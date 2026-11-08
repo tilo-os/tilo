@@ -1446,7 +1446,7 @@ impl ContextMenu {
         let at = self
             .hovered
             .and_then(|hovered| self.shown.iter().position(|&index| index == hovered));
-        let next = crate::widget::autocomplete::step_pickable(
+        let next = crate::widget::floating_list::step_pickable(
             self.shown.len(),
             at,
             dir > 0,

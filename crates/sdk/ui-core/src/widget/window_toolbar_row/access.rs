@@ -439,7 +439,7 @@ impl ToolbarRow {
         if !self.suggestions_open() {
             return Vec::new();
         }
-        let rows = self.suggestions.suggestions();
+        let rows = self.suggestions.rows();
         let list = rows
             .iter()
             .enumerate()

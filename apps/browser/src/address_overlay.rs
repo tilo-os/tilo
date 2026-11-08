@@ -81,7 +81,7 @@ impl AddressSuggestions {
             .map(|row| list_row(row, &self.engine))
             .collect();
         self.items = items;
-        self.list.set_suggestions(rows);
+        self.list.set_rows(rows);
         self.list.set_highlight(None);
         self.touched = None;
     }

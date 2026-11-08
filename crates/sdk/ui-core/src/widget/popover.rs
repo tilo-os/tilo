@@ -611,7 +611,7 @@ impl<C: Widget> Popover<C> {
                 }
             })
             .collect();
-        self.menu.set_suggestions(rows);
+        self.menu.set_rows(rows);
         self.menu.set_highlight(Some(options.highlighted));
         self.menu.measure(tr, theme);
     }

@@ -3175,8 +3175,8 @@ pub use editable_label::{EditOutcome, EditableLabel, EditableLabelProps};
 pub mod acknowledgement;
 pub mod autocomplete;
 pub use autocomplete::{
-    Autocomplete, AutocompleteOutcome, AutocompleteProps, Suggester, Suggestion, SuggestionList,
-    SuggestionPerson, SuggestionProps,
+    Autocomplete, AutocompleteOutcome, AutocompleteProps, CheckColumn, Suggester, Suggestion,
+    SuggestionList, SuggestionPerson, SuggestionProps,
 };
 pub mod mention_picker;
 pub use mention_picker::{MentionCandidate, MentionQuery};
@@ -3267,6 +3267,8 @@ pub mod canvas_navigation_hint;
 pub use canvas_navigation_hint::{CanvasNavigation, CanvasNavigationHint};
 pub use shortcut_recorder::{ShortcutRecorder, ShortcutRecorderProps};
 pub mod context_menu;
+pub mod floating_list;
+pub use floating_list::{FloatingList, FloatingMetrics, FloatingRow, RowState};
 pub mod floating_surface;
 pub mod primitives;
 pub use context_menu::{

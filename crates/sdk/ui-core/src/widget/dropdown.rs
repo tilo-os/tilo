@@ -777,7 +777,7 @@ impl Dropdown {
         // keeps its width while a query narrows it.
         let hint = (rows.is_empty() || self.supports_filter())
             .then(|| crate::i18n!("dropdown-no-matches"));
-        self.list.set_suggestions(rows);
+        self.list.set_rows(rows);
         self.list.set_status(hint);
         self.list.set_anchor(self.rect);
         if let Some(viewport) = self.viewport {
