@@ -75,6 +75,9 @@ pub(super) struct Joined {
 struct WorkspaceSession {
     /// Wakes the session to send what its owner holds for it.
     wake: Arc<Notify>,
+    /// Ticks when the link to the workspace's host comes up or ends: what a
+    /// commit waits on before it sends.
+    connected: Arc<Notify>,
     /// The link to the workspace's host, while it is up.
     live: Option<Arc<DirectSync>>,
     /// The device key of the host it is linked to, which serves the
@@ -103,7 +106,7 @@ impl Holder for WorkspaceHolder {
         _governor: bool,
         reason: String,
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send + '_>> {
-        tracing::debug!(%reason, "joined workspace link unavailable");
+        tracing::debug!(%reason, "a joined workspace's link is unavailable");
         Box::pin(std::future::ready(()))
     }
 
@@ -373,6 +376,7 @@ impl Joined {
             workspace,
             WorkspaceSession {
                 wake: Arc::clone(&wake),
+                connected: Arc::new(Notify::new()),
                 live: None,
                 host: None,
                 members: std::collections::BTreeSet::new(),
@@ -398,12 +402,23 @@ impl Joined {
         let host = scope.host().host.device_public_key;
         // Subscribed before the link runs, so nothing it brings in is missed.
         let mut heard = link.heard();
-        self.set_live(workspace, Some((Arc::clone(&link), host)));
-        self.publish(&scope, &link);
+        // The link is the workspace's to send on once it caught up with its
+        // host's history: a frame sent before reaches no one, and what this
+        // device holds for the workspace waits for it.
+        let mut caught_up = link.caught_up();
+        let mut live = false;
         let mut running = Box::pin(linked.run());
         let ended = loop {
             tokio::select! {
                 ended = &mut running => break ended,
+                caught = caught_up.wait_for(|up| *up), if !live => {
+                    if caught.is_err() {
+                        break Err("the link closed".into());
+                    }
+                    live = true;
+                    self.set_live(workspace, Some((Arc::clone(&link), host)));
+                    self.publish(&scope, &link);
+                }
                 frame = heard.recv() => match frame {
                     Ok(heard) => {
                         self.take(&scope, heard);
@@ -420,7 +435,7 @@ impl Joined {
             }
         };
         if let Err(reason) = ended {
-            tracing::debug!(%reason, %workspace, "joined workspace link ended");
+            tracing::debug!(%workspace, %reason, "a joined workspace's link ended");
         }
         scope.close();
         self.set_live(workspace, None);
@@ -482,15 +497,30 @@ impl Joined {
     /// content follows: what is wanted is asked of a host that connected, and
     /// waits while there is none.
     fn set_live(&self, workspace: WorkspaceId, live: Option<(Arc<DirectSync>, [u8; 32])>) {
+        let mut connected = None;
         if let Ok(mut sessions) = self.sessions.lock()
             && let Some(session) = sessions.get_mut(&workspace)
         {
             (session.live, session.host) = live.unzip();
             session.members.clear();
+            connected = Some(Arc::clone(&session.connected));
+        }
+        if let Some(connected) = connected {
+            connected.notify_waiters();
         }
         if let Some(content) = self.content.get().cloned() {
             tilo_rt::app().spawn_blocking(move || content.sources_changed());
         }
+    }
+
+    /// Ticks when `workspace`'s link to its host comes up or ends.
+    fn connected(&self, workspace: WorkspaceId) -> Result<Arc<Notify>, String> {
+        self.sessions
+            .lock()
+            .map_err(|_| "the joined workspaces closed".to_owned())?
+            .get(&workspace)
+            .map(|session| Arc::clone(&session.connected))
+            .ok_or_else(|| "this profile holds no session for the workspace".to_owned())
     }
 
     /// A device of `workspace` this session heard a frame from, other than
@@ -580,10 +610,9 @@ impl Joined {
                 tracing::debug!(%error, "joined workspace sealed history stays uncompacted");
             }
         }
-        let result = scope.publish_renewing(link, &self.custody, &mut |sealed| {
+        if let Err(error) = scope.publish_renewing(link, &self.custody, &mut |sealed| {
             keys.renew_sealed(scope.workspace(), sealed)
-        });
-        if let Err(error) = result {
+        }) {
             tracing::debug!(%error, "joined workspace publication remains in durable custody");
         }
     }

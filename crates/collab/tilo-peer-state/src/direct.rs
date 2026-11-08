@@ -81,6 +81,11 @@ pub struct Heard {
 struct Authored {
     from: [u8; 32],
     message: NeighbourMsg,
+    /// Whether this device published the frame itself just now, rather than
+    /// carrying it from its replica or forwarding another device's: a device
+    /// hosting its own workspace shares its key with the member it serves, so
+    /// whose name a frame bears does not say whether the other end has it.
+    published: bool,
 }
 
 /// The streams of a dialled link after the other device admitted this one:
@@ -249,6 +254,7 @@ impl DirectSync {
         self.outgoing(Authored {
             from: self.device(),
             message: message.clone(),
+            published: true,
         });
         Ok(message)
     }
@@ -286,6 +292,7 @@ impl DirectSync {
         self.outgoing(Authored {
             from: self.device(),
             message,
+            published: true,
         });
         Ok(())
     }
@@ -457,7 +464,7 @@ impl DirectSync {
             .open_uni()
             .await
             .map_err(|error| error.to_string())?;
-        let sending = send_authored(send, remote, catch_up, live);
+        let sending = send_authored(send, remote, self.device(), catch_up, live);
         let receiving = self.receive_all(&certificate, connection);
         let history = async {
             let done = if dialing {
@@ -585,6 +592,7 @@ impl DirectSync {
             .map(|message| Authored {
                 from: device,
                 message,
+                published: false,
             })
             .collect())
     }
@@ -623,7 +631,7 @@ impl DirectSync {
     ) -> Result<(), String> {
         let author = store::author_of(&message).unwrap_or(claimed);
         let heard = match &self.0.admission {
-            Some(admission) => self.admit_owned(admission, author, message, retained)?,
+            Some(admission) => self.admit_owned(admission, author, message, retained),
             None => self.admit_local(author, certificate, message, retained)?,
         };
         self.keep(&heard.message);
@@ -636,6 +644,7 @@ impl DirectSync {
             self.outgoing(Authored {
                 from: heard.author,
                 message: heard.message.clone(),
+                published: false,
             });
         }
         let _ = self.0.heard.send(heard);
@@ -650,7 +659,7 @@ impl DirectSync {
         author: [u8; 32],
         message: NeighbourMsg,
         retained: bool,
-    ) -> Result<Heard, String> {
+    ) -> Heard {
         let origin = if retained {
             TransportOrigin::RetainedRelayDelta(author)
         } else {
@@ -670,13 +679,13 @@ impl DirectSync {
                 (false, Err(reason))
             }
         };
-        Ok(Heard {
+        Heard {
             author,
             message,
             landed,
             retained,
             report,
-        })
+        }
     }
 
     /// Take `message` into this device's own replica: whether it is the
@@ -963,7 +972,9 @@ impl ProtocolHandler for Owning {
                 Ok(link) => link,
                 Err(reason) => return Err(refuse(&connection, &reason)),
             };
-            link.link(&connection, false, Control { send, recv }).await
+            let live = link.0.outgoing.subscribe();
+            link.link(&connection, false, Control { send, recv }, live)
+                .await
         };
         serve
             .await
@@ -986,7 +997,7 @@ async fn forward(
 ) -> Result<(), String> {
     loop {
         match live.recv().await {
-            Ok(authored) if from_device(&authored.message, remote) => {}
+            Ok(authored) if already_theirs(&authored, remote, device.device()) => {}
             Ok(authored) => {
                 device.admit(authored.from, Some(certificate), authored.message, retained)?;
             }
@@ -996,6 +1007,15 @@ async fn forward(
             Err(broadcast::error::RecvError::Closed) => return Ok(()),
         }
     }
+}
+
+/// Whether `authored` is the other end's already: the device `remote` sent it
+/// itself, and is another device than the one `own` this link signs for. A
+/// device hosting a workspace it placed itself serves the member it placed
+/// under the same signing key, and what that member published is what only
+/// that member's replica lacks, so whose name a frame bears says nothing there.
+fn already_theirs(authored: &Authored, remote: [u8; 32], own: [u8; 32]) -> bool {
+    !authored.published && remote != own && from_device(&authored.message, remote)
 }
 
 /// Whether `message` is one `device` sent: what a link does not send back to
@@ -1018,11 +1038,12 @@ pub(crate) fn from_device(message: &NeighbourMsg, device: [u8; 32]) -> bool {
     }
 }
 
-/// Write `catch_up`, then every frame published live that `remote` did not
-/// author, to `send`, under the name of the device that authored each.
+/// Write `catch_up`, then every frame published live, to `send`, under the
+/// name of the device that authored each.
 async fn send_authored(
     mut send: SendStream,
     remote: [u8; 32],
+    own: [u8; 32],
     catch_up: Vec<Authored>,
     mut live: broadcast::Receiver<Authored>,
 ) -> Result<(), String> {
@@ -1031,7 +1052,7 @@ async fn send_authored(
     }
     loop {
         match live.recv().await {
-            Ok(authored) if from_device(&authored.message, remote) => {}
+            Ok(authored) if already_theirs(&authored, remote, own) => {}
             Ok(authored) => write_authored(&mut send, &authored).await?,
             Err(broadcast::error::RecvError::Lagged(_)) => {
                 return Err("the link fell behind the device's changes".into());
@@ -1057,7 +1078,13 @@ async fn write_authored(send: &mut SendStream, authored: &Authored) -> Result<()
 async fn read_authored(recv: &mut RecvStream) -> Result<Option<Authored>, String> {
     match crate::frames::read_frame(recv, MAX_FRAME_BYTES).await? {
         Some(bytes) => postcard::from_bytes::<([u8; 32], NeighbourMsg)>(&bytes)
-            .map(|(from, message)| Some(Authored { from, message }))
+            .map(|(from, message)| {
+                Some(Authored {
+                    from,
+                    message,
+                    published: false,
+                })
+            })
             .map_err(|error| error.to_string()),
         None => Ok(None),
     }

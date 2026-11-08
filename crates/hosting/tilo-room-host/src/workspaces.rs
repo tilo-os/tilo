@@ -1411,7 +1411,7 @@ impl Workspaces {
     }
 
     /// Serve `workspace`'s replica over the direct link, keeping its history
-    /// at the host's store, and answer what its members ask there.
+    /// at the host's store, and take in what its members send there.
     fn serve_direct(&self, workspace: &GovernedWorkspace) -> Result<(), String> {
         let link = tilo_peer_state::direct::DirectSync::over(
             workspace.peer.clone(),
@@ -1419,14 +1419,17 @@ impl Workspaces {
         )
         .with_store(Arc::clone(&self.inner.store));
         self.inner.direct.serve(link.clone())?;
-        self.answer_content(workspace, &link);
+        self.follow_link(workspace, &link);
         Ok(())
     }
 
-    /// Answer what `workspace`'s members ask for content of `link`: what this
-    /// host keeps, or word that it keeps none, addressed to whoever asked.
-    /// The link carries each ask on to the workspace's other members itself.
-    fn answer_content(
+    /// Take in what `workspace`'s link admits and answer what its members ask
+    /// there: a frame the link admitted is what a member's write through a
+    /// relay session was, so it is followed as one ([`Self::absorb`]), and each
+    /// ask for content is answered with what this host keeps of it, or word
+    /// that it keeps none, addressed to whoever asked. The link carries each
+    /// ask on to the workspace's other members itself.
+    fn follow_link(
         &self,
         workspace: &GovernedWorkspace,
         link: &tilo_peer_state::direct::DirectSync,
@@ -1441,15 +1444,19 @@ impl Workspaces {
                 let Some(workspaces) = workspaces.upgrade() else {
                     return;
                 };
-                if !matches!(
+                let asking = matches!(
                     frame.message,
                     neighbour_wire::NeighbourMsg::RecordContentWant { .. }
-                ) {
-                    continue;
-                }
+                );
                 let Ok(body) = postcard::to_allocvec(&frame.message) else {
                     continue;
                 };
+                if let Err(error) = workspaces.absorb(&name, frame.author, &body).await {
+                    tracing::warn!(%name, %error, "the host did not keep what its link admitted");
+                }
+                if !asking {
+                    continue;
+                }
                 for answer in workspaces.content_answer(&name, &body) {
                     match postcard::from_bytes::<neighbour_wire::NeighbourMsg>(&answer) {
                         Ok(message) => {

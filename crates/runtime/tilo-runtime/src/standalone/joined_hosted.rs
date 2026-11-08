@@ -152,13 +152,19 @@ impl Joined {
     }
 
     /// Commit `request`, an app's write to `workspace`, a workspace this device's host
-    /// hosts: admitted here, and answered once the host keeps it.
+    /// hosts: sent to the host over this device's link to it, and answered once
+    /// the host keeps it.
+    #[expect(
+        clippy::significant_drop_tightening,
+        reason = "the host is this profile's own, kept by a OnceLock: the reference holds no lock"
+    )]
     pub(super) async fn commit_hosted(
         &self,
         workspace: WorkspaceId,
         request: OwnerCommitRequest,
         record_kind: Option<String>,
     ) -> Result<OwnerCommitReceipt, String> {
+        let binding = request.binding()?;
         let CommitOperation::Document {
             app,
             record,
@@ -176,9 +182,19 @@ impl Joined {
             .own_host
             .get()
             .ok_or("this profile runs no workspace host")?;
-        if !self.owner.with_current(workspace, |view| {
-            Ok(view.peer().holds_document(&app, &record))
-        })? {
+        let (held, authors, generation) = self.owner.with_current(workspace, |view| {
+            let now = SystemTime::now();
+            Ok((
+                view.peer().holds_document(&app, &record),
+                view.peer().permissions(own, now).is_ok_and(|member| {
+                    member
+                        .policy
+                        .app_authors(&app, &tilo_action_policy::Context::at_time(now))
+                }),
+                view.generation(),
+            ))
+        })?;
+        if !held {
             let kind = record_kind
                 .as_deref()
                 .ok_or_else(|| format!("{app} named no kind for a new record"))?;
@@ -186,29 +202,11 @@ impl Joined {
                 return Err(format!("{app} does not declare the resource kind `{kind}`"));
             }
         }
-        let deadline = Instant::now()
-            .checked_add(KEPT_WITHIN)
-            .ok_or("the clock cannot count a write's wait")?;
-        let ws = super::workspace_topic(workspace)?;
-        let host = own_host
-            .host
-            .workspaces()
-            .direct()
-            .link(ws)
-            .ok_or("this device's host does not serve the workspace yet")?;
-        let authors = |app: &str| -> Result<bool, String> {
-            self.owner.with_current(workspace, |view| {
-                let now = SystemTime::now();
-                Ok(view.peer().permissions(own, now).is_ok_and(|member| {
-                    member
-                        .policy
-                        .app_authors(app, &tilo_action_policy::Context::at_time(now))
-                }))
-            })
-        };
-        if !authors(&app)? {
+        if !authors {
             // This device lets the app author, committed by its own host,
-            // which signs the workspace's history under this device's key.
+            // which signs the workspace's history under this device's key. The
+            // link carries the grant to this device behind the write, and the
+            // host decides the write with the grant in hand.
             own_host
                 .host
                 .workspaces()
@@ -221,16 +219,28 @@ impl Joined {
                 )
                 .await
                 .map_err(|error| error.to_string())?;
-            self.wait_until(
-                &host,
-                deadline,
-                "this device's host did not grant the write in time",
-                || authors(&app),
-            )
-            .await?;
         }
-        let receipt = self.owner.commit_document(request, SystemTime::now())?;
-        self.wake(workspace);
+        let message = neighbour_wire::NeighbourMsg::AppDocument {
+            peer: neighbour_wire::peer_handle(&own),
+            app_id: app.clone(),
+            cluster_id: workspace.to_string(),
+            record_id: record.clone(),
+            envelope: Box::new(envelope.clone()),
+        };
+        let digest =
+            *blake3::hash(&postcard::to_allocvec(&message).map_err(|error| error.to_string())?)
+                .as_bytes();
+        let deadline = Instant::now()
+            .checked_add(KEPT_WITHIN)
+            .ok_or("the clock cannot count a write's wait")?;
+        let ws = super::workspace_topic(workspace)?;
+        let host = own_host
+            .host
+            .workspaces()
+            .direct()
+            .link(ws)
+            .ok_or("this device's host does not serve the workspace yet")?;
+        self.live_by(workspace, deadline).await?.send(message)?;
         self.wait_until(
             &host,
             deadline,
@@ -243,7 +253,35 @@ impl Joined {
             },
         )
         .await?;
-        Ok(receipt)
+        Ok(OwnerCommitReceipt {
+            binding,
+            generation: generation.max(1),
+            aggregate_hash: digest,
+        })
+    }
+
+    /// This device's link to `workspace`'s host, up and ready to carry a frame,
+    /// waited for until `deadline`.
+    async fn live_by(
+        &self,
+        workspace: WorkspaceId,
+        deadline: Instant,
+    ) -> Result<Arc<tilo_peer_state::direct::DirectSync>, String> {
+        let connected = self.connected(workspace)?;
+        loop {
+            let waiting = connected.notified();
+            tokio::pin!(waiting);
+            waiting.as_mut().enable();
+            if let Some(link) = self.live(workspace) {
+                return Ok(link);
+            }
+            if tokio::time::timeout_at(tokio::time::Instant::from_std(deadline), waiting)
+                .await
+                .is_err()
+            {
+                return Err("the workspace's link to its host is not up".into());
+            }
+        }
     }
 
     /// Wait until `check` holds as the host's replica changes, or `deadline`
@@ -277,24 +315,43 @@ impl Joined {
 #[cfg(test)]
 impl Joined {
     /// `app`'s `record` as this device's host keeps it in `workspace`: its latest
-    /// whole write, opened with the channel's keys. `Err` says where the write
+    /// whole write, out of the history the host keeps for the workspace's
+    /// devices, opened with the channel's keys. `Err` says where the write
     /// stops on the way there, so one that never arrives is explained rather
-    /// than just missing. Waits on the host: call it from a thread that may
-    /// block.
+    /// than just missing.
+    #[expect(
+        clippy::significant_drop_tightening,
+        reason = "the host is this profile's own: the handle holds no lock"
+    )]
     pub(in crate::standalone) fn test_kept_document(
         &self,
         workspace: WorkspaceId,
         app: &str,
         record: &str,
     ) -> Result<Vec<u8>, String> {
-        let host = Arc::clone(
-            self.room_host()
-                .ok_or("this profile runs no workspace host")?,
-        );
+        let host = self
+            .room_host()
+            .ok_or("this profile runs no workspace host")?;
         let ws = super::workspace_topic(workspace)?;
-        let retained = tilo_rt::app()
-            .handle()
-            .block_on(async move { host.workspace_records().retained(ws).await })?;
+        let link = host
+            .workspaces()
+            .direct()
+            .link(ws)
+            .ok_or("this device's host does not serve the workspace")?;
+        let store = link
+            .store()
+            .cloned()
+            .ok_or("this device's host keeps no history of the workspace")?;
+        let kept = store
+            .replay(
+                ws,
+                &[],
+                tilo_peer_state::store::Budget {
+                    max_frames: usize::MAX,
+                    max_bytes: u64::MAX,
+                },
+            )
+            .map_err(|error| error.to_string())?;
         let route = collab_types::ChannelRoute::new(app, record);
         let keys = self
             .channel_keys()
@@ -303,25 +360,24 @@ impl Joined {
             .record_keys(workspace, &route)
             .ok_or_else(|| {
                 format!(
-                    "the host keeps {} bodies but this device takes part in no channel of {app}'s {record}",
-                    retained.len()
+                    "the host keeps {} writes but this device takes part in no channel of {app}'s {record}",
+                    kept.frames.len()
                 )
             })?
             .map_err(|error| {
                 format!(
-                    "the host keeps {} bodies but this device holds no keys for {app}'s {record}: {error}",
-                    retained.len()
+                    "the host keeps {} writes but this device holds no keys for {app}'s {record}: {error}",
+                    kept.frames.len()
                 )
             })?;
         let mut kept_of_the_record = 0_usize;
-        for kept in retained.iter().rev() {
+        for message in kept.frames.iter().rev() {
             let neighbour_wire::NeighbourMsg::AppDocument {
                 app_id,
                 record_id,
                 envelope,
                 ..
-            } = postcard::from_bytes(&kept.body)
-                .map_err(|error| format!("the host keeps an unreadable body: {error}"))?
+            } = message
             else {
                 continue;
             };
@@ -332,7 +388,7 @@ impl Joined {
             let metadata = envelope
                 .encryption
                 .ok_or_else(|| format!("{app}'s {record} reached the host unsealed"))?;
-            let ciphertext = collab_types::sealed_ciphertext(&envelope)
+            let ciphertext = collab_types::sealed_ciphertext(envelope)
                 .map_err(|error| format!("{app}'s {record} is not sealed as one frame: {error}"))?;
             let plaintext = keys
                 .open_content(envelope.artifact, &metadata, &ciphertext)
@@ -348,8 +404,8 @@ impl Joined {
             }
         }
         Err(format!(
-            "the host keeps {} bodies, {kept_of_the_record} of them {app}'s {record}, none whole",
-            retained.len()
+            "the host keeps {} writes, {kept_of_the_record} of them {app}'s {record}, none whole",
+            kept.frames.len()
         ))
     }
 }
