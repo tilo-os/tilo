@@ -21,8 +21,6 @@
 )]
 
 use std::path::{Path, PathBuf};
-use std::process::Command;
-use tilo_test_env::SpawnUnderEnvLock as _;
 
 use ed25519_dalek::{Signer, SigningKey};
 use tilo_app_package::manifest::TrustAttestation;
@@ -32,7 +30,7 @@ use tilo_app_package::trust::{
 };
 use tilo_app_package::{Manifest, SigningIdentity, pack};
 
-use crate::support::{build_tapp, fresh_key, install_bin};
+use crate::support::{build_tapp, fresh_key};
 
 const SAMPLE_APP_MANIFEST_TEMPLATE: &str = r#"
 [package]
@@ -125,10 +123,6 @@ impl TestEnv {
         self.home.path().join("config")
     }
 
-    fn xdg_data(&self) -> PathBuf {
-        self.home.path().join("data")
-    }
-
     fn tilo_config(&self) -> PathBuf {
         self.xdg_config().join("tilo")
     }
@@ -147,9 +141,9 @@ impl TestEnv {
 
     /// The output of the CLI `arguments` run in this environment.
     fn cli(&self, arguments: &[&str]) -> (bool, String, String) {
-        let mut cmd = self.cmd();
+        let mut cmd = crate::support::cmd(self.home.path());
         cmd.args(arguments);
-        run(cmd)
+        crate::support::run(cmd)
     }
 
     /// The output of installing `tapp` with `extra`. Every install here proves
@@ -160,25 +154,6 @@ impl TestEnv {
         let arguments = [&["install", tapp, "--ignore-missing-runtime"][..], extra].concat();
         self.cli(&arguments)
     }
-
-    fn cmd(&self) -> Command {
-        let mut c = Command::new(install_bin());
-        // Wipe every ambient env var — we do NOT want the user's
-        // XDG dirs or HOME to leak in.
-        c.env_clear();
-        c.env("PATH", std::env::var("PATH").unwrap_or_default());
-        c.env("XDG_CONFIG_HOME", self.xdg_config());
-        c.env("XDG_DATA_HOME", self.xdg_data());
-        c.env("HOME", self.home.path()); // fallback for tilo_paths::data_dir
-        c
-    }
-}
-
-fn run(mut cmd: Command) -> (bool, String, String) {
-    let out = cmd.output_locked().expect("spawn tilo-install");
-    let stdout = String::from_utf8_lossy(&out.stdout).to_string();
-    let stderr = String::from_utf8_lossy(&out.stderr).to_string();
-    (out.status.success(), stdout, stderr)
 }
 
 #[test]

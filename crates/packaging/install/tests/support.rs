@@ -8,10 +8,12 @@
 )]
 
 use std::path::{Path, PathBuf};
+use std::process::Command;
 
 use ed25519_dalek::SigningKey;
 use getrandom::{SysRng, rand_core::UnwrapErr};
 use tilo_app_package::{Manifest, SigningIdentity, pack};
+use tilo_test_env::SpawnUnderEnvLock as _;
 
 /// Path to the compiled `tilo-install` binary.
 pub fn install_bin() -> PathBuf {
@@ -39,4 +41,27 @@ pub fn build_tapp(
     let file = std::fs::File::create(tapp_path).unwrap();
     tilo_app_package::tapp::write(file, &packed.meta, Some(&packed)).unwrap();
     packed.id()
+}
+
+/// The `tilo-install` binary pointed at the data and config dirs under `home`:
+/// nothing of the ambient environment, the user's XDG dirs or their HOME leaks
+/// in.
+pub fn cmd(home: &Path) -> Command {
+    let mut cmd = Command::new(install_bin());
+    cmd.env_clear();
+    cmd.env("PATH", std::env::var("PATH").unwrap_or_default());
+    cmd.env("XDG_CONFIG_HOME", home.join("config"));
+    cmd.env("XDG_DATA_HOME", home.join("data"));
+    cmd.env("HOME", home);
+    cmd
+}
+
+/// [`cmd`]'s output: whether it succeeded, and its stdout and stderr.
+pub fn run(mut cmd: Command) -> (bool, String, String) {
+    let out = cmd.output_locked().expect("spawn tilo-install");
+    (
+        out.status.success(),
+        String::from_utf8_lossy(&out.stdout).to_string(),
+        String::from_utf8_lossy(&out.stderr).to_string(),
+    )
 }

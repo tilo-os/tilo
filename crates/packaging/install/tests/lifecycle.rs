@@ -16,13 +16,11 @@
 )]
 
 use std::path::{Path, PathBuf};
-use std::process::Command;
-use tilo_test_env::SpawnUnderEnvLock as _;
 
 use ed25519_dalek::SigningKey;
 use tilo_app_package::Manifest;
 
-use crate::support::{build_tapp, fresh_key, install_bin};
+use crate::support::{build_tapp, fresh_key};
 
 /// A package that declares no runtime bundle, so the lifecycle tests
 /// exercise install/update/uninstall rather than dependency handling.
@@ -150,19 +148,9 @@ impl Env {
     }
 
     fn cmd(&self, args: &[&str]) -> (bool, String, String) {
-        let mut c = Command::new(install_bin());
-        c.env_clear();
-        c.env("PATH", std::env::var("PATH").unwrap_or_default());
-        c.env("XDG_CONFIG_HOME", self.home.path().join("config"));
-        c.env("XDG_DATA_HOME", self.xdg_data());
-        c.env("HOME", self.home.path());
-        c.args(args);
-        let out = c.output_locked().expect("spawn tilo-install");
-        (
-            out.status.success(),
-            String::from_utf8_lossy(&out.stdout).to_string(),
-            String::from_utf8_lossy(&out.stderr).to_string(),
-        )
+        let mut cmd = crate::support::cmd(self.home.path());
+        cmd.args(args);
+        crate::support::run(cmd)
     }
 
     /// Simulate the app having saved something, in two workspaces.
