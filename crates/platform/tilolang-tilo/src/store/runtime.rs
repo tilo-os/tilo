@@ -358,52 +358,53 @@ impl Store for TiloStore {
     }
 
     fn read(&self, at: &ResourceRef, field: &FieldSpec) -> Result<FieldValue, StoreError> {
-        let needs_record = {
+        // The value the index answers for the field: a field of a row it derived, or the items
+        // of a collection. What it does not hold is read from the chunk the resource's map is
+        // in, which the store reads when it was not sent it.
+        let indexed: Option<FieldValue> = {
             let inner = self.held();
-            let (app, ty) = inner.locate(at)?;
-            if let Some(view) = inner.view(&app) {
-                let resource = at.id_string();
-                let Some(stored) = view.type_of(&resource).map_err(backend)? else {
-                    // A record the index cannot name yet: an origin's write is derived, and the
-                    // record it makes (or moves on) is read here before the next derivation
-                    // names it. The overlay the write made holds its fields, so a field it
-                    // wrote reads from there rather than as if the record were gone.
-                    if let Ok(Some(written)) = view.field(&resource, &field.id) {
-                        return Ok(written);
-                    }
-                    return Err(not_found(format!("resource {resource}")));
-                };
-                let schema = lookup(&stored).ok_or_else(|| not_found(format!("type {stored}")))?;
-                let spec = schema
-                    .field(&field.id)
-                    .ok_or_else(|| not_found(format!("field {}", field.id)))?;
-                match spec.kind {
-                    MergeKind::Collection => {
-                        return Ok(FieldValue::Items(inner.listed(at, &field.id, None)?.ids()));
-                    }
-                    // Not a field the index holds: read from the record.
-                    MergeKind::Record => true,
-                    _ => match view.field(&resource, &spec.id) {
-                        Ok(value) => {
-                            return Ok(value.unwrap_or_else(|| default_value(spec)));
+            let (app, _) = inner.locate(at)?;
+            match inner.view(&app) {
+                None => None,
+                Some(view) => {
+                    let resource = at.id_string();
+                    let Some(stored) = view.type_of(&resource).map_err(backend)? else {
+                        // A record the index cannot name yet: an origin's write is derived, and the
+                        // record it makes (or moves on) is read here before the next derivation
+                        // names it. The overlay the write made holds its fields, so a field it
+                        // wrote reads from there rather than as if the record were gone.
+                        if let Ok(Some(written)) = view.field(&resource, &field.id) {
+                            return Ok(written);
                         }
-                        // Never read from a corrupt index: the record says, until the index
-                        // is built anew.
-                        Err(_) if inner.chunks.has_record() => {
-                            return inner.read_mirror((&app, &ty), at, &field.id);
+                        return Err(not_found(format!("resource {resource}")));
+                    };
+                    let schema =
+                        lookup(&stored).ok_or_else(|| not_found(format!("type {stored}")))?;
+                    let spec = schema
+                        .field(&field.id)
+                        .ok_or_else(|| not_found(format!("field {}", field.id)))?;
+                    match spec.kind {
+                        MergeKind::Collection => {
+                            Some(FieldValue::Items(inner.listed(at, &field.id, None)?.ids()))
                         }
-                        Err(error) => return Err(backend(error)),
-                    },
+                        // Not a field the index holds: read from the record.
+                        MergeKind::Record => None,
+                        _ => match view.field(&resource, &spec.id) {
+                            Ok(value) => Some(value.unwrap_or_else(|| default_value(spec))),
+                            // Never read from a corrupt index: the record says, until the index
+                            // is built anew.
+                            Err(_) if inner.chunks.has_record() => None,
+                            Err(error) => return Err(backend(error)),
+                        },
+                    }
                 }
-            } else if inner.chunks.has_record() {
-                return inner.read_mirror((&app, &ty), at, &field.id);
-            } else {
-                true
             }
         };
-        if needs_record {
-            self.load_record()?;
+        if let Some(value) = indexed {
+            return Ok(value);
         }
+        // The resource's map is in its own chunk: one the store was not sent is read here.
+        self.load_at(at)?;
         let inner = self.held();
         let (app, ty) = inner.locate(at)?;
         inner.read_mirror((&app, &ty), at, &field.id)
