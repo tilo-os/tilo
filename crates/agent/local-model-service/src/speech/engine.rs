@@ -180,8 +180,8 @@ fn full_params(
     params.language = language;
     if draft {
         // The pinned engine polls this after the encoder graph and after every
-        // decoded token, so a stop ends the run promptly and leaves the
-        // context valid for the final.
+        // decoded token: a stop ends the draft at its next poll, never later
+        // than one encoder pass, and leaves the context valid for the final.
         params.abort_callback = Some(stop_requested);
     }
     if !vocabulary.is_empty() {
