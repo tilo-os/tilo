@@ -8,7 +8,7 @@ use std::process::{Command, Output};
 use tilo_test_env::SpawnUnderEnvLock as _;
 
 use ed25519_dalek::SigningKey;
-use registry_server::{PublisherAllowlist, PublisherRow, Storage};
+use registry_server::{PublisherRow, Storage};
 
 fn add_publisher(data_dir: &Path, arguments: &[&str]) -> Output {
     Command::new(tilo_test_env::package_binary!("tilo-registry-server"))
@@ -39,9 +39,7 @@ fn add_publisher_requires_namespace() {
         namespaces: vec!["com.acme".into()],
     };
     storage
-        .save_allowlist(&PublisherAllowlist {
-            publishers: vec![existing.clone()],
-        })
+        .save_allowlist(&crate::support::allowlist(vec![existing.clone()]))
         .unwrap();
     let before = std::fs::read(storage.publishers_path()).unwrap();
     let newcomer = pubkey_hex(72);
@@ -137,9 +135,7 @@ fn grant_adds_a_namespace_to_an_allowed_publisher() {
         namespaces: vec!["so.tilo".into()],
     };
     storage
-        .save_allowlist(&PublisherAllowlist {
-            publishers: vec![release.clone()],
-        })
+        .save_allowlist(&crate::support::allowlist(vec![release.clone()]))
         .unwrap();
 
     // phase: grant_adds_to_the_row_it_already_owns

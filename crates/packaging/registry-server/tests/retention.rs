@@ -19,7 +19,7 @@ use tilo_test_env::SpawnUnderEnvLock as _;
 
 use ed25519_dalek::SigningKey;
 use registry_server::storage::SNAPSHOT_HISTORY_RETAINED;
-use registry_server::{PublisherAllowlist, PublisherRow, ServerIdentity, Storage};
+use registry_server::{ServerIdentity, Storage};
 use registry_types::retention::RetentionPolicy;
 use registry_types::{RegistryEntry, RegistryTarget, RegistryVersion, sign_entry};
 
@@ -50,14 +50,10 @@ fn registry() -> Registry {
         })
         .unwrap();
     storage
-        .save_allowlist(&PublisherAllowlist {
-            publishers: vec![PublisherRow {
-                pubkey_hex: hex::encode(publisher.verifying_key().to_bytes()),
-                can_add_new: true,
-                note: String::new(),
-                namespaces: vec![registry_types::namespace::TILO_NAMESPACE.to_owned()],
-            }],
-        })
+        .save_allowlist(&crate::support::allowlist(vec![crate::support::publisher(
+            hex::encode(publisher.verifying_key().to_bytes()),
+            true,
+        )]))
         .unwrap();
     let key_path = keys.path().join("owner.seed");
     std::fs::write(&key_path, hex::encode(owner.to_bytes())).unwrap();

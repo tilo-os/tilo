@@ -13,12 +13,11 @@ use tilo_test_env::SpawnUnderEnvLock as _;
 
 use ed25519_dalek::SigningKey;
 use registry_server::{
-    PendingSubmission, PromotionJournal, PublisherAllowlist, PublisherRow, ServerIdentity,
-    StagedArtifact, StagedPromotion, Storage,
+    PendingSubmission, PromotionJournal, PublisherRow, ServerIdentity, StagedArtifact,
+    StagedPromotion, Storage,
 };
 use registry_types::{
-    EntryAction, RegistryEntry, RegistryTarget, RegistryVersion, SignedRegistrySnapshot,
-    sign_change_request,
+    EntryAction, RegistryTarget, RegistryVersion, SignedRegistrySnapshot, sign_change_request,
 };
 use tilo_app_package::Manifest;
 use tilo_app_package::pack::{SigningIdentity, pack};
@@ -56,14 +55,12 @@ async fn networkless_publisher_reverifies_content_addressed_bytes_and_delegated_
     };
     storage.save_identity(&identity).unwrap();
     storage
-        .save_allowlist(&PublisherAllowlist {
-            publishers: vec![PublisherRow {
-                pubkey_hex: publisher_hex.clone(),
-                can_add_new: false,
-                note: "first party".into(),
-                namespaces: vec![registry_types::namespace::TILO_NAMESPACE.to_owned()],
-            }],
-        })
+        .save_allowlist(&crate::support::allowlist(vec![PublisherRow {
+            pubkey_hex: publisher_hex.clone(),
+            can_add_new: false,
+            note: "first party".into(),
+            namespaces: vec![registry_types::namespace::TILO_NAMESPACE.to_owned()],
+        }]))
         .unwrap();
     let owner_path = temp.path().join("owner.seed");
     let channel_path = temp.path().join("channel.seed");
@@ -94,14 +91,12 @@ async fn networkless_publisher_reverifies_content_addressed_bytes_and_delegated_
     });
     started_rx.recv().unwrap();
     storage
-        .save_allowlist(&PublisherAllowlist {
-            publishers: vec![PublisherRow {
-                pubkey_hex: publisher_hex.clone(),
-                can_add_new: true,
-                note: "first party".into(),
-                namespaces: vec![registry_types::namespace::TILO_NAMESPACE.to_owned()],
-            }],
-        })
+        .save_allowlist(&crate::support::allowlist(vec![PublisherRow {
+            pubkey_hex: publisher_hex.clone(),
+            can_add_new: true,
+            note: "first party".into(),
+            namespaces: vec![registry_types::namespace::TILO_NAMESPACE.to_owned()],
+        }]))
         .unwrap();
     drop(authorization_lock);
     let authorized = authorizer.join().unwrap();
@@ -202,40 +197,23 @@ async fn networkless_publisher_reverifies_content_addressed_bytes_and_delegated_
 
     let (bytes, package_id) = signed_tapp(&publisher);
     let digest = blake3::hash(&bytes).to_hex().to_string();
-    let entry = RegistryEntry {
-        package_id: "so.tilo.editor".into(),
-        kind: registry_types::EntryKind::App,
+    let entry = registry_types::RegistryEntry {
         name: "Editor".into(),
         description: "Editor".into(),
         tagline: "Edit video on Tilo OS".into(),
-        images: registry_types::LocalizedImages::english_icon(
-            "https://apps.tilo.so/images/test-icon.svg",
-            "Test icon",
-        ),
-        supported_languages: vec!["en".into()],
         categories: vec!["Productivity".into()],
-        source_url: None,
-        homepage: None,
-        publisher_pubkey_hex: publisher_hex.clone(),
-        versions: vec![RegistryVersion {
-            version: "1.0.0".into(),
-            released_at_unix: 1,
-            artifact: registry_types::VersionArtifact::Tapp(registry_types::TappArtifact {
-                tapp_url: "https://apps.tilo.so/artifacts/editor-x86_64.tapp".into(),
-                tapp_root_hash_hex: hex::encode(package_id.as_bytes()),
-                tapp_size_bytes: bytes.len() as u64,
-                tapp_blake3_hex: digest.clone(),
-                target: RegistryTarget {
-                    platform: registry_types::TILO_OS_PLATFORM.into(),
-                    architecture: "x86_64".into(),
-                    isa: "x86_64-v3".into(),
-                    runtime: None,
-                    interfaces: Vec::new(),
-                },
-            }),
-        }],
-        updated_at_unix: 1,
-        signature_hex: String::new(),
+        versions: vec![crate::support::version(
+            "1.0.0",
+            1,
+            crate::support::tapp(
+                "https://apps.tilo.so/artifacts/editor-x86_64.tapp",
+                hex::encode(package_id.as_bytes()),
+                bytes.len() as u64,
+                digest.clone(),
+                None,
+            ),
+        )],
+        ..crate::support::entry("so.tilo.editor", publisher_hex.clone(), Vec::new())
     };
     let pending = PendingSubmission {
         submission_id: entry.package_id.clone(),
@@ -401,52 +379,33 @@ fn collector_reuses_staged_bytes_and_leaves_uncollectable_submissions_pending() 
     let publisher = SigningIdentity::from_signing_key(publisher_key.clone());
     let publisher_hex = hex::encode(publisher.public_key_bytes());
     storage
-        .save_allowlist(&PublisherAllowlist {
-            publishers: vec![PublisherRow {
-                pubkey_hex: publisher_hex.clone(),
-                can_add_new: true,
-                note: "first party".into(),
-                namespaces: vec![registry_types::namespace::TILO_NAMESPACE.to_owned()],
-            }],
-        })
+        .save_allowlist(&crate::support::allowlist(vec![PublisherRow {
+            pubkey_hex: publisher_hex.clone(),
+            can_add_new: true,
+            note: "first party".into(),
+            namespaces: vec![registry_types::namespace::TILO_NAMESPACE.to_owned()],
+        }]))
         .unwrap();
     let (bytes, package_id) = signed_tapp(&publisher);
     let digest = blake3::hash(&bytes).to_hex().to_string();
     let submission = |id: &str, url: &str, blake3_hex: &str| {
-        let entry = RegistryEntry {
-            package_id: id.into(),
-            kind: registry_types::EntryKind::App,
+        let entry = registry_types::RegistryEntry {
             name: "Editor".into(),
             description: "Editor".into(),
             tagline: "Edit video on Tilo OS".into(),
-            images: registry_types::LocalizedImages::english_icon(
-                "https://apps.tilo.so/images/test-icon.svg",
-                "Test icon",
-            ),
-            supported_languages: vec!["en".into()],
             categories: vec!["Productivity".into()],
-            source_url: None,
-            homepage: None,
-            publisher_pubkey_hex: publisher_hex.clone(),
-            versions: vec![RegistryVersion {
-                version: "1.0.0".into(),
-                released_at_unix: 1,
-                artifact: registry_types::VersionArtifact::Tapp(registry_types::TappArtifact {
-                    tapp_url: url.into(),
-                    tapp_root_hash_hex: hex::encode(package_id.as_bytes()),
-                    tapp_size_bytes: bytes.len() as u64,
-                    tapp_blake3_hex: blake3_hex.into(),
-                    target: RegistryTarget {
-                        platform: registry_types::TILO_OS_PLATFORM.into(),
-                        architecture: "x86_64".into(),
-                        isa: "x86_64-v3".into(),
-                        runtime: None,
-                        interfaces: Vec::new(),
-                    },
-                }),
-            }],
-            updated_at_unix: 1,
-            signature_hex: String::new(),
+            versions: vec![crate::support::version(
+                "1.0.0",
+                1,
+                crate::support::tapp(
+                    url,
+                    hex::encode(package_id.as_bytes()),
+                    bytes.len() as u64,
+                    blake3_hex,
+                    None,
+                ),
+            )],
+            ..crate::support::entry(id, publisher_hex.clone(), Vec::new())
         };
         PendingSubmission {
             submission_id: id.into(),
@@ -510,14 +469,12 @@ fn thin_app_promotion_waits_for_its_exact_native_runtime() {
         })
         .unwrap();
     storage
-        .save_allowlist(&PublisherAllowlist {
-            publishers: vec![PublisherRow {
-                pubkey_hex: publisher_hex.clone(),
-                can_add_new: true,
-                note: "first party".into(),
-                namespaces: vec![registry_types::namespace::TILO_NAMESPACE.to_owned()],
-            }],
-        })
+        .save_allowlist(&crate::support::allowlist(vec![PublisherRow {
+            pubkey_hex: publisher_hex.clone(),
+            can_add_new: true,
+            note: "first party".into(),
+            namespaces: vec![registry_types::namespace::TILO_NAMESPACE.to_owned()],
+        }]))
         .unwrap();
     let owner_path = temp.path().join("owner.seed");
     let channel_path = temp.path().join("channel.seed");
@@ -711,14 +668,12 @@ fn selected_partial_inventory_recovers_without_consuming_deferred_requests() {
             })
             .unwrap();
         storage
-            .save_allowlist(&PublisherAllowlist {
-                publishers: vec![PublisherRow {
-                    pubkey_hex: publisher_hex.clone(),
-                    can_add_new: true,
-                    note: "test publisher".into(),
-                    namespaces: vec![registry_types::namespace::TILO_NAMESPACE.to_owned()],
-                }],
-            })
+            .save_allowlist(&crate::support::allowlist(vec![PublisherRow {
+                pubkey_hex: publisher_hex.clone(),
+                can_add_new: true,
+                note: "test publisher".into(),
+                namespaces: vec![registry_types::namespace::TILO_NAMESPACE.to_owned()],
+            }]))
             .unwrap();
         let owner_path = temp.path().join("owner.seed");
         let channel_path = temp.path().join("channel.seed");
@@ -927,14 +882,12 @@ fn delegated_refresh_preserves_incomplete_stage_and_transaction_recovery() {
         })
         .unwrap();
     storage
-        .save_allowlist(&PublisherAllowlist {
-            publishers: vec![PublisherRow {
-                pubkey_hex: publisher_hex.clone(),
-                can_add_new: true,
-                note: "first party".into(),
-                namespaces: vec![registry_types::namespace::TILO_NAMESPACE.to_owned()],
-            }],
-        })
+        .save_allowlist(&crate::support::allowlist(vec![PublisherRow {
+            pubkey_hex: publisher_hex.clone(),
+            can_add_new: true,
+            note: "first party".into(),
+            namespaces: vec![registry_types::namespace::TILO_NAMESPACE.to_owned()],
+        }]))
         .unwrap();
     let owner_path = temp.path().join("owner.seed");
     let channel_path = temp.path().join("channel.seed");
@@ -1303,9 +1256,7 @@ mode = "off"
         runtime: Some(runtime.into()),
         interfaces: Vec::new(),
     };
-    let entry = RegistryEntry {
-        package_id: package_id.into(),
-        kind: registry_types::EntryKind::App,
+    let entry = registry_types::RegistryEntry {
         name: "Native package".into(),
         description: "Native package".into(),
         tagline: "Native package".into(),
@@ -1313,11 +1264,6 @@ mode = "off"
             "https://apps.tilo.so/images/test.svg",
             "Test icon",
         ),
-        supported_languages: vec!["en".into()],
-        categories: Vec::new(),
-        source_url: None,
-        homepage: None,
-        publisher_pubkey_hex: hex::encode(identity.public_key_bytes()),
         versions: vec![RegistryVersion {
             version: "1.0.0".into(),
             released_at_unix: 1,
@@ -1331,8 +1277,11 @@ mode = "off"
                 target: target.clone(),
             }),
         }],
-        updated_at_unix: 1,
-        signature_hex: String::new(),
+        ..crate::support::entry(
+            package_id,
+            hex::encode(identity.public_key_bytes()),
+            Vec::new(),
+        )
     };
     let pending = PendingSubmission {
         submission_id: package_id.into(),
