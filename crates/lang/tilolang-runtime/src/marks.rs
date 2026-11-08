@@ -393,6 +393,12 @@ impl Core {
         else {
             return Err(RuntimeError::NotFound(format!("the field {field}")));
         };
+        // A bound field's previous value is the one text it held. What a change made of a rich
+        // text is the paragraphs it typed into, which is the record's history to show, not a
+        // field's: read nothing of the whole text here.
+        if spec.kind == crate::meta::FieldKind::RichText {
+            return Ok(());
+        }
         let before = self
             .store
             .borrow()

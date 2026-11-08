@@ -75,7 +75,7 @@ use crate::index::select::Carried;
 use crate::index::view::{self, View};
 use crate::index::{self as idx, Index, IndexError, IndexReads};
 use crate::items::Nested;
-use crate::reads::{changed_by, default_value, locate_ref, read_field, type_at};
+use crate::reads::{changed_by, default_value, field_of_json, locate_ref, read_field, type_at};
 use crate::record::DynRecord;
 use crate::schema::{MergeKind, TYPE_KEY, lookup};
 

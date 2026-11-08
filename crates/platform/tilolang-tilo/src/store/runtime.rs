@@ -561,6 +561,10 @@ impl Store for TiloStore {
         Ok(out)
     }
 
+    /// The field `field` of `at` as it was before the change `change`, read in place at the
+    /// change's dependencies: the cost of the value, not of the record. A field whose previous
+    /// value is a whole rich text is not read this way: a change's two sides of one are the
+    /// paragraphs it typed into ([`Self::written`]).
     fn read_before(
         &self,
         at: &ResourceRef,
@@ -580,13 +584,16 @@ impl Store for TiloStore {
         let made = committed
             .get_change_by_hash(&hash)
             .ok_or_else(|| not_found(format!("change {change}")))?;
-        let before = committed.fork_at(made.deps()).map_err(backend)?;
-        let before = Doc::load(&before.save()).map_err(backend)?;
         let spec = located
             .schema
             .field(&field.id)
             .ok_or_else(|| not_found(format!("field {}", field.id)))?;
-        read_field(&before, &located, spec)
+        let Some(obj) = located.obj.as_ref() else {
+            return Ok(default_value(spec));
+        };
+        let held = tilo_resource::history::held_at(committed, obj, &field.id, made.deps())
+            .map_err(backend)?;
+        field_of_json(&held, spec)
     }
 
     fn written(
