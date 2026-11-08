@@ -142,8 +142,8 @@ async fn bind_endpoint(
     Ok(endpoint)
 }
 
-/// This device's statement that `endpoint` speaks for `device`, for as long as
-/// [`DELEGATION_LIFETIME_NS`]: empty for a device whose endpoint is its own
+/// This device's statement that `endpoint` speaks for `device`, for as long
+/// as [`DELEGATION_LIFETIME_NS`]: empty for a device whose endpoint is its own
 /// key, and the device's own signature otherwise (through custody, which keeps
 /// a page's key unextractable).
 #[cfg(feature = "iroh")]

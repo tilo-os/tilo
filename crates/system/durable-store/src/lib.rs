@@ -333,8 +333,8 @@ pub trait DurableStore {
     /// [`StoreError::Busy`] while an exclusive lease is held; an invalid key.
     fn lease_shared(&self, key: &StorageKey) -> Result<SharedLease, StoreError>;
 
-    /// Whether a lease or read the calling thread makes may answer
-    /// [`StoreError::Opening`]: on a thread that must not wait on storage
+    /// Whether a lease or read the calling thread makes may
+    /// answer [`StoreError::Opening`]: on a thread that must not wait on storage
     /// ([`waiting`], a frame loop), [`Self::lease`], [`Self::lease_shared`]
     /// and [`Self::read`] of a key the store has not opened for this thread
     /// answer it while the store's own thread opens or reads the key, and

@@ -1670,6 +1670,7 @@ fn is_modal(toplevel: &ToplevelSurface) -> bool {
 impl State {
     /// The mapped window [`WindowInfo::id`] `id` names: the one a policy, a tool or a client's own
     /// id is about. `None` for an id no mapped window holds.
+    ///
     /// [`WindowInfo::id`]: crate::capture::WindowInfo::id
     pub(crate) fn mapped_window(&self, id: u64) -> Option<&Window> {
         self.space

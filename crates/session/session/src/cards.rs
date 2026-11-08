@@ -7,6 +7,7 @@
 //! This is the session's side of that: what each app presented, the place the layer gave it this
 //! pass, and the geometry the desk places its window at. The app's own geometry is a request; the
 //! layer's place is the answer.
+//!
 //! [`Present`]: ui::floating_surface::FloatingSurfaceClientMessage::Present
 
 use std::cell::RefCell;

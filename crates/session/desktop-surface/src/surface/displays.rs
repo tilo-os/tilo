@@ -437,6 +437,7 @@ impl DesktopHandle {
     /// The displays the desktop spreads over, primary first, in the surface's coordinates; a mirror
     /// set is one display. Groups move between them as [`OutputPartition::reconcile`] says, and the
     /// surface lays each display's lane out on its next pass. Whether anything changed.
+    ///
     /// [`OutputPartition::reconcile`]: tilo_desktop_model::OutputPartition::reconcile
     pub fn set_displays(&self, displays: &[Display]) -> bool {
         let mut shared = self.shared.borrow_mut();

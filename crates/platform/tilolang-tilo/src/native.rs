@@ -260,7 +260,7 @@ impl<'a> NativeReads<'a> {
         }
     }
 
-    /// [`ReadRequest::Read`]: one resource, as a program reads it.
+    /// [`ReadRequest::Read`] — one resource, as a program reads it.
     fn answer_read(&self, app: &str, ty: &str, id: &str) -> Result<Json, String> {
         let schema = self.schema_of(app, ty)?;
         let row = match split_id(id) {
@@ -303,7 +303,7 @@ impl<'a> NativeReads<'a> {
         serde_json::to_value(answer).map_err(|error| error.to_string())
     }
 
-    /// [`ReadRequest::Select`]: the resources of `ty` its predicate holds of, by id, in the
+    /// [`ReadRequest::Select`] — the resources of `ty` its predicate holds of, by id, in the
     /// order asked.
     fn answer_select(
         &self,
@@ -349,7 +349,7 @@ impl<'a> NativeReads<'a> {
         ))
     }
 
-    /// [`ReadRequest::Describe`]: what the app publishes, from its package.
+    /// [`ReadRequest::Describe`] — what the app publishes, from its package.
     fn answer_describe(
         &self,
         app: &str,

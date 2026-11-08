@@ -764,8 +764,8 @@ impl Dispatched {
     }
 }
 
-/// The locus-aware front door, routing `action` per its
-/// [`ExecutionLocus`]: `ClientLocal` →
+/// The locus-aware front door, routing `action` per
+/// its [`ExecutionLocus`]: `ClientLocal` →
 /// [`apply_local`] then `transport.replicate`; `ServerPreferred` →
 /// `transport.submit_to_host`, refusing when no authoritative host is
 /// reachable. The envelope's id/timestamp are fixed before submission.

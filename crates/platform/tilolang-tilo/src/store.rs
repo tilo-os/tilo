@@ -1,4 +1,4 @@
-//! [`TiloStore`]: the runtime's [`Store`] over the workspace record.
+//! [`TiloStore`] — the runtime's [`Store`] over the workspace record.
 //!
 //! The runtime reads and mutates resources through the `Store` trait and expects its own commits
 //! to be visible at once. The workspace record, though, belongs to the framework: every change to it

@@ -862,8 +862,8 @@ impl LauncherSurface {
         Ok(Effected::done())
     }
 
-    /// Publish the results on screen, each chosen through
-    /// [`LauncherEffect::Choose`]: what an agent reads to find the row to
+    /// Publish the results on screen, each chosen
+    /// through [`LauncherEffect::Choose`]: what an agent reads to find the row to
     /// choose.
     fn publish_rows(&self) {
         if !self.open {

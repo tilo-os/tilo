@@ -1,4 +1,4 @@
-//! [`DisclosureBand`]: any content that opens and closes in place in a
+//! [`DisclosureBand`] — any content that opens and closes in place in a
 //! column on the disclosure motion (`motion::Disclosure`), as a banner
 //! does: it unrolls from its top while what follows moves down with its
 //! edge, and when its view stops building it the column rolls it up.

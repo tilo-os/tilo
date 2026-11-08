@@ -194,6 +194,7 @@ struct StoredVersion {
 /// into (every window and tab id of it in that namespace) goes; one they used stays as it is, and
 /// so does one that is a workspace's only strip. Focus on a dropped strip moves to the workspace's
 /// first strip.
+///
 /// [`RESERVED_SALT`]: tilo_desktop_model::ids::RESERVED_SALT
 #[allow(
     clippy::needless_pass_by_value,

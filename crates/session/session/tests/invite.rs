@@ -359,7 +359,7 @@ struct Hosted {
     cert: DeviceCert,
 }
 
-/// [`Hosted`]: this computer holding the workspace, its bar offering Invite,
+/// [`Hosted`] — this computer holding the workspace, its bar offering Invite,
 /// and the sheet the person's press puts up.
 fn hosted(home: &mut tilo_test_env::TestHome) -> Hosted {
     let (identity, key, cert) = this_computer(home.env());

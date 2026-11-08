@@ -9,6 +9,7 @@
 //! one of its own, both as [`RemoteActionMessage`]s of the protocol every app speaks to its host.
 //! Those are the only messages: what a surface shows it reads from the resources it holds, and what
 //! was done is said in actions.
+//!
 //! [`Compositor::connect_trusted_client`]: tilo_compositor::Compositor::connect_trusted_client
 
 use std::collections::{HashMap, VecDeque};

@@ -27,8 +27,8 @@ pub struct TrustedHuman {
     pub display_name: String,
     /// The human's own devices: what sharing with them encrypts to.
     pub devices: Vec<TrustedDevice>,
-    /// Delegated agents of the human, by their own device. Kept apart from
-    /// [`Self::devices`]: an agent acts only within its delegation, so
+    /// Delegated agents of the human, by their own device. Kept apart
+    /// from [`Self::devices`]: an agent acts only within its delegation, so
     /// sharing with its person never reaches it. Used to name who wrote.
     pub agents: Vec<TrustedAgent>,
 }

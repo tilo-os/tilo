@@ -5,8 +5,8 @@
 //! are composited per output ([`render`]); where windows go and who has focus
 //! is a [`WindowPolicy`]'s decision; a [`Backend`] supplies outputs and
 //! input ([`backend::headless`]: offscreen composition with no display, for
-//! tests and screenshots; [`backend::nested`]: a window inside another desktop;
-//! [`backend::drm`]: a bare TTY).
+//! tests and screenshots; [`backend::nested`]: a window inside another
+//! desktop; [`backend::drm`]: a bare TTY).
 //!
 //! ```no_run
 //! # fn main() -> Result<(), Box<dyn std::error::Error>> {

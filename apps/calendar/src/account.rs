@@ -228,8 +228,8 @@ impl CalendarAccount {
     }
 }
 
-/// The opaque config payload a [`CalendarAccount`] serialises into a shared
-/// [`StoredAccount`]: the `CalDAV` settings (password skipped), the discovered
+/// The opaque config payload a [`CalendarAccount`] serialises into a
+/// shared [`StoredAccount`]: the `CalDAV` settings (password skipped), the discovered
 /// calendars, and the sidebar collapse state.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 struct StoredConfig {

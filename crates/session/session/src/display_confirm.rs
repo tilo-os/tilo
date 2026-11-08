@@ -5,8 +5,8 @@
 //! whose risky change waits inside the compositor ([`DisplayEvent::Confirm`]),
 //! and Settings, whose change waits in its settings
 //! ([`DisplayTransaction`](settings_store::hardware::DisplayTransaction)).
-//! Both are one question here, on the sheet of
-//! [`tilo_sheets::display_confirm`]: one seat, one question, one place that
+//! Both are one question here, on the sheet
+//! of [`tilo_sheets::display_confirm`]: one seat, one question, one place that
 //! answers it. The question stands on every display that is on, so it is
 //! seen even when the change blanked another one, and the countdown is read
 //! again on every settle pass: nothing counts down on a timer of its own.

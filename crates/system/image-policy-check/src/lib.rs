@@ -399,7 +399,7 @@ fn is_developer_scope(repository: &str, requirements: Option<&Json>) -> bool {
         || !fields
             .iter()
             .map(|(k, _)| k.as_str())
-            .eq(["type", "keyPath", "signedIdentity"].into_iter())
+            .eq(["type", "keyPath", "signedIdentity"])
     {
         return false;
     }

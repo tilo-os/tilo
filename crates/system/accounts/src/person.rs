@@ -2,8 +2,8 @@
 //! configured follow them to every device they sign in on, never to a
 //! collaborator.
 //!
-//! [`PersonAccounts`] is a resource kept in the person's own scope, a
-//! [`SharedRecord`]: its owner app ([`ACCOUNTS_OWNER`], Settings) and Mail,
+//! [`PersonAccounts`] is a resource kept in the person's own scope,
+//! a [`SharedRecord`]: its owner app ([`ACCOUNTS_OWNER`], Settings) and Mail,
 //! whose provider sign-in adds mail accounts, edit it through its actions;
 //! every other app reads it. Each app process keeps a copy of the one
 //! record, in step with the others where their personal store carries it;

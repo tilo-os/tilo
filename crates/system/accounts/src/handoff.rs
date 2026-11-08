@@ -1,8 +1,8 @@
 //! The narrowly scoped credential **handoff** from Settings to the storage
 //! daemon.
 //!
-//! Settings keeps custody of every long-lived secret in the
-//! [`crate::SecretVault`]: passwords, `OAuth` refresh tokens, `iCloud` trust
+//! Settings keeps custody of every long-lived secret in
+//! the [`crate::SecretVault`]: passwords, `OAuth` refresh tokens, `iCloud` trust
 //! tokens. The daemon that mounts a cloud account never opens that vault.
 //! It reads exactly one account's entry from this separate store, which only
 //! ever holds what a single request needs:

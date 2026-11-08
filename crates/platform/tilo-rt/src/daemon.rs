@@ -27,8 +27,8 @@ pub struct Daemon {
 /// A multi-thread runtime for the service `name`.
 ///
 /// Workers default to [`WORKER_THREADS_ENV`] when it holds a positive integer,
-/// and otherwise to the available parallelism, capped at
-/// [`Daemon::DEFAULT_MAX_WORKERS`]: a service waits on sockets and disks, and
+/// and otherwise to the available parallelism, capped
+/// at [`Daemon::DEFAULT_MAX_WORKERS`]: a service waits on sockets and disks, and
 /// more workers than that only add contention. [`Daemon::workers`] overrides
 /// both. The blocking pool defaults to [`Daemon::DEFAULT_MAX_BLOCKING`]
 /// threads instead of tokio's 512, so a burst of blocking calls queues rather

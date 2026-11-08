@@ -1,4 +1,4 @@
-//! [`Host`]: the tilolang runtime wired to the platform, without any UI.
+//! [`Host`] — the tilolang runtime wired to the platform, without any UI.
 //!
 //! A host owns one [`Runtime`] over a [`TiloStore`] and the platform's [`TiloAuthority`]. It
 //! compiles and loads packages, keeps their record schemas registered, opens a package's root

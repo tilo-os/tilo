@@ -136,8 +136,8 @@ impl Connect {
         })
     }
 
-    /// The host to dial after `after` (the first when `None`) among
-    /// [`Self::hosts`]: where the workspace's session goes next while its
+    /// The host to dial after `after` (the first when `None`)
+    /// among [`Self::hosts`]: where the workspace's session goes next while its
     /// governor is out of reach. `None` once every host was tried.
     pub fn next_host(
         &self,

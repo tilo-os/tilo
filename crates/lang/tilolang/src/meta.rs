@@ -630,13 +630,13 @@ pub struct ActionMeta {
     /// invocation records and a replay answers from the record ([`crate::effects::Effect`]).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub uses: Vec<String>,
-    /// Whether the action keeps a requirement its subject alone decides, exported as
-    /// [`crate::ir::guard_export`]: the first reason it cannot run on the subject now, or empty
+    /// Whether the action keeps a requirement its subject alone decides, exported
+    /// as [`crate::ir::guard_export`]: the first reason it cannot run on the subject now, or empty
     /// while it can. What a surface offering the action reads its availability from.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub guard: bool,
-    /// Whether the action keeps an `applies` condition, exported as
-    /// [`crate::ir::applies_export`]: the first reason it cannot apply to the item where it is
+    /// Whether the action keeps an `applies` condition, exported
+    /// as [`crate::ir::applies_export`]: the first reason it cannot apply to the item where it is
     /// offered, or empty while it can. A menu leaves such an action out; a palette lists it,
     /// disabled with the reason.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]

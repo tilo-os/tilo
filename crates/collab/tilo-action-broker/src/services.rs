@@ -118,8 +118,8 @@ pub trait WorkspaceAuthority: Send + Sync {
     }
 
     /// Whether every write to what the broker's membership and context
-    /// checks read on this host is announced through
-    /// [`tilo_identity_host::policy_change`]: this tree, the device fleet and
+    /// checks read on this host is announced
+    /// through [`tilo_identity_host::policy_change`]: this tree, the device fleet and
     /// identity registry behind the installed certificate authority, and the
     /// owner's task store. The broker then re-checks on those announcements
     /// and at the next capability or certificate expiry. `false` (the

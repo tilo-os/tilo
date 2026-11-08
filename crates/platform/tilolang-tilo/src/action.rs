@@ -1,4 +1,4 @@
-//! [`DynAction`]: a tilolang action as a replayable tilo action.
+//! [`DynAction`] — a tilolang action as a replayable tilo action.
 //!
 //! At the origin a tilolang action runs in wasm as a planner; its writes are recorded as
 //! [`DynEdit`]s. The recorded action is plain data whose `apply` replays those edits without wasm,

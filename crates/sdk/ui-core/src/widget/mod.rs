@@ -827,8 +827,8 @@ impl StructureChange {
     }
 }
 
-/// Optional cross-device continuation capability for an app root, deliberately separate from
-/// [`Widget`]: ordinary controls have no resumable app state, while roots that do expose it through
+/// Optional cross-device continuation capability for an app root, deliberately separate
+/// from [`Widget`]: ordinary controls have no resumable app state, while roots that do expose it through
 /// [`Widget::provide`] without weakening their UI integration.
 pub trait Continuable {
     /// Return a compact, path-free projection of state that may be resumed on
@@ -1797,8 +1797,8 @@ pub trait Widget {
     /// directly. Content that frames nothing ignores it.
     fn set_full_bleed(&mut self, _full_bleed: bool) {}
 
-    /// The form's validation verdict for this control, set by
-    /// [`Field::with_error`]: an invalid control edges itself in danger ink
+    /// The form's validation verdict for this control, set
+    /// by [`Field::with_error`]: an invalid control edges itself in danger ink
     /// and reports `invalid` to assistive technology. Controls without a
     /// field face ignore it.
     fn set_invalid(&mut self, _invalid: bool) {}
@@ -2377,8 +2377,8 @@ pub trait Widget {
     /// [`Self::take_structure_dirty`], saying whether the frame's damage can
     /// still describe the rebuild ([`StructureChange::Described`]). Reading
     /// clears what `take_structure_dirty` clears; the two must agree on
-    /// whether there is a change. The default is the flag, as a
-    /// [`StructureChange::Rebuild`]: only a widget that knows every pixel its
+    /// whether there is a change. The default is the flag, as
+    /// a [`StructureChange::Rebuild`]: only a widget that knows every pixel its
     /// change touches lands in its own damage says less, and a container
     /// forwards a child's [`StructureChange::Described`] only by overriding
     /// this.
@@ -2387,8 +2387,8 @@ pub trait Widget {
     }
 
     /// This widget's own layout node while the widgets under it are laid
-    /// out again in place, in it, by the coming
-    /// [`Self::remount_children`]: it then names none of them through
+    /// out again in place, in it, by the
+    /// coming [`Self::remount_children`]: it then names none of them through
     /// [`Self::for_each_layout_child`], and the host lets go of every node
     /// under this one, as their widgets may be gone. `None` (the default)
     /// otherwise.

@@ -61,7 +61,7 @@ pub trait ApplyIncoming {
         changes: impl IntoIterator<Item = Change> + Clone,
     ) -> Result<(), AutomergeError>;
 
-    /// [`AutoCommit::load_incremental`]: the number of ops applied.
+    /// [`AutoCommit::load_incremental`] — the number of ops applied.
     ///
     /// # Errors
     ///
@@ -82,7 +82,7 @@ pub trait ApplyIncoming {
         self.load_incoming(data)
     }
 
-    /// [`AutoCommit::merge`]: the hashes of the changes taken from `other`.
+    /// [`AutoCommit::merge`] — the hashes of the changes taken from `other`.
     ///
     /// # Errors
     ///
@@ -101,10 +101,10 @@ pub trait ApplyIncoming {
         message: sync::Message,
     ) -> Result<(), AutomergeError>;
 
-    /// [`AutoCommit::isolate`]: view the document at `heads`.
+    /// [`AutoCommit::isolate`] — view the document at `heads`.
     fn isolate_at(&mut self, heads: &[ChangeHash]);
 
-    /// [`AutoCommit::integrate`]: leave an isolated view for the current heads.
+    /// [`AutoCommit::integrate`] — leave an isolated view for the current heads.
     fn integrate_all(&mut self);
 }
 

@@ -1030,8 +1030,8 @@ pub struct PresenceEvent {
     pub payload: PresencePayload,
 }
 
-/// Roster + local permissions snapshot delivered on
-/// [`ContextStream`]: one context change, the rest left at their defaults.
+/// Roster + local permissions snapshot delivered
+/// on [`ContextStream`]: one context change, the rest left at their defaults.
 #[derive(Debug, Clone, Default)]
 pub struct ChannelContext {
     pub collaborators: Vec<collab_types::presence::Collaborator>,

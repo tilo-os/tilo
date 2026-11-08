@@ -1,4 +1,4 @@
-//! [`DiskIndex`]: a persistent, keyed full-text index on disk.
+//! [`DiskIndex`] — a persistent, keyed full-text index on disk.
 //!
 //! For corpora too large to keep in memory (a home directory's file
 //! contents): each document is a key, a version the owner reconciles

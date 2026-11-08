@@ -1,4 +1,4 @@
-//! [`Recents`]: the things used lately, newest first, each once, at most
+//! [`Recents`] — the things used lately, newest first, each once, at most
 //! `KEEP` of them. One type for every app's recent files, folders, projects,
 //! searches and videos, whether a device-local setting keeps the list or a
 //! resource shares it.

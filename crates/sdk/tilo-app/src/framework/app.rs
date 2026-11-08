@@ -609,7 +609,7 @@ pub(crate) struct AppHooks {
     id: &'static str,
     title: &'static str,
     icon: Option<&'static str>,
-    /// [`ResourceApp::named`]: the app's name when the launch gives it.
+    /// [`ResourceApp::named`] — the app's name when the launch gives it.
     named: fn() -> Option<AppName>,
     /// [`ResourceApp::member_record`].
     member_record: fn() -> bool,
@@ -654,7 +654,7 @@ pub(crate) struct AppHooks {
     file_history_witness: fn() -> &'static ui_core::history_mode::HistoryDefinition,
 }
 
-/// [`AppHooks::new_record`]: the context, and what the launch named.
+/// [`AppHooks::new_record`] — the context, and what the launch named.
 type NewRecord = fn(
     &mut HostContext,
     &[String],
@@ -662,7 +662,7 @@ type NewRecord = fn(
     &[ui_core::application::LaunchOption],
 ) -> Result<(), LaunchError>;
 
-/// [`AppHooks::open_hosted`]: the context, who edits, the connection to the
+/// [`AppHooks::open_hosted`] — the context, who edits, the connection to the
 /// session and the resource address it publishes at.
 type OpenHosted = fn(
     &mut HostContext,
@@ -671,7 +671,7 @@ type OpenHosted = fn(
     &str,
 ) -> Result<Box<dyn ui_core::widget::AppWidget>, LaunchError>;
 
-/// [`AppHooks::open`]: the context, who edits, whether it is a capture and
+/// [`AppHooks::open`] — the context, who edits, whether it is a capture and
 /// whether the launch created the record.
 type OpenRoot = fn(
     &mut HostContext,

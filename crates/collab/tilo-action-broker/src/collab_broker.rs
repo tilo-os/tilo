@@ -444,8 +444,8 @@ impl AppActionBroker {
     /// (`AppBrokerState::app_authorship_commit`). Blocks on the owner's
     /// commit: call it off the broker's loop and the frame loop.
     ///
-    /// # Errors
-    /// [`AppAuthorshipError::Unasked`]: the broker is shutting down, or the
+    /// #
+    /// Errors [`AppAuthorshipError::Unasked`]: the broker is shutting down, or the
     /// device may not ask it in this workspace; [`AppAuthorshipError::Refused`]:
     /// the workspace's owner refused or could not commit it.
     pub fn grant_app_authorship(

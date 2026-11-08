@@ -1,4 +1,4 @@
-//! [`SwipeRow`]: a row that follows the finger sideways and uncovers what swiping it does.
+//! [`SwipeRow`] — a row that follows the finger sideways and uncovers what swiping it does.
 //!
 //! A horizontal drag on a touch screen moves the row with the finger (a vertical one is the
 //! list's scroll and leaves it alone). Dragging towards the trailing edge uncovers the leading

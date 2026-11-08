@@ -2365,8 +2365,8 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
         }
     }
     /// The first page of the document instance `peer` just opened, read
-    /// through the action `reader` its app declared for it, and cut to
-    /// [`content::CONTENT_BYTES`]: the output's value, the resource and
+    /// through the action `reader` its app declared for it, and cut
+    /// to [`content::CONTENT_BYTES`]: the output's value, the resource and
     /// action that read it, and `"truncated": true` when cut, which the
     /// same action with no arguments answers whole.
     async fn document_content(

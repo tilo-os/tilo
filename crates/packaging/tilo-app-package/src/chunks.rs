@@ -516,8 +516,8 @@ impl BlobSink for ObjectWriter<'_> {
     }
 }
 
-/// A directory of payload objects, as [`split`] writes it, read as a
-/// [`BlobSource`]: a whole `<blob>.blob`, or a `<blob>.chunks` list whose
+/// A directory of payload objects, as [`split`] writes it, read as
+/// a [`BlobSource`]: a whole `<blob>.blob`, or a `<blob>.chunks` list whose
 /// chunks are joined and verified one at a time.
 #[derive(Clone, Debug)]
 pub struct ObjectDir {

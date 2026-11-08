@@ -760,8 +760,8 @@ pub(crate) enum PickedPaths {
     Many(MultiChannel),
 }
 
-/// The paths a path-based picker answered, read on the host's
-/// [`tilo_rt::background::Background`]: the default
+/// The paths a path-based picker answered, read on the
+/// host's [`tilo_rt::background::Background`]: the default
 /// [`crate::FilePicker::pick_contents`] for hosts with local files.
 pub(crate) fn read_picked(
     paths: Option<PickedPaths>,
@@ -850,8 +850,8 @@ fn read_contents(path: &Path, limit: Option<usize>) -> Result<Vec<u8>, String> {
     Ok(bytes)
 }
 
-/// Write `bytes` to the path a Save chooser answers, on the host's
-/// [`tilo_rt::background::Background`]: the default
+/// Write `bytes` to the path a Save chooser answers, on the
+/// host's [`tilo_rt::background::Background`]: the default
 /// [`crate::FilePicker::save_contents`] for hosts with local files.
 pub(crate) fn write_picked(destination: Option<PortalChannel>, bytes: Vec<u8>) -> SaveChannel {
     let (tx, rx) = std::sync::mpsc::channel();

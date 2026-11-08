@@ -1,4 +1,4 @@
-//! [`ConversationList`]: the message list a widget-tree app draws, the same conversation the
+//! [`ConversationList`] — the message list a widget-tree app draws, the same conversation the
 //! painting apps compose themselves — the day breaks, the clock each line carries, the delivery
 //! vocabulary, the way consecutive lines from one person run together — so a message reads the
 //! same whether it arrived in a channel or a private thread.

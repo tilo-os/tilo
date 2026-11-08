@@ -1217,8 +1217,8 @@ impl AppActions for Apps {
         self.invoke_at(target, arguments, OpenPlace::Focus)
     }
 
-    /// Open `app` where the person asked it, through the same run of the workspace's `open` as
-    /// [`Self::invoke`]: `place` is what the modifier they held over the row asked of the window.
+    /// Open `app` where the person asked it, through the same run of the workspace's `open`
+    /// as [`Self::invoke`]: `place` is what the modifier they held over the row asked of the window.
     fn open_application(
         &self,
         workspace: &str,

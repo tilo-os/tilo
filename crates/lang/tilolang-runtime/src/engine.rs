@@ -18,8 +18,8 @@
 //! to the compiled module between calls once it is ready. Compiled modules are kept on disk
 //! ([`keep_compiled_in`]), so a module compiled once starts compiled. Without the feature the
 //! engine is wasmi alone. A process can also run on one engine only, wasmi, Cranelift or Winch,
-//! to compare them (docs/tilolang-engines.md). What differs between engines is behind
-//! [`Backend`]: making a module, linking the imports, instantiating with the limits, and one
+//! to compare them (docs/tilolang-engines.md). What differs between engines is
+//! behind [`Backend`]: making a module, linking the imports, instantiating with the limits, and one
 //! call. Caching, pooling, profiling, import dispatch and how errors are reported are written
 //! once, here, so a call gives the same result on every engine, and the same before and after
 //! a module moves to compiled code.

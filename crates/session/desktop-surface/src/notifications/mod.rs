@@ -59,8 +59,8 @@ pub trait NotificationHost {
     }
 
     /// The banner stack laid out `on_screen` (newest first) at `now` , and the person `held` them
-    /// (the pointer on the stack, keyboard focus in a banner). Forward to
-    /// [`NotificationLog::present`]: a banner ages only while it is on screen and unheld.
+    /// (the pointer on the stack, keyboard focus in a banner). Forward
+    /// to [`NotificationLog::present`]: a banner ages only while it is on screen and unheld.
     /// Viewer-local, no repaint.
     fn present(&self, now: ui::time::Instant, on_screen: &[u64], held: bool);
 

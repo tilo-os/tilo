@@ -56,8 +56,8 @@ ui::engine_main!(
 );
 
 /// The engine's self-check ([`self_check`]) for its check binary, by the
-/// unmangled name the binary links, as Settings' binary links
-/// [`tilo_settings_engine_run`]: nothing compiles against this library, so
+/// unmangled name the binary links, as Settings' binary
+/// links [`tilo_settings_engine_run`]: nothing compiles against this library, so
 /// it exports no Rust item. Prints the report; whether it passed.
 #[cfg(feature = "thin")]
 #[unsafe(no_mangle)]

@@ -1,4 +1,4 @@
-//! [`ListIndex`]: ranking a short list its owner rebuilds freely.
+//! [`ListIndex`] — ranking a short list its owner rebuilds freely.
 
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};

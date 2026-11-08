@@ -470,8 +470,8 @@ pub struct PlanContext {
     /// Content addresses (`tilo.content:<hash>`) the task's steps have
     /// produced so far, oldest first.
     pub produced: Vec<String>,
-    /// What the task's steps have answered so far, oldest first, each an
-    /// [`observation`]: what a view or read found (an artwork's size, a
+    /// What the task's steps have answered so far, oldest first, each
+    /// an [`observation`]: what a view or read found (an artwork's size, a
     /// document's text), for the rest of the task to be planned with.
     pub observed: Vec<String>,
     /// Apps the task is about of which neither the agent nor the workspace has

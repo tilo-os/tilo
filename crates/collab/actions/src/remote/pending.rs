@@ -53,8 +53,8 @@ struct AbandonSignal {
 struct AbandonWake {
     /// The task waiting in [`Completer::abandoned`].
     waker: Option<Waker>,
-    /// The signal of the answer this one forwards to through
-    /// [`Pending::map`]: dropping the mapped answer may abandon that one.
+    /// The signal of the answer this one forwards to
+    /// through [`Pending::map`]: dropping the mapped answer may abandon that one.
     upstream: Option<Arc<AbandonSignal>>,
 }
 
@@ -220,7 +220,7 @@ impl<T> Drop for Completer<T> {
     }
 }
 
-/// [`Completer::abandoned`]: resolves once the answer is unobservable.
+/// [`Completer::abandoned`] — resolves once the answer is unobservable.
 #[must_use = "a future does nothing unless awaited"]
 pub struct Abandoned<'a, T> {
     completer: &'a Completer<T>,

@@ -14,8 +14,8 @@
 //! exchange is the collaboration broker's — content travels on the record's
 //! route (`tilo_action_broker::record_content`), never between daemons.
 //!
-//! A host can also offer an explicit owner action through
-//! [`LegacyMediaImportHost`]: it verifies a bounded selection and creates new
+//! A host can also offer an explicit owner action
+//! through [`LegacyMediaImportHost`]: it verifies a bounded selection and creates new
 //! workspace references, without claiming historical ownership. That host-only
 //! authority is not exposed on the ordinary blob capability or socket.
 //!

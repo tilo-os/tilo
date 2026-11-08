@@ -660,8 +660,8 @@ pub fn take_slot(slots: &mut [MapSlot], index: usize) -> MapSlot {
     slots.get_mut(index).and_then(Option::take)
 }
 
-/// `T` read from a slot [`read_slots`] found under `key`, or
-/// [`Model::missing`]: what [`read_key`] answers for that key.
+/// `T` read from a slot [`read_slots`] found under `key`,
+/// or [`Model::missing`]: what [`read_key`] answers for that key.
 ///
 /// # Errors
 /// Returns [`ModelError`] located at `key`.

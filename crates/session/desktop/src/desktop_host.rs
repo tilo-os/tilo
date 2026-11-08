@@ -9,6 +9,7 @@
 //! Neither layer knows its host. What a person may change is asked of [`DesktopRules`]; what only
 //! the host can do (inviting someone, a host action, the bar's people and profile popovers, quick
 //! settings) comes back as [`DesktopAsk`]s.
+//!
 //! [`DesktopSurface`]: tilo_desktop_surface::DesktopSurface
 
 use std::cell::{Cell, RefCell};

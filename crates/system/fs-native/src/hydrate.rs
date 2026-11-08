@@ -14,8 +14,8 @@
 //! further events and is invisible to the change journal.
 //!
 //! A blocked caller waits in the kernel, uninterruptibly, and so does anyone
-//! queued behind it on the same pages. No access ever waits longer than
-//! [`HydratorConfig::access_bound`]: past it the access fails with `EIO`,
+//! queued behind it on the same pages. No access ever waits longer
+//! than [`HydratorConfig::access_bound`]: past it the access fails with `EIO`,
 //! whether its range is being fetched from a peer that went quiet, waiting
 //! for another caller's fill, or still queued behind fills of other files.
 //! Answering it also [cancels](Cancel) the fill a worker is making for it,

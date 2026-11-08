@@ -11,8 +11,8 @@
 //! with every other confinement path; this module is the launcher's
 //! vocabulary over it.
 //!
-//! Production launches use the in-namespace `__sandbox-exec` path in
-//! [`crate::landlock_shim`]: bwrap creates the mount namespace, execs the
+//! Production launches use the in-namespace `__sandbox-exec` path
+//! in [`crate::landlock_shim`]: bwrap creates the mount namespace, execs the
 //! launcher at its private read-only bind, and that shim installs Landlock
 //! before replacing itself with the application. [`apply_plan_or_log`] remains the
 //! small in-process primitive used by focused probes and tests.

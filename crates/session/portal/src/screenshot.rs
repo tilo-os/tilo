@@ -1,7 +1,7 @@
 //! `org.freedesktop.impl.portal.Screenshot`.
 //!
-//! An interactive screenshot is asked as a question of kind
-//! [`SCREENSHOT_QUESTION`]: the person takes it (or not). A
+//! An interactive screenshot is asked as a question of
+//! kind [`SCREENSHOT_QUESTION`]: the person takes it (or not). A
 //! non-interactive one needs the person's access decision for the app
 //! ([`crate::consent`]), unless the frontend already checked its
 //! permission store. Either way the picture is the session's capture of

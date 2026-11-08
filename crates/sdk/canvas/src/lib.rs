@@ -4,8 +4,8 @@
 //!
 //! A [`DocumentCanvas`] is a component that hosts a [`CanvasContent`]. The
 //! content paints through a [`CanvasPainter`], which offers shapes,
-//! pictures, document text, clips and layers, and takes its colours as
-//! [`Ink`]: a colour the document holds ([`DocColor`]) or a role the theme
+//! pictures, document text, clips and layers, and takes its colours
+//! as [`Ink`]: a colour the document holds ([`DocColor`]) or a role the theme
 //! resolves ([`CanvasRole`]). It has no controls, rows, buttons or theme
 //! surfaces; the chrome around a canvas is built from components.
 

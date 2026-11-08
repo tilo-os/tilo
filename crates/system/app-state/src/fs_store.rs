@@ -1,4 +1,4 @@
-//! [`FsStore`]: the [`DurableStore`] over a local profile directory.
+//! [`FsStore`] — the [`DurableStore`] over a local profile directory.
 //!
 //! Keys map onto the same files the canonical record owner has always used,
 //! so existing profiles open unchanged:

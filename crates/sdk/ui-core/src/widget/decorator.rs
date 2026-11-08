@@ -208,8 +208,8 @@ macro_rules! decorator_trait {
             }
         }
 
-        /// [`Widget`] for `$ty`, a toolkit type that implements
-        /// [`concrete::Decorator`]: the blanket impl's methods, written for
+        /// [`Widget`] for `$ty`, a toolkit type that
+        /// implements [`concrete::Decorator`]: the blanket impl's methods, written for
         /// the one type, so they are compiled here and every app links them
         /// from the shared runtime instead of compiling its own copy.
         macro_rules! concrete_decorator_widget {

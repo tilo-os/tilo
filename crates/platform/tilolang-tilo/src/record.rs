@@ -1,4 +1,4 @@
-//! [`DynRecord`]: a tilolang resource as a `tilo_resource` model.
+//! [`DynRecord`] — a tilolang resource as a `tilo_resource` model.
 //!
 //! The framework stores typed records through `Model`, which a Rust type implements once. A
 //! tilolang type exists only at run time, so `DynRecord` is one hand-written implementation whose

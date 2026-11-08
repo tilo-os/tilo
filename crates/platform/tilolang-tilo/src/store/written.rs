@@ -32,7 +32,7 @@ fn select_written(held: &Written, fields: &[FieldSpec]) -> Written {
 }
 
 impl TiloStore {
-    /// [`tilolang_runtime::Store::written`]: what the change `change` wrote to each of `fields`
+    /// [`tilolang_runtime::Store::written`] — what the change `change` wrote to each of `fields`
     /// of `at`, before and after.
     ///
     /// # Errors

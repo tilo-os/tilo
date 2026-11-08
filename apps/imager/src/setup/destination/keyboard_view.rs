@@ -1,4 +1,4 @@
-//! [`KeyboardView`]: a picture of the keyboard layout the person picked.
+//! [`KeyboardView`] — a picture of the keyboard layout the person picked.
 //!
 //! The toolkit's `KeyboardMap` draws the keys, their legends and the board,
 //! from the theme. This view feeds it the chosen layout's legends over a

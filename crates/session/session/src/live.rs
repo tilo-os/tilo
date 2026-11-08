@@ -15,6 +15,7 @@
 //! Every other member dials that relay over iroh ([`tilo_live::native`]) with its device
 //! certificate as its grant, and each participant seals its own tracks under the scope's channel
 //! content keys ([`tilo_live::plane::Plane`]): the relay copies bytes it cannot open.
+//!
 //! [`DeviceCapabilities::can_act_as_host`]: tilo_user_identity::DeviceCapabilities::can_act_as_host
 
 use std::collections::{BTreeMap, BTreeSet};

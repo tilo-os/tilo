@@ -118,7 +118,7 @@ pub(crate) trait Provider: Send + Sync + 'static {
         held: Option<Self::Held>,
     ) -> Result<Approved<Self>, SendError>;
 
-    /// [`Order::GrantThenLink`]: publish the account the person reviewed
+    /// [`Order::GrantThenLink`] — publish the account the person reviewed
     /// again after linking.
     fn confirm(
         &self,
@@ -638,7 +638,7 @@ impl<P: Provider> Flow<P> {
         result
     }
 
-    /// [`Order::GrantThenLink`]: the person reviewed the linked identity;
+    /// [`Order::GrantThenLink`] — the person reviewed the linked identity;
     /// publish it.
     async fn confirm(
         self: Arc<Self>,

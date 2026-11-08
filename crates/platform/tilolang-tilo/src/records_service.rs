@@ -341,8 +341,8 @@ impl RecordService {
         wrote
     }
 
-    /// Whether a field of any record changed since the last call. What changed is kept for
-    /// [`Service::moved`]: each resource a changed field is of, by its published id.
+    /// Whether a field of any record changed since the last call. What changed is kept
+    /// for [`Service::moved`]: each resource a changed field is of, by its published id.
     fn watched(&mut self) -> bool {
         use tilolang_runtime::store::Store as _;
         let changes = self.watch.take();

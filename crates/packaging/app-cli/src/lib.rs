@@ -684,7 +684,7 @@ fn entry_current(entry: &package_store::InstalledPackage) -> bool {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct InstalledVersion {
     pub version: String,
-    /// [`installed_current`]: nothing but a newer version would change it.
+    /// [`installed_current`] — nothing but a newer version would change it.
     pub current: bool,
 }
 

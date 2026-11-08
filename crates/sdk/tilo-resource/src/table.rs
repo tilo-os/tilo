@@ -6,8 +6,8 @@
 //! of its fields ([`RecordDesc`]) and three small functions reaching into it
 //! (a field by position, the same mutably, and building one from its
 //! fields), and every [`Model`] operation of a record is one function here,
-//! compiled once into the runtime. A field's type is reached through its
-//! [`ModelTable`]: the type's [`Model`] functions with the type erased,
+//! compiled once into the runtime. A field's type is reached through
+//! its [`ModelTable`]: the type's [`Model`] functions with the type erased,
 //! built once per type, and for the types this crate defines, once.
 
 use std::any::Any;
