@@ -26,7 +26,7 @@ ui = { package = "tilo-ui", path = "../../sdk/ui-core", features = ["dmabuf-impo
 
 [target.'cfg(target_os = "linux")'.dependencies]
 gbm = { version = "0.18", default-features = false, features = ["drm-support"] }
-rustix = { workspace = true, features = ["event", "fs", "mm", "net", "process", "std"] }
+rustix = { workspace = true, features = ["event", "fs", "mm", "net", "process", "std", "time"] }
 libc.workspace = true
 tilo-sandbox-core = { path = "../../system/sandbox-core" }
 
