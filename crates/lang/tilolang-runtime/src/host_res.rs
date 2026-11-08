@@ -1025,8 +1025,8 @@ impl Core {
                 self.apply_mut(&ctx, &Mutation::CollRemove { field, item })?;
                 ret_void()
             }
-            // `move(x, after: y)`: beside an item of this collection, from wherever `x` is in
-            // the document; it keeps its id.
+            // `move(x, after: y)` or `before: y`: beside an item of this collection, from
+            // wherever `x` is in the document; it keeps its id.
             Imp::CollMove => {
                 let ctx = self.mut_ctx(a.h(0)?, a.h(1)?)?;
                 let item_tys = self.coll_field(&ctx)?;
@@ -1037,21 +1037,7 @@ impl Core {
                 if neighbour == item {
                     return ret_void();
                 }
-                // The neighbour's place among the other items, as this change sees them.
-                let listing = self
-                    .store
-                    .borrow()
-                    .listing(&ctx.target, &spec(&ctx.field))
-                    .map_err(|e| crate::engine::HostFail::Trap(e.to_string()))?;
-                let others: Vec<Rc<str>> =
-                    listing.iter().filter(|id| **id != *item.as_str()).collect();
-                let Some(at) = others.iter().position(|id| **id == *neighbour.as_str()) else {
-                    return trap("the neighbour is not in this collection");
-                };
-                let index = if after { at.saturating_add(1) } else { at };
-                let field = ctx.field.id.clone();
-                self.apply_mut(&ctx, &Mutation::CollMove { field, item, index })?;
-                ret_void()
+                self.coll_move_beside(&ctx, &item, &neighbour, after)
             }
             // `move(x, to: i)`: to the place `i` among the other items, as the invoker sees
             // them now. The store records it beside the item it then comes before, so a move
@@ -1149,10 +1135,42 @@ impl Core {
         })))
     }
 
-    /// `move(x, to: i, among: run)`: to the place `i` among the items of `run` other than `x`
-    /// (a board's lane), as the invoker sees them now: just before the item of the run at
-    /// that place, or just after the run's last. Like `move(x, before: y)`, the store records
-    /// it beside that neighbour; into an empty run it stays where it is.
+    /// Puts `item` beside the other item `neighbour` in this collection, before it or after it,
+    /// as this change sees the collection's items. The store records it beside that neighbour,
+    /// so a move made elsewhere at the same time leaves it where this one meant.
+    fn coll_move_beside(
+        &self,
+        ctx: &MutCtx,
+        item: &str,
+        neighbour: &str,
+        after: bool,
+    ) -> HResult<Option<Wasm>> {
+        let listing = self
+            .store
+            .borrow()
+            .listing(&ctx.target, &spec(&ctx.field))
+            .map_err(|e| crate::engine::HostFail::Trap(e.to_string()))?;
+        let others: Vec<Rc<str>> = listing.iter().filter(|id| **id != *item).collect();
+        let Some(at) = others.iter().position(|id| **id == *neighbour) else {
+            return trap("the item to go beside is not in this collection");
+        };
+        let index = if after { at.saturating_add(1) } else { at };
+        let field = ctx.field.id.clone();
+        self.apply_mut(
+            ctx,
+            &Mutation::CollMove {
+                field,
+                item: item.to_owned(),
+                index,
+            },
+        )?;
+        ret_void()
+    }
+
+    /// `move(x, to: i, among: run)`: to the place `i` among the items of `run` other than `x`,
+    /// as the invoker sees them now. A run is any part of the collection in its own order, such
+    /// as the items one filter shows: just before the item of the run at that place, or just
+    /// after the run's last. Into an empty run it stays where it is.
     fn coll_move_among(&self, a: &Args<'_>) -> HResult<Option<Wasm>> {
         let ctx = self.mut_ctx(a.h(0)?, a.h(1)?)?;
         let item_tys = self.coll_field(&ctx)?;
@@ -1164,38 +1182,22 @@ impl Core {
             Value::List(run) => run,
             other => return trap(format!("expected a list, got {}", other.kind_name())),
         };
-        let mut lane = Vec::with_capacity(run.len());
+        // The run's items without the one moved, in its order.
+        let mut others = Vec::with_capacity(run.len());
         for v in &run {
             let Value::Ref(r) = v else {
                 return trap(format!("a run holds items, not {}", v.kind_name()));
             };
             match &r.target.item {
-                Some(id) if *id != item => lane.push(id.clone()),
+                Some(id) if *id != item => others.push(id.clone()),
                 Some(_) => {}
                 None => return trap("a run holds items of this collection"),
             }
         }
-        let (neighbour, after) = match lane.get(at).or_else(|| lane.last()) {
-            Some(next) => (next, at >= lane.len()),
-            None => return ret_void(),
-        };
-        let listing = self
-            .store
-            .borrow()
-            .listing(&ctx.target, &spec(&ctx.field))
-            .map_err(|e| crate::engine::HostFail::Trap(e.to_string()))?;
-        let others: Vec<Rc<str>> = listing.iter().filter(|id| **id != *item.as_str()).collect();
-        let Some(place) = others.iter().position(|id| **id == *neighbour.as_str()) else {
-            return trap("an item of the run is not in this collection");
-        };
-        let index = if after {
-            place.saturating_add(1)
-        } else {
-            place
-        };
-        let field = ctx.field.id.clone();
-        self.apply_mut(&ctx, &Mutation::CollMove { field, item, index })?;
-        ret_void()
+        match others.get(at).or_else(|| others.last()) {
+            Some(next) => self.coll_move_beside(&ctx, &item, next, at >= others.len()),
+            None => ret_void(),
+        }
     }
 
     fn set_map_import(&self, imp: Imp, a: &Args<'_>) -> HResult<Option<Wasm>> {

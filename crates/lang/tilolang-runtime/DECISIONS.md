@@ -510,8 +510,8 @@ What a host relies on. A tilolang app that misses a budget is a bug in the runti
   the host first (`coll_where`); in a view the host hands back the collection narrowed to the
   predicate (a `CollRef` with a filter), which the store lists (`Store::listing_where`) and the
   view reads like any collection: its length, which the column's counts answer without reading
-  the run, or its count, which reads the run's entries to their end once (what a lane's header,
-  drawing its cards, pays for), and the items a list shows. No reference
+  the run, or its count, which reads the run's entries to their end once (what a view drawing
+  a run's count with its items pays for), and the items a list shows. No reference
   is built per item and the lambda runs on none. The Tilo store evaluates the predicate on every
   item once, reading only the fields it reads, in one pass on several threads, then keeps the
   filtered listing and evaluates only the items a change touches (a field the predicate reads,

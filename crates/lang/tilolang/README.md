@@ -294,14 +294,14 @@ where each person meant. The collection a move is called on is where the item go
 whichever collection of the document holds it: `done.cards.move(card, to: done.cards.len())`
 takes a card from its column to the foot of `done`, the same card, with its history and every
 reference to it. An item cannot go inside itself. A place may count only a run of the
-collection, the items a board's lane shows: `items.move(x, to: i, among: items.filter(t ->
-t.section == s))` puts `x` at the place `i` among that run's other items, beside the one it
-then comes before, or after the run's last. Where an item stands among them is
-`items.index_of(x)`, an `Option<Int>`: none when it is not one, and the item just before it is
-`items.previous(x)`, an `Option<T>`: the row over the one a list is drawing, which the host
-knows without reading the items before it. A board lane's drop says both
-what was dropped and where: `on drop(moved: Task, at: Int): place(moved, s, at)`. How moves,
-edits and removals made at the same time merge is convergence.md, "Storage and sync".
+collection, any part of it in its own order, such as the items one filter shows:
+`items.move(x, to: i, among: items.filter(t -> t.section == s))` puts `x` at the place `i`
+among that run's other items, beside the one it then comes before, or after the run's last.
+Where an item stands among them is `items.index_of(x)`, an `Option<Int>`: none when it is not
+one, and the item just before it is `items.previous(x)`, an `Option<T>`: the row over the one a
+list is drawing, which the host knows without reading the items before it. A drop that names a
+place says both what was dropped and where: `on drop(moved: Task, at: Int): place(moved, s, at)`.
+How moves, edits and removals made at the same time merge is convergence.md, "Storage and sync".
 
 **Counts of what is not all read.** A window answers rows from the index it opens over, which
 may still be reading the workspace: `items.len()` and `items.count(pred)` are then the part read

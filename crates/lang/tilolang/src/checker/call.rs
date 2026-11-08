@@ -1608,8 +1608,9 @@ impl Checker<'_> {
     /// counted (convergence.md, "Actions"), so concurrent moves land where each person meant.
     fn move_item(&mut self, b: Ex, fid: Ex, t: &Ty, args: &[ast::Arg], span: Span) -> Ex {
         let usage = "write `.move(item, after: other)`, `.move(item, before: other)`, `.move(item, to: index)` or `.move(item, to: index, among: run)`";
-        // `to: i, among: run`: the place `i` among the items of `run` (a lane of a board, the
-        // items of one section) other than the one moved.
+        // `to: i, among: run`: the place `i` among the items of `run` (any part of the
+        // collection in its own order, such as the items one filter shows) other than the one
+        // moved.
         if let [item, place, among] = args
             && place.name.as_ref().is_some_and(|n| n.name == "to")
             && among.name.as_ref().is_some_and(|n| n.name == "among")
