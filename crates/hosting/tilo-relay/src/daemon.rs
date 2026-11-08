@@ -560,7 +560,10 @@ impl Relay {
             full_replica: full_replica.clone(),
             state_root: cfg.state_root.clone(),
         };
-        let certification = crate::certification::CertificationProtocol::new(live.clone());
+        let certification = crate::certification::CertificationProtocol::new(
+            live.clone(),
+            Some(workspaces.clone()),
+        );
         let web = Box::new(WebContext {
             relay: handler.clone(),
             #[cfg(feature = "web")]

@@ -5,15 +5,17 @@
 //! A page reads a site that sends no CORS headers (a feed, a video
 //! directory's API, a calendar subscription) through the workspace host it
 //! is admitted to. Only a member's or guest's device with an open session
-//! may: the session token arrives in [`SESSION_HEADER`], as on every other
-//! route, and its person must be admitted to a workspace here. The proxy
+//! may: the host minted its token for that connection as the session started
+//! ([`Grants`]), and its person must be admitted to a workspace here. The proxy
 //! itself enforces destinations, bounds, rates and budgets (see
 //! `tilo_net::proxy::host`);
 //! this module adds who may call it, which workspaces' budgets a request counts
 //! against (every workspace here its person is admitted to), and the CORS
 //! headers a page on the web entry's origin needs to read the answer.
 
+use std::collections::HashMap;
 use std::path::PathBuf;
+use std::sync::Mutex;
 use std::time::Duration;
 
 use hyper::{Method, Request, Response, header};
@@ -95,6 +97,45 @@ async fn write_metrics(proxy: FetchProxy, path: PathBuf) {
     }
 }
 
+/// The tokens this listener's fetch proxy takes: one per open page session,
+/// minted as the session starts over its own carrier and taken back when its
+/// connection ends.
+#[derive(Default)]
+pub struct Grants {
+    open: Mutex<HashMap<[u8; 32], Holder>>,
+}
+
+/// The device a token was minted for, and the person it is.
+#[derive(Clone, Copy)]
+struct Holder {
+    user: [u8; 32],
+    device: [u8; 32],
+}
+
+impl Grants {
+    /// What `token` names, while its connection holds it.
+    fn holder(&self, token: &[u8; 32]) -> Option<Holder> {
+        self.open.lock().ok()?.get(token).copied()
+    }
+}
+
+impl crate::peer::FetchGrants for Grants {
+    fn grant(&self, user: [u8; 32], device: [u8; 32]) -> Option<[u8; 32]> {
+        let token: [u8; 32] = rand::random();
+        self.open
+            .lock()
+            .ok()?
+            .insert(token, Holder { user, device });
+        Some(token)
+    }
+
+    fn revoke(&self, token: [u8; 32]) {
+        if let Ok(mut open) = self.open.lock() {
+            open.remove(&token);
+        }
+    }
+}
+
 /// Answer one request to the fetch route, or its CORS preflight.
 pub(super) async fn handle(web: &Web, request: Request<hyper::body::Incoming>) -> Response<Body> {
     let origin = request.headers().get(header::ORIGIN).cloned();
@@ -145,18 +186,17 @@ async fn caller(
             hex::decode(session).ok()?.try_into().ok()
         })
         .ok_or("the fetch proxy is for pages signed in to this host")?;
-    let session = web
-        .sessions
-        .get(&token)
-        .map_err(|_| "the session ended; sign in again")?;
-    let user = session.peer.user_public_key;
+    let Holder { user, device } = web
+        .grants
+        .holder(&token)
+        .ok_or("the session ended; sign in again")?;
     let workspaces = member_of(web, user).await;
     // The person this host runs for may use it before any of their workspaces is
     // bound here: their fetches count against their device's budget alone.
     if workspaces.is_empty() && user != web.sessions.context().relay.identity.user_public_key {
         return Err("the fetch proxy is for members of a workspace on this host");
     }
-    Ok((Caller(session.peer.device_public_key), workspaces))
+    Ok((Caller(device), workspaces))
 }
 
 /// The workspaces here `user` is admitted to as a person of its own: a

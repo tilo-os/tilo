@@ -218,8 +218,10 @@ struct Web {
         hyper::header::HeaderName,
         tilo_relay_protocol::proxies::TrustedProxies,
     )>,
-    /// The fetch proxy, when [`WebConfig::fetch_proxy`] asked for one.
+    /// The fetch proxy, when [`WebConfig::fetch_proxy`] asked for one, and the
+    /// tokens its pages' sessions take for it.
     fetch: Option<tilo_net::proxy::host::FetchProxy>,
+    grants: Arc<fetch::Grants>,
     /// The live plane: the one account of who is here.
     presence: Arc<plane::Authority>,
     /// The page errors the door logs.
@@ -374,6 +376,7 @@ impl Relay {
             here: Arc::new(here::Here::new(here::from_env())),
             country: config.country.and_then(country_header),
             fetch: fetch.proxy,
+            grants: Arc::default(),
             presence: plane.authority(),
             page_errors: page_errors::PageErrors::default(),
             shelf: shelf::Shelf::default(),
@@ -385,6 +388,11 @@ impl Relay {
             presence: Arc::clone(&web.presence),
             profiles: Arc::clone(&web.profiles),
         }));
+        // A page's fetch proxy token is minted on the session it fetched from.
+        if web.fetch.is_some() {
+            let grants: Arc<dyn crate::peer::FetchGrants> = web.grants.clone();
+            let _ = context.relay.fetch.set(grants);
+        }
         let mut tasks = Vec::new();
         tasks.extend(fetch.metrics);
         let mut plain_origin = None;
@@ -821,27 +829,8 @@ async fn body(
 /// Whether `user` is admitted to any workspace this relay serves: whose
 /// envelope it keeps.
 async fn admitted_anywhere(web: &Web, user: [u8; 32]) -> bool {
-    let workspaces: Vec<_> = web
-        .sessions
-        .context()
-        .relay
-        .workspaces
-        .lock()
-        .await
-        .values()
-        .cloned()
-        .collect();
     // The person this host runs for is its own before any workspace is bound.
-    let own_user = web.sessions.context().relay.identity.user_public_key;
-    if user == own_user {
-        return true;
-    }
-    for workspace in workspaces {
-        if workspace.lock().await.admits_person(&user, &own_user) {
-            return true;
-        }
-    }
-    false
+    web.sessions.context().relay.admits(user).await
 }
 
 fn wait(ms: u32) -> Duration {

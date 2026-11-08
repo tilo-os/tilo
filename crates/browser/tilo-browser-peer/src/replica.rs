@@ -267,7 +267,6 @@ impl Replicas {
     /// workspace's own governance keeps for it: the address a peer dials the
     /// host at, and the relay it is reached through. `None` until the host's
     /// bootstrap or a governance message named it.
-    #[cfg(feature = "iroh")]
     pub(crate) fn host_endpoint(
         &self,
         workspace_id: u64,

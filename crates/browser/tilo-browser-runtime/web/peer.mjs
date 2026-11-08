@@ -388,11 +388,6 @@ export function createLiveLayer(peer, runtime, workspace, {
  *                               device key, certified by an approver)
  * @param options.deviceCertificate  `{cert, hostCert}` JSON this device was
  *                               certified with elsewhere (`joinWorkspace`)
- * @param options.background     `true`: the page keeps this peer beside the
- *                               workspace in front, only to deliver for it
- *                               (problem reports to its home workspace).
- *                               The host counts nobody online by it: no
- *                               seat, no face, no online count.
  */
 export async function connectPeer(options) {
   const {identity, custody, origin, store, profile} = options;
@@ -435,7 +430,7 @@ async function connect({
   profile, device, displayName = '', vaultStorage,
   fetch: fetcher, desktop, signal, onStatus, onPairingCode, live: liveEnabled = true,
   voice: voiceOptions = {}, requireExistingCertificate = false, namespaces = globalThis.localStorage,
-  background = false, workspaceName,
+  workspaceName,
 }) {
   userPublicKey ??= identity?.userPublicKey;
   // Only a peer in its profile's own namespace moves to a fresh one when the
@@ -478,6 +473,7 @@ async function connect({
   // here together never share one.
   const ownColor = () => runtime.presenceColor(userPublicKey);
   let host = JSON.parse(await runtime.hostInfo(post));
+  if (!host.address) throw new Error('the host named no iroh endpoint to reach it at');
   const listeners = new Set();
   /** Called after each published status, so a surface follows the session
    * (the transport, the admission, the store) and not only its mount. */
@@ -682,8 +678,8 @@ async function connect({
     if (existing && !(identity && expiresWithinADay(existing))) return existing;
     const issued = identity
       ? await runtime.certifyWithRoot(post, identity, custodyForWasm, label)
-      : await runtime.certifyDevice(post, userPublicKey, label, null, custodyForWasm, code => onPairingCode?.(code),
-        host.address ? JSON.stringify(host.address) : undefined);
+      : await runtime.certifyDevice(userPublicKey, label, null, custodyForWasm, code => onPairingCode?.(code),
+        JSON.stringify(host.address));
     await store.put(CERTIFICATE, issued);
     return issued;
   }
@@ -700,12 +696,11 @@ async function connect({
     }
     const record = storage ? undefined : await store.get(PEER_RECORD);
     peer = runtime.WasmPeer.start(
-      withStartFields(certified, {displayName, address: host.address, background: background || undefined}),
+      withStartFields(certified, {displayName, address: host.address}),
       custodyForWasm,
       storage ? JSON.stringify({profile, device}) : undefined,
       storage ? undefined : (record ?? undefined),
       storage ? undefined : bytes => { store.put(PEER_RECORD, bytes).catch(() => {}); },
-      post,
       channelVault,
     );
     peer.subscribe(publish);
@@ -894,12 +889,6 @@ async function connect({
     fetchProxy() {
       const session = disposed ? undefined : peer?.fetchProxySession?.();
       return session ? {endpoint: new URL(FETCH_PROXY_PATH, origin).href, session} : null;
-    },
-    /** The device (hex) of the session the node runs beside the host (the
-     * one that opens the node's legacy apps), or `null`. */
-    async nodeSession() {
-      if (!peer) return null;
-      return (await peer.nodeSession()) ?? null;
     },
     /** The workspace's app actions (`actions.mjs`), or `undefined` without a workspace. */
     get actions() { return actions; },
@@ -1176,9 +1165,10 @@ export async function pairDevice(options) {
     const runtime = options.runtime ?? await pageRuntime(options.desktop);
     const custodyForWasm = own.kind === 'sealed-seed' ? await own.unseal() : own;
     const info = JSON.parse(await runtime.hostInfo(httpsPost(origin, options.fetch)));
-    const certified = await runtime.certifyDevice(httpsPost(origin, options.fetch), userPublicKey, label,
+    if (!info.address) throw new Error('the host named no iroh endpoint to reach it at');
+    const certified = await runtime.certifyDevice(userPublicKey, label,
       options.invite ?? null, custodyForWasm, code => options.onPairingCode?.(code),
-      info.address ? JSON.stringify(info.address) : undefined);
+      JSON.stringify(info.address));
     const common = {...options, identity: undefined, label, profile, custody: own, runtime};
     if (!admission) return connect({...common, deviceCertificate: certified});
     const offer = await admission();

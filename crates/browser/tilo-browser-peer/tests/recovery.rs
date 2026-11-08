@@ -21,7 +21,7 @@ mod support;
 tilo_automerge_isolate::test_worker!();
 
 use collab_types::DocumentMutation;
-use tilo_browser_peer::{FailureSubject, Host, LocalState, PeerEvent, PeerSnapshot};
+use tilo_browser_peer::{FailureSubject, LocalState, PeerEvent, PeerSnapshot};
 use tilo_user_identity::{DeviceCapabilities, UserIdentity};
 
 use support::{enrol, next_document, ready, route, start_host, start_peer, wait_for, workspace};
@@ -42,7 +42,7 @@ async fn refresh_asks_the_restarted_host_for_the_workspace_again() {
     let _laptop = participant::Participant::start(&host.relay, &root).await;
     let listen = host.web.addr;
     let peer = start_peer(
-        Host::Https(host.https()),
+        host.iroh(),
         browser.cert.clone(),
         host_device.cert.clone(),
         browser.key.clone(),
@@ -107,7 +107,7 @@ async fn a_session_told_the_network_is_back_reconnects_now_instead_of_after_its_
     .await;
     let listen = host.web.addr;
     let peer = start_peer(
-        Host::Https(host.https()),
+        host.iroh(),
         browser.cert.clone(),
         host_device.cert.clone(),
         browser.key.clone(),
@@ -176,7 +176,7 @@ async fn page_failures_are_scoped_offer_their_recovery_and_clear() {
     )
     .await;
     let peer = start_peer(
-        Host::Https(host.https()),
+        host.iroh(),
         browser.cert.clone(),
         host_device.cert.clone(),
         browser.key.clone(),

@@ -34,24 +34,21 @@ use tilo_lock::MutexRecover as _;
 use tilo_peer_state::document_frame::{
     Ciphers, ContentCipher, DocumentRoute, OpenedDocument, Reassembly, open_frame,
 };
-use tilo_relay_client::https::{HttpClient, HttpsLink, LinkError};
+use tilo_relay_client::https::LinkError;
+use tilo_relay_session::RelayClient;
 
 mod connect;
 mod plane;
 mod voice;
 
 use connect::Dial;
-#[cfg(all(test, feature = "iroh"))]
+#[cfg(test)]
 use connect::{connect, iroh_link_error};
 
 /// Longest wait between reconnect attempts.
 const MAX_BACKOFF: Duration = Duration::from_secs(30);
 /// Keep-alive interval on an idle session.
 const PING_INTERVAL: Duration = Duration::from_secs(15);
-/// How long before the host ends a session (its fixed lifetime) the next one
-/// starts: the renewal is then an ordinary reconnect, not a refused poll
-/// followed by an offline spell and a backoff.
-const RENEW_AHEAD: Duration = Duration::from_secs(60);
 /// How often overdue channel access requests are sent again.
 const CHANNEL_TICK: Duration = Duration::from_secs(1);
 /// Documents held per route while this device waits for its keys; past it
@@ -129,18 +126,24 @@ const ADMISSION_TIMEOUT_MS: u64 = 30_000;
 /// Failures kept at once; the oldest goes first.
 const MAX_FAILURES: usize = 16;
 
-/// How to reach the user's host.
-#[derive(Clone)]
-pub enum Host {
-    /// Its HTTPS origin, through this client (the page's `fetch`).
-    Https(Arc<dyn HttpClient>),
+/// Where to reach the user's host: the iroh endpoint it serves its peers'
+/// sessions on.
+#[derive(Clone, Debug)]
+pub struct Host {
     /// Its iroh endpoint.
-    #[cfg(feature = "iroh")]
-    Iroh {
-        addr: iroh_base::EndpointAddr,
-        /// An iroh relay server to dial it through, if any.
-        relay_url: Option<iroh_base::RelayUrl>,
-    },
+    pub addr: iroh_base::EndpointAddr,
+    /// An iroh relay server to dial it through, if any.
+    pub relay_url: Option<iroh_base::RelayUrl>,
+}
+
+impl Host {
+    /// The host at `addr`, dialled through the relay `addr` names, if any.
+    pub fn at(addr: iroh_base::EndpointAddr) -> Self {
+        Self {
+            addr,
+            relay_url: None,
+        }
+    }
 }
 
 /// Where to connect and as whom.
@@ -154,11 +157,6 @@ pub struct PeerConfig {
     pub host_cert: DeviceCert,
     /// Root-signed revocations this device knows about.
     pub revocations: RevocationList,
-    /// The page keeps this session beside the workspace in front, only to
-    /// deliver for it (problem reports to the page's home workspace): the
-    /// host counts nobody online by it, so it takes no seat and shows no
-    /// face there ([`tilo_relay_protocol::web::SessionFinish::background`]).
-    pub background: bool,
 }
 
 /// Transport phase, in `SessionHealth` v1 vocabulary.
@@ -592,7 +590,6 @@ enum Command {
         RoomsCompletion,
     ),
     Here(tilo_relay_protocol::web::HereRequest, HereCompletion),
-    Node(NodeCompletion),
     Compact([u8; 16], Vec<u8>),
     Reconnect,
     /// The network is back: a session waiting out its backoff tries again
@@ -653,9 +650,6 @@ pub type Completion = Box<dyn FnOnce(Result<(), String>) + Send>;
 /// keys, or `None` when this device holds none; see
 /// [`PeerHandle::seal_live_then`] and [`PeerHandle::open_live_then`].
 pub type LiveCompletion = Box<dyn FnOnce(Option<Vec<u8>>) + Send>;
-/// Called once with the session device the node runs beside the host (or
-/// `None`), see [`PeerHandle::node_session_then`].
-pub type NodeCompletion = Box<dyn FnOnce(Result<Option<[u8; 32]>, String>) + Send>;
 /// Called once with who is here, see [`PeerHandle::here_then`].
 pub type HereCompletion =
     Box<dyn FnOnce(Result<tilo_relay_protocol::web::HereReply, String>) + Send>;
@@ -668,12 +662,10 @@ struct Shared {
     status: PeerStatus,
     queues: Vec<std::sync::Weak<Mutex<VecDeque<PeerEvent>>>>,
     wakes: Vec<Wake>,
-    /// The current session's token while its host serves the fetch proxy;
-    /// kept apart from [`PeerStatus`], which diagnostics show.
+    /// The current session's bearer token for its host's fetch proxy
+    /// (`tilo_net::proxy`, at `/peer/v1/fetch`); kept apart from
+    /// [`PeerStatus`], which diagnostics show.
     fetch_proxy: Option<String>,
-    /// The current HTTPS session's token, for the page to end it as it
-    /// leaves ([`PeerHandle::session_token`]).
-    session: Option<String>,
     /// What the page shows where its live plane would be, when it has none:
     /// that no plane could be reached ([`PeerHandle::live_note`]).
     live_note: Option<String>,
@@ -779,7 +771,6 @@ impl PeerHandle {
             queues: Vec::new(),
             wakes: Vec::new(),
             fetch_proxy: None,
-            session: None,
             live_note: None,
         }));
         let events: Queue = Arc::new(Mutex::new(VecDeque::new()));
@@ -1078,13 +1069,6 @@ impl PeerHandle {
         self.send(Command::Administer(request, done))
     }
 
-    /// Ask the host which device runs the person's apps beside it (a
-    /// node's session), over the current HTTPS session; `done` receives it,
-    /// or `None` from a host that runs none.
-    pub fn node_session_then(&self, done: NodeCompletion) -> Result<(), String> {
-        self.send(Command::Node(done))
-    }
-
     /// Drop the connection and reconnect now, also after a failure.
     pub fn reconnect(&self) -> Result<(), String> {
         self.send(Command::Reconnect)
@@ -1218,24 +1202,17 @@ impl PeerHandle {
         });
     }
 
-    /// Current status.
-    pub fn status(&self) -> PeerStatus {
-        lock(&self.shared).status.clone()
-    }
-
-    /// The session token the host's fetch proxy takes
-    /// (`tilo_net::proxy`, at `/peer/v1/fetch`), while connected over HTTPS to
-    /// a host that serves one; `None` otherwise. It changes with every
-    /// reconnect, so callers read it for each request.
+    /// The bearer token the host's fetch proxy takes (`tilo_net::proxy`, at
+    /// `/peer/v1/fetch`) while this session holds one; `None` otherwise, and
+    /// from a host that serves no proxy. It changes with every session, so
+    /// callers read it for each request.
     pub fn fetch_proxy_session(&self) -> Option<String> {
         lock(&self.shared).fetch_proxy.clone()
     }
 
-    /// The token of the HTTPS session the peer runs now, `None` between
-    /// sessions and over iroh: what a page leaving sends the host
-    /// (`/peer/v1/session/end`) so the workspace stops counting it at once.
-    pub fn session_token(&self) -> Option<String> {
-        lock(&self.shared).session.clone()
+    /// Current status.
+    pub fn status(&self) -> PeerStatus {
+        lock(&self.shared).status.clone()
     }
 
     /// Take every event produced since the last call on this handle's own
@@ -1409,16 +1386,15 @@ impl Task {
     /// Tell the host, once `workspace_id` admitted this device, its
     /// certificate and that it answers compaction requests. Returns `false`
     /// when the session could not take them.
-    fn announce(&self, client: &Link, workspace_id: u64) -> bool {
+    fn announce(&self, client: &RelayClient, workspace_id: u64) -> bool {
         if let Some(hello) = identity_hello(workspace_id, &self.config.cert)
             && client.send(hello).is_err()
         {
             return false;
         }
-        !client.compacts()
-            || client
-                .send(Envelope::CompactVolunteer { workspace_id })
-                .is_ok()
+        client
+            .send(Envelope::CompactVolunteer { workspace_id })
+            .is_ok()
     }
 
     fn compaction_requested(&mut self, workspace_id: u64, request: [u8; 16], route: DocumentRoute) {
@@ -1449,7 +1425,7 @@ impl Task {
         &mut self,
         request: [u8; 16],
         snapshot: Vec<u8>,
-        client: Option<&Link>,
+        client: Option<&RelayClient>,
     ) -> bool {
         let Some(client) = client else {
             return true;
@@ -1549,9 +1525,20 @@ impl Task {
         }
     }
 
+    /// Subscribe to `workspace_id`, continuing from the position this page
+    /// last received: the host replays only what came after it, and a page
+    /// that holds no position (its first session, or a refresh) gets the
+    /// workspace whole.
+    fn subscribe(&self, workspace_id: u64) -> Envelope {
+        Envelope::SubscribeFrom {
+            workspace_id,
+            position: self.positions.get(&workspace_id).cloned(),
+        }
+    }
+
     /// Subscribe every joined workspace again, from now on waiting for its
     /// `Ready`. Returns `false` when the session could not take them.
-    fn resubscribe(&self, client: &Link) -> bool {
+    fn resubscribe(&self, client: &RelayClient) -> bool {
         let mut sent_ok = true;
         for workspace_id in &self.workspaces {
             sent_ok &= client
@@ -1655,7 +1642,7 @@ impl Task {
                 self.fail("certificate-expired", "This browser's certificate expired.");
                 self.update(|status| status.phase = TransportPhase::Failed);
                 if !self.wait_for_reconnect(&mut commands).await {
-                    return self.closed();
+                    return self.closed().await;
                 }
                 continue;
             }
@@ -1675,12 +1662,12 @@ impl Task {
                     // subscribes, not from the moment the host answers, so a
                     // host that holds the connection open still reports.
                     self.admission_since = Some(tilo_clock::unix_now_ms());
-                    let exit = self.serve_naming_proxy(client, &mut commands).await;
+                    let exit = self.serve(client, &mut commands).await;
                     // A request the host had not answered is answered here:
                     // nothing waits on a connection that is gone.
                     self.requests_lost();
                     match exit {
-                        Exit::Closed => return self.closed(),
+                        Exit::Closed => return self.closed().await,
                         Exit::Reconnect => continue,
                         Exit::Lost(reason) => self.fail("transport-ended", reason),
                     }
@@ -1704,7 +1691,7 @@ impl Task {
                             status.authenticated = false;
                         });
                         if !self.wait_for_reconnect(&mut commands).await {
-                            return self.closed();
+                            return self.closed().await;
                         }
                         attempt = 0;
                         refusals = 0;
@@ -1731,7 +1718,7 @@ impl Task {
                 tokio::select! {
                     biased;
                     command = commands.recv() => match command {
-                        None | Some(Command::Close) => return self.closed(),
+                        None | Some(Command::Close) => return self.closed().await,
                         Some(Command::Reconnect | Command::Retry) => break,
                         Some(Command::Refresh) => {
                             self.positions.clear();
@@ -1748,7 +1735,11 @@ impl Task {
         }
     }
 
-    fn closed(&self) {
+    async fn closed(mut self) {
+        // Nothing reconnects from here: the endpoint goes with the session,
+        // and the host is told so.
+        self.dial.shutdown().await;
+        lock(&self.shared).fetch_proxy = None;
         self.update(|status| {
             status.phase = TransportPhase::Closed;
             status.authenticated = false;
@@ -1776,25 +1767,6 @@ impl Task {
         }
     }
 
-    /// [`Self::serve`], naming the session's fetch proxy while it lasts
-    /// ([`PeerHandle::fetch_proxy_session`]).
-    async fn serve_naming_proxy(
-        &mut self,
-        client: Link,
-        commands: &mut mpsc::UnboundedReceiver<Command>,
-    ) -> Exit {
-        {
-            let mut shared = lock(&self.shared);
-            shared.fetch_proxy = client.fetch_proxy_session();
-            shared.session = client.session_token();
-        }
-        let exit = self.serve(client, commands).await;
-        let mut shared = lock(&self.shared);
-        shared.fetch_proxy = None;
-        shared.session = None;
-        exit
-    }
-
     /// The session is up: connected and authenticated, its transport
     /// failures cleared, every workspace waiting to be admitted again.
     fn connected(&self) {
@@ -1814,9 +1786,12 @@ impl Task {
 
     async fn serve(
         &mut self,
-        mut client: Link,
+        client: RelayClient,
         commands: &mut mpsc::UnboundedReceiver<Command>,
     ) -> Exit {
+        // The last session's fetch proxy token died with its connection; this
+        // one mints its own as it starts.
+        lock(&self.shared).fetch_proxy = None;
         if !self.resume_session(&client) {
             return Exit::Lost("host session saturated during resume".into());
         }
@@ -1827,8 +1802,6 @@ impl Task {
         // A page that stood still beats once when it runs again, not once
         // for every beat it missed.
         heartbeat.set_missed_tick_behavior(n0_future::time::MissedTickBehavior::Delay);
-        let renewal = renewal(client.renew_after(tilo_clock::unix_now_ns()));
-        tokio::pin!(renewal);
         loop {
             if !self.settle_channels(Some(&client)).await {
                 return Exit::Lost("host session saturated".into());
@@ -1849,11 +1822,12 @@ impl Task {
                 biased;
                 command = commands.recv() => match command {
                     None | Some(Command::Close) => {
-                        client.close().await;
+                        client.disconnect().await;
                         return Exit::Closed;
                     }
                     Some(Command::Reconnect) => {
-                        client.close().await;
+                        // The next session dials from this same endpoint.
+                        client.disconnect().await;
                         return Exit::Reconnect;
                     }
                     Some(Command::Refresh) => {
@@ -1910,10 +1884,6 @@ impl Task {
                     let changes = self.channels.tick(tilo_clock::unix_now_ms());
                     self.absorb(changes);
                 }
-                () = &mut renewal => {
-                    client.close().await;
-                    return Exit::Reconnect;
-                }
                 _ = heartbeat.tick() => {
                     for beat in self.voice.heartbeats() {
                         if client.send(beat).is_err() {
@@ -1931,7 +1901,7 @@ impl Task {
         workspace_id: u64,
         to: [u8; 32],
         frame: Vec<u8>,
-        client: Option<&Link>,
+        client: Option<&RelayClient>,
     ) {
         if let Some(client) = client {
             let _ = client.send(Envelope::RemoteAction {
@@ -1954,7 +1924,7 @@ impl Task {
     /// Ask the workspace for content ([`PeerHandle::want_content`]): the host
     /// fans the request out and answers with what it keeps. Nothing while
     /// disconnected.
-    fn want_content(&self, workspace_id: u64, request: Vec<u8>, client: Option<&Link>) {
+    fn want_content(&self, workspace_id: u64, request: Vec<u8>, client: Option<&RelayClient>) {
         let Some(client) = client else {
             return;
         };
@@ -1988,7 +1958,7 @@ impl Task {
         clippy::too_many_lines,
         reason = "one arm per command, each handing off to its own method"
     )]
-    async fn apply(&mut self, command: Command, client: Option<&Link>) -> bool {
+    async fn apply(&mut self, command: Command, client: Option<&RelayClient>) -> bool {
         match command {
             Command::Join(workspace_id) => self.join(workspace_id, client),
             Command::JoinPlaced(workspace, name) => self.join_placed(workspace, name, client),
@@ -2084,7 +2054,7 @@ impl Task {
                 self.publish_call_audio(workspace_id, frames);
                 true
             }
-            Command::Here(request, done) => self.request_here(request, done, client),
+            Command::Here(request, done) => self.request_here(&request, done, client),
             Command::VoiceCalls(workspace_id) => self.voice_calls(workspace_id, client),
             Command::VoiceCall(workspace, request, op) => {
                 self.voice_call(workspace, request, op, client)
@@ -2105,11 +2075,7 @@ impl Task {
                 true
             }
             Command::Administer(request, done) => {
-                self.administer(request, done, client);
-                true
-            }
-            Command::Node(done) => {
-                Self::request_node(done, client);
+                self.administer(&request, done, client);
                 true
             }
             // Handled by the caller's loop.
@@ -2118,17 +2084,22 @@ impl Task {
     }
 
     /// Subscribe to `workspace_id`, now or once connected.
-    fn join(&mut self, workspace_id: u64, client: Option<&Link>) -> bool {
+    fn join(&mut self, workspace_id: u64, client: Option<&RelayClient>) -> bool {
         self.workspaces.insert(workspace_id);
         self.update(|status| {
             status.workspaces.entry(workspace_id).or_insert(false);
         });
         self.received.clear();
-        client.is_none_or(|client| client.send(self.subscribe(client, workspace_id)).is_ok())
+        client.is_none_or(|client| client.send(self.subscribe(workspace_id)).is_ok())
     }
 
     /// Join `workspace` once the host governs it ([`PeerHandle::join_placed`]).
-    fn join_placed(&mut self, workspace: String, name: String, client: Option<&Link>) -> bool {
+    fn join_placed(
+        &mut self,
+        workspace: String,
+        name: String,
+        client: Option<&RelayClient>,
+    ) -> bool {
         let Ok(workspace_id) = tilo_relay_protocol::room_workspace_id(&workspace) else {
             return true;
         };
@@ -2147,57 +2118,42 @@ impl Task {
 
     /// Ask the host to govern the workspace joined as `workspace_id`; it is
     /// subscribed once the host answers, whatever it answers.
-    fn place(&self, workspace_id: u64, client: &Link) -> bool {
+    fn place(&mut self, workspace_id: u64, client: &RelayClient) -> bool {
         let Some((workspace, name)) = self.placing.get(&workspace_id).cloned() else {
             return true;
         };
         let commands = self.commands.clone();
-        let placed = move || {
+        // Refused (not this person's host, a workspace governed elsewhere) or
+        // unanswered: the workspace's admission decides.
+        let placed = move |_: Result<tilo_relay_protocol::workspaces::WorkspacesReply, String>| {
             if let Some(commands) = commands.upgrade() {
                 let _ = commands.send(Command::Placed(workspace_id));
             }
         };
-        match client {
-            Link::Https(link) => {
-                let http = link.client().clone();
-                let session = link.session().to_owned();
-                n0_future::task::spawn(async move {
-                    let request = tilo_relay_protocol::workspaces::WorkspacesRequest::Place {
-                        workspace,
-                        name,
-                    };
-                    // Refused (not this person's host, a workspace governed
-                    // elsewhere) or unanswered: the workspace's admission decides.
-                    let _ = tilo_relay_client::https::workspaces(http.as_ref(), &session, &request)
-                        .await;
-                    placed();
-                });
-            }
-            // Workspaces are administered over HTTPS only: a native peer joins
-            // workspaces placed for it otherwise.
-            #[cfg(feature = "iroh")]
-            Link::Iroh { .. } => placed(),
-        }
+        self.administer(
+            &tilo_relay_protocol::workspaces::WorkspacesRequest::Place { workspace, name },
+            Box::new(placed),
+            Some(client),
+        );
         true
     }
 
     /// Restore this session's workspaces, pending commits and call participations.
-    fn resume_session(&mut self, client: &Link) -> bool {
+    fn resume_session(&mut self, client: &RelayClient) -> bool {
         let mut sent_ok = true;
         // A plane's grant is its session's token: the planes of the last
         // session ended with it, and every workspace's is joined again with
         // this one ([`Self::settle_planes`]).
         self.planes.end_session();
-        // A resuming subscription can replay a frame before its covering position.
-        // Keep duplicate detection until the host requests a whole subscription.
-        if !client.resumable() {
-            self.received.clear();
+        // Every subscription starts whole: the host replays the workspace's
+        // retained state, and duplicate detection begins with it.
+        self.received.clear();
+        for workspace_id in self.workspaces.clone() {
+            sent_ok &= client.send(self.subscribe(workspace_id)).is_ok();
         }
-        for workspace_id in &self.workspaces {
-            sent_ok &= client.send(self.subscribe(client, *workspace_id)).is_ok();
-        }
-        for workspace_id in self.placing.keys() {
-            sent_ok &= self.place(*workspace_id, client);
+        let placing = self.placing.keys().copied().collect::<Vec<_>>();
+        for workspace_id in placing {
+            sent_ok &= self.place(workspace_id, client);
         }
         for (channel, (workspace_id, _)) in &self.opened_records {
             sent_ok &= client
@@ -2223,7 +2179,7 @@ impl Task {
     /// answers bring. A page that recorded a lot while it was away owes more
     /// than the transport holds at once, which is no reason to give up the
     /// session.
-    fn flush_outbox(&mut self, client: &Link) {
+    fn flush_outbox(&mut self, client: &RelayClient) {
         let owed: Vec<[u8; 16]> = self
             .outbox
             .iter()
@@ -2246,41 +2202,30 @@ impl Task {
     /// Always `true`: the session takes it whatever the answer.
     fn request_here(
         &mut self,
-        request: tilo_relay_protocol::web::HereRequest,
+        request: &tilo_relay_protocol::web::HereRequest,
         done: HereCompletion,
-        client: Option<&Link>,
+        client: Option<&RelayClient>,
     ) -> bool {
-        match client {
-            Some(Link::Https(link)) => {
-                let http = link.client().clone();
-                let session = link.session().to_owned();
-                n0_future::task::spawn(async move {
-                    let reply =
-                        tilo_relay_client::https::here(http.as_ref(), &session, &request).await;
-                    done(reply.map_err(|error| error.to_string()));
-                });
+        let Some(client) = client else {
+            done(Err("not connected to the host".into()));
+            return true;
+        };
+        let request_id = self.here_next;
+        self.here_next = self.here_next.wrapping_add(1);
+        let frame = match postcard::to_stdvec(request) {
+            Ok(frame) => frame,
+            Err(error) => {
+                done(Err(format!("the request does not encode: {error}")));
+                return true;
             }
-            #[cfg(feature = "iroh")]
-            Some(Link::Iroh { client, .. }) => {
-                let request_id = self.here_next;
-                self.here_next = self.here_next.wrapping_add(1);
-                let frame = match postcard::to_stdvec(&request) {
-                    Ok(frame) => frame,
-                    Err(error) => {
-                        done(Err(format!("the request does not encode: {error}")));
-                        return true;
-                    }
-                };
-                self.here_pending.insert(request_id, done);
-                if client
-                    .send(Envelope::HereRequest { request_id, frame })
-                    .is_err()
-                    && let Some(done) = self.here_pending.remove(&request_id)
-                {
-                    done(Err("the host's session closed".into()));
-                }
-            }
-            None => done(Err("not connected to the host".into())),
+        };
+        self.here_pending.insert(request_id, done);
+        if client
+            .send(Envelope::HereRequest { request_id, frame })
+            .is_err()
+            && let Some(done) = self.here_pending.remove(&request_id)
+        {
+            done(Err("the host's session closed".into()));
         }
         true
     }
@@ -2297,41 +2242,28 @@ impl Task {
     /// session asking several may come back in any order.
     fn administer(
         &mut self,
-        request: tilo_relay_protocol::workspaces::WorkspacesRequest,
+        request: &tilo_relay_protocol::workspaces::WorkspacesRequest,
         done: RoomsCompletion,
-        client: Option<&Link>,
+        client: Option<&RelayClient>,
     ) {
-        match client {
-            Some(Link::Https(link)) => {
-                let http = link.client().clone();
-                let session = link.session().to_owned();
-                n0_future::task::spawn(async move {
-                    let reply =
-                        tilo_relay_client::https::workspaces(http.as_ref(), &session, &request)
-                            .await;
-                    done(reply.map_err(|error| error.to_string()));
-                });
+        let Some(client) = client else {
+            return done(Err("not connected to the host".into()));
+        };
+        let request_id = self.rooms_next;
+        self.rooms_next = self.rooms_next.wrapping_add(1);
+        let frame = match postcard::to_stdvec(request) {
+            Ok(frame) => frame,
+            Err(error) => {
+                return done(Err(format!("the request does not encode: {error}")));
             }
-            #[cfg(feature = "iroh")]
-            Some(Link::Iroh { client, .. }) => {
-                let request_id = self.rooms_next;
-                self.rooms_next = self.rooms_next.wrapping_add(1);
-                let frame = match postcard::to_stdvec(&request) {
-                    Ok(frame) => frame,
-                    Err(error) => {
-                        return done(Err(format!("the request does not encode: {error}")));
-                    }
-                };
-                self.rooms_pending.insert(request_id, done);
-                if client
-                    .send(Envelope::WorkspacesRequest { request_id, frame })
-                    .is_err()
-                    && let Some(done) = self.rooms_pending.remove(&request_id)
-                {
-                    done(Err("the host's session closed".into()));
-                }
-            }
-            None => done(Err("not connected to the host".into())),
+        };
+        self.rooms_pending.insert(request_id, done);
+        if client
+            .send(Envelope::WorkspacesRequest { request_id, frame })
+            .is_err()
+            && let Some(done) = self.rooms_pending.remove(&request_id)
+        {
+            done(Err("the host's session closed".into()));
         }
     }
 
@@ -2350,23 +2282,6 @@ impl Task {
         }
         for (_, done) in std::mem::take(&mut self.here_pending) {
             done(Err("the session ended before the host answered".into()));
-        }
-    }
-
-    fn request_node(done: NodeCompletion, client: Option<&Link>) {
-        match client {
-            Some(Link::Https(link)) => {
-                let http = link.client().clone();
-                let session = link.session().to_owned();
-                n0_future::task::spawn(async move {
-                    // A host that answers no `/node` runs nothing beside it.
-                    let info = tilo_relay_client::https::node(http.as_ref(), &session).await;
-                    done(Ok(info.ok().and_then(|info| info.session)));
-                });
-            }
-            #[cfg(feature = "iroh")]
-            Some(Link::Iroh { .. }) => done(Ok(None)),
-            None => done(Err("not connected to the host".into())),
         }
     }
 
@@ -2564,7 +2479,7 @@ impl Task {
         &mut self,
         route: DocumentRoute,
         frames: Vec<Vec<u8>>,
-        client: Option<&Link>,
+        client: Option<&RelayClient>,
     ) -> bool {
         let Ok(workspace_id) = route.workspace_id() else {
             self.fail(
@@ -2642,7 +2557,7 @@ impl Task {
         &mut self,
         workspace_id: u64,
         route: DocumentRoute,
-        client: Option<&Link>,
+        client: Option<&RelayClient>,
     ) -> bool {
         let channel = neighbour_wire::app_document_channel(&route.app_id, &route.record);
         self.open_channel(&route);
@@ -2679,19 +2594,6 @@ impl Task {
                 route: route.clone(),
                 frames,
             });
-        }
-    }
-
-    /// Subscribe to `workspace_id`, resuming after the last position when
-    /// the host supports it.
-    fn subscribe(&self, client: &Link, workspace_id: u64) -> Envelope {
-        if client.resumable() {
-            Envelope::SubscribeFrom {
-                workspace_id,
-                position: self.positions.get(&workspace_id).cloned(),
-            }
-        } else {
-            Envelope::Subscribe { workspace_id }
         }
     }
 
@@ -2745,6 +2647,9 @@ impl Task {
             } => {
                 self.positions.insert(workspace_id, position);
             }
+            // This session's token for its host's fetch proxy, which dies
+            // with the connection.
+            Envelope::FetchGrant { token } => self.grant_fetch_proxy(&token),
             Envelope::RecordOpened {
                 workspace_id,
                 channel,
@@ -2800,6 +2705,12 @@ impl Task {
                 }
             }
         }
+    }
+
+    /// Hold `token` for the rest of this session: what a page sends with
+    /// every read through its host's fetch proxy.
+    fn grant_fetch_proxy(&self, token: &[u8; 32]) {
+        lock(&self.shared).fetch_proxy = Some(hex::encode(token));
     }
 
     /// One member asked for `frame` of `workspace_id`'s record content: a
@@ -3041,7 +2952,7 @@ impl Task {
 
     /// Take every document held for `route` and decide it again: what still
     /// cannot be decided is held again with the reason it has now.
-    fn decide_route(&mut self, route: &DocumentRoute, client: Option<&Link>) {
+    fn decide_route(&mut self, route: &DocumentRoute, client: Option<&RelayClient>) {
         let held = self
             .held_inbound
             .get_mut(route)
@@ -3056,7 +2967,7 @@ impl Task {
 
     /// Decide again what the surfaces that arrived were waited for: every
     /// document held for an app version this page has now.
-    fn decide_held_surfaces(&mut self, client: &Link) {
+    fn decide_held_surfaces(&mut self, client: &RelayClient) {
         let routes: Vec<DocumentRoute> = self
             .held_inbound
             .iter()
@@ -3071,7 +2982,7 @@ impl Task {
     /// Ask the workspaces for the app surfaces this page holds documents for
     /// and does not have: the workspace keeps every version its history was
     /// written with, and a member that wrote under one answers with it.
-    fn ask_surfaces(&mut self, client: &Link) {
+    fn ask_surfaces(&mut self, client: &RelayClient) {
         let mut wants: BTreeMap<[u8; 32], (u64, String, String)> = BTreeMap::new();
         for (route, held) in &self.held_inbound {
             let Ok(workspace_id) = route.workspace_id() else {
@@ -3131,7 +3042,7 @@ impl Task {
     /// The host answered `Ready` for `workspace_id`: what the replay brought
     /// before it and a full hold let go of is paged again, where the route
     /// now opens it.
-    fn admitted(&mut self, workspace_id: u64, client: &Link) {
+    fn admitted(&mut self, workspace_id: u64, client: &RelayClient) {
         self.check_admission();
         // What this session could not ask before the workspace admitted it.
         let asked = self
@@ -3191,7 +3102,7 @@ impl Task {
 
     /// Ask the host to replay the records whose full holds let documents
     /// go, now that `route` can open them.
-    fn replay_owed(&mut self, route: &DocumentRoute, client: Option<&Link>) {
+    fn replay_owed(&mut self, route: &DocumentRoute, client: Option<&RelayClient>) {
         let owed = self
             .held_inbound
             .get(route)
@@ -3285,7 +3196,7 @@ impl Task {
     /// Act on channel changes: install new keys, open what waited for them,
     /// seal and commit what was held, and sign and send governance. Returns
     /// `false` when the session could not take an envelope.
-    async fn settle_channels(&mut self, client: Option<&Link>) -> bool {
+    async fn settle_channels(&mut self, client: Option<&RelayClient>) -> bool {
         let mut delivered = true;
         loop {
             let changes = std::mem::take(&mut self.channel_changes);
@@ -3616,126 +3527,10 @@ fn commit(entry: &OutboxEntry, cert: &DeviceCert) -> Envelope {
     }
 }
 
-/// Resolves when a session is due for renewal `after` from now; never for a
-/// session with no fixed end.
-async fn renewal(after: Option<Duration>) {
-    match after {
-        Some(after) => n0_future::time::sleep(after).await,
-        None => std::future::pending().await,
-    }
-}
-
-/// How long from `now_ns` until a session that ends at `expires_at_ns` is
-/// renewed: [`RENEW_AHEAD`] before its end, at once when that has passed.
-fn renew_after(expires_at_ns: u64, now_ns: u64) -> Duration {
-    Duration::from_nanos(expires_at_ns.saturating_sub(now_ns)).saturating_sub(RENEW_AHEAD)
-}
-
 /// The reply `frame` carries, or the refusal a page shows when it does not
 /// decode.
 fn answered<T: serde::de::DeserializeOwned>(frame: &[u8]) -> Result<T, String> {
     postcard::from_bytes(frame).map_err(|error| format!("the answer does not decode: {error}"))
-}
-
-/// The session to the host, over whichever carrier reaches it.
-#[allow(
-    clippy::large_enum_variant,
-    reason = "one link per session, never moved in bulk"
-)]
-enum Link {
-    Https(HttpsLink),
-    #[cfg(feature = "iroh")]
-    Iroh {
-        client: tilo_relay_session::RelayClient,
-    },
-}
-
-impl Link {
-    /// The session whose fetch proxy this link's host serves; `None` when
-    /// it serves none, as a direct Iroh link never does.
-    fn fetch_proxy_session(&self) -> Option<String> {
-        match self {
-            Self::Https(link) => link.fetch_proxy().then(|| link.session().to_owned()),
-            #[cfg(feature = "iroh")]
-            Self::Iroh { .. } => None,
-        }
-    }
-
-    #[cfg_attr(
-        not(feature = "iroh"),
-        allow(
-            clippy::unnecessary_wraps,
-            reason = "an iroh link has no session token"
-        )
-    )]
-    fn session_token(&self) -> Option<String> {
-        match self {
-            Self::Https(link) => Some(link.session().to_owned()),
-            #[cfg(feature = "iroh")]
-            Self::Iroh { .. } => None,
-        }
-    }
-
-    fn resumable(&self) -> bool {
-        match self {
-            Self::Https(link) => link.resumable(),
-            #[cfg(feature = "iroh")]
-            Self::Iroh { .. } => false,
-        }
-    }
-
-    fn compacts(&self) -> bool {
-        match self {
-            Self::Https(link) => link.compacts(),
-            #[cfg(feature = "iroh")]
-            Self::Iroh { .. } => false,
-        }
-    }
-
-    fn send(&self, envelope: Envelope) -> Result<(), Box<Envelope>> {
-        match self {
-            Self::Https(link) => link.send(envelope),
-            #[cfg(feature = "iroh")]
-            Self::Iroh { client, .. } => client.send(envelope),
-        }
-    }
-
-    /// How long until this session is renewed, [`RENEW_AHEAD`] of the end
-    /// its host set; `None` for a carrier whose session has no fixed end.
-    #[cfg_attr(
-        not(feature = "iroh"),
-        allow(
-            clippy::unnecessary_wraps,
-            reason = "the iroh carrier's sessions have no fixed end"
-        )
-    )]
-    fn renew_after(&self, now_ns: u64) -> Option<Duration> {
-        match self {
-            Self::Https(link) => Some(renew_after(link.expires_at_ns(), now_ns)),
-            #[cfg(feature = "iroh")]
-            Self::Iroh { .. } => None,
-        }
-    }
-
-    async fn recv(&mut self) -> Option<Envelope> {
-        match self {
-            Self::Https(link) => link.recv().await,
-            #[cfg(feature = "iroh")]
-            Self::Iroh { client, .. } => client.recv().await,
-        }
-    }
-
-    #[cfg_attr(
-        not(feature = "iroh"),
-        allow(clippy::unused_async, reason = "the iroh carrier awaits its close")
-    )]
-    async fn close(self) {
-        match self {
-            Self::Https(link) => link.close(),
-            #[cfg(feature = "iroh")]
-            Self::Iroh { client, .. } => client.close().await,
-        }
-    }
 }
 
 #[cfg(test)]
@@ -3921,21 +3716,6 @@ mod tests {
         assert_eq!(code(LinkError::Refused("io: closed".into())), "unexplained");
     }
 
-    /// A session is renewed a minute before the host ends it, so a page never
-    /// learns of the end from a refused poll; one already that close renews
-    /// at once.
-    #[test]
-    fn a_session_renews_ahead_of_its_end() {
-        let second = 1_000_000_000_u64;
-        let now = 1_000 * second;
-        assert_eq!(
-            super::renew_after(now + 15 * 60 * second, now),
-            Duration::from_secs(14 * 60)
-        );
-        assert_eq!(super::renew_after(now + 30 * second, now), Duration::ZERO);
-        assert_eq!(super::renew_after(now - second, now), Duration::ZERO);
-    }
-
     /// A page that lists nobody says why: each workspace's plane names what it
     /// waits for, and only asks that reached no plane count towards the note
     /// in the members' place.
@@ -3959,5 +3739,5 @@ mod tests {
     }
 }
 
-#[cfg(all(test, feature = "iroh"))]
+#[cfg(test)]
 mod iroh_connect_tests;

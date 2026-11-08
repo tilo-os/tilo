@@ -90,6 +90,9 @@ pub struct CertificationProtocol {
     /// The pairing invites an approver answered, by person: an invite is
     /// for one device, so a second request naming it is refused.
     answered_invites: Arc<Mutex<AnsweredInvites>>,
+    /// The workspaces this host serves, whose members may queue their own
+    /// devices' requests; absent in a host that governs none.
+    workspaces: Option<crate::peer::WorkspaceRegistry>,
 }
 
 impl std::fmt::Debug for CertificationProtocol {
@@ -107,13 +110,17 @@ fn encode<T: serde::Serialize>(value: &T) -> Result<Vec<u8>, AcceptError> {
 }
 
 impl CertificationProtocol {
-    pub(crate) fn new(identity: LiveIdentity) -> Self {
+    pub(crate) fn new(
+        identity: LiveIdentity,
+        workspaces: Option<crate::peer::WorkspaceRegistry>,
+    ) -> Self {
         Self {
             identity,
             policy: CertificationPolicy::browser(),
             pending: Arc::new(Mutex::new(HashMap::new())),
             confirmations: Arc::new(Mutex::new(HashMap::new())),
             answered_invites: Arc::new(Mutex::new(std::collections::HashSet::new())),
+            workspaces,
         }
     }
 
@@ -334,7 +341,22 @@ impl CertificationProtocol {
     ) -> Result<(), AcceptError> {
         let expires_at_ns = request.expires_at_ns;
         let now = unix_now_ns();
-        let (digest, pairing_code, answer) = match self.enqueue(request, now) {
+        // A member of a workspace this host serves queues their own devices
+        // beside the host's own, answered by their root rather than the
+        // owner's.
+        let member = match &self.workspaces {
+            Some(workspaces) => {
+                crate::workspace_access::admits_person(
+                    workspaces,
+                    self.identity.user_public_key,
+                    request.user_public_key,
+                )
+                .await
+            }
+            None => request.user_public_key == self.identity.user_public_key,
+        };
+        let queued = self.enqueue_member(request, now, member, None);
+        let (digest, pairing_code, answer) = match queued {
             Ok(queued) => queued,
             Err(reason) => {
                 write_frame(&mut send, &encode(&CertifyReply::Denied { reason })?)
@@ -586,6 +608,10 @@ async fn answered(
 
 #[cfg(test)]
 mod confirmation_tests {
+    #![allow(
+        clippy::significant_drop_tightening,
+        reason = "the protocol is the fixture each test drives to its end"
+    )]
 
     use super::*;
     use tilo_user_identity::{DeviceCapabilities, UserIdentity, sign_device_cert};
@@ -603,12 +629,15 @@ mod confirmation_tests {
             signature: [0; 64],
         };
         sign_device_cert(&mut cert, &root).unwrap();
-        CertificationProtocol::new(LiveIdentity {
-            user_public_key: root.verifying_key().to_bytes(),
-            cert,
-            signing_key: key,
-            revocations: Arc::new(std::sync::RwLock::new(RevocationList::new())),
-        })
+        CertificationProtocol::new(
+            LiveIdentity {
+                user_public_key: root.verifying_key().to_bytes(),
+                cert,
+                signing_key: key,
+                revocations: Arc::new(std::sync::RwLock::new(RevocationList::new())),
+            },
+            None,
+        )
     }
 
     fn question(id: u8, wait: Duration) -> PendingConfirmation {

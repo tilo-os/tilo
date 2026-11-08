@@ -18,7 +18,7 @@ mod support;
 // This binary re-execs as the automerge worker (support is shared with crates that lack the dep).
 tilo_automerge_isolate::test_worker!();
 
-use tilo_browser_peer::{Host, PeerEvent, PeerHandle, VoiceEvent};
+use tilo_browser_peer::{PeerEvent, PeerHandle, VoiceEvent};
 use tilo_relay_protocol::Envelope;
 use tilo_relay_protocol::voice::{CallOperation, VoiceGrant};
 
@@ -67,7 +67,7 @@ async fn a_browser_session_lists_joins_keeps_and_leaves_a_governed_call() {
     let workspace_id = workspace.workspace_id;
     let (_bob, page) = workspace.invite("bob-browser").await;
     let peer = start_peer(
-        Host::Https(workspace.https()),
+        workspace.iroh(),
         page.cert.clone(),
         workspace.host.cert.clone(),
         page.key.clone(),

@@ -299,7 +299,7 @@ test('the person’s own desktop writes as their root identity and shows them by
   assert.ok(own[1].label && own[1].label !== 'Guest', own[1].label);
 });
 
-test('the home workspace’s peer that carries reports from another workspace asks for a background session', async () => {
+test('the home workspace’s peer that carries reports from another workspace joins it without calls or a live plane', async () => {
   let homePeer;
   await fixture({boot: async (options, page) => { homePeer = options.deps.homePeer; return page; }});
   const home = {name: 'Lounge', host: {origin: 'https://lounge.example'}, admission: 'https://lounge.example/'};
@@ -311,9 +311,8 @@ test('the home workspace’s peer that carries reports from another workspace as
   localStorage.setItem('tilo-host-memberships', JSON.stringify({'https://lounge.example': {origin: 'https://lounge.example', room: 'LOUNGE', userPublicKey: USER}}));
   assert.equal(await homePeer(home), carrier);
   assert.equal(joined.length, 1);
-  // Not online by it: no seat, face or count in the home workspace; and
-  // nothing live or in calls, which only the workspace in front has.
-  assert.equal(joined[0].background, true);
+  // Nothing live or in calls, which only the workspace in front has.
+  assert.equal(joined[0].background, undefined);
   assert.equal(joined[0].live, false);
   assert.equal(joined[0].voice, false);
   assert.equal(joined[0].workspace, home);

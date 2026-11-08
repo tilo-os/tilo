@@ -68,12 +68,9 @@ impl HostEndpoint {
     /// The host at its iroh endpoint `addr`, the way a host's own agents
     /// reach it.
     #[must_use]
-    pub const fn iroh(addr: iroh_base::EndpointAddr, host_cert: DeviceCert) -> Self {
+    pub fn iroh(addr: iroh_base::EndpointAddr, host_cert: DeviceCert) -> Self {
         Self {
-            host: Host::Iroh {
-                addr,
-                relay_url: None,
-            },
+            host: Host::at(addr),
             host_cert,
         }
     }

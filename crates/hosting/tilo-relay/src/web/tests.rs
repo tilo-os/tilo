@@ -5,6 +5,7 @@
 
 use super::*;
 use crate::RelayConfig;
+use crate::peer::FetchGrants as _;
 use ed25519_dalek::{Signer as _, SigningKey};
 use tilo_peer_state::join::MemberRole;
 use tilo_user_identity::{DeviceCapabilities, DeviceCert, RevocationList};
@@ -105,6 +106,7 @@ fn web_with(relay: &Relay, host: &Host, sessions: Arc<Sessions>) -> Web {
         here: Arc::new(here::Here::new(None)),
         country: None,
         fetch: None,
+        grants: Arc::default(),
         presence: Arc::new(plane::Authority::new(relay.web_context().relay.clone())),
         page_errors: page_errors::PageErrors::default(),
         shelf: shelf::Shelf::default(),
@@ -701,10 +703,10 @@ async fn the_fetch_proxy_answers_admitted_people_and_refuses_everyone_else() {
         83,
         tilo_user_identity::cloud_enrollment::host_capabilities(),
     );
-    let (owner_key, owner) = device(&signer, 84, DeviceCapabilities::member());
+    let (_, owner) = device(&signer, 84, DeviceCapabilities::member());
     let (joined_key, joined) = device(&watcher, 85, DeviceCapabilities::member());
-    let (watch_key, watch) = device(&watcher, 86, DeviceCapabilities::member());
-    let (laptop_key, laptop) = device(&signer, 87, DeviceCapabilities::member());
+    let (_, watch) = device(&watcher, 86, DeviceCapabilities::member());
+    let (_, laptop) = device(&signer, 87, DeviceCapabilities::member());
     let state = tempfile::tempdir().unwrap();
     let relay = relay_at(&state, host.identity(), RelayConfig::default()).await;
     let workspaces = relay.workspaces().unwrap().clone();
@@ -766,9 +768,22 @@ async fn the_fetch_proxy_answers_admitted_people_and_refuses_everyone_else() {
         })
         .unwrap(),
     );
+    // The tokens a page's sessions take as they start, over their own
+    // carrier: one per connection, and the person it names is what the proxy
+    // admits.
+    let owner_token = web
+        .grants
+        .grant(owner.user_public_key, owner.device_public_key)
+        .unwrap();
+    let visiting = web
+        .grants
+        .grant(watch.user_public_key, watch.device_public_key)
+        .unwrap();
+    let laptop_token = web
+        .grants
+        .grant(laptop.user_public_key, laptop.device_public_key)
+        .unwrap();
     let (addr, serving) = serve_web(Arc::new(web)).await;
-    let owner_token = browser(addr, &owner_key, &owner).await;
-    let visiting = browser(addr, &watch_key, &watch).await;
 
     let target = test_http::Responder::start(vec![
         test_http::Reply::status(200)
@@ -903,7 +918,6 @@ async fn the_fetch_proxy_answers_admitted_people_and_refuses_everyone_else() {
 
     // The workspace received its budget: another of its people's devices is
     // refused, in a way the page can read, and the target never asked.
-    let laptop_token = browser(addr, &laptop_key, &laptop).await;
     let (status, head, _) = fetch(Some(hex::encode(laptop_token)), "https://app.example").await;
     assert_eq!(status, 429, "{head}");
     assert_eq!(

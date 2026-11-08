@@ -26,7 +26,7 @@ use std::time::Duration;
 use collab_types::DocumentMutation;
 use ed25519_dalek::SigningKey;
 use getrandom::{SysRng, rand_core::UnwrapErr};
-use tilo_browser_peer::{Host, PeerEvent, PeerHandle};
+use tilo_browser_peer::{PeerEvent, PeerHandle};
 use tilo_peer_state::document_frame::DocumentRoute;
 use tilo_user_identity::DeviceCapabilities;
 
@@ -59,7 +59,7 @@ async fn a_later_person_finds_nothing_in_the_clear_in_a_sealed_lounge() {
     let alice_laptop = enrol(&alice, "alice-laptop", DeviceCapabilities::primary());
     let state = tempfile::tempdir().unwrap();
     let hosted = start_workspace_host(&alice, &host, state.path(), false).await;
-    let https = Host::Https(hosted.https());
+    let https = hosted.iroh();
     let relay = &hosted.relay;
 
     let lounge = relay.workspaces().unwrap().create("Lounge").await.unwrap();

@@ -468,20 +468,28 @@ async fn wait_for<T: Send>(
     }
 }
 
-/// A page of `cert`'s device on the room's plain listener.
+/// The room's iroh endpoint, where its pages run their sessions.
+fn host_of(info: tilo_relay_protocol::web::HostInfo) -> tilo_browser_peer::Host {
+    tilo_browser_peer::Host::at(
+        info.address
+            .expect("the room publishes its iroh endpoint")
+            .endpoint_addr,
+    )
+}
+
+/// A page of `cert`'s device, on the room's session.
 fn page(
-    plain: std::net::SocketAddr,
+    host: tilo_browser_peer::Host,
     key: ed25519_dalek::SigningKey,
     cert: tilo_user_identity::DeviceCert,
     host_cert: &tilo_user_identity::DeviceCert,
 ) -> tilo_browser_peer::PeerHandle {
     tilo_browser_peer::PeerHandle::start(
         tilo_browser_peer::PeerConfig {
-            host: tilo_browser_peer::Host::Https(std::sync::Arc::new(Plain(plain))),
+            host,
             cert,
             host_cert: host_cert.clone(),
             revocations: tilo_user_identity::RevocationList::new(),
-            background: false,
         },
         std::sync::Arc::new(key),
         std::sync::Arc::new(tilo_browser_peer::MemoryPeerStore::default()),
@@ -634,21 +642,21 @@ async fn chat_route(
     plain: std::net::SocketAddr,
     cluster: &str,
 ) -> (
+    tilo_browser_peer::Host,
     tilo_user_identity::DeviceCert,
     tilo_peer_state::document_frame::DocumentRoute,
 ) {
     const CHAT: &str = "so.tilo.chat";
-    let host_cert = tilo_browser_peer::host_info(&Plain(plain))
-        .await
-        .unwrap()
-        .host_cert;
+    let info = tilo_browser_peer::host_info(&Plain(plain)).await.unwrap();
+    let host_cert = info.host_cert.clone();
+    let host = host_of(info);
     let catalogue = tilo_agent_participant::AppCatalogue::native();
     let route = tilo_peer_state::document_frame::DocumentRoute {
         app_id: CHAT.into(),
         cluster_id: cluster.into(),
         record: tilo_relay::room_bots::workspace_record(&catalogue, CHAT),
     };
-    (host_cert, route)
+    (host, host_cert, route)
 }
 
 /// A person of their own: a root this test generates, and a device the root
@@ -943,16 +951,16 @@ async fn persons_read_the_room_and_are_refused(
     use collab_types::DocumentMutation;
     use tilo_browser_peer::PeerEvent;
 
-    let (host_cert, route) = chat_route(plain, cluster).await;
+    let (host, host_cert, route) = chat_route(plain, cluster).await;
 
-    let visiting = page(plain, visiting_key, visiting_cert, &host_cert);
+    let visiting = page(host.clone(), visiting_key, visiting_cert, &host_cert);
     visiting.join(workspace_id).unwrap();
     visiting.open_route(route.clone()).unwrap();
     assert_page_reads_the_chat("Ana", &visiting, workspace_id, &route, &["general"]).await;
 
     // Another person holds the listing's default role, a viewer's: they read
     // the room and write nothing.
-    let writer = page(plain, writing_key, writing_cert, &host_cert);
+    let writer = page(host.clone(), writing_key, writing_cert, &host_cert);
     writer.join(workspace_id).unwrap();
     writer.open_route(route.clone()).unwrap();
     assert_page_reads_the_chat("Ben", &writer, workspace_id, &route, &["general"]).await;
@@ -981,7 +989,7 @@ async fn persons_read_the_room_and_are_refused(
     .await;
     assert!(!committed, "the viewer's write was committed: {refused:?}");
 
-    let other = page(plain, sibling_key, sibling_cert, &host_cert);
+    let other = page(host, sibling_key, sibling_cert, &host_cert);
     other.join(workspace_id).unwrap();
     let refused = wait_for(
         "the sibling device to be refused",
@@ -1019,8 +1027,8 @@ async fn an_editor_page_writes_and_is_committed(
     use collab_types::DocumentMutation;
     use tilo_browser_peer::PeerEvent;
 
-    let (host_cert, route) = chat_route(plain, cluster).await;
-    let editor = page(plain, editor_key, editor_cert, &host_cert);
+    let (host, host_cert, route) = chat_route(plain, cluster).await;
+    let editor = page(host, editor_key, editor_cert, &host_cert);
     editor.join(workspace_id).unwrap();
     editor.open_route(route.clone()).unwrap();
     assert_page_reads_the_chat("editor", &editor, workspace_id, &route, &["general"]).await;
@@ -1101,17 +1109,16 @@ fn a_persistent_room_reopens_after_hard_stops() {
     let workspace_id = tilo_relay::room_workspace_id(&id).unwrap();
     let (key, cert) = join_through_door(&runtime, plain, &id, own_device(0x75, "Ben"), "Ben");
     runtime.block_on(async {
-        let host_cert = tilo_browser_peer::host_info(&Plain(plain))
-            .await
-            .unwrap()
-            .host_cert;
+        let info = tilo_browser_peer::host_info(&Plain(plain)).await.unwrap();
+        let host_cert = info.host_cert.clone();
+        let host = host_of(info);
         let catalogue = tilo_agent_participant::AppCatalogue::native();
         let route = tilo_peer_state::document_frame::DocumentRoute {
             app_id: CHAT.into(),
             cluster_id: id.clone(),
             record: tilo_relay::room_bots::workspace_record(&catalogue, CHAT),
         };
-        let visiting = page(plain, key, cert, &host_cert);
+        let visiting = page(host, key, cert, &host_cert);
         visiting.join(workspace_id).unwrap();
         visiting.open_route(route.clone()).unwrap();
         assert_page_reads_the_chat("visiting", &visiting, workspace_id, &route, &["general"]).await;

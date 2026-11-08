@@ -20,7 +20,7 @@ use tilo_test_env::SpawnUnderEnvLockAsync as _;
 use ed25519_dalek::SigningKey;
 use getrandom::{SysRng, rand_core::UnwrapErr};
 use tilo_browser_peer::{
-    DeviceSigner, Host, IssuedRole, SignError, SignFuture, certify_with_root, issue_device_cert,
+    DeviceSigner, IssuedRole, SignError, SignFuture, certify_with_root, issue_device_cert,
 };
 use tilo_user_identity::DeviceCapabilities;
 use tilo_user_identity::root_envelope::{RecoveryKey, RootEnvelope};
@@ -114,7 +114,7 @@ async fn a_passkey_root_in_chrome_certifies_a_node_and_its_own_page() {
         .unwrap();
     assert_eq!(host_cert, node_cert);
     assert_eq!(cert.capabilities, DeviceCapabilities::member());
-    let peer = start_peer(Host::Https(host.https()), cert, host_cert, page_device);
+    let peer = start_peer(host.iroh(), cert, host_cert, page_device);
     ready(&[&peer]).await;
 
     drop(root);

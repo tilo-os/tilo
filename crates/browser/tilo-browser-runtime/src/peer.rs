@@ -310,15 +310,10 @@ struct ConnectConfig {
     host_cert: DeviceCert,
     /// Where the host's iroh endpoint is dialled: the session and its planes
     /// reach it there.
-    #[serde(default)]
-    address: Option<JsHostAddress>,
+    address: JsHostAddress,
     /// The person's chosen name, for history and presence; empty for none.
     #[serde(default)]
     display_name: String,
-    /// The page keeps this peer beside the workspace in front, to deliver for
-    /// it ([`PeerConfig::background`]).
-    #[serde(default)]
-    background: bool,
 }
 
 /// The certified user as the toolkit's local identity.
@@ -366,10 +361,11 @@ struct JsHostAddress {
 impl JsHostAddress {
     /// The host as the peer dials it.
     fn host(&self) -> Host {
-        Host::Iroh {
-            addr: self.endpoint_addr.clone(),
-            relay_url: self.relay_url.as_deref().and_then(|url| url.parse().ok()),
-        }
+        let addr = match self.relay_url.as_deref().and_then(|url| url.parse().ok()) {
+            Some(relay) => self.endpoint_addr.clone().with_relay_url(relay),
+            None => self.endpoint_addr.clone(),
+        };
+        Host::at(addr)
     }
 }
 
@@ -397,7 +393,7 @@ pub async fn host_info(post: Function) -> Result<String, JsError> {
     .map_err(js_error)
 }
 
-/// Certify this page's device key through the host's HTTPS origin, as the
+/// Certify this page's device key with the host its address names, as the
 /// answer to the pairing invite `inviteHex` (16 bytes as hex) the person's
 /// link named, if any. Calls `onPairingCode(code)` once the host queued the
 /// request. Resolves to `{cert, hostCert}` JSON for [`WasmPeer::start`].
@@ -407,13 +403,12 @@ pub async fn host_info(post: Function) -> Result<String, JsError> {
     reason = "the page's HTTP client stays on its one thread"
 )]
 pub async fn certify_device(
-    post: Function,
     user_public_key_hex: String,
     label: String,
     invite_hex: Option<String>,
     custody: JsValue,
     on_pairing_code: Function,
-    address: Option<String>,
+    address: String,
 ) -> Result<String, JsError> {
     let signer = PageSigner::from_js(&custody)?;
     let user: [u8; 32] = hex::decode(user_public_key_hex)
@@ -427,14 +422,9 @@ pub async fn certify_device(
             .map_err(|_| js_error("a pairing invite is 16 bytes"))?,
         None => [0; 16],
     };
-    // A host that named its iroh endpoint is certified there; one that named
-    // none is certified over its HTTPS origin.
-    let host = match address.filter(|text| !text.is_empty()) {
-        Some(text) => serde_json::from_str::<JsHostAddress>(&text)
-            .map_err(js_error)?
-            .host(),
-        None => Host::Https(Arc::new(PageHttp(post))),
-    };
+    let host = serde_json::from_str::<JsHostAddress>(&address)
+        .map_err(js_error)?
+        .host();
     let (cert, host_cert) =
         tilo_browser_peer::certify(&host, user, &label, invite, &signer, |code| {
             let _ = on_pairing_code.call1(&JsValue::NULL, &code.into());
@@ -1462,7 +1452,6 @@ impl WasmPeer {
         namespace: Option<String>,
         record: Option<Vec<u8>>,
         save: Option<Function>,
-        post: Function,
         channel_vault: Option<Vec<u8>>,
     ) -> Result<WasmPeer, JsError> {
         let config: ConnectConfig = serde_json::from_str(config_json).map_err(js_error)?;
@@ -1497,14 +1486,10 @@ impl WasmPeer {
         let display_name = config.display_name;
         let handle = PeerHandle::start(
             PeerConfig {
-                host: match &config.address {
-                    Some(address) => address.host(),
-                    None => Host::Https(Arc::new(PageHttp(post))),
-                },
+                host: config.address.host(),
                 cert: config.cert,
                 host_cert: config.host_cert,
                 revocations: RevocationList::new(),
-                background: config.background,
             },
             Arc::new(signer),
             store,
@@ -1679,28 +1664,6 @@ impl WasmPeer {
         serde_json::to_string(&answer).map_err(js_error)
     }
 
-    /// The device (hex) of the session a node runs beside its relay, the
-    /// one that runs the person's apps there; `undefined` from a host that
-    /// runs none.
-    ///
-    /// # Errors
-    ///
-    /// Rejects without a connection.
-    #[wasm_bindgen(js_name = nodeSession)]
-    pub async fn node_session(&self) -> Result<Option<String>, JsError> {
-        let (reply, receipt) = tokio::sync::oneshot::channel();
-        self.handle
-            .node_session_then(Box::new(move |answer| {
-                let _ = reply.send(answer);
-            }))
-            .map_err(js_error)?;
-        Ok(receipt
-            .await
-            .map_err(|_| js_error("peer session closed"))?
-            .map_err(js_error)?
-            .map(hex::encode))
-    }
-
     /// The session token the host's fetch proxy (`/peer/v1/fetch`) takes,
     /// while this page is connected to a host that serves one; `undefined`
     /// otherwise. It changes when the page reconnects, so the page's fetch
@@ -1708,14 +1671,6 @@ impl WasmPeer {
     #[wasm_bindgen(js_name = fetchProxySession)]
     pub fn fetch_proxy_session(&self) -> Option<String> {
         self.handle.fetch_proxy_session()
-    }
-
-    /// The token of the host session this page runs now, `undefined`
-    /// between sessions: the page sends it to the host's session end as it
-    /// leaves, so the workspace stops counting it then, not when its polls stop.
-    #[wasm_bindgen(js_name = sessionToken)]
-    pub fn session_token(&self) -> Option<String> {
-        self.handle.session_token()
     }
 
     /// Pre-admit whoever redeems the invitation this issues and presents

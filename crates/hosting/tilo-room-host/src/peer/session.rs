@@ -7,6 +7,7 @@ mod reader;
 mod wire;
 mod writer;
 
+use super::fetch::Grant as FetchGrant;
 use super::{
     AccessAudit, Arc, AuthenticatedPeer, Envelope, EnvelopeV2, HashMap, Lag,
     PEER_OUTBOUND_CAPACITY, PeerContext, PeerError, ReplayWrite, SessionCtx, SessionReader,
@@ -115,6 +116,10 @@ where
 
 // Shared stream driver also exercised with a deterministic in-memory wire.
 #[expect(
+    clippy::too_many_lines,
+    reason = "one connection's whole life, in the order it happens: set up, serve until it ends, and the teardown every exit shares"
+)]
+#[expect(
     clippy::significant_drop_tightening,
     reason = "the session context, the loop context and the writer's queues are borrowed by the concurrent reader and writer futures, and teardown reads the session context again; the lint does not see those uses"
 )]
@@ -143,6 +148,7 @@ where
         carried_calls,
         admin,
         here,
+        fetch,
         agents,
         positions,
         compactor,
@@ -188,6 +194,7 @@ where
         carried_calls: carried_calls.clone(),
         admin: admin.as_deref(),
         here: here.as_deref(),
+        fetch: fetch.as_deref(),
         agents: &agents,
         positions,
         compactor: compactor.as_ref(),
@@ -197,6 +204,7 @@ where
         presence: Some(&presence),
     };
 
+    let grant = FetchGrant::open(&session, &peer, &tx);
     // A clean EOF is only one of the ways this ends: a write to a
     // connection the peer has already closed, a frame that will not
     // decode, an envelope the handler rejects. Every one of them has to
@@ -233,6 +241,7 @@ where
     };
 
     connection_live.end();
+    grant.end();
     let outcome = finish_peer_outcome(outcome, &metrics, &peer.device_public_key);
     let sent = wire.io(EgressWrite::bytes_sent);
     trace_session_end(&peer, sent, &outcome, &subscribed);

@@ -33,14 +33,10 @@ async fn dial_error(server: &Endpoint) -> TestResult<LinkError> {
     let device = SigningKey::from_bytes(&[2; 32]);
     let host = SigningKey::from_bytes(&[3; 32]);
     let config = PeerConfig {
-        host: Host::Iroh {
-            addr: server.addr(),
-            relay_url: None,
-        },
+        host: Host::at(server.addr()),
         cert: cert(&root, &device)?,
         host_cert: cert(&root, &host)?,
         revocations: RevocationList::new(),
-        background: false,
     };
     match tilo_test_env::within(
         "native browser-peer dial",

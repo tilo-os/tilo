@@ -1131,7 +1131,7 @@ doc = false
 "tilo-boot-signin" = { path = "../../../crates/system/boot-signin", default-features = false, features = [] }
 "tilo-bot-directory" = { path = "../../../crates/packaging/bot-directory", default-features = false, features = [] }
 "tilo-browser-compute" = { path = "../../../crates/browser/tilo-browser-compute", default-features = false, features = [] }
-"tilo-browser-peer" = { path = "../../../crates/browser/tilo-browser-peer", default-features = false, features = ["default", "iroh", "toolkit"] }
+"tilo-browser-peer" = { path = "../../../crates/browser/tilo-browser-peer", features = ["toolkit"] }
 "tilo-browser-runtime" = { path = "../../../crates/browser/tilo-browser-runtime", default-features = false, features = ["default"] }
 "tilo-browser-sessions" = { path = "../../../crates/platform/tilo-browser-sessions", default-features = false, features = [] }
 "tilo-callstream" = { path = "../../../crates/collab/tilo-callstream", default-features = false, features = ["recording", "surface-decoder", "unit-chain"] }
@@ -3715,7 +3715,7 @@ doc = false
 "tilo-boot-signin" = { path = "../../../crates/system/boot-signin", default-features = false, features = [] }
 "tilo-bot-directory" = { path = "../../../crates/packaging/bot-directory", default-features = false, features = [] }
 "tilo-browser-compute" = { path = "../../../crates/browser/tilo-browser-compute", default-features = false, features = [] }
-"tilo-browser-peer" = { path = "../../../crates/browser/tilo-browser-peer", default-features = false, features = ["default", "iroh", "toolkit"] }
+"tilo-browser-peer" = { path = "../../../crates/browser/tilo-browser-peer", features = ["toolkit"] }
 "tilo-browser-runtime" = { path = "../../../crates/browser/tilo-browser-runtime", default-features = false, features = ["default"] }
 "tilo-browser-sessions" = { path = "../../../crates/platform/tilo-browser-sessions", default-features = false, features = [] }
 "tilo-callstream" = { path = "../../../crates/collab/tilo-callstream", default-features = false, features = ["recording", "surface-decoder", "unit-chain"] }

@@ -24,7 +24,7 @@ tilo_automerge_isolate::test_worker!();
 use collab_types::DocumentMutation;
 use ed25519_dalek::SigningKey;
 use getrandom::{SysRng, rand_core::UnwrapErr};
-use tilo_browser_peer::{Host, PeerSnapshot, TransportPhase, certify};
+use tilo_browser_peer::{PeerSnapshot, TransportPhase, certify};
 use tilo_user_identity::{
     DeviceCapabilities, RevocationEntry, RevocationReason, UserIdentity, sign_revocation_entry,
 };
@@ -50,7 +50,7 @@ async fn browser_over_https_is_certified_syncs_and_is_revoked() {
     )
     .await;
     let _laptop = participant::Participant::start(&host.relay, &root).await;
-    let https = Host::Https(host.https());
+    let https = host.iroh();
 
     // 1. Certification over HTTPS; the laptop approves.
     let browser_key = SigningKey::generate(&mut UnwrapErr(SysRng));

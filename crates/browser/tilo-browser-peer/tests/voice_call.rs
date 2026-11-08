@@ -22,10 +22,8 @@ mod support;
 // This binary re-execs as the automerge worker (support is shared with crates that lack the dep).
 tilo_automerge_isolate::test_worker!();
 
-use tilo_browser_peer::HttpsLink;
 use tilo_relay_protocol::Envelope;
 use tilo_relay_protocol::voice::{CallOperation, Directions};
-use tilo_user_identity::RevocationList;
 
 use call::{GovernedCall, browser, granted, native, operate};
 
@@ -49,23 +47,14 @@ async fn an_invited_browser_and_the_owners_device_take_part_in_a_governed_call()
     assert_eq!(alone.participants.len(), 1);
     assert!(alone.directions.publish && alone.directions.subscribe);
 
-    // Bob's browser joins over HTTPS; as a guest it may not end the call.
-    let mut page_link = HttpsLink::connect(
-        workspace.https(),
-        &page.cert,
-        workspace.host.cert.device_public_key,
-        &RevocationList::new(),
-        &page.key,
-    )
-    .await
-    .unwrap();
-    assert!(page_link.voice(), "the host advertises calls");
+    // Bob's browser joins the host's session; as a guest it may not end the call.
+    let page_link = workspace.session(&page.cert, &page.key).await;
     page_link
         .send(Envelope::Subscribe {
             workspace_id: workspace.workspace_id,
         })
         .unwrap();
-    browser(&mut page_link, |envelope| match envelope {
+    browser(&page_link, |envelope| match envelope {
         Envelope::Ready { .. } => Some(()),
         Envelope::NotAuthorised { reason, .. } => panic!("browser not admitted: {reason}"),
         _ => None,
@@ -81,7 +70,7 @@ async fn an_invited_browser_and_the_owners_device_take_part_in_a_governed_call()
             },
         })
         .unwrap();
-    let intruder = browser(&mut page_link, |envelope| match envelope {
+    let intruder = browser(&page_link, |envelope| match envelope {
         Envelope::VoiceCallResult { result, .. } => Some(result),
         _ => None,
     })
@@ -94,7 +83,7 @@ async fn an_invited_browser_and_the_owners_device_take_part_in_a_governed_call()
             participation: None,
         })
         .unwrap();
-    let bob_grant = browser(&mut page_link, granted).await;
+    let bob_grant = browser(&page_link, granted).await;
     assert!(bob_grant.directions.publish && bob_grant.directions.subscribe);
     let alice_grant = native(alice_link, |envelope| {
         granted(envelope).filter(|grant| grant.participants.len() == 2)
@@ -126,7 +115,7 @@ async fn an_invited_browser_and_the_owners_device_take_part_in_a_governed_call()
     .await
     .unwrap();
     assert!(muted.epoch > started.epoch);
-    let listening = browser(&mut page_link, |envelope| {
+    let listening = browser(&page_link, |envelope| {
         granted(envelope).filter(|grant| !grant.directions.publish)
     })
     .await;
@@ -160,7 +149,7 @@ async fn an_invited_browser_and_the_owners_device_take_part_in_a_governed_call()
     )
     .await
     .unwrap();
-    browser(&mut page_link, |envelope| match envelope {
+    browser(&page_link, |envelope| match envelope {
         Envelope::VoiceRefused { .. } => Some(()),
         _ => None,
     })
@@ -172,7 +161,7 @@ async fn an_invited_browser_and_the_owners_device_take_part_in_a_governed_call()
             participation: None,
         })
         .unwrap();
-    let refused = browser(&mut page_link, |envelope| match envelope {
+    let refused = browser(&page_link, |envelope| match envelope {
         Envelope::VoiceRefused { reason, .. } => Some(reason),
         Envelope::VoiceGranted { .. } => panic!("an ended call admits no one"),
         _ => None,

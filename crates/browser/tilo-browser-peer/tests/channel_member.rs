@@ -27,7 +27,7 @@ use collab_types::{
     OpKind, SignedOp, document_artifact_id, document_attestation_id, document_channel_id,
 };
 use neighbour_wire::NeighbourMsg;
-use tilo_browser_peer::{Host, PeerEvent, PeerStore as _};
+use tilo_browser_peer::{PeerEvent, PeerStore as _};
 use tilo_relay::{Inbound, RelayClient, RelayCoeditSession};
 use tilo_user_identity::{DeviceCapabilities, RevocationList, UserIdentity};
 
@@ -206,7 +206,7 @@ async fn a_browser_joins_a_native_channel_and_edits_its_sealed_record() {
 
     // The browser joins the workspace over HTTPS and opens the note.
     let peer = start_peer(
-        Host::Https(host.https()),
+        host.iroh(),
         browser.cert.clone(),
         host_device.cert.clone(),
         browser.key.clone(),
@@ -532,7 +532,7 @@ async fn an_edit_held_for_the_keys_survives_a_reload() {
     let store = std::sync::Arc::new(tilo_browser_peer::MemoryPeerStore::default());
     let start = || {
         start_peer_with_store(
-            Host::Https(host.https()),
+            host.iroh(),
             browser.cert.clone(),
             host_device.cert.clone(),
             browser.key.clone(),
@@ -680,7 +680,7 @@ async fn a_page_that_joined_first_holds_its_edit_until_the_genesis_admits_it() {
     );
 
     let peer = start_peer(
-        Host::Https(host.https()),
+        host.iroh(),
         browser.cert.clone(),
         host_device.cert.clone(),
         browser.key.clone(),

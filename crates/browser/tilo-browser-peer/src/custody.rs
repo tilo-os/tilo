@@ -177,53 +177,27 @@ pub async fn certify(
     on_pending: impl FnOnce(&str),
 ) -> Result<(DeviceCert, DeviceCert), CertifyError> {
     let request = signed_request(user_public_key, label, invite, signer).await?;
-    let reply = match host {
-        Host::Https(client) => {
-            let digest = request
-                .digest()
-                .map_err(|error| CertifyError::Request(error.to_string()))?;
-            let mut reply =
-                tilo_relay_client::https::certify_request(client.as_ref(), &request).await?;
-            let mut on_pending = Some(on_pending);
-            while let CertifyReply::Pending { pairing_code } = &reply {
-                if let Some(show) = on_pending.take() {
-                    show(pairing_code);
-                }
-                reply = tilo_relay_client::https::certify_wait(client.as_ref(), digest).await?;
-            }
-            reply
-        }
-        #[cfg(feature = "iroh")]
-        Host::Iroh { addr, relay_url } => {
-            let mut builder = iroh::endpoint::Endpoint::builder(iroh::endpoint::presets::Minimal);
-            let mut addr = addr.clone();
-            if let Some(url) = relay_url {
-                builder = builder.relay_mode(iroh::RelayMode::Custom(url.clone().into()));
-                addr = addr.with_relay_url(url.clone());
-            }
-            let endpoint = builder
-                .bind()
-                .await
-                .map_err(|error| LinkError::Unavailable(error.to_string()))?;
-            let outcome = tilo_relay_client::request_certification(
-                &endpoint,
-                addr,
-                request.clone(),
-                on_pending,
-            )
+    let mut addr = host.addr.clone();
+    let mut builder = iroh::endpoint::Endpoint::builder(iroh::endpoint::presets::Minimal);
+    if let Some(url) = &host.relay_url {
+        builder = builder.relay_mode(iroh::RelayMode::Custom(url.clone().into()));
+        addr = addr.with_relay_url(url.clone());
+    }
+    let endpoint = builder
+        .bind()
+        .await
+        .map_err(|error| LinkError::Unavailable(error.to_string()))?;
+    let outcome =
+        tilo_relay_client::request_certification(&endpoint, addr, request.clone(), on_pending)
             .await
             .map_err(|error| LinkError::Refused(error.to_string()))?;
-            endpoint.close().await;
-            match outcome {
-                tilo_relay_client::CertificationOutcome::Issued { cert, host_cert } => {
-                    CertifyReply::Issued { cert, host_cert }
-                }
-                tilo_relay_client::CertificationOutcome::Denied(reason) => {
-                    CertifyReply::Denied { reason }
-                }
-                tilo_relay_client::CertificationOutcome::Expired => CertifyReply::Expired,
-            }
+    endpoint.close().await;
+    let reply = match outcome {
+        tilo_relay_client::CertificationOutcome::Issued { cert, host_cert } => {
+            CertifyReply::Issued { cert, host_cert }
         }
+        tilo_relay_client::CertificationOutcome::Denied(reason) => CertifyReply::Denied { reason },
+        tilo_relay_client::CertificationOutcome::Expired => CertifyReply::Expired,
     };
     match reply {
         CertifyReply::Issued { cert, host_cert } => {

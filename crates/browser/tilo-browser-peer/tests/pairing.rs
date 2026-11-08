@@ -204,7 +204,7 @@ async fn a_paired_device_is_the_same_person_and_keeps_working_after_reconnecting
     .await;
     let _laptop = participant::Participant::start(&host.relay, &root).await;
     let https = host.https();
-    let page = Host::Https(https.clone());
+    let page = host.iroh();
 
     // The laptop page holds Ada's root and is in the workspace.
     let laptop_peer = start_peer(
@@ -310,7 +310,7 @@ async fn a_declined_device_gets_no_certificate() {
     .await;
     let https = host.https();
 
-    let mut phone = ask_to_pair(&Host::Https(https.clone()), user, "Phone");
+    let mut phone = ask_to_pair(&host.iroh(), user, "Phone");
     let shown = phone.code().await;
     let waiting = waiting_for(&*https, &root).await;
     assert_eq!(waiting.pairing_code, shown);
@@ -415,7 +415,7 @@ async fn an_unanswered_request_expires_between_the_roots(process: tilo_clock::te
         .await;
     }
     let https = host.https();
-    let page = Host::Https(https.clone());
+    let page = host.iroh();
 
     // Nobody here is Carol: a request naming her is refused at once, and
     // her root answers nothing here.
@@ -570,7 +570,7 @@ async fn approvals_for_requests_that_do_not_wait_are_refused() {
     .await;
     assert!(refused(&reply), "{reply:?}");
 
-    let mut phone = ask_to_pair(&Host::Https(https.clone()), user, "Phone");
+    let mut phone = ask_to_pair(&host.iroh(), user, "Phone");
     phone.code().await;
     let waiting = waiting_for(&*https, &root).await;
     let digest = waiting.request_digest;
@@ -673,7 +673,7 @@ async fn a_device_paired_through_the_door_enters_the_workspace_as_the_person() {
     .await;
 
     // His phone opens the pairing link and the laptop approves it.
-    let mut phone = ask_to_pair(&Host::Https(https.clone()), user, "Phone");
+    let mut phone = ask_to_pair(&host.iroh(), user, "Phone");
     let shown = phone.code().await;
     let waiting = waiting_for(&*https, &bob).await;
     assert_eq!(waiting.pairing_code, shown);

@@ -26,7 +26,7 @@ use collab_types::scope::Scope;
 use iroh::{Endpoint, RelayMode, SecretKey};
 use serde_json::{Value, json};
 use test_http::{Reply, Responder};
-use tilo_browser_peer::{Host, PeerEvent, PeerHandle, VoiceEvent};
+use tilo_browser_peer::{PeerEvent, PeerHandle, VoiceEvent};
 use tilo_live::live::Track;
 use tilo_live::plane::Heard;
 use tilo_live::plane::{Join, Plane};
@@ -322,7 +322,7 @@ async fn a_page_and_a_native_device_exchange_pictures_in_a_governed_call() {
     let page = Arc::new(Page {
         workspace: governed.cluster_id.clone(),
         peer: support::start_peer(
-            Host::Https(governed.https()),
+            governed.iroh(),
             bob_device.cert,
             governed.host.cert.clone(),
             bob_device.key,

@@ -23,7 +23,7 @@ tilo_automerge_isolate::test_worker!();
 use std::collections::BTreeMap;
 
 use collab_types::DocumentMutation;
-use tilo_browser_peer::{Host, PeerEvent, PeerHandle};
+use tilo_browser_peer::{PeerEvent, PeerHandle};
 use tilo_peer_state::document_frame::DocumentRoute;
 use tilo_user_identity::{DeviceCapabilities, UserIdentity};
 
@@ -120,7 +120,7 @@ async fn a_join_replays_eager_records_and_a_page_opens_the_rest() {
     let _laptop = participant::Participant::start(&host.relay, &root).await;
     let peer = |device: support::Device| {
         start_peer(
-            Host::Https(host.https()),
+            host.iroh(),
             device.cert,
             host_device.cert.clone(),
             device.key,

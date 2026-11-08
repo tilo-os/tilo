@@ -216,7 +216,7 @@ slow-timeout = { period = "30s", terminate-after = 40 }
 # Megabytes of fsynced commits: these take the runner's disk and CPUs, so
 # they run alone rather than slowing every test beside them.
 [[profile.default.overrides]]
-filter = 'package(tilo-browser-peer) and (binary(compaction) or binary(backpressure))'
+filter = 'package(tilo-browser-peer) and binary(compaction)'
 threads-required = "num-cpus"
 
 [[profile.default.overrides]]
