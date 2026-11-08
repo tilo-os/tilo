@@ -968,32 +968,28 @@ fn persistent_device_id(profile_root: &Path) -> Result<String, LaunchError> {
     let generated = format!("device-{}", uuid::Uuid::new_v4());
     let mut options = std::fs::OpenOptions::new();
     options.write(true).create_new(true);
-    match options.open(&path) {
-        Ok(mut file) => {
-            if let Err(error) = file
-                .write_all(generated.as_bytes())
-                .and_then(|()| file.write_all(b"\n"))
-                .and_then(|()| file.sync_all())
-                .and_then(|()| tilo_files::native::atomic::sync_directory(profile_root))
-            {
-                // Close the file before removing it; a page's file handle has
-                // nothing to close.
-                #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
-                drop(file);
-                let _ = std::fs::remove_file(&path);
-                return Err(LaunchError::Operation(format!(
-                    "writing {}: {error}",
-                    path.display()
-                )));
-            }
-        }
-        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
+    let written = match options.open(&path) {
+        Ok(mut file) => file
+            .write_all(generated.as_bytes())
+            .and_then(|()| file.write_all(b"\n"))
+            .and_then(|()| file.sync_all())
+            .and_then(|()| tilo_files::native::atomic::sync_directory(profile_root)),
+        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => Ok(()),
         Err(error) => {
             return Err(LaunchError::Operation(format!(
                 "creating {}: {error}",
                 path.display()
             )));
         }
+    };
+    // The handle closed as the arm above ended, so removing the path here does
+    // not leave a page's half-written file behind.
+    if let Err(error) = written {
+        let _ = std::fs::remove_file(&path);
+        return Err(LaunchError::Operation(format!(
+            "writing {}: {error}",
+            path.display()
+        )));
     }
     let value = std::fs::read_to_string(&path)
         .map_err(|error| LaunchError::Operation(format!("reading {}: {error}", path.display())))?;
