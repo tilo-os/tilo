@@ -985,6 +985,14 @@ impl Apps {
             Planned::of(launch, &context)
         };
         let mut planned = planned.map_err(|error| DoorError::Failed(error.to_string()))?;
+        // The window this launch starts is the one the shell asked for: a
+        // process has no door open to it yet, so its launch says which item
+        // it opens (`ui::window_door::REVEAL_ENV`).
+        if let Some(reveal) = reveal {
+            planned
+                .env
+                .insert(ui::window_door::REVEAL_ENV.to_owned(), reveal.to_owned());
+        }
         // The tool this launch opens is told what to show: only a package is given it.
         if let (Some(context), Kind::Package) =
             (self.state.borrow().tool_context.clone(), planned.kind)

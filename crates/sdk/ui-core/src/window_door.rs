@@ -119,14 +119,28 @@ pub fn requested_instance() -> Option<u64> {
     }
 }
 
-/// The item the shell opened the window being built on, while one is: the
-/// resource the window shows once it is up. `None` for the process's first
-/// window, whose launch said what it opens.
+/// The variable a launch names the item its window opens on in, for a
+/// process the shell starts for that window rather than one it asks for it:
+/// a window door request cannot reach a window that is already being built.
+pub const REVEAL_ENV: &str = crate::host::REVEAL_ENV;
+
+/// The item the window being built opens on: what the shell's request named
+/// for a window of a process already running, or, for the process's first
+/// window, the item its launch named it.
 #[must_use]
 pub fn requested_reveal() -> Option<String> {
     #[cfg(feature = "local-daemons")]
     {
-        transport::requested_reveal()
+        if transport::is_building() {
+            return transport::requested_reveal();
+        }
+        let environment = crate::host::environment();
+        environment
+            .reveal
+            .as_deref()
+            .map(str::trim)
+            .map(str::to_owned)
+            .filter(|value| !value.is_empty())
     }
     #[cfg(not(feature = "local-daemons"))]
     {

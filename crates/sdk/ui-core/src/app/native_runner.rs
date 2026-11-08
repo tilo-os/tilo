@@ -5035,8 +5035,11 @@ impl App {
             native_scenario.is_none() || self.profiler.is_some(),
             "native performance scenarios require TILO_PROFILE_OUT or TILO_PROFILE"
         );
-        let handler = self.into_handler(&proxy, native_scenario, setup);
+        // The door is taken before the launch's own window is made: the desk
+        // takes a window as it maps as one this process serves, and only a
+        // process that answered its door before that is served more.
         let door = open.and_then(|open| process_windows::serve_door(&proxy).map(|()| open));
+        let handler = self.into_handler(&proxy, native_scenario, setup);
         let mut handler = process_windows::ProcessWindows::new(handler, proxy, door);
         // Run on demand, so a window that gives its place to the next one
         // (`hand_over`) keeps the loop for that window to run on. On every

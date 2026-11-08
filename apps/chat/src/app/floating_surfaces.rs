@@ -26,10 +26,10 @@ impl FloatingSurfaceProvider for ChatApp {
         target: &str,
         action: &ui::a11y::Action,
         state: &mut ui::widget::Edits<'_>,
-        path: &ObjId,
+        _path: &ObjId,
     ) -> bool {
         id == crate::live::activity(&self.call.channel)
-            && self.activate_call_card(target, action, state, path)
+            && self.activate_call_card(target, action, state)
     }
 
     fn take_floating_surface_request(
