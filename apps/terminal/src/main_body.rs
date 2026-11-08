@@ -5667,11 +5667,12 @@ impl TerminalBackend {
         target: &crate::target::SessionTarget,
         requested_by: Requester,
         relay_session: Option<&str>,
+        workspace: Option<&str>,
     ) -> Result<Self, OpenError> {
         let program = launch_command_from_env();
         match confinement_route(target) {
             ConfineRoute::Service => {
-                ush_service_backend(&program, target, requested_by, relay_session)
+                ush_service_backend(&program, target, requested_by, relay_session, workspace)
             }
             ConfineRoute::SelfHosted(bin) => {
                 let mut cmd = CommandBuilder::new(&bin);
@@ -6067,6 +6068,7 @@ fn ush_service_backend(
     target: &crate::target::SessionTarget,
     requested_by: Requester,
     relay_session: Option<&str>,
+    workspace: Option<&str>,
 ) -> Result<TerminalBackend, OpenError> {
     use runtime_portal::service_socket::ServiceSocketError;
 
@@ -6074,7 +6076,14 @@ fn ush_service_backend(
     // negotiates protocol two and returns only its independent session lease.
     unsafe {
         USH_SERVICE.with_control(|stream| {
-            ush_backend_on(stream, program, target, requested_by, relay_session)
+            ush_backend_on(
+                stream,
+                program,
+                target,
+                requested_by,
+                relay_session,
+                workspace,
+            )
         })
     }
     .map_err(|error| match error {
@@ -6091,17 +6100,22 @@ fn ush_service_backend(
     _target: &crate::target::SessionTarget,
     _requested_by: Requester,
     _relay_session: Option<&str>,
+    _workspace: Option<&str>,
 ) -> Result<TerminalBackend, OpenError> {
     Err(OpenError::Unavailable(
         "Tilo hosted terminal service transport is unavailable on Windows".into(),
     ))
 }
 
+/// The `open-session` line for the supervisor. `workspace` is the tilo
+/// workspace the Terminal is in, which the session's environment belongs to;
+/// the field is left out when the Terminal does not know it.
 pub(crate) fn ush_request(
     program: &[String],
     target: &crate::target::SessionTarget,
     requested_by: Requester,
     relay_session: Option<&str>,
+    workspace: Option<&str>,
     runs: Option<&str>,
     (cols, rows): (u16, u16),
 ) -> Result<Vec<u8>, OpenError> {
@@ -6137,6 +6151,7 @@ pub(crate) fn ush_request(
             fields.insert("runs".to_string(), serde_json::json!(key));
         }
     }
+    crate::sessions::with_workspace(&mut request, workspace);
     let mut request =
         serde_json::to_vec(&request).map_err(|error| OpenError::Failed(error.to_string()))?;
     request.push(b'\n');
@@ -6199,6 +6214,7 @@ pub(crate) fn ush_backend_on(
     target: &crate::target::SessionTarget,
     requested_by: Requester,
     relay_session: Option<&str>,
+    workspace: Option<&str>,
 ) -> Result<TerminalBackend, OpenError> {
     // How long the answer may take. Before it answers, the supervisor checks
     // that the environment can be built, which on a device's first open reads
@@ -6232,6 +6248,7 @@ pub(crate) fn ush_backend_on(
         target,
         requested_by,
         relay_session,
+        workspace,
         Some(&key),
         (80, 24),
     )?;
