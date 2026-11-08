@@ -1933,6 +1933,15 @@ pub struct ShellPart {
     /// An instant the session has something of its own to draw at (the switcher's panel
     /// coming up while Alt is held): the part wakes then rather than sleeping over it.
     deadline: Option<std::time::Instant>,
+    /// The content its places' pictures are read from: the session's document media, as the
+    /// workspace in front's places stand in it. The part draws in the session's own process,
+    /// which the launcher handed no capability of its own, so what an app's connector kept for
+    /// the records a place shows is read from here (`ui::pictures::lend_content`).
+    content: Option<ui::content::ContentStore>,
+    /// The workspace the store was opened for, as the session names it: a place of another
+    /// workspace reads its pictures from that one's, and the session lends the store of the
+    /// workspace in front each pass.
+    content_workspace: String,
 }
 
 /// Which of the compositor's windows a view's window key names, if it may be pictured.
@@ -2037,6 +2046,8 @@ impl ShellPart {
             seen_heads: Vec::new(),
             previews: None,
             deadline: None,
+            content: None,
+            content_workspace: String::new(),
         };
         if seed {
             part.seed();
@@ -2278,6 +2289,24 @@ impl ShellPart {
     pub fn show_pictures(&mut self, previews: ui::widget::Previews, windows: WindowLookup) {
         self.widgets.install_previews(Some(previews.clone()));
         self.previews = Some((previews, windows));
+    }
+
+    /// Read its places' pictures from `content`, the session's document media as the workspace
+    /// `workspace` in front holds it: a place shows the records an app's connector kept stills
+    /// for, and the part draws in the session's own process, which the launcher handed no store
+    /// of its own.
+    ///
+    /// The store keeps every workspace the session draws, so one lending serves a place
+    /// whichever workspace it stands in; a part told the same store twice keeps the one it has.
+    pub fn lend_content(&mut self, workspace: &str, content: Option<ui::content::ContentStore>) {
+        if self.content_workspace == workspace && self.content.is_some() == content.is_some() {
+            return;
+        }
+        workspace.clone_into(&mut self.content_workspace);
+        self.content = content;
+        // The views asked for their pictures before one answered: the frames after this ask
+        // again, now that a store reads them.
+        self.again = true;
     }
 
     /// When the session has something of its own to draw, which the part does not know: it
