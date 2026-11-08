@@ -149,7 +149,7 @@ tilo-paths.workspace = true
 tilo-relay = { path = "../../hosting/tilo-relay", features = ["agents", "test-support"] }
 tilo-relay-client = { path = "../../hosting/tilo-relay-client" }
 iroh.workspace = true
-# tilo-browser-peer's test support (its HTTPS client), included by path.
+# tilo-browser-peer's test support (its host fixture), included by path.
 tilo-net = { path = "../../platform/tilo-net" }
 hyper = { version = "1", features = ["client", "http1"] }
 hyper-util = { version = "0.1", features = ["tokio"] }

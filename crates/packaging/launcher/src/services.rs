@@ -290,11 +290,11 @@ pub struct ServiceLaunchContext<'a> {
 
 /// Discover `$XDG_RUNTIME_DIR/tilo/services/`.
 pub fn services_root() -> PathBuf {
-    tilo_paths::xdg::runtime_dir_or_default().join("tilo/services")
+    tilo_paths::xdg::services_dir()
 }
 
 pub fn socket_for(name: &str) -> PathBuf {
-    services_root().join(format!("{name}.sock"))
+    tilo_paths::xdg::service_socket(name)
 }
 
 /// Where the session's CRDT fan-out broker listens.

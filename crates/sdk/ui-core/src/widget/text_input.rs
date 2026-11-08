@@ -5927,6 +5927,12 @@ impl Widget for TextInput {
         Some(self)
     }
 
+    fn own_page_title(&self) -> Option<String> {
+        (self.text_role.heading_level() == Some(1))
+            .then(|| self.text.trim().to_owned())
+            .filter(|shown| !shown.is_empty())
+    }
+
     /// A field made for the person to type in right away takes the keyboard in the tree it
     /// stands in, once. It names itself as the runner finds it ([`Self::test_id`]).
     fn take_focus_request(&mut self) -> Option<String> {

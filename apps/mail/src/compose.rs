@@ -1171,7 +1171,7 @@ impl ComposeWindow {
                 }
             })
             .collect();
-        self.completions.set_suggestions(offered);
+        self.completions.set_rows(offered);
         if self.completions.has_content() {
             self.completions.set_highlight(Some(0));
         }
@@ -1183,7 +1183,7 @@ impl ComposeWindow {
     fn accept_completion(&mut self, index: usize) {
         let Some(chosen) = self
             .completions
-            .suggestions()
+            .rows()
             .get(index)
             .map(|suggestion| suggestion.value.clone())
         else {

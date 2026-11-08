@@ -187,7 +187,7 @@ tilo-workspace-emoji = { path = "../../platform/tilo-workspace-emoji", optional 
 # The room's default record id, the one members' first windows open.
 ui = { package = "tilo-ui", path = "../../sdk/ui-core", optional = true }
 # Read existing signed document envelopes through the shared, read-only cipher.
-tilo-browser-peer = { path = "../../browser/tilo-browser-peer", default-features = false, optional = true }
+tilo-browser-peer = { path = "../../browser/tilo-browser-peer", optional = true }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 bounded-command = { path = "../../system/bounded-command" }

@@ -258,6 +258,7 @@ impl Device {
                 workspace_id,
                 name: "Notes".into(),
                 host: host.host_hint(),
+                held: false,
             })
             .expect("the plane takes the entry");
         let deadline = tilo_test_env::hang_deadline();

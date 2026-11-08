@@ -14,6 +14,15 @@ pub const TILO_DESKTOP: &str = "tilo";
 pub const SESSION_DIR: &str = "tilo-session";
 /// The agent door's file name in [`SESSION_DIR`].
 pub const AGENT_SOCKET_FILE: &str = "agent.sock";
+/// The directory, beside the agent door, holding the door of each confined
+/// environment (a `ush` guest) open now: one socket per environment, bound
+/// into that environment alone at [`GUEST_AGENT_SOCKET`].
+pub const ENVIRONMENT_DOORS_DIR: &str = "environments";
+/// Where a confined environment sees its own agent door.
+pub const GUEST_AGENT_SOCKET: &str = "/run/tilo/agent.sock";
+/// The variable naming the agent door a `--connect` client uses in place of
+/// the session's own: an environment's ([`GUEST_AGENT_SOCKET`]).
+pub const AGENT_SOCKET_ENV: &str = "TILO_AGENT_SOCK";
 /// The device admin's control socket's file name in [`SESSION_DIR`].
 pub const ADMIN_CONTROL_SOCKET_FILE: &str = "admin-control.sock";
 /// The development test-control socket's file name in [`SESSION_DIR`]: what

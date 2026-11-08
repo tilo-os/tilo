@@ -1305,10 +1305,17 @@ impl Stage {
         }
     }
 
+    /// Whether what the field holds can be submitted: something is typed
+    /// and no attempt is checking it.
+    fn submits(&mut self) -> bool {
+        !self.seat.shown().checking
+            && find_field(self.content.as_mut()).is_some_and(|field| !field.value().is_empty())
+    }
+
     /// Type what a key of the screen's keyboard asks into the one field, or
     /// unlock with what is there.
     fn type_input(&mut self, input: &PasscodeInput) {
-        let checking = self.seat.shown().checking;
+        let submits = self.submits();
         let Some(field) = find_field(self.content.as_mut()) else {
             return;
         };
@@ -1319,9 +1326,7 @@ impl Stage {
                 value.pop();
                 field.set_text(&value);
             }
-            PasscodeInput::Enter if !checking && !field.value().is_empty() => {
-                self.dispatch.effect(&LockEffect::Unlock);
-            }
+            PasscodeInput::Enter if submits => self.dispatch.effect(&LockEffect::Unlock),
             PasscodeInput::Enter => {}
         }
     }
@@ -1338,9 +1343,9 @@ fn key_metrics(theme: &ui::theme::Theme) -> (f64, f64) {
 
 /// Where the keyboard stands on a screen of `bounds`: along the bottom edge,
 /// no wider than a wide sheet so its keys stay a thumb's reach apart.
-fn keyboard_rect(theme: &ui::theme::Theme, bounds: Rect) -> Rect {
+fn keyboard_rect(theme: &ui::theme::Theme, keyboard: PasscodeKeyboard, bounds: Rect) -> Rect {
     let (key_height, gap) = key_metrics(theme);
-    let height = PasscodeKeyboard::height(key_height, gap);
+    let height = keyboard.height(key_height, gap);
     let margin = f64::from(Spacing::BASE.s4);
     let widest = (bounds.width() - margin * 2.0)
         .max(1.0)
@@ -1528,18 +1533,26 @@ impl ui::widget::Decorator for Stage {
         )
         .fade(ui::num::f32_of_f64(1.0 - quiet));
         let placement = transform;
-        let content = &mut self.content;
         // The screen's own keyboard goes up with the screen it belongs to:
         // same arrival, same shake, same fade when it leaves.
         let showed = self.seat.shown().keyboard;
         let (key_height, gap) = key_metrics(theme);
-        let place = keyboard_rect(theme, bounds);
-        self.keyboard_place.set((place, key_height, gap));
         let keyboard = self.keyboard.get();
+        let place = keyboard_rect(theme, keyboard, bounds);
+        self.keyboard_place.set((place, key_height, gap));
+        let submits = self.submits();
+        let content = &mut self.content;
         pose.paint(scene, placement, bounds, |scene, xform| {
             content.draw(scene, xform, text_renderer, theme, presence);
             if showed {
-                keyboard.paint(scene, xform, text_renderer, theme, (place, key_height, gap));
+                keyboard.paint(
+                    scene,
+                    xform,
+                    text_renderer,
+                    theme,
+                    (place, key_height, gap),
+                    submits,
+                );
             }
         });
     }

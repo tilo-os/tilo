@@ -8,6 +8,8 @@ const SELF = 'dd'.repeat(32);
 const OTHER = 'cc'.repeat(32);
 const AGENT = 'ee'.repeat(32);
 const tick = () => new Promise(resolve => setTimeout(resolve, 5));
+/** The iroh endpoint a host publishes as its address. */
+const HOST_ADDRESS = {endpointAddr: {}};
 /** The shared hang bound: a wait this long means the code under test is stuck. */
 const HANG_BOUND_MS = Number(process.env.TILO_TEST_HANG_BOUND_SECS || 120) * 1000;
 /** Resolves once `check()` holds; a loaded runner takes longer, not forever. */
@@ -42,9 +44,9 @@ function fakeRuntime({phase = 'ready'} = {}) {
   const runtime = {
     calls,
     get peer() { return peer; },
-    async hostInfo(post) { calls.hostPost = post; return JSON.stringify({hostCert: {}}); },
-    async certifyDevice(post, user, label, invite, custody, onPairingCode) {
-      calls.certify.push({post, user, label, custody});
+    async hostInfo(post) { calls.hostPost = post; return JSON.stringify({address: HOST_ADDRESS, hostCert: {}}); },
+    async certifyDevice(user, label, invite, custody, onPairingCode) {
+      calls.certify.push({user, label, invite, custody});
       onPairingCode('123456');
       return JSON.stringify({cert: {device: calls.certify.length}, hostCert: {host: true}});
     },
@@ -68,12 +70,12 @@ function fakeRuntime({phase = 'ready'} = {}) {
     },
     presenceColor: id => `#${String(id).padEnd(6, '0').slice(0, 6).replace(/[^0-9a-f]/g, '0')}`,
     WasmPeer: {
-      start(config, custody, namespace, record, save, post, channelVault) {
+      start(config, custody, namespace, record, save, channelVault) {
         const listeners = [];
         const durable = [];
         const liveEvents = [];
         peer = {
-          config: JSON.parse(config), configText: config, custody, namespace, record, save, post, channelVault, disposed: false, reconnects: 0, retries: 0,
+          config: JSON.parse(config), configText: config, custody, namespace, record, save, channelVault, disposed: false, reconnects: 0, retries: 0,
           phase,
           records: [],
           admission: 'ready',
@@ -141,21 +143,21 @@ const options = (runtime, store, extra = {}) => ({
 /** What the workspace's members said, as the session hands it to the page. */
 const say = (runtime, said, durable = []) => runtime.peer.emit(runtime.peer.phase, durable, said);
 
-test('httpsPost posts bodies with the session header to the host origin', async () => {
+test('httpsPost posts bodies to the host origin', async () => {
   const seen = [];
   const post = httpsPost('https://host.example:8443', async (url, init) => {
     seen.push({url, init});
     return {status: 204, arrayBuffer: async () => new ArrayBuffer(0)};
   });
-  const answer = await post('/peer/v1/send', 'ab', new Uint8Array([1]));
+  const answer = await post('/peer/v1/host', new Uint8Array([1]));
   assert.equal(answer.status, 204);
-  assert.equal(seen[0].url, 'https://host.example:8443/peer/v1/send');
-  assert.equal(seen[0].init.headers['x-tilo-session'], 'ab');
+  assert.equal(seen[0].url, 'https://host.example:8443/peer/v1/host');
+  assert.deepEqual(seen[0].init.body, new Uint8Array([1]));
   assert.equal(seen[0].init.credentials, 'omit');
   assert.throws(() => httpsPost('http://host.example'), TypeError);
 });
 
-test('first connect certifies over HTTPS once, shows the pairing code and keeps the certificate', async () => {
+test('first connect certifies with the host it names once, shows the pairing code and keeps the certificate', async () => {
   const runtime = fakeRuntime();
   const store = memoryStore();
   const codes = [];
@@ -164,7 +166,6 @@ test('first connect certifies over HTTPS once, shows the pairing code and keeps 
   assert.equal(runtime.calls.certify.length, 1);
   assert.equal(runtime.peer.workspace, WORKSPACE);
   assert.deepEqual(runtime.peer.config.cert, {device: 1});
-  assert.equal(typeof runtime.peer.post, 'function', 'the session posts to the host origin');
   await peer.dispose();
 
   const second = await connect(options(runtime, store));
@@ -191,7 +192,7 @@ test('a certificate reaches the session byte for byte, its nanosecond timestamps
 test('a guest certificate from an invitation reaches the session byte for byte', async () => {
   const runtime = fakeRuntime();
   runtime.askToJoin = async () => `{"reply":{"kind":"admitted","room":"${WORKSPACE}","workspaceId":"7","name":"Acme","role":"Editor"},"cert":${LINUX_CERT}}`;
-  runtime.hostInfo = async () => `{"hostCert":{"issued_at_ns":${NANOS}}}`;
+  runtime.hostInfo = async () => `{"address":${JSON.stringify(HOST_ADDRESS)},"hostCert":{"issued_at_ns":${NANOS}}}`;
   const identity = {kind: 'webcrypto-ed25519', publicKey: new Uint8Array(32).fill(0xee), userPublicKey: 'ee'.repeat(32), sign: async () => new Uint8Array(64)};
   const peer = await joinWorkspace({
     origin: 'https://host.example:8443', invitation: Uint8Array.from([1, 2, 3]), identity, admissionToken: 'token',
@@ -281,7 +282,7 @@ test('reauthentication forgets the certificate and certifies again', async () =>
   const peer = await connect(options(runtime, store));
   runtime.peer.emit('failed');
   assert.equal(peer.getSnapshot().phase, 'failed');
-  runtime.hostInfo = async () => JSON.stringify({hostCert: {host: 'new'}});
+  runtime.hostInfo = async () => JSON.stringify({address: HOST_ADDRESS, hostCert: {host: 'new'}});
   await peer.recover({kind: 'reauthenticate'});
   assert.equal(runtime.calls.certify.length, 2);
   assert.equal(runtime.calls.started[0].disposed, true);
@@ -298,10 +299,10 @@ test('a kept certificate of another host than the one answering now is refused b
   const store = memoryStore();
   const host = (user, device) => ({user_public_key: Array(32).fill(user), device_public_key: Array(32).fill(device)});
   await store.put('certificate', JSON.stringify({cert: {device: 9}, hostCert: host(1, 2)}));
-  runtime.hostInfo = async () => JSON.stringify({hostCert: host(1, 3)});
+  runtime.hostInfo = async () => JSON.stringify({address: HOST_ADDRESS, hostCert: host(1, 3)});
   await assert.rejects(connect(options(runtime, store)), {name: 'AdmissionError', code: 'host-changed', message: HOST_CHANGED});
   assert.equal(runtime.calls.started.length, 0, 'no session was started');
-  runtime.hostInfo = async () => JSON.stringify({hostCert: host(1, 2)});
+  runtime.hostInfo = async () => JSON.stringify({address: HOST_ADDRESS, hostCert: host(1, 2)});
   const same = await connect(options(runtime, store));
   assert.equal(runtime.calls.certify.length, 0, 'the same host takes the kept certificate');
   await same.dispose();
@@ -364,7 +365,7 @@ test('a device the host set up again admitted keeps its state apart; what was ke
   // certificate, and (in the runtime's record beside it) the outbox.
   const kept = JSON.stringify({cert: {device: 9}, hostCert: hostCertOf(1, 2)});
   values.set(`${profile}/${PROFILE_DEVICE}/certificate`, new TextEncoder().encode(kept));
-  runtime.hostInfo = async () => JSON.stringify({hostCert: hostCertOf(1, 3)});
+  runtime.hostInfo = async () => JSON.stringify({address: HOST_ADDRESS, hostCert: hostCertOf(1, 3)});
   const common = {origin: 'https://host.example:8443', identity, runtime, custody, desktop, namespaces, vaultStorage, profile,
     fetch: async () => { throw new Error('no network in tests'); }};
 
@@ -389,7 +390,7 @@ test('a device the host set up again admitted keeps its state apart; what was ke
   assert.deepEqual(handles.map(handle => [handle.device, handle.released]),
     [[PROFILE_DEVICE, 1], [PROFILE_DEVICE, 1], [PROFILE_DEVICE, 1], [fresh, 0]]);
   assert.equal(vaultStorage.rows.size, 2, 'the new namespace seals its channel state with a vault of its own');
-  assert.equal((await peer.mountDesktop('target', {app: 'scratch'})).device, fresh, 'its desktops mount there too');
+  assert.equal((await peer.mountDesktop('target', {app: 'desktop'})).device, fresh, 'its desktops mount there too');
   await peer.dispose();
 
   // The next visit reconnects there, with no new admission.
@@ -416,7 +417,7 @@ test('a device the workspace let go asks to join again under the certificate it 
   // text itself still matches the certificate's signature.
   const kept = JSON.stringify({cert: certificate, hostCert: host}).replace('"issued_at_ns":5', '"issued_at_ns":1792040183583123457');
   values.set(`${profile}/${PROFILE_DEVICE}/certificate`, new TextEncoder().encode(kept));
-  runtime.hostInfo = async () => JSON.stringify({hostCert: host});
+  runtime.hostInfo = async () => JSON.stringify({address: HOST_ADDRESS, hostCert: host});
   runtime.askToJoinAs = async (post, invitation, held, custodyKey, requestId, name, token) => {
     runtime.calls.askedAs = {held, token: token && new TextDecoder().decode(token)};
     return JSON.stringify({reply: {kind: 'admitted', room: WORKSPACE, workspaceId: '7', name: 'Acme', role: 'Editor'}, cert: JSON.parse(held).cert});
@@ -452,7 +453,7 @@ test('a peer with a store of its own never moves it: a host set up again is refu
   const store = memoryStore();
   await store.put('certificate', JSON.stringify({cert: {device: 9}, hostCert: hostCertOf(1, 2)}));
   await store.put('peer-record', 'outbox for the previous host');
-  runtime.hostInfo = async () => JSON.stringify({hostCert: hostCertOf(1, 3)});
+  runtime.hostInfo = async () => JSON.stringify({address: HOST_ADDRESS, hostCert: hostCertOf(1, 3)});
   await assert.rejects(joinWorkspace({origin: 'https://host.example:8443', invitation: Uint8Array.from([1, 2, 3]), identity: person(),
     admissionToken: 'one-time-token', runtime, custody, store, storage: null,
     fetch: async () => { throw new Error('no network in tests'); }}), {code: 'host-changed'});
@@ -463,10 +464,10 @@ test('a peer with a store of its own never moves it: a host set up again is refu
 test('reauthenticating against a host set up again reloads the page to join it, keeping the certificate', async () => {
   const runtime = fakeRuntime();
   const store = memoryStore();
-  runtime.hostInfo = async () => JSON.stringify({hostCert: hostCertOf(1, 2)});
+  runtime.hostInfo = async () => JSON.stringify({address: HOST_ADDRESS, hostCert: hostCertOf(1, 2)});
   await store.put('certificate', JSON.stringify({cert: {device: 9}, hostCert: hostCertOf(1, 2)}));
   const peer = await connect(options(runtime, store));
-  runtime.hostInfo = async () => JSON.stringify({hostCert: hostCertOf(1, 3)});
+  runtime.hostInfo = async () => JSON.stringify({address: HOST_ADDRESS, hostCert: hostCertOf(1, 3)});
   let reloads = 0;
   const location = globalThis.location;
   globalThis.location = {reload: () => { reloads += 1; }};
@@ -527,7 +528,7 @@ test('with a profile the peer keeps its state in the profile storage and mounts 
   assert.equal(runtime.peer.config.displayName, 'Ada');
   assert.ok(values.has('work/laptop/certificate'), 'the certificate is kept in the profile');
 
-  await peer.mountDesktop('target', {app: 'scratch'});
+  await peer.mountDesktop('target', {app: 'desktop'});
   assert.equal(mounts[0].profile, 'work');
   assert.equal(mounts[0].device, 'laptop');
   assert.equal(mounts[0].workspace, WORKSPACE);
@@ -706,9 +707,6 @@ test('leaving the page withdraws its presence from the workspace at once; back o
   const page = new EventTarget();
   globalThis.addEventListener = page.addEventListener.bind(page);
   globalThis.removeEventListener = page.removeEventListener.bind(page);
-  const navigator = Object.getOwnPropertyDescriptor(globalThis, 'navigator');
-  const beacons = [];
-  Object.defineProperty(globalThis, 'navigator', {configurable: true, value: {sendBeacon: (url, body) => { beacons.push([url, body]); return true; }}});
   try {
     const runtime = fakeRuntime();
     const peer = await connect(options(runtime, memoryStore()));
@@ -718,14 +716,11 @@ test('leaving the page withdraws its presence from the workspace at once; back o
     await tick();
     assert.equal(peer.live.state, 'live', 'a page kept to come back to stays');
     assert.deepEqual(runtime.peer.left, [], 'and keeps its place');
-    assert.deepEqual(beacons, [], 'and its host session');
     page.dispatchEvent(Object.assign(new Event('pagehide'), {persisted: false}));
     await tick();
     assert.equal(peer.live.state, 'closed');
     assert.deepEqual(runtime.peer.left, [WORKSPACE],
       'the members take it down at once, not when its keepalive stops');
-    assert.deepEqual(beacons, [['https://host.example:8443/peer/v1/session/end', 'ce'.repeat(32)]],
-      'the host hears the page went, its session token the body');
     // Back online, the session tries again now instead of after its backoff.
     page.dispatchEvent(new Event('online'));
     assert.equal(runtime.peer.retries, 1);
@@ -735,8 +730,6 @@ test('leaving the page withdraws its presence from the workspace at once; back o
   } finally {
     delete globalThis.addEventListener;
     delete globalThis.removeEventListener;
-    if (navigator) Object.defineProperty(globalThis, 'navigator', navigator);
-    else delete globalThis.navigator;
   }
 });
 

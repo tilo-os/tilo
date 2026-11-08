@@ -1,7 +1,7 @@
 /**
  * The picture a person shows beside their name.
  *
- * It is part of their profile (`root-identity.mjs` `publishProfile`): the
+ * It is part of their profile (`identity.mjs` `publishProfile`): the
  * hosts of their workspaces keep it signed by their root, beside their name, so
  * each of their devices and everyone in those workspaces shows the same one.
  * Chosen here from an image file, cropped to its centre square and scaled

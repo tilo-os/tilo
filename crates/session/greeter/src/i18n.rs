@@ -61,8 +61,6 @@ pub(crate) const KEYS: &[&str] = &[
     "greeter-keyboard",
     "greeter-key-shift",
     "greeter-key-symbols",
-    "greeter-key-numbers",
-    "greeter-key-letters",
     "greeter-key-space",
     "greeter-key-delete",
     "greeter-key-enter",

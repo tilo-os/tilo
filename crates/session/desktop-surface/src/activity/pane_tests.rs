@@ -2794,6 +2794,48 @@ mod tasks_link_tests {
             pane.unreverted
         );
     }
+
+    /// A run the host cannot undo says so, in the host's words, and reports no record as come
+    /// back.
+    #[test]
+    fn a_run_the_host_cannot_undo_is_reported_as_refused() {
+        let (mut tree, mut pane, host) = fixture();
+        let change = ui::history_source::entry_id_from_hash(&"12".repeat(32));
+        let doc = tree.document_mut();
+        let key = ui::record_run_with_details(
+            doc,
+            "Review release notes",
+            Some("agent:scribe"),
+            Some("local"),
+            None,
+            None,
+            &[ui::RunStep {
+                app: "so.tilo.notes".into(),
+                record: "file:/notes/release.note".into(),
+                run: ui::ChangeRun::new(change, change),
+                what: Vec::new(),
+            }],
+        )
+        .unwrap();
+        assert!(ui::history_source::runs::set_run_task(doc, &key, "task:1"));
+        doc.commit();
+        pane.refresh_records(&mut tree, &RecordStore::in_memory());
+
+        assert!(pane.undo_task_run("task:1"));
+        let why = "open the documents this task changed to undo it";
+        host.ended.replace(Some(Err(why.into())));
+        pane.poll_undo();
+        assert_eq!(
+            pane.agent_undo_notice
+                .as_ref()
+                .map(|(_, notice)| notice.clone()),
+            Some(crate::i18n::t_args(
+                "activity-undo-task-refused",
+                &[("detail", why.into())]
+            ))
+        );
+        assert!(pane.unreverted.is_empty(), "nothing came back");
+    }
 }
 
 #[cfg(test)]

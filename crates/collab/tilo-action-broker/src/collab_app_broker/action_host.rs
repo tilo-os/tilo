@@ -3426,9 +3426,7 @@ mod foreign_caller_tests {
 
 #[cfg(test)]
 mod app_close_tests {
-    use super::super::{
-        AppBrokerState, BrokerChannels, FanoutState, PeerPublisher, PublishedSurface,
-    };
+    use super::super::{AppBrokerState, PublishedSurface};
     use super::RowScope;
     use crate::route::CrdtRoute;
     use crate::test_support::{Workspace, WorkspaceSlot, WorkspaceTree};
@@ -3490,13 +3488,8 @@ mod app_close_tests {
         let workspace_id = workspace.id().to_string();
         let mut tree = WorkspaceTree::default();
         tree.workspaces.push(workspace);
-        let (state, _bridge_rx) = AppBrokerState::new_configured(
-            &Arc::new(FanoutState::new()),
-            Arc::new(Mutex::new(BrokerChannels::default())),
-            PeerPublisher::disabled(),
+        let (state, _bridge_rx) = AppBrokerState::test_state(
             Some(tree.shared().authority()),
-            None,
-            None,
             crate::services::HostServices {
                 launcher: Some(launcher),
                 ..Default::default()

@@ -898,14 +898,22 @@ fn derive(
         }
     };
     let now = stamps_after(chunks, from, part);
+    // The chunks the step derives from their first change: a step of a build, or a chunk read
+    // since the index was. Their items are read once, and each change the step takes in reads
+    // the one it names from them. A chunk the index reflects up to a few changes ago is not:
+    // the items those name are looked up, as an edit of one task costs one task.
+    let whole: Vec<ChunkNo> = part
+        .iter()
+        .copied()
+        .filter(|chunk| from.get(chunk).is_none_or(Vec::is_empty))
+        .collect();
     let written = index.write(|writer| {
-        // The items of the chunks the step derives are read once, and each change the step
-        // takes in reads the one it names from them: the first step of a build reads only the
-        // chunks it derives, and its items are its rows.
+        // The first step of a build reads only the chunks it derives, and its items are its
+        // rows.
         let mut derive = if opening {
             Derive::opening(chunks, docs, nested, clock, part)
         } else {
-            Derive::step(chunks, docs, nested, clock, part)
+            Derive::step(chunks, docs, nested, clock, (part, &whole))
         };
         derive.removed_before(writer, app, &ends, &placed)?;
         derive.changes(writer, app, &reached)?;

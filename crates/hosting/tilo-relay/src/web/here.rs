@@ -1,5 +1,5 @@
 //! Who is here and what are they doing: the line each person in a workspace
-//! shows to the others ([`HERE_PATH`](super::protocol::HERE_PATH)).
+//! shows to the others ([`HereRequest`](super::protocol::HereRequest)).
 //!
 //! A member's page posts their own recent semantic actions (titles of
 //! actions, records and apps, never keystrokes or bodies). The host keeps

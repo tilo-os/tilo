@@ -652,7 +652,37 @@ enum Command {
         #[arg(long, default_value = "/run/tilo/fs-blobs.sock")]
         blob_sock: PathBuf,
     },
+    /// Serve the document-media capability alone: this device's content store
+    /// and the scoped capability over it, with no workspace mount and no
+    /// collaboration.
+    ///
+    /// A desktop session's document media is its filesystem daemon's
+    /// (`fs serve --blob-sock`), which serves both from one store. A session
+    /// whose filesystem is a *different* build's — every development session,
+    /// whose apps and connector run this tree while the mount belongs to the
+    /// image underneath — cannot use that daemon's capability: the two speak
+    /// different wires, and every store call dies on the first frame. Such a
+    /// session serves its own media here instead, from a store of its own,
+    /// and hands its apps that socket ([`SERVE_MEDIA_SOCKET_ENV`]).
+    ///
+    /// A Tilo image needs none of this: its filesystem daemon is built from
+    /// the same tree as the apps it serves, so `fs serve --blob-sock` is their
+    /// document media already, and nothing on such a device starts this.
+    ServeMedia {
+        /// Where this device's content store is kept: created when absent,
+        /// one directory per build's protocol.
+        #[arg(long)]
+        store: PathBuf,
+        /// Serve the scoped document-media capability here.
+        #[arg(long)]
+        blob_sock: PathBuf,
+    },
 }
+
+/// The variable naming the document-media socket a session serves its apps,
+/// instead of the image's `/run/tilo/fs-blobs.sock`: set by a session whose
+/// filesystem is another build's (`fs serve-media`).
+pub const SERVE_MEDIA_SOCKET_ENV: &str = "TILO_FS_BLOB_SOCKET";
 
 fn main() -> Result<()> {
     // Before the runtime starts any thread: this executable also serves as
@@ -686,6 +716,7 @@ async fn run_command(cli: Cli) -> Result<()> {
             Ok(())
         }
         Command::ServePrimary(_) => bail!("serve-primary runs before the runtime starts"),
+        Command::ServeMedia { store, blob_sock } => serve_media(&store, &blob_sock).await,
         Command::Serve {
             require_existing_workspace,
             mount_point,
@@ -1075,6 +1106,30 @@ fn spawn_acl_reload(
         .spawn_reload()
         .with_context(|| format!("watching the capability list {}", path.display()))?;
     Ok(Some(reload))
+}
+
+/// Serve document media alone, from the content store at `store`, at `socket`: a session
+/// whose filesystem daemon is another build's, which its apps must not reach
+/// ([`Command::ServeMedia`]).
+///
+/// The server thread serves the socket until the process ends, so a socket left behind by a
+/// session that was killed outright is replaced the next time this runs (`serve_socket`).
+async fn serve_media(store: &Path, socket: &Path) -> Result<()> {
+    std::fs::create_dir_all(store)
+        .with_context(|| format!("creating the content store at {}", store.display()))?;
+    let store = Arc::new(
+        ContentStore::open(store)
+            .await
+            .with_context(|| format!("opening the content store at {}", store.display()))?,
+    );
+    let media = fs::document_media::DocumentMedia::new(Arc::clone(&store));
+    let _server = fs::document_media::serve_socket(socket, media)
+        .with_context(|| format!("serving document media at {}", socket.display()))?;
+    println!("Document media socket at {}", socket.display());
+    // Serve until this process is ended, as the mount's own daemon does: the session that
+    // started this one ends it, and nothing here has a last pass to run.
+    std::future::pending::<()>().await;
+    Ok(())
 }
 
 /// Serve document media from the content store (best-effort, like the other
@@ -1821,6 +1876,18 @@ async fn serve(
         );
     }
     let namespace = Arc::new(Mutex::new(ns_value));
+    // The mounted tree, published as the Files app's person record: this
+    // daemon is the windowless endpoint of the Files app, so a file created,
+    // renamed, moved or deleted here reaches the person's other devices — and
+    // the members of a workspace this mount is another device's of.
+    let _tree_record = fs::tree_record::spawn(
+        Arc::clone(&namespace),
+        remote_ticket.as_ref().map_or_else(
+            || collab_types::personal_cluster(&credentials.user_public_key()).to_string(),
+            |ticket| ticket.workspace_id().to_string(),
+        ),
+        credentials.clone(),
+    );
     let record_materializer = if let Some(records) = record_services.as_mut() {
         let materializer =
             RecordMaterializer::new(workspace_id, namespace.clone(), history.clone());

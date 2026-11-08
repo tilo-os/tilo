@@ -229,7 +229,6 @@ impl PeerGovernanceMut<'_> {
         if delegation.delegate.agent_id().is_none() {
             return Err("the delegation is not an agent's".into());
         }
-        self.peer.require_governance_writer(key, now)?;
         if cert.user_public_key != self.peer.core.owner {
             return Err("only the workspace owner's agents are admitted".into());
         }
@@ -322,7 +321,7 @@ impl PeerGovernanceMut<'_> {
     ///
     /// # Errors
     ///
-    /// Returns an error if `key` is not the governance writer, the device is
+    /// Returns an error if the change is not `key`'s device's to make, the device is
     /// a member rather than an agent, or governance cannot be updated.
     pub fn withdraw_agent(
         self,
@@ -330,7 +329,6 @@ impl PeerGovernanceMut<'_> {
         key: &SigningKey,
         now: SystemTime,
     ) -> Result<bool, String> {
-        self.peer.require_governance_writer(key, now)?;
         let doc = self
             .peer
             .core

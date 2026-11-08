@@ -66,6 +66,11 @@ pub struct Args {
     /// client to that device of the person's agent door instead of this
     /// one's ([`crate::remote_door`]).
     pub forward: Option<crate::remote_door::Forward>,
+    /// `--workspace ID` without `--device`, for `--connect` only: the
+    /// workspace the client asks this desktop's agent door to let it work in,
+    /// rather than the one in front of the person. The person decides; it is
+    /// never authority.
+    pub workspace: Option<String>,
 }
 fn invalid(message: impl Into<String>) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidInput, message.into())
@@ -169,7 +174,7 @@ pub fn parse_args(arguments: impl IntoIterator<Item = OsString>) -> io::Result<A
     if !profile.is_absolute() {
         return Err(invalid("runtime profile must be absolute"));
     }
-    let mode = mode.ok_or_else(|| invalid("choose --daemon, --connect [--standalone] [--device NAME [--workspace ID]], --owner-action INVOCATION_JSON, --join INVITATION, --run-app APP_ID [--workspace WORKSPACE] -- EXECUTABLE, or --profile PATH --apps MANIFEST"))?;
+    let mode = mode.ok_or_else(|| invalid("choose --daemon, --connect [--standalone] [--device NAME] [--workspace ID], --owner-action INVOCATION_JSON, --join INVITATION, --run-app APP_ID [--workspace WORKSPACE] -- EXECUTABLE, or --profile PATH --apps MANIFEST"))?;
     if matches!(mode, Mode::AdmissionDaemon { .. }) && !explicit_profile {
         return Err(invalid(
             "native admission requires an explicit isolated profile",
@@ -183,17 +188,26 @@ pub fn parse_args(arguments: impl IntoIterator<Item = OsString>) -> io::Result<A
             "--standalone chooses where --connect goes: use it with --connect",
         ));
     }
-    let forward = forward_of(&mode, device, workspace)?;
+    let local = device.is_none();
+    let forward = forward_of(&mode, device, workspace.clone())?;
+    let workspace = workspace.filter(|_| local);
+    if workspace.is_some() && (standalone || explicit_profile) {
+        return Err(invalid(
+            "--workspace asks the desktop's agent door for a workspace, not a standalone runtime",
+        ));
+    }
     Ok(Args {
         profile,
         mode,
         dev,
         standalone: standalone || explicit_profile,
         forward,
+        workspace,
     })
 }
 
-/// Where `--connect --device NAME [--workspace ID]` goes.
+/// Where `--connect --device NAME [--workspace ID]` goes: `None` without a
+/// device, where `--workspace` asks this desktop's own door for the workspace.
 fn forward_of(
     mode: &Mode,
     device: Option<String>,
@@ -204,13 +218,7 @@ fn forward_of(
             "--device and --workspace choose where --connect goes: use them with --connect",
         ));
     }
-    match device {
-        Some(device) => Ok(Some(crate::remote_door::Forward { device, workspace })),
-        None if workspace.is_some() => Err(invalid(
-            "--workspace chooses a workspace on another device: use it with --device",
-        )),
-        None => Ok(None),
-    }
+    Ok(device.map(|device| crate::remote_door::Forward { device, workspace }))
 }
 
 /// The device `--device` names, by its name or its endpoint id.
@@ -1087,22 +1095,30 @@ pub fn join(profile: &Path, invitation: &str) -> io::Result<()> {
     }
 }
 
-/// Bridge this process's stdio to the MCP host it belongs to: inside a Tilo
-/// login, the desktop's agent door, which is never replaced by a standalone
-/// runtime; elsewhere, or when `standalone`, the persistent daemon of
-/// `profile`, started when none runs. EOF closes only this client's
-/// connection; neither applications nor the daemon are owned here.
+/// Bridge this process's stdio to the MCP host it belongs to: inside a
+/// confined environment, the door the environment names
+/// ([`tilo_paths::login::AGENT_SOCKET_ENV`]); inside a Tilo login, the
+/// desktop's agent door, which is never replaced by a standalone runtime;
+/// elsewhere, or when `standalone`, the persistent daemon of `profile`,
+/// started when none runs. EOF closes only this client's connection; neither
+/// applications nor the daemon are owned here.
 ///
 /// With `forward`, the host this process belongs to carries the connection on
 /// to the agent door of the device it names, and this process's stdio is that
-/// door's once it opened ([`crate::remote_door::ask_forward`]).
+/// door's once it opened ([`crate::remote_door::ask_forward`]). `workspace` is
+/// the workspace the client asks this desktop's door for, written into its
+/// `initialize`.
 pub fn connect(
     profile: &Path,
     standalone: bool,
     forward: Option<&crate::remote_door::Forward>,
+    workspace: Option<&str>,
 ) -> io::Result<()> {
     let route = crate::session_door::route(
         standalone,
+        crate::session_door::environment_door(std::env::var_os(
+            tilo_paths::login::AGENT_SOCKET_ENV,
+        )),
         tilo_paths::login::is_tilo_login(),
         crate::session_door::agent_socket_path(
             tilo_paths::login::login_runtime_dir().map(Into::into),
@@ -1112,6 +1128,12 @@ pub fn connect(
     let mut stream = match route {
         crate::session_door::Route::Session(door) => UnixStream::connect(&door)
             .map_err(|error| crate::session_door::unreachable_door(&door, &error))?,
+        crate::session_door::Route::Standalone if workspace.is_some() => {
+            return Err(invalid(
+                "--workspace asks a Tilo desktop's agent door for a workspace, and this process \
+                 is not in a Tilo login",
+            ));
+        }
         crate::session_door::Route::Standalone => {
             ensure_running(profile)?;
             UnixStream::connect(profile.join("native.sock"))?
@@ -1120,21 +1142,90 @@ pub fn connect(
     if let Some(forward) = forward {
         crate::remote_door::ask_forward(&mut stream, forward)?;
     }
-    bridge_stdio(stream)
+    bridge_stdio(stream, workspace)
 }
 
-/// Relay this process's stdin to `stream` and `stream` to its stdout.
-fn bridge_stdio(mut stream: UnixStream) -> io::Result<()> {
+/// `line` with the workspace `workspace` asked for, when it is the client's
+/// `initialize` ([`crate::session_door::WORKSPACE`]); `None` for any other
+/// line, which goes to the door as it is.
+fn asking_for_workspace(line: &[u8], workspace: &str) -> Option<Vec<u8>> {
+    let mut request: serde_json::Value = serde_json::from_slice(line).ok()?;
+    if request.get("method").and_then(serde_json::Value::as_str) != Some("initialize") {
+        return None;
+    }
+    let params = request
+        .as_object_mut()?
+        .entry("params")
+        .or_insert_with(|| serde_json::json!({}));
+    let mut at = params;
+    for key in ["capabilities", "experimental", "so.tilo"] {
+        at = at
+            .as_object_mut()?
+            .entry(key)
+            .or_insert_with(|| serde_json::json!({}));
+    }
+    at.as_object_mut()?
+        .insert("workspace".into(), serde_json::json!(workspace));
+    serde_json::to_vec(&request).ok()
+}
+
+/// Relay this process's stdin to `stream` and `stream` to its stdout; the
+/// client's `initialize` asks for `workspace`, when it names one.
+fn bridge_stdio(mut stream: UnixStream, workspace: Option<&str>) -> io::Result<()> {
     let mut writer = stream.try_clone()?;
+    let workspace = workspace.map(str::to_owned);
     std::thread::Builder::new()
         .name("tilo-mcp-proxy-stdin".into())
         .spawn(move || {
-            let result = relay(&mut io::stdin().lock(), &mut writer);
+            let result = match &workspace {
+                Some(workspace) => relay_asking(
+                    &mut io::BufReader::new(io::stdin().lock()),
+                    &mut writer,
+                    workspace,
+                ),
+                None => relay(&mut io::stdin().lock(), &mut writer),
+            };
             let _ = writer.shutdown(std::net::Shutdown::Write);
             result
         })?;
     relay(&mut stream, &mut io::stdout().lock())?;
     Ok(())
+}
+
+/// [`relay`], with the client's `initialize` asking for `workspace`: the lines
+/// before it, and it, are read whole; everything after is copied as it comes.
+pub(crate) fn relay_asking(
+    from: &mut impl io::BufRead,
+    to: &mut impl io::Write,
+    workspace: &str,
+) -> io::Result<u64> {
+    /// The most the client sends before its `initialize` is through, as the
+    /// door reads it.
+    const MOST: u64 = 64 * 1024;
+    let mut total = 0_u64;
+    loop {
+        let mut line = Vec::new();
+        let read =
+            io::Read::take(&mut *from, MOST.saturating_sub(total)).read_until(b'\n', &mut line)?;
+        if read == 0 {
+            return Ok(total);
+        }
+        total = total.saturating_add(u64::try_from(read).unwrap_or(u64::MAX));
+        let body = line.strip_suffix(b"\n").unwrap_or(&line);
+        let asked = asking_for_workspace(body, workspace);
+        match &asked {
+            Some(rewritten) => {
+                to.write_all(rewritten)?;
+                to.write_all(b"\n")?;
+            }
+            None => to.write_all(&line)?,
+        }
+        to.flush()?;
+        if asked.is_some() || total >= MOST {
+            break;
+        }
+    }
+    Ok(total.saturating_add(relay(from, to)?))
 }
 
 /// Copy `from` to `to`, flushing after every read. A client waits for each

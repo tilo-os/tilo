@@ -14,7 +14,7 @@
  * on the node hosts and governs the person's workspaces, so this browser
  * remembers it as a host the person owns.
  */
-import {IdentityError, installNode} from './root-identity.mjs';
+import {IdentityError, installNode} from './identity.mjs';
 
 export const SET_UP = Object.freeze({id: 'set-up-machine', title: 'Set up a machine',
   subtitle: 'Make a Tilo node yours, with its address, key and install token'});

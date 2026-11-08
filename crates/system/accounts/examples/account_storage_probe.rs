@@ -1,6 +1,11 @@
 //! Production account-vault browser probe, driven by ../web/run.mjs.
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 mod browser {
+    #![allow(
+        clippy::future_not_send,
+        reason = "the probe runs in a page, where the vault, its directory and every JavaScript handle stay on one thread"
+    )]
+
     use std::cell::RefCell;
     use std::collections::BTreeMap;
 

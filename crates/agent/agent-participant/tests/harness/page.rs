@@ -71,10 +71,7 @@ impl Page {
     ) -> Self {
         let workspace = tilo_relay_protocol::room_workspace_id(cluster_id).unwrap();
         let peer = start_peer(
-            Host::Https(crate::support::https::DevHttps::new(
-                hosted.web.addr,
-                hosted.web.certificate_sha256.as_ref().unwrap(),
-            )),
+            Host::at(hosted.relay.node_addr()),
             device.cert.clone(),
             host.cert.clone(),
             device.key.clone(),

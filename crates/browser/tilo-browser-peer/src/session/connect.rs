@@ -1,4 +1,4 @@
-//! Dialling the host: the session's carrier, and the endpoint it speaks from.
+//! Dialling the host: the session, and the endpoint it speaks from.
 //!
 //! A device that holds its key dials as its device key, as a native peer does.
 //! A page keeps its device key non-extractable, so its endpoint speaks under a
@@ -6,12 +6,11 @@
 //! endpoint — and its device signs, for every plane grant, that the endpoint
 //! speaks for it.
 
-use super::{DeviceSigner, Host, HttpsLink, Link, LinkError, PeerConfig, Task};
+use super::{DeviceSigner, LinkError, PeerConfig, RelayClient, Task};
 
 /// The statement a page's device signs to speak through `endpoint` for a day:
 /// long enough for a session and its planes to outlive one roster change,
 /// short enough that a leaked page key is bounded by the page's device.
-#[cfg(feature = "iroh")]
 const DELEGATION_LIFETIME_NS: u64 = 24 * 60 * 60 * 1_000_000_000;
 
 /// Where a session dials its host from, and this device's statement that the
@@ -20,14 +19,11 @@ const DELEGATION_LIFETIME_NS: u64 = 24 * 60 * 60 * 1_000_000_000;
 pub(super) struct Dial {
     /// The endpoint this session dials from, bound on the first connect. A
     /// device's is its device key; a page's speaks under [`Self::key`].
-    #[cfg(feature = "iroh")]
     endpoint: Option<iroh::Endpoint>,
     /// The key a page's endpoint speaks as, derived from its store's channel
     /// vault: a reload dials as the same endpoint.
-    #[cfg(feature = "iroh")]
     key: [u8; 32],
     /// This device's signed statement that the endpoint speaks for it.
-    #[cfg(feature = "iroh")]
     delegation: Option<Vec<u8>>,
 }
 
@@ -38,7 +34,6 @@ impl Dial {
     /// The endpoint this session dials and joins planes from, with this
     /// device's statement that it speaks for the device; `None` before the
     /// first connect.
-    #[cfg(feature = "iroh")]
     pub(super) fn plane(&self) -> Option<(iroh::Endpoint, Vec<u8>)> {
         let endpoint = self.endpoint.clone()?;
         Some((endpoint, self.delegation.clone().unwrap_or_default()))
@@ -46,17 +41,24 @@ impl Dial {
 
     pub(super) fn for_page(vault: &[u8; 32]) -> Self {
         Self {
-            #[cfg(feature = "iroh")]
             key: blake3::derive_key("tilo page endpoint v1", vault),
             ..Self::default()
+        }
+    }
+
+    /// Close the endpoint this session dialled from, waiting for it to reach
+    /// the host: a session that ends for good leaves no socket behind for the
+    /// host to fan out to until an idle timeout.
+    pub(super) async fn shutdown(&mut self) {
+        if let Some(endpoint) = self.endpoint.take() {
+            endpoint.close().await;
         }
     }
 }
 
 impl Task {
-    /// The session to the host over whichever carrier reaches it, dialled
-    /// from the endpoint this session keeps.
-    pub(super) async fn connect(&mut self) -> Result<Link, LinkError> {
+    /// The session to the host, dialled from the endpoint this session keeps.
+    pub(super) async fn connect(&mut self) -> Result<RelayClient, LinkError> {
         connect(&self.config, self.signer.as_ref(), &mut self.dial).await
     }
 }
@@ -66,66 +68,49 @@ impl Task {
 /// dials as its device key, as a native peer does; a page's device key never
 /// leaves custody, so its endpoint speaks under its own key for the device,
 /// which signs that it does for every plane grant.
-#[cfg_attr(
-    not(feature = "iroh"),
-    allow(unused_variables, reason = "only an iroh link keeps a dial")
-)]
 pub(super) async fn connect(
     config: &PeerConfig,
     signer: &dyn DeviceSigner,
     dial: &mut Dial,
-) -> Result<Link, LinkError> {
-    match config.host.clone() {
-        Host::Https(client) => HttpsLink::connect_as(
-            client,
-            &config.cert,
-            config.host_cert.device_public_key,
-            &config.revocations,
-            signer,
-            config.background,
-        )
-        .await
-        .map(Link::Https),
-        #[cfg(feature = "iroh")]
-        Host::Iroh { addr, relay_url } => {
-            let relay = relay_url.or_else(|| addr.relay_urls().next().cloned());
-            let endpoint = bind_endpoint(
-                &mut dial.endpoint,
-                signer.device_signing_key().unwrap_or(dial.key),
-                relay.clone(),
-            )
-            .await?;
-            sign_delegation(
-                signer,
-                config.cert.device_public_key,
-                &endpoint,
-                &mut dial.delegation,
-            )
-            .await?;
-            let host = match relay {
-                Some(url) => addr.with_relay_url(url),
-                None => addr,
-            };
-            tilo_relay_session::RelayClient::connect_with_signer(
-                endpoint.clone(),
-                host,
-                Some(config.host_cert.user_public_key),
-                Some(config.host_cert.device_public_key),
-                config.cert.clone(),
-                signer,
-                config.revocations.clone(),
-            )
-            .await
-            .map(|client| Link::Iroh { client })
-            .map_err(iroh_link_error)
-        }
-    }
+) -> Result<RelayClient, LinkError> {
+    let host = &config.host;
+    let relay = host
+        .relay_url
+        .clone()
+        .or_else(|| host.addr.relay_urls().next().cloned());
+    let endpoint = bind_endpoint(
+        &mut dial.endpoint,
+        signer.device_signing_key().unwrap_or(dial.key),
+        relay.clone(),
+    )
+    .await?;
+    sign_delegation(
+        signer,
+        config.cert.device_public_key,
+        &endpoint,
+        &mut dial.delegation,
+    )
+    .await?;
+    let host = match relay {
+        Some(url) => host.addr.clone().with_relay_url(url),
+        None => host.addr.clone(),
+    };
+    RelayClient::connect_with_signer(
+        endpoint,
+        host,
+        Some(config.host_cert.user_public_key),
+        Some(config.host_cert.device_public_key),
+        config.cert.clone(),
+        signer,
+        config.revocations.clone(),
+    )
+    .await
+    .map_err(iroh_link_error)
 }
 
 /// The endpoint `slot` holds, bound from `key` on the first call and reused
 /// after: a page's key is derived from its store's channel vault, so a reload —
 /// and the planes beside the session — dial as the same endpoint.
-#[cfg(feature = "iroh")]
 async fn bind_endpoint(
     slot: &mut Option<iroh::Endpoint>,
     key: [u8; 32],
@@ -133,6 +118,16 @@ async fn bind_endpoint(
 ) -> Result<iroh::Endpoint, LinkError> {
     if let Some(endpoint) = slot {
         return Ok(endpoint.clone());
+    }
+    // A page has no direct transport — every packet it sends goes through a
+    // relay — so an endpoint bound without one can never reach the host, and
+    // iroh shuts it down as soon as it is polled. A host that names no relay
+    // is unreachable from here, and says so.
+    #[cfg(target_arch = "wasm32")]
+    if relay.is_none() {
+        return Err(LinkError::Unavailable(
+            "the host named no relay a page can reach it through".into(),
+        ));
     }
     let mut builder = iroh::endpoint::Endpoint::builder(iroh::endpoint::presets::Minimal)
         .secret_key(iroh::SecretKey::from_bytes(&key));
@@ -151,7 +146,6 @@ async fn bind_endpoint(
 /// as [`DELEGATION_LIFETIME_NS`]: empty for a device whose endpoint is its own
 /// key, and the device's own signature otherwise (through custody, which keeps
 /// a page's key unextractable).
-#[cfg(feature = "iroh")]
 async fn sign_delegation(
     signer: &dyn DeviceSigner,
     device: [u8; 32],
@@ -189,7 +183,6 @@ async fn sign_delegation(
 /// this device away without saying why (`Refused`, which fails the session
 /// after `REFUSALS_BEFORE_FAILING` in a row). Every variant is named, so a new
 /// client error must be classified here rather than fall into a default.
-#[cfg(feature = "iroh")]
 pub(super) fn iroh_link_error(error: tilo_relay_session::ClientError) -> LinkError {
     use tilo_relay_session::ClientError;
     match error {

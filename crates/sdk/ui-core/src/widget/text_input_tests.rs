@@ -221,3 +221,27 @@ fn a_field_that_asks_for_the_keyboard_asks_once() {
         "a field that says nothing asks nothing"
     );
 }
+
+#[test]
+fn a_large_title_field_shows_its_pages_title_and_a_body_field_does_not() {
+    let field = |role: TextRole| {
+        TextInput::local()
+            .with_initial_value("Call the landlord about the boiler")
+            .with_text_role(role)
+    };
+    assert_eq!(
+        Widget::own_page_title(&field(TextRole::LargeTitle)).as_deref(),
+        Some("Call the landlord about the boiler"),
+        "the page's title is the words its large-title field shows"
+    );
+    assert_eq!(
+        Widget::own_page_title(&field(TextRole::Body)),
+        None,
+        "a field of the body is no heading, however it is worded"
+    );
+    assert_eq!(
+        Widget::own_page_title(&TextInput::local().with_text_role(TextRole::LargeTitle)),
+        None,
+        "a blank title names nothing"
+    );
+}

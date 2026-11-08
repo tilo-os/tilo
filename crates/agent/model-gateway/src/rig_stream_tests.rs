@@ -51,7 +51,7 @@ async fn test_stream_gated(
     Vec<Response>,
     PlanTiming,
 ) {
-    use std::io::{BufRead as _, Read as _, Write as _};
+    use std::io::Write as _;
     let (legacy, deltas) = options;
     let (preview_tx, preview_rx) = std::sync::mpsc::channel::<Response>();
     let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
@@ -59,22 +59,7 @@ async fn test_stream_gated(
     profile.endpoint = format!("http://{}/v1", listener.local_addr().unwrap());
     let peer = std::thread::spawn(move || {
         let (mut socket, _) = listener.accept().unwrap();
-        socket
-            .set_read_timeout(Some(tilo_test_env::hang_bound()))
-            .unwrap();
-        let mut reader = std::io::BufReader::new(&mut socket);
-        let mut length = 0;
-        loop {
-            let mut line = String::new();
-            assert!(reader.read_line(&mut line).unwrap() > 0);
-            if line == "\r\n" {
-                break;
-            }
-            if let Some(value) = line.to_ascii_lowercase().strip_prefix("content-length:") {
-                length = value.trim().parse().unwrap();
-            }
-        }
-        reader.read_exact(&mut vec![0; length]).unwrap();
+        let _ = super::tests::read_request(&mut socket);
         write!(
             socket,
             "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nConnection: close\r\n\r\n"

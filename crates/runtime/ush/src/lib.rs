@@ -59,6 +59,7 @@
 //! permissions panel and can revoke. There is no `ush`-local permission type.
 //! See [`policy`].
 
+pub mod agent_door;
 pub mod approved_checks;
 pub mod audit;
 pub mod broker;
@@ -132,6 +133,10 @@ pub const GUEST_COMMANDS: &[&str] = &[
     "touch",
     "append",
     "history",
+    // A coding agent's MCP server, `tilo-runtime --connect`, as on the host:
+    // relayed to the environment's own agent door (`crate::agent_door`).
+    "tilo-runtime",
+    "tilo-runtime-mcp",
     // A file's own history, read and restored through the mount's own
     // protocols, so a script or an agent reads the same revisions the file
     // manager's History view lists instead of a second store beside them.
@@ -183,6 +188,22 @@ pub fn guest_command_available(base: &std::path::Path, command: &str) -> bool {
 fn system_provider_available(base: &std::path::Path) -> bool {
     base.join("usr/bin/tilo").is_file() && base.join("usr/libexec/tilo-deployment").is_file()
 }
+
+/// Whether this machine runs the helper from a native loader it may trust. A
+/// nested runner that maps the host's root-owned files to its caller owns them
+/// as root-equivalent, and the helper refuses every host loader there.
+#[cfg(test)]
+macro_rules! require_trusted_loader {
+    () => {
+        tilo_test_env::require_capability!(
+            TrustedLoader,
+            $crate::helper_runtime::native_loader_trusted(),
+            "the helper's native loader"
+        );
+    };
+}
+#[cfg(test)]
+pub(crate) use require_trusted_loader;
 
 #[cfg(test)]
 mod tests {

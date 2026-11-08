@@ -409,6 +409,15 @@ impl FloatingSurfaceProvider for ChatWindow {
         self.chat.borrow().floating_surface_ime(id)
     }
 
+    fn floating_surface_event(
+        &mut self,
+        id: &str,
+        event: &ui::winit::event::WindowEvent,
+        ctx: &mut ui::widget::EventCtx<'_>,
+    ) -> bool {
+        self.state().floating_surface_event(id, event, ctx)
+    }
+
     fn take_floating_surface_request(
         &mut self,
     ) -> Option<ui::floating_surface::FloatingSurfaceRequest> {

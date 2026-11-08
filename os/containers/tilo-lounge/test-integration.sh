@@ -5,9 +5,9 @@
 #
 # Everything the deployment does around the image is here, on this machine:
 # the entrypoint reads production-shaped TILO_ROOMS_* (this test's own ports
-# and addresses), the web entry is served beside it, an ingress publishes the
-# live plane at a host of its own and forwards to the listener, and the people
-# are real headless Chromium contexts. The programs are the image's own,
+# and addresses), the web entry is served beside it, the host runs the packet
+# relay its pages reach their live plane through, and the people are real
+# headless Chromium browsers, one each. The programs are the image's own,
 # started as the image's entrypoint starts them, in a jail of the image's
 # files.
 #
@@ -41,22 +41,17 @@ image=$(b pull --quiet "$(reference "${1:?$usage}")")
 revision=$(b inspect --type image --format '{{index .OCIv1.Config.Labels "org.opencontainers.image.revision"}}' "$image")
 
 # This test's own addresses, beside whatever already listens on this machine.
-# The HTTPS listener is the image's own fixed 9781 (`--web`); the live plane,
-# the plain origin-forwarding listener and the web entry's site take ports of
-# this test's. The live plane is published the way a deployment publishes it:
-# at a host and port of its own — an ingress's, here a UDP forwarder — that
-# forwards to the listener, which pages reach only through it, and whose
-# certificate names that host. The site's port is fixed so the relay knows the
-# site's origin before the site's workspace exists.
+# The HTTPS listener is the image's own fixed 9781 (`--web`); the plain
+# origin-forwarding listener, the packet relay pages reach the live plane
+# through, and the web entry's site take ports of this test's. The site's port
+# is fixed so the relay knows the site's origin before the site's workspace
+# exists.
 http_port=18790
 plain_port=19780
 live_port=19781
 site_port=19782
-ingress_port=19783
 web_port=9781
-live_host=live.localhost
 relay_origin=https://127.0.0.1:$web_port
-live_origin=https://$live_host:$ingress_port
 site_origin=https://127.0.0.1:$site_port
 
 # The web entry's bundle, laid out as the web entry image lays it out: the
@@ -78,13 +73,12 @@ fi
   || fail 'no certificate for the site'
 
 # The image's own files, mounted once.
-containers=() image_pid= site_pid= ingress_pid=
+containers=() image_pid= site_pid=
 container=$(b from --pull=never --quiet "$image")
 containers+=("$container")
 root=$(b mount "$container")
 cleanup() {
   stop_site
-  stop_ingress
   stop_image
   local c
   for c in "${containers[@]}"; do
@@ -170,11 +164,9 @@ start_image() {
     TILO_ROOMS_NAME=Lounge \
     TILO_ROOMS_DESCRIPTION='The Tilo community: chat, notes and a shared desktop' \
     TILO_ROOMS_DEFAULT_ROLE=editor \
-    TILO_ROOMS_LAYOUT=shared \
     TILO_ROOMS_ADMISSION=open \
     TILO_ROOMS_RELAY_ORIGIN="$relay_origin" \
     TILO_ROOMS_LIVE="127.0.0.1:$live_port" \
-    TILO_ROOMS_LIVE_ORIGIN="$live_origin" \
     TILO_ROOMS_RELAY_PLAIN="127.0.0.1:$plain_port" \
     TILO_ROOMS_HTTP="127.0.0.1:$http_port" \
     TILO_ROOMS_WEB_ENTRY="$site_origin/" \
@@ -185,10 +177,8 @@ start_image() {
     TILO_ROOMS_CHAT_CHANNELS=general \
     /usr/local/bin/tilo-lounge >> "$log" 2>&1 &
   image_pid=$!
-  start_ingress
 }
 stop_image() {
-  stop_ingress
   [[ -n $image_pid ]] || return 0
   end "$image_pid"
   image_pid=
@@ -201,29 +191,6 @@ start_on() {
   start_image
 }
 still_running() { kill -0 "$image_pid" 2>/dev/null; }
-
-# The ingress before the live plane: pages dial the host and port its origin
-# names, and it forwards each client to the listener, as the deployment's
-# ingress forwards UDP 443 to the pod. The listener is never dialled directly,
-# so the shape a page joins is the deployment's.
-start_ingress() {
-  stop_ingress
-  : > "$work/ingress.log"
-  node "$here/integration/ingress.mjs" "$ingress_port" 127.0.0.1 "$live_port" \
-    >> "$work/ingress.log" 2>&1 &
-  ingress_pid=$!
-  for _ in $(seq 300); do
-    grep -q '"udp"' "$work/ingress.log" 2>/dev/null && return 0
-    kill -0 "$ingress_pid" 2>/dev/null || break
-    sleep 0.1
-  done
-  fail "the live ingress did not start at 127.0.0.1:$ingress_port: $(cat "$work/ingress.log")"
-}
-stop_ingress() {
-  [[ -n $ingress_pid ]] || return 0
-  end "$ingress_pid"
-  ingress_pid=
-}
 
 # Ready: the deployment's readiness probe answers that the relay is up, and
 # the image's own revision is what it reports. At most 4 minutes, which a
@@ -340,13 +307,13 @@ start_site "$minted"
 
 # Two people: real browsers on the web entry, each its own person, both
 # joining the Lounge through its door, chatting, sharing a desk and seeing
-# each other present through the live plane their pages join at the ingress's
-# host. One of them is made someone the workspace lets invite while their
-# page is open, invites a third person from the page's own sheet, and that
-# person arrives from the link the sheet handed over, with no one letting
-# them in.
+# each other present through the live plane their pages join over the host's
+# own packet relay. One of them is made someone the workspace lets invite
+# while their page is open, invites a third person from the page's own sheet,
+# and that person arrives from the link the sheet handed over, with no one
+# letting them in.
 node "$here/integration/people.mjs" "$site_url" "$relay_origin" "$relay_origin" "$work/people" \
-  "$live_host" "$state_root/roles.json" \
+  "$state_root/roles.json" \
   || fail 'two people did not meet in the Lounge'
 echo 'ok: two people joined, chatted, shared a desk and saw each other present'
 echo 'ok: a person invited from the page arrived from the link as the role it named'
@@ -365,17 +332,8 @@ start_image
 wait_ready || fail "the image did not start again on the volume people wrote in: $(tail -20 "$log")"
 verify_records_read
 node "$here/integration/people.mjs" "$site_url" "$relay_origin" "$relay_origin" "$work/returns" \
-  "$live_host" "$state_root/roles.json" "$earlier" \
+  "$state_root/roles.json" "$earlier" \
   || fail 'a person joining after the restart did not find the chat the workspace kept'
 echo 'ok: a person joining after a restart reads the chat earlier pages wrote and writes in it'
-
-# The live plane taken away: a page says in its members' place that it cannot
-# reach live presence, and says it once in its console. A page that retried
-# silently would look like a workspace nobody is in.
-stop_ingress
-node "$here/integration/live-note.mjs" "$site_url" "$live_host" "$work/live-note" \
-  || fail 'a page without a live plane said nothing'
-echo 'ok: a page that cannot reach the live plane says so and logs it'
-start_ingress
 
 echo "ok: the Lounge image runs, opens a fresh volume, and hosts people ($revision)"

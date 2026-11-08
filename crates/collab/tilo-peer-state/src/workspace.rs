@@ -7,6 +7,7 @@ pub mod membership;
 pub(crate) mod policy;
 pub(crate) mod private_policy;
 pub(crate) mod read;
+pub mod rows;
 pub mod saved_shortcut;
 pub mod share;
 pub use admit::{
@@ -15,6 +16,7 @@ pub use admit::{
 };
 pub use adopt::adopt_workspace;
 use automerge::{AutoCommit, ROOT, ReadDoc, ScalarValue, Value};
+pub use rows::{GovernanceRow, changed_rows, governance_rows};
 pub use saved_shortcut::{proven_saver, sign_saved_shortcut, workspace_revocations};
 use std::collections::BTreeMap;
 use tilo_automerge::ReadTyped as _;
@@ -305,35 +307,7 @@ pub fn declared_workspace_mismatches(candidate: &AutoCommit, workspace: uuid::Uu
 /// peer echoing governance it learned re-states it under its own actor, which
 /// is not a change. Durable receipts and import proposals are governed too.
 pub fn governance_unchanged(before: Option<&AutoCommit>, after: &AutoCommit) -> bool {
-    governed_unchanged(before, after, true)
-}
-
-/// [`governance_unchanged`] with the membership rows left out: they are the
-/// projection of the workspace's membership operations, and how they change is
-/// judged on those operations ([`crate::members::growth`]).
-pub fn governance_except_membership(before: Option<&AutoCommit>, after: &AutoCommit) -> bool {
-    governed_unchanged(before, after, false)
-}
-
-fn governed_unchanged(before: Option<&AutoCommit>, after: &AutoCommit, membership: bool) -> bool {
-    let same = |from: Option<&AutoCommit>, to: Option<&AutoCommit>| {
-        let (mut from, mut to) = (governance_of(from), governance_of(to));
-        if !membership {
-            from.members.clear();
-            from.members_joined.clear();
-            from.grants.clear();
-            to.members.clear();
-            to.members_joined.clear();
-            to.grants.clear();
-        }
-        from == to
-    };
-    same(before, Some(after))
-        && before.and_then(crate::durability::governed_bytes)
-            == crate::durability::governed_bytes(after)
-        && crate::document_import::governed_bytes(before)
-            == crate::document_import::governed_bytes(Some(after))
-        && settings_of(before) == settings_of(Some(after))
+    changed_rows(before, Some(after), true).is_empty()
 }
 
 /// What `value` holds, as stored: bytes as bytes, and any value of another
@@ -650,7 +624,9 @@ pub fn only_reader_writes_differ(before: Option<&AutoCommit>, after: &AutoCommit
                 _ => None,
             },
         };
-        key.is_some_and(|key| READER_WRITES.contains(&key))
+        key.is_some_and(|key| {
+            READER_WRITES.contains(&key) || crate::members::op::keyed(key).is_some()
+        })
     })
 }
 

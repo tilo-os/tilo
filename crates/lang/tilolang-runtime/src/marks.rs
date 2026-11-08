@@ -7,7 +7,8 @@
 //!
 //! - a row gets a `ui.ChangeMark` in its `change` slot: who, in which task run; a row a list
 //!   folds away as done with stands with the rows above while the change is unseen, so the mark
-//!   is read where it happened;
+//!   is read where it happened. A row that is itself new, in a list that stands a divider where
+//!   its unseen part starts (`unread:`), takes no mark: the divider says it is new;
 //! - a bound text field takes the changer's colour (`changed_by`), and says what it held before
 //!   the change (`previous`);
 //! - a window's header holds a mark with how many changes of what it shows are unseen, and by
@@ -21,8 +22,8 @@
 use crate::core::Core;
 use crate::error::RuntimeError;
 use crate::ids::Principal;
-use crate::render::Acc;
-use crate::store::{FieldSpec, FieldValue, Scalar, Version};
+use crate::render::{Acc, Walk};
+use crate::store::{FieldSpec, FieldValue, Scalar, Version, VersionKind};
 use crate::value::{ActionRef, CollRef, ResourceRef, Value};
 use crate::view::UiNode;
 
@@ -70,6 +71,7 @@ impl Core {
         node: &mut UiNode,
         (viewer, window): (&Principal, &str),
         listed: Option<&CollRef>,
+        walk: Walk<'_>,
         acc: &mut Acc,
     ) -> Result<(), RuntimeError> {
         match node.kind.as_str() {
@@ -103,6 +105,11 @@ impl Core {
                     node.props.insert("tail".to_owned(), Value::Bool(false));
                 }
                 if places_mark(node, &r.target.id_string()) {
+                    return Ok(());
+                }
+                // A row that is itself new, in a list that stands a divider where its unseen
+                // part starts: the divider says so, and a mark on the row says it again.
+                if walk.says_new && unseen.kind == VersionKind::Created {
                     return Ok(());
                 }
                 let mut mark = UiNode::empty(CHANGE_MARK, &format!("{}~change", node.key));
@@ -386,6 +393,12 @@ impl Core {
         else {
             return Err(RuntimeError::NotFound(format!("the field {field}")));
         };
+        // A bound field's previous value is the one text it held. What a change made of a rich
+        // text is the paragraphs it typed into, which is the record's history to show, not a
+        // field's: read nothing of the whole text here.
+        if spec.kind == crate::meta::FieldKind::RichText {
+            return Ok(());
+        }
         let before = self
             .store
             .borrow()

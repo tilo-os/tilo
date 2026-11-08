@@ -91,7 +91,6 @@ impl BotParticipant {
                 cert: identity.cert.clone(),
                 host_cert: config.host_cert,
                 revocations: RevocationList::new(),
-                background: false,
             },
             Arc::new(identity.key.clone()),
             Arc::new(MemoryPeerStore::default()),

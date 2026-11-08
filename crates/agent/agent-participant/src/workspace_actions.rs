@@ -746,7 +746,6 @@ impl Workspace {
                 cert: member.endpoint.host_cert.clone(),
                 host_cert: member.endpoint.host_cert.clone(),
                 revocations: RevocationList::new(),
-                background: false,
             },
             Arc::new(member.key.clone()),
             Arc::new(MemoryPeerStore::default()),

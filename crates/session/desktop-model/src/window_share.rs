@@ -1,7 +1,6 @@
-//! A window one member shares with a workspace whose layout is personal.
-//! In a personal workspace each member's windows stay on their device
-//! ([`crate::projection::WorkspaceLayout::Personal`]); a member who wants the
-//! others to see one shares it, and the share is the workspace's resource share
+//! A window one member shares with the workspace. A member's windows are their
+//! own until they say otherwise; a member who wants the others to see one shares
+//! it, and the share is the workspace's resource share
 //! ([`tilo_action_policy::share`]) of the window's own node. The governor takes
 //! such a share only from the device that minted the tab's id, so nobody shares
 //! another device's window.

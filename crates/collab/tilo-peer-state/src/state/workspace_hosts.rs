@@ -60,7 +60,6 @@ impl PeerGovernanceMut<'_> {
         key: &SigningKey,
         now: SystemTime,
     ) -> Result<bool, String> {
-        self.peer.require_governance_writer(key, now)?;
         if self.peer.governance().workspace_hosts().contains(hint) {
             return Ok(false);
         }
@@ -89,7 +88,6 @@ impl PeerGovernanceMut<'_> {
         key: &SigningKey,
         now: SystemTime,
     ) -> Result<bool, String> {
-        self.peer.require_governance_writer(key, now)?;
         if !self
             .peer
             .governance()
@@ -127,7 +125,7 @@ impl PeerGovernanceMut<'_> {
         doc.set_actor(self.peer.workspace_actor_of(key));
         change(&mut doc)?;
         doc.commit();
-        self.peer.apply_governance_doc(doc, &before, key, now)
+        self.peer.write_governance(doc, &before, key, now)
     }
 }
 

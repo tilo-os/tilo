@@ -76,7 +76,6 @@ mod workspace_hosts;
 pub use workspace_hosts::{WORKSPACE_HOSTS_KEY, workspace_hosts_of};
 mod personal;
 mod seed;
-mod workspace_layout;
 mod workspace_name;
 mod workspace_settings;
 use held::Held;
@@ -597,12 +596,12 @@ impl StatePeer {
             workspace_host: false,
         })
     }
-    /// Add a root-certified viewer to existing governed history. Only the pinned
-    /// workspace authority may issue this local governance mutation.
+    /// Add a root-certified viewer to existing governed history, as a member
+    /// device of this workspace.
     ///
     /// # Errors
     ///
-    /// Returns an error if `key` is not the governance writer, the certificate is invalid,
+    /// Returns an error if `key` is not a member's device, the certificate is invalid,
     /// revoked or conflicts with a recorded one, or governance cannot be updated.
     pub fn admit_certificate(
         &mut self,
@@ -610,7 +609,7 @@ impl StatePeer {
         key: &SigningKey,
         now: SystemTime,
     ) -> Result<bool, String> {
-        self.require_governance_writer(key, now)?;
+        self.require_member_writer(key, now)?;
         if cert.user_public_key != self.core.owner {
             return Err("enrollment root mismatch".into());
         }
@@ -672,34 +671,13 @@ impl StatePeer {
             .ok_or("governed peers missing")?
             .1;
         doc.set_actor(self.workspace_actor_of(key));
+        let before = doc.get_heads();
         doc.put(&identities, &id, automerge::ScalarValue::Bytes(encoded))
             .map_err(err)?;
         doc.put(&names, &id, identity.device_cert.device_label.as_str())
             .map_err(err)?;
         doc.commit();
-        workspace::media::refresh_authorization(
-            self.core
-                .workspace_doc
-                .as_deref()
-                .ok_or("missing workspace")?,
-            &mut doc,
-        )
-        .map_err(err)?;
-        let changes = doc
-            .get_changes(&[])
-            .into_iter()
-            .map(|change| change.raw_bytes().to_vec())
-            .collect();
-        let workspace = self.core.workspace.clone();
-        let outcome = self.receive_from(
-            TransportOrigin::RelayDelta(key.verifying_key().to_bytes()),
-            NeighbourMsg::SyncResp {
-                changes,
-                room: workspace,
-            },
-            now,
-        )?;
-        Ok(outcome.changed || outcome.metadata_changed)
+        self.write_governance(doc, &before, key, now)
     }
 
     fn set_member(
@@ -767,7 +745,7 @@ impl StatePeer {
             }
         }
         doc.commit();
-        let changed = self.apply_governance_doc(doc, &before, key, now)?;
+        let changed = self.write_governance(doc, &before, key, now)?;
         Ok(changed && (before_role != Some(role) || before_admin != administrator))
     }
 
@@ -780,15 +758,33 @@ impl StatePeer {
         })
     }
 
-    fn require_governance_writer(&self, key: &SigningKey, now: SystemTime) -> Result<(), String> {
-        self.owner_device(&key.verifying_key().to_bytes(), now)
-            .map(drop)
+    /// Whether `key`'s device may take `action` on the workspace's governance
+    /// now: its person's role there and the grants on it decide, as every
+    /// receiver of a governance operation judges it
+    /// ([`crate::workspace::membership`]). The owner's role holds every
+    /// governance action by default.
+    fn require_governance_action(
+        &self,
+        key: &SigningKey,
+        action: &str,
+        now: SystemTime,
+    ) -> Result<(), String> {
+        let member = self.membership(key.verifying_key().to_bytes(), now)?;
+        let bound = tilo_action_policy::roles::foreign_device_bound();
+        member
+            .policy
+            .check_action(
+                &member.authority(&bound),
+                action,
+                &tilo_action_policy::Context::at_time(now),
+                false,
+            )
+            .map_err(|refusal| refusal.to_string())
     }
 
-    /// A current member's device. What it writes into the workspace's membership
-    /// is admitted as far as its person's grants reach, as every receiver
-    /// admits it (`workspace::membership`); the rest of governance stays the
-    /// owner's.
+    /// A current member's device. What it writes into the workspace is admitted
+    /// as far as its person's role and grants reach, as every receiver admits
+    /// it (`workspace::membership`).
     pub(crate) fn require_member_writer(
         &self,
         key: &SigningKey,
@@ -810,15 +806,15 @@ impl StatePeer {
     }
 
     /// `device`'s certificate when it is one of the owner's devices, current
-    /// at `now`: the workspace's governance is the owner's to write, from any
-    /// device their root certifies, so no one device of theirs is needed
+    /// at `now`: the owner's own device publishes the records they wrote, from
+    /// any device their root certifies, so no one device of theirs is needed
     /// and a revoked one hands nothing over.
     fn owner_device(&self, device: &[u8; 32], now: SystemTime) -> Result<&DeviceCert, String> {
         let cert = self
             .certificate(device, now)
             .map_err(|error| error.to_string())?;
         if cert.user_public_key != self.core.owner {
-            return Err("governance writer is not the owner's device".into());
+            return Err("the publisher is not a device of the workspace's owner".into());
         }
         Ok(cert)
     }
@@ -842,22 +838,31 @@ impl StatePeer {
                 .is_some_and(|cert| cert.user_public_key == self.core.owner)
     }
 
-    fn apply_governance_doc(
+    /// Write the governance change `doc` holds as `key`'s device, and take it in
+    /// as every member will.
+    ///
+    /// The parts of the workspace's governance the change moves are recorded as
+    /// this device's operation, so every receiver judges each by its author's
+    /// role ([`crate::workspace::membership`]): a part this device's role does
+    /// not permit is refused here, by the same admission that receives it.
+    fn write_governance(
         &mut self,
         mut doc: CachedDocument,
         before: &[automerge::ChangeHash],
         key: &SigningKey,
         now: SystemTime,
     ) -> Result<bool, String> {
-        workspace::media::refresh_authorization(
-            self.core
+        let rows = {
+            let held = self
+                .core
                 .workspace_doc
                 .as_deref()
-                .ok_or("missing workspace")?,
-            &mut doc,
-        )
-        .map_err(err)?;
+                .ok_or("missing workspace")?;
+            workspace::media::refresh_authorization(held, &mut doc).map_err(err)?;
+            crate::workspace::changed_rows(Some(held), Some(&doc), false)
+        };
         self.record_membership(&mut doc, before, key, now)?;
+        self.record_governance(&mut doc, rows, key, now)?;
         let changes = doc
             .get_changes(before)
             .into_iter()
@@ -938,6 +943,38 @@ impl StatePeer {
             return Err("the membership change is not this device's to make".into());
         }
         members::materialise(doc, &target)?;
+        Ok(())
+    }
+
+    /// Record the governance rows `doc` moved as this device's operation, so
+    /// every receiver judges each by its author's role
+    /// ([`crate::workspace::membership`]). A workspace whose log does not start
+    /// yet has no operations to name anything with, and its rows govern as they
+    /// did before the log.
+    fn record_governance(
+        &self,
+        doc: &mut CachedDocument,
+        mut rows: Vec<crate::workspace::GovernanceRow>,
+        key: &SigningKey,
+        now: SystemTime,
+    ) -> Result<(), String> {
+        use crate::members::{self, MembershipOpCommand, SignedMembershipOp};
+        let workspace = self.core.workspace.clone();
+        if rows.is_empty() || !members::starts(doc, &workspace) {
+            return Ok(());
+        }
+        rows.sort_unstable();
+        let cert = self
+            .certificate(&key.verifying_key().to_bytes(), now)
+            .map_err(|error| error.to_string())?;
+        let op = SignedMembershipOp::signed(
+            cert,
+            key,
+            members::heads(&members::ops(doc)),
+            now_ns(now),
+            MembershipOpCommand::Governance { rows },
+        )?;
+        crate::members::legacy::put_op(doc, &op)?;
         Ok(())
     }
 
@@ -2756,7 +2793,6 @@ impl StatePeer {
         key: &SigningKey,
         now: SystemTime,
     ) -> Result<(), String> {
-        self.require_governance_writer(key, now)?;
         self.receive(
             key.verifying_key().to_bytes(),
             NeighbourMsg::SyncResp {
@@ -3703,7 +3739,6 @@ impl PeerPublicationMut<'_> {
         {
             return Err("publication cannot replace the session namespace".into());
         }
-        self.peer.require_governance_writer(key, now)?;
         self.peer
             .permissions(key.verifying_key().to_bytes(), now)
             .map_err(|error| error.to_string())?;

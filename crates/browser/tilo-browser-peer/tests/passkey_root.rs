@@ -1,6 +1,6 @@
 //! A person with only a browser and a passkey: headless Chrome (a virtual
 //! authenticator with PRF) creates their root with the production
-//! `root-identity.mjs`; native code opens the same envelope with the
+//! `identity.mjs`; native code opens the same envelope with the
 //! recovery key; the page's root certifies a node, which serves with that
 //! certificate, and then the page's own device, which syncs with the node.
 
@@ -20,7 +20,7 @@ use tilo_test_env::SpawnUnderEnvLockAsync as _;
 use ed25519_dalek::SigningKey;
 use getrandom::{SysRng, rand_core::UnwrapErr};
 use tilo_browser_peer::{
-    DeviceSigner, Host, IssuedRole, SignError, SignFuture, certify_with_root, issue_device_cert,
+    DeviceSigner, IssuedRole, SignError, SignFuture, certify_with_root, issue_device_cert,
 };
 use tilo_user_identity::DeviceCapabilities;
 use tilo_user_identity::root_envelope::{RecoveryKey, RootEnvelope};
@@ -60,9 +60,10 @@ impl DeviceSigner for PageRoot {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_passkey_root_in_chrome_certifies_a_node_and_its_own_page() {
     let driver =
-        std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/passkey_root/driver.mjs");
+        std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/support/page-driver.mjs");
     let mut browser = tokio::process::Command::new("node")
         .arg(driver)
+        .arg("passkey")
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
         .kill_on_drop(true)
@@ -114,7 +115,7 @@ async fn a_passkey_root_in_chrome_certifies_a_node_and_its_own_page() {
         .unwrap();
     assert_eq!(host_cert, node_cert);
     assert_eq!(cert.capabilities, DeviceCapabilities::member());
-    let peer = start_peer(Host::Https(host.https()), cert, host_cert, page_device);
+    let peer = start_peer(host.iroh(), cert, host_cert, page_device);
     ready(&[&peer]).await;
 
     drop(root);

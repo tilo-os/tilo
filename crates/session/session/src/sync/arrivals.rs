@@ -1,7 +1,7 @@
 //! What the person sees of who is here with them: the bar's faces for whoever is in the workspace
 //! in front, the name that slides out when they come where people are, and a wave at them.
 
-use super::{Client, Workspace};
+use super::Client;
 use tilo_desktop::chrome::{ArrivalNotice, WaveNotice};
 use tilo_desktop::here::LiveMember;
 
@@ -26,6 +26,7 @@ impl Client {
 
     /// Hand the desktop this person and whoever is here with them in the workspace in front.
     pub(super) fn show_here(&self) {
+        let now = super::now_ms();
         let (own, members, workspace) = {
             let plane = self.plane.borrow();
             let in_front = plane
@@ -33,7 +34,7 @@ impl Client {
                 .and_then(|ws| plane.workspaces.iter().find(|held| held.ws == ws));
             (
                 self.own_member(),
-                in_front.map(Workspace::members).unwrap_or_default(),
+                in_front.map(|held| held.members(now)).unwrap_or_default(),
                 in_front.map(|held| held.id.clone()).unwrap_or_default(),
             )
         };

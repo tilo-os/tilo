@@ -13,7 +13,6 @@ use automerge::AutoCommit;
 use tilo_action_policy::{ActionKind, Answer, Context, TreePath};
 
 use super::media;
-use tilo_desktop_model::projection::workspace_layout_choice;
 
 /// How the receiver knows the sender's standing in the workspace.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -64,7 +63,7 @@ pub struct WorkspaceAdmission<'a> {
     /// The workspace id as governance and capability scopes spell it.
     pub workspace: &'a str,
     pub source: Writer<'a>,
-    /// The workspace's owner, whose devices write its governance.
+    /// The workspace's owner: the person the workspace was made for.
     pub owner: &'a [u8; 32],
     /// The instant the batch is judged at, in nanoseconds since the Unix
     /// epoch: grant expiry, and the certificate a saved shortcut's proof
@@ -87,7 +86,7 @@ pub struct AdmittedWorkspace {
 /// Why a batch was refused. Display strings are the peer-state messages.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum WorkspaceRefusal {
-    /// The sender is not the governance writer and nothing is held to check
+    /// The sender is not the workspace's owner and nothing is held to check
     /// its membership against.
     GovernanceMissing,
     /// The sender may not change the workspace.
@@ -96,7 +95,8 @@ pub enum WorkspaceRefusal {
     Malformed(String),
     /// The document names a different workspace than the one it answers.
     DeclaredWorkspaceMismatch,
-    /// The batch changes governance and its sender is not the owner's device.
+    /// The batch changes governance the writer's role does not permit, or
+    /// governance no operation of its own names.
     GovernanceWriter,
     /// A member's membership change is not theirs to make.
     Membership(String),
@@ -132,7 +132,7 @@ impl std::fmt::Display for WorkspaceRefusal {
             | Self::Durability(error)
             | Self::Membership(error) => f.write_str(error),
             Self::DeclaredWorkspaceMismatch => f.write_str("declared workspace mismatch"),
-            Self::GovernanceWriter => f.write_str("governance writer is not the owner's device"),
+            Self::GovernanceWriter => f.write_str("governance is not this writer's to change"),
             Self::ReceiptImmutable => f.write_str("effect receipt is immutable"),
             Self::RedemptionImmutable => {
                 f.write_str("governed invitation has conflicting redemption receipts")
@@ -179,34 +179,30 @@ pub fn admit_workspace_changes(
             if !writes && !super::only_reader_writes_differ(input.before, &candidate) {
                 return Err(WorkspaceRefusal::WriteForbidden);
             }
-            // Operations are self-authorizing: replay applies a membership
-            // change only where its writer's grants allowed it, so a batch
-            // that adds operations that prove their writers is a membership
-            // change as long as it changes nothing else.
+            // What a batch changes in the workspace's governance is what its
+            // operations say it changes, each of them its author's to make: a
+            // membership change replays under its writer's grants
+            // ([`super::membership`]), and a governance change is the row its
+            // operation names, judged by its author's role.
             let grown = crate::members::growth(input.before, &candidate)
                 .map_err(WorkspaceRefusal::Membership)?;
-            let membership = if grown > 0 && !governs {
-                if !super::governance_except_membership(input.before, &candidate) {
-                    return Err(WorkspaceRefusal::GovernanceWriter);
-                }
-                // The rows a batch brings are never what admits it: they are
-                // the log's projection, and the receiver writes them from the
-                // log it replays ([`crate::members::settle`]). Where the log
-                // does not start yet there is nothing to project from, and the
-                // rows the batch brings would be the change itself: no batch
-                // that carries operations may move them then.
-                if !crate::members::starts(&candidate, input.workspace)
-                    && !super::governance_unchanged(input.before, &candidate)
-                {
-                    return Err(WorkspaceRefusal::GovernanceWriter);
-                }
+            let governed = if grown > 0 && !governs {
+                super::membership::admit_operations(
+                    input.before,
+                    &candidate,
+                    &changes,
+                    input.workspace,
+                    input.now_ns,
+                )
+                .map_err(membership)?;
+                true
+            } else if !governs && !super::governance_unchanged(input.before, &candidate) {
+                membership_authorized(&input, &changes)?;
                 true
             } else {
-                !governs
-                    && !super::governance_unchanged(input.before, &candidate)
-                    && membership_authorized(&input, &changes)?
+                false
             };
-            let media = checked(&input, &candidate, membership)?;
+            let media = checked(&input, &candidate, governed)?;
             crate::members::settle(&mut candidate, input.workspace)
                 .map_err(WorkspaceRefusal::Malformed)?;
             Ok(AdmittedWorkspace {
@@ -240,9 +236,12 @@ pub fn admit_workspace_changes(
 ///
 /// 1. The document names this workspace ([`super::declared_workspace_mismatches`]).
 /// 2. A governance change — owner, capabilities, identities, media,
-///    coverage, receipts, durability or import proposals — comes from the
-///    owner's devices ([`super::governance_unchanged`]).
-/// 3. The workspace's layout scope changes only by the owner's devices.
+///    coverage, receipts, durability or import proposals — is one an operation
+///    of the batch names, and its author's role permits it
+///    ([`super::membership::admit_operations`]); a batch with no operation is
+///    a membership change, judged where its writer made it
+///    ([`super::membership::authorize`]).
+/// 3. The workspace's hosts change only by the owner's devices.
 /// 4. Effect receipts are immutable ([`super::immutable_receipts`]), and
 ///    one not from the owner's devices records only its writer's own
 ///    ([`super::effect_slices_kept`]).
@@ -297,12 +296,13 @@ fn membership(refusal: super::membership::MembershipRefusal) -> WorkspaceRefusal
     }
 }
 
-/// `membership`: the batch's governance change was admitted as its writer's
-/// membership change, so only what membership cannot touch is checked here.
+/// `governed`: the batch's governance change was admitted as its writer's
+/// membership change or as the rows its operations name, so only what neither
+/// touches is checked here.
 fn checked(
     input: &WorkspaceAdmission<'_>,
     candidate: &AutoCommit,
-    membership: bool,
+    governed: bool,
 ) -> Result<Option<media::WorkspaceMediaV1>, WorkspaceRefusal> {
     let WorkspaceAdmission {
         before,
@@ -317,19 +317,18 @@ fn checked(
     if super::declared_workspace_mismatches(candidate, declared) {
         return Err(WorkspaceRefusal::DeclaredWorkspaceMismatch);
     }
-    if !governs && !membership && !super::governance_unchanged(before, candidate) {
+    if !governs && !governed && !super::governance_unchanged(before, candidate) {
+        return Err(WorkspaceRefusal::GovernanceWriter);
+    }
+    // The workspace's hosts are its owner's to name.
+    if !governs
+        && !governed
+        && before.map_or_else(Vec::new, crate::workspace_hosts_of)
+            != crate::workspace_hosts_of(candidate)
+    {
         return Err(WorkspaceRefusal::GovernanceWriter);
     }
     if !governs {
-        if before.and_then(workspace_layout_choice) != workspace_layout_choice(candidate) {
-            return Err(WorkspaceRefusal::GovernanceWriter);
-        }
-        if before.map_or_else(Vec::new, crate::workspace_hosts_of)
-            != crate::workspace_hosts_of(candidate)
-        {
-            // The workspace's hosts are its owner's to name.
-            return Err(WorkspaceRefusal::GovernanceWriter);
-        }
         // The owner's devices relay what members recorded; anyone else
         // records only their own.
         if !super::effect_slices_kept(before, candidate, source.person()) {
@@ -402,7 +401,7 @@ fn saved_shortcuts_proven(
     Ok(())
 }
 
-/// Whether a sender that is not the governance writer may make undoable
+/// Whether a sender that is not the workspace's owner may make undoable
 /// changes on the workspace (`true`), or only read it and so record its own
 /// effect receipts and give its own shares (`false`), decided against the
 /// policy already held — never the one the batch brings.

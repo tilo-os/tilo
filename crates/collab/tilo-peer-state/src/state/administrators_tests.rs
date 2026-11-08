@@ -1,7 +1,7 @@
-//! A workspace's administrators govern it: the governance writer gives them a
-//! grant the Editor's own rule on the workspace's resource does not outrank, and
-//! rewrites the grant workspaces held before it so their administrators govern
-//! too.
+//! A workspace's administrators govern it: a member given the administrator
+//! grant holds every governance action of the workspace, on a node the Editor's
+//! own rule on its resource does not outrank, so workspaces that held the grant
+//! where it did are rewritten to govern through it.
 use super::*;
 use tilo_action_policy::KindSet;
 use tilo_action_policy::roles::{self, governance};

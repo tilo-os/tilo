@@ -425,7 +425,7 @@ impl ToolbarRow {
             .collect();
         // A new answer is a new list: nothing in it is chosen yet, so Enter
         // opens what was typed until an arrow chooses a row.
-        self.suggestions.set_suggestions(rows);
+        self.suggestions.set_rows(rows);
         self.suggestions.set_highlight(None);
         self.suggestion_values = values;
         self.place_suggestions();

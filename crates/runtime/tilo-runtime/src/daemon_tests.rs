@@ -925,3 +925,89 @@ fn the_proxy_delivers_each_reply_before_the_stream_ends() {
         "the whole reply reached the client while the stream is open"
     );
 }
+
+/// `--connect --workspace ID` asks the desktop's door for that workspace: it
+/// is a client's request of the person, so it goes with `--connect` alone,
+/// never with a standalone runtime of the client's own.
+#[test]
+fn connect_asks_for_a_workspace_by_its_id() {
+    let args = |list: &[&str]| parse_args(list.iter().map(OsString::from));
+    let workspace = "6f1b4a7e-0b2f-4d3a-9a1e-2c3d4e5f6a7b";
+    let asked = args(&["--connect", "--workspace", workspace]).unwrap();
+    assert_eq!(asked.mode, Mode::Connect);
+    assert_eq!(asked.workspace.as_deref(), Some(workspace));
+    assert_eq!(args(&["--connect"]).unwrap().workspace, None);
+    assert_eq!(asked.forward, None, "this desktop's own door");
+    let elsewhere = args(&["--connect", "--device", "b", "--workspace", workspace]).unwrap();
+    assert_eq!(
+        elsewhere.workspace, None,
+        "with --device, the workspace is the other device's"
+    );
+    for invalid in [
+        vec!["--connect", "--workspace"],
+        vec!["--connect", "--workspace", "not-a-workspace"],
+        vec![
+            "--connect",
+            "--workspace",
+            workspace,
+            "--workspace",
+            workspace,
+        ],
+        vec!["--connect", "--standalone", "--workspace", workspace],
+        vec![
+            "--profile",
+            "/tmp/profile",
+            "--connect",
+            "--workspace",
+            workspace,
+        ],
+        vec![
+            "--profile",
+            "/tmp/profile",
+            "--daemon",
+            "--workspace",
+            workspace,
+        ],
+    ] {
+        assert!(args(&invalid).is_err(), "{invalid:?}");
+    }
+}
+
+/// The relay writes the workspace into the client's `initialize` and nothing
+/// else: a probe before it and every line after it reach the door as sent.
+#[test]
+fn the_relay_writes_the_workspace_into_the_initialize_alone() {
+    let sent = concat!(
+        r#"{"jsonrpc":"2.0","id":0,"method":"server/discover"}"#,
+        "\n",
+        r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"capabilities":{"experimental":{"so.tilo":{"actsAs":"agent"}}},"clientInfo":{"name":"Claude Code"}}}"#,
+        "\n",
+        r#"{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{"workspace":"x"}}"#,
+        "\n",
+    );
+    let mut relayed = Vec::new();
+    let total = super::relay_asking(&mut sent.as_bytes(), &mut relayed, "w-1").unwrap();
+    assert_eq!(total, sent.len() as u64, "every byte read is relayed");
+    let lines: Vec<serde_json::Value> = relayed
+        .split(|byte| *byte == b'\n')
+        .filter(|line| !line.is_empty())
+        .map(|line| serde_json::from_slice(line).unwrap())
+        .collect();
+    assert_eq!(lines.len(), 3);
+    assert_eq!(lines[0]["method"], "server/discover");
+    assert_eq!(
+        lines[1].pointer(crate::session_door::WORKSPACE),
+        Some(&serde_json::json!("w-1"))
+    );
+    assert_eq!(
+        lines[1].pointer("/params/capabilities/experimental/so.tilo/actsAs"),
+        Some(&serde_json::json!("agent")),
+        "what the client asked is kept"
+    );
+    assert_eq!(
+        lines[2],
+        serde_json::json!({"jsonrpc":"2.0","id":2,"method":"tools/list","params":{"workspace":"x"}})
+    );
+    let hello = crate::session_door::parse_hello(&serde_json::to_vec(&lines[1]).unwrap()).unwrap();
+    assert_eq!(hello.workspace.as_deref(), Some("w-1"), "the door reads it");
+}

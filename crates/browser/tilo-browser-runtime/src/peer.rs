@@ -6,7 +6,7 @@
 //! callback, or — where `WebCrypto` lacks Ed25519 — a seed unsealed from
 //! `IndexedDB` straight into this module, which keeps it only in wasm
 //! memory. Nothing here generates or holds a user root: a page that holds
-//! one (`web/root-identity.mjs`) lends it as a signer, the same shape as
+//! one (`web/identity.mjs`) lends it as a signer, the same shape as
 //! custody, to [`issue_device_cert`] and [`certify_with_root`].
 //!
 //! The peer record (certificates and the commit outbox) and the workspaces it
@@ -264,16 +264,15 @@ impl PeerStore for PageStore {
     }
 }
 
-/// HTTP through the page: `post(path, session, body)` resolves to
+/// HTTP through the page: `post(path, body)` resolves to
 /// `{status, body}`, rejecting only when the host was not reached.
 struct PageHttp(Function);
 
 impl HttpClient for PageHttp {
-    fn post(&self, path: &str, session: Option<&str>, body: Vec<u8>) -> HttpFuture<'_> {
-        let called = self.0.call3(
+    fn post(&self, path: &str, body: Vec<u8>) -> HttpFuture<'_> {
+        let called = self.0.call2(
             &JsValue::NULL,
             &path.into(),
-            &session.map_or(JsValue::NULL, JsValue::from),
             &Uint8Array::from(body.as_slice()).into(),
         );
         Box::pin(async move {
@@ -310,15 +309,10 @@ struct ConnectConfig {
     host_cert: DeviceCert,
     /// Where the host's iroh endpoint is dialled: the session and its planes
     /// reach it there.
-    #[serde(default)]
-    address: Option<JsHostAddress>,
+    address: JsHostAddress,
     /// The person's chosen name, for history and presence; empty for none.
     #[serde(default)]
     display_name: String,
-    /// The page keeps this peer beside the workspace in front, to deliver for
-    /// it ([`PeerConfig::background`]).
-    #[serde(default)]
-    background: bool,
 }
 
 /// The certified user as the toolkit's local identity.
@@ -346,7 +340,7 @@ async fn post_decoded<T: serde::de::DeserializeOwned>(
     body: Vec<u8>,
 ) -> Result<T, JsError> {
     let path = format!("{}{route}", tilo_relay_protocol::web::API_PREFIX);
-    let (status, bytes) = post.post(&path, None, body).await.map_err(js_error)?;
+    let (status, bytes) = post.post(&path, body).await.map_err(js_error)?;
     if status != 200 {
         return Err(js_error(format!("host answered {status}")));
     }
@@ -366,10 +360,11 @@ struct JsHostAddress {
 impl JsHostAddress {
     /// The host as the peer dials it.
     fn host(&self) -> Host {
-        Host::Iroh {
-            addr: self.endpoint_addr.clone(),
-            relay_url: self.relay_url.as_deref().and_then(|url| url.parse().ok()),
-        }
+        let addr = match self.relay_url.as_deref().and_then(|url| url.parse().ok()) {
+            Some(relay) => self.endpoint_addr.clone().with_relay_url(relay),
+            None => self.endpoint_addr.clone(),
+        };
+        Host::at(addr)
     }
 }
 
@@ -397,7 +392,7 @@ pub async fn host_info(post: Function) -> Result<String, JsError> {
     .map_err(js_error)
 }
 
-/// Certify this page's device key through the host's HTTPS origin, as the
+/// Certify this page's device key with the host its address names, as the
 /// answer to the pairing invite `inviteHex` (16 bytes as hex) the person's
 /// link named, if any. Calls `onPairingCode(code)` once the host queued the
 /// request. Resolves to `{cert, hostCert}` JSON for [`WasmPeer::start`].
@@ -407,13 +402,12 @@ pub async fn host_info(post: Function) -> Result<String, JsError> {
     reason = "the page's HTTP client stays on its one thread"
 )]
 pub async fn certify_device(
-    post: Function,
     user_public_key_hex: String,
     label: String,
     invite_hex: Option<String>,
     custody: JsValue,
     on_pairing_code: Function,
-    address: Option<String>,
+    address: String,
 ) -> Result<String, JsError> {
     let signer = PageSigner::from_js(&custody)?;
     let user: [u8; 32] = hex::decode(user_public_key_hex)
@@ -427,14 +421,9 @@ pub async fn certify_device(
             .map_err(|_| js_error("a pairing invite is 16 bytes"))?,
         None => [0; 16],
     };
-    // A host that named its iroh endpoint is certified there; one that named
-    // none is certified over its HTTPS origin.
-    let host = match address.filter(|text| !text.is_empty()) {
-        Some(text) => serde_json::from_str::<JsHostAddress>(&text)
-            .map_err(js_error)?
-            .host(),
-        None => Host::Https(Arc::new(PageHttp(post))),
-    };
+    let host = serde_json::from_str::<JsHostAddress>(&address)
+        .map_err(js_error)?
+        .host();
     let (cert, host_cert) =
         tilo_browser_peer::certify(&host, user, &label, invite, &signer, |code| {
             let _ = on_pairing_code.call1(&JsValue::NULL, &code.into());
@@ -456,7 +445,7 @@ fn device_key(text: &str) -> Result<[u8; 32], JsError> {
 }
 
 /// Certify `devicePublicKeyHex` with the user root the page holds (`root`:
-/// `{publicKey, sign}` from `root-identity.mjs`) as `role`: `browser` (a
+/// `{publicKey, sign}` from `identity.mjs`) as `role`: `browser` (a
 /// member, 30 days), `node` (hosts and governs the person's workspaces,
 /// admits no devices) or `session` (the session beside a node that runs
 /// the person's apps and agents: a member, one year). Resolves to the
@@ -774,9 +763,8 @@ pub async fn certify_with_root(
 
 /// The new devices waiting at the host at `post` for the member root the
 /// page holds (`root`) to pair them: `[{digest, pairingCode, label, device,
-/// invite, requestedAtMs, country}]` JSON, keys, digest and invite as hex
-/// (`invite` null for a request no invite asked for, `country` null when the
-/// host does not know it).
+/// invite, requestedAtMs}]` JSON, keys, digest and invite as hex (`invite`
+/// null for a request no invite asked for).
 #[wasm_bindgen(js_name = pendingPairings)]
 pub async fn pending_pairings(post: Function, root: JsValue) -> Result<String, JsError> {
     let root = PageSigner::from_js(&root)?;
@@ -795,7 +783,6 @@ pub async fn pending_pairings(post: Function, root: JsValue) -> Result<String, J
                     "invite": (entry.request.invite != [0; 16])
                         .then(|| hex::encode(entry.request.invite)),
                     "requestedAtMs": entry.requested_at_ns / 1_000_000,
-                    "country": entry.country,
                 })
             })
             .collect(),
@@ -1462,7 +1449,6 @@ impl WasmPeer {
         namespace: Option<String>,
         record: Option<Vec<u8>>,
         save: Option<Function>,
-        post: Function,
         channel_vault: Option<Vec<u8>>,
     ) -> Result<WasmPeer, JsError> {
         let config: ConnectConfig = serde_json::from_str(config_json).map_err(js_error)?;
@@ -1497,14 +1483,10 @@ impl WasmPeer {
         let display_name = config.display_name;
         let handle = PeerHandle::start(
             PeerConfig {
-                host: match &config.address {
-                    Some(address) => address.host(),
-                    None => Host::Https(Arc::new(PageHttp(post))),
-                },
+                host: config.address.host(),
                 cert: config.cert,
                 host_cert: config.host_cert,
                 revocations: RevocationList::new(),
-                background: config.background,
             },
             Arc::new(signer),
             store,
@@ -1679,28 +1661,6 @@ impl WasmPeer {
         serde_json::to_string(&answer).map_err(js_error)
     }
 
-    /// The device (hex) of the session a node runs beside its relay, the
-    /// one that runs the person's apps there; `undefined` from a host that
-    /// runs none.
-    ///
-    /// # Errors
-    ///
-    /// Rejects without a connection.
-    #[wasm_bindgen(js_name = nodeSession)]
-    pub async fn node_session(&self) -> Result<Option<String>, JsError> {
-        let (reply, receipt) = tokio::sync::oneshot::channel();
-        self.handle
-            .node_session_then(Box::new(move |answer| {
-                let _ = reply.send(answer);
-            }))
-            .map_err(js_error)?;
-        Ok(receipt
-            .await
-            .map_err(|_| js_error("peer session closed"))?
-            .map_err(js_error)?
-            .map(hex::encode))
-    }
-
     /// The session token the host's fetch proxy (`/peer/v1/fetch`) takes,
     /// while this page is connected to a host that serves one; `undefined`
     /// otherwise. It changes when the page reconnects, so the page's fetch
@@ -1708,14 +1668,6 @@ impl WasmPeer {
     #[wasm_bindgen(js_name = fetchProxySession)]
     pub fn fetch_proxy_session(&self) -> Option<String> {
         self.handle.fetch_proxy_session()
-    }
-
-    /// The token of the host session this page runs now, `undefined`
-    /// between sessions: the page sends it to the host's session end as it
-    /// leaves, so the workspace stops counting it then, not when its polls stop.
-    #[wasm_bindgen(js_name = sessionToken)]
-    pub fn session_token(&self) -> Option<String> {
-        self.handle.session_token()
     }
 
     /// Pre-admit whoever redeems the invitation this issues and presents
@@ -1869,16 +1821,10 @@ impl WasmPeer {
         Ok(())
     }
 
-    /// Seal one encoded live frame of `workspace` (from [`encode_live_presence`]
-    /// and friends) with the channel keys of the record it names, for the
-    /// page's live plane. Resolves to `null` when the frame names no record
-    /// or this device holds none of its keys: such a frame is never sent.
-    ///
-    /// # Errors
-    ///
-    /// Rejects for a malformed workspace or a closed session.
-    #[wasm_bindgen(js_name = sealLive)]
-    pub async fn seal_live(
+    /// Seal one encoded live frame of `workspace` with the channel keys of the
+    /// record it names. `None` when the frame names no record or this device
+    /// holds none of its keys: such a frame is never sent.
+    async fn seal_live(
         &self,
         workspace: String,
         frame: Vec<u8>,
@@ -1890,32 +1836,6 @@ impl WasmPeer {
                 frame,
                 Box::new(move |sealed| {
                     let _ = reply.send(sealed);
-                }),
-            )
-            .map_err(js_error)?;
-        receipt.await.map_err(|_| js_error("peer session closed"))
-    }
-
-    /// Open one sealed live frame of `workspace` the live plane delivered.
-    /// Resolves to the encoded frame for [`decode_live_frame`], or `null`
-    /// when it does not open with keys this device holds.
-    ///
-    /// # Errors
-    ///
-    /// Rejects for a malformed workspace or a closed session.
-    #[wasm_bindgen(js_name = openLive)]
-    pub async fn open_live(
-        &self,
-        workspace: String,
-        frame: Vec<u8>,
-    ) -> Result<Option<Vec<u8>>, JsError> {
-        let (reply, receipt) = tokio::sync::oneshot::channel();
-        self.handle
-            .open_live_then(
-                workspace_number(&workspace)?,
-                frame,
-                Box::new(move |opened| {
-                    let _ = reply.send(opened);
                 }),
             )
             .map_err(js_error)?;

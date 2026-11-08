@@ -20,13 +20,12 @@ mod support;
 tilo_automerge_isolate::test_worker!();
 
 use std::path::Path;
-use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use automerge::{AutoCommit, ROOT, ReadDoc as _, transaction::Transactable as _};
 use collab_types::{DocumentMutation, document_channel_id};
 use tilo_automerge::ApplyIncoming as _;
-use tilo_browser_peer::{Host, PeerEvent, PeerHandle};
+use tilo_browser_peer::{PeerEvent, PeerHandle};
 use tilo_peer_state::document_frame::ContentCipher;
 use tilo_user_identity::{DeviceCapabilities, UserIdentity};
 
@@ -93,51 +92,17 @@ async fn durable(peer: &PeerHandle) {
         .unwrap();
 }
 
-/// An HTTPS client that keeps every `/events` answer.
-struct Pages {
-    inner: Arc<support::https::DevHttps>,
-    pages: Arc<Mutex<Vec<Vec<u8>>>>,
-}
-
-impl tilo_browser_peer::HttpClient for Pages {
-    fn post(
-        &self,
-        path: &str,
-        session: Option<&str>,
-        body: Vec<u8>,
-    ) -> tilo_browser_peer::HttpFuture<'_> {
-        let events = path.ends_with("/events");
-        let answer = self.inner.post(path, session, body);
-        Box::pin(async move {
-            let answer = answer.await;
-            if events && let Ok((_, bytes)) = &answer {
-                self.pages.lock().unwrap().push(bytes.clone());
-            }
-            answer
-        })
-    }
-}
-
 /// Join late and merge the note until its heads are `target`; returns the
-/// replica, the documents received, the `/events` bytes and the duration.
+/// replica, the documents received and the duration.
 async fn join_late(
     host: &support::TestHost,
     device: support::Device,
     host_cert: &tilo_user_identity::DeviceCert,
     cipher: Option<Box<dyn ContentCipher>>,
     target: &[automerge::ChangeHash],
-) -> (AutoCommit, usize, Vec<Vec<u8>>, Duration) {
-    let pages = Arc::new(Mutex::new(Vec::new()));
+) -> (AutoCommit, usize, Duration) {
     let started = Instant::now();
-    let joiner = start_peer(
-        Host::Https(Arc::new(Pages {
-            inner: host.https(),
-            pages: pages.clone(),
-        })),
-        device.cert,
-        host_cert.clone(),
-        device.key,
-    );
+    let joiner = start_peer(host.iroh(), device.cert, host_cert.clone(), device.key);
     if let Some(cipher) = cipher {
         joiner.install_cipher(route(), cipher).unwrap();
     }
@@ -157,8 +122,7 @@ async fn join_late(
     .await;
     let elapsed = started.elapsed();
     joiner.close();
-    let pages = pages.lock().unwrap().clone();
-    (replica, documents, pages, elapsed)
+    (replica, documents, elapsed)
 }
 
 /// A route's content keys as the page's cipher, as a member holds them.
@@ -243,7 +207,7 @@ async fn a_member_compacts_a_sealed_route_the_host_cannot_read() {
     )
     .unwrap();
     let keys = || -> Box<dyn ContentCipher> { Box::new(Keys(creator.content_keys().unwrap())) };
-    let https = || Host::Https(host.https());
+    let https = || host.iroh();
     let mut members: Vec<Member> = [a, b]
         .into_iter()
         .map(|device| {
@@ -351,7 +315,7 @@ async fn a_member_compacts_a_sealed_route_the_host_cannot_read() {
     let mut merged = members[0].replica.fork();
     merged.merge_incoming(&mut c_doc.fork()).unwrap();
     let heads = merged.get_heads();
-    let (replica, documents, _, _) = join_late(
+    let (replica, documents, _) = join_late(
         &host,
         enrol(&root, "phone", DeviceCapabilities::member()),
         &host_device.cert,

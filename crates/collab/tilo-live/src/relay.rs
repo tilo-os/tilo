@@ -371,36 +371,6 @@ impl Relay {
         }
     }
 
-    /// Validate the exact raw HTTP/3 route selected by a shared host ingress.
-    ///
-    /// Both arguments must come from the unnormalized CONNECT pseudo-headers.
-    /// `expected_authority` is the canonical authority from the installed host
-    /// configuration. Queries, dot segments, percent aliases, credentials and
-    /// alternate authority spellings fail byte-for-byte comparison.
-    pub fn validate_route(
-        raw_authority: &str,
-        expected_authority: &str,
-        raw_target: &str,
-    ) -> Option<VoiceRoute> {
-        (raw_authority == expected_authority && raw_target == VOICE_PATH).then_some(VoiceRoute(()))
-    }
-
-    /// Serve a standalone listener for [`VOICE_PATH`]. At most
-    /// [`MAX_ADMITTING`] sessions are being admitted at once; admitted ones
-    /// are as many as the authority admits. Dropping this future aborts every task
-    /// and its protocol session; no detached session survives shutdown.
-    pub async fn serve(self, endpoint: quinn::Endpoint) {
-        carrier::serve_endpoint(endpoint, &[VOICE_PATH], move |_, session| {
-            let relay = self.clone();
-            async move {
-                relay
-                    .serve_session(VoiceRoute(()), session, Peer::Web)
-                    .await;
-            }
-        })
-        .await;
-    }
-
     /// Serve one session answered with [`carrier::PROTOCOL`] on an exactly
     /// validated route.
     ///
@@ -683,43 +653,6 @@ impl Relay {
             session.abort(moq_net::Error::Cancel);
         }
         drop(forwarder);
-    }
-}
-
-/// Isolated loopback voice relay with a generated short-lived certificate,
-/// for device-free native pipeline tests and proofs. It never
-/// binds a non-loopback address and advertises no production authorization:
-/// the caller supplies the complete (test) authority.
-pub struct LoopbackRelay {
-    pub endpoint: String,
-    pub fingerprints: Vec<String>,
-    relay: Relay,
-    task: tokio::task::JoinHandle<()>,
-}
-impl LoopbackRelay {
-    /// Must be called inside a Tokio runtime.
-    ///
-    /// # Errors
-    ///
-    /// Returns a message when the loopback server cannot be configured or bound.
-    pub fn start(authority: Arc<dyn RelayAuthority>) -> Result<Self, String> {
-        let listener = carrier::loopback()?;
-        let relay = Relay::new(authority);
-        let task = tokio::spawn(relay.clone().serve(listener.endpoint));
-        Ok(Self {
-            endpoint: format!("https://127.0.0.1:{}{VOICE_PATH}", listener.port),
-            fingerprints: listener.fingerprints,
-            relay,
-            task,
-        })
-    }
-    pub fn counters(&self) -> CounterSnapshot {
-        self.relay.counters()
-    }
-}
-impl Drop for LoopbackRelay {
-    fn drop(&mut self) {
-        self.task.abort();
     }
 }
 

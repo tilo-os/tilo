@@ -18,38 +18,23 @@ struct Seen {
 
 /// A server answering one request with what its path asks for.
 fn server() -> (String, std::thread::JoinHandle<Seen>) {
-    use std::io::{BufRead as _, Read as _, Write as _};
+    use std::io::Write as _;
     let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     let origin = format!("http://{}", listener.local_addr().unwrap());
     let task = std::thread::spawn(move || {
         let (mut socket, _) = listener.accept().unwrap();
-        socket
-            .set_read_timeout(Some(tilo_test_env::hang_bound()))
-            .unwrap();
-        let mut reader = std::io::BufReader::new(&mut socket);
-        let mut request_line = String::new();
-        reader.read_line(&mut request_line).unwrap();
-        let path = request_line
+        let (head, body) = super::tests::read_request(&mut socket);
+        let path = head
             .split_whitespace()
             .nth(1)
             .unwrap_or_default()
             .to_owned();
-        let (mut headers, mut length) = (Vec::new(), 0);
-        loop {
-            let mut line = String::new();
-            assert!(reader.read_line(&mut line).unwrap() > 0);
-            if line == "\r\n" {
-                break;
-            }
-            let (name, value) = line.trim_end().split_once(':').unwrap();
-            let (name, value) = (name.to_ascii_lowercase(), value.trim().to_owned());
-            if name == "content-length" {
-                length = value.parse().unwrap();
-            }
-            headers.push((name, value));
-        }
-        let mut body = vec![0; length];
-        reader.read_exact(&mut body).unwrap();
+        let headers: Vec<(String, String)> = head
+            .lines()
+            .skip(1)
+            .filter_map(|line| line.split_once(':'))
+            .map(|(name, value)| (name.to_ascii_lowercase(), value.trim().to_owned()))
+            .collect();
         let answer = if path.ends_with("/v1/messages") {
             json!({"id": "msg_1", "type": "message", "role": "assistant", "model": "checked-model",
                 "content": [{"type": "text", "text": "answer"}],

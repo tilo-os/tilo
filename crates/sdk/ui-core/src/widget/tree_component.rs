@@ -673,6 +673,7 @@ fn row_of(
     let folded = marks.is_folded(&key_owned);
     let mut row = ListRow::new(key_owned.clone(), node.label.clone())
         .depth(marks.depth(&key_owned))
+        .tree_row()
         .row_height(TREE_ROW_HEIGHT)
         .with_feel(feel);
     if let Some(props) = &node.row {
@@ -931,7 +932,7 @@ impl Decorator for DescribedTreeView {
 }
 
 /// A branch "Root" over a leaf "Child", as a described component: the rows a headless run
-/// acts on.
+/// acts on. It reports the row a person chooses, so a headless run reads the choice it makes.
 #[cfg(test)]
 pub(crate) fn items_tree(id: &str, name: Option<&str>, open: bool) -> DescribedTreeView {
     let node = |label: &str, item: &str, parent: Option<&str>, branch: bool| TreeViewNodeProps {
@@ -1225,5 +1226,41 @@ mod tests {
             vec!["folder".to_owned()],
             "a view that holds nothing open folds its branch, and the list opens it when read"
         );
+    }
+
+    /// A press on a tree's row chooses it whether or not the view names a choice event: the
+    /// tree keeps the row under the keyboard and the pointer alike, as every list does.
+    #[test]
+    fn a_press_chooses_a_trees_row_whatever_the_view_reports() {
+        use crate::headless::FrameHarness;
+        use crate::theme::Theme;
+
+        let queue = crate::Intents::default();
+        for select in [
+            Event::None,
+            Event::View(Intent::new(&crate::Intents::default(), "tree", "select")),
+        ] {
+            let tree = tree_of(
+                vec![
+                    node("a", None, true, &queue),
+                    node("b", Some("a"), false, &queue),
+                ],
+                true,
+                select,
+            );
+            let mut harness =
+                FrameHarness::for_root(crate::State::new(), tree, (400, 240), Theme::dark());
+            let row = harness
+                .root::<DescribedTreeView>()
+                .list
+                .row_rect(&"b".to_owned())
+                .expect("the leaf row stands somewhere");
+            harness.click_at(row.center().x, row.center().y);
+            assert_eq!(
+                harness.root::<DescribedTreeView>().selected(),
+                ["b".to_owned()],
+                "a press chooses the row"
+            );
+        }
     }
 }

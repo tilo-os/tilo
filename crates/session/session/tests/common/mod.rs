@@ -19,6 +19,7 @@
 pub mod audio;
 pub mod dev_apps;
 pub mod people;
+pub mod personal;
 pub mod window;
 
 use std::io::{BufRead as _, BufReader, Write as _};

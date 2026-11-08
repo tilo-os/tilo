@@ -48,7 +48,7 @@ use tilo_agent_participant::{
     AgentControl, AgentIdentity, AgentParticipant, ModelPlanner, ParticipantConfig, Replica, Seed,
     StepAction, record_provider,
 };
-use tilo_browser_peer::{Host, PeerEvent};
+use tilo_browser_peer::PeerEvent;
 use tilo_peer_state::document_frame::DocumentRoute;
 use tilo_relay_protocol::agents::{AgentStatus, TaskState};
 use tilo_relay_protocol::delegation::{DelegateScope, Delegation};
@@ -193,18 +193,8 @@ async fn session() -> (
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn every_web_app_over_the_session() {
-    let (root, _) = UserIdentity::generate("Ada", 1);
+    let (root, host_device, _state, host, _laptop) = session().await;
     let user = root.verifying_key().to_bytes();
-    let host_device = enrol(&root, "home-server", DeviceCapabilities::host());
-    let state = support::scratch_dir();
-    let host = start_host(
-        &root,
-        &host_device,
-        state.path(),
-        "127.0.0.1:0".parse().unwrap(),
-    )
-    .await;
-    let _laptop = participant::Participant::start(&host.relay, &root).await;
     let catalogue = catalogue();
 
     // The agent: its own device under the root with no capabilities, and a
@@ -258,7 +248,7 @@ async fn every_web_app_over_the_session() {
     // The browser: one HTTPS session for the workspace's documents.
     let browser_device = enrol(&root, "browser", DeviceCapabilities::member());
     let browser = start_peer(
-        Host::Https(host.https()),
+        host.iroh(),
         browser_device.cert.clone(),
         host_device.cert.clone(),
         browser_device.key.clone(),

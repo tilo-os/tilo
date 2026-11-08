@@ -21,11 +21,12 @@
 # while it runs:
 #   TILO_ROOMS_ROLES_FILE    that file's path (unset: the owner root alone)
 #
-# The pages' live plane is WebTransport on UDP, which the ingress publishes
-# separately from the HTTP routes: it binds TILO_ROOMS_LIVE and pages dial
-# TILO_ROOMS_LIVE_ORIGIN. The HTTPS listener behind the ingress binds
-# TILO_ROOMS_WEB; an address ending in `:0` takes a port the kernel picks,
-# which the host announces in its started event.
+# The pages reach the host's live plane through the host's own iroh packet
+# relay, over websockets, which the deployment publishes beside the HTTP
+# routes: it binds TILO_ROOMS_LIVE, and pages dial TILO_ROOMS_LIVE_ORIGIN
+# when an ingress terminates TLS in front of it. The HTTPS listener behind the
+# ingress binds TILO_ROOMS_WEB; an address ending in `:0` takes a port the
+# kernel picks, which the host announces in its started event.
 #
 # Everything else has the default below. Any other TILO_ROOMS_* variable stops
 # the start: this host does not read it, and a deployment that still sets what
@@ -37,10 +38,13 @@ fail() {
   exit 2
 }
 
+# `TILO_ROOMS_LAYOUT` is read but no longer passed on: every workspace's
+# arrangement is its shared desktop record, so the host has no layout flag, and
+# a deployment that still names one (eu1 does) starts unchanged.
 known='TILO_ROOMS_PERSISTENT TILO_ROOMS_NAME TILO_ROOMS_DESCRIPTION TILO_ROOMS_ADMISSION
 TILO_ROOMS_WAIT_LIST_MAX TILO_ROOMS_PUBLIC_API TILO_ROOMS_LIVE_ORIGIN
 TILO_ROOMS_DEFAULT_ROLE TILO_ROOMS_CHAT_CHANNELS TILO_ROOMS_FEEDBACK_CHANNEL
-TILO_ROOMS_SEED_APPS TILO_ROOMS_AUTHOR_APPS TILO_ROOMS_BOTS TILO_ROOMS_LAYOUT
+TILO_ROOMS_SEED_APPS TILO_ROOMS_AUTHOR_APPS TILO_ROOMS_REFOUND TILO_ROOMS_BOTS TILO_ROOMS_LAYOUT
 TILO_ROOMS_INACTIVE_AFTER_DAYS TILO_ROOMS_ROOT_FILE TILO_ROOMS_ROLES_FILE
 TILO_ROOMS_STATE
 TILO_ROOMS_WEB_ENTRY TILO_ROOMS_SITE_ORIGINS TILO_ROOMS_RELAY_ORIGIN
@@ -114,10 +118,9 @@ set -- room \
   --public-avatars-url "$origin/avatars" \
   --listing-description "$description" \
   --default-role "${TILO_ROOMS_DEFAULT_ROLE:-editor}" \
-  --layout "${TILO_ROOMS_LAYOUT:-shared}" \
   --inactive-after-days "${TILO_ROOMS_INACTIVE_AFTER_DAYS:-30}" \
   --web "${TILO_ROOMS_WEB:-127.0.0.1:9781}" \
-  --web-live "${TILO_ROOMS_LIVE:-0.0.0.0:9781}" \
+  --packet-relay "${TILO_ROOMS_LIVE:-0.0.0.0:9782}" \
   --tls dev \
   --web-plain "${TILO_ROOMS_RELAY_PLAIN:-0.0.0.0:9780}" \
   --public-origin "$origin" \
@@ -125,12 +128,11 @@ set -- room \
   --web-entry "$entry" \
   --allowed-origin "$origin"
 
-# By default the relay announces the live plane at the relay origin's host on
-# the port it bound; an ingress that publishes it at another host or port (its
-# own https://live.… on UDP 443) names that origin, and the certificate the
-# relay presents names its host too: pages pin that certificate for it.
+# By default pages dial the packet relay at the address it bound; an ingress
+# that publishes it at another host (its own wss://live.…) names that origin,
+# and the certificate the ingress presents names its host too.
 if [ -n "${TILO_ROOMS_LIVE_ORIGIN:-}" ]; then
-  set -- "$@" --web-live-origin "${TILO_ROOMS_LIVE_ORIGIN%/}"
+  set -- "$@" --packet-relay-url "${TILO_ROOMS_LIVE_ORIGIN%/}"
 fi
 if [ -n "${TILO_ROOMS_NAME:-}" ]; then
   set -- "$@" --workspace-name "$TILO_ROOMS_NAME"
@@ -162,6 +164,23 @@ fi
 set -- "$@" $(comma_flags "${TILO_ROOMS_CHAT_CHANNELS-general}" --chat-channel)
 set -- "$@" $(comma_flags "${TILO_ROOMS_SEED_APPS-so.tilo.chat}" --seed-app)
 set -- "$@" $(comma_flags "${TILO_ROOMS_AUTHOR_APPS:-}" --author-app)
+# Records whose retained history lost the base its deltas were written over:
+# founded again at start from what the workspace still reads, their old
+# history archived beside the replay, never deleted. Named as
+# APP:RECORD (an app id holds no `:`), comma-separated.
+refound=${TILO_ROOMS_REFOUND:-}
+while [ -n "$refound" ]; do
+  case $refound in
+    *,*) entry=${refound%%,*}; refound=${refound#*,} ;;
+    *) entry=$refound; refound= ;;
+  esac
+  entry=$(printf '%s' "$entry" | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')
+  [ -z "$entry" ] && continue
+  case $entry in
+    *:*) set -- "$@" --refound "${entry%%:*}/${entry#*:}" ;;
+    *) fail "TILO_ROOMS_REFOUND entry $entry is not APP:RECORD" ;;
+  esac
+done
 set -- "$@" $(comma_flags "${TILO_ROOMS_SITE_ORIGINS:-}" --allowed-origin)
 if [ -n "${TILO_ROOMS_FEEDBACK_CHANNEL:-}" ]; then
   set -- "$@" --feedback-channel "$TILO_ROOMS_FEEDBACK_CHANNEL"

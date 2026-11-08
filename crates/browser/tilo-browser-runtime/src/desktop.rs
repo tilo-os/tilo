@@ -30,15 +30,11 @@ use ui::widget::TileHost;
 use ui::window_share::ResourceView;
 
 /// Applications the page can open, in launcher order: every application
-/// the bundle registered from its manifests (`ui::application::registry`),
-/// else the built-in Scratch, so a runtime without apps still opens one. A
-/// bundle whose apps are all still deferred has apps, just none loaded yet.
+/// the bundle registered from its manifests (`ui::application::registry`).
+/// A bundle whose apps are all still deferred has apps, just none loaded
+/// yet.
 pub(crate) fn applications() -> Vec<&'static ApplicationDefinition> {
-    let mut applications = if ui::application::registry::catalogue().is_empty() {
-        vec![crate::scratch::definition()]
-    } else {
-        ui::application::registry::applications()
-    };
+    let mut applications = ui::application::registry::applications();
     // The composer is an application of the bundle when it registered it
     // (fetched on first open); otherwise it is linked in here.
     if !applications
@@ -51,12 +47,11 @@ pub(crate) fn applications() -> Vec<&'static ApplicationDefinition> {
     applications
 }
 
-/// An application the page can open by id whose code is loaded, Scratch
-/// included: windows a desktop saved before keep their application.
+/// An application the page can open by id whose code is loaded: windows a
+/// desktop saved before keep their application.
 pub(crate) fn application(app: &str) -> Option<&'static ApplicationDefinition> {
     applications()
         .into_iter()
-        .chain(std::iter::once(crate::scratch::definition()))
         .find(|definition| definition.app_id() == app)
 }
 
@@ -107,10 +102,8 @@ fn not_in_the_browser(app: &str) -> String {
 }
 
 pub(crate) fn known_application(app: &str) -> Option<&'static str> {
-    let scratch = crate::scratch::definition();
     known_applications()
         .into_iter()
-        .chain(std::iter::once((scratch.app_id(), scratch.title())))
         .find_map(|(id, title)| (id == app).then_some(title))
 }
 
@@ -215,7 +208,6 @@ impl Standing {
         tilo_desktop_model::commands::Standing {
             person,
             role: self.role(),
-            layout_shared: true,
             members: None,
         }
     }
@@ -375,10 +367,6 @@ pub(crate) struct Shared {
     /// ([`crate::replication`] asks it with the rest of their standing, as
     /// the desk asks its own host).
     pub invitable: Arc<AtomicBool>,
-    /// The workspace keeps no member's layout (a public workspace refused this
-    /// desktop's): its windows and desks are the person's own, sent to
-    /// nobody, and the workspace's later layout no longer replaces them.
-    pub own_layout: Rc<Cell<bool>>,
     /// The workspace's members as its governance lists them, once heard: what
     /// someone no longer among them made is released, anyone's here to
     /// close ([`tilo_desktop_model::ownership::released`]).
@@ -410,7 +398,6 @@ impl Shared {
         members: Option<&'a std::collections::BTreeSet<String>>,
     ) -> tilo_desktop_model::commands::Standing<'a> {
         tilo_desktop_model::commands::Standing {
-            layout_shared: !self.own_layout.get(),
             members,
             ..self.standing.of(person)
         }

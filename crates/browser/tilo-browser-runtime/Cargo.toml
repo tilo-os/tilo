@@ -71,7 +71,7 @@ web-sys = { version = "=0.3.85", features = [
     "console",
 ] }
 # The certified peer over iroh, its live codec and the toolkit transport.
-tilo-browser-peer = { version = "0.1.0", path = "../tilo-browser-peer", default-features = false, features = ["iroh", "toolkit"] }
+tilo-browser-peer = { version = "0.1.0", path = "../tilo-browser-peer", features = ["toolkit"] }
 tilo-peer-state = { version = "0.1.0", path = "../../collab/tilo-peer-state" }
 # The picture sources and layers a call of the page encodes and shows.
 tilo-live = { version = "0.1.0", path = "../../collab/tilo-live", features = ["plane"] }

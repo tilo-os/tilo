@@ -1,43 +1,21 @@
-//! The browser carrier of the relay: HTTPS for the durable plane, presence
-//! and calls. Served by the host itself.
+//! What a page asks a host over HTTPS before it has a session: the host's
+//! address, approvals for a member's own devices, and the join steps of a
+//! workspace. Served by the host itself.
 //!
-//! HTTPS carries the *same* values as the `tilo-relay/1` stream: the
-//! [`auth`](crate::auth) handshake, then [`Envelope`]s both ways. A browser
-//! session is one more peer of the host, served by the same per-workspace
-//! authority as an iroh peer, so both see one host order.
-//!
-//! Every body is postcard. Routes (all `POST`, below [`API_PREFIX`]):
+//! Everything a page does once it is up goes over its iroh session; these
+//! routes only get it there. Every body is postcard. Routes (all `POST`,
+//! below [`API_PREFIX`]):
 //!
 //! | Route | Body | Answer |
 //! |---|---|---|
 //! | `/host` | — | [`HostInfo`] |
-//! | `/node` | — | [`NodeInfo`] |
-//! | `/certify` | `CertificationRequest` | `CertifyReply` |
-//! | `/certify/wait` | request digest `[u8; 32]` | `CertifyReply` (long-poll) |
-//! | `/session` | [`Hello`](crate::auth::Hello) | [`SessionChallenge`]; `403` [`SessionRefusal`] |
-//! | `/session/finish` | [`SessionFinish`] | [`SessionGrant`]; `403` [`SessionRefusal`] |
-//! | `/session/end` ([`SESSION_END_PATH`]) | the session token, lowercase hex text | `204` |
-//! | `/send` | `Vec<Envelope>` | `204` |
-//! | `/events` | [`EventsRequest`] | [`EventsPage`] (long-poll) |
-//! | `/rooms` | [`WorkspacesRequest`](crate::workspaces::RoomsRequest) | [`WorkspacesReply`](crate::workspaces::RoomsReply) |
+//! | `/certify/approve` | `MemberApproval` | `ApproverReply` |
 //! | `/join` | [`JoinStep`](crate::workspaces::JoinStep) | [`JoinReply`](crate::workspaces::JoinReply) |
-//! | `/here` ([`HERE_PATH`]) | [`HereRequest`] | [`HereReply`]; `400` out of bounds, `403` when not admitted |
-//! | `/live` ([`LIVE_INFO_PATH`]) | [`LiveRequest`] | [`LiveInfo`]; `403` when the page's device is not admitted |
 //! | `/fetch` ([`FETCH_PATH`]) | any method: `tilo_net::proxy` wire protocol v1 | the target's response, or the proxy's failure |
 //!
-//! `/fetch` is the host's fetch proxy, offered when the session grant
-//! carries [`FEATURE_FETCH_PROXY`]: an admitted member's page reads, through
-//! its host, the sites that send no CORS headers. Unlike every other route it
-//! takes the method of the request it relays, and its session token in
-//! [`SESSION_HEADER`] as the others do.
-//!
-//! `/workspace-join` is the host's workspace join exchange, the one its
-//! iroh endpoint serves on the workspace-join ALPN, for a native device that
-//! reaches the host over HTTPS only: it takes and answers exactly the
-//! requests and responses the iroh exchange does. Over iroh the transport
-//! authenticates the requesting device; here each request is bound to the
-//! device it names, whose signature its proof carries, as `/join` binds a
-//! page's steps.
+//! `/fetch` is the host's fetch proxy: through it a page reads the sites that
+//! send no CORS headers. Unlike every other route it takes the method of the
+//! request it relays, and it takes its session token in [`SESSION_HEADER`].
 //!
 //! A host started without a certificate serves only `/install` until it has
 //! one: the body is the root-signed `DeviceCert` for its device key as JSON
@@ -49,29 +27,17 @@
 //! node, the key of the session beside it, which the root certifies at the
 //! same time as one of the person's devices.
 //!
-//! `/join` and `/workspace-join` are the routes after `/certify` a device
-//! calls without a session: a person a host does not know yet joins through
-//! them. Routes after
-//! the handshake carry the session token in
-//! [`SESSION_HEADER`] (lowercase hex). A `401` means the session is gone:
-//! the device runs the handshake again, resubscribes and resends its outbox.
-//!
-//! `/session/end` takes its token as the body instead, so a page that is
-//! going away can say so with `navigator.sendBeacon`, which sends no
-//! headers of its own: the host ends that session at once rather than when
-//! its polls stop, and the people in the workspace stop counting the page.
+//! `/join` is the route a device calls without a session: a person a host
+//! does not know yet joins through it. A device certifies itself over the
+//! host's certification ALPN, and `/certify/approve` carries a member's
+//! root-signed answer to their own device's request.
 
 use serde::{Deserialize, Serialize};
 
-use crate::Envelope;
-use crate::auth::{HelloAck, HelloAck2};
-
-/// Path prefix of every browser carrier route.
+/// Path prefix of every route a page asks a host.
 pub const API_PREFIX: &str = "/peer/v1";
 /// Header carrying the session token.
 pub const SESSION_HEADER: &str = "x-tilo-session";
-/// Where a page ends its session as it leaves, the token its body.
-pub const SESSION_END_PATH: &str = "/session/end";
 /// Header carrying the install token of a host awaiting its certificate.
 pub const INSTALL_TOKEN_HEADER: &str = "x-tilo-install-token";
 /// The route that installs a waiting host's certificate.
@@ -125,69 +91,8 @@ pub struct Installed {
     pub user_public_key: String,
 }
 
-/// Longest an `/events` or `/certify/wait` poll is held.
-pub const MAX_POLL_MS: u32 = 25_000;
 /// Largest request body a route accepts.
 pub const MAX_REQUEST_BYTES: usize = 8 * 1024 * 1024;
-/// Most envelopes one `/events` answer carries. A late join's tail is
-/// thousands of small envelopes (a few hundred bytes each), and every page
-/// costs the browser a round trip to the host: the count must let
-/// [`MAX_PAGE_BYTES`] end a page of small envelopes, not cut it short. At
-/// 256 a Lounge with ~4000 envelopes of history took 16 pages, 8 s over a
-/// 450 ms route, before the page could open.
-pub const MAX_PAGE_ENVELOPES: usize = 8192;
-// Envelopes of 128 payload bytes (plus the per-envelope allowance) fill a
-// page by bytes before by count.
-const _: () = assert!(MAX_PAGE_ENVELOPES * (128 + ENVELOPE_OVERHEAD) >= MAX_PAGE_BYTES);
-/// Payload bytes after which an `/events` answer ends (it always carries at
-/// least one envelope). A late join's checkpoint and tail, or a segmented
-/// multi-megabyte document, then stream as a series of bounded pages, each
-/// acknowledged before the next.
-pub const MAX_PAGE_BYTES: usize = 1024 * 1024;
-
-/// What [`envelope_bytes`] allows each envelope for its keys and framing.
-const ENVELOPE_OVERHEAD: usize = 160;
-
-/// Approximate wire size of `envelope`: its opaque payload plus a fixed
-/// allowance for keys and framing. Bounds pages and session buffers without
-/// encoding every envelope twice.
-pub fn envelope_bytes(envelope: &Envelope) -> usize {
-    let payload = match envelope {
-        Envelope::Delta { delta, .. } | Envelope::Commit { delta, .. } => delta.len(),
-        Envelope::SyncResponse { delta_since, .. } => delta_since.len(),
-        Envelope::RetiredPresence { payload, .. } => payload.len(),
-        Envelope::Compacted { statement, .. } => statement.len(),
-        Envelope::RetiredLive { frame, .. }
-        | Envelope::RemoteAction { frame, .. }
-        | Envelope::HostAction { frame }
-        | Envelope::WorkspacesRequest { frame, .. }
-        | Envelope::WorkspacesReply { frame, .. }
-        | Envelope::RecordContentWant { frame, .. }
-        | Envelope::RecordContent { frame, .. } => frame.len(),
-        Envelope::WorkspaceBootstrap { bootstrap, .. } => bootstrap.len(),
-        Envelope::NotAuthorised { reason, .. }
-        | Envelope::RemoteActionUndeliverable { reason, .. }
-        | Envelope::CommitRefused { reason, .. }
-        | Envelope::VoiceRefused { reason, .. } => reason.len(),
-        Envelope::VoiceGranted { grant, .. } => grant.participants.len().saturating_mul(200),
-        Envelope::VoiceCallList { result, .. } => match result {
-            Ok(calls) => calls.iter().fold(0usize, |bytes, call| {
-                bytes.saturating_add(
-                    call.participants
-                        .len()
-                        .saturating_add(1)
-                        .saturating_mul(200),
-                )
-            }),
-            Err(reason) => reason.len(),
-        },
-        Envelope::PeerRelayHello { hosted_workspaces } => hosted_workspaces.len().saturating_mul(8),
-        Envelope::SyncRequest { have_heads, .. } => have_heads.len().saturating_mul(32),
-        _ => 0,
-    };
-    payload.saturating_add(ENVELOPE_OVERHEAD)
-}
-
 /// What a page needs to know about the host before it has a certificate.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct HostInfo {
@@ -209,257 +114,9 @@ pub struct HostAddress {
     pub relay_url: Option<String>,
 }
 
-/// What a node runs beside its relay, for a member's session.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct NodeInfo {
-    /// The device of the session that runs the person's apps (legacy apps
-    /// among them) on the node: the device a page asks to open one.
-    pub session: Option<[u8; 32]>,
-}
-
-/// The host's answer to a session [`Hello`](crate::auth::Hello).
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct SessionChallenge {
-    /// The same [`HelloAck`] the relay stream answers with.
-    pub ack: HelloAck,
-    /// Identifies this handshake for [`SessionFinish`].
-    pub handshake: [u8; 16],
-}
-
-/// Why the host turned a session handshake away: the body of a `403` from
-/// `/session` or `/session/finish`, so a device decides what to do from the
-/// host's own reason rather than from how often it was refused.
-///
-/// The handshake checks the device's certificate, the host's revocations
-/// and its live trust policy, which is one allow list for the whole host.
-/// So it tells a revoked device apart from a person the host does not admit,
-/// but not why it does not admit them: one it never knew, one it forgot (its
-/// state was reset, or it pruned them after an absence) and one a workspace
-/// removed or banned all read [`Self::NotAdmitted`]. Whether such a person
-/// may come back is the workspace's door to answer, not the handshake's.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub enum SessionRefusal {
-    /// The host admits nobody of this device's person: joining again, where
-    /// the workspace lets them, admits them anew.
-    NotAdmitted,
-    /// This device is on the host's revocation list. It never comes back;
-    /// its person's other devices are unaffected.
-    DeviceRevoked,
-    /// The certificate did not verify, or was not valid at the host's time:
-    /// a newly issued certificate for the same device may be admitted.
-    CertificateInvalid,
-    /// The handshake itself failed: it was unknown or too old by its second
-    /// step, or the challenge signature did not verify. A new handshake may
-    /// succeed.
-    Handshake,
-}
-
-impl SessionRefusal {
-    /// The refusal for a failed [`crate::auth`] check.
-    #[must_use]
-    pub fn from_auth(error: &crate::auth::AuthError) -> Self {
-        use crate::auth::AuthError;
-        match error {
-            AuthError::Revoked => Self::DeviceRevoked,
-            AuthError::PolicyReject => Self::NotAdmitted,
-            AuthError::Cert(_) => Self::CertificateInvalid,
-            AuthError::BadChallengeSig | AuthError::EndpointMismatch => Self::Handshake,
-        }
-    }
-}
-
-/// The device's signature over the host's challenge.
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct SessionFinish {
-    /// From [`SessionChallenge::handshake`].
-    pub handshake: [u8; 16],
-    /// The same [`HelloAck2`] the relay stream carries.
-    pub ack2: HelloAck2,
-    /// The device's page keeps this session beside the workspace it is in, only
-    /// to deliver for it: nobody is online by it, so it takes no seat and
-    /// shows no face, and its person counts only by another session.
-    pub background: bool,
-}
-
-/// An authenticated session.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct SessionGrant {
-    /// Bearer token for [`SESSION_HEADER`].
-    pub token: [u8; 32],
-    /// The session ends here at the latest; the device then runs the
-    /// handshake again.
-    pub expires_at_ns: u64,
-}
-
-/// The host accepts [`crate::transport::Envelope::SubscribeFrom`] and issues
-/// [`crate::transport::Envelope::Position`]s.
-pub const FEATURE_RESUME: u64 = 1;
-
-/// The host accepts [`crate::transport::Envelope::CompactVolunteer`] and
-/// [`crate::transport::Envelope::Compacted`], and may send volunteers
-/// [`crate::transport::Envelope::CompactRequest`].
-pub const FEATURE_COMPACTION: u64 = 2;
-
-/// The host governs calls in its workspaces: it accepts
-/// [`crate::transport::Envelope::VoiceCall`],
-/// [`crate::transport::Envelope::VoiceJoin`],
-/// [`crate::transport::Envelope::VoiceLeave`],
-/// [`crate::transport::Envelope::VoiceShow`] and
-/// [`crate::transport::Envelope::VoiceCalls`] (see [`crate::voice`]).
-pub const FEATURE_VOICE: u64 = 4;
-
-/// The host governs workspaces a page administers and joins over HTTPS
-/// (`/rooms`, `/join`; see [`crate::workspaces`]).
-pub const FEATURE_ROOMS: u64 = 8;
-
-/// The host serves its members' pages a fetch proxy at [`FETCH_PATH`]
-/// (`tilo_net::proxy`, wire protocol v1).
-pub const FEATURE_FETCH_PROXY: u64 = 16;
-
 /// The host's fetch proxy, below [`API_PREFIX`].
 pub const FETCH_PATH: &str = "/fetch";
 
-/// Encode a `/session/finish` answer: the [`SessionGrant`] followed by the
-/// host's feature bits.
-pub fn encode_grant(grant: &SessionGrant, features: u64) -> Result<Vec<u8>, postcard::Error> {
-    let mut bytes = postcard::to_allocvec(grant)?;
-    bytes.extend(postcard::to_allocvec(&features)?);
-    Ok(bytes)
-}
-
-/// Decode a `/session/finish` answer into the grant and the host's feature
-/// bits.
-pub fn decode_grant(bytes: &[u8]) -> Result<(SessionGrant, u64), postcard::Error> {
-    let (grant, rest) = postcard::take_from_bytes::<SessionGrant>(bytes)?;
-    Ok((grant, postcard::from_bytes(rest)?))
-}
-
-/// Host-signed position in one session's event stream.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct Cursor {
-    /// Sequence of the last event covered.
-    pub seq: u64,
-    /// Host MAC binding `seq` to the session.
-    pub mac: [u8; 32],
-}
-
-/// One `/events` poll.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct EventsRequest {
-    /// Acknowledge every event up to this cursor; `None` on the first poll.
-    pub ack: Option<Cursor>,
-    /// Hold the poll this long for new events, at most [`MAX_POLL_MS`].
-    pub wait_ms: u32,
-}
-
-/// Events after the acknowledged cursor, in host order.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-pub struct EventsPage {
-    /// Cursor covering the last envelope here (unchanged when empty).
-    pub cursor: Option<Cursor>,
-    /// The envelopes the relay stream would have delivered.
-    pub envelopes: Vec<Envelope>,
-}
-
-/// Route of the live plane: how a page learns where the relay's WebTransport
-/// listener is and which certificate to pin for it.
-pub const LIVE_INFO_PATH: &str = "/live";
-
-/// A page's ask to join `workspace_id`'s live plane. The host answers only
-/// when the page's session device is admitted to the workspace now, so the
-/// answer is also the admission the page dials with.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct LiveRequest {
-    /// The workspace as this host numbers it, for the admission decision.
-    pub workspace_id: u64,
-    /// The workspace's own name, which its live namespace carries: the same
-    /// string every device of the workspace names its tracks by. The host
-    /// checks it against [`tilo_relay_protocol::room_workspace_id_matches`].
-    pub workspace: String,
-}
-
-/// Where a page joins the live plane: the relay's WebTransport listener, its
-/// certificate, and the origin to dial it at.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct LiveInfo {
-    /// The UDP port of the relay's WebTransport listener.
-    pub webtransport_port: u16,
-    /// Base64 SHA-256 of the listener's leaf certificate: what a page pins as
-    /// `serverCertificateHashes` (a development or self-signed certificate is
-    /// trusted by no root store).
-    pub certificate_sha256: String,
-    /// `https://<host>:<port>`: the origin the page dials, with the route and
-    /// the `moq-lite` subprotocol added by the page's carrier.
-    pub webtransport_origin: String,
-}
-
-/// The one length of an encoded [`LiveGrant`]: the version, the workspace as
-/// a little-endian `u64`, and the page's session token.
-pub const LIVE_GRANT_BYTES: usize = 1 + 8 + 32;
-
-/// The version an encoded [`LiveGrant`] starts with.
-const LIVE_GRANT_VERSION: u8 = 2;
-
-/// What a page admits itself to the live plane with: the workspace as the host
-/// numbers it, and the token of the page's HTTPS session. The host answers
-/// [`LIVE_INFO_PATH`] only to a device the workspace admits, so the grant is
-/// the admission itself; the WebTransport listener takes it as its proof
-/// because a page holds no device certificate where its network stack runs.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct LiveGrant {
-    /// The workspace as the host numbers it.
-    pub workspace_id: u64,
-    /// The page's HTTPS session token, which every route carries as hex.
-    pub token: [u8; 32],
-}
-
-impl LiveGrant {
-    /// The grant of the page whose HTTPS session token is `session` (hex, as
-    /// the routes carry it) to `workspace_id`'s live plane, or `None` when
-    /// `session` is not a session token.
-    #[must_use]
-    pub fn from_session(workspace_id: u64, session: &str) -> Option<Self> {
-        let mut token = [0_u8; 32];
-        hex::decode_to_slice(session, &mut token).ok()?;
-        Some(Self {
-            workspace_id,
-            token,
-        })
-    }
-
-    /// The grant's bytes: the live carrier's admission proof.
-    #[must_use]
-    pub fn encode(self) -> [u8; LIVE_GRANT_BYTES] {
-        let mut bytes = [0_u8; LIVE_GRANT_BYTES];
-        let fields = [LIVE_GRANT_VERSION]
-            .into_iter()
-            .chain(self.workspace_id.to_le_bytes())
-            .chain(self.token);
-        for (slot, field) in bytes.iter_mut().zip(fields) {
-            *slot = field;
-        }
-        bytes
-    }
-
-    /// The grant `proof` carries, or `None` for any other proof.
-    #[must_use]
-    pub fn decode(proof: &[u8]) -> Option<Self> {
-        let proof = <[u8; LIVE_GRANT_BYTES]>::try_from(proof).ok()?;
-        let (&version, rest) = proof.split_first()?;
-        if version != LIVE_GRANT_VERSION {
-            return None;
-        }
-        let (workspace_id, token) = rest.split_at(core::mem::size_of::<u64>());
-        Some(Self {
-            workspace_id: u64::from_le_bytes(workspace_id.try_into().ok()?),
-            token: token.try_into().ok()?,
-        })
-    }
-}
-
-/// Route of "who is here and what are they doing" in a workspace: a member
-/// posts their own recent semantic actions and gets everyone's line back.
-pub const HERE_PATH: &str = "/here";
 /// Bound of [`HereRequest::actions`].
 pub const MAX_HERE_ACTIONS: usize = 16;
 /// Bound, in characters, of each text field of a [`HereAction`].
@@ -601,33 +258,6 @@ pub struct HerePerson {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn a_page_grant_names_its_workspace_and_token() {
-        let grant = LiveGrant {
-            workspace_id: 7,
-            token: [9; 32],
-        };
-        assert_eq!(grant.encode().len(), LIVE_GRANT_BYTES);
-        assert_eq!(LiveGrant::decode(&grant.encode()), Some(grant));
-        assert!(LiveGrant::decode(&[]).is_none());
-        assert!(LiveGrant::decode(&[1; LIVE_GRANT_BYTES]).is_none());
-        assert!(LiveGrant::decode(&[2; LIVE_GRANT_BYTES.saturating_add(1)]).is_none());
-    }
-
-    #[test]
-    fn a_session_token_becomes_the_pages_grant() {
-        let session = hex::encode([9; 32]);
-        assert_eq!(
-            LiveGrant::from_session(7, &session),
-            Some(LiveGrant {
-                workspace_id: 7,
-                token: [9; 32],
-            })
-        );
-        assert!(LiveGrant::from_session(7, "9").is_none());
-        assert!(LiveGrant::from_session(7, "zz".repeat(32).as_str()).is_none());
-    }
 
     #[test]
     fn here_requests_past_their_bounds_are_refused() {

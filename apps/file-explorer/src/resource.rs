@@ -976,6 +976,14 @@ impl ResourceApp for FileExplorerShell {
         title: "Selected file",
         preview: crate::framework_history::preview,
     });
+    /// The person's own workspace tree: the record the filesystem daemon
+    /// writes as files are created, renamed, moved and deleted, and the one
+    /// the person's other devices and a shared workspace's members hold. The
+    /// window shows it through the mount, and keeps it as theirs.
+    const PERSON_RECORDS: &'static [ui::framework::PersonKind] =
+        &[ui::framework::PersonKind::shared::<
+            fs_protocol::tree::FilesTree,
+        >()];
 
     fn view(cx: &mut ViewCx<FileExplorer>) -> Element {
         // Mounted in the shell, Files starts where the shell says and opens

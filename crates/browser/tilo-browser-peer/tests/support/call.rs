@@ -14,7 +14,6 @@ use automerge::AutoCommit;
 use ed25519_dalek::SigningKey;
 use getrandom::{SysRng, rand_core::UnwrapErr};
 use neighbour_wire::NeighbourMsg;
-use tilo_browser_peer::HttpsLink;
 use tilo_peer_state::join::{MemberRole, decode_and_verify_invitation};
 use tilo_peer_state::{StatePeer, TransportOrigin};
 use tilo_relay::RelayClient;
@@ -45,7 +44,7 @@ pub async fn endpoint(key: &SigningKey) -> iroh::Endpoint {
 }
 
 /// The next envelope from the browser session that `pick` accepts.
-pub async fn browser<T>(link: &mut HttpsLink, mut pick: impl FnMut(Envelope) -> Option<T>) -> T {
+pub async fn browser<T>(link: &RelayClient, mut pick: impl FnMut(Envelope) -> Option<T>) -> T {
     tilo_test_env::within("the host answers the browser", async {
         loop {
             if let Some(value) = pick(link.recv().await.expect("session open")) {
@@ -343,12 +342,23 @@ impl GovernedCall {
         (person, page)
     }
 
-    /// The host's HTTPS origin for browser sessions.
-    pub fn https(&self) -> std::sync::Arc<crate::support::https::DevHttps> {
-        crate::support::https::DevHttps::new(
-            self.web.addr,
-            self.web.certificate_sha256.as_ref().unwrap(),
+    /// The host as a browser session reaches it.
+    pub fn iroh(&self) -> tilo_browser_peer::Host {
+        tilo_browser_peer::Host::at(self.relay.node_addr())
+    }
+
+    /// A raw session the device behind `cert` and `key` dials from its own
+    /// iroh key, as a native device does: what a test drives envelopes with.
+    pub async fn session(&self, cert: &DeviceCert, key: &SigningKey) -> RelayClient {
+        RelayClient::connect_to_pinned_host(
+            endpoint(key).await,
+            self.relay.node_addr(),
+            cert.clone(),
+            key.clone(),
+            RevocationList::new(),
         )
+        .await
+        .unwrap()
     }
 
     pub async fn shutdown(self) {

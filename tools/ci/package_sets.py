@@ -66,9 +66,6 @@ WASM_ALSO = {
     "channel-crypto": (),
     "tilo-peer-state": (),
 }
-# Lints that misfire on wasm32 alone: browser handles are neither Send nor
-# Sync, and std::fs::File there holds nothing to drop.
-WASM_CLIPPY_ALLOW = ("clippy::future_not_send", "clippy::arc_with_non_send_sync", "clippy::drop_non_drop")
 
 
 def wasm_crates(packages: dict[str, dict]) -> set[str]:

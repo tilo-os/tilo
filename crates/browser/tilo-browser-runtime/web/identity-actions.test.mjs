@@ -5,13 +5,8 @@ import {
   SIGN_IN, syncProfile,
 } from './identity-actions.mjs';
 import {openInvites} from './pairing.mjs';
-import {browserIdentity, IdentityError, unlockIdentity} from './root-identity.mjs';
-import {fakeAuthenticator} from './testing/fake-authenticator.mjs';
-
-function memoryStorage() {
-  const map = new Map();
-  return {get: async key => (map.has(key) ? structuredClone(map.get(key)) : undefined), put: async (key, value) => { map.set(key, structuredClone(value)); }, delete: async key => { map.delete(key); }};
-}
+import {IdentityError} from './identity.mjs';
+import {fakeIdentity} from './testing/fake-identity.mjs';
 
 function fakeMount() {
   return {
@@ -44,7 +39,7 @@ test('passkeys are offered only where the browser says it can make one', async (
 });
 
 test('without passkeys the ask offers a recovery key, never a passkey it cannot make', async () => {
-  const identity = await browserIdentity({storage: memoryStorage(), persist: null});
+  const identity = fakeIdentity();
   const mount = fakeMount();
   const actions = createIdentityActions({identity, session: memorySession(), passkeys: async () => false});
   await actions.attach(mount);
@@ -63,7 +58,7 @@ function memorySession() {
 }
 
 test('nothing is asked on arrival; the ask comes after enough separate actions, once a session', async () => {
-  const identity = await browserIdentity({storage: memoryStorage(), persist: null});
+  const identity = fakeIdentity();
   const mount = fakeMount();
   const session = memorySession();
   let clock = 0;
@@ -99,7 +94,7 @@ test('nothing is asked on arrival; the ask comes after enough separate actions, 
 });
 
 test('the ask waits for a pause in what the person is doing', async () => {
-  const identity = await browserIdentity({storage: memoryStorage(), persist: null});
+  const identity = fakeIdentity();
   const mount = fakeMount();
   let busy = true;
   let retry = null;
@@ -118,8 +113,7 @@ test('the ask waits for a pause in what the person is doing', async () => {
 });
 
 test('keeping adds a passkey, publishes the envelope to every host, then offers a recovery key', async () => {
-  const credentials = fakeAuthenticator();
-  const identity = await browserIdentity({storage: memoryStorage(), persist: null, credentials});
+  const identity = fakeIdentity();
   const mount = fakeMount();
   const published = [];
   const errors = [];
@@ -130,6 +124,7 @@ test('keeping adds a passkey, publishes the envelope to every host, then offers 
   await actions.perform(KEEP.id);
   assert.deepEqual(errors, []);
   assert.equal(identity.kept, true);
+  assert.deepEqual(identity.calls[0], ['keepWithPasskey', {rpId: 'example.com', userName: undefined}]);
   assert.deepEqual(mount.actions, [RECOVERY.id]);
   assert.deepEqual(published, [['https://a.example', 1], ['https://b.example', 1]]);
   assert.deepEqual(mount.offers, [RECOVERY.id]);
@@ -138,12 +133,12 @@ test('keeping adds a passkey, publishes the envelope to every host, then offers 
   const recovering = createIdentityActions({passkeys: withPasskeys, identity, publish: async () => {},
     save: async key => { saved = key; return 'file'; }});
   await recovering.perform(RECOVERY.id);
-  const opened = await unlockIdentity(identity.envelope, {recoveryKey: saved});
-  assert.equal(opened.userPublicKey, identity.userPublicKey);
+  assert.equal(saved, 'RECOVERY-KEY');
+  assert.deepEqual(identity.calls.at(-1), ['createRecoveryKey']);
 });
 
 test('signing in asks every known host for the envelope, then reloads as that person', async () => {
-  const identity = await browserIdentity({storage: memoryStorage(), persist: null});
+  const identity = fakeIdentity();
   const asked = [];
   let reloaded = false;
   const actions = createIdentityActions({passkeys: withPasskeys, identity, rpId: 'example.com', lookups: () => ['https://a.example', 'https://a.example', 'https://host.example'],
@@ -159,7 +154,7 @@ test('signing in asks every known host for the envelope, then reloads as that pe
 });
 
 test('setting a name names the person and offers to keep them', async () => {
-  const identity = await browserIdentity({storage: memoryStorage(), persist: null});
+  const identity = fakeIdentity();
   const mount = fakeMount();
   const named = [];
   const actions = createIdentityActions({passkeys: withPasskeys, identity, name: () => 'Brave Otter',
@@ -180,7 +175,7 @@ test('setting a name names the person and offers to keep them', async () => {
 });
 
 test('a chosen name goes to every host the person joined, as their profile', async () => {
-  const identity = await browserIdentity({storage: memoryStorage(), persist: null});
+  const identity = fakeIdentity();
   const published = [];
   const actions = createIdentityActions({passkeys: withPasskeys, identity, hosts: () => ['https://a.example', 'https://b.example'],
     profile: async ({origin, identity: who, displayName}) => {
@@ -196,7 +191,7 @@ test('a chosen name goes to every host the person joined, as their profile', asy
 });
 
 test('a chosen picture is kept in the profile with the name, worn at once, and can be taken away', async () => {
-  const identity = await browserIdentity({storage: memoryStorage(), persist: null});
+  const identity = fakeIdentity();
   const published = [];
   let current = null;
   const photos = {current: () => current, choose: async () => 'data:image/webp;base64,UklGRg==', show: url => { current = url; }};
@@ -223,7 +218,7 @@ test('a chosen picture is kept in the profile with the name, worn at once, and c
 });
 
 test('a linked account names itself in the profile and lends its picture until one is uploaded', async () => {
-  const identity = await browserIdentity({storage: memoryStorage(), persist: null});
+  const identity = fakeIdentity();
   const published = [];
   let current = null;
   const photos = {current: () => current, choose: async () => 'data:image/webp;base64,UklGRg==', show: url => { current = url; }};
@@ -258,7 +253,7 @@ test('a linked account names itself in the profile and lends its picture until o
 });
 
 test('a new member with no saved profile wears their linked account’s picture', async () => {
-  const identity = await browserIdentity({storage: memoryStorage(), persist: null});
+  const identity = fakeIdentity();
   const published = [];
   let current = null;
   const photos = {current: () => current, choose: async () => null, show: url => { current = url; }};
@@ -283,7 +278,7 @@ test('a new member with no saved profile wears their linked account’s picture'
 });
 
 test('unlinking takes away the picture the account lent', async () => {
-  const identity = await browserIdentity({storage: memoryStorage(), persist: null});
+  const identity = fakeIdentity();
   const published = [];
   const avatar = 'data:image/png;base64,iVBORw0KGgo=';
   let current = avatar;
@@ -299,7 +294,7 @@ test('unlinking takes away the picture the account lent', async () => {
 });
 
 test('a name typed in the desktop is kept as typed, with no form', async () => {
-  const identity = await browserIdentity({storage: memoryStorage(), persist: null});
+  const identity = fakeIdentity();
   const published = [];
   const set = [];
   const actions = createIdentityActions({passkeys: withPasskeys, identity, hosts: () => ['https://a.example'],
@@ -312,7 +307,7 @@ test('a name typed in the desktop is kept as typed, with no form', async () => {
 });
 
 test('a name a host refuses is said in the form, which stays open, and is not taken', async () => {
-  const identity = await browserIdentity({storage: memoryStorage(), persist: null});
+  const identity = fakeIdentity();
   const set = [];
   const said = [];
   const errors = [];
@@ -348,7 +343,7 @@ test('a name a host refuses is said in the form, which stays open, and is not ta
 });
 
 test('a device takes the name its person keeps on their hosts, and a root holder publishes one chosen only here', async () => {
-  const identity = await browserIdentity({storage: memoryStorage(), persist: null});
+  const identity = fakeIdentity();
   const userPublicKey = identity.userPublicKey;
   const applied = [];
   const published = [];
@@ -383,7 +378,7 @@ const INVITE_B = '0b'.repeat(16);
 /** Pairing wired to fakes: the host's requests (`host.pending`), its
  * answers, the sheets and asks shown, and a clock and poll to drive. */
 async function pairingFixture({invites = [INVITE_A, INVITE_B]} = {}) {
-  const identity = await browserIdentity({storage: memoryStorage(), persist: null});
+  const identity = fakeIdentity();
   const mount = fakeMount();
   const host = {pending: [], answers: [], fail: null};
   const sheets = [];
@@ -417,7 +412,7 @@ async function pairingFixture({invites = [INVITE_A, INVITE_B]} = {}) {
 }
 
 const request = (digest, invite, extra = {}) => ({digest, pairingCode: '123456', label: 'Safari on iPhone', device: 'ee'.repeat(32),
-  invite, requestedAtMs: 0, country: 'DE', ...extra});
+  invite, requestedAtMs: 0, ...extra});
 
 test('each pairing link names a fresh invite, shown on a sheet that can copy it, open for ten minutes', async () => {
   const pairing = await pairingFixture();

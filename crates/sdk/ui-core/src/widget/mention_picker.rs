@@ -267,8 +267,7 @@ impl MentionPicker {
                         .list
                         .highlighted()
                         .and_then(|row| ranked.iter().position(|c| c.id == row.value));
-                    self.list
-                        .set_suggestions(ranked.iter().map(suggestion).collect());
+                    self.list.set_rows(ranked.iter().map(suggestion).collect());
                     self.list.set_highlight(Some(keep.unwrap_or(0)));
                     self.shown = ranked;
                     self.open = Some((block, query.start));

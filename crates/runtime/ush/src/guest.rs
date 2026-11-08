@@ -170,6 +170,10 @@ pub struct GuestPlan {
     /// own and a process group of its own: the terminal reaches only the
     /// programs given it.
     pub control: Option<std::sync::Arc<std::os::fd::OwnedFd>>,
+    /// The environment's own agent door on the host ([`crate::agent_door`]),
+    /// bound at [`tilo_paths::login::GUEST_AGENT_SOCKET`] and named in
+    /// [`tilo_paths::login::AGENT_SOCKET_ENV`]. `None` binds none.
+    pub agent_door: Option<PathBuf>,
 }
 
 impl GuestPlan {
@@ -528,6 +532,14 @@ fn push_runtime_and_broker(a: &mut Vec<OsString>, plan: &GuestPlan, broker: bool
     a.push("--bind".into());
     a.push(plan.broker_socket.clone().into_os_string());
     a.push(crate::GUEST_BROKER_SOCK.into());
+    // The environment's own agent door, which nothing outside it reaches. A
+    // door the session took away (it ended) leaves the guest without one,
+    // never without a guest.
+    if let Some(door) = &plan.agent_door {
+        a.push("--bind-try".into());
+        a.push(door.clone().into_os_string());
+        a.push(tilo_paths::login::GUEST_AGENT_SOCKET.into());
+    }
 }
 
 /// The environment's home, then the grants at their host paths, then the
@@ -604,6 +616,13 @@ fn push_environment(a: &mut Vec<OsString>, plan: &GuestPlan, broker: bool) {
     setenv("TILO_USH_ENVIRONMENT", &plan.environment, a);
     if broker {
         setenv("TILO_USH_BROKER", crate::GUEST_BROKER_SOCK, a);
+        if plan.agent_door.is_some() {
+            setenv(
+                tilo_paths::login::AGENT_SOCKET_ENV,
+                tilo_paths::login::GUEST_AGENT_SOCKET,
+                a,
+            );
+        }
     }
     // Carried across explicitly since the guest no longer inherits it: a shell
     // with no `LANG` answers in the C locale, breaking `ls`, `date`, and messages.
@@ -828,7 +847,58 @@ mod tests {
             resolver: None,
             terminal: None,
             control: None,
+            agent_door: None,
         }
+    }
+
+    /// The environment's own agent door is bound into its guest alone, at the
+    /// path its variable names; a guest without one, and a check's guest,
+    /// have neither.
+    #[test]
+    fn the_environments_agent_door_is_bound_where_its_variable_says() {
+        let dir = tempfile::tempdir().unwrap();
+        let door = dir.path().join("tilo-session/environments/0123.sock");
+        let plan = GuestPlan {
+            agent_door: Some(door.clone()),
+            ..plan_in(dir.path())
+        };
+        let argv = build_argv(&plan, None);
+        let bound = vec![
+            "--bind-try".to_owned(),
+            path(&door),
+            tilo_paths::login::GUEST_AGENT_SOCKET.to_owned(),
+        ];
+        assert!(windows(&argv, 3).contains(&bound), "{argv:?}");
+        let named = vec![
+            "--setenv".to_owned(),
+            tilo_paths::login::AGENT_SOCKET_ENV.to_owned(),
+            tilo_paths::login::GUEST_AGENT_SOCKET.to_owned(),
+        ];
+        assert!(windows(&argv, 3).contains(&named), "{argv:?}");
+
+        let without = build_argv(&plan_in(dir.path()), None);
+        assert!(
+            !strings(&without)
+                .iter()
+                .any(|s| s == tilo_paths::login::GUEST_AGENT_SOCKET),
+            "no door, no binding and no variable: {without:?}"
+        );
+        let check = build_check_argv(
+            &plan,
+            42,
+            Path::new("/private/source"),
+            Path::new("/private/build"),
+        );
+        assert!(
+            !check.iter().any(|s| s == door.as_os_str()),
+            "a check's guest reaches no door"
+        );
+        assert!(
+            !strings(&check)
+                .iter()
+                .any(|s| s == tilo_paths::login::AGENT_SOCKET_ENV),
+            "nor is told of one"
+        );
     }
 
     fn strings(argv: &[OsString]) -> Vec<String> {

@@ -305,7 +305,7 @@ impl CompletionList {
     /// The rows in view, for tests.
     #[cfg(test)]
     pub(crate) fn rows(&self) -> &[Suggestion] {
-        self.list.suggestions()
+        self.list.rows()
     }
 
     /// The selected row, when one is.
@@ -420,7 +420,7 @@ impl CompletionList {
         let (rows, selected) =
             completion::keep_place(rows, kept.as_ref().map(|(key, at)| (key.as_str(), *at)));
         self.list
-            .set_suggestions(rows.iter().map(Entry::suggestion).collect());
+            .set_rows(rows.iter().map(Entry::suggestion).collect());
         self.list.set_highlight(selected);
         self.entries = rows;
         self.token = Some(token);

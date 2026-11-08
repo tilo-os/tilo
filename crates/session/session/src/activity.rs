@@ -30,8 +30,8 @@ use tilo_desktop_model::{DesktopTree, Workspace, WorkspaceId, WorkspaceSlot};
 use tilo_desktop_surface::HistorySource;
 use tilo_desktop_surface::activity::describer::{Describer, Job};
 use tilo_desktop_surface::activity::{
-    ActivityHost, ActivitySnapshot, DetachedRecordHistory, HistoryOrigin, WorkspaceDeparture,
-    WorkspaceSeenFrontier, morning,
+    ActivityHost, ActivitySnapshot, DetachedRecordHistory, HistoryOrigin, TaskRunDocument,
+    TaskRunUndo, WorkspaceDeparture, WorkspaceSeenFrontier, morning,
 };
 use tilo_desktop_surface::history_log;
 use tilo_desktop_surface::session::{ActivityRequests, activity_requests};
@@ -154,6 +154,10 @@ impl Activity {
                 maps: HistoryMaps::load(state),
                 lists,
                 engine: RefCell::default(),
+                door: RefCell::default(),
+                undos: crate::task_undo::Undos::default(),
+                woken: Arc::clone(&woken),
+                wake: wake.clone(),
             }),
             person,
             records: RefCell::default(),
@@ -236,6 +240,12 @@ impl Activity {
     /// and is told when it served something new.
     pub(crate) fn serve_apps(&self, wire: Arc<ActivityWire>) {
         *self.0.wire.borrow_mut() = Some(wire);
+    }
+
+    /// Serve the apps this session runs through `door` : what undoes an agent's run in the records
+    /// it changed, as the person at the screen.
+    pub(crate) fn attach_door(&self, door: Arc<dyn crate::task_undo::UndoDoor>) {
+        *self.0.host.door.borrow_mut() = Some(door);
     }
 
     /// Take part in `link` 's fabric: what the person's devices answer each other about unlocking a
@@ -694,6 +704,12 @@ struct NativeActivityHost {
     /// The workspaces this device holds, once the session opened them: what refused one of the
     /// history's writes, and what the devices call themselves.
     engine: RefCell<Option<Arc<crate::engine::Engine>>>,
+    /// The session's action door, once its apps run here: the records an agent's run is undone in.
+    door: RefCell<Option<Arc<dyn crate::task_undo::UndoDoor>>>,
+    undos: crate::task_undo::Undos,
+    /// What asks the desk for the frame that shows how an undo ended.
+    woken: Arc<AtomicBool>,
+    wake: Option<tilo_service::Wake>,
 }
 
 impl ActivityHost for NativeActivityHost {
@@ -752,8 +768,6 @@ impl ActivityHost for NativeActivityHost {
             .map(|entry| entry.title.clone())
     }
 
-    /// Each write this device refused in `workspace` , once per change it would have brought: the
-    /// history row of that change reads where it is not.
     fn refusals(&self, workspace: &str) -> Vec<wire::Refusal> {
         let Some(engine) = self.engine.borrow().as_ref().map(Arc::clone) else {
             return Vec::new();
@@ -783,6 +797,36 @@ impl ActivityHost for NativeActivityHost {
                     .collect::<Vec<_>>()
             })
             .collect()
+    }
+
+    fn undo_task_run(&self, undo: TaskRunUndo) -> Result<(), String> {
+        // Undone by each changed document's own history, as the person at the screen.
+        let Some(door) = self.door.borrow().as_ref().map(Arc::clone) else {
+            return Err(tilo_desktop_surface::i18n::t(
+                "activity-undo-task-unavailable",
+            ));
+        };
+        let woken = Arc::clone(&self.woken);
+        let wake = self.wake.clone();
+        self.undos.start(
+            door,
+            self.person.clone(),
+            undo.workspace,
+            undo.invocation,
+            undo.task_id,
+            undo.steps,
+            move || ask_for_frame(&woken, wake.as_ref()),
+        )
+    }
+
+    fn poll_task_run_undo(
+        &self,
+        invocation: uuid::Uuid,
+    ) -> Option<Result<Vec<TaskRunDocument>, String>> {
+        match self.undos.poll(invocation)? {
+            crate::task_undo::UndoState::Running => None,
+            crate::task_undo::UndoState::Ended(outcome) => Some(outcome),
+        }
     }
 }
 

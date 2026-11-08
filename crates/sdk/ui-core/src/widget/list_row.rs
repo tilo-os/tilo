@@ -29,11 +29,11 @@ use std::borrow::Cow;
 use std::collections::HashMap;
 
 use crate::a11y::{AccessNode, AccessState, Role};
-use crate::chrome::{RowJoin, SelectionState, row_bleed};
+use crate::chrome::{RowJoin, SelectionState};
 use crate::icons::Icon;
 use crate::paint::PaintCtx;
 use crate::presence::PresenceCtx;
-use crate::text_render::{FontChoice, TextRenderer, TextStyle};
+use crate::text_render::{FontChoice, TextRenderer};
 use crate::theme::Theme;
 use crate::tokens::TextRole;
 use crate::tokens::colors::PresenceHue;
@@ -156,118 +156,6 @@ pub enum RowValue {
     Body,
     /// The row's main figure (a clock's time, a one-time code).
     Title,
-}
-
-/// The resolved geometry of every row in `theme`: what the face paints and
-/// the retained row measures, from one place.
-#[derive(Clone, Debug)]
-struct RowMetrics {
-    bleed: f64,
-    pad_y: f64,
-    min_height: f64,
-    column_gap: f64,
-    title: TextStyle,
-    title_strong: TextStyle,
-    subtitle: TextStyle,
-    secondary: TextStyle,
-    meta: TextStyle,
-    badge: TextStyle,
-    value_body: TextStyle,
-    value_title: TextStyle,
-    icon: f64,
-    mark: f64,
-    action: f64,
-    action_gap: f64,
-    dot: f64,
-    radius: f64,
-    tag_gap: f64,
-    /// One step of nesting: the gutter a disclosure chevron hangs in, left of its content.
-    nest: f64,
-}
-
-impl RowMetrics {
-    fn new(theme: &Theme) -> Self {
-        let spacing = &theme.tokens.spacing;
-        let metrics = &theme.tokens.metrics;
-        Self {
-            bleed: row_bleed(theme),
-            // The row's height comes from its kind (36 / 52 / 64, compact
-            // 28 / 44 / 52); the text keeps a tight inset inside it.
-            pad_y: f64::from(spacing.rhythm.tight),
-            min_height: f64::from(metrics.row_single),
-            column_gap: f64::from(spacing.s3),
-            title: theme.text(TextRole::Body),
-            title_strong: theme.text(TextRole::Body).strong(),
-            subtitle: theme.text(TextRole::Body),
-            secondary: theme.text(TextRole::Caption),
-            meta: theme.text(TextRole::Caption).numeric(),
-            badge: theme.text(TextRole::Caption).strong(),
-            value_body: theme.text(TextRole::Body).numeric(),
-            value_title: theme.text(TextRole::Title).numeric(),
-            icon: f64::from(metrics.icon_control),
-            mark: f64::from(metrics.icon_sm),
-            action: f64::from(metrics.bar_control_height),
-            action_gap: f64::from(spacing.s1),
-            dot: f64::from(spacing.s2),
-            radius: f64::from(theme.tokens.radii.item),
-            tag_gap: f64::from(spacing.s1),
-            nest: crate::chrome::disclosure_gutter(theme),
-        }
-    }
-
-    /// The metrics of a row shown as a card: the row is its own surface, so nothing of it
-    /// bleeds past its box, and the padding inside that surface is its own — compact enough
-    /// that a card of one title line and its facts stands under a control's height.
-    fn card(theme: &Theme) -> Self {
-        let mut m = Self::new(theme);
-        m.bleed = f64::from(theme.tokens.spacing.rhythm.sibling);
-        m.pad_y = f64::from(theme.tokens.spacing.rhythm.tight);
-        m
-    }
-
-    /// The metrics of a dense row: one line at the caption's size and the small glyph, for a
-    /// reference that stands among content (what a message was made from) or a list that shows
-    /// a lot at once. Its height comes from its own line and inset, not the list's row height;
-    /// a row a finger presses still grows to its target.
-    fn dense(theme: &Theme) -> Self {
-        let mut m = Self::new(theme);
-        m.min_height = 0.0;
-        m.column_gap = f64::from(theme.tokens.spacing.s2);
-        m.title = theme.text(TextRole::Caption);
-        m.title_strong = theme.text(TextRole::Caption).strong();
-        m.subtitle = theme.text(TextRole::Caption);
-        m.icon = f64::from(theme.tokens.metrics.icon_sm);
-        m
-    }
-
-    fn line(text: &mut TextRenderer, style: &TextStyle) -> f64 {
-        f64::from(text.measure_style("Ag", None, style).1)
-    }
-
-    /// The avatar's side: the inline size beside a one-line row, the list
-    /// size beside a row with more lines. Fixed per kind of row, so a list's
-    /// titles share one edge whatever each row's secondary text does.
-    fn avatar(theme: &Theme, extra_lines: bool) -> f64 {
-        let metrics = &theme.tokens.metrics;
-        if extra_lines {
-            f64::from(metrics.avatar_row)
-        } else {
-            f64::from(metrics.avatar_inline)
-        }
-    }
-
-    /// The least a row is tall: one line 36, a title and a secondary line
-    /// 52, a row led by a 40 px avatar 64 (28 / 44 / 52 compact).
-    fn min_height_for(theme: &Theme, extra_lines: bool, big_leading: bool) -> f64 {
-        let metrics = &theme.tokens.metrics;
-        f64::from(if extra_lines && big_leading {
-            metrics.row_avatar
-        } else if extra_lines {
-            metrics.row_double
-        } else {
-            metrics.row_single
-        })
-    }
 }
 
 /// Measure the leading column that fits every badge in `badges`, so a list
@@ -398,6 +286,10 @@ pub struct ListRowFace<'a> {
     /// How many rows over it the row stands: its content indents one
     /// disclosure gutter per depth, while its lift fills the row.
     depth: u32,
+    /// The row stands in a tree: its content keeps one more disclosure gutter
+    /// free at its leading edge, where the list paints the chevron that folds
+    /// it, whether or not it has anything to fold.
+    tree_row: bool,
     status: Option<RowStatus<'a>>,
     change: Option<RowChange<'a>>,
     struck: bool,
@@ -483,6 +375,7 @@ impl<'a> ListRowFace<'a> {
             leading_column: None,
             nested: false,
             depth: 0,
+            tree_row: false,
             status: None,
             change: None,
             struck: false,
@@ -748,10 +641,19 @@ impl<'a> ListRowFace<'a> {
     }
 
     /// Indent the row's content `depth` steps in, one disclosure gutter each, as a
-    /// subtree's rows stand under their parents; its chevron hangs in its own gutter.
+    /// subtree's rows stand under their parents.
     #[must_use]
     pub fn depth(mut self, depth: u32) -> Self {
         self.depth = depth;
+        self
+    }
+
+    /// Stand the row in a tree, one disclosure gutter in from its depth's column: the list
+    /// hangs the chevron that folds it there, and a row with nothing to fold keeps that gutter
+    /// free so that the rows at one depth stand on one column.
+    #[must_use]
+    pub fn tree_row(mut self, tree_row: bool) -> Self {
+        self.tree_row = tree_row;
         self
     }
 
@@ -1235,6 +1137,8 @@ pub struct ListRow {
     /// How many rows over it the row stands, indenting its content one
     /// disclosure gutter each ([`ListRowFace::depth`]).
     depth: u32,
+    /// See [`ListRowFace::tree_row`].
+    tree_row: bool,
     /// Every badge of the row's list, measured into `leading_column` at
     /// layout.
     column_badges: Option<std::rc::Rc<[String]>>,
@@ -1357,6 +1261,7 @@ impl ListRow {
             leading_column: None,
             nested: false,
             depth: 0,
+            tree_row: false,
             column_badges: None,
             shared_leading: None,
             shared_after_trailing: None,
@@ -1738,6 +1643,13 @@ impl ListRow {
     #[must_use]
     pub fn depth(mut self, depth: u32) -> Self {
         self.depth = depth;
+        self
+    }
+
+    /// See [`ListRowFace::tree_row`].
+    #[must_use]
+    pub fn tree_row(mut self) -> Self {
+        self.tree_row = true;
         self
     }
 
@@ -2387,6 +2299,7 @@ impl ListRow {
         }
         face = face.nested(self.nested);
         face = face.depth(self.depth);
+        face = face.tree_row(self.tree_row);
         if let Some(avatar) = &self.avatar {
             face = face.avatar(avatar.face());
         }
@@ -3459,6 +3372,9 @@ mod kept;
 use kept::KeptRow;
 
 mod geometry;
+
+mod metrics;
+use metrics::RowMetrics;
 
 mod leading;
 

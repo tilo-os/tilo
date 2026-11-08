@@ -71,9 +71,15 @@ impl PeerWorkspace<'_> {
         }
         Ok(())
     }
-    /// Check current native checkpoint governor signing custody, including retries.
+    /// Check current native checkpoint signing custody, including retries: the
+    /// checkpoint rows are the workspace's settings, so the settings action
+    /// permits them.
     pub fn check_checkpoint_writer(self, key: &SigningKey, now: SystemTime) -> Result<(), String> {
-        self.peer.require_governance_writer(key, now)
+        self.peer.require_governance_action(
+            key,
+            tilo_action_policy::roles::governance::SETTINGS,
+            now,
+        )
     }
     /// Read the native checkpoint content anchor, never treating corruption as absence.
     pub fn workspace_checkpoint_root(self) -> Result<Option<[u8; 32]>, String> {
@@ -232,7 +238,8 @@ impl PeerWorkspaceMut<'_> {
         Ok(Some(candidate))
     }
 
-    /// Anchor retained checkpoint content under current governor signing custody.
+    /// Anchor retained checkpoint content as `key`'s device, when the
+    /// workspace's settings are its to change.
     pub fn set_workspace_checkpoint_root(
         self,
         root: [u8; 32],
@@ -240,7 +247,11 @@ impl PeerWorkspaceMut<'_> {
         now: SystemTime,
     ) -> Result<(), String> {
         use automerge::{ROOT, ScalarValue, transaction::Transactable};
-        self.peer.require_governance_writer(key, now)?;
+        self.peer.require_governance_action(
+            key,
+            tilo_action_policy::roles::governance::SETTINGS,
+            now,
+        )?;
         let mut candidate = self
             .peer
             .core

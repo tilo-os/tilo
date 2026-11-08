@@ -14,7 +14,7 @@
  */
 
 import {joinWorkspace} from './peer.mjs';
-import {createIdentity} from './root-identity.mjs';
+import {createIdentity} from './identity.mjs';
 
 const API = '/__tilo/room';
 

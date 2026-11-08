@@ -95,14 +95,46 @@ impl TiloStore {
     }
 
     /// Have the chunk the resource at `at` is read and written in, if the store was not sent it:
-    /// of an item, the chunk the index routes it to.
+    /// of a record, the one the manifest places it in, and of an item, the one the index routes
+    /// it to.
+    ///
+    /// An item the index names no chunk for — one no step has derived yet, and the chunks read
+    /// so far hold none of — is in one of the chunks the manifest places, and those are read
+    /// until one holds it. A window opens over the chunk its first rows are in and reads the
+    /// rest as it reaches for them ([`Self::load_short`]), so what a person reaches for in one
+    /// of those is read, never missing.
     pub(super) fn load_at(&self, at: &ResourceRef) -> Result<(), StoreError> {
         self.load_record()?;
-        let chunk = {
-            let inner = self.held();
-            inner.at_chunk(at)?
+        let Some(item) = &at.item else {
+            let chunk = self.held().chunks.chunk(&at.doc);
+            return self.load_chunk(chunk);
         };
-        self.load_chunk(chunk)
+        let routed = self.held().routed_chunk(at);
+        if let Some(chunk) = routed {
+            return self.load_chunk(chunk);
+        }
+        // The chunks the record places that the store was not sent: an item is in one of them,
+        // or in one it holds already, which is where its row stands.
+        let missing: Vec<ChunkNo> = {
+            let inner = self.held();
+            if inner.holds_item(&at.doc, item) {
+                return Ok(());
+            }
+            inner
+                .chunks
+                .placement()
+                .chunks()
+                .into_iter()
+                .filter(|chunk| inner.chunks.mirror(*chunk).is_none())
+                .collect()
+        };
+        for chunk in missing {
+            self.load_chunk(chunk)?;
+            if self.held().holds_item(&at.doc, item) {
+                return Ok(());
+            }
+        }
+        Err(StoreError::NotFound(format!("item `{item}`")))
     }
 }
 

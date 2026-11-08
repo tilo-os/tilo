@@ -9,19 +9,13 @@ use tilo_desktop_model::{
     DesktopTree, StripId, WindowWidth, Workspace, WorkspaceSlot, shared_record,
 };
 use tilo_user_identity::{DeviceCert, RevocationList};
-use web_time::{Duration, SystemTime};
 
 use crate::join::{InviteGrant, JoinChallenge, MemberRole, issue_invitation, sign_join_proof};
 use crate::owner::testing::member_certificate as certificate;
-use crate::{NeighbourMsg, SeedDocument, SeedState, StatePeer, TransportOrigin, seed_workspace};
+use crate::owner::testing::{now, receive};
+use crate::{NeighbourMsg, SeedDocument, SeedState, StatePeer, seed_workspace};
 
 const WORKSPACE: &str = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaab";
-
-fn now() -> SystemTime {
-    SystemTime::UNIX_EPOCH
-        .checked_add(Duration::from_secs(2000))
-        .unwrap()
-}
 
 fn tab(id: u64) -> Tab {
     Tab {
@@ -185,15 +179,6 @@ fn write(
         record_id: DESKTOP_RECORD.into(),
         envelope: Box::new(envelope),
     }
-}
-
-fn receive(peer: &mut StatePeer, guest: &DeviceCert, message: NeighbourMsg) -> Result<(), String> {
-    peer.receive_from(
-        TransportOrigin::RelayDelta(guest.device_public_key),
-        message,
-        now(),
-    )
-    .map(|_| ())
 }
 
 fn windows(peer: &StatePeer) -> Vec<u64> {

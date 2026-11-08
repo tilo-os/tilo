@@ -32,11 +32,13 @@ fn plan(root: &Path) -> std::io::Result<ush::guest::GuestPlan> {
         resolver: None,
         terminal: None,
         control: None,
+        agent_door: None,
     })
 }
 
 #[test]
 fn dynamic_helper_starts_from_private_closure_without_host_usr_and_keeps_shim_dispatch() {
+    crate::serve_handoff::require_trusted_loader!();
     tilo_test_env::require_capability!(
         UserNamespace,
         tilo_test_env::bubblewrap(),

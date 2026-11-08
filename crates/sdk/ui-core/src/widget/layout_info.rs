@@ -106,7 +106,7 @@ pub struct RowLayout {
 /// short only once every action in the row has given what it can — its label first, then its
 /// place in the row for the menu's door — and the app's primary action never leaves the row.
 #[derive(serde::Serialize, Clone, Copy, Debug, PartialEq)]
-pub struct HeaderRow {
+pub struct HeaderRowLayout {
     /// The column the row heads: `sidebar`, `overview`, `content` or `inspector`.
     pub column: &'static str,
     /// How wide the title says it is.
@@ -125,7 +125,7 @@ pub struct HeaderRow {
 /// The header rows one shell laid out, one per column it shows.
 #[derive(serde::Serialize, Clone, Copy, Debug, PartialEq)]
 pub struct HeaderRows {
-    pub rows: [Option<HeaderRow>; 4],
+    pub rows: [Option<HeaderRowLayout>; 4],
 }
 
 /// Concrete layout policies. Manual layout information can extend this enum.

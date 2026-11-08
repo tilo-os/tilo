@@ -85,19 +85,27 @@ release is cut (it requires signed commits), and it is the only ref
 publications build from.
 
 - `check.yml` runs after every push to `main`, one window of commits at a time.
-  Its first job (`tools/ci/push_window.py`, through the Forgejo API) makes the
-  newest push the window: older runs that never started are cancelled, an older
-  run that is executing is waited for (bounded, then this one starts beside it),
-  and a newer run makes this one skip its jobs as a clean success. A run plans
-  from the head of the newest earlier run on main whose window ran
-  (`PLAN_BASE`), falling back to the main commit the push landed on
-  (`github.event.before`) and then to the full workspace, so a cancelled run
-  leaves no commit unmeasured. `main-window.yml` repeats the cancellation every
-  fifteen minutes, so a supersede job that dies cannot let the queue grow back.
-  The `web` job is the exception: it checks the page builds for wasm32 on every
-  push, before and independent of that window, so a break only the web build
-  sees fails the head that introduced it. Its `wasm` job then adds the browser
-  crates and web-capable examples the window selects.
+  Its first job (`tools/ci/push_window.py`, through the Forgejo API) hands the
+  window out, deciding once and in seconds: a run skips its jobs as a clean
+  success when an older run holds the window (its commits and this one's are the
+  same next window) or when a newer run holds it (these commits are its
+  business), and otherwise takes the window and cancels the older runs that never
+  started. The run that holds the window keeps it until it finishes, so one
+  window runs at a time and the first push after it opens the next one, at any
+  push rate; waiting for a running window instead left main with no window at all
+  while pushes kept arriving. A run plans from the head of the newest earlier run
+  on main whose window ran (`PLAN_BASE`), falling back to the main commit the
+  push landed on (`github.event.before`) and then to the full workspace, so a
+  cancelled run leaves no commit unmeasured. The CI host controller sweeps the
+  runs that never started when a supersede job dies, so the queue cannot grow
+  back. The `web` job is the exception: it checks the page builds for wasm32 on
+  every push, before and independent of that window, so a break only the web
+  build sees fails the head that introduced it. Its `wasm` job then adds the
+  browser crates and web-capable examples the window selects.
+- `lint.yml` makes the same decision for the policy and lint gates: a whole-tree
+  lint at a later commit says everything an earlier one could, so a push skips
+  its gates while another run holds them and the first push after that run
+  finishes takes over.
 - Release and artifact workflows (`release-*.yml`, `build-*.yml`) trigger on a
   push to `stable` or on a version tag, never on `main`. `ci-nightly.yml` runs
   the full suite on both native architectures as the coverage backstop, and the

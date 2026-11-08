@@ -266,7 +266,7 @@ export interface DesktopMount {
   retryAsset(assetId:string):Promise<void>;
 }
 /** Ids of the applications the page host names itself. */
-export const APPLICATIONS: Readonly<{desktop: 'desktop'; scratch: 'so.tilo.browser-scratch'}>;
+export const APPLICATIONS: Readonly<{desktop: 'desktop'}>;
 /** Resolves after the first actual GPU presentation. AbortSignal cancels pending initialization. */
 export function mountDesktop(target: HTMLElement, options?: MountOptions): Promise<DesktopMount>;
 /** Terminal page-host shutdown. Individual peers must use their own cleanup method. */

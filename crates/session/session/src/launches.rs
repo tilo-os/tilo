@@ -46,6 +46,9 @@ struct Launch {
     /// the person chose for it: the launcher does that for a package, whose sandbox holds nothing
     /// else of the host, and for no other kind.
     sandboxed: bool,
+    /// The launch runs with no window (see [`Launches::windowless`]): it takes the app's actions on
+    /// its records and is never handed an `open`.
+    windowless: bool,
 }
 
 /// One window of a running app the session is connecting: the window's own instance, and the launch
@@ -202,6 +205,32 @@ impl Launches {
                 workspace: workspace.to_owned(),
                 start,
                 sandboxed,
+                windowless: false,
+            },
+        );
+    }
+
+    /// Record that `pid`, a process this session did not start, runs `app` in `workspace` with no
+    /// window: an endpoint of the app's records the login runs beside this session, such as the
+    /// Files daemon. Its connections are admitted as the app's and take its actions on its records;
+    /// an `open` is never handed to it. A pid whose process cannot be read is recorded by nothing.
+    pub fn windowless(&self, pid: u32, app: &str, workspace: &str) {
+        let Some(start) = start_time(pid) else {
+            tracing::warn!(
+                pid,
+                %app,
+                "a windowless endpoint's process could not be read: its connection reaches no service"
+            );
+            return;
+        };
+        self.started.lock_recover().insert(
+            pid,
+            Launch {
+                app: app.to_owned(),
+                workspace: workspace.to_owned(),
+                start,
+                sandboxed: false,
+                windowless: true,
             },
         );
     }
@@ -319,14 +348,23 @@ impl Launches {
         (start_time(launched) == Some(start)).then_some(app)
     }
 
+    /// The start time of the process `pid` started and whether that launch runs with no window,
+    /// when that process is the launch of `app` in `workspace` and still runs.
+    fn live_launch(&self, pid: u32, app: &str, workspace: &str) -> Option<(u64, bool)> {
+        let (start, windowless) = match self.started.lock_recover().get(&pid) {
+            Some(launch) if launch.app == app && launch.workspace == workspace => {
+                (launch.start, launch.windowless)
+            }
+            _ => return None,
+        };
+        (start_time(pid) == Some(start)).then_some((start, windowless))
+    }
+
     /// The start time of the process `pid` started, when that process is the launch of `app` in
     /// `workspace` and still runs.
     fn live(&self, pid: u32, app: &str, workspace: &str) -> Option<u64> {
-        let start = match self.started.lock_recover().get(&pid) {
-            Some(launch) if launch.app == app && launch.workspace == workspace => launch.start,
-            _ => return None,
-        };
-        (start_time(pid) == Some(start)).then_some(start)
+        self.live_launch(pid, app, workspace)
+            .map(|(start, _)| start)
     }
 
     /// The window record a connection from the session's own process naming `app` in `workspace`
@@ -446,12 +484,12 @@ impl LauncherServices for Launches {
         workspace: &str,
         window_instance: Option<u64>,
     ) -> Result<Option<AuthenticatedApplicationLaunch>, String> {
-        if self.live(pid, app, workspace).is_some() {
+        if let Some((_, windowless)) = self.live_launch(pid, app, workspace) {
             return Ok(Some(AuthenticatedApplicationLaunch {
                 creation: self.application_creation_evidence(pid, app, workspace)?,
                 continuation_instance: None,
                 launch_ticket: None,
-                windowless: false,
+                windowless,
             }));
         }
         Ok(self.take_window(pid, app, workspace, window_instance))
@@ -634,6 +672,66 @@ mod tests {
             launches.app_of_descendant(std::process::id()).as_deref(),
             Some("so.tilo.terminal"),
             "the launch still runs"
+        );
+    }
+
+    /// An endpoint the login runs with no window is admitted as its app in its workspace, and says
+    /// so: the broker hands it the app's actions on its records and never an `open`. It is neither
+    /// another app's, another workspace's, nor a later process that reused its pid.
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn a_windowless_endpoint_is_admitted_as_its_app_and_says_so() {
+        let launches = Launches::default();
+        let app = "so.tilo.file-explorer";
+        let workspace = "workspace-files";
+        let mut child = std::process::Command::new("sleep")
+            .arg("30")
+            .spawn_locked()
+            .expect("a process to launch");
+        launches.windowless(child.id(), app, workspace);
+
+        assert!(
+            launches
+                .authenticated_launch(std::process::id(), app, workspace, None)
+                .unwrap()
+                .is_none(),
+            "another process is not the endpoint"
+        );
+        assert!(
+            launches
+                .authenticated_launch(child.id(), "so.tilo.notes", workspace, None)
+                .unwrap()
+                .is_none(),
+            "another app"
+        );
+        assert!(
+            launches
+                .authenticated_launch(child.id(), app, "another-workspace", None)
+                .unwrap()
+                .is_none(),
+            "another workspace"
+        );
+        let admitted = launches
+            .authenticated_launch(child.id(), app, workspace, None)
+            .unwrap()
+            .expect("the endpoint's connection");
+        assert!(admitted.windowless, "it takes actions and never an open");
+        assert!(
+            launches
+                .authenticated_launch(child.id(), app, workspace, None)
+                .unwrap()
+                .is_some(),
+            "an endpoint's record stays for its whole life, as a launch's does"
+        );
+
+        child.kill().ok();
+        child.wait().ok();
+        assert!(
+            launches
+                .authenticated_launch(child.id(), app, workspace, None)
+                .unwrap()
+                .is_none(),
+            "the endpoint is over"
         );
     }
 

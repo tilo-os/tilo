@@ -9,42 +9,60 @@ the oldest. Forgejo's own `concurrency:` cannot express what this needs (see the
 replaces nor drops a waiting run, and with `cancel-in-progress: true` it would
 cancel runs that are already testing.
 
-So before anything expensive starts, a push run asks the Forgejo API about the
-other push runs of this workflow on main, and answers with two outputs:
+So before anything expensive starts, a push run asks the forge's API about the
+other push runs of its workflow on main, and answers with two outputs:
 
-* `superseded` -- a newer push run on main is going to run. This run's commits
-  are that one's business, so this run skips its jobs: a clean success, since
-  nothing was tested here and nothing was lost.
+* `superseded` -- main's window is somebody else's. Either a newer push run is
+  running a window that covers these commits, or an older run holds the window:
+  its plan and this one's are the same next window, which starts above both. In
+  both cases this run skips its jobs -- a clean success, since nothing was
+  tested here and nothing was lost.
 * `base` -- where this run's plan starts: the head of the newest earlier push
-  run whose window was measured (it finished, successfully or not, its `select`
-  job planned it, and its builder job gave the checks their image). A run that
-  skipped, was cancelled, broke while planning, or never got a builder checked
-  nothing and is not a base. A window's plan always starts below every run that
-  was dropped before it, so the chain of measured windows leaves no commit
-  unmeasured: a run that finds nothing to drop plans from the newest window that
-  ran, and a run that drops older runs plans from below them.
+  run whose window was measured (it finished, successfully or not, its decision
+  and plan jobs ran, and its builder job gave the checks their image). A run
+  that skipped, was cancelled, broke while planning, or never got a builder
+  checked nothing and is not a base. A window's plan always starts below every
+  run that was dropped before it, so the chain of measured windows leaves no
+  commit unmeasured.
 
-Being the newest is not enough to be the window; it also has to stop the runs
-that will never get a slot. An older run that has not started a single job is
-cancelled on the spot -- its commits are inside this run's plan, because the
-base moves below the oldest run that is being dropped. An older run that has
-started is never cancelled: it may be mid-window, so this run waits for it
-(`WAIT_SECONDS`, bounded) and starts beside it when the deadline passes, because
-a late window is still better than none. Two windows at once is the most this
-can cost.
+The decision never waits. It reads the queue once and answers in seconds, and
+the window it hands out is a run that decided to run and has not finished yet,
+which every later run sees in the API as a run whose plan job was not skipped.
+Waiting was how the window used to be handed over, and under a constant push
+rate it broke the model: a run that waited for the running window to finish was
+superseded by every push behind it, and each of those skipped in turn for the
+next one, so no run ever claimed the window and the window ran only when pushes
+happened to pause. Now a window holds until it is done, every run behind it
+skips at once, and the first push after it claims the next window: one window
+per run duration, at any push rate.
+
+An older run that has started but not decided yet may be claiming the window, so
+a later run skips behind it rather than open a second window beside it. It
+resolves in seconds, and when it gives up the next push claims; nothing waits on
+it, and a run whose decision never ran at all is not started, so the run that
+reads it cancels it. A window that is still unfinished after WINDOW_LIMIT is
+broken rather than slow -- every job of a window has its own timeout -- so it
+stops blocking the runs behind it and one stuck window costs one window of
+latency instead of main's window forever.
+
+Planning needs the run that measured the previous window, which under a stream of
+pushes is many runs back, so the read follows the API's pages back as far as a
+window can last, and the job lists are fetched only for the runs the decision
+still has a question about.
 
 When the API has no answer, the outputs stay empty and check.yml's select job
 plans from the push's own `before` commit, which is narrower but correct.
 
-`--sweep` is the safety net (main-window.yml, every fifteen minutes): it cancels
-the push runs on main that never started, so a supersede job that died cannot
-let the pile grow back.
+`--sweep` is the safety net the CI host controller calls: it cancels the push
+runs on main that never started, so a decision job that died cannot let the pile
+grow back.
 
 `--dry-run` says what would be cancelled and where the plan would start, without
 touching a run: the same report the job logs, for reading by hand.
 """
 from __future__ import annotations
 
+import datetime
 import json
 import os
 import sys
@@ -52,9 +70,13 @@ import time
 import urllib.error
 import urllib.request
 
-# The job of this workflow that plans a run. A run whose `select` job succeeded
-# has a window of commits this workflow measured.
-SELECT_JOB = "select"
+# The job of the workflow that decides a run's window, in both push workflows.
+DECISION_JOB = os.environ.get("DECISION_JOB", "supersede")
+# The first job a run starts only when it decided to run: `skipped` on a run
+# that gave its commits away, anything else on the run that holds the window.
+MARKER_JOB = os.environ.get("MARKER_JOB", "select")
+# The workflow whose push runs supersede each other.
+WORKFLOW = os.environ.get("WORKFLOW", "check.yml")
 # The job that resolves and starts the image every other job runs in.
 BUILDER_JOB = "builder"
 # A job in one of these states has not begun; a run holding only these has not
@@ -68,23 +90,22 @@ FINISHED_RUN = ("success", "failure")
 GAVE_UP_RUN = ("cancelled", "skipped", "blocked")
 # `--dry-run`: report the decision without cancelling anything.
 DRY_RUN = "--dry-run" in sys.argv[1:]
-# How many runs to inspect backwards and forwards: the queue is about a dozen
-# deep, and every run past the ones that matter costs a request.
-WINDOW = 20
+# The longest a window can legitimately hold: its jobs' own timeouts (120
+# minutes each) and the queue in front of them. A run still unfinished after
+# that is not making progress, so it stops standing in the way of the next one.
+WINDOW_LIMIT_SECONDS = 3 * 60 * 60
+# How the runs are read: the API lists them newest first, a page at a time. The
+# read goes back until it has looked a whole WINDOW_LIMIT_SECONDS back, which is
+# as far as the run that measured the previous window can be, and `PAGES` keeps
+# one decision's requests bounded when pushes arrive faster than that.
+PAGE_SIZE = 50
+PAGES = 24
 
 
-def select_status(jobs):
-    """The status of a run's planning job, or None when the list has no such job."""
+def job_status(jobs, name):
+    """The status of a run's job called `name`, or None when it has no such job."""
     for job in jobs:
-        if job.get("name") == SELECT_JOB:
-            return job.get("status")
-    return None
-
-
-def builder_status(jobs):
-    """The status of a run's builder job, or None when the list has no such job."""
-    for job in jobs:
-        if job.get("name") == BUILDER_JOB:
+        if job.get("name") == name:
             return job.get("status")
     return None
 
@@ -94,7 +115,45 @@ def started(jobs):
     return any(job.get("status") not in UNSTARTED_JOB for job in jobs)
 
 
-def measured(run, jobs):
+def gave_up(run, jobs, marker):
+    """Whether this run is over, or never got as far as a window."""
+    return (run.get("status") in FINISHED_RUN + GAVE_UP_RUN
+            or job_status(jobs, marker) == "skipped")
+
+
+def timestamp(value):
+    """An API timestamp as a POSIX timestamp, or None when it says nothing."""
+    try:
+        return datetime.datetime.fromisoformat(
+            value.replace("Z", "+00:00")).timestamp()
+    except (AttributeError, ValueError):
+        return None
+
+
+def running_since(run):
+    """When this run started, as a POSIX timestamp, or None when it says nothing."""
+    return timestamp(run.get("started") or run.get("created"))
+
+
+def stale(run, now):
+    """Whether this run has been going longer than any window can."""
+    since = running_since(run)
+    return since is not None and now - since > WINDOW_LIMIT_SECONDS
+
+
+def holds(run, jobs, marker, now):
+    """Whether this run is main's window: it decided to run and has not finished.
+
+    A run that gave its commits away decided too, and its plan job is `skipped`;
+    that is what tells the two apart. It stops holding once it is stale, so a
+    window that never finishes cannot leave main without another.
+    """
+    return (not gave_up(run, jobs, marker)
+            and job_status(jobs, DECISION_JOB) == "success"
+            and not stale(run, now))
+
+
+def measured(run, jobs, marker):
     """Whether this run finished and acted on the window it planned.
 
     Planning is only half of it: every job that checks a window - the test
@@ -103,79 +162,81 @@ def measured(run, jobs):
     checked, and the next window has to plan them again.
     """
     return (run.get("status") in FINISHED_RUN
-            and select_status(jobs) == "success"
-            and builder_status(jobs) in (None, "success"))
+            and job_status(jobs, DECISION_JOB) == "success"
+            and job_status(jobs, marker) == "success"
+            and job_status(jobs, BUILDER_JOB) in (None, "success"))
 
 
-def coming(run, jobs):
-    """Whether this run still owes main a window: it is executing right now.
-
-    A run that has started something but has not finished is somebody's window:
-    its `select` job may be queued behind a large slot or already running, and
-    its commits arrive with it. Such a run is waited for, never cancelled.
-    """
-    if measured(run, jobs) or run.get("status") in FINISHED_RUN + GAVE_UP_RUN:
-        return False
-    if select_status(jobs) == "skipped":
-        # Superseded: it planned nothing and gives up its commits to a newer run.
-        return False
-    return run.get("status") == "running" or started(jobs)
-
-
-def cancellable(run, jobs):
+def cancellable(run, jobs, marker):
     """Whether dropping this run loses nothing but its queue position."""
-    if run.get("status") in FINISHED_RUN + GAVE_UP_RUN:
-        return False
-    return not started(jobs)
+    return not gave_up(run, jobs, marker) and not started(jobs)
 
 
-def decide(runs, jobs_of, run_number):
-    """(superseding, base, executing, cancelling) for the run numbered `run_number`.
+def decide(runs, jobs_of, run_number, marker=None, now=None):
+    """(superseding, base, holding, cancelling) for the run numbered `run_number`.
 
     `runs` is the API's list of push runs of this workflow on main, `jobs_of`
-    returns one run's jobs, and every value returned is a run number: the newer
-    run that covers this one (0 when there is none), the commit this run's plan
-    starts from (empty when no earlier run is a base), the older runs that are
-    executing and so are waited for, and the older runs this run cancels.
+    returns one run's jobs, `marker` names the first job only a run that holds
+    the window starts, and every value returned is a run number: the newer run
+    whose window covers this one (0 when there is none), the commit this run's
+    plan starts from (empty when no earlier run is a base), the older run that
+    holds the window right now (0 when there is none), and the older runs this
+    run cancels.
     """
+    marker = MARKER_JOB if marker is None else marker
+    now = time.time() if now is None else now
     older = sorted((run for run in runs if run["index_in_repo"] < run_number),
                    key=lambda run: run["index_in_repo"], reverse=True)
     newer = sorted((run for run in runs if run["index_in_repo"] > run_number),
                    key=lambda run: run["index_in_repo"], reverse=True)
 
-    # The newest run cannot be superseded, so a chain of skipped runs always
-    # ends at one that runs: the first newer run that did not give up covers
-    # this one.
+    # Only a newer run that already holds the window covers this one. A newer run
+    # that is still deciding might give its commits away in turn, and every run
+    # in a stream is newer than the one it arrived behind, so skipping for those
+    # is how no window gets claimed at all. Finished runs cannot hold it, and
+    # checking them would cost a job lookup each.
     superseding = 0
-    for run in newer[:WINDOW]:
-        if run.get("status") in GAVE_UP_RUN or select_status(jobs_of(run)) == "skipped":
+    for run in newer:
+        if run.get("status") in FINISHED_RUN + GAVE_UP_RUN:
             continue
-        superseding = run["index_in_repo"]
-        break
+        if holds(run, jobs_of(run), marker, now):
+            superseding = run["index_in_repo"]
+            break
+    if superseding:
+        return superseding, "", 0, []
 
-    executing, cancelling, barrier = [], [], 0
-    for run in older[:WINDOW]:
+    holding, cancelling, barrier = 0, [], 0
+    for run in older:
+        if run.get("status") in FINISHED_RUN + GAVE_UP_RUN:
+            # Measured, or long since stopped: it is not this run's to drop. A
+            # run that stopped before a window that came after it was inside
+            # that window's plan, which is the chain this rule keeps.
+            continue
         jobs = jobs_of(run)
-        if coming(run, jobs):
-            executing.append(run["index_in_repo"])
+        if gave_up(run, jobs, marker):
+            # Unfinished, but already past its decision: it gave its commits
+            # away and is only waiting to be closed.
             continue
-        if measured(run, jobs) or not cancellable(run, jobs):
-            # Measured, or long since stopped: either way it is not this run's
-            # to drop. A run that stopped before a window that came after it was
-            # inside that window's plan, which is the chain this rule keeps.
+        if not started(jobs):
+            # Never started: it may go, and then the plan has to start below it.
+            cancelling.append(run["index_in_repo"])
+            barrier = run["index_in_repo"]
             continue
-        # Never started: it may go, and then the plan has to start below it.
-        cancelling.append(run["index_in_repo"])
-        barrier = run["index_in_repo"]
+        if not holding and not stale(run, now):
+            # Started and unfinished: a window in progress, or one about to be
+            # claimed. Either way this run's commits belong to the window above.
+            holding = run["index_in_repo"]
 
+    # Only a finished run can have measured a window, so the scan back to the
+    # previous one costs a job lookup per finished run it passes.
     base = ""
-    for run in older[:WINDOW]:
+    for run in older:
         if barrier and run["index_in_repo"] >= barrier:
             continue
-        if measured(run, jobs_of(run)):
+        if run.get("status") in FINISHED_RUN and measured(run, jobs_of(run), marker):
             base = run.get("commit_sha") or ""
             break
-    return superseding, base, executing, cancelling
+    return superseding, base, holding, cancelling
 
 
 class Api:
@@ -214,11 +275,30 @@ class Api:
 
 
 def read_window(api):
-    """The newest push runs of this workflow on main, newest first."""
-    page = api.get("/actions/runs?event=push&ref=refs/heads/main&workflow_id=check.yml"
-                   f"&limit={WINDOW + 5}")
-    runs = [run for run in page.get("workflow_runs") or []
-            if run.get("index_in_repo") is not None and run.get("commit_sha")]
+    """This workflow's push runs on main, newest first.
+
+    Enough of them to hold both the run that holds main's window and the run
+    that measured the previous one: a window lasts at most WINDOW_LIMIT_SECONDS
+    and the next one is claimed right after it, so the previous window's run was
+    created within that span. Reading only the newest page was how a plan lost
+    its base: in a stream of pushes the measuring run had fallen out of the
+    window, the new run planned from its own push alone, and one window of
+    commits went unmeasured.
+    """
+    cutoff = time.time() - WINDOW_LIMIT_SECONDS
+    runs = []
+    for page in range(1, PAGES + 1):
+        answer = api.get(f"/actions/runs?event=push&ref=refs/heads/main"
+                         f"&workflow_id={WORKFLOW}&limit={PAGE_SIZE}&page={page}")
+        listed = answer.get("workflow_runs") or []
+        runs.extend(run for run in listed
+                    if run.get("index_in_repo") is not None
+                    and run.get("commit_sha"))
+        if len(listed) < PAGE_SIZE:
+            break
+        if all((timestamp(run.get("created")) or float("inf")) < cutoff
+               for run in listed):
+            break
     # The list is newest first; sort anyway so the decisions cannot depend on it.
     return sorted(runs, key=lambda run: run["index_in_repo"], reverse=True)
 
@@ -309,16 +389,18 @@ def sweep():
         notice("no push runs on main to sweep")
         return 0
     newest = runs[0]["index_in_repo"]
-    stale = []
+    stale_runs = []
     for run in runs:
         if run["index_in_repo"] >= newest:
             continue
-        if cancellable(run, api.get(f"/actions/runs/{run['id']}/jobs")):
-            stale.append(run["index_in_repo"])
-    if not stale:
+        if run.get("status") in FINISHED_RUN + GAVE_UP_RUN:
+            continue
+        if cancellable(run, api.get(f"/actions/runs/{run['id']}/jobs"), MARKER_JOB):
+            stale_runs.append(run["index_in_repo"])
+    if not stale_runs:
         notice(f"newest push run on main is #{newest}; nothing older is waiting to start")
         return 0
-    cancelled = cancel_runs(api, runs, stale, os.environ.get("CI_SPARE_TOKEN", ""))
+    cancelled = cancel_runs(api, runs, stale_runs, os.environ.get("CI_SPARE_TOKEN", ""))
     notice(f"newest push run on main is #{newest}; cancelled {len(cancelled)} run(s) "
            f"that never started: {runs_list(cancelled) or 'none'}")
     return 0
@@ -342,10 +424,6 @@ def main():
     api = api_from_environment()
     if api is None:
         return finish()
-    spare_token = os.environ.get("CI_SPARE_TOKEN", "")
-    poll_seconds = float(os.environ.get("POLL_SECONDS", "30"))
-    wait_seconds = float(os.environ.get("WAIT_SECONDS", "2700"))
-    deadline = time.monotonic() + wait_seconds
 
     jobs = {}
 
@@ -354,44 +432,31 @@ def main():
             jobs[run["id"]] = api.get(f"/actions/runs/{run['id']}/jobs")
         return jobs[run["id"]]
 
-    while True:
-        try:
-            runs = read_window(api)
-            # A finished run's jobs never change again, so only the runs that
-            # are still going are asked about twice.
-            for run in runs:
-                if run.get("status") not in FINISHED_RUN + GAVE_UP_RUN:
-                    jobs.pop(run["id"], None)
-            superseding, base, executing, cancelling = decide(runs, jobs_of, run_number)
-        except (urllib.error.HTTPError, OSError) as error:  # a lookup never fails the run
-            notice(f"::warning::cannot read this workflow's runs ({error}); planning "
-                   "from the push's own before commit", summary=False)
-            notice("earlier runs unavailable: the plan falls back to the push base")
-            return finish()
+    try:
+        runs = read_window(api)
+        superseding, base, holding, cancelling = decide(runs, jobs_of, run_number)
+    except (urllib.error.HTTPError, OSError) as error:  # a lookup never fails the run
+        notice(f"::warning::cannot read this workflow's runs ({error}); planning "
+               "from the push's own before commit", summary=False)
+        notice("earlier runs unavailable: the plan falls back to the push base")
+        return finish()
 
-        if superseding:
-            notice(f"run #{superseding} is newer and covers these commits: skipping "
-                   "this run's jobs, so nothing here is left untested")
-            return finish(superseded=True)
-        if cancelling:
-            cancelled = cancel_runs(api, runs, cancelling, spare_token)
-            if cancelled:
-                notice(f"this run is the window: cancelled {len(cancelled)} older run(s) "
-                       f"that never started ({runs_list(cancelled)})")
-        if not executing:
-            notice(f"nothing else on main is executing; this run's window starts at "
-                   f"{base or 'the push base'}")
-            return finish(base=base)
-        if time.monotonic() >= deadline:
-            notice(f"::warning::waited {int(wait_seconds)}s for {runs_list(executing)}; "
-                   "starting beside it rather than dropping this window", summary=False)
-            notice(f"waited {int(wait_seconds)}s for {runs_list(executing)}: starting "
-                   f"beside it rather than dropping this window; beginning at "
-                   f"{base or 'the push base'}")
-            return finish(base=base)
-        notice(f"waiting for {runs_list(executing)} to finish before planning this "
-               "window", summary=False)
-        time.sleep(poll_seconds)
+    if superseding:
+        notice(f"run #{superseding} is newer and runs main's window: skipping this "
+               "run's jobs, so these commits are measured there")
+        return finish(superseded=True)
+    if holding:
+        notice(f"run #{holding} holds main's window: skipping this run's jobs, whose "
+               "commits the window above it plans with its own")
+        return finish(superseded=True)
+    cancelled = cancel_runs(api, runs, cancelling,
+                            os.environ.get("CI_SPARE_TOKEN", "")) if cancelling else []
+    if cancelled:
+        notice(f"this run is main's window: cancelled {len(cancelled)} older run(s) "
+               f"that never started ({runs_list(cancelled)})")
+    notice(f"this run is main's window; its plan starts at "
+           f"{base or 'the push base'}")
+    return finish(base=base)
 
 
 if __name__ == "__main__":

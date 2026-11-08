@@ -907,13 +907,8 @@ mod tests {
         let mut tree = WorkspaceTree::default();
         tree.desktop.workspaces.push(workspace);
         let tree = tree.shared();
-        let (state, _bridge) = AppBrokerState::new_configured(
-            &Arc::new(FanoutState::new()),
-            Arc::new(Mutex::new(BrokerChannels::default())),
-            PeerPublisher::disabled(),
+        let (state, _bridge) = AppBrokerState::test_state(
             Some(tree.authority()),
-            None,
-            None,
             crate::services::HostServices {
                 launcher: Some(Arc::new(Pressed(Mutex::new(vec!["so.tilo.chat".into()])))),
                 ..tree.services()
@@ -1871,13 +1866,8 @@ mod tests {
                 offer("never-published", OfferKind::Read, false),
             ],
         }]);
-        let (state, _bridge) = AppBrokerState::new_configured(
-            &Arc::new(FanoutState::new()),
-            Arc::new(Mutex::new(BrokerChannels::default())),
-            PeerPublisher::disabled(),
+        let (state, _bridge) = AppBrokerState::test_state(
             Some(tree.authority()),
-            None,
-            None,
             crate::services::HostServices {
                 launcher: Some(Arc::new(installed)),
                 ..tree.services()

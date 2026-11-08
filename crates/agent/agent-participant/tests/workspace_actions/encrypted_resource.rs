@@ -56,22 +56,8 @@ async fn remote_encrypted_chat_primary_is_discoverable_after_host_restart() {
     .unwrap();
     let mut doc = source.read(Clone::clone).unwrap();
     let writer = hex::encode(writer_device.cert.user_public_key);
-    chat::demo::apply_as(
-        &mut doc,
-        &writer,
-        chat::Chat::CREATE_CHANNEL.with(chat::record::chat::CreateChannel {
-            name: "general".parse().unwrap(),
-            category: None,
-            kind: None,
-            topic: None,
-        }),
-    )
-    .unwrap();
-    let channel = chat::projection::read(&doc)
-        .channel_rows()
-        .into_iter()
-        .find(|channel| channel.kind == chat::model::ChannelKind::Text)
-        .unwrap();
+    common::add_channel(&mut doc, &writer, "general", None);
+    let channel = common::channel(&doc, chat::model::ChannelKind::Text);
     source
         .apply(&collab_types::DocumentMutation::Snapshot(doc.save()))
         .unwrap();

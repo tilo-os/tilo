@@ -17,8 +17,8 @@ use automerge::{AutoCommit, ReadDoc};
 use tilo_automerge::{ReadTyped as _, WriteTyped as _};
 use tilo_sort::CompactSort as _;
 
-use crate::ids::{StripId, WorkspaceId, WorkspaceSlot, peer_salt_of};
-use crate::layout::{Tab, TileContent};
+use crate::ids::{WorkspaceId, WorkspaceSlot};
+use crate::layout::TileContent;
 use crate::receipt::WorkspaceEffectReceipt;
 use crate::tree::DesktopTree;
 use crate::workspace::Workspace;
@@ -642,76 +642,6 @@ pub fn apply_admitted_workspace(
     Ok(changed || renamed || reshortcut || reprofiled)
 }
 
-/// Key of the workspace's layout scope in its governance document
-/// ([`WorkspaceLayout`]), which only the workspace's governor writes.
-pub const WORKSPACE_LAYOUT_KEY: &str = "layout_v1";
-
-/// Whether a workspace shares its members' strips and windows: a field of the
-/// workspace's governance, written by its governor alone, that every member reads.
-///
-/// A workspace admitted through a public door (a community site's) or with open
-/// admission (listed in a public directory) is [`Self::Personal`]; an
-/// invite-only workspace is [`Self::Shared`]. The governor may change it.
-#[derive(
-    Clone, Copy, Debug, Default, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize,
-)]
-#[serde(rename_all = "snake_case")]
-pub enum WorkspaceLayout {
-    /// The namespaced layout model: each member's windows are published into
-    /// the workspace, and every member shows everyone's.
-    #[default]
-    Shared,
-    /// Each member's strips and windows stay on their device. Only the
-    /// workspace's records (its apps' documents) and its people are shared: the
-    /// governor takes in no member's layout, and devices send none.
-    Personal,
-}
-
-impl WorkspaceLayout {
-    /// The word the governance document stores.
-    #[must_use]
-    pub const fn id(self) -> &'static str {
-        match self {
-            Self::Shared => "shared",
-            Self::Personal => "personal",
-        }
-    }
-
-    /// The layout `id` names; `None` for any other word.
-    #[must_use]
-    pub fn from_id(id: &str) -> Option<Self> {
-        match id {
-            "shared" => Some(Self::Shared),
-            "personal" => Some(Self::Personal),
-            _ => None,
-        }
-    }
-
-    /// Whether each member's layout stays on their device.
-    #[must_use]
-    pub const fn is_personal(self) -> bool {
-        matches!(self, Self::Personal)
-    }
-}
-
-/// The layout scope `doc`'s governor chose, `None` when it chose none (a
-/// workspace from before the field, or an invite-only workspace left at the
-/// default). A value this build does not read is personal: what a workspace may
-/// not share is never shared by a device that misreads it.
-#[must_use]
-pub fn workspace_layout_choice(doc: &AutoCommit) -> Option<WorkspaceLayout> {
-    use automerge::{ROOT, ScalarValue, Value};
-    match doc.get(&ROOT, WORKSPACE_LAYOUT_KEY).ok().flatten()? {
-        (Value::Scalar(value), _) => match value.as_ref() {
-            ScalarValue::Str(id) => {
-                Some(WorkspaceLayout::from_id(id).unwrap_or(WorkspaceLayout::Personal))
-            }
-            _ => Some(WorkspaceLayout::Personal),
-        },
-        _ => Some(WorkspaceLayout::Personal),
-    }
-}
-
 /// The people the workspace `doc` governs lists as its owner and members, by
 /// person id: who still holds what they made on its desktop
 /// ([`crate::ownership::released`]). `None` when `doc` lists nobody (not
@@ -733,76 +663,10 @@ pub fn workspace_members(doc: &AutoCommit) -> Option<std::collections::BTreeSet<
     (!people.is_empty()).then_some(people)
 }
 
-/// The layout scope of the workspace `doc` governs: its governor's choice, else
-/// [`WorkspaceLayout::Shared`], an invite-only workspace's default.
-#[must_use]
-pub fn workspace_layout(doc: &AutoCommit) -> WorkspaceLayout {
-    workspace_layout_choice(doc).unwrap_or_default()
-}
-
-/// In the workspace with `identity`, remove every window `foreign` names
-/// (someone else's, mirrored here while the workspace shared its layout), then
-/// the window groups left with none, and the strips left with none that this
-/// machine (`local_salt`) did not make. Every window of this machine's own
-/// stays where it is. Reports whether anything changed.
-pub fn drop_windows_of_others(
-    desktop: &mut DesktopTree,
-    identity: WorkspaceId,
-    local_salt: u16,
-    foreign: &impl Fn(&Tab) -> bool,
-) -> bool {
-    let Some(ws) = desktop.workspaces.iter_mut().find(|w| w.id() == identity) else {
-        return false;
-    };
-    let mut changed = false;
-    let mut vanished: Vec<StripId> = Vec::new();
-    for strip in &mut ws.strips {
-        for group in &mut strip.window_groups {
-            let before = group.tabs.len();
-            group.tabs.retain(|tab| !foreign(tab));
-            if group.tabs.len() == before {
-                continue;
-            }
-            changed = true;
-            group
-                .focus_history
-                .retain(|id| group.tabs.iter().any(|tab| tab.id == *id));
-            if !group.tabs.iter().any(|tab| tab.id == group.active_tab)
-                && let Some(first) = group.tabs.first()
-            {
-                group.active_tab = first.id;
-            }
-        }
-        strip.window_groups.retain(|group| !group.tabs.is_empty());
-    }
-    ws.strips.retain(|strip| {
-        let keep = !strip.window_groups.is_empty() || peer_salt_of(strip.id.raw()) == local_salt;
-        if !keep {
-            vanished.push(strip.id);
-        }
-        keep
-    });
-    changed |= !vanished.is_empty();
-    let slot = ws.slot;
-    if desktop
-        .active_strip
-        .get(&slot)
-        .is_some_and(|active| vanished.contains(active))
-    {
-        desktop.active_strip.remove(&slot);
-    }
-    for strip in vanished {
-        desktop.active_group.remove(&strip);
-    }
-    changed
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::app::AppKind;
-    use crate::ids::compose_id;
-    use crate::layout::{Strip, WindowGroup};
     use tilo_automerge::ApplyIncoming;
 
     /// A grant given and revoked in a workspace is what the workspace document holds:
@@ -952,127 +816,5 @@ mod tests {
                 .collect();
             assert_eq!(ids, ["file:/a.md", "file:/b.md"]);
         }
-    }
-
-    /// A test window group under `salt`, with one tab named `name`.
-    fn canvas_group(salt: u16, counter: u64, name: &str) -> WindowGroup {
-        let id = compose_id(salt, counter);
-        WindowGroup {
-            id,
-            tabs: vec![Tab {
-                id,
-                title: name.into(),
-                tile: TileContent::Stub {
-                    kind: AppKind::Other("Canvas".into()),
-                    label: name.into(),
-                },
-                app_title: None,
-                view: String::new(),
-                pinned: false,
-            }],
-            active_tab: id,
-            width: crate::width::WindowWidth::Normal,
-            maximized: false,
-            focus_history: Vec::new(),
-        }
-    }
-
-    /// A desktop with one workspace under local id `workspace`, holding `strips`
-    /// in the workspace with `identity`.
-    fn workspace_desktop(
-        identity: WorkspaceId,
-        workspace: u64,
-        strips: Vec<Strip>,
-    ) -> crate::tree::DesktopTree {
-        let mut w = crate::workspace::Workspace::in_workspace(
-            crate::ids::WorkspaceSlot(workspace),
-            identity,
-            "Team",
-        );
-        w.strips = strips;
-        crate::tree::DesktopTree {
-            active: w.slot,
-            workspaces: vec![w],
-            ..crate::tree::DesktopTree::default()
-        }
-    }
-
-    #[test]
-    fn a_workspaces_layout_is_what_its_governor_wrote_and_shared_by_default() {
-        use automerge::transaction::Transactable as _;
-        let mut doc = AutoCommit::new();
-        assert_eq!(workspace_layout_choice(&doc), None);
-        assert_eq!(workspace_layout(&doc), WorkspaceLayout::Shared);
-        doc.put(automerge::ROOT, WORKSPACE_LAYOUT_KEY, "personal")
-            .unwrap();
-        assert_eq!(workspace_layout(&doc), WorkspaceLayout::Personal);
-        doc.put(automerge::ROOT, WORKSPACE_LAYOUT_KEY, "shared")
-            .unwrap();
-        assert_eq!(workspace_layout_choice(&doc), Some(WorkspaceLayout::Shared));
-        doc.put(automerge::ROOT, WORKSPACE_LAYOUT_KEY, "by-invitation")
-            .unwrap();
-        assert_eq!(workspace_layout(&doc), WorkspaceLayout::Personal);
-        doc.put(automerge::ROOT, WORKSPACE_LAYOUT_KEY, 3_u64)
-            .unwrap();
-        assert_eq!(workspace_layout(&doc), WorkspaceLayout::Personal);
-        for layout in [WorkspaceLayout::Shared, WorkspaceLayout::Personal] {
-            assert_eq!(WorkspaceLayout::from_id(layout.id()), Some(layout));
-        }
-    }
-
-    /// A device's local copy of a workspace whose workspace became personal loses
-    /// the windows it mirrored of others, and keeps every window of its own,
-    /// wherever it stands.
-    #[test]
-    fn dropping_others_windows_keeps_every_window_of_ones_own() {
-        const MINE: u16 = 0x1111;
-        const THEIRS: u16 = 0x2222;
-        let identity = WorkspaceId::new();
-        // My strip, holding my window and one of theirs side by side; their
-        // strip, holding only theirs; their strip I moved a window of mine
-        // into.
-        let mut mine = Strip::new(StripId(compose_id(MINE, 1)), "Mine");
-        mine.window_groups.push(canvas_group(MINE, 2, "Board"));
-        mine.window_groups
-            .push(canvas_group(THEIRS, 3, "ssh prod-db"));
-        let mut theirs = Strip::new(StripId(compose_id(THEIRS, 4)), "Terminals");
-        theirs
-            .window_groups
-            .push(canvas_group(THEIRS, 5, "~/private"));
-        let mut shared = Strip::new(StripId(compose_id(THEIRS, 6)), "Shared");
-        shared.window_groups.push(canvas_group(MINE, 7, "Notes"));
-        let mut tree = workspace_desktop(identity, 1, vec![mine, theirs, shared]);
-        let ws = tree.workspaces[0].slot;
-        tree.active_strip.insert(ws, StripId(compose_id(THEIRS, 4)));
-
-        let foreign = |tab: &Tab| peer_salt_of(tab.id) == THEIRS;
-        assert!(drop_windows_of_others(&mut tree, identity, MINE, &foreign));
-        let titles: Vec<(&str, Vec<&str>)> = tree.workspaces[0]
-            .strips
-            .iter()
-            .map(|strip| {
-                (
-                    strip.name.as_str(),
-                    strip
-                        .window_groups
-                        .iter()
-                        .flat_map(|group| group.tabs.iter().map(|tab| tab.title.as_str()))
-                        .collect(),
-                )
-            })
-            .collect();
-        assert_eq!(
-            titles,
-            [("Mine", vec!["Board"]), ("Shared", vec!["Notes"])],
-            "every window of mine stays, none of theirs"
-        );
-        assert!(
-            !tree.active_strip.contains_key(&ws),
-            "no pointer at a strip that went"
-        );
-        assert!(
-            !drop_windows_of_others(&mut tree, identity, MINE, &foreign),
-            "nothing more to drop"
-        );
     }
 }

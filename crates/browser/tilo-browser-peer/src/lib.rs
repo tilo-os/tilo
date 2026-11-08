@@ -19,10 +19,18 @@
 //!   the page to a call, and the pictures and voice it publishes and shows.
 //!
 //! [`health`] derives `PeerSnapshot` and `SessionHealth` v1 from it. With the
-//! `toolkit` feature, [`transport::RelayCollabTransport`] plugs the session
-//! into `CollaborationManager::with_transport`.
+//! `toolkit` feature, [`presence_anchors`] carries an editor's ranges on the
+//! live plane as every native device does.
 
 #![deny(rust_2018_idioms)]
+#![cfg_attr(
+    all(target_arch = "wasm32", target_os = "unknown"),
+    allow(
+        clippy::future_not_send,
+        clippy::arc_with_non_send_sync,
+        reason = "a page runs on one thread, and its signer, HTTP and store handles to JavaScript are never `Send`"
+    )
+)]
 
 mod channels;
 mod clock;
@@ -32,12 +40,12 @@ pub mod document;
 pub mod health;
 mod held_live;
 pub mod invite;
+#[cfg(feature = "toolkit")]
+pub mod presence_anchors;
 mod previews;
 mod replica;
 pub mod session;
 pub mod surfaces;
-#[cfg(feature = "toolkit")]
-pub mod transport;
 pub mod voice;
 
 pub use channel_crypto::ChannelContentKeys;
@@ -50,10 +58,11 @@ pub use health::{PeerSnapshot, SessionHealth};
 pub use previews::{LiveChange, LiveState, RemoteMember};
 pub use session::{
     CallFrame, CallPicture, CallShown, Completion, Failure, FailureSubject, Host, LocalState,
-    NodeCompletion, PAGE_FAILURE_CODES, PeerConfig, PeerEvent, PeerEvents, PeerHandle, PeerStatus,
-    RoomsCompletion, TransportPhase,
+    PAGE_FAILURE_CODES, PeerConfig, PeerEvent, PeerEvents, PeerHandle, PeerStatus, RoomsCompletion,
+    TransportPhase,
 };
 pub use tilo_live::live::Track;
-pub use tilo_relay_client::https::{HttpClient, HttpFuture, HttpsLink, LinkError, host_info};
+pub use tilo_relay_client::LinkError;
+pub use tilo_relay_client::https::{HttpClient, HttpFuture, host_info};
 pub use tilo_relay_client::{DeviceSigner, SignError, SignFuture};
 pub use voice::VoiceEvent;

@@ -5,7 +5,8 @@
 
 use super::*;
 use crate::RelayConfig;
-use ed25519_dalek::{Signer as _, SigningKey};
+use crate::peer::FetchGrants as _;
+use ed25519_dalek::SigningKey;
 use tilo_peer_state::join::MemberRole;
 use tilo_user_identity::{DeviceCapabilities, DeviceCert, RevocationList};
 use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
@@ -83,29 +84,23 @@ async fn relay_at(
 /// The web `relay` serves its pages, with every door a test does not open
 /// closed.
 fn web_of(relay: &Relay, host: &Host) -> Web {
-    web_with(relay, host, Sessions::new(relay.web_context().clone()))
-}
-
-/// [`web_of`], answering the browser sessions `sessions`.
-fn web_with(relay: &Relay, host: &Host, sessions: Arc<Sessions>) -> Web {
     Web {
-        sessions,
+        context: relay.web_context().clone(),
         host_info: HostInfo {
             host_cert: host.cert.clone(),
             address: None,
         },
         allowed_origins: vec![],
-        features: 0,
         workspaces: relay.workspaces().cloned(),
         envelopes: envelopes::Envelopes::new(relay.state_root().join("envelopes")),
-        profiles: envelopes::Envelopes::of(
-            envelopes::Kind::Profile,
+        profiles: Arc::new(envelopes::Envelopes::of(
+            envelopes::Record::Profile,
             relay.state_root().join("profiles"),
-        ),
+        )),
         here: Arc::new(here::Here::new(None)),
-        country: None,
         fetch: None,
-        live: None,
+        grants: Arc::default(),
+        presence: Arc::new(plane::Authority::new(relay.web_context().relay.clone())),
         page_errors: page_errors::PageErrors::default(),
         shelf: shelf::Shelf::default(),
     }
@@ -126,18 +121,10 @@ async fn stop(relay: Relay, serving: tokio::task::JoinHandle<()>) {
     crate::daemon::Relay::shutdown(relay).await;
 }
 
-async fn post(
-    addr: SocketAddr,
-    path: &str,
-    token: Option<[u8; 32]>,
-    body: Vec<u8>,
-) -> (u16, Vec<u8>) {
+async fn post(addr: SocketAddr, path: &str, body: Vec<u8>) -> (u16, Vec<u8>) {
     let mut socket = tokio::net::TcpStream::connect(addr).await.unwrap();
-    let token = token.map_or_else(String::new, |token| {
-        format!("{SESSION_HEADER}: {}\r\n", hex::encode(token))
-    });
     let header = format!(
-        "POST {API_PREFIX}{path} HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n{token}Content-Length: {}\r\n\r\n",
+        "POST {API_PREFIX}{path} HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\nContent-Length: {}\r\n\r\n",
         body.len()
     );
     socket.write_all(header.as_bytes()).await.unwrap();
@@ -174,48 +161,6 @@ async fn post(
     } else {
         (status, body.to_vec())
     }
-}
-
-async fn browser(addr: SocketAddr, key: &SigningKey, cert: &DeviceCert) -> [u8; 32] {
-    browser_as(addr, key, cert, false).await
-}
-
-/// A browser session, in the background when `background`.
-async fn browser_as(
-    addr: SocketAddr,
-    key: &SigningKey,
-    cert: &DeviceCert,
-    background: bool,
-) -> [u8; 32] {
-    let (status, body) = post(
-        addr,
-        "/session",
-        None,
-        postcard::to_allocvec(&crate::auth::Hello::new(cert.clone(), [9; 32])).unwrap(),
-    )
-    .await;
-    assert_eq!(status, 200);
-    let challenge: protocol::SessionChallenge = postcard::from_bytes(&body).unwrap();
-    let finish = SessionFinish {
-        handshake: challenge.handshake,
-        ack2: crate::auth::HelloAck2 {
-            sig_over_server_nonce: key
-                .sign(&crate::auth::client_challenge_digest(
-                    &challenge.ack.server_nonce,
-                ))
-                .to_bytes(),
-        },
-        background,
-    };
-    let (status, body) = post(
-        addr,
-        "/session/finish",
-        None,
-        postcard::to_allocvec(&finish).unwrap(),
-    )
-    .await;
-    assert_eq!(status, 200);
-    protocol::decode_grant(&body).unwrap().0.token
 }
 
 #[test]
@@ -276,7 +221,7 @@ async fn no_route_hands_a_page_the_keys_of_a_channels_record() {
         73,
         tilo_user_identity::cloud_enrollment::host_capabilities(),
     );
-    let (owner_key, owner) = device(&signer, 74, DeviceCapabilities::member());
+    let (_, owner) = device(&signer, 74, DeviceCapabilities::member());
     let state = tempfile::tempdir().unwrap();
     let relay = relay_at(&state, host.identity(), RelayConfig::default()).await;
     let workspaces = relay.workspaces().unwrap().clone();
@@ -287,8 +232,7 @@ async fn no_route_hands_a_page_the_keys_of_a_channels_record() {
         .unwrap();
 
     let (addr, serving) = serve_web(Arc::new(web_of(&relay, &host))).await;
-    let token = browser(addr, &owner_key, &owner).await;
-    let (code, body) = post(addr, "/channel-keys", Some(token), Vec::new()).await;
+    let (code, body) = post(addr, "/channel-keys", Vec::new()).await;
     assert_eq!(
         code,
         404,
@@ -569,79 +513,6 @@ async fn a_sealed_invitation_is_left_fetched_and_taken_back() {
     stop(relay, serving).await;
 }
 
-/// A browser handshake the host turns away says why, in a body the device
-/// decodes: a stranger is not admitted, a revoked device is revoked, and a
-/// handshake the host does not know is to be run again.
-#[tokio::test]
-async fn refused_handshakes_carry_their_typed_reason() {
-    let root = SigningKey::from_bytes(&[101; 32]);
-    let host = host(&root, 102, DeviceCapabilities::host());
-    let (_, member) = device(&root, 103, DeviceCapabilities::member());
-    let (_, revoked) = device(&root, 104, DeviceCapabilities::member());
-    let stranger_root = SigningKey::from_bytes(&[105; 32]);
-    let (_, stranger) = device(&stranger_root, 106, DeviceCapabilities::member());
-    let mut entry = tilo_user_identity::RevocationEntry {
-        user_public_key: root.verifying_key().to_bytes(),
-        revoked_device_public_key: revoked.device_public_key,
-        revoked_at_ns: 1,
-        reason: tilo_user_identity::RevocationReason::Lost,
-        signature: [0; 64],
-    };
-    tilo_user_identity::sign_revocation_entry(&mut entry, &root).unwrap();
-    let mut revocations = RevocationList::new();
-    revocations.insert(entry).unwrap();
-    let state = tempfile::tempdir().unwrap();
-    let mut identity = host.identity();
-    identity.revocations = revocations;
-    exercise_handshake_refusal_reasons(
-        relay_at(&state, identity, RelayConfig::default()).await,
-        &member,
-        &revoked,
-        &stranger,
-    )
-    .await;
-}
-
-async fn exercise_handshake_refusal_reasons(
-    relay: Relay,
-    member: &DeviceCert,
-    revoked: &DeviceCert,
-    stranger: &DeviceCert,
-) {
-    let sessions = Sessions::new(relay.web_context().clone());
-    let hello = |cert: &DeviceCert| crate::auth::Hello::new(cert.clone(), [7; 32]);
-    let refusal = |error: SessionError| {
-        // On the wire the reason is the 403's postcard body.
-        let response = session_status(&error);
-        assert_eq!(response.status(), StatusCode::FORBIDDEN);
-        match error {
-            SessionError::Denied(refusal) => refusal,
-            other => panic!("not a typed refusal: {other:?}"),
-        }
-    };
-    assert!(sessions.hello(&hello(member)).is_ok(), "the owner's device");
-    assert_eq!(
-        refusal(sessions.hello(&hello(stranger)).unwrap_err()),
-        protocol::SessionRefusal::NotAdmitted
-    );
-    assert_eq!(
-        refusal(sessions.hello(&hello(revoked)).unwrap_err()),
-        protocol::SessionRefusal::DeviceRevoked
-    );
-    let unknown = sessions
-        .finish(
-            &[0; 16],
-            &crate::auth::HelloAck2 {
-                sig_over_server_nonce: [0; 64],
-            },
-        )
-        .map(|_| ())
-        .unwrap_err();
-    assert_eq!(refusal(unknown), protocol::SessionRefusal::Handshake);
-    drop(sessions);
-    relay.shutdown().await;
-}
-
 /// One request to the listener at `addr`: its status, its header block
 /// (lowercased) and its body.
 async fn exchange(addr: SocketAddr, head: &str, body: &[u8]) -> (u16, String, Vec<u8>) {
@@ -701,10 +572,10 @@ async fn the_fetch_proxy_answers_admitted_people_and_refuses_everyone_else() {
         83,
         tilo_user_identity::cloud_enrollment::host_capabilities(),
     );
-    let (owner_key, owner) = device(&signer, 84, DeviceCapabilities::member());
+    let (_, owner) = device(&signer, 84, DeviceCapabilities::member());
     let (joined_key, joined) = device(&watcher, 85, DeviceCapabilities::member());
-    let (watch_key, watch) = device(&watcher, 86, DeviceCapabilities::member());
-    let (laptop_key, laptop) = device(&signer, 87, DeviceCapabilities::member());
+    let (_, watch) = device(&watcher, 86, DeviceCapabilities::member());
+    let (_, laptop) = device(&signer, 87, DeviceCapabilities::member());
     let state = tempfile::tempdir().unwrap();
     let relay = relay_at(&state, host.identity(), RelayConfig::default()).await;
     let workspaces = relay.workspaces().unwrap().clone();
@@ -750,7 +621,6 @@ async fn the_fetch_proxy_answers_admitted_people_and_refuses_everyone_else() {
 
     let mut web = web_of(&relay, &host);
     web.allowed_origins = vec!["https://app.example".into()];
-    web.features = protocol::FEATURE_FETCH_PROXY;
     // The target is on loopback, which a host's proxy never reaches; the
     // refusal of its own network is `tilo_net`'s to test. The workspace may
     // receive what the two answers below carry, together.
@@ -766,9 +636,22 @@ async fn the_fetch_proxy_answers_admitted_people_and_refuses_everyone_else() {
         })
         .unwrap(),
     );
+    // The tokens a page's sessions take as they start, over their own
+    // carrier: one per connection, and the person it names is what the proxy
+    // admits.
+    let owner_token = web
+        .grants
+        .grant(owner.user_public_key, owner.device_public_key)
+        .unwrap();
+    let visiting = web
+        .grants
+        .grant(watch.user_public_key, watch.device_public_key)
+        .unwrap();
+    let laptop_token = web
+        .grants
+        .grant(laptop.user_public_key, laptop.device_public_key)
+        .unwrap();
     let (addr, serving) = serve_web(Arc::new(web)).await;
-    let owner_token = browser(addr, &owner_key, &owner).await;
-    let visiting = browser(addr, &watch_key, &watch).await;
 
     let target = test_http::Responder::start(vec![
         test_http::Reply::status(200)
@@ -795,7 +678,7 @@ async fn the_fetch_proxy_answers_admitted_people_and_refuses_everyone_else() {
     let path = format!("{}?{}", route.path(), route.query().unwrap());
     let fetch = |token: Option<String>, origin: &'static str| {
         let token = token.map_or_else(String::new, |token| {
-            format!("{SESSION_HEADER}: {token}\r\n")
+            format!("{}: {token}\r\n", tilo_relay_protocol::web::SESSION_HEADER)
         });
         let head = format!(
             "GET {path} HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\nOrigin: {origin}\r\nx-tilo-proxy: 1\r\n{token}\r\n"
@@ -903,7 +786,6 @@ async fn the_fetch_proxy_answers_admitted_people_and_refuses_everyone_else() {
 
     // The workspace received its budget: another of its people's devices is
     // refused, in a way the page can read, and the target never asked.
-    let laptop_token = browser(addr, &laptop_key, &laptop).await;
     let (status, head, _) = fetch(Some(hex::encode(laptop_token)), "https://app.example").await;
     assert_eq!(status, 429, "{head}");
     assert_eq!(
@@ -936,219 +818,6 @@ async fn the_fetch_proxy_answers_admitted_people_and_refuses_everyone_else() {
     // Another site's page gets no CORS answer to read.
     let (_, head, _) = fetch(None, "https://other.example").await;
     assert_eq!(header_value(&head, "access-control-allow-origin"), None);
-
-    stop(relay, serving).await;
-}
-
-/// The live plane a page joins: the relay's own WebTransport listener, a grant
-/// issued only to a page whose device the workspace admits, and a session cut
-/// when that device is removed.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[expect(
-    clippy::significant_drop_tightening,
-    reason = "the relay carries the page's live session until it shuts down at the end"
-)]
-async fn a_pages_live_grant_is_issued_to_an_admitted_device_and_cut_on_removal() {
-    use base64::Engine as _;
-    use channel_crypto::{ChannelGroup, MemberKey};
-    use sha2::Digest as _;
-    use tilo_live::live::Track;
-    use tilo_live::plane::{Join, Plane, PlaneError};
-    use tilo_live::roster::Roster;
-    use tilo_live::scope::Scope;
-    use tilo_relay_protocol::web::{LiveInfo, LiveRequest};
-
-    const WORKSPACE: &str = "6f1d3a52-1c7e-4b8e-9d2a-0f4a8c3e5b71";
-    let signer = SigningKey::from_bytes(&[71; 32]);
-    let outsider_root = SigningKey::from_bytes(&[72; 32]);
-    let host = host(&signer, 73, DeviceCapabilities::host());
-    let (member_key, member) = device(&signer, 74, DeviceCapabilities::member());
-    let (outsider_key, outsider) = device(&outsider_root, 75, DeviceCapabilities::member());
-    let state = tempfile::tempdir().unwrap();
-    let workspace = tilo_relay_protocol::room_workspace_id(WORKSPACE).unwrap();
-    let relay = relay_at(
-        &state,
-        host.identity(),
-        RelayConfig {
-            // A guest of the host who is not a member of the workspace still
-            // opens a session: the route, not the handshake, keeps them out.
-            trust_policy: crate::policy::TrustPolicy::AllowList {
-                users: vec![
-                    hex::encode(signer.verifying_key().to_bytes()),
-                    hex::encode(outsider_root.verifying_key().to_bytes()),
-                ],
-            },
-            ..Default::default()
-        },
-    )
-    .await;
-    let admit = |devices: Vec<[u8; 32]>| tilo_peer_state::GovernedAccess {
-        member_user_roots: vec![signer.verifying_key().to_bytes()],
-        member_devices: devices,
-    };
-    relay
-        .replace_governed_workspace_access(
-            workspace,
-            true,
-            admit(vec![member.device_public_key]),
-            state.path().into(),
-        )
-        .await
-        .unwrap();
-
-    // The daemon's own live listener, a development certificate as a host on
-    // its own machine has, serving its routes on a loopback port.
-    let sessions = Sessions::new(relay.web_context().clone());
-    let config = WebConfig {
-        listen: (std::net::Ipv4Addr::LOCALHOST, 0).into(),
-        tls: TlsSource::Development {
-            hosts: vec![
-                "localhost".into(),
-                "127.0.0.1".into(),
-                // The published plane below is announced here, so the
-                // certificate the page pins names it.
-                "live.example".into(),
-            ],
-            store: None,
-        },
-        allowed_origins: Vec::new(),
-        plain_listen: None,
-        public_origin: None,
-        limits: super::WebLimits::default(),
-        country: None,
-        fetch_proxy: None,
-        live: LiveConfig::default(),
-    };
-    let identity = tls::Identity::load(&config.tls).unwrap();
-    let plane = relay.plane.as_ref().expect("the relay runs a live plane");
-    plane.pages.serve_pages(sessions.clone());
-    let live = wt::Live::start(plane, &identity, &config, "https://127.0.0.1").unwrap();
-    let answered = live.info.clone();
-    // Published behind a proxy: the plane binds where it was told and pages
-    // are told the origin they dial, with the port that origin names.
-    let published = WebConfig {
-        live: super::LiveConfig {
-            listen: Some((std::net::Ipv4Addr::LOCALHOST, 0).into()),
-            origin: Some("https://live.example".into()),
-        },
-        ..config.clone()
-    };
-    let published = wt::Live::start(plane, &identity, &published, "https://127.0.0.1").unwrap();
-    assert_eq!(published.info.webtransport_origin, "https://live.example");
-    assert_eq!(published.info.webtransport_port, 443);
-    assert_eq!(
-        published.bound.ip(),
-        std::net::IpAddr::from(std::net::Ipv4Addr::LOCALHOST)
-    );
-    drop(published);
-    let mut web = web_with(&relay, &host, sessions);
-    web.live = Some(Arc::new(live));
-    let (addr, serving) = serve_web(Arc::new(web)).await;
-
-    let ask = |workspace_of: &str| {
-        postcard::to_allocvec(&LiveRequest {
-            workspace_id: workspace,
-            workspace: workspace_of.into(),
-        })
-        .unwrap()
-    };
-
-    // No session, no grant; a device the workspace does not admit gets none
-    // either, though its session is open; and not in a workspace this relay
-    // does not number.
-    assert_eq!(post(addr, "/live", None, ask(WORKSPACE)).await.0, 401);
-    let outsider_token = browser(addr, &outsider_key, &outsider).await;
-    assert_eq!(
-        post(addr, "/live", Some(outsider_token), ask(WORKSPACE))
-            .await
-            .0,
-        403
-    );
-    let member_token = browser(addr, &member_key, &member).await;
-    assert_eq!(
-        post(addr, "/live", Some(member_token), ask("Somewhere else"))
-            .await
-            .0,
-        400
-    );
-
-    // The admitted device's page is told where the listener is and which
-    // certificate it presents.
-    let (code, body) = post(addr, "/live", Some(member_token), ask(WORKSPACE)).await;
-    assert_eq!(code, 200);
-    let info: LiveInfo = postcard::from_bytes(&body).unwrap();
-    assert_eq!(info, answered);
-    assert!(info.webtransport_port > 0);
-    assert_eq!(
-        info.webtransport_origin,
-        format!("https://127.0.0.1:{}", info.webtransport_port)
-    );
-    let leaf = sha2::Sha256::digest(identity.chain.first().unwrap().as_ref());
-    assert_eq!(
-        info.certificate_sha256,
-        base64::engine::general_purpose::STANDARD.encode(leaf)
-    );
-
-    // The page joins that listener with its grant and publishes presence
-    // under the scope's keys, as the page's own carrier does.
-    let certificate: Vec<u8> = base64::engine::general_purpose::STANDARD
-        .decode(&info.certificate_sha256)
-        .unwrap();
-    let carrier = tilo_live::carrier::WebTransport::new(
-        &format!("{}{}", info.webtransport_origin, tilo_live::preface::PATH),
-        &[hex::encode(certificate)],
-    )
-    .unwrap();
-    let grant = tilo_relay_protocol::web::LiveGrant {
-        workspace_id: workspace,
-        token: member_token,
-    };
-    let keys = ChannelGroup::create(
-        collab_types::ChannelId::new(),
-        MemberKey::generate("alice").unwrap(),
-    )
-    .unwrap()
-    .content_keys()
-    .unwrap();
-    let plane = Plane::join(
-        &carrier,
-        &grant.encode(),
-        Join {
-            scope: Scope::workspace(WORKSPACE),
-            device: member.device_public_key,
-            keys,
-            roster: Roster::new([member.device_public_key]),
-            publish: true,
-        },
-    )
-    .await
-    .unwrap();
-    plane.publish(Track::Presence, 0, b"role=member").unwrap();
-
-    // Removing the device from the workspace cuts its page's session, and the
-    // route refuses it from then on.
-    relay
-        .replace_governed_workspace_access(workspace, true, admit(Vec::new()), state.path().into())
-        .await
-        .unwrap();
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
-    while !plane.ended() && std::time::Instant::now() < deadline {
-        tokio::time::sleep(std::time::Duration::from_millis(5)).await;
-    }
-    assert!(
-        plane.ended(),
-        "the removed device's live session stayed open"
-    );
-    assert_eq!(
-        plane.publish(Track::Presence, 1, b"role=member"),
-        Err(PlaneError::Ended)
-    );
-    assert_eq!(
-        post(addr, "/live", Some(member_token), ask(WORKSPACE))
-            .await
-            .0,
-        403
-    );
 
     stop(relay, serving).await;
 }

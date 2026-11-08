@@ -523,14 +523,6 @@ async fn a_public_rooms_guest_is_answered_the_role_it_was_admitted_with() {
         41,
     )
     .await;
-    let workspaces = relay.workspaces().unwrap();
-    workspaces
-        .set_layout(
-            &room.workspace,
-            tilo_desktop_model::projection::WorkspaceLayout::Personal,
-        )
-        .await
-        .unwrap();
     let answered = |device: &TestDevice| {
         let workspaces = relay.workspaces().unwrap();
         let cert = device.cert.clone();

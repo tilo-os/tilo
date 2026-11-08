@@ -832,11 +832,16 @@ fn run_gui_command(
         landlock_best_effort: launcher::provider_sandbox::landlock_best_effort(&args.payload_root),
         mode: if args.service {
             LaunchMode::Service {
-                passthrough_argv: args.rest,
+                passthrough_argv: args.rest.clone(),
             }
         } else {
             LaunchMode::Gui
         },
+        // A GUI launch's `--` tail is the app's own argv, exactly as a CLI
+        // launch's is: the app's parser decides what it means. The launcher
+        // only carries it, so the record reader (`--index`) and a surface
+        // report (`--surface`) reach the binary they name.
+        gui_argv: if args.service { Vec::new() } else { args.rest },
         allow_missing_runtime: args.allow_missing_runtime,
         allow_unsigned_runtime: args.allow_unsigned_runtime,
         require_runtime_publisher: args.require_runtime_publisher,
@@ -1538,9 +1543,11 @@ fn run_installed(
         app_id: Some(package.to_string()),
         render_node: None,
         // A CLI invocation's arguments are the user's own, forwarded through
-        // `LaunchMode::Cli`; no document to open on its behalf.
+        // `LaunchMode::Cli`; no document to open on its behalf, and no GUI
+        // argv to carry.
         open_document: None,
         open_uri: None,
+        gui_argv: Vec::new(),
         open_as_visitor: false,
         headless_console: None,
         tilolang_hosted: false,

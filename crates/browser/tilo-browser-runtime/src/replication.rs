@@ -44,8 +44,8 @@ use tilo_browser_peer::{PeerEvent, PeerEvents, PeerHandle};
 use tilo_peer_state::document_frame::DocumentRoute;
 use ui::automerge::{AutoCommit, ReadDoc as _, transaction::Transactable as _};
 use ui::collaboration::record_content::ContentLane;
-use ui::record::{RecordCheckout, RecordId, RecordStore};
-use ui::state::{DocumentFrontier, DocumentReplica};
+use ui::record::{RecordId, RecordStore, RecordSync};
+use ui::state::DocumentReplica;
 
 /// The desktop document's route. Changing it splits workspaces by build.
 pub(crate) const DESKTOP_APP: &str = "so.tilo.browser-desktop";
@@ -79,11 +79,6 @@ pub(crate) struct Attachment {
     pub permissions: ui::permissions::SharedPermissions,
 }
 
-struct Replica {
-    frontier: DocumentFrontier,
-    snapshotted: bool,
-}
-
 /// How a page sends its desktop to the workspace.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum DesktopSending {
@@ -91,15 +86,11 @@ enum DesktopSending {
     Snapshot,
     /// The workspace has the document: changes go as deltas.
     Changes,
-    /// The workspace keeps no member's layout: it refused this page's desktop as
-    /// a public workspace does. The attached desktops are their people's own
-    /// from then on: sent to nobody, and not replaced by the workspace's.
-    KeptOwn,
 }
 
 struct Mounted {
     attachment: Attachment,
-    records: HashMap<(String, String), Replica>,
+    records: HashMap<(String, String), RecordSync>,
 }
 
 pub(crate) struct Joined {
@@ -468,9 +459,6 @@ pub(crate) fn attach(id: u32, mount: u64, attachment: Attachment) -> bool {
             warn(&format!("shared desktop not applied: {error}"));
         }
         if let Some((_, shared)) = &attachment.desktop {
-            shared
-                .own_layout
-                .set(joined.desktop_sending == DesktopSending::KeptOwn);
             shared.members.replace(joined.members.clone());
             joined.moderates = Arc::clone(&shared.moderates);
             joined.invitable = Arc::clone(&shared.invitable);
@@ -548,12 +536,6 @@ fn refused_change(app: &str, plain: &str) -> String {
         .find(|definition| definition.app_id == app)
         .map_or("The app", |definition| &*definition.title);
     format!("{title} didn't keep that. {plain}")
-}
-
-fn debug(message: &str) {
-    web_sys::console::debug_1(&wasm_bindgen::JsValue::from_str(&format!(
-        "Browser runtime replication: {message}"
-    )));
 }
 
 fn warn(message: &str) {
@@ -897,9 +879,7 @@ impl Joined {
                 PeerEvent::Ready { workspace_id } if workspace_id == self.workspace => {
                     self.ready = true;
                     self.moderation_due_ms.store(0, Ordering::Relaxed);
-                    self.follow_layout(&mut woken);
                 }
-                PeerEvent::WorkspaceLayout { .. } => self.follow_layout(&mut woken),
                 PeerEvent::CompactionRequested { route, request }
                     if route.cluster_id == self.uuid =>
                 {
@@ -1080,16 +1060,6 @@ impl Joined {
         reason: &str,
         woken: &mut HashSet<u64>,
     ) {
-        let personal = route.app_id == DESKTOP_APP
-            && reason.trim() == tilo_relay_protocol::refusal::PERSONAL_LAYOUT;
-        if personal {
-            // Expected in a public workspace, not a fault: said once, quietly.
-            if self.desktop_sending != DesktopSending::KeptOwn {
-                debug("this workspace keeps each member's layout to themselves");
-                self.keep_own_layout(woken);
-            }
-            return;
-        }
         warn(&format!(
             "{}/{}: the workspace refused a change: {reason}",
             route.app_id, route.record
@@ -1128,7 +1098,7 @@ impl Joined {
                                 .records
                                 .get_mut(&(route.app_id.clone(), route.record.clone()))
                             {
-                                replica.frontier.advance(heads);
+                                replica.advance(heads);
                             }
                         }
                         woken.insert(id);
@@ -1315,13 +1285,9 @@ impl Joined {
                 let replica = mounted
                     .records
                     .entry((app.clone(), record.clone()))
-                    .or_insert_with(|| Replica {
-                        frontier: DocumentFrontier::default(),
-                        snapshotted: false,
-                    });
+                    .or_default();
                 for mutation in &mutations {
-                    let (changed, observed) = store.merge_replica(&checkout, mutation.clone())?;
-                    replica.frontier.observe(observed);
+                    let changed = replica.merge(store, &checkout, mutation.clone())?;
                     if changed {
                         woken.insert(id);
                     }
@@ -1478,11 +1444,6 @@ impl Joined {
         if self.desktop_value.as_ref() == Some(&value) {
             return Ok(());
         }
-        // A desktop of the person's own keeps what they arranged.
-        if self.desktop_sending == DesktopSending::KeptOwn {
-            self.desktop_value = Some(value);
-            return Ok(());
-        }
         // A peer renaming the workspace is news to everyone else here; the
         // first desktop this page receives is not.
         let renamed = tilo_desktop_surface::history_log::WorkspaceRename::merged(
@@ -1535,18 +1496,8 @@ impl Joined {
                     let replica = mounted.records.entry(key.clone()).or_insert_with(|| {
                         match delivered.remove(&key) {
                             // The workspace has the record as it delivered it.
-                            Some(heads) => {
-                                let mut frontier = DocumentFrontier::default();
-                                frontier.advance(heads);
-                                Replica {
-                                    frontier,
-                                    snapshotted: true,
-                                }
-                            }
-                            None => Replica {
-                                frontier: DocumentFrontier::default(),
-                                snapshotted: false,
-                            },
+                            Some(heads) => RecordSync::delivered(heads),
+                            None => RecordSync::new(),
                         }
                     });
                     let route = DocumentRoute {
@@ -1554,9 +1505,9 @@ impl Joined {
                         cluster_id: self.uuid.clone(),
                         record: key.1.clone(),
                     };
-                    match outbound(store, &checkout, replica) {
-                        Ok(Some((mutation, heads))) => {
-                            outgoing.push((route, mutation, (id, key, heads)));
+                    match replica.take_outbound(store, &checkout.id) {
+                        Ok(Some(next)) => {
+                            outgoing.push((route, next.mutation, (id, key, next.heads)));
                         }
                         Ok(None) => {}
                         Err(error) => warn(&format!("{}/{}: {error}", key.0, key.1)),
@@ -1591,38 +1542,10 @@ impl Joined {
                 .get_mut(&id)
                 .and_then(|m| m.records.get_mut(&key))
             {
-                replica.frontier.advance(heads);
-                replica.snapshotted = true;
+                replica.advance(heads);
             }
         }
         self.send_desktop();
-    }
-
-    /// A workspace whose layout is personal, as a public workspace's is, shares no
-    /// member's windows or layout: what this person arranges is theirs
-    /// alone, never sent, and nothing of it is undone. Known from the workspace's
-    /// governance as soon as the page hears it, or from the workspace refusing
-    /// this page's desktop as personal.
-    fn keep_own_layout(&mut self, woken: &mut HashSet<u64>) {
-        self.desktop_sending = DesktopSending::KeptOwn;
-        for (&id, mounted) in &self.mounts {
-            if let Some((_, shared)) = &mounted.attachment.desktop {
-                shared.own_layout.set(true);
-                woken.insert(id);
-            }
-        }
-    }
-
-    /// [`Self::keep_own_layout`] once the workspace's governance says its layout
-    /// is personal, as the peer heard it (`PeerStatus::personal_rooms`):
-    /// asked on joining, for a scope heard before this workspace listened, and
-    /// whenever a workspace's scope changes.
-    fn follow_layout(&mut self, woken: &mut HashSet<u64>) {
-        if self.desktop_sending != DesktopSending::KeptOwn
-            && self.peer.status().personal_rooms.contains(&self.uuid)
-        {
-            self.keep_own_layout(woken);
-        }
     }
 
     /// The workspace's members as the peer last heard its governance list them:
@@ -1642,9 +1565,6 @@ impl Joined {
     }
 
     fn send_desktop(&mut self) {
-        if self.desktop_sending == DesktopSending::KeptOwn {
-            return;
-        }
         let Some((desktop, author)) = self.mounts.values().find_map(|mounted| {
             mounted.attachment.desktop.as_ref().map(|(handle, shared)| {
                 (
@@ -1724,30 +1644,12 @@ impl Joined {
     }
 }
 
-type Outbound = (DocumentMutation, Vec<ui::automerge::ChangeHash>);
 /// A publication and the replica frontier it advances once accepted.
 type Pending = (
     DocumentRoute,
     DocumentMutation,
     (u64, (String, String), Vec<ui::automerge::ChangeHash>),
 );
-
-fn outbound(
-    store: &RecordStore,
-    checkout: &RecordCheckout,
-    replica: &mut Replica,
-) -> Result<Option<Outbound>, String> {
-    if !replica.snapshotted {
-        let (bytes, heads) = store
-            .replication_snapshot(&checkout.id)
-            .map_err(|error| error.to_string())?;
-        return Ok(Some((DocumentMutation::Snapshot(bytes), heads)));
-    }
-    let (delta, heads) = store
-        .replication_delta(&checkout.id, &mut replica.frontier)
-        .map_err(|error| error.to_string())?;
-    Ok((!delta.is_empty()).then_some((DocumentMutation::Incremental(delta), heads)))
-}
 
 /// Who wrote the newest change of the workspace's desktop, as its message names
 /// them (`history_log::commit`).

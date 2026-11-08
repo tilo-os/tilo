@@ -160,7 +160,7 @@ mod foreign_ask_tests;
 
 #[cfg(test)]
 mod tests {
-    use super::super::super::{AppBrokerState, BrokerChannels, FanoutState, PeerPublisher};
+    use super::super::super::AppBrokerState;
     use crate::services::{OwnDeviceActions, OwnDeviceOutcome};
     use crate::test_support::{Workspace, WorkspaceSlot, WorkspaceTree};
     use std::sync::{Arc, Mutex};
@@ -221,13 +221,8 @@ mod tests {
         let workspace_id = workspace.id().to_string();
         let mut tree = WorkspaceTree::default();
         tree.workspaces.push(workspace);
-        let (state, _bridge_rx) = AppBrokerState::new_configured(
-            &Arc::new(FanoutState::new()),
-            Arc::new(Mutex::new(BrokerChannels::default())),
-            PeerPublisher::disabled(),
+        let (state, _bridge_rx) = AppBrokerState::test_state(
             Some(tree.shared().authority()),
-            None,
-            None,
             crate::services::HostServices {
                 own_device: Some(network),
                 ..Default::default()

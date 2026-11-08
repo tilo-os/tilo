@@ -86,6 +86,8 @@ async fn a_fanned_delivery_skips_the_rooms_lock_until_authority_moves() {
         revocations: &revocations,
         carried_calls: None,
         admin: None,
+        here: None,
+        fetch: None,
         agents: Box::leak(Box::default()),
         positions: None,
         compactor: None,

@@ -156,6 +156,9 @@ NOT_CONTROL_CALLBACKS = {
     "on_expand": "folds or unfolds a row: what this window shows, no edit",
     "on_fold": "reports a row's subtasks folded or opened, however they were folded: what "
     "this window shows, no edit",
+    "on_opened": "reports the item a row opened into where it stands: what this window shows, "
+    "kept where the person is and put back as the list's open prop, no edit",
+    "on_closed": "reports the row standing open closed: what this window shows, no edit",
     "on_open_toggle": "folds or unfolds a disclosure: what this window shows, no edit",
     "on_header_click": "sorts a table by a column: what this window shows, no edit",
     "on_edit_requested": "turns a breadcrumb into its editable field: what this window shows",

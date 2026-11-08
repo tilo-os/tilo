@@ -69,18 +69,29 @@ for (( index = 0; index < ${#arguments[@]}; index++ )); do
 done
 tests() { local name; for name; do [[ $tested == *" $name "* ]] && return 0; done; return 1; }
 
-# A run that names the packages it asks for builds those beside the family's `unify` member,
-# which t selects itself (t.toml's `unify`): its manifest declares each member's features as the
-# whole family's build resolves them, tests' features included (tools/ci/workspace_unify.py), so
-# the selection's units are the ones a whole-family job made and shares, and nothing is added
-# here. A run of the whole family selects `--workspace --exclude`, with no unify member to
-# resolve its features, and gets them package-qualified: `tilo-media/decode` as `--features`
-# also turns on the optional tilo-media of every package selected beside it, and never enables
-# inference for client-only apps.
-if (( nextest )) && [[ " $* " != *" -p "* && " $* " != *" --package "* ]]; then
-    feature_flags=$(python3 "$root/tools/ci/package_features.py" "$@")
-    read -r -a features <<<"$feature_flags"
-    arguments+=("${features[@]}")
+# In CI, a build of named packages resolves every member's features as the whole workspace does,
+# its tests' features included (tools/ci/workspace_unify.py), so jobs testing different packages
+# share each member's unit, and a test target a feature gates is a target of the run. That build
+# compiles every member, so outside CI (a developer's `cargo test -p NAME` on one incremental
+# target) an edit would rebuild every package that depends on the edited one; there the named
+# packages build alone.
+unify=()
+[[ -n ${CI:-} ]] && unify=(-p workspace-unify)
+
+if (( nextest )); then
+    if [[ " $* " == *" -p "* || " $* " == *" --package "* ]]; then
+        # Not as --features: `tilo-media/decode` there also turns on the optional tilo-media of
+        # every package selected beside it.
+        arguments+=("${unify[@]}")
+    else
+        # A run of the whole family selects `--workspace --exclude`, with no unify member to
+        # resolve its features, and gets them package-qualified: `tilo-media/decode` as
+        # `--features` also turns on the optional tilo-media of every package selected beside it,
+        # and never enables inference for client-only apps.
+        feature_flags=$(python3 "$root/tools/ci/package_features.py" "$@")
+        read -r -a features <<<"$feature_flags"
+        arguments+=("${features[@]}")
+    fi
 fi
 
 # Only the NTFS helper's own tests read the native images, which take minutes to build.

@@ -2263,7 +2263,7 @@ impl EditorView {
         // or above it when the editor ends first; it scrolls to keep the
         // chosen row in view and sizes itself to its labels and details.
         let x = caret_x.max(self.rect.x0 + self.gutter_width());
-        self.completion_list.set_suggestions(suggestions);
+        self.completion_list.set_rows(suggestions);
         self.completion_list
             .set_anchor(Rect::new(x, caret_top, x, caret_top + self.line_h));
         self.completion_list.set_viewport(self.rect);
@@ -3358,7 +3358,7 @@ mod tests {
             insert_text: label.into(),
         };
         ev.show_completions(vec![item("primes_below"), item("println")]);
-        ev.completion_list.set_suggestions(
+        ev.completion_list.set_rows(
             ev.completions
                 .iter()
                 .map(|item| Suggestion::new(&item.insert_text))

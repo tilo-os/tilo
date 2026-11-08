@@ -146,7 +146,7 @@ pub struct Relay {
     pub(crate) browser_origin: Arc<std::sync::RwLock<Option<Arc<String>>>>,
     /// The relay's live plane, which its browsers serve and its devices dial.
     #[cfg(feature = "web")]
-    pub(crate) plane: Option<crate::web::wt::Plane>,
+    pub(crate) plane: Option<crate::web::plane::Plane>,
     /// Background tasks (revocation refresh, metrics persistence). Aborted
     /// (per-handle) when the `Relay` drops.
     background_tasks: Arc<std::sync::Mutex<Vec<AbortOnDrop>>>,
@@ -156,7 +156,7 @@ pub struct Relay {
     mesh_profile: Arc<crate::mesh::DeviceMeshProfile>,
     /// Atomic filesystem completeness proof shared with the headless replica.
     full_replica: ReplicaProof,
-    /// What the browser carriers need to serve sessions of this relay.
+    /// What the routes a page asks before its session answer with.
     web: Box<WebContext>,
     /// The workspaces this relay governs; absent when it hosts no workspace authority.
     workspaces: Option<crate::workspaces::Workspaces>,
@@ -167,9 +167,16 @@ pub struct Relay {
     /// The packet relay this host runs for the pages it serves, when it runs
     /// one ([`RelayConfig::packet_relay`]).
     packet_server: Option<iroh_relay::server::Server>,
+    /// The relay the host's pages reach it through, as they are told it: its
+    /// own packet relay, or the one it was configured with. A page has no UDP
+    /// socket, so a relay is the only way it reaches its host, and this is the
+    /// configuration's answer — an endpoint reports a relay only once it has
+    /// connected to it, which a start that restarts on kept state outruns.
+    #[cfg(feature = "web")]
+    pub(crate) pages_reach: Option<iroh::RelayUrl>,
 }
 
-/// The relay state the browser carriers serve sessions with.
+/// The relay state the page's pre-session routes answer with.
 #[derive(Clone)]
 pub(crate) struct WebContext {
     pub(crate) relay: RelayProtocol,
@@ -468,18 +475,34 @@ impl Relay {
             path: cfg.full_replica_status.clone(),
             clock: replica_clock,
         };
-        let (packet_relay, relay_mode) = match cfg.packet_relay {
+        #[cfg_attr(not(feature = "web"), allow(unused_variables))]
+        let (packet_relay, relay_mode, pages_reach) = match cfg.packet_relay {
             Some(addr) if endpoint.is_none() && relay_mode.is_none() => {
                 let (server, url) = spawn_packet_relay(addr).await?;
+                let url = match &cfg.packet_relay_url {
+                    Some(published) => published.parse().map_err(|error| {
+                        RelayError::Iroh(format!("packet relay URL {published}: {error}"))
+                    })?,
+                    None => url,
+                };
                 tracing::info!(%addr, %url, "running this host's own packet relay");
-                (Some(server), Some(iroh::RelayMode::Custom(url.into())))
+                (
+                    Some(server),
+                    Some(iroh::RelayMode::Custom(url.clone().into())),
+                    Some(url),
+                )
             }
             Some(_) => {
                 return Err(RelayError::Iroh(
                     "a host runs its own packet relay or is given one, not both".into(),
                 ));
             }
-            None => (None, relay_mode),
+            None => {
+                let pages = relay_mode
+                    .as_ref()
+                    .and_then(|mode| mode.relay_map().urls::<Vec<_>>().into_iter().next());
+                (None, relay_mode, pages)
+            }
         };
         let endpoint = match endpoint {
             Some(endpoint) => endpoint,
@@ -531,11 +554,11 @@ impl Relay {
         let metrics = sessions.metrics.clone();
         let live = sessions.identity.clone();
         let handler = sessions.handler.clone();
-        // The live plane belongs to the relay: pages reach it over
-        // WebTransport, devices over the relay's own iroh endpoint, and both
+        // The live plane belongs to the relay: every participant, a page
+        // included, reaches it over the relay's own iroh endpoint, and all
         // land in one origin whether or not browsers are served.
         #[cfg(feature = "web")]
-        let mut plane = Some(crate::web::wt::Plane::start(handler.clone()));
+        let mut plane = Some(crate::web::plane::Plane::start(handler.clone()));
         let live_trust_policy = handler.trust_policy.clone();
         let discovery = DiscoveryProtocol {
             workspaces: workspaces.clone(),
@@ -554,7 +577,10 @@ impl Relay {
             full_replica: full_replica.clone(),
             state_root: cfg.state_root.clone(),
         };
-        let certification = crate::certification::CertificationProtocol::new(live.clone());
+        let certification = crate::certification::CertificationProtocol::new(
+            live.clone(),
+            Some(workspaces.clone()),
+        );
         let web = Box::new(WebContext {
             relay: handler.clone(),
             #[cfg(feature = "web")]
@@ -610,6 +636,8 @@ impl Relay {
             workspaces: governed,
             _channels: channels,
             packet_server: packet_relay,
+            #[cfg(feature = "web")]
+            pages_reach,
         })
     }
 

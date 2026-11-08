@@ -87,8 +87,12 @@ fn every_kind_of_broken_layout_is_caught_at_the_view_that_breaks_it() {
             | Kind::TitleClippedWithRoom
             // The fixture's windows ship one language: nothing reads from another catalogue.
             | Kind::MixedLanguage
-            // No window in this fixture opens an item under its row.
-            | Kind::OpenOutsideList => "(no view)",
+            // No window in this fixture opens an item under its row, and no page names itself
+            // in a bar beside a heading of its own.
+            | Kind::OpenOutsideList
+            | Kind::RepeatedPageTitle
+            // The fixture's cards each hold what they are given, so none stands empty.
+            | Kind::EmptySurface => "(no view)",
         };
         assert_eq!(
             finding.view,
@@ -119,20 +123,59 @@ fn a_view_whose_body_is_layers_lays_its_children_over_each_other() {
     );
 }
 
+/// The `languages` fixture copied to a scratch directory, with the German word for
+/// `w-a-word-only-the-source-language` taken out: an app whose German is short one message. The
+/// fixture in the tree is translated whole; the drift is made here, where the check is tested.
+fn short_of_one_german_word() -> std::io::Result<(tempfile::TempDir, PathBuf)> {
+    let source = manifest().join("tests/layout_check/languages");
+    let scratch = tempfile::tempdir()?;
+    copy_tree(&source, &scratch.path().join("languages"))?;
+    let german = scratch.path().join("languages/locales/de-DE.ftl");
+    let whole = std::fs::read_to_string(&german)?;
+    let mut short = String::with_capacity(whole.len());
+    for line in whole.lines() {
+        if !line
+            .trim_start()
+            .starts_with(".w-a-word-only-the-source-language")
+        {
+            short.push_str(line);
+            short.push('\n');
+        }
+    }
+    std::fs::write(&german, short)?;
+    let languages = scratch.path().join("languages");
+    Ok((scratch, languages))
+}
+
+fn copy_tree(from: &Path, to: &Path) -> std::io::Result<()> {
+    std::fs::create_dir_all(to)?;
+    for entry in std::fs::read_dir(from)? {
+        let entry = entry?;
+        let target = to.join(entry.file_name());
+        if entry.path().is_dir() {
+            copy_tree(&entry.path(), &target)?;
+        } else {
+            std::fs::copy(entry.path(), &target)?;
+        }
+    }
+    Ok(())
+}
+
 /// A window reads in one language throughout: a word it shows from a catalogue in another
 /// language — here the app's source standing in for a translation it lacks — is a finding, and
 /// the same window read in the language the person speaks has none. The person's language is
 /// staged whatever locale this machine runs in, so the two runs differ by the person alone.
 #[test]
 fn a_word_a_window_shows_from_another_languages_catalogue_is_a_finding() {
-    let dir = manifest().join("tests/layout_check/languages");
+    let (_scratch, dir) = short_of_one_german_word()
+        .unwrap_or_else(|error| panic!("the languages fixture copies: {error}"));
     let report = |locale: &str| {
         layout_check::check(&Options {
             dirs: vec![dir.clone()],
             locale: locale.to_owned(),
             ..Options::default()
         })
-        .expect("the fixture lays out")
+        .unwrap_or_else(|error| panic!("the fixture lays out: {error}"))
     };
     let english = report(layout_check::DEFAULT_LOCALE);
     assert!(

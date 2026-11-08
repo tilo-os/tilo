@@ -75,45 +75,26 @@ pub struct WebArgs {
     /// `--web-plain` bind a non-loopback address.
     #[arg(long = "public-origin", value_name = "ORIGIN", requires = "web_plain")]
     pub public_origin: Option<String>,
-    /// The UDP address of the live plane (WebTransport), when a proxy forwards
-    /// to it: `0.0.0.0:9781` behind an ingress that publishes it. By default
-    /// the plane shares `--web`'s address and port where UDP allows it.
-    #[arg(long = "web-live", value_name = "ADDR", requires = "web")]
-    pub web_live: Option<SocketAddr>,
-    /// The `https://host[:port]` origin pages dial the live plane at, when a
-    /// proxy publishes it at another host or port than the host's own origin
-    /// on the port the plane bound (such as `https://live.example`, whose UDP
-    /// 443 the proxy forwards). The port it names is the one pages dial, 443
-    /// when it names none. With `--tls dev` its host is a name the
-    /// development certificate carries, since pages pin that certificate for
-    /// this origin.
-    #[arg(long = "web-live-origin", value_name = "ORIGIN", requires = "web")]
-    pub web_live_origin: Option<String>,
     /// Run this host's own iroh packet relay at this address, and have its
     /// pages reach it through it: a page has no UDP socket, so it reaches a
     /// host only through a relay. Without it the host uses the public relays.
     #[arg(long = "packet-relay", value_name = "ADDR")]
     pub packet_relay: Option<SocketAddr>,
+    /// The `https://` origin an ingress publishes the packet relay at, in front
+    /// of `--packet-relay`: the URL the host advertises, which pages dial. By
+    /// default that is the bind address's own `http://`.
+    #[arg(
+        long = "packet-relay-url",
+        value_name = "URL",
+        requires = "packet_relay"
+    )]
+    pub packet_relay_url: Option<String>,
     /// The web entry (ending in `/`, e.g. `https://app.example/`) where the
     /// Tilo app opens this host's links: announced in catalogue locators,
     /// so `share-link` and bots mint links under it. Overrides the config's
     /// `web_entry`.
     #[arg(long = "web-entry", value_name = "URL")]
     pub web_entry: Option<String>,
-    /// The request header the proxy in front of the host names a client's
-    /// country in (such as `CF-IPCountry`). A person approving a new device
-    /// is shown it; nothing is looked up.
-    #[arg(long = "country-header", value_name = "NAME", requires = "web")]
-    pub country_header: Option<String>,
-    /// The peers `--country-header` is believed from, as comma-separated
-    /// `address[/prefix]` ranges; by default this machine only.
-    #[arg(
-        long = "country-proxies",
-        value_name = "RANGES",
-        default_value = "127.0.0.0/8,::1",
-        requires = "country_header"
-    )]
-    pub country_proxies: tilo_relay_protocol::proxies::TrustedProxies,
     /// Without a device certificate yet, create the device key, print its
     /// public half and serve only `/peer/v1/install` on `--web` until a
     /// root-signed host certificate for it arrives with the token in this
@@ -309,6 +290,9 @@ pub async fn start_relay_lending(
     }
     announce_web_entry(&mut cfg, args);
     cfg.packet_relay = cfg.packet_relay.or(args.packet_relay);
+    cfg.packet_relay_url = cfg
+        .packet_relay_url
+        .or_else(|| args.packet_relay_url.clone());
     let lock =
         tilo_relay::state_lock::StateLock::acquire(&cfg.state_root).map_err(anyhow::Error::msg)?;
     #[cfg(feature = "agents")]
@@ -348,25 +332,16 @@ pub async fn start_relay_lending(
     })
 }
 
-/// The host an `https://host[:port]` origin names.
-fn origin_host(origin: &str) -> Option<String> {
-    let rest = origin.trim().strip_prefix("https://")?;
-    let host = rest.split([':', '/']).next().unwrap_or_default();
-    (!host.is_empty()).then(|| host.to_string())
-}
-
 pub(crate) fn web_config(args: &WebArgs, listen: SocketAddr, state_root: &Path) -> WebConfig {
     let tls = match &args.tls {
         TlsArg::Dev => {
             // The names pages may dial this host by: the name it publishes
-            // itself under, the live plane's announced host — pages pin the
-            // live listener's certificate for that origin — and loopback.
+            // itself under and loopback.
             let mut hosts: Vec<String> = Vec::new();
             let named = args
                 .public_host
                 .clone()
                 .into_iter()
-                .chain(args.web_live_origin.as_deref().and_then(origin_host))
                 .chain(["localhost".to_string(), listen.ip().to_string()]);
             for host in named {
                 if !hosts.iter().any(|known| known.eq_ignore_ascii_case(&host)) {
@@ -390,14 +365,6 @@ pub(crate) fn web_config(args: &WebArgs, listen: SocketAddr, state_root: &Path) 
         allowed_origins: args.allowed_origins.clone(),
         plain_listen: args.web_plain,
         public_origin: args.public_origin.clone(),
-        limits: web_limits(),
-        country: args
-            .country_header
-            .clone()
-            .map(|name| tilo_relay::web::CountryHeader {
-                name,
-                proxies: args.country_proxies.clone(),
-            }),
         fetch_proxy: args.fetch_proxy.then(|| tilo_relay::web::FetchProxySetup {
             config: fetch_proxy_config(),
             metrics_file: Some(
@@ -405,10 +372,6 @@ pub(crate) fn web_config(args: &WebArgs, listen: SocketAddr, state_root: &Path) 
                     .join("fetch-proxy.prom"),
             ),
         }),
-        live: tilo_relay::web::LiveConfig {
-            listen: args.web_live,
-            origin: args.web_live_origin.clone(),
-        },
     }
 }
 
@@ -500,14 +463,6 @@ fn fetch_proxy_config() -> tilo_net::proxy::host::Config {
 /// caps without a config file.
 fn env_count(name: &str) -> Option<usize> {
     std::env::var(name).ok()?.trim().parse().ok()
-}
-
-fn web_limits() -> tilo_relay::web::WebLimits {
-    let defaults = tilo_relay::web::WebLimits::default();
-    tilo_relay::web::WebLimits {
-        max_sessions: env_count("TILO_RELAY_MAX_WEB_SESSIONS").unwrap_or(defaults.max_sessions),
-        max_handshakes: env_count("TILO_RELAY_MAX_HANDSHAKES").unwrap_or(defaults.max_handshakes),
-    }
 }
 
 /// Start the listener `run --web` asked for, if any.
@@ -1465,7 +1420,6 @@ mod tests {
             pairing_code: code.into(),
             request,
             requested_at_ns: 0,
-            country: None,
         }
     }
 

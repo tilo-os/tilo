@@ -131,8 +131,6 @@ mod scrollable_test;
 mod scrollbar_render_test;
 #[path = "spacing_token_audit.rs"]
 mod spacing_token_audit;
-#[path = "strip_view_test.rs"]
-mod strip_view_test;
 #[cfg(any(target_os = "macos", target_os = "linux"))]
 #[path = "synthetic_key_event.rs"]
 mod synthetic_key_event;
@@ -174,8 +172,6 @@ mod widget_trait_test;
 mod window_group_test;
 #[path = "window_group_visual_journey.rs"]
 mod window_group_visual_journey;
-#[path = "workspace_view_test.rs"]
-mod workspace_view_test;
 
 mod canonical_record_owner;
 

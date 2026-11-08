@@ -87,6 +87,18 @@ fn rows(view: &mut ViewInstance) -> Vec<UiNode> {
         .collect()
 }
 
+/// Whether the transcript's "New messages" divider stands over each row.
+fn dividers(view: &mut ViewInstance) -> Vec<bool> {
+    rows(view)
+        .iter()
+        .map(|row| {
+            row.children
+                .first()
+                .is_some_and(|first| first.kind == "ui.UnreadDivider")
+        })
+        .collect()
+}
+
 /// What each row of the transcript says: its rich text.
 fn said(view: &mut ViewInstance) -> Vec<String> {
     rows(view)
@@ -650,8 +662,9 @@ fn a_deleted_message_is_gone_for_everyone_and_leaves_a_version_of_the_removal() 
 
 /// What someone else says in a channel is unseen to you until you open it: the sidebar's place
 /// for the channel carries how many of its messages you have not seen and stands out, the
-/// messages themselves carry a change mark, and opening the channel takes the marks away. A
-/// message of your own is never unseen to you, and nothing outside the channel is counted.
+/// transcript stands its "New messages" divider where the unseen part starts, and opening the
+/// channel takes the divider away. A message of your own is never unseen to you, and nothing
+/// outside the channel is counted.
 #[test]
 fn a_channels_new_messages_are_unseen_in_the_sidebar_until_the_person_opens_it() {
     let (mut ada, loaded) = Replica::new("ada", AutoCommit::new(), &[(CHAT, CHAT_IDS)]);
@@ -705,7 +718,8 @@ fn a_channels_new_messages_are_unseen_in_the_sidebar_until_the_person_opens_it()
     );
     assert_eq!(place("/random").props.get("live"), Some(&Value::Int(1)));
 
-    // In the channel each of Ben's messages carries a change mark; Ada's own does not.
+    // Ben's messages are new, and the transcript says so once, with its divider where their
+    // part starts: a row of that part carries no mark of its own.
     let mut channel = ada.host.open_resource(&target(&design), None).unwrap();
     let marked = |view: &mut ViewInstance| -> Vec<bool> {
         rows(view)
@@ -713,16 +727,17 @@ fn a_channels_new_messages_are_unseen_in_the_sidebar_until_the_person_opens_it()
             .map(|row| find(row, "ui.ChangeMark").is_some())
             .collect()
     };
-    assert_eq!(marked(&mut channel), [true, true]);
-    post(&mut ada, &channel, "Thanks.");
+    assert_eq!(marked(&mut channel), [false, false]);
     assert_eq!(
-        marked(&mut channel),
-        [true, true, false],
-        "one's own message is not unseen to oneself"
+        dividers(&mut channel),
+        [true, false],
+        "the divider stands over the first message Ada had not seen"
     );
+    post(&mut ada, &channel, "Thanks.");
+    assert_eq!(marked(&mut channel), [false, false, false]);
 
     // Opening the channel marks what it showed seen, as the window does on the way out: the
-    // marks go, and so does the badge; random's is its own.
+    // divider goes, and so does the badge; random's is its own.
     ada.host
         .runtime()
         .mark_seen("ada", &target(&design))
@@ -730,7 +745,7 @@ fn a_channels_new_messages_are_unseen_in_the_sidebar_until_the_person_opens_it()
     ada.commit();
     let mut reopened = ada.host.open_resource(&target(&design), None).unwrap();
     assert_eq!(
-        marked(&mut reopened),
+        dividers(&mut reopened),
         [false, false, false],
         "opening the channel saw it"
     );

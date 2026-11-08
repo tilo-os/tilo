@@ -8,18 +8,16 @@ license.workspace = true
 
 [features]
 default = []
-# The HTTPS server identity alone (`tls`): rustls, without the relay stack.
-tls = ["dep:rustls"]
 # One participant's sealed session in one scope: the namespace of one device
 # in one scope, the tracks within it and their delivery, the sealing under
-# the scope's channel keys, and the admission a page runs over WebTransport.
+# the scope's channel keys, and the admission a participant runs on it.
 # Builds for the page, which publishes and reads them itself.
 plane = ["dep:moq-net", "dep:hex", "dep:n0-future"]
-# The relay and the native carrier: the listening half, which runs on the
-# device that serves them.
-relay = ["tls", "plane", "dep:web-transport-quinn", "dep:quinn", "dep:rustls", "dep:rcgen", "dep:sha2", "dep:bytes", "dep:tokio", "dep:url", "dep:serde_json"]
-# The carrier over a direct iroh connection, the one every device dials and
-# the page will: the client half only (`plane`), so it builds for the browser.
+# The relay: the copying and admitting half, which runs on the device that
+# serves a plane.
+relay = ["plane", "dep:bytes", "dep:tokio", "dep:serde_json"]
+# The carrier over a direct iroh connection, the one every device dials, a
+# page included: the client half only (`plane`), so it builds for the browser.
 # The listening half a device that serves a plane runs is `relay`'s.
 iroh = ["plane", "dep:iroh", "dep:bytes", "dep:serde_json"]
 
@@ -31,7 +29,6 @@ tilo-clock = { path = "../../platform/tilo-clock" }
 thiserror.workspace = true
 bytes = { workspace = true, optional = true }
 tokio = { workspace = true, optional = true, features = ["rt-multi-thread", "macros", "sync", "time", "signal"] }
-url = { workspace = true, optional = true }
 # A frame names its stream in a lane's handshake; a carrier's handshake is
 # serde too.
 serde = { workspace = true, features = ["derive"] }
@@ -39,11 +36,6 @@ serde_json = { workspace = true, optional = true }
 moq-net = { workspace = true, optional = true }
 # Plain future polling: the client carrier runs in a page as it does natively.
 n0-future = { version = "0.3", optional = true }
-web-transport-quinn = { version = "0.12.1", default-features = false, features = ["ring"], optional = true }
-quinn = { version = "0.11.9", default-features = false, features = ["runtime-tokio", "rustls-ring"], optional = true }
-rustls = { workspace = true, optional = true }
-rcgen = { workspace = true, optional = true }
-sha2 = { workspace = true, optional = true }
 hex = { workspace = true, optional = true }
 iroh = { workspace = true, optional = true }
 # A track is sealed and opened under the scope's channel keys, as a call's
@@ -56,31 +48,10 @@ tilo-seal = { version = "0.1.0", path = "../../system/tilo-seal" }
 workspace-hack = { version = "0.1" }
 
 [dev-dependencies]
-# Only for examples/wt_stream_signal_repro.rs (Chromium WebTransport crash reproducer).
-web-transport-quinn = { version = "0.12.1", default-features = false, features = ["ring"] }
-rustls.workspace = true
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "time", "test-util"] }
+serde_json.workspace = true
 tilo-test-env = { path = "../../dev/test-env" }
-# `tls` tests load a generated PEM pair from a temporary directory.
-rcgen.workspace = true
 tempfile.workspace = true
-
-[[bin]]
-name = "moq-proof"
-path = "src/bin/moq-proof.rs"
-required-features = ["relay"]
-
-[[example]]
-name = "wt_stream_signal_repro"
-path = "examples/wt_stream_signal_repro.rs"
-
-[[test]]
-name = "relay"
-required-features = ["relay"]
-
-[[test]]
-name = "relay_goaway"
-required-features = ["relay"]
 
 [[test]]
 name = "live_native"

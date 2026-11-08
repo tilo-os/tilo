@@ -729,6 +729,7 @@ mod tests {
             focusable: role.is_some(),
             rect,
             child_clip: None,
+            page_title: None,
             layout: None,
             semantics: role.map(AccessNode::new),
             children: Vec::new(),

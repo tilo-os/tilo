@@ -23,7 +23,7 @@ use ed25519_dalek::SigningKey;
 use tilo_agent_participant::{AgentHost, AppCatalogue, FeedbackReviewer, ModelChoice};
 use tilo_relay::certify::{ApproverDecision, ApproverReply, ConfirmationAnswer};
 use tilo_relay::daemon::{Relay, RelayIdentity};
-use tilo_relay::web::{LiveConfig, TlsSource, WebConfig, WebHandle};
+use tilo_relay::web::{TlsSource, WebConfig, WebHandle};
 use tilo_relay_client::Approver;
 use tilo_relay_protocol::certify::PendingConfirmation;
 use tilo_user_identity::{CertificationPolicy, RevocationList, issue_device_cert};
@@ -120,10 +120,8 @@ pub async fn start(root: &SigningKey, host: &Device, state: &Path, options: Opti
             allowed_origins: options.allowed_origins,
             plain_listen: None,
             public_origin: None,
-            limits: tilo_relay::web::WebLimits::default(),
             country: None,
             fetch_proxy: None,
-            live: LiveConfig::default(),
         })
         .await
         .unwrap();

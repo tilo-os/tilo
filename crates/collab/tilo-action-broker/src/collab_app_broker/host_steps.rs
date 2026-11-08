@@ -847,8 +847,8 @@ pub(crate) mod signed_test_support {
 
 #[cfg(test)]
 mod identity_admin_tests {
+    use super::super::AppBrokerState;
     use super::super::action_host::RowScope;
-    use super::super::{AppBrokerState, BrokerChannels, FanoutState, PeerPublisher};
     use crate::services::{HostStepOutcome, HostStepRequest, HostStepServices};
     use crate::test_support::{Grants as _, Workspace, WorkspaceSlot, WorkspaceTree};
     use std::sync::{Arc, Mutex};
@@ -936,13 +936,8 @@ mod identity_admin_tests {
         let workspace_id = workspace.id().to_string();
         let mut tree = WorkspaceTree::default();
         tree.workspaces.push(workspace);
-        let (state, _bridge_rx) = AppBrokerState::new_configured(
-            &Arc::new(FanoutState::new()),
-            Arc::new(Mutex::new(BrokerChannels::default())),
-            PeerPublisher::disabled(),
+        let (state, _bridge_rx) = AppBrokerState::test_state(
             Some(tree.shared().authority()),
-            None,
-            None,
             crate::services::HostServices {
                 host_steps: vec![host],
                 ..Default::default()
@@ -978,13 +973,8 @@ mod identity_admin_tests {
         let workspace_id = workspace.id().to_string();
         let mut tree = WorkspaceTree::default();
         tree.workspaces.push(workspace);
-        let (state, _bridge_rx) = AppBrokerState::new_configured(
-            &Arc::new(FanoutState::new()),
-            Arc::new(Mutex::new(BrokerChannels::default())),
-            PeerPublisher::disabled(),
+        let (state, _bridge_rx) = AppBrokerState::test_state(
             Some(tree.shared().authority()),
-            None,
-            None,
             crate::services::HostServices {
                 host_steps: vec![host.clone()],
                 local_person: Some(Arc::new(NoSeat)),
@@ -1607,7 +1597,7 @@ mod identity_admin_tests {
 
 #[cfg(test)]
 mod settings_records_tests {
-    use super::super::{AppBrokerState, BrokerChannels, FanoutState, PeerPublisher};
+    use super::super::AppBrokerState;
     use crate::services::{HostStepOutcome, HostStepRequest, HostStepServices};
     use crate::test_support::{
         Grants as _, KindSet, Subject, Workspace, WorkspaceSlot, WorkspaceTree,
@@ -1763,13 +1753,8 @@ mod settings_records_tests {
         let workspace_id = workspace.id().to_string();
         let mut tree = WorkspaceTree::default();
         tree.workspaces.push(workspace);
-        let (state, _bridge_rx) = AppBrokerState::new_configured(
-            &Arc::new(FanoutState::new()),
-            Arc::new(Mutex::new(BrokerChannels::default())),
-            PeerPublisher::disabled(),
+        let (state, _bridge_rx) = AppBrokerState::test_state(
             Some(tree.shared().authority()),
-            None,
-            None,
             crate::services::HostServices {
                 host_steps: vec![host.clone()],
                 ..Default::default()

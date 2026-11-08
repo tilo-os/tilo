@@ -60,12 +60,19 @@ impl Host {
         let reading =
             <ModelService as tilo_service::Service>::read(&*self.service.borrow(), ADDRESS)
                 .expect("the session reads the tracker");
-        reading["issues"]
-            .as_array()
+        reading
+            .get("issues")
+            .and_then(|issues| issues.as_array())
             .map(|issues| {
                 issues
                     .iter()
-                    .filter_map(|issue| issue["value"]["title"].as_str().map(str::to_owned))
+                    .filter_map(|issue| {
+                        issue
+                            .get("value")
+                            .and_then(|value| value.get("title"))
+                            .and_then(serde_json::Value::as_str)
+                            .map(str::to_owned)
+                    })
                     .collect()
             })
             .unwrap_or_default()
@@ -83,14 +90,13 @@ impl Answers for HostAnswers {
 
     fn submit(&self, ask: &Ask) -> Result<(), String> {
         let arguments: Map<String, Value> = ask.arguments.clone();
-        let started = <ModelService as tilo_service::Service>::invoke(
+        <ModelService as tilo_service::Service>::invoke(
             &mut *self.0.service.borrow_mut(),
             &ask.address.resource,
             &ask.address.action,
             &arguments,
         )
         .map_err(|error| error.to_string())?;
-        let _ = started;
         self.0
             .asked
             .borrow_mut()
@@ -175,6 +181,5 @@ fn the_app_process_opens_no_document() {
 /// The tracker's own type is the app's record type, as the model crate declares it.
 #[test]
 fn the_app_and_the_module_agree_on_the_record() {
-    use ui::tilo_resource::Resource as _;
     assert_eq!(<Tracker as ui::tilo_resource::Resource>::KIND, TRACKER);
 }

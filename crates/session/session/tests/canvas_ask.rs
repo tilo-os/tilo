@@ -125,7 +125,7 @@ fn a_question_typed_on_the_canvas_asks_the_kept_agent() {
     let _settled = ui::motion::testing::settled();
     let root = private_home();
     let mut session = session(root.path());
-    let before: Vec<String> = chat(&mut session)
+    let before: Vec<String> = chat(&session)
         .map(|chat| channels(&chat).into_iter().map(|(id, _)| id).collect())
         .unwrap_or_default();
 
@@ -163,7 +163,7 @@ fn a_question_typed_on_the_canvas_asks_the_kept_agent() {
 
     // Chat's record holds it, with the agent a participant: the turn the broker delivers to that
     // agent is the person's message in this channel.
-    let (_, participants) = channels(&chat(&mut session).expect("Chat's record"))
+    let (_, participants) = channels(&chat(&session).expect("Chat's record"))
         .into_iter()
         .find(|(id, _)| *id == channel)
         .expect("the channel is Chat's");

@@ -916,11 +916,11 @@ fn concurrent_namespace_changes_merge_and_converge() {
         b2.resolve();
 
         assert!(
-            a2.find_cycle().is_none(),
+            a2.find_cycle(None).is_none(),
             "a side must be acyclic after resolve"
         );
         assert!(
-            b2.find_cycle().is_none(),
+            b2.find_cycle(None).is_none(),
             "b side must be acyclic after resolve"
         );
 
@@ -1228,16 +1228,32 @@ fn record_indexes_track_structure_and_page_tails_directly() {
     }
 }
 
-/// The incrementally maintained structural index and record digest must
-/// equal a from-scratch rebuild after every kind of local and merged
-/// placement change.
-fn assert_indexes_match_rebuild(ns: &Namespace) {
+/// The index and structural walk `ns` built incrementally equal the ones a
+/// from-scratch rebuild makes, after any local or merged placement change:
+/// every node's placement and record binding, every row with its path, their
+/// order, the digest and revision built from that order, and which record
+/// ids are ambiguous.
+pub(super) fn assert_indexes_match_rebuild(ns: &Namespace) {
     let mut rebuilt = ns.clone();
     rebuilt.rebuild_record_index();
-    assert_eq!(ns.tree.placement, rebuilt.tree.placement);
-    assert_eq!(ns.tree.children, rebuilt.tree.children);
-    assert_eq!(ns.record_index_digest, rebuilt.record_index_digest);
-    assert_eq!(ns.record_index_revision, rebuilt.record_index_revision);
+    assert_eq!(ns.tree.placement, rebuilt.tree.placement, "placement");
+    assert_eq!(ns.tree.children, rebuilt.tree.children, "children");
+    assert_eq!(ns.tree.records, rebuilt.tree.records, "record bindings");
+    assert_eq!(ns.tree.record_of, rebuilt.tree.record_of, "record owners");
+    assert_eq!(ns.record_index, rebuilt.record_index, "rows");
+    assert_eq!(ns.record_index_order, rebuilt.record_index_order, "order");
+    assert_eq!(
+        ns.record_index_digest, rebuilt.record_index_digest,
+        "digest"
+    );
+    assert_eq!(
+        ns.record_index_revision, rebuilt.record_index_revision,
+        "revision"
+    );
+    assert_eq!(
+        ns.record_index_ambiguous, rebuilt.record_index_ambiguous,
+        "ambiguity"
+    );
 }
 
 /// `inode_view` is the one-lock read FUSE `read` and `getattr` are served

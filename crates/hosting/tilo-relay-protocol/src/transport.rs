@@ -595,6 +595,40 @@ pub enum Envelope {
         #[serde(with = "serde_bytes")]
         frame: Vec<u8>,
     },
+
+    /// A device asks the host it is joined to who is here in a workspace: the
+    /// postcard-encoded [`HereRequest`], answered through [`Self::HereReply`]
+    /// with the asker's `request_id`. The connection says who asks; the host
+    /// checks that device's place in the workspace as it does for any other
+    /// frame.
+    ///
+    /// [`HereRequest`]: crate::web::HereRequest
+    HereRequest {
+        request_id: u64,
+        #[serde(with = "serde_bytes")]
+        frame: Vec<u8>,
+    },
+
+    /// The host's answer to [`Self::HereRequest`] with the same `request_id`:
+    /// the postcard-encoded `Result<`[`HereReply`](crate::web::HereReply)`,`
+    /// `String>` — a host that cannot answer says why.
+    HereReply {
+        request_id: u64,
+        #[serde(with = "serde_bytes")]
+        frame: Vec<u8>,
+    },
+
+    /// The host's fetch proxy grant for this connection: the bearer token a
+    /// page sends with every request it makes through its host
+    /// ([`FETCH_PATH`], as `tilo_net::proxy` names it). Sent once, as the
+    /// session starts, and dead when the connection ends; a host that serves
+    /// no proxy sends none.
+    ///
+    /// [`FETCH_PATH`]: crate::web::FETCH_PATH
+    FetchGrant {
+        /// What names this connection to the host.
+        token: [u8; 32],
+    },
 }
 
 impl Envelope {
@@ -647,6 +681,9 @@ impl Envelope {
             Self::RecordContentWant { .. } => "RecordContentWant",
             Self::WorkspacesRequest { .. } => "WorkspacesRequest",
             Self::WorkspacesReply { .. } => "WorkspacesReply",
+            Self::HereRequest { .. } => "HereRequest",
+            Self::HereReply { .. } => "HereReply",
+            Self::FetchGrant { .. } => "FetchGrant",
         }
     }
 
@@ -699,7 +736,10 @@ impl Envelope {
             | Self::PeerRelayHello { .. }
             | Self::HostAction { .. }
             | Self::WorkspacesRequest { .. }
-            | Self::WorkspacesReply { .. } => None,
+            | Self::WorkspacesReply { .. }
+            | Self::HereRequest { .. }
+            | Self::HereReply { .. }
+            | Self::FetchGrant { .. } => None,
         }
     }
 }

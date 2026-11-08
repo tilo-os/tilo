@@ -126,7 +126,10 @@ fn state_in_scope(scope: &InteractiveWorkspaceScope, envelope: &Envelope) -> boo
         Envelope::PeerRelayHello { .. }
         | Envelope::HostAction { .. }
         | Envelope::WorkspacesRequest { .. }
-        | Envelope::WorkspacesReply { .. } => false,
+        | Envelope::WorkspacesReply { .. }
+        | Envelope::HereRequest { .. }
+        | Envelope::HereReply { .. }
+        | Envelope::FetchGrant { .. } => false,
     }
 }
 
@@ -988,27 +991,24 @@ impl RelayClient {
         self.carrier.transport_stats()
     }
 
-    /// Disconnect this session without closing an endpoint shared with state peers.
-    pub(crate) async fn disconnect(&self) {
-        self.carrier.disconnect().await;
-    }
-
-    /// Disconnect, waiting until the relay has been told.
+    /// Disconnect this session, waiting until the relay has been told, and
+    /// leave the endpoint it dialled from open for the next connection.
     ///
     /// Prefer this to dropping the handle whenever the disconnect is
     /// deliberate. `Connection::close` only queues `CONNECTION_CLOSE` and there
-    /// is no per-connection flush; `Endpoint::close` is what waits for the
-    /// driver to put it on the wire. Without that wait the endpoint dies with
-    /// the handle first, and the relay keeps the subscription until its idle
-    /// timeout — fanning deltas out to a connection that is gone rather than
-    /// queueing them for store-and-forward.
-    ///
-    /// This closes the endpoint the client was built on, which
+    /// is no per-connection flush, so the wait is what puts it on the wire;
+    /// without it the relay keeps the subscription until its idle timeout —
+    /// fanning deltas out to a connection that is gone rather than queueing
+    /// them for store-and-forward.
+    pub async fn disconnect(&self) {
+        self.carrier.disconnect().await;
+    }
+
+    /// Disconnect and close the endpoint this client was built on, which
     /// [`RelayClient::connect`] takes by value on the understanding that the
-    /// client owns it. A caller that kept a clone and is still using it — the
-    /// daemon's attach dial loop passes the relay's own endpoint — must drop
-    /// the handle instead.
-    /// Close this connection and its owned endpoint. Do not use with a shared endpoint.
+    /// client owns it. A caller that kept a clone and is still using it — a
+    /// page redialling from the endpoint beside its planes — calls
+    /// [`RelayClient::disconnect`] instead.
     pub async fn close(self) {
         self.carrier.close_owned().await;
     }

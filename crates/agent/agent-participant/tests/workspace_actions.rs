@@ -123,22 +123,8 @@ async fn an_existing_native_chat_reference_discovers_local_views_over_the_govern
     )
     .unwrap();
     let mut doc = source.read(Clone::clone).unwrap();
-    chat::demo::apply_as(
-        &mut doc,
-        "ada",
-        chat::Chat::CREATE_CHANNEL.with(chat::record::chat::CreateChannel {
-            name: "general".parse().unwrap(),
-            category: None,
-            kind: None,
-            topic: None,
-        }),
-    )
-    .unwrap();
-    let channel = chat::projection::read(&doc)
-        .channel_rows()
-        .into_iter()
-        .find(|channel| channel.kind == chat::model::ChannelKind::Text)
-        .unwrap();
+    common::add_channel(&mut doc, "ada", "general", None);
+    let channel = common::channel(&doc, chat::model::ChannelKind::Text);
     source
         .apply(&collab_types::DocumentMutation::Snapshot(doc.save()))
         .unwrap();
@@ -369,13 +355,10 @@ async fn an_existing_native_chat_reference_discovers_local_views_over_the_govern
     for revoke_on_read in [false, true] {
         let link = Arc::new(DeliveryReadFixture {
             member: tilo_agent_participant::workspace_actions::WorkspaceMember {
-                endpoint: tilo_agent_participant::HostEndpoint {
-                    host: Host::Https(support::https::DevHttps::new(
-                        hosted.web.addr,
-                        hosted.web.certificate_sha256.as_ref().unwrap(),
-                    )),
-                    host_cert: host.cert.clone(),
-                },
+                endpoint: tilo_agent_participant::HostEndpoint::iroh(
+                    hosted.relay.node_addr(),
+                    host.cert.clone(),
+                ),
                 key: host.key.clone(),
                 runtime: tokio::runtime::Handle::current(),
             },

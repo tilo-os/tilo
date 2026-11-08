@@ -15,7 +15,7 @@ mod support;
 use ed25519_dalek::SigningKey;
 use getrandom::{SysRng, rand_core::UnwrapErr};
 use tilo_browser_peer::{
-    CertifyError, DeviceSigner as _, Host, IssuedRole, certify_with_root, issue_device_cert,
+    CertifyError, DeviceSigner as _, IssuedRole, certify_with_root, issue_device_cert,
 };
 use tilo_user_identity::{DeviceCapabilities, UserIdentity};
 
@@ -55,7 +55,7 @@ async fn a_page_root_certifies_its_node_and_then_itself() {
     assert_eq!(host_cert, node_cert);
     assert_eq!(cert.capabilities, DeviceCapabilities::member());
     assert_eq!(cert.device_public_key, browser.device_public_key());
-    let peer = start_peer(Host::Https(host.https()), cert, host_cert, browser);
+    let peer = start_peer(host.iroh(), cert, host_cert, browser);
     ready(&[&peer]).await;
 
     // Another person's root does not certify a page for this node.

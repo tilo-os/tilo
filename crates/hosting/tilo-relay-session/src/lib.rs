@@ -14,6 +14,13 @@
 //! `tilo-relay-client`.
 
 #![deny(rust_2018_idioms)]
+#![cfg_attr(
+    all(target_arch = "wasm32", target_os = "unknown"),
+    allow(
+        clippy::future_not_send,
+        reason = "a page runs on one thread, and its signer and HTTP handles to JavaScript are never `Send`"
+    )
+)]
 pub mod antientropy;
 pub mod client;
 pub mod coedit;

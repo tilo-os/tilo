@@ -88,9 +88,12 @@ fn run<S: RuntimeServices>() -> io::Result<()> {
         daemon::Mode::AdmissionDaemon { owner_uid } => {
             daemon::serve_admission::<S>(&args.profile, owner_uid)
         }
-        daemon::Mode::Connect => {
-            daemon::connect(&args.profile, args.standalone, args.forward.as_ref())
-        }
+        daemon::Mode::Connect => daemon::connect(
+            &args.profile,
+            args.standalone,
+            args.forward.as_ref(),
+            args.workspace.as_deref(),
+        ),
         daemon::Mode::OwnerAction { request } => {
             let receipt = owner_action::<S>(&args.profile, &request)?;
             println!(

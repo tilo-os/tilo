@@ -117,17 +117,6 @@ export function whenRequested(requestedAtMs, {now = Date.now(), locale} = {}) {
   return minutes < 60 ? format.format(-minutes, 'minute') : format.format(-Math.round(minutes / 60), 'hour');
 }
 
-/** The name of the country `code` (ISO 3166 alpha-2) in `locale`, or the
- * code where the browser cannot name it; `null` without one. */
-export function countryName(code, {locale} = {}) {
-  if (!code) return null;
-  try {
-    return new Intl.DisplayNames(locale, {type: 'region'}).of(code.toUpperCase()) ?? code;
-  } catch {
-    return code;
-  }
-}
-
 /** What to tell the new device when pairing failed with `error`, or `null`
  * when it is not the host's answer to the pairing (a network failure). */
 export function pairingFailure(error) {

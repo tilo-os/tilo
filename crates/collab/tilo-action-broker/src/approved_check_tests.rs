@@ -59,13 +59,8 @@ async fn progress_native_connection(
             .unwrap()
             .take(),
     );
-    let (state, bridge) = AppBrokerState::new_configured(
-        &Arc::new(FanoutState::new()),
-        Arc::new(Mutex::new(BrokerChannels::default())),
-        PeerPublisher::disabled(),
+    let (state, bridge) = AppBrokerState::test_state(
         Some(workspace.membership.authority()),
-        None,
-        None,
         HostServices {
             launcher: Some(Arc::new(ProgressFixtureLaunch {
                 app: workspace.route.app_id.clone(),

@@ -177,6 +177,13 @@ impl CredentialOwner {
     /// Host-only access to the original current permission broker.
     /// # Errors
     /// Refuses an owner without a native initializer or existing broker.
+    #[cfg_attr(
+        all(target_arch = "wasm32", target_os = "unknown"),
+        expect(
+            clippy::arc_with_non_send_sync,
+            reason = "in a page the vault holds browser handles, which stay on the page's one thread"
+        )
+    )]
     pub fn broker(&self) -> Result<Arc<Mutex<CredentialBroker>>, BrokerError> {
         if let Some(broker) = self.broker.get() {
             return Ok(broker.clone());

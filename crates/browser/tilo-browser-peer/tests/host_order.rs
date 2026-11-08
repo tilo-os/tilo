@@ -21,7 +21,7 @@ mod support;
 tilo_automerge_isolate::test_worker!();
 
 use collab_types::DocumentMutation;
-use tilo_browser_peer::{Host, PeerEvent, PeerHandle};
+use tilo_browser_peer::{PeerEvent, PeerHandle};
 use tilo_user_identity::{DeviceCapabilities, UserIdentity};
 
 use support::{enrol, ready, route, start_host, start_peer, wait_for};
@@ -65,7 +65,7 @@ async fn https_and_iroh_commits_share_one_host_order() {
     let _laptop = participant::Participant::start(&host.relay, &root).await;
 
     let browser_peer = start_peer(
-        Host::Https(host.https()),
+        host.iroh(),
         browser.cert.clone(),
         host_device.cert.clone(),
         browser.key.clone(),

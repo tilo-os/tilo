@@ -1639,6 +1639,43 @@ impl HistoryHost {
             self.rebuild_toolbar();
         }
     }
+    /// The before/after comparison buttons, marking the side shown: as a
+    /// toolbar pair, or small and toggled in a panel footer.
+    fn compare_row(&self, small: bool) -> Row {
+        let mut compare = if small {
+            Row::new().with_gap(4.0)
+        } else {
+            Row::new()
+        };
+        for (id, label, command, side) in [
+            (
+                "history-before",
+                "history-mode-before",
+                Command::Before,
+                PreviewSide::Before,
+            ),
+            (
+                "history-after",
+                "history-mode-after",
+                Command::After,
+                PreviewSide::After,
+            ),
+        ] {
+            let button = self.command_button(id, label, command);
+            let button = if small {
+                button
+                    .control_size(crate::widget::ControlSize::Small)
+                    .toggled(self.side == side)
+            } else if self.side == side {
+                button.role(ButtonRole::Primary)
+            } else {
+                button
+            };
+            compare = compare.push(Box::new(button));
+        }
+        compare
+    }
+
     fn command_button(&self, id: &str, label: &str, command: Command) -> Button {
         let queue = self.commands.clone();
         Button::new(id, label).on_effect(move || {
@@ -1880,27 +1917,7 @@ impl HistoryHost {
                 "history-mode-back-to-live",
                 Command::Live,
             )));
-            let mut compare = Row::new();
-            for (id, label, command, side) in [
-                (
-                    "history-before",
-                    "history-mode-before",
-                    Command::Before,
-                    PreviewSide::Before,
-                ),
-                (
-                    "history-after",
-                    "history-mode-after",
-                    Command::After,
-                    PreviewSide::After,
-                ),
-            ] {
-                let mut button = self.command_button(id, label, command);
-                if self.side == side {
-                    button = button.role(ButtonRole::Primary);
-                }
-                compare = compare.push(Box::new(button));
-            }
+            let mut compare = self.compare_row(false);
             compare = compare.push(Box::new(Text::new(if self.side == PreviewSide::Before {
                 "history-mode-showing-before"
             } else {
@@ -2125,28 +2142,7 @@ impl HistoryHost {
                     )),
             ));
         }
-        let mut compare = Row::new().with_gap(4.0);
-        for (id, label, command, side) in [
-            (
-                "history-before",
-                "history-mode-before",
-                Command::Before,
-                PreviewSide::Before,
-            ),
-            (
-                "history-after",
-                "history-mode-after",
-                Command::After,
-                PreviewSide::After,
-            ),
-        ] {
-            compare = compare.push(Box::new(
-                self.command_button(id, label, command)
-                    .control_size(crate::widget::ControlSize::Small)
-                    .toggled(self.side == side),
-            ));
-        }
-        footer = footer.push(Box::new(compare));
+        footer = footer.push(Box::new(self.compare_row(true)));
         if self.offers_naming() {
             if self.name_draft_for.as_ref() == Some(&self.selected) {
                 let commands = self.commands.clone();

@@ -18,7 +18,10 @@ fn private(path: &Path) {
     std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700)).unwrap();
 }
 fn fixture() -> Fixture {
-    let temp = tempfile::tempdir().unwrap();
+    // The qualifier runs its child as the original user, which must traverse
+    // every ancestor of the fixture; the test environment's TMPDIR is a
+    // private root, while /tmp is shared. The fixture's own modes stay private.
+    let temp = tempfile::Builder::new().tempdir_in("/tmp").unwrap();
     let system = temp.path().join("future-system");
     private(&system);
     let identity = temp.path().join("future-identity");
@@ -452,6 +455,13 @@ fn current_owner_reference_actual_user_reads_root_owned_host_and_retains_activat
     }
     // This opt-in native qualifier requires genuine root-owned custody and a
     // real original-user child; it never treats missing privilege as a pass.
+    // A job sandbox's root holds neither CAP_CHOWN nor CAP_SETUID, so the
+    // qualifier runs in the privileged fixture check instead.
+    tilo_test_env::require_capability!(
+        Chown,
+        tilo_test_env::switch_identity(1000),
+        "the qualifier's root-owned fixture and original-user child"
+    );
     // SAFETY: observes current credentials only.
     assert_eq!(
         unsafe { libc::geteuid() },

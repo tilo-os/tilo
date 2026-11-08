@@ -469,6 +469,9 @@ pub struct Derive<'d> {
     /// deriving each item a change names is a lookup rather than a search of every chunk the
     /// store holds (which, an item at a time, is the workspace read once an item).
     found: BTreeMap<DocId, BTreeMap<ItemId, Found>>,
+    /// The chunks the step derives a few changes of, not read whole: an item read from `found`
+    /// is looked up in these as well, as one of their changes may have moved a copy of it there.
+    looked: Vec<ChunkNo>,
     /// Whether a record derives only the items of the chunks the step reads: the first step of
     /// a build, which is where the window's first rows are, the rest of the record derived as
     /// the chunks holding it are read.
@@ -804,22 +807,33 @@ impl<'d> Derive<'d> {
             left: Vec::new(),
             part: None,
             found: BTreeMap::new(),
+            looked: Vec::new(),
             opening: false,
         }
     }
 
-    /// [`Self::new`] for a step that derives the chunks `part`: the items of those chunks are
-    /// read once, where they are, and each item a change of them names is looked up rather than
-    /// searched for in every chunk the store holds.
+    /// [`Self::new`] for a step that derives the chunks `part`, of which it derives the chunks
+    /// `whole` from their first change: the items of those are read once, where they are, and
+    /// each item a change of them names is looked up rather than searched for in every chunk the
+    /// store holds.
+    ///
+    /// A chunk the step takes a few changes of is not read whole: an edit of one task names one
+    /// item, which is searched for, and reading every item of its chunk to find it would cost
+    /// each edit what the chunk holds.
     pub fn step(
         chunks: &'d Chunks,
         docs: &'d BTreeMap<DocId, (AppId, TypeId)>,
         nested: &'d Nested,
         clock: super::Clock,
-        part: &'d [ChunkNo],
+        (part, whole): (&'d [ChunkNo], &[ChunkNo]),
     ) -> Self {
         let mut derive = Self::new(chunks, docs, nested, clock);
-        derive.read_part(part);
+        derive.read_part(whole);
+        derive.looked = part
+            .iter()
+            .copied()
+            .filter(|chunk| !whole.contains(chunk))
+            .collect();
         derive.part = Some(part);
         derive
     }
@@ -834,7 +848,7 @@ impl<'d> Derive<'d> {
         clock: super::Clock,
         part: &'d [ChunkNo],
     ) -> Self {
-        let mut derive = Self::step(chunks, docs, nested, clock, part);
+        let mut derive = Self::step(chunks, docs, nested, clock, (part, part));
         derive.opening = true;
         derive
     }
@@ -885,7 +899,17 @@ impl<'d> Derive<'d> {
         if let Some(found) = held
             && derived.is_none_or(|derived| derived == found.chunk)
         {
-            return Ok(Some(found.clone()));
+            let mut found = found.clone();
+            for chunk in &self.looked {
+                let Some(held) = self.chunks.mirror(*chunk) else {
+                    continue;
+                };
+                let copy = crate::items::find_in((*chunk, held), app, doc, schema, self.nested, id);
+                if let Some(copy) = copy {
+                    found = crate::items::later(Some(found), copy);
+                }
+            }
+            return Ok(Some(found));
         }
         // An item the store holds two copies of (a move made on two replicas at once) is read
         // from the copy that is later in the record's order, wherever it stands.
@@ -1557,8 +1581,20 @@ impl<'d> Derive<'d> {
             docs.get(doc).is_some_and(|(a, _)| a == app)
         };
         // Records as a whole, first: what is inside them is derived with them.
+        //
+        // In a step of a build or a catch-up ([`Self::step`]), a record whose own map the changes
+        // named whole (any field of it) is derived whole here too, rather than after its items'
+        // placements: each item the step places would otherwise be derived once where it
+        // arrives and again with the record, which for the rest of a build is every item of the
+        // workspace twice. A step reports no item that moved (the store takes it in as a change
+        // to everything, [`Self::moved`] unread); a change derived on the frame does, for the
+        // lists it keeps, and places its items first.
         for (doc, fields) in &reached.docs {
-            if !fields.is_empty() {
+            let named_whole = self.part.is_some()
+                && fields
+                    .iter()
+                    .any(|key| key.resource == *doc && key.field == ANY_FIELD);
+            if !fields.is_empty() && !named_whole {
                 continue;
             }
             match self.docs.get(doc) {
@@ -1568,7 +1604,7 @@ impl<'d> Derive<'d> {
                 }
                 // Gone from the record (or never this package's): what the index held of it
                 // goes.
-                None if sink.text(doc, TYPE)?.is_some() => {
+                None if fields.is_empty() && sink.text(doc, TYPE)?.is_some() => {
                     sink.remove(doc)?;
                     sink.doc(doc, None, self.chunks.chunk(doc))?;
                     self.done.insert(doc.clone());

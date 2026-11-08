@@ -516,7 +516,7 @@ fn bounded_menu_scrolls_and_keeps_targets_reachable() {
         dispatch(&mut menu, &cursor_at(point));
         let wheel = |y| crate::synthetic_input::mouse_wheel(0.0, y);
         assert!(dispatch(&mut menu, &wheel(-100.0)));
-        assert_eq!(menu.scroll_offset(), menu.scroll.max_offset().y);
+        assert_eq!(menu.scroll_offset(), menu.list.max_scroll_offset());
         let last = menu.item_rect(19).unwrap().center();
         assert_eq!(menu.item_at([last.x, last.y]), Some(19));
         dispatch(&mut menu, &cursor_at(last));
@@ -554,7 +554,7 @@ fn bounded_menu_scrolls_and_keeps_targets_reachable() {
         menu.set_viewport(Some(viewport));
         menu.open_at([390.0, 160.0]);
         assert!(
-            menu.scroll.overflows_vertically(),
+            menu.list.overflows(),
             "clipped rows expose a scroll affordance"
         );
         assert_eq!(menu.get_rect().x1, viewport.x1);

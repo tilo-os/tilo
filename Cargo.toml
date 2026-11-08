@@ -770,9 +770,6 @@ zeroize = "1"
 # ---------------------------------------------------------------------------
 iroh = "1.0.3"
 iroh-base = "1.0.3"
-# The address lookup that finds the person's devices on the local network
-# without a relay or the internet (versions follow iroh).
-iroh-mdns-address-lookup = "0.5.0"
 # Disable unused RPC support and its platform certificate dependencies.
 iroh-blobs = { version = "0.103.0", default-features = false, features = ["fs-store", "hide-proto-docs"] }
 # iroh-blobs' BAO tree and RPC layer, for the content store's file-backed

@@ -20,6 +20,7 @@
 use super::*;
 use crate::app::{App, AppSurface, SurfaceDamage};
 use crate::offscreen::OffscreenRenderer;
+use vello::kurbo::RoundedRect;
 use winit::event::MouseScrollDelta;
 
 const ROW: f32 = 36.0;

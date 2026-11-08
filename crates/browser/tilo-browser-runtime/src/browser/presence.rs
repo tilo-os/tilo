@@ -9,12 +9,12 @@
 //! while a pointer may still be moving, a bubble or reaction is animating, or
 //! a silent member's pointer is about to leave the screen.
 
-use tilo_desktop::here::{Focus, LiveMember, MemberLayout, MemberWindow, Wave};
+use tilo_desktop::here::LiveMember;
 use ui::permissions::UserId;
 use ui::presence::PresenceKey;
 use wasm_bindgen::prelude::*;
 
-use crate::peer_presence::{BoardView, JsSelection, Present};
+use crate::peer_presence::BoardView;
 
 use super::{Mount, error, with_mount_quietly};
 
@@ -25,93 +25,6 @@ const SETTLE_MS: f64 = 250.0;
 /// member here restates itself every keepalive, so a longer silence is a page
 /// that left before the workspace noticed.
 const POINTER_STALE_MS: f64 = tilo_live::presence::KEEPALIVE_MS + 1000.0;
-
-/// A member of the board as the desktop's roster reads them.
-fn member_of(present: &Present) -> LiveMember {
-    LiveMember {
-        publisher: present.publisher.clone(),
-        kind: if present.agent { "agent" } else { "person" }.into(),
-        label: present.label.clone(),
-        device: present.device.clone(),
-        focus: present.focus.as_ref().map(|focus| Focus {
-            app: focus.app.clone(),
-            record: focus.record.clone(),
-        }),
-        activity: present.activity.clone(),
-        place: present.place.clone(),
-        user: present.user.clone(),
-        wave: present.wave.as_ref().map(|wave| Wave {
-            seq: wave.seq,
-            target: wave.target.clone(),
-        }),
-        layout: present.layout.as_ref().map(|layout| MemberLayout {
-            size: layout.size,
-            windows: layout
-                .windows
-                .iter()
-                .map(|window| MemberWindow {
-                    app: window.app.clone(),
-                    record: window.record.clone(),
-                    rect: window.rect,
-                    focused: window.focused,
-                })
-                .collect(),
-        }),
-        following: present.following.clone(),
-        availability: Some(present.availability.clone()),
-        call: present.call.clone(),
-    }
-}
-
-/// This page's own word, as the desktop's roster reads it (it names the
-/// person's own device apart from anyone else's).
-fn own_member(view: &BoardView) -> LiveMember {
-    let own = &view.own;
-    let shell = own.shell.as_deref();
-    LiveMember {
-        publisher: view.publisher.clone(),
-        kind: if shell.is_some_and(|shell| shell.agent) {
-            "agent"
-        } else {
-            "person"
-        }
-        .into(),
-        label: own.label.clone(),
-        device: own.device.clone(),
-        focus: shell
-            .and_then(|shell| shell.windows.iter().find(|window| window.focused))
-            .map(|window| Focus {
-                app: window.app.clone(),
-                record: hex::encode(window.record),
-            }),
-        activity: shell.and_then(|shell| shell.activity.clone()),
-        place: shell.and_then(|shell| shell.place.clone()),
-        user: own.user.clone(),
-        wave: own.wave.as_ref().map(|wave| Wave {
-            seq: wave.seq,
-            target: wave.target.clone(),
-        }),
-        layout: shell.map(|shell| MemberLayout {
-            size: [
-                u16::try_from(shell.size[0]).unwrap_or(u16::MAX),
-                u16::try_from(shell.size[1]).unwrap_or(u16::MAX),
-            ],
-            windows: shell
-                .windows
-                .iter()
-                .map(|window| MemberWindow {
-                    app: window.app.clone(),
-                    record: hex::encode(window.record),
-                    rect: window.rect,
-                    focused: window.focused,
-                })
-                .collect(),
-        }),
-        following: own.following.clone(),
-        availability: Some(own.availability.id().to_owned()),
-        call: own.call.as_ref().map(|call| call.call.encode()),
-    }
-}
 
 impl Mount {
     /// Who is here changed: the next frame puts them on the windows they are
@@ -293,10 +206,11 @@ impl Mount {
         let Some(desktop) = &self.desktop else {
             return;
         };
-        let members: Vec<LiveMember> = view.members.iter().map(member_of).collect();
+        let members = view.members.iter().map(LiveMember::of).collect();
+        let own = tilo_live::presence::own_shown(&view.own, view.device);
         let changed = {
             let mut here = desktop.here.borrow_mut();
-            let members = here.set_members(Some(own_member(view)), Some(members));
+            let members = here.set_members(Some(LiveMember::of(&own)), Some(members));
             let note = here.set_unavailable(view.note.clone());
             members || note
         };
@@ -372,7 +286,9 @@ impl Mount {
 
 /// A member's published caret or selection, as the record it is in and its
 /// anchors.
-fn selection_anchors(selection: Option<&JsSelection>) -> Option<(PresenceKey, usize, usize)> {
+fn selection_anchors(
+    selection: Option<&collab_types::presence::ShellSelection>,
+) -> Option<(PresenceKey, usize, usize)> {
     let selection = selection?;
     let anchor = tilo_relay_protocol::live::LiveAnchor {
         cursor: hex::decode(&selection.anchor).ok()?,
@@ -380,7 +296,7 @@ fn selection_anchors(selection: Option<&JsSelection>) -> Option<(PresenceKey, us
     let head = tilo_relay_protocol::live::LiveAnchor {
         cursor: hex::decode(&selection.head).ok()?,
     };
-    tilo_browser_peer::transport::read_presence_anchors(&anchor, &head)
+    tilo_browser_peer::presence_anchors::read_presence_anchors(&anchor, &head)
 }
 
 impl Mount {

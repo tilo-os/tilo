@@ -36,7 +36,7 @@ use iroh::{EndpointAddr, EndpointId};
 use neighbour_wire::NeighbourMsg;
 use tilo_action_broker::record_content::ContentSources;
 use tilo_desktop::chrome::{ArrivalNotice, WaveNotice};
-use tilo_desktop::here::{Focus, Here, LiveMember, Wave};
+use tilo_desktop::here::{Here, LiveMember, Wave};
 use tilo_desktop_model::{
     DesktopTree, TabId, WorkspaceId as DeskWorkspaceId, WorkspaceSlot as DeskSlot,
 };
@@ -304,6 +304,9 @@ pub struct Entering {
     pub name: String,
     /// Where the device hosting it is reached, as its host signed it.
     pub host: tilo_peer_state::join::TransportHint,
+    /// Already on this desk, held as the device this machine was copied
+    /// from: an entry that does not land leaves it where it is.
+    pub held: bool,
 }
 
 /// What became of an enrollment or an entry, and the workspace it was for.
@@ -318,6 +321,8 @@ pub struct Enrolled {
     pub name: Option<String>,
     /// `Ok` once this device holds the workspace and takes part in it.
     pub result: Result<(), String>,
+    /// The entry was for a workspace already on this desk ([`Entering::held`]).
+    pub held: bool,
 }
 
 /// The session's client of the collaboration plane: the workspaces it shows,
@@ -496,31 +501,11 @@ impl Workspace {
         }
     }
 
-    /// Who is here, as the desktop lists them.
-    pub(super) fn members(&self) -> Vec<LiveMember> {
+    /// Who is here, as the desktop lists them, on the clock presence is heard on.
+    pub(super) fn members(&self, now_ms: f64) -> Vec<LiveMember> {
         self.board
             .here()
-            .map(|member| LiveMember {
-                publisher: endpoint(member.publisher),
-                kind: if member.agent() { "agent" } else { "person" }.into(),
-                label: member.label().to_owned(),
-                device: member.device.clone(),
-                focus: member.focus().map(|(app, record)| Focus {
-                    app: app.to_owned(),
-                    record: hex::encode(record),
-                }),
-                activity: member.activity().map(str::to_owned),
-                place: member.place().map(str::to_owned),
-                user: member.user.clone(),
-                wave: member.wave.as_ref().map(|wave| Wave {
-                    seq: wave.seq,
-                    target: wave.target.clone(),
-                }),
-                layout: None,
-                following: member.following.clone(),
-                availability: (!member.agent()).then(|| member.availability.id().to_owned()),
-                call: member.call.as_ref().map(|call| call.call.encode()),
-            })
+            .map(|member| LiveMember::of(&presence::shown(member, now_ms)))
             .collect()
     }
 
@@ -1099,16 +1084,13 @@ impl Client {
                 if object.track != Track::Presence {
                     continue;
                 }
-                let Some(frame) = presence::decode(&object.body) else {
-                    continue;
-                };
                 let Ok(from) = EndpointId::from_bytes(&object.sender) else {
                     continue;
                 };
                 if from == own {
                     continue;
                 }
-                self.heard_presence(&workspace, from, &frame);
+                self.heard_body(&workspace, from, &object.body);
                 heard = true;
             }
         }
@@ -1120,6 +1102,27 @@ impl Client {
     /// A session takes these from its planes on every [`follow`](Self::follow). One with no plane
     /// of its own — a test, an embedder that carries the frames itself — hands them here instead.
     pub fn heard_presence(&self, workspace: &str, from: EndpointId, frame: &Presence) {
+        self.heard_word(workspace, from, |board, now| {
+            board.hear(*from.as_bytes(), frame, now)
+        });
+    }
+
+    /// One member's presence frame as its track carried it, opened by the workspace's board.
+    fn heard_body(&self, workspace: &str, from: EndpointId, body: &[u8]) {
+        self.heard_word(workspace, from, |board, now| {
+            board.heard(*from.as_bytes(), body, now)
+        });
+    }
+
+    /// Take one member's word about themselves into `workspace`'s board. Every surface that lists
+    /// people draws what it changed: a pointer landing draws one frame, and one that says the same
+    /// place again draws none.
+    fn heard_word(
+        &self,
+        workspace: &str,
+        from: EndpointId,
+        take: impl FnOnce(&mut Board, f64) -> bool,
+    ) {
         let now = now_ms();
         let changed = {
             let mut plane = self.plane.borrow_mut();
@@ -1130,13 +1133,11 @@ impl Client {
                 .workspaces
                 .iter_mut()
                 .find(|held| held.id == workspace)
-                .is_some_and(|held| held.board.hear(*from.as_bytes(), frame, now))
+                .is_some_and(|held| take(&mut held.board, now))
         };
         if !changed {
             return;
         }
-        // Every surface that lists people draws what the frame changed: a pointer landing draws one
-        // frame, and one that says the same place again draws none.
         self.note_reachability();
         self.show_here();
         self.show_waves();
@@ -1890,23 +1891,8 @@ impl Client {
 
     /// This session's own person, as everyone here reads them.
     fn own_member(&self) -> LiveMember {
-        let own = self.own.borrow().clone();
-        let publisher = self.plane.borrow().publisher.to_string();
-        LiveMember {
-            publisher,
-            kind: "person".into(),
-            label: own.label,
-            device: self.device.clone(),
-            focus: None,
-            activity: own.status,
-            place: None,
-            user: own.user,
-            wave: self.sent_wave.borrow().clone(),
-            layout: None,
-            following: own.following,
-            availability: Some(own.availability.id().to_owned()),
-            call: own.call.as_ref().map(|call| call.call.encode()),
-        }
+        let publisher = *self.plane.borrow().publisher.as_bytes();
+        LiveMember::of(&presence::own_shown(&self.own_word(), publisher))
     }
 
     /// Who is here, as the desktop lists them: `tree` places them where their focused record is

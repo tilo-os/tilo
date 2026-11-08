@@ -60,11 +60,11 @@ use tilo_agent_participant::{
     AgentIdentity, AgentParticipant, AgentSupervisor, DirectPlanner, ParticipantConfig, Replica,
     ReplicaActor, Seed, SupervisorHost,
 };
-use tilo_browser_peer::{Host, PeerEvent, PeerHandle, certify};
+use tilo_browser_peer::{PeerEvent, PeerHandle, certify};
 use tilo_peer_state::document_frame::DocumentRoute;
 use tilo_relay::certify::{ApproverDecision, ApproverReply};
 use tilo_relay::daemon::{Relay, RelayIdentity};
-use tilo_relay::web::{LiveConfig, TlsSource, WebConfig};
+use tilo_relay::web::{TlsSource, WebConfig};
 use tilo_relay_client::Approver;
 use tilo_relay_protocol::agents::{
     AGENTS_PROVIDER, AgentStatus, AgentsStatus, CANCEL_TASK_ACTION, MESSAGE_ACTION, PAUSE_ACTION,
@@ -144,10 +144,8 @@ async fn start_host(
             allowed_origins: Vec::new(),
             plain_listen: None,
             public_origin: None,
-            limits: tilo_relay::web::WebLimits::default(),
             country: None,
             fetch_proxy: None,
-            live: LiveConfig::default(),
         })
         .await
         .unwrap();
@@ -388,7 +386,7 @@ async fn an_agent_edits_beside_a_browser_and_both_see_each_other() {
     // mounted from its component on a new record, committed to the host.
     let browser_device = enrol(&root, "browser", DeviceCapabilities::member());
     let browser = start_peer(
-        Host::Https(host.https()),
+        host.iroh(),
         browser_device.cert.clone(),
         host_cert.clone(),
         browser_device.key.clone(),

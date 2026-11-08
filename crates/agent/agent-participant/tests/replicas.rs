@@ -318,7 +318,7 @@ fn an_agents_presence_is_where_its_last_operation_left_it() {
         .presence()
         .expect("the append leaves the agent somewhere");
     let (key, start, end) =
-        tilo_browser_peer::transport::read_presence_anchors(&anchor, &head).unwrap();
+        tilo_browser_peer::presence_anchors::read_presence_anchors(&anchor, &head).unwrap();
     let last = agent
         .read(|doc| {
             let state = <word_processor::model::Document as ui::tilo_resource::Resource>::read(doc)
@@ -486,17 +486,7 @@ fn a_bot_without_a_write_grant_is_offered_only_reads() {
 fn a_bot_reads_a_channels_latest_post_made_after_it_opened_the_record() {
     let mut page = common::open("so.tilo.chat", "ada", ReplicaActor::Owner, Seed::New).unwrap();
     let mut doc = page.read(Clone::clone).unwrap();
-    chat::demo::apply_as(
-        &mut doc,
-        "ada",
-        chat::Chat::CREATE_CHANNEL.with(chat::record::chat::CreateChannel {
-            name: "general".parse().unwrap(),
-            category: None,
-            kind: None,
-            topic: None,
-        }),
-    )
-    .unwrap();
+    common::add_channel(&mut doc, "ada", "general", None);
     let projection = chat::projection::read(&doc);
     let channel = projection.channel_rows()[0].id.clone();
     page.apply(&DocumentMutation::Snapshot(doc.save())).unwrap();
@@ -584,17 +574,7 @@ fn a_bot_reads_a_channels_latest_post_made_after_it_opened_the_record() {
 fn a_bot_granted_posting_is_offered_the_chains_post_and_starts_a_part() {
     let mut page = common::open("so.tilo.chat", "ada", ReplicaActor::Owner, Seed::New).unwrap();
     let mut doc = page.read(Clone::clone).unwrap();
-    chat::demo::apply_as(
-        &mut doc,
-        "ada",
-        chat::Chat::CREATE_CHANNEL.with(chat::record::chat::CreateChannel {
-            name: "general".parse().unwrap(),
-            category: None,
-            kind: None,
-            topic: None,
-        }),
-    )
-    .unwrap();
+    common::add_channel(&mut doc, "ada", "general", None);
     let channel = chat::projection::read(&doc).channel_rows()[0].id.clone();
     page.apply(&DocumentMutation::Snapshot(doc.save())).unwrap();
     // What a program that posts derives: posting on the chat's messages.

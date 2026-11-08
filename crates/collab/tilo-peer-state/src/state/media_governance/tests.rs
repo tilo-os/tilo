@@ -1,5 +1,6 @@
 use super::*;
 use crate::SeedState;
+use crate::StatePeer;
 use crate::seed_workspace;
 use automerge::AutoCommit;
 use tilo_user_identity::{

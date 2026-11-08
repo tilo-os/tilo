@@ -69,14 +69,12 @@ https://eu1.tilo.coffee/avatars
 Coffee and tea, and whatever is being made
 --default-role
 editor
---layout
-shared
 --inactive-after-days
 30
 --web
 127.0.0.1:9781
---web-live
-0.0.0.0:9781
+--packet-relay
+0.0.0.0:9782
 --tls
 dev
 --web-plain
@@ -97,15 +95,15 @@ so.tilo.chat
 EXPECTED
 lounge >"$work/args" || fail "the plain deployment did not start"
 subsequence "$work/want" "$work/args" || fail "the plain deployment maps other arguments"
-# The state is the workspace's own directory under the state root, the layout
-# the old wrapper left on the volume.
+# The state is the workspace's own directory under the state root, the volume
+# the old wrapper left.
 grep -Fqx -- "--state" "$work/args" || fail "no state flag"
 grep -Fqx -- "$work/state/lounge/relay" "$work/args" || fail "the relay state is not under the workspace"
 grep -Fqx -- "$work/state/lounge/room-id" "$work/args" || fail "the workspace id is not kept with the workspace"
 grep -Fqx -- "$work/state/lounge/avatars" "$work/args" || fail "the avatars are not published from the workspace"
-# The live plane binds where the ingress forwards; without a named origin the
-# relay derives it from the relay origin and the port it bound.
-grep -Fqx -- --web-live-origin "$work/args" && fail "a live origin was announced without one set"
+# The packet relay binds where the ingress forwards; without a named origin the
+# host advertises the address it bound.
+grep -Fqx -- --packet-relay-url "$work/args" && fail "a published relay URL was announced without one set"
 
 # Every setting of a populated deployment reaches the host, and replaces the
 # default it shares a flag with.
@@ -116,8 +114,8 @@ lounge \
   TILO_ROOMS_FEEDBACK_CHANNEL=feedback \
   TILO_ROOMS_SEED_APPS='so.tilo.chat,so.tilo.board' \
   TILO_ROOMS_AUTHOR_APPS='so.tilo.chat' \
+  TILO_ROOMS_REFOUND='so.tilo.browser-desktop:desktop, so.tilo.chat:' \
   TILO_ROOMS_BOTS='/usr/local/share/tilo/bots/discord-bridge.json guild=1521251563828416532 server=Tilo mirror-channels=yes;/opt/echo.json a=b' \
-  TILO_ROOMS_LAYOUT=personal \
   TILO_ROOMS_INACTIVE_AFTER_DAYS=7 \
   TILO_ROOMS_ROLES_FILE=/run/tilo-rooms/roles.json \
   TILO_ROOMS_FETCH_PROXY=0 \
@@ -146,14 +144,16 @@ pair() {
 pair --web 127.0.0.1:0 || fail "the HTTPS listener setting did not reach the host"
 pair --web-plain 0.0.0.0:9880 || fail "the plain listener setting did not reach the host"
 pair --public-origin https://eu1.tilo.coffee || fail "the public origin did not reach the host"
-pair --web-live 0.0.0.0:9881 || fail "the live plane's bind address did not reach the host"
-pair --web-live-origin https://live.eu1.tilo.coffee || fail "the live origin did not reach the host"
+pair --packet-relay 0.0.0.0:9881 || fail "the packet relay's bind address did not reach the host"
+pair --packet-relay-url https://live.eu1.tilo.coffee || fail "the published relay URL did not reach the host"
 pair --http 0.0.0.0:8890 || fail "the routes listener setting did not reach the host"
 pair --allowed-origin https://tilo.coffee || fail "a site origin did not reach the host"
 pair --allowed-origin https://tilo.so || fail "a site origin did not reach the host"
 pair --chat-channel feedback || fail "a chat channel did not reach the host"
 pair --seed-app so.tilo.board || fail "a seeded app did not reach the host"
 pair --author-app so.tilo.chat || fail "an authoring app did not reach the host"
+pair --refound so.tilo.browser-desktop/desktop || fail "a refounded record did not reach the host"
+pair --refound so.tilo.chat/ || fail "a refounded record of the app's primary did not reach the host"
 pair --feedback-channel feedback || fail "the feedback channel did not reach the host"
 pair --bot '/usr/local/share/tilo/bots/discord-bridge.json guild=1521251563828416532 server=Tilo mirror-channels=yes' \
   || fail "the bridge's bot spec did not reach the host"
@@ -164,11 +164,14 @@ pair --discord-client-id 1559266815148953650 || fail "the Discord client id did 
 pair --discord-client-secret-file /run/secrets/discord-client-secret || fail "the Discord secret did not reach the host"
 pair --discord-redirect-url https://eu1.tilo.coffee/discord/callback || fail "the Discord callback did not reach the host"
 pair --discord-authorize-url https://discord.com/oauth2/authorize || fail "the Discord consent page did not reach the host"
-pair --layout personal || fail "the layout setting did not reach the host"
 pair --inactive-after-days 7 || fail "the inactivity setting did not reach the host"
 pair --roles-file /run/tilo-rooms/roles.json || fail "the roles file did not reach the host"
 grep -Fqx -- --fetch-proxy "$work/args" && fail "fetch proxy 0 still asked for the proxy"
-grep -Fqx -- shared "$work/args" && fail "the shared layout default was not replaced"
+# Every workspace's arrangement is its shared desktop record: the host has no
+# layout flag, so a deployment that still names one (eu1 does) starts without
+# it rather than handing the host an argument it refuses.
+grep -Fqx -- --layout "$work/args" && fail "the entrypoint still passes a layout the host has no flag for"
+grep -Fqx -- personal "$work/args" && fail "a layout setting reached the host"
 grep -Fqx -- 0.0.0.0:9780 "$work/args" && fail "the plain listener default was not replaced"
 grep -Fqx -- 127.0.0.1:9781 "$work/args" && fail "the HTTPS listener default was not replaced"
 
@@ -216,4 +219,53 @@ for required in TILO_ROOMS_PERSISTENT TILO_ROOMS_ROOT_FILE TILO_ROOMS_RELAY_ORIG
   grep -Fq "$required" "$work/err" || fail "the refusal does not name $required"
 done
 
-echo "ok: the Lounge entrypoint maps the deployment and refuses the rest"
+
+# The flags the stub accepts are the flags the host has. A removed flag that the
+# entrypoint still passes starts nothing in production, and the stub cannot see
+# that; where a built `tilo-relay` is here (a developer's checkout, the builder),
+# the real one takes the entrypoint's arguments and says whether it would start.
+# `TILO_RELAY_BIN` names one; without either, this part says it was skipped.
+relay=${TILO_RELAY_BIN:-}
+if [[ -z $relay ]]; then
+  for candidate in "${CARGO_TARGET_DIR:-$here/../../../target}/debug/tilo-relay" \
+    "${CARGO_TARGET_DIR:-$here/../../../target}/release/tilo-relay"; do
+    [[ -x $candidate ]] && relay=$candidate && break
+  done
+fi
+if [[ -n $relay ]] && "$relay" --version >/dev/null 2>&1; then
+  # `room --help` names every flag the persistent room reads; the entrypoint's
+  # arguments must be among them. `--help` answers without starting anything.
+  "$relay" room --help >"$work/room-help" 2>&1
+  # The arguments the entrypoint hands the host for eu1's environment.
+  lounge \
+    TILO_ROOMS_NAME=Lounge \
+    TILO_ROOMS_SITE_ORIGINS='https://tilo.coffee,https://tilo.so' \
+    TILO_ROOMS_CHAT_CHANNELS='general,feedback' \
+    TILO_ROOMS_FEEDBACK_CHANNEL=feedback \
+    TILO_ROOMS_SEED_APPS='so.tilo.chat' \
+    TILO_ROOMS_AUTHOR_APPS='so.tilo.chat' \
+    TILO_ROOMS_REFOUND='so.tilo.browser-desktop:desktop' \
+    TILO_ROOMS_LAYOUT=shared \
+    TILO_ROOMS_ROLES_FILE=/run/tilo-rooms/roles.json \
+    TILO_ROOMS_LIVE=0.0.0.0:9881 \
+    TILO_ROOMS_LIVE_ORIGIN=https://live.eu1.tilo.coffee/ \
+    TILO_ROOMS_MODERATION_KEY_FILE=/run/secrets/moderation-model-key \
+    TILO_ROOMS_DISCORD_CLIENT_ID=1559266815148953650 \
+    TILO_ROOMS_DISCORD_CLIENT_SECRET_FILE=/run/secrets/discord-client-secret \
+    >"$work/real-args" || fail "the deployment did not start against the real relay"
+  # Every argument that is a flag (starts with `--`) must be one `room --help`
+  # lists.
+  while IFS= read -r argument; do
+    case $argument in
+      --*)
+        name=${argument%%=*}
+        grep -Eq -- "(^|[[:space:]])${name}([[:space:]]|=|$)" "$work/room-help" \
+          || fail "the entrypoint passes $name, which tilo-relay room has no flag for"
+        ;;
+    esac
+  done <"$work/real-args"
+  [[ $(grep -c -- '^--' "$work/real-args") -gt 0 ]] || fail "the entrypoint passed no flags to the real relay"
+  echo "ok: every flag the entrypoint passes is one tilo-relay room reads ($relay)"
+else
+  echo "skipped: no built tilo-relay (TILO_RELAY_BIN) to check the entrypoint's flags against"
+fi

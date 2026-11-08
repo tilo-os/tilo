@@ -900,6 +900,18 @@ pub trait FloatingSurfaceProvider {
     /// host resets this immediately after dispatch; it grants no authority.
     fn on_floating_surface_event_source(&mut self, _id: Option<&str>) {}
 
+    /// Deliver one input event aimed at the card `id`, in the desk's
+    /// coordinates: the frame the card's hits were recorded in. Answers
+    /// whether the card took the event.
+    fn floating_surface_event(
+        &mut self,
+        _id: &str,
+        _event: &crate::winit::event::WindowEvent,
+        _ctx: &mut EventCtx<'_>,
+    ) -> bool {
+        false
+    }
+
     /// The retained semantic subtree presented in one secondary window.
     fn floating_surface_accessibility(&self, _id: &str) -> Option<crate::a11y::AccessNode> {
         None
@@ -1672,6 +1684,14 @@ pub trait Widget {
     /// pointer routing. Inspectors and enclosing scroll regions must respect
     /// this boundary instead of treating clipped descendants as visible extent.
     fn child_clip_rect(&self) -> Option<vello::kurbo::Rect> {
+        None
+    }
+
+    /// The words this widget shows as the heading of the page it belongs to,
+    /// when it is the page's own title: a large-title text the content edits
+    /// or sets at the top of a document. A shell that also names the page in
+    /// its bar reads this to keep one title on screen at a time.
+    fn own_page_title(&self) -> Option<String> {
         None
     }
 
@@ -2547,6 +2567,12 @@ pub trait FloatingSurfaceWidgetExt {
     fn on_floating_surface_focus_changed(&mut self, id: Option<&str>, focused: bool);
     fn on_floating_surface_ime_source_changed(&mut self, id: Option<&str>);
     fn on_floating_surface_event_source(&mut self, id: Option<&str>);
+    fn floating_surface_event(
+        &mut self,
+        id: &str,
+        event: &crate::winit::event::WindowEvent,
+        ctx: &mut EventCtx<'_>,
+    ) -> bool;
     fn floating_surface_accessibility(&self, id: &str) -> Option<crate::a11y::AccessNode>;
     fn perform_floating_surface_accessibility_action(
         &mut self,
@@ -2610,6 +2636,16 @@ impl<T: Widget + ?Sized> FloatingSurfaceWidgetExt for T {
         if let Some(provider) = capability::capability_mut::<dyn FloatingSurfaceProvider>(self) {
             provider.on_floating_surface_event_source(id);
         }
+    }
+
+    fn floating_surface_event(
+        &mut self,
+        id: &str,
+        event: &crate::winit::event::WindowEvent,
+        ctx: &mut EventCtx<'_>,
+    ) -> bool {
+        capability::capability_mut::<dyn FloatingSurfaceProvider>(self)
+            .is_some_and(|provider| provider.floating_surface_event(id, event, ctx))
     }
 
     fn floating_surface_accessibility(&self, id: &str) -> Option<crate::a11y::AccessNode> {
@@ -3023,7 +3059,9 @@ pub use layout::{
 mod cached_paint;
 pub use cached_paint::CachedPaint;
 mod button;
-pub use button::{Button, ButtonFace, ButtonProps, ButtonRole, face_colors, focus_ring_reach};
+pub use button::{
+    Button, ButtonFace, ButtonProps, ButtonRole, REST_BORDER_WIDTH, face_colors, focus_ring_reach,
+};
 mod control_size;
 pub use control_size::ControlSize;
 mod bool_control;
@@ -3043,8 +3081,8 @@ mod layout_info;
 pub use form::{CheckControl, FormControl, labeled_check, labeled_field};
 pub use form_composition::{Field, Form, FormPage, FormSection, Page};
 pub use layout_info::{
-    Density, Effective, FieldLayout, FormLayout, HeaderRow, HeaderRows, LabelPlacement, LayoutInfo,
-    LayoutOrigin, ManualConflict, ManualLayout, PageLayout, RowLayout, ScrollDirection,
+    Density, Effective, FieldLayout, FormLayout, HeaderRowLayout, HeaderRows, LabelPlacement,
+    LayoutInfo, LayoutOrigin, ManualConflict, ManualLayout, PageLayout, RowLayout, ScrollDirection,
     ScrollLayout, SectionLayout,
 };
 mod embedded;
@@ -3173,8 +3211,8 @@ pub use editable_label::{EditOutcome, EditableLabel, EditableLabelProps};
 pub mod acknowledgement;
 pub mod autocomplete;
 pub use autocomplete::{
-    Autocomplete, AutocompleteOutcome, AutocompleteProps, Suggester, Suggestion, SuggestionList,
-    SuggestionPerson, SuggestionProps,
+    Autocomplete, AutocompleteOutcome, AutocompleteProps, CheckColumn, Suggester, Suggestion,
+    SuggestionList, SuggestionPerson, SuggestionProps,
 };
 pub mod mention_picker;
 pub use mention_picker::{MentionCandidate, MentionQuery};
@@ -3265,6 +3303,8 @@ pub mod canvas_navigation_hint;
 pub use canvas_navigation_hint::{CanvasNavigation, CanvasNavigationHint};
 pub use shortcut_recorder::{ShortcutRecorder, ShortcutRecorderProps};
 pub mod context_menu;
+pub mod floating_list;
+pub use floating_list::{FloatingList, FloatingMetrics, FloatingRow, RowState};
 pub mod floating_surface;
 pub mod primitives;
 pub use context_menu::{
@@ -3340,12 +3380,6 @@ pub use group_row::{
     pan_within_canvas, wheel_jump_detents,
 };
 mod finger_path;
-mod strip_deck;
-pub use strip_deck::{StripDeck, StripDeckRelease};
-mod strip_view;
-pub use strip_view::{STRIP_COOLDOWN_MS, StripView};
-mod workspace_view;
-pub use workspace_view::{WorkspaceSwitchDirection, WorkspaceView};
 pub mod tooltip;
 pub use tooltip::{Tooltip, TooltipHost};
 pub mod permission_prompt;

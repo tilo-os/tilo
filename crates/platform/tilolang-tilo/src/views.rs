@@ -62,7 +62,7 @@ impl RustViews for DeclaredViews {
         target: &RustResource,
         reading: Option<&serde_json::Value>,
         person: &Principal,
-        _window: &str,
+        window: &str,
     ) -> RustRendered {
         let Some(view) = tilo_view::ViewRegistry::resolve(kind, name) else {
             return RustRendered {
@@ -85,7 +85,7 @@ impl RustViews for DeclaredViews {
         );
         let input = ViewInput { target, reading };
         let tree = (view.render)(&input, &cx);
-        convert(tree, &cx.recorded())
+        convert(tree, &cx.recorded(), window, &person.0)
     }
 }
 
@@ -98,11 +98,17 @@ pub fn declared_apps() -> Vec<&'static str> {
 
 /// A view's tree as the runtime's, and what its events do, by key and event name.
 #[must_use]
-pub fn convert(tree: Node, effects: &BTreeMap<(String, String), Effect>) -> RustRendered {
+pub fn convert(
+    tree: Node,
+    effects: &BTreeMap<(String, String), Effect>,
+    window: &str,
+    person: &str,
+) -> RustRendered {
     let events = effects
         .iter()
         .filter_map(|((key, event), effect)| {
-            effect_to_runtime(effect).map(|done| ((key.clone(), event.clone()), done))
+            effect_to_runtime(effect, window, person)
+                .map(|done| ((key.clone(), event.clone()), done))
         })
         .collect();
     RustRendered {
@@ -121,12 +127,19 @@ fn convert_node(node: Node) -> RustNode {
             .into_iter()
             .map(|(name, value)| (name, value_into_runtime(value)))
             .collect(),
-        binding: node.binding.and_then(|binding| {
-            let (target, field) = binding.field?;
-            Some(tilolang_runtime::rust_views::RustBinding { target, field })
-        }),
+        binding: node.binding.map(convert_binding),
         anchor: node.anchor,
         children: node.children.into_iter().map(convert_node).collect(),
+    }
+}
+
+/// What a view's bound control edits: a resource's field, or the view's own state (whose name
+/// is the binding's, as a tilolang view's `state` is named).
+fn convert_binding(binding: tilo_view::Binding) -> tilolang_runtime::rust_views::RustBinding {
+    use tilolang_runtime::rust_views::RustBinding;
+    match binding.field {
+        Some((target, field)) => RustBinding::Field { target, field },
+        None => RustBinding::State { name: binding.name },
     }
 }
 
@@ -165,17 +178,27 @@ fn value_into_runtime(value: ViewValue) -> Value {
 }
 
 /// What a view's event does, as the runtime's.
-fn effect_to_runtime(effect: &Effect) -> Option<RustEvent> {
+fn effect_to_runtime(effect: &Effect, window: &str, person: &str) -> Option<RustEvent> {
     Some(match effect {
-        Effect::Action { action } => RustEvent::Invoke {
+        Effect::Action { action, args } => RustEvent::Invoke {
             resource: String::new(),
             action: action.clone(),
-            args: Vec::new(),
+            args: args
+                .iter()
+                .map(|arg| arg_into_runtime(arg, window, person))
+                .collect(),
         },
-        Effect::On { target, action } => RustEvent::Invoke {
+        Effect::On {
+            target,
+            action,
+            args,
+        } => RustEvent::Invoke {
             resource: target.id.clone(),
             action: action.clone(),
-            args: Vec::new(),
+            args: args
+                .iter()
+                .map(|arg| arg_into_runtime(arg, window, person))
+                .collect(),
         },
         Effect::Open { target, view } => RustEvent::Open {
             target: target.id.clone(),
@@ -186,4 +209,19 @@ fn effect_to_runtime(effect: &Effect) -> Option<RustEvent> {
         Effect::State { name } => RustEvent::State { name: name.clone() },
         Effect::None => return None,
     })
+}
+
+/// One argument of a view's action: the value it read, [`Value::Event`] for what the control's
+/// event carries at the press (the runtime fills it where it fires), or the view's own state
+/// `name`, read at the press — the slot a bound control holds, as a tilolang view's `draft`.
+fn arg_into_runtime(arg: &tilo_view::cx::Arg, window: &str, person: &str) -> Value {
+    use tilo_view::cx::Arg;
+    match arg {
+        Arg::Value(value) => value_into_runtime(value.clone()),
+        Arg::Event => Value::Event,
+        Arg::State(name) => Value::State {
+            key: tilolang_runtime::view_state::StateKey::view(window, person, name.as_str()),
+            scalar: false,
+        },
+    }
 }

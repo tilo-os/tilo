@@ -171,6 +171,10 @@ fn project(
 /// Import a deliberately supplied old snapshot without copying its plaintext
 /// CRDT history into the destination. The caller retains the original bytes
 /// until this succeeds and the destination is saved.
+#[allow(
+    clippy::future_not_send,
+    reason = "the secret store's future is not Send on the web, where its promises run on the page's single thread"
+)]
 pub(super) async fn snapshot(bytes: &[u8], store: &SecretStore) -> Result<Workspace, String> {
     let doc =
         ui::tilo_resource::Doc::load(bytes).map_err(|_| "Invalid legacy Automerge snapshot")?;

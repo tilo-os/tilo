@@ -545,7 +545,6 @@ doc = false
 "iroh-blobs-0_103_0" = { package = "iroh-blobs", version = "^0.103.0", default-features = false, features = ["fs-store", "hide-proto-docs"] }
 "iroh-dns-1_0_3" = { package = "iroh-dns", version = "^1.0.3", default-features = false, features = ["default", "tls-ring"] }
 "iroh-io-0_6_2" = { package = "iroh-io", version = "^0.6.2", default-features = false, features = ["default", "smallvec", "tokio", "tokio-io"] }
-"iroh-mdns-address-lookup-0_5_0" = { package = "iroh-mdns-address-lookup", version = "^0.5.0", default-features = false, features = [] }
 "iroh-metrics-1_0_1" = { package = "iroh-metrics", version = "^1.0.1", default-features = false, features = ["default", "metrics", "service"] }
 "iroh-relay-1_0_3" = { package = "iroh-relay", version = "^1.0.3", default-features = false, features = ["default", "metrics", "server", "tls-ring"] }
 "iroh-tickets-1_0_0" = { package = "iroh-tickets", version = "^1.0.0", default-features = false, features = [] }
@@ -1131,7 +1130,7 @@ doc = false
 "tilo-boot-signin" = { path = "../../../crates/system/boot-signin", default-features = false, features = [] }
 "tilo-bot-directory" = { path = "../../../crates/packaging/bot-directory", default-features = false, features = [] }
 "tilo-browser-compute" = { path = "../../../crates/browser/tilo-browser-compute", default-features = false, features = [] }
-"tilo-browser-peer" = { path = "../../../crates/browser/tilo-browser-peer", default-features = false, features = ["default", "iroh", "toolkit"] }
+"tilo-browser-peer" = { path = "../../../crates/browser/tilo-browser-peer", features = ["toolkit"] }
 "tilo-browser-runtime" = { path = "../../../crates/browser/tilo-browser-runtime", default-features = false, features = ["default"] }
 "tilo-browser-sessions" = { path = "../../../crates/platform/tilo-browser-sessions", default-features = false, features = [] }
 "tilo-callstream" = { path = "../../../crates/collab/tilo-callstream", default-features = false, features = ["recording", "surface-decoder", "unit-chain"] }
@@ -1213,7 +1212,7 @@ doc = false
 "tilo-install-helpers" = { path = "../../../crates/system/install-helpers", default-features = false, features = [] }
 "tilo-keyboard-map" = { path = "../../../crates/platform/tilo-keyboard-map", default-features = false, features = [] }
 "tilo-libvirt-domain" = { path = "../../../crates/system/libvirt-domain", default-features = false, features = [] }
-"tilo-live" = { path = "../../../crates/collab/tilo-live", default-features = false, features = ["default", "iroh", "plane", "relay", "tls"] }
+"tilo-live" = { path = "../../../crates/collab/tilo-live", default-features = false, features = ["default", "iroh", "plane", "relay"] }
 "tilo-liveness" = { path = "../../../crates/session/liveness", default-features = false, features = [] }
 "tilo-locale" = { path = "../../../crates/platform/tilo-locale", default-features = false, features = [] }
 "tilo-location" = { path = "../../../crates/platform/tilo-location", default-features = false, features = [] }
@@ -3129,7 +3128,6 @@ doc = false
 "iroh-blobs-0_103_0" = { package = "iroh-blobs", version = "^0.103.0", default-features = false, features = ["fs-store", "hide-proto-docs"] }
 "iroh-dns-1_0_3" = { package = "iroh-dns", version = "^1.0.3", default-features = false, features = ["default", "tls-ring"] }
 "iroh-io-0_6_2" = { package = "iroh-io", version = "^0.6.2", default-features = false, features = ["default", "smallvec", "tokio", "tokio-io"] }
-"iroh-mdns-address-lookup-0_5_0" = { package = "iroh-mdns-address-lookup", version = "^0.5.0", default-features = false, features = [] }
 "iroh-metrics-1_0_1" = { package = "iroh-metrics", version = "^1.0.1", default-features = false, features = ["default", "metrics", "service"] }
 "iroh-relay-1_0_3" = { package = "iroh-relay", version = "^1.0.3", default-features = false, features = ["default", "metrics", "server", "tls-ring"] }
 "iroh-tickets-1_0_0" = { package = "iroh-tickets", version = "^1.0.0", default-features = false, features = [] }
@@ -3715,7 +3713,7 @@ doc = false
 "tilo-boot-signin" = { path = "../../../crates/system/boot-signin", default-features = false, features = [] }
 "tilo-bot-directory" = { path = "../../../crates/packaging/bot-directory", default-features = false, features = [] }
 "tilo-browser-compute" = { path = "../../../crates/browser/tilo-browser-compute", default-features = false, features = [] }
-"tilo-browser-peer" = { path = "../../../crates/browser/tilo-browser-peer", default-features = false, features = ["default", "iroh", "toolkit"] }
+"tilo-browser-peer" = { path = "../../../crates/browser/tilo-browser-peer", features = ["toolkit"] }
 "tilo-browser-runtime" = { path = "../../../crates/browser/tilo-browser-runtime", default-features = false, features = ["default"] }
 "tilo-browser-sessions" = { path = "../../../crates/platform/tilo-browser-sessions", default-features = false, features = [] }
 "tilo-callstream" = { path = "../../../crates/collab/tilo-callstream", default-features = false, features = ["recording", "surface-decoder", "unit-chain"] }
@@ -3797,7 +3795,7 @@ doc = false
 "tilo-install-helpers" = { path = "../../../crates/system/install-helpers", default-features = false, features = [] }
 "tilo-keyboard-map" = { path = "../../../crates/platform/tilo-keyboard-map", default-features = false, features = [] }
 "tilo-libvirt-domain" = { path = "../../../crates/system/libvirt-domain", default-features = false, features = [] }
-"tilo-live" = { path = "../../../crates/collab/tilo-live", default-features = false, features = ["default", "iroh", "plane", "relay", "tls"] }
+"tilo-live" = { path = "../../../crates/collab/tilo-live", default-features = false, features = ["default", "iroh", "plane", "relay"] }
 "tilo-liveness" = { path = "../../../crates/session/liveness", default-features = false, features = [] }
 "tilo-locale" = { path = "../../../crates/platform/tilo-locale", default-features = false, features = [] }
 "tilo-location" = { path = "../../../crates/platform/tilo-location", default-features = false, features = [] }

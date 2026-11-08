@@ -2150,6 +2150,7 @@ version = "0.1.0"
 dependencies = [
  "agent-provider-config",
  "chat",
+ "chrono",
  "durable-store",
  "emoji",
  "fnv",
@@ -2178,6 +2179,8 @@ dependencies = [
  "tilo-rich-text",
  "tilo-test-env",
  "tilo-vello",
+ "tilo-view",
+ "tilo-view-macros",
  "tilo-winit",
  "tokio",
  "uuid",
@@ -5384,6 +5387,9 @@ dependencies = [
  "serde_json",
  "sha2 0.11.0",
  "thiserror 2.0.21",
+ "tilo-automerge",
+ "tilo-automerge-fork",
+ "tilo-resource",
  "uuid",
  "wire-frame",
  "workspace-hack",
@@ -8033,26 +8039,6 @@ dependencies = [
  "pin-project",
  "smallvec",
  "tokio",
-]
-
-[[package]]
-name = "iroh-mdns-address-lookup"
-version = "0.5.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "cad3dfcaddd5c3681bf0a42606498fc6e8891de793408dfbc46a9fbe76f370b3"
-dependencies = [
- "data-encoding",
- "derive_more",
- "futures-util",
- "iroh",
- "iroh-base",
- "n0-error",
- "n0-future",
- "n0-watcher",
- "swarm-discovery",
- "tokio",
- "tokio-stream",
- "tracing",
 ]
 
 [[package]]
@@ -18733,10 +18719,11 @@ dependencies = [
 name = "tilo-endpoint-reachability"
 version = "0.1.0"
 dependencies = [
+ "data-encoding",
  "iroh",
- "iroh-mdns-address-lookup",
  "iroh-relay",
  "n0-future",
+ "swarm-discovery",
  "tilo-lock",
  "tilo-test-env",
  "tokio",
@@ -19004,9 +18991,11 @@ dependencies = [
  "tilo-doc-codecs",
  "tilo-endpoint-reachability",
  "tilo-files",
+ "tilo-identity-client",
  "tilo-lock",
  "tilo-net",
  "tilo-nm",
+ "tilo-paths",
  "tilo-power-mgmt",
  "tilo-rt",
  "tilo-test-env",
@@ -19201,6 +19190,7 @@ dependencies = [
  "tilo-clock",
  "tilo-identity-client",
  "tilo-lock",
+ "workspace-hack",
 ]
 
 [[package]]
@@ -19377,12 +19367,8 @@ dependencies = [
  "iroh",
  "moq-net",
  "n0-future",
- "quinn",
- "rcgen",
- "rustls",
  "serde",
  "serde_json",
- "sha2 0.11.0",
  "tempfile",
  "thiserror 2.0.21",
  "tilo-clock",
@@ -19390,8 +19376,6 @@ dependencies = [
  "tilo-seal",
  "tilo-test-env",
  "tokio",
- "url",
- "web-transport-quinn",
  "workspace-hack",
 ]
 
@@ -21241,6 +21225,7 @@ dependencies = [
  "desktop-policy",
  "durable-store",
  "ed25519-dalek 3.0.0",
+ "fs-protocol",
  "futures-util",
  "gbm",
  "getrandom 0.4.3",
@@ -21315,6 +21300,7 @@ dependencies = [
  "tilo-feedback",
  "tilo-files",
  "tilo-frame-metrics",
+ "tilo-fs",
  "tilo-fs-client",
  "tilo-identity-authority",
  "tilo-identity-host",
@@ -27455,7 +27441,6 @@ dependencies = [
  "iroh-blobs",
  "iroh-dns",
  "iroh-io",
- "iroh-mdns-address-lookup",
  "iroh-metrics",
  "iroh-metrics-derive",
  "iroh-relay",

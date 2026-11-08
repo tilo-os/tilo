@@ -549,12 +549,14 @@ view suggestions<R>(of: R) {
 
 /// What happened to `of`, newest first, as the platform folds its history (`steps`): each step,
 /// consecutive changes by one person or by one task run, is an entry saying who made it, what
-/// they did and how long ago. What they did is what its last change says (`version_said`),
-/// worked out from the fields the change wrote, the person looking as "You". A step of one
-/// change shows each field it changed, what it held before beside what it holds now, each as
-/// the field's type shows it; a step of several opens to each of them. A step the person
-/// looking made offers Undo for it, and a run's step Undo for the whole run; each change of
-/// theirs in a longer step is undone on its own. One change made over many items at
+/// they did and when — one sentence, wrapping as a sentence does, the face of whoever made it
+/// beside it. What they did is what its last change says (`version_said`), worked out from the
+/// fields the change wrote, the person looking as "You". What the sentence leaves out stands
+/// under it, muted (`version_notes`): each field the change wrote, what it held before beside
+/// what it holds now, each as the field's type shows it. Steps of one hand, moments apart, group
+/// under the face of the step that opens them. Undo ends the step that offers it, as quiet as
+/// the words around it, a run's undo taking the whole run; each change of theirs in a step of
+/// several is undone on its own, where the step opens. One change made over many items at
 /// once — a command run on a choice of them — is one step: it says how many items it changed,
 /// and its Undo takes them all back together.
 view history<R>(of: R) {
@@ -564,30 +566,50 @@ view history<R>(of: R) {
         section(phrase("tilolang-history")) {
             for s in steps {
                 let key = "{s.at}/{s.who}"
-                // What was done: the sentence its last change says, or, for a step of a run,
-                // who ran it and what it ran. The face stands beside the name and the time,
-                // as a comment does, and what was done stands under the name, in the room the
-                // face leaves: the entry reads as a row of the conversation it records.
+                // The step above this one: where it is the same hand's a moment before, this
+                // one joins the visit that step's face opened.
+                let prev = steps.previous(s)
+                let joined = if let p = prev { p.who == s.who and s.at - p.at < 1h } else { false }
                 stack(gap: .related) {
                     row(gap: .tight, align: .start) {
-                        avatar(s.who)
+                        if joined {
+                            // The room the face above takes, so one visit lines up under it.
+                            stack(min: 2rem, max: 2rem) {
+                            }
+                        } else {
+                            avatar(s.who)
+                        }
                         stack(gap: .tight, fill: 1.0) {
-                            // The row wraps rather than squeezing the name it opens with: an
-                            // undo's own word is as long as its language says, and a name cut
-                            // to nothing to make room for it says less than nothing.
+                            // Who, what, when: one sentence. It wraps rather than squeezing the
+                            // name it opens with — an undo's own word is as long as its language
+                            // says — and what can be undone is offered at its end, quietly.
                             row(gap: .tight, align: .center, wrap: true) {
                                 if let v = s.versions.last() {
                                     ui.Text(v.actor, role: .label)
+                                    // A run's own words stand under its sentence: its changes are
+                                    // what it did, and it names them all.
+                                    if s.task == .none {
+                                        std.version_said(v)
+                                    }
                                 }
+                                ui.Text("·", role: .caption, secondary: true)
                                 ui.Time(s.at, role: .caption, secondary: true)
                                 spacer()
                                 if let run = s.task {
-                                    ui.Button(phrase("tilolang-history-undo-run")) {
+                                    ui.Button(
+                                        phrase("tilolang-history-undo-run"),
+                                        role: .plain,
+                                        size: .small,
+                                    ) {
                                         on press: undo(run)
                                     }
                                 } else if s.changes == 1 and s.mine {
                                     if let v = s.versions.last() {
-                                        ui.Button(phrase("tilolang-undo")) {
+                                        ui.Button(
+                                            phrase("tilolang-undo"),
+                                            role: .plain,
+                                            size: .small,
+                                        ) {
                                             on press: undo(v)
                                         }
                                     }
@@ -595,45 +617,55 @@ view history<R>(of: R) {
                             }
                             if let run = s.task {
                                 ui.Text(run.title, role: .caption, secondary: true)
-                            } else if let v = s.versions.last() {
-                                std.version_said(v)
                             }
-                            if s.changes > 1 {
+                            if s.changes == 1 {
+                                if let v = s.versions.last() {
+                                    std.version_notes(v, spoken: s.task == .none)
+                                }
+                            } else if s.changes > 1 {
                                 ui.Text(
                                     phrase("tilolang-history-changes", count: s.changes),
                                     role: .caption,
                                     secondary: true,
                                 )
-                            }
-                        }
-                    }
-                    if s.changes == 1 {
-                        if let v = s.versions.last() {
-                            std.version_changes(v)
-                        }
-                    } else if s.changes > 1 {
-                        if open == key {
-                            ui.Button(phrase("tilolang-history-hide")) {
-                                on press: set(open, "")
-                            }
-                            for v in s.versions {
-                                stack(gap: .tight) {
-                                    row(gap: .related, align: .center, wrap: true) {
-                                        std.version_sentence(v)
-                                        spacer()
-                                        ui.Time(v.at, role: .caption, secondary: true)
-                                        if v.mine {
-                                            ui.Button(phrase("tilolang-undo")) {
-                                                on press: undo(v)
+                                if open == key {
+                                    ui.Button(
+                                        phrase("tilolang-history-hide"),
+                                        role: .plain,
+                                        size: .small,
+                                    ) {
+                                        on press: set(open, "")
+                                    }
+                                    for v in s.versions {
+                                        stack(gap: .tight) {
+                                            row(gap: .tight, align: .center, wrap: true) {
+                                                ui.Text(v.actor, role: .label)
+                                                std.version_said(v)
+                                                ui.Text("·", role: .caption, secondary: true)
+                                                ui.Time(v.at, role: .caption, secondary: true)
+                                                spacer()
+                                                if v.mine {
+                                                    ui.Button(
+                                                        phrase("tilolang-undo"),
+                                                        role: .plain,
+                                                        size: .small,
+                                                    ) {
+                                                        on press: undo(v)
+                                                    }
+                                                }
                                             }
+                                            std.version_notes(v, spoken: s.task == .none)
                                         }
                                     }
-                                    std.version_changes(v)
+                                } else {
+                                    ui.Button(
+                                        phrase("tilolang-history-show"),
+                                        role: .plain,
+                                        size: .small,
+                                    ) {
+                                        on press: set(open, key)
+                                    }
                                 }
-                            }
-                        } else {
-                            ui.Button(phrase("tilolang-history-show")) {
-                                on press: set(open, key)
                             }
                         }
                     }
@@ -643,63 +675,57 @@ view history<R>(of: R) {
     }
 }
 
-/// A version in one sentence: who made it, then what it did (`version_said`).
-template view version_sentence(v: host.Version) {
-    row(gap: .tight, wrap: true) {
-        ui.Text(v.actor, role: .label)
-        std.version_said(v)
-    }
-}
-
-/// What a version did, in the words a person reads after who did it: the words the app writes
-/// for the action (`did:`), the fields the change wrote and what they held ("set the due date
-/// to", then the day as a day), or, for one that declares nothing and changed no field, the
-/// action's label, which the platform reads by the action's own name when it declares none.
+/// What a version did, in the words a person reads after who did it, one sentence: the words the
+/// app writes for the action (`did:`), the fields the change wrote and what they held ("set the
+/// due date to", then the day as a day), or, for one that declares nothing and changed no field,
+/// the action's label, which the platform reads by the action's own name when it declares none.
 /// Never what the action's declaration explains to the person writing the app: history says what
 /// happened, and a doc comment is not part of what happened.
 template view version_said(v: host.Version) {
-    stack(gap: .tight) {
-        if v.count > 1 {
-            ui.Text(
-                phrase("tilolang-did-many", count: v.count, kind: meta(v.of).plural),
-                role: .label,
-            )
-        } else if v.did != "" {
-            ui.Text(v.did, role: .label)
-        } else if not v.changes.is_empty() {
-            row(gap: .tight, wrap: true) {
-                for c in v.changes {
-                    row(gap: .tight) {
-                        ui.Text(c.said, role: .label)
-                        if c.shows == "after" {
-                            c.after
-                        } else if c.shows == "before" {
-                            c.before
-                        }
+    if v.count > 1 {
+        ui.Text(phrase("tilolang-did-many", count: v.count, kind: meta(v.of).plural), role: .label)
+    } else if v.did != "" {
+        ui.Text(v.did, role: .label)
+    } else if not v.changes.is_empty() {
+        row(gap: .tight, wrap: true) {
+            for c in v.changes {
+                row(gap: .tight) {
+                    ui.Text(c.said, role: .label)
+                    if c.shows == "after" {
+                        c.after
+                    } else if c.shows == "before" {
+                        c.before
                     }
                 }
             }
-        } else {
-            ui.Text(v.what, role: .label)
         }
-        if v.suggested != "" {
-            ui.Text(
-                phrase("tilolang-suggested-by", name: v.suggested),
-                role: .caption,
-                secondary: true,
-            )
-        }
+    } else {
+        ui.Text(v.what, role: .label)
     }
 }
 
-/// What a version did to each field it changed: the field's name, what it held before and what
-/// it holds after, each as the field's type shows it; or that it made or removed the resource.
-template view version_changes(v: host.Version) {
-    // What the change did to the fields it holds. A change that made or removed the resource
-    // already says so above (`std.version_said`), so nothing stands twice under it.
-    if v.kind != "created" and v.kind != "removed" and not v.changes.is_empty() {
+/// What stands muted under a version's sentence: what the change did to each field it holds,
+/// where the sentence does not say it, and who suggested it where someone did.
+template view version_notes(v: host.Version, spoken: Bool = true) {
+    std.version_changes(v, spoken: spoken)
+    if v.suggested != "" {
+        ui.Text(phrase("tilolang-suggested-by", name: v.suggested), role: .caption, secondary: true)
+    }
+}
+
+/// What a version did to each field it changed, in muted text: the field's name, what it held
+/// before and what it holds after, each as the field's type shows it. A sentence built from the
+/// fields' own words already says the value it names, so only what it leaves out stands here;
+/// a sentence that says the change in the app's words says nothing of the fields, so all of
+/// them do. A change that made or removed the resource already says so above, so nothing stands
+/// under it.
+template view version_changes(v: host.Version, spoken: Bool = true) {
+    let unsaid = if spoken {
+        v.changes.filter(c -> v.count > 1 or v.did != "" or c.shows == "")
+    } else { v.changes }
+    if v.kind != "created" and v.kind != "removed" and not unsaid.is_empty() {
         grid(columns: 3, gap: .related) {
-            for c in v.changes {
+            for c in unsaid {
                 ui.Text(c.label, role: .caption, secondary: true)
                 c.before
                 c.after

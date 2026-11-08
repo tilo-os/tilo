@@ -5,72 +5,72 @@ kind = "files.folder"
 label = "Folder"
 version = 1
 fields = [
-  { path = "places", type = "Collection<Bookmark>", stored = "collection" },
-  { path = "places.*.place", type = "Atom", readonly = true },
-  { path = "ops", type = "Outbox<FileTask, Vec<Change>>", unit = true },
+  { path = "places", type = { collection = { named = "Bookmark" } }, stored = "collection" },
+  { path = "places.*.place", type = "text", readonly = true },
+  { path = "ops", type = { outbox = { named = "FileTask" } }, unit = true },
 ]
 
 [[resources.verbs]]
 id = "add-bookmark"
 kind = "undoable"
 params = [
-  { name = "place", required = true, schema = { type = "string", minLength = 1, pattern = "\\S" } },
-  { name = "at", required = false, schema = { type = ["integer", "null"], minimum = 0 } },
+  { name = "place", type = "text", required = true, schema = { type = "string", minLength = 1, pattern = "\\S" } },
+  { name = "at", type = { option = "int" }, required = false, schema = { type = ["integer", "null"], minimum = 0 } },
 ]
 
 [[resources.verbs]]
 id = "remove-bookmark"
 kind = "undoable"
 params = [
-  { name = "place", required = true, schema = { type = "string" } },
+  { name = "place", type = "text", required = true, schema = { type = "string" } },
 ]
 
 [[resources.verbs]]
 id = "new-folder"
 kind = "outside"
 params = [
-  { name = "device", required = true, schema = { type = "string" } },
+  { name = "device", type = "text", required = true, schema = { type = "string" } },
   { name = "parent", required = true, schema = { type = "string" } },
-  { name = "name", required = true, schema = { type = "string", minLength = 1, pattern = "\\S" } },
+  { name = "name", type = "text", required = true, schema = { type = "string", minLength = 1, pattern = "\\S" } },
 ]
 
 [[resources.verbs]]
 id = "rename"
 kind = "outside"
 params = [
-  { name = "device", required = true, schema = { type = "string" } },
-  { name = "folder", required = true, schema = { type = "string" } },
-  { name = "entry", required = true, schema = { type = "string" } },
-  { name = "name", required = true, schema = { type = "string", minLength = 1, pattern = "\\S" } },
+  { name = "device", type = "text", required = true, schema = { type = "string" } },
+  { name = "folder", type = "text", required = true, schema = { type = "string" } },
+  { name = "entry", type = "text", required = true, schema = { type = "string" } },
+  { name = "name", type = "text", required = true, schema = { type = "string", minLength = 1, pattern = "\\S" } },
 ]
 
 [[resources.verbs]]
 id = "trash"
 kind = "outside"
 params = [
-  { name = "device", required = true, schema = { type = "string" } },
-  { name = "folder", required = true, schema = { type = "string" } },
-  { name = "entries", required = true, schema = { type = "array", items = { type = "string" } } },
+  { name = "device", type = "text", required = true, schema = { type = "string" } },
+  { name = "folder", type = "text", required = true, schema = { type = "string" } },
+  { name = "entries", type = { list = "text" }, required = true, schema = { type = "array", items = { type = "string" } } },
 ]
 
 [[resources.verbs]]
 id = "move"
 kind = "outside"
 params = [
-  { name = "device", required = true, schema = { type = "string" } },
-  { name = "from", required = true, schema = { type = "string" } },
-  { name = "entries", required = true, schema = { type = "array", items = { type = "string" } } },
+  { name = "device", type = "text", required = true, schema = { type = "string" } },
+  { name = "from", type = "text", required = true, schema = { type = "string" } },
+  { name = "entries", type = { list = "text" }, required = true, schema = { type = "array", items = { type = "string" } } },
   { name = "to", required = true, schema = { type = "string" } },
-  { name = "create", required = false, schema = { type = ["boolean", "null"] } },
+  { name = "create", type = { option = "bool" }, required = false, schema = { type = ["boolean", "null"] } },
 ]
 
 [[resources.verbs]]
 id = "copy-into"
 kind = "outside"
 params = [
-  { name = "device", required = true, schema = { type = "string" } },
-  { name = "from", required = true, schema = { type = "string" } },
-  { name = "entries", required = true, schema = { type = "array", items = { type = "string" } } },
+  { name = "device", type = "text", required = true, schema = { type = "string" } },
+  { name = "from", type = "text", required = true, schema = { type = "string" } },
+  { name = "entries", type = { list = "text" }, required = true, schema = { type = "array", items = { type = "string" } } },
   { name = "to", required = true, schema = { type = "string" } },
 ]
 
@@ -78,8 +78,8 @@ params = [
 id = "import-mounted"
 kind = "outside"
 params = [
-  { name = "device", required = true, schema = { type = "string" } },
-  { name = "paths", required = true, schema = { type = "array", items = { type = "string" } } },
+  { name = "device", type = "text", required = true, schema = { type = "string" } },
+  { name = "paths", type = { list = "text" }, required = true, schema = { type = "array", items = { type = "string" } } },
   { name = "folder", required = true, schema = { type = "string" } },
 ]
 
@@ -87,10 +87,10 @@ params = [
 id = "cloud-import"
 kind = "outside"
 params = [
-  { name = "device", required = true, schema = { type = "string" } },
-  { name = "job_id", required = true, schema = { type = "string" } },
-  { name = "account", required = true, schema = { type = "string" } },
-  { name = "entries", required = true, schema = { type = "array", items = {} } },
+  { name = "device", type = "text", required = true, schema = { type = "string" } },
+  { name = "job_id", type = "text", required = true, schema = { type = "string" } },
+  { name = "account", type = "text", required = true, schema = { type = "string" } },
+  { name = "entries", type = { list = "any" }, required = true, schema = { type = "array", items = {} } },
   { name = "destination", required = true, schema = { type = "object", properties = { path = { type = "string" }, identity = { type = "object", properties = { device = { type = "integer", minimum = 0 }, inode = { type = "integer", minimum = 0 }, modified = { type = ["array", "null"], maxItems = 3, minItems = 3 } }, required = ["device", "inode"] } }, required = ["path", "identity"] } },
 ]
 
@@ -98,80 +98,109 @@ params = [
 id = "write-file"
 kind = "outside"
 params = [
-  { name = "device", required = true, schema = { type = "string" } },
+  { name = "device", type = "text", required = true, schema = { type = "string" } },
   { name = "folder", required = true, schema = { type = "string" } },
-  { name = "name", required = true, schema = { type = "string", minLength = 1, pattern = "\\S" } },
-  { name = "text", required = true, schema = { type = "string" } },
-  { name = "replace", required = false, schema = { type = ["boolean", "null"] } },
+  { name = "name", type = "text", required = true, schema = { type = "string", minLength = 1, pattern = "\\S" } },
+  { name = "text", type = "text", required = true, schema = { type = "string" } },
+  { name = "replace", type = { option = "bool" }, required = false, schema = { type = ["boolean", "null"] } },
 ]
 
 [[resources.verbs]]
 id = "compress"
 kind = "outside"
 params = [
-  { name = "device", required = true, schema = { type = "string" } },
+  { name = "device", type = "text", required = true, schema = { type = "string" } },
   { name = "from", required = true, schema = { type = "string" } },
-  { name = "entries", required = true, schema = { type = "array", items = { type = "string" } } },
-  { name = "name", required = false, schema = { type = ["string", "null"] } },
-  { name = "format", required = false, schema = { type = ["string", "null"] } },
+  { name = "entries", type = { list = "text" }, required = true, schema = { type = "array", items = { type = "string" } } },
+  { name = "name", type = { option = "text" }, required = false, schema = { type = ["string", "null"] } },
+  { name = "format", type = { option = "text" }, required = false, schema = { type = ["string", "null"] } },
 ]
 
 [[resources.verbs]]
 id = "extract"
 kind = "outside"
 params = [
-  { name = "device", required = true, schema = { type = "string" } },
+  { name = "device", type = "text", required = true, schema = { type = "string" } },
   { name = "archive", required = true, schema = { type = "string" } },
-  { name = "to", required = false, schema = { type = ["string", "null"] } },
-  { name = "if_exists", required = false, schema = { type = ["string", "null"] } },
+  { name = "to", type = { option = "any" }, required = false, schema = { type = ["string", "null"] } },
+  { name = "if_exists", type = { option = "text" }, required = false, schema = { type = ["string", "null"] } },
 ]
 
 [[resources.verbs]]
 id = "record-clipboard-transfer"
 kind = "outside"
 params = [
-  { name = "device", required = true, schema = { type = "string" } },
-  { name = "receipt", required = true, schema = { type = "object", additionalProperties = false, properties = { completed = { type = "integer", minimum = 0 }, cut = { type = "boolean" }, error = { type = ["string", "null"] }, operation = { type = "string" }, restore = { type = "boolean" } }, required = ["operation", "completed", "cut"] } },
+  { name = "device", type = "text", required = true, schema = { type = "string" } },
+  { name = "receipt", type = { named = "Receipt" }, required = true, schema = { type = "object", additionalProperties = false, properties = { completed = { type = "integer", minimum = 0 }, cut = { type = "boolean" }, error = { type = ["string", "null"] }, operation = { type = "string" }, restore = { type = "boolean" } }, required = ["operation", "completed", "cut"] } },
 ]
 
 [[resources.verbs]]
 id = "record-trash-restore"
 kind = "outside"
 params = [
-  { name = "device", required = true, schema = { type = "string" } },
-  { name = "receipt", required = true, schema = { type = "object", additionalProperties = false, properties = { completed = { type = "integer", minimum = 0 }, cut = { type = "boolean" }, error = { type = ["string", "null"] }, operation = { type = "string" }, restore = { type = "boolean" } }, required = ["operation", "completed", "cut"] } },
+  { name = "device", type = "text", required = true, schema = { type = "string" } },
+  { name = "receipt", type = { named = "Receipt" }, required = true, schema = { type = "object", additionalProperties = false, properties = { completed = { type = "integer", minimum = 0 }, cut = { type = "boolean" }, error = { type = ["string", "null"] }, operation = { type = "string" }, restore = { type = "boolean" } }, required = ["operation", "completed", "cut"] } },
 ]
 
 [[resources.verbs]]
 id = "revert"
 kind = "outside"
 params = [
-  { name = "op", required = true, schema = { type = "string" } },
+  { name = "op", type = "text", required = true, schema = { type = "string" } },
 ]
+
+[[resources.types]]
+name = "Bookmark"
+fields = [
+  { name = "place", type = "text" },
+]
+
+[[resources.types]]
+name = "FileTask"
+fields = [
+  { name = "device", type = "text" },
+  { name = "op", type = "any" },
+]
+
+[[resources.types]]
+name = "Receipt"
+fields = [
+  { name = "operation", type = "text" },
+  { name = "completed", type = "int" },
+  { name = "cut", type = "bool" },
+  { name = "restore", type = "bool" },
+  { name = "error", type = { option = "text" } },
+]
+
+[[resources]]
+kind = "files.tree"
+label = "Files"
+version = 1
+person = true
 
 [[resources]]
 kind = "files.recent"
 label = "Recent files"
 version = 1
 fields = [
-  { path = "devices", type = "BTreeMap<String, RecentFiles>" },
+  { path = "devices", type = { map = "any" } },
 ]
 
 [[resources.verbs]]
 id = "note"
 kind = "undoable"
 params = [
-  { name = "device", required = true, schema = { type = "string" } },
+  { name = "device", type = "text", required = true, schema = { type = "string" } },
   { name = "path", required = true, schema = { type = "string" } },
-  { name = "last_use", required = true, schema = { type = "string", enum = ["opened", "changed"] } },
-  { name = "at_ms", required = true, schema = { type = "integer", minimum = 0 } },
+  { name = "last_use", type = { named = "RecentUse" }, required = true, schema = { type = "string", enum = ["opened", "changed"] } },
+  { name = "at_ms", type = "int", required = true, schema = { type = "integer", minimum = 0 } },
 ]
 
 [[resources.verbs]]
 id = "moved"
 kind = "undoable"
 params = [
-  { name = "device", required = true, schema = { type = "string" } },
+  { name = "device", type = "text", required = true, schema = { type = "string" } },
   { name = "from", required = true, schema = { type = "string" } },
   { name = "to", required = true, schema = { type = "string" } },
 ]
@@ -180,7 +209,14 @@ params = [
 id = "forget"
 kind = "undoable"
 params = [
-  { name = "device", required = true, schema = { type = "string" } },
+  { name = "device", type = "text", required = true, schema = { type = "string" } },
   { name = "path", required = true, schema = { type = "string" } },
+]
+
+[[resources.types]]
+name = "RecentUse"
+cases = [
+  { name = "opened" },
+  { name = "changed" },
 ]
 

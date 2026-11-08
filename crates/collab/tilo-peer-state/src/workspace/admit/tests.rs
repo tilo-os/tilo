@@ -1,6 +1,7 @@
 //! One case per check of [`admit_workspace_changes`], each admitted and refused on
 //! the production function — the same call both receivers make.
 use super::*;
+use crate::workspace::GovernanceRow;
 use automerge::transaction::Transactable;
 use automerge::{ObjType, ROOT, ReadDoc, ScalarValue};
 use std::collections::BTreeMap;
@@ -110,6 +111,19 @@ fn hold_record(doc: &mut AutoCommit, record: &str) {
         &BTreeMap::from([(record.to_owned(), "document".to_owned())]),
     )
     .unwrap();
+}
+
+/// `doc` with no membership operation left in it, as an older build wrote the
+/// workspace: its rows govern its membership.
+fn without_operations(doc: &AutoCommit) -> AutoCommit {
+    let mut legacy = doc.clone();
+    for key in doc.keys(ROOT).collect::<Vec<_>>() {
+        if crate::members::op::keyed(&key).is_some() || key == crate::members::MEMBERS_KEY {
+            legacy.delete(ROOT, key.as_str()).unwrap();
+        }
+    }
+    legacy.commit();
+    legacy
 }
 
 fn take_ownership(doc: &mut AutoCommit, root: [u8; 32]) {
@@ -238,6 +252,20 @@ fn governance_changes_only_from_the_owners_devices() {
         doc.put(ROOT, "owner", person_id(OWNER)).unwrap();
     });
     assert!(admit(Some(&before), as_editor, &OWNER, &echo).is_ok());
+}
+
+/// A workspace made while the arrangement could be one member's own stores
+/// the scope it was given (`layout_v1`). This build reads no scope: the value
+/// is no longer governance, so a member's batch that carries it is admitted as
+/// any other change, and the arrangement a workspace holds is its members'.
+#[test]
+fn a_stored_layout_scope_is_no_governance() {
+    let before = governed();
+    let edit = changes_after(&before, |doc| {
+        doc.put(ROOT, "layout_v1", "personal").unwrap();
+        hold_record(doc, "file:/plan.md");
+    });
+    assert!(admit(Some(&before), member(&key(0x02), EDITOR), &OWNER, &edit).is_ok());
 }
 
 #[test]
@@ -596,7 +624,7 @@ fn refusals_keep_the_peer_state_messages() {
         ),
         (
             WorkspaceRefusal::GovernanceWriter,
-            "governance writer is not the owner's device",
+            "governance is not this writer's to change",
         ),
         (
             WorkspaceRefusal::ReceiptImmutable,
@@ -928,6 +956,7 @@ struct Started {
     owner: DeviceCert,
     admin_key: ed25519_dalek::SigningKey,
     admin: DeviceCert,
+    editor_key: ed25519_dalek::SigningKey,
     editor: DeviceCert,
     viewer: DeviceCert,
 }
@@ -935,7 +964,7 @@ struct Started {
 fn started() -> Started {
     let (owner_key, owner) = rooted(0x11);
     let (admin_key, admin) = rooted(0x21);
-    let (_, editor) = rooted(0x31);
+    let (editor_key, editor) = rooted(0x31);
     let (_, viewer) = rooted(0x41);
     let mut doc = AutoCommit::new();
     doc.put(ROOT, "room", WORKSPACE).unwrap();
@@ -988,6 +1017,7 @@ fn started() -> Started {
         owner,
         admin_key,
         admin,
+        editor_key,
         editor,
         viewer,
     }
@@ -1048,9 +1078,7 @@ fn rows_a_batch_moves_beside_an_operation_are_refused_before_the_log_starts() {
     let workspace = started();
     // The same document with its genesis dropped: a workspace on an older
     // build, its rows governing its membership.
-    let mut legacy = workspace.doc.clone();
-    legacy.delete(ROOT, "members_v2").unwrap();
-    legacy.commit();
+    let legacy = without_operations(&workspace.doc);
     assert!(!crate::members::starts(&legacy, WORKSPACE));
     let guest = rooted(0x52).1;
     let admin = hex::encode(workspace.admin.device_public_key);
@@ -1112,6 +1140,174 @@ fn a_row_change_without_an_operation_is_judged_by_the_membership_it_names() {
             Err(WorkspaceRefusal::Membership(_))
         ),
         "an editor writes itself no role above its own"
+    );
+}
+
+/// An operation `cert` writes on top of `parents`, naming the governance rows
+/// its batch changes.
+fn governing(
+    cert: &DeviceCert,
+    key: &ed25519_dalek::SigningKey,
+    parents: Vec<crate::members::OpId>,
+    rows: &[GovernanceRow],
+) -> crate::members::SignedMembershipOp {
+    crate::members::SignedMembershipOp::signed(
+        cert,
+        key,
+        parents,
+        crate::workspace::saved_shortcut::ns_at(NOW),
+        crate::members::MembershipOpCommand::Governance {
+            rows: rows.to_vec(),
+        },
+    )
+    .unwrap()
+}
+
+fn name_of(doc: &AutoCommit) -> Option<String> {
+    match doc.get(ROOT, "name").ok().flatten() {
+        Some((automerge::Value::Scalar(value), _)) => match value.as_ref() {
+            ScalarValue::Str(name) => Some(name.to_string()),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+/// A governance part is changed by a device whose role holds its action: an
+/// administrator holds every governance action, so its device renames the
+/// workspace with the operation that names the row it changed. Every receiver
+/// shares this admission path.
+#[test]
+fn a_role_permits_the_governance_a_members_operation_names() {
+    let workspace = started();
+    let before = &workspace.doc;
+    let reached = crate::members::heads(&crate::members::ops(before));
+    let op = governing(
+        &workspace.admin,
+        &workspace.admin_key,
+        reached,
+        &[GovernanceRow::Settings],
+    );
+    let batch = changes_after(before, |doc| {
+        doc.put(ROOT, "name", "Renamed").unwrap();
+        crate::members::legacy::put_op(doc, &op).unwrap();
+    });
+    let admin = hex::encode(workspace.admin.device_public_key);
+    let admitted = admit(
+        Some(before),
+        member_of(&admin, &workspace.admin),
+        &workspace.owner.user_public_key,
+        &batch,
+    )
+    .expect("an administrator holds the settings action");
+    assert_eq!(name_of(&admitted.candidate).as_deref(), Some("Renamed"));
+
+    let reached = crate::members::heads(&crate::members::ops(&admitted.candidate));
+    let op = governing(
+        &workspace.admin,
+        &workspace.admin_key,
+        reached,
+        &[GovernanceRow::Checkpoints],
+    );
+    let batch = changes_after(&admitted.candidate, |doc| {
+        crate::coverage::put(doc, coverage(1)).unwrap();
+        crate::members::legacy::put_op(doc, &op).unwrap();
+    });
+    let admitted = admit(
+        Some(&admitted.candidate),
+        member_of(&admin, &workspace.admin),
+        &workspace.owner.user_public_key,
+        &batch,
+    )
+    .expect("an administrator holds the action its checkpoints take");
+    assert_eq!(
+        crate::coverage::entries(&admitted.candidate).unwrap().len(),
+        1
+    );
+}
+
+/// The same operation from a role that does not hold the row's action is
+/// refused, and the refusal names the row and the action: an editor holds no
+/// governance action, so its coverage write changes nothing.
+#[test]
+fn a_governance_row_its_writers_role_does_not_permit_is_refused() {
+    let workspace = started();
+    let before = &workspace.doc;
+    let reached = crate::members::heads(&crate::members::ops(before));
+    let op = governing(
+        &workspace.editor,
+        &workspace.editor_key,
+        reached,
+        &[GovernanceRow::Checkpoints],
+    );
+    let batch = changes_after(before, |doc| {
+        crate::coverage::put(doc, coverage(1)).unwrap();
+        crate::members::legacy::put_op(doc, &op).unwrap();
+    });
+    let editor = hex::encode(workspace.editor.device_public_key);
+    match admit(
+        Some(before),
+        member_of(&editor, &workspace.editor),
+        &workspace.owner.user_public_key,
+        &batch,
+    ) {
+        Err(WorkspaceRefusal::Membership(refusal)) => {
+            for named in ["the workspace's checkpoints", "settings"] {
+                assert!(
+                    refusal.contains(named),
+                    "the refusal names {named}: {refusal}"
+                );
+            }
+        }
+        other => panic!("an editor writes no checkpoints: {other:?}"),
+    }
+}
+
+/// The operation names what its batch changed and nothing else: a change no
+/// operation names, or a row an operation names without changing it, is
+/// refused.
+#[test]
+fn an_operation_names_exactly_the_governance_its_batch_changes() {
+    let workspace = started();
+    let before = &workspace.doc;
+    let reached = crate::members::heads(&crate::members::ops(before));
+    let admin = hex::encode(workspace.admin.device_public_key);
+    let unnamed = governing(&workspace.admin, &workspace.admin_key, reached.clone(), &[]);
+    let batch = changes_after(before, |doc| {
+        doc.put(ROOT, "name", "Renamed").unwrap();
+        crate::members::legacy::put_op(doc, &unnamed).unwrap();
+    });
+    assert_eq!(
+        admit(
+            Some(before),
+            member_of(&admin, &workspace.admin),
+            &workspace.owner.user_public_key,
+            &batch,
+        )
+        .unwrap_err(),
+        WorkspaceRefusal::GovernanceWriter,
+        "no operation names the change"
+    );
+    let spare = governing(
+        &workspace.admin,
+        &workspace.admin_key,
+        reached,
+        &[GovernanceRow::Settings, GovernanceRow::Media],
+    );
+    let batch = changes_after(before, |doc| {
+        doc.put(ROOT, "name", "Renamed").unwrap();
+        crate::members::legacy::put_op(doc, &spare).unwrap();
+    });
+    assert_eq!(
+        admit(
+            Some(before),
+            member_of(&admin, &workspace.admin),
+            &workspace.owner.user_public_key,
+            &batch,
+        )
+        .unwrap_err(),
+        WorkspaceRefusal::GovernanceWriter,
+        "an operation names a row the batch did not change"
     );
 }
 

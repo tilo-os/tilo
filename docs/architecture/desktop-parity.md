@@ -33,12 +33,9 @@ the old file and function, what the new code has, and where the two stand.
    `tilo_desktop_surface::DesktopSurface`. That surface shows **one strip at
    a time**: `show_active_strip` swaps `self.shown` and marks its own
    structure dirty, so a strip or workspace change replaces the child row in
-   the layout. The two widgets that hold the old motion — `WorkspaceView`
-   (`ui-core/src/widget/workspace_view.rs`) and `StripDeck`
-   (`ui-core/src/widget/strip_deck.rs`) — are built and reconciled only by
-   `desktop/src/composition.rs`, which nothing in the session constructs
-   (`composition::DesktopSurface` appears only in that crate's own tests and
-   `topbar/avatar_ask.rs`).
+   the layout. The old motion lived in two widgets, `WorkspaceView` and
+   `StripDeck`, built only by `desktop/src/composition.rs`; that file and the
+   widgets are gone, and `surface/slide.rs` draws the change instead (§9).
 2. **The old shell animated both.** Workspaces slid through
    `overlay_host/workspace_slide.rs` (`Drill::WORKSPACE`, parked workspaces,
    the leaving workspace drawn at a pose), and strips slid through the deck:
@@ -55,13 +52,13 @@ carry its direction cue is not drawn yet."
 
 | Behaviour | Old | New | Status |
 |---|---|---|---|
-| Switch workspace by pointer (menu, banner) slides the whole view: the shown workspace leaves along the shared axis while the chosen one arrives from the side it lies on; only windows move, the bar and backdrop stay; input live from the first frame | `overlay_host/workspace_slide.rs` `WorkspaceSlide::start/poses`, `Drill::WORKSPACE` (`Slow` toward later, `Base` back), parked content drawn by `draw_leaving_workspace`, consumed by `paint_desktop::draw_workspace_sections` | workspace changes `tree.active` (`desktop-surface/src/surface.rs`, `Admitted::Workspace`); `show_active_strip` swaps the row and marks structure dirty. `WorkspaceView::switch` holds a `Drill` slide but is built only by `composition.rs` | missing → **fixed** (see §9) |
+| Switch workspace by pointer (menu, banner) slides the whole view: the shown workspace leaves along the shared axis while the chosen one arrives from the side it lies on; only windows move, the bar and backdrop stay; input live from the first frame | `overlay_host/workspace_slide.rs` `WorkspaceSlide::start/poses`, `Drill::WORKSPACE` (`Slow` toward later, `Base` back), parked content drawn by `draw_leaving_workspace`, consumed by `paint_desktop::draw_workspace_sections` | `surface/slide.rs` poses the workspace shown before away on `Drill::WORKSPACE` while the chosen one is already laid out | same (see §9) |
 | Switch workspace by key lands | `workspace_slide.rs` test `a_pointer_switch_slides_the_windows_and_a_key_lands`; `MotionSource::Keyboard` | `ShortcutAction::Previous/NextWorkspace` → `ChromeIntent::SwitchWorkspace(±1)` → `ChromeEffect::SwitchWorkspace`; no motion | same |
 | Switch workspace by four fingers: gesture-triggered at the end of the swipe | `compositor` `gestures.rs` `swipe_action` → `switch_workspace`; `native.rs` `apply_shell_gesture` sets `MotionSource::Gesture`, which slides | `compositor/src/gestures.rs` identical; `session/src/keys.rs` `follow_gestures` → `chrome switch-workspace`; the change lands, because nothing draws a slide for a gesture either | worse → **fixed** (§9) |
-| Strip deck: every strip laid at the deck's whole size, only the shown one drawn and taking input; going to another strip slides the deck | `StripDeck` (`begin_drag`/`drag_to`/`end_drag`, `Snap::SPEC`, `FingerPath` resampling, `COMMIT_SHARE` a quarter of the deck) | `StripDeck` exists and is tested; the session never builds it. One row is mounted | missing → **fixed** (§9) |
+| Strip deck: every strip laid at the deck's whole size, only the shown one drawn and taking input; going to another strip slides the deck | `StripDeck` (`begin_drag`/`drag_to`/`end_drag`, `Snap::SPEC`, `FingerPath` resampling, `COMMIT_SHARE` a quarter of the deck) | `surface/slide.rs`: the shown strip is laid out and takes input while the one before it is posed away | same (§9) |
 | Switch strip by key (Ctrl+Super+↑/↓, Super+1..9, controller): `Snap` within `fast` | `desktop_host.rs` `go_to_strip` → `ShowStrip`; `composition.rs` `deck.show(display, index, source)` | `go_to_strip` → `ChromeEffect::ShowStrip` → `show_active_strip` swaps the row | worse → **fixed** (§9) |
 | Switch strip by clicking the strip switcher / ribbon | `overlay_host/strip_switcher.rs`, `strip_rail.rs`; the click calls `state.focus_strip` and the deck slides | `desktop/src/strip_switcher.rs`, `strip_navigator.rs`, `strip_indicators.rs` (the sliding indicator moves on `ListChange::MOVE`); the switch itself jumped | worse → **fixed** (§9) |
-| Three fingers up/down move the deck with the hand; release settles with momentum | `update_strip_deck_drag` → `StripDeck::begin_drag/drag_to/end_drag`; commit past a quarter or a flick | `GestureTracker` still emits `StripDeckUpdate` per update; `surface-host/src/desktop.rs` `GestureReader` kept only the total and stepped once at release; nothing moved with the fingers | worse → **fixed** (§9) |
+| Three fingers up/down move the deck with the hand; release settles with momentum | `update_strip_deck_drag` → `StripDeck::begin_drag/drag_to/end_drag`; commit past a quarter or a flick | `GestureTracker` emits `StripDeckUpdate` per update; `surface-host`'s gesture reader hands every update to `DesktopSurface` | same (§9) |
 | Horizontal strip pan follows three fingers 1:1 with rubber band and coast | `GroupRow::update_strip_pan` driven by `StripPanUpdate` | `GestureReader` drops the stream into `self.travel` and steps at the end; `DesktopSurface` has `route_swipe` (wheel and trackpad scroll) but no gesture-driven pan. `paging.rs` uses `update_strip_pan` for a wheel step | worse (still) |
 | Focused window framed; a keyboard focus change slides the viewport only when the target was off screen, at `fast` | `navigation.rs` `begin_transition`, `scroll_group_into_view_animated` | `desktop/src/navigation.rs` `apply_navigation` (built only behind `composition.rs`); `desktop-surface` `scroll_group_into_view` jumps | worse |
 | Strip indicator ribbon and rail fade and slide between strips | `StripIndicators` `Transient::CONFIRMATION`, `SlidingFocus::follow` | `desktop/src/strip_indicators.rs` same | same |

@@ -179,8 +179,9 @@ fn a_receiver_refuses_a_members_admission_without_a_valid_invitation() {
     peer.governance_mut()
         .set_member_administrator(user, &owner_key, now)
         .unwrap();
-    // The administrator's device writes a receipt whose invitation is not
-    // the one it names.
+    // The administrator's device admits the guest as every device does — the
+    // rows its operation names beside the receipt — and files under that
+    // invitation a receipt naming another one in the same batch.
     let guest = device(78, 79);
     let owner = peer.owner_certificates()[0].clone();
     let invited = redemption(
@@ -192,11 +193,15 @@ fn a_receiver_refuses_a_members_admission_without_a_valid_invitation() {
         80,
         now,
     );
-    let mut doc = (**peer.core.workspace_doc.as_ref().unwrap()).clone();
-    doc.set_actor(automerge::ActorId::from(
-        editor_key.verifying_key().to_bytes().to_vec(),
-    ));
-    crate::governance::admit_invited_member(&mut doc, &invited, now).unwrap();
+    let before = (**peer.core.workspace_doc.as_ref().unwrap())
+        .clone()
+        .get_heads();
+    let mut writer = peer.clone();
+    writer
+        .governance_mut()
+        .admit_invited_member(&invited, &editor_key, now)
+        .unwrap();
+    let mut doc = (**writer.core.workspace_doc.as_ref().unwrap()).clone();
     let ledger = doc.get(ROOT, "invitation_receipts_v1").unwrap().unwrap().1;
     let key = hex::encode(invited.join().invite_id());
     let mut receipt: RedemptionReceipt =
@@ -214,9 +219,6 @@ fn a_receiver_refuses_a_members_admission_without_a_valid_invitation() {
     receipt.invitation = Some(crate::join::encode_invitation_text(
         other.join().signed_invitation(),
     ));
-    let before = (**peer.core.workspace_doc.as_ref().unwrap())
-        .clone()
-        .get_heads();
     doc.set_actor(automerge::ActorId::from(
         editor_key.verifying_key().to_bytes().to_vec(),
     ));

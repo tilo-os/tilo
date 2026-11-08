@@ -5,12 +5,12 @@
 
 //! Window chrome in dark and light: a modal whose scrim covers the whole
 //! window (the History bar included), an option menu and a content popover,
-//! a stack of notification cards, a sheet up from the foot, the status
-//! surfaces, and video controls on the floating material.
+//! a transient notice in the window's bar, a sheet up from the foot, the
+//! status surfaces, and video controls on the floating material.
 //!
 //! Run:  `cargo run -p ui-examples --example ui-shots -- window_chrome [OUT_DIR]`
 //! Out:  `OUT_DIR` (default `/tmp/window_chrome`): `modal-<theme>.png`,
-//!       `popover-<theme>.png`, `app-menu-<theme>.png`, `toast-<theme>.png`,
+//!       `popover-<theme>.png`, `app-menu-<theme>.png`, `notice-<theme>.png`,
 //!       `sheet-<theme>.png`, `status-<theme>.png`, `video-<theme>.png`.
 
 use std::path::{Path, PathBuf};
@@ -44,7 +44,7 @@ pub fn run(args: &[String]) {
         modal(&out, name, &theme);
         popover(&out, name, &theme);
         app_menu(&out, name, &theme);
-        toast(&out, name, &theme);
+        notice(&out, name, &theme);
         sheet(&out, name, &theme);
         status(&out, name, &theme);
         video(&out, name, &theme);
@@ -143,52 +143,20 @@ fn app_menu(out: &Path, name: &str, theme: &Theme) {
     );
 }
 
-/// A stack of notification cards over the content, as the window's corner
-/// holds them: severity, a person, work in progress and a decision.
-fn toast(out: &Path, name: &str, theme: &Theme) {
-    use tilo_ui::widget::toast::{ToastCard, ToastKind, card_height, paint_card};
-    let (w, h) = (1000_u32, 640_u32);
-    let width = 380.0;
-    let mut tr = TextRenderer::new();
-    let mut scene = Scene::new();
-    let cards = [
-        ToastCard::new("Backup finished", ToastKind::Success)
-            .caption("Tilo Files")
-            .time("2 m ago")
-            .body("Quarterly report and 128 other files are on every device.")
-            .closable(true),
-        ToastCard::new("Reindexing the workspace", ToastKind::Info)
-            .caption("Search")
-            .progress(0.42)
-            .action("Pause", false),
-        ToastCard::new("Changes could not be synced", ToastKind::Warning)
-            .time("4 m ago")
-            .body("Tilo will retry when the connection is back.")
-            .closable(true)
-            .close_hovered(true),
-        ToastCard::new("Ana", ToastKind::Info)
-            .person("Ana", "ana@example.org")
-            .caption("Direct message")
-            .body("Can you look at the forecast sheet?")
-            .reply("On it —", true)
-            .closable(true),
-    ];
-    let x1 = f64::from(w) - 24.0;
-    let mut y = 24.0;
-    for card in &cards {
-        let height = card_height(&mut tr, theme, card, width);
-        paint_card(
-            &mut scene,
-            Affine::IDENTITY,
-            &mut tr,
-            theme,
-            Rect::new(x1 - width, y, x1, y + height),
-            card,
-        );
-        y += height + f64::from(theme.tokens.spacing.s2);
-    }
-    let path = out.join(format!("toast-{name}.png"));
-    OffscreenRenderer::new(w, h).render_png(&scene, theme.tokens.colors.surfaces.content, &path);
+/// A transient notice in the window's bar: an operation's result, work under way or a failure,
+/// shown where the person is looking, one at a time, beside the app's own slots.
+fn notice(out: &Path, name: &str, theme: &Theme) {
+    use tilo_ui::widget::toast::ToastKind;
+    use tilo_ui::window_toolbar::{ToolbarAction, ToolbarNotice, notify, withdraw};
+    let up = ToolbarNotice::new("Changes could not be synced", ToastKind::Warning)
+        .action(ToolbarAction::new("retry", "refresh", "Retry"));
+    notify(Some(up.clone()));
+    let mut harness =
+        FrameHarness::new_with_theme(State::new(), Box::new(page()), (1000, 640), theme.clone());
+    harness.present_in_window_bar();
+    harness.settle_for_capture(SETTLE);
+    harness.render_png(&out.join(format!("notice-{name}.png")));
+    withdraw(&up);
 }
 
 /// A sheet up from the foot of a narrow window, resting at half height,

@@ -34,13 +34,14 @@ pub struct RustNode {
     pub children: Vec<RustNode>,
 }
 
-/// What a Rust view's binding edits: the field of a resource.
+/// What a Rust view's binding edits: the field of a resource, or the view's own state.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct RustBinding {
-    /// The resource it edits, by its id string.
-    pub target: String,
-    /// The field's id.
-    pub field: String,
+pub enum RustBinding {
+    /// A field of the resource `target`, by its id string, and the field's id.
+    Field { target: String, field: String },
+    /// The view's own state `name`, held in the person's window as a tilolang view's `state`
+    /// declaration is: so a control the view binds it to has somewhere to type into.
+    State { name: String },
 }
 
 /// What pressing an event of a Rust view runs.
@@ -135,18 +136,27 @@ pub(crate) fn app_of(shared: &Shared, ty: &str) -> Option<Rc<dyn RustViews>> {
 
 /// The kind a Rust app declares for the resource type `ty`: its own kind whose type name is
 /// `ty`'s (`tube.Channel` for `tube#Channel`), when it declares one.
+///
+/// The app matters as well as the type's name: two apps declare a `Channel` (`tube.Channel`,
+/// `chat.Channel`), and a resource of one is drawn by its own app's view, never the other's.
 pub(crate) fn kind_of(views: &Rc<dyn RustViews>, ty: &str) -> String {
+    let app = ty.split(['#', '.']).next().unwrap_or(ty);
     let name = ty.rsplit(['#', '.']).next().unwrap_or(ty);
     views
         .kinds()
         .into_iter()
-        .find(|kind| kind.rsplit(['#', '.']).next() == Some(name))
-        .unwrap_or_else(|| {
-            // The type's own kind (`tube.Channel`, as a place names it); a registry that answers
-            // for every app already knows its kind, so this is the last resort.
-            let app = ty.split(['#', '.']).next().unwrap_or(ty);
-            format!("{app}.{name}")
+        .find(|kind| {
+            kind.split(['#', '.']).next() == Some(app)
+                && kind.rsplit(['#', '.']).next() == Some(name)
         })
+        .or_else(|| {
+            // A kind a registry of every app names by the type alone.
+            views
+                .kinds()
+                .into_iter()
+                .find(|kind| kind.rsplit(['#', '.']).next() == Some(name))
+        })
+        .unwrap_or_else(|| format!("{app}.{name}"))
 }
 
 /// The view a place's `shown_as` names the resource type `ty` through, or the type's default view:
@@ -164,6 +174,8 @@ impl RustNode {
         events: &BTreeMap<(String, String), RustEvent>,
         subject: &ResourceRef,
         author: &ModuleHash,
+        window: &str,
+        viewer: &crate::ids::Principal,
         retain: &mut dyn FnMut(Value) -> crate::handles::Retained,
     ) -> Result<UiNode, String> {
         let key = self.key.clone();
@@ -172,26 +184,35 @@ impl RustNode {
             if node_key != &key {
                 continue;
             }
-            let aref = action(effect, subject, author)?;
+            let aref = action(effect, subject, window, viewer, author)?;
             kept.insert(name.clone(), retain(Value::Action(aref)));
         }
         let binding = match &self.binding {
-            Some(binding) => {
-                let at = ResourceRef::parse_id(&binding.target, String::new())
-                    .ok_or_else(|| format!("no resource `{}` to bind", binding.target))?;
+            Some(RustBinding::Field { target, field }) => {
+                let at = ResourceRef::parse_id(target, String::new())
+                    .ok_or_else(|| format!("no resource `{target}` to bind"))?;
                 Some(Binding {
                     target: crate::view::BindTarget::Field {
                         target: at,
-                        field: binding.field.clone(),
+                        field: field.clone(),
                     },
                     author: author.clone(),
                 })
             }
+            // The view's own state, in the person's window: where a bound control types into.
+            Some(RustBinding::State { name }) => Some(Binding {
+                target: crate::view::BindTarget::State {
+                    key: crate::view_state::StateKey::view(window, viewer.0.clone(), name.clone()),
+                    name: name.clone(),
+                    ty: "Text".to_owned(),
+                },
+                author: author.clone(),
+            }),
             None => None,
         };
         let mut children = Vec::with_capacity(self.children.len());
         for child in self.children {
-            children.push(child.into_ui(events, subject, author, retain)?);
+            children.push(child.into_ui(events, subject, author, window, viewer, retain)?);
         }
         Ok(UiNode {
             kind: self.kind,
@@ -210,6 +231,8 @@ impl RustNode {
 fn action(
     effect: &RustEvent,
     subject: &ResourceRef,
+    window: &str,
+    viewer: &crate::ids::Principal,
     author: &ModuleHash,
 ) -> Result<ActionRef, String> {
     let author = Some(author.clone());
@@ -258,9 +281,8 @@ fn action(
         RustEvent::State { name } => ActionRef {
             action: crate::host_ui::SET_ACTION.to_owned(),
             args: vec![
-                Value::Text(String::new()),
-                Value::none(),
-                Value::Int(0),
+                Value::Text(window.to_owned()),
+                Value::text(viewer.0.clone()),
                 Value::Text(name.clone()),
                 Value::Event,
             ],

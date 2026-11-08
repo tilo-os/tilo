@@ -4226,17 +4226,44 @@ impl AppBrokerState {
         membership: WorkspaceTreeHandle,
         services: HostServices,
     ) -> crate::collab_broker::AppActionBroker {
-        let fanout = Arc::new(FanoutState::new());
-        let (state, _bridge_rx) = Self::new_configured(
-            &fanout,
-            Arc::new(Mutex::new(BrokerChannels::default())),
-            PeerPublisher::disabled(),
-            Some(membership),
-            None,
-            None,
-            services,
-        );
+        let (state, _bridge_rx) = Self::test_state(Some(membership), services);
         crate::collab_broker::AppActionBroker::from_state_for_test(state)
+    }
+
+    /// [`Self::test_state_configured`] with no native config and no transport,
+    /// the host fixture most tests start from.
+    #[cfg(any(test, feature = "test-support"))]
+    fn test_state(
+        membership: Option<WorkspaceTreeHandle>,
+        services: HostServices,
+    ) -> (
+        Arc<Self>,
+        std::sync::mpsc::Receiver<ActionDirectoryBridgeRequest>,
+    ) {
+        Self::test_state_configured(membership, None, PeerPublisher::disabled(), services)
+    }
+
+    /// The state [`Self::test_broker_with_authority`] wraps, with the bridge a
+    /// test drains itself, its own publisher, or a native config.
+    #[cfg(any(test, feature = "test-support"))]
+    fn test_state_configured(
+        membership: Option<WorkspaceTreeHandle>,
+        config: Option<&super::NativePeerBrokerConfig>,
+        publisher: Arc<PeerPublisher>,
+        services: HostServices,
+    ) -> (
+        Arc<Self>,
+        std::sync::mpsc::Receiver<ActionDirectoryBridgeRequest>,
+    ) {
+        Self::new_configured(
+            &Arc::new(FanoutState::new()),
+            Arc::new(Mutex::new(BrokerChannels::default())),
+            publisher,
+            membership,
+            None,
+            config,
+            services,
+        )
     }
 
     /// A transport-free fixture with an explicit admission turn. Certified
@@ -4252,15 +4279,7 @@ impl AppBrokerState {
         membership: WorkspaceTreeHandle,
         services: HostServices,
     ) -> (crate::collab_broker::AppActionBroker, impl Fn()) {
-        let (state, bridge_rx) = Self::new_configured(
-            &Arc::new(FanoutState::new()),
-            Arc::new(Mutex::new(BrokerChannels::default())),
-            PeerPublisher::disabled(),
-            Some(membership),
-            None,
-            None,
-            services,
-        );
+        let (state, bridge_rx) = Self::test_state(Some(membership), services);
         let broker = crate::collab_broker::AppActionBroker::from_state_for_test(Arc::clone(&state));
         let turn = move || {
             let first =

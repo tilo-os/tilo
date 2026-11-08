@@ -11,6 +11,7 @@ mod key;
 mod payload;
 mod said;
 mod shell;
+mod shown;
 
 pub use call::CallPresence;
 pub use hue::{
@@ -31,3 +32,4 @@ pub use crate::peer::PeerPresencePayload as Payload;
 pub use shell::{
     MAX_ACTIVITY_BYTES, ShellChat, ShellPresence, ShellReaction, ShellSelection, ShellWindow,
 };
+pub use shown::{Shown, ShownFocus, ShownLayout, ShownPoint, ShownWave, ShownWindow};

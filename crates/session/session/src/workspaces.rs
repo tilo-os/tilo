@@ -840,8 +840,9 @@ impl Personal {
             // On this desk already: nothing to enter, unless it is held as the device this machine
             // was copied from.
             if present.contains(workspace) {
+                let copied = unknown_here(*workspace);
                 if let Some(host) = entry.host.filter(|host| *host != self.device)
-                    && unknown_here(*workspace)
+                    && copied
                 {
                     adoption.enter.push(ToEnter {
                         workspace: *workspace,
@@ -1367,6 +1368,16 @@ impl crate::Shared {
                         joined_notice(&self.notices, &listed);
                     }
                 }
+                // A workspace this desk held stays on it as it was: the
+                // device asks again when it next can.
+                Err(error) if enrolled.held => {
+                    tracing::warn!(
+                        target: JOIN_FLOW_TARGET,
+                        workspace = %key,
+                        %error,
+                        "the person's workspace did not take this copied machine in as its own device"
+                    );
+                }
                 Err(error) => {
                     tracing::info!(
                         target: JOIN_FLOW_TARGET,
@@ -1484,7 +1495,44 @@ impl crate::Shared {
                 })
             };
             let adoption = personal.adopt_into(&self.handle, &unknown_here);
-            for opened in adoption.enter {
+            let mut enter = adoption.enter;
+            // A workspace on this desk the person's list does not carry (one
+            // joined at someone's site) is entered as this device at the host
+            // its own state names, as a listed one is.
+            if let Some(engine) = &self.engine {
+                for workspace in engine.workspaces() {
+                    if enter.iter().any(|opened| opened.workspace == workspace)
+                        || !unknown_here(workspace)
+                    {
+                        continue;
+                    }
+                    let Ok(hint) = engine
+                        .owner()
+                        .with_current(workspace, |view| view.transport_hint().cloned())
+                    else {
+                        continue;
+                    };
+                    if hint.host.device_public_key == device {
+                        continue;
+                    }
+                    let name = self
+                        .handle
+                        .read(|tree| {
+                            tree.workspaces
+                                .iter()
+                                .find(|held| held.id() == workspace)
+                                .map(|held| held.name.clone())
+                        })
+                        .unwrap_or_default();
+                    enter.push(ToEnter {
+                        workspace,
+                        name,
+                        host: hint.host.device_public_key,
+                        held: true,
+                    });
+                }
+            }
+            for opened in enter {
                 self.enter_listed(&mut personal, &opened);
             }
             for workspace in adoption.release {
@@ -1526,9 +1574,21 @@ impl crate::Shared {
             }
             return;
         };
-        let Some(entering) =
-            Self::entry_to_ask(&personal.asked, opened, sync.host_hint(&workspace))
-        else {
+        // A workspace this desk holds already says itself where its host is
+        // reached, should none of the person's devices have said it yet.
+        // ignored-failure: a held workspace whose state cannot be read has no hint of its own; the person's devices say one
+        let hint = sync.host_hint(&workspace).or_else(|| {
+            opened
+                .held
+                .then(|| {
+                    engine
+                        .owner()
+                        .with_current(opened.workspace, |view| view.transport_hint().cloned())
+                        .ok()
+                })
+                .flatten()
+        });
+        let Some(entering) = Self::entry_to_ask(&personal.asked, opened, hint) else {
             return;
         };
         personal
@@ -1593,6 +1653,7 @@ impl crate::Shared {
             workspace_id: opened.workspace,
             name: opened.name.clone(),
             host: hint,
+            held: opened.held,
         })
     }
 

@@ -11,7 +11,8 @@ use tilo_relay_client::DeviceSigner;
 use tilo_relay_protocol::workspaces::{JoinChallengeView, JoinReply, JoinStep, join_proof_digest};
 use tilo_user_identity::{DeviceCapabilities, DeviceCert, device_cert_signing_digest};
 
-use tilo_relay_client::https::{self, HttpClient, LinkError};
+use tilo_relay_client::LinkError;
+use tilo_relay_client::https::{self, HttpClient};
 
 /// The page's own certificate for its device, signed by the person's own
 /// root `root`: a member device named `label`, with no expiry.

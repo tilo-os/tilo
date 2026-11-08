@@ -420,7 +420,7 @@ struct ColumnFit {
     /// `None` until the first layout decides.
     shown: Option<usize>,
     /// What the last layout settled on for the row, for an audit to read.
-    header: Option<crate::widget::HeaderRow>,
+    header: Option<crate::widget::HeaderRowLayout>,
 }
 
 /// Everything the geometry depends on. Shared with the layout policy the
@@ -2585,6 +2585,32 @@ impl NavShell {
         changed
     }
 
+    /// Give each column's title back to the content while the content shows the same words as
+    /// its page's own heading: one title on screen, and the one the page sets in the body. The
+    /// bar takes it again once the heading scrolls out of the column's body.
+    fn mirror_own_page_titles(&mut self) -> bool {
+        let mut covered = [false; 4];
+        for column in Column::ALL {
+            let Some(title) = self.headers[column.index()].title.title.clone() else {
+                continue;
+            };
+            let Some(body) = self.part(Part::Body(column)) else {
+                continue;
+            };
+            covered[column.index()] = page_heading_shown(body, self.geometry.body(column), &title);
+        }
+        let mut changed = false;
+        for column in Column::ALL {
+            let title = &mut self.headers[column.index()].title;
+            let covered = covered[column.index()];
+            if title.is_covered() != covered {
+                title.set_covered(covered);
+                changed = true;
+            }
+        }
+        changed
+    }
+
     fn after_flap_change(&mut self) {
         if self.layout_theme.reduce_motion {
             // Under reduced motion the panel does not slide; it fades in.
@@ -3951,8 +3977,12 @@ impl Widget for NavShell {
         }
         self.apply_fit();
         let mirrored = self.mirror_header_counts();
+        // The content's own page heading stands where the layout just put it, at this scroll
+        // offset: the bar keeps its title out of its way.
+        let covered = self.mirror_own_page_titles();
         self.invalidation.acknowledge_applied();
-        self.layout_dirty = stale.then(|| self.invalidation.invalidate()).is_some() || mirrored;
+        self.layout_dirty =
+            stale.then(|| self.invalidation.invalidate()).is_some() || mirrored || covered;
         self.apply_open_states();
         self.publish_open_states();
         let visible = self.geometry.visible_parts(&self.inputs.borrow());
@@ -4187,7 +4217,7 @@ impl Widget for NavShell {
     fn layout_info(&self) -> Option<crate::widget::LayoutInfo> {
         let inputs = self.inputs.borrow();
         let fit = inputs.fit.borrow();
-        let mut rows: [Option<crate::widget::HeaderRow>; 4] = [None; 4];
+        let mut rows: [Option<crate::widget::HeaderRowLayout>; 4] = [None; 4];
         for (row, slot) in rows.iter_mut().zip(fit.iter()) {
             *row = slot.header;
         }
@@ -4484,6 +4514,42 @@ fn button_of_mut(action: &mut dyn Widget) -> Option<&mut Button> {
 /// Whether `action` is the button that opens the app's search, which the window's bar replaces.
 fn is_app_search(action: &dyn Widget) -> bool {
     action.test_id() == Some(crate::search::APP_SEARCH_BUTTON_ID)
+}
+
+/// Whether `body` shows, inside `region`, a text of its own that is the page's title and says
+/// `title`: what a bar naming the page would repeat. Only what the region and the body's own
+/// clips leave on screen counts, so a heading scrolled out of its column frees the bar's title.
+fn page_heading_shown(body: &dyn Widget, region: Rect, title: &str) -> bool {
+    fn walk(widget: &dyn Widget, clip: Rect, title: &str) -> bool {
+        let clip = widget
+            .child_clip_rect()
+            .map_or(clip, |child_clip| clip.intersect(child_clip));
+        if widget
+            .own_page_title()
+            .is_some_and(|own| same_words(&own, title))
+        {
+            let shown = widget.get_rect().intersect(clip);
+            if shown.width() > 0.0 && shown.height() > 0.0 {
+                return true;
+            }
+        }
+        let mut found = false;
+        widget.for_each_child(&mut |child| {
+            found = found || walk(child, clip, title);
+        });
+        found
+    }
+    walk(body, region, title)
+}
+
+/// Whether two titles say the same words, however their spacing or case was set.
+fn same_words(a: &str, b: &str) -> bool {
+    let words = |text: &str| -> Vec<String> {
+        text.split_whitespace()
+            .map(str::to_lowercase)
+            .collect::<Vec<_>>()
+    };
+    words(a) == words(b)
 }
 
 /// Controls in a column the shell is not showing (a hidden sidebar, a closed drawer, a pushed-away

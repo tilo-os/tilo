@@ -7,6 +7,7 @@ mod reader;
 mod wire;
 mod writer;
 
+use super::fetch::Grant as FetchGrant;
 use super::{
     AccessAudit, Arc, AuthenticatedPeer, Envelope, EnvelopeV2, HashMap, Lag,
     PEER_OUTBOUND_CAPACITY, PeerContext, PeerError, ReplayWrite, SessionCtx, SessionReader,
@@ -115,6 +116,10 @@ where
 
 // Shared stream driver also exercised with a deterministic in-memory wire.
 #[expect(
+    clippy::too_many_lines,
+    reason = "one connection's whole life, in the order it happens: set up, serve until it ends, and the teardown every exit shares"
+)]
+#[expect(
     clippy::significant_drop_tightening,
     reason = "the session context, the loop context and the writer's queues are borrowed by the concurrent reader and writer futures, and teardown reads the session context again; the lint does not see those uses"
 )]
@@ -142,6 +147,8 @@ where
         app_serving,
         carried_calls,
         admin,
+        here,
+        fetch,
         agents,
         positions,
         compactor,
@@ -154,8 +161,7 @@ where
     let wire = Wire::new(EgressWrite::new(write, &metrics, peer.device_public_key));
     let (mut write, beats) = (wire.writer(), Heartbeats::default());
 
-    // Outbound channel — every workspace runtime this peer is
-    // subscribed to writes into it; we drain to the wire.
+    // Outbound channel: workspaces write here what they fan out to this peer.
     let (tx, mut rx) = mpsc::channel::<Envelope>(PEER_OUTBOUND_CAPACITY);
     let (state_tx, mut state_rx) = mpsc::channel::<StateDelivery>(PEER_OUTBOUND_CAPACITY);
     let (disconnect_tx, mut disconnect_rx) = mpsc::channel::<()>(1);
@@ -164,8 +170,7 @@ where
     let mut subscribed: Vec<u64> = Vec::new();
     let mut authority = crate::authority_epoch::subscribe();
     authority.mark_unchanged();
-    // The host's own device, connected in process while the host runs, is
-    // audited only when something changes.
+    // The host's own device, connected in process, is audited only on change.
     let mut access_audit =
         AccessAudit::new(peer.device_public_key == own_device_cert.device_public_key);
 
@@ -188,6 +193,8 @@ where
         revocations: &revocations,
         carried_calls: carried_calls.clone(),
         admin: admin.as_deref(),
+        here: here.as_deref(),
+        fetch: fetch.as_deref(),
         agents: &agents,
         positions,
         compactor: compactor.as_ref(),
@@ -197,6 +204,7 @@ where
         presence: Some(&presence),
     };
 
+    let grant = FetchGrant::open(&session, &peer, &tx);
     // A clean EOF is only one of the ways this ends: a write to a
     // connection the peer has already closed, a frame that will not
     // decode, an envelope the handler rejects. Every one of them has to
@@ -232,9 +240,8 @@ where
         .await
     };
 
-    connection_live
-        .0
-        .store(false, std::sync::atomic::Ordering::SeqCst);
+    connection_live.end();
+    grant.end();
     let outcome = finish_peer_outcome(outcome, &metrics, &peer.device_public_key);
     let sent = wire.io(EgressWrite::bytes_sent);
     trace_session_end(&peer, sent, &outcome, &subscribed);
@@ -338,9 +345,16 @@ pub(super) fn finish_peer_outcome(
 }
 
 struct ConnectionLease(Arc<std::sync::atomic::AtomicBool>);
+impl ConnectionLease {
+    /// Mark the connection gone: what a workspace would deliver to it stops
+    /// now, not at teardown.
+    fn end(&self) {
+        self.0.store(false, std::sync::atomic::Ordering::SeqCst);
+    }
+}
 impl Drop for ConnectionLease {
     fn drop(&mut self) {
-        self.0.store(false, std::sync::atomic::Ordering::SeqCst);
+        self.end();
     }
 }
 pub(super) fn inbound_bytes(frame: &EnvelopeV2) -> usize {

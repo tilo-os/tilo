@@ -17,7 +17,7 @@
  *
  * The page holds one device key (`device-custody.mjs`): each tab is a
  * device of its own, with its own key, certificate and state. A page that also
- * holds the user root (`root-identity.mjs`, `options.identity`) certifies
+ * holds the user root (`identity.mjs`, `options.identity`) certifies
  * that key itself instead of waiting for an approver.
  * `getSnapshot()` returns `PeerSnapshot` with `SessionHealth` v1.
  */
@@ -33,15 +33,13 @@ import {memberText, objectText} from './json-text.mjs';
 import {WEBKIT_WEBGPU_REFUSAL} from './webgpu-safety.mjs';
 import {AdmissionError} from './admission.mjs';
 import {idbStorage, openDeviceCustody} from './device-custody.mjs';
-import {currentIdentity, fitDisplayName, IdentityError} from './root-identity.mjs';
+import {currentIdentity, fitDisplayName, IdentityError} from './identity.mjs';
 import {FETCH_PROXY_PATH} from './fetch-proxy.mjs';
-/** Where a leaving page ends its host session, the token its body (tilo-relay-protocol's `SESSION_END_PATH`). */
-const SESSION_END_PATH = '/peer/v1/session/end';
 
 export {
   addPasskey, browserIdentity, browserPerson, certifyDevice, createIdentity, currentIdentity, fetchEnvelope, fetchProfile, fitDisplayName, IdentityError, installNode,
   installNodeCertificate, MAX_DISPLAY_NAME_BYTES, nodeInstallInfo, publishEnvelope, publishProfile, signInWithPasskey, storagePersisted, unlockIdentity,
-} from './root-identity.mjs';
+} from './identity.mjs';
 // The workspaces a page can open, for hosts of this module (Tilo Cloud) that
 // import only the peer.
 export {joinViaHost, listedWorkspaces, workspaceAt} from './workspaces.mjs';
@@ -202,19 +200,19 @@ const LOOPBACK = new Set(['localhost', '127.0.0.1', '[::1]']);
 /** A host served over plain HTTP on this machine (`tilo-relay workspace --web-plain`). */
 const isLoopbackHttp = url => url.protocol === 'http:' && LOOPBACK.has(url.hostname);
 
-/** `post(path, session, body)` over `fetch` to the host origin: https, or
- * loopback http for local review (no certificate exception needed). */
+/** `post(path, body)` over `fetch` to the host origin: https, or loopback
+ * http for local review (no certificate exception needed). */
 export function httpsPost(origin, fetcher = (...args) => globalThis.fetch(...args)) {
   const base = new URL(origin);
   const secure = base.protocol === 'https:' || isLoopbackHttp(base);
   if (!secure || base.pathname !== '/' || base.search || base.hash) {
     throw new TypeError('host origin must be an https (or loopback http) origin');
   }
-  return async (path, session, body) => {
-    const headers = {'content-type': 'application/octet-stream'};
-    if (session) headers['x-tilo-session'] = session;
+  return async (path, body) => {
     const response = await fetcher(new URL(path, base).href, {
-      method: 'POST', headers, body, credentials: 'omit', cache: 'no-store', redirect: 'error',
+      method: 'POST',
+      headers: {'content-type': 'application/octet-stream'},
+      body, credentials: 'omit', cache: 'no-store', redirect: 'error',
     });
     return {status: response.status, body: new Uint8Array(await response.arrayBuffer())};
   };
@@ -379,7 +377,7 @@ export function createLiveLayer(peer, runtime, workspace, {
  * @param options.desktop        `{mountDesktop(target, options)}`; defaults to `host.mjs`
  * @param options.live           `false`: join no live plane
  * @param options.onPairingCode  shown while an approver decides
- * @param options.identity       an unlocked root (`root-identity.mjs`): the
+ * @param options.identity       an unlocked root (`identity.mjs`): the
  *                               page certifies its own device with it, no
  *                               approver; `userPublicKey` defaults to its key,
  *                               `profile` to one per identity and `custody` to
@@ -388,11 +386,6 @@ export function createLiveLayer(peer, runtime, workspace, {
  *                               device key, certified by an approver)
  * @param options.deviceCertificate  `{cert, hostCert}` JSON this device was
  *                               certified with elsewhere (`joinWorkspace`)
- * @param options.background     `true`: the page keeps this peer beside the
- *                               workspace in front, only to deliver for it
- *                               (problem reports to its home workspace).
- *                               The host counts nobody online by it: no
- *                               seat, no face, no online count.
  */
 export async function connectPeer(options) {
   const {identity, custody, origin, store, profile} = options;
@@ -435,7 +428,7 @@ async function connect({
   profile, device, displayName = '', vaultStorage,
   fetch: fetcher, desktop, signal, onStatus, onPairingCode, live: liveEnabled = true,
   voice: voiceOptions = {}, requireExistingCertificate = false, namespaces = globalThis.localStorage,
-  background = false, workspaceName,
+  workspaceName,
 }) {
   userPublicKey ??= identity?.userPublicKey;
   // Only a peer in its profile's own namespace moves to a fresh one when the
@@ -478,6 +471,7 @@ async function connect({
   // here together never share one.
   const ownColor = () => runtime.presenceColor(userPublicKey);
   let host = JSON.parse(await runtime.hostInfo(post));
+  if (!host.address) throw new Error('the host named no iroh endpoint to reach it at');
   const listeners = new Set();
   /** Called after each published status, so a surface follows the session
    * (the transport, the admission, the store) and not only its mount. */
@@ -682,8 +676,8 @@ async function connect({
     if (existing && !(identity && expiresWithinADay(existing))) return existing;
     const issued = identity
       ? await runtime.certifyWithRoot(post, identity, custodyForWasm, label)
-      : await runtime.certifyDevice(post, userPublicKey, label, null, custodyForWasm, code => onPairingCode?.(code),
-        host.address ? JSON.stringify(host.address) : undefined);
+      : await runtime.certifyDevice(userPublicKey, label, null, custodyForWasm, code => onPairingCode?.(code),
+        JSON.stringify(host.address));
     await store.put(CERTIFICATE, issued);
     return issued;
   }
@@ -700,12 +694,11 @@ async function connect({
     }
     const record = storage ? undefined : await store.get(PEER_RECORD);
     peer = runtime.WasmPeer.start(
-      withStartFields(certified, {displayName, address: host.address, background: background || undefined}),
+      withStartFields(certified, {displayName, address: host.address}),
       custodyForWasm,
       storage ? JSON.stringify({profile, device}) : undefined,
       storage ? undefined : (record ?? undefined),
       storage ? undefined : bytes => { store.put(PEER_RECORD, bytes).catch(() => {}); },
-      post,
       channelVault,
     );
     peer.subscribe(publish);
@@ -762,17 +755,13 @@ async function connect({
 
   // Leaving the page leaves the workspace's live plane at once: closing its
   // sessions withdraws this page's announcement, so everyone else takes its
-  // pointer and face down now, not when the link times out. Its host
-  // session ends with it, by beacon (the one request a leaving page still
-  // sends), so the workspace stops counting the page now too, not once its polls
-  // are missed. A page kept to come back to (`persisted`) is frozen, not
-  // gone.
+  // pointer and face down now, not when the link times out, and its host
+  // session ends with it. A page kept to come back to (`persisted`) is frozen,
+  // not gone.
   const page = typeof globalThis.addEventListener === 'function' ? globalThis : null;
   const leavePage = event => {
     if (event?.persisted) return;
     stopLive();
-    const token = disposed ? undefined : peer?.sessionToken?.();
-    if (token) globalThis.navigator?.sendBeacon?.(new URL(SESSION_END_PATH, origin).href, token);
   };
   page?.addEventListener('pagehide', leavePage);
   // Back online, the session reconnects now rather than when its backoff
@@ -894,12 +883,6 @@ async function connect({
     fetchProxy() {
       const session = disposed ? undefined : peer?.fetchProxySession?.();
       return session ? {endpoint: new URL(FETCH_PROXY_PATH, origin).href, session} : null;
-    },
-    /** The device (hex) of the session the node runs beside the host (the
-     * one that opens the node's legacy apps), or `null`. */
-    async nodeSession() {
-      if (!peer) return null;
-      return (await peer.nodeSession()) ?? null;
     },
     /** The workspace's app actions (`actions.mjs`), or `undefined` without a workspace. */
     get actions() { return actions; },
@@ -1176,9 +1159,10 @@ export async function pairDevice(options) {
     const runtime = options.runtime ?? await pageRuntime(options.desktop);
     const custodyForWasm = own.kind === 'sealed-seed' ? await own.unseal() : own;
     const info = JSON.parse(await runtime.hostInfo(httpsPost(origin, options.fetch)));
-    const certified = await runtime.certifyDevice(httpsPost(origin, options.fetch), userPublicKey, label,
+    if (!info.address) throw new Error('the host named no iroh endpoint to reach it at');
+    const certified = await runtime.certifyDevice(userPublicKey, label,
       options.invite ?? null, custodyForWasm, code => options.onPairingCode?.(code),
-      info.address ? JSON.stringify(info.address) : undefined);
+      JSON.stringify(info.address));
     const common = {...options, identity: undefined, label, profile, custody: own, runtime};
     if (!admission) return connect({...common, deviceCertificate: certified});
     const offer = await admission();

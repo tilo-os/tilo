@@ -2303,14 +2303,7 @@ impl Widget for ChatApp {
                 .iter()
                 .find(|(_, hit)| matches!(hit, Hit::CallDragHandle))
         {
-            children.push(
-                AccessNode::new(Role::StaticText)
-                    .with_name(self.call_people_label())
-                    .with_value(crate::live::elapsed(&self.call, ui::time::now()))
-                    .with_description(self.call_status_label())
-                    .with_bounds(*title_bar)
-                    .with_hashed_key(("call-count", &self.call.channel)),
-            );
+            children.push(self.call_reading(*title_bar));
         }
         children.extend(self.emoji_notice_accessibility());
         if let Some(menu) = self.menu.as_ref()

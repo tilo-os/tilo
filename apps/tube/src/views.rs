@@ -305,7 +305,7 @@ mod tests {
         assert!(
             effects.values().any(|effect| matches!(
                 effect,
-                Effect::Action { action } if action == "subscribe"
+                Effect::Action { action, .. } if action == "subscribe"
             )),
             "the page offers the channel's subscribe action: {effects:?}"
         );

@@ -272,26 +272,37 @@ pub fn find_across(
 ) -> Option<Found> {
     let mut found: Option<Found> = None;
     for (chunk, held) in chunks.docs() {
-        let Some(root) = crate::reads::resource_obj(held, app, doc) else {
-            continue;
-        };
-        // An item of a record written before items were flat is nested in the record's own map.
-        let next = if chunk == FIRST {
-            find(held, (doc, &root, schema), nested, id)
-        } else {
-            flat(held, &root, id).map(|obj| Found {
-                ty: type_at(held, &obj),
-                held: place::held_at(held, &obj),
-                obj: Some(obj),
-                nesting: Vec::new(),
-                chunk,
-            })
-        };
-        if let Some(next) = next {
+        if let Some(next) = find_in((chunk, held), app, doc, schema, nested, id) {
             found = Some(later(found.take(), next));
         }
     }
     found
+}
+
+/// The item `id` of the record `doc` (of `app`) where the chunk `chunk`, held as `held`, holds
+/// it: one copy of the ones [`find_across`] reads.
+#[must_use]
+pub fn find_in(
+    (chunk, held): (ChunkNo, &Doc),
+    app: &str,
+    doc: &str,
+    schema: &TypeSchema,
+    nested: &Nested,
+    id: &str,
+) -> Option<Found> {
+    let root = crate::reads::resource_obj(held, app, doc)?;
+    // An item of a record written before items were flat is nested in the record's own map.
+    if chunk == FIRST {
+        find(held, (doc, &root, schema), nested, id)
+    } else {
+        flat(held, &root, id).map(|obj| Found {
+            ty: type_at(held, &obj),
+            held: place::held_at(held, &obj),
+            obj: Some(obj),
+            nesting: Vec::new(),
+            chunk,
+        })
+    }
 }
 
 /// The item type of the collection the last step of `nesting` is in.

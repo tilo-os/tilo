@@ -409,12 +409,6 @@ impl Lifecycle {
         if open { Self::Shown } else { Self::Closed }
     }
 
-    /// Whether a surface in this state takes input.
-    #[must_use]
-    pub const fn takes_input(self) -> bool {
-        matches!(self, Self::Shown)
-    }
-
     /// The state's name, as a reading spells it.
     #[must_use]
     pub const fn as_str(self) -> &'static str {

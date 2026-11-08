@@ -600,6 +600,18 @@ impl ChatApp {
         Self::people_line(&self.call_people(|id| self.user_name(id)))
     }
 
+    /// The call's reading: who it is with, how it is connected, and the run
+    /// time it counts, drawn over `bounds`. The title bar of Chat's own
+    /// window and the card the shell draws the call as read the same.
+    pub(crate) fn call_reading(&self, bounds: Rect) -> ui::a11y::AccessNode {
+        ui::a11y::AccessNode::new(ui::a11y::Role::StaticText)
+            .with_name(self.call_people_label())
+            .with_value(crate::live::elapsed(&self.call, ui::time::now()))
+            .with_description(self.call_status_label())
+            .with_bounds(bounds)
+            .with_hashed_key(("call-count", &self.call.channel))
+    }
+
     /// The same people as a narrow line names them — the card's hero and the
     /// panel's title bar: given names, because a line that carries three
     /// names, a count and a run time has room for a first name and not for a

@@ -13,7 +13,7 @@ mod support;
 
 use http_body_util::BodyExt as _;
 use test_http::{Reply, Responder};
-use tilo_browser_peer::{Host, PeerHandle};
+use tilo_browser_peer::PeerHandle;
 use tilo_net::proxy::{self, Proxy};
 use tilo_net::{HeaderMap, HeaderValue, Url};
 use tilo_relay::web::FetchProxySetup;
@@ -103,7 +103,7 @@ async fn an_admitted_page_reads_a_site_without_cors_through_its_host() {
     let plain = host.web.plain_origin.clone().unwrap();
     let plain = plain.replace("localhost", "127.0.0.1");
     let peer = start_peer(
-        Host::Https(host.https()),
+        host.iroh(),
         laptop.cert.clone(),
         host_device.cert.clone(),
         laptop.key.clone(),
@@ -175,7 +175,7 @@ async fn a_host_without_the_proxy_names_none() {
     )
     .await;
     let peer = start_peer(
-        Host::Https(host.https()),
+        host.iroh(),
         laptop.cert.clone(),
         host_device.cert.clone(),
         laptop.key.clone(),

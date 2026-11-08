@@ -13,10 +13,10 @@ use tilo_actions::{
     ActionContext, ActionItem, ActionKey, Did, EditOp, FieldEdit, PathStep, VerbCall,
 };
 use tilo_user_identity::{DeviceCert, RevocationList};
-use web_time::{Duration, SystemTime};
 
 use crate::join::{InviteGrant, JoinChallenge, MemberRole, issue_invitation, sign_join_proof};
 use crate::owner::testing::member_certificate as certificate;
+use crate::owner::testing::{now, receive};
 use crate::{NeighbourMsg, SeedDocument, SeedState, StatePeer, TransportOrigin, seed_workspace};
 
 const WORKSPACE: &str = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
@@ -80,12 +80,6 @@ impl SurfaceSource for Source {
     ) -> Option<Arc<dyn ReceiptSurface>> {
         self.0.then(|| Arc::new(App) as Arc<dyn ReceiptSurface>)
     }
-}
-
-fn now() -> SystemTime {
-    SystemTime::UNIX_EPOCH
-        .checked_add(Duration::from_secs(2000))
-        .unwrap()
 }
 
 /// A workspace whose record keeps its comments as units, and a member of
@@ -352,15 +346,6 @@ fn comment_on(id: &'static str) -> impl FnOnce(&mut AutoCommit) {
         let value = doc.put_object(&entry, "v", ObjType::Map).unwrap();
         doc.put(&value, "text", "looks good").unwrap();
     }
-}
-
-fn receive(peer: &mut StatePeer, guest: &DeviceCert, message: NeighbourMsg) -> Result<(), String> {
-    peer.receive_from(
-        TransportOrigin::RelayDelta(guest.device_public_key),
-        message,
-        now(),
-    )
-    .map(|_| ())
 }
 
 use automerge::ReadDoc as _;

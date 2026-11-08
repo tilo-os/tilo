@@ -106,10 +106,19 @@ impl NativeWorkspaceOwner {
             WorkspaceId::parse(&answer.workspace).ok_or("noncanonical vouched workspace")?;
         let _turn = self.0.mutation.lock();
         if let Some(held) = self.0.authority.read().workspaces.get(&workspace) {
-            if held.enrollment.is_some() {
+            // An enrollment of another device is the one this machine was
+            // copied from: never this device's to act with, so the membership
+            // its host answered for this device takes its place.
+            let this_device = held.device.device_public_key == device.device_public_key;
+            if held.enrollment.is_some() && this_device {
                 return Err("the workspace is held through an enrollment".into());
             }
-            if held.workspace_host == answer.host && held.workspace_id == workspace_id {
+            // The same host keeps what it admitted for this device; a record
+            // another device held is replaced whatever its host.
+            if this_device
+                && held.workspace_host == answer.host
+                && held.workspace_id == workspace_id
+            {
                 return Ok(false);
             }
         }
@@ -182,10 +191,19 @@ impl NativeWorkspaceOwner {
             WorkspaceId::parse(&bootstrap.room).ok_or("noncanonical member workspace")?;
         let _turn = self.0.mutation.lock();
         if let Some(held) = self.0.authority.read().workspaces.get(&workspace) {
-            if held.enrollment.is_some() {
+            // An enrollment of another device is the one this machine was
+            // copied from: never this device's to act with, so the membership
+            // its host answered for this device takes its place.
+            let this_device = held.device.device_public_key == device.device_public_key;
+            if held.enrollment.is_some() && this_device {
                 return Err("the workspace is held through an enrollment".into());
             }
-            if held.workspace_host == bootstrap.host && held.workspace_id == workspace_id {
+            // The same host keeps what it admitted for this device; a record
+            // another device held is replaced whatever its host.
+            if this_device
+                && held.workspace_host == bootstrap.host
+                && held.workspace_id == workspace_id
+            {
                 return Ok(false);
             }
         }

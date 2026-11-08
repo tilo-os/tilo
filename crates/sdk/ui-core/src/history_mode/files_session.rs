@@ -756,6 +756,32 @@ mod tests {
             Outcome::Unavailable
         }
     }
+    /// The review `scope()` answers with, or one at another `frontier`.
+    fn review(frontier: [u8; 32]) -> Review {
+        Review {
+            schema_version: 1,
+            workspace_id: scope().workspace_id,
+            mount_lifetime: scope().mount_lifetime,
+            record_id: scope().record_id,
+            frontier,
+        }
+    }
+    /// A version of `controller()`'s record, made by its own signing device.
+    fn version(id: u128) -> FileVersionV1 {
+        FileVersionV1 {
+            id: FileVersionId(uuid::Uuid::from_u128(id)),
+            record_id: scope().record_id,
+            parents: vec![],
+            actor: fs_protocol::FileActor {
+                person: collab_types::Ed25519PublicKey::from_bytes([1; 32]),
+                device: collab_types::Ed25519PublicKey::from_bytes([2; 32]),
+            },
+            timestamp_ms: 1,
+            content_hash: Some(fs_protocol::ContentHash([3; 32])),
+            metadata_hash: fs_protocol::ContentHash([4; 32]),
+            provenance: fs_protocol::FileProvenance::Create,
+        }
+    }
     fn controller() -> FileController {
         FileController::new(FileHistoryTarget {
             binding: uuid::Uuid::from_u128(9),
@@ -934,13 +960,7 @@ mod tests {
         let request = controller
             .restore
             .prepare(
-                Review {
-                    schema_version: 1,
-                    workspace_id: scope().workspace_id,
-                    mount_lifetime: scope().mount_lifetime,
-                    record_id: scope().record_id,
-                    frontier: scope().frontier,
-                },
+                review(scope().frontier),
                 Operation::Restore {
                     version_id: FileVersionId(uuid::Uuid::from_u128(8)),
                 },
@@ -1043,29 +1063,11 @@ mod tests {
             for changed_binding in [false, true] {
                 let mut controller = controller();
                 controller.active = false;
-                let version = FileVersionV1 {
-                    id: FileVersionId(uuid::Uuid::from_u128(8)),
-                    record_id: scope().record_id,
-                    parents: vec![],
-                    actor: fs_protocol::FileActor {
-                        person: collab_types::Ed25519PublicKey::from_bytes([1; 32]),
-                        device: collab_types::Ed25519PublicKey::from_bytes([2; 32]),
-                    },
-                    timestamp_ms: 1,
-                    content_hash: Some(fs_protocol::ContentHash([3; 32])),
-                    metadata_hash: fs_protocol::ContentHash([4; 32]),
-                    provenance: fs_protocol::FileProvenance::Create,
-                };
+                let version = version(8);
                 controller.key.selection = Some(version.id);
                 let key = controller.key;
                 let nonce = controller.confirmation_token();
-                let review = Review {
-                    schema_version: 1,
-                    workspace_id: scope().workspace_id,
-                    mount_lifetime: scope().mount_lifetime,
-                    record_id: scope().record_id,
-                    frontier: scope().frontier,
-                };
+                let review = review(scope().frontier);
                 let operation = Operation::Restore {
                     version_id: version.id,
                 };
@@ -1124,13 +1126,7 @@ mod tests {
         {
             let mut controller = controller();
             controller.active = false;
-            let review = Review {
-                schema_version: 1,
-                workspace_id: scope().workspace_id,
-                mount_lifetime: scope().mount_lifetime,
-                record_id: scope().record_id,
-                frontier: scope().frontier,
-            };
+            let review = review(scope().frontier);
             let operation = Operation::Restore {
                 version_id: FileVersionId(uuid::Uuid::from_u128(8)),
             };
@@ -1161,13 +1157,7 @@ mod tests {
             controller.request_review(Operation::Undo {
                 restore_intent: uuid::Uuid::from_u128(20),
             });
-            let review = Review {
-                schema_version: 1,
-                workspace_id: scope().workspace_id,
-                mount_lifetime: scope().mount_lifetime,
-                record_id: scope().record_id,
-                frontier: [5; 32],
-            };
+            let review = review([5; 32]);
             controller
                 .tx
                 .send(Completion {
@@ -1199,13 +1189,7 @@ mod tests {
             let mut controller = controller();
             let old = controller.key;
             controller.suspend();
-            let review = Review {
-                schema_version: 1,
-                workspace_id: scope().workspace_id,
-                mount_lifetime: scope().mount_lifetime,
-                record_id: scope().record_id,
-                frontier: [5; 32],
-            };
+            let review = review([5; 32]);
             controller
                 .tx
                 .send(Completion {
@@ -1236,13 +1220,7 @@ mod tests {
         // phase: files_closed_generation_retains_original_intent_result_without_retargeting
         {
             let mut controller = controller();
-            let review = Review {
-                schema_version: 1,
-                workspace_id: scope().workspace_id,
-                mount_lifetime: scope().mount_lifetime,
-                record_id: scope().record_id,
-                frontier: [5; 32],
-            };
+            let review = review([5; 32]);
             let request = controller
                 .restore
                 .prepare(
@@ -1331,19 +1309,7 @@ mod tests {
                     }
                 }
                 let (started, rx) = mpsc::channel();
-                let version = FileVersionV1 {
-                    id: FileVersionId(uuid::Uuid::from_u128(8)),
-                    record_id: scope().record_id,
-                    parents: vec![],
-                    actor: fs_protocol::FileActor {
-                        person: collab_types::Ed25519PublicKey::from_bytes([1; 32]),
-                        device: collab_types::Ed25519PublicKey::from_bytes([2; 32]),
-                    },
-                    timestamp_ms: 1,
-                    content_hash: Some(fs_protocol::ContentHash([3; 32])),
-                    metadata_hash: fs_protocol::ContentHash([4; 32]),
-                    provenance: fs_protocol::FileProvenance::Create,
-                };
+                let version = version(8);
                 let transport = Arc::new(Delayed {
                     calls: AtomicUsize::new(0),
                     revoked: AtomicBool::new(false),

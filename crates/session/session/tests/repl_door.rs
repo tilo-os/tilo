@@ -292,32 +292,12 @@ fn a_record_the_sessions_services_publish_is_found_through_the_door() {
     let mut repl = Repl::connect(&root.path().join("agent.sock"));
     repl.opened(&mut session);
 
-    // Every page of the session's listing, as its cursors read on.
-    let listed = every_page(&mut repl, &mut session, "session");
+    let listed = every_page(&mut repl, &mut session);
     // The session's records are listed, each row naming its type the way a program types it
     // (`tasks.Tasks`, `chat.Conversations` ): the name this listing is for, and the name a path
     // walks back by. Never the kind the app publishes it under (`tl.<app>.<Type>`), which no
-    // program writes.
-    let row_of = |listed: &str, form: &str| -> String {
-        listed
-            .lines()
-            .find(|line| line.split("  ").any(|column| column.trim() == form))
-            .unwrap_or_else(|| panic!("the listing names {form}: {listed}"))
-            .to_owned()
-    };
-    // A row's columns are two spaces apart: the reference a program passes it by, the name,
-    // then the type.
-    let name_of = |row: &str| -> String {
-        row.split("  ")
-            .map(str::trim)
-            .nth(1)
-            .map(|name| name.trim_end_matches('/').to_owned())
-            .filter(|name| !name.is_empty())
-            .unwrap_or_else(|| panic!("the row names its record: {row}"))
-    };
-    // No record is named by the kind its app publishes it under (`tl.<app>.<Type>`): a row's type
-    // column is a program form. An app's own row names the app itself (`Chat
-    // tl.so.tilo.lang.chat`), an id whose last part is no capitalised type.
+    // program writes; an app's own row names the app itself (`Chat tl.so.tilo.lang.chat`), an id
+    // whose last part is no capitalised type.
     assert!(
         !listed.lines().any(|line| {
             line.split("  ").map(str::trim).any(|column| {
@@ -376,13 +356,17 @@ fn a_record_the_sessions_services_publish_is_found_through_the_door() {
     );
 }
 
-/// Every page of the listing at `path`, as its cursors read on.
-fn every_page(repl: &mut Repl, session: &mut Session, path: &str) -> String {
+/// Every page of the session's listing, as its cursors read on: each page a line, its cursor the
+/// next page's.
+fn every_page(repl: &mut Repl, session: &mut Session) -> String {
     let mut listed = String::new();
     let mut cursor = String::new();
     for _ in 0..20 {
-        let (page, failed) =
-            repl.call(session, "tilo_ls", &json!({"path": path, "cursor": cursor}));
+        let (page, failed) = repl.call(
+            session,
+            "tilo_ls",
+            &json!({"path": "session", "cursor": cursor}),
+        );
         assert!(!failed, "{page}");
         listed.push_str(&page);
         listed.push('\n');
@@ -396,6 +380,26 @@ fn every_page(repl: &mut Repl, session: &mut Session, path: &str) -> String {
         cursor = next;
     }
     listed
+}
+
+/// The listing's row whose type column is `form`.
+fn row_of(listed: &str, form: &str) -> String {
+    listed
+        .lines()
+        .find(|line| line.split("  ").any(|column| column.trim() == form))
+        .unwrap_or_else(|| panic!("the listing names {form}: {listed}"))
+        .to_owned()
+}
+
+/// A row's name column: the reference a program passes the record by. A row's columns are two
+/// spaces apart, the reference first, then the name, then the type.
+fn name_of(row: &str) -> String {
+    row.split("  ")
+        .map(str::trim)
+        .nth(1)
+        .map(|name| name.trim_end_matches('/').to_owned())
+        .filter(|name| !name.is_empty())
+        .unwrap_or_else(|| panic!("the row names its record: {row}"))
 }
 
 /// The resources `session` publishes, at any depth, as its action model holds them.

@@ -327,9 +327,12 @@ impl ListRowFace<'_> {
         if self.card {
             return self.card_geometry(rect, m, text, theme);
         }
-        // A nested row indents its content one step per depth, its lift still filling the row:
-        // the list paints the chevron its depth hangs in the gutter left of here.
-        let left = rect.x0 + m.bleed + f64::from(self.depth) * m.nest;
+        // A nested row indents its content one step per depth, its lift still filling the row.
+        // A tree row keeps one more step free at its own leading edge, where the list paints the
+        // chevron that folds it: a row with nothing to fold keeps it free all the same, so the
+        // rows at one depth stand on one column whether or not they disclose anything.
+        let slot = if self.tree_row { m.nest } else { 0.0 };
+        let left = rect.x0 + m.bleed + f64::from(self.depth) * m.nest + slot;
         let mut right = rect.x1 - m.bleed;
         let cy = rect.center().y;
         let mut geo = RowGeometry::default();

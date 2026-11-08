@@ -71,10 +71,16 @@ pub enum Kind {
     /// opened it is no row of a list the person sees, or more than one row of one list stands
     /// open at a time.
     OpenOutsideList,
+    /// A surface with nothing in it: a filled block standing where a person reads it as a card,
+    /// a page or a band, and holding no words and nothing laid out of its own.
+    EmptySurface,
+    /// A column's header naming the page while the page shows the same words as its own
+    /// heading, or in the field it edits its title in: one title on screen, and the page's.
+    RepeatedPageTitle,
 }
 
 impl Kind {
-    pub const ALL: [Self; 23] = [
+    pub const ALL: [Self; 25] = [
         Self::Overflow,
         Self::ClippedText,
         Self::Overlap,
@@ -98,6 +104,8 @@ impl Kind {
         Self::TitleClippedWithRoom,
         Self::MixedLanguage,
         Self::OpenOutsideList,
+        Self::EmptySurface,
+        Self::RepeatedPageTitle,
     ];
 
     pub fn name(self) -> &'static str {
@@ -125,6 +133,8 @@ impl Kind {
             Self::TitleClippedWithRoom => "title-clipped-with-room",
             Self::MixedLanguage => "mixed-language",
             Self::OpenOutsideList => "open-outside-list",
+            Self::EmptySurface => "empty-surface",
+            Self::RepeatedPageTitle => "repeated-page-title",
         }
     }
 }
@@ -179,6 +189,11 @@ fn has_words(node: &InspectionNode) -> bool {
 
 fn size(r: Rect) -> String {
     format!("{:.0}×{:.0}", r.width(), r.height())
+}
+
+/// `text` as one line of words: whitespace collapsed, ends trimmed.
+fn words(text: &str) -> String {
+    text.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
 /// Which ways a box lets its content go on past it.
@@ -336,6 +351,26 @@ fn layers(widget: &str) -> bool {
         || widget.contains("Layer")
 }
 
+/// Whether a widget paints a surface of its own: a ground or a card a person reads as a block,
+/// which shows what it holds. A block with nothing in it says there is something here when
+/// there is not. A well is no such block: it is the room another program's window draws in, so
+/// it holds what this tree cannot see.
+fn paints_surface(widget: &str) -> bool {
+    matches!(
+        widget,
+        "Banner"
+            | "Card"
+            | "CardGrid"
+            | "Docked"
+            | "EmptyState"
+            | "FloatingPanel"
+            | "FormSection"
+            | "Page"
+            | "PageSidebar"
+            | "Section"
+    )
+}
+
 /// Whether a node is one control a person presses: its own role says so, or it is a box (a
 /// header action's frame) around exactly one.
 fn is_control(node: &InspectionNode) -> bool {
@@ -391,7 +426,21 @@ struct Walk<'a> {
     header_counts: Vec<Count>,
     /// The counts a window's places draw beside the place chosen in them.
     place_counts: Vec<Count>,
+    /// The titles the window's column headers draw.
+    header_titles: Vec<Title>,
+    /// The titles the window's content shows as its own.
+    page_titles: Vec<Title>,
     out: &'a mut Vec<Problem>,
+}
+
+/// Words a window shows as a title: a column header's, or one its content shows as the page's.
+struct Title {
+    words: String,
+    at: Rect,
+    /// The keys of the widgets at and above it, innermost first.
+    keys: Vec<String>,
+    widget: String,
+    id: Option<String>,
 }
 
 /// One number a window draws: a column header's count, or a place's.
@@ -426,6 +475,8 @@ pub fn inspect(
         off_pixel: false,
         header_counts: Vec::new(),
         place_counts: Vec::new(),
+        header_titles: Vec::new(),
+        page_titles: Vec::new(),
         out: &mut out,
     };
     walk.node(
@@ -438,6 +489,7 @@ pub fn inspect(
         "",
     );
     walk.repeated_counts();
+    walk.repeated_titles();
     out
 }
 
@@ -494,6 +546,7 @@ impl Walk<'_> {
             self.bare_row(node, keys, own);
             self.lone_door(node, keys, above);
             self.empty_heading(node, keys, own);
+            self.empty_surface(node, keys, own);
         }
         if geometric && !hangs(&node.widget) {
             self.reach(node, keys, own, parent, scroller);
@@ -539,6 +592,7 @@ impl Walk<'_> {
         if geometric {
             self.overlaps(node, keys, inner_clip);
             self.counts(node, keys, own, inner_clip);
+            self.titles(node, keys, own);
             self.header_rows(node, keys);
         }
         for child in &node.children {
@@ -673,6 +727,22 @@ impl Walk<'_> {
             node,
             keys,
             format!("it takes {} and says nothing", size(own)),
+        );
+    }
+
+    /// A surface with nothing in it: the block takes the ground and the corners of a card or a
+    /// page, and no words stand in it and nothing of its own is laid out. What a person sees is a
+    /// filled rectangle where a thing should be: a surface is drawn for what it holds, so one
+    /// holding nothing is not drawn at all.
+    fn empty_surface(&mut self, node: &InspectionNode, keys: &[String], own: Rect) {
+        if !paints_surface(&node.widget) || has_words(node) || held(node).is_some() {
+            return;
+        }
+        self.push(
+            Kind::EmptySurface,
+            node,
+            keys,
+            format!("it paints {} and holds nothing", size(own)),
         );
     }
 
@@ -842,6 +912,20 @@ impl Walk<'_> {
         let number = |value: Option<&str>| value.and_then(|value| value.trim().parse::<u32>().ok());
         match node.widget.as_str() {
             "NavShellTitle" => {
+                if let Some(name) = access
+                    .name
+                    .as_deref()
+                    .map(words)
+                    .filter(|name| !name.is_empty())
+                {
+                    self.header_titles.push(Title {
+                        words: name,
+                        at: own,
+                        keys: keys.iter().rev().cloned().collect(),
+                        widget: node.widget.clone(),
+                        id: node.test_id.clone(),
+                    });
+                }
                 let Some(count) = number(access.value.as_deref()) else {
                     return;
                 };
@@ -938,6 +1022,55 @@ impl Walk<'_> {
                     header.number,
                     size(place.at),
                     (header.at.x0 - place.at.x1).round()
+                ),
+            });
+        }
+    }
+
+    /// The words `node` shows as a title of its own: the page's own heading, as the toolkit
+    /// names it. What the person reads as the page's name, beside the bar's.
+    fn titles(&mut self, node: &InspectionNode, keys: &[String], own: Rect) {
+        let Some(shown) = node
+            .page_title
+            .as_deref()
+            .map(words)
+            .filter(|shown| !shown.is_empty())
+        else {
+            return;
+        };
+        self.page_titles.push(Title {
+            words: shown,
+            at: own,
+            keys: keys.iter().rev().cloned().collect(),
+            widget: node.widget.clone(),
+            id: node.test_id.clone(),
+        });
+    }
+
+    /// A bar naming a page while the page shows those same words as its own title: the bar
+    /// keeps only the way back and the page's actions until the title scrolls out of the page.
+    fn repeated_titles(&mut self) {
+        let (headers, pages) = (
+            std::mem::take(&mut self.header_titles),
+            std::mem::take(&mut self.page_titles),
+        );
+        for header in headers {
+            let Some(page) = pages.iter().find(|page| {
+                page.words.eq_ignore_ascii_case(&header.words)
+                    && page.at.y0 >= header.at.y1 - EPSILON
+            }) else {
+                continue;
+            };
+            self.out.push(Problem {
+                kind: Kind::RepeatedPageTitle,
+                keys: header.keys.clone(),
+                widget: header.widget.clone(),
+                id: header.id.clone(),
+                detail: format!(
+                    "the bar names the page {:?} while the page shows it {} below, {} wide",
+                    page.words,
+                    (page.at.y0 - header.at.y1).round(),
+                    size(page.at)
                 ),
             });
         }
@@ -1044,7 +1177,7 @@ fn title_cut_with_room(needs: f64, has: f64, free: f64) -> bool {
 /// What is wrong with one header row, as the shell laid it out: a title cut off while an action
 /// in the row kept a label it could have shown as its icon, a title cut off with room standing
 /// empty beside it, or a row that kept its menu but not the app's primary action.
-fn header_row_problem(row: &ui::widget::HeaderRow) -> Option<String> {
+fn header_row_problem(row: &ui::widget::HeaderRowLayout) -> Option<String> {
     let needs = f64::from(row.title_needs);
     let has = f64::from(row.title_has);
     let free = f64::from(row.free_beside_title);
@@ -1185,6 +1318,7 @@ mod tests {
             focusable: role.is_some(),
             rect,
             child_clip: None,
+            page_title: None,
             layout: None,
             semantics: role.map(AccessNode::new),
             children: Vec::new(),
@@ -1207,8 +1341,8 @@ mod tests {
         free: f32,
         labelled: bool,
         primary: bool,
-    ) -> ui::widget::HeaderRow {
-        ui::widget::HeaderRow {
+    ) -> ui::widget::HeaderRowLayout {
+        ui::widget::HeaderRowLayout {
             column: "content",
             title_needs: needs,
             title_has: has,
@@ -1513,6 +1647,60 @@ mod tests {
         header
     }
 
+    /// A bar naming the page while the page shows those words as its own title: the same title
+    /// twice on one screen. A bar whose title is already covered, or a page whose heading says
+    /// other words, is no repeat.
+    #[test]
+    fn a_bar_naming_a_page_beside_the_pages_own_heading_is_caught_once() {
+        let repeated = |bar_title: Option<&str>, page: Option<&str>| {
+            let mut shell = node("NavShell", "shell", [0.0, 0.0, 390.0, 844.0], None);
+            let mut bar = node(
+                "NavShellTitle",
+                "bar",
+                [68.0, 18.0, 314.0, 39.0],
+                Some(Role::Heading { level: 2 }),
+            );
+            if let Some(title) = bar_title {
+                bar.semantics.as_mut().expect("the bar's semantics").name = Some(title.to_owned());
+            } else {
+                bar.semantics = None;
+            }
+            let mut heading = node("TextInput", "title", [80.0, 80.0, 294.0, 161.0], None);
+            heading.page_title = page.map(str::to_owned);
+            shell.children = vec![bar, heading];
+            inspect(&shell, (390, 844), None, 1.0)
+                .into_iter()
+                .filter(|problem| problem.kind == Kind::RepeatedPageTitle)
+                .count()
+        };
+        assert_eq!(
+            repeated(
+                Some("Call the landlord about the boiler"),
+                Some("Call the landlord about the boiler")
+            ),
+            1,
+            "the page's heading says what the bar says"
+        );
+        assert_eq!(
+            repeated(Some("Call the landlord about the boiler"), None),
+            0,
+            "the page shows no title of its own, so the bar names it"
+        );
+        assert_eq!(
+            repeated(None, Some("Call the landlord about the boiler")),
+            0,
+            "the bar left the title to the page"
+        );
+        assert_eq!(
+            repeated(
+                Some("Call the landlord about the boiler"),
+                Some("Call the plumber")
+            ),
+            0,
+            "the page shows other words"
+        );
+    }
+
     fn place(name: &str, rect: [f64; 4], count: u32, selected: bool) -> AccessNode {
         let mut place = AccessNode::new(Role::TreeItem);
         place.name = Some(name.to_owned());
@@ -1665,6 +1853,85 @@ mod tests {
         assert!(
             empty_headings(&board(lane(None))).is_empty(),
             "a lane no heading heads starts its cards at its top"
+        );
+    }
+
+    fn empty_surfaces(root: &InspectionNode) -> Vec<Problem> {
+        inspect(root, (800, 600), None, 1.0)
+            .into_iter()
+            .filter(|p| p.kind == Kind::EmptySurface)
+            .collect()
+    }
+
+    /// A card standing empty in a column paints a filled block with nothing in it, and what it
+    /// promised is not there: a surface is drawn for what it holds, so one holding nothing — or
+    /// only a placeholder that never filled — is no surface at all. What holds words, a control
+    /// or anything laid out of its own is a surface doing its work.
+    #[test]
+    fn a_surface_with_nothing_in_it_is_caught() {
+        let column = |surface: Option<InspectionNode>, under: Option<InspectionNode>| {
+            let mut children: Vec<InspectionNode> = surface.into_iter().collect();
+            children.extend(under);
+            holding(
+                node("Column", "column", [24.0, 56.0, 342.0, 600.0], None),
+                children,
+            )
+        };
+        let card = |children: Vec<InspectionNode>| {
+            holding(
+                node("Card", "card", [24.0, 56.0, 342.0, 157.0], None),
+                children,
+            )
+        };
+        let found = empty_surfaces(&column(Some(card(Vec::new())), None));
+        assert_eq!(found.len(), 1, "{found:?}");
+        assert_eq!(found[0].keys.first().map(String::as_str), Some("card"));
+        assert!(
+            found[0].detail.contains("342×157"),
+            "it names the block it paints: {}",
+            found[0].detail
+        );
+        let placeholder = card(vec![node("Card", "body", [24.0, 56.0, 0.0, 0.0], None)]);
+        assert_eq!(
+            empty_surfaces(&column(Some(placeholder), None)).len(),
+            1,
+            "a placeholder that never filled leaves the block empty"
+        );
+        let written = card(vec![node(
+            "Text",
+            "body",
+            [44.0, 76.0, 302.0, 21.0],
+            Some(Role::StaticText),
+        )]);
+        assert!(
+            empty_surfaces(&column(Some(written), None)).is_empty(),
+            "a card saying something is what the block is for"
+        );
+        let pictured = card(vec![node(
+            "Picture",
+            "cover",
+            [44.0, 76.0, 302.0, 120.0],
+            None,
+        )]);
+        assert!(
+            empty_surfaces(&column(Some(pictured), None)).is_empty(),
+            "a card showing a picture holds something"
+        );
+        let flat = holding(
+            node("Card", "flat", [24.0, 56.0, 342.0, 0.0], None),
+            Vec::new(),
+        );
+        assert!(
+            empty_surfaces(&column(Some(flat), None)).is_empty(),
+            "a block with no height paints nothing"
+        );
+        assert!(
+            empty_surfaces(&column(
+                None,
+                Some(node("Stack", "rows", [24.0, 56.0, 342.0, 200.0], None))
+            ))
+            .is_empty(),
+            "a column is no surface of its own"
         );
     }
 
@@ -1884,7 +2151,15 @@ mod tests {
                 overflow: false,
                 first_conflict: None,
             }));
-            region.children = vec![node("Card", "place", [200.0, 40.0, 240.0, 90.0], None)];
+            region.children = vec![holding(
+                node("Card", "place", [200.0, 40.0, 240.0, 90.0], None),
+                vec![node(
+                    "Text",
+                    "place-name",
+                    [204.0, 44.0, 236.0, 86.0],
+                    Some(Role::StaticText),
+                )],
+            )];
             let mut view = node("View", "view", [0.0, 0.0, 320.0, 300.0], None);
             view.child_clip = Some([0.0, 0.0, 320.0, 300.0]);
             view.layout = outer;
@@ -1960,6 +2235,7 @@ mod tests {
             focusable: false,
             rect,
             child_clip: None,
+            page_title: None,
             layout: None,
             semantics: None,
             children,
