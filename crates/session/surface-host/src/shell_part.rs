@@ -264,8 +264,11 @@ pub fn compile_shell() -> Result<Vec<Compiled>, String> {
         "en-US".to_owned(),
         include_str!("../../../../apps/tl/shell/locales/en-US.ftl").to_owned(),
     )]);
-    let mut imports: Vec<tilolang_tilo::tilolang::PackageMeta> = vec![session];
-    imports.extend(platform_packages()?);
+    let mut imports: Vec<tilolang_tilo::tilolang::PackageMeta> = platform_packages()?
+        .into_iter()
+        .filter(|meta| meta.app != SESSION_APP)
+        .collect();
+    imports.insert(0, session);
     let shell = tilolang_tilo::tilolang::compile_package_source(&source, &lock, &imports).map_err(
         |diagnostics| {
             diagnostics
@@ -1755,6 +1758,11 @@ impl Platform for ShellPlatform {
         match platform_packages() {
             Ok(packages) => {
                 for meta in packages {
+                    // The session's package is loaded below, from the copy the shell was built
+                    // against, which is the only description whose action ids its code calls.
+                    if meta.app == SESSION_APP {
+                        continue;
+                    }
                     let app = meta.app.clone();
                     if let Err(error) = host.runtime().load_foreign(meta) {
                         tracing::error!(app, %error, "a platform package did not load");
@@ -1771,7 +1779,18 @@ impl Platform for ShellPlatform {
             return 0;
         };
         // The session's own package is a description: its actions run at the session's door.
-        match session_package() {
+        // It is the one the shell was built against — the bundle's own import, whose action ids
+        // are the ids the shell's code calls (`so.tilo.session#tilo-menu`). A package read again
+        // from the source describes the same resources under the same names, but names its
+        // actions as the surface does (`tilo-menu`), which is not what a compiled call names:
+        // the runtime would find no action for it and the view would fail. The source's
+        // description stands in only for a shell compiled against it, which has no bundle.
+        let built_against = self
+            .packages
+            .iter()
+            .find(|package| package.meta.app == SESSION_APP)
+            .map(|package| package.meta.clone());
+        match built_against.map_or_else(session_package, Ok) {
             Ok(session) => {
                 if let Err(error) = host.runtime().load_foreign(session) {
                     tracing::error!(%error, "the session's package did not load");
