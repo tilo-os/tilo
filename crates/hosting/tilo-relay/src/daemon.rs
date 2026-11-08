@@ -475,14 +475,7 @@ impl Relay {
             path: cfg.full_replica_status.clone(),
             clock: replica_clock,
         };
-        #[cfg_attr(
-            not(feature = "web"),
-            allow(
-                unused_variables,
-                reason = "without the web listener no page is told how to reach the packet relay"
-            )
-        )]
-        let (packet_relay, relay_mode, pages_reach) = match cfg.packet_relay {
+        let (packet_relay, relay_mode) = match cfg.packet_relay {
             Some(addr) if endpoint.is_none() && relay_mode.is_none() => {
                 let (server, url) = spawn_packet_relay(addr).await?;
                 let url = match &cfg.packet_relay_url {
@@ -492,24 +485,19 @@ impl Relay {
                     None => url,
                 };
                 tracing::info!(%addr, %url, "running this host's own packet relay");
-                (
-                    Some(server),
-                    Some(iroh::RelayMode::Custom(url.clone().into())),
-                    Some(url),
-                )
+                (Some(server), Some(iroh::RelayMode::Custom(url.into())))
             }
             Some(_) => {
                 return Err(RelayError::Iroh(
                     "a host runs its own packet relay or is given one, not both".into(),
                 ));
             }
-            None => {
-                let pages = relay_mode
-                    .as_ref()
-                    .and_then(|mode| mode.relay_map().urls::<Vec<_>>().into_iter().next());
-                (None, relay_mode, pages)
-            }
+            None => (None, relay_mode),
         };
+        #[cfg(feature = "web")]
+        let pages_reach = relay_mode
+            .as_ref()
+            .and_then(|mode| mode.relay_map().urls::<Vec<_>>().into_iter().next());
         let endpoint = match endpoint {
             Some(endpoint) => endpoint,
             None => bind_endpoint(&cfg, &identity.device_signing_key, relay_mode).await?,
