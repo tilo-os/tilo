@@ -562,7 +562,7 @@ impl App {
             );
         }
         text.push_str(
-            "\n  each branch has the whole disk (home, keys, vaults, settings) and the same root SSH key; on first boot it sees its new UUID and gives itself a new device identity",
+            "\n  each branch has the whole disk (home, keys, vaults, settings) and the same root SSH key; on first boot it sees its new UUID and gives itself a new device identity, provided the source last booted an image with tilo-device-branch.service (tilo-vm guide concepts)",
         );
         let base = frozen.map_or(
             Value::Null,
