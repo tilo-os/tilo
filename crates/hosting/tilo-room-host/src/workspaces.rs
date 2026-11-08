@@ -1033,6 +1033,16 @@ pub struct RecordWrite {
     pub record: String,
 }
 
+/// What [`Workspaces::refound_record`] did: which record was founded again,
+/// and how many retained entries its old history took to the archive.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Refounded {
+    pub app: String,
+    pub record: String,
+    /// Entries archived off the channel, beside the replay and never deleted.
+    pub archived: usize,
+}
+
 /// The authority governing one workspace, as the workspace's governance refers to it.
 #[derive(Clone)]
 pub struct WorkspaceAuthority {
@@ -2318,6 +2328,110 @@ impl Workspaces {
             .unwrap_or_default();
         sink.take(waiting);
         Ok(())
+    }
+
+    /// Refound `record` of `app` from what the governor itself can still read,
+    /// when its retained history lost the base its deltas were written over.
+    ///
+    /// A record whose retained checkpoint is gone while deltas over it remain
+    /// cannot be read by anyone: the governor's own reader meets changes whose
+    /// history it lacks, and every device that joins afterwards is replayed a
+    /// tail that builds on changes no frame carries. Nothing a member sends
+    /// can repair it — a snapshot of the record as one device holds it is not
+    /// the record's history — so the repair is the governor's own: it writes
+    /// the record as it stands as the workspace's next checkpoint of the
+    /// record, which founds the route again for every device reading it.
+    ///
+    /// Nothing is deleted. What the channel retained until now is archived
+    /// ([`WorkspaceStore::archive_channel`]) under the retained directory,
+    /// beside the replay that is read, and out of it: an operator can go back
+    /// to it, and the history that made the record unreadable is kept where it
+    /// cannot stop the workspace being used.
+    ///
+    /// # Errors
+    ///
+    /// The workspace is not governed here, the record is not one the governor
+    /// holds, or the new checkpoint could not be published.
+    pub async fn refound_record(
+        &self,
+        workspace: &str,
+        app: &str,
+        record: &str,
+    ) -> Result<Refounded, CollaborationError> {
+        let governed = self.workspace(workspace).await?;
+        let workspace_id = governed.lock().await.workspace_id();
+        let hosted = self
+            .inner
+            .host
+            .workspaces
+            .lock()
+            .await
+            .get(&workspace_id)
+            .cloned()
+            .ok_or_else(|| CollaborationError::new("the workspace is not hosted here"))?;
+        let channel = neighbour_wire::app_document_channel(app, record);
+        let state = self.workspace(workspace).await?;
+        let now = SystemTime::now();
+        let host = &self.inner.host;
+        let (readable, keys) = {
+            let workspace = state.lock().await;
+            if !workspace.peer().holds_document(app, record) {
+                return Err(CollaborationError::new("the record is not held here"));
+            }
+            let readable = workspace
+                .readable_document(app, record)
+                .await
+                .map_err(CollaborationError::new)?
+                .ok_or_else(|| CollaborationError::new("the record does not read"))?;
+            let keys = workspace.record_keys(app, record).await;
+            (readable, keys)
+        };
+        // Keep what the channel retained until now beside the replay: never
+        // deleted, never read by a device joining after this.
+        let archived =
+            crate::compaction::owner_run(&hosted, move |store| store.archive_channel(&channel))
+                .await
+                .map_err(CollaborationError::new)?;
+        let mut workspace = state.lock().await;
+        let mut candidate = workspace.peer().clone();
+        let sealed = match keys {
+            Ok(Some(keys)) => Some(keys),
+            Ok(None) => None,
+            Err(error) => return Err(CollaborationError::new(error)),
+        };
+        // The record as it reads, published as the workspace's next checkpoint
+        // of the route: a whole record, sealed where the record is sealed,
+        // admitted as this state's own write so the replay that follows
+        // carries it.
+        sealed_records::refound(
+            &mut candidate,
+            sealed.as_ref(),
+            (app, record),
+            readable,
+            &host.key,
+            now,
+        )
+        .map_err(CollaborationError::new)?;
+        workspace.commit(candidate, &host.key, now, |record, _| {
+            Ok(record.collaboration.clone())
+        })?;
+        self.settle(&mut workspace).await?;
+        // The new checkpoint is what a device joining now is replayed: wait
+        // for it to be admitted to the host's order and durable before the
+        // operator is told the record reads again.
+        host.records.settled(workspace_id).await;
+        tracing::warn!(
+            workspace = %workspace.workspace(),
+            %app,
+            %record,
+            archived,
+            "a record whose base its history lost was refounded; its old history is archived"
+        );
+        Ok(Refounded {
+            app: app.to_owned(),
+            record: record.to_owned(),
+            archived,
+        })
     }
 
     /// Take every device row of `workspace` whose certificate has expired out

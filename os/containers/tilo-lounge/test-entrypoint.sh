@@ -116,6 +116,7 @@ lounge \
   TILO_ROOMS_FEEDBACK_CHANNEL=feedback \
   TILO_ROOMS_SEED_APPS='so.tilo.chat,so.tilo.board' \
   TILO_ROOMS_AUTHOR_APPS='so.tilo.chat' \
+  TILO_ROOMS_REFOUND='so.tilo.browser-desktop:desktop, so.tilo.chat:' \
   TILO_ROOMS_BOTS='/usr/local/share/tilo/bots/discord-bridge.json guild=1521251563828416532 server=Tilo mirror-channels=yes;/opt/echo.json a=b' \
   TILO_ROOMS_LAYOUT=personal \
   TILO_ROOMS_INACTIVE_AFTER_DAYS=7 \
@@ -154,6 +155,8 @@ pair --allowed-origin https://tilo.so || fail "a site origin did not reach the h
 pair --chat-channel feedback || fail "a chat channel did not reach the host"
 pair --seed-app so.tilo.board || fail "a seeded app did not reach the host"
 pair --author-app so.tilo.chat || fail "an authoring app did not reach the host"
+pair --refound so.tilo.browser-desktop/desktop || fail "a refounded record did not reach the host"
+pair --refound so.tilo.chat/ || fail "a refounded record of the app's primary did not reach the host"
 pair --feedback-channel feedback || fail "the feedback channel did not reach the host"
 pair --bot '/usr/local/share/tilo/bots/discord-bridge.json guild=1521251563828416532 server=Tilo mirror-channels=yes' \
   || fail "the bridge's bot spec did not reach the host"
