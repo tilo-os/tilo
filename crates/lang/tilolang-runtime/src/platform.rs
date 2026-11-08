@@ -425,7 +425,7 @@ impl Core {
     /// where the viewer only looks.
     fn viewer_import(&self) -> HResult<Option<Wasm>> {
         let who = self.looking()?;
-        self.ret_h(Value::Principal(crate::ids::Principal(who)))
+        self.ret_h(Value::Principal(crate::ids::Principal::new(who)))
     }
 
     /// A version of `of` as a `host.Version`: who, when, what, the task run, its kind, the
@@ -479,7 +479,7 @@ impl Core {
         let actor = self.actor(&v.who, mine);
         // Who proposed the action the person accepted, by the name the workspace calls them.
         let suggested = v.suggested_by.as_ref().map_or_else(String::new, |who| {
-            let who = Principal(who.clone());
+            let who = Principal::new(who.clone());
             self.names
                 .borrow()
                 .as_ref()
@@ -490,7 +490,7 @@ impl Core {
             None => Vec::new(),
         };
         Ok(Value::Tuple(vec![
-            Value::Principal(Principal(v.who)),
+            Value::Principal(Principal::new(v.who)),
             Value::Text(v.at),
             Value::Text(self.action_label(&v.action)),
             Value::Opt(task),
@@ -810,7 +810,7 @@ impl Core {
         }
         self.names.borrow().as_ref().map_or_else(
             || who.to_owned(),
-            |host| host.name(&Principal(who.to_owned())),
+            |host| host.name(&Principal::new(who.to_owned())),
         )
     }
 
@@ -995,7 +995,7 @@ impl Core {
             let Some(last) = step.last() else {
                 continue;
             };
-            let who = Value::Principal(Principal(last.who.clone()));
+            let who = Value::Principal(Principal::new(last.who.clone()));
             let at_time = Value::Text(last.at.clone());
             let task = Value::Opt(last.task.as_ref().map(|run| {
                 Box::new(Value::Tuple(vec![
@@ -2362,7 +2362,7 @@ impl Core {
         match frames.deciding().map(|f| &f.kind) {
             Some(FrameKind::View(vs)) => vs.viewer.clone(),
             Some(FrameKind::Action(state)) => state.invoker.clone(),
-            _ => Principal(String::new()),
+            _ => Principal::new(String::new()),
         }
     }
 
@@ -2376,7 +2376,7 @@ impl Core {
                 _ => (
                     crate::space::Space::default(),
                     String::new(),
-                    Principal(String::new()),
+                    Principal::new(String::new()),
                     1,
                 ),
             }

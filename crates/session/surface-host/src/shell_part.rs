@@ -1785,7 +1785,7 @@ impl NameHost for Person {
         if who.0.is_empty() {
             self.0.clone()
         } else {
-            who.0.clone()
+            who.shown()
         }
     }
 }

@@ -355,7 +355,9 @@ const MESSAGES_KIND: &str = "chat.workspace";
 /// draws the same page: nothing here knows a width or a look.
 #[view(default)]
 fn page(c: &Channel, cx: &ViewCx) -> Node {
-    // The channel names itself and what it is about above the transcript.
+    // The channel names itself and what it is about above the transcript, and the transcript
+    // fills what the column leaves under it: two rows of one column, so a long transcript
+    // scrolls inside its own room and never draws under the header over it.
     let head = ui::page(
         &cx.key("head"),
         vec![ui::stack(
@@ -364,11 +366,8 @@ fn page(c: &Channel, cx: &ViewCx) -> Node {
             header_facts(c, cx),
         )],
     );
-    let conversation = ui::column(
-        &cx.key("column"),
-        Gap::None,
-        vec![head, ui::fill(transcript(c, cx))],
-    );
+    let conversation = ui::page(&cx.key("column"), vec![head, ui::fill(transcript(c, cx))]);
+    let conversation = ui::arg(conversation, "fill", Value::Float(1.0));
     // The composer stands docked at the foot, in the page's own gutter and measure, as every
     // conversation sets its reply box under the messages it answers (`ui.Docked`): the
     // transcript fills the column above it and scrolls, the composer keeps its own height.
@@ -425,22 +424,39 @@ fn transcript(c: &Channel, cx: &ViewCx) -> Node {
             vec![ui::page(&cx.key("empty-page"), vec![empty(c, cx)])],
         ));
     }
-    // The rows, in order: a day's divider, then each message with what it answers and says.
+    // The rows, in order: a day's divider, then each message with what it answers and says. A
+    // run of one person's messages is one group, so the column's gap stands between runs — a
+    // section's — and the rows inside a run meet tightly, the way every conversation draws
+    // them: a person's name never sits jammed against what was said before it.
     let clock = ConversationClock::local();
     let grouped = grouped_messages(c, &clock);
     let mut rows: Vec<Node> = Vec::new();
+    let mut run: Vec<Node> = Vec::new();
+    let mut flush = |run: &mut Vec<Node>, rows: &mut Vec<Node>| {
+        if !run.is_empty() {
+            rows.push(ui::stack(
+                &cx.key(format!("run-{}", rows.len())),
+                Gap::None,
+                std::mem::take(run),
+            ));
+        }
+    };
     for (index, (day, message, continues)) in grouped.iter().enumerate() {
         if let Some(label) = day {
+            flush(&mut run, &mut rows);
             rows.push(
                 ui::DayDividerBuilder::new(&cx.key(format!("day-{index}")), label.clone()).into(),
             );
         }
-        rows.push(message_row(c, message, *continues, cx));
+        if !*continues {
+            flush(&mut run, &mut rows);
+        }
+        run.push(message_row(c, message, *continues, cx));
     }
-    // The rows are one page's column: the page sets their measure and gutter, and a run's next
-    // line stands a tight gap under the one before while a new run stands a section's gap under
-    // it.
-    let column = ui::stack(&cx.key("messages"), Gap::None, rows);
+    flush(&mut run, &mut rows);
+    // The rows are one page's column: the page sets their measure and gutter, and the column's
+    // sibling gap stands between one run and the next, and around a day's divider.
+    let column = ui::stack(&cx.key("messages"), Gap::Section, rows);
     node::with(
         ui::fill(node::with(
             scroll,
@@ -539,6 +555,9 @@ fn message_row(c: &Channel, message: &Message, continues: bool, cx: &ViewCx) -> 
                 .role(ui::TextRole::Caption)
                 .secondary(true)
                 .past(true)
+                // A message's line says when it was sent, by the clock the person reads
+                // ("5:16 AM"); the day it falls on is the divider over its run.
+                .clock(true)
                 .into(),
         );
         vec![ui::row(
@@ -1206,6 +1225,110 @@ mod tests {
         assert!(
             texts(&tree).iter().any(|text| text == "No messages yet"),
             "an empty channel says so"
+        );
+    }
+
+    #[test]
+    fn a_messages_time_is_the_clock_the_person_reads() {
+        // A message's line says when it was sent by the clock ("5:16 AM"), never the day alone:
+        // the day it falls on is the divider over its run, so a time showing "Jun 26" repeats
+        // the divider and says nothing of when the message was written.
+        let mut channel = demo_channel();
+        // 2026-06-26 09:16 UTC, read in the zone the page reads clocks in.
+        channel.messages = vec![Message {
+            id: "m_when".to_owned(),
+            author: crate::model::ME.to_owned(),
+            ts: 1_782_465_360,
+            text: "Sent at a moment".to_owned(),
+            ..Message::default()
+        }];
+        let cx = view_cx(&channel);
+        let tree = page(&channel, &cx);
+        passes(&tree);
+        let when = keyed(&tree, "ui.Time", "@when-");
+        assert_eq!(when.len(), 1, "the run's first message carries its time");
+        assert_eq!(
+            when[0].props.get("clock"),
+            Some(&Value::Bool(true)),
+            "the time reads as the clock, not as how long ago it was"
+        );
+        // The component's own reading of that moment: the time of day in the person's zone,
+        // which says a clock and not a date.
+        let label = sdk::widget::clock_text(1_782_465_360);
+        assert!(
+            label.contains(':'),
+            "the time of day names the hour and minute: {label}"
+        );
+        assert!(
+            !label.contains("Jun"),
+            "a message's time is not its day: {label}"
+        );
+    }
+
+    #[test]
+    fn a_new_authors_row_stands_a_runs_gap_under_the_one_before() {
+        // Two people's messages, then a third: each new author's row stands as a run of its
+        // own, and the column's section gap separates runs, so a name never sits jammed
+        // against what was said before it. A run's second line stays inside its own group,
+        // where the rows meet tightly.
+        let mut channel = demo_channel();
+        channel.messages = vec![
+            Message {
+                id: "m_one".to_owned(),
+                author: "u_aria".to_owned(),
+                ts: 1_782_470_400,
+                text: "First".to_owned(),
+                ..Message::default()
+            },
+            Message {
+                id: "m_two".to_owned(),
+                author: "u_aria".to_owned(),
+                ts: 1_782_470_460,
+                text: "Still the same run".to_owned(),
+                ..Message::default()
+            },
+            Message {
+                id: "m_three".to_owned(),
+                author: "u_milo".to_owned(),
+                ts: 1_782_470_520,
+                text: "Another person".to_owned(),
+                ..Message::default()
+            },
+        ];
+        let cx = view_cx(&channel);
+        let tree = page(&channel, &cx);
+        passes(&tree);
+        // The column spaces its children (runs) by a section's gap.
+        let column = walk(&tree)
+            .into_iter()
+            .find(|node| node.key.contains("@messages"))
+            .expect("the messages' column");
+        assert_eq!(
+            column.props.get("gap"),
+            Some(&Value::Text("section".to_owned())),
+            "a run stands a section's gap under the one before it"
+        );
+        // The two runs: the first holds the first person's two messages, meeting tightly.
+        let runs: Vec<&Node> = column
+            .children
+            .iter()
+            .filter(|node| node.key.contains("@run-"))
+            .collect();
+        assert_eq!(runs.len(), 2, "two people's messages make two runs");
+        assert_eq!(
+            runs[0].props.get("gap"),
+            Some(&Value::Text("none".to_owned())),
+            "a run's own messages meet, as one person's next line does"
+        );
+        assert_eq!(
+            runs[0].children.len(),
+            2,
+            "the first run holds both of the first person's messages"
+        );
+        assert_eq!(
+            runs[1].children.len(),
+            1,
+            "the second is the other person's"
         );
     }
 }

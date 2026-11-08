@@ -185,6 +185,50 @@ fn a_chat_channel_placed_on_the_canvas_draws_its_own_page() {
 }
 
 #[test]
+fn the_transcript_stands_below_the_header_never_under_it() {
+    let _settled = ui::motion::testing::settled();
+    let root = common::private_home();
+    let mut session = session(root.path());
+    place(&mut session, CHANNEL);
+    common::until(&mut session, "the channel's page", |session| {
+        session.shell_says(MESSAGE)
+    });
+    // The channel's name and its topic stand over the transcript, and the transcript's rows
+    // begin under them: a page whose header floated over the scrolling content drew a message's
+    // pill across the topic line. The transcript follows its newest line, so its rows run above
+    // the place's top and scroll into view; each row that stands in the page's own band has its
+    // top under the header's bottom edge.
+    let bounds = |text: &str| {
+        session
+            .shell_text_bounds(text)
+            .unwrap_or_else(|| panic!("the page says `{text}`: {:?}", session.accessible_labels()))
+    };
+    let (_, name_y, _, name_h) = bounds("#design-crit");
+    let (_, topic_y, _, topic_h) = bounds("Share work, get sharp feedback");
+    let header_bottom = (name_y + name_h).max(topic_y + topic_h);
+    // Each message's words and every avatar's label: the ones the page shows stand clear of the
+    // header, never across it.
+    let mut rows = 0_u32;
+    for label in session.accessible_labels() {
+        for (_, y, _, h) in session.shell_text_bounds_all(&label) {
+            // A row scrolled out of the page is above the header's own top; one in the page
+            // begins under the header.
+            if y + h <= name_y {
+                continue;
+            }
+            rows = rows.saturating_add(1);
+            assert!(
+                y >= header_bottom || y + h <= name_y,
+                "`{label}` stands clear of the header: its band {y}..{}, the header's {}..{header_bottom}",
+                y + h,
+                name_y
+            );
+        }
+    }
+    assert!(rows > 0, "the page shows the transcript's rows");
+}
+
+#[test]
 fn typing_in_the_composer_and_pressing_send_posts_to_the_channel() {
     let _settled = ui::motion::testing::settled();
     let root = common::private_home();

@@ -45,6 +45,19 @@ fn next_new_year(secs: i64) -> Option<i64> {
         .map(|at| at.timestamp())
 }
 
+/// `at` (seconds since 1970) as the clock the person reads shows it: the time of day in their
+/// zone (`5:16 AM`), as a conversation's transcript says when a message was sent.
+#[must_use]
+pub fn clock_text(at: i64) -> String {
+    let Some(local) = local(at) else {
+        return String::new();
+    };
+    crate::clock::hour_minute(
+        u32::try_from(chrono::Timelike::hour(&local)).unwrap_or(0),
+        u32::try_from(chrono::Timelike::minute(&local)).unwrap_or(0),
+    )
+}
+
 /// `at` (seconds since 1970) as people read it at `now`.
 #[must_use]
 pub fn relative_text(at: i64, now: i64) -> String {
@@ -137,6 +150,10 @@ pub struct TimeProps {
     /// reader's clock has not reached yet (the clock of the device that wrote it runs ahead)
     /// reads `just now`, never ahead.
     pub past: bool,
+    /// Show the time of day the moment falls at in the person's zone (`5:16 AM`), as a
+    /// conversation's transcript says when a message was sent, rather than how long ago it was:
+    /// the day it falls on is the transcript's divider, never this line.
+    pub clock: bool,
 }
 
 /// [`TimeProps`]' widget: a [`Text`] that reads its moment against the wall clock.
@@ -146,6 +163,8 @@ pub struct RelativeTime {
     role: TextRole,
     secondary: bool,
     past: bool,
+    /// The time of day the moment falls at, not how long ago it was.
+    clock: bool,
     /// When what it says next reads differently, in seconds since 1970.
     changes_at: Cell<Option<i64>>,
 }
@@ -160,6 +179,7 @@ impl RelativeTime {
             role: TextRole::Body,
             secondary: false,
             past: false,
+            clock: false,
             changes_at: Cell::new(None),
         };
         time.read_clock(crate::time::unix_now_i64());
@@ -177,8 +197,14 @@ impl RelativeTime {
     fn read_clock(&mut self, now: i64) -> bool {
         let before = self.text.resolved_label();
         let at = self.moment(now);
-        let shown = relative_text(at, now);
-        self.changes_at.set(next_change(at, now));
+        // A transcript says when a message was sent, by the clock the person reads: the time of
+        // day, which never changes, so nothing wakes for it.
+        let (shown, changes) = if self.clock {
+            (clock_text(at), None)
+        } else {
+            (relative_text(at, now), next_change(at, now))
+        };
+        self.changes_at.set(changes);
         let changed = before != shown;
         self.text.show_content(shown);
         changed
@@ -247,6 +273,7 @@ impl Described for RelativeTime {
             role,
             secondary,
             past,
+            clock,
         } = props;
         let mut text = Text::new("").with_role(role).with_id(key);
         if secondary {
@@ -258,6 +285,7 @@ impl Described for RelativeTime {
             role,
             secondary,
             past,
+            clock,
             changes_at: Cell::new(None),
         };
         time.read_clock(crate::time::unix_now_i64());
@@ -266,7 +294,11 @@ impl Described for RelativeTime {
 
     /// Another moment reads in place; another role, ink or kind of moment builds it again.
     fn set_props(&mut self, props: TimeProps) -> bool {
-        if props.role != self.role || props.secondary != self.secondary || props.past != self.past {
+        if props.role != self.role
+            || props.secondary != self.secondary
+            || props.past != self.past
+            || props.clock != self.clock
+        {
             return false;
         }
         if props.at.0 != self.at {
@@ -347,6 +379,33 @@ mod tests {
         assert!(due);
         assert_eq!(time.label(), "3 min ago");
         assert_eq!(with_wall(wall(at + 180), || wait(&time)), Some(60));
+    }
+
+    #[test]
+    fn a_clock_time_is_the_time_of_day_and_never_moves() {
+        // A message's line says when it was sent, by the clock: "5:16 PM", whatever the day, and
+        // it never changes while the window is open, so nothing wakes for it.
+        let at = local_secs(26, (17, 16, 0));
+        let mut time = with_wall(wall(at + 3 * 3600), || {
+            RelativeTime::from_props(
+                "t",
+                TimeProps {
+                    at: Moment(at),
+                    clock: true,
+                    ..TimeProps::default()
+                },
+            )
+        });
+        assert_eq!(time.label(), clock_text(at));
+        assert_eq!(time.label(), "5:16 PM");
+        assert_eq!(
+            Widget::next_wake_deadline(&time),
+            None,
+            "a clock time never changes, so nothing wakes for it"
+        );
+        // Hours later, the same clock.
+        assert!(!with_wall(wall(at + 9 * 3600), || time.follow_clock()));
+        assert_eq!(time.label(), "5:16 PM");
     }
 
     #[test]

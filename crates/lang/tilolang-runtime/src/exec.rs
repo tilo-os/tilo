@@ -1199,7 +1199,7 @@ impl Core {
                 run: run.clone(),
                 cursor: 0,
                 invoker: journal.invoker.clone(),
-                suggested_by: journal.suggested_by.clone().map(Principal),
+                suggested_by: journal.suggested_by.clone().map(Principal::new),
                 clock: clock.clone(),
                 journaled,
                 journal,
@@ -1260,7 +1260,7 @@ impl Core {
             invoker: journal.invoker.clone(),
             chain: journal.chain.clone(),
             approved_by: journal.approved_by.clone(),
-            suggested_by: journal.suggested_by.clone().map(Principal),
+            suggested_by: journal.suggested_by.clone().map(Principal::new),
             identity: Some(run.clone()),
             from: journal.from.clone(),
             at: journal.at.clone(),
@@ -1409,7 +1409,7 @@ impl Core {
             invoker: step.who.clone().unwrap_or_else(|| journal.invoker.clone()),
             chain,
             approved_by: None,
-            suggested_by: journal.suggested_by.clone().map(Principal),
+            suggested_by: journal.suggested_by.clone().map(Principal::new),
             identity: None,
             from: step.from.clone().or_else(|| journal.from.clone()),
             at: step.at.clone(),
@@ -1572,7 +1572,7 @@ impl Core {
             invoker: suggestion.invoker.clone(),
             chain: suggestion.chain.clone(),
             approved_by: Some(approver.clone()),
-            suggested_by: journal.suggested_by.clone().map(Principal),
+            suggested_by: journal.suggested_by.clone().map(Principal::new),
             identity: Some(run.clone()),
             from: journal.from.clone(),
             at: journal.at.clone(),
@@ -2712,7 +2712,7 @@ impl Core {
             Imp::PrincipalNamed | Imp::AgentNamed => {
                 let name = self.text(a.h(0)?)?;
                 self.scenario_state(|_| ())?;
-                let who = Principal(format!("scenario:{name}"));
+                let who = Principal::new(format!("scenario:{name}"));
                 if imp == Imp::AgentNamed {
                     self.named_agent(who.clone());
                 } else {

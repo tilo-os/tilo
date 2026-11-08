@@ -4054,6 +4054,11 @@
           "name": "past",
           "doc": "The moment has already happened, as a message received or an entry logged: a moment the reader's clock has not reached yet (the clock of the device that wrote it runs ahead) reads `just now`, never ahead.",
           "type": "bool"
+        },
+        {
+          "name": "clock",
+          "doc": "Show the time of day the moment falls at in the person's zone (`5:16 AM`), as a conversation's transcript says when a message was sent, rather than how long ago it was: the day it falls on is the transcript's divider, never this line.",
+          "type": "bool"
         }
       ],
       "semantics": {

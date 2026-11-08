@@ -156,7 +156,9 @@ fn value_into_runtime(value: ViewValue) -> Value {
         ViewValue::Opt(held) => Value::Opt(held.map(|held| Box::new(value_into_runtime(*held)))),
         ViewValue::Ref(target) => ResourceRef::parse_id(&target.id, target.ty.clone())
             .map_or(Value::Unit, |at| Value::resource(&at)),
-        ViewValue::Principal(who) => Value::Principal(Principal(who.id)),
+        // A view names the person it draws (`who.name`), and that name is what a byline, an
+        // avatar's initials and a quote's "In reply to" show: the id is what a record keeps.
+        ViewValue::Principal(who) => Value::Principal(Principal::new(who.id).named(who.name)),
         ViewValue::Rich(rich) => Value::Rich(tilolang_runtime::rich::RichValue::from_text(
             &rich
                 .blocks

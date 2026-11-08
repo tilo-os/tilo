@@ -18,12 +18,33 @@ pub type DocId = String;
 pub type RunId = String;
 
 /// A person, an agent task or an app on whose behalf code runs.
+///
+/// Its id names it in every record and grant. Its name is what a person reads where it stands
+/// (an avatar's initials, a byline, a quote's "In reply to"), which a record does not keep and
+/// the host knows; a principal a record holds carries the id alone, and the host names it there
+/// ([`crate::core::NameHost`]).
 #[derive(Clone, Debug, Default, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
-pub struct Principal(pub String);
+pub struct Principal(pub String, #[serde(default)] pub String);
 
 impl Principal {
     pub fn new(name: impl Into<String>) -> Self {
-        Self(name.into())
+        Self(name.into(), String::new())
+    }
+
+    /// It, called `name` where a person reads it.
+    #[must_use]
+    pub fn named(self, name: impl Into<String>) -> Self {
+        Self(self.0, name.into())
+    }
+
+    /// What to show for it: the name it carries, else its id.
+    #[must_use]
+    pub fn shown(&self) -> String {
+        if self.1.trim().is_empty() {
+            self.0.clone()
+        } else {
+            self.1.clone()
+        }
     }
 }
 

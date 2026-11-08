@@ -2304,7 +2304,7 @@ pub fn inline_view(
     if let Some(person) = reference.as_person() {
         return InlineView::Person {
             identity: person.to_owned(),
-            name: names.name(&Principal(person.to_owned())),
+            name: names.name(&Principal::new(person)),
         };
     }
     let Some(mut target) = referenced_resource(host, reference) else {
@@ -2328,7 +2328,8 @@ struct NoNames;
 
 impl NameHost for NoNames {
     fn name(&self, who: &Principal) -> String {
-        who.0.clone()
+        // A principal the view named carries its name; one from a record carries only its id.
+        who.shown()
     }
 }
 
