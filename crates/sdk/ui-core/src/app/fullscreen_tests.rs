@@ -58,7 +58,6 @@ impl Widget for FsRoot {
 
 #[test]
 fn fullscreen_decisions_and_transitions_notify_and_relayout() {
-    // Case `decision_truth_table`.
     {
         assert_eq!(fullscreen_request_decision(false, None), None);
         assert_eq!(fullscreen_request_decision(true, None), None);
@@ -68,7 +67,6 @@ fn fullscreen_decisions_and_transitions_notify_and_relayout() {
         assert_eq!(fullscreen_request_decision(true, Some(false)), Some(false));
     }
 
-    // Case `actual_state_transitions_notify_root_once_per_edge`.
     {
         let (root, changes) = FsRoot::new(None);
         let mut app = App::new(State::new(), Box::new(root));
@@ -81,7 +79,6 @@ fn fullscreen_decisions_and_transitions_notify_and_relayout() {
         assert!(!app.window.fullscreen_active);
     }
 
-    // Case `entering_fullscreen_marks_resync_and_relayout`.
     {
         let (root, _changes) = FsRoot::new(Some(true));
         let mut app = App::new(State::new(), Box::new(root));

@@ -3,7 +3,6 @@ use tilo_ui::presence::{PathSegment, PresenceCtx, PresenceKey, SelectionRange};
 
 #[test]
 fn presence_keys_and_locations_are_single_per_peer() {
-    // Case `presence_key_widget_path_equality_and_hash`.
     {
         let a = PresenceKey::Widget {
             path: vec![PathSegment::Field("root".into()), PathSegment::Index(2)],
@@ -23,7 +22,6 @@ fn presence_keys_and_locations_are_single_per_peer() {
         assert_eq!(map.get(&c), None);
     }
 
-    // Case `selection_range_construction`.
     {
         let r = SelectionRange { start: 3, end: 10 };
         assert_eq!(r.len(), 7);
@@ -32,7 +30,6 @@ fn presence_keys_and_locations_are_single_per_peer() {
         assert!(caret.is_caret());
     }
 
-    // Case `caret_is_single_location_per_peer`.
     {
         // A caret moving from block A to B must not leave a stale one on A.
         let mut ctx = PresenceCtx::empty();
@@ -64,7 +61,6 @@ fn presence_keys_and_locations_are_single_per_peer() {
         );
     }
 
-    // Case `selection_is_single_location_per_peer`.
     {
         let mut ctx = PresenceCtx::empty();
         let a = PresenceKey::Widget {
@@ -87,7 +83,6 @@ fn presence_keys_and_locations_are_single_per_peer() {
 
 #[test]
 fn presence_queries_return_peers_pointers_and_selections() {
-    // Case `peers_on_returns_users_registered_against_key`.
     {
         let mut ctx = PresenceCtx::empty();
         let key = PresenceKey::Tab { id: "tab-1".into() };
@@ -100,7 +95,6 @@ fn presence_queries_return_peers_pointers_and_selections() {
         assert!(peers.iter().any(|u| u.0 == "bob"));
     }
 
-    // Case `pointer_for_returns_latest_coord`.
     {
         let mut ctx = PresenceCtx::empty();
         let key = PresenceKey::Workspace { id: "ws-1".into() };
@@ -110,7 +104,6 @@ fn presence_queries_return_peers_pointers_and_selections() {
         assert_eq!(pos, Some((30.0, 40.0)));
     }
 
-    // Case `selection_for_returns_range`.
     {
         let mut ctx = PresenceCtx::empty();
         let key = PresenceKey::Widget {
@@ -132,7 +125,6 @@ use vello::Scene;
 
 #[test]
 fn peer_carets_and_selections_paint_into_scenes() {
-    // Case `draw_peer_caret_emits_scene_content`.
     {
         let ctx = PresenceCtx::empty();
         let mut scene = Scene::new();
@@ -154,7 +146,6 @@ fn peer_carets_and_selections_paint_into_scenes() {
         );
     }
 
-    // Case `draw_peer_selection_emits_scene_content`.
     {
         let ctx = PresenceCtx::empty();
         let mut scene = Scene::new();
@@ -169,7 +160,6 @@ fn peer_carets_and_selections_paint_into_scenes() {
         assert!(!scene.encoding().is_empty());
     }
 
-    // Case `text_input_renders_peer_caret_when_presence_ctx_has_caret`.
     {
         use tilo_ui::text_render::TextRenderer;
         use tilo_ui::widget::TextInput;

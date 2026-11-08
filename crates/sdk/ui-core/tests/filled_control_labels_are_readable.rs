@@ -77,7 +77,6 @@ const STYLES: [ButtonRole; 4] = [
 
 #[test]
 fn filled_control_labels_clear_their_floor_in_every_theme_and_state() {
-    // Case `every_button_style_label_clears_its_floor_in_every_theme`.
     {
         let mut failures = Vec::new();
         for theme in themes() {
@@ -105,7 +104,6 @@ fn filled_control_labels_clear_their_floor_in_every_theme_and_state() {
         );
     }
 
-    // Case `a_button_label_holds_its_colour_across_interaction`.
     // Deriving the label per state would let it cross the floor mid-gesture and
     // flip from white to near-black under the pointer. Whatever a style resolves,
     // it resolves once, for every state it can be in.
@@ -127,7 +125,6 @@ fn filled_control_labels_clear_their_floor_in_every_theme_and_state() {
         }
     }
 
-    // Case `every_segment_label_clears_its_floor_in_every_theme`.
     {
         let mut failures = Vec::new();
         for theme in themes() {
@@ -164,7 +161,6 @@ fn filled_control_labels_clear_their_floor_in_every_theme_and_state() {
 
 #[test]
 fn toggle_knobs_stay_visible_and_in_place() {
-    // Case `every_toggle_knob_stays_visible_on_its_track`.
     // The knob is a shape, not text, so it answers to the non-text floor — but it
     // answers to it on the accent track as well as the neutral one, and the accent
     // is the track a theme is free to make bright.
@@ -210,7 +206,6 @@ fn toggle_knobs_stay_visible_and_in_place() {
         );
     }
 
-    // Case `a_toggle_knob_never_swaps_sides_under_the_pointer`.
     // Hover must read as the same knob pressed harder, not as a different one.
     // Resolving the resting and hovered tones independently is what produced a
     // near-white knob that turned near-black on hover, each measuring fine alone.

@@ -148,7 +148,6 @@ fn directory() -> AuthorDirectory {
 )]
 #[test]
 fn agent_work_is_undone_through_the_document_not_the_peer_stack() {
-    // Case `a_peer_cannot_reach_the_agents_work_through_the_undo_stack`.
     {
         // Alice's session, holding the document as `tilo_ui::State` — the real thing an
         // app runs on.
@@ -184,7 +183,6 @@ fn agent_work_is_undone_through_the_document_not_the_peer_stack() {
         );
     }
 
-    // Case `the_peer_can_undo_the_agents_work_by_addressing_it_in_the_document`.
     {
         let (mut report, _intro) = Report::started_by_a_person();
         let before = report.body();
@@ -218,7 +216,6 @@ fn agent_work_is_undone_through_the_document_not_the_peer_stack() {
         );
     }
 
-    // Case `the_undo_is_a_new_change_and_leaves_the_agents_authorship_standing`.
     {
         let (mut report, _intro) = Report::started_by_a_person();
         agent_writes_two_paragraphs(&mut report);
@@ -258,7 +255,6 @@ fn agent_work_is_undone_through_the_document_not_the_peer_stack() {
         );
     }
 
-    // Case `every_peer_converges_on_the_undo`.
     {
         let (mut report, _intro) = Report::started_by_a_person();
         agent_writes_two_paragraphs(&mut report);
@@ -302,7 +298,6 @@ fn agent_work_is_undone_through_the_document_not_the_peer_stack() {
 )]
 #[test]
 fn undo_keeps_later_human_edits_and_is_idempotent() {
-    // Case `a_paragraph_the_person_edited_afterwards_is_kept_and_reported`.
     {
         let (mut report, _intro) = Report::started_by_a_person();
         let (_closing, caption) = agent_writes_two_paragraphs(&mut report);
@@ -360,7 +355,6 @@ fn undo_keeps_later_human_edits_and_is_idempotent() {
         );
     }
 
-    // Case `a_persons_edit_elsewhere_does_not_block_the_undo`.
     {
         // Adding a paragraph next to the agent's is not building on it. If a shared
         // parent container counted as a conflict, nothing would ever be undoable in
@@ -397,7 +391,6 @@ fn undo_keeps_later_human_edits_and_is_idempotent() {
         assert!(!body.contains("Figure 1"), "{body:?}");
     }
 
-    // Case `a_field_somebody_overwrote_afterwards_is_kept`.
     {
         let (_workspace, mut photo, _report, run) = one_instruction_two_apps();
 
@@ -431,7 +424,6 @@ fn undo_keeps_later_human_edits_and_is_idempotent() {
         );
     }
 
-    // Case `undoing_a_run_twice_does_not_undo_it_twice_over`.
     {
         let (mut report, _intro) = Report::started_by_a_person();
         let before = report.body();
@@ -462,7 +454,6 @@ fn undo_keeps_later_human_edits_and_is_idempotent() {
 )]
 #[test]
 fn runs_span_applications_and_are_refused_whole_when_unresolvable() {
-    // Case `a_run_from_another_document_is_refused_rather_than_guessed_at`.
     {
         let (mut report, _intro) = Report::started_by_a_person();
         agent_writes_two_paragraphs(&mut report);
@@ -477,7 +468,6 @@ fn runs_span_applications_and_are_refused_whole_when_unresolvable() {
         );
     }
 
-    // Case `one_instruction_across_two_applications_is_one_undo`.
     {
         let (_workspace, mut photo, mut report, run) = one_instruction_two_apps();
 
@@ -529,7 +519,6 @@ fn runs_span_applications_and_are_refused_whole_when_unresolvable() {
         );
     }
 
-    // Case `a_run_is_refused_whole_when_one_application_is_not_open`.
     {
         let (_workspace, photo, mut report, run) = one_instruction_two_apps();
         let untouched = report.body();
@@ -558,7 +547,6 @@ fn runs_span_applications_and_are_refused_whole_when_unresolvable() {
         assert_eq!(crop(&photo), photo_before, "and so was the other one");
     }
 
-    // Case `a_pre_flight_names_every_missing_application_before_anything_is_written`.
     {
         let (_workspace, _photo, _report, run) = one_instruction_two_apps();
         let missing = unreachable_steps(&run, |_| false);
@@ -682,7 +670,6 @@ fn one_instruction_two_apps() -> (AutoCommit, AutoCommit, Report, AgentRun) {
 
 #[test]
 fn run_records_replicate_without_polluting_history() {
-    // Case `the_recorded_run_replicates_and_names_the_same_work_on_another_peer`.
     {
         let (mut workspace, mut photo, mut report, _run) = one_instruction_two_apps();
 
@@ -721,7 +708,6 @@ fn run_records_replicate_without_polluting_history() {
         assert_eq!(crop(&photo), (4000, 3000));
     }
 
-    // Case `the_run_record_does_not_become_a_row_in_the_history`.
     {
         // The band is already on screen as the run; a "1 field" row under it would
         // be noise, and would invite undoing the bookkeeping instead of the work.
@@ -741,7 +727,6 @@ fn run_records_replicate_without_polluting_history() {
         );
     }
 
-    // Case `a_run_with_no_steps_is_not_recorded`.
     {
         // An instruction that changed nothing has nothing to undo, and a record
         // claiming otherwise would put an affordance on screen that can only fail.
@@ -751,7 +736,6 @@ fn run_records_replicate_without_polluting_history() {
         assert!(read_runs(&r).is_empty());
     }
 
-    // Case `the_schema_genesis_is_nobodys_run`.
     {
         // Every tilo-doc document opens with a change written under a fixed actor that
         // no person is. Addressing that actor must find nothing: inverting the
@@ -778,7 +762,6 @@ fn run_records_replicate_without_polluting_history() {
         );
     }
 
-    // Case `entry_ids_are_stable_across_peers`.
     {
         // The whole cross-peer story rests on this: a run recorded on one machine
         // must name the same changes on another.
@@ -804,7 +787,6 @@ fn run_records_replicate_without_polluting_history() {
 
 #[test]
 fn author_chips_find_and_bound_an_authors_run() {
-    // Case `an_author_chip_has_everything_it_needs_to_undo_that_author`.
     {
         // A chip reading "Claude" next to a line knows one thing: whose line it is.
         // That is enough — `latest_run_by` turns an identity into the band, and the
@@ -843,7 +825,6 @@ fn author_chips_find_and_bound_an_authors_run() {
         assert!(!body.contains("Figure 1"), "{body:?}");
     }
 
-    // Case `a_run_found_by_author_stops_at_somebody_elses_change`.
     {
         // The band must never swallow a collaborator's work just because it sits
         // between two of the agent's changes.

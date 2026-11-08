@@ -44,7 +44,6 @@ fn layout_picker(picker: &mut ColorPicker) -> (TaffyTree<()>, NodeId) {
 )]
 #[test]
 fn embedded_hex_input_takes_focus_and_applies_only_valid_hex() {
-    // Case `typing_hex_into_picker_updates_picker_color`.
     {
         let mut picker = ColorPicker::new(Color::from_rgba8(99, 102, 241, 255));
         let (taffy, root_node) = layout_picker(&mut picker);
@@ -76,7 +75,6 @@ fn embedded_hex_input_takes_focus_and_applies_only_valid_hex() {
         assert_eq!((c.r(), c.g(), c.b()), (0x10, 0xC0, 0xF0));
     }
 
-    // Case `typing_invalid_hex_leaves_picker_color_unchanged`.
     {
         let mut picker = ColorPicker::new(Color::from_rgba8(99, 102, 241, 255));
         let (taffy, root_node) = layout_picker(&mut picker);
@@ -106,7 +104,6 @@ fn embedded_hex_input_takes_focus_and_applies_only_valid_hex() {
         assert_eq!((c.r(), c.g(), c.b()), (99, 102, 241));
     }
 
-    // Case `clicking_hex_input_focuses_it`.
     // Clicking the embedded hex input must actually focus it, not just route
     // focus to the picker's own node id. Drives a real cursor-move +
     // mouse-press flow (no test sentinel).
@@ -170,7 +167,6 @@ fn embedded_hex_input_takes_focus_and_applies_only_valid_hex() {
         );
     }
 
-    // Case `clicking_outside_hex_input_releases_input_focus`.
     // Press inside the SV square after focusing the input must release the
     // input's focus — otherwise keyboard events keep flowing into it even
     // after the user clicks away.

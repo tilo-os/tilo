@@ -149,7 +149,6 @@ pub(crate) fn native_chrome_app() -> App {
 }
 #[test]
 fn native_history_surface_composes_installs_and_keeps_editor_state() {
-    // Case `native_managed_app_automatically_composes_same_history_surface`.
     {
         let mut app = app();
         layout(&mut app);
@@ -170,7 +169,6 @@ fn native_history_surface_composes_installs_and_keeps_editor_state() {
         );
     }
 
-    // Case `native_dirty_editor_real_history_click_preserves_pending_heads_and_semantic_focus`.
     {
         let mut app = app();
         app.root_widget = Box::new(crate::widget::Column::new().push(Box::new(
@@ -217,7 +215,6 @@ fn native_history_surface_composes_installs_and_keeps_editor_state() {
         assert_eq!(editor_before.text_selection, after.text_selection);
     }
 
-    // Case `native_pointer_version_selection_restore_dialog_and_back_live_use_shared_surface`.
     {
         let mut app = app();
         layout(&mut app);
@@ -261,7 +258,6 @@ fn native_history_surface_composes_installs_and_keeps_editor_state() {
         assert!(app.history.as_ref().unwrap().live_visible());
     }
 
-    // Case `native_component_bundle_installs_history_in_existing_component_wake_scope`.
     {
         let (_host, component) = crate::history_mode::integration_tests::component_with_history();
         let mut app = App::from_component(
@@ -292,7 +288,6 @@ fn native_history_surface_composes_installs_and_keeps_editor_state() {
         assert!(!handle.is_active());
     }
 
-    // Case `replacing_installed_autosave_invalidates_history_and_old_modal_action`.
     {
         let mut app = app();
         layout(&mut app);
@@ -320,7 +315,6 @@ fn native_history_surface_composes_installs_and_keeps_editor_state() {
         assert_eq!(app.state.doc.base_heads(), heads);
     }
 
-    // Case `native_hidden_resource_at_action_cannot_bypass_history_presentation`.
     {
         let probe = crate::history_mode::isolation_tests::native_effect_probe_parts(
             "live",
@@ -365,7 +359,6 @@ fn native_history_surface_composes_installs_and_keeps_editor_state() {
         );
     }
 
-    // Case `native_history_tab_shift_tab_release_and_ime_keep_pending_live_editor_isolated`.
     {
         let mut app = app();
         app.root_widget = Box::new(crate::widget::TextInput::local().with_id("pending-editor"));
@@ -475,7 +468,6 @@ fn routed_document(
 }
 #[test]
 fn owned_routes_isolate_documents_and_admit_only_custodied_bytes() {
-    // Case `native_document_envelope_refuses_foreign_route_without_touching_outer_state`.
     {
         use automerge::ReadDoc;
         let mut app = App::new_with_controlled_inputs(
@@ -504,7 +496,6 @@ fn owned_routes_isolate_documents_and_admit_only_custodied_bytes() {
         );
     }
 
-    // Case `native_owned_routes_isolate_two_documents_and_outer_for_snapshot_incremental_and_publication`.
     {
         use automerge::ReadDoc;
         let mut fixture = RoutedOwners::new();
@@ -623,7 +614,6 @@ fn owned_routes_isolate_documents_and_admit_only_custodied_bytes() {
         );
     }
 
-    // Case `owned_route_frontier_moves_only_when_the_transport_accepts_the_change`.
     {
         let mut fixture = RoutedOwners::new();
         let refusal = crate::collaboration::CollabSendError::TooLarge {
@@ -678,7 +668,6 @@ fn owned_routes_isolate_documents_and_admit_only_custodied_bytes() {
         );
     }
 
-    // Case `document_envelopes_never_enter_generic_widget_notification_before_custody`.
     {
         let probe = crate::history_mode::isolation_tests::native_effect_probe_parts(
             "observer",
@@ -718,7 +707,6 @@ fn owned_routes_isolate_documents_and_admit_only_custodied_bytes() {
         );
     }
 
-    // Case `native_route_epoch_change_retires_queued_bytes_before_later_drain`.
     {
         let mut fixture = RoutedOwners::new();
         let incoming = fixture.remote(0, "old-epoch", false);
@@ -756,7 +744,6 @@ fn owned_routes_isolate_documents_and_admit_only_custodied_bytes() {
         assert_eq!(fixture.value(0, "draft").as_deref(), Some("local"));
     }
 
-    // Case `native_scrollback_and_live_share_exact_primary_and_owned_route_admission`.
     {
         use automerge::ReadDoc;
         let mut fixture = RoutedOwners::new();
@@ -1495,7 +1482,6 @@ fn signed_package_primary_refuses_identity_stamps_and_scope_changes() {
 }
 #[test]
 fn remote_delivery_waits_for_pending_edits_and_recovers_overflow() {
-    // Case `native_owned_remote_delivery_preserves_pending_edits_until_normal_boundary`.
     {
         for incremental in [false, true] {
             let mut fixture = RoutedOwners::new();
@@ -1559,7 +1545,6 @@ fn remote_delivery_waits_for_pending_edits_and_recovers_overflow() {
         }
     }
 
-    // Case `native_owned_committed_offline_change_is_in_first_reconnected_snapshot`.
     {
         use automerge::ReadDoc;
         let mut fixture = RoutedOwners::new();
@@ -1630,7 +1615,6 @@ fn remote_delivery_waits_for_pending_edits_and_recovers_overflow() {
         );
     }
 
-    // Case `native_remote_waits_for_logical_owned_edit_and_drains_after_normal_undo_boundary`.
     {
         let mut fixture = RoutedOwners::new();
         let incoming = fixture.remote(0, "remote-logical", true);
@@ -1683,7 +1667,6 @@ fn remote_delivery_waits_for_pending_edits_and_recovers_overflow() {
         );
     }
 
-    // Case `native_remote_queue_overflow_is_visible_and_recovers_only_with_fresh_snapshot`.
     {
         let mut fixture = RoutedOwners::new();
         fixture.install_history();
@@ -1987,7 +1970,6 @@ fn round1_malformed_mutation(
 
 #[test]
 fn malformed_remote_bytes_quarantine_and_recover_with_a_snapshot() {
-    // Case `round1_owned_malformed_remote_recovers_with_snapshot_after_local_edit_finishes`.
     {
         for incremental in [false, true] {
             let mut fixture = RoutedOwners::new();
@@ -2112,7 +2094,6 @@ fn malformed_remote_bytes_quarantine_and_recover_with_a_snapshot() {
         }
     }
 
-    // Case `round1_primary_malformed_remote_recovers_with_snapshot_after_local_edit_finishes`.
     {
         use automerge::ReadDoc;
         for incremental in [false, true] {
@@ -2230,7 +2211,6 @@ fn malformed_remote_bytes_quarantine_and_recover_with_a_snapshot() {
         }
     }
 
-    // Case `round1_malformed_incremental_tail_never_partly_applies_valid_prefix`.
     {
         let mut fixture = RoutedOwners::new();
         let valid = fixture.remote(0, "must-not-partly-apply", true);
@@ -2260,7 +2240,6 @@ fn malformed_remote_bytes_quarantine_and_recover_with_a_snapshot() {
         );
     }
 
-    // Case `round1_quarantining_bad_bytes_preserves_other_admitted_updates_and_recovers_in_order`.
     {
         let mut fixture = RoutedOwners::new();
         let binding = fixture.bindings[0].clone();
@@ -2359,19 +2338,16 @@ fn malformed_remote_bytes_quarantine_and_recover_with_a_snapshot() {
 
 #[test]
 fn deferred_remote_recovery_retains_later_deltas_and_requires_a_new_snapshot_on_overflow() {
-    // Case `round2_owned_deferred_recovery_retains_later_delta_and_newer_snapshot`.
     {
         for snapshot in [false, true] {
             round2_deferred_recovery_keeps_later_traffic(true, snapshot, false);
         }
     }
-    // Case `round2_primary_deferred_recovery_retains_later_delta_and_newer_snapshot`.
     {
         for snapshot in [false, true] {
             round2_deferred_recovery_keeps_later_traffic(false, snapshot, false);
         }
     }
-    // Case `round2_deferred_recovery_overflow_requires_new_snapshot_on_both_routes`.
     {
         for owned in [false, true] {
             round2_deferred_recovery_keeps_later_traffic(owned, false, true);

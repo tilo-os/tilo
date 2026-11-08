@@ -45,7 +45,6 @@ fn seed_pages() -> Vec<PageEntry> {
 fn link_popover_filters_and_commits_page_links() {
     // Motion reads at its end: this test checks the resting frame.
     let _settled = tilo_ui::motion::testing::settled();
-    // Case `link_popover_filters_by_typed_filter`.
     {
         let mut p = tilo_ui::widget::link_popover::LinkPopover::new();
         p.set_items(seed_pages());
@@ -55,7 +54,6 @@ fn link_popover_filters_and_commits_page_links() {
         assert_eq!(p.highlighted().unwrap().title, "Welcome");
     }
 
-    // Case `enter_returns_chosen_page_entry`.
     {
         let mut p = tilo_ui::widget::link_popover::LinkPopover::new();
         p.set_items(seed_pages());
@@ -66,7 +64,6 @@ fn link_popover_filters_and_commits_page_links() {
         assert_eq!(chosen.title, "Roadmap");
     }
 
-    // Case `block_editor_double_bracket_opens_popover_and_commits_link`.
     {
         let mut editor = BlockEditor::new();
         editor.set_link_pages(seed_pages());

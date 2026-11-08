@@ -114,7 +114,6 @@ fn spacing_audit_sees_what_it_polices_and_literals_do_not_grow() {
     ] {
         assert!(!is_authored_geometry(std::path::Path::new(path)));
     }
-    // Case `spacing_patterns_match_the_shapes_they_claim`.
     // The scanner must be able to see what it polices. Each rule is exercised
     // on a line that must count and one that must not, so a regex edit that
     // silently stops matching fails here instead of passing an empty audit.
@@ -220,7 +219,6 @@ fn spacing_audit_sees_what_it_polices_and_literals_do_not_grow() {
         assert_eq!(count(spacer, "Spacer::flex()"), 0);
     }
 
-    // Case `spacing_literals_do_not_grow`.
     // The `#[cfg(test)]` span finder's shapes are pinned once in
     // `support::ratchet` (every ratchet scans through the same finder).
     // Spacing literals in widget, chrome and app production code may

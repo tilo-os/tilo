@@ -21,7 +21,6 @@ use tilo_ui::theme::Theme;
 exactly representable as u32"
 )]
 fn ghost_cursor_paints_only_remote_presence() {
-    // Case `ghost_cursor_rendered_at_remote_position`.
     {
         // 128x96 is just enough to fit the caret + name pill without
         // clipping; small enough to stay sub-millisecond on llvmpipe.
@@ -91,7 +90,6 @@ fn ghost_cursor_paints_only_remote_presence() {
         );
     }
 
-    // Case `ghost_cursor_with_empty_presence_paints_nothing`.
     {
         // An empty `remote_cursors` vec must short-circuit cleanly, or an
         // idle peer-list would still drag through TextRenderer / theme

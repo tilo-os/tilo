@@ -87,7 +87,6 @@ fn app_with_reader() -> (App, SharedRecorder) {
 
 #[test]
 fn reader_narrates_focus_and_obeys_its_enablement() {
-    // Case `autofocus_narrates_the_focused_widget`.
     {
         let (mut app, rec) = app_with_reader();
         app.autofocus_first = true;
@@ -95,7 +94,6 @@ fn reader_narrates_focus_and_obeys_its_enablement() {
         assert_eq!(rec.0.borrow().spoken(), &["Save, button".to_string()]);
     }
 
-    // Case `directional_focus_change_narrates_new_widget`.
     {
         let (mut app, rec) = app_with_reader();
         app.autofocus_first = true;
@@ -111,7 +109,6 @@ fn reader_narrates_focus_and_obeys_its_enablement() {
         );
     }
 
-    // Case `disabling_reader_silences_and_stops`.
     {
         let (mut app, rec) = app_with_reader();
         app.autofocus_first = true;
@@ -134,7 +131,6 @@ fn reader_narrates_focus_and_obeys_its_enablement() {
         );
     }
 
-    // Case `reader_disabled_by_default_unless_env`.
     {
         let mut app = App::new(State::new(), Box::new(TwoButtons::new()));
         app.autofocus_first = true;
@@ -145,7 +141,6 @@ fn reader_narrates_focus_and_obeys_its_enablement() {
         );
     }
 
-    // Case `screen_reader_key_layer_is_noop_when_disabled`.
     {
         // winit's KeyEvent has no public constructor; the disabled-guard is
         // the first line of the method, so a non-keyboard event exercises it.
@@ -161,7 +156,6 @@ fn reader_narrates_focus_and_obeys_its_enablement() {
         );
     }
 
-    // Case `screen_reader_key_layer_ignores_non_keyboard_when_enabled`.
     {
         let (mut app, _rec) = app_with_reader();
         app.init_layout();
@@ -222,7 +216,6 @@ fn app_with_reader_over(root: Box<dyn Widget>) -> (App, SharedRecorder) {
 
 #[test]
 fn live_regions_announce_with_their_priority_only_when_the_reader_is_on() {
-    // Case `live_region_change_announces_without_moving_focus`.
     {
         let live = LiveWidget::new("Notifications", crate::a11y::Politeness::Assertive);
         let val = live.value.clone();
@@ -253,7 +246,6 @@ fn live_regions_announce_with_their_priority_only_when_the_reader_is_on() {
         );
     }
 
-    // Case `assertive_live_region_uses_important_interrupting_priority`.
     {
         let live = LiveWidget::new("Errors", crate::a11y::Politeness::Assertive);
         let val = live.value.clone();
@@ -269,7 +261,6 @@ fn live_regions_announce_with_their_priority_only_when_the_reader_is_on() {
         assert!(last.interrupt, "assertive live regions interrupt");
     }
 
-    // Case `polite_live_region_uses_notification_non_interrupting_priority`.
     {
         let live = LiveWidget::new("Status", crate::a11y::Politeness::Polite);
         let val = live.value.clone();
@@ -285,7 +276,6 @@ fn live_regions_announce_with_their_priority_only_when_the_reader_is_on() {
         assert!(!last.interrupt, "polite live regions do not interrupt");
     }
 
-    // Case `live_region_scan_is_noop_when_reader_off`.
     {
         let live = LiveWidget::new("Notifications", crate::a11y::Politeness::Assertive);
         let val = live.value.clone();
@@ -369,7 +359,6 @@ fn app_with_focused_input(initial: &str) -> (App, SharedRecorder, NodeId) {
 
 #[test]
 fn caret_review_announces_characters_and_words_for_text_widgets() {
-    // Case `caret_move_one_char_announces_the_character`.
     {
         let (mut app, rec, id) = app_with_focused_input("abc");
         let pre = app.text_review_snapshot();
@@ -386,7 +375,6 @@ fn caret_review_announces_characters_and_words_for_text_widgets() {
         );
     }
 
-    // Case `caret_jump_to_start_announces_the_word`.
     {
         let (mut app, rec, id) = app_with_focused_input("hello world");
         let pre = app.text_review_snapshot();
@@ -402,7 +390,6 @@ fn caret_review_announces_characters_and_words_for_text_widgets() {
         );
     }
 
-    // Case `no_caret_move_announces_nothing`.
     {
         let (mut app, rec, _id) = app_with_focused_input("abc");
         let pre = app.text_review_snapshot();
@@ -414,7 +401,6 @@ fn caret_review_announces_characters_and_words_for_text_widgets() {
         );
     }
 
-    // Case `text_review_snapshot_is_none_for_non_text_widget`.
     {
         let (mut app, _rec) = app_with_reader();
         app.autofocus_first = true;

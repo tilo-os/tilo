@@ -53,7 +53,6 @@ fn host() -> (BTreeMap<u64, Mount>, Sender<Message>, Receiver<Message>) {
 
 #[test]
 fn wake_scopes_route_only_to_their_own_mounts_and_hosts() {
-    // Case `two_mounts_on_one_host_sync_only_their_own_background_changes`.
     {
         let (mut mounts, tx, rx) = host();
         mounts.insert(10, mount(10, tx.clone()));
@@ -72,7 +71,6 @@ fn wake_scopes_route_only_to_their_own_mounts_and_hosts() {
         assert_eq!(mounts.get(&20).unwrap().syncs, 1);
     }
 
-    // Case `two_hosts_keep_destinations_when_the_other_binds_and_drops`.
     {
         let (mut a, tx_a, rx_a) = host();
         let (mut b, tx_b, rx_b) = host();
@@ -93,7 +91,6 @@ fn wake_scopes_route_only_to_their_own_mounts_and_hosts() {
 
 #[test]
 fn queued_and_detached_wakes_never_reach_the_wrong_mount() {
-    // Case `queued_wake_cannot_recreate_missing_mount_or_reach_same_id_replacement`.
     {
         let (mut mounts, tx, rx) = host();
         mounts.insert(7, mount(7, tx.clone()));
@@ -117,7 +114,6 @@ fn queued_and_detached_wakes_never_reach_the_wrong_mount() {
         assert_eq!(mounts.get(&7).unwrap().state.get(), 9);
     }
 
-    // Case `explicitly_detached_headless_work_stays_functional_after_host_creation`.
     {
         let (state, task, mut request) = {
             let _detached = WakeScope::enter_detached();
