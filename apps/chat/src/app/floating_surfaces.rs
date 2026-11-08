@@ -3,11 +3,11 @@
 //! it (adopted, suspended, closed, reattached).
 
 use automerge::ObjId;
-use ui::Widget;
 use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
-use ui::widget::FloatingSurfaceProvider;
+use ui::widget::{FloatingSurfaceProvider, Widget};
+use ui::winit::event::WindowEvent;
 use vello::Scene;
 use vello::kurbo::{Affine, Rect};
 
@@ -15,6 +15,9 @@ use super::ChatApp;
 
 impl FloatingSurfaceProvider for ChatApp {
     fn floating_surface_accessibility(&self, id: &str) -> Option<ui::a11y::AccessNode> {
+        if id == crate::live::activity(&self.call.channel) {
+            return self.call_card_accessibility();
+        }
         self.agent_surfaces
             .values()
             .find(|surface| surface.id == id && !surface.is_closed())?
@@ -29,6 +32,9 @@ impl FloatingSurfaceProvider for ChatApp {
         state: &mut ui::widget::Edits<'_>,
         path: &ObjId,
     ) -> bool {
+        if id == crate::live::activity(&self.call.channel) {
+            return self.activate_call_card(target, action, state);
+        }
         let Some((source, child_target)) = target
             .strip_prefix("agent-surface:")
             .and_then(|target| target.split_once('|'))
@@ -380,5 +386,79 @@ impl FloatingSurfaceProvider for ChatApp {
 
     fn on_floating_surface_event_source(&mut self, id: Option<&str>) {
         self.input_agent_surface = id.map(str::to_owned);
+    }
+
+    fn floating_surface_event(
+        &mut self,
+        id: &str,
+        event: &WindowEvent,
+        ctx: &mut ui::widget::EventCtx<'_>,
+    ) -> bool {
+        // The pointer stands on the card, in the desk's coordinates: the
+        // frame the card's hits were recorded in, and the frame the app's
+        // card-owned input reads.
+        let previous = self.input_agent_surface.replace(id.to_owned());
+        <Self as Widget>::handle_event(self, event, ctx);
+        self.input_agent_surface = previous;
+        *ctx.handled
+    }
+}
+
+impl ChatApp {
+    /// The card over the desk as assistive technology reads it: who the call
+    /// is with and for how long, how it is connected, and the controls the
+    /// card draws, where it draws them.
+    fn call_card_accessibility(&self) -> Option<ui::a11y::AccessNode> {
+        use ui::a11y::{AccessNode, AccessState, Role};
+        if !self.call.active || self.card_hits.is_empty() {
+            return None;
+        }
+        let mut children = vec![self.call_reading(self.call_video_rect())];
+        children.extend(
+            Self::deduplicate_semantic_hits(self.semantic_hits_from(&self.card_hits))
+                .into_iter()
+                .map(|(rect, hit, name, role, selected)| {
+                    let mut state = AccessState::new().focusable(true);
+                    if matches!(role, Role::ToggleButton) {
+                        state = state.checked(selected);
+                    }
+                    AccessNode::new(role)
+                        .with_name(name.text)
+                        .with_interface_name(name.interface)
+                        .with_state(state)
+                        .with_bounds(rect)
+                        .with_action_target(hit.semantic_id())
+                }),
+        );
+        Some(
+            AccessNode::new(Role::Group)
+                .with_name(crate::i18n::t("chat-call-active"))
+                .with_bounds(self.call_video_rect())
+                .with_hashed_key(("call-card", &self.call.channel))
+                .with_children(children),
+        )
+    }
+
+    /// Press one of the card's controls, named the way the card's own
+    /// accessibility names it.
+    fn activate_call_card(
+        &mut self,
+        target: &str,
+        action: &ui::a11y::Action,
+        state: &mut ui::widget::Edits<'_>,
+    ) -> bool {
+        if !matches!(action, ui::a11y::Action::Activate) {
+            return false;
+        }
+        let Some((_, hit, ..)) =
+            Self::deduplicate_semantic_hits(self.semantic_hits_from(&self.card_hits))
+                .into_iter()
+                .find(|(_, hit, ..)| hit.semantic_id() == target)
+        else {
+            return false;
+        };
+        self.on_hit(hit, state);
+        self.request_relayout();
+        true
     }
 }

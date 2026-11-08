@@ -34,6 +34,7 @@ use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
 use winit::event::{ElementState, Modifiers, MouseButton, WindowEvent};
 
+mod cards;
 mod shortcut_actions;
 mod start_cards;
 
@@ -141,6 +142,11 @@ pub struct DeskLayer {
     /// a secondary press opens stands at the pointer.
     cursor: Option<Point>,
     asks: Rc<RefCell<Vec<DesktopAsk>>>,
+    /// The cards the windows' apps present over the desk, for a host with no
+    /// compositor to give each one a window of its own.
+    cards: cards::Cards,
+    /// Whether this desk hosts those cards.
+    hosts_cards: bool,
     rect: Rect,
 }
 
@@ -228,8 +234,20 @@ impl DeskLayer {
             workspace: Cell::new(workspace),
             cursor: None,
             asks,
+            cards: cards::Cards::default(),
+            hosts_cards: false,
             rect: Rect::ZERO,
         }
+    }
+
+    /// Host the cards the windows' apps present over the desk: the desk draws
+    /// each at the place its floating column gives it, and hands the app that
+    /// draws it the input and the reading that follow from there. A host that
+    /// gives a card a window of its own leaves this off.
+    #[must_use]
+    pub fn with_cards(mut self) -> Self {
+        self.hosts_cards = true;
+        self
     }
 
     /// Where a secondary press landed, when `event` is one and the pointer stands on the desk: the
@@ -429,7 +447,11 @@ impl Widget for DeskLayer {
     );
 
     fn update(&mut self, state: &AppModel, path: &ModelPath) -> bool {
-        self.area.update(state, path)
+        let changed = self.area.update(state, path);
+        if !self.hosts_cards {
+            return changed;
+        }
+        self.follow_cards() || changed
     }
 
     fn build_layout(
@@ -476,6 +498,9 @@ impl Widget for DeskLayer {
         }
         self.backdrop.draw(scene, transform, text, theme, presence);
         ui::widget::draw_child(&mut self.area, scene, transform, text, theme, presence);
+        if self.hosts_cards {
+            self.draw_cards(scene, transform, text, theme, presence);
+        }
     }
 
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut EventCtx<'_>) {
@@ -486,6 +511,22 @@ impl Widget for DeskLayer {
             ));
         } else if matches!(event, WindowEvent::CursorLeft { .. }) {
             self.cursor = None;
+        }
+        // A card the desk stands over its windows takes the pointer where it
+        // is drawn: the app that paints it is the one the press is for.
+        if self.hosts_cards
+            && matches!(
+                event,
+                WindowEvent::CursorMoved { .. }
+                    | WindowEvent::MouseInput { .. }
+                    | WindowEvent::MouseWheel { .. }
+                    | WindowEvent::Touch(_)
+            )
+            && let Some(at) = self.cursor
+            && let Some(id) = self.card_at(at)
+            && self.card_event(&id, event, ctx)
+        {
+            return;
         }
         if let [_, _, area] = ctx.taffy.children(ctx.node_id).unwrap_or_default()[..] {
             self.area
@@ -561,6 +602,37 @@ impl Widget for DeskLayer {
             .iter()
             .filter_map(|child| child.next_wake_deadline())
             .min()
+    }
+
+    fn accessibility(&self) -> Option<ui::a11y::AccessNode> {
+        let cards = self.cards_accessibility();
+        if cards.is_empty() {
+            return None;
+        }
+        Some(
+            ui::a11y::AccessNode::new(ui::a11y::Role::Group)
+                .with_hashed_key("desk-cards")
+                .with_children(cards),
+        )
+    }
+
+    /// A control a card over the desk publishes is the app's: the press goes
+    /// to the app that draws the card.
+    fn perform_semantic_action(
+        &mut self,
+        target: &str,
+        action: &ui::a11y::Action,
+        state: &mut ui::widget::Edits<'_>,
+        path: &ui::widget::ModelPath,
+    ) -> bool {
+        if !self.hosts_cards {
+            return false;
+        }
+        let Some(surface) = self.area.children_mut().pop() else {
+            return false;
+        };
+        let (state, path) = ui::doc::document(state, path);
+        self.cards.press(surface, target, action, state, path)
     }
 
     fn name(&self) -> &'static str {

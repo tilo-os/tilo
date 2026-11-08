@@ -1388,6 +1388,18 @@ impl WindowGroup {
         self.hosts.iter().find(|(i, _)| *i == id).map(|(_, h)| &**h)
     }
 
+    /// The hosts whose tab is behind but whose app draws a card over the desk:
+    /// what they show is live, so the desk wakes, draws and marks them as it
+    /// does the tab in use.
+    fn card_hosts(&self) -> impl Iterator<Item = &TileHost> {
+        let active = self.bar.active_id();
+        self.hosts
+            .iter()
+            .filter(move |(id, _)| *id != active)
+            .map(|(_, host)| &**host)
+            .filter(|host| !FloatingSurfaceProvider::active_floating_surface_ids(*host).is_empty())
+    }
+
     pub(crate) fn discard_layout_nodes(&mut self) {
         self.node = None;
         self.laid_shape = None;
@@ -2822,6 +2834,17 @@ impl FloatingSurfaceProvider for WindowGroup {
         }
     }
 
+    fn floating_surface_event(
+        &mut self,
+        id: &str,
+        event: &winit::event::WindowEvent,
+        ctx: &mut crate::widget::EventCtx<'_>,
+    ) -> bool {
+        self.hosts.iter_mut().any(|(_, host)| {
+            FloatingSurfaceProvider::floating_surface_event(&mut **host, id, event, ctx)
+        })
+    }
+
     fn floating_surface_accessibility(&self, id: &str) -> Option<crate::a11y::AccessNode> {
         self.hosts.iter().find_map(|(_, host)| {
             FloatingSurfaceProvider::floating_surface_accessibility(&**host, id)
@@ -3000,6 +3023,7 @@ impl Widget for WindowGroup {
         self.children()
             .into_iter()
             .filter_map(Widget::next_wake_deadline)
+            .chain(self.card_hosts().filter_map(Widget::next_wake_deadline))
             .chain(self.edge_reveal_at())
             .min()
     }
@@ -3153,7 +3177,23 @@ impl Widget for WindowGroup {
         // The bar's hover dwell or aim hold that came due (its wake
         // deadline) opens its pill here, before the frame lays out.
         let bar = self.bar.update(s, p);
-        self.active_host_mut().is_some_and(|h| h.update(s, p)) || pressed || searched || bar
+        let active = self.bar.active_id();
+        let focused = self.active_host_mut().is_some_and(|h| h.update(s, p));
+        // A window whose app draws a card over the desk keeps running with
+        // its tab behind: the card is the app's live content, not the picture
+        // the last frame left, and the desk wakes it each second of a call.
+        let mut detached = false;
+        for (id, host) in &mut self.hosts {
+            if *id == active {
+                continue;
+            }
+            if !FloatingSurfaceProvider::active_floating_surface_ids(&**host).is_empty()
+                && host.update(s, p)
+            {
+                detached = true;
+            }
+        }
+        focused || detached || pressed || searched || bar
     }
     fn build_layout(
         &mut self,
@@ -3553,20 +3593,27 @@ impl Widget for WindowGroup {
                 && ((self.bar.needs_redraw() || self.bar.needs_animation_frame())
                     || (self.search.needs_redraw() || self.search.needs_animation_frame())))
             || self.active_host().is_some_and(Widget::needs_redraw)
+            || self.card_hosts().any(Widget::needs_redraw)
     }
     fn mark_drawn(&mut self) {
         self.grip_dirty = false;
         self.next_frame();
-        // The bar, its search and the active host: what the group draws.
+        // The bar, its search and the active host: what the group draws. A
+        // host drawing a card over the desk draws that card here too, so what
+        // it recorded is this frame's.
         let shows_bar = self.navigation_bar_visible();
         if shows_bar {
             self.bar.mark_drawn();
             self.search.mark_drawn();
         }
         let active = self.bar.active_id();
-        if let Some((id, host)) = self.hosts.iter_mut().find(|(id, _)| *id == active) {
-            host.set_panic_scope(*id);
-            host.mark_drawn();
+        for (id, host) in &mut self.hosts {
+            let draws_card = *id != active
+                && !FloatingSurfaceProvider::active_floating_surface_ids(&**host).is_empty();
+            if *id == active || draws_card {
+                host.set_panic_scope(*id);
+                host.mark_drawn();
+            }
         }
     }
     /// Layout follows the built tree: the tab bar (whenever it was built) and

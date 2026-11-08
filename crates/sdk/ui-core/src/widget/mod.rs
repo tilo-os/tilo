@@ -900,6 +900,18 @@ pub trait FloatingSurfaceProvider {
     /// host resets this immediately after dispatch; it grants no authority.
     fn on_floating_surface_event_source(&mut self, _id: Option<&str>) {}
 
+    /// Deliver one input event aimed at the card `id`, in the desk's
+    /// coordinates: the frame the card's hits were recorded in. Answers
+    /// whether the card took the event.
+    fn floating_surface_event(
+        &mut self,
+        _id: &str,
+        _event: &crate::winit::event::WindowEvent,
+        _ctx: &mut EventCtx<'_>,
+    ) -> bool {
+        false
+    }
+
     /// The retained semantic subtree presented in one secondary window.
     fn floating_surface_accessibility(&self, _id: &str) -> Option<crate::a11y::AccessNode> {
         None
@@ -2547,6 +2559,12 @@ pub trait FloatingSurfaceWidgetExt {
     fn on_floating_surface_focus_changed(&mut self, id: Option<&str>, focused: bool);
     fn on_floating_surface_ime_source_changed(&mut self, id: Option<&str>);
     fn on_floating_surface_event_source(&mut self, id: Option<&str>);
+    fn floating_surface_event(
+        &mut self,
+        id: &str,
+        event: &crate::winit::event::WindowEvent,
+        ctx: &mut EventCtx<'_>,
+    ) -> bool;
     fn floating_surface_accessibility(&self, id: &str) -> Option<crate::a11y::AccessNode>;
     fn perform_floating_surface_accessibility_action(
         &mut self,
@@ -2610,6 +2628,16 @@ impl<T: Widget + ?Sized> FloatingSurfaceWidgetExt for T {
         if let Some(provider) = capability::capability_mut::<dyn FloatingSurfaceProvider>(self) {
             provider.on_floating_surface_event_source(id);
         }
+    }
+
+    fn floating_surface_event(
+        &mut self,
+        id: &str,
+        event: &crate::winit::event::WindowEvent,
+        ctx: &mut EventCtx<'_>,
+    ) -> bool {
+        capability::capability_mut::<dyn FloatingSurfaceProvider>(self)
+            .is_some_and(|provider| provider.floating_surface_event(id, event, ctx))
     }
 
     fn floating_surface_accessibility(&self, id: &str) -> Option<crate::a11y::AccessNode> {

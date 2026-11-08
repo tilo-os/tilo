@@ -3761,6 +3761,17 @@ impl FloatingSurfaceProvider for GroupRow {
         }
     }
 
+    fn floating_surface_event(
+        &mut self,
+        id: &str,
+        event: &winit::event::WindowEvent,
+        ctx: &mut crate::widget::EventCtx<'_>,
+    ) -> bool {
+        self.groups
+            .iter_mut()
+            .any(|group| FloatingSurfaceProvider::floating_surface_event(group, id, event, ctx))
+    }
+
     fn floating_surface_accessibility(&self, id: &str) -> Option<crate::a11y::AccessNode> {
         self.groups
             .iter()

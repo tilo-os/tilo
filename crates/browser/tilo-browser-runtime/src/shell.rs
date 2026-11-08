@@ -605,6 +605,9 @@ impl BrowserShell {
         }
         let launchpad = CollaborationLaunchpad::new().with_copy(welcome_copy(offers.mac));
         let hints = control_hints::load();
+        // The page has one window and no compositor to give an app's card one
+        // of its own: the desk hosts the cards itself, at the place its
+        // floating column gives them.
         let desk = DeskLayer::new(
             Box::new(surface),
             handle.clone(),
@@ -613,7 +616,8 @@ impl BrowserShell {
             // layer keeps the asks to itself; `follow_asks` reads them back.
             Rc::default(),
             vec![Box::new(hints.announcer())],
-        );
+        )
+        .with_cards();
         // The desktop's shortcut table keeps the native defaults: the page
         // keeps no device settings to rebind them in.
         let top = DesktopChrome::new(
