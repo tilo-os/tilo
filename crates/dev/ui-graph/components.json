@@ -689,6 +689,13 @@
           }
         },
         {
+          "name": "noun_one",
+          "doc": "What one item of it is called, singular (\"task\"): one change names one, so the count and the noun agree in number.",
+          "type": {
+            "option": "text"
+          }
+        },
+        {
           "name": "run",
           "doc": "The task run it was part of, as its task is titled.",
           "type": {
@@ -1486,6 +1493,11 @@
         {
           "name": "optional",
           "doc": "The date may be cleared: the calendar offers \"Clear date\".",
+          "type": "bool"
+        },
+        {
+          "name": "compact",
+          "doc": "The field stands beside the entry that tells its day (a moment's field, whose hour the entry types): the chip shows the calendar icon alone, opening the calendar and the time.",
           "type": "bool"
         }
       ],

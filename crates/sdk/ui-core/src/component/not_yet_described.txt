@@ -5,6 +5,5 @@
 # described by the toolkit or being here).
 #
 # A line is `Name — why it is not bound yet`.
-CartesianPlot — numeric axes and mixed series: its axes, series and marks are Rust data the language has no value for yet
 Chart — a titled trend chart with its axis labels: its series are Rust data the language has no value for yet
 GraphCanvas — a node-and-connection drawing: its nodes and connections are Rust data the language has no value for yet
