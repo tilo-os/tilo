@@ -1,30 +1,28 @@
-//! Closed relay provenance for workspaces installed by the native durable owner.
+//! Workspaces installed by the native durable owner, over the direct lane.
 //!
-//! The session itself is `tilo_peer_state::owner::session`'s; this actor keeps one
-//! route per enrolled workspace, dials it again when its pin changes and runs
-//! the connected session's pump beside every other host session. A workspace
-//! hosted on this device is not dialled: its session goes to this device's
-//! own host in process ([`crate::local_host`]), through the same
-//! handshake and session code.
-use super::{
-    ActorState, Arc, DeviceCert, HashMap, HostRuntime, InternalEvent, RelayCoeditSession,
-    spawn_host_pump,
-};
+//! The link itself is `tilo_peer_state::owner::session`'s: this actor keeps one
+//! route per enrolled workspace, holds it, and runs the link a hold reports as
+//! its own task. What the link admits into the workspace's owner reaches this
+//! device's apps through [`InternalEvent::NativeHeard`], and what the owner
+//! publishes leaves through the same link, so a workspace's state has one path
+//! between its devices and its host.
+use super::{ActorState, Arc, HashMap, InternalEvent, NeighbourMsg};
 use crate::local_host::LocalHost;
 use tilo_delivery_protocol::workspace_join::IrohWorkspaceHostHintV1;
+use tilo_peer_state::direct::DirectSync;
 use tilo_peer_state::join::TransportHint;
 pub use tilo_peer_state::owner::session::{Connect, Input, Scope};
-use tilo_peer_state::owner::session::{DialError, Holder, Link, OwnHost, Reach};
+use tilo_peer_state::owner::session::{Holder, Link, Linked, OwnHost, Reach};
 
 struct Route {
     connect: Connect,
     /// What the workspace's hold shares with this actor.
     link: Arc<Link>,
     hold: tokio::task::JoinHandle<()>,
-    /// The workspace's host is this device's own: its session stays in process.
+    /// The workspace's host is this device's own: its link stays in process.
     local: bool,
 }
-/// A governed workspace's relay session is not up (yet): the caller may retry.
+/// A governed workspace's link is not up (yet): the caller may retry.
 pub const NOT_CONNECTED: &str = "the governed workspace is not connected";
 
 impl Drop for Route {
@@ -46,11 +44,11 @@ impl Routes {
         }
     }
     /// Whether a route goes to a host on another machine: routes to this
-    /// device's own host keep no relay up and need no upkeep.
+    /// device's own host need no upkeep.
     pub(super) fn any_remote(&self) -> bool {
         self.entries.values().any(|route| !route.local)
     }
-    /// Whether a session for the workspace on topic `ws` is being established:
+    /// Whether a link for the workspace on topic `ws` is being established:
     /// a dial, or a renewal of this device's membership ahead of one, has
     /// not reported back yet.
     pub(super) fn establishing(&self, ws: u64) -> bool {
@@ -64,8 +62,8 @@ impl Routes {
             route.link.retry();
         }
     }
-    /// Every room this device hosts itself, as its routes now stand: their
-    /// sessions join in process, and a join that has not happened yet is
+    /// Every workspace this device hosts itself, as its routes now stand: their
+    /// links join in process, and a join that has not happened yet is
     /// work this device's loop keeps, not nothing.
     pub(super) fn local(&self) -> impl Iterator<Item = u64> + '_ {
         self.entries
@@ -75,8 +73,8 @@ impl Routes {
     }
 }
 
-/// One workspace's session, held for this actor: each session up, and each
-/// dial that failed, is answered to it.
+/// One workspace's link, held by this actor: each link up, and each dial that
+/// failed, is answered to it.
 struct NativeHolder {
     ws: u64,
     endpoint: iroh::Endpoint,
@@ -105,7 +103,7 @@ impl Holder for NativeHolder {
         &self,
         via: TransportHint,
         governor: bool,
-        error: DialError,
+        reason: String,
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send + '_>> {
         Box::pin(async move {
             let _ = self
@@ -114,7 +112,7 @@ impl Holder for NativeHolder {
                     ws: self.ws,
                     via: Box::new(via),
                     governor,
-                    error,
+                    reason,
                 })
                 .await;
         })
@@ -122,196 +120,72 @@ impl Holder for NativeHolder {
 
     fn run(
         &self,
-        session: RelayCoeditSession,
+        linked: Linked,
         scope: Arc<Scope>,
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send + '_>> {
         Box::pin(async move {
             let (held, ended) = tokio::sync::oneshot::channel();
             if self
                 .tx
-                .send(InternalEvent::NativeHostConnected {
+                .send(InternalEvent::NativeLinkConnected {
                     ws: self.ws,
-                    session: Box::new(session),
+                    linked: Box::new(linked),
                     scope,
                     held,
                 })
                 .await
                 .is_ok()
             {
-                // Over once the actor lets the session go.
+                // Over once the actor lets the link go.
                 let _ = ended.await;
             }
         })
     }
 }
 
-/// The connected relay session of the joined workspace on topic `ws`.
-pub(super) fn native_session(
-    sessions: &HashMap<(u64, iroh::EndpointId), HostRuntime>,
-    ws: u64,
-) -> Option<Arc<RelayCoeditSession>> {
-    sessions.iter().find_map(|((topic, _), runtime)| {
-        (*topic == ws && runtime.native_scope.is_some()).then(|| runtime.session.clone())
-    })
+/// A workspace's link as this actor keeps it: the device's end of the
+/// direct lane, the pin it was admitted under, and the task running it.
+pub(super) struct NativeLink {
+    pub scope: Arc<Scope>,
+    pub link: Arc<DirectSync>,
+    /// Held while the workspace's hold runs this link; let go with it.
+    held: Option<tokio::sync::oneshot::Sender<()>>,
+    pump: tokio::task::JoinHandle<()>,
+}
+
+impl Drop for NativeLink {
+    fn drop(&mut self) {
+        self.scope.close();
+        // The workspace's hold dials again once its link is let go.
+        drop(self.held.take());
+        self.pump.abort();
+    }
 }
 
 impl ActorState {
-    /// Admit authenticated governance through the same durable owner before
-    /// replayed app state can stall the compositor's event drain. This actor
-    /// awaits one blocking admission at a time; the live scope still
-    /// checks current custody, revocation and its exact session pin.
-    pub(super) async fn admit_native_governance(
-        &self,
-        ws: u64,
-        event: super::HostEvent,
-    ) -> super::HostEvent {
-        let input = match &event {
-            super::HostEvent::NativeInput(input)
-                if matches!(
-                    input.message(),
-                    neighbour_wire::NeighbourMsg::SyncResp { .. }
-                ) =>
-            {
-                input.clone()
-            }
-            _ => return event,
-        };
-        let Some(identity) = self.host_identity.clone() else {
-            return event;
-        };
-        let workspace = input.workspace();
-        match tokio::task::spawn_blocking(move || {
-            let before = input.generation().ok();
-            input.admit(&identity)?;
-            Ok::<_, String>(before != input.generation().ok())
-        })
-        .await
+    /// Send `msg`, a member's own write, to the workspace's host as its link
+    /// carries it: the link keeps it at its store, and the next link the
+    /// workspace has sends it again.
+    pub(super) fn publish_sealed_native(&mut self, ws: u64, msg: &NeighbourMsg) {
+        if let Some(link) = self.native_links.get(&ws)
+            && let Err(error) = link.link.send(msg.clone())
         {
-            Ok(Ok(changed)) => {
-                self.tally.note(if changed {
-                    "NativeGovernanceChanged"
-                } else {
-                    "NativeGovernanceUnchanged"
-                });
-                if changed {
-                    self.drive_native_publication(ws);
-                }
-            }
-            Ok(Err(error)) => {
-                self.tally.note("NativeGovernanceRefused");
-                tracing::warn!(%error, %workspace, "native relay governance admission denied");
-            }
-            Err(error) => {
-                tracing::warn!(%error, %workspace, "native relay governance admission worker failed");
-            }
-        }
-        event
-    }
-    /// Every native scope joined for the workspace on topic `ws`, with its relay
-    /// session and this host's identity. Without an identity there are none.
-    fn native_scopes(
-        &self,
-        ws: u64,
-    ) -> impl Iterator<Item = (&Scope, &RelayCoeditSession, &super::HostIdentity)> {
-        let identity = self.host_identity.as_ref();
-        self.host_sessions
-            .iter()
-            .filter(move |((topic, _), _)| *topic == ws)
-            .filter_map(move |(_, runtime)| {
-                Some((
-                    runtime.native_scope.as_deref()?,
-                    &*runtime.session,
-                    identity?,
-                ))
-            })
-    }
-    /// A refresh only asks the original subscribed host to run its own genuine
-    /// checkpoint barrier. It grants no local admission and retires no outbox.
-    pub(super) fn request_native_refresh(&self, ws: u64) {
-        for (scope, session, identity) in self.native_scopes(ws) {
-            if let Err(error) = scope.refresh(session, identity) {
-                tracing::debug!(%error, "native checkpoint refresh blocked");
-            }
-        }
-    }
-    /// Send `msg`, a member's own sealed write, to the workspace's host as a
-    /// commit, and hold it until a host keeps it ([`super::sealed_outbox`]).
-    pub(super) fn publish_sealed_native(&mut self, ws: u64, msg: &super::NeighbourMsg) {
-        let (Some((channel, retention)), Ok(bytes)) =
-            (super::retention(msg, false), postcard::to_allocvec(msg))
-        else {
-            return;
-        };
-        // Held until a host keeps it: a session up now may already be gone
-        // without this device knowing, and the next one sends it again.
-        let (op, payload, record) = self
-            .sealed_outbox
-            .entry(ws)
-            .or_default()
-            .hold(channel, retention, bytes);
-        // In the workspace's log too: a device shut down before a host kept it
-        // still holds it when it starts again.
-        if let (Some(record), Some(route)) = (record, self.native_routes.entries.get(&ws)) {
-            self.sealed_records
-                .hold(ws, route.connect.workspace(), record);
-        }
-        if let Some(session) = native_session(&self.host_sessions, ws)
-            && let Err(error) = session.commit(op, &payload)
-        {
-            tracing::debug!(ws, %error, "sealed write held for the workspace's next session");
+            tracing::debug!(ws, %error, "sealed write kept for the workspace's next link");
         }
         self.tell_unsynced(ws);
-    }
-
-    /// A host of the workspace on topic `ws` keeps this device's sealed write
-    /// `op`: it is let go, here and in the workspace's log.
-    pub(super) fn sealed_kept(&mut self, ws: u64, op: [u8; 16]) {
-        let Some(outbox) = self.sealed_outbox.get_mut(&ws) else {
-            return;
-        };
-        if !outbox.kept(op) {
-            return;
-        }
-        let empty = outbox.is_empty();
-        if empty {
-            self.sealed_outbox.remove(&ws);
-        }
-        if let Some(route) = self.native_routes.entries.get(&ws) {
-            self.sealed_records
-                .kept(ws, route.connect.workspace(), op, empty);
-        }
-        self.tell_unsynced(ws);
-    }
-
-    /// A host of the workspace on topic `ws` did not keep this device's sealed
-    /// write `op`: it stays held, not yet synced, until the workspace's next
-    /// session sends it again.
-    pub(super) fn sealed_refused(&mut self, ws: u64, op: [u8; 16]) {
-        if self
-            .sealed_outbox
-            .get_mut(&ws)
-            .is_some_and(|outbox| outbox.refused(op))
-        {
-            self.tell_unsynced(ws);
-        }
     }
 
     /// Tell the workspace on topic `ws`'s apps how many of this device's writes
-    /// to it are not yet synced ([`crate::workspace_sync::unsynced`]):
-    /// the committed writes in its owner's outgoing custody and the sealed
-    /// writes held for its hosts, all of them while no session of the workspace
-    /// carries them, else the sealed writes its host did not keep. A write
-    /// sent on a session up now is on its way, and says nothing.
+    /// to it are not yet synced ([`crate::workspace_sync::unsynced`]): the
+    /// committed writes in its owner's outgoing custody, all of them while no
+    /// link of the workspace carries them. A write sent over a link up now is
+    /// on its way, and says nothing.
     pub(super) fn tell_unsynced(&self, ws: u64) {
         let Some(route) = self.native_routes.entries.get(&ws) else {
             return;
         };
-        let carried = native_session(&self.host_sessions, ws).is_some();
-        let sealed = self
-            .sealed_outbox
-            .get(&ws)
-            .map_or(0, |outbox| outbox.unsynced(carried));
-        let committed = if carried {
+        let carried = self.native_links.contains_key(&ws);
+        let unsynced = if carried {
             0
         } else {
             route
@@ -320,14 +194,61 @@ impl ActorState {
                 .unadmitted_writes(route.connect.workspace())
                 .unwrap_or(0)
         };
-        crate::workspace_sync::unsynced(ws, sealed.saturating_add(committed));
+        crate::workspace_sync::unsynced(ws, unsynced);
     }
 
+    /// A frame the workspace on topic `ws`'s link admitted: the workspace's
+    /// state is in, and this device's apps take their part of it.
+    pub(super) async fn native_heard(&mut self, ws: u64, heard: tilo_peer_state::direct::Heard) {
+        let Some(link) = self.native_links.get(&ws) else {
+            return;
+        };
+        let Some(input) = Input::heard(Arc::clone(&link.scope), heard) else {
+            return;
+        };
+        self.tally.note(super::heard_kind(&input));
+        self.publish_to_subscriber(ws, super::NetEvent::NativeInput(input))
+            .await;
+    }
+
+    /// The workspace on topic `ws`'s link has its host's retained history in
+    /// hand: the workspace holds what its host holds.
+    pub(super) async fn native_ready(&mut self, ws: u64) {
+        crate::workspace_sync::synced(ws);
+        let Some(link) = self.native_links.get(&ws) else {
+            return;
+        };
+        let Ok((payload, _)) =
+            IrohWorkspaceHostHintV1::authenticate_transport_hint(link.scope.host())
+        else {
+            return;
+        };
+        let peer = payload.endpoint_addr.id;
+        self.publish_to_subscriber(ws, super::NetEvent::HostReady { ws, peer })
+            .await;
+    }
+
+    /// The workspace on topic `ws`'s link ended.
+    pub(super) fn native_link_closed(&mut self, ws: u64) {
+        tracing::info!(
+            ws,
+            "a workspace's link ended; the next heartbeat dials it again"
+        );
+        self.native_links.remove(&ws);
+        // The workspace's hold dials again at once: no heartbeat runs for a
+        // workspace this device's own host serves.
+        self.native_routes.retry(ws);
+        // What this device holds for the workspace is not on its way now.
+        self.tell_unsynced(ws);
+    }
+
+    /// Publish what the workspace `ws`'s owner holds for its other devices over
+    /// the link it holds now.
     pub(super) fn drive_native_publication(&self, ws: u64) {
-        for (scope, session, identity) in self.native_scopes(ws) {
-            if let Err(error) = scope.publish(session, identity) {
-                tracing::debug!(%error,"native publication remains in durable custody");
-            }
+        if let (Some(link), Some(identity)) = (self.native_links.get(&ws), &self.host_identity)
+            && let Err(error) = link.scope.publish(&link.link, identity)
+        {
+            tracing::debug!(%error,"native publication remains in durable custody");
         }
         self.tell_unsynced(ws);
     }
@@ -336,21 +257,20 @@ impl ActorState {
         if !self.native_routes.contains(ws) && self.native_routes.entries.len() >= 64 {
             return;
         }
-        // A route that is dialling, or whose session is up, is the one this
+        // A route that is dialling, or whose link is up, is the one this
         // workspace takes part through: it needs no second dial.
         if self.native_routes.contains(ws)
-            && (self.native_routes.establishing(ws)
-                || native_session(&self.host_sessions, ws).is_some())
+            && (self.native_routes.establishing(ws) || self.native_links.contains_key(&ws))
         {
             return;
         }
-        // A session that was up carried nothing of what this one carries: the
+        // A link that was up carried nothing of what this one carries: the
         // route below dials its own.
-        drop_sessions(&mut self.host_sessions, ws);
+        self.native_links.remove(&ws);
         // A workspace pinned to this device, on a device that runs no host of its
         // own, has no host to reach: its apps' empty states are their own
         // from the start, as in a workspace that syncs with no host. With a
-        // host here, its session joins that host in process.
+        // host here, its link joins that host in process.
         if self.local_host.is_none()
             && self
                 .host_identity
@@ -363,25 +283,9 @@ impl ActorState {
         }
         // Apps in the workspace say they are connecting until its first sync.
         crate::workspace_sync::connecting(ws);
-        // The sealed writes the workspace's log held when this device started:
-        // its next session sends them.
-        match self
-            .held_log
-            .as_ref()
-            .map(|log| log.read(connect.workspace()))
-            .transpose()
-        {
-            Ok(Some(held)) if !held.is_empty() => {
-                self.sealed_outbox.entry(ws).or_default().restore(held);
-            }
-            Ok(_) => {}
-            Err(error) => {
-                tracing::warn!(ws, %error, "the workspace's held sealed writes cannot be read");
-            }
-        }
         let link = Arc::new(Link::default());
         // The hold's first dial starts on its own task: until it reports
-        // back, the workspace has a session being established, not none.
+        // back, the workspace has a link being established, not none.
         link.dialling();
         let holder = NativeHolder {
             ws,
@@ -408,7 +312,7 @@ impl ActorState {
         self.tell_unsynced(ws);
         self.retry_native_routes();
     }
-    /// Let go of each workspace's sessions no longer pinned to its material, and
+    /// Let go of each workspace's link no longer pinned to its material, and
     /// have every workspace's hold dial again: the heartbeat paces the dials.
     pub(super) fn retry_native_routes(&mut self) {
         let Some(identity) = self.host_identity.as_ref() else {
@@ -440,7 +344,7 @@ impl ActorState {
                 .connect
                 .hosts(&identity.device_cert.device_public_key)
                 .unwrap_or_default();
-            drop_unpinned_sessions(&mut self.host_sessions, ws, &material, &hosts);
+            drop_unpinned(&mut self.native_links, ws, &material, &hosts);
             route.link.retry();
         }
     }
@@ -451,7 +355,7 @@ impl ActorState {
         ws: u64,
         via: &TransportHint,
         governor: bool,
-        error: DialError,
+        reason: &str,
     ) {
         self.tally.note(if governor {
             "NativeGovernorDial"
@@ -461,18 +365,19 @@ impl ActorState {
         if !self.native_routes.contains(ws) {
             return;
         }
-        let Ok((payload, _)) = IrohWorkspaceHostHintV1::authenticate_transport_hint(via) else {
-            return;
-        };
-        dial_refused(ws, payload.endpoint_addr.id, error);
+        // The host did not answer: until a link with a host of the workspace
+        // completes, its apps say it cannot be reached and work on what this
+        // device has. The route dials again on the next heartbeat.
+        tracing::debug!(ws, host = %hex::encode(via.host.device_public_key), %reason, "native host dial failed; retrying");
+        crate::workspace_sync::unreachable(ws);
     }
 
-    /// The workspace on topic `ws`'s hold reached a host: its session runs here
+    /// The workspace on topic `ws`'s hold reached a host: its link runs here
     /// until `held` is let go with it.
-    pub(super) fn native_host_connected(
+    pub(super) fn native_link_connected(
         &mut self,
         ws: u64,
-        session: RelayCoeditSession,
+        linked: Linked,
         scope: Arc<Scope>,
         held: tokio::sync::oneshot::Sender<()>,
     ) {
@@ -489,155 +394,75 @@ impl ActorState {
         // The host is reachable again: a certificate renewal that failed
         // meanwhile tries again.
         tilo_identity_host::provisioning::RENEWAL_CAUSES.changed();
-        let Ok((payload, _)) = IrohWorkspaceHostHintV1::authenticate_transport_hint(scope.host())
-        else {
-            return;
-        };
-        let host = payload.endpoint_addr.id;
-        if !governor && native_session(&self.host_sessions, ws).is_some() {
-            // A custody session of this workspace is up already, and this one
-            // would only say what it says.
-            return;
-        }
-        // A session that stood in for this one is let go: a host that held the
-        // workspace while its governor was away, or a plain session that
-        // carries none of the workspace's records.
-        drop_sessions(&mut self.host_sessions, ws);
-        let session = Arc::new(session);
-        let replaying = Arc::new(std::sync::atomic::AtomicBool::new(true));
-        let pump = spawn_host_pump(
+        // A link that stood in for this one is let go: a host that held the
+        // workspace while its governor was away.
+        self.native_links.remove(&ws);
+        let link = Arc::new(linked.link.clone());
+        let pump = super::spawn_direct_pump(
             ws,
-            host,
-            session.clone(),
-            Arc::clone(&replaying),
+            linked,
+            Arc::clone(&link),
+            scope.clone(),
             self.internal_tx.clone(),
-            Some(scope.clone()),
-            !local,
         );
-        // What this device said while the session was down: its channel
-        // governance (its writer publishes it again), and every sealed
-        // write no host has kept yet, sent before or meanwhile.
-        for (channel, bytes) in self.governance.get(&ws).into_iter().flatten() {
-            if let Err(error) = session.publish_checkpoint(*channel, bytes.clone()) {
-                tracing::warn!(ws, %error, "channel governance not sent to the workspace's relay");
+        // What this device said while the link was down: its channel
+        // governance (its writer publishes it again), and the held state of
+        // its workspace.
+        let backlog: Vec<(u8, Vec<u8>)> = self
+            .governance
+            .get(&ws)
+            .into_iter()
+            .flatten()
+            .map(|(_, bytes)| (0, bytes.clone()))
+            .chain(
+                self.host_backlog
+                    .remove(&ws)
+                    .unwrap_or_default()
+                    .into_iter()
+                    .map(|(_, _, bytes)| (1, bytes)),
+            )
+            .collect();
+        for (_, bytes) in backlog {
+            if let Ok(msg) = postcard::from_bytes(&bytes)
+                && let Err(error) = link.send(msg)
+            {
+                tracing::warn!(ws, %error, "held state not sent to the workspace's link");
             }
         }
-        for (channel, retention, bytes) in self.host_backlog.remove(&ws).unwrap_or_default() {
-            let sent = match retention {
-                super::Retention::Checkpoint => session.publish_checkpoint(channel, bytes),
-                super::Retention::Delta => session.publish_retained_delta(channel, bytes),
-            };
-            if let Err(error) = sent {
-                tracing::warn!(ws, %error, "held state not sent to the workspace's relay");
-            }
-        }
-        if let Some(outbox) = self.sealed_outbox.get_mut(&ws) {
-            for (op, payload) in outbox.commits() {
-                if let Err(error) = session.commit(op, &payload) {
-                    tracing::debug!(ws, %error, "sealed write held for the workspace's next session");
-                }
-            }
-            outbox.sent_again();
-        }
-        // Pointers, cursor chat and reactions ride the workspace's live plane,
-        // which carries only what its members say: join it, as a workspace
-        // host's session does.
-        if let Err(error) = session.live_join() {
-            tracing::warn!(ws, %error, "could not join the workspace's live plane");
-        }
-        self.reopen_records(ws, &session);
-        self.host_sessions.insert(
-            (ws, host),
-            HostRuntime {
-                replaying,
-                session,
+        self.native_links.insert(
+            ws,
+            NativeLink {
+                scope,
+                link,
+                held: Some(held),
                 pump,
-                native_scope: Some(scope),
-                native_held: Some(held),
-                local,
             },
         );
+        if local {
+            // A workspace this device hosts needs nothing of its own host's
+            // live plane: it is the same process.
+            tracing::debug!(ws, "joined the workspace's own host in process");
+        }
         self.drive_native_publication(ws);
     }
 }
 
-/// Let go of every host session of the workspace on topic `ws`, and of the
-/// pumps that carried them.
-fn drop_sessions(sessions: &mut HashMap<(u64, iroh::EndpointId), HostRuntime>, ws: u64) {
-    let gone: Vec<(u64, iroh::EndpointId)> = sessions
-        .keys()
-        .filter(|(topic, _)| *topic == ws)
-        .copied()
-        .collect();
-    for key in gone {
-        if let Some(runtime) = sessions.remove(&key) {
-            runtime.pump.abort();
-        }
-    }
-}
-
-/// Drop topic `ws`'s host sessions not pinned to its workspace's current
-/// `material`, or reaching a host the workspace no longer names among its
+/// Drop topic `ws`'s link when it is not pinned to its workspace's current
+/// `material`, or reaches a host the workspace no longer names among its
 /// `hosts`.
-fn drop_unpinned_sessions(
-    sessions: &mut HashMap<(u64, iroh::EndpointId), HostRuntime>,
+fn drop_unpinned(
+    links: &mut HashMap<u64, NativeLink>,
     ws: u64,
-    material: &Result<
-        (
-            TransportHint,
-            DeviceCert,
-            tilo_user_identity::RevocationList,
-            u64,
-        ),
-        String,
-    >,
+    material: &Result<(TransportHint, super::DeviceCert, u64), String>,
     hosts: &[TransportHint],
 ) {
-    let unpinned: Vec<(u64, iroh::EndpointId)> = sessions
-        .iter()
-        .filter(|((topic, _), runtime)| {
-            *topic == ws
-                && !runtime.native_scope.as_ref().is_some_and(|scope| {
-                    material
-                        .as_ref()
-                        .is_ok_and(|(hint, device, _, continuity)| {
-                            scope.pinned_to(hint, device, *continuity)
-                        })
-                        && (scope.reaches_governor() || hosts.contains(scope.host()))
-                })
-        })
-        .map(|(key, _)| *key)
-        .collect();
-    for key in unpinned {
-        if let Some(runtime) = sessions.remove(&key) {
-            runtime.pump.abort();
-        }
-    }
-}
-
-/// What a failed dial of the joined workspace on topic `ws`, whose host is
-/// `host`, tells the person and the shell.
-fn dial_refused(ws: u64, host: iroh::EndpointId, error: DialError) {
-    match error {
-        // The workspace's host speaks another peer protocol version: the workspace
-        // cannot sync until one side updates, which the person is told,
-        // rather than holding a workspace that silently stays empty.
-        DialError::PeerVersion { theirs } => {
-            tracing::warn!(
-                ws,
-                theirs,
-                ours = neighbour_wire::PEER_PROTOCOL_VERSION,
-                "the workspace's host speaks another peer protocol version"
-            );
-            crate::services::peer_version(host.to_string(), theirs);
-            crate::workspace_sync::other_version(ws, theirs);
-        }
-        // Anything else did not reach the workspace's host: until a sync with
-        // it completes, its apps say it cannot be reached and work on what
-        // this device has. The route dials again on the next heartbeat.
-        error => {
-            tracing::debug!(%error, ws, "native host dial failed; retrying");
-            crate::workspace_sync::unreachable(ws);
-        }
+    let unpinned = links.get(&ws).is_some_and(|link| {
+        !material
+            .as_ref()
+            .is_ok_and(|(hint, device, continuity)| link.scope.pinned_to(hint, device, *continuity))
+            || !(link.scope.reaches_governor() || hosts.contains(link.scope.host()))
+    });
+    if unpinned {
+        links.remove(&ws);
     }
 }

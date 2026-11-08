@@ -1172,15 +1172,8 @@ impl tilo_peer_state::owner::session::OwnHost for WorkspaceHost {
         Self::join_service(self)
     }
 
-    fn connect_local(
-        &self,
-        cert: DeviceCert,
-        key: ed25519_dalek::SigningKey,
-        revocations: RevocationList,
-    ) -> std::pin::Pin<
-        Box<dyn std::future::Future<Output = Result<RelayClient, ClientError>> + Send + '_>,
-    > {
-        Box::pin(Self::connect_local(self, cert, key, revocations))
+    fn direct(&self, workspace: u64) -> Option<tilo_peer_state::direct::DirectSync> {
+        self.workspaces().direct().link(workspace)
     }
 }
 

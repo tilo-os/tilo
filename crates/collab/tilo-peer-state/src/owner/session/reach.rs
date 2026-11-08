@@ -1,30 +1,24 @@
 //! Reaching a workspace's host: this device's own host in process, or a host's
-//! iroh endpoint. Every holder of a workspace's session reaches its host, and
+//! iroh endpoint. Every holder of a workspace's link reaches its host, and
 //! renews this device's membership with it, through [`Reach`].
-use super::{Connect, DialError};
+use super::Connect;
+use crate::direct::{Dialed, DirectSync};
 use crate::join::TransportHint;
 use crate::join_transport::{LocalJoinService, WorkspaceJoinClient};
 use ed25519_dalek::SigningKey;
-use std::{future::Future, pin::Pin, sync::Arc, time::Duration};
-use tilo_delivery_protocol::workspace_join::{IrohWorkspaceHostHintV1, WorkspaceHostTrust};
+use std::{sync::Arc, time::Duration};
+use tilo_delivery_protocol::workspace_join::IrohWorkspaceHostHintV1;
 use tilo_identity_host::custody::HostIdentity;
-use tilo_relay_session::{ClientError, RelayClient, RelayCoeditSession};
-use tilo_user_identity::{DeviceCert, RevocationList};
 
 /// This device's own workspace host, running in this process: a workspace placed on
-/// this device is joined through it, as an endpoint cannot dial itself.
+/// this device is linked through it, as an endpoint cannot dial itself.
 pub trait OwnHost: Send + Sync {
     /// The host's workspace-join exchange, for enrolling in and renewing
     /// membership of its workspaces.
     fn join_service(&self) -> Arc<dyn LocalJoinService>;
-    /// An in-process member session as `cert`, through the handshake a
-    /// remote member's dial takes.
-    fn connect_local(
-        &self,
-        cert: DeviceCert,
-        key: SigningKey,
-        revocations: RevocationList,
-    ) -> Pin<Box<dyn Future<Output = Result<RelayClient, ClientError>> + Send + '_>>;
+    /// The host's end of `workspace`'s link, syncing the replica the host
+    /// decides the workspace on. `None` for a workspace it does not hold.
+    fn direct(&self, workspace: u64) -> Option<DirectSync>;
 }
 
 /// How this device reaches a workspace's host.
@@ -36,90 +30,82 @@ pub struct Reach {
     pub own_host: Option<Arc<dyn OwnHost>>,
 }
 
-impl Reach {
-    /// Join workspace `ws`'s co-edit session at `via` as `cert`: in process
-    /// when `via` is this device's own host, and dialled otherwise. With
-    /// `probe`, a host that closes the stream without answering is asked
-    /// which peer protocol it speaks.
+/// A workspace's link, ready to run: this device's end, and the host's when it
+/// is in this process.
+pub struct Linked {
+    /// This device's end of the link.
+    pub link: DirectSync,
+    host: Host,
+}
+
+enum Host {
+    /// A host dialled over its endpoint.
+    Dialled(Box<Dialed>),
+    /// This device's own host: the two ends pair in process.
+    Paired(DirectSync),
+}
+
+impl Linked {
+    /// Sync with the workspace's host until the link ends.
     ///
     /// # Errors
-    /// The hint does not authenticate for `ws`, the host authenticates as
-    /// another certificate or speaks another peer protocol version
-    /// ([`DialError::PeerVersion`]), the connection fails or takes over 10
-    /// seconds, and a workspace hosted here fails while this device's host
-    /// does not run.
+    ///
+    /// The connection ends badly, or either device is no longer in the
+    /// workspace's roster.
+    pub async fn run(self) -> Result<(), String> {
+        match self.host {
+            Host::Dialled(dialed) => dialed.run(&self.link).await,
+            Host::Paired(host) => DirectSync::pair(&self.link, &host).await,
+        }
+    }
+}
+
+impl Reach {
+    /// Link `connect`'s workspace to its host at `via` as the device whose
+    /// signing key is `key`: in process when `via` is this device's own host,
+    /// and over [`DIRECT_ALPN`](crate::direct::DIRECT_ALPN) otherwise.
+    ///
+    /// # Errors
+    /// The hint does not authenticate for the workspace, the host refuses this
+    /// device or cannot be reached in 10 seconds, or a workspace hosted here
+    /// is held by no host of this device.
     pub async fn session(
         &self,
-        ws: u64,
+        connect: &Connect,
         via: &TransportHint,
-        cert: DeviceCert,
         key: SigningKey,
-        revocations: RevocationList,
-        probe: bool,
-    ) -> Result<RelayCoeditSession, DialError> {
-        let (payload, trust) =
+    ) -> Result<Linked, String> {
+        let (payload, _) =
             IrohWorkspaceHostHintV1::authenticate_transport_hint(via).map_err(|e| e.to_string())?;
-        if payload.workspace_id != ws {
-            return Err("native relay workspace pin mismatch".into());
+        let workspace = connect.workspace();
+        if payload.workspace_id
+            != tilo_relay_protocol::room_workspace_id(&workspace.to_string())
+                .map_err(|e| e.to_string())?
+        {
+            return Err("native link workspace pin mismatch".into());
         }
-        let own = cert.device_public_key;
-        let client = if super::hosted_by(via, &own) {
+        let link = connect.link(key)?;
+        let own = link.device();
+        if super::hosted_by(via, &own) {
             let host = self
                 .own_host
                 .as_ref()
-                .ok_or("this device's workspace host is not running")?;
-            host.connect_local(cert, key, revocations).await?
-        } else {
-            let probing = probe.then(|| cert.clone());
-            let addr = payload.endpoint_addr.clone();
-            let host = via.host.clone();
-            let connect = async {
-                match trust {
-                    WorkspaceHostTrust::CertifiedHost => {
-                        RelayClient::connect_v2_to_enrolled_home_peer(
-                            self.endpoint.clone(),
-                            addr,
-                            host.user_public_key,
-                            host.device_public_key,
-                            cert,
-                            key,
-                            revocations,
-                        )
-                        .await
-                    }
-                    WorkspaceHostTrust::InteractiveOwner(trust) => {
-                        RelayClient::connect_v2_to_interactive_workspace_owner(
-                            self.endpoint.clone(),
-                            addr,
-                            trust,
-                            cert,
-                            key,
-                            revocations,
-                        )
-                        .await
-                    }
-                }
-                .map_err(DialError::from)
-            };
-            match tokio::time::timeout(Duration::from_secs(10), connect).await {
-                Err(_) => return Err("native relay connection timed out".into()),
-                Ok(Err(DialError::NoAnswer(reason))) => {
-                    let theirs = match &probing {
-                        Some(cert) => probe_version(&self.endpoint, &payload, cert).await,
-                        None => None,
-                    };
-                    return Err(theirs.map_or(DialError::NoAnswer(reason), |theirs| {
-                        DialError::PeerVersion { theirs }
-                    }));
-                }
-                Ok(client) => client?,
-            }
-        };
-        if client.relay_peer.cert != via.host {
-            return Err("native relay authenticated a different host certificate".into());
+                .ok_or("this device's workspace host is not running")?
+                .direct(payload.workspace_id)
+                .ok_or("this device's workspace host holds no such workspace")?;
+            return Ok(Linked {
+                link,
+                host: Host::Paired(host),
+            });
         }
-        RelayCoeditSession::join(client, ws, own)
-            .map_err(|error| DialError::Failed(error.to_string()))
+        let addr = payload.endpoint_addr;
+        let dialed = tokio::time::timeout(Duration::from_secs(10), link.dial(&self.endpoint, addr))
+            .await
+            .map_err(|_| "native link connection timed out".to_string())??;
+        Ok(Linked {
+            link,
+            host: Host::Dialled(Box::new(dialed)),
+        })
     }
 
     /// The workspace-join exchange with a workspace's host as this device,
@@ -155,32 +141,5 @@ impl Reach {
             workspace,
         )
         .await
-    }
-}
-
-/// The peer protocol version of the host at `host`, when a probe shows it
-/// is not this device's: a host that predates versioned handshakes reads as
-/// [`tilo_relay_protocol::auth::UNVERSIONED_PEER_PROTOCOL`]. `None` when the
-/// host speaks this device's version (it refused this device instead), or
-/// the probe could not tell.
-async fn probe_version(
-    endpoint: &iroh::Endpoint,
-    host: &IrohWorkspaceHostHintV1,
-    cert: &DeviceCert,
-) -> Option<u32> {
-    use tilo_relay_session::client::HandshakeProbe;
-    let probe = tokio::time::timeout(
-        Duration::from_secs(10),
-        RelayClient::probe_handshake_version(endpoint, host.endpoint_addr.clone(), cert),
-    )
-    .await
-    .ok()?
-    .ok()?;
-    match probe {
-        HandshakeProbe::Unversioned => Some(tilo_relay_protocol::auth::UNVERSIONED_PEER_PROTOCOL),
-        HandshakeProbe::Versioned(theirs) if theirs != neighbour_wire::PEER_PROTOCOL_VERSION => {
-            Some(theirs)
-        }
-        HandshakeProbe::Versioned(_) | HandshakeProbe::Unknown => None,
     }
 }

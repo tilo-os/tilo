@@ -88,7 +88,6 @@ pub(crate) async fn spawn_ticking(
         Some(Hosting {
             host: local.clone(),
             protocols,
-            held_writes: state.join("held-writes"),
         }),
         Vec::new(),
     );
