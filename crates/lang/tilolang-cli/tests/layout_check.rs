@@ -93,6 +93,8 @@ fn every_kind_of_broken_layout_is_caught_at_the_view_that_breaks_it() {
             | Kind::OpenOutsideList
             | Kind::RepeatedPageTitle
             | Kind::DoubleNavigation
+            // The fixture's sections hold no tree, so no first level stands off its title.
+            | Kind::FirstLevelIndent
             // The fixture's cards each hold what they are given, so none stands empty.
             | Kind::EmptySurface => "(no view)",
         };

@@ -964,8 +964,10 @@ fn a_first_row_under_a_heading_draws_its_chevron_on_its_own_row() {
     );
 }
 
-/// The chevron that folds a row stands at the row's own leading edge, inside the step its
-/// content keeps free, so a row with something to fold starts on the column its neighbours do.
+/// The chevron that folds a row hangs in the step in front of the row's own column, so a row
+/// with something to fold starts on the column its neighbours do and the top level stands its
+/// own one step in from the list's leading edge — never a step for the chevron and another for
+/// the depth on top of it.
 #[test]
 fn a_branch_row_starts_on_the_column_its_neighbours_do() {
     let marks = Rc::new(TreeMarks::default());
@@ -982,23 +984,28 @@ fn a_branch_row_starts_on_the_column_its_neighbours_do() {
         leaf.x0
     );
 
-    // The chevron stands in the step the row keeps free in front of its content: the content
-    // starts after that step, on the column its neighbours' does, so no row starts before the
-    // column of its depth.
+    // The top level stands the one step its chevron takes in from the list's leading edge:
+    // the rows' column is `lead` in, and the chevron hangs in the step in front of it.
     let column = branch.x0 + list.lead;
+    assert!(
+        (column - (branch.x0 + TREE_INDENT)).abs() < 0.5,
+        "the top level stands one step in from the list's leading edge, not two: {column} \
+         from {}",
+        branch.x0
+    );
     let chevron = list
         .disclosure_rect(&0)
         .expect("the branch shows its disclosure");
     assert!(
-        (chevron.x0 - column).abs() < 0.5,
-        "the chevron stands at the row's own leading edge, not before it: {} against {column}",
-        chevron.x0
+        (chevron.x1 - column).abs() < 0.5,
+        "the chevron ends where the row's box begins: {} against {column}",
+        chevron.x1
     );
     assert!(
-        chevron.x1 <= column + TREE_INDENT + 0.5,
-        "it hangs inside the step its content keeps free: {} past {}",
-        chevron.x1,
-        column + TREE_INDENT
+        (chevron.x0 - (column - TREE_INDENT)).abs() < 0.5,
+        "it hangs in the step in front of the box: {} against {}",
+        chevron.x0,
+        column - TREE_INDENT
     );
     assert!(
         list.disclosure_rect(&3).is_none(),

@@ -1408,13 +1408,21 @@ impl AppCheck<'_> {
             )?;
             let mut layer = on_layer(&unit.scene.scenario, unit.scene.root.as_deref());
             staged.lay_out(viewport, first.theme(), first.input(), first.display_scale)?;
-            // What the app opened stands in front of the list it came from: a finger goes back
-            // to that list before it can tap a row of it.
-            let mut tapped = tappable_row(&staged, viewport);
+            // What the app opened stands in front of the list it came from: a scenario that
+            // returns a resource shows that resource's page, and a row of the page is the
+            // page's own, where tapping it chooses what it shows. A finger goes back to the
+            // list first, and taps a row of that.
+            let mut page_in_front = self.scenario_returns_a_resource(&unit.scene.scenario);
+            let mut tapped = if page_in_front {
+                None
+            } else {
+                tappable_row(&staged, viewport)
+            };
             if tapped.is_none() {
                 if !back_chip(&staged.harness().inspection().root, viewport) {
                     continue;
                 }
+                let shown = staged.front_target();
                 staged.press(ui::widget::WINDOW_BACK, true)?;
                 layer = format!("{layer}, then Back pressed");
                 for layout in of_size.iter().copied() {
@@ -1426,7 +1434,11 @@ impl AppCheck<'_> {
                     )?;
                     self.audit(&mut staged, layout, &layer)?;
                 }
-                tapped = tappable_row(&staged, viewport);
+                // A window that kept what it showed has no list behind it to tap.
+                page_in_front = page_in_front && staged.front_target() == shown;
+                if !page_in_front {
+                    tapped = tappable_row(&staged, viewport);
+                }
             }
             // The row the window keeps chosen, or else the first of the list: what a person
             // reaches for, which opens in front of the list as the app declares.
@@ -1455,6 +1467,23 @@ impl AppCheck<'_> {
             }
         }
         Ok(())
+    }
+
+    /// Whether the scenario the window was staged from returned a resource of its own
+    /// (`scenario "a busy week" -> Task`): the window shows that resource's page in front of
+    /// the list the scenario made.
+    fn scenario_returns_a_resource(&self, scenario: &str) -> bool {
+        self.meta
+            .scenarios
+            .iter()
+            .find(|entry| entry.name == scenario)
+            .and_then(|entry| {
+                self.meta
+                    .actions
+                    .iter()
+                    .find(|action| action.id == entry.action)
+            })
+            .is_some_and(|action| action.result.is_some())
     }
 
     /// The view a window opens `target` in: its type's default view, which is what a row of it
@@ -1632,7 +1661,12 @@ impl AppCheck<'_> {
             self.text,
             viewport,
         ));
-        problems.extend(ux::inspect(&inspection.root, viewport, &declared));
+        problems.extend(ux::inspect(
+            &inspection.root,
+            viewport,
+            &declared,
+            ui::chrome::disclosure_gutter(&layout.theme()),
+        ));
         problems.extend(mixed_language());
         for mut problem in problems {
             // A list draws a row as one widget keyed by the row: what it is about is the row

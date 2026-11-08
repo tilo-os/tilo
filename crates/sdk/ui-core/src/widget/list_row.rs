@@ -286,10 +286,6 @@ pub struct ListRowFace<'a> {
     /// How many rows over it the row stands: its content indents one
     /// disclosure gutter per depth, while its lift fills the row.
     depth: u32,
-    /// The row stands in a tree: its content keeps one more disclosure gutter
-    /// free at its leading edge, where the list paints the chevron that folds
-    /// it, whether or not it has anything to fold.
-    tree_row: bool,
     status: Option<RowStatus<'a>>,
     change: Option<RowChange<'a>>,
     struck: bool,
@@ -375,7 +371,6 @@ impl<'a> ListRowFace<'a> {
             leading_column: None,
             nested: false,
             depth: 0,
-            tree_row: false,
             status: None,
             change: None,
             struck: false,
@@ -645,15 +640,6 @@ impl<'a> ListRowFace<'a> {
     #[must_use]
     pub fn depth(mut self, depth: u32) -> Self {
         self.depth = depth;
-        self
-    }
-
-    /// Stand the row in a tree, one disclosure gutter in from its depth's column: the list
-    /// hangs the chevron that folds it there, and a row with nothing to fold keeps that gutter
-    /// free so that the rows at one depth stand on one column.
-    #[must_use]
-    pub fn tree_row(mut self, tree_row: bool) -> Self {
-        self.tree_row = tree_row;
         self
     }
 
@@ -1137,8 +1123,6 @@ pub struct ListRow {
     /// How many rows over it the row stands, indenting its content one
     /// disclosure gutter each ([`ListRowFace::depth`]).
     depth: u32,
-    /// See [`ListRowFace::tree_row`].
-    tree_row: bool,
     /// Every badge of the row's list, measured into `leading_column` at
     /// layout.
     column_badges: Option<std::rc::Rc<[String]>>,
@@ -1261,7 +1245,6 @@ impl ListRow {
             leading_column: None,
             nested: false,
             depth: 0,
-            tree_row: false,
             column_badges: None,
             shared_leading: None,
             shared_after_trailing: None,
@@ -1643,13 +1626,6 @@ impl ListRow {
     #[must_use]
     pub fn depth(mut self, depth: u32) -> Self {
         self.depth = depth;
-        self
-    }
-
-    /// See [`ListRowFace::tree_row`].
-    #[must_use]
-    pub fn tree_row(mut self) -> Self {
-        self.tree_row = true;
         self
     }
 
@@ -2299,7 +2275,6 @@ impl ListRow {
         }
         face = face.nested(self.nested);
         face = face.depth(self.depth);
-        face = face.tree_row(self.tree_row);
         if let Some(avatar) = &self.avatar {
             face = face.avatar(avatar.face());
         }

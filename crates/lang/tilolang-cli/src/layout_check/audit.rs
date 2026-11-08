@@ -81,10 +81,14 @@ pub enum Kind {
     /// offering two ways to navigate, where a screen that went somewhere deeper has one, its
     /// way back at the leading edge.
     DoubleNavigation,
+    /// A list or tree whose first level starts more than one nesting step right of the title its
+    /// section goes by: a section's title stands on the column its content does, and a first
+    /// level keeps no more than the one step a folding chevron hangs in front of it.
+    FirstLevelIndent,
 }
 
 impl Kind {
-    pub const ALL: [Self; 26] = [
+    pub const ALL: [Self; 27] = [
         Self::Overflow,
         Self::ClippedText,
         Self::Overlap,
@@ -111,6 +115,7 @@ impl Kind {
         Self::EmptySurface,
         Self::RepeatedPageTitle,
         Self::DoubleNavigation,
+        Self::FirstLevelIndent,
     ];
 
     pub fn name(self) -> &'static str {
@@ -141,6 +146,7 @@ impl Kind {
             Self::EmptySurface => "empty-surface",
             Self::RepeatedPageTitle => "repeated-page-title",
             Self::DoubleNavigation => "double-navigation",
+            Self::FirstLevelIndent => "first-level-indent",
         }
     }
 }
