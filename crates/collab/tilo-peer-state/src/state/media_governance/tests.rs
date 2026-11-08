@@ -2,7 +2,9 @@ use super::*;
 use crate::SeedState;
 use crate::StatePeer;
 use crate::seed_workspace;
+use crate::{NeighbourMsg, TransportOrigin};
 use automerge::AutoCommit;
+use std::collections::BTreeMap;
 use tilo_user_identity::{
     DeviceCapabilities, DeviceCert, RevocationEntry, RevocationReason, sign_device_cert,
     sign_revocation_entry,

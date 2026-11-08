@@ -12,7 +12,7 @@ pub mod saved_shortcut;
 pub mod share;
 pub use admit::{
     AdmittedWorkspace, Standing, WorkspaceAdmission, WorkspaceRefusal, Writer,
-    admit_workspace_changes, check_candidate,
+    admit_workspace_changes,
 };
 pub use adopt::adopt_workspace;
 use automerge::{AutoCommit, ROOT, ReadDoc, ScalarValue, Value};

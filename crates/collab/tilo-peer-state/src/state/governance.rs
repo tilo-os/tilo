@@ -427,14 +427,7 @@ impl PeerGovernanceMut<'_> {
             .workspace_doc
             .clone()
             .ok_or("workspace governance missing")?;
-        let rows = workspace::governance_of(Some(&doc))
-            .identities
-            .into_iter()
-            .map(|(id, bytes)| {
-                let identity: GovernedIdentity = serde_json::from_slice(&bytes).map_err(err)?;
-                Ok((id, bytes, identity))
-            })
-            .collect::<Result<Vec<_>, String>>()?;
+        let rows = super::governed_rows::identity_rows(&doc).map_err(err)?;
         let mut verified = self.peer.core.revocations.clone();
         for entry in entries {
             let certified = rows.iter().any(|(_, _, identity)| {
@@ -447,14 +440,9 @@ impl PeerGovernanceMut<'_> {
             verified.insert(entry.clone()).map_err(err)?;
         }
         let before = doc.get_heads();
-        let identities = doc
-            .get(ROOT, "peer_identities_v1")
-            .map_err(err)?
-            .ok_or("governed identities missing")?
-            .1;
         doc.set_actor(self.peer.workspace_actor_of(key));
-        let mut changed = false;
-        for (id, bytes, mut identity) in rows {
+        let mut projected = rows;
+        for (_, _, identity) in &mut projected {
             let root = identity.device_cert.user_public_key;
             let own_row = root == owner;
             let mut list = RevocationList::new();
@@ -471,16 +459,11 @@ impl PeerGovernanceMut<'_> {
                     list.insert(entry.clone()).map_err(err)?;
                 }
             }
-            let mut projected = list.iter().cloned().collect::<Vec<_>>();
-            projected.sort_by_key(|entry| entry.revoked_device_public_key);
-            identity.revocations = projected;
-            let encoded = serde_json::to_vec(&identity).map_err(err)?;
-            if encoded != bytes {
-                doc.put(&identities, id, automerge::ScalarValue::Bytes(encoded))
-                    .map_err(err)?;
-                changed = true;
-            }
+            let mut written = list.iter().cloned().collect::<Vec<_>>();
+            written.sort_by_key(|entry| entry.revoked_device_public_key);
+            identity.revocations = written;
         }
+        let changed = super::governed_rows::put_identity_rows(&mut doc, &projected).map_err(err)?;
         if changed {
             doc.commit();
             self.peer.write_governance(doc, &before, key, now)?;

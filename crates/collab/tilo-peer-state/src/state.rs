@@ -858,7 +858,12 @@ impl StatePeer {
                 .workspace_doc
                 .as_deref()
                 .ok_or("missing workspace")?;
-            workspace::media::refresh_authorization(held, &mut doc).map_err(err)?;
+            // A policy the workspace holds is rebound to the security basis its
+            // change moves; one it does not hold yet is its author's, and
+            // initialising it is never this refresh's.
+            if workspace::media::parse(held).map_err(err)?.is_some() {
+                workspace::media::refresh_authorization(held, &mut doc).map_err(err)?;
+            }
             crate::workspace::changed_rows(Some(held), Some(&doc), false)
         };
         self.record_membership(&mut doc, before, key, now)?;

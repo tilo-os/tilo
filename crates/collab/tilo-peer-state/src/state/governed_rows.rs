@@ -1,9 +1,56 @@
 //! The rows a workspace's governance keeps per device: its certificate and how
 //! it was admitted.
+use automerge::{AutoCommit, ObjId, ROOT, ReadDoc, ScalarValue, transaction::Transactable};
 use serde::{Deserialize, Serialize};
 use tilo_user_identity::DeviceCert;
 
 use super::GovernedDelegateRow;
+
+/// A device row: its key, the bytes it was read from, and the row they hold.
+pub(crate) type IdentityRow = (String, Vec<u8>, GovernedIdentity);
+
+/// The workspace document's device rows, in key order.
+pub(crate) fn identity_rows(doc: &AutoCommit) -> Result<Vec<IdentityRow>, String> {
+    crate::workspace::governance_of(Some(doc))
+        .identities
+        .into_iter()
+        .map(|(id, bytes)| {
+            serde_json::from_slice(&bytes)
+                .map(|row| (id, bytes, row))
+                .map_err(err)
+        })
+        .collect()
+}
+
+/// Write the rows whose bytes changed, as gone from `rows` where the document
+/// holds them. Whether anything changed.
+pub(crate) fn put_identity_rows(
+    doc: &mut AutoCommit,
+    rows: &[IdentityRow],
+) -> Result<bool, String> {
+    let map = identities(doc)?;
+    let mut changed = false;
+    for (id, old, row) in rows {
+        let bytes = serde_json::to_vec(row).map_err(err)?;
+        if bytes != *old {
+            doc.put(&map, id, ScalarValue::Bytes(bytes)).map_err(err)?;
+            changed = true;
+        }
+    }
+    Ok(changed)
+}
+
+fn identities(doc: &AutoCommit) -> Result<ObjId, String> {
+    Ok(doc
+        .get(ROOT, "peer_identities_v1")
+        .map_err(err)?
+        .ok_or("governed identities missing")?
+        .1)
+}
+
+fn err(error: impl std::fmt::Display) -> String {
+    error.to_string()
+}
 
 #[derive(Clone, Serialize, Deserialize)]
 pub(crate) struct GovernedIdentity {
