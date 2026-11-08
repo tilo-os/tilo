@@ -520,8 +520,12 @@ fn item_clock(v: Video) -> Text {
 /// What the last search found: the channels, the playlists, then the videos. The field at the
 /// top asks YouTube for what is typed; a query typed into the system's search reaches the same
 /// place (`search_text` and `search`), so an agent or the palette finds the catalogue too.
+///
+/// The field starts at `search_text`, the query the results under it were found for: a search
+/// run by the system's own search, or by an agent, shows the words it asked with, as every
+/// search field shows what it searched for. Typing changes the field alone; Enter searches.
 view search_results(yt: YouTube) {
-    state typed: Text = ""
+    state typed: Text = yt.search_text
     stack(gap: .section) {
         ui.TextInput(value: typed, placeholder: "Search YouTube", fill) {
             on submit: search(yt, typed)

@@ -140,6 +140,13 @@ name = "native_sync_bench"
 path = "tests/native_sync_bench.rs"
 required-features = ["filesystem"]
 
+# The document media a session started from a build under test serves its apps
+# (`fs serve-media`): the connector's put and the window's read through it.
+[[test]]
+name = "session_media"
+path = "tests/session_media.rs"
+required-features = ["filesystem"]
+
 [[test]]
 name = "gdrive-rystic-volume"
 path = "tests/gdrive_rystic_volume.rs"
