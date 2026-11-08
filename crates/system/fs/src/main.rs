@@ -31,13 +31,12 @@ use fs::workspace_authority::{
     serve_local_authority, serve_local_content_peer,
 };
 use fs::{
-    AclHandle, CapabilityFile, ContentStore, FileHistoryStore, FileShareLinkV2,
-    FsTransportIdentity, Heuristics, Hydrator, IdentityKey, Namespace, QuickFS,
-    RecipientControlServer, RecipientMountSupervisor, RecordAccessRegistry, RecordMaterializer,
-    RecordProtocolClient, RecordProtocolOperationV1, RecordProtocolResponseV1,
-    RecordProtocolSnapshotV1, RecordPublisher, RecordRepository, RecordServices,
-    RecordSubscriptionFailureCode, RecordSubscriptionKey, RecordSubscriptionStore, ShareAuthority,
-    ShareControlServer, ShareManagement, Ticket, Workspace, identity_paths,
+    AclHandle, CapabilityFile, ContentStore, FileShareLinkV2, FsTransportIdentity, Heuristics,
+    Hydrator, IdentityKey, Namespace, QuickFS, RecipientControlServer, RecipientMountSupervisor,
+    RecordAccessRegistry, RecordMaterializer, RecordProtocolClient, RecordProtocolOperationV1,
+    RecordProtocolResponseV1, RecordProtocolSnapshotV1, RecordPublisher, RecordRepository,
+    RecordServices, RecordSubscriptionFailureCode, RecordSubscriptionKey, RecordSubscriptionStore,
+    ShareAuthority, ShareControlServer, ShareManagement, Ticket, Workspace, identity_paths,
     load_certified_mount_identity_once_valid, load_revocation_list, load_workspace_share_issuer,
 };
 use fuser::{Config, MountOption, SessionACL};
@@ -253,13 +252,11 @@ mod share_mount_tests {
     #[test]
     fn shared_snapshots_project_exactly_one_record() {
         {
-            let dir = tempfile::tempdir().unwrap();
-            let history = FileHistoryStore::open(dir.path().join("history.json")).unwrap();
             let namespace = Arc::new(Mutex::new(Namespace::new("recipient").unwrap()));
             let record_id = FileRecordId::new();
             let first = snapshot(record_id);
 
-            apply_shared_snapshot(&namespace, &history, &first).unwrap();
+            apply_shared_snapshot(&namespace, &first).unwrap();
             let mut guard = namespace.lock().unwrap();
             validate_shared_namespace(&mut guard, record_id, false).unwrap();
             let entries: Vec<_> = guard
@@ -277,7 +274,16 @@ mod share_mount_tests {
                 Some(iroh_blobs::Hash::from([0x44; 32]))
             );
             drop(guard);
-            assert_eq!(history.snapshot(record_id).unwrap().versions.len(), 2);
+            assert_eq!(
+                namespace
+                    .lock()
+                    .unwrap()
+                    .record_history(record_id)
+                    .unwrap()
+                    .versions
+                    .len(),
+                2
+            );
 
             let mut second = first;
             let metadata = second.metadata.as_mut().unwrap();
@@ -297,24 +303,22 @@ mod share_mount_tests {
                 byte_len: 456,
                 metadata_hash: ContentHash([0x56; 32]),
             });
-            apply_shared_snapshot(&namespace, &history, &second).unwrap();
+            apply_shared_snapshot(&namespace, &second).unwrap();
             let guard = namespace.lock_recover();
             assert_eq!(guard.ino_for_record_id(record_id), Some(ino));
             assert_eq!(guard.getattr(ino).unwrap().size, 456);
             drop(guard);
         }
         {
-            let dir = tempfile::tempdir().unwrap();
-            let history = FileHistoryStore::open(dir.path().join("history.json")).unwrap();
             let namespace = Arc::new(Mutex::new(Namespace::new("recipient").unwrap()));
             let record_id = FileRecordId::new();
             let mut wrong_metadata = snapshot(record_id);
             wrong_metadata.metadata.as_mut().unwrap().record_id = FileRecordId::new();
-            assert!(apply_shared_snapshot(&namespace, &history, &wrong_metadata).is_err());
+            assert!(apply_shared_snapshot(&namespace, &wrong_metadata).is_err());
 
             let mut wrong_history = snapshot(record_id);
             wrong_history.versions[0].record_id = FileRecordId::new();
-            assert!(apply_shared_snapshot(&namespace, &history, &wrong_history).is_err());
+            assert!(apply_shared_snapshot(&namespace, &wrong_history).is_err());
         }
         {
             let expected = FileRecordId::new();
@@ -1461,6 +1465,11 @@ async fn replica_workspace(
         endpoint.id().to_string(),
         namespace_path.as_deref(),
     )?));
+    import_legacy_history(
+        &namespace,
+        Some(bundle.cache_dir.as_path()),
+        namespace_path.as_deref(),
+    );
     // A home peer is a real record replica, not merely a namespace/blob
     // cache. Keep the signed record repository and its materialized projection
     // exactly as a normal mounted collaborator does, so replacements,
@@ -1469,12 +1478,11 @@ async fn replica_workspace(
     let mut record_services = open_record_services(Some(&bundle.cache_dir), share_authority)?
         .context("home-peer record repository unavailable")?;
     record_services.workspace_authority = Some(Arc::new(authority));
-    let history = open_history(Some(&bundle.cache_dir))?;
     let workspace_id = ticket.workspace_id();
     let materializer = Arc::new(RecordMaterializer::new(
         workspace_id,
         Arc::clone(&namespace),
-        history.clone(),
+        true,
     ));
     materializer.reconcile_repository(&record_services.repository)?;
     let replica_repository = Arc::clone(&record_services.repository);
@@ -1544,9 +1552,7 @@ async fn replica_workspace(
             // The workspace did not change across this hydration pass. Remove
             // only blobs absent from its current authenticated root set, then
             // force a fresh pass if a concurrent update arrives.
-            if let Err(error) =
-                prune_obsolete_workspace_content(&namespace, &hydrator, history.as_deref()).await
-            {
+            if let Err(error) = prune_obsolete_workspace_content(&namespace, &hydrator).await {
                 status = fs::full_replica::FullReplicaStatus::syncing();
                 status.state = "failed".into();
                 status.error = Some(format!("prune obsolete replica content: {error}"));
@@ -1714,7 +1720,6 @@ async fn serve(
         }
         records.availability.clone_from(&availability);
     }
-    let history = open_history(cache_dir.as_deref())?;
     let paths = identity_paths();
     let certified = load_certified_mount_identity_once_valid(&paths).await?;
     let revocations = Arc::new(RwLock::new(load_revocation_list(&paths)?));
@@ -1727,6 +1732,9 @@ async fn serve(
         person: collab_types::Ed25519PublicKey(credentials.user_public_key()),
         device: collab_types::Ed25519PublicKey(credentials.device_public_key()),
     };
+    // A workspace whose document outlives this mount keeps its history there
+    // too; an in-memory mount has nothing to persist either in.
+    let history = cache_dir.as_deref().map(|_| history_actor);
     // The relays wait until something means another party may dial this
     // mount (#4224, `fs::reachability`): each trace of one wakes them.
     let (endpoint, lookup, reachability) =
@@ -1786,6 +1794,7 @@ async fn serve(
     let fresh = !np.as_ref().is_some_and(|path| path.exists());
     let ns_value = open_namespace(author.clone(), np.as_deref())?;
     let namespace = Arc::new(Mutex::new(ns_value));
+    import_legacy_history(&namespace, cache_dir.as_deref(), np.as_deref());
     // This mount's tree, as the Files app's person record of the workspace
     // that holds it: this daemon is the app's windowless endpoint, so what
     // changes here reaches the person's other devices, and the members of a
@@ -1805,7 +1814,7 @@ async fn serve(
     );
     let record_materializer = if let Some(records) = record_services.as_mut() {
         let materializer =
-            RecordMaterializer::new(workspace_id, namespace.clone(), history.clone());
+            RecordMaterializer::new(workspace_id, namespace.clone(), history.is_some());
         let materializer = match &replacement_transactions {
             Some((journal, namespace_path)) => {
                 materializer.with_transaction_recovery(Arc::clone(journal), namespace_path.clone())
@@ -1905,16 +1914,15 @@ async fn serve(
                     Arc::clone(authority),
                     Arc::clone(publisher),
                     &paths,
-                    history.as_ref().zip(replacement_transactions.as_ref()).map(
-                        |(history, (journal, path))| {
+                    history
+                        .zip(replacement_transactions.as_ref())
+                        .map(|(_, (journal, path))| {
                             fs::external_history::ExternalHistoryRuntime::from_mount(
-                                Arc::clone(history),
                                 Arc::clone(journal),
                                 Arc::clone(&namespace),
                                 path.clone(),
                             )
-                        },
-                    ),
+                        }),
                 ) {
                     Ok(factory) => factory,
                     Err(error) => {
@@ -1933,12 +1941,11 @@ async fn serve(
             .as_ref()
             .is_some_and(|repository| repository.is_empty());
     let initialized_record_authority = if allow_legacy_record_migration {
-        match (&history, &record_publisher) {
-            (Some(history), Some(publisher)) => {
+        match (history, &record_publisher) {
+            (Some(_), Some(publisher)) => {
                 initialize_owner_record_authority(
                     namespace.clone(),
                     hydrator.clone(),
-                    history.clone(),
                     history_actor,
                     publisher.clone(),
                 )?;
@@ -2228,7 +2235,7 @@ async fn serve(
             availability,
             eviction_queue,
             share_authority,
-            history: history.map(|history| (history, history_actor)),
+            history,
             record_publisher,
             replacement_transactions,
             #[cfg(target_os = "linux")]
@@ -2266,13 +2273,12 @@ async fn serve(
 fn initialize_owner_record_authority(
     namespace: Arc<Mutex<Namespace>>,
     hydrator: Arc<Hydrator>,
-    history: Arc<FileHistoryStore>,
     actor: fs_protocol::FileActor,
     publisher: Arc<RecordPublisher>,
 ) -> Result<()> {
     let heuristics = Arc::new(Heuristics::new(hydrator.clone()));
     let initialized = QuickFS::new(namespace, hydrator, heuristics)
-        .with_history(history, actor)?
+        .with_history(actor)?
         .with_record_publisher(publisher)?;
     drop(initialized);
     Ok(())
@@ -2320,7 +2326,6 @@ async fn mount(
         }
         records.availability.clone_from(&availability);
     }
-    let history = open_history(cache_dir.as_deref())?;
     let paths = identity_paths();
     let certified = load_certified_mount_identity_once_valid(&paths).await?;
     let revocations = Arc::new(RwLock::new(load_revocation_list(&paths)?));
@@ -2331,6 +2336,9 @@ async fn mount(
         person: collab_types::Ed25519PublicKey(credentials.user_public_key()),
         device: collab_types::Ed25519PublicKey(credentials.device_public_key()),
     };
+    // A workspace whose document outlives this mount keeps its history there
+    // too; an in-memory mount has nothing to persist either in.
+    let history = cache_dir.as_deref().map(|_| history_actor);
     let (endpoint, lookup) = sync::bind_endpoint_with_key(device.secret.clone()).await?;
     let caps = resolve_acl(&acl_args, credentials.user_public_key())?;
     let acl = caps.as_ref().map(|c| (c.handle(), c.identity()));
@@ -2348,6 +2356,7 @@ async fn mount(
     }
 
     let namespace = Arc::new(Mutex::new(open_namespace(author, np.as_deref())?));
+    import_legacy_history(&namespace, cache_dir.as_deref(), np.as_deref());
     // The shared workspace's Files record holds this tree for every member: a
     // mount that has none yet is given it whole, and every change here is
     // published as the Files app's.
@@ -2362,7 +2371,7 @@ async fn mount(
     let workspace_id = ticket.workspace_id();
     let record_materializer = if let Some(records) = record_services.as_mut() {
         let materializer =
-            RecordMaterializer::new(workspace_id, namespace.clone(), history.clone());
+            RecordMaterializer::new(workspace_id, namespace.clone(), history.is_some());
         let materializer = match &replacement_transactions {
             Some((journal, namespace_path)) => {
                 materializer.with_transaction_recovery(Arc::clone(journal), namespace_path.clone())
@@ -2474,7 +2483,7 @@ async fn mount(
             availability,
             eviction_queue,
             share_authority,
-            history: history.map(|history| (history, history_actor)),
+            history,
             record_publisher,
             replacement_transactions,
             #[cfg(target_os = "linux")]
@@ -2562,8 +2571,7 @@ async fn mount_share(
     validate_shared_namespace(&mut namespace, expected_record, true)?;
     let namespace = Arc::new(Mutex::new(namespace));
     let cache = Some(cache_dir.clone());
-    let history = open_history(cache.as_deref())?.context("recipient history store unavailable")?;
-    apply_shared_snapshot(&namespace, &history, &snapshot)?;
+    apply_shared_snapshot(&namespace, &snapshot)?;
     persist_now(&namespace, &namespace_path);
 
     let store = Arc::new(open_store(Some(cache_dir.join("blobs"))).await?);
@@ -2602,7 +2610,6 @@ async fn mount_share(
     let refresh = ShareRefreshTask {
         refresher: ShareRefresher::new(client, credential.clone(), actor.person, &snapshot),
         namespace: Arc::clone(&namespace),
-        history: Arc::clone(&history),
         namespace_path: namespace_path.clone(),
         subscriptions: subscriptions.map(|store| (store, subscription_key)),
         store: Arc::clone(&store),
@@ -2651,7 +2658,7 @@ async fn mount_share(
             availability,
             eviction_queue,
             share_authority: None,
-            history: Some((history, actor)),
+            history: Some(actor),
             record_publisher: None,
             replacement_transactions: None,
             #[cfg(target_os = "linux")]
@@ -2849,7 +2856,6 @@ const SHARE_REPLICA_RENEWAL: Duration = Duration::from_secs(4 * 60);
 struct ShareRefreshTask {
     refresher: ShareRefresher,
     namespace: Arc<Mutex<Namespace>>,
-    history: Arc<FileHistoryStore>,
     namespace_path: PathBuf,
     subscriptions: Option<(Arc<RecordSubscriptionStore>, RecordSubscriptionKey)>,
     store: Arc<ContentStore>,
@@ -2909,7 +2915,7 @@ impl ShareRefreshTask {
     /// Project a changed snapshot and persist it; a new revision clears
     /// the receipts of the old one.
     fn apply(&mut self, snapshot: &RecordProtocolSnapshotV1) -> Result<()> {
-        apply_shared_snapshot(&self.namespace, &self.history, snapshot)?;
+        apply_shared_snapshot(&self.namespace, snapshot)?;
         persist_now(&self.namespace, &self.namespace_path);
         if snapshot.content_revision != self.revision {
             self.revision = snapshot.content_revision;
@@ -3061,7 +3067,6 @@ async fn refresh_host_replica_observation(
 )] // The complete projection is namespace-atomic.
 fn apply_shared_snapshot(
     namespace: &Arc<Mutex<Namespace>>,
-    history: &FileHistoryStore,
     snapshot: &RecordProtocolSnapshotV1,
 ) -> Result<()> {
     let metadata = snapshot
@@ -3091,12 +3096,12 @@ fn apply_shared_snapshot(
     {
         bail!("shared content revision does not match signed record state");
     }
-    // Persist immutable history before exposing the namespace pointer. A
-    // crash may leave an unprojected version, but never a projected revision
-    // whose referenced history node is absent locally.
-    append_snapshot_history(history, snapshot)?;
     {
         let mut namespace = namespace.lock_recover();
+        // The record's versions join the document before the revision that
+        // names one is projected: one atomic write, and never a projected
+        // revision whose version the document lacks.
+        append_snapshot_history(&mut namespace, snapshot)?;
         namespace.enable_signed_content_authority();
         let ino = match namespace.ino_for_record_id(snapshot.record_id) {
             Some(ino) => ino,
@@ -3162,38 +3167,13 @@ fn validate_shared_namespace(
     Ok(())
 }
 
+/// Stage a shared snapshot's versions in the document. They arrive in no
+/// order; the document places each after the parents it names.
 fn append_snapshot_history(
-    history: &FileHistoryStore,
+    namespace: &mut Namespace,
     snapshot: &RecordProtocolSnapshotV1,
 ) -> Result<()> {
-    use std::collections::BTreeSet;
-    let mut known: BTreeSet<_> = history
-        .snapshot(snapshot.record_id)
-        .map_or_else(Vec::new, |state| state.versions)
-        .into_iter()
-        .map(|version| version.id)
-        .collect();
-    let mut pending = snapshot.versions.clone();
-    while !pending.is_empty() {
-        let before = pending.len();
-        let mut deferred = Vec::new();
-        for version in pending {
-            version.validate()?;
-            if version.record_id != snapshot.record_id {
-                bail!("shared history contains another record");
-            }
-            if version.parents.iter().all(|parent| known.contains(parent)) {
-                history.append(version.clone())?;
-                known.insert(version.id);
-            } else {
-                deferred.push(version);
-            }
-        }
-        if deferred.len() == before {
-            bail!("shared history contains missing or cyclic parents");
-        }
-        pending = deferred;
-    }
+    namespace.append_versions(&snapshot.versions)?;
     Ok(())
 }
 
@@ -3279,12 +3259,27 @@ fn open_record_services(
     }))
 }
 
-fn open_history(cache_dir: Option<&Path>) -> Result<Option<Arc<FileHistoryStore>>> {
-    cache_dir
-        .map(|dir| FileHistoryStore::open(dir.join("file-history.json")))
-        .transpose()
-        .map(|history| history.map(Arc::new))
-        .map_err(Into::into)
+/// Take in the history earlier releases kept beside the namespace document,
+/// persisting the document before the old files are moved aside: a crash in
+/// between imports the same versions again instead of losing them.
+fn import_legacy_history(
+    namespace: &Arc<Mutex<Namespace>>,
+    cache_dir: Option<&Path>,
+    namespace_path: Option<&Path>,
+) {
+    let (Some(cache_dir), Some(namespace_path)) = (cache_dir, namespace_path) else {
+        return;
+    };
+    let path = cache_dir.join("file-history.json");
+    let imported = fs::legacy_history::import(&mut namespace.lock_recover(), &path);
+    match imported {
+        Ok(true) => {
+            persist_now(namespace, namespace_path);
+            fs::legacy_history::retire(&path);
+        }
+        Ok(false) => fs::legacy_history::retire(&path),
+        Err(error) => eprintln!("could not import {}: {error:#}", path.display()),
+    }
 }
 
 /// Atomically persist the namespace document and retain bounded known-good
@@ -3475,7 +3470,7 @@ struct MountServices {
     availability: Option<Arc<Mutex<fs::AvailabilityRegistry>>>,
     eviction_queue: Option<Arc<tokio::sync::Mutex<fs::eviction::EvictionQueue>>>,
     share_authority: Option<Arc<ShareAuthority>>,
-    history: Option<(Arc<FileHistoryStore>, fs_protocol::FileActor)>,
+    history: Option<fs_protocol::FileActor>,
     record_publisher: Option<Arc<RecordPublisher>>,
     replacement_transactions: Option<(Arc<Mutex<fs::RecordTransactionJournal>>, PathBuf)>,
     #[cfg(target_os = "linux")]
@@ -3547,7 +3542,6 @@ async fn run_mount(config: MountConfig, services: MountServices) -> Result<Mount
     // never fall back to Hydrator-only proof or direct blob deletion.
     let storage_availability = availability.clone();
     let storage_eviction_queue = eviction_queue.clone();
-    let storage_history = history.as_ref().map(|(history, _)| Arc::clone(history));
     let durable_namespace = Arc::clone(&namespace);
     #[cfg(target_os = "linux")]
     let signalled_namespace = Arc::clone(&namespace);
@@ -3579,7 +3573,7 @@ async fn run_mount(config: MountConfig, services: MountServices) -> Result<Mount
         None => fs,
     };
     let fs = match history {
-        Some((history, actor)) => fs.with_history(history, actor)?,
+        Some(actor) => fs.with_history(actor)?,
         None => fs,
     };
     let fs = match record_publisher {
@@ -3676,7 +3670,6 @@ async fn run_mount(config: MountConfig, services: MountServices) -> Result<Mount
             fs.write_buffers_handle(),
             storage_availability,
             storage_eviction_queue,
-            storage_history,
             // The name the person's devices tell this workspace by: its
             // mount's directory, or its id where the mount has none.
             mount_point

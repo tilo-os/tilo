@@ -498,13 +498,13 @@ impl QuickFS {
     /// above) as one signed changeset, made durable at once:
     ///
     /// 1. the content of every file is synced once, not once per file;
-    /// 2. the history mutations are written in one log write;
-    /// 3. every record operation is signed once as a changeset and written
+    /// 2. every record operation is signed once as a changeset and written
     ///    with it in one log transaction: after a crash either all of the
     ///    changeset is there or none of it;
-    /// 4. the durability hook persists the namespace that places the
-    ///    changeset's records, so a crash cannot leave durable records
-    ///    without placements (which a restart would read as deletions).
+    /// 3. the durability hook persists the namespace that places the
+    ///    changeset's records and holds their history, so a crash cannot
+    ///    leave durable records without placements (which a restart would
+    ///    read as deletions).
     ///
     /// Until then peers see none of it: its records are served only once
     /// durable, namespace exchanges wait on the publication gate, and the
@@ -512,8 +512,6 @@ impl QuickFS {
     pub fn changeset<T>(&self, apply: impl FnOnce() -> T) -> T {
         let publisher = self.record_publisher.as_ref();
         let gate = publisher.map(|p| p.repository().publication_gate().blocking_write());
-        let history = self.history.as_ref().map(|(history, _)| history);
-        let deferral = history.map(|history| history.defer_durability());
         if let Some(publisher) = publisher
             && let Err(error) = publisher.begin_changeset()
         {
@@ -526,15 +524,7 @@ impl QuickFS {
         if let Err(error) = self.hydrator.block_on(store.end_deferred_sync()) {
             eprintln!("content stays pending: {error:#}");
         }
-        let mut durable = if let Some(deferral) = deferral
-            && let Err(error) = deferral.finish()
-        {
-            // The records wait for the history that describes them.
-            eprintln!("history stays pending: {error}");
-            false
-        } else {
-            true
-        };
+        let mut durable = true;
         if durable && let Some(publisher) = publisher {
             match publisher.commit_changeset() {
                 Ok(Some(changeset)) if std::env::var_os("TILO_FS_NATIVE_TRACE").is_some() => {

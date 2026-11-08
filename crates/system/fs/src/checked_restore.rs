@@ -1,8 +1,8 @@
 //! Checked history service owned by the actual mounted filesystem.
 use super::{
-    Access, EBUSY, EINVAL, EIO, ENOENT, EROFS, Hash, Namespace, QuickFS, RecordKind,
-    VersionMetadataDigest, now_ms,
+    Access, EBUSY, EINVAL, EIO, ENOENT, EROFS, Hash, Namespace, QuickFS, RecordKind, now_ms,
 };
+use crate::namespace::history::VersionMetadataDigest;
 // The test module reaches the whole filesystem scope through this module.
 #[cfg(test)]
 use super::*;
@@ -177,7 +177,6 @@ impl QuickFS {
         &self,
         ino: u64,
         namespace: &Namespace,
-        history: &crate::history::HistoryLease<'_>,
         repository: &RepositoryLease<'_>,
     ) -> Result<Review, Outcome> {
         let workspace_id = self.restore_workspace()?;
@@ -187,7 +186,9 @@ impl QuickFS {
             record_id,
         };
         let signed = repository.snapshot(key).map_err(|_| Outcome::Unavailable)?;
-        let stored = history.snapshot(record_id).ok_or(Outcome::Unavailable)?;
+        let stored = namespace
+            .record_history(record_id)
+            .ok_or(Outcome::Unavailable)?;
         let mut versions = signed.versions.clone();
         versions.sort_by_key(|v| v.id);
         let mut history_versions = stored.versions.clone();
@@ -245,7 +246,7 @@ impl QuickFS {
     fn observed_revision(
         namespace: &Namespace,
         ino: u64,
-        history: &crate::history::RecordHistorySnapshot,
+        history: &crate::namespace::history::RecordHistorySnapshot,
     ) -> Result<ContentRevisionV1, Outcome> {
         let revision = namespace
             .content_revision_for(ino)
@@ -279,13 +280,12 @@ impl QuickFS {
             .as_ref()
             .ok_or(Outcome::Unavailable)?;
         let publisher = self.record_publisher.as_ref().ok_or(Outcome::Unavailable)?;
-        let (history, _) = self.history.as_ref().ok_or(Outcome::Unavailable)?;
+        self.history.as_ref().ok_or(Outcome::Unavailable)?;
         let buffers = self
             .write_buffers
             .lock()
             .map_err(|_| Outcome::Unavailable)?;
         let namespace = self.namespace.lock().map_err(|_| Outcome::Unavailable)?;
-        let history = history.lease().map_err(|_| Outcome::Unavailable)?;
         let repository = publisher
             .repository()
             .lease()
@@ -307,7 +307,7 @@ impl QuickFS {
             return Err(Outcome::PendingWrites);
         }
         Self::restore_kind(&namespace, ino)?;
-        self.review_locked(ino, &namespace, &history, &repository)
+        self.review_locked(ino, &namespace, &repository)
     }
 
     /// Restore `ino` as `request` asks. Content that is not local yet is
@@ -449,12 +449,11 @@ impl QuickFS {
         };
         authorize()?;
         if journal.checked_phase(request.intent_id) != Some(Phase::BroadcastCommitted)
-            && let (Some(publisher), Some((history, _))) = (&self.record_publisher, &self.history)
+            && let (Some(publisher), Some(_)) = (&self.record_publisher, &self.history)
         {
             let sync = self.sync.clone();
             let _ = publisher.recover_replacement_transactions(
                 &mut journal,
-                history,
                 &self.namespace,
                 &runtime.namespace_path,
                 move |_delta| {
@@ -580,7 +579,7 @@ impl QuickFS {
             .as_ref()
             .ok_or(Outcome::Unavailable)?;
         let publisher = self.record_publisher.as_ref().ok_or(Outcome::Unavailable)?;
-        let (history_store, actor) = self.history.as_ref().ok_or(Outcome::Unavailable)?;
+        let actor = self.history.as_ref().ok_or(Outcome::Unavailable)?;
         if self.ns().record_id_for(ino) != Some(request.review.record_id)
             || self.restore_workspace()? != request.review.workspace_id
         {
@@ -599,14 +598,10 @@ impl QuickFS {
         if request.review.mount_lifetime != self.mount_lifetime {
             return Err(Outcome::ReviewRequired);
         }
-        let selected = history_store
-            .snapshot(request.review.record_id)
-            .and_then(|state| {
-                state
-                    .versions
-                    .into_iter()
-                    .find(|value| value.id == selected_id)
-            })
+        let selected = self
+            .ns()
+            .record_version(request.review.record_id, selected_id)
+            .0
             .ok_or(Outcome::InvalidRequest)?;
         let kind = Self::restore_kind(&self.ns(), ino)?;
         // The selected version must be local before anything commits; a
@@ -676,7 +671,6 @@ impl QuickFS {
             .lock()
             .map_err(|_| Outcome::Unavailable)?;
         let mut namespace = self.namespace.lock().map_err(|_| Outcome::Unavailable)?;
-        let mut history = history_store.lease().map_err(|_| Outcome::Unavailable)?;
         let mut repository = publisher
             .repository()
             .lease()
@@ -720,12 +714,12 @@ impl QuickFS {
         if Self::restore_kind(&namespace, ino)? != kind {
             return Err(Outcome::ReviewRequired);
         }
-        let current_review = self.review_locked(ino, &namespace, &history, &repository)?;
+        let current_review = self.review_locked(ino, &namespace, &repository)?;
         if current_review != request.review {
             return Err(Outcome::ReviewRequired);
         }
-        let state = history
-            .snapshot(request.review.record_id)
+        let state = namespace
+            .record_history(request.review.record_id)
             .ok_or(Outcome::Unavailable)?;
         if !state.versions.iter().any(|value| value == &selected) {
             return Err(Outcome::ReviewRequired);
@@ -805,8 +799,8 @@ impl QuickFS {
             workspace_id: request.review.workspace_id,
             record_id: proposed.record_id,
         };
-        let history_candidate = history
-            .prepare_versions(std::slice::from_ref(&proposed))
+        namespace
+            .check_versions(std::slice::from_ref(&proposed))
             .map_err(|_| Outcome::Unavailable)?;
         let result_receipt = Receipt {
             schema_version: 1,
@@ -836,8 +830,13 @@ impl QuickFS {
         let mut entry = publisher
             .sign_checked_restore(manifest, repository.highest_sequence(key, actor))
             .map_err(|_| Outcome::Unavailable)?;
+        // The version joins the document this restore publishes, not the one
+        // in use: until the transaction commits, nothing may be visible.
         let mut namespace_candidate = namespace.clone();
         namespace_candidate.note_change();
+        namespace_candidate
+            .append_version(proposed.clone())
+            .map_err(|_| Outcome::Unavailable)?;
         let projection_actor = namespace_candidate.begin_restore_projection(
             request.review.workspace_id,
             request.review.record_id,
@@ -886,7 +885,6 @@ impl QuickFS {
         drop(repository);
         #[cfg(test)]
         test_fault(request.intent_id, TestFault::Records).map_err(|_| pending())?;
-        history.install(history_candidate).map_err(|_| pending())?;
         journal
             .advance(request.intent_id, Phase::HistoryCommitted, None)
             .map_err(|_| pending())?;
@@ -913,7 +911,6 @@ impl QuickFS {
                 Some(delta.clone()),
             )
             .map_err(|_| pending())?;
-        drop(history);
         drop(namespace);
         drop(buffers);
         self.project_checked_availability(request.review.record_id);

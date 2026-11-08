@@ -1380,9 +1380,6 @@ async fn fuse_open_handles_survive_replacement_unlink_and_concurrent_writes() {
                 person: Ed25519PublicKey::from_bytes(person.verifying_key().to_bytes()),
                 device: Ed25519PublicKey::from_bytes(signer.verifying_key().to_bytes()),
             };
-            let history = Arc::new(
-                fs::FileHistoryStore::open(state_dir.path().join("history.json")).unwrap(),
-            );
             let repository =
                 Arc::new(fs::RecordRepository::open(state_dir.path().join("records")).unwrap());
             let publisher = Arc::new(
@@ -1397,7 +1394,7 @@ async fn fuse_open_handles_survive_replacement_unlink_and_concurrent_writes() {
             let hydrator = Arc::new(Hydrator::new(endpoint, store));
             let heuristics = Arc::new(Heuristics::new(hydrator.clone()));
             let quick_fs = QuickFS::new(namespace.clone(), hydrator, heuristics)
-                .with_history(history.clone(), actor)
+                .with_history(actor)
                 .unwrap()
                 .with_record_publisher(publisher.clone())
                 .unwrap()
@@ -1427,8 +1424,26 @@ async fn fuse_open_handles_survive_replacement_unlink_and_concurrent_writes() {
             assert!(victim_snapshot.binding.unwrap().tombstoned);
             assert!(journal.lock().unwrap().entries().next().is_none());
             assert!(namespace_path.exists());
-            assert!(history.snapshot(source_record).unwrap().versions.len() >= 2);
-            assert!(history.snapshot(victim_record).unwrap().versions.len() >= 2);
+            assert!(
+                namespace
+                    .lock()
+                    .unwrap()
+                    .record_history(source_record)
+                    .unwrap()
+                    .versions
+                    .len()
+                    >= 2
+            );
+            assert!(
+                namespace
+                    .lock()
+                    .unwrap()
+                    .record_history(victim_record)
+                    .unwrap()
+                    .versions
+                    .len()
+                    >= 2
+            );
             drop(victim_handle);
             shutdown_fuse_fixture(session, mount_dir.path(), shutdown_endpoint, shutdown_store)
                 .await;

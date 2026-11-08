@@ -4,7 +4,6 @@
 use super::pending_source::AuthenticatedPendingSource;
 use super::{ExternalSourceAdmission, refused};
 use crate::{
-    history::FileHistoryStore,
     namespace::Namespace,
     record_log::{ExternalCanonicalIds, ExternalReservationInput, PreviousCanonicalIds},
     record_transaction::{
@@ -36,20 +35,17 @@ use std::{
 /// These are the existing mount's actual stores, never a caller-selected path
 /// or a second publisher/history backend.
 pub struct ExternalHistoryRuntime {
-    pub(super) history: Arc<FileHistoryStore>,
     pub(super) journal: Arc<Mutex<RecordTransactionJournal>>,
     pub(super) namespace: Arc<Mutex<Namespace>>,
     pub(super) namespace_path: PathBuf,
 }
 impl ExternalHistoryRuntime {
     pub fn from_mount(
-        history: Arc<FileHistoryStore>,
         journal: Arc<Mutex<RecordTransactionJournal>>,
         namespace: Arc<Mutex<Namespace>>,
         namespace_path: PathBuf,
     ) -> Self {
         Self {
-            history,
             journal,
             namespace,
             namespace_path,
@@ -434,8 +430,10 @@ impl SeededExternalRecords {
         }
         let runtime = a.factory.runtime.as_ref().ok_or_else(refused)?;
         runtime
-            .history
-            .append_batch(&[source_version.clone(), victim_version.clone()])
+            .namespace
+            .lock()
+            .map_err(|_| refused())?
+            .append_versions(&[source_version.clone(), victim_version.clone()])
             .map_err(io::Error::other)?;
         drop(a);
         let seed = Rc::new(Self {
@@ -1188,8 +1186,10 @@ impl ObservedExternalReplacement {
             == RecordTransactionPhase::ParticipantRecordsCommitted
         {
             runtime
-                .history
-                .append_batch(
+                .namespace
+                .lock()
+                .map_err(|_| refused())?
+                .append_versions(
                     &self
                         .entry
                         .transaction

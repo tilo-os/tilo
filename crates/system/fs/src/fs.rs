@@ -46,13 +46,13 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use iroh_blobs::Hash;
-use serde::Serialize;
 
 use crate::acl::{Access, AclHandle};
 use crate::availability::{AvailabilityRegistry, RecordAvailability, RecordKind};
 use crate::clock::unix_now_ms as now_ms;
 use crate::eviction::{EvictionMode, EvictionQueue, EvictionRequestId, EvictionRequestState};
 use crate::hydration::Hydrator;
+use crate::namespace::history::VersionMetadataDigest;
 use crate::namespace::{InodeQuery, InodeView, Namespace};
 use crate::smart::Heuristics;
 use crate::smart::history::{AccessHistory, natural_cmp};
@@ -94,14 +94,6 @@ pub type WriteStages = HashMap<u64, Arc<Stage>>;
 /// Writes the namespace to disk unless the copy there already holds it
 /// ([`QuickFS::set_durability_hook`]).
 pub type DurabilityHook = Arc<dyn Fn() -> io::Result<()> + Send + Sync>;
-
-#[derive(Serialize)]
-struct VersionMetadataDigest {
-    path: Option<String>,
-    kind: u8,
-    byte_len: u64,
-    deleted: bool,
-}
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 struct VersionSnapshot {
@@ -732,12 +724,9 @@ pub struct QuickFS {
     /// Durable signed-grant authority used for the bounded read-only share
     /// projection. The FUSE callback never holds or reconstructs link secrets.
     share_authority: Option<Arc<crate::share_authority::ShareAuthority>>,
-    /// Durable immutable version/conflict history and the certified local
-    /// actor attributed to mutations made through this mount.
-    history: Option<(
-        Arc<crate::history::FileHistoryStore>,
-        fs_protocol::FileActor,
-    )>,
+    /// The certified local actor attributed to the versions this mount
+    /// appends; the versions themselves live in the namespace document.
+    history: Option<fs_protocol::FileActor>,
     /// Signed exact-record projection used by partial-share network sessions.
     record_publisher: Option<Arc<crate::record_publisher::RecordPublisher>>,
     /// Which agent the desktop session says caused the writes to some paths
@@ -2408,19 +2397,18 @@ impl QuickFS {
         self
     }
 
-    /// Attach durable history and create a migration baseline for records
-    /// that predate history support. Failure refuses the mount rather than
-    /// silently running with an incomplete audit trail.
+    /// Keep immutable versions for this mount, and create a baseline version
+    /// for records that predate version history. Failure refuses the mount
+    /// rather than silently running with an incomplete audit trail.
     ///
     /// # Errors
     ///
     /// Returns a history error when the migration baseline cannot be written.
     pub fn with_history(
         mut self,
-        history: Arc<crate::history::FileHistoryStore>,
         actor: fs_protocol::FileActor,
-    ) -> Result<Self, crate::history::HistoryError> {
-        self.history = Some((history, actor));
+    ) -> Result<Self, crate::namespace::history::HistoryError> {
+        self.history = Some(actor);
         if self.allow_legacy_record_migration {
             self.ensure_history_baseline()?;
         }
@@ -2511,7 +2499,7 @@ impl QuickFS {
         journal: Arc<Mutex<crate::record_transaction::RecordTransactionJournal>>,
         namespace_path: std::path::PathBuf,
     ) -> Result<Self, crate::record_publisher::RecordPublisherError> {
-        if let (Some(publisher), Some((history, _))) = (&self.record_publisher, &self.history) {
+        if let (Some(publisher), Some(_)) = (&self.record_publisher, &self.history) {
             publisher
                 .repository()
                 .restore_admission_fences(&*journal.lock().map_err(|_| {
@@ -2520,7 +2508,6 @@ impl QuickFS {
             let sync = self.sync.clone();
             publisher.recover_replacement_transactions(
                 &mut journal.lock_recover(),
-                history,
                 &self.namespace,
                 &namespace_path,
                 move |_delta| {
@@ -2595,7 +2582,7 @@ impl QuickFS {
     fn ensure_record_publication(
         &self,
     ) -> Result<(), crate::record_publisher::RecordPublisherError> {
-        let (Some(publisher), Some((history, _))) = (&self.record_publisher, &self.history) else {
+        let (Some(publisher), Some(_)) = (&self.record_publisher, &self.history) else {
             return Ok(());
         };
         let binding_inodes = self.live_inodes_with_root();
@@ -2619,7 +2606,7 @@ impl QuickFS {
             let Some(snapshot) = self.version_snapshot(ino, false, None) else {
                 continue;
             };
-            let history_state = history.snapshot(snapshot.record_id);
+            let history_state = self.ns().record_history(snapshot.record_id);
             let versions = history_state
                 .as_ref()
                 .map(|history| {
@@ -2659,8 +2646,8 @@ impl QuickFS {
         Ok(())
     }
 
-    fn ensure_history_baseline(&self) -> Result<(), crate::history::HistoryError> {
-        let Some((history, _)) = &self.history else {
+    fn ensure_history_baseline(&self) -> Result<(), crate::namespace::history::HistoryError> {
+        let Some(_) = &self.history else {
             return Ok(());
         };
         let inodes = self.live_inodes_with_root();
@@ -2668,7 +2655,7 @@ impl QuickFS {
             let Some(snapshot) = self.version_snapshot(ino, false, None) else {
                 continue;
             };
-            if history.snapshot(snapshot.record_id).is_none() {
+            if !self.ns().has_history(snapshot.record_id) {
                 self.append_version(snapshot, fs_protocol::FileProvenance::Create, now_ms())?;
             }
         }
@@ -2845,7 +2832,7 @@ impl QuickFS {
         snapshot: VersionSnapshot,
         provenance: fs_protocol::FileProvenance,
         timestamp_ms: u64,
-    ) -> Result<fs_protocol::FileVersionId, crate::history::HistoryError> {
+    ) -> Result<fs_protocol::FileVersionId, crate::namespace::history::HistoryError> {
         self.append_version_at(snapshot, provenance, timestamp_ms, timestamp_ms)
     }
 
@@ -2858,13 +2845,11 @@ impl QuickFS {
         provenance: fs_protocol::FileProvenance,
         timestamp_ms: u64,
         observed_at_ms: u64,
-    ) -> Result<fs_protocol::FileVersionId, crate::history::HistoryError> {
-        let Some((history, actor)) = &self.history else {
+    ) -> Result<fs_protocol::FileVersionId, crate::namespace::history::HistoryError> {
+        let Some(actor) = &self.history else {
             return Ok(fs_protocol::FileVersionId::new());
         };
-        let parents = history
-            .snapshot(snapshot.record_id)
-            .map_or_else(Vec::new, |history| history.heads);
+        let parents = self.ns().record_history_heads(snapshot.record_id);
         let id = fs_protocol::FileVersionId::new();
         let version = fs_protocol::FileVersionV1 {
             id,
@@ -2889,14 +2874,17 @@ impl QuickFS {
             };
             published.map_err(|error| {
                 if error.is_capacity_exhausted() {
-                    crate::history::HistoryError::CapacityExhausted(error.to_string())
+                    crate::namespace::history::HistoryError::CapacityExhausted(error.to_string())
                 } else {
-                    crate::history::HistoryError::Publication(error.to_string())
+                    crate::namespace::history::HistoryError::Publication(error.to_string())
                 }
             })?;
         }
         self.attribute_version(&version, None);
-        history.append(version)?;
+        {
+            let mut namespace = self.ns();
+            namespace.append_version(version)?;
+        }
         if let Some(registry) = &self.availability {
             let mut registry = registry.lock_recover();
             if let Some(mut record) = registry.get(snapshot.record_id).cloned() {
@@ -2937,9 +2925,12 @@ impl QuickFS {
     }
 
     fn history_projection_for(&self, ino: u64) -> Option<Vec<u8>> {
-        let (history, _) = self.history.as_ref()?;
+        self.history.as_ref()?;
         let record_id = self.ns().record_id_for(ino)?;
-        history.projection(record_id)?.to_xattr_bytes().ok()
+        self.ns()
+            .record_history_projection(record_id)?
+            .to_xattr_bytes()
+            .ok()
     }
 
     /// The namespace owns the record/path index.  This method only fingerprints
@@ -3278,17 +3269,10 @@ impl QuickFS {
         version_id: fs_protocol::FileVersionId,
     ) -> Result<Vec<u8>, i32> {
         self.check_access(ino, Access::Read)?;
-        let (history, _) = self.history.as_ref().ok_or(libc::ENOTSUP)?;
+        self.history.as_ref().ok_or(libc::ENOTSUP)?;
         let record_id = self.ns().record_id_for(ino).ok_or(ENOENT)?;
-        let version = history
-            .snapshot(record_id)
-            .and_then(|snapshot| {
-                snapshot
-                    .versions
-                    .into_iter()
-                    .find(|version| version.id == version_id)
-            })
-            .ok_or(EINVAL)?;
+        let (version, _) = self.ns().record_version(record_id, version_id);
+        let version = version.ok_or(EINVAL)?;
         let Some(content_hash) = version.content_hash else {
             return Ok(Vec::new());
         };
@@ -3316,7 +3300,7 @@ impl QuickFS {
     )]
     fn history_merge_preflight(&self, ino: u64, conflict_id: uuid::Uuid) -> Result<Vec<u8>, i32> {
         self.check_access(ino, Access::Read)?;
-        let (history, _) = self.history.as_ref().ok_or(libc::ENOTSUP)?;
+        self.history.as_ref().ok_or(libc::ENOTSUP)?;
         let (record_id, source_name) = {
             let namespace = self.ns();
             (
@@ -3334,7 +3318,7 @@ impl QuickFS {
         if !matches!(extension.as_str(), "txt" | "qdoc" | "tilo-doc") {
             return Err(libc::ENOTSUP);
         }
-        let state = history.snapshot(record_id).ok_or(EINVAL)?;
+        let state = self.ns().record_history(record_id).ok_or(EINVAL)?;
         let conflict = state
             .conflicts
             .iter()
@@ -3463,7 +3447,7 @@ impl QuickFS {
             // this one-record control operation.
             return Err(libc::ENOTSUP);
         }
-        let (history, actor) = self.history.as_ref().ok_or(libc::ENOTSUP)?;
+        let actor = self.history.as_ref().ok_or(libc::ENOTSUP)?;
         let publisher = self.record_publisher.as_ref().ok_or(libc::ENOTSUP)?;
         let (record_id, expected_revision) = {
             let namespace = self.ns();
@@ -3475,7 +3459,7 @@ impl QuickFS {
         if expected_revision.record_id != record_id {
             return Err(EIO);
         }
-        let state = history.snapshot(record_id).ok_or(EINVAL)?;
+        let state = self.ns().record_history(record_id).ok_or(EINVAL)?;
         let conflict = state
             .conflicts
             .iter()
@@ -3557,10 +3541,13 @@ impl QuickFS {
             )
             .map_err(|_| EIO)?;
         self.attribute_version(&result_version, None);
-        history.append(result_version).map_err(|_| EIO)?;
-        history
-            .resolve(record_id, conflict_id, resolution)
-            .map_err(|_| EIO)?;
+        {
+            let mut namespace = self.ns();
+            namespace.append_version(result_version).map_err(|_| EIO)?;
+            namespace
+                .resolve_history_conflict(record_id, conflict_id, &resolution)
+                .map_err(|_| EIO)?;
+        }
 
         let converged = publisher
             .snapshot(record_id)
@@ -3602,7 +3589,7 @@ impl QuickFS {
         conflict_id: uuid::Uuid,
         selected_version: fs_protocol::FileVersionId,
     ) -> Result<(), i32> {
-        let (history, actor) = self.history.as_ref().ok_or(libc::ENOTSUP)?;
+        let actor = self.history.as_ref().ok_or(libc::ENOTSUP)?;
         let publisher = self.record_publisher.as_ref().ok_or(libc::ENOTSUP)?;
         let runtime = self
             .replacement_transactions
@@ -3629,7 +3616,7 @@ impl QuickFS {
         if !matches!(extension.as_str(), "txt" | "qdoc" | "tilo-doc") {
             return Err(libc::ENOTSUP);
         }
-        let state = history.snapshot(record_id).ok_or(EINVAL)?;
+        let state = self.ns().record_history(record_id).ok_or(EINVAL)?;
         let conflict = state
             .conflicts
             .iter()
@@ -3835,7 +3822,6 @@ impl QuickFS {
             .execute_replacement_transaction(
                 manifest,
                 &mut runtime.journal.lock_recover(),
-                history,
                 &self.namespace,
                 &runtime.namespace_path,
                 move |_delta| {
@@ -3862,7 +3848,7 @@ impl QuickFS {
         conflict_id: uuid::Uuid,
         selected_version: fs_protocol::FileVersionId,
     ) -> Result<(), i32> {
-        let (history, actor) = self.history.as_ref().ok_or(libc::ENOTSUP)?;
+        let actor = self.history.as_ref().ok_or(libc::ENOTSUP)?;
         let publisher = self.record_publisher.as_ref().ok_or(libc::ENOTSUP)?;
         let transaction_runtime = self
             .replacement_transactions
@@ -3898,7 +3884,7 @@ impl QuickFS {
         let target_version_id = fs_protocol::FileVersionId(derive(b"target-version"));
         let result_version_id = fs_protocol::FileVersionId(derive(b"source-result"));
         let transaction_id = derive(b"transaction");
-        let state = history.snapshot(source_record).ok_or(EINVAL)?;
+        let state = self.ns().record_history(source_record).ok_or(EINVAL)?;
         let conflict = state
             .conflicts
             .iter()
@@ -4089,7 +4075,6 @@ impl QuickFS {
             .execute_replacement_transaction(
                 manifest,
                 &mut transaction_runtime.journal.lock_recover(),
-                history,
                 &self.namespace,
                 &transaction_runtime.namespace_path,
                 move |_delta| {
@@ -4354,9 +4339,7 @@ impl QuickFS {
             Arc::clone(&self.hydrator),
             self.availability.as_ref().ok_or(libc::ENOTSUP)?.clone(),
             self.eviction_queue.as_ref().ok_or(libc::ENOTSUP)?.clone(),
-            self.history
-                .as_ref()
-                .map(|(history, _)| Arc::clone(history)),
+            Arc::clone(&self.namespace),
         ))
     }
 
@@ -4992,7 +4975,7 @@ impl QuickFS {
             .ok_or_else(|| io::Error::from_raw_os_error(ENOENT))?;
         self.append_version_at(snapshot, fs_protocol::FileProvenance::Edit, now_ms(), stamp)
             .map_err(|error| match error {
-                crate::history::HistoryError::CapacityExhausted(detail) => {
+                crate::namespace::history::HistoryError::CapacityExhausted(detail) => {
                     eprintln!("inode {ino}: {detail}");
                     io::Error::from_raw_os_error(EDQUOT)
                 }
@@ -5074,7 +5057,7 @@ impl QuickFS {
         let byte_len = if content.is_some() { byte_len } else { 0 };
         let content_hash = content.map(|hash| fs_protocol::ContentHash(*hash.as_bytes()));
         let timestamp_ms = now_ms();
-        if let (Some(publisher), Some((history, actor))) = (&self.record_publisher, &self.history) {
+        if let (Some(publisher), Some(actor)) = (&self.record_publisher, &self.history) {
             let path = {
                 let mut namespace = self.ns();
                 if namespace.lookup_kind(parent, name).is_some() {
@@ -5131,7 +5114,10 @@ impl QuickFS {
                 )
                 .map_err(|_| EIO)?;
             self.attribute_version(&version, Some(&path));
-            history.append(version).map_err(|_| EIO)?;
+            {
+                let mut namespace = self.ns();
+                namespace.append_version(version).map_err(|_| EIO)?;
+            }
             let revision = publisher
                 .snapshot(record_id)
                 .map_err(|_| EIO)?
@@ -5174,7 +5160,7 @@ impl QuickFS {
     fn create_empty_dir(&self, parent: u64, name: impl AsRef<[u8]>) -> Result<u64, i32> {
         let name: &[u8] = name.as_ref();
         let timestamp_ms = now_ms();
-        if let (Some(publisher), Some((history, actor))) = (&self.record_publisher, &self.history) {
+        if let (Some(publisher), Some(actor)) = (&self.record_publisher, &self.history) {
             let (parent_record, path) = {
                 let mut namespace = self.ns();
                 if namespace.lookup_kind(parent, name).is_some() {
@@ -5221,7 +5207,10 @@ impl QuickFS {
                 .publish_structural_version(&version)
                 .map_err(|_| EIO)?;
             self.attribute_version(&version, Some(&path));
-            history.append(version).map_err(|_| EIO)?;
+            {
+                let mut namespace = self.ns();
+                namespace.append_version(version).map_err(|_| EIO)?;
+            }
             let mut namespace = self.ns();
             if namespace.lookup_kind(parent, name).is_some() {
                 return Err(EEXIST);
@@ -5294,7 +5283,7 @@ impl QuickFS {
         {
             return Err(EIO);
         }
-        if let (Some(publisher), Some((_, actor))) = (&self.record_publisher, &self.history) {
+        if let (Some(publisher), Some(actor)) = (&self.record_publisher, &self.history) {
             let mut binding = self
                 .ns()
                 .signed_binding_for(ino, *actor, timestamp_ms)
@@ -5343,7 +5332,7 @@ impl QuickFS {
         let new_name: &[u8] = new_name.as_ref();
         let runtime = self.replacement_transactions.as_ref().ok_or(EEXIST)?;
         let publisher = self.record_publisher.as_ref().ok_or(EIO)?;
-        let (history, actor) = self.history.as_ref().ok_or(EIO)?;
+        let actor = self.history.as_ref().ok_or(EIO)?;
         let (
             source_current,
             victim_current,
@@ -5450,8 +5439,13 @@ impl QuickFS {
                 destination_parent_record,
             )
         };
-        let source_heads = history.snapshot(source_current.record_id).ok_or(EIO)?.heads;
-        let victim_heads = history.snapshot(victim_current.record_id).ok_or(EIO)?.heads;
+        let (source_heads, victim_heads) = {
+            let namespace = self.ns();
+            (
+                namespace.record_history_heads(source_current.record_id),
+                namespace.record_history_heads(victim_current.record_id),
+            )
+        };
         let ([source_expected], [victim_expected]) =
             (source_heads.as_slice(), victim_heads.as_slice())
         else {
@@ -5553,7 +5547,6 @@ impl QuickFS {
             .execute_replacement_transaction(
                 manifest,
                 &mut runtime.journal.lock_recover(),
-                history,
                 &self.namespace,
                 &runtime.namespace_path,
                 move |_delta| {
@@ -5645,7 +5638,7 @@ impl QuickFS {
                 ..expected
             };
             let parent_record = namespace.record_id_for(new_parent).ok_or(EIO)?;
-            let actor = self.history.as_ref().ok_or(EIO)?.1;
+            let actor = *self.history.as_ref().ok_or(EIO)?;
             let kind = match attr.kind {
                 FileType::Directory => fs_protocol::FileNodeKind::Directory,
                 FileType::RegularFile => fs_protocol::FileNodeKind::File,

@@ -22,7 +22,7 @@ use crate::availability::{
     RecordAvailability, RecordKind, pinned_in_snapshot,
 };
 use crate::clock::unix_now_ms;
-use crate::{FileHistoryStore, Hydrator};
+use crate::{Hydrator, Namespace};
 use fs_protocol::{AvailabilityPolicy, Residency};
 use tilo_lock::MutexRecover as _;
 
@@ -39,7 +39,8 @@ pub struct EvictionCoordinator {
     hydrator: Arc<Hydrator>,
     registry: Arc<Mutex<AvailabilityRegistry>>,
     queue: Arc<tokio::sync::Mutex<EvictionQueue>>,
-    history: Option<Arc<FileHistoryStore>>,
+    /// Versions and their payload hashes, read from the tree document.
+    namespace: Arc<Mutex<Namespace>>,
 }
 
 impl EvictionCoordinator {
@@ -47,13 +48,13 @@ impl EvictionCoordinator {
         hydrator: Arc<Hydrator>,
         registry: Arc<Mutex<AvailabilityRegistry>>,
         queue: Arc<tokio::sync::Mutex<EvictionQueue>>,
-        history: Option<Arc<FileHistoryStore>>,
+        namespace: Arc<Mutex<Namespace>>,
     ) -> Self {
         Self {
             hydrator,
             registry,
             queue,
-            history,
+            namespace,
         }
     }
 
@@ -217,15 +218,10 @@ impl EvictionCoordinator {
                 .and_then(|record| record.current_version)
                 .ok_or_else(|| anyhow::anyhow!("record has no exact current version"))?;
             let version = self
-                .history
-                .as_ref()
-                .and_then(|history| history.snapshot(record_id))
-                .and_then(|snapshot| {
-                    snapshot
-                        .versions
-                        .into_iter()
-                        .find(|version| version.id == current)
-                })
+                .namespace
+                .lock_recover()
+                .record_version(record_id, current)
+                .0
                 .ok_or_else(|| {
                     anyhow::anyhow!("version history changed during eviction planning")
                 })?;
@@ -323,10 +319,6 @@ impl EvictionCoordinator {
         targets: &[FileRecordId],
     ) -> anyhow::Result<EvictionCatalog> {
         let targets = targets.iter().copied().collect::<HashSet<_>>();
-        let history = self
-            .history
-            .as_ref()
-            .ok_or_else(|| anyhow::anyhow!("durable version history is unavailable"))?;
         let mut keys = Vec::new();
         for record in records {
             if record.kind != RecordKind::File {
@@ -348,21 +340,24 @@ impl EvictionCoordinator {
         }
         keys.sort_unstable();
         keys.dedup();
+        let versions = {
+            let namespace = self.namespace.lock_recover();
+            keys.iter()
+                .map(|&(record_id, version_id)| {
+                    namespace
+                        .record_version(record_id, version_id)
+                        .0
+                        .map(|version| (record_id, version_id, version.content_hash))
+                        .ok_or_else(|| {
+                            anyhow::anyhow!("version history changed during eviction planning")
+                        })
+                })
+                .collect::<anyhow::Result<Vec<_>>>()?
+        };
         let mut payload_keys = Vec::new();
         let mut empty = Vec::new();
-        for (record_id, version_id) in keys {
-            let version = history
-                .snapshot(record_id)
-                .and_then(|snapshot| {
-                    snapshot
-                        .versions
-                        .into_iter()
-                        .find(|version| version.id == version_id)
-                })
-                .ok_or_else(|| {
-                    anyhow::anyhow!("version history changed during eviction planning")
-                })?;
-            match version.content_hash {
+        for (record_id, version_id, content_hash) in versions {
+            match content_hash {
                 Some(hash) => payload_keys.push((record_id, version_id, Hash::from(hash.0))),
                 None => empty.push((record_id, version_id)),
             }

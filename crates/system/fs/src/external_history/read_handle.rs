@@ -299,7 +299,7 @@ impl ExternalHistoryReadHandle {
     fn snapshot(
         &self,
     ) -> io::Result<(
-        crate::history::RecordHistorySnapshot,
+        crate::namespace::history::RecordHistorySnapshot,
         Scope,
         Option<fs_protocol::ContentRevisionV1>,
     )> {
@@ -307,10 +307,12 @@ impl ExternalHistoryReadHandle {
         let a = self.source.admission.try_borrow().map_err(|_| refused())?;
         let runtime = a.factory.runtime.as_ref().ok_or_else(refused)?;
         let namespace = runtime.namespace.lock().map_err(|_| refused())?;
-        let history = runtime.history.lease().map_err(io::Error::other)?;
         let projection = namespace
             .external_record(self.lineage.binding.record_id)
             .map_err(io::Error::other)?
+            .ok_or_else(refused)?;
+        let snapshot = namespace
+            .record_history(self.lineage.binding.record_id)
             .ok_or_else(refused)?;
         drop(namespace);
         if projection.binding != self.lineage.binding
@@ -338,8 +340,6 @@ impl ExternalHistoryReadHandle {
         {
             return Err(refused());
         }
-        let snapshot = history.snapshot(key.record_id).ok_or_else(refused)?;
-        drop(history);
         if signed
             .versions
             .iter()

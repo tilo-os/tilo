@@ -20,7 +20,7 @@ use crate::record_repository::RecordRepositoryKey;
 struct Fixture {
     workspace: Uuid,
     namespace: Arc<Mutex<Namespace>>,
-    history: Arc<FileHistoryStore>,
+    history: Arc<crate::history_fixture::History>,
     materializer: RecordMaterializer,
     record: FileRecordId,
     ino: u64,
@@ -39,17 +39,13 @@ impl Fixture {
         let record = namespace.record_id_for(ino).unwrap();
         let namespace = Arc::new(Mutex::new(namespace));
         let temp = tempfile::tempdir().unwrap();
-        let history = Arc::new(FileHistoryStore::open(temp.path().join("history.json")).unwrap());
+        let history = Arc::new(crate::history_fixture::History::new(Arc::clone(&namespace)));
         let device = SigningKey::from_bytes(&[7; 32]);
         let actor = FileActor {
             person: Ed25519PublicKey::from_bytes([8; 32]),
             device: Ed25519PublicKey::from_bytes(device.verifying_key().to_bytes()),
         };
-        let materializer = RecordMaterializer::new(
-            workspace,
-            Arc::clone(&namespace),
-            Some(Arc::clone(&history)),
-        );
+        let materializer = RecordMaterializer::new(workspace, Arc::clone(&namespace), true);
         Self {
             workspace,
             namespace,
@@ -785,8 +781,7 @@ fn remote_transactions_and_merges_materialize_exactly_and_heal_after_restart() {
             .unwrap();
             let journal_path = temp.path().join("transaction-journal");
             let namespace = Arc::new(Mutex::new(initial_namespace));
-            let history_path = temp.path().join("history.json");
-            let history = Arc::new(FileHistoryStore::open(&history_path).unwrap());
+            let history = Arc::new(crate::history_fixture::History::new(Arc::clone(&namespace)));
             let repository_path = temp.path().join("records");
             let repository = RecordRepository::open(&repository_path).unwrap();
 
@@ -857,18 +852,14 @@ fn remote_transactions_and_merges_materialize_exactly_and_heal_after_restart() {
                     .unwrap();
             }
 
-            let materializer = RecordMaterializer::new(
-                workspace,
-                Arc::clone(&namespace),
-                Some(Arc::clone(&history)),
-            )
-            .with_transaction_recovery(
-                Arc::new(Mutex::new(
-                    crate::record_transaction::RecordTransactionJournal::open(&journal_path)
-                        .unwrap(),
-                )),
-                namespace_path.clone(),
-            );
+            let materializer = RecordMaterializer::new(workspace, Arc::clone(&namespace), true)
+                .with_transaction_recovery(
+                    Arc::new(Mutex::new(
+                        crate::record_transaction::RecordTransactionJournal::open(&journal_path)
+                            .unwrap(),
+                    )),
+                    namespace_path.clone(),
+                );
             materializer.reconcile_repository(&repository).unwrap();
 
             let participant = |record_id, expected_version, role, hash: ContentHash| {
@@ -1028,28 +1019,29 @@ fn remote_transactions_and_merges_materialize_exactly_and_heal_after_restart() {
                 )
                 .unwrap(),
             ));
-            let restarted_history = Arc::new(FileHistoryStore::open(&history_path).unwrap());
+            let restarted_history = Arc::new(crate::history_fixture::History::new(Arc::clone(
+                &restarted_namespace,
+            )));
             let restarted_repository = RecordRepository::open(&repository_path).unwrap();
             let blocked_namespace_path = temp.path().join("namespace-write-blocked");
             if source_first {
                 std::fs::create_dir(&blocked_namespace_path).unwrap();
             }
-            let restarted_materializer = RecordMaterializer::new(
-                workspace,
-                Arc::clone(&restarted_namespace),
-                Some(Arc::clone(&restarted_history)),
-            )
-            .with_transaction_recovery(
-                Arc::new(Mutex::new(
-                    crate::record_transaction::RecordTransactionJournal::open(&journal_path)
-                        .unwrap(),
-                )),
-                if source_first {
-                    blocked_namespace_path.clone()
-                } else {
-                    namespace_path.clone()
-                },
-            );
+            let restarted_materializer =
+                RecordMaterializer::new(workspace, Arc::clone(&restarted_namespace), true)
+                    .with_transaction_recovery(
+                        Arc::new(Mutex::new(
+                            crate::record_transaction::RecordTransactionJournal::open(
+                                &journal_path,
+                            )
+                            .unwrap(),
+                        )),
+                        if source_first {
+                            blocked_namespace_path.clone()
+                        } else {
+                            namespace_path.clone()
+                        },
+                    );
             {
                 let namespace = restarted_namespace.lock().unwrap();
                 assert_eq!(
@@ -1094,18 +1086,17 @@ fn remote_transactions_and_merges_materialize_exactly_and_heal_after_restart() {
                     );
                     drop(namespace);
                 }
-                let recovering_materializer = RecordMaterializer::new(
-                    workspace,
-                    Arc::clone(&restarted_namespace),
-                    Some(Arc::clone(&restarted_history)),
-                )
-                .with_transaction_recovery(
-                    Arc::new(Mutex::new(
-                        crate::record_transaction::RecordTransactionJournal::open(&journal_path)
-                            .unwrap(),
-                    )),
-                    namespace_path.clone(),
-                );
+                let recovering_materializer =
+                    RecordMaterializer::new(workspace, Arc::clone(&restarted_namespace), true)
+                        .with_transaction_recovery(
+                            Arc::new(Mutex::new(
+                                crate::record_transaction::RecordTransactionJournal::open(
+                                    &journal_path,
+                                )
+                                .unwrap(),
+                            )),
+                            namespace_path.clone(),
+                        );
                 recovering_materializer
                     .reconcile_repository(&restarted_repository)
                     .unwrap()
@@ -1339,8 +1330,7 @@ fn remote_completed_merge_case(codec: ConflictMergeCodecV1) {
     tilo_files::native::atomic::write_creating_parent(&namespace_path, &initial_namespace.save())
         .unwrap();
     let namespace = Arc::new(Mutex::new(initial_namespace));
-    let history_path = temp.path().join("history.json");
-    let history = Arc::new(FileHistoryStore::open(&history_path).unwrap());
+    let history = Arc::new(crate::history_fixture::History::new(Arc::clone(&namespace)));
     let repository_path = temp.path().join("records");
     let repository = RecordRepository::open(&repository_path).unwrap();
     let key = RecordRepositoryKey {
@@ -1411,12 +1401,8 @@ fn remote_completed_merge_case(codec: ConflictMergeCodecV1) {
     let journal = Arc::new(Mutex::new(
         crate::record_transaction::RecordTransactionJournal::open(&journal_path).unwrap(),
     ));
-    let materializer = RecordMaterializer::new(
-        workspace,
-        Arc::clone(&namespace),
-        Some(Arc::clone(&history)),
-    )
-    .with_transaction_recovery(Arc::clone(&journal), namespace_path.clone());
+    let materializer = RecordMaterializer::new(workspace, Arc::clone(&namespace), true)
+        .with_transaction_recovery(Arc::clone(&journal), namespace_path.clone());
     materializer.reconcile_repository(&repository).unwrap();
 
     let result = FileVersionV1 {
@@ -1563,17 +1549,15 @@ fn remote_completed_merge_case(codec: ConflictMergeCodecV1) {
         )
         .unwrap(),
     ));
-    let restarted_history = Arc::new(FileHistoryStore::open(&history_path).unwrap());
+    let restarted_history = Arc::new(crate::history_fixture::History::new(Arc::clone(
+        &restarted_namespace,
+    )));
     let restarted_repository = RecordRepository::open(&repository_path).unwrap();
     let restarted_journal = Arc::new(Mutex::new(
         crate::record_transaction::RecordTransactionJournal::open(&journal_path).unwrap(),
     ));
-    let restarted = RecordMaterializer::new(
-        workspace,
-        Arc::clone(&restarted_namespace),
-        Some(Arc::clone(&restarted_history)),
-    )
-    .with_transaction_recovery(Arc::clone(&restarted_journal), namespace_path);
+    let restarted = RecordMaterializer::new(workspace, Arc::clone(&restarted_namespace), true)
+        .with_transaction_recovery(Arc::clone(&restarted_journal), namespace_path);
     restarted
         .reconcile_repository(&restarted_repository)
         .unwrap();
@@ -1792,9 +1776,8 @@ fn a_signed_record_log_alone_rebuilds_the_structural_namespace() {
     );
 
     let rebuilt = Arc::new(Mutex::new(Namespace::new("rebuild").unwrap()));
-    let history = Arc::new(FileHistoryStore::open(temp.path().join("history.json")).unwrap());
-    let materializer =
-        RecordMaterializer::new(workspace, Arc::clone(&rebuilt), Some(Arc::clone(&history)));
+    let history = Arc::new(crate::history_fixture::History::new(Arc::clone(&rebuilt)));
+    let materializer = RecordMaterializer::new(workspace, Arc::clone(&rebuilt), true);
     let report = materializer.reconcile_repository(&log.repository).unwrap();
     assert_eq!(report.unknown_or_tombstoned_records, 0);
     assert_eq!(report.deferred_records, 0);
@@ -1844,10 +1827,7 @@ fn a_signed_record_log_alone_rebuilds_the_structural_namespace() {
     drop(materializer);
     drop(rebuilt);
     let restarted = Arc::new(Mutex::new(Namespace::new("restarted").unwrap()));
-    let restarted_history =
-        Arc::new(FileHistoryStore::open(temp.path().join("history.json")).unwrap());
-    let restarted_materializer =
-        RecordMaterializer::new(workspace, Arc::clone(&restarted), Some(restarted_history));
+    let restarted_materializer = RecordMaterializer::new(workspace, Arc::clone(&restarted), true);
     restarted_materializer
         .reconcile_repository(&log.repository)
         .unwrap();
@@ -2020,9 +2000,8 @@ fn signed_moves_tombstones_and_resurrections_rebuild_repeat_and_restart() {
     );
 
     let rebuilt = Arc::new(Mutex::new(Namespace::new("transitions").unwrap()));
-    let history = Arc::new(FileHistoryStore::open(temp.path().join("history.json")).unwrap());
-    let materializer =
-        RecordMaterializer::new(workspace, Arc::clone(&rebuilt), Some(Arc::clone(&history)));
+    let history = Arc::new(crate::history_fixture::History::new(Arc::clone(&rebuilt)));
+    let materializer = RecordMaterializer::new(workspace, Arc::clone(&rebuilt), true);
     let report = materializer.reconcile_repository(&log.repository).unwrap();
     assert_eq!(report.unknown_or_tombstoned_records, 0);
     assert_eq!(report.deferred_records, 0);
@@ -2070,10 +2049,7 @@ fn signed_moves_tombstones_and_resurrections_rebuild_repeat_and_restart() {
     drop(rebuilt);
     drop(history);
     let restarted = Arc::new(Mutex::new(Namespace::new("transitions-restart").unwrap()));
-    let restarted_history =
-        Arc::new(FileHistoryStore::open(temp.path().join("history.json")).unwrap());
-    let restarted_materializer =
-        RecordMaterializer::new(workspace, Arc::clone(&restarted), Some(restarted_history));
+    let restarted_materializer = RecordMaterializer::new(workspace, Arc::clone(&restarted), true);
     restarted_materializer
         .reconcile_repository(&log.repository)
         .unwrap();
@@ -2177,9 +2153,7 @@ fn malformed_bindings_and_denied_writes_never_enter_the_tree() {
         ),
     );
     let rebuilt = Arc::new(Mutex::new(Namespace::new("malformed").unwrap()));
-    let history = Arc::new(FileHistoryStore::open(temp.path().join("history.json")).unwrap());
-    let materializer =
-        RecordMaterializer::new(workspace, Arc::clone(&rebuilt), Some(Arc::clone(&history)));
+    let materializer = RecordMaterializer::new(workspace, Arc::clone(&rebuilt), true);
     let first = materializer.reconcile_repository(&log.repository).unwrap();
     assert_eq!(first.unknown_or_tombstoned_records, 0);
     assert_eq!(
@@ -2236,7 +2210,7 @@ fn malformed_bindings_and_denied_writes_never_enter_the_tree() {
     assert_eq!(namespace.record_id_for(ROOT_INO), Some(root_record));
     // The immutable history of the file is still there after the rejected
     // binding changed only the structural projection.
-    assert!(history.snapshot(file_record).is_some());
+    assert!(namespace.record_history(file_record).is_some());
     drop(namespace);
 }
 
@@ -2446,13 +2420,7 @@ fn partial_supersession_after_atomic_replacement_case(later: LaterParticipantCha
     }
 
     let namespace = Arc::new(Mutex::new(Namespace::new("partial-supersession").unwrap()));
-    let history_path = temp.path().join("partial-history.json");
-    let history = Arc::new(FileHistoryStore::open(&history_path).unwrap());
-    let materializer = RecordMaterializer::new(
-        workspace,
-        Arc::clone(&namespace),
-        Some(Arc::clone(&history)),
-    );
+    let materializer = RecordMaterializer::new(workspace, Arc::clone(&namespace), true);
     let first = materializer.reconcile_repository(&log.repository).unwrap();
     assert_eq!(first.transactions_reconciled, 1);
     {
@@ -2612,9 +2580,7 @@ fn partial_supersession_after_atomic_replacement_case(later: LaterParticipantCha
     let restarted = Arc::new(Mutex::new(
         Namespace::new("partial-supersession-restart").unwrap(),
     ));
-    let restarted_history = Arc::new(FileHistoryStore::open(&history_path).unwrap());
-    let restarted_materializer =
-        RecordMaterializer::new(workspace, Arc::clone(&restarted), Some(restarted_history));
+    let restarted_materializer = RecordMaterializer::new(workspace, Arc::clone(&restarted), true);
     restarted_materializer
         .reconcile_repository(&log.repository)
         .unwrap();

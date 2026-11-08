@@ -52,11 +52,11 @@ pub mod full_replica;
 #[cfg(feature = "filesystem")]
 pub mod fuse_session;
 #[cfg(feature = "filesystem")]
-pub mod history;
-#[cfg(feature = "filesystem")]
 pub mod hydration;
 #[cfg(feature = "filesystem")]
 pub mod identity;
+#[cfg(feature = "filesystem")]
+pub mod legacy_history;
 #[cfg(feature = "filesystem")]
 pub mod named_share_delivery;
 #[cfg(feature = "filesystem")]
@@ -148,6 +148,9 @@ pub mod write_attribution;
 
 #[cfg(test)]
 #[cfg(feature = "filesystem")]
+mod history_fixture;
+#[cfg(test)]
+#[cfg(feature = "filesystem")]
 mod tests;
 
 // The tilo-doc conflict merge decodes peer versions in Automerge workers.
@@ -177,8 +180,6 @@ pub use fs_protocol::{
     RecipientFailureV1, RecipientSubscriptionKeyV1, RecipientSubscriptionStatusV1,
 };
 #[cfg(feature = "filesystem")]
-pub use history::{FileHistoryStore, HistoryError, RecordHistorySnapshot};
-#[cfg(feature = "filesystem")]
 pub use hydration::Hydrator;
 #[cfg(feature = "filesystem")]
 pub use identity::{
@@ -193,6 +194,8 @@ pub use named_share_delivery::{
     NamedShareEnvelopeV1, NamedShareInbox, NamedShareInboxError, NamedShareInboxProtocol,
     NamedShareOutbox, NamedShareOutboxEntryV1, TILO_FS_NAMED_SHARE_INBOX_ALPN,
 };
+#[cfg(feature = "filesystem")]
+pub use namespace::history::{HistoryError, RecordHistorySnapshot};
 #[cfg(feature = "filesystem")]
 pub use namespace::{Namespace, ROOT_INO, TransactionProjectionError};
 #[cfg(feature = "filesystem")]

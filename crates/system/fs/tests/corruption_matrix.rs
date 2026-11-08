@@ -8,7 +8,7 @@ use std::fs as stdfs;
 
 use fs::eviction::EvictionQueue;
 use fs::{
-    AvailabilityRegistry, FileHistoryStore, Namespace, RecordRepository, RecordTransactionJournal,
+    AvailabilityRegistry, Namespace, RecordRepository, RecordTransactionJournal,
     load_mount_identity,
 };
 use tempfile::tempdir;
@@ -99,18 +99,16 @@ fn corrupt_namespaces_stores_and_journals_are_preserved_and_fail_closed() {
     {
         let dir = tempdir().unwrap();
         let damaged = b"{\"schema_version\":";
-        let history = dir.path().join("history.json");
         let availability = dir.path().join("availability.json");
         let eviction = dir.path().join("evictions.json");
 
-        for path in [&history, &availability, &eviction] {
+        for path in [&availability, &eviction] {
             stdfs::write(path, damaged).unwrap();
         }
 
-        assert!(FileHistoryStore::open(&history).is_err());
         assert!(AvailabilityRegistry::open(&availability).is_err());
         assert!(EvictionQueue::open(&eviction).is_err());
-        for path in [&history, &availability, &eviction] {
+        for path in [&availability, &eviction] {
             assert_eq!(
                 stdfs::read(path).unwrap(),
                 damaged,

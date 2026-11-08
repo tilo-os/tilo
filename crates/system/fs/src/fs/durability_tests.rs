@@ -11,7 +11,7 @@ use uuid::Uuid;
 struct Fixture {
     namespace: Arc<Mutex<Namespace>>,
     hydrator: Arc<Hydrator>,
-    history: Arc<crate::history::FileHistoryStore>,
+    history: Arc<crate::history_fixture::History>,
     publisher: Arc<crate::record_publisher::RecordPublisher>,
     actor: FileActor,
     /// Last, so the stores above close before their files are deleted.
@@ -25,9 +25,7 @@ impl Fixture {
         let store = Arc::new(crate::store::ContentStore::memory());
         let hydrator = Arc::new(Hydrator::new(endpoint, store));
         let namespace = Arc::new(Mutex::new(Namespace::new("host").unwrap()));
-        let history = Arc::new(
-            crate::history::FileHistoryStore::open(dir.path().join("history.json")).unwrap(),
-        );
+        let history = Arc::new(crate::history_fixture::History::new(Arc::clone(&namespace)));
         let repository = Arc::new(
             crate::record_repository::RecordRepository::open(dir.path().join("records")).unwrap(),
         );
@@ -57,7 +55,7 @@ impl Fixture {
     fn mount(&self, staging: bool) -> QuickFS {
         let heuristics = Arc::new(Heuristics::new(self.hydrator.clone()));
         let fs = QuickFS::new(self.namespace.clone(), self.hydrator.clone(), heuristics)
-            .with_history(self.history.clone(), self.actor)
+            .with_history(self.actor)
             .unwrap()
             .with_record_publisher(self.publisher.clone())
             .unwrap();

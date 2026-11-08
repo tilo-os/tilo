@@ -209,7 +209,6 @@ impl RecordPublisher {
         &self,
         manifest: FileMutationTransactionManifest,
         journal: &mut crate::record_transaction::RecordTransactionJournal,
-        history: &crate::history::FileHistoryStore,
         namespace: &Arc<Mutex<crate::namespace::Namespace>>,
         namespace_path: &Path,
         broadcast: F,
@@ -235,7 +234,6 @@ impl RecordPublisher {
         crate::transaction_coordinator::complete_replacement_transaction(
             &self.repository,
             journal,
-            history,
             namespace,
             namespace_path,
             &entry,
@@ -317,7 +315,6 @@ impl RecordPublisher {
     pub fn recover_replacement_transactions<F>(
         &self,
         journal: &mut crate::record_transaction::RecordTransactionJournal,
-        history: &crate::history::FileHistoryStore,
         namespace: &Arc<Mutex<crate::namespace::Namespace>>,
         namespace_path: &Path,
         mut broadcast: F,
@@ -360,7 +357,6 @@ impl RecordPublisher {
             crate::transaction_coordinator::complete_replacement_transaction(
                 &self.repository,
                 journal,
-                history,
                 namespace,
                 namespace_path,
                 &entry,

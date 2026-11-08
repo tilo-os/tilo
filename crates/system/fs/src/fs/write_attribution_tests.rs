@@ -34,8 +34,6 @@ async fn session_leased_writes_carry_their_agent_in_signed_history() {
     let endpoint = Endpoint::bind(presets::Minimal).await.unwrap();
     let store = Arc::new(crate::store::ContentStore::memory());
     let namespace = Arc::new(Mutex::new(Namespace::new("host").unwrap()));
-    let history =
-        Arc::new(crate::history::FileHistoryStore::open(dir.path().join("history.json")).unwrap());
     let repository = Arc::new(
         crate::record_repository::RecordRepository::open(dir.path().join("records")).unwrap(),
     );
@@ -49,7 +47,7 @@ async fn session_leased_writes_carry_their_agent_in_signed_history() {
     let heuristics = Arc::new(Heuristics::new(hydrator.clone()));
     let fs = QuickFS::new(namespace, hydrator, heuristics)
         .with_checked_history_workspace(workspace_id)
-        .with_history(history, actor)
+        .with_history(actor)
         .unwrap()
         .with_record_publisher(publisher)
         .unwrap()

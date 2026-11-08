@@ -1,6 +1,5 @@
 use super::*;
 use crate::acl::WorkspaceAcl;
-use crate::history::FileHistoryStore;
 use crate::namespace::ROOT_INO;
 use crate::record_publisher::RecordPublisher;
 use crate::record_replication::{
@@ -1605,12 +1604,10 @@ async fn structure_content_and_transactions_propagate_between_peers() {
 
             let client_policy = Some(policy_read_write(&[identity(&server_ep)], &[]));
             let client_repository_path = client_temp.path().join("records");
-            let client_history_path = client_temp.path().join("history.json");
             let client_transaction_journal_path = client_temp.path().join("record-transactions");
             let client_namespace_path = client_temp.path().join("namespace.bin");
             let client_repository =
                 Arc::new(RecordRepository::open(&client_repository_path).unwrap());
-            let client_history = Arc::new(FileHistoryStore::open(&client_history_path).unwrap());
             let client_namespace = Arc::new(Mutex::new(
                 Namespace::from_bytes("live-record-mesh-client", &namespace_seed).unwrap(),
             ));
@@ -1618,7 +1615,7 @@ async fn structure_content_and_transactions_propagate_between_peers() {
                 crate::record_materializer::RecordMaterializer::new(
                     workspace_id,
                     Arc::clone(&client_namespace),
-                    Some(Arc::clone(&client_history)),
+                    true,
                 )
                 .with_transaction_recovery(
                     Arc::new(Mutex::new(
@@ -1674,7 +1671,13 @@ async fn structure_content_and_transactions_propagate_between_peers() {
                     Some(2)
                 );
                 assert_eq!(
-                    client_history.snapshot(record_id).unwrap().versions.len(),
+                    client_namespace
+                        .lock()
+                        .unwrap()
+                        .record_history(record_id)
+                        .unwrap()
+                        .versions
+                        .len(),
                     1
                 );
             }
@@ -1770,10 +1773,8 @@ async fn structure_content_and_transactions_propagate_between_peers() {
             drop(client_services);
             drop(client_materializer);
             drop(client_repository);
-            drop(client_history);
             let restarted_repository =
                 Arc::new(RecordRepository::open(&client_repository_path).unwrap());
-            let restarted_history = Arc::new(FileHistoryStore::open(&client_history_path).unwrap());
             let restarted_namespace = Arc::new(Mutex::new(
                 Namespace::from_bytes(
                     "live-record-mesh-client-restarted",
@@ -1791,7 +1792,7 @@ async fn structure_content_and_transactions_propagate_between_peers() {
                 crate::record_materializer::RecordMaterializer::new(
                     workspace_id,
                     Arc::clone(&restarted_namespace),
-                    Some(Arc::clone(&restarted_history)),
+                    true,
                 )
                 .with_transaction_recovery(
                     Arc::clone(&restarted_journal),
@@ -1847,16 +1848,20 @@ async fn structure_content_and_transactions_propagate_between_peers() {
             assert!(namespace.ino_for_record_id(replaced_record).is_none());
             drop(namespace);
             assert_eq!(
-                restarted_history
-                    .snapshot(source_record)
+                restarted_namespace
+                    .lock()
+                    .unwrap()
+                    .record_history(source_record)
                     .unwrap()
                     .versions
                     .len(),
                 2
             );
             assert_eq!(
-                restarted_history
-                    .snapshot(replaced_record)
+                restarted_namespace
+                    .lock()
+                    .unwrap()
+                    .record_history(replaced_record)
                     .unwrap()
                     .versions
                     .len(),

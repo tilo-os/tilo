@@ -8,7 +8,6 @@ use iroh::endpoint::{Endpoint, presets};
 
 use super::{Pass, STAGING_PREFIX, SyncFolder};
 use crate::fs::QuickFS;
-use crate::history::FileHistoryStore;
 use crate::hydration::Hydrator;
 use crate::namespace::Namespace;
 use crate::smart::Heuristics;
@@ -18,7 +17,7 @@ use crate::store::ContentStore;
 struct Fixture {
     dir: tempfile::TempDir,
     fs: Arc<QuickFS>,
-    history: Arc<FileHistoryStore>,
+    history: Arc<crate::history_fixture::History>,
 }
 
 impl Fixture {
@@ -27,14 +26,14 @@ impl Fixture {
         let endpoint = Endpoint::bind(presets::N0).await.unwrap();
         let hydrator = Arc::new(Hydrator::new(endpoint, Arc::new(ContentStore::memory())));
         let namespace = Arc::new(Mutex::new(Namespace::new("host").unwrap()));
-        let history = Arc::new(FileHistoryStore::open(dir.path().join("history.json")).unwrap());
+        let history = Arc::new(crate::history_fixture::History::new(Arc::clone(&namespace)));
         let actor = FileActor {
             person: Ed25519PublicKey([1; 32]),
             device: Ed25519PublicKey([2; 32]),
         };
         let heuristics = Arc::new(Heuristics::new(Arc::clone(&hydrator)));
         let fs = QuickFS::new(namespace, hydrator, heuristics)
-            .with_history(Arc::clone(&history), actor)
+            .with_history(actor)
             .unwrap();
         Self {
             dir,

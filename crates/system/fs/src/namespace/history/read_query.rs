@@ -1,4 +1,4 @@
-//! Shared bounded immutable-history query handling. This owns no visibility
+//! Bounded immutable-history query handling. This owns no visibility
 //! admission; callers obtain their snapshot and scope under current authority.
 use super::RecordHistorySnapshot;
 use fs_protocol::{
@@ -108,16 +108,18 @@ impl RecordHistorySnapshot {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::history::FileHistoryStore;
     use fs_protocol::{
-        ContentHash, Ed25519PublicKey, FileActor, FileProvenance, FileRecordId, FileVersionId,
-        FileVersionV1,
+        ConflictStatus, ContentHash, Ed25519PublicKey, FileActor, FileProvenance, FileRecordId,
+        FileVersionId, FileVersionV1,
     };
     use uuid::Uuid;
 
-    fn append_metadata_versions(store: &FileHistoryStore, record: FileRecordId) -> FileVersionId {
+    /// The snapshot a record with `count` versions has: each version its
+    /// parent's child, all metadata-only.
+    fn metadata_snapshot(record: FileRecordId, count: u64) -> RecordHistorySnapshot {
+        let mut versions = Vec::new();
         let mut parent = None;
-        for index in 0..25 {
+        for index in 0..count {
             let version = FileVersionV1 {
                 id: FileVersionId::new(),
                 record_id: record,
@@ -136,18 +138,23 @@ mod tests {
                 },
             };
             parent = Some(version.id);
-            store.append(version).unwrap();
+            versions.push(version);
         }
-        parent.unwrap()
+        versions.sort_by_key(|version| version.id);
+        let head = versions.last().map(|version| version.id);
+        RecordHistorySnapshot {
+            record_id: record,
+            versions,
+            heads: head.into_iter().collect(),
+            conflicts: Vec::new(),
+        }
     }
 
     #[test]
-    fn durable_metadata_history_uses_exact_bounded_shared_query() {
-        let directory = tempfile::tempdir().unwrap();
-        let store = FileHistoryStore::open(directory.path().join("history.json")).unwrap();
+    fn metadata_history_uses_exact_bounded_shared_query() {
         let record = FileRecordId::new();
-        let latest = append_metadata_versions(&store, record);
-        let snapshot = store.snapshot(record).unwrap();
+        let snapshot = metadata_snapshot(record, 25);
+        let latest = snapshot.heads[0];
         let scope = Scope {
             workspace_id: Uuid::new_v4(),
             mount_lifetime: Uuid::new_v4(),
@@ -230,6 +237,7 @@ mod tests {
             ),
             Err(Error::InvalidRequest)
         );
+        let _ = ConflictStatus::Open;
     }
 
     /// A page carries the agent behind each of its own versions an agent
@@ -237,11 +245,9 @@ mod tests {
     /// read carries that version's.
     #[test]
     fn reads_carry_the_agent_behind_each_version_they_return() {
-        let directory = tempfile::tempdir().unwrap();
-        let store = FileHistoryStore::open(directory.path().join("history.json")).unwrap();
         let record = FileRecordId::new();
-        let latest = append_metadata_versions(&store, record);
-        let snapshot = store.snapshot(record).unwrap();
+        let snapshot = metadata_snapshot(record, 25);
+        let latest = snapshot.heads[0];
         let oldest = snapshot.versions.first().unwrap().id;
         let scope = Scope {
             workspace_id: Uuid::new_v4(),

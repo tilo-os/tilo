@@ -48,6 +48,7 @@ const STRUCTURAL_CONFLICT_MARKER: &[u8] = b".sync-conflict-";
 pub const MAX_LIVE_RECORD_BLOB_SCAN: usize = 100_000;
 mod changes;
 mod changesets;
+pub mod history;
 #[cfg(test)]
 mod index_walk_tests;
 mod kernel_changes;
@@ -560,7 +561,12 @@ fn read_u64(doc: &AutoCommit, obj: &ObjId, key: &str) -> u64 {
 impl Namespace {
     /// A namespace over `doc` whose `nodes` map is already in place, with
     /// only the root bound and every derived index empty.
-    fn over(doc: AutoCommit, nodes: ObjId, author: String, next_id: u64) -> Self {
+    fn over(
+        doc: AutoCommit,
+        nodes: ObjId,
+        author: String,
+        next_id: u64,
+    ) -> Result<Self, automerge::AutomergeError> {
         let mut ns = Self {
             doc: ChangeTrackedDoc::new(doc),
             nodes,
@@ -595,7 +601,11 @@ impl Namespace {
         };
         ns.ino_to_id.insert(ROOT_INO, ROOT_ID.to_string());
         ns.id_to_ino.insert(ROOT_ID.to_string(), ROOT_INO);
-        ns
+        if ns.history_root().is_none() {
+            ns.doc
+                .put_object(&ROOT, history::HISTORY_KEY, ObjType::Map)?;
+        }
+        Ok(ns)
     }
 
     /// # Errors
@@ -604,7 +614,7 @@ impl Namespace {
     pub fn new(author: impl Into<String>) -> Result<Self, automerge::AutomergeError> {
         let mut doc = AutoCommit::new();
         let nodes = doc.put_object(&ROOT, "nodes", ObjType::Map)?;
-        let mut ns = Self::over(doc, nodes, author.into(), 0);
+        let mut ns = Self::over(doc, nodes, author.into(), 0)?;
         let root_record_id = FileRecordId::new();
         let _ = ns
             .doc
@@ -636,7 +646,7 @@ impl Namespace {
                 max_local = max_local.max(v.saturating_add(1));
             }
         }
-        let mut ns = Self::over(doc, nodes, author, max_local);
+        let mut ns = Self::over(doc, nodes, author, max_local)?;
         ns.ensure_record_ids();
         ns.rebuild_record_index();
         Ok(ns)

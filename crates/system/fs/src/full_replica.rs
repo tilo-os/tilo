@@ -420,7 +420,6 @@ pub async fn hydrate_full_workspace(
 pub async fn prune_obsolete_workspace_content(
     namespace: &Arc<Mutex<Namespace>>,
     hydrator: &Hydrator,
-    _history: Option<&crate::FileHistoryStore>,
 ) -> Result<u64> {
     let (roots, generation) = {
         let mut namespace = namespace.lock_recover();
@@ -869,7 +868,7 @@ mod tests {
         assert!(namespace.lock().unwrap().remove(file));
         tokio::time::timeout(
             tilo_test_env::hang_bound(),
-            prune_obsolete_workspace_content(&namespace, &nas_hydrator, None),
+            prune_obsolete_workspace_content(&namespace, &nas_hydrator),
         )
         .await
         .expect("obsolete blob prune must be bounded")
@@ -901,7 +900,7 @@ mod tests {
         }
         let hydrator = Hydrator::new(endpoint.clone(), Arc::clone(&store));
         let namespace = Arc::new(Mutex::new(Namespace::new("gc-yield").unwrap()));
-        let gc = prune_obsolete_workspace_content(&namespace, &hydrator, None);
+        let gc = prune_obsolete_workspace_content(&namespace, &hydrator);
         let mutation = async {
             tokio::time::sleep(Duration::from_millis(1)).await;
             namespace
