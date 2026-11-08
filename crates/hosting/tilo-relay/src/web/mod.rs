@@ -41,8 +41,8 @@ use hyper::{Method, Request, Response, StatusCode, header};
 use tilo_relay_protocol::certify::CertifyReply;
 pub(crate) use tilo_relay_protocol::web as protocol;
 use tilo_relay_protocol::web::{
-    API_PREFIX, EventsRequest, HostInfo, MAX_POLL_MS, MAX_REQUEST_BYTES, NodeInfo, SESSION_HEADER,
-    SessionFinish,
+    API_PREFIX, EventsRequest, HostAddress, HostInfo, MAX_POLL_MS, MAX_REQUEST_BYTES, NodeInfo,
+    SESSION_HEADER, SessionFinish,
 };
 use tilo_user_identity::CertificationRequest;
 
@@ -329,6 +329,7 @@ impl Relay {
             let _ = context.relay.carried_calls.set(workspaces.downgrade());
         }
         let host_cert = context.relay.identity.cert.clone();
+        let node_addr = self.node_addr();
         let mut live = wt::Live::start(
             plane,
             &identity,
@@ -346,7 +347,13 @@ impl Relay {
         );
         let web = Arc::new(Web {
             sessions: sessions.clone(),
-            host_info: HostInfo { host_cert },
+            host_info: HostInfo {
+                host_cert,
+                address: Some(HostAddress {
+                    endpoint_addr: node_addr.clone(),
+                    relay_url: node_addr.relay_urls().next().map(ToString::to_string),
+                }),
+            },
             allowed_origins: config.allowed_origins,
             features: self.web_features() | fetch.features(),
             workspaces: self.workspaces().cloned(),

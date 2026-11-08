@@ -70,9 +70,8 @@ web-sys = { version = "=0.3.85", features = [
     "HtmlVideoElement",
     "console",
 ] }
-# The certified peer over HTTPS (no iroh in the bundle), its live codec and
-# the toolkit transport.
-tilo-browser-peer = { version = "0.1.0", path = "../tilo-browser-peer", default-features = false, features = ["toolkit"] }
+# The certified peer over iroh, its live codec and the toolkit transport.
+tilo-browser-peer = { version = "0.1.0", path = "../tilo-browser-peer", default-features = false, features = ["iroh", "toolkit"] }
 tilo-peer-state = { version = "0.1.0", path = "../../collab/tilo-peer-state" }
 # The picture sources and layers a call of the page encodes and shows.
 tilo-live = { version = "0.1.0", path = "../../collab/tilo-live", features = ["plane"] }
@@ -118,6 +117,8 @@ deferred-feedback = []
 deferred-people-overlay = []
 
 [dependencies]
+# The host's endpoint address, as the page receives and dials it.
+iroh-base = { workspace = true }
 # Sorts without a copy of std's sort per call site, which kept the web
 # desktop's start module large.
 tilo-sort = { version = "0.1.0", path = "../../platform/tilo-sort" }

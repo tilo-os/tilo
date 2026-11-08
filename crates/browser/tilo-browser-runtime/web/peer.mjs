@@ -815,7 +815,8 @@ async function connect({
     if (existing && !(identity && expiresWithinADay(existing))) return existing;
     const issued = identity
       ? await runtime.certifyWithRoot(post, identity, custodyForWasm, label)
-      : await runtime.certifyDevice(post, userPublicKey, label, null, custodyForWasm, code => onPairingCode?.(code));
+      : await runtime.certifyDevice(post, userPublicKey, label, null, custodyForWasm, code => onPairingCode?.(code),
+        host.address ? JSON.stringify(host.address) : undefined);
     await store.put(CERTIFICATE, issued);
     return issued;
   }
@@ -832,7 +833,7 @@ async function connect({
     }
     const record = storage ? undefined : await store.get(PEER_RECORD);
     peer = runtime.WasmPeer.start(
-      withStartFields(certified, {displayName, background: background || undefined}),
+      withStartFields(certified, {displayName, address: host.address, background: background || undefined}),
       custodyForWasm,
       storage ? JSON.stringify({profile, device}) : undefined,
       storage ? undefined : (record ?? undefined),
@@ -1307,8 +1308,10 @@ export async function pairDevice(options) {
   const pairing = async () => {
     const runtime = options.runtime ?? await pageRuntime(options.desktop);
     const custodyForWasm = own.kind === 'sealed-seed' ? await own.unseal() : own;
+    const info = JSON.parse(await runtime.hostInfo(httpsPost(origin, options.fetch)));
     const certified = await runtime.certifyDevice(httpsPost(origin, options.fetch), userPublicKey, label,
-      options.invite ?? null, custodyForWasm, code => options.onPairingCode?.(code));
+      options.invite ?? null, custodyForWasm, code => options.onPairingCode?.(code),
+      info.address ? JSON.stringify(info.address) : undefined);
     const common = {...options, identity: undefined, label, profile, custody: own, runtime};
     if (!admission) return connect({...common, deviceCertificate: certified});
     const offer = await admission();

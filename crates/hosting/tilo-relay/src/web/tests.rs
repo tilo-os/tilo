@@ -217,6 +217,7 @@ async fn no_route_hands_a_page_the_keys_of_a_channels_record() {
         sessions,
         host_info: HostInfo {
             host_cert: host.clone(),
+            address: None,
         },
         allowed_origins: vec![],
         features: 0,
@@ -301,6 +302,7 @@ async fn the_public_directory_answers_any_site_and_a_full_door_says_when() {
         sessions,
         host_info: HostInfo {
             host_cert: host.clone(),
+            address: None,
         },
         allowed_origins: vec![],
         features: 0,
@@ -470,6 +472,7 @@ async fn a_sealed_invitation_is_left_fetched_and_taken_back() {
         sessions,
         host_info: HostInfo {
             host_cert: host.clone(),
+            address: None,
         },
         allowed_origins: vec![],
         features: 0,
@@ -805,6 +808,7 @@ async fn the_fetch_proxy_answers_admitted_people_and_refuses_everyone_else() {
         sessions,
         host_info: HostInfo {
             host_cert: host.clone(),
+            address: None,
         },
         allowed_origins: vec!["https://app.example".into()],
         features: protocol::FEATURE_FETCH_PROXY,
@@ -1126,6 +1130,7 @@ async fn a_pages_live_grant_is_issued_to_an_admitted_device_and_cut_on_removal()
         sessions,
         host_info: HostInfo {
             host_cert: host.clone(),
+            address: None,
         },
         allowed_origins: vec![],
         features: 0,
