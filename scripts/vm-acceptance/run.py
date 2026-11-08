@@ -30,8 +30,8 @@ HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
 
 from acceptance import core, records, report  # noqa: E402
-from acceptance.checks import (agent, apps, basics, clock, daily_apps,  # noqa: E402,F401
-                               input_devices, provenance, resources, search, secrets, startup, ui,
+from acceptance.checks import (agent, agents_e2e, apps, basics, clock,  # noqa: E402,F401
+                               daily_apps, input_devices, provenance, resources, search, secrets, startup, ui,
                                window)
 from acceptance.context import Context  # noqa: E402
 from management import start_management  # noqa: E402
@@ -119,6 +119,11 @@ ORDER = ["P01", "P02", "R06", "R01", "A14", "R02", "R03", "A15", "A17", "R04",
          "U01", "U02", "B01", "B02", "B03", "B04", "B05", "B06",
          "M01", "M02", "M03", "M04", "I01", "I02", "I03", "I04", "I05", "I06", "I07", "I08",
          "C01", "R09", "R07", "A16", "R05", "K01", "R08", "C02", "P03"]
+# The coding agents' end-to-end scenario (checks/agents_e2e.py), in its order: each check needs
+# the ones before it. It runs only when named (`--only agents-e2e`, the e2e-agents check), in
+# no shard of vm-acceptance and in no run of every check.
+E2E_ORDER = ["E01", "E02", "E03", "E04", "E05", "E06", "E07"]
+EXPLICIT_AREAS = {"agents-e2e"}
 
 
 def git(*args: str, repo: Path = REPO) -> str:
@@ -593,7 +598,8 @@ def main() -> int:
             ctx.facts["locale_de:why"] = "the German pass was not requested (--locales)"
         by_id = {c.id: c for c in core.REGISTRY}
         german = de
-        main_ids = [i for i in ORDER + list(DE_PASS) if i in selected and (i not in DE_PASS or not german)]
+        main_ids = [i for i in ORDER + E2E_ORDER + list(DE_PASS)
+                    if i in selected and (i not in DE_PASS or not german)]
         for cid in main_ids:
             core.keep_awake(ctx)
             r = core.run_check(ctx, by_id[cid])
@@ -630,6 +636,13 @@ def main() -> int:
         if ctx is not None and ctx.facts.get("dialog_recovered_after"):
             # The checks that left a dialog open, what it was, and how the harness closed it.
             meta["dialog_recovered_after"] = ctx.facts["dialog_recovered_after"]
+        hold = int(os.environ.get("TILO_ACCEPTANCE_HOLD_S") or 0)
+        if hold > 0 and any(r.status == "fail" for r in results):
+            # A developer's run keeps a failed VM up a while, to reach it (`t vm ssh`, then
+            # `tilo-vm` as the run's user) before it goes.
+            print(f"a check failed: holding the VM {vm_name} for {hold} s (TILO_ACCEPTANCE_HOLD_S)",
+                  flush=True)
+            time.sleep(hold)
         if not args.keep:
             try:
                 vm.vm_cmd("stop", vm_name, timeout=300, check=False)
@@ -684,7 +697,7 @@ SESSION_JUDGES = {"P03", "R07", "A16"}
 def select(only: str | None, areas: str | None = None) -> set[str]:
     ids = {c.id for c in core.REGISTRY}
     if not only:
-        chosen = set(ids)
+        chosen = {c.id for c in core.REGISTRY if c.area not in EXPLICIT_AREAS}
     else:
         want = {w.strip() for w in only.split(",")}
         chosen = {c.id for c in core.REGISTRY if c.id in want or c.area in want}

@@ -12,6 +12,11 @@
 #                              produced from this commit enter through verified
 #                              swap-artifact, verified by the tilo-vm it built
 #                              from main
+#   vm-acceptance.sh e2e-agents
+#                              what e2e-agents runs: the coding agents'
+#                              end-to-end scenario (checks/agents_e2e.py) on
+#                              this tree's own disk, nothing swapped, its
+#                              report in /target/e2e-agents/report
 #
 # Inputs (t dispatch <check> --input name=value; every other run gets the
 # defaults):
@@ -41,10 +46,12 @@
 set -euo pipefail
 
 mode=${1:-}
-[[ -z $mode || $mode == cohort ]] || { echo "usage: vm-acceptance.sh [cohort]" >&2; exit 2; }
+[[ -z $mode || $mode == cohort || $mode == e2e-agents ]] \
+  || { echo "usage: vm-acceptance.sh [cohort|e2e-agents]" >&2; exit 2; }
 arch=x86_64
 work=/var/tmp/vm-acceptance
 reports=${CARGO_TARGET_DIR:-/target}/vm-acceptance
+[[ $mode != e2e-agents ]] || reports=${CARGO_TARGET_DIR:-/target}/e2e-agents
 gate=/target/publish/os-dev-disk/$arch/disk
 tilo_vm=/target/tilo-vm-bin/tilo-vm
 cohort=/target/vm-cohort
@@ -114,7 +121,11 @@ fi
 # vm-acceptance --test 'A15|W16'` names the checks itself (T_TEST_FILTER: check ids or
 # areas, `|`-separated); each shard then boots only if it holds one of them.
 only=${T_INPUT_ONLY:-}
-if [[ -n ${T_TEST_FILTER:-} ]]; then
+if [[ $mode == e2e-agents ]]; then
+  # The scenario's checks, all of them: each sets up what it needs through the ones before it.
+  only=agents-e2e
+  swap=""
+elif [[ -n ${T_TEST_FILTER:-} ]]; then
   only=${T_TEST_FILTER//|/,}
 elif [[ -z $only && -z ${T_TRIGGER:-} ]]; then
   mapfile -t paths < <({ git diff --name-only "$(git merge-base main HEAD)" HEAD; git diff --name-only HEAD; } | sort -u)
@@ -212,6 +223,11 @@ part() {
 }
 
 status=0
+if [[ $mode == e2e-agents ]]; then
+  part "$reports/report" --locales en || status=$?
+  phase 'scenario done'
+  exit "$status"
+fi
 if [[ $mode == cohort ]]; then
   part "$reports/report" || status=$?
   phase 'scenarios done'

@@ -23,6 +23,7 @@ AREAS = {
     "resources": "Resources",
     "basics": "Basics: hardware controls, keyboard, displays",
     "agent": "Agent door: the in-session MCP path",
+    "agents-e2e": "Coding agents in two workspaces, end to end (e2e-agents)",
     "input": "Input fidelity: real device descriptors, layouts, touchpad",
     "secrets": "Security and identity: secret custody",
 }

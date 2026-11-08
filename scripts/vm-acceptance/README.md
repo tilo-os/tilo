@@ -125,6 +125,32 @@ must reach the agent as `isError` / a JSON-RPC error. Until the image serves `$X
 run (`core.ExpectedFailure`), is listed in the report, and becomes an ordinary check when the
 socket appears.
 
+### Coding agents in two workspaces (E01-E07, `e2e-agents`)
+
+E01-E07 (`checks/agents_e2e.py`) prove that several coding agents work independently on one
+machine, each in an environment of its own workspace. They run only when named: t's
+dispatch-only `e2e-agents` check (`tools/ci/vm-acceptance.sh e2e-agents`, `t test
+e2e-agents`) boots this tree's dev disk and runs them alone, in order, each on what the ones
+before it set up; no shard of vm-acceptance and no run of every check includes them.
+
+The person makes two workspaces (`workspace.create`), opens Notes and Terminal in each, makes an
+environment in each from Terminal (`create-environment`, `open-in`), and starts an MCP client
+in each environment's shell configured as Claude Code is, `{"command": "tilo-runtime", "args":
+["--connect"]}`: `guest/mcp_agent.sh`, bash alone (the environment's runtime has no python),
+naming itself `claude-code`, sending what the harness appends to its inbox in the workspace's
+tree and keeping every line the server writes beside it. The person answers on the sheet by
+pressing its controls (`list-targets`, `click_named`), and stops an agent with the desk's
+`stop-agent`. The checks: each environment names its workspace and environment, its `~` is
+its workspace's tree and the other's is unreadable (E01); both agents are asked about and
+admitted at once, with distinct ids naming their environments (E02); each one's note lands in
+its own workspace only (E03); an environment's agent asking for the other workspace is
+refused before anyone is asked (E04); "Always allow" admits a second session there without
+the sheet, as the next instance (E05); Stop on one leaves the other working (E06); a program
+of the login outside the environments is refused on an environment's door (E07).
+
+`TILO_ACCEPTANCE_HOLD_S=N` keeps a run's VM up N seconds after a check failed, to reach it
+(`t vm ssh`, then `tilo-vm` as the run's user) before it goes.
+
 I01-I08 (`checks/input_devices.py`) plug uinput devices copied from the Lenovo Yoga Slim 7x
 (`os/hardware/profiles/lenovo-83ed/input/*.json`: I2C bus, 048D:8987 keyboard, 0488:1054
 touchpad; `tilo device input device plug lenovo-83ed-keyboard`) and check German keysyms,

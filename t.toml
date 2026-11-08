@@ -1642,6 +1642,22 @@ on = ["dispatch"]
 dispatch_inputs = { only = "", outputs = "1920x1080@1,1280x800@1.25", gl = "auto" }
 
 [[check]]
+name = "e2e-agents"
+# Several coding agents on one booted tilo box, each in an environment of its own workspace:
+# two workspaces, Terminal and an environment in each, an MCP client configured as Claude Code
+# in each environment's shell, the person's answers on the sheet and their Stop
+# (scripts/vm-acceptance/acceptance/checks/agents_e2e.py).
+run = "bash tools/ci/install-packages.sh tools/ci/packages/vm-acceptance.txt && bash tools/ci/vm-acceptance.sh e2e-agents"
+needs = ["os-dev-disk-x86_64", "tilo-vm-binary-x86_64"]
+requires = ["arch=x86_64", "/dev/kvm", "disk-100g"]
+isolation = "vm"
+outputs = ["/target/e2e-agents/report/**"]
+cache = false
+git = true
+timeout_secs = 5400
+on = ["dispatch"]
+
+[[check]]
 name = "vm-cohort-x86_64"
 run = "bash tools/ci/vm-cohort.sh produce"
 needs = ["tilo-vm-binary-x86_64", "test-assets", "engine-dev-x86_64"]

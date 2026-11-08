@@ -48,6 +48,8 @@ FEATURES = [
     (re.compile(r"^crates/runtime/runtime-identity/src/secure_store\.rs$"), "secrets"),
     # The guest-side MCP client belongs to the agent checks that run it.
     (re.compile(r"^scripts/vm-acceptance/guest/mcp_client\.py$"), "agent"),
+    # The coding agents' client belongs to the end-to-end checks (e2e-agents), in no shard.
+    (re.compile(r"^scripts/vm-acceptance/guest/mcp_agent\.sh$"), "agents-e2e"),
 ]
 
 
