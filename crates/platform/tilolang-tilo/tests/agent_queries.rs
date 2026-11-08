@@ -342,9 +342,12 @@ fn print_shows_rows_with_the_fields_asked_or_the_types_filters() {
 #[test]
 fn errors_teach_what_is_valid() {
     let w = world();
+    // No word of a declaration spells `completed`: the error teaches the filters there are.
     let filter = refused(&w.run("find(Task, completed: true)"));
     assert!(
-        filter.contains("has no filter `completed`; did you mean `done`?"),
+        filter.contains("has no filter `completed`")
+            && filter.contains("its filters: ")
+            && filter.contains("done"),
         "{filter}"
     );
     let source = refused(&w.run("grep(/x/, in: notez)"));
