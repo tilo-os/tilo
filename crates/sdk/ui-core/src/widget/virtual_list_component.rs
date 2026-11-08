@@ -348,6 +348,12 @@ impl SlotType for DescribedRows {
                 }
                 _ => {}
             }
+            if let ItemRow::View(_) = item.detail {
+                return Err(
+                    "a list given its items whole holds list rows, and the document a row opens into is one too; a list of other views renders them as they are shown"
+                        .to_owned(),
+                );
+            }
             if items.iter().any(|other| other.key == item.key) {
                 return Err(format!("has two items of the key {}", item.key));
             }
@@ -428,18 +434,21 @@ impl DescribedRows {
     }
 }
 
-/// An item given whole, again: its row's props are built anew each time it scrolls in.
+/// An item given whole, again: its row's props are built anew each time it scrolls in, and the
+/// document its row opens into, which is a row of the same kind. `None` for an item that is not
+/// rows all the way down: a view given once cannot be built a second time, so a list given its
+/// items whole holds rows (and their documents) rather than views.
 fn reusable(item: &ListItemProps) -> Option<ListItemProps> {
     let row = match &item.row {
         ItemRow::None => ItemRow::None,
         ItemRow::Row(row) => ItemRow::Row(Box::new(row.reusable()?)),
         ItemRow::View(_) => return None,
     };
-    // A row with a document of its own is not given whole: it is built where it stands, so
-    // the item keeps what it shows.
-    if !matches!(item.detail, ItemRow::None) {
-        return None;
-    }
+    let detail = match &item.detail {
+        ItemRow::None => ItemRow::None,
+        ItemRow::Row(document) => ItemRow::Row(Box::new(document.reusable()?)),
+        ItemRow::View(_) => return None,
+    };
     Some(ListItemProps {
         key: item.key.clone(),
         item: item.item.clone(),
@@ -477,7 +486,7 @@ fn reusable(item: &ListItemProps) -> Option<ListItemProps> {
         parent_title: item.parent_title.clone(),
         progress: item.progress.clone(),
         row,
-        detail: ItemRow::None,
+        detail,
     })
 }
 
@@ -1588,7 +1597,11 @@ mod tests {
                     title: format!("row {at}"),
                     ..ListRowProps::default()
                 })),
-                detail: ItemRow::View(Box::new(Spacer::fixed(120.0))),
+                detail: ItemRow::Row(Box::new(ListRowProps {
+                    title: format!("what row {at} is about"),
+                    secondary: Some("with the notes written about it".to_owned()),
+                    ..ListRowProps::default()
+                })),
                 ..ListItemProps::default()
             })
             .collect();
@@ -1614,8 +1627,12 @@ mod tests {
             "the item the host holds open is the row standing open"
         );
         lay_out(inner, 400.0);
+        let closed = inner.viewport.item_height(0).unwrap_or_default();
         let open = inner.viewport.item_height(2).unwrap_or_default();
-        assert!(open > 100.0, "the row grew into its document: {open}");
+        assert!(
+            open > closed,
+            "the row grows into its document: {open} over a closed row's {closed}"
+        );
 
         // The same list given the item again keeps it open, and given none closes it.
         let same = VirtualListProps {
