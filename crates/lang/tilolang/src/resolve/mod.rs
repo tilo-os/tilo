@@ -1022,15 +1022,14 @@ impl Resolver<'_> {
                 }
             };
         }
-        if let Some((held, args)) = std_text_call(e) {
-            return match std_text_value(&held, args) {
-                Ok(text) if held.same(ty) => Some(serde_json::Value::String(text)),
+        if let Some(args) = std_identifier_call(e) {
+            return match std_identifier_value(args) {
+                Ok(text) if ty.same(&Ty::Identifier) => Some(serde_json::Value::String(text)),
                 Ok(_) => {
-                    let found = held.display("");
                     self.err(
                         "E020",
                         e.span,
-                        format!("the default is {found} but the field has type {ty}"),
+                        format!("the default is std.Identifier but the field has type {ty}"),
                     );
                     None
                 }
@@ -1241,7 +1240,7 @@ impl Resolver<'_> {
             } else {
                 known.join(", ")
             };
-            let held = if std_text_ty(&[crate::stdlib::NS, single]).is_some() {
+            let held = if *single == "Identifier" {
                 format!("; the standard library has `std.{single}`")
             } else {
                 String::new()
@@ -1262,7 +1261,7 @@ impl Resolver<'_> {
         // The library declares no types: what it names under `std.` are the language's
         // text-held types.
         if import.app == crate::stdlib::APP {
-            self.err("E013", span, format!("the standard library has no type `{name}`; its types are `std.Identifier`, `std.Repeat`, `std.Reminder` and `std.RichText`"));
+            self.err("E013", span, format!("the standard library has no type `{name}`; its types are `std.Identifier` and `std.RichText`"));
             return Ty::Error;
         }
         let key = TypeKey {

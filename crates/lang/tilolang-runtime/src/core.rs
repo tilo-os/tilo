@@ -374,11 +374,10 @@ impl Core {
             OfType, Outside, OutsideAt, Phrase, PrincipalEq, PrincipalKind, PrincipalName,
             PrincipalNamed, PrincipalRole, Print, PrintRows, ProposalNote, Query, QueueBlock,
             RandomChoice, RandomFloat, RandomId, RandomInt, RandomShuffle, ReadText, ReadWith,
-            RecNew, RecSetF, RecSetH, RecSetI, RefEq, RefId, RefIs, RefLit, ReminderAt,
-            ReminderLabel, RepeatLabel, RepeatNext, RepeatNextAt, ResAddF, ResAddI, ResGetF,
-            ResGetH, ResGetI, ResSetF, ResSetH, ResSetI, ResTextSet, ResourceRef, RichEmpty,
-            RichNew, RichPart, RichTime, RunChanges, SetAdd, SetRemove, Single, SomeF, SomeH,
-            SomeI, SpaceF, SpaceI, Speakers, StateAt, StateGet, Steps, StrCmp, StrConcat,
+            RecNew, RecSetF, RecSetH, RecSetI, RefEq, RefId, RefIs, RefLit, ResAddF, ResAddI,
+            ResGetF, ResGetH, ResGetI, ResSetF, ResSetH, ResSetI, ResTextSet, ResourceRef,
+            RichEmpty, RichNew, RichPart, RichTime, RunChanges, SetAdd, SetRemove, Single, SomeF,
+            SomeH, SomeI, SpaceF, SpaceI, Speakers, StateAt, StateGet, Steps, StrCmp, StrConcat,
             StrContains, StrEndsWith, StrEq, StrFind, StrJoin, StrLen, StrLit, StrLower,
             StrMatches, StrReplace, StrSlice, StrSplit, StrStartsWith, StrToInt, StrTrim, StrUpper,
             Suggest, Take, TimeDay, TimeOfDay, TimeParse, TimeShift, TimeSpan, Today, TryInvoke,
@@ -411,11 +410,8 @@ impl Core {
             Query => self.ret_h(self.query_import(a.h(0)?, a.h(1)?, a.h(2)?, a.h(3)?)?),
             Filters | FilterLit => self.catalogue_import(imp, a),
             IdentPart => self.ret_h(self.ident_part(a.h(0)?, a.h(1)?)?),
-            RepeatNext | RepeatNextAt | RepeatLabel | ReminderAt | ReminderLabel | WallClock => {
-                self.recurrence_import(imp, a)
-            }
             Today | TimeDay | TimeOfDay | TimeSpan | DayShift | DayPart | DayWeekday
-            | DayStartOfWeek | DayParse | TimeParse => self.time_import(imp, a),
+            | DayStartOfWeek | DayParse | TimeParse | WallClock => self.time_import(imp, a),
             RandomInt | RandomFloat | RandomChoice | RandomShuffle | RandomId => {
                 self.random_import(imp, a)
             }

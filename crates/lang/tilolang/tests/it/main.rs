@@ -24,7 +24,6 @@ mod origins;
 mod outcomes;
 mod placement;
 mod principal;
-mod repeats;
 mod roundtrip;
 mod search;
 mod semantics;

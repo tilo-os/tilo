@@ -53,12 +53,10 @@ fn type_default(ty: &Ty) -> Result<Value, String> {
         Ty::Int => Value::Int(0),
         Ty::Float => Value::Float(0.0),
         Ty::Bool => Value::Bool(false),
-        // A date, a time, an identifier, a repeat or a reminder a record was never given reads
-        // as no text, which is what the store compares a field without one as
-        // ([`crate::store::FieldRead::of`]): a filter and a view then agree on it.
-        Ty::Text | Ty::Date | Ty::Time | Ty::Identifier | Ty::Repeat | Ty::Reminder => {
-            Value::text("")
-        }
+        // A date, a time or an identifier a record was never given reads as no text, which is
+        // what the store compares a field without one as ([`crate::store::FieldRead::of`]): a
+        // filter and a view then agree on it.
+        Ty::Text | Ty::Date | Ty::Time | Ty::Identifier => Value::text(""),
         Ty::RichText => Value::Rich(crate::rich::RichValue::default()),
         Ty::Option(_) => Value::none(),
         Ty::List(_) | Ty::Set(_) | Ty::Map(_) | Ty::Collection(_) => Value::List(Vec::new()),
@@ -99,7 +97,7 @@ pub(crate) fn declared_default(ty: &Ty, default: Option<&Json>) -> Result<Value,
             .as_bool()
             .map(Value::Bool)
             .ok_or_else(|| "default is not a bool".into()),
-        (Ty::Text | Ty::Date | Ty::Time | Ty::Identifier | Ty::Repeat | Ty::Reminder, Some(j)) => j
+        (Ty::Text | Ty::Date | Ty::Time | Ty::Identifier, Some(j)) => j
             .as_str()
             .map(Value::text)
             .ok_or_else(|| "default is not text".into()),
@@ -116,7 +114,7 @@ pub(crate) fn to_scalar(v: &Value, ty: &Ty) -> Result<Scalar, String> {
         (Value::Int(i), Ty::Int) => Ok(Scalar::Int(*i)),
         (Value::Float(f), Ty::Float) => Ok(Scalar::Float(*f)),
         (Value::Text(s), Ty::Text) => Ok(Scalar::Text(s.clone())),
-        (Value::Text(s), Ty::Date | Ty::Time | Ty::Identifier | Ty::Repeat | Ty::Reminder) => {
+        (Value::Text(s), Ty::Date | Ty::Time | Ty::Identifier) => {
             check_dated(s, ty)?;
             Ok(Scalar::Text(s.clone()))
         }
@@ -160,28 +158,6 @@ pub(crate) fn check_dated(text: &str, ty: &Ty) -> Result<(), String> {
             } else {
                 Err(format!(
                     "`{text}` is not an identifier as it is held; write `{held}`"
-                ))
-            }
-        }),
-        // A repeat and a reminder are held as the text their constructor checked, so text that
-        // reads back differently was written by something that does not keep them.
-        Ty::Repeat => tilolang::repeat::Repeat::parse(text).and_then(|held| {
-            if held.text() == text {
-                Ok(())
-            } else {
-                Err(format!(
-                    "`{text}` is not a repeat as it is held; write `{}`",
-                    held.text()
-                ))
-            }
-        }),
-        Ty::Reminder => tilolang::repeat::Reminder::parse(text).and_then(|held| {
-            if held.text() == text {
-                Ok(())
-            } else {
-                Err(format!(
-                    "`{text}` is not a reminder as it is held; write `{}`",
-                    held.text()
                 ))
             }
         }),

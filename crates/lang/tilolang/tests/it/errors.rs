@@ -133,13 +133,13 @@ fn e022_wrong_arguments() {
 /// the parameter and its type, rather than reading as one the person forgot.
 #[test]
 fn e022_names_a_parameter_no_form_can_ask_for() {
-    let body = "action remind(at: Time, every: std.Repeat) {\n}\naction go() {\n    remind(now)\n}";
+    let body = "action remind(at: Time, headers: Bytes) {\n}\naction go() {\n    remind(now)\n}";
     let d = crate::common::compile_with(&format!("app t.x \"X\"\n{body}\n"), &[])
-        .expect_err("a form cannot ask for the repeat");
+        .expect_err("a form cannot ask for a bytes value");
     let message = &d[0].message;
     assert_eq!(d[0].code, "E022");
     assert!(
-        message.contains("remind") && message.contains("every") && message.contains("std.Repeat"),
+        message.contains("remind") && message.contains("headers") && message.contains("Bytes"),
         "{message}"
     );
 }

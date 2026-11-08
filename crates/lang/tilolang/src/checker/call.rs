@@ -39,11 +39,9 @@ impl Checker<'_> {
                     if name.name == "RichText" {
                         return self.builtin_rich_text(args, span);
                     }
-                    if let Some(held) =
-                        crate::resolve::std_text_ty(&[crate::stdlib::NS, name.name.as_str()])
-                    {
-                        return match crate::resolve::std_text_value(&held, args) {
-                            Ok(text) => Ex::str(&text).typed(held),
+                    if name.name == "Identifier" {
+                        return match crate::resolve::std_identifier_value(args) {
+                            Ok(text) => Ex::str(&text).typed(Ty::Identifier),
                             Err(msg) => {
                                 self.err("E099", span, msg);
                                 Ex::error()
@@ -2255,54 +2253,6 @@ impl Checker<'_> {
             }
             // A length of time as the seconds it is, which is how a record keeps one.
             (Ty::Duration, "seconds") if args.is_empty() => r.typed(Ty::Int),
-            // `r.next(from, done)`: the day the item comes round again. Counting from the due
-            // day it steps on by the rule; counting from completion it steps from the day it was
-            // done. Returns the day to be due next.
-            (Ty::Repeat, "next") => {
-                if !self.arity(name, args, 2, span) {
-                    return Ex::error();
-                }
-                let (Some(from), Some(done)) = (args.first(), args.get(1)) else {
-                    return Ex::error();
-                };
-                let from = self.expr_as(&from.value, &Ty::Date);
-                let done = self.expr_as(&done.value, &Ty::Date);
-                Ex::host(Imp::RepeatNext, vec![r, from, done], Ty::Date)
-            }
-            // `r.next_at(at, day)`: the moment on `day` at the same local time of day as `at`,
-            // so a standup at 09:30 stays at 09:30 across a change of clocks.
-            (Ty::Repeat, "next_at") => {
-                if !self.arity(name, args, 2, span) {
-                    return Ex::error();
-                }
-                let (Some(at), Some(day)) = (args.first(), args.get(1)) else {
-                    return Ex::error();
-                };
-                let at = self.expr_as(&at.value, &Ty::Time);
-                let day = self.expr_as(&day.value, &Ty::Date);
-                self.reads(crate::effects::Effect::Time, span, "`next_at`");
-                Ex::host(Imp::RepeatNextAt, vec![r, at, day], Ty::Time)
-            }
-            (Ty::Repeat, "label") if args.is_empty() => {
-                Ex::host(Imp::RepeatLabel, vec![r], Ty::Text)
-            }
-            // `m.at(due, at)`: the moment to remind, from the due day and its time of day: an
-            // item without one is timed from the start of the day.
-            (Ty::Reminder, "at") => {
-                if !self.arity(name, args, 2, span) {
-                    return Ex::error();
-                }
-                let (Some(due), Some(at)) = (args.first(), args.get(1)) else {
-                    return Ex::error();
-                };
-                let due = self.expr_as(&due.value, &Ty::Date);
-                let at = self.expr_as(&at.value, &Ty::Option(Box::new(Ty::Time)));
-                self.reads(crate::effects::Effect::Time, span, "`at`");
-                Ex::host(Imp::ReminderAt, vec![r, due, at], Ty::Time)
-            }
-            (Ty::Reminder, "label") if args.is_empty() => {
-                Ex::host(Imp::ReminderLabel, vec![r], Ty::Text)
-            }
             (Ty::Principal, "name") if args.is_empty() => {
                 Ex::host(Imp::PrincipalName, vec![r], Ty::Text)
             }
@@ -2448,8 +2398,6 @@ impl Checker<'_> {
             (other, _) => {
                 let t = self.show(other);
                 let known = match other {
-                    Ty::Repeat => "next, next_at, label".to_owned(),
-                    Ty::Reminder => "at, label".to_owned(),
                     Ty::Principal => "name, kind, role".to_owned(),
                     Ty::Action => "then, made_from".to_owned(),
                     // Every other type's methods are in one table, whose names the check of a

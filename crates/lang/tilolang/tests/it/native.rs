@@ -75,7 +75,8 @@ view note_row(n: Note) {
 }
 
 view notebook(nb: Notebook) {
-    std.list(nb.notes) { (n, at) ->
+    state opened: Option<Note> = .none
+    std.list(nb.notes, opened) { (n, at) ->
         ui.ListItem(item: n, presence: at) {
             note_row(n)
         }
@@ -657,10 +658,7 @@ fn a_field_is_its_name_its_type_and_its_default() {
     expect("E003", "type T {\n    n: Int (title)\n}");
     expect("E003", "type T {\n    n: Int (done)\n}");
     expect("E003", "type T {\n    n: Option<Date> (time of: due)\n}");
-    expect(
-        "E003",
-        "type T {\n    n: Option<std.Repeat> (repeats: due)\n}",
-    );
+    expect("E003", "type T {\n    n: Option<Bytes> (asked)\n}");
     ok("type T {\n    a: Text\n    b: Text merge register = \"x\"\n}");
 }
 

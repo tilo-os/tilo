@@ -180,9 +180,7 @@ impl FieldRead {
                     Ty::Bool => Lit::Bool(false),
                     Ty::Int => Lit::Int(0),
                     Ty::Float => Lit::Float(tilolang::pred::Float(0.0)),
-                    Ty::Text | Ty::Date | Ty::Time | Ty::Identifier | Ty::Repeat | Ty::Reminder => {
-                        Lit::Text(String::new())
-                    }
+                    Ty::Text | Ty::Date | Ty::Time | Ty::Identifier => Lit::Text(String::new()),
                     _ => Lit::Absent,
                 },
             },

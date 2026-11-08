@@ -516,12 +516,6 @@ impl Checker<'_> {
             ),
             Ty::Record(_) | Ty::Union(_) => Ex::host(Imp::RefId, vec![v], Ty::Text),
             Ty::Principal => Ex::host(Imp::PrincipalName, vec![v], Ty::Text),
-            // Its words, which only the runtime's locale knows.
-            Ty::Repeat | Ty::Reminder => {
-                let t = self.show(&v.ty);
-                self.err("E020", span, format!("a value of type {t} cannot be shown as text; write its label, `….label()`, to show it in words"));
-                Ex::error()
-            }
             other => {
                 let t = self.show(other);
                 self.err("E020", span, format!("a value of type {t} cannot be shown as text; interpolate Text, Int, Float, Bool, a Duration, a Date, a Time, a Principal or a record"));
@@ -789,7 +783,7 @@ impl Checker<'_> {
                 vec![Self::filter_query(l), Self::filter_query(r)],
                 Ty::Bool,
             ),
-            Ty::Text | Ty::Date | Ty::Time | Ty::Identifier | Ty::Repeat | Ty::Reminder => {
+            Ty::Text | Ty::Date | Ty::Time | Ty::Identifier => {
                 Ex::host(Imp::StrEq, vec![l, r], Ty::Bool)
             }
             Ty::Principal => Ex::host(Imp::PrincipalEq, vec![l, r], Ty::Bool),
