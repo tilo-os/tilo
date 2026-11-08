@@ -1647,7 +1647,14 @@ impl<const BOUND: bool> A11yVisitor for Build<'_, BOUND> {
             },
             description: access.description.clone(),
             state,
-            bounds: Some(w.get_rect()),
+            // A widget that names where its node stands (the one control it paints inside a
+            // larger box) is taken at its word, as the AccessKit bridge takes it; otherwise its
+            // box.
+            bounds: Some(
+                access
+                    .bounds
+                    .map_or_else(|| w.get_rect(), crate::a11y::AccessBounds::to_rect),
+            ),
             actions,
             children,
             // A widget with no layout node is acted on through the nearest
