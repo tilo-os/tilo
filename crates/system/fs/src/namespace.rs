@@ -437,7 +437,6 @@ pub struct Namespace {
     /// of changes becomes one delta when it ends. Encoding a delta
     /// regenerates its changes from the op set (a pass over the document),
     /// so one per changed file is quadratic in a changeset.
-    incremental_batch: Option<(Vec<automerge::ChangeHash>, Vec<u8>)>,
     #[cfg(test)]
     record_index_rebuilds: u64,
     /// Changes whenever the verified (signed) content projection changes:
@@ -581,7 +580,6 @@ impl Namespace {
             record_ids_complete: false,
             placed_since_resolve: HashSet::new(),
             cycle_scan_pending: true,
-            incremental_batch: None,
             #[cfg(test)]
             record_index_rebuilds: 0,
             verified_generation: next_verified_generation(),
@@ -750,43 +748,29 @@ impl Namespace {
         }
         self.doc.save()
     }
+    /// Finish a mutation: every node it made has its stable record id before
+    /// anything reads the document (`save`, `changes_since`).
+    ///
+    /// INVARIANT: pair every mutation with its `note_change` inside the same
+    /// `Namespace` lock scope, so the ids of a change are there before another
+    /// change's `save` folds them.
+    pub fn note_change(&mut self) {
+        if !self.record_ids_complete {
+            self.ensure_record_ids();
+        }
+    }
+
     /// Changes since the last `save_incremental`/load/merge, advancing the shared
-    /// automerge watermark.
+    /// automerge watermark. For callers that carry the delta itself (a staged
+    /// transaction); a plain mutation follows [`Self::note_change`].
     ///
     /// INVARIANT: pair every mutation with its `save_incremental` inside the same
     /// `Namespace` lock scope — the watermark is one shared cursor, so a mutation
     /// saved outside that scope can have its delta silently swallowed by a
     /// concurrent remote-apply.
     pub fn save_incremental(&mut self) -> Vec<u8> {
-        if !self.record_ids_complete {
-            self.ensure_record_ids();
-        }
-        if self.incremental_batch.is_some() {
-            return Vec::new();
-        }
+        self.note_change();
         self.doc.save_incremental()
-    }
-
-    /// Collect every change from now on into the one delta
-    /// [`Self::end_incremental_batch`] returns; meanwhile
-    /// [`Self::save_incremental`] returns nothing.
-    pub fn begin_incremental_batch(&mut self) {
-        if self.incremental_batch.is_none() {
-            // Changes not yet taken lead the batch's delta.
-            let pending = self.doc.save_incremental();
-            self.incremental_batch = Some((self.doc.get_heads(), pending));
-        }
-    }
-
-    /// The delta of every change since the batch began. A full save made
-    /// meanwhile (which moves the incremental cursor) loses nothing.
-    pub fn end_incremental_batch(&mut self) -> Vec<u8> {
-        let Some((heads, mut delta)) = self.incremental_batch.take() else {
-            return self.save_incremental();
-        };
-        delta.extend(self.doc.save_after(&heads));
-        let _ = self.doc.save_incremental();
-        delta
     }
     pub fn apply_incremental(&mut self, data: &[u8]) -> Result<(), automerge::AutomergeError> {
         let before = self.doc.get_heads();

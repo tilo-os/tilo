@@ -41,7 +41,7 @@ use std::ffi::OsStr;
 use std::future::Future;
 use std::io;
 use std::os::unix::ffi::OsStrExt;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -752,12 +752,12 @@ pub struct QuickFS {
     /// Makes the namespace on disk hold the current placements: run after a
     /// record group is durable (native plane), and by `fsync`/`fsyncdir`.
     durability_hook: std::sync::OnceLock<DurabilityHook>,
-    /// Namespace deltas of the changeset being published, broadcast once it
-    /// is durable (`None` outside a changeset).
-    deferred_deltas: Mutex<Option<Vec<Vec<u8>>>>,
-    /// Deltas of changesets whose durable write failed; broadcast with the
-    /// next changeset that becomes durable.
-    held_deltas: Mutex<Vec<Vec<u8>>>,
+    /// Whether a changeset is publishing: its changes are announced once,
+    /// when it is durable.
+    changeset_open: AtomicBool,
+    /// A changeset changed the namespace but was not durable: the next
+    /// durable changeset announces both.
+    announce_held: AtomicBool,
     /// Explicit one-time owner migration permission. Joining peers disable
     /// this so unsigned legacy namespace bytes are never automatically
     /// blessed into their certified actor's signed history.
@@ -822,8 +822,8 @@ impl QuickFS {
             checked_history_workspace: None,
             mount_lifetime: uuid::Uuid::new_v4(),
             durability_hook: std::sync::OnceLock::new(),
-            deferred_deltas: Mutex::new(None),
-            held_deltas: Mutex::new(Vec::new()),
+            changeset_open: AtomicBool::new(false),
+            announce_held: AtomicBool::new(false),
             allow_legacy_record_migration: true,
             share_control_path: None,
             change_signal: None,
@@ -1363,8 +1363,8 @@ impl QuickFS {
             // as far as creating it is finished by committing into it.
             ino
         } else {
-            let (ino, delta) = self.create_empty_file(parent, copy_name)?;
-            self.publish(delta);
+            let ino = self.create_empty_file(parent, copy_name)?;
+            self.publish();
             ino
         };
         self.commit_version_at(ino, source, now_ms(), None)
@@ -2087,20 +2087,20 @@ impl QuickFS {
         );
         // import_document validates before replacing; an invalid input
         // leaves the previous content intact and returns false.
-        let delta = {
+        let imported = {
             let mut ns = self.ns();
-            if ns.import_document(ino, data, now_ms(), &self.document_content) {
-                ns.save_incremental()
-            } else {
-                Vec::new()
+            let imported = ns.import_document(ino, data, now_ms(), &self.document_content);
+            if imported {
+                ns.note_change();
             }
+            imported
         };
         self.doc_export_cache().remove(&ino);
-        if delta.is_empty() {
+        if !imported {
             eprintln!("document import rejected (invalid format); previous content kept");
             return Err(EINVAL);
         }
-        self.publish(delta);
+        self.publish();
         self.record_version(ino, fs_protocol::FileProvenance::Edit, content);
         Ok(())
     }
@@ -3567,7 +3567,7 @@ impl QuickFS {
             .map_err(|_| EIO)?
             .and_then(|snapshot| snapshot.content_revision)
             .ok_or(EIO)?;
-        let delta = {
+        {
             let mut namespace = self.ns();
             if namespace.record_id_for(ino) != Some(record_id)
                 || namespace.content_revision_for(ino) != Some(expected_revision)
@@ -3577,9 +3577,9 @@ impl QuickFS {
             if !namespace.set_content_revision(ino, &converged, timestamp_ms) {
                 return Err(EIO);
             }
-            namespace.save_incremental()
-        };
-        self.publish(delta);
+            namespace.note_change();
+        }
+        self.publish();
         if let Some(registry) = &self.availability {
             let mut registry = registry.lock_recover();
             if let Some(mut record) = registry.get(record_id).cloned() {
@@ -4508,14 +4508,12 @@ impl QuickFS {
                         .install_verified_thumbnail(record_id, Some(Hash::from(verified_hash.0)));
                 }
             } else {
-                let delta = {
+                {
                     let mut ns = self.ns();
                     ns.set_thumb(ino, &tbh);
-                    ns.save_incremental()
-                };
-                if !delta.is_empty() {
-                    self.publish(delta);
+                    ns.note_change();
                 }
+                self.publish();
             }
         }
         Some(png)
@@ -4843,17 +4841,19 @@ impl QuickFS {
         self.check_path(&child_path(&parent_path, name), Access::Write)
     }
 
-    fn publish(&self, delta: Vec<u8>) {
-        {
-            let mut deferred = self.deferred_deltas.lock_recover();
-            if let Some(deltas) = deferred.as_mut() {
-                // Peers learn a changeset's placements only once its records
-                // are durable; the visible index is refreshed once for the
-                // whole changeset then.
-                deltas.push(delta);
-                return;
-            }
+    /// Announce a local change of the namespace to the peers, the ACL view
+    /// and the hydration workers. A change inside a changeset waits until
+    /// the changeset is durable, so peers never learn of placements whose
+    /// records are not.
+    fn publish(&self) {
+        if self.changeset_open.load(Ordering::Acquire) {
+            self.announce_held.store(true, Ordering::Release);
+            return;
         }
+        self.announce();
+    }
+
+    fn announce(&self) {
         if self.enforcement.is_some() {
             // Local structural changes have already updated Namespace's
             // incremental record index. Refresh the retained ACL projection
@@ -5007,7 +5007,7 @@ impl QuickFS {
                 .map(Some)?,
             None => None,
         };
-        let delta = {
+        {
             let mut ns = self.ns();
             let current_len = ns.getattr(ino).map(|attr| attr.size);
             let installed = ns.hash_for(ino) == hash && current_len == Some(byte_len);
@@ -5031,20 +5031,16 @@ impl QuickFS {
             } else {
                 ns.set_content(ino, hash.as_ref(), byte_len, stamp);
             }
-            ns.save_incremental()
-        };
-        self.publish(delta);
+            ns.note_change();
+        }
+        self.publish();
         Ok(())
     }
 
     /// Create an empty regular file. Signed mounts publish the immutable
     /// baseline before exposing the move-tree node; a failed publication can
     /// leave an unreachable repository record, but never an unsigned live file.
-    fn create_empty_file(
-        &self,
-        parent: u64,
-        name: impl AsRef<[u8]>,
-    ) -> Result<(u64, Vec<u8>), i32> {
+    fn create_empty_file(&self, parent: u64, name: impl AsRef<[u8]>) -> Result<u64, i32> {
         self.create_empty_file_stamped(parent, name, now_ms())
     }
 
@@ -5055,7 +5051,7 @@ impl QuickFS {
         parent: u64,
         name: impl AsRef<[u8]>,
         observed_at_ms: u64,
-    ) -> Result<(u64, Vec<u8>), i32> {
+    ) -> Result<u64, i32> {
         self.create_file_stamped(parent, name, observed_at_ms, None, 0)
     }
 
@@ -5073,7 +5069,7 @@ impl QuickFS {
         observed_at_ms: u64,
         content: Option<Hash>,
         byte_len: u64,
-    ) -> Result<(u64, Vec<u8>), i32> {
+    ) -> Result<u64, i32> {
         let name: &[u8] = name.as_ref();
         let byte_len = if content.is_some() { byte_len } else { 0 };
         let content_hash = content.map(|hash| fs_protocol::ContentHash(*hash.as_bytes()));
@@ -5159,21 +5155,23 @@ impl QuickFS {
                 }
                 ino
             };
-            return Ok((ino, namespace.save_incremental()));
+            namespace.note_change();
+            return Ok(ino);
         }
 
         let mut namespace = self.ns();
         let ino = namespace
             .create_file(parent, name, content.as_ref(), byte_len, observed_at_ms)
             .ok_or(ENOENT)?;
-        Ok((ino, namespace.save_incremental()))
+        namespace.note_change();
+        Ok(ino)
     }
 
     #[allow(
         clippy::significant_drop_tightening,
         reason = "directory creation publishes one namespace mutation and its incremental document snapshot"
     )]
-    fn create_empty_dir(&self, parent: u64, name: impl AsRef<[u8]>) -> Result<(u64, Vec<u8>), i32> {
+    fn create_empty_dir(&self, parent: u64, name: impl AsRef<[u8]>) -> Result<u64, i32> {
         let name: &[u8] = name.as_ref();
         let timestamp_ms = now_ms();
         if let (Some(publisher), Some((history, actor))) = (&self.record_publisher, &self.history) {
@@ -5231,13 +5229,15 @@ impl QuickFS {
             let ino = namespace
                 .create_projected_dir(parent, name, record_id, timestamp_ms)
                 .ok_or(EIO)?;
-            return Ok((ino, namespace.save_incremental()));
+            namespace.note_change();
+            return Ok(ino);
         }
         let mut namespace = self.ns();
         let ino = namespace
             .create_dir(parent, name, timestamp_ms)
             .ok_or(ENOENT)?;
-        Ok((ino, namespace.save_incremental()))
+        namespace.note_change();
+        Ok(ino)
     }
 
     fn remove_entry(&self, parent: INodeNo, name: &OsStr, expect_dir: bool, reply: ReplyEmpty) {
@@ -5302,7 +5302,7 @@ impl QuickFS {
             binding.tombstoned = true;
             publisher.publish_binding(&binding).map_err(|_| EIO)?;
         }
-        let delta = {
+        {
             let mut ns = self.ns();
             if ns.lookup(parent, name).is_none_or(|attr| attr.ino.0 != ino)
                 || Self::version_snapshot_locked(&ns, ino, true, None, None)
@@ -5316,9 +5316,9 @@ impl QuickFS {
             if !ns.remove(ino) {
                 return Err(ENOENT);
             }
-            ns.save_incremental()
-        };
-        self.publish(delta);
+            ns.note_change();
+        }
+        self.publish();
         Ok(())
     }
 
@@ -5338,7 +5338,7 @@ impl QuickFS {
         source_ino: u64,
         victim_ino: u64,
         timestamp_ms: u64,
-    ) -> Result<Vec<u8>, i32> {
+    ) -> Result<(), i32> {
         let name: &[u8] = name.as_ref();
         let new_name: &[u8] = new_name.as_ref();
         let runtime = self.replacement_transactions.as_ref().ok_or(EEXIST)?;
@@ -5565,7 +5565,7 @@ impl QuickFS {
             )
             .map_err(|_| EIO)?;
         self.attribute_versions(&attributed, destination.as_deref());
-        Ok(Vec::new())
+        Ok(())
     }
 
     // Keep signed preflight, publication, and namespace projection ordered.
@@ -5580,18 +5580,19 @@ impl QuickFS {
         name: impl AsRef<[u8]>,
         new_parent: u64,
         new_name: impl AsRef<[u8]>,
-    ) -> Result<Vec<u8>, i32> {
+    ) -> Result<(), i32> {
         let name: &[u8] = name.as_ref();
         let new_name: &[u8] = new_name.as_ref();
         let signed = self.record_publisher.is_some() && self.history.is_some();
         if !signed {
-            let (ino, delta) = {
+            let ino = {
                 let mut namespace = self.ns();
                 let ino = namespace.lookup(parent, name).ok_or(ENOENT)?.ino.0;
                 if !namespace.rename(parent, name, new_parent, new_name, now_ms()) {
                     return Err(ENOENT);
                 }
-                (ino, namespace.save_incremental())
+                namespace.note_change();
+                ino
             };
             self.record_version(
                 ino,
@@ -5602,7 +5603,7 @@ impl QuickFS {
                 },
                 None,
             );
-            return Ok(delta);
+            return Ok(());
         }
 
         let timestamp_ms = now_ms();
@@ -5712,7 +5713,8 @@ impl QuickFS {
                 return Err(EIO);
             }
         }
-        Ok(namespace.save_incremental())
+        namespace.note_change();
+        Ok(())
     }
 }
 
@@ -6621,13 +6623,17 @@ impl Filesystem for QuickFS {
         let created =
             if let (false, Some(name), Some(codec)) = (signed, name.to_str(), codec.as_deref()) {
                 let mut ns = self.ns();
-                ns.create_document(parent.0, name, codec, now_ms())
-                    .map(|ino| (ino, ns.save_incremental()))
-                    .ok_or(ENOENT)
+                let created = ns
+                    .create_document(parent.0, name, codec, now_ms())
+                    .ok_or(ENOENT);
+                if created.is_ok() {
+                    ns.note_change();
+                }
+                created
             } else {
                 self.create_empty_file(parent.0, name_bytes)
             };
-        let (ino, delta) = match created {
+        let ino = match created {
             Ok(created) => created,
             Err(error) => {
                 reply.error(to_errno(error));
@@ -6653,7 +6659,7 @@ impl Filesystem for QuickFS {
                 },
             );
         }
-        self.publish(delta);
+        self.publish();
         if !signed {
             self.record_version(attr.ino.0, fs_protocol::FileProvenance::Create, None);
         }
@@ -6848,7 +6854,7 @@ impl Filesystem for QuickFS {
             reply.error(to_errno(e));
             return;
         }
-        let (ino, delta) = match self.create_empty_dir(parent.0, name) {
+        let ino = match self.create_empty_dir(parent.0, name) {
             Ok(created) => created,
             Err(error) => {
                 reply.error(to_errno(error));
@@ -6858,7 +6864,7 @@ impl Filesystem for QuickFS {
         let attr = self.ns().getattr(ino);
         match attr {
             Some(attr) => {
-                self.publish(delta);
+                self.publish();
                 if self.record_publisher.is_none() || self.history.is_none() {
                     self.record_version(attr.ino.0, fs_protocol::FileProvenance::Create, None);
                 }
@@ -6918,10 +6924,8 @@ impl Filesystem for QuickFS {
             return;
         }
         match self.rename_named(parent.0, name, newparent.0, newname) {
-            Ok(delta) => {
-                if !delta.is_empty() {
-                    self.publish(delta);
-                }
+            Ok(()) => {
+                self.publish();
                 reply.ok();
             }
             Err(error) => reply.error(to_errno(error)),

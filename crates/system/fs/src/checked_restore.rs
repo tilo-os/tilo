@@ -837,7 +837,7 @@ impl QuickFS {
             .sign_checked_restore(manifest, repository.highest_sequence(key, actor))
             .map_err(|_| Outcome::Unavailable)?;
         let mut namespace_candidate = namespace.clone();
-        let _ = namespace_candidate.save_incremental();
+        namespace_candidate.note_change();
         let projection_actor = namespace_candidate.begin_restore_projection(
             request.review.workspace_id,
             request.review.record_id,
@@ -917,7 +917,7 @@ impl QuickFS {
         drop(namespace);
         drop(buffers);
         self.project_checked_availability(request.review.record_id);
-        self.publish(delta.clone());
+        self.publish();
         #[cfg(test)]
         test_fault(request.intent_id, TestFault::Broadcast).map_err(|_| pending())?;
         journal

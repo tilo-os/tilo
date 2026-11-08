@@ -855,25 +855,24 @@ fn byte_names_survive_load_save_rename_and_replication_exactly() {
 }
 
 #[test]
-fn a_batch_of_changes_is_one_delta_even_across_a_full_save() {
+fn changes_since_cover_what_a_full_save_came_between() {
     let mut source = Namespace::new("source").unwrap();
     source.create_file(ROOT_INO, "before", None, 0, 1).unwrap();
     let mut peer = Namespace::from_bytes("peer", &source.save()).unwrap();
-    source.create_file(ROOT_INO, "pending", None, 0, 1).unwrap();
-    source.begin_incremental_batch();
+    let heads = source.heads();
     source.create_file(ROOT_INO, "one", None, 0, 2).unwrap();
-    assert!(
-        source.save_incremental().is_empty(),
-        "no delta inside a batch"
-    );
     let _ = source.save();
     source.create_file(ROOT_INO, "two", None, 0, 3).unwrap();
-    let delta = source.end_incremental_batch();
+    let delta = source.changes_since(&heads);
     peer.apply_remote_and_resolve(&delta).unwrap();
-    for name in ["pending", "one", "two"] {
+    for name in ["one", "two"] {
         assert!(peer.lookup(ROOT_INO, name).is_some(), "{name} arrived");
     }
-    assert!(source.save_incremental().is_empty(), "the batch was taken");
+    let held = source.heads();
+    assert!(
+        source.changes_since(&held).is_empty(),
+        "everything was told"
+    );
 }
 
 #[test]

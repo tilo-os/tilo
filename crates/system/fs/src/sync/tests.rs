@@ -2937,10 +2937,12 @@ fn received_change_is_checked_for_conflict() {
         "one conflict copy for the concurrent edit"
     );
     assert_eq!(namespace.lock().unwrap().conflict_scans(), 2);
-    assert!(
-        !crate::conflict::materialize(&mut namespace.lock().unwrap(), &conflicts[0], 10, 6)
-            .is_empty()
-    );
+    assert!(crate::conflict::materialize(
+        &mut namespace.lock().unwrap(),
+        &conflicts[0],
+        10,
+        6
+    ));
 
     // Publishing the conflict was itself a write: the next pass checks
     // that one record again and finds it settled; the one after checks

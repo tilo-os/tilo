@@ -2026,16 +2026,13 @@ mod history_integration_tests {
             "flush/fsync/release of unchanged bytes must not invent versions"
         );
 
-        assert!(
-            !fs.rename_named(
-                crate::namespace::ROOT_INO,
-                "before.txt",
-                crate::namespace::ROOT_INO,
-                "after.txt",
-            )
-            .unwrap()
-            .is_empty()
-        );
+        fs.rename_named(
+            crate::namespace::ROOT_INO,
+            "before.txt",
+            crate::namespace::ROOT_INO,
+            "after.txt",
+        )
+        .unwrap();
         let after_rename = history.snapshot(record_id).unwrap();
         assert_eq!(after_rename.versions.len(), 3);
         assert_eq!(after_rename.versions[2].provenance, FileProvenance::Rename);
@@ -2293,16 +2290,13 @@ mod record_publisher_integration_tests {
             before_noop_sequence
         );
 
-        assert!(
-            !fs.rename_named(
-                crate::namespace::ROOT_INO,
-                "before.txt",
-                crate::namespace::ROOT_INO,
-                "after.txt",
-            )
-            .unwrap()
-            .is_empty()
-        );
+        fs.rename_named(
+            crate::namespace::ROOT_INO,
+            "before.txt",
+            crate::namespace::ROOT_INO,
+            "after.txt",
+        )
+        .unwrap();
         assert_eq!(namespace.lock_recover().record_id_for(ino), Some(record_id));
         let after_rename = published_snapshot(&repository, &publisher, record_id);
         assert_eq!(after_rename.binding.as_ref().unwrap().name, "after.txt");
@@ -2394,10 +2388,9 @@ mod record_publisher_integration_tests {
             "new operations must continue after the recovered actor watermark"
         );
 
-        let (created_ino, delta) = restarted
+        let created_ino = restarted
             .create_empty_file(crate::namespace::ROOT_INO, "signed-new.txt")
             .unwrap();
-        assert!(!delta.is_empty());
         let created_record = restarted
             .namespace
             .lock_recover()
@@ -2417,10 +2410,9 @@ mod record_publisher_integration_tests {
             "the empty signed baseline is visible only through its verified revision"
         );
 
-        let (created_dir_ino, dir_delta) = restarted
+        let created_dir_ino = restarted
             .create_empty_dir(crate::namespace::ROOT_INO, "signed-folder")
             .unwrap();
-        assert!(!dir_delta.is_empty());
         let created_dir_record = restarted
             .namespace
             .lock_recover()
@@ -2522,18 +2514,14 @@ mod record_publisher_integration_tests {
         let restarted = restarted
             .with_replacement_transactions(journal.clone(), namespace_path.clone())
             .unwrap();
-        assert!(
-            restarted
-                .rename_named(
-                    crate::namespace::ROOT_INO,
-                    "after.txt",
-                    crate::namespace::ROOT_INO,
-                    "signed-new.txt",
-                )
-                .unwrap()
-                .is_empty(),
-            "the coordinator broadcasts the staged delta itself"
-        );
+        restarted
+            .rename_named(
+                crate::namespace::ROOT_INO,
+                "after.txt",
+                crate::namespace::ROOT_INO,
+                "signed-new.txt",
+            )
+            .unwrap();
         let mut namespace = restarted.namespace.lock_recover();
         assert!(
             namespace
@@ -3604,10 +3592,10 @@ mod write_stage_tests {
         let heuristics = Arc::new(Heuristics::new(Arc::clone(&hydrator)));
         let fs = QuickFS::new(Arc::clone(&namespace), hydrator, heuristics)
             .with_write_stage_dir(dir.path().join("stage"));
-        let (large, delta) = fs.create_empty_file(ROOT_INO, "large.bin").unwrap();
-        fs.publish(delta);
-        let (small, delta) = fs.create_empty_file(ROOT_INO, "small.txt").unwrap();
-        fs.publish(delta);
+        let large = fs.create_empty_file(ROOT_INO, "large.bin").unwrap();
+        fs.publish();
+        let small = fs.create_empty_file(ROOT_INO, "small.txt").unwrap();
+        fs.publish();
         let payload = pseudo(16 * 1024 * 1024, 6);
         assert_eq!(
             fs.write_buffer(large, 0, &payload),

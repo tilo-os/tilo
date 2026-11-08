@@ -3127,7 +3127,7 @@ fn apply_shared_snapshot(
                 Some(iroh_blobs::Hash::from((preview.1).0)),
             );
         }
-        namespace.save_incremental();
+        namespace.note_change();
         validate_shared_namespace(&mut namespace, snapshot.record_id, false)?;
     }
     Ok(())

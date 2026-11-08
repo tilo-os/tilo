@@ -614,7 +614,7 @@ fn forced_partition_offline_edits_restart_and_converge_as_a_conflict() {
     for namespace in [&mut left, &mut right] {
         let conflicts = fs::conflict::detect(namespace);
         assert_eq!(conflicts.len(), 1);
-        assert!(!fs::conflict::materialize(namespace, &conflicts[0], 20, 21).is_empty());
+        assert!(fs::conflict::materialize(namespace, &conflicts[0], 20, 21));
         assert!(fs::conflict::detect(namespace).is_empty());
     }
 

@@ -67,14 +67,14 @@ async fn session_leased_writes_carry_their_agent_in_signed_history() {
         )
         .unwrap();
 
-    let (folder, _) = fs
+    let folder = fs
         .create_empty_dir(crate::namespace::ROOT_INO, "Reports")
         .unwrap();
-    let (report, _) = fs.create_empty_file(folder, "q3.txt").unwrap();
+    let report = fs.create_empty_file(folder, "q3.txt").unwrap();
     fs.commit_content(report, b"written for Ada").unwrap();
     // A rename inside the leased folder is Scribe's too.
     fs.rename_named(folder, "q3.txt", folder, "q4.txt").unwrap();
-    let (notes, _) = fs
+    let notes = fs
         .create_empty_file(crate::namespace::ROOT_INO, "notes.txt")
         .unwrap();
 

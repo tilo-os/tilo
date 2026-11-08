@@ -144,6 +144,16 @@ impl RecordMaterializer {
         }
     }
 
+    /// Peers, the ACL view and hydration learn of a projection that changed
+    /// the namespace.
+    fn announce(&self) {
+        if let Ok(sync) = self.sync.read()
+            && let Some(sync) = sync.as_ref()
+        {
+            sync.announce_change();
+        }
+    }
+
     /// Materialize one already accepted envelope after independently checking
     /// its signature, actor, workspace, and exact live-record binding.
     ///
@@ -190,10 +200,6 @@ impl RecordMaterializer {
             .history
             .as_ref()
             .map(|history| history.defer_durability());
-        self.namespace
-            .lock()
-            .map_err(|_| RecordMaterializerError::NamespaceUnavailable)?
-            .begin_incremental_batch();
         let mut report = RecordReconciliationReport::default();
         let more = match scope {
             ReconcileScope::Touched => Vec::new(),
@@ -210,18 +216,7 @@ impl RecordMaterializer {
         all.extend(more);
         let projected = self.reconcile_keys(repository, &all, &mut report);
         let everything = scope != ReconcileScope::Touched || !keys.is_empty();
-        // One namespace delta for the whole batch.
-        let delta = self
-            .namespace
-            .lock()
-            .map_err(|_| RecordMaterializerError::NamespaceUnavailable)?
-            .end_incremental_batch();
-        if !delta.is_empty()
-            && let Ok(sync) = self.sync.read()
-            && let Some(sync) = sync.as_ref()
-        {
-            sync.announce_change();
-        }
+        self.announce();
         projected?;
         // A pull may complete a multi-record transaction.
         if everything {
@@ -305,16 +300,10 @@ impl RecordMaterializer {
         let live = namespace
             .ensure_ino_for_record_id(binding.record_id)
             .is_some();
-        // A namespace batch (a pulled changeset) collects this delta and
-        // broadcasts it once; a repository reconciliation persists it here.
-        let delta = changed.then(|| namespace.save_incremental());
+        namespace.note_change();
         drop(namespace);
-        if let Some(delta) = delta
-            && !delta.is_empty()
-            && let Ok(sync) = self.sync.read()
-            && let Some(sync) = sync.as_ref()
-        {
-            sync.announce_change();
+        if changed {
+            self.announce();
         }
         if live {
             Ok(BindingPlacement::Live)
@@ -540,14 +529,9 @@ impl RecordMaterializer {
             Ok(false) => Ok(()),
             Ok(true) => {
                 report.bindings_projected = report.bindings_projected.saturating_add(1);
-                let delta = namespace.save_incremental();
+                namespace.note_change();
                 drop(namespace);
-                if !delta.is_empty()
-                    && let Ok(sync) = self.sync.read()
-                    && let Some(sync) = sync.as_ref()
-                {
-                    sync.announce_change();
-                }
+                self.announce();
                 Ok(())
             }
             Err(crate::namespace::BindingProjectionError::UnknownParent) => {
@@ -619,7 +603,7 @@ impl RecordMaterializer {
                         HistoryError::Io(_) => RecordMaterializerError::HistoryUnavailable,
                         _ => RecordMaterializerError::HistoryRejected,
                     })?;
-                let delta = {
+                let changed = {
                     let mut namespace = self
                         .namespace
                         .lock()
@@ -642,14 +626,11 @@ impl RecordMaterializer {
                             changed = true;
                         }
                     }
-                    changed.then(|| namespace.save_incremental())
+                    namespace.note_change();
+                    changed
                 };
-                if let Some(delta) = delta
-                    && !delta.is_empty()
-                    && let Ok(sync) = self.sync.read()
-                    && let Some(sync) = sync.as_ref()
-                {
-                    sync.announce_change();
+                if changed {
+                    self.announce();
                 }
                 report.transactions_reconciled = report.transactions_reconciled.saturating_add(1);
                 continue;
@@ -791,7 +772,7 @@ impl RecordMaterializer {
                         )
                         .map_err(|_| RecordMaterializerError::HistoryRejected)?;
                 }
-                let delta = if matches!(
+                let changed = if matches!(
                     transaction.manifest.operation,
                     fs_protocol::FileMutationOperation::RestoreContent { .. }
                 ) {
@@ -825,19 +806,18 @@ impl RecordMaterializer {
                             transaction.manifest.timestamp_ms,
                         );
                     }
-                    Some(namespace.save_incremental())
+                    namespace.note_change();
+                    true
                 } else {
                     self.namespace
                         .lock()
                         .map_err(|_| RecordMaterializerError::NamespaceUnavailable)?
                         .apply_mutation_transaction(&transaction)
                         .map_err(|_| RecordMaterializerError::TransactionRejected)?
+                        .is_some()
                 };
-                if delta.is_some()
-                    && let Ok(sync) = self.sync.read()
-                    && let Some(sync) = sync.as_ref()
-                {
-                    sync.announce_change();
+                if changed {
+                    self.announce();
                 }
             }
             report.transactions_reconciled = report.transactions_reconciled.saturating_add(1);
@@ -985,16 +965,11 @@ impl RecordMaterializer {
             }
             pending = next;
         }
-        if let Some(delta) = changed.then(|| {
-            self.namespace
-                .lock()
-                .map(|mut namespace| namespace.save_incremental())
-                .unwrap_or_default()
-        }) && !delta.is_empty()
-            && let Ok(sync) = self.sync.read()
-            && let Some(sync) = sync.as_ref()
-        {
-            sync.announce_change();
+        if changed {
+            if let Ok(mut namespace) = self.namespace.lock() {
+                namespace.note_change();
+            }
+            self.announce();
         }
         report.transactions_reconciled = report.transactions_reconciled.saturating_add(1);
         Ok(())
@@ -1093,14 +1068,11 @@ impl RecordMaterializer {
                 }
                 _ => RecordMaterializerError::BindingMismatch,
             })?;
-            let delta = changed.then(|| namespace.save_incremental());
+            namespace.note_change();
             drop(projection);
             drop(namespace);
-            if delta.is_some()
-                && let Ok(sync) = self.sync.read()
-                && let Some(sync) = sync.as_ref()
-            {
-                sync.announce_change();
+            if changed {
+                self.announce();
             }
             return Ok(());
         }
@@ -1160,14 +1132,10 @@ impl RecordMaterializer {
                 if !changed {
                     return Err(RecordMaterializerError::NamespaceUnavailable);
                 }
-                namespace.save_incremental();
+                namespace.note_change();
                 drop(projection);
                 drop(namespace);
-                if let Ok(sync) = self.sync.read()
-                    && let Some(sync) = sync.as_ref()
-                {
-                    sync.announce_change();
-                }
+                self.announce();
             }
             RecordOperationV1::AppendVersion(version) => {
                 // Do not hold the namespace lock across durable history I/O.
@@ -1205,14 +1173,10 @@ impl RecordMaterializer {
                 if !namespace.set_content_revision(ino, revision, observed_at_ms) {
                     return Err(RecordMaterializerError::NamespaceUnavailable);
                 }
-                namespace.save_incremental();
+                namespace.note_change();
                 drop(projection);
                 drop(namespace);
-                if let Ok(sync) = self.sync.read()
-                    && let Some(sync) = sync.as_ref()
-                {
-                    sync.announce_change();
-                }
+                self.announce();
             }
             RecordOperationV1::AppendConflict(_) | RecordOperationV1::ResolveConflict { .. } => {
                 let conflict_id = match &envelope.operation {

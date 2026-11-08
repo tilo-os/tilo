@@ -336,13 +336,13 @@ fn push_copy(
     });
 }
 
-/// Materialize the conflict copy for `c`; returns the CRDT delta to broadcast (empty if it already existed).
-pub fn materialize(ns: &mut Namespace, c: &ContentConflict, loser_len: u64, now: u64) -> Vec<u8> {
-    if ns.create_conflict_copy(&c.parent_id, &c.name, &c.loser, loser_len, now) {
-        ns.save_incremental()
-    } else {
-        Vec::new()
+/// Materialize the conflict copy for `c`; whether it changed the namespace.
+pub fn materialize(ns: &mut Namespace, c: &ContentConflict, loser_len: u64, now: u64) -> bool {
+    let created = ns.create_conflict_copy(&c.parent_id, &c.name, &c.loser, loser_len, now);
+    if created {
+        ns.note_change();
     }
+    created
 }
 
 #[cfg(test)]
@@ -383,8 +383,7 @@ mod tests {
             let loser = conflicts[0].loser;
             assert!(loser == h(10) || loser == h(20));
 
-            let delta = materialize(&mut a, &conflicts[0], 99, 6);
-            assert!(!delta.is_empty());
+            assert!(materialize(&mut a, &conflicts[0], 99, 6));
 
             let winner = a.entry_at("doc").unwrap().hash.unwrap();
             assert_ne!(winner, loser);
@@ -546,7 +545,7 @@ mod tests {
         scan.rescan();
         assert_eq!(summary(&scan.due(&a)), summary(&due));
         assert_eq!(scan.scans(), 3);
-        assert!(!materialize(&mut a.lock_recover(), &due[0], 10, 6).is_empty());
+        assert!(materialize(&mut a.lock_recover(), &due[0], 10, 6));
         assert!(scan.due(&a).is_empty());
         assert_eq!(scan.scans(), 3, "a materialised copy is no merge");
         assert!(detect(&a.lock_recover()).is_empty(), "exactly one copy");
