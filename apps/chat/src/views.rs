@@ -355,26 +355,30 @@ const MESSAGES_KIND: &str = "chat.workspace";
 /// draws the same page: nothing here knows a width or a look.
 #[view(default)]
 fn page(c: &Channel, cx: &ViewCx) -> Node {
-    let mut above: Vec<Node> = vec![ui::page(
+    // The channel names itself and what it is about above the transcript.
+    let head = ui::page(
         &cx.key("head"),
         vec![ui::stack(
             &cx.key("header"),
             Gap::Tight,
             header_facts(c, cx),
         )],
-    )];
-    above.push(ui::fill(transcript(c, cx)));
-    let conversation = ui::column(&cx.key("column"), Gap::None, above);
-    // The composer stands at the foot of the column, in the page's own gutter and measure, so
-    // the box that answers a message sits under the messages it answers.
-    ui::page(
-        &cx.key("page"),
-        vec![ui::fill(ui::column(
-            &cx.key("stack"),
-            Gap::None,
-            vec![conversation, ui::fill(composer(c, cx))],
-        ))],
-    )
+    );
+    let conversation = ui::column(
+        &cx.key("column"),
+        Gap::None,
+        vec![head, ui::fill(transcript(c, cx))],
+    );
+    // The composer stands docked at the foot, in the page's own gutter and measure, as every
+    // conversation sets its reply box under the messages it answers (`ui.Docked`): the
+    // transcript fills the column above it and scrolls, the composer keeps its own height.
+    let docked: Node = ui::DockedBuilder::new(&cx.key("docked")).into();
+    let docked = node::slot(docked, "foot", vec![composer(c, cx)]);
+    let docked = node::with(docked, vec![conversation]);
+    // The page is the window's whole body: it fills the height the place gives it, its column
+    // takes the width, and the transcript scrolls inside — never the page scrolling away with
+    // the composer under it.
+    ui::fill(ui::page(&cx.key("page"), vec![ui::fill(docked)]))
 }
 
 /// Who the channel is: its name, and what it is about or that it is a call.
@@ -560,7 +564,7 @@ fn message_row(c: &Channel, message: &Message, continues: bool, cx: &ViewCx) -> 
         // it), so a message that continues a run lines up under the first one's avatar.
         ui::AvatarBuilder::new(&cx.key(format!("lead-{}", message.id)))
             .who(principal(author, &message.author))
-            .square(false)
+            .room(true)
             .into()
     } else {
         avatar
@@ -1054,6 +1058,14 @@ mod tests {
             keyed(&tree, "ui.Avatar", "@avatar-").len() + keyed(&tree, "ui.Avatar", "@lead-").len(),
             2,
             "each message has an avatar (or its empty lead), the run's first their face, the next a lead"
+        );
+        // The run's second message draws an empty lead: an avatar's room with nothing in it.
+        let lead = keyed(&tree, "ui.Avatar", "@lead-");
+        assert_eq!(lead.len(), 1, "the run's second message has an empty lead");
+        assert_eq!(
+            lead[0].props.get("room"),
+            Some(&Value::Bool(true)),
+            "the lead is an avatar's room, empty"
         );
     }
 

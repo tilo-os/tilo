@@ -150,6 +150,11 @@
           "name": "square",
           "doc": "A square rather than a circle: an account or a site, not a person.",
           "type": "bool"
+        },
+        {
+          "name": "room",
+          "doc": "The avatar's room with none in it: a message that continues its author's run lines up under the first one's avatar without repeating it. Nothing is painted and nothing is read out.",
+          "type": "bool"
         }
       ],
       "semantics": {

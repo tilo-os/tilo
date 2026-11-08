@@ -15,6 +15,7 @@
 use std::cell::RefCell;
 use std::collections::BTreeMap;
 use std::path::PathBuf;
+use std::rc::Rc;
 use std::sync::{Arc, Mutex};
 
 use tilo_action_broker::services::{NativeTaskActionRequirement, TrackerRun, TrackerRuns};
@@ -306,6 +307,36 @@ impl Conversations {
         Some(opened.chat.as_ref()?.get().as_ref().clone())
     }
 
+    /// The page of the conversation `channel` (a channel id, after
+    /// `chat.workspace/channels/`), as Chat's own `#[view(default)]` draws it, read from the
+    /// workspace this session holds open that has it: the very channel Chat's window shows and
+    /// the canvas places when a person asks there (shell.md §8.1, "The view"). Its messages are
+    /// the head part's, projected exactly as the window projects them.
+    ///
+    /// `None` where no open workspace holds the channel, or the session has not opened one yet.
+    #[must_use]
+    pub fn channel_reading(&self, channel: &str) -> Option<chat::views::Channel> {
+        let open = self.open.borrow();
+        for opened in open.values() {
+            let Some(chat_record) = &opened.chat else {
+                continue;
+            };
+            let chat = chat_record.get();
+            if !chat.channels.iter().any(|(id, _)| id.as_str() == channel) {
+                continue;
+            }
+            let Some((index, part)) = &opened.part else {
+                continue;
+            };
+            let held = chat::parts::ChatPart::clone(part.get().as_ref());
+            let messages = chat::messages::Messages::new(vec![(*index, std::rc::Rc::new(held))]);
+            let rows = chat.message_rows(&messages, channel);
+            let me = opened.records.author().0.clone();
+            return Some(chat::views::Channel::read(&chat, &rows, channel, &me));
+        }
+        None
+    }
+
     /// What the canvas asks of the session, made as `person`'s in
     /// `workspace`: their ask conversation with the agent the workspace
     /// keeps, the agent making it (shell.md §8.1, "Asking from the canvas").
@@ -542,6 +573,86 @@ impl Conversations {
         }
         let part = opened.part.as_ref().map(|(_, part)| part.clone())?;
         Some((chat, part))
+    }
+}
+
+/// Chat's conversations as a session service, so a place that shows one draws Chat's own
+/// channel page from its reading (one-app-model.md §2, shell.md §8.1): the very channel Chat's
+/// window shows, drawn by Chat's `#[view(default)]`, never a second chat.
+///
+/// The reading is read from the workspace's open Chat record, through the same record the
+/// agent pass reads turns from — never a second writer on the store. It is the real path a
+/// person's session uses, not a development fixture: the canvas's ask places
+/// `chat.workspace/channels/<id>`, and the shell reads that reading here.
+pub(crate) struct ChatViewService {
+    conversations: Rc<Conversations>,
+}
+
+impl ChatViewService {
+    /// The service over `conversations`, the session's one open of the workspaces' chats.
+    #[must_use]
+    pub(crate) fn new(conversations: Rc<Conversations>) -> Self {
+        Self { conversations }
+    }
+}
+
+impl tilo_service::Service for ChatViewService {
+    fn resources(&self) -> Vec<tilo_actions::ResourceSpec> {
+        // Each conversation of each open workspace, as Chat publishes a channel: its item
+        // resource, of the app `chat`, through its `page` view.
+        let open = self.conversations.open.borrow();
+        let mut specs: Vec<tilo_actions::ResourceSpec> = Vec::new();
+        for opened in open.values() {
+            let Some(chat_record) = &opened.chat else {
+                continue;
+            };
+            let chat = chat_record.get();
+            for (id, conversation) in chat.channels.iter() {
+                if !conversation.is_channel() {
+                    continue;
+                }
+                let mut spec = tilo_actions::ResourceSpec::new(
+                    format!("chat.workspace/channels/{}", id.as_str()),
+                    "chat.workspace.channels",
+                    format!("#{}", conversation.name),
+                )
+                .with_view(tilo_actions::ResourceViewSpec::new(
+                    "page",
+                    conversation.name.clone(),
+                    "open",
+                ))
+                .with_type(tilo_actions::ResourceType {
+                    noun: tilo_actions::Noun::new("channel", "channels"),
+                    app: tilo_actions::Noun::new("Chat", "Chat"),
+                    root: false,
+                });
+                spec.app_id = Some("chat".to_owned());
+                specs.push(spec);
+            }
+        }
+        specs
+    }
+
+    fn read(&self, resource: &str) -> Option<serde_json::Value> {
+        let channel = resource
+            .strip_prefix("chat.workspace/channels/")
+            .or_else(|| resource.strip_prefix("chat.workspace.channels:"))?;
+        let reading = self.conversations.channel_reading(channel)?;
+        serde_json::to_value(&reading).ok()
+    }
+
+    fn invoke(
+        &mut self,
+        resource: &str,
+        action: &str,
+        _arguments: &serde_json::Map<String, serde_json::Value>,
+    ) -> Result<tilo_service::Started, tilo_actions::DoorError> {
+        // The page's own actions (its composer's `post`, a message's verbs) are Chat's, posted
+        // through its record. Until they are published here, a press the page offers runs on
+        // Chat's window's record like any of Chat's verbs: this service serves readings.
+        Err(tilo_actions::DoorError::Unknown(
+            tilo_actions::ActionAddress::new(resource, action),
+        ))
     }
 }
 
