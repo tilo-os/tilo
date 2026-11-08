@@ -148,6 +148,13 @@ pub trait FloatingRow {
         false
     }
 
+    /// Whether revealing this row brings the unpickable rows above it (its
+    /// headings) into view too, as a results list's first row under a
+    /// header does.
+    fn reveals_lead(&self) -> bool {
+        false
+    }
+
     /// Whether it is on its way, showing progress at its content's end.
     fn busy(&self) -> bool {
         false
@@ -573,8 +580,20 @@ impl<R: FloatingRow> FloatingList<R> {
 
     /// Arm row `index` (`None` disarms) and scroll it into view.
     pub fn set_highlight(&mut self, index: Option<usize>) {
-        self.highlight = index.filter(|&i| self.rows.get(i).is_some_and(FloatingRow::pickable));
+        self.set_highlight_in_place(index);
         self.reveal();
+    }
+
+    /// Arm row `index` where it stands, without scrolling it into view: the
+    /// pointer picked the row it is over.
+    pub fn set_highlight_in_place(&mut self, index: Option<usize>) {
+        self.highlight = index.filter(|&i| self.rows.get(i).is_some_and(FloatingRow::pickable));
+    }
+
+    /// Track the pointer for the hover lift (`None` for off the rows), without
+    /// arming or scrolling anything.
+    pub fn set_hover(&mut self, index: Option<usize>) {
+        self.hover = index.filter(|&i| i < self.rows.len());
     }
 
     /// The armed cell, of a row that offers cells.
@@ -760,7 +779,16 @@ impl<R: FloatingRow> FloatingList<R> {
             return;
         }
         self.place_scroll();
-        let top = self.row_top(h);
+        let mut top = self.row_top(h);
+        if self.rows.get(h).is_some_and(FloatingRow::reveals_lead) {
+            // The headings over the row come along: they are what it is.
+            for index in (0..h).rev() {
+                if self.rows[index].pickable() {
+                    break;
+                }
+                top -= self.heights.get(index).copied().unwrap_or(0.0);
+            }
+        }
         self.scroll.scroll_into_view(Rect::new(
             0.0,
             top,
@@ -1206,7 +1234,38 @@ impl<R: FloatingRow> FloatingList<R> {
         }
         let radius = self.panel_radius(theme);
         floating_surface::paint_rounded(scene, transform, panel, radius, theme);
+        self.paint_rows_in(scene, transform, text, theme, panel);
+    }
+
+    /// Paint the rows alone, into a panel the host draws itself ([`Self::set_rect`]
+    /// placed them): a card that already has its ground, edge and shadow.
+    pub fn paint_rows(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        text: &mut TextRenderer,
+        theme: &Theme,
+    ) {
+        self.measure(text, theme);
+        let Some(panel) = self.rect() else {
+            return;
+        };
+        self.place_scroll();
+        self.paint_rows_in(scene, transform, text, theme, panel);
+    }
+
+    /// The rows, their clip and the busy spinner, in `panel`.
+    fn paint_rows_in(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        text: &mut TextRenderer,
+        theme: &Theme,
+        panel: Rect,
+    ) {
+        let now = crate::motion::frame_now();
         let m = self.metrics;
+        let radius = self.panel_radius(theme);
         self.drawn_step = self.arriving_step(now);
         let columns = R::columns(&self.rows);
         if self.rows.is_empty() {
