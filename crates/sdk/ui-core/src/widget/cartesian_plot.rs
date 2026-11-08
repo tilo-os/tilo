@@ -11,7 +11,6 @@
 )]
 
 use crate::time::Instant;
-use crate::widget::ModelPath;
 use std::cell::RefCell;
 use tilo_sort::CompactSort as _;
 
@@ -20,18 +19,13 @@ use vello::kurbo::{Affine, BezPath, Circle, Line, Point, Rect, RoundedRect, Stro
 use vello::peniko::{BlendMode, Color, Fill};
 use winit::event::{ElementState, MouseButton, MouseScrollDelta, WindowEvent};
 
-use crate::a11y::{AccessNode, AccessState, Role};
 use crate::paint::with_alpha;
-use crate::presence::PresenceCtx;
 use crate::text_render::{TextRenderer, TextWeight};
 use crate::theme::Theme;
 use crate::tokens::TextRole;
-use crate::widget::Widget;
 use crate::widget::chart_labels::format_compact;
 use crate::widget::chart_legend;
-use crate::widget::chart_navigation::{
-    ChartNavAction, ChartTouchAction, ChartTouchTracker, chart_nav_action, moved_index,
-};
+use crate::widget::plot::{Plot, PlotFrame, PlotItem, PlotMarks};
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum AxisRange {
@@ -656,48 +650,43 @@ impl Domain {
     }
 }
 
-#[derive(Clone, Copy, Debug)]
-struct Hovered {
-    series: usize,
-    datum: usize,
-    point: Point,
+/// What a pointer or the keyboard inspects on a plot: a series' data point,
+/// or one of the plot's interactive annotations.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum CartesianHover {
+    Datum { series: usize, datum: usize },
+    Annotation(usize),
 }
 
-pub struct CartesianPlot {
+/// What activating a mark reports, once.
+#[derive(Clone, Debug, PartialEq)]
+pub enum CartesianActivation {
+    /// The ids of the activated series and datum.
+    Datum { series: String, datum: String },
+    /// The id of the activated annotation.
+    Annotation(String),
+}
+
+pub struct CartesianMarks {
+    frame: PlotFrame<CartesianHover>,
     series: Vec<PlotSeries>,
     annotations: Vec<CartesianAnnotation>,
     style: CartesianStyle,
-    title: String,
-    height: f32,
-    rect: Rect,
-    pointer: Point,
-    hovered: Option<Hovered>,
-    hovered_annotation: Option<usize>,
-    activated: Option<(String, String)>,
-    annotation_activated: Option<String>,
     x_view: Option<Domain>,
     y_view: Option<Domain>,
     view_changed: bool,
     toggles: chart_legend::SeriesToggles,
-    keyboard_inspection: bool,
     brush_start: Option<Point>,
     brush_current: Point,
-    pan_last: Option<Point>,
     brushed: Option<CartesianBrushSelection>,
+    pan_last: Option<Point>,
     transition_from: Option<Vec<PlotSeries>>,
     transition_started: Instant,
     reduce_motion: bool,
     domain_cache: RefCell<Option<DomainCache>>,
-    touch: ChartTouchTracker,
     /// The bands around the plot, measured from the theme and the labels
     /// at the last draw.
     bands: Bands,
-    /// Keyboard inspection only while the plot has focus.
-    focused: bool,
-
-    /// Input or a new document value changed what this widget paints: it
-    /// repaints once, and rests after the frame draws it.
-    dirty: bool,
 }
 
 /// The space around a plot: tick labels, axis titles, the chart's title and
@@ -727,67 +716,35 @@ impl Bands {
     };
 }
 
+/// A Cartesian plot: see the [module docs](self).
+pub type CartesianPlot = Plot<CartesianMarks>;
+
 impl CartesianPlot {
-    fn transform(value: f64, scale: AxisScale) -> Option<f64> {
-        match scale {
-            AxisScale::Linear => value.is_finite().then_some(value),
-            AxisScale::Log10 => (value.is_finite() && value > 0.0).then(|| value.log10()),
-        }
-    }
-    fn inverse(value: f64, scale: AxisScale) -> f64 {
-        match scale {
-            AxisScale::Linear => value,
-            AxisScale::Log10 => 10.0_f64.powf(value),
-        }
-    }
-    fn project(
-        value: f64,
-        domain: Domain,
-        scale: AxisScale,
-        origin: f64,
-        span: f64,
-    ) -> Option<f64> {
-        let value = Self::transform(value, scale)?;
-        let min = Self::transform(domain.min, scale)?;
-        let max = Self::transform(domain.max, scale)?;
-        Some(((value - min) / (max - min)).mul_add(span, origin))
-    }
     pub fn new(series: Vec<PlotSeries>) -> Self {
-        Self {
-            dirty: true,
+        Plot::from_marks(CartesianMarks {
+            frame: PlotFrame::new(320.0, 100.0),
             series,
             annotations: Vec::new(),
             style: CartesianStyle::default(),
-            title: String::new(),
-            height: 320.0,
-            rect: Rect::ZERO,
-            pointer: Point::ZERO,
-            hovered: None,
-            hovered_annotation: None,
-            activated: None,
-            annotation_activated: None,
             x_view: None,
             y_view: None,
             view_changed: false,
             toggles: chart_legend::SeriesToggles::default(),
-            keyboard_inspection: false,
             brush_start: None,
             brush_current: Point::ZERO,
-            pan_last: None,
             brushed: None,
+            pan_last: None,
             transition_from: None,
             transition_started: crate::time::now(),
             reduce_motion: false,
             domain_cache: RefCell::new(None),
-            touch: ChartTouchTracker::default(),
             bands: Bands::STOCK,
-            focused: false,
-        }
+        })
     }
 
     #[must_use]
     pub fn with_style(mut self, style: CartesianStyle) -> Self {
-        self.style = style;
+        self.marks.style = style;
         self
     }
     #[must_use]
@@ -795,165 +752,107 @@ impl CartesianPlot {
         mut self,
         annotations: impl IntoIterator<Item = CartesianAnnotation>,
     ) -> Self {
-        self.annotations = annotations.into_iter().collect();
+        self.marks.annotations = annotations.into_iter().collect();
         self
     }
     pub fn annotations(&self) -> &[CartesianAnnotation] {
-        &self.annotations
+        &self.marks.annotations
     }
     pub fn annotations_mut(&mut self) -> &mut Vec<CartesianAnnotation> {
-        &mut self.annotations
-    }
-    #[must_use]
-    pub fn titled(mut self, title: impl Into<String>) -> Self {
-        self.title = title.into();
-        self
-    }
-    #[must_use]
-    pub fn with_height(mut self, height: f32) -> Self {
-        self.height = height.max(100.0);
-        self
+        &mut self.marks.annotations
     }
     pub fn set_series(&mut self, series: Vec<PlotSeries>) {
-        self.dirty = true;
-        if self.series == series {
+        self.mark_dirty();
+        let marks = &mut self.marks;
+        if marks.series == series {
             return;
         }
-        let previous = std::mem::replace(&mut self.series, series);
-        if self.style.animation.enabled && !self.reduce_motion {
-            self.transition_from = Some(previous);
-            self.transition_started = crate::time::now();
+        let previous = std::mem::replace(&mut marks.series, series);
+        if marks.style.animation.enabled && !marks.reduce_motion {
+            marks.transition_from = Some(previous);
+            marks.transition_started = crate::time::now();
         } else {
-            self.transition_from = None;
+            marks.transition_from = None;
         }
-        self.toggles
-            .retain(|id| self.series.iter().any(|series| series.id == id));
-        self.hovered = None;
-        self.invalidate_domains();
+        marks
+            .toggles
+            .retain(|id| marks.series.iter().any(|series| series.id == id));
+        marks.frame.inspection.clear();
+        marks.invalidate_domains();
     }
     /// Replace data without motion, useful for initial hydration, restored
     /// sessions, and deterministic capture.
     pub fn set_series_immediate(&mut self, series: Vec<PlotSeries>) {
-        self.dirty = true;
-        self.series = series;
-        self.transition_from = None;
-        self.toggles
-            .retain(|id| self.series.iter().any(|series| series.id == id));
-        self.hovered = None;
-        self.invalidate_domains();
+        self.mark_dirty();
+        let marks = &mut self.marks;
+        marks.series = series;
+        marks.transition_from = None;
+        marks
+            .toggles
+            .retain(|id| marks.series.iter().any(|series| series.id == id));
+        marks.frame.inspection.clear();
+        marks.invalidate_domains();
     }
     pub fn finish_animation(&mut self) {
-        self.transition_from = None;
+        self.marks.transition_from = None;
     }
     pub fn is_animating(&self) -> bool {
-        !self.reduce_motion
-            && self.style.animation.enabled
-            && self.transition_from.is_some()
-            && crate::time::now().saturating_duration_since(self.transition_started)
-                < crate::widget::pie_chart::data_change_time()
+        self.marks.is_animating()
     }
-
-    fn animation_progress_at(&self, now: Instant) -> f64 {
-        if self.reduce_motion || !self.style.animation.enabled || self.transition_from.is_none() {
-            return 1.0;
-        }
-        crate::widget::pie_chart::data_change_progress(
-            now.saturating_duration_since(self.transition_started),
-        )
-    }
-
-    fn animated_xy(&self, series: usize, datum: usize, now: Instant) -> Option<(f64, f64)> {
-        let target_series = self.series.get(series)?;
-        let target = target_series.data.get(datum)?;
-        let progress = self.animation_progress_at(now);
-        if progress >= 1.0 {
-            return Some((target.x, target.y));
-        }
-        let previous = self
-            .transition_from
-            .as_ref()?
-            .iter()
-            .find(|series| series.id == target_series.id)?
-            .data
-            .iter()
-            .find(|datum| datum.id == target.id)?;
-        Some((
-            previous.x + (target.x - previous.x) * progress,
-            previous.y + (target.y - previous.y) * progress,
-        ))
-    }
-    pub fn is_series_visible(&self, id: &str) -> bool {
-        self.series.iter().any(|series| series.id == id) && !self.toggles.is_hidden(id)
-    }
-    pub fn set_series_visible(&mut self, id: &str, visible: bool) -> bool {
-        self.dirty = true;
-        if !self.series.iter().any(|series| series.id == id) {
-            return false;
-        }
-        let changed = self.toggles.set(id, visible);
-        if changed {
-            self.hovered = None;
-            self.invalidate_domains();
-        }
-        changed
-    }
-    pub fn toggle_series(&mut self, id: &str) -> bool {
-        let visible = !self.is_series_visible(id);
-        self.set_series_visible(id, visible)
-    }
-    pub fn take_visibility_changed(&mut self) -> Option<(String, bool)> {
-        self.toggles.take_changed()
-    }
+    /// Inspects the datum `datum_id` of `series_id` as the keyboard would.
     pub fn inspect(&mut self, series_id: &str, datum_id: &str) -> bool {
-        let target = self.series.iter().enumerate().find_map(|(series, values)| {
-            if self.toggles.is_hidden(&values.id) || values.id != series_id {
-                return None;
-            }
-            values
-                .data
-                .iter()
-                .position(|datum| datum.id == datum_id)
-                .map(|datum| (series, datum))
-        });
-        self.hovered = target.and_then(|(series, datum)| {
-            let datum_ref = self.series.get(series)?.data.get(datum)?;
-            self.map_datum(
-                self.plot_rect(),
-                self.domain(&self.style.x_axis, true),
-                self.domain(&self.style.y_axis, false),
-                datum_ref,
-            )
-            .map(|point| Hovered {
-                series,
-                datum,
-                point,
-            })
-        });
-        self.keyboard_inspection = self.hovered.is_some();
-        self.hovered.is_some()
+        let marks = &self.marks;
+        let target = marks
+            .series
+            .iter()
+            .enumerate()
+            .find(|(_, series)| !marks.toggles.is_hidden(&series.id) && series.id == series_id)
+            .and_then(|(series, values)| {
+                values
+                    .data
+                    .iter()
+                    .position(|datum| datum.id == datum_id)
+                    .map(|datum| CartesianHover::Datum { series, datum })
+            });
+        self.inspect_item(target)
     }
-    pub fn clear_inspection(&mut self) {
-        self.hovered = None;
-        self.hovered_annotation = None;
-        self.keyboard_inspection = false;
-    }
+    /// Inspects the interactive annotation `id` as a click would.
     pub fn inspect_annotation(&mut self, id: &str) -> bool {
-        self.hovered_annotation = self
+        let index = self
+            .marks
             .annotations
             .iter()
             .position(|annotation| annotation.id == id && annotation.interactive);
-        if self.hovered_annotation.is_some() {
-            self.hovered = None;
-            self.keyboard_inspection = true;
+        self.inspect_item(index.map(CartesianHover::Annotation))
+    }
+    /// The annotation a person activated, once.
+    pub fn take_annotation_activated(&mut self) -> Option<String> {
+        match self.activation() {
+            Some(CartesianActivation::Annotation(id)) => {
+                let id = id.clone();
+                self.clear_activation();
+                Some(id)
+            }
+            _ => None,
         }
-        self.hovered_annotation.is_some()
+    }
+    /// The domain-space region a finished brush selected, once. Independent of
+    /// the chart's pixel size: ready for filtering, aggregation or
+    /// [`Self::zoom_to_selection`].
+    pub fn take_brush_selection(&mut self) -> Option<CartesianBrushSelection> {
+        self.marks.brushed.take()
+    }
+    /// Whether zooming, panning or a reset changed the viewport since the last
+    /// call.
+    pub fn take_view_changed(&mut self) -> bool {
+        std::mem::take(&mut self.marks.view_changed)
     }
     /// Restore automatic/fixed axis domains after interactive zooming.
     pub fn reset_view(&mut self) {
-        self.x_view = None;
-        self.y_view = None;
-        self.view_changed = true;
-        self.update_hover();
+        self.marks.x_view = None;
+        self.marks.y_view = None;
+        self.marks.view_changed = true;
+        self.marks.frame.inspection.clear();
     }
     /// Current interactive viewport, if zoom has changed it.
     pub fn viewport(&self) -> (Option<AxisRange>, Option<AxisRange>) {
@@ -963,64 +862,47 @@ impl CartesianPlot {
                 max: domain.max,
             })
         };
-        (range(self.x_view), range(self.y_view))
+        (range(self.marks.x_view), range(self.marks.y_view))
     }
     /// Set a viewport in data coordinates. `None` or `AxisRange::Auto` restores
     /// that axis to its configured domain. Invalid or empty fixed ranges are
     /// rejected without changing the current view.
     pub fn set_viewport(&mut self, x: Option<AxisRange>, y: Option<AxisRange>) -> bool {
-        self.dirty = true;
+        self.mark_dirty();
+        let marks = &mut self.marks;
         let parse = |range: Option<AxisRange>, scale: AxisScale| match range {
             None | Some(AxisRange::Auto) => Ok(None),
             Some(range) => Domain::from_range(range)
                 .filter(|domain| {
-                    Self::transform(domain.min, scale).is_some()
-                        && Self::transform(domain.max, scale).is_some()
+                    CartesianMarks::transform(domain.min, scale).is_some()
+                        && CartesianMarks::transform(domain.max, scale).is_some()
                 })
                 .map(Some)
                 .ok_or(()),
         };
         let (Ok(x), Ok(y)) = (
-            parse(x, self.style.x_axis.scale),
-            parse(y, self.style.y_axis.scale),
+            parse(x, marks.style.x_axis.scale),
+            parse(y, marks.style.y_axis.scale),
         ) else {
             return false;
         };
-        if self.x_view.map(|d| (d.min, d.max)) == x.map(|d| (d.min, d.max))
-            && self.y_view.map(|d| (d.min, d.max)) == y.map(|d| (d.min, d.max))
+        if marks.x_view.map(|d| (d.min, d.max)) == x.map(|d| (d.min, d.max))
+            && marks.y_view.map(|d| (d.min, d.max)) == y.map(|d| (d.min, d.max))
         {
             return false;
         }
-        self.x_view = x;
-        self.y_view = y;
-        self.view_changed = true;
-        self.update_hover();
+        marks.x_view = x;
+        marks.y_view = y;
+        marks.view_changed = true;
+        marks.frame.inspection.clear();
         true
     }
     /// Pan by fractions of the visible width and height. This is convenient
     /// for responsive buttons, trackpads, and synchronized overview charts.
     pub fn pan_view_fraction(&mut self, x_fraction: f64, y_fraction: f64) -> bool {
-        let x = self
-            .x_view
-            .unwrap_or_else(|| self.base_domain(&self.style.x_axis, true));
-        let y = self
-            .y_view
-            .unwrap_or_else(|| self.base_domain(&self.style.y_axis, false));
-        if !x_fraction.is_finite() || !y_fraction.is_finite() {
-            return false;
-        }
-        let shift = |domain: Domain, fraction: f64, scale: AxisScale| {
-            let min = Self::transform(domain.min, scale)?;
-            let max = Self::transform(domain.max, scale)?;
-            let delta = (max - min) * fraction;
-            Some(Domain {
-                min: Self::inverse(min + delta, scale),
-                max: Self::inverse(max + delta, scale),
-            })
-        };
         let (Some(x), Some(y)) = (
-            shift(x, x_fraction, self.style.x_axis.scale),
-            shift(y, y_fraction, self.style.y_axis.scale),
+            self.marks.panned(x_fraction, true),
+            self.marks.panned(y_fraction, false),
         ) else {
             return false;
         };
@@ -1035,6 +917,15 @@ impl CartesianPlot {
             }),
         )
     }
+    /// Promote a brush result to the active viewport, enabling concise
+    /// brush-to-zoom and linked-detail workflows.
+    pub fn zoom_to_selection(&mut self, selection: CartesianBrushSelection) -> bool {
+        self.set_viewport(Some(selection.x), selection.y)
+    }
+}
+
+impl CartesianMarks {
+    /// Pans the view by `dx`/`dy` logical pixels of `plot`; whether it moved.
     fn pan_view_pixels(&mut self, dx: f64, dy: f64, plot: Rect) -> bool {
         if !dx.is_finite()
             || !dy.is_finite()
@@ -1053,48 +944,84 @@ impl CartesianPlot {
                 max: Self::inverse(max + delta, scale),
             })
         };
-        let x_current = self
-            .x_view
-            .unwrap_or_else(|| self.base_domain(&self.style.x_axis, true));
-        let Some(x) = shift(x_current, -dx, plot.width(), self.style.x_axis.scale) else {
+        let Some(x) = shift(
+            self.x_view
+                .unwrap_or_else(|| self.base_domain(&self.style.x_axis, true)),
+            -dx,
+            plot.width(),
+            self.style.x_axis.scale,
+        ) else {
             return false;
         };
-        let x = Some(AxisRange::Fixed {
-            min: x.min,
-            max: x.max,
-        });
         let y = if self.style.pan == CartesianPan::XY {
-            let current = self
-                .y_view
-                .unwrap_or_else(|| self.base_domain(&self.style.y_axis, false));
-            let Some(y) = shift(current, dy, plot.height(), self.style.y_axis.scale) else {
+            let Some(y) = shift(
+                self.y_view
+                    .unwrap_or_else(|| self.base_domain(&self.style.y_axis, false)),
+                dy,
+                plot.height(),
+                self.style.y_axis.scale,
+            ) else {
                 return false;
             };
-            Some(AxisRange::Fixed {
-                min: y.min,
-                max: y.max,
-            })
+            Some(y)
         } else {
-            self.viewport().1
+            self.y_view
         };
-        self.set_viewport(x, y)
+        if self.x_view.as_ref().map(|d| (d.min, d.max)) == Some((x.min, x.max))
+            && self.y_view.as_ref().map(|d| (d.min, d.max)) == y.as_ref().map(|d| (d.min, d.max))
+        {
+            return false;
+        }
+        self.x_view = Some(x);
+        self.y_view = y;
+        self.view_changed = true;
+        self.frame.inspection.hovered = self.hit(self.frame.inspection.pointer);
+        true
     }
-    /// Promote a brush result to the active viewport, enabling concise
-    /// brush-to-zoom and linked-detail workflows.
-    pub fn zoom_to_selection(&mut self, selection: CartesianBrushSelection) -> bool {
-        self.set_viewport(Some(selection.x), selection.y)
+
+    /// The domain `fraction` of its own span along the axis `x_axis` moves
+    /// to, out of the current view.
+    fn panned(&self, fraction: f64, x_axis: bool) -> Option<Domain> {
+        let (view, axis) = if x_axis {
+            (self.x_view, &self.style.x_axis)
+        } else {
+            (self.y_view, &self.style.y_axis)
+        };
+        if !fraction.is_finite() {
+            return None;
+        }
+        let domain = view.unwrap_or_else(|| self.base_domain(axis, x_axis));
+        let min = Self::transform(domain.min, axis.scale)?;
+        let max = Self::transform(domain.max, axis.scale)?;
+        let delta = (max - min) * fraction;
+        Some(Domain {
+            min: Self::inverse(min + delta, axis.scale),
+            max: Self::inverse(max + delta, axis.scale),
+        })
     }
-    pub fn take_activated(&mut self) -> Option<(String, String)> {
-        self.activated.take()
+
+    /// The inspected data point, when that is what is inspected.
+    fn hovered_datum(&self) -> Option<(usize, usize)> {
+        match self.frame.inspection.hovered? {
+            CartesianHover::Datum { series, datum } => Some((series, datum)),
+            CartesianHover::Annotation(_) => None,
+        }
+    }
+    /// The inspected annotation, when that is what is inspected.
+    fn hovered_annotation(&self) -> Option<usize> {
+        match self.frame.inspection.hovered? {
+            CartesianHover::Annotation(index) => Some(index),
+            CartesianHover::Datum { .. } => None,
+        }
     }
 
     fn plot_rect(&self) -> Rect {
         let b = self.bands;
         Rect::new(
-            self.rect.x0 + b.left,
-            self.rect.y0 + b.top,
-            (self.rect.x1 - b.right).max(self.rect.x0 + b.left + 1.0),
-            (self.rect.y1 - b.bottom).max(self.rect.y0 + b.top + 1.0),
+            self.frame.rect.x0 + b.left,
+            self.frame.rect.y0 + b.top,
+            (self.frame.rect.x1 - b.right).max(self.frame.rect.x0 + b.left + 1.0),
+            (self.frame.rect.y1 - b.bottom).max(self.frame.rect.y0 + b.top + 1.0),
         )
     }
 
@@ -1112,7 +1039,7 @@ impl CartesianPlot {
                 .1,
         );
         let yd = self.domain(&self.style.y_axis, false);
-        let widest_tick = Self::ticks(&self.style.y_axis, yd, self.rect.height().max(1.0))
+        let widest_tick = Self::ticks(&self.style.y_axis, yd, self.frame.rect.height().max(1.0))
             .iter()
             .map(|tick| f64::from(tr.measure_style(&tick.label, None, &caption).0))
             .fold(0.0, f64::max);
@@ -1135,8 +1062,8 @@ impl CartesianPlot {
         } else {
             chart_legend::rows(
                 self.series.iter().map(|series| series.name.as_str()),
-                self.rect.x0,
-                self.rect.x1 - right,
+                self.frame.rect.x0,
+                self.frame.rect.x1 - right,
             )
         };
         let legend = if legend_rows == 0 {
@@ -1144,7 +1071,7 @@ impl CartesianPlot {
         } else {
             crate::num::f64_of_usize(legend_rows) * chart_legend::ROW_HEIGHT + gap
         };
-        let title = if self.title.is_empty() {
+        let title = if self.frame.title.is_empty() {
             0.0
         } else {
             title_line + gap
@@ -1319,14 +1246,14 @@ impl CartesianPlot {
 
     fn zoom_at_pointer(&mut self, delta: f64) {
         let plot = self.plot_rect();
-        if !plot.contains(self.pointer) || self.style.zoom == CartesianZoom::Disabled {
+        if !plot.contains(self.frame.inspection.pointer) || self.style.zoom == CartesianZoom::Disabled {
             return;
         }
         let factor = (-delta * 0.12).exp().clamp(0.5, 2.0);
         let base_x = self.base_domain(&self.style.x_axis, true);
         let current_x = self.x_view.unwrap_or(base_x);
         let x_anchor = Self::unproject(
-            self.pointer.x,
+            self.frame.inspection.pointer.x,
             current_x,
             self.style.x_axis.scale,
             plot.x0,
@@ -1344,7 +1271,7 @@ impl CartesianPlot {
             let base_y = self.base_domain(&self.style.y_axis, false);
             let current_y = self.y_view.unwrap_or(base_y);
             let y_anchor = Self::unproject(
-                self.pointer.y,
+                self.frame.inspection.pointer.y,
                 current_y,
                 self.style.y_axis.scale,
                 plot.y1,
@@ -1360,18 +1287,7 @@ impl CartesianPlot {
             ));
         }
         self.view_changed = true;
-        self.update_hover();
-    }
-
-    fn map(
-        plot: Rect,
-        x_domain: Domain,
-        y_domain: Domain,
-        x_scale: AxisScale,
-        y_scale: AxisScale,
-        datum: &PlotDatum,
-    ) -> Option<Point> {
-        Self::map_xy(plot, x_domain, y_domain, x_scale, y_scale, datum.x, datum.y)
+        self.frame.inspection.hovered = self.hit(self.frame.inspection.pointer);
     }
 
     fn map_xy(
@@ -1386,23 +1302,6 @@ impl CartesianPlot {
         let x = Self::project(x_value, x_domain, x_scale, plot.x0, plot.width())?;
         let y = Self::project(y_value, y_domain, y_scale, plot.y1, -plot.height())?;
         Some(Point::new(x, y))
-    }
-
-    fn map_datum(
-        &self,
-        plot: Rect,
-        x_domain: Domain,
-        y_domain: Domain,
-        datum: &PlotDatum,
-    ) -> Option<Point> {
-        Self::map(
-            plot,
-            x_domain,
-            y_domain,
-            self.style.x_axis.scale,
-            self.style.y_axis.scale,
-            datum,
-        )
     }
 
     fn map_animated_datum(
@@ -1424,6 +1323,57 @@ impl CartesianPlot {
             x,
             y,
         )
+    }
+
+    fn project(value: f64, domain: Domain, scale: AxisScale, origin: f64, span: f64) -> Option<f64> {
+        let value = Self::transform(value, scale)?;
+        let min = Self::transform(domain.min, scale)?;
+        let max = Self::transform(domain.max, scale)?;
+        Some(((value - min) / (max - min)).mul_add(span, origin))
+    }
+
+    fn animation_progress_at(&self, now: Instant) -> f64 {
+        if self.reduce_motion || !self.style.animation.enabled || self.transition_from.is_none() {
+            return 1.0;
+        }
+        crate::widget::pie_chart::data_change_progress(
+            now.saturating_duration_since(self.transition_started),
+        )
+    }
+
+    fn animated_xy(&self, series: usize, datum: usize, now: Instant) -> Option<(f64, f64)> {
+        let target_series = self.series.get(series)?;
+        let target = target_series.data.get(datum)?;
+        let progress = self.animation_progress_at(now);
+        if progress >= 1.0 {
+            return Some((target.x, target.y));
+        }
+        let previous = self
+            .transition_from
+            .as_ref()?
+            .iter()
+            .find(|series| series.id == target_series.id)?
+            .data
+            .iter()
+            .find(|datum| datum.id == target.id)?;
+        Some((
+            previous.x + (target.x - previous.x) * progress,
+            previous.y + (target.y - previous.y) * progress,
+        ))
+    }
+
+    fn transform(value: f64, scale: AxisScale) -> Option<f64> {
+        match scale {
+            AxisScale::Linear => value.is_finite().then_some(value),
+            AxisScale::Log10 => (value.is_finite() && value > 0.0).then(|| value.log10()),
+        }
+    }
+
+    fn inverse(value: f64, scale: AxisScale) -> f64 {
+        match scale {
+            AxisScale::Linear => value,
+            AxisScale::Log10 => 10.0_f64.powf(value),
+        }
     }
 
     fn unproject(value: f64, domain: Domain, scale: AxisScale, origin: f64, span: f64) -> f64 {
@@ -1472,9 +1422,10 @@ impl CartesianPlot {
         Some(CartesianBrushSelection { x, y })
     }
 
-    fn finish_brush(&mut self) {
+    fn finish_brush(&mut self) -> bool {
         let Some(rect) = self.brush_rect() else {
-            return;
+            self.brush_start = None;
+            return false;
         };
         self.brush_start = None;
         let plot = self.plot_rect();
@@ -1489,6 +1440,7 @@ impl CartesianPlot {
             self.style.y_axis.scale,
             self.style.brush,
         );
+        self.brushed.is_some()
     }
 
     fn ticks(axis: &PlotAxis, domain: Domain, span: f64) -> Vec<AxisTick> {
@@ -1561,47 +1513,39 @@ impl CartesianPlot {
             .collect()
     }
 
-    fn update_hover(&mut self) {
+    /// The mark under `pointer`: the nearest data point within the hit
+    /// radius, else an interactive annotation under it.
+    fn hit(&self, pointer: Point) -> Option<CartesianHover> {
         let plot = self.plot_rect();
         if !plot
             .inflate(self.style.hit_radius, self.style.hit_radius)
-            .contains(self.pointer)
+            .contains(pointer)
         {
-            self.hovered = None;
-            self.hovered_annotation = None;
-            return;
+            return None;
         }
         let xd = self.domain(&self.style.x_axis, true);
         let yd = self.domain(&self.style.y_axis, false);
         let now = crate::time::now();
-        let mut nearest: Option<(f64, Hovered)> = None;
-        for (series_index, series) in self.series.iter().enumerate() {
-            if self.toggles.is_hidden(&series.id) {
+        let mut nearest: Option<(f64, CartesianHover)> = None;
+        for (series, values) in self.series.iter().enumerate() {
+            if self.toggles.is_hidden(&values.id) {
                 continue;
             }
-            for datum_index in self.hover_range(series, plot, xd) {
-                let Some(point) =
-                    self.map_animated_datum(series_index, datum_index, plot, xd, yd, now)
-                else {
+            for datum in self.hover_range(values, plot, xd) {
+                let Some(point) = self.map_animated_datum(series, datum, plot, xd, yd, now) else {
                     continue;
                 };
-                let distance = point.distance(self.pointer);
+                let distance = point.distance(pointer);
                 if distance <= self.style.hit_radius
                     && nearest.is_none_or(|current| distance < current.0)
                 {
-                    nearest = Some((
-                        distance,
-                        Hovered {
-                            series: series_index,
-                            datum: datum_index,
-                            point,
-                        },
-                    ));
+                    nearest = Some((distance, CartesianHover::Datum { series, datum }));
                 }
             }
         }
-        self.hovered = nearest.map(|(_, hovered)| hovered);
-        self.hovered_annotation = self.annotation_at(self.pointer, plot, xd, yd);
+        nearest
+            .map(|(_, hover)| hover)
+            .or_else(|| self.annotation_at(pointer, plot, xd, yd).map(CartesianHover::Annotation))
     }
 
     fn hover_range(
@@ -1615,14 +1559,14 @@ impl CartesianPlot {
             return 0..count;
         }
         let a = Self::unproject(
-            self.pointer.x - self.style.hit_radius,
+            self.frame.inspection.pointer.x - self.style.hit_radius,
             x_domain,
             self.style.x_axis.scale,
             plot.x0,
             plot.width(),
         );
         let b = Self::unproject(
-            self.pointer.x + self.style.hit_radius,
+            self.frame.inspection.pointer.x + self.style.hit_radius,
             x_domain,
             self.style.x_axis.scale,
             plot.x0,
@@ -1840,7 +1784,7 @@ impl CartesianPlot {
                 &title,
                 theme.tokens.colors.text_dim,
                 transform
-                    * Affine::translate((self.rect.x0, plot.center().y + f64::from(width) / 2.0))
+                    * Affine::translate((self.frame.rect.x0, plot.center().y + f64::from(width) / 2.0))
                     * Affine::rotate(-std::f64::consts::FRAC_PI_2),
                 None,
                 &title_style.clone().with_weight(TextWeight::Semibold),
@@ -2103,9 +2047,7 @@ impl CartesianPlot {
                     } else {
                         series.marker_radius
                     };
-                    let selected = self.hovered.is_some_and(|hovered| {
-                        hovered.series == series_index && hovered.datum == datum_index
-                    });
+                    let selected = self.hovered_datum() == Some((series_index, datum_index));
                     if selected {
                         scene.fill(
                             Fill::NonZero,
@@ -2213,7 +2155,7 @@ impl CartesianPlot {
 
     fn draw_annotations(&self, context: &mut AnnotationPaintContext<'_>) {
         for (index, annotation) in self.annotations.iter().enumerate() {
-            let hovered = self.hovered_annotation == Some(index);
+            let hovered = self.hovered_annotation() == Some(index);
             let anchor = self.draw_annotation_shape(context, annotation, hovered);
             Self::draw_annotation_label(context, annotation, anchor);
         }
@@ -2452,17 +2394,17 @@ impl CartesianPlot {
             return;
         }
         // The key stands on the content edge, like the labels beside it.
-        let left = self.rect.x0;
-        let right = self.rect.x1 - self.bands.right;
+        let left = self.frame.rect.x0;
+        let right = self.frame.rect.x1 - self.bands.right;
         let y = if self.style.legend == LegendPosition::Top {
-            self.rect.y0 + self.bands.legend_top
+            self.frame.rect.y0 + self.bands.legend_top
         } else {
             let rows = chart_legend::rows(
                 self.series.iter().map(|series| series.name.as_str()),
                 left,
                 right,
             );
-            self.rect.y1 - crate::num::f64_of_usize(rows) * chart_legend::ROW_HEIGHT
+            self.frame.rect.y1 - crate::num::f64_of_usize(rows) * chart_legend::ROW_HEIGHT
         };
         self.toggles.paint(
             scene,
@@ -2476,137 +2418,106 @@ impl CartesianPlot {
         );
     }
 
-    fn draw_tooltip(
+    /// The hover card of the inspected mark — its title and detail beside the
+    /// mark, outlined in the mark's colour — and, for a data point, the
+    /// crosshair through it.
+    fn draw_inspector(
         &self,
         scene: &mut Scene,
         transform: Affine,
         tr: &mut TextRenderer,
         theme: &Theme,
     ) {
-        let Some(hovered) = self.hovered.filter(|_| self.style.tooltip.enabled) else {
-            return;
-        };
-        let Some(series) = self.series.get(hovered.series) else {
-            return;
-        };
-        let Some(datum) = series.data.get(hovered.datum) else {
-            return;
-        };
-        if self.style.rendering.show_crosshair {
-            let plot = self.plot_rect();
-            scene.stroke(
-                &Stroke::new(1.0),
-                transform,
-                with_alpha(theme.tokens.colors.text_dim, 110),
-                None,
-                &Line::new((hovered.point.x, plot.y0), (hovered.point.x, plot.y1)),
-            );
-            scene.stroke(
-                &Stroke::new(1.0),
-                transform,
-                with_alpha(theme.tokens.colors.text_dim, 110),
-                None,
-                &Line::new((plot.x0, hovered.point.y), (plot.x1, hovered.point.y)),
-            );
-        }
-        let title = if datum.label.is_empty() {
-            &series.name
-        } else {
-            &datum.label
-        };
-        let coordinates = format!(
-            "x {}  ·  y {}",
-            format_axis_value(datum.x, self.style.x_axis.label_format),
-            format_axis_value(datum.y, self.style.y_axis.label_format)
-        );
-        let detail = if datum.detail.is_empty() {
-            coordinates
-        } else if self.style.tooltip.show_coordinates {
-            format!("{}  ·  {coordinates}", datum.detail)
-        } else {
-            datum.detail.clone()
-        };
-        let (title_width, _) = tr.measure_style(title, None, &theme.text(TextRole::Caption));
-        let (detail_width, _) = tr.measure_style(&detail, None, &theme.text(TextRole::Caption));
-        let padding = self.style.tooltip.padding.clamp(8.0, 32.0);
-        let content_width = f64::from(title_width.max(detail_width));
-        let available_width = (self.rect.width() - 16.0).max(1.0);
-        let width = self
-            .style
-            .tooltip
-            .width
-            .unwrap_or_else(|| content_width.max(self.style.tooltip.min_width) + padding * 2.0)
-            .clamp(80.0_f64.min(available_width), available_width);
-        let anchor = match self.style.tooltip.anchor {
-            CartesianTooltipAnchor::Pointer if self.rect.contains(self.pointer) => self.pointer,
-            CartesianTooltipAnchor::Pointer | CartesianTooltipAnchor::Datum => hovered.point,
-        };
-        let height = 38.0 + padding * 2.0;
-        let rect = Self::tooltip_rect(
-            anchor,
-            (width, height),
-            self.rect,
-            self.style.tooltip.offset.max(0.0),
-        );
-        let x = rect.x0;
-        let y = rect.y0;
-        scene.fill(
-            Fill::NonZero,
-            transform,
-            theme.tokens.colors.surfaces.overlay,
-            None,
-            &RoundedRect::from_rect(rect, f64::from(theme.tokens.radii.control)),
-        );
-        tr.draw_style(
-            scene,
-            title,
-            theme.tokens.colors.text_primary,
-            transform * Affine::translate((x + padding, y + padding - 2.0)),
-            Some(crate::num::f32_of_f64((width - padding * 2.0).max(1.0))),
-            &theme
-                .text(TextRole::Label)
-                .with_weight(TextWeight::Semibold),
-        );
-        tr.draw_style(
-            scene,
-            &detail,
-            theme.tokens.colors.text_dim,
-            transform * Affine::translate((x + padding, y + padding + 24.0)),
-            Some(crate::num::f32_of_f64((width - padding * 2.0).max(1.0))),
-            &theme.text(TextRole::Caption),
-        );
-    }
-
-    fn draw_annotation_tooltip(
-        &self,
-        scene: &mut Scene,
-        transform: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-    ) {
-        if self.hovered.is_some() || !self.style.tooltip.enabled {
+        if !self.style.tooltip.enabled {
             return;
         }
-        let Some(annotation) = self
-            .hovered_annotation
-            .and_then(|index| self.annotations.get(index))
-        else {
+        let Some(hover) = self.frame.inspection.hovered else {
             return;
         };
-        let title = if annotation.label.is_empty() {
-            annotation.id.as_str()
-        } else {
-            annotation.label.as_str()
+        let (title, detail, anchor, offset, outline) = match hover {
+            CartesianHover::Datum { series, datum } => {
+                let Some(values) = self.series.get(series) else {
+                    return;
+                };
+                let Some(datum) = values.data.get(datum) else {
+                    return;
+                };
+                let Some(point) = self.anchor(&hover) else {
+                    return;
+                };
+                if self.style.rendering.show_crosshair {
+                    let plot = self.plot_rect();
+                    let crosshair = with_alpha(theme.tokens.colors.text_dim, 110);
+                    scene.stroke(
+                        &Stroke::new(1.0),
+                        transform,
+                        crosshair,
+                        None,
+                        &Line::new((point.x, plot.y0), (point.x, plot.y1)),
+                    );
+                    scene.stroke(
+                        &Stroke::new(1.0),
+                        transform,
+                        crosshair,
+                        None,
+                        &Line::new((plot.x0, point.y), (plot.x1, point.y)),
+                    );
+                }
+                let title = if datum.label.is_empty() {
+                    values.name.clone()
+                } else {
+                    datum.label.clone()
+                };
+                let coordinates = format!(
+                    "x {}  ·  y {}",
+                    format_axis_value(datum.x, self.style.x_axis.label_format),
+                    format_axis_value(datum.y, self.style.y_axis.label_format)
+                );
+                let detail = if datum.detail.is_empty() {
+                    coordinates
+                } else if self.style.tooltip.show_coordinates {
+                    format!("{}  ·  {coordinates}", datum.detail)
+                } else {
+                    datum.detail.clone()
+                };
+                let anchor = match self.style.tooltip.anchor {
+                    CartesianTooltipAnchor::Pointer
+                        if self.frame.rect.contains(self.frame.inspection.pointer) =>
+                    {
+                        self.frame.inspection.pointer
+                    }
+                    CartesianTooltipAnchor::Pointer | CartesianTooltipAnchor::Datum => point,
+                };
+                (title, detail, anchor, 0.0, None)
+            }
+            CartesianHover::Annotation(index) => {
+                let Some(annotation) = self.annotations.get(index) else {
+                    return;
+                };
+                let title = if annotation.label.is_empty() {
+                    annotation.id.clone()
+                } else {
+                    annotation.label.clone()
+                };
+                let detail = if annotation.detail.is_empty() {
+                    "Chart annotation".to_owned()
+                } else {
+                    annotation.detail.clone()
+                };
+                (
+                    title,
+                    detail,
+                    self.frame.inspection.pointer,
+                    4.0,
+                    Some(annotation.color),
+                )
+            }
         };
-        let detail = if annotation.detail.is_empty() {
-            "Chart annotation"
-        } else {
-            annotation.detail.as_str()
-        };
-        let (title_width, _) = tr.measure_style(title, None, &theme.text(TextRole::Caption));
-        let (detail_width, _) = tr.measure_style(detail, None, &theme.text(TextRole::Caption));
+        let caption = theme.text(TextRole::Caption);
+        let (title_width, _) = tr.measure_style(&title, None, &caption);
+        let (detail_width, _) = tr.measure_style(&detail, None, &caption);
         let padding = self.style.tooltip.padding.clamp(8.0, 32.0);
-        let available_width = (self.rect.width() - 16.0).max(1.0);
+        let available_width = (self.frame.rect.width() - 16.0).max(1.0);
         let width = self
             .style
             .tooltip
@@ -2618,88 +2529,71 @@ impl CartesianPlot {
             .clamp(80.0_f64.min(available_width), available_width);
         let height = 38.0 + padding * 2.0;
         let rect = Self::tooltip_rect(
-            self.pointer,
+            anchor,
             (width, height),
-            self.rect,
-            self.style.tooltip.offset.max(4.0),
+            self.frame.rect,
+            self.style.tooltip.offset.max(offset),
         );
+        let rounded = RoundedRect::from_rect(rect, f64::from(theme.tokens.radii.control));
         scene.fill(
             Fill::NonZero,
             transform,
             theme.tokens.colors.surfaces.overlay,
             None,
-            &RoundedRect::from_rect(rect, f64::from(theme.tokens.radii.control)),
+            &rounded,
         );
-        scene.stroke(
-            &Stroke::new(1.0),
-            transform,
-            with_alpha(annotation.color, 180),
-            None,
-            &RoundedRect::from_rect(rect, f64::from(theme.tokens.radii.control)),
-        );
+        if let Some(color) = outline {
+            scene.stroke(
+                &Stroke::new(1.0),
+                transform,
+                with_alpha(color, 180),
+                None,
+                &rounded,
+            );
+        }
+        let wrap = Some(crate::num::f32_of_f64((width - padding * 2.0).max(1.0)));
         tr.draw_style(
             scene,
-            title,
+            &title,
             theme.tokens.colors.text_primary,
             transform * Affine::translate((rect.x0 + padding, rect.y0 + padding - 2.0)),
-            Some(crate::num::f32_of_f64((width - padding * 2.0).max(1.0))),
+            wrap,
             &theme
                 .text(TextRole::Label)
                 .with_weight(TextWeight::Semibold),
         );
         tr.draw_style(
             scene,
-            detail,
+            &detail,
             theme.tokens.colors.text_dim,
             transform * Affine::translate((rect.x0 + padding, rect.y0 + padding + 24.0)),
-            Some(crate::num::f32_of_f64((width - padding * 2.0).max(1.0))),
-            &theme.text(TextRole::Caption),
+            wrap,
+            &caption,
         );
     }
 
-    fn activate_inspected(&mut self) -> bool {
-        if let Some(hovered) = self.hovered
-            && let (Some(series), Some(datum)) = (
-                self.series.get(hovered.series),
-                self.series
-                    .get(hovered.series)
-                    .and_then(|series| series.data.get(hovered.datum)),
-            )
-        {
-            self.activated = Some((series.id.clone(), datum.id.clone()));
-            return true;
-        }
-        if let Some(annotation) = self
-            .hovered_annotation
-            .and_then(|index| self.annotations.get(index))
-        {
-            self.annotation_activated = Some(annotation.id.clone());
-            return true;
-        }
-        false
-    }
-
     fn begin_pointer_gesture(&mut self, modifiers: winit::event::Modifiers) -> bool {
-        if !self.plot_rect().contains(self.pointer) {
+        if !self.plot_rect().contains(self.frame.inspection.pointer) {
             return false;
         }
         if self.style.pan != CartesianPan::Disabled
             && (!self.style.gestures.pan_modifier_required || modifiers.state().alt_key())
         {
-            self.pan_last = Some(self.pointer);
+            self.pan_last = Some(self.frame.inspection.pointer);
         } else if self.style.brush != CartesianBrush::Disabled
             && (!self.style.gestures.brush_modifier_required || modifiers.state().shift_key())
         {
-            self.brush_start = Some(self.pointer);
-            self.brush_current = self.pointer;
+            self.brush_start = Some(self.frame.inspection.pointer);
+            self.brush_current = self.frame.inspection.pointer;
         } else {
             return false;
         }
-        self.hovered = None;
-        self.hovered_annotation = None;
+        self.frame.inspection.clear();
         true
     }
 
+    /// Ends a pan or brush; whether one was in flight. A click with no
+    /// gesture stays the shell's to inspect and activate.
     fn finish_pointer_gesture(&mut self) -> bool {
         if self.pan_last.take().is_some() {
             return true;
@@ -2708,99 +2602,21 @@ impl CartesianPlot {
             self.finish_brush();
             return true;
         }
-        if self.style.interactive_legend
-            && let Some(id) = self.toggles.hit(self.pointer)
-        {
-            return self.toggle_series(&id);
-        }
-        self.activate_inspected()
+        false
     }
 
-    fn move_keyboard_inspection(&mut self, action: ChartNavAction) {
-        let x_scale = self.style.x_axis.scale;
-        let y_scale = self.style.y_axis.scale;
-        let targets = self
-            .series
-            .iter()
-            .enumerate()
-            .filter(|(_, series)| !self.toggles.is_hidden(&series.id))
-            .flat_map(|(series_index, series)| {
-                series
-                    .data
-                    .iter()
-                    .enumerate()
-                    .filter(move |(_, datum)| {
-                        Self::transform(datum.x, x_scale).is_some()
-                            && Self::transform(datum.y, y_scale).is_some()
-                    })
-                    .map(move |(datum_index, _)| (series_index, datum_index))
-            })
-            .collect::<Vec<_>>();
-        let position = self.hovered.and_then(|hovered| {
-            targets
-                .iter()
-                .position(|target| *target == (hovered.series, hovered.datum))
-        });
-        self.hovered = moved_index(position, targets.len(), action).and_then(|position| {
-            targets.get(position).and_then(|&(series, datum)| {
-                self.map_animated_datum(
-                    series,
-                    datum,
-                    self.plot_rect(),
-                    self.domain(&self.style.x_axis, true),
-                    self.domain(&self.style.y_axis, false),
-                    crate::time::now(),
-                )
-                .map(|point| Hovered {
-                    series,
-                    datum,
-                    point,
-                })
-            })
-        });
-        self.hovered_annotation = None;
-        self.keyboard_inspection = self.hovered.is_some();
-    }
-
-    fn handle_touch_action(&mut self, action: ChartTouchAction) -> bool {
-        match action {
-            ChartTouchAction::Inspect(point) => {
-                self.pointer = point;
-                self.update_hover();
-                self.keyboard_inspection = false;
-                false
-            }
-            ChartTouchAction::Activate(point) => {
-                self.pointer = point;
-                self.update_hover();
-                self.activate_inspected()
-            }
-            ChartTouchAction::Clear => {
-                self.clear_inspection();
-                false
-            }
-        }
-    }
-
-    fn update_pointer(&mut self, point: Point) -> bool {
-        self.pointer = point;
-        let consumed = if let Some(previous) = self.pan_last.replace(self.pointer) {
-            let delta = self.pointer - previous;
-            self.pan_view_pixels(delta.x, delta.y, self.plot_rect());
-            true
+    /// Moves the pointer of a pan or brush in flight; whether one was.
+    fn drag_to(&mut self, point: Point) -> bool {
+        self.frame.inspection.pointer = point;
+        if let Some(previous) = self.pan_last.replace(point) {
+            self.pan_view_pixels(point.x - previous.x, point.y - previous.y, self.plot_rect());
         } else if self.brush_start.is_some() {
-            self.brush_current = self.pointer;
-            true
+            self.brush_current = point;
         } else {
-            self.update_hover();
-            false
-        };
-        if consumed {
-            self.hovered = None;
-            self.hovered_annotation = None;
+            return false;
         }
-        self.keyboard_inspection = false;
-        consumed
+        self.frame.inspection.clear();
+        true
     }
 
     fn tooltip_rect(anchor: Point, size: (f64, f64), bounds: Rect, offset: f64) -> Rect {
@@ -2890,53 +2706,241 @@ fn format_bytes(value: f64, places: u8) -> String {
     crate::format::Formats::current().memory_value(value, usize::from(places.min(8)))
 }
 
-impl Widget for CartesianPlot {
-    crate::widget::chart_navigation::chart_leaf!();
+impl PlotMarks for CartesianMarks {
+    type Hover = CartesianHover;
+    type Activated = CartesianActivation;
+    const NAME: &'static str = "CartesianPlot";
+    const LABEL: &'static str = "Plot";
 
-    fn draw(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        _presence: &PresenceCtx,
-    ) {
-        self.reduce_motion = theme.reduce_motion;
-        let now = crate::time::now();
-        self.bands = self.measure_bands(tr, theme);
+    fn frame(&self) -> &PlotFrame<CartesianHover> {
+        &self.frame
+    }
+    fn frame_mut(&mut self) -> &mut PlotFrame<CartesianHover> {
+        &mut self.frame
+    }
+    fn hit(&self, point: Point) -> Option<CartesianHover> {
+        self.hit(point)
+    }
+    fn keyboard_items(&self) -> Vec<CartesianHover> {
+        let (x_scale, y_scale) = (self.style.x_axis.scale, self.style.y_axis.scale);
+        self.series
+            .iter()
+            .enumerate()
+            .filter(|(_, series)| !self.toggles.is_hidden(&series.id))
+            .flat_map(|(series, values)| {
+                values
+                    .data
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, datum)| {
+                        Self::transform(datum.x, x_scale).is_some()
+                            && Self::transform(datum.y, y_scale).is_some()
+                    })
+                    .map(move |(datum, _)| CartesianHover::Datum { series, datum })
+            })
+            .collect()
+    }
+    fn anchor(&self, hover: &CartesianHover) -> Option<Point> {
         let plot = self.plot_rect();
         let xd = self.domain(&self.style.x_axis, true);
         let yd = self.domain(&self.style.y_axis, false);
-        if self.keyboard_inspection
-            && let Some(hovered) = self.hovered
-        {
-            if let Some(point) =
-                self.map_animated_datum(hovered.series, hovered.datum, plot, xd, yd, now)
+        match *hover {
+            CartesianHover::Datum { series, datum } => {
+                self.map_animated_datum(series, datum, plot, xd, yd, crate::time::now())
+            }
+            CartesianHover::Annotation(index) => self.annotation_anchor(index, plot, xd, yd),
+        }
+    }
+    fn activation(&self, hover: &CartesianHover) -> Option<CartesianActivation> {
+        match *hover {
+            CartesianHover::Datum { series, datum } => {
+                let values = self.series.get(series)?;
+                let datum = values.data.get(datum)?;
+                Some(CartesianActivation::Datum {
+                    series: values.id.clone(),
+                    datum: datum.id.clone(),
+                })
+            }
+            CartesianHover::Annotation(index) => self
+                .annotations
+                .get(index)
+                .filter(|annotation| annotation.interactive)
+                .map(|annotation| CartesianActivation::Annotation(annotation.id.clone())),
+        }
+    }
+    fn items(&self) -> Vec<PlotItem<CartesianActivation>> {
+        let (x_scale, y_scale) = (self.style.x_axis.scale, self.style.y_axis.scale);
+        let points = self
+            .series
+            .iter()
+            .filter(|series| !self.toggles.is_hidden(&series.id))
+            .flat_map(|series| {
+                series
+                    .data
+                    .iter()
+                    .filter(|datum| {
+                        Self::transform(datum.x, x_scale).is_some()
+                            && Self::transform(datum.y, y_scale).is_some()
+                    })
+                    .map(|datum| {
+                        PlotItem::new(
+                            format!("{}:{}", series.id, datum.id),
+                            if datum.label.is_empty() {
+                                format!("{} data point", series.name)
+                            } else {
+                                datum.label.clone()
+                            },
+                            if datum.detail.is_empty() {
+                                format!("x {}, y {}", datum.x, datum.y)
+                            } else {
+                                datum.detail.clone()
+                            },
+                            CartesianActivation::Datum {
+                                series: series.id.clone(),
+                                datum: datum.id.clone(),
+                            },
+                        )
+                    })
+            });
+        let annotations = self
+            .annotations
+            .iter()
+            .filter(|annotation| annotation.interactive)
+            .map(|annotation| {
+                PlotItem::new(
+                    format!("plot-annotation:{}", annotation.id),
+                    if annotation.label.is_empty() {
+                        annotation.id.clone()
+                    } else {
+                        annotation.label.clone()
+                    },
+                    if annotation.detail.is_empty() {
+                        "Chart annotation".to_owned()
+                    } else {
+                        annotation.detail.clone()
+                    },
+                    CartesianActivation::Annotation(annotation.id.clone()),
+                )
+            });
+        points.chain(annotations).collect()
+    }
+    fn series(&self) -> Vec<(&str, &str)> {
+        self.series
+            .iter()
+            .map(|series| (series.id.as_str(), series.name.as_str()))
+            .collect()
+    }
+    fn legend_interactive(&self) -> bool {
+        self.style.interactive_legend && self.style.legend != LegendPosition::Hidden
+    }
+    fn toggles(&self) -> Option<&chart_legend::SeriesToggles> {
+        Some(&self.toggles)
+    }
+    fn toggles_mut(&mut self) -> Option<&mut chart_legend::SeriesToggles> {
+        Some(&mut self.toggles)
+    }
+    fn series_of(&self, hover: &CartesianHover) -> Option<&str> {
+        match *hover {
+            CartesianHover::Datum { series, .. } => self.series.get(series).map(|s| s.id.as_str()),
+            CartesianHover::Annotation(_) => None,
+        }
+    }
+    fn is_animating(&self) -> bool {
+        !self.reduce_motion
+            && self.style.animation.enabled
+            && self.transition_from.is_some()
+            && crate::time::now().saturating_duration_since(self.transition_started)
+                < crate::widget::pie_chart::data_change_time()
+    }
+    fn wants_pointer_capture(&self) -> bool {
+        self.pan_last.is_some() || self.brush_start.is_some()
+    }
+    fn visible_changed(&mut self) {
+        self.invalidate_domains();
+    }
+    fn event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) -> bool {
+        let claim = |ctx: &mut crate::widget::EventCtx<'_>| {
+            *ctx.handled = true;
+            *ctx.focus_target = Some(ctx.node_id);
+        };
+        match event {
+            WindowEvent::CursorMoved { position, .. } => {
+                if self.drag_to(ctx.logical(position)) {
+                    *ctx.handled = true;
+                    return true;
+                }
+            }
+            WindowEvent::Focused(false) => {
+                self.pan_last = None;
+                self.brush_start = None;
+                self.frame.inspection.clear();
+            }
+            WindowEvent::MouseWheel { delta, .. }
+                if self.style.zoom != CartesianZoom::Disabled
+                    && (!self.style.gestures.zoom_modifier_required
+                        || ctx.modifiers.state().control_key()
+                        || ctx.modifiers.state().super_key()) =>
             {
-                self.hovered = Some(Hovered { point, ..hovered });
-                self.pointer = point;
-            } else {
-                self.hovered = None;
+                let amount = match delta {
+                    MouseScrollDelta::LineDelta(_, y) => f64::from(*y),
+                    MouseScrollDelta::PixelDelta(position) => position.y / 80.0,
+                };
+                if self.plot_rect().contains(self.frame.inspection.pointer) && amount != 0.0 {
+                    self.zoom_at_pointer(amount);
+                    claim(ctx);
+                }
             }
-        }
-        if self.keyboard_inspection
-            && let Some(index) = self.hovered_annotation
-        {
-            if let Some(point) = self.annotation_anchor(index, plot, xd, yd) {
-                self.pointer = point;
-            } else {
-                self.hovered_annotation = None;
+            WindowEvent::PinchGesture { delta, .. }
+                if self.style.zoom != CartesianZoom::Disabled
+                    && self.plot_rect().contains(self.frame.inspection.pointer) =>
+            {
+                // A positive delta means magnification. Pinch is already an
+                // unambiguous zoom gesture, so it never requires a modifier.
+                self.zoom_at_pointer(*delta);
+                claim(ctx);
             }
+            WindowEvent::PanGesture { delta, .. }
+                if self.style.pan != CartesianPan::Disabled
+                    && self.plot_rect().contains(self.frame.inspection.pointer)
+                    && (!self.style.gestures.pan_modifier_required
+                        || ctx.modifiers.state().alt_key()) =>
+            {
+                if self.pan_view_pixels(f64::from(delta.x), f64::from(delta.y), self.plot_rect()) {
+                    self.frame.inspection.clear();
+                    claim(ctx);
+                }
+            }
+            WindowEvent::MouseInput {
+                state: ElementState::Pressed,
+                button: MouseButton::Left,
+                ..
+            } if self.begin_pointer_gesture(*ctx.modifiers) => claim(ctx),
+            WindowEvent::MouseInput {
+                state: ElementState::Released,
+                button: MouseButton::Left,
+                ..
+            } if self.finish_pointer_gesture() => claim(ctx),
+            _ => {}
         }
-        if !self.title.is_empty() {
+        *ctx.handled
+    }
+    fn paint(&mut self, scene: &mut Scene, transform: Affine, tr: &mut TextRenderer, theme: &Theme) {
+        self.reduce_motion = theme.reduce_motion;
+        let now = crate::time::now();
+        self.bands = self.measure_bands(tr, theme);
+        self.follow_keyboard_anchor();
+        let plot = self.plot_rect();
+        let xd = self.domain(&self.style.x_axis, true);
+        let yd = self.domain(&self.style.y_axis, false);
+        if !self.frame.title.is_empty() {
             tr.draw_style(
                 scene,
-                &self.title,
+                &self.frame.title,
                 theme.tokens.colors.text_primary,
                 transform
                     * Affine::translate((
-                        self.rect.x0 + self.bands.gap,
-                        self.rect.y0 + self.bands.gap,
+                        self.frame.rect.x0 + self.bands.gap,
+                        self.frame.rect.y0 + self.bands.gap,
                     )),
                 None,
                 &theme.text(TextRole::Heading),
@@ -2972,253 +2976,14 @@ impl Widget for CartesianPlot {
         }
         scene.pop_layer();
         self.draw_legend(scene, transform, tr, theme);
-        self.draw_tooltip(scene, transform, tr, theme);
-        self.draw_annotation_tooltip(scene, transform, tr, theme);
-    }
-    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
-        self.dirty = true;
-        if let Some(action) = self.touch.handle(event, ctx.scale_factor) {
-            if self.handle_touch_action(action) {
-                *ctx.handled = true;
-                *ctx.focus_target = Some(ctx.node_id);
-            }
-            return;
-        }
-        // Keys inspect the plot only while it has focus; otherwise they
-        // belong to whatever does.
-        if self.focused
-            && let Some(action) = chart_nav_action(event)
-        {
-            if action == ChartNavAction::Activate {
-                let _ = self.activate_inspected();
-            } else {
-                self.move_keyboard_inspection(action);
-            }
-            *ctx.handled = true;
-            *ctx.focus_target = Some(ctx.node_id);
-            return;
-        }
-        match event {
-            WindowEvent::CursorMoved { position, .. } => {
-                let point = ctx.logical(position);
-                if self.update_pointer(point) {
-                    *ctx.handled = true;
-                }
-            }
-            WindowEvent::CursorLeft { .. } if !self.keyboard_inspection => {
-                self.hovered = None;
-                self.hovered_annotation = None;
-            }
-            WindowEvent::Focused(false) => {
-                self.pan_last = None;
-                self.brush_start = None;
-                self.hovered = None;
-                self.hovered_annotation = None;
-            }
-            WindowEvent::MouseWheel { delta, .. }
-                if self.style.zoom != CartesianZoom::Disabled
-                    && (!self.style.gestures.zoom_modifier_required
-                        || ctx.modifiers.state().control_key()
-                        || ctx.modifiers.state().super_key()) =>
-            {
-                let amount = match delta {
-                    MouseScrollDelta::LineDelta(_, y) => f64::from(*y),
-                    MouseScrollDelta::PixelDelta(position) => position.y / 80.0,
-                };
-                if self.plot_rect().contains(self.pointer) && amount != 0.0 {
-                    self.zoom_at_pointer(amount);
-                    *ctx.handled = true;
-                    *ctx.focus_target = Some(ctx.node_id);
-                }
-            }
-            WindowEvent::PinchGesture { delta, .. }
-                if self.style.zoom != CartesianZoom::Disabled
-                    && self.plot_rect().contains(self.pointer) =>
-            {
-                // A positive delta means magnification. Pinch is already an
-                // unambiguous zoom gesture, so it never requires a modifier.
-                self.zoom_at_pointer(*delta);
-                *ctx.handled = true;
-                *ctx.focus_target = Some(ctx.node_id);
-            }
-            WindowEvent::PanGesture { delta, .. }
-                if self.style.pan != CartesianPan::Disabled
-                    && self.plot_rect().contains(self.pointer)
-                    && (!self.style.gestures.pan_modifier_required
-                        || ctx.modifiers.state().alt_key()) =>
-            {
-                if self.pan_view_pixels(f64::from(delta.x), f64::from(delta.y), self.plot_rect()) {
-                    self.hovered = None;
-                    self.hovered_annotation = None;
-                    *ctx.handled = true;
-                    *ctx.focus_target = Some(ctx.node_id);
-                }
-            }
-            WindowEvent::MouseInput {
-                state: ElementState::Pressed,
-                button: MouseButton::Left,
-                ..
-            } if self.begin_pointer_gesture(*ctx.modifiers) => {
-                *ctx.handled = true;
-                *ctx.focus_target = Some(ctx.node_id);
-            }
-            WindowEvent::MouseInput {
-                state: ElementState::Released,
-                button: MouseButton::Left,
-                ..
-            } if self.finish_pointer_gesture() => {
-                *ctx.handled = true;
-                *ctx.focus_target = Some(ctx.node_id);
-            }
-            _ => {}
-        }
-    }
-    fn accessibility(&self) -> Option<AccessNode> {
-        let x_scale = self.style.x_axis.scale;
-        let y_scale = self.style.y_axis.scale;
-        let mut children: Vec<AccessNode> = self
-            .series
-            .iter()
-            .filter(|series| !self.toggles.is_hidden(&series.id))
-            .flat_map(|series| {
-                series
-                    .data
-                    .iter()
-                    .filter(|datum| {
-                        Self::transform(datum.x, x_scale).is_some()
-                            && Self::transform(datum.y, y_scale).is_some()
-                    })
-                    .map(|datum| {
-                        let target = format!("{}:{}", series.id, datum.id);
-                        AccessNode::new(Role::Button)
-                            .with_action_target(target)
-                            .with_name(if datum.label.is_empty() {
-                                format!("{} data point", series.name)
-                            } else {
-                                datum.label.clone()
-                            })
-                            .with_description(if datum.detail.is_empty() {
-                                format!("x {}, y {}", datum.x, datum.y)
-                            } else {
-                                datum.detail.clone()
-                            })
-                            .with_state(AccessState::new().focusable(true))
-                    })
-            })
-            .collect();
-        if self.style.interactive_legend && self.style.legend != LegendPosition::Hidden {
-            children.extend(
-                self.series
-                    .iter()
-                    .map(|series| self.toggles.access_node(&series.id, &series.name)),
-            );
-        }
-        children.extend(
-            self.annotations
-                .iter()
-                .filter(|annotation| annotation.interactive)
-                .map(|annotation| {
-                    AccessNode::new(Role::Button)
-                        .with_action_target(format!("plot-annotation:{}", annotation.id))
-                        .with_name(if annotation.label.is_empty() {
-                            annotation.id.clone()
-                        } else {
-                            annotation.label.clone()
-                        })
-                        .with_description(if annotation.detail.is_empty() {
-                            "Chart annotation".to_owned()
-                        } else {
-                            annotation.detail.clone()
-                        })
-                        .with_state(AccessState::new().focusable(true))
-                }),
-        );
-        Some(
-            AccessNode::new(Role::Canvas)
-                .with_name(if self.title.is_empty() {
-                    "Plot"
-                } else {
-                    &self.title
-                })
-                .with_children(children),
-        )
-    }
-    fn perform_action(
-        &mut self,
-        action: &crate::a11y::Action,
-        key_path: &[u64],
-        _state: &mut crate::widget::Edits<'_>,
-        _path: &ModelPath,
-    ) -> bool {
-        if !matches!(action, crate::a11y::Action::Activate) {
-            return false;
-        }
-        let Some(key) = key_path.last() else {
-            return false;
-        };
-        if self.style.interactive_legend
-            && let Some(id) = chart_legend::SeriesToggles::activated(
-                self.series.iter().map(|series| series.id.as_str()),
-                *key,
-            )
-        {
-            return self.toggle_series(&id);
-        }
-        if let Some(annotation) = self.annotations.iter().find(|annotation| {
-            annotation.interactive
-                && crate::a11y::hash_key(&format!("plot-annotation:{}", annotation.id)) == *key
-        }) {
-            self.annotation_activated = Some(annotation.id.clone());
-            return true;
-        }
-        for series in &self.series {
-            for datum in &series.data {
-                let target = format!("{}:{}", series.id, datum.id);
-                if crate::a11y::hash_key(&target) == *key {
-                    self.activated = Some((series.id.clone(), datum.id.clone()));
-                    return true;
-                }
-            }
-        }
-        false
-    }
-
-    fn needs_redraw(&self) -> bool {
-        crate::widget::redraw_or_children(self.dirty, self)
-    }
-    fn mark_drawn(&mut self) {
-        self.dirty = false;
-        crate::widget::Widget::mark_children_drawn(self);
-    }
-    fn name(&self) -> &'static str {
-        "CartesianPlot"
-    }
-    fn needs_animation_frame(&self) -> bool {
-        self.is_animating()
-    }
-    fn is_focusable(&self) -> bool {
-        true
-    }
-    fn set_focus(&mut self, focused: bool) {
-        self.dirty = true;
-        self.focused = focused;
-        if !focused && self.keyboard_inspection {
-            self.keyboard_inspection = false;
-            self.hovered = None;
-            self.hovered_annotation = None;
-        }
-    }
-    fn is_focused(&self) -> bool {
-        self.focused
-    }
-    fn wants_pointer_capture(&self) -> bool {
-        self.pan_last.is_some() || self.brush_start.is_some()
+        self.draw_inspector(scene, transform, tr, theme);
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::widget::Widget as _;
 
     #[test]
     fn auto_domains_and_ticks_expand_preserve_and_thin() {
@@ -3238,7 +3003,7 @@ mod tests {
             let axis = PlotAxis::default()
                 .with_ticks([AxisTick::new(0.0, "Start"), AxisTick::new(1.0, "End")]);
             assert_eq!(
-                CartesianPlot::ticks(&axis, Domain::normalized(0.0, 1.0), 320.0),
+                CartesianMarks::ticks(&axis, Domain::normalized(0.0, 1.0), 320.0),
                 axis.ticks
             );
         }
@@ -3247,7 +3012,7 @@ mod tests {
             let axis = PlotAxis::default().with_ticks(
                 (0..10).map(|value| AxisTick::new(f64::from(value), value.to_string())),
             );
-            let ticks = CartesianPlot::ticks(&axis, Domain::normalized(0.0, 9.0), 150.0);
+            let ticks = CartesianMarks::ticks(&axis, Domain::normalized(0.0, 9.0), 150.0);
             assert_eq!(ticks.len(), 2);
             assert_eq!(ticks.first().map(|tick| tick.label.as_str()), Some("0"));
             assert_eq!(ticks.last().map(|tick| tick.label.as_str()), Some("9"));
@@ -3267,11 +3032,11 @@ mod tests {
                 vec![PlotDatum::new("b", 1_000.0, 1_000.0)],
             );
             let mut plot = CartesianPlot::new(vec![near.clone(), far]);
-            let initial = plot.base_domain(&plot.style.x_axis, true);
-            let cached = plot.base_domain(&plot.style.x_axis, true);
+            let initial = plot.marks.base_domain(&plot.marks.style.x_axis, true);
+            let cached = plot.marks.base_domain(&plot.marks.style.x_axis, true);
             assert_eq!(initial, cached);
             assert!(plot.set_series_visible("far", false));
-            let hidden = plot.base_domain(&plot.style.x_axis, true);
+            let hidden = plot.marks.base_domain(&plot.marks.style.x_axis, true);
             assert!(hidden.max < 10.0);
             plot.set_series_immediate(vec![
                 near,
@@ -3282,7 +3047,7 @@ mod tests {
                     vec![PlotDatum::new("c", 50.0, 50.0)],
                 ),
             ]);
-            let replaced = plot.base_domain(&plot.style.x_axis, true);
+            let replaced = plot.marks.base_domain(&plot.marks.style.x_axis, true);
             assert!(replaced.max > 50.0);
         }
 
@@ -3292,9 +3057,9 @@ mod tests {
                 PlotSeries::new("near", "Near", color, vec![PlotDatum::new("a", 0.0, 1.0)]),
                 PlotSeries::new("far", "Far", color, vec![PlotDatum::new("b", 100.0, 100.0)]),
             ]);
-            let before = plot.base_domain(&PlotAxis::default(), true);
+            let before = plot.marks.base_domain(&PlotAxis::default(), true);
             assert!(plot.set_series_visible("far", false));
-            let after = plot.base_domain(&PlotAxis::default(), true);
+            let after = plot.marks.base_domain(&PlotAxis::default(), true);
             assert!(after.max < before.max);
             assert_eq!(plot.take_visibility_changed(), Some(("far".into(), false)));
             assert!(!plot.is_series_visible("far"));
@@ -3312,14 +3077,14 @@ mod tests {
     fn axis_titles_formats_and_tooltips_fit_the_chart() {
         fn axis_titles_fit_responsive_space_with_unicode_safe_ellipsis() {
             assert_eq!(
-                CartesianPlot::fitted_axis_title("Latency", 200.0),
+                CartesianMarks::fitted_axis_title("Latency", 200.0),
                 "Latency"
             );
             assert_eq!(
-                CartesianPlot::fitted_axis_title("Requests / second", 42.0),
+                CartesianMarks::fitted_axis_title("Requests / second", 42.0),
                 "Reque…"
             );
-            assert_eq!(CartesianPlot::fitted_axis_title("Διακύμανση", 28.0), "Δια…");
+            assert_eq!(CartesianMarks::fitted_axis_title("Διακύμανση", 28.0), "Δια…");
         }
 
         fn built_in_axis_formats_cover_units() {
@@ -3359,10 +3124,10 @@ mod tests {
         fn tooltip_placement_flips_and_clamps_to_chart_bounds() {
             let bounds = Rect::new(0.0, 0.0, 300.0, 200.0);
             let rect =
-                CartesianPlot::tooltip_rect(Point::new(290.0, 190.0), (120.0, 60.0), bounds, 16.0);
+                CartesianMarks::tooltip_rect(Point::new(290.0, 190.0), (120.0, 60.0), bounds, 16.0);
             assert_eq!(rect, Rect::new(154.0, 114.0, 274.0, 174.0));
             let oversized =
-                CartesianPlot::tooltip_rect(Point::new(10.0, 10.0), (300.0, 200.0), bounds, 16.0);
+                CartesianMarks::tooltip_rect(Point::new(10.0, 10.0), (300.0, 200.0), bounds, 16.0);
             assert_eq!(oversized, bounds);
         }
 
@@ -3376,7 +3141,7 @@ mod tests {
     fn viewport_navigation_zooms_pans_and_survives_invalid_input() {
         fn cursor_anchored_zoom_keeps_anchor_stable() {
             let base = Domain::normalized(0.0, 100.0);
-            let zoomed = CartesianPlot::zoom_domain(base, base, 25.0, 0.5, 0.01, AxisScale::Linear);
+            let zoomed = CartesianMarks::zoom_domain(base, base, 25.0, 0.5, 0.01, AxisScale::Linear);
             assert_eq!(zoomed.min, 12.5);
             assert_eq!(zoomed.max, 62.5);
             assert_eq!((25.0 - zoomed.min) / (zoomed.max - zoomed.min), 0.25);
@@ -3417,13 +3182,16 @@ mod tests {
                     })
                 )
             );
+            assert!(plot.take_view_changed());
+            assert!(!plot.take_view_changed());
             plot.reset_view();
             assert_eq!(plot.viewport(), (None, None));
+            assert!(plot.take_view_changed());
         }
 
         fn pixel_pan_is_scale_aware_and_x_only_preserves_y() {
             let mut plot = CartesianPlot::new(Vec::new());
-            plot.style.pan = CartesianPan::X;
+            plot.marks.style.pan = CartesianPan::X;
             assert!(plot.set_viewport(
                 Some(AxisRange::Fixed {
                     min: 0.0,
@@ -3434,7 +3202,7 @@ mod tests {
                     max: 15.0
                 }),
             ));
-            assert!(plot.pan_view_pixels(100.0, 50.0, Rect::new(0.0, 0.0, 400.0, 200.0)));
+            assert!(plot.marks.pan_view_pixels(100.0, 50.0, Rect::new(0.0, 0.0, 400.0, 200.0)));
             assert_eq!(
                 plot.viewport(),
                 (
@@ -3449,7 +3217,7 @@ mod tests {
                 )
             );
 
-            plot.style.x_axis = PlotAxis::default().logarithmic();
+            plot.marks.style.x_axis = PlotAxis::default().logarithmic();
             assert!(plot.set_viewport(
                 Some(AxisRange::Fixed {
                     min: 1.0,
@@ -3457,7 +3225,7 @@ mod tests {
                 }),
                 None
             ));
-            assert!(plot.pan_view_pixels(100.0, 0.0, Rect::new(0.0, 0.0, 300.0, 100.0)));
+            assert!(plot.marks.pan_view_pixels(100.0, 0.0, Rect::new(0.0, 0.0, 300.0, 100.0)));
             let Some(AxisRange::Fixed { min, max }) = plot.viewport().0 else {
                 panic!()
             };
@@ -3467,12 +3235,12 @@ mod tests {
 
         fn pixel_pan_rejects_invalid_geometry_and_captures_active_drags() {
             let mut plot = CartesianPlot::new(Vec::new());
-            plot.style.pan = CartesianPan::XY;
-            assert!(!plot.pan_view_pixels(f64::NAN, 0.0, Rect::new(0.0, 0.0, 100.0, 100.0)));
-            assert!(!plot.pan_view_pixels(1.0, 0.0, Rect::ZERO));
-            assert!(!plot.wants_pointer_capture());
-            plot.pan_last = Some(Point::ZERO);
-            assert!(plot.wants_pointer_capture());
+            plot.marks.style.pan = CartesianPan::XY;
+            assert!(!plot.marks.pan_view_pixels(f64::NAN, 0.0, Rect::new(0.0, 0.0, 100.0, 100.0)));
+            assert!(!plot.marks.pan_view_pixels(1.0, 0.0, Rect::ZERO));
+            assert!(!plot.marks.wants_pointer_capture());
+            plot.marks.pan_last = Some(Point::ZERO);
+            assert!(plot.marks.wants_pointer_capture());
         }
 
         fn invalid_viewports_do_not_destroy_current_navigation() {
@@ -3499,17 +3267,17 @@ mod tests {
                 min: 1.0,
                 max: 1000.0,
             };
-            let projected = CartesianPlot::project(10.0, domain, AxisScale::Log10, 0.0, 300.0)
+            let projected = CartesianMarks::project(10.0, domain, AxisScale::Log10, 0.0, 300.0)
                 .expect("positive log value");
             assert!((projected - 100.0).abs() < 1e-9);
-            let value = CartesianPlot::unproject(projected, domain, AxisScale::Log10, 0.0, 300.0);
+            let value = CartesianMarks::unproject(projected, domain, AxisScale::Log10, 0.0, 300.0);
             assert!((value - 10.0).abs() < 1e-9);
-            assert!(CartesianPlot::project(0.0, domain, AxisScale::Log10, 0.0, 300.0).is_none());
+            assert!(CartesianMarks::project(0.0, domain, AxisScale::Log10, 0.0, 300.0).is_none());
         }
 
         fn logarithmic_ticks_prefer_decades_and_respect_density() {
             let axis = PlotAxis::default().logarithmic().with_tick_density(4, 60.0);
-            let ticks = CartesianPlot::ticks(
+            let ticks = CartesianMarks::ticks(
                 &axis,
                 Domain {
                     min: 1.0,
@@ -3528,10 +3296,10 @@ mod tests {
                 min: 1.0,
                 max: 1000.0,
             };
-            let zoomed = CartesianPlot::zoom_domain(base, base, 10.0, 0.5, 0.01, AxisScale::Log10);
+            let zoomed = CartesianMarks::zoom_domain(base, base, 10.0, 0.5, 0.01, AxisScale::Log10);
             assert!((zoomed.min.log10() - 0.5).abs() < 1e-9);
             assert!((zoomed.max.log10() - 2.0).abs() < 1e-9);
-            let selection = CartesianPlot::brush_selection_from_rect(
+            let selection = CartesianMarks::brush_selection_from_rect(
                 Rect::new(100.0, 0.0, 200.0, 100.0),
                 Rect::new(0.0, 0.0, 300.0, 100.0),
                 base,
@@ -3552,7 +3320,7 @@ mod tests {
 
         fn logarithmic_viewports_reject_non_positive_ranges() {
             let mut plot = CartesianPlot::new(Vec::new());
-            plot.style.x_axis = PlotAxis::default().logarithmic();
+            plot.marks.style.x_axis = PlotAxis::default().logarithmic();
             assert!(!plot.set_viewport(
                 Some(AxisRange::Fixed {
                     min: 0.0,
@@ -3615,7 +3383,7 @@ mod tests {
             data[7_331].y = -700.0;
             let line = PlotSeries::new("dense", "Dense", Color::WHITE, data);
             let plot = CartesianPlot::new(vec![line.clone()]);
-            let sampled = plot.render_indices(&line, Rect::new(0.0, 0.0, 100.0, 100.0));
+            let sampled = plot.marks.render_indices(&line, Rect::new(0.0, 0.0, 100.0, 100.0));
             assert!(sampled.len() <= 202, "{} sampled points", sampled.len());
             assert_eq!(sampled.first(), Some(&0));
             assert_eq!(sampled.last(), Some(&9_999));
@@ -3625,7 +3393,7 @@ mod tests {
 
             let scatter = line.kind(SeriesKind::Scatter);
             assert_eq!(
-                plot.render_indices(&scatter, Rect::new(0.0, 0.0, 100.0, 100.0))
+                plot.marks.render_indices(&scatter, Rect::new(0.0, 0.0, 100.0, 100.0))
                     .len(),
                 10_000
             );
@@ -3643,9 +3411,9 @@ mod tests {
             let a = Point::new(0.0, 0.0);
             let b = Point::new(1.0, 1.0);
             let c = Point::new(2.0, 2.0);
-            let broken = CartesianPlot::point_segments([Some(a), Some(b), None, Some(c)], false);
+            let broken = CartesianMarks::point_segments([Some(a), Some(b), None, Some(c)], false);
             assert_eq!(broken, vec![vec![a, b], vec![c]]);
-            let connected = CartesianPlot::point_segments([Some(a), Some(b), None, Some(c)], true);
+            let connected = CartesianMarks::point_segments([Some(a), Some(b), None, Some(c)], true);
             assert_eq!(connected, vec![vec![a, b, c]]);
 
             let series = PlotSeries::new(
@@ -3664,7 +3432,7 @@ mod tests {
             );
             let plot = CartesianPlot::new(vec![series.clone()]);
             assert!(
-                plot.render_indices(&series, Rect::new(0.0, 0.0, 40.0, 100.0))
+                plot.marks.render_indices(&series, Rect::new(0.0, 0.0, 40.0, 100.0))
                     .contains(&501)
             );
         }
@@ -3689,9 +3457,9 @@ mod tests {
             )
             .sorted_by_x();
             let mut plot = CartesianPlot::new(vec![series.clone()]);
-            plot.pointer = Point::new(500.0, 50.0);
-            plot.style.hit_radius = 10.0;
-            let range = plot.hover_range(
+            plot.marks.frame.inspection.pointer = Point::new(500.0, 50.0);
+            plot.marks.style.hit_radius = 10.0;
+            let range = plot.marks.hover_range(
                 &series,
                 Rect::new(0.0, 0.0, 1_000.0, 100.0),
                 Domain::normalized(0.0, 10_000.0),
@@ -3707,16 +3475,16 @@ mod tests {
                 CartesianAnnotation::x_band("window", 7.0, 9.0, color),
                 CartesianAnnotation::y_line("decoration", 2.0, color).interactive(false),
             ]);
-            plot.style.x_axis = PlotAxis::default().fixed(0.0, 10.0);
-            plot.style.y_axis = PlotAxis::default().fixed(0.0, 10.0);
+            plot.marks.style.x_axis = PlotAxis::default().fixed(0.0, 10.0);
+            plot.marks.style.y_axis = PlotAxis::default().fixed(0.0, 10.0);
             let area = Rect::new(0.0, 0.0, 100.0, 100.0);
             let domain = Domain::normalized(0.0, 10.0);
             assert_eq!(
-                plot.annotation_at(Point::new(50.0, 40.0), area, domain, domain),
+                plot.marks.annotation_at(Point::new(50.0, 40.0), area, domain, domain),
                 Some(0)
             );
             assert_eq!(
-                plot.annotation_at(Point::new(80.0, 40.0), area, domain, domain),
+                plot.marks.annotation_at(Point::new(80.0, 40.0), area, domain, domain),
                 Some(1)
             );
             assert!(plot.inspect_annotation("marker"));
@@ -3740,15 +3508,15 @@ mod tests {
                 vec![PlotDatum::new("point", 100.0, 30.0)],
             )]);
             let midpoint = crate::time::now();
-            plot.transition_started = midpoint
+            plot.marks.transition_started = midpoint
                 .checked_sub(crate::time::Duration::from_millis(100))
                 .unwrap();
-            let (x, y) = plot.animated_xy(0, 0, midpoint).unwrap();
+            let (x, y) = plot.marks.animated_xy(0, 0, midpoint).unwrap();
             assert!(x > 50.0 && x < 100.0, "ease-out midpoint: {x}");
             assert!(y > 20.0 && y < 30.0, "ease-out midpoint: {y}");
             assert!(plot.needs_animation_frame());
-            plot.reduce_motion = true;
-            assert_eq!(plot.animated_xy(0, 0, midpoint), Some((100.0, 30.0)));
+            plot.marks.reduce_motion = true;
+            assert_eq!(plot.marks.animated_xy(0, 0, midpoint), Some((100.0, 30.0)));
             assert!(!plot.needs_animation_frame());
         }
 
@@ -3760,9 +3528,9 @@ mod tests {
                 vec![PlotDatum::new("point", 1.0, 2.0)],
             )];
             let mut plot = CartesianPlot::new(series.clone());
-            let started = plot.transition_started;
+            let started = plot.marks.transition_started;
             plot.set_series(series);
-            assert_eq!(plot.transition_started, started);
+            assert_eq!(plot.marks.transition_started, started);
             assert!(!plot.is_animating());
             plot.set_series_immediate(vec![PlotSeries::new(
                 "series",
@@ -3771,7 +3539,7 @@ mod tests {
                 vec![PlotDatum::new("point", 3.0, 4.0)],
             )]);
             assert!(!plot.is_animating());
-            assert_eq!(plot.series[0].data[0].x, 3.0);
+            assert_eq!(plot.marks.series[0].data[0].x, 3.0);
         }
 
         sorted_series_hover_uses_a_small_exact_x_window();
@@ -3783,7 +3551,7 @@ mod tests {
     #[test]
     fn brushes_convert_pixels_to_domains_and_ignore_tiny_drags() {
         fn brush_converts_pixels_to_x_domain() {
-            let selection = CartesianPlot::brush_selection_from_rect(
+            let selection = CartesianMarks::brush_selection_from_rect(
                 Rect::new(60.0, 20.0, 160.0, 120.0),
                 Rect::new(10.0, 20.0, 210.0, 120.0),
                 Domain::normalized(0.0, 100.0),
@@ -3804,7 +3572,7 @@ mod tests {
         }
 
         fn xy_brush_converts_inverted_y_domain() {
-            let selection = CartesianPlot::brush_selection_from_rect(
+            let selection = CartesianMarks::brush_selection_from_rect(
                 Rect::new(50.0, 25.0, 150.0, 75.0),
                 Rect::new(0.0, 0.0, 200.0, 100.0),
                 Domain::normalized(0.0, 20.0),
@@ -3830,9 +3598,32 @@ mod tests {
             );
         }
 
+        fn a_finished_brush_is_handed_back_once_and_a_tiny_one_is_not() {
+            let mut plot = CartesianPlot::new(vec![PlotSeries::new(
+                "s",
+                "S",
+                Color::WHITE,
+                vec![PlotDatum::new("a", 1.0, 1.0)],
+            )]);
+            plot.marks.style.brush = CartesianBrush::X;
+            plot.marks.frame.rect = Rect::new(0.0, 0.0, 320.0, 200.0);
+            let plot_rect = plot.marks.plot_rect();
+            let y = plot_rect.y0 + plot_rect.height() / 2.0;
+            plot.marks.brush_start = Some(Point::new(plot_rect.x0 + 10.0, y));
+            plot.marks.brush_current = Point::new(plot_rect.x0 + 60.0, y);
+            assert!(plot.marks.finish_brush());
+            assert!(plot.take_brush_selection().is_some());
+            assert_eq!(plot.take_brush_selection(), None);
+
+            plot.marks.brush_start = Some(Point::new(plot_rect.x0 + 10.0, y));
+            plot.marks.brush_current = Point::new(plot_rect.x0 + 12.0, y);
+            assert!(!plot.marks.finish_brush());
+            assert_eq!(plot.take_brush_selection(), None);
+        }
+
         fn tiny_brushes_are_ignored() {
             assert!(
-                CartesianPlot::brush_selection_from_rect(
+                CartesianMarks::brush_selection_from_rect(
                     Rect::new(0.0, 0.0, 3.0, 100.0),
                     Rect::new(0.0, 0.0, 100.0, 100.0),
                     Domain::normalized(0.0, 1.0),
@@ -3848,5 +3639,6 @@ mod tests {
         brush_converts_pixels_to_x_domain();
         xy_brush_converts_inverted_y_domain();
         tiny_brushes_are_ignored();
+        a_finished_brush_is_handed_back_once_and_a_tiny_one_is_not();
     }
 }

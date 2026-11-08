@@ -3437,6 +3437,7 @@ pub use chart::{
     TrendRange, TrendStyle,
 };
 pub(crate) mod chart_data;
+pub(crate) mod chart_geometry;
 pub(crate) mod chart_labels;
 pub use chart_data::{ChartItem, ChartLink, ChartNode, GraphSelection};
 pub mod chart_legend;

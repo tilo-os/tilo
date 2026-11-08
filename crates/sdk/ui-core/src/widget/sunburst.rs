@@ -9,15 +9,14 @@ use std::f64::consts::{FRAC_PI_2, TAU};
 use std::ops::Range;
 
 use vello::Scene;
-use vello::kurbo::{Affine, BezPath, Circle, Point, Rect, Stroke};
+use vello::kurbo::{Affine, Circle, Point, Rect, Stroke};
 use vello::peniko::{Color, Fill};
 
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
+use crate::widget::chart_geometry;
 use crate::widget::chart_labels::format_compact;
 use crate::widget::plot::{Plot, PlotFrame, PlotItem, PlotMarks};
-
-const ARC_STEPS: u32 = 64;
 
 #[derive(Clone, Debug)]
 pub struct SunburstNode {
@@ -280,28 +279,6 @@ impl SunburstMarks {
         }
     }
 
-    fn wedge(center: Point, inner: f64, outer: f64, start: f64, end: f64) -> BezPath {
-        let mut path = BezPath::new();
-        let polar = |radius: f64, angle: f64| {
-            Point::new(
-                center.x + radius * angle.cos(),
-                center.y + radius * angle.sin(),
-            )
-        };
-        path.move_to(polar(outer, start));
-        for step in 1..=ARC_STEPS {
-            let fraction = f64::from(step) / f64::from(ARC_STEPS);
-            path.line_to(polar(outer, start + (end - start) * fraction));
-        }
-        path.line_to(polar(inner, end));
-        for step in 1..=ARC_STEPS {
-            let fraction = f64::from(step) / f64::from(ARC_STEPS);
-            path.line_to(polar(inner, end - (end - start) * fraction));
-        }
-        path.close_path();
-        path
-    }
-
     fn hit_test(&self, point: Point) -> Option<String> {
         let (center, inner, outer, band) = self.geometry();
         let dx = point.x - center.x;
@@ -426,7 +403,7 @@ impl PlotMarks for SunburstMarks {
             let color = segment
                 .color
                 .unwrap_or_else(|| Self::palette(theme, segment.family, segment.depth));
-            let path = Self::wedge(
+            let path = chart_geometry::ring_sector(
                 center,
                 inner_radius,
                 outer_radius,
