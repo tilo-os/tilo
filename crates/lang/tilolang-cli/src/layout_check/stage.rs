@@ -908,11 +908,14 @@ mod tests {
         });
         assert!(applied, "the agent's action shows");
         // The frames the pointer glides in, run out: the capture shows it at rest on the
-        // control rather than mid-glide.
+        // control rather than mid-glide. Settling re-renders the whole window before it can
+        // say the window is still, and that pass takes about a second here and longer on a
+        // loaded machine, so the bound is generous on purpose: it fails an animation that
+        // never ends, not a window that is slow to draw.
         assert!(
             staged
                 .harness_mut()
-                .settle_for_capture(ui::time::Duration::from_secs(2)),
+                .settle_for_capture(ui::time::Duration::from_secs(30)),
             "the marker comes to rest"
         );
         staged.harness_mut().poll_frame().expect("a frame is drawn");
@@ -1651,7 +1654,10 @@ mod tests {
         tilo_ui_host::i18n::ensure();
         let packages = app_packages("tasks");
         let app = packages.0.last().expect("the app").meta.app.clone();
-        let label = "Call the landlord about the boiler";
+        // The task the scenario answers with is the one open; another row of the same list
+        // takes its place when pressed.
+        let answered = "Call the landlord about the boiler";
+        let label = "Book a haircut";
         for (width, height) in [(1280_u32, 800_u32), (390, 844)] {
             let mut staged = Staged::over(
                 &app,
@@ -1674,8 +1680,8 @@ mod tests {
                     "the row stands closed before anyone presses it"
                 );
                 assert!(
-                    !shown_named(root, "Subtasks"),
-                    "the row shows none of its document before anyone presses it"
+                    shows_open(root, answered),
+                    "the task the scenario answers with is the one open"
                 );
             }
 
@@ -1685,6 +1691,10 @@ mod tests {
             assert!(
                 shows_open(root, label),
                 "the row opened where it stands at {width}×{height}"
+            );
+            assert!(
+                !shows_open(root, answered),
+                "one row is open at a time: the other closed at {width}×{height}"
             );
             assert!(
                 shown_named(root, "Subtasks"),

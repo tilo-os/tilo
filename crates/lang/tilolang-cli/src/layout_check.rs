@@ -707,6 +707,23 @@ fn build(
     crate::compile(dir, search, &mut tilolang::OsEntropy::default()).map_err(|e| e.to_string())
 }
 
+/// The stack a worker lays a window out on: a window's tree is as deep as the documents it
+/// shows, and a rich-text editor inside a row standing open needs more room than a thread's
+/// default two megabytes, sized for a plain thread's work. A window in the app lays out on the
+/// thread running the app, which is the main thread's; a worker gets the room to match.
+pub(crate) const WORKER_STACK: usize = 32 * 1024 * 1024;
+
+/// Start `worker` on a thread of the scope with a window's stack.
+fn spawn_worker<'scope, 'env>(
+    scope: &'scope std::thread::Scope<'scope, 'env>,
+    worker: impl FnOnce() + Send + 'scope,
+) {
+    std::thread::Builder::new()
+        .stack_size(WORKER_STACK)
+        .spawn_scoped(scope, worker)
+        .expect("a worker starts");
+}
+
 /// Run every unit of `units` at the same time, each on a worker of its own, and return what each
 /// found in the order given. A worker reads an app's package itself: the compiled packages a
 /// window loads belong to one window at a time, so no two workers share them.
@@ -728,7 +745,7 @@ fn run(apps: &[App], units: &[Unit], options: &Options) -> Result<Vec<Found>, St
     let stopped = AtomicBool::new(false);
     std::thread::scope(|scope| {
         for _ in 0..workers {
-            scope.spawn(|| {
+            spawn_worker(scope, || {
                 tilo_ui_host::i18n::ensure();
                 let mut worker = Worker {
                     apps,
@@ -841,7 +858,7 @@ fn run_opens(
                 let Some(slot) = slots.get(app) else {
                     continue;
                 };
-                scope.spawn(move || {
+                spawn_worker(scope, move || {
                     tilo_ui_host::i18n::ensure();
                     *slot.lock().unwrap_or_else(PoisonError::into_inner) = Some(chain(app));
                 });
@@ -1033,9 +1050,14 @@ fn resource_of(listed: &[ResourceRef], named: &[ResourceRef], ty: &str) -> Optio
 /// list of rows lays it out already.
 fn surface_views(meta: &tilolang::PackageMeta) -> Vec<&tilolang::meta::ViewMeta> {
     let ids: BTreeSet<&str> = meta
-        .actions
+        .row_views
         .iter()
-        .filter_map(|action| action.proposal.as_ref().map(|p| p.view.as_str()))
+        .map(|row| row.view.as_str())
+        .chain(
+            meta.actions
+                .iter()
+                .filter_map(|action| action.proposal.as_ref().map(|p| p.view.as_str())),
+        )
         .collect();
     meta.views
         .iter()

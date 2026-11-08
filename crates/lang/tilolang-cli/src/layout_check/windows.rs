@@ -184,6 +184,26 @@ fn floating_rect(staged: &stage::Staged, name: &str) -> Option<Rect> {
     find(&staged.harness().inspection().root, name)
 }
 
+/// Where the floating surface the widget `name` draws stands once it is shown: a page's fields
+/// carry popovers of their own, laid out only while open, so the first one is not the surface a
+/// press opened.
+fn shown_floating_rect(staged: &stage::Staged, name: &str) -> Option<Rect> {
+    fn all(node: &ui::headless::InspectionNode, name: &str, out: &mut Vec<Rect>) {
+        if node.widget == name {
+            let [x, y, width, height] = node.rect;
+            out.push(Rect::new(x, y, x + width, y + height));
+        }
+        for child in &node.children {
+            all(child, name, out);
+        }
+    }
+    let mut rects = Vec::new();
+    all(&staged.harness().inspection().root, name, &mut rects);
+    rects
+        .into_iter()
+        .find(|rect| rect.width() > 0.0 && rect.height() > 0.0)
+}
+
 /// Where the column title that says `said` stands once the layout ran.
 fn title_rect(staged: &stage::Staged, said: &str) -> Option<Rect> {
     fn find(node: &ui::headless::InspectionNode, said: &str) -> Option<Rect> {
@@ -242,16 +262,23 @@ fn row_changes(staged: &stage::Staged) -> Vec<(String, String, String)> {
     let mut rows = Vec::new();
     collect(staged.harness().root_widget(), &mut rows);
 
-    rows.into_iter()
+    // One change reads once however many rows show it: a task open where it stands shows it
+    // on its row and again over the step that made it, and both are the same change.
+    let mut changes = Vec::new();
+    for change in rows
+        .into_iter()
         .filter_map(ui::widget::ListRow::shown_change)
-        .map(|change| {
-            (
-                change.identity.to_owned(),
-                change.name.to_owned(),
-                change.said.to_owned(),
-            )
-        })
-        .collect()
+    {
+        let change = (
+            change.identity.to_owned(),
+            change.name.to_owned(),
+            change.said.to_owned(),
+        );
+        if !changes.contains(&change) {
+            changes.push(change);
+        }
+    }
+    changes
 }
 
 /// The mark a window's header carries: what changed in what it shows, and by whom.
@@ -1010,6 +1037,19 @@ fn a_scenario_on_two_layers_is_named_apart() {
     );
 }
 
+/// Lay `body` out on a thread with a window's stack: a window's tree is as deep as the
+/// documents it shows, and a rich-text editor inside a row standing open needs more room than
+/// a test thread's two megabytes. A window in the app lays out on the thread running the app,
+/// which is the main thread's; a test gets the room to match.
+fn on_a_windows_stack(body: fn()) {
+    std::thread::Builder::new()
+        .stack_size(super::WORKER_STACK)
+        .spawn(body)
+        .expect("a thread starts")
+        .join()
+        .expect("the window lays out");
+}
+
 /// The tasks app staged as the "while you were away" scenario has it, laid out at `size`.
 fn away_at(packages: &Rc<stage::Packages>, size: (u32, u32)) -> stage::Staged {
     let mut staged = stage::Staged::over(
@@ -1019,7 +1059,7 @@ fn away_at(packages: &Rc<stage::Packages>, size: (u32, u32)) -> stage::Staged {
         size,
         ui::Theme::light(),
         None,
-        &["place=Task.today".to_owned()],
+        &[],
     )
     .expect("the scenario stages");
     staged
@@ -1046,6 +1086,16 @@ fn input_at(size: (u32, u32)) -> ui::interaction::InteractionEnvironment {
     reason = "frame and mark sizes are small counts, far inside usize and f64"
 )]
 fn a_capture_writes_the_scenarios_steps_down_so_what_changed_shows() {
+    on_a_windows_stack(a_window_of_the_week_away);
+}
+
+#[allow(
+    clippy::cast_possible_truncation,
+    clippy::cast_precision_loss,
+    clippy::cast_sign_loss,
+    reason = "frame and mark sizes are small counts, far inside usize and f64"
+)]
+fn a_window_of_the_week_away() {
     // The marks a row and a window carry are read from the record's steps, which are the
     // store's versions and the person's seen marks: a scenario staged for a capture is
     // written down as a session writes it, or the capture shows nothing of what it staged.
@@ -1154,6 +1204,10 @@ fn a_capture_writes_the_scenarios_steps_down_so_what_changed_shows() {
 
 #[test]
 fn a_catch_up_hangs_inside_the_window_it_belongs_to() {
+    on_a_windows_stack(a_catch_up_inside_its_window);
+}
+
+fn a_catch_up_inside_its_window() {
     // A mark's catch-up is a panel under the mark where the window is wide, a sheet at its
     // foot where it is narrow, and neither reaches past the window it belongs to.
     tilo_ui_host::i18n::ensure();
@@ -1187,17 +1241,20 @@ fn a_catch_up_hangs_inside_the_window_it_belongs_to() {
         "nothing reaches past the window: {wrong:?}"
     );
 
-    // A window held in the hand is staged at its own size, as a capture stages it.
+    // A window held in the hand is staged at its own size, as a capture stages it. It stands on
+    // the place the task it answers with belongs to, over the places behind it; the mark in its
+    // header is the window's own either way.
     let mut narrow = away_at(&packages, (390, 844));
-    let window = window_mark(&narrow.composed().expect("the narrow window composed"))
-        .expect("the narrow window's header says what changed in it");
+    let mark = shown_floating_rect(&narrow, "ChangeMark")
+        .expect("the narrow window's header shows its mark");
     narrow
-        .press(&window.key, false)
+        .press_at(mark.center().x, mark.center().y)
         .expect("the narrow window's mark opens its catch-up");
     narrow
-        .lay_out((390, 844), ui::Theme::light(), input_at((390, 844)), 1.0)
+        .freshen()
         .expect("the app lays out narrow with its catch-up open");
-    let sheet = floating_rect(&narrow, "Popover").expect("the catch-up hangs over the window");
+    let sheet =
+        shown_floating_rect(&narrow, "Popover").expect("the catch-up hangs over the window");
     assert!(
         sheet.x0 >= 0.0
             && sheet.x1 <= 390.0
