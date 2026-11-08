@@ -36,6 +36,7 @@ struct Fixture {
 }
 
 /// Whose connection a fixture session answers as.
+#[derive(Clone, Copy)]
 enum Side {
     Source,
     Recipient,
