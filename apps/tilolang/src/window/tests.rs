@@ -2391,9 +2391,9 @@ fn a_later_build_that_changes_a_field_type_starts_over_on_the_same_data() {
 #[test]
 fn typing_into_a_shown_items_title_keeps_the_windows_tree() {
     use ui::widget::Widget as _;
+    // A task opens where it stands: the scenario's task is the row the window shows, and its
+    // title is that row's field.
     let mut workspace = Workspace::seeded("tasks");
-    let (key, _) = workspace.rows().remove(0);
-    workspace.activate(&key);
     let detail = workspace.window.detail_tree().expect("the item is shown");
     let input = first_input(&detail).expect("the item's title").key.clone();
     // The list mounts the rows its laid-out height shows, measures them as they are laid out,
@@ -2427,9 +2427,8 @@ fn a_keystroke_repaints_its_field_not_the_window() {
     // The item's column slides in: what a keystroke repaints is asked of the
     // window at rest.
     let _settled = ui::motion::testing::settled();
+    // The scenario's task is the row the window shows.
     let mut workspace = Workspace::seeded("tasks");
-    let (key, _) = workspace.rows().remove(0);
-    workspace.activate(&key);
     let detail = workspace.window.detail_tree().expect("the item is shown");
     let input = first_input(&detail).expect("the item's title").key.clone();
     workspace.lay_out();
@@ -2493,7 +2492,7 @@ fn a_list_that_asks_for_more_rows_shows_the_ones_it_has_until_they_come() {
 }
 
 #[test]
-fn todays_cards_show_their_resources_title_count_and_first_rows() {
+fn todays_cards_show_their_places_title_count_and_first_rows() {
     fn walk<'a>(node: &'a UiNode, kind: &str, out: &mut Vec<&'a UiNode>) {
         if node.kind == kind {
             out.push(node);
@@ -2511,42 +2510,23 @@ fn todays_cards_show_their_resources_title_count_and_first_rows() {
     let tree = workspace.window.root_tree().unwrap();
     let mut cards = Vec::new();
     walk(&tree, "ui.Card", &mut cards);
-    assert_eq!(cards.len(), 3, "the todo list, the notebook and the chats");
+    // A card is another app's place: the tasks due today, the notes pinned, the conversations
+    // with something unread, each named as its own app names it.
+    let titled = |cards: &[&UiNode]| cards.iter().map(|c| text(c, "title")).collect::<Vec<_>>();
     assert_eq!(
-        text(cards[0], "title"),
-        "Tasks",
-        "a card is headed by its resource's title"
+        titled(&cards),
+        ["Today", "Pinned", "Unread"],
+        "a card is headed by the place its app names it"
     );
     let mut shown = Vec::new();
-    let mut talks = Vec::new();
     for card in &cards {
-        assert!(
-            !text(card, "title").is_empty(),
-            "every card has a title: {card:?}"
-        );
         let Some(Value::Int(count)) = card.props.get("count") else {
             panic!("every card counts what it lists: {card:?}");
         };
+        // The card shows its first rows and says how many it holds.
         let preview = usize::try_from(*count).unwrap().min(5);
         let mut rows = Vec::new();
         walk(card, "ui.ListRow", &mut rows);
-        if text(card, "title") == "Chat" {
-            // The chat's channels and categories: a button that opens each channel outside a
-            // category, and each category's name.
-            let mut buttons = Vec::new();
-            walk(card, "ui.Button", &mut buttons);
-            let mut captions = Vec::new();
-            walk(card, "ui.Text", &mut captions);
-            talks.extend(buttons.iter().map(|button| text(button, "label")));
-            talks.extend(captions.iter().map(|caption| text(caption, "value")));
-            assert!(rows.is_empty(), "{rows:?}");
-            assert_eq!(
-                talks.len(),
-                usize::try_from(*count).unwrap(),
-                "a card counts what it lists: Chat"
-            );
-            continue;
-        }
         assert_eq!(
             rows.len(),
             preview,
@@ -2558,17 +2538,23 @@ fn todays_cards_show_their_resources_title_count_and_first_rows() {
             "each row is titled"
         );
         shown.extend(rows.iter().map(|row| text(row, "title")));
+        // A card whose place holds more than it shows opens the app for the rest.
+        let mut buttons = Vec::new();
+        walk(card, "ui.Button", &mut buttons);
+        assert_eq!(
+            buttons.is_empty(),
+            preview == usize::try_from(*count).unwrap(),
+            "a card shows the way into the rest: {}",
+            text(card, "title")
+        );
     }
     assert!(
         shown.iter().any(|title| title == "Buy oat milk and eggs"),
-        "the open todos are the todo card's rows: {shown:?}"
+        "the tasks due today are the todo card's rows: {shown:?}"
     );
-    assert_eq!(
-        talks,
-        // The channels outside a category, the conversations with people (your own is
-        // "You"), and then the categories, which the card names.
-        ["# general", "# random", "Leo", "You", "Team", "Social"],
-        "the chat card's entries"
+    assert!(
+        shown.iter().any(|title| title == "general") && shown.iter().any(|title| title == "Leo"),
+        "the conversations with something unread are the chat card's rows: {shown:?}"
     );
     // And the window draws them: a header and a row widget for each.
     let widgets = content_widgets(&mut workspace);
