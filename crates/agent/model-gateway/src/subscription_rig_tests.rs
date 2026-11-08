@@ -22,26 +22,7 @@ fn chatgpt_token(account: &str) -> String {
 
 /// One request: its lowercased head and its JSON body.
 fn read_request(socket: &mut std::net::TcpStream) -> (String, serde_json::Value) {
-    use std::io::{BufRead as _, Read as _};
-    socket
-        .set_read_timeout(Some(tilo_test_env::hang_bound()))
-        .unwrap();
-    let mut reader = std::io::BufReader::new(socket);
-    let mut head = String::new();
-    let mut length = 0;
-    loop {
-        let mut line = String::new();
-        assert!(reader.read_line(&mut line).unwrap() > 0);
-        if line == "\r\n" {
-            break;
-        }
-        if let Some(value) = line.to_ascii_lowercase().strip_prefix("content-length:") {
-            length = value.trim().parse().unwrap();
-        }
-        head.push_str(&line);
-    }
-    let mut body = vec![0; length];
-    reader.read_exact(&mut body).unwrap();
+    let (head, body) = super::tests::read_request(socket);
     (
         head.to_ascii_lowercase(),
         serde_json::from_slice(&body).unwrap(),
