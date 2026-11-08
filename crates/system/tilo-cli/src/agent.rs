@@ -2,8 +2,9 @@
 //!
 //! `connect` registers this desktop's agent door with an agent tool you run
 //! in a terminal, so it can act on the desktop through the same actions a
-//! person has. `models` is the model list Settings shows, through the
-//! program that keeps it.
+//! person has — or, with `--device`, the agent door of another of your own
+//! devices, reached from this one. `models` is the model list Settings shows,
+//! through the program that keeps it.
 
 use std::ffi::OsString;
 use std::process::{Command, ExitCode};
@@ -20,14 +21,27 @@ pub const MODELS: &str = "tilo-model-manager";
 
 #[derive(Subcommand)]
 pub enum AgentCmd {
-    /// Let an agent you run in a terminal act on this desktop.
+    /// Let an agent you run in a terminal act on this desktop, or on another
+    /// of your devices.
     #[command(
-        after_help = "Examples:\n  tilo agent connect claude\n  tilo agent connect codex\n\n\
-                      The agent then reaches this desktop's actions from any terminal in your login."
+        after_help = "Examples:\n  tilo agent connect claude\n  tilo agent connect codex\n  \
+                      tilo agent connect claude --device build-box\n\n\
+                      The agent then reaches this desktop's actions from any terminal in your login. \
+                      With --device it reaches that device's instead, as an agent of yours from \
+                      this device: that device asks you there, unless you let agents from your \
+                      other devices in on it (Settings, \"Agents from your other devices\"). The \
+                      agent's tilo_devices tool lists your devices and which answer now."
     )]
     Connect {
         /// The agent tool: claude or codex.
         tool: Tool,
+        /// Another of your devices to act on, by its name or endpoint id.
+        #[arg(long)]
+        device: Option<String>,
+        /// The workspace on that device to work in, by its id; the one in
+        /// front there when not given.
+        #[arg(long, requires = "device", value_parser = workspace_id)]
+        workspace: Option<String>,
     },
     /// The models agents run on, local or hosted.
     Models {
@@ -59,18 +73,73 @@ impl Tool {
         }
     }
 
-    /// The tool's own command that registers `door` as the server `tilo`.
-    fn registration(self, door: &std::path::Path) -> Vec<OsString> {
+    /// The tool's own command that registers `door` as the server `tilo`,
+    /// or, for another device, as `tilo-<device>` carried to that device's
+    /// door.
+    fn registration(self, door: &std::path::Path, remote: Option<&Remote>) -> Vec<OsString> {
+        let name = remote.map_or_else(|| "tilo".to_owned(), Remote::server_name);
         let mut args: Vec<OsString> = match self {
             // In every directory, not only this one.
-            Self::Claude => ["mcp", "add", "--scope", "user", "tilo", "--"]
+            Self::Claude => ["mcp", "add", "--scope", "user"]
                 .map(OsString::from)
                 .to_vec(),
-            Self::Codex => ["mcp", "add", "tilo", "--"].map(OsString::from).to_vec(),
+            Self::Codex => ["mcp", "add"].map(OsString::from).to_vec(),
         };
+        args.push(name.into());
+        args.push("--".into());
         args.push(door.as_os_str().to_owned());
         args.push("--connect".into());
+        if let Some(remote) = remote {
+            args.push("--device".into());
+            args.push(remote.device.clone().into());
+            if let Some(workspace) = &remote.workspace {
+                args.push("--workspace".into());
+                args.push(workspace.clone().into());
+            }
+        }
         args
+    }
+}
+
+/// A workspace id, as `--workspace` takes it: a UUID in its hyphenated form.
+fn workspace_id(text: &str) -> Result<String, String> {
+    let groups: Vec<&str> = text.split('-').collect();
+    let lengths: Vec<usize> = groups.iter().map(|group| group.len()).collect();
+    if lengths == [8, 4, 4, 4, 12]
+        && groups
+            .iter()
+            .all(|group| group.chars().all(|character| character.is_ascii_hexdigit()))
+    {
+        Ok(text.to_ascii_lowercase())
+    } else {
+        Err(format!("{text} is not a workspace id"))
+    }
+}
+
+/// Another of the person's devices an agent is connected to.
+pub struct Remote {
+    /// The device, by its name or endpoint id.
+    device: String,
+    /// The workspace on it, when chosen.
+    workspace: Option<String>,
+}
+
+impl Remote {
+    /// The server name the agent tool lists it under: `tilo-` and the
+    /// device, folded to what a server name may hold.
+    fn server_name(&self) -> String {
+        let mut name = String::from("tilo-");
+        for character in self.device.chars().flat_map(char::to_lowercase) {
+            if character.is_ascii_alphanumeric() {
+                name.push(character);
+            } else if !name.ends_with('-') {
+                name.push('-');
+            }
+            if name.len() >= 48 {
+                break;
+            }
+        }
+        name.trim_end_matches('-').to_owned()
     }
 }
 
@@ -100,12 +169,19 @@ pub enum ModelsCmd {
 
 pub fn run(cmd: AgentCmd) -> Result<ExitCode> {
     match cmd {
-        AgentCmd::Connect { tool } => connect(tool),
+        AgentCmd::Connect {
+            tool,
+            device,
+            workspace,
+        } => connect(
+            tool,
+            device.map(|device| Remote { device, workspace }).as_ref(),
+        ),
         AgentCmd::Models { cmd } => models(cmd),
     }
 }
 
-fn connect(tool: Tool) -> Result<ExitCode> {
+fn connect(tool: Tool, remote: Option<&Remote>) -> Result<ExitCode> {
     let Some(door) = nouns::program(DOOR) else {
         bail!("connecting an agent needs a Tilo desktop, which this computer doesn't have");
     };
@@ -116,7 +192,7 @@ fn connect(tool: Tool) -> Result<ExitCode> {
         );
     }
     let output = Command::new(tool.command())
-        .args(tool.registration(&door))
+        .args(tool.registration(&door, remote))
         .output()
         .with_context(|| format!("running {}", tool.command()))?;
     let said = format!(
@@ -124,15 +200,25 @@ fn connect(tool: Tool) -> Result<ExitCode> {
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr)
     );
+    let place = remote.map_or_else(
+        || "this desktop".to_owned(),
+        |remote| format!("your device {}", remote.device),
+    );
     if output.status.success() {
         println!(
-            "{} can now act on this desktop from any terminal in your login.",
+            "{} can now act on {place} from any terminal in your login.",
             tool.title()
         );
+        if remote.is_some() {
+            println!(
+                "That device asks you before the agent first works there, unless you let agents \
+                 from your other devices in on it."
+            );
+        }
         return Ok(ExitCode::SUCCESS);
     }
     if said.contains("already exists") {
-        println!("{} is already connected to this desktop.", tool.title());
+        println!("{} is already connected to {place}.", tool.title());
         return Ok(ExitCode::SUCCESS);
     }
     eprint!("{said}");
@@ -170,7 +256,7 @@ fn models(cmd: ModelsCmd) -> Result<ExitCode> {
 
 #[cfg(test)]
 mod tests {
-    use super::Tool;
+    use super::{Remote, Tool, workspace_id};
 
     /// Connecting registers the door, in every directory for Claude Code,
     /// under the name `tilo` with `--connect`, so it reaches the login's
@@ -179,7 +265,7 @@ mod tests {
     fn connecting_registers_the_desktops_door() {
         let door = std::path::Path::new("/usr/libexec/tilo/tilo-runtime-mcp");
         let claude: Vec<String> = Tool::Claude
-            .registration(door)
+            .registration(door, None)
             .into_iter()
             .map(|arg| arg.to_string_lossy().into_owned())
             .collect();
@@ -197,7 +283,7 @@ mod tests {
             ]
         );
         let codex: Vec<String> = Tool::Codex
-            .registration(door)
+            .registration(door, None)
             .into_iter()
             .map(|arg| arg.to_string_lossy().into_owned())
             .collect();
@@ -212,5 +298,45 @@ mod tests {
                 "--connect"
             ]
         );
+    }
+
+    /// Connecting to another device registers its own server, named after
+    /// the device, carried to that device's door.
+    #[test]
+    fn connecting_to_another_device_registers_its_door_beside_this_ones() {
+        let door = std::path::Path::new("/usr/libexec/tilo/tilo-runtime-mcp");
+        let remote = Remote {
+            device: "Build Box".into(),
+            workspace: Some("cccccccc-cccc-4ccc-8ccc-cccccccccccc".into()),
+        };
+        let claude: Vec<String> = Tool::Claude
+            .registration(door, Some(&remote))
+            .into_iter()
+            .map(|arg| arg.to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(
+            claude,
+            [
+                "mcp",
+                "add",
+                "--scope",
+                "user",
+                "tilo-build-box",
+                "--",
+                "/usr/libexec/tilo/tilo-runtime-mcp",
+                "--connect",
+                "--device",
+                "Build Box",
+                "--workspace",
+                "cccccccc-cccc-4ccc-8ccc-cccccccccccc"
+            ]
+        );
+    }
+
+    #[test]
+    fn a_workspace_is_named_by_its_id() {
+        assert!(workspace_id("CCCCCCCC-cccc-4ccc-8ccc-cccccccccccc").is_ok());
+        assert!(workspace_id("Studio").is_err());
+        assert!(workspace_id("cccccccc-cccc-4ccc-8ccc-ccccccccccc").is_err());
     }
 }
