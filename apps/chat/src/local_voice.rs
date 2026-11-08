@@ -4,7 +4,9 @@ use std::collections::{BTreeMap, BTreeSet};
 use ui::native_media::{PictureLayer, PictureSource};
 use ui::{
     collaboration::CollabRequest,
-    native_media::{Command, PICTURES_HOLD, Picture, Request, Shown, Snapshot, State},
+    native_media::{
+        Command, PICTURES_LOST, Picture, REPLY_LOST, Request, Shown, Snapshot, State, WATCH_LOST,
+    },
     time::{Duration, Instant},
 };
 
@@ -89,18 +91,8 @@ pub(crate) struct CallVideo {
     pub(crate) arrived: Vec<Picture>,
 }
 
-/// A collection unanswered this long was lost: the service holds one at
-/// most [`PICTURES_HOLD`].
-const PICTURES_LOST: Duration = PICTURES_HOLD.saturating_add(Duration::from_secs(5));
-
-/// A command unanswered this long was lost.
-const REPLY_LOST: Duration = Duration::from_secs(2);
-
 /// How long a service that refused is left alone before it is watched again.
 const WATCH_RETRY: Duration = Duration::from_secs(2);
-/// A watch unanswered this long was lost: the service holds one at most
-/// [`ui::native_media::WATCH_HOLD`].
-const WATCH_LOST: Duration = ui::native_media::WATCH_HOLD.saturating_add(Duration::from_secs(5));
 
 /// A deadline found passed by more than this was not woken for in time:
 /// the app itself was not running (a stalled page, a suspended device).
@@ -1011,7 +1003,7 @@ pub(crate) fn layer_for(width: f64, height: f64, source: PictureSource) -> Pictu
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ui::native_media::State;
+    use ui::native_media::{REPLY_TIMEOUT, State};
 
     fn live() -> Snapshot {
         let mut snapshot = Snapshot::unavailable();
@@ -1092,6 +1084,25 @@ mod tests {
             voice.next_deadline(due).is_none_or(|next| next > due),
             "a deadline that passed does not keep waking the window"
         );
+    }
+
+    #[test]
+    fn a_join_is_held_while_its_answer_crosses_to_the_host() {
+        let now = ui::time::now();
+        let mut voice = LocalVoice::default();
+        voice
+            .submit(Command::Join {
+                channel_id: "voice".into(),
+            })
+            .unwrap();
+        let _ = voice.take_requests(now);
+        let answered = voice.take_requests(now + REPLY_TIMEOUT);
+        assert!(
+            answered.is_empty(),
+            "nothing gives up while the host may still answer"
+        );
+        assert_eq!(voice.snapshot.state, State::Preparing);
+        assert_eq!(voice.client_issue, None);
     }
 
     #[test]
