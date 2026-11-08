@@ -349,6 +349,7 @@ inputs = [
   "tools/ci/rustc-thin-app-wrapper.sh", "tools/ci/thin-app/sccache", "tools/font-catalog.py",
   "tools/policy/app_capability_usage.toml", "tools/policy/app_portability_rules.toml",
   "tools/protocols/airdrop_sender.py", "tools/test-assets-build.rs", "tools/test-assets.py",
+  "tools/web/wasm-opt-flags",
 ]
 suites = ["os/tests/containerfile_sources.sh"]
 
