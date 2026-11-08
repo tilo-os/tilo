@@ -27,7 +27,7 @@ import {readBrowserAccounts} from './browser-accounts.mjs';
 import {CustodyError, idbStorage, openDeviceCustody} from './device-custody.mjs';
 import {createIdentityActions, syncProfile} from './identity-actions.mjs';
 import {pickImageFile, squarePhoto} from './profile-photos.mjs';
-import {countryName, deviceLabel, pairingFailure, pairSecret, whenRequested} from './pairing.mjs';
+import {deviceLabel, pairingFailure, pairSecret, whenRequested} from './pairing.mjs';
 import {readInstallSecret, SET_UP, SETUP_PHASES, setUpFailure, setUpMachine} from './machine-setup.mjs';
 import {browserIdentity, browserPerson, currentIdentity, fetchEnvelope, IdentityError, MAX_DISPLAY_NAME_BYTES, signInWithPasskey} from './identity.mjs';
 import {createReconnect, domReconnectView} from './reconnect.mjs';
@@ -342,9 +342,6 @@ function pairingAsk(request, decide) {
   };
   detail('Device', request.label || 'A browser');
   const when = detail('Asked', '');
-  // In the card's own language, which is English for now.
-  const country = countryName(request.country, {locale: 'en'});
-  if (country) detail('From', country);
   const tick = () => { when.textContent = whenRequested(request.requestedAtMs, {locale: 'en'}); };
   tick();
   const timer = setInterval(tick, 15_000);

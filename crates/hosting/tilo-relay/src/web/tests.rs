@@ -98,7 +98,6 @@ fn web_of(relay: &Relay, host: &Host) -> Web {
             relay.state_root().join("profiles"),
         )),
         here: Arc::new(here::Here::new(None)),
-        country: None,
         fetch: None,
         grants: Arc::default(),
         presence: Arc::new(plane::Authority::new(relay.web_context().relay.clone())),

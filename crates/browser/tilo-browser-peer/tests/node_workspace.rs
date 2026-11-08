@@ -191,7 +191,6 @@ async fn a_company_node_governs_and_seals_the_workspace_people_join() {
             allowed_origins: vec![page_origin],
             plain_listen: Some("127.0.0.1:0".parse().unwrap()),
             public_origin: None,
-            country: None,
             fetch_proxy: None,
         },
         paths.clone(),
@@ -279,7 +278,6 @@ async fn a_company_node_governs_and_seals_the_workspace_people_join() {
             allowed_origins: Vec::new(),
             plain_listen: None,
             public_origin: None,
-            country: None,
             fetch_proxy: None,
         })
         .await

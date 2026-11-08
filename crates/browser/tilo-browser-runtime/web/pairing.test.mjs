@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  countryName, deviceLabel, forInvites, INVITE_TTL_MS, newInvite, openInvites, PAIRING_DECLINED, PAIRING_EXPIRED,
+  deviceLabel, forInvites, INVITE_TTL_MS, newInvite, openInvites, PAIRING_DECLINED, PAIRING_EXPIRED,
   pairingFailure, pairSecret, parsePairSecret, whenRequested,
 } from './pairing.mjs';
 
@@ -76,14 +76,10 @@ test('a device is named by its browser and system, as people say them', () => {
   assert.ok(deviceLabel({userAgent: 'Firefox/1', platform: 'x'.repeat(100)}).length <= 64);
 });
 
-test('when a device asked, and from where, read as words', () => {
+test('when a device asked reads as words', () => {
   assert.equal(whenRequested(1000, {now: 20_000, locale: 'en'}), 'just now');
   assert.equal(whenRequested(0, {now: 2 * 60_000, locale: 'en'}), '2 minutes ago');
   assert.equal(whenRequested(0, {now: 3 * 3_600_000, locale: 'en'}), '3 hours ago');
-  assert.equal(countryName('DE', {locale: 'en'}), 'Germany');
-  assert.equal(countryName('de', {locale: 'de'}), 'Deutschland');
-  assert.equal(countryName(null), null);
-  assert.equal(countryName('not a region', {locale: 'en'}), 'not a region');
 });
 
 test('the host’s refusals of a pairing are said as what to do next', () => {

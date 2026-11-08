@@ -95,20 +95,6 @@ pub struct WebArgs {
     /// `web_entry`.
     #[arg(long = "web-entry", value_name = "URL")]
     pub web_entry: Option<String>,
-    /// The request header the proxy in front of the host names a client's
-    /// country in (such as `CF-IPCountry`). A person approving a new device
-    /// is shown it; nothing is looked up.
-    #[arg(long = "country-header", value_name = "NAME", requires = "web")]
-    pub country_header: Option<String>,
-    /// The peers `--country-header` is believed from, as comma-separated
-    /// `address[/prefix]` ranges; by default this machine only.
-    #[arg(
-        long = "country-proxies",
-        value_name = "RANGES",
-        default_value = "127.0.0.0/8,::1",
-        requires = "country_header"
-    )]
-    pub country_proxies: tilo_relay_protocol::proxies::TrustedProxies,
     /// Without a device certificate yet, create the device key, print its
     /// public half and serve only `/peer/v1/install` on `--web` until a
     /// root-signed host certificate for it arrives with the token in this
@@ -379,13 +365,6 @@ pub(crate) fn web_config(args: &WebArgs, listen: SocketAddr, state_root: &Path) 
         allowed_origins: args.allowed_origins.clone(),
         plain_listen: args.web_plain,
         public_origin: args.public_origin.clone(),
-        country: args
-            .country_header
-            .clone()
-            .map(|name| tilo_relay::web::CountryHeader {
-                name,
-                proxies: args.country_proxies.clone(),
-            }),
         fetch_proxy: args.fetch_proxy.then(|| tilo_relay::web::FetchProxySetup {
             config: fetch_proxy_config(),
             metrics_file: Some(
@@ -1441,7 +1420,6 @@ mod tests {
             pairing_code: code.into(),
             request,
             requested_at_ns: 0,
-            country: None,
         }
     }
 

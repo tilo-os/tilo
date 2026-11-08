@@ -97,7 +97,6 @@ async fn main() {
             allowed_origins,
             plain_listen: None,
             public_origin: None,
-            country: None,
             fetch_proxy: None,
         })
         .await

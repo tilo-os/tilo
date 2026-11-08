@@ -1,6 +1,6 @@
 //! What a page asks a host over HTTPS before it has a session: the host's
-//! address, its own certification and the join steps of a workspace. Served
-//! by the host itself.
+//! address, approvals for a member's own devices, and the join steps of a
+//! workspace. Served by the host itself.
 //!
 //! Everything a page does once it is up goes over its iroh session; these
 //! routes only get it there. Every body is postcard. Routes (all `POST`,
@@ -9,9 +9,7 @@
 //! | Route | Body | Answer |
 //! |---|---|---|
 //! | `/host` | — | [`HostInfo`] |
-//! | `/certify` | `CertificationRequest` | `CertifyReply` |
-//! | `/certify/approve` | `CertificationRequest` | `CertifyReply` |
-//! | `/certify/wait` | request digest `[u8; 32]` | `CertifyReply` (long-poll) |
+//! | `/certify/approve` | `MemberApproval` | `ApproverReply` |
 //! | `/join` | [`JoinStep`](crate::workspaces::JoinStep) | [`JoinReply`](crate::workspaces::JoinReply) |
 //! | `/fetch` ([`FETCH_PATH`]) | any method: `tilo_net::proxy` wire protocol v1 | the target's response, or the proxy's failure |
 //!
@@ -29,8 +27,10 @@
 //! node, the key of the session beside it, which the root certifies at the
 //! same time as one of the person's devices.
 //!
-//! `/certify` and `/join` are the routes a device calls without a session: a
-//! person a host does not know yet joins through them.
+//! `/join` is the route a device calls without a session: a person a host
+//! does not know yet joins through it. A device certifies itself over the
+//! host's certification ALPN, and `/certify/approve` carries a member's
+//! root-signed answer to their own device's request.
 
 use serde::{Deserialize, Serialize};
 
@@ -91,8 +91,6 @@ pub struct Installed {
     pub user_public_key: String,
 }
 
-/// Longest a `/certify/wait` poll is held.
-pub const MAX_POLL_MS: u32 = 25_000;
 /// Largest request body a route accepts.
 pub const MAX_REQUEST_BYTES: usize = 8 * 1024 * 1024;
 /// What a page needs to know about the host before it has a certificate.

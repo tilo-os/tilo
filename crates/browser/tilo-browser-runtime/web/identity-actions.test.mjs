@@ -412,7 +412,7 @@ async function pairingFixture({invites = [INVITE_A, INVITE_B]} = {}) {
 }
 
 const request = (digest, invite, extra = {}) => ({digest, pairingCode: '123456', label: 'Safari on iPhone', device: 'ee'.repeat(32),
-  invite, requestedAtMs: 0, country: 'DE', ...extra});
+  invite, requestedAtMs: 0, ...extra});
 
 test('each pairing link names a fresh invite, shown on a sheet that can copy it, open for ten minutes', async () => {
   const pairing = await pairingFixture();

@@ -38,10 +38,10 @@ use tilo_browser_peer::{
     CertifyError, Host, HttpClient, LinkError, MemoryPeerStore, PeerHandle, PeerStore as _,
     answer_pairing, certify, pending_pairings,
 };
+use tilo_relay_client::CertificationOutcome;
 use tilo_relay_client::https as carrier;
 use tilo_relay_protocol::certify::{
-    ApproverDecision, ApproverReply, ApproverRequest, CertifyReply, MemberApproval,
-    PendingCertification,
+    ApproverDecision, ApproverReply, ApproverRequest, MemberApproval, PendingCertification,
 };
 use tilo_relay_protocol::web::HereRequest;
 use tilo_user_identity::{
@@ -497,41 +497,38 @@ async fn an_unanswered_request_expires_between_the_roots(process: tilo_clock::te
     let (cert, host_cert) = phone.answer().await.unwrap();
     assert_paired(&cert, &host_cert, person(&bob), &phone_key);
 
-    // Dave's root is on no device here: a request naming him waits for
-    // its lifetime and then expires, and is gone from his list. The wall
-    // clock is held while it is asked and then moved past its lifetime, so
-    // a slow run neither expires it early nor waits for it.
+    // Dave's root is on no device here: a request naming him is queued,
+    // shows its code, waits for its lifetime and then expires, and is gone.
+    // The wall clock is held while it is asked, so a slow run does not
+    // expire it before the host has queued it.
     let asked_at = tilo_clock::wall();
     let _asking = tilo_clock::testing::hold_wall_everywhere(process, asked_at);
     let device = new_key();
-    let request = short_request(person(&dave), &device, 3_000_000_000);
-    let CertifyReply::Pending { pairing_code } =
-        carrier::certify_request(&*https, &request).await.unwrap()
-    else {
-        panic!("a member's request waits");
-    };
-    assert_eq!(pairing_code, request.pairing_code().unwrap());
-    let digest = request.digest().unwrap();
+    let request = short_request(person(&dave), &device, 2_000_000_000);
+    let expected_code = request.pairing_code().unwrap();
+    let endpoint = iroh::endpoint::Endpoint::builder(iroh::endpoint::presets::Minimal)
+        .bind()
+        .await
+        .unwrap();
+    let (code_sent, code) = tokio::sync::oneshot::channel::<String>();
+    let address = host.iroh().addr;
+    let asking = tokio::spawn(async move {
+        tilo_relay_client::request_certification(&endpoint, address, request, |code| {
+            let _ = code_sent.send(code.to_owned());
+        })
+        .await
+    });
     assert_eq!(
-        carrier::certify_wait(&*https, digest).await.unwrap(),
-        CertifyReply::Pending {
-            pairing_code: pairing_code.clone()
-        },
-        "a request waits through its lifetime"
+        tilo_test_env::within("the pairing code", code)
+            .await
+            .unwrap(),
+        expected_code
     );
-    let expired_at = asked_at + std::time::Duration::from_secs(3);
-    let _expired = tilo_clock::testing::hold_wall_everywhere(process, expired_at);
-    let reply = wait_for("the request to expire", || async {
-        match carrier::certify_wait(&*https, digest).await.unwrap() {
-            CertifyReply::Pending { pairing_code: code } => {
-                assert_eq!(code, pairing_code);
-                None
-            }
-            reply => Some(reply),
-        }
-    })
-    .await;
-    assert_eq!(reply, CertifyReply::Expired);
+    let outcome = tilo_test_env::within("the request to expire", asking)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(outcome, CertificationOutcome::Expired);
     assert!(pending_pairings(&*https, &dave).await.unwrap().is_empty());
     host.relay.shutdown().await;
 }

@@ -1,6 +1,6 @@
 //! What a page asks a host before it holds a session, over HTTPS through its
-//! `fetch`: the host's certificate and address, certification, pairing, and
-//! joining a workspace.
+//! `fetch`: the host's certificate and address, a member's approval of their
+//! own device, and joining a workspace.
 //!
 //! Everything after that is the session, over iroh
 //! (`tilo_relay_session::RelayClient`).
@@ -8,9 +8,7 @@
 use std::future::Future;
 use std::pin::Pin;
 
-use tilo_relay_protocol::certify::CertifyReply;
 use tilo_relay_protocol::web::API_PREFIX;
-use tilo_user_identity::CertificationRequest;
 
 use crate::LinkError;
 
@@ -70,15 +68,6 @@ pub async fn host_info(
     call(client, "/host", Vec::new()).await
 }
 
-/// Ask the host to queue `request` for its root holder. Returns the pairing
-/// code, or the final answer when the host refused at once.
-pub async fn certify_request(
-    client: &dyn HttpClient,
-    request: &CertificationRequest,
-) -> Result<CertifyReply, LinkError> {
-    call(client, "/certify", encode(request)?).await
-}
-
 /// Send a member's root-signed approver command (their pending device
 /// requests, or a decision on one).
 pub async fn certify_approve(
@@ -86,14 +75,6 @@ pub async fn certify_approve(
     approval: &tilo_relay_protocol::certify::MemberApproval,
 ) -> Result<tilo_relay_protocol::certify::ApproverReply, LinkError> {
     call(client, "/certify/approve", encode(approval)?).await
-}
-
-/// Long-poll the answer to a queued request. `Pending` means poll again.
-pub async fn certify_wait(
-    client: &dyn HttpClient,
-    digest: [u8; 32],
-) -> Result<CertifyReply, LinkError> {
-    call(client, "/certify/wait", encode(&digest)?).await
 }
 
 /// One step of joining a workspace with no session (`/join`).

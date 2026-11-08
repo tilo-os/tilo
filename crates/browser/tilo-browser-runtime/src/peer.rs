@@ -763,9 +763,8 @@ pub async fn certify_with_root(
 
 /// The new devices waiting at the host at `post` for the member root the
 /// page holds (`root`) to pair them: `[{digest, pairingCode, label, device,
-/// invite, requestedAtMs, country}]` JSON, keys, digest and invite as hex
-/// (`invite` null for a request no invite asked for, `country` null when the
-/// host does not know it).
+/// invite, requestedAtMs}]` JSON, keys, digest and invite as hex (`invite`
+/// null for a request no invite asked for).
 #[wasm_bindgen(js_name = pendingPairings)]
 pub async fn pending_pairings(post: Function, root: JsValue) -> Result<String, JsError> {
     let root = PageSigner::from_js(&root)?;
@@ -784,7 +783,6 @@ pub async fn pending_pairings(post: Function, root: JsValue) -> Result<String, J
                     "invite": (entry.request.invite != [0; 16])
                         .then(|| hex::encode(entry.request.invite)),
                     "requestedAtMs": entry.requested_at_ns / 1_000_000,
-                    "country": entry.country,
                 })
             })
             .collect(),

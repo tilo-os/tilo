@@ -34,10 +34,8 @@ pub use tls::TlsSource;
 use bytes::Bytes;
 use http_body_util::BodyExt as _;
 use hyper::{Method, Request, Response, StatusCode, header};
-use tilo_relay_protocol::certify::CertifyReply;
 pub(crate) use tilo_relay_protocol::web as protocol;
-use tilo_relay_protocol::web::{API_PREFIX, HostAddress, HostInfo, MAX_POLL_MS, MAX_REQUEST_BYTES};
-use tilo_user_identity::CertificationRequest;
+use tilo_relay_protocol::web::{API_PREFIX, HostAddress, HostInfo, MAX_REQUEST_BYTES};
 
 use crate::daemon::{Relay, RelayError, WebContext};
 
@@ -60,23 +58,9 @@ pub struct WebConfig {
     /// address (the proxy is the way in), and this origin is what pages
     /// and links are told.
     pub public_origin: Option<String>,
-    /// Where the proxy in front of the host names a client's country. The
-    /// host shows it to a person approving a new device and looks nothing up
-    /// itself.
-    pub country: Option<CountryHeader>,
     /// The fetch proxy this host serves its members' pages at
     /// [`protocol::FETCH_PATH`], if any.
     pub fetch_proxy: Option<FetchProxySetup>,
-}
-
-/// The request header a proxy in front of the host names the client's
-/// country in (such as a CDN's `CF-IPCountry`), and the peers it is
-/// believed from: that proxy, never the open internet.
-#[derive(Clone, Debug)]
-pub struct CountryHeader {
-    pub name: String,
-    /// The peers whose header is believed.
-    pub proxies: tilo_relay_protocol::proxies::TrustedProxies,
 }
 
 /// A running browser listener. Dropping it stops serving.
@@ -182,11 +166,6 @@ struct Web {
     profiles: Arc<envelopes::Envelopes>,
     /// Who is here and what they are doing, for `/here`.
     here: Arc<here::Here>,
-    /// [`WebConfig::country`], its header name parsed.
-    country: Option<(
-        hyper::header::HeaderName,
-        tilo_relay_protocol::proxies::TrustedProxies,
-    )>,
     /// The fetch proxy, when [`WebConfig::fetch_proxy`] asked for one, and the
     /// tokens its pages' sessions take for it.
     fetch: Option<tilo_net::proxy::host::FetchProxy>,
@@ -350,7 +329,6 @@ impl Relay {
                 self.state_root().join("profiles"),
             )),
             here: Arc::new(here::Here::new(here::from_env())),
-            country: config.country.and_then(country_header),
             fetch: fetch.proxy,
             grants: Arc::default(),
             presence: plane.authority(),
@@ -424,7 +402,7 @@ async fn accept_loop(
 ) {
     let mut connections = tokio::task::JoinSet::new();
     loop {
-        let Ok((stream, peer)) = tcp.accept().await else {
+        let Ok((stream, _)) = tcp.accept().await else {
             continue;
         };
         while connections.try_join_next().is_some() {}
@@ -436,7 +414,7 @@ async fn accept_loop(
             else {
                 return;
             };
-            serve_connection(tls, web, peer).await;
+            serve_connection(tls, web).await;
         });
     }
 }
@@ -445,25 +423,20 @@ async fn accept_loop(
 async fn plain_accept_loop(tcp: tokio::net::TcpListener, web: Arc<Web>) {
     let mut connections = tokio::task::JoinSet::new();
     loop {
-        let Ok((stream, peer)) = tcp.accept().await else {
+        let Ok((stream, _)) = tcp.accept().await else {
             continue;
         };
         while connections.try_join_next().is_some() {}
-        connections.spawn(serve_connection(stream, web.clone(), peer));
+        connections.spawn(serve_connection(stream, web.clone()));
     }
 }
 
-/// The TCP peer a request arrived from.
-#[derive(Clone, Copy)]
-struct Peer(SocketAddr);
-
-async fn serve_connection<Io>(io: Io, web: Arc<Web>, peer: SocketAddr)
+async fn serve_connection<Io>(io: Io, web: Arc<Web>)
 where
     Io: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static,
 {
-    let service = hyper::service::service_fn(move |mut request: Request<hyper::body::Incoming>| {
+    let service = hyper::service::service_fn(move |request: Request<hyper::body::Incoming>| {
         let web = web.clone();
-        request.extensions_mut().insert(Peer(peer));
         async move { Ok::<_, Infallible>(handle(&web, request).await) }
     });
     let _ = hyper_util::server::conn::auto::Builder::new(hyper_util::rt::TokioExecutor::new())
@@ -626,20 +599,6 @@ fn decode<T: serde::de::DeserializeOwned>(bytes: &[u8]) -> Result<T, Response<Bo
     postcard::from_bytes(bytes).map_err(|_| status(StatusCode::BAD_REQUEST, "malformed body"))
 }
 
-/// The client's country as the proxy in front of the host names it
-/// ([`WebConfig::country`]): from a trusted peer only, and only a two-letter
-/// code.
-fn country(web: &Web, request: &Request<hyper::body::Incoming>) -> Option<String> {
-    let (header, proxies) = web.country.as_ref()?;
-    let peer = request.extensions().get::<Peer>()?;
-    if !proxies.contains(peer.0.ip()) {
-        return None;
-    }
-    let value = request.headers().get(header)?.to_str().ok()?.trim();
-    (value.len() == 2 && value.bytes().all(|byte| byte.is_ascii_uppercase()) && value != "XX")
-        .then(|| value.to_owned())
-}
-
 /// Headers a page may send to the browser routes.
 const ALLOWED_HEADERS: &str = "content-type, x-tilo-session";
 
@@ -778,10 +737,6 @@ async fn admitted_anywhere(web: &Web, user: [u8; 32]) -> bool {
     web.context.relay.admits(user).await
 }
 
-fn wait(ms: u32) -> Duration {
-    Duration::from_millis(u64::from(ms.min(MAX_POLL_MS)))
-}
-
 #[allow(
     clippy::too_many_lines,
     reason = "one routing table: every browser route and its body type in one place"
@@ -801,26 +756,10 @@ async fn route(
     else {
         return Err(status(StatusCode::NOT_FOUND, "not found"));
     };
-    let country = country(web, &request);
     let (_, bytes) = body(request, MAX_REQUEST_BYTES).await?;
     let certification = &web.context.certification;
     match route {
         "/host" => Ok(encoded(&web.host_info)),
-        "/certify" => {
-            let request: CertificationRequest = decode(&bytes)?;
-            // A member of a workspace here pairs their devices through it;
-            // the member's own devices answer (`/certify/approve`).
-            let member = admitted_anywhere(web, request.user_public_key).await;
-            Ok(encoded(&match certification.enqueue_member(
-                request,
-                tilo_clock::unix_now_ns(),
-                member,
-                country,
-            ) {
-                Ok((_, pairing_code, _)) => CertifyReply::Pending { pairing_code },
-                Err(reason) => CertifyReply::Denied { reason },
-            }))
-        }
         "/certify/approve" => {
             let approval: crate::certify::MemberApproval = decode(&bytes)?;
             if !admitted_anywhere(web, approval.user_public_key).await {
@@ -831,12 +770,6 @@ async fn route(
             }
             Ok(encoded(
                 &certification.member_approve(approval, tilo_clock::unix_now_ns()),
-            ))
-        }
-        "/certify/wait" => {
-            let digest: [u8; 32] = decode(&bytes)?;
-            Ok(encoded(
-                &certification.wait(&digest, wait(MAX_POLL_MS)).await,
             ))
         }
         "/join" => {
@@ -899,17 +832,4 @@ async fn route(
         },
         _ => Err(status(StatusCode::NOT_FOUND, "not found")),
     }
-}
-
-/// The configured country header as the listener reads it; a name that is not
-/// a valid header name is no header.
-fn country_header(
-    country: CountryHeader,
-) -> Option<(
-    hyper::header::HeaderName,
-    tilo_relay_protocol::proxies::TrustedProxies,
-)> {
-    hyper::header::HeaderName::try_from(country.name.as_str())
-        .ok()
-        .map(|name| (name, country.proxies))
 }

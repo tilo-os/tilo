@@ -14,8 +14,8 @@
 //! - [`error`] — why a call to a host failed, and why a host turned a device
 //!   away;
 //! - [`https`] — what a page asks a host before it holds a session, over
-//!   HTTPS through its `fetch`: the host's certificate and address,
-//!   certification, pairing, and joining a workspace.
+//!   HTTPS through its `fetch`: the host's certificate and address, a
+//!   member's approval of their own device, and joining a workspace.
 //!
 //! The messages themselves are defined in [`tilo_relay_protocol`]. Without
 //! the default `iroh` feature certification is left out and the signer seam,
