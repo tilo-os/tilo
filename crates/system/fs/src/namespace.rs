@@ -411,8 +411,6 @@ pub struct Namespace {
     record_index: BTreeMap<FileRecordId, IndexedRecord>,
     record_index_order: Vec<FileRecordId>,
     record_index_revision: String,
-    record_index_by_node: HashMap<String, FileRecordId>,
-    record_index_children: HashMap<String, BTreeSet<String>>,
     /// Stable record identities that are currently multiply bound.  They are
     /// deliberately absent from the public index until a full reconciliation
     /// proves the ambiguity gone.
@@ -627,8 +625,6 @@ impl Namespace {
             record_index: BTreeMap::new(),
             record_index_order: Vec::new(),
             record_index_revision: String::new(),
-            record_index_by_node: HashMap::new(),
-            record_index_children: HashMap::new(),
             record_index_ambiguous: HashSet::new(),
             record_index_digest: RecordIndexDigest::default(),
             tree: TreeIndex::default(),
@@ -1160,7 +1156,9 @@ impl Namespace {
 
     /// Reconstruct the index once while loading or after an opaque remote
     /// Automerge merge.  Serving a record-index page never calls this: page
-    /// work is a slice of `record_index`, not a document traversal.
+    /// work is a slice of `record_index`, not a document traversal.  Every
+    /// mutation this replica makes on its own refreshes only the nodes it
+    /// changed ([`Self::index_refresh_node`]).
     fn rebuild_record_index(&mut self) {
         let NodeWalk {
             tree,
@@ -1176,7 +1174,6 @@ impl Namespace {
                 .insert(id.clone());
         }
         let mut record_index = BTreeMap::new();
-        let mut by_node = HashMap::new();
         let mut queue = VecDeque::from([(ROOT_ID.to_string(), String::from("/"))]);
         let mut visited = HashSet::from([ROOT_ID.to_string()]);
         while let Some((parent, parent_path)) = queue.pop_front() {
@@ -1200,7 +1197,6 @@ impl Namespace {
                 if occurrences.get(&record_id) != Some(&1) {
                     continue;
                 }
-                by_node.insert(id.clone(), record_id);
                 record_index.insert(
                     record_id,
                     IndexedRecord {
@@ -1219,8 +1215,6 @@ impl Namespace {
         }
         self.record_index = record_index;
         self.record_index_order = self.record_index.keys().copied().collect();
-        self.record_index_by_node = by_node;
-        self.record_index_children = children;
         self.record_index_ambiguous = occurrences
             .into_iter()
             .filter_map(|(record_id, count)| (count > 1).then_some(record_id))
@@ -1338,71 +1332,87 @@ impl Namespace {
         self.record_index_revision = hasher.finalize().to_hex().to_string();
     }
 
-    /// Incrementally admit a freshly created node. Creation is the hot path
-    /// for imports, so it must not turn N creates into N full document walks.
-    /// More complex remote/reparent operations deliberately use the one-shot
-    /// reconciler above, outside xattr serving.
-    fn index_insert_node(&mut self, id: &str) {
-        let Some(node) = self.node(id) else { return };
+    /// Bring one node's catalogue row in line with the document: a create, a
+    /// rename, a move and a trash all end here, so each of them costs the one
+    /// node (its row's path comes from the structural index) instead of a
+    /// walk over the whole namespace.
+    fn index_refresh_node(&mut self, id: &str) {
+        if id == ROOT_ID {
+            return;
+        }
         let Some(record_id) = self.record_id_for_id(id) else {
             return;
         };
-        if self.record_index_ambiguous.contains(&record_id) {
-            return;
-        }
-        if let Some(previous) = self.record_index.remove(&record_id) {
+        let existing = self.record_index.get(&record_id).cloned();
+        if let Some(row) = existing.as_ref().filter(|row| row.node_id != id) {
             // A duplicate durable identity is withheld until a full
             // reconciliation can represent the ambiguity fail-closed.
-            self.record_index_digest.remove(&previous);
-            self.record_index_by_node.remove(&previous.node_id);
-            if let Some(children) = self.record_index_children.get_mut(&previous.parent_id) {
-                children.remove(&previous.node_id);
-            }
-            if let Ok(position) = self.record_index_order.binary_search(&record_id) {
-                self.record_index_order.remove(position);
-            }
+            let row = row.clone();
+            self.index_drop_row(&row);
             self.record_index_ambiguous.insert(record_id);
             self.update_record_index_revision();
             return;
         }
-        let parent_id = str_at(&self.doc, &node, "parent").unwrap_or_default();
-        let parent_path = if parent_id == ROOT_ID {
-            Some(String::from("/"))
+        let desired = if self.record_index_ambiguous.contains(&record_id) {
+            None
         } else {
-            self.record_index_by_node
-                .get(&parent_id)
-                .and_then(|record_id| self.record_index.get(record_id))
-                .map(|parent| parent.path.clone())
+            self.path_for_id(id).map(|path| IndexedRecord {
+                record_id,
+                node_id: id.to_string(),
+                parent_id: self.parent_of(id).unwrap_or_default(),
+                path,
+                is_dir: self.kind_of(id) == NodeKind::Dir,
+            })
         };
-        let Some(parent_path) = parent_path else {
+        if existing == desired {
             return;
-        };
-        let name = read_name(&self.doc, &node, "name").unwrap_or_default();
-        let path = if parent_path == "/" {
-            format!("/{}", escape_path_name(name.as_bytes()))
-        } else {
-            format!("{parent_path}/{}", escape_path_name(name.as_bytes()))
-        };
-        self.record_index_children
-            .entry(parent_id.clone())
-            .or_default()
-            .insert(id.to_string());
-        self.record_index_by_node.insert(id.to_string(), record_id);
-        let record = IndexedRecord {
-            record_id,
-            node_id: id.to_string(),
-            parent_id,
-            path,
-            is_dir: self.kind_of(id) == NodeKind::Dir,
-        };
-        self.record_index_digest.add(&record);
-        self.record_index.insert(record_id, record);
+        }
+        if let Some(row) = existing {
+            self.index_drop_row(&row);
+        }
+        if let Some(row) = desired {
+            self.index_admit_row(row);
+        }
+        self.update_record_index_revision();
+    }
+
+    /// Re-path `root` and every node below it after a placement change, so a
+    /// moved subtree costs its own size and nothing else in the catalogue is
+    /// touched.
+    fn index_refresh_subtree(&mut self, root: &str) {
+        let mut visited = HashSet::from([root.to_string()]);
+        let mut queue = VecDeque::from([root.to_string()]);
+        while let Some(id) = queue.pop_front() {
+            queue.extend(
+                self.tree
+                    .children
+                    .get(&id)
+                    .into_iter()
+                    .flat_map(BTreeMap::values)
+                    .flat_map(BTreeSet::iter)
+                    .filter(|child| visited.insert((*child).clone()))
+                    .cloned(),
+            );
+            self.index_refresh_node(&id);
+        }
+    }
+
+    fn index_drop_row(&mut self, row: &IndexedRecord) {
+        self.record_index.remove(&row.record_id);
+        self.record_index_digest.remove(row);
+        if let Ok(position) = self.record_index_order.binary_search(&row.record_id) {
+            self.record_index_order.remove(position);
+        }
+    }
+
+    fn index_admit_row(&mut self, row: IndexedRecord) {
+        self.record_index_digest.add(&row);
         let position = self
             .record_index_order
-            .binary_search(&record_id)
+            .binary_search(&row.record_id)
             .unwrap_or_else(|position| position);
-        self.record_index_order.insert(position, record_id);
-        self.update_record_index_revision();
+        self.record_index_order.insert(position, row.record_id);
+        self.record_index.insert(row.record_id, row);
     }
 
     #[cfg(test)]
@@ -1937,6 +1947,7 @@ impl Namespace {
         self.set_field(id, PLACEMENT_NAME_KEY, name.as_bytes().to_vec());
         self.set_field(id, "name", name.as_bytes().to_vec());
         self.set_field(id, "mtime", mtime);
+        self.index_refresh_subtree(id);
     }
 
     /// Assign the names of all live children of `parent_id` that ask for one
@@ -1988,17 +1999,17 @@ impl Namespace {
                 }
             }
             if !moved {
-                let mut changed = false;
+                let mut renamed = Vec::new();
                 for (id, name) in current {
                     if self.name_of(&id).as_ref() != Some(&name) {
                         self.set_field(&id, "name", name.as_bytes().to_vec());
-                        changed = true;
+                        renamed.push(id);
                     }
                 }
-                if changed {
-                    self.rebuild_record_index();
+                for id in &renamed {
+                    self.index_refresh_subtree(id);
                 }
-                return Ok(changed);
+                return Ok(!renamed.is_empty());
             }
             current = next;
         }
@@ -2029,7 +2040,6 @@ impl Namespace {
         let mut candidate = self.clone();
         let delta = candidate.apply_replacement_transaction_in_place(transaction)?;
         if delta.is_some() {
-            candidate.rebuild_record_index();
             *self = candidate;
         }
         Ok(delta)
@@ -2152,7 +2162,6 @@ impl Namespace {
                 let mut candidate = self.clone();
                 let delta = candidate.apply_atomic_save_in_place(transaction)?;
                 if delta.is_some() {
-                    candidate.rebuild_record_index();
                     *self = candidate;
                 }
                 Ok(delta)
@@ -2164,7 +2173,6 @@ impl Namespace {
                 let mut candidate = self.clone();
                 let delta = candidate.apply_keep_both_transaction_in_place(transaction)?;
                 if delta.is_some() {
-                    candidate.rebuild_record_index();
                     *self = candidate;
                 }
                 Ok(delta)
@@ -2173,7 +2181,6 @@ impl Namespace {
                 let mut candidate = self.clone();
                 let delta = candidate.apply_merge_transaction_in_place(transaction)?;
                 if delta.is_some() {
-                    candidate.rebuild_record_index();
                     *self = candidate;
                 }
                 Ok(delta)
@@ -3072,6 +3079,7 @@ impl Namespace {
         self.tree
             .place(&id, parent_id.to_string(), name.to_vec().into());
         self.tree.bind_record(&id, record_id);
+        self.index_refresh_node(&id);
         Some(id)
     }
 
@@ -3085,9 +3093,7 @@ impl Namespace {
     ) -> Option<u64> {
         let parent_id = self.ino_to_id.get(&parent_ino)?.clone();
         let id = self.create_node(&parent_id, name, NodeKind::File, hash, size, mtime)?;
-        let ino = self.ino_for_id(&id);
-        self.index_insert_node(&id);
-        Some(ino)
+        Some(self.ino_for_id(&id))
     }
 
     /// Create a projected file for an already-authoritative stable record.
@@ -3114,15 +3120,16 @@ impl Namespace {
             return None;
         }
         let parent_id = self.ino_to_id.get(&parent_ino)?.clone();
-        let id = self.create_node(&parent_id, name, NodeKind::File, hash, size, mtime)?;
-        let obj = self.node(&id)?;
-        self.doc
-            .put(&obj, RECORD_ID_KEY, record_id.0.to_string())
-            .ok()?;
-        self.tree.bind_record(&id, record_id);
-        let ino = self.ino_for_id(&id);
-        self.index_insert_node(&id);
-        Some(ino)
+        let id = self.create_node_as(
+            &parent_id,
+            name,
+            NodeKind::File,
+            hash,
+            size,
+            mtime,
+            record_id,
+        )?;
+        Some(self.ino_for_id(&id))
     }
 
     /// [`Self::create_projected_file`] whose content is the verified
@@ -3177,7 +3184,6 @@ impl Namespace {
             .put(&obj, CONTENT_REVISION_KEY, ScalarValue::Bytes(encoded))
             .ok()?;
         let ino = self.ino_for_id(&id);
-        self.index_insert_node(&id);
         if !self.install_verified_content_revision(*revision) {
             let _ = self.remove(ino);
             return None;
@@ -3193,9 +3199,7 @@ impl Namespace {
     ) -> Option<u64> {
         let parent_id = self.ino_to_id.get(&parent_ino)?.clone();
         let id = self.create_node(&parent_id, name, NodeKind::Dir, None, 0, mtime)?;
-        let ino = self.ino_for_id(&id);
-        self.index_insert_node(&id);
-        Some(ino)
+        Some(self.ino_for_id(&id))
     }
 
     /// Create a directory whose stable identity has already been signed.
@@ -3218,15 +3222,8 @@ impl Namespace {
             return None;
         }
         let parent_id = self.ino_to_id.get(&parent_ino)?.clone();
-        let id = self.create_node(&parent_id, name, NodeKind::Dir, None, 0, mtime)?;
-        let obj = self.node(&id)?;
-        self.doc
-            .put(&obj, RECORD_ID_KEY, record_id.0.to_string())
-            .ok()?;
-        self.tree.bind_record(&id, record_id);
-        let ino = self.ino_for_id(&id);
-        self.index_insert_node(&id);
-        Some(ino)
+        let id = self.create_node_as(&parent_id, name, NodeKind::Dir, None, 0, mtime, record_id)?;
+        Some(self.ino_for_id(&id))
     }
 
     // Document files: content lives as a CRDT, not opaque bytes.
@@ -3246,9 +3243,7 @@ impl Namespace {
         let node = self.node(&id)?;
         let root = self.doc.put_object(&node, "doc", ObjType::Map).ok()?;
         tilo_doc::model::init(&mut self.doc, &root);
-        let ino = self.ino_for_id(&id);
-        self.index_insert_node(&id);
-        Some(ino)
+        Some(self.ino_for_id(&id))
     }
 
     pub fn document_codec(&self, ino: u64) -> Option<String> {
@@ -3688,7 +3683,7 @@ impl Namespace {
         let cur = self.parent_of(&id).unwrap_or_else(|| ROOT_ID.to_string());
         self.set_field(&id, "prev_parent", cur.clone());
         self.set_field(&id, "parent", TRASH_ID);
-        self.rebuild_record_index();
+        self.index_refresh_subtree(&id);
         // A delete may release a name another signed record was waiting for.
         let _ = self.settle_structural_conflicts(&cur);
         true
@@ -3757,6 +3752,7 @@ impl Namespace {
             return false;
         }
         // POSIX rename replaces the target: if the destination name is occupied, trash it.
+        let mut replaced = None;
         if let Some(existing) = self.child_named(&new_parent_id, new_name)
             && existing != id
         {
@@ -3768,6 +3764,7 @@ impl Namespace {
                 .unwrap_or_else(|| ROOT_ID.to_string());
             self.set_field(&existing, "prev_parent", ep);
             self.set_field(&existing, "parent", TRASH_ID);
+            replaced = Some(existing);
         }
         let cur = self.parent_of(&id).unwrap_or_else(|| ROOT_ID.to_string());
         self.set_field(&id, "prev_parent", cur.clone());
@@ -3775,7 +3772,10 @@ impl Namespace {
         self.set_field(&id, PLACEMENT_NAME_KEY, new_name.to_vec());
         self.set_field(&id, "name", new_name.to_vec());
         self.set_field(&id, "mtime", mtime);
-        self.rebuild_record_index();
+        self.index_refresh_subtree(&id);
+        if let Some(replaced) = replaced {
+            self.index_refresh_subtree(&replaced);
+        }
         let _ = self.settle_structural_conflicts(&new_parent_id);
         if cur != new_parent_id {
             let _ = self.settle_structural_conflicts(&cur);
@@ -3815,7 +3815,7 @@ impl Namespace {
     /// Break every move-cycle deterministically: the lowest-id node in each cycle
     /// reverts to `prev_parent` (or ROOT). Pure function of the doc, so every peer computes the same repair.
     pub fn resolve(&mut self) -> bool {
-        let mut changed = false;
+        let mut repaired = Vec::new();
         let guard = self.doc.keys(&self.nodes).count().saturating_add(2);
         for _ in 0..guard {
             let Some(cycle) = self.find_cycle() else {
@@ -3837,12 +3837,12 @@ impl Namespace {
                 pp
             };
             self.set_field(&loser, "parent", &*target);
-            changed = true;
+            repaired.push(loser);
         }
-        if changed {
-            self.rebuild_record_index();
+        for id in &repaired {
+            self.index_refresh_subtree(id);
         }
-        changed
+        !repaired.is_empty()
     }
 
     // Path + conflict helpers (used by tests and conflict.rs).

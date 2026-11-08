@@ -6,6 +6,8 @@
 //! record id from that object. `node_lookup_count` is the same unit
 //! `crates/system/fs/tests/performance_gate.rs` bounds for a listing, so a
 //! per-field re-read fails here rather than in a number nobody attributes.
+//! A rename or move of this replica's own is not such a walk: it re-paths
+//! the moved subtree only, which the same counter proves.
 
 use automerge::ObjType;
 use automerge::transaction::Transactable;
@@ -115,4 +117,104 @@ fn a_node_under_the_reserved_root_id_keeps_the_root_record_its_own() {
     assert!(ns.tree.nodes_of(own_record).any(|id| id == ROOT_ID));
     assert!(!ns.tree.nodes_of(root_record).any(|id| id == ROOT_ID));
     assert!(ns.indexed_record(own_record).is_none());
+}
+
+/// A workspace the size a real Files tree reaches.
+const WIDE_DIRECTORIES: usize = 100;
+const WIDE_FILES: usize = 1_000;
+
+fn wide_tree() -> Namespace {
+    let mut ns = Namespace::new("a").unwrap();
+    for directory in 0..WIDE_DIRECTORIES {
+        let dir = ns
+            .create_dir(ROOT_INO, format!("dir-{directory:03}"), 1)
+            .unwrap();
+        for file in 0..WIDE_FILES {
+            ns.create_file(dir, format!("f-{file:04}"), Some(&h(1)), 1, file as u64)
+                .unwrap();
+        }
+    }
+    ns
+}
+
+/// A rename or move re-paths the moved node and its descendants, not the
+/// workspace: on 100,100 nodes it reads a slice of the catalogue, and the
+/// rows it leaves behind equal a from-scratch rebuild.
+#[test]
+fn a_rename_repaths_only_the_moved_subtree() {
+    let mut ns = wide_tree();
+    let nodes = ns.doc.keys(&ns.nodes).count() as u64;
+    assert_eq!(nodes, 100_100, "the fixture is the whole tree");
+    assert_eq!(ns.indexed_record_count() as u64, nodes);
+
+    // A file renamed in a 1,000-entry directory.
+    let dir = ns.lookup(ROOT_INO, "dir-000").unwrap().ino.0;
+    let before = ns.node_lookup_count();
+    let start = std::time::Instant::now();
+    assert!(ns.rename(dir, "f-0000", dir, "renamed", 2));
+    let file_rename_ms = start.elapsed().as_millis();
+    let file_rename = ns.node_lookup_count() - before;
+
+    // A 1,000-entry directory moved into another one: its whole subtree.
+    let target = ns.lookup(ROOT_INO, "dir-002").unwrap().ino.0;
+    let before = ns.node_lookup_count();
+    let start = std::time::Instant::now();
+    assert!(ns.rename(ROOT_INO, "dir-001", target, "moved", 3));
+    let dir_move_ms = start.elapsed().as_millis();
+    let dir_move = ns.node_lookup_count() - before;
+
+    eprintln!(
+        "WORK rename-file-in-100k-tree: {file_rename} lookups, {file_rename_ms} ms \
+         ({} nodes)",
+        ns.indexed_record_count()
+    );
+    eprintln!("WORK rename-1000-entry-dir-in-100k-tree: {dir_move} lookups, {dir_move_ms} ms");
+
+    // The rows are where the moves put them.
+    let indexed_path = |ns: &Namespace, ino: u64| {
+        ns.indexed_record(ns.record_id_for(ino).unwrap())
+            .expect("a live node has a catalogue row")
+            .path
+    };
+    let moved = ns.lookup(dir, "renamed").unwrap().ino.0;
+    assert_eq!(indexed_path(&ns, moved), "/dir-000/renamed");
+    let moved_dir = ns.lookup(target, "moved").unwrap().ino.0;
+    assert_eq!(indexed_path(&ns, moved_dir), "/dir-002/moved");
+    let nested = ns.lookup(moved_dir, "f-0001").unwrap().ino.0;
+    assert_eq!(indexed_path(&ns, nested), "/dir-002/moved/f-0001");
+    assert!(ns.lookup(ROOT_INO, "dir-001").is_none());
+
+    // A rename reads what it touches, never the catalogue: the entries of
+    // the directories it joins or leaves (their conflict check) and the moved
+    // subtree. The whole-tree walk this replaced read 4-5 documents per node.
+    let touched = WIDE_FILES as u64 + 1;
+    assert!(
+        file_rename <= 4 * touched + 64,
+        "a file rename read {file_rename} node documents, more than the {touched} entries \
+         of its directory"
+    );
+    assert!(
+        dir_move <= 8 * touched + 64,
+        "moving a 1,000-entry directory read {dir_move} node documents, more than its \
+         {touched} entries and the directory it joined"
+    );
+
+    let mut rebuilt = ns.clone();
+    let start = std::time::Instant::now();
+    rebuilt.rebuild_record_index();
+    eprintln!("WORK rebuild-100k-tree: {} ms", start.elapsed().as_millis());
+    assert_eq!(ns.record_index, rebuilt.record_index, "rows");
+    assert_eq!(ns.record_index_order, rebuilt.record_index_order, "order");
+    assert_eq!(
+        ns.record_index_digest, rebuilt.record_index_digest,
+        "digest"
+    );
+    assert_eq!(
+        ns.record_index_revision, rebuilt.record_index_revision,
+        "revision"
+    );
+    assert_eq!(
+        ns.record_index_ambiguous, rebuilt.record_index_ambiguous,
+        "ambiguity"
+    );
 }
