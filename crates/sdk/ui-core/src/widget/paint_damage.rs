@@ -51,24 +51,36 @@ thread_local! {
 }
 
 /// A scene to draw one part into, its last frame's drawing cleared.
+///
+/// A thread that is past its own cleanup keeps no spares: the pool belongs
+/// to the thread, so the part takes a fresh scene rather than reaching for
+/// one that is already gone.
 fn take_scene() -> Scene {
-    DRAW_SCENES.with_borrow_mut(|spare| {
-        let Some(scene) = spare.scenes.pop() else {
-            return Scene::default();
-        };
-        spare.tags = spare.tags.saturating_sub(held(&scene));
-        scene
-    })
+    DRAW_SCENES
+        .try_with(|pool| {
+            let mut spare = pool.borrow_mut();
+            let Some(scene) = spare.scenes.pop() else {
+                return Scene::default();
+            };
+            spare.tags = spare.tags.saturating_sub(held(&scene));
+            scene
+        })
+        .unwrap_or_default()
 }
 
 /// The part's drawing is in the frame; keep its scene for the next one.
+///
+/// A part dropped while its thread tears down (a whole tree going away at the
+/// end of a thread) hands its scene to the allocator: the pool is that thread's
+/// and may be gone already, and a drop that reached for it would panic.
 fn spare_scene(mut scene: Scene) {
     let tags = held(&scene);
     if tags > SPARE_PART_TAGS {
         return;
     }
     scene.reset();
-    DRAW_SCENES.with_borrow_mut(|spare| {
+    let _ = DRAW_SCENES.try_with(|pool| {
+        let mut spare = pool.borrow_mut();
         if spare.scenes.len() < SPARE_SCENES && spare.tags + tags <= SPARE_ENTRIES {
             spare.scenes.push(scene);
             spare.tags += tags;

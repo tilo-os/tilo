@@ -689,7 +689,10 @@ impl Widget for NavRow {
                 )
             }
             NavRowKind::Caption { caption, .. } => (caption.clone(), None, None),
-            NavRowKind::Pending { .. } => (String::new(), None, None),
+            // A row standing in for an item still being read says so, as every
+            // skeleton in a window does: a person who reaches it with a
+            // keyboard hears what it waits for, not an unnamed control.
+            NavRowKind::Pending { .. } => ("Loading".to_owned(), None, None),
         };
         // A destination is an entry of the tree the list is: it says it is one, and whether it
         // is the one the person picked. A header and a caption group what stands under them.

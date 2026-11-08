@@ -2992,7 +2992,7 @@ impl NavShell {
                 .skip(shown)
                 .enumerate()
                 .map(|(index, action)| {
-                    let node = action.accessibility();
+                    let node = action_node(&**action);
                     let name = node
                         .as_ref()
                         .and_then(|node| node.name.clone())
@@ -4526,6 +4526,17 @@ fn button_of(action: &dyn Widget) -> Option<&Button> {
         .children()
         .into_iter()
         .find_map(|child| child.as_any().and_then(|any| any.downcast_ref::<Button>()))
+}
+
+/// The accessibility node a header action speaks with: its own, or the one
+/// of the control it shows as, for an action wrapped in a view of the
+/// window's state (which is presentational and says nothing itself). The
+/// More menu reads the action's words and state from it.
+fn action_node(action: &dyn Widget) -> Option<crate::a11y::AccessNode> {
+    if let Some(node) = action.accessibility() {
+        return Some(node);
+    }
+    action.children().into_iter().find_map(action_node)
 }
 
 /// [`button_of`], to change how it shows.
