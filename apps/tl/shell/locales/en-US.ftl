@@ -345,6 +345,11 @@ d-6m3fzjng = Key
 
 d-tljqo2yo = Name
 
+d-3uxxhan3 = Current
+    .doc = Whether it is the workspace in front, which the desk shows.
+
+d-wydxt4zu-filter-current = Current
+
 d-k6bv5cxt = Arrangement row
     .doc = A row of the desk: a strip across a workspace's width, holding columns.
     .noun = { $count ->
@@ -1123,6 +1128,8 @@ d-i6kntbiy = Preset menu
     .w-desktop = Desktop
 
 d-qrahog47 = Strips view
+    .w-no-window-here-yet = No window here yet
+    .w-open-something-into-this-strip = Open something into this strip.
 
 d-4qeo26jr = Workspace rows
 
