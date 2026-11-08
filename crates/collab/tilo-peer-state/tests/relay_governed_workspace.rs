@@ -14,6 +14,10 @@
     reason = "in a test these are the assertion, not a hazard"
 )]
 
+mod common;
+
+use common::endpoint;
+
 use collab_types::CommitNamed as _;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -81,14 +85,6 @@ async fn invite(relay: &Relay, issuer: &DeviceCert, workspace: &str, person: [u8
         .await
         .unwrap();
     join::encode_invitation_text(&invitation.signed_invitation)
-}
-
-async fn endpoint(key: &SigningKey) -> iroh::Endpoint {
-    iroh::Endpoint::builder(iroh::endpoint::presets::Minimal)
-        .secret_key(iroh::SecretKey::from_bytes(&key.to_bytes()))
-        .bind()
-        .await
-        .unwrap()
 }
 
 fn text(doc: Option<Vec<u8>>, key: &str) -> Option<String> {
