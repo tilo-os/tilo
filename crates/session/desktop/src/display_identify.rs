@@ -20,26 +20,7 @@ use vello::kurbo::{Affine, Rect};
 /// short enough not to be in the way.
 pub const HOLD: Duration = Duration::from_secs(3);
 
-/// One display's card: the number Settings shows it by, and the name Settings calls it.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Label {
-    /// The display, by its monitor as the desktop names it.
-    pub monitor: String,
-    /// Its place in the person's arrangement, counting from one.
-    pub number: usize,
-    /// What Settings calls it: the built-in display, or the monitor's model.
-    pub name: String,
-}
-
-/// What Settings asked for: which request it is (asking again shows the cards again) and each
-/// display's card.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub struct Ask {
-    /// The request's stamp: the moment it was written, which changes with every press of Identify.
-    pub id: u64,
-    /// One per display the session shows something on.
-    pub labels: Vec<Label>,
-}
+pub use tilo_desktop_surface::host::chrome::{Ask, Label};
 
 /// One card as it stands on a display, in the desk's coordinates.
 #[derive(Clone, Debug, PartialEq)]

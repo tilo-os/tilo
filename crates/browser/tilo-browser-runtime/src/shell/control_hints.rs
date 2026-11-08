@@ -4,6 +4,7 @@
 
 use super::BrowserShell;
 use settings_store::control_hints::LEARNED;
+use tilo_desktop::chrome::ChromeSource;
 use tilo_desktop::control_hints::{ControlHints, HintFrame};
 use ui::control_hints::Quiet;
 use ui::text_render::TextRenderer;

@@ -12,57 +12,23 @@ use std::sync::{Arc, Mutex};
 
 use tilo_desktop::about::{AboutLinks, AboutVariant, TiloMenu};
 use tilo_desktop::chrome::ChromeIntent;
-use tilo_desktop::desktop_host::{DesktopAsk, DesktopChrome, DesktopRules, JOIN_WORKSPACE};
+use tilo_desktop::desktop_host::{
+    DesktopAsk, DesktopChrome, JOIN_WORKSPACE, NoticeTiles, PermissiveRules,
+};
 use tilo_desktop::emoji::{EmojiLink, EmojiPlace};
 use tilo_desktop::topbar::TopBarChrome;
-use tilo_desktop_model::commands::DesktopCommand;
 use tilo_desktop_model::{
     DesktopTree, Strip, StripId, Tab, TileContent, WindowGroup, WindowWidth, Workspace,
     WorkspaceSlot,
 };
-use tilo_desktop_surface::{
-    DesktopHandle, DesktopSurface, HostAction, HostActionSource, TileSource,
-};
+use tilo_desktop_surface::{DesktopHandle, DesktopSurface, HostAction, HostActionSource};
 use ui::a11y::Action;
 use ui::headless::FrameHarness;
 use ui::kurbo::{Affine, Rect};
 use ui::synthetic_input::{char_key, key_press, named_key};
-use ui::widget::{TileHost, Widget};
+use ui::widget::Widget;
 use winit::event::{Modifiers, WindowEvent};
 use winit::keyboard::{Key, ModifiersState, NamedKey};
-
-struct Notices;
-
-impl TileSource for Notices {
-    fn tile(&mut self, _: &Workspace, tab: &Tab) -> TileHost {
-        TileHost::new(ui::widget::TileContent::Notice {
-            title: tab.title.clone(),
-            detail: String::new(),
-        })
-    }
-}
-
-struct Rules {
-    handle: DesktopHandle,
-}
-
-impl DesktopRules for Rules {
-    fn tree(&self) -> DesktopTree {
-        self.handle.read(Clone::clone)
-    }
-
-    fn author(&self) -> String {
-        "Ada".into()
-    }
-
-    fn may(&self, _: &DesktopCommand) -> Result<(), String> {
-        Ok(())
-    }
-
-    fn may_create_workspace(&self) -> Result<(), String> {
-        Ok(())
-    }
-}
 
 fn window(id: u64, title: &str, app: &str) -> Tab {
     Tab {
@@ -124,14 +90,12 @@ struct Desk {
 /// A desk of two strips and the chrome over it, and the link the host keeps the picker through.
 fn desk() -> Desk {
     let tree = desk_tree();
-    let (surface, handle) = DesktopSurface::new(tree.clone(), 7, Box::new(Notices));
+    let (surface, handle) = DesktopSurface::new(tree.clone(), 7, Box::new(NoticeTiles));
     let link = EmojiLink::default();
     let mut chrome = DesktopChrome::new(
         handle.clone(),
         "g".into(),
-        Rc::new(Rules {
-            handle: handle.clone(),
-        }),
+        Rc::new(PermissiveRules::new(handle.clone())),
         TopBarChrome::from_tree(&tree),
         TiloMenu::new(AboutVariant::Native, &AboutLinks::default()),
         false,

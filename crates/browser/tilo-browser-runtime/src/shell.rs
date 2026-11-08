@@ -33,21 +33,21 @@ use std::rc::Rc;
 use std::sync::Arc;
 
 use tilo_desktop::about::{AboutVariant, TiloMenu};
-use tilo_desktop::chrome::{
-    AvatarAsk, ChromeIntent, ClockSnapshot, DesktopChromeSnapshot, DesktopChromeSource,
-};
+use tilo_desktop::chrome::{ChromeIntent, DesktopChromeSource};
 use tilo_desktop::collaborators::{
     CollaboratorsHit, CollaboratorsModel, CollaboratorsOverlay, RecentChange, RosterRow,
     RosterStatus,
 };
-use tilo_desktop::desktop_host::{DeskLayer, DesktopAsk, DesktopChrome, DesktopRules};
+use tilo_desktop::desktop_host::{DeskLayer, DesktopAsk, DesktopChrome};
 use tilo_desktop::launchpad::{CollaborationLaunchpad, LaunchpadAction, LaunchpadCopy};
 use tilo_desktop::profile_card::{
     LazyProfileCard, ProfileAction, ProfileChoice, ProfileGroup, ProfileModel,
 };
 use tilo_desktop::topbar::TopBarChrome;
-use tilo_desktop_model::commands::DesktopCommand;
-use tilo_desktop_model::{DesktopTree, StripId, TabId};
+use tilo_desktop_model::commands::Standing;
+use tilo_desktop_model::ownership::Authors;
+use tilo_desktop_model::{DesktopTree, TabId};
+use tilo_desktop_surface::host::chrome::{ChromeSource, Facts, HostChrome, Notices};
 use tilo_desktop_surface::navigation::{ChromeEffect, Verb};
 use tilo_desktop_surface::{DesktopHandle, DesktopSurface, HostActionSource};
 use ui::kurbo::{Affine, Point, Rect};
@@ -167,78 +167,68 @@ struct PageChrome {
     authorship: Authorship,
     notifications: tilo_desktop_surface::DesktopNotifications,
     intents: RefCell<Vec<ChromeIntent>>,
-    /// `(tree revision, minute, who-is-here revision, notifications
-    /// revision, standing)` the snapshot revision was last bumped for.
-    seen: Cell<(u64, i64, u64, u64, u8)>,
-    revision: Cell<u64>,
+    /// The host of the workspace shown, named beside it.
+    host: Option<String>,
     wake: Arc<dyn Fn() + Send + Sync>,
     /// The page takes invitations ([`HostOffers::invite`]): the bar keeps
     /// its invite button.
     invite: bool,
 }
 
-impl DesktopChromeSource for PageChrome {
-    fn snapshot(&self) -> DesktopChromeSnapshot {
-        let clock = ClockSnapshot::now();
-        let seen = (
-            self.handle.revision(),
-            clock.unix_seconds.div_euclid(60),
-            self.here.borrow().revision(),
-            self.notifications.revision(),
-            self.shared.standing.code(),
-        );
-        if self.seen.get() != seen {
-            self.seen.set(seen);
-            self.revision.set(self.revision.get().wrapping_add(1));
+impl ChromeSource for PageChrome {
+    fn handle(&self) -> &DesktopHandle {
+        &self.handle
+    }
+
+    fn person(&self) -> &str {
+        &self.authorship.author
+    }
+
+    fn people_revision(&self) -> u64 {
+        self.here.borrow().revision()
+    }
+
+    fn place_people(&self, tree: &mut DesktopTree) {
+        let people = self.people(tree);
+        tilo_desktop::here::overlay_collaborators(tree, &people);
+    }
+
+    fn with_standing<R>(&self, answer: impl FnOnce(&Standing<'_>) -> R) -> R {
+        let members = self.shared.members.borrow();
+        let standing = self
+            .shared
+            .standing_of(&self.authorship.author, members.as_ref());
+        answer(&standing)
+    }
+
+    fn with_authors<R>(&self, answer: impl FnOnce(&mut Authors) -> R) -> R {
+        answer(&mut self.authorship.authors.borrow_mut())
+    }
+
+    /// This page's person as everyone here sees them: their name (numbered when someone else
+    /// here shares it) and colour.
+    fn own_chip(&self) -> tilo_desktop::chrome::OwnChip {
+        let here = self.here.borrow();
+        let (name, rgb) = own_identity(&here);
+        // Their root key, which wears the picture they chose.
+        let identity = here.own_user().unwrap_or_default().to_owned();
+        tilo_desktop::chrome::OwnChip {
+            name,
+            rgb,
+            identity,
         }
-        DesktopChromeSnapshot {
-            revision: self.revision.get(),
-            clock,
-            watching: self.here.borrow().watching(),
-            own: Some(self.own_chip()),
-            // The page has no quick settings: the cluster opens the
-            // notification centre, so it is that centre's bell.
-            notifications_only: true,
-            notification_badge: u32::try_from(self.notifications.unread()).unwrap_or(u32::MAX),
-            invite: tilo_desktop::chrome::Invite::when(self.may_invite()),
-            waved: self.here.borrow().wave_notice(),
-            ..DesktopChromeSnapshot::default()
+    }
+
+    fn notices(&self) -> Notices {
+        Notices {
+            unread: u32::try_from(self.notifications.unread()).unwrap_or(u32::MAX),
+            // The page keeps no quiet hours of its own.
+            quiet: false,
         }
     }
 
-    /// The surface's tree with who is here as the active workspace's
-    /// collaborators, for the bar's avatars.
-    fn tree(&self) -> DesktopTree {
-        let mut tree = self.handle.read(Clone::clone);
-        let people = self.people(&tree);
-        tilo_desktop::here::overlay_collaborators(&mut tree, &people);
-        tree
-    }
-
-    fn intent(&self, intent: ChromeIntent) -> bool {
-        self.intents.borrow_mut().push(intent);
-        (self.wake)();
-        true
-    }
-
-    /// What the page asks about the person themselves (keeping who they
-    /// are), waiting on their avatar rather than as a banner over windows.
-    fn avatar_ask(&self) -> Option<AvatarAsk> {
-        self.handle.personal_ask().map(|ask| AvatarAsk {
-            question: ask.title,
-            detail: ask.body,
-            answer: ask.action.title,
-            open: ask.open,
-        })
-    }
-}
-
-impl PageChrome {
-    /// Whether the bar offers its invite button: the page takes invitations
-    /// and the workspace let this person invite others here when it last
-    /// answered. Someone it lets only look, or write without saying who may
-    /// join, brings nobody in; the button stands once the host says so, as
-    /// the desk's own bar keeps it by its governance.
+    /// Whether the bar offers its invite button: the page takes invitations and the workspace
+    /// let this person invite others here when it last answered.
     fn may_invite(&self) -> bool {
         self.invite
             && self
@@ -247,32 +237,41 @@ impl PageChrome {
                 .load(std::sync::atomic::Ordering::Relaxed)
     }
 
-    fn may(&self, command: &DesktopCommand) -> Result<(), String> {
-        let members = self.shared.members.borrow();
-        let standing = self
-            .shared
-            .standing_of(&self.authorship.author, members.as_ref());
-        let authors = self.authorship.authors.borrow();
-        self.handle.read(|tree| {
-            let workspace = tree
-                .active_workspace()
-                .ok_or_else(|| "There is no workspace open".to_owned())?;
-            tilo_desktop_model::commands::may_command(&standing, &authors, workspace, command)
-                .map_err(|refusal| refusal.to_string())
-        })
+    fn waved(&self) -> Option<tilo_desktop::chrome::WaveNotice> {
+        self.here.borrow().wave_notice()
     }
 
-    /// Whether this desktop's person may add a workspace to the workspace, by the
-    /// desktop's one policy.
-    fn may_create_workspace(&self) -> Result<(), String> {
-        let members = self.shared.members.borrow();
-        let standing = self
-            .shared
-            .standing_of(&self.authorship.author, members.as_ref());
-        tilo_desktop_model::commands::may_create_workspace(&standing)
-            .map_err(|refusal| refusal.to_string())
+    fn watching(&self) -> u32 {
+        self.here.borrow().watching()
     }
 
+    fn facts(&self, facts: &mut Facts) {
+        facts.number(self.here.borrow().revision());
+        facts.number(self.notifications.revision());
+        facts.number(u64::from(self.shared.standing.code()));
+    }
+
+    fn take_intent(&self, intent: ChromeIntent) -> bool {
+        self.intents.borrow_mut().push(intent);
+        true
+    }
+
+    fn wake(&self) {
+        (self.wake)();
+    }
+
+    fn workspace_host(&self) -> Option<String> {
+        self.host.clone()
+    }
+
+    /// The page's desk never takes a window full screen over the bar: it has one window of its
+    /// own and no display to give it.
+    fn fullscreen(&self) -> bool {
+        false
+    }
+}
+
+impl PageChrome {
     fn people(&self, tree: &DesktopTree) -> Vec<tilo_desktop::here::Person> {
         here_people(&self.here, &self.shared, tree)
     }
@@ -292,58 +291,6 @@ impl PageChrome {
         let pairs = here.following_pairs(people);
         tilo_desktop::collaborators::note_following(&mut rows, &pairs, here.own_id());
         (rows, pairs)
-    }
-
-    /// This page's person as everyone here sees them: their name (numbered
-    /// when someone else here shares it) and colour.
-    fn own_chip(&self) -> tilo_desktop::chrome::OwnChip {
-        let here = self.here.borrow();
-        let (name, rgb) = own_identity(&here);
-        // Their root key, which wears the picture they chose.
-        let identity = here.own_user().unwrap_or_default().to_owned();
-        tilo_desktop::chrome::OwnChip {
-            name,
-            rgb,
-            identity,
-        }
-    }
-}
-
-/// The page's answers to the desktop's layers: the workspace's policy for this
-/// page's person, and who is here.
-struct PageRules(Rc<PageChrome>, Option<String>);
-
-impl DesktopRules for PageRules {
-    fn tree(&self) -> DesktopTree {
-        DesktopChromeSource::tree(&*self.0)
-    }
-
-    fn people_revision(&self) -> u64 {
-        self.0.here.borrow().revision()
-    }
-
-    fn author(&self) -> String {
-        self.0.authorship.author.clone()
-    }
-
-    fn may(&self, command: &DesktopCommand) -> Result<(), String> {
-        self.0.may(command)
-    }
-
-    fn may_create_workspace(&self) -> Result<(), String> {
-        self.0.may_create_workspace()
-    }
-
-    fn made_strip(&self, strip: StripId) {
-        self.0
-            .authorship
-            .authors
-            .borrow_mut()
-            .insert(strip.0, self.0.authorship.author.clone());
-    }
-
-    fn workspace_host(&self) -> Option<String> {
-        self.1.clone()
     }
 }
 
@@ -461,6 +408,9 @@ pub(crate) struct BrowserShell {
     drawn_minute: Cell<i64>,
     rect: Rect,
     chrome: Rc<PageChrome>,
+    /// The bar and the desk's rules over what the page knows, which the bar and the chrome
+    /// read.
+    source: Rc<HostChrome<PageChrome>>,
     handle: DesktopHandle,
     offers: HostOffers,
     requests: HostRequests,
@@ -596,14 +546,14 @@ impl BrowserShell {
             authorship,
             notifications,
             intents: RefCell::default(),
-            seen: Cell::new((u64::MAX, 0, 0, 0, u8::MAX)),
-            revision: Cell::new(0),
+            host: offers.host.clone(),
             wake: Arc::clone(&wake),
             invite: offers.invite.is_some(),
         });
+        let source = Rc::new(HostChrome::new(Rc::clone(&chrome)));
         let tree = handle.read(Clone::clone);
         let bar = TopBarChrome::from_tree(&tree)
-            .with_chrome(chrome.clone())
+            .with_chrome(source.clone())
             .with_tilo_mark();
         let mut tilo_menu = TiloMenu::new(AboutVariant::Browser, &offers.about);
         // Offered only where the page holds a destination for reports.
@@ -630,7 +580,7 @@ impl BrowserShell {
         let top = DesktopChrome::new(
             handle.clone(),
             generation,
-            Rc::new(PageRules(Rc::clone(&chrome), offers.host.clone())),
+            source.clone(),
             bar,
             tilo_menu,
             offers.mac,
@@ -658,6 +608,7 @@ impl BrowserShell {
             drawn_minute: Cell::new(i64::MIN),
             rect: Rect::ZERO,
             chrome,
+            source,
             handle,
             offers,
             requests,
@@ -991,7 +942,7 @@ impl BrowserShell {
     /// Hand what the person picked to the composer, and open it on it.
     fn follow_picker(&mut self) -> bool {
         let names = {
-            let tree = self.chrome.tree();
+            let tree = self.source.tree();
             let mut names: Vec<String> = self
                 .chrome
                 .people(&tree)

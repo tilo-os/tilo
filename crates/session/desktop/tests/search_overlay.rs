@@ -11,54 +11,18 @@ use std::rc::Rc;
 use std::time::Duration;
 
 use tilo_desktop::about::{AboutLinks, AboutVariant, TiloMenu};
-use tilo_desktop::desktop_host::{DesktopChrome, DesktopRules};
+use tilo_desktop::desktop_host::{DesktopChrome, NoticeTiles, PermissiveRules};
 use tilo_desktop::topbar::TopBarChrome;
-use tilo_desktop_model::commands::DesktopCommand;
 use tilo_desktop_model::{
     DesktopTree, Strip, StripId, Tab, TileContent, WindowGroup, WindowWidth, Workspace,
     WorkspaceSlot,
 };
-use tilo_desktop_surface::{DesktopHandle, DesktopSurface, SearchHost, SearchHostFeed, TileSource};
+use tilo_desktop_surface::{DesktopHandle, DesktopSurface, SearchHost, SearchHostFeed};
 use ui::headless::FrameHarness;
 use ui::search::Scope;
 use ui::synthetic_input::{char_key, key_press, named_key};
-use ui::widget::TileHost;
 use winit::event::{Modifiers, WindowEvent};
 use winit::keyboard::{Key, ModifiersState, NamedKey};
-
-/// The windows of the test desk, with their content as plain notices.
-struct Notices;
-
-impl TileSource for Notices {
-    fn tile(&mut self, _: &Workspace, tab: &Tab) -> TileHost {
-        TileHost::new(ui::widget::TileContent::Notice {
-            title: tab.title.clone(),
-            detail: String::new(),
-        })
-    }
-}
-
-struct Rules {
-    handle: DesktopHandle,
-}
-
-impl DesktopRules for Rules {
-    fn tree(&self) -> DesktopTree {
-        self.handle.read(Clone::clone)
-    }
-
-    fn author(&self) -> String {
-        "Ada".into()
-    }
-
-    fn may(&self, _: &DesktopCommand) -> Result<(), String> {
-        Ok(())
-    }
-
-    fn may_create_workspace(&self) -> Result<(), String> {
-        Ok(())
-    }
-}
 
 fn window(id: u64, title: &str, app: &str) -> Tab {
     Tab {
@@ -122,7 +86,7 @@ fn session_parts(
     host: Option<Rc<dyn SearchHost>>,
     track_parts: bool,
 ) -> Session {
-    let (surface, handle) = DesktopSurface::new(tree.clone(), 7, Box::new(Notices));
+    let (surface, handle) = DesktopSurface::new(tree.clone(), 7, Box::new(NoticeTiles));
     let mut desk = FrameHarness::new(ui::state::State::new(), Box::new(surface), size);
     desk.relayout();
     if let Some(host) = host {
@@ -131,9 +95,7 @@ fn session_parts(
     let chrome = DesktopChrome::new(
         handle.clone(),
         "g".into(),
-        Rc::new(Rules {
-            handle: handle.clone(),
-        }),
+        Rc::new(PermissiveRules::new(handle.clone())),
         TopBarChrome::from_tree(tree),
         TiloMenu::new(AboutVariant::Native, &AboutLinks::default()),
         false,

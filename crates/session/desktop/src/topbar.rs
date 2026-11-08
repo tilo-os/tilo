@@ -314,77 +314,7 @@ enum BarVariant {
     Compact,
 }
 
-/// One display's bar.
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub struct BarPlace {
-    /// The display, by the desktop's id for it.
-    pub display: u32,
-    /// The display's whole rectangle: the bar stands on its top edge.
-    pub rect: Rect,
-    /// The full bar (the display in use); the others carry the compact one.
-    pub full: bool,
-}
-
-/// Where the bars go, in the bar's own coordinates.
-#[derive(Clone, Debug, Default, PartialEq)]
-pub struct Placement {
-    /// One per display. Empty: one full bar along the bar's own area.
-    pub bars: Vec<BarPlace>,
-    /// The bars a window covers, by the same key as [`Self::bars`]: `None` for the one bar of a
-    /// desk that needs no placing, a display's id for a display's own. Each takes no room there
-    /// until it is reached for.
-    pub fullscreen: Vec<Option<u32>>,
-}
-
-impl Placement {
-    /// The bars a desk of `tree` carries: one per display, the display in use full and the others
-    /// compact, each on its own display's rectangle. `fullscreen` names the monitors of the
-    /// displays a fullscreen window owns; a window the desk itself took full screen covers its
-    /// display too, as the compositor never saw that one asked for.
-    /// A desk showing a single display carries no bars here: one bar across the desk needs no
-    /// placing, and the bar's own layout already stands it there.
-    #[must_use]
-    pub fn of(tree: &DesktopTree, fullscreen: &[String]) -> Self {
-        let displays = &tree.outputs.displays;
-        let group = tree
-            .fullscreen_group()
-            .and_then(|group| tree.outputs.display_of(group));
-        let owned = || {
-            displays
-                .iter()
-                .filter(|display| {
-                    Some(display.id) == group || fullscreen.contains(&display.monitor)
-                })
-                .map(|display| Some(display.id))
-                .collect()
-        };
-        if !tree.is_partitioned() {
-            // The desk has one display, and any monitor the compositor names is that one.
-            let covered = tree.fullscreen_group().is_some() || !fullscreen.is_empty();
-            return Self {
-                bars: Vec::new(),
-                fullscreen: covered.then_some(None).into_iter().collect(),
-            };
-        }
-        let in_use = tree.outputs.focused_display();
-        Self {
-            bars: displays
-                .iter()
-                .map(|display| BarPlace {
-                    display: display.id,
-                    rect: Rect::new(
-                        display.x,
-                        display.y,
-                        display.x + display.width,
-                        display.y + display.height,
-                    ),
-                    full: Some(display.id) == in_use,
-                })
-                .collect(),
-            fullscreen: owned(),
-        }
-    }
-}
+pub use tilo_desktop_surface::host::chrome::{BarPlace, Placement};
 
 /// `DesktopTree` , not `TopBar` , lets `build_tilo_root` stay a pure function of the tree and
 /// avoids a circular borrow against the shell's owned logical `TopBar` .

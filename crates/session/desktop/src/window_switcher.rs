@@ -212,15 +212,7 @@ pub struct SwitcherView {
 }
 
 /// What the pointer asks of the walk while the switcher's panel is up.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum SwitcherAsk {
-    /// The pointer stands over this card: the walk goes there.
-    Hover(usize),
-    /// A press on this card: the walk goes there, and goes to it.
-    Choose(usize),
-    /// A press off the panel, which is no press on anything behind it: the walk ends where it is.
-    Dismiss,
-}
+pub use tilo_desktop_surface::host::contract::SwitcherAsk;
 
 /// Sizes of the panel, all read off the theme's tokens.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]

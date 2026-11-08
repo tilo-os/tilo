@@ -8,54 +8,18 @@
     reason = "in a test these are the assertion, not a hazard"
 )]
 use tilo_desktop::about::{AboutLinks, AboutVariant, TiloMenu};
-use tilo_desktop::desktop_host::{DesktopChrome, DesktopRules};
+use tilo_desktop::desktop_host::{DesktopChrome, NoticeTiles, PermissiveRules};
 use tilo_desktop::overlays::{Overlays, Slot};
 use tilo_desktop::topbar::TopBarChrome;
-use tilo_desktop_model::commands::DesktopCommand;
 use tilo_desktop_model::{
     DesktopTree, Strip, StripId, Tab, TileContent, WindowGroup, WindowWidth, Workspace,
     WorkspaceSlot,
 };
-use tilo_desktop_surface::{DesktopHandle, DesktopSurface, TileSource};
+use tilo_desktop_surface::DesktopSurface;
 use ui::headless::FrameHarness;
 use ui::kurbo::Rect;
-use ui::widget::TileHost;
 
 const DISPLAY: Rect = Rect::new(0.0, 0.0, 1280.0, 800.0);
-
-/// The windows of the test desk, with their content as plain notices.
-struct Notices;
-
-impl TileSource for Notices {
-    fn tile(&mut self, _: &Workspace, tab: &Tab) -> TileHost {
-        TileHost::new(ui::widget::TileContent::Notice {
-            title: tab.title.clone(),
-            detail: String::new(),
-        })
-    }
-}
-
-struct Rules {
-    handle: DesktopHandle,
-}
-
-impl DesktopRules for Rules {
-    fn tree(&self) -> DesktopTree {
-        self.handle.read(Clone::clone)
-    }
-
-    fn author(&self) -> String {
-        "Ada".into()
-    }
-
-    fn may(&self, _: &DesktopCommand) -> Result<(), String> {
-        Ok(())
-    }
-
-    fn may_create_workspace(&self) -> Result<(), String> {
-        Ok(())
-    }
-}
 
 fn desk_tree() -> DesktopTree {
     let tabs = vec![Tab {
@@ -98,13 +62,13 @@ fn desk_tree() -> DesktopTree {
 fn chrome() -> (FrameHarness, Overlays) {
     let tree = desk_tree();
     // The desk's own tree stays unmounted: the chrome is what the press is judged against.
-    let (_, handle) = DesktopSurface::new(tree.clone(), 7, Box::new(Notices));
+    let (_, handle) = DesktopSurface::new(tree.clone(), 7, Box::new(NoticeTiles));
     let overlays = Overlays::new();
     overlays.set_displays(&[DISPLAY], Some(DISPLAY));
     let mut chrome = DesktopChrome::new(
         handle.clone(),
         "g".into(),
-        std::rc::Rc::new(Rules { handle }),
+        std::rc::Rc::new(PermissiveRules::new(handle)),
         TopBarChrome::from_tree(&tree),
         TiloMenu::new(AboutVariant::Native, &AboutLinks::default()),
         false,

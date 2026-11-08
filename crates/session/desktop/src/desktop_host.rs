@@ -37,6 +37,7 @@ use winit::event::{ElementState, Modifiers, MouseButton, WindowEvent};
 mod cards;
 mod shortcut_actions;
 mod start_cards;
+mod testing;
 
 use start_cards::{DisplayPad, EmptyWorkspace};
 
@@ -77,6 +78,8 @@ pub use crate::host_contract::{
     REPORT_PROBLEM, SESSION_LOCK, SESSION_LOG_OUT, SESSION_RESTART, SESSION_SHUT_DOWN,
     WORKSPACE_SETTINGS,
 };
+
+pub use testing::{NoticeTiles, PermissiveRules};
 
 /// Whether the desk shown has no window. Every desk, not only a workspace's first: a new desk
 /// beside others with windows is as blank as a new workspace, and the launchpad is the way in from

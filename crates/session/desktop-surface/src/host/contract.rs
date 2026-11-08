@@ -6,9 +6,26 @@ use tilo_desktop_model::commands::DesktopCommand;
 use tilo_desktop_model::{DesktopTree, StripId, TabId, WorkspaceId, WorkspaceSlot};
 use ui::shortcut_table::{FixedAction, ShortcutAction};
 
-use crate::chrome::ChromeIntent;
-use crate::desk_widgets::music::MusicAction;
-use crate::window_switcher::SwitcherAsk;
+use crate::host::chrome::ChromeIntent;
+
+/// The person pressed one of the music widget's controls.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MusicAction {
+    PlayPause,
+    Previous,
+    Next,
+}
+
+/// What the pointer and presses on the switcher's panel ask: the walk's position.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SwitcherAsk {
+    /// The pointer stands over this card: the walk goes there.
+    Hover(usize),
+    /// A press on this card: the walk goes there, and goes to it.
+    Choose(usize),
+    /// A press off the panel, which is no press on anything behind it: the walk ends where it is.
+    Dismiss,
+}
 
 /// The host action that lists the workspaces this computer may join.
 pub const JOIN_WORKSPACE: &str = "join-workspace";
