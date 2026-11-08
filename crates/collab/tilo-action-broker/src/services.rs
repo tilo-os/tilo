@@ -8,8 +8,8 @@ pub use published::{Caller, Granted, PublishedResources, Reading, ResourceWatch}
 pub use task_execution::{
     AgentRoster, NativeTaskActionRequirement, NativeTaskBinding, Preview, PreviewSide, TRACKER_APP,
     TRACKER_ISSUE_PREFIX, TRACKER_RECORD, TRACKER_RESOURCE, TrackerAnswer, TrackerDirection,
-    TrackerQuestion, TrackerRun, TrackerRuns, confirmation_preview, is_tracker_issue,
-    tracker_written,
+    TrackerQuestion, TrackerRun, TrackerRuns, confirmation_preview, is_conversation_turn,
+    is_tracker_issue, tracker_written,
 };
 pub use workspace_nodes::{WorkspaceNodeActions, WorkspaceNodeAsk, WorkspaceNodeOutcome};
 

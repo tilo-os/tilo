@@ -20,6 +20,10 @@ pub struct AvatarProps {
     pub glyph: Option<Icon>,
     /// A square rather than a circle: an account or a site, not a person.
     pub square: bool,
+    /// The avatar's room with none in it: a message that continues its author's run lines up
+    /// under the first one's avatar without repeating it. Nothing is painted and nothing is
+    /// read out.
+    pub room: bool,
 }
 
 impl AvatarProps {
@@ -48,6 +52,9 @@ impl Described for Avatar {
         if props.square {
             avatar = avatar.square();
         }
+        if props.room {
+            avatar = avatar.room();
+        }
         avatar
     }
 
@@ -58,6 +65,7 @@ impl Described for Avatar {
         self.glyph = props.glyph;
         self.neutral = props.glyph.is_some();
         self.square = props.square || props.glyph.is_some();
+        self.room = props.room;
         self.dirty = true;
         true
     }

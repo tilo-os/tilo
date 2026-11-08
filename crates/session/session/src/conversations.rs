@@ -15,6 +15,7 @@
 use std::cell::RefCell;
 use std::collections::BTreeMap;
 use std::path::PathBuf;
+use std::rc::Rc;
 use std::sync::{Arc, Mutex};
 
 use tilo_action_broker::services::{NativeTaskActionRequirement, TrackerRun, TrackerRuns};
@@ -323,6 +324,76 @@ impl Conversations {
         Some(opened.chat.as_ref()?.get().as_ref().clone())
     }
 
+    /// The page of the conversation `channel` (a channel id, after
+    /// `chat.workspace/channels/`), as Chat's own `#[view(default)]` draws it, read from the
+    /// workspace this session holds open that has it: the very channel Chat's window shows and
+    /// the canvas places when a person asks there (shell.md §8.1, "The view"). Its messages are
+    /// the head part's, projected exactly as the window projects them.
+    ///
+    /// `None` where no open workspace holds the channel, or the session has not opened one yet.
+    #[must_use]
+    pub fn channel_reading(&self, channel: &str) -> Option<chat::views::Channel> {
+        let open = self.open.borrow();
+        for opened in open.values() {
+            let Some(chat_record) = &opened.chat else {
+                continue;
+            };
+            let chat = chat_record.get();
+            if !chat.channels.iter().any(|(id, _)| id.as_str() == channel) {
+                continue;
+            }
+            let Some((index, part)) = &opened.part else {
+                continue;
+            };
+            let held = chat::parts::ChatPart::clone(part.get().as_ref());
+            let messages = chat::messages::Messages::new(vec![(*index, std::rc::Rc::new(held))]);
+            let rows = chat.message_rows(&messages, channel);
+            let me = opened.records.author().0.clone();
+            return Some(chat::views::Channel::read(&chat, &rows, channel, &me));
+        }
+        None
+    }
+
+    /// Post `text` in `channel`, as the person seated here, through Chat's own `post`: a message
+    /// in the workspace whose open record holds the channel, written to the head part as Chat's
+    /// composer writes it. This is the verb a place's composer runs, so the page Chat's window
+    /// shows and the page a place draws post to one record.
+    ///
+    /// # Errors
+    /// No open workspace holds the channel, or Chat refused the post.
+    pub fn post(&self, channel: &str, text: &str) -> Result<(), String> {
+        let open = self.open.borrow();
+        for opened in open.values() {
+            let Some(chat_record) = &opened.chat else {
+                continue;
+            };
+            let chat = chat_record.get();
+            if !chat.channels.iter().any(|(id, _)| id.as_str() == channel) {
+                continue;
+            }
+            let Some((_, part)) = &opened.part else {
+                continue;
+            };
+            let channel = Id::from_raw(channel);
+            return part
+                .invoke(
+                    &chat::parts::ChatPart::POST.with(chat::messages::chat_part::Post {
+                        message: chat::messages::NewMessage {
+                            channel,
+                            text: text.to_owned(),
+                            parent: None,
+                            body: None,
+                            attachments: Vec::new(),
+                            mentions: None,
+                            written: None,
+                        },
+                    }),
+                )
+                .map_err(|error| error.to_string());
+        }
+        Err(format!("no open workspace holds the channel {channel}"))
+    }
+
     /// What the canvas asks of the session, made as `person`'s in
     /// `workspace`: their ask conversation with the agent the workspace
     /// keeps, the agent making it (shell.md §8.1, "Asking from the canvas").
@@ -585,6 +656,153 @@ impl Conversations {
         }
         let part = opened.part.as_ref().map(|(_, part)| part.clone())?;
         Some((chat, part))
+    }
+}
+
+/// Chat's conversations as a session service, so a place that shows one draws Chat's own
+/// channel page from its reading (one-app-model.md §2, shell.md §8.1): the very channel Chat's
+/// window shows, drawn by Chat's `#[view(default)]`, never a second chat.
+///
+/// The reading is read from the workspace's open Chat record, through the same record the
+/// agent pass reads turns from — never a second writer on the store. It is the real path a
+/// person's session uses, not a development fixture: the canvas's ask places
+/// `chat.workspace/channels/<id>`, and the shell reads that reading here.
+pub(crate) struct ChatViewService {
+    conversations: Rc<Conversations>,
+}
+
+impl ChatViewService {
+    /// The service over `conversations`, the session's one open of the workspaces' chats.
+    #[must_use]
+    pub(crate) fn new(conversations: Rc<Conversations>) -> Self {
+        Self { conversations }
+    }
+}
+
+/// The channel's `post` action, as the service publishes it on a channel's item: a message from
+/// The channel's `post` action, as the service publishes it on a channel's item: a message from
+/// the person typing, in the channel it names — the very verb Chat's own composer runs. It is
+/// the one definition of the verb a place's composer reaches; a service publishing a channel
+/// offers it so the page and Chat's window post alike.
+///
+/// It is `ClientLocal` with an empty encoded action, and that is correct here: the dispatcher
+/// never applies this verb's envelope. The session's `ChatViewService::invoke` runs the verb
+/// itself — `Conversations::post` commits `ChatPart::POST` to the workspace's open Chat record
+/// (`invoke` reads the invocation's `channel` and `text` directly), and the record's own CRDT is
+/// what syncs the message to the person's other devices. So there is no client-local envelope to
+/// replay with no text: the change that travels is the record's, and the encoded action is inert
+/// on this path. A `ServerPreferred` verb would instead fail closed when no host is reachable,
+/// which the composer must never do for a message the session can write itself.
+#[must_use]
+pub(crate) fn post_action() -> tilo_actions::ActionSpec {
+    use tilo_actions::{ActionArgs, EncodedAction, ExecutionLocus, ParamType};
+    tilo_actions::ActionSpec::typed(
+        "post",
+        "Post a message",
+        "a message",
+        ExecutionLocus::ClientLocal,
+        vec![
+            tilo_actions::ActionParam::required("channel", ParamType::Text, "The channel"),
+            tilo_actions::ActionParam::required("text", ParamType::Text, "What it says"),
+        ],
+        |_: &ActionArgs| EncodedAction::written("chat.post".to_owned(), Vec::new()),
+    )
+}
+
+impl tilo_service::Service for ChatViewService {
+    fn resources(&self) -> Vec<tilo_actions::ResourceSpec> {
+        // Each conversation of each open workspace, as Chat publishes a channel: its item
+        // resource, of the app `chat`, through its `page` view.
+        let open = self.conversations.open.borrow();
+        let mut specs: Vec<tilo_actions::ResourceSpec> = Vec::new();
+        for opened in open.values() {
+            let Some(chat_record) = &opened.chat else {
+                continue;
+            };
+            let chat = chat_record.get();
+            for (id, conversation) in chat.channels.iter() {
+                // Every conversation the record holds is a place's resource: a channel of the
+                // workspace, and the ask conversation a person and an agent talk in (a channel
+                // the record keeps with its two participants, which `is_channel` calls no
+                // workspace channel but which the canvas places all the same).
+                //
+                // A workspace channel is named with its `#`, as Chat writes a channel; a
+                // conversation kept with participants (the ask) is named plainly, as the window
+                // names a conversation, never with a `#` it does not wear.
+                let label = if conversation.is_channel() {
+                    format!("#{}", conversation.name)
+                } else {
+                    conversation.name.clone()
+                };
+                let mut spec = tilo_actions::ResourceSpec::new(
+                    format!("chat.workspace/channels/{}", id.as_str()),
+                    "chat.workspace.channels",
+                    label,
+                )
+                .with_view(tilo_actions::ResourceViewSpec::new(
+                    "page",
+                    conversation.name.clone(),
+                    "open",
+                ))
+                .with_type(tilo_actions::ResourceType {
+                    noun: tilo_actions::Noun::new("channel", "channels"),
+                    app: tilo_actions::Noun::new("Chat", "Chat"),
+                    root: false,
+                });
+                spec.app_id = Some("chat".to_owned());
+                spec = spec.with_action(post_action());
+                specs.push(spec);
+            }
+        }
+        specs
+    }
+
+    fn read(&self, resource: &str) -> Option<serde_json::Value> {
+        let channel = resource
+            .strip_prefix("chat.workspace/channels/")
+            .or_else(|| resource.strip_prefix("chat.workspace.channels:"))?;
+        let reading = self.conversations.channel_reading(channel)?;
+        serde_json::to_value(&reading).ok()
+    }
+
+    fn invoke(
+        &mut self,
+        resource: &str,
+        action: &str,
+        arguments: &serde_json::Map<String, serde_json::Value>,
+    ) -> Result<tilo_service::Started, tilo_actions::DoorError> {
+        if action == "post" {
+            let channel = arguments
+                .get("channel")
+                .and_then(serde_json::Value::as_str)
+                .or_else(|| {
+                    resource
+                        .strip_prefix("chat.workspace/channels/")
+                        .or_else(|| resource.strip_prefix("chat.workspace.channels:"))
+                })
+                .unwrap_or_default();
+            let text = arguments
+                .get("text")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or_default();
+            if text.trim().is_empty() {
+                return Err(tilo_actions::DoorError::InvalidArguments(
+                    "a message says something".to_owned(),
+                ));
+            }
+            self.conversations
+                .post(channel, text)
+                .map_err(tilo_actions::DoorError::Failed)?;
+            return Ok(tilo_service::Started::Done(
+                tilo_actions::ActionOutput::default(),
+            ));
+        }
+        // The page's other verbs (react, pin, edit) are Chat's own on the messages it shows;
+        // the service publishes the composer's `post` that a place reaches. A verb it does not
+        // publish is refused, as the door refuses any address no service offers.
+        Err(tilo_actions::DoorError::Unknown(
+            tilo_actions::ActionAddress::new(resource, action),
+        ))
     }
 }
 

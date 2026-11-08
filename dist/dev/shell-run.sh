@@ -93,8 +93,15 @@ if ((build)); then
         -p nested-session-bus --bin nested-session-bus \
         -p tilo-fs --bin fs \
         -p runtime-bundle --bin tilo-runtime-bundle)
+    # The model gateway runs in a build of its own, as `dist/dev/nested-session-build.sh` builds
+    # it: its `server` feature no longer comes from building beside the session, and the session's
+    # gateway runs with the features a workspace image builds it with. A kept agent's turn is
+    # planned through the gateway the image starts (`tilo-model-gateway.service`), so a session
+    # whose agent answers needs one at the session's own service socket.
+    (cd "$repo_root" && cargo build --locked -p tilo-model-gateway --bin tilo-model-gateway \
+        --features server,host-backend,local-models,runtime-client)
 fi
-for tool in tilo-session tilolang tilo-control tilo-launcher tilo-install tilo-app-package nested-session-bus tilo-runtime-bundle fs; do
+for tool in tilo-session tilolang tilo-control tilo-launcher tilo-install tilo-app-package nested-session-bus tilo-runtime-bundle fs tilo-model-gateway; do
     [[ -x $bin/$tool ]] || die "no $bin/$tool (run without --no-build)"
 done
 # The thin-app build every Tilo runtime here is made of: `dist/dev/nested-session-build.sh`
@@ -187,10 +194,19 @@ stop_media() {
     wait "$media_pid" 2>/dev/null || true
     media_pid=
 }
+# The session's model gateway (`start_gateway`, started beside the media).
+gateway_pid=
+stop_gateway() {
+    [[ -n $gateway_pid ]] || return 0
+    kill -TERM -- "-$gateway_pid" 2>/dev/null || kill -TERM "$gateway_pid" 2>/dev/null || true
+    wait "$gateway_pid" 2>/dev/null || true
+    gateway_pid=
+}
 cleanup() {
     # A second signal must not cut the cleanup short and leave the session up.
     trap '' INT TERM HUP
     stop_session
+    stop_gateway
     stop_media
     rm -rf "$scratch" 2>/dev/null || true
 }
@@ -348,6 +364,42 @@ until [[ -S $media_socket ]]; do
     ((tries--)) || { cat "$scratch/media.log" >&2; die "the document media socket did not open"; }
     sleep 0.1
 done
+# The community site this session reads: its own, empty, rather than whatever
+# this machine is in (`/etc/tilo/community.toml`, `/usr/share/tilo/community.toml`).
+# A scratch-HOME session is a new device, not the person's computer here: it
+# founds its own desk and joins no community, so nothing it does lands in the
+# machine's site and nothing the machine belongs to is in front of it. A site
+# the session is asked to join is given with `--community` (a site's address).
+community_file=$scratch/community.toml
+printf 'site = ""\n' > "$community_file"
+# The session's model gateway, started the way a workspace image starts it: as
+# its user unit does, at the socket the launcher hands to every app of the
+# session (`tilo-model-gateway.service`: `serve --socket %t/tilo/services/`).
+# A kept agent's turn is planned through it (`so.tilo.agent` requires the
+# service), and the provider it plans with is the person's, written to their
+# configuration by Settings or `tilo-model-gateway provision-provider`. A
+# session that plans no turn runs no gateway, and starts as before.
+gateway_socket=$runtime/tilo/services/model-gateway.sock
+start_gateway() {
+    mkdir -p "$runtime/tilo/services"
+    chmod 700 "$runtime/tilo" "$runtime/tilo/services"
+    env -u WAYLAND_DISPLAY -u DISPLAY -u DBUS_SESSION_BUS_ADDRESS \
+        HOME="$home" XDG_CONFIG_HOME="$home/.config" XDG_DATA_HOME="$home/.local/share" \
+        XDG_STATE_HOME="$home/.local/state" XDG_CACHE_HOME="$home/.cache" \
+        XDG_RUNTIME_DIR="$runtime" TILO_IDENTITY_ROOT="$scratch/identity" \
+        TILO_SECRETS_DIR="$secrets" \
+        setsid "$bin/tilo-model-gateway" serve --socket "$gateway_socket" \
+        > "$scratch/model-gateway.log" 2>&1 &
+    gateway_pid=$!
+    local tries=200
+    until [[ -S $gateway_socket ]]; do
+        kill -0 "$gateway_pid" 2>/dev/null \
+            || die "the model gateway ended as it started (see $scratch/model-gateway.log)"
+        ((tries--)) || die "the model gateway did not open its socket (see $scratch/model-gateway.log)"
+        sleep 0.1
+    done
+}
+start_gateway
 # Start tilo-session headless with the arguments given, its output in $log, and
 # wait until it printed its control socket, which it does last. It runs on the
 # private bus, which goes when the session does.
@@ -362,6 +414,7 @@ start_session() {
         TILO_LAUNCHER_BIN="$bin/tilo-launcher" \
         TILO_SYSTEM_INTERFACES="$repo_root/os/usr/share/tilo/system-interfaces.toml" \
         TILO_FS_BLOB_SOCKET="$media_socket" \
+        TILO_COMMUNITY_CONFIG="$community_file" \
         TILO_AGENT_DOOR="$door" \
         setsid "$session_bus" "$dbus_daemon" \
         "$bin/tilo-session" --backend headless --size "$size" --no-x11 \

@@ -20,6 +20,11 @@ use tilo_view_macros::view;
 use ::ui as sdk;
 type Id = sdk::tilo_resource::Id;
 
+/// The conversation toolkit's clock and day breaks: how a transcript labels a day, and the rule
+/// a run of one person's messages follows, read from the toolkit the view draws with.
+use sdk::widget::conversation::list::RUN_WINDOW_SECS;
+use sdk::widget::conversation::{ConversationClock, DayBreaks};
+
 /// One conversation of a workspace, as the place that shows it names it: a channel everyone in
 /// the workspace talks in, or a conversation some of them do.
 ///
@@ -342,17 +347,42 @@ const MESSAGES_KIND: &str = "chat.workspace";
 
 /// The channel's page: what it is called and about, its messages filling the column, and the
 /// composer at its foot — a conversation above the box that answers it.
+///
+/// The page is the window's own body: a place draws it as it stands here, with the guttered,
+/// readable column every page sets its blocks on (`page`), the transcript that scrolls at that
+/// measure and follows its newest line, and the composer in the same column at the foot, as
+/// Chat's own window draws them. A place that is narrow, or a window shown in another theme,
+/// draws the same page: nothing here knows a width or a look.
 #[view(default)]
 fn page(c: &Channel, cx: &ViewCx) -> Node {
-    ui::column(
-        &cx.key("page"),
-        Gap::Sibling,
-        vec![header(c, cx), messages(c, cx), composer(c, cx)],
-    )
+    // The channel names itself and what it is about above the transcript.
+    let head = ui::page(
+        &cx.key("head"),
+        vec![ui::stack(
+            &cx.key("header"),
+            Gap::Tight,
+            header_facts(c, cx),
+        )],
+    );
+    let conversation = ui::column(
+        &cx.key("column"),
+        Gap::None,
+        vec![head, ui::fill(transcript(c, cx))],
+    );
+    // The composer stands docked at the foot, in the page's own gutter and measure, as every
+    // conversation sets its reply box under the messages it answers (`ui.Docked`): the
+    // transcript fills the column above it and scrolls, the composer keeps its own height.
+    let docked: Node = ui::DockedBuilder::new(&cx.key("docked")).into();
+    let docked = node::slot(docked, "foot", vec![composer(c, cx)]);
+    let docked = node::with(docked, vec![conversation]);
+    // The page is the window's whole body: it fills the height the place gives it, its column
+    // takes the width, and the transcript scrolls inside — never the page scrolling away with
+    // the composer under it.
+    ui::fill(ui::page(&cx.key("page"), vec![ui::fill(docked)]))
 }
 
 /// Who the channel is: its name, and what it is about or that it is a call.
-fn header(c: &Channel, cx: &ViewCx) -> Node {
+fn header_facts(c: &Channel, cx: &ViewCx) -> Vec<Node> {
     let mut facts: Vec<Node> = vec![
         ui::TextBuilder::new(&cx.key("name"), format!("#{}", c.name))
             .role(ui::TextRole::Title)
@@ -371,47 +401,184 @@ fn header(c: &Channel, cx: &ViewCx) -> Node {
                 .into(),
         );
     }
-    ui::stack(&cx.key("header"), Gap::Tight, facts)
+    facts
 }
 
 /// The channel's messages, oldest first, each a row saying who spoke, when, and what.
-fn messages(c: &Channel, cx: &ViewCx) -> Node {
-    if c.messages.is_empty() {
-        return ui::EmptyStateBuilder::new(
-            &cx.key("empty"),
-            if c.voice {
-                "No one has joined this call yet"
-            } else {
-                "No messages yet"
-            },
-        )
-        .inline(true)
-        .into();
-    }
-    let rows: Vec<Node> = c
-        .messages
-        .iter()
-        .map(|message| message_row(c, message, cx))
-        .collect();
+///
+/// A transcript's rows are the ones every conversation draws: a day's divider over the first
+/// message of a local day, and a run of one person's consecutive messages under their avatar and
+/// name once, the time beside it. The day is the toolkit's (`ui.DayDivider`), the avatar theirs
+/// (`ui.Avatar`), the clock the person's (`ui.Time`, read in their language and zone), and the
+/// grouping the run's own rule ([`runs`]): a message continues the run above it when one person
+/// wrote it within [`RUN_WINDOW_SECS`] of the one before, on the same local day.
+fn transcript(c: &Channel, cx: &ViewCx) -> Node {
     // A conversation scrolls its transcript, opening at the newest message and following it as
-    // it grows. It is a scroll rather than a list: the rows are the page's own, drawn whole, and
-    // the place scrolls them (a Rust view sends no list rows of its own). It fills the room the
-    // page leaves it, so the composer stays at the foot and the transcript is what scrolls.
-    let transcript = ui::fill(
-        ui::ScrollBuilder::new(&cx.key("transcript"))
-            .follow_end(true)
-            .into(),
-    );
+    // it grows. It fills the room the page leaves it, so the composer stays at the foot and the
+    // transcript is what scrolls.
+    let scroll = ui::ScrollBuilder::new(&cx.key("transcript"))
+        .follow_end(true)
+        .into();
+    if c.messages.is_empty() {
+        return ui::fill(node::with(
+            scroll,
+            vec![ui::page(&cx.key("empty-page"), vec![empty(c, cx)])],
+        ));
+    }
+    // The rows, in order: a day's divider, then each message with what it answers and says.
+    let clock = ConversationClock::local();
+    let grouped = grouped_messages(c, &clock);
+    let mut rows: Vec<Node> = Vec::new();
+    for (index, (day, message, continues)) in grouped.iter().enumerate() {
+        if let Some(label) = day {
+            rows.push(
+                ui::DayDividerBuilder::new(&cx.key(format!("day-{index}")), label.clone()).into(),
+            );
+        }
+        rows.push(message_row(c, message, *continues, cx));
+    }
+    // The rows are one page's column: the page sets their measure and gutter, and a run's next
+    // line stands a tight gap under the one before while a new run stands a section's gap under
+    // it.
+    let column = ui::stack(&cx.key("messages"), Gap::None, rows);
     node::with(
-        transcript,
-        vec![ui::column(&cx.key("messages"), Gap::Sibling, rows)],
+        ui::fill(node::with(
+            scroll,
+            vec![ui::page(&cx.key("rows-page"), vec![column])],
+        )),
+        vec![],
     )
 }
 
-/// One message: who wrote it and when, the message it answers, what it says, the reactions on
-/// it, and what it carries. The name and the time lead it, as a conversation's messages do.
-fn message_row(c: &Channel, message: &Message, cx: &ViewCx) -> Node {
+/// What the transcript shows of the channel, in order: each message, whether a day begins over
+/// it (its label, when one does), and whether it continues the run above it.
+///
+/// A run is one person's consecutive messages within [`RUN_WINDOW_SECS`] of one another on one
+/// local day, so the avatar, the name and the time stand over the run's first message and the
+/// others line up under it, as every conversation draws them. A day's divider stands over the
+/// first message of a local day, never otherwise.
+fn grouped_messages<'a>(
+    c: &'a Channel,
+    clock: &ConversationClock,
+) -> Vec<(Option<String>, &'a Message, bool)> {
+    let mut breaks = DayBreaks::new();
+    let mut out: Vec<(Option<String>, &Message, bool)> = Vec::with_capacity(c.messages.len());
+    let mut previous: Option<&Message> = None;
+    for message in &c.messages {
+        let day = clock.day(message.ts);
+        let label = breaks.begins(day).then(|| clock.day_label(day));
+        let continues = label.is_none()
+            && previous.is_some_and(|before| {
+                before.author == message.author
+                    && message.ts.saturating_sub(before.ts) <= RUN_WINDOW_SECS
+            });
+        out.push((label, message, continues));
+        previous = Some(message);
+    }
+    out
+}
+
+/// What a channel says while it holds no message: a word about the kind of conversation, or an
+/// invitation to start it.
+fn empty(c: &Channel, cx: &ViewCx) -> Node {
+    if c.voice {
+        ui::EmptyStateBuilder::new(&cx.key("empty"), "No one has joined this call yet")
+            .icon("phone")
+            .into()
+    } else if c.topic.trim().is_empty() {
+        ui::EmptyStateBuilder::new(&cx.key("empty"), "No messages yet")
+            .icon("message-circle")
+            .into()
+    } else {
+        ui::EmptyStateBuilder::new(&cx.key("empty"), "No messages yet")
+            .message(c.topic.trim())
+            .icon("message-circle")
+            .into()
+    }
+}
+
+/// One message: the avatar and the name with the time over a run's first message, then the
+/// message it answers, what it says, the reactions on it and what it carries. A row that
+/// continues the run above it leaves the avatar's room empty and starts at what it says.
+///
+/// The row is a page row: its author's name, and what it says, stand at the page's measure, and
+/// the message's own menu, toolbar and swipe are what its type offers.
+fn message_row(c: &Channel, message: &Message, continues: bool, cx: &ViewCx) -> Node {
     let author = c.person(&message.author);
+    let said = message_said(c, message, cx);
+
+    // The avatar and the name with the time, over a run's first message. A run's next message
+    // keeps the avatar's room, empty, so a person's messages line up under their name once.
+    let avatar = ui::AvatarBuilder::new(&cx.key(format!("avatar-{}", message.id)))
+        .who(principal(author, &message.author))
+        .square(false)
+        .into();
+    let leading: Node = if continues {
+        // An avatar's room, empty: the toolkit's own (a person's face drawn with nothing in
+        // it), so a message that continues a run lines up under the first one's avatar.
+        ui::AvatarBuilder::new(&cx.key(format!("lead-{}", message.id)))
+            .who(principal(author, &message.author))
+            .room(true)
+            .into()
+    } else {
+        avatar
+    };
+    let head: Vec<Node> = if continues {
+        Vec::new()
+    } else {
+        let mut head = vec![
+            ui::TextBuilder::new(
+                &cx.key(format!("author-{}", message.id)),
+                author_label(author, &message.author),
+            )
+            .role(ui::TextRole::Label)
+            .into(),
+        ];
+        head.push(
+            ui::TimeBuilder::new(&cx.key(format!("when-{}", message.id)), moment(message.ts))
+                .role(ui::TextRole::Caption)
+                .secondary(true)
+                .past(true)
+                .into(),
+        );
+        vec![ui::row(
+            &cx.key(format!("by-{}", message.id)),
+            Gap::Tight,
+            head,
+        )]
+    };
+    let mut column: Vec<Node> = head;
+    column.push(said);
+    let content = ui::stack(
+        &cx.key(format!("content-{}", message.id)),
+        Gap::Tight,
+        column,
+    );
+
+    // What a message offers on hover: answer it, as Chat's own window shows the toolbar over a
+    // message. It is Chat's own `post` with the message as the reply's parent, through the
+    // composer's reply banner: the view's state holds which message the box answers.
+    let bar = hover_actions(c, message, cx);
+    let lined = ui::row(
+        &cx.key(format!("message-{}", message.id)),
+        Gap::Related,
+        vec![leading, ui::fill(content)],
+    );
+    let body = node::with(lined, vec![bar]);
+    // Activating the message places it: its own resource, which is the system's open.
+    match Channel::message_resource(&message.id) {
+        Some(target) => {
+            let open = cx.open(&body, "activate", target, None);
+            node::on(body, "activate", open)
+        }
+        None => body,
+    }
+}
+
+/// What a message says and carries, in the order a conversation reads it: the message it answers
+/// (a quote), that it is pinned, its words, its attachments, that it was edited, and the
+/// reactions on it — one column under the byline.
+fn message_said(c: &Channel, message: &Message, cx: &ViewCx) -> Node {
     let mut body: Vec<Node> = Vec::new();
     if let Some(quote) = &message.reply_to {
         body.push(reply_quote(
@@ -429,23 +596,6 @@ fn message_row(c: &Channel, message: &Message, cx: &ViewCx) -> Node {
                 .into(),
         );
     }
-    // Who wrote it and when, over what it says: the name in the row's ink, the time quiet
-    // beside it.
-    let said = ui::TextBuilder::new(
-        &cx.key(format!("author-{}", message.id)),
-        author_label(author, &message.author),
-    )
-    .role(ui::TextRole::Label)
-    .into();
-    let when = ui::TextBuilder::new(&cx.key(format!("when-{}", message.id)), moment(message.ts))
-        .role(ui::TextRole::Caption)
-        .secondary(true)
-        .into();
-    body.push(ui::row(
-        &cx.key(format!("by-{}", message.id)),
-        Gap::Tight,
-        vec![said, when],
-    ));
     if !message.text.trim().is_empty() {
         body.push(
             ui::TextBuilder::new(&cx.key(format!("text-{}", message.id)), message.text.trim())
@@ -475,21 +625,34 @@ fn message_row(c: &Channel, message: &Message, cx: &ViewCx) -> Node {
             &cx.key(format!("reactions-{}", message.id)),
         ));
     }
-    // The message stands in one column: who wrote it, then what it says, the quote over it, its
-    // attachments and its reactions. Activating the column places the message.
-    let body = ui::column(&cx.key(format!("body-{}", message.id)), Gap::Tight, body);
-    match Channel::message_resource(&message.id) {
-        Some(target) => {
-            let open = cx.open(&body, "activate", target, None);
-            node::on(body, "activate", open)
-        }
-        None => body,
-    }
+    ui::stack(&cx.key(format!("said-{}", message.id)), Gap::Tight, body)
 }
 
-/// What a reply answers: who wrote it and the start of what it said, as a quiet row over the
-/// reply that places the quoted message when pressed.
-fn reply_quote(c: &Channel, quote: &Quote, key: &str, cx: &ViewCx) -> Node {
+/// What a message offers while the pointer is over it or it holds focus, over its trailing
+/// edge: answer it.
+///
+/// The reply is the view's own state ([`REPLYING`]): a press names the message the composer
+/// answers, which the box at the foot reads, and the next message posted is its reply. The
+/// message's other verbs (pin, react) are what its type offers on its own row, which a place of
+/// the message draws; the page does not repeat them here.
+fn hover_actions(_c: &Channel, message: &Message, cx: &ViewCx) -> Node {
+    let reply: Node = ui::ButtonBuilder::new(&cx.key(format!("reply-{}", message.id)), "Reply")
+        .icon("reply")
+        .icon_only(true)
+        .role(ui::ButtonRole::Plain)
+        .into();
+    let fired = cx.set(&reply, "press", REPLYING);
+    let reply = node::on(reply, "press", fired);
+    node::with(
+        ui::HoverToolbarBuilder::new(&cx.key(format!("actions-{}", message.id))).into(),
+        vec![reply],
+    )
+}
+
+/// What a reply answers: who wrote it and the start of what it said, as the designed quote over
+/// the reply (`ui.Quote`), naming who it answers and what they said. The message the reply is in
+/// opens on activation, as every message does.
+fn reply_quote(c: &Channel, quote: &Quote, key: &str, _cx: &ViewCx) -> Node {
     let author = c.person(&quote.author);
     let excerpt = if quote.excerpt.trim().is_empty() {
         // A message the page does not hold (one from an earlier part of the chat) still says
@@ -498,29 +661,10 @@ fn reply_quote(c: &Channel, quote: &Quote, key: &str, cx: &ViewCx) -> Node {
     } else {
         quote.excerpt.trim().to_owned()
     };
-    let mut builder = ui::ListRowBuilder::new(key)
-        .title(&excerpt)
-        .prefix("In reply to")
-        .icon("corner-up-left")
-        .dense(true);
-    if let Some(target) = Channel::message_resource(&quote.id) {
-        builder = builder.item(target);
-    }
-    let mut row: Node = builder.into();
-    if let Some(person) = author {
-        let secondary = person.name.trim().to_owned();
-        if !secondary.is_empty() {
-            row = ui::put(row, "secondary", Value::Text(secondary));
-        }
-    }
-    // The quoted message is what the row shows: activating it places that message.
-    match Channel::message_resource(&quote.id) {
-        Some(target) => {
-            let opened = cx.open(&row, "activate", target, None);
-            node::on(row, "activate", opened)
-        }
-        None => row,
-    }
+    ui::QuoteBuilder::new(key, &excerpt)
+        .caption("In reply to")
+        .author(principal(author, &quote.author))
+        .into()
 }
 
 /// One thing a message carries: a record it was shared from (a row that places it), the words
@@ -600,17 +744,32 @@ fn composer(c: &Channel, cx: &ViewCx) -> Node {
     let input = node::bind(field, ViewCx::bind_state(DRAFT));
     // Enter hands the action the text the field carries as it submits.
     let input = post(cx, input, "submit", &c.id, Arg::Event);
+    // The field takes everything the buttons leave, so the two read as one full-width control.
+    let input = ui::fill(input);
+    // The attach button: raises the system's own file chooser for the conversation (Chat's
+    // `attach-file` effect with no path), whose files become the message's attachments.
+    let attach: Node = ui::ButtonBuilder::new(&cx.key("attach"), "Attach")
+        .icon("paperclip")
+        .icon_only(true)
+        .role(ui::ButtonRole::Plain)
+        .into();
+    let fired = cx.action(&attach, "press", "attach-file");
+    let attach = node::on(attach, "press", fired);
     // The button carries no text of its own: it sends the draft the field is bound to.
     let send: Node = ui::ButtonBuilder::new(&cx.key("send"), "Send")
         .icon("send")
         .icon_only(true)
         .into();
     let send = post(cx, send, "press", &c.id, Arg::state(DRAFT));
-    ui::row(&cx.key("composer"), Gap::Tight, vec![input, send])
+    ui::row(&cx.key("composer"), Gap::Tight, vec![attach, input, send])
 }
 
 /// The name the composer's draft is held under in the view's own state.
 const DRAFT: &str = "Composer";
+
+/// The name the message being answered is held under in the view's own state: a message's Reply
+/// button sets it, and the composer reads it as the next message's parent.
+const REPLYING: &str = "Replying";
 
 /// `node` with its event `event` running the chat's `post` of channel `channel`, with the text
 /// `text`: what the composer's field and its button both do.
@@ -763,20 +922,34 @@ mod tests {
         }
     }
 
+    /// Every node of the tree whose key holds `suffix` and whose kind is `kind`.
+    fn keyed<'a>(tree: &'a Node, kind: &str, suffix: &str) -> Vec<&'a Node> {
+        walk(tree)
+            .into_iter()
+            .filter(|node| node.kind == kind && node.key.contains(suffix))
+            .collect()
+    }
+
     #[test]
     fn each_message_says_who_wrote_it_and_when() {
         let channel = demo_channel();
         let cx = view_cx(&channel);
         let tree = page(&channel, &cx);
-        // Each message leads with its author's name and the moment it was written.
-        let named: Vec<&Node> = walk(&tree)
-            .into_iter()
-            .filter(|node| node.kind == "ui.Text" && node.key.contains("@author-"))
+        passes(&tree);
+        // A run's first message leads with its author's name, drawn from the channel's people,
+        // never their id; a message continuing the run leaves the name to the run's first.
+        let clock = ConversationClock::local();
+        let grouped = grouped_messages(&channel, &clock);
+        let starts: Vec<&Message> = grouped
+            .iter()
+            .filter(|(_, _, continues)| !continues)
+            .map(|(_, message, _)| *message)
             .collect();
+        let named = keyed(&tree, "ui.Text", "@author-");
         assert_eq!(
             named.len(),
-            channel.messages.len(),
-            "every message names its author"
+            starts.len(),
+            "every run names its author once, and only a run's first"
         );
         let authors: Vec<String> = named
             .iter()
@@ -793,19 +966,158 @@ mod tests {
             !authors.iter().any(|name| name.starts_with("u_")),
             "no author shows as their id: {authors:?}"
         );
-        // The moment each message says is its own.
-        let when: Vec<&Node> = walk(&tree)
-            .into_iter()
-            .filter(|node| node.kind == "ui.Text" && node.key.contains("@when-"))
-            .collect();
-        assert_eq!(when.len(), channel.messages.len());
-        for (node, message) in when.iter().zip(&channel.messages) {
-            assert_eq!(
-                node.props.get("value"),
-                Some(&Value::Text(moment(message.ts))),
-                "the message says when it was written"
+        // Every message says when it was written through `ui.Time`, whose `at` is the message's
+        // own instant: the component reads it in the person's language and zone, never as a raw
+        // ISO stamp.
+        let when = keyed(&tree, "ui.Time", "@when-");
+        assert_eq!(
+            when.len(),
+            starts.len(),
+            "every run's first message carries its time"
+        );
+        for node in &when {
+            // The moment the time component reads is the message's own instant, as RFC 3339
+            // (`ui.Time` renders it in the person's language and zone, never as this stamp).
+            let at = node.props.get("at").expect("a time says its moment");
+            let Value::Text(at) = at else {
+                panic!("a time's `at` is text");
+            };
+            assert!(
+                chrono::DateTime::parse_from_rfc3339(at).is_ok(),
+                "a time's `at` is an instant: {at}"
             );
         }
+    }
+
+    #[test]
+    fn a_day_divider_stands_between_two_days() {
+        // Two messages a day apart: the transcript marks the second day with a divider, the
+        // toolkit's own, labelled as the person reads a day.
+        let mut channel = demo_channel();
+        channel.messages = vec![
+            Message {
+                id: "m_day_one".to_owned(),
+                author: crate::model::ME.to_owned(),
+                ts: 1_782_470_400, // 2026-06-30
+                text: "First day".to_owned(),
+                ..Message::default()
+            },
+            Message {
+                id: "m_day_two".to_owned(),
+                author: crate::model::ME.to_owned(),
+                ts: 1_782_470_400 + 86_400, // the day after
+                text: "Second day".to_owned(),
+                ..Message::default()
+            },
+        ];
+        let cx = view_cx(&channel);
+        let tree = page(&channel, &cx);
+        passes(&tree);
+        let dividers = keyed(&tree, "ui.DayDivider", "@day-");
+        assert_eq!(
+            dividers.len(),
+            2,
+            "a divider stands over the first message of each of two days"
+        );
+        for divider in dividers {
+            let Value::Text(label) = divider.props.get("day").expect("a divider names its day")
+            else {
+                panic!("a day's label is text");
+            };
+            assert!(!label.is_empty(), "a divider names its day");
+        }
+    }
+
+    #[test]
+    fn a_run_of_one_person_names_them_once() {
+        // Two messages from one person within the run window: one avatar-and-name run, so the
+        // second message leaves the name to the first, as every conversation draws a run.
+        let mut channel = demo_channel();
+        channel.messages = vec![
+            Message {
+                id: "m_a".to_owned(),
+                author: crate::model::ME.to_owned(),
+                ts: 1_782_470_400,
+                text: "One".to_owned(),
+                ..Message::default()
+            },
+            Message {
+                id: "m_b".to_owned(),
+                author: crate::model::ME.to_owned(),
+                ts: 1_782_470_400 + 60,
+                text: "Two".to_owned(),
+                ..Message::default()
+            },
+        ];
+        let cx = view_cx(&channel);
+        let tree = page(&channel, &cx);
+        let clock = ConversationClock::local();
+        let grouped = grouped_messages(&channel, &clock);
+        assert_eq!(
+            grouped
+                .iter()
+                .filter(|(_, _, continues)| !continues)
+                .count(),
+            1,
+            "one run of two consecutive messages from one person"
+        );
+        assert_eq!(
+            keyed(&tree, "ui.Avatar", "@avatar-").len() + keyed(&tree, "ui.Avatar", "@lead-").len(),
+            2,
+            "each message has an avatar (or its empty lead), the run's first their face, the next a lead"
+        );
+        // The run's second message draws an empty lead: an avatar's room with nothing in it.
+        let lead = keyed(&tree, "ui.Avatar", "@lead-");
+        assert_eq!(lead.len(), 1, "the run's second message has an empty lead");
+        assert_eq!(
+            lead[0].props.get("room"),
+            Some(&Value::Bool(true)),
+            "the lead is an avatar's room, empty"
+        );
+    }
+
+    #[test]
+    fn the_composer_is_full_width_with_attach_and_send() {
+        let channel = demo_channel();
+        let cx = view_cx(&channel);
+        let tree = page(&channel, &cx);
+        passes(&tree);
+        let composer = walk(&tree)
+            .into_iter()
+            .find(|node| node.key.contains("@composer"))
+            .expect("the composer's row");
+        // The composer's row holds an attach button, the field and its send button, in order.
+        let buttons: Vec<&Node> = composer
+            .children
+            .iter()
+            .filter(|node| node.kind == "ui.Button")
+            .collect();
+        let labels: Vec<String> = buttons
+            .iter()
+            .filter_map(|node| match node.props.get("label") {
+                Some(Value::Text(label)) => Some(label.clone()),
+                _ => None,
+            })
+            .collect();
+        assert!(
+            labels.iter().any(|label| label == "Attach"),
+            "the composer offers attach: {labels:?}"
+        );
+        assert!(
+            labels.iter().any(|label| label == "Send"),
+            "the composer offers send: {labels:?}"
+        );
+        // The field is full width: a `fill` argument asks for the room the buttons leave.
+        let field = composer
+            .children
+            .iter()
+            .find(|node| node.kind == "ui.TextInput")
+            .expect("the composer's field");
+        assert_eq!(
+            field.props.get("fill"),
+            Some(&Value::Float(1.0)),
+            "the composer's field takes the room the buttons leave"
+        );
     }
 
     #[test]

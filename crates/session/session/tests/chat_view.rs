@@ -154,6 +154,20 @@ fn a_chat_channel_placed_on_the_canvas_draws_its_own_page() {
         "the page shows its messages: {:?}",
         session.accessible_labels()
     );
+    // The page draws as Chat's own window does: a run's first message carries its author's
+    // avatar (an image labelled by their name), and its time reads as the person reads clocks,
+    // never as a raw ISO stamp.
+    let labels = session.accessible_labels();
+    assert!(
+        labels.iter().any(|label| label.contains("Aria")),
+        "a message carries its author's avatar: {labels:?}"
+    );
+    assert!(
+        !labels
+            .iter()
+            .any(|label| label.contains("T09:") || label.ends_with('Z')),
+        "the page shows no raw ISO stamp: {labels:?}"
+    );
     // The composer is the page's own: the box a message is typed in, and its send button.
     assert!(
         session.shell_control("Send").is_some(),

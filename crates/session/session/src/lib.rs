@@ -1744,6 +1744,14 @@ impl Session {
                 Rc::clone(&commands),
                 Rc::clone(&controls_reading),
             )));
+        // Chat's conversations as a service, so a place that shows one draws Chat's own channel
+        // page from its reading: the canvas's ask places `chat.workspace/channels/<id>`, and the
+        // shell reads that reading here (one-app-model.md §2, shell.md §8.1).
+        services
+            .borrow_mut()
+            .add(Box::new(conversations::ChatViewService::new(Rc::clone(
+                &conversations,
+            ))));
         // The shell's own records reach the door as any app's do the moment its package runs.
         if let Some(shell) = &shell {
             shell.share_records(&services);
