@@ -1332,6 +1332,15 @@ fn long_navigation_labels_fit_the_shared_rows() {
                 theme,
                 &ui::presence::PresenceCtx::default(),
             );
+            // The list paints the rows near the viewport and clips the rest
+            // to itself, so a row below the box is clipped away, not overflow:
+            // what a label must do is stay inside the row that holds it.
+            let rows: Vec<vello::kurbo::Rect> = widget
+                .children_mut()
+                .into_iter()
+                .map(|row| row.get_rect())
+                .collect();
+            assert!(!rows.is_empty(), "the navigation list holds no rows");
             let mut glyphs = 0;
             for run in &scene.encoding().resources.glyph_runs {
                 for glyph in scene
@@ -1341,10 +1350,15 @@ fn long_navigation_labels_fit_the_shared_rows() {
                     .get(run.glyphs.clone())
                     .expect("painted run has valid glyph range")
                 {
+                    let x = f64::from(run.transform.translation[0] + glyph.x);
                     let y = f64::from(run.transform.translation[1] + glyph.y);
                     assert!(
-                        y >= rect.y0 && y < rect.y1,
-                        "navigation glyph {y} escapes {rect:?}"
+                        x >= rect.x0 && x < rect.x1,
+                        "navigation glyph {x} escapes the list's width {rect:?}"
+                    );
+                    assert!(
+                        rows.iter().any(|row| y >= row.y0 && y < row.y1),
+                        "navigation glyph {y} escapes every row {rows:?}"
                     );
                     glyphs += 1;
                 }
