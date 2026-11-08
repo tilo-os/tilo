@@ -552,7 +552,7 @@ heavy = true
 
 [[check]]
 name = "accounts-web-storage"
-run = "cargo clippy --locked --target wasm32-unknown-unknown --lib --example account_storage_probe -p accounts -p tilo-secret-vault -p tilo-files -p tilo-secrets -- -D warnings -A clippy::future_not_send -A clippy::arc_with_non_send_sync -A clippy::drop_non_drop\nbash tools/ci/ensure-browser-dependencies.sh\nnpx --yes @puppeteer/browsers@2 install chrome@stable --path \"$TMPDIR/chrome\" > \"$TMPDIR/chrome.txt\"\nexport CHROME=$(awk '{print $2}' \"$TMPDIR/chrome.txt\" | tail -n 1)\nnode crates/system/accounts/web/run.mjs --no-sandbox\n"
+run = "cargo clippy --locked --target wasm32-unknown-unknown --lib --example account_storage_probe -p accounts -p tilo-secret-vault -p tilo-files -p tilo-secrets -- -D warnings\nbash tools/ci/ensure-browser-dependencies.sh\nnpx --yes @puppeteer/browsers@2 install chrome@stable --path \"$TMPDIR/chrome\" > \"$TMPDIR/chrome.txt\"\nexport CHROME=$(awk '{print $2}' \"$TMPDIR/chrome.txt\" | tail -n 1)\nnode crates/system/accounts/web/run.mjs --no-sandbox\n"
 env = { CARGO_TARGET_WASM32_UNKNOWN_UNKNOWN_RUSTFLAGS = "-D warnings" }
 requires = ["arch=x86_64"]
 

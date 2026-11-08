@@ -31,15 +31,6 @@ if [ "${1:-}" = --check ]; then
   mode=check
   shift
 fi
-# Lints that misfire on wasm32 alone (package_sets.WASM_CLIPPY_ALLOW, which the
-# check and clippy families' wasm pass allows too).
-allow=()
-if [ "$mode" = clippy ]; then
-  for lint in $(python3 -c 'import sys; sys.path.insert(0, "tools/ci"); import package_sets; print(*package_sets.WASM_CLIPPY_ALLOW)'); do
-    allow+=(-A "$lint")
-  done
-fi
-
 passed=()
 failed=()
 verify() {
@@ -47,7 +38,7 @@ verify() {
   shift
   local command=("$cargo" "$mode" --locked --target "$target" "$@")
   if [ "$mode" = clippy ]; then
-    command+=(-- -D warnings "${allow[@]}")
+    command+=(-- -D warnings)
   fi
   if bash tools/ci/measure.sh "wasm32 $mode: $label" -- \
     bash scripts/ci-run.sh "cargo $mode (wasm32, $label)" -- \
