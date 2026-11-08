@@ -568,6 +568,14 @@ pub trait SurfaceHost {
         Vec::new()
     }
 
+    /// What this surface draws over the windows, by the window each part is of, in the logical
+    /// layout: a floating window's bar and body, whole and opaque. A surface below the windows
+    /// draws nothing over them but this: the windows under it are drawn around it, and a point on
+    /// it belongs to this surface rather than to the window beneath.
+    fn drawn_over_windows(&self) -> Vec<(u64, crate::LayoutRect)> {
+        Vec::new()
+    }
+
     /// The regions this surface draws translucent material in, which take a blur of what lies below
     /// them ([`crate::backdrop`]).
     fn backdrops(&self) -> Vec<crate::BackdropRequest> {

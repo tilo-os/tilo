@@ -405,6 +405,9 @@ pub struct GroupRow {
     /// How open each floating window is drawn: one lifted fades in over the
     /// desk, one snapped fades back into its strip.
     float_fade: HashMap<u64, crate::motion::Presence>,
+    /// What the last draw covered of the windows under each floating window: its bar, its body and
+    /// the shadow that lifts it, in this row's coordinates, by the window it shows.
+    drawn_covers: Vec<(u64, Rect)>,
 }
 
 /// What of a group at `rect` the draw viewport shows across, limited to the group, which its
@@ -1210,6 +1213,7 @@ impl GroupRow {
             float_drag_from: None,
             pending_float: None,
             float_fade: HashMap::new(),
+            drawn_covers: Vec::new(),
         }
     }
 
@@ -5405,6 +5409,17 @@ impl GroupRow {
             };
             if !lanes_match.get(i).copied().unwrap_or(true) {
                 // Between two displays there is no gap to drag.
+                h.set_neighbour_rects(Rect::ZERO, Rect::ZERO);
+                continue;
+            }
+            // A window floating over the desk stands nowhere in the strip: the room it left is no
+            // seam between the two it stood between, and its own rect is no neighbour's.
+            let floating = |index: usize| {
+                self.groups
+                    .get(index)
+                    .is_some_and(|group| self.floats.contains_key(&group.id))
+            };
+            if floating(i) || floating(i.saturating_add(1)) {
                 h.set_neighbour_rects(Rect::ZERO, Rect::ZERO);
                 continue;
             }

@@ -40,6 +40,7 @@ use smithay::wayland::shell::xdg::{
     PopupSurface, PositionerState, ShellClient, ToplevelSurface, XdgShellHandler, XdgShellState,
 };
 use smithay::wayland::shm::{ShmHandler, ShmState};
+use smithay::wayland::xwayland_shell::XWaylandShellState;
 
 use crate::app_liveness;
 use crate::host::SurfaceHost;
@@ -223,6 +224,10 @@ pub struct State {
     pub(crate) frame: crate::window_frame::WindowFrame,
     /// The frames of the windows that are framed differently, by id.
     pub(crate) window_frames: std::collections::HashMap<u64, crate::window_frame::WindowFrame>,
+    /// The cards the desk draws in front of the windows, by the window each one is the card of:
+    /// the desk draws a floating window's bar and its lift around it, and the window beneath the
+    /// card is drawn around it, as a window under a floating one is.
+    pub(crate) covers: std::collections::BTreeMap<u64, smithay::utils::Rectangle<i32, Logical>>,
     /// The shadows and edges drawn so far.
     pub(crate) frame_images: crate::window_frame::FrameImages,
     /// The windows that closed, kept so the desktop can animate them away.
@@ -372,9 +377,7 @@ impl State {
             text_input: crate::text_input::TextInput::new(display),
             cursor: crate::cursor::Cursor::new(),
             output_management: crate::output_management::OutputManagement::new(display),
-            xwayland_shell: smithay::wayland::xwayland_shell::XWaylandShellState::new::<Self>(
-                display,
-            ),
+            xwayland_shell: XWaylandShellState::new::<Self>(display),
             xwms: Vec::new(),
             x11: None,
             touch: crate::touch::Touches::default(),
@@ -385,6 +388,7 @@ impl State {
             effects: std::collections::HashMap::new(),
             frame: crate::window_frame::WindowFrame::default(),
             window_frames: std::collections::HashMap::new(),
+            covers: std::collections::BTreeMap::new(),
             frame_images: crate::window_frame::FrameImages::default(),
             closing: Vec::new(),
             snapshots: crate::snapshot::Snapshots::default(),
@@ -742,11 +746,44 @@ impl State {
         &self,
         point: Point<f64, Logical>,
     ) -> Option<(Window, WlSurface, Point<f64, Logical>)> {
-        let (window, location) = self.space.element_under(point)?;
+        let (window, location) = self.window_at(point)?;
         let origin = location - window.geometry().loc;
         let (surface, offset) =
             window.surface_under(point - origin.to_f64(), WindowSurfaceType::ALL)?;
-        Some((window.clone(), surface, (origin + offset).to_f64()))
+        Some((window, surface, (origin + offset).to_f64()))
+    }
+
+    /// The window a logical point lands on, with where it stands: the frontmost one that is
+    /// visible there. What a desk draws over the windows hides what it lies on, and a point on it
+    /// belongs to the desk, so the window beneath it is passed over the way a window behind another
+    /// is.
+    pub(crate) fn window_at(
+        &self,
+        point: Point<f64, Logical>,
+    ) -> Option<(Window, Point<i32, Logical>)> {
+        let size = |cover: &smithay::utils::Rectangle<i32, Logical>| {
+            smithay::utils::Rectangle::new(cover.loc.to_f64(), cover.size.to_f64())
+        };
+        let mut covers: Vec<smithay::utils::Rectangle<f64, Logical>> = Vec::new();
+        for window in self.space.elements().rev() {
+            let Some(location) = self.space.element_location(window) else {
+                continue;
+            };
+            let element = smithay::utils::Rectangle::from_size(window.geometry().size).to_f64();
+            if element.contains(point - location.to_f64())
+                && !covers.iter().any(|cover| cover.contains(point))
+            {
+                return Some((window.clone(), location));
+            }
+            // What the desk covers them with for this window is over the windows behind it, from
+            // here on.
+            if let Some(info) = describe(self, window)
+                && let Some(cover) = self.covers.get(&info.id)
+            {
+                covers.push(size(cover));
+            }
+        }
+        None
     }
 
     /// The hosted surface the pointer at `point` belongs to: one above the windows where it drew,
@@ -767,8 +804,7 @@ impl State {
             })
         };
         under(false).or_else(|| {
-            self.space
-                .element_under(point)
+            self.window_at(point)
                 .is_none()
                 .then(|| under(true))
                 .flatten()

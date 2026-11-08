@@ -135,33 +135,7 @@ pub fn paint_surface(
             );
         }
         SurfaceLevel::Window => {
-            crate::surface::shadow(
-                scene,
-                transform,
-                rect,
-                radius,
-                &theme.tokens.elevation.window,
-            );
-            let body = RoundedRect::from_rect(rect, radius);
-            crate::backdrop::fill_role(
-                scene,
-                transform,
-                &body,
-                crate::tokens::SurfaceRole::Window,
-                theme,
-                fill,
-            );
-            if !crate::surface::paint_border(scene, transform, &body, theme)
-                && theme.finish(crate::tokens::SurfaceRole::Window).hairline()
-            {
-                scene.stroke(
-                    &vello::kurbo::Stroke::new(1.0),
-                    transform,
-                    theme.window_edge(),
-                    None,
-                    &RoundedRect::from_rect(rect.inflate(0.5, 0.5), radius + 0.5),
-                );
-            }
+            paint_window_card(scene, transform, rect, theme, |_, _| {});
         }
         SurfaceLevel::Floating => {
             crate::surface::floating_shadow(scene, transform, rect, radius, 1.0, theme);
@@ -169,6 +143,63 @@ pub fn paint_surface(
         }
     }
     theme.on_ground(fill)
+}
+
+/// A window card whose parts reach its edge: its shadow and its ground,
+/// `content` on that ground clipped to its shape, and its edge over the two,
+/// so a part filled to the outline (a window's bar at the head) never cuts the
+/// card's frame. Returns the theme a child on the card paints with, as
+/// [`paint_surface`] does for [`SurfaceLevel::Window`].
+pub fn paint_window_card(
+    scene: &mut Scene,
+    transform: Affine,
+    rect: Rect,
+    theme: &Theme,
+    content: impl FnOnce(&mut Scene, &Theme),
+) -> Theme {
+    let fill = SurfaceLevel::Window.color(theme);
+    let on = theme.on_ground(fill);
+    if rect.width() <= 0.0 || rect.height() <= 0.0 {
+        return on;
+    }
+    let radius = SurfaceLevel::Window.radius(theme).min(rect.height() / 2.0);
+    let body = RoundedRect::from_rect(rect, radius);
+    crate::surface::shadow(
+        scene,
+        transform,
+        rect,
+        radius,
+        &theme.tokens.elevation.window,
+    );
+    crate::backdrop::fill_role(
+        scene,
+        transform,
+        &body,
+        crate::tokens::SurfaceRole::Window,
+        theme,
+        fill,
+    );
+    scene.push_layer(
+        Fill::NonZero,
+        vello::peniko::BlendMode::default(),
+        1.0,
+        transform,
+        &body,
+    );
+    content(scene, &on);
+    scene.pop_layer();
+    if !crate::surface::paint_border(scene, transform, &body, theme)
+        && theme.finish(crate::tokens::SurfaceRole::Window).hairline()
+    {
+        scene.stroke(
+            &vello::kurbo::Stroke::new(1.0),
+            transform,
+            theme.window_edge(),
+            None,
+            &RoundedRect::from_rect(rect.inflate(0.5, 0.5), radius + 0.5),
+        );
+    }
+    on
 }
 
 /// A document set on a reader: a page that brings its own colours (an HTML

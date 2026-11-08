@@ -22,6 +22,7 @@ use crate::presence::PresenceCtx;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use crate::widget::Widget as _;
+use crate::widget::primitives::{SurfaceLevel, paint_window_card};
 
 /// The size a window takes when it floats: the design's floating window,
 /// smaller than the strip's tile so it reads as lifted over the desk.
@@ -105,6 +106,14 @@ impl GroupRow {
     #[must_use]
     pub fn floats(&self) -> &HashMap<u64, Rect> {
         &self.floats
+    }
+
+    /// Each floating window the row just drew whole over what is under it — the card it shows: its
+    /// bar and its body as one window, and the shadow that lifts it, as one rect in the surface's
+    /// coordinates. A float still fading in lets what is under it show, so it is not one yet.
+    #[must_use]
+    pub fn drawn_covers(&self) -> &[(u64, Rect)] {
+        &self.drawn_covers
     }
 
     /// Whether the group `id` floats above the desk.
@@ -299,6 +308,7 @@ impl GroupRow {
         transform: Affine,
         (tr, theme, presence): (&mut TextRenderer, &Theme, &PresenceCtx),
     ) {
+        self.drawn_covers.clear();
         let now = crate::motion::frame_now();
         let floated: Vec<(usize, f32)> = (0..self.groups.len())
             .filter_map(|i| {
@@ -311,30 +321,43 @@ impl GroupRow {
             if alpha <= f32::EPSILON {
                 continue;
             }
-            let rect = self.groups[i].get_rect();
+            // A float is one window card: its bar is not a strip bar above a body, it is the head of
+            // the window, so the card is the body and the bar over it, painted, lifted and framed as
+            // one.
+            let card = self.groups[i].get_rect().union(self.groups[i].bar_rect());
+            let radius = SurfaceLevel::Window.radius(theme);
             if alpha < 1.0 - f32::EPSILON {
                 scene.push_layer(
                     vello::peniko::Fill::NonZero,
                     vello::peniko::BlendMode::default(),
                     alpha,
                     transform,
-                    &rect.inflate(160.0, 160.0),
+                    &card.inflate(160.0, 160.0),
                 );
+            } else {
+                // Drawn whole: the windows under it are drawn around its lift, so none of them reads
+                // through its bar or its body.
+                let tab = self.groups[i].active_tab_id();
+                self.drawn_covers
+                    .push((tab, crate::surface::floating_shadow_bounds(card, theme)));
             }
-            // A float stands over the desk rather than in its strip: the
-            // floating elevation lifts it off what it covers, and its own
-            // opaque ground stands between them, so the window below never
-            // reads through its bar or its body.
-            let radius = f64::from(theme.tokens.radii.tile);
-            crate::surface::floating_shadow(scene, transform, rect, radius, alpha, theme);
-            scene.fill(
-                vello::peniko::Fill::NonZero,
-                transform,
-                theme.tokens.colors.surfaces.content,
-                None,
-                &vello::kurbo::RoundedRect::from_rect(rect, radius),
-            );
-            self.draw_group_plain(i, scene, transform, (tr, theme, presence));
+            // A float stands over the desk rather than in its strip: the theme's floating lift under
+            // the window the card is, as a window in front stands over those behind it.
+            crate::surface::floating_shadow(scene, transform, card, radius, alpha, theme);
+            // The bar and the body are the card's, clipped to its shape, and its head is the ground a
+            // strip's bar stands on rather than its content: lifted, the bar is the same dark band it
+            // is docked, its body's lighter ground below it, and its frame over both, so a float
+            // reads as the window it is.
+            paint_window_card(scene, transform, card, theme, |scene, on| {
+                scene.fill(
+                    vello::peniko::Fill::NonZero,
+                    transform,
+                    SurfaceLevel::Ground.color(theme),
+                    None,
+                    &self.groups[i].bar_rect(),
+                );
+                self.draw_group_plain(i, scene, transform, (tr, on, presence));
+            });
             if alpha < 1.0 - f32::EPSILON {
                 scene.pop_layer();
             }

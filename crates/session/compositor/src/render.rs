@@ -346,6 +346,9 @@ where
         }
     }
     let mut elements = Vec::new();
+    // What the desks draw over the windows: one a window in front of another stands on lies over it,
+    // so everything behind is drawn around it.
+    let mut covers: Vec<Rectangle<i32, Physical>> = Vec::new();
     for (front, window) in stack.into_iter().enumerate() {
         let window = &window;
         for gone in closing.get(front).into_iter().flatten() {
@@ -358,17 +361,36 @@ where
         };
         let effect = state.effect_of(window);
         let framing = state.framing(window);
-        // A window drawn as it stands keeps its buffer's own element, which a display can scan out;
-        // anything else is drawn through its frame.
-        if effect != WindowEffect::default() || !framing.frame.is_square() {
-            elements.extend(crate::effects::with_effect(
-                renderer,
-                framing,
-                crate::effects::Content::Window(window),
-                location.to_f64() - origin,
-                &effect,
-                (bounds, scale),
+        // What this window still shows through: what the desks cover it with for the windows in
+        // front of it.
+        let visible = outside(bounds, &covers);
+        // Its own cover is over the windows behind it, from here on.
+        if let Some(cover) = crate::state::describe(state, window)
+            .and_then(|info| state.covers.get(&info.id).copied())
+        {
+            covers.push(Rectangle::new(
+                cover.loc.to_physical_precise_round(scale),
+                cover.size.to_physical_precise_round(scale),
             ));
+        }
+        // What the window drew is kept while it stands, so its close has a frame to animate even
+        // once its surface is gone.
+        state.record_snapshot(renderer, window);
+        // A window drawn as it stands keeps its buffer's own element, which a display can scan out;
+        // anything else is drawn through its frame. A window a cover cuts into keeps the corners it
+        // has and draws the rest of itself.
+        let whole = effect == WindowEffect::default() && framing.frame.is_square();
+        if !whole || visible.len() != 1 || visible.first() != Some(&bounds) {
+            for piece in &visible {
+                elements.extend(crate::effects::with_effect(
+                    renderer,
+                    framing,
+                    crate::effects::Content::Window(window),
+                    location.to_f64() - origin,
+                    &effect,
+                    (*piece, scale),
+                ));
+            }
             continue;
         }
         let at = location.to_f64() - window.geometry().loc.to_f64() - origin;
@@ -391,9 +413,6 @@ where
                 1.0,
             )),
         }
-        // What the window drew is kept while it stands, so its close has a frame to animate even
-        // once its surface is gone.
-        state.record_snapshot(renderer, window);
     }
     for gone in closing.get(len).into_iter().flatten() {
         elements.extend(closing_elements(
@@ -401,6 +420,45 @@ where
         ));
     }
     elements
+}
+
+/// `bounds` with every one of `covers` taken out of it: the pieces it still shows in.
+fn outside(
+    bounds: Rectangle<i32, Physical>,
+    covers: &[Rectangle<i32, Physical>],
+) -> Vec<Rectangle<i32, Physical>> {
+    let mut pieces = vec![bounds];
+    for cover in covers {
+        let Some(cover) = cover.intersection(bounds) else {
+            continue;
+        };
+        let mut left = Vec::with_capacity(pieces.len().saturating_mul(4));
+        for piece in pieces {
+            let Some(overlap) = piece.intersection(cover) else {
+                left.push(piece);
+                continue;
+            };
+            let (x0, y0) = (piece.loc.x, piece.loc.y);
+            let (x1, y1) = (x0 + piece.size.w, y0 + piece.size.h);
+            let (cx0, cy0) = (overlap.loc.x, overlap.loc.y);
+            let (cx1, cy1) = (cx0 + overlap.size.w, cy0 + overlap.size.h);
+            for (ax0, ay0, ax1, ay1) in [
+                (x0, y0, x1, cy0),
+                (x0, cy1, x1, y1),
+                (x0, cy0, cx0, cy1),
+                (cx1, cy0, x1, cy1),
+            ] {
+                if ax1 > ax0 && ay1 > ay0 {
+                    left.push(Rectangle::new(
+                        Point::from((ax0, ay0)),
+                        Size::from((ax1 - ax0, ay1 - ay0)),
+                    ));
+                }
+            }
+        }
+        pieces = left;
+    }
+    pieces
 }
 
 /// A window that closed, drawn from its last buffer with whatever effect the desktop is animating
@@ -654,4 +712,85 @@ fn alert_bands(
         band(x, y, width, h),
         band(x + w - width, y, width, h),
     ]
+}
+
+#[cfg(test)]
+mod tests {
+    use smithay::utils::{Point, Rectangle, Size};
+
+    /// The area `bounds` keeps out of `covers`, as a rect for each piece.
+    fn outside(
+        bounds: Rectangle<i32, smithay::utils::Physical>,
+        covers: &[Rectangle<i32, smithay::utils::Physical>],
+    ) -> Vec<Rectangle<i32, smithay::utils::Physical>> {
+        super::outside(bounds, covers)
+    }
+
+    fn rect(x: i32, y: i32, w: i32, h: i32) -> Rectangle<i32, smithay::utils::Physical> {
+        Rectangle::new(Point::from((x, y)), Size::from((w, h)))
+    }
+
+    fn area(pieces: &[Rectangle<i32, smithay::utils::Physical>]) -> i32 {
+        pieces.iter().map(|piece| piece.size.w * piece.size.h).sum()
+    }
+
+    /// No piece stands on a cover, and none overlaps another.
+    fn apart(
+        pieces: &[Rectangle<i32, smithay::utils::Physical>],
+        covers: &[Rectangle<i32, smithay::utils::Physical>],
+    ) {
+        for piece in pieces {
+            for cover in covers {
+                assert!(
+                    piece.intersection(*cover).is_none(),
+                    "{piece:?} stands on {cover:?}"
+                );
+            }
+            for other in pieces {
+                assert!(
+                    piece == other || piece.intersection(*other).is_none(),
+                    "{piece:?} overlaps {other:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn a_cover_in_the_middle_leaves_the_rest_of_the_window() {
+        let bounds = rect(0, 0, 100, 100);
+        let covers = [rect(20, 30, 40, 20)];
+        let pieces = outside(bounds, &covers);
+        assert_eq!(
+            area(&pieces),
+            10_000 - 800,
+            "everything but the cover: {pieces:?}"
+        );
+        apart(&pieces, &covers);
+    }
+
+    #[test]
+    fn covers_overlapping_the_edges_take_only_what_they_cover() {
+        let bounds = rect(10, 10, 60, 40);
+        let covers = [rect(0, 0, 30, 30), rect(50, 40, 100, 100)];
+        let pieces = outside(bounds, &covers);
+        let covered = 20 * 20 + 20 * 10;
+        assert_eq!(
+            area(&pieces),
+            60 * 40 - covered,
+            "the parts of the covers inside the window: {pieces:?}"
+        );
+        apart(&pieces, &covers);
+    }
+
+    #[test]
+    fn a_cover_over_everything_leaves_nothing() {
+        assert!(outside(rect(0, 0, 50, 50), &[rect(-10, -10, 100, 100)]).is_empty());
+    }
+
+    #[test]
+    fn a_cover_beside_the_window_takes_nothing() {
+        let bounds = rect(0, 0, 50, 50);
+        let pieces = outside(bounds, &[rect(50, 0, 10, 10)]);
+        assert_eq!(pieces, vec![bounds]);
+    }
 }

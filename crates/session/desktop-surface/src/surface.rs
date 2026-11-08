@@ -209,6 +209,9 @@ struct Shared {
     replaced: bool,
     /// Where each shown window stands and the bounds of the tab it shows, as last laid out.
     shown_tabs: ShownTabs,
+    /// Each window floating over the desk, and what it is drawn whole over the windows under it —
+    /// its bar, its body and the shadow that lifts it — as last drawn.
+    float_covers: Vec<(TabId, Rect)>,
     /// The shown strip, the area it is drawn in and how far it is panned, as last laid out.
     shown_strip: Option<(StripId, Rect, f64)>,
     /// Where the shown strip's controls are for control hints, as last drawn.
@@ -2565,6 +2568,21 @@ impl Widget for DesktopSurface {
     ) {
         self.draw_leaving_strip(scene, transform, text, theme, presence);
         self.draw_display_strips(scene, transform, text, theme, presence);
+        // What the strips just drew of their floated windows whole over the windows under them:
+        // the compositor draws those around it rather than under it, so nothing reads through its
+        // bar or its body and its lift shows against them.
+        let float_covers: Vec<(TabId, Rect)> = self
+            .drawn_strips()
+            .into_iter()
+            .filter_map(|strip| self.rows.get(&strip))
+            .flat_map(|row| row.drawn_covers().iter().copied())
+            .collect();
+        {
+            let mut shared = self.shared.borrow_mut();
+            if shared.float_covers != float_covers {
+                shared.float_covers = float_covers;
+            }
+        }
         let hint_places = self.shown_row().map(|row| {
             ui::widget::draw_child(row, scene, transform, text, theme, presence);
             row.hint_places()

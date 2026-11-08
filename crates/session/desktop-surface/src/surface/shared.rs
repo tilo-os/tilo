@@ -45,6 +45,7 @@ impl Shared {
             viewport_width: ui::widget::DEFAULT_STRIP_USABLE_PX,
             replaced: false,
             shown_tabs: ShownTabs::default(),
+            float_covers: Vec::new(),
             shown_strip: None,
             hint_places: ui::widget::HintPlaces::default(),
             focused_presence: Vec::new(),

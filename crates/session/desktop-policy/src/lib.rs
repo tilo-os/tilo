@@ -73,6 +73,10 @@ pub struct Layout {
     /// fills that display's whole area, the bar's room included, and the
     /// bar steps aside while it does.
     pub fullscreen: Option<u64>,
+    /// Each window floating over the desk, and what the desk covers the
+    /// windows under it with for that window: its bar and body, the whole
+    /// rect they fill, in surface coordinates ([`DesktopPolicy::float_covers`]).
+    pub covers: Vec<(u64, Rect)>,
 }
 
 /// Windows waiting for their tab, shared with the surface's tile source.
@@ -1443,10 +1447,25 @@ impl DesktopPolicy {
         }
         Layout {
             fullscreen: self.handle.read(covering_window),
+            covers: self.float_covers(),
             shown,
             hidden,
             floating,
         }
+    }
+
+    /// Each window floating over the desk, and the rect the desk draws over the windows under
+    /// it for that window: the whole of its bar and body, which it paints opaque, in surface
+    /// coordinates. What lies under it there is drawn around it.
+    #[must_use]
+    pub fn float_covers(&self) -> Vec<(u64, Rect)> {
+        self.handle.read(|tree| {
+            self.handle
+                .float_covers()
+                .into_iter()
+                .filter_map(|(tab, cover)| Some((window_of(tree, tab)?, cover)))
+                .collect()
+        })
     }
 
     /// The windows whose tabs the person closed since the last call: the

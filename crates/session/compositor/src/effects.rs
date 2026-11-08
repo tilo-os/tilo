@@ -141,6 +141,10 @@ pub type FrameElement<R> =
 /// corner strips in as many rows as the arc is deep and the rest once. Every renderer draws a
 /// texture into a rows worth of a destination the same way, so this needs nothing of the GPU and
 /// nothing of the CPU renderer's shape handling.
+///
+/// `clip` is what it may cover: the corners it cuts are the element's own, wherever the clip leaves
+/// them, and the buffer is cropped to the clip rather than squeezed into it — a window the desk's
+/// card takes a bite out of keeps its corners and its scale.
 #[derive(Debug)]
 pub struct RoundedElement<E> {
     element: E,
@@ -148,16 +152,25 @@ pub struct RoundedElement<E> {
     radius: f64,
     /// What it may cover, physical.
     clip: Rectangle<i32, Physical>,
+    /// The element's own geometry where it stands, physical: the rect its corners belong to,
+    /// however much of it the clip leaves.
+    whole: Rectangle<i32, Physical>,
+    /// The part of the buffer `whole` ∩ `clip` draws.
+    src: Rectangle<f64, Buffer>,
 }
 
-impl<E> RoundedElement<E> {
+impl<E: Element> RoundedElement<E> {
     /// `element`, drawn with corners rounded by `radius` (physical pixels),
-    /// covering no more than `clip`.
-    pub fn new(element: E, radius: f64, clip: Rectangle<i32, Physical>) -> Self {
+    /// covering no more than `clip`, on an output at `scale`.
+    pub fn new(element: E, radius: f64, clip: Rectangle<i32, Physical>, scale: Scale<f64>) -> Self {
+        let whole = element.geometry(scale);
+        let src = cropped_source(element.src(), whole, whole.intersection(clip));
         Self {
             element,
             radius,
             clip,
+            whole,
+            src,
         }
     }
 
@@ -166,6 +179,37 @@ impl<E> RoundedElement<E> {
     pub fn inner(&self) -> &E {
         &self.element
     }
+}
+
+/// `src`, the part of the buffer `whole` shows, cropped to what `visible` shows of `whole`: what a
+/// destination cut out of it draws.
+fn cropped_source(
+    src: Rectangle<f64, Buffer>,
+    whole: Rectangle<i32, Physical>,
+    visible: Option<Rectangle<i32, Physical>>,
+) -> Rectangle<f64, Buffer> {
+    let Some(visible) = visible.filter(|visible| *visible != whole) else {
+        return src;
+    };
+    let across = |length: i32, whole: i32, of: f64| {
+        if whole > 0 {
+            of * f64::from(length) / f64::from(whole)
+        } else {
+            0.0
+        }
+    };
+    let (off_x, off_y) = (visible.loc.x - whole.loc.x, visible.loc.y - whole.loc.y);
+    Rectangle::<f64, Buffer>::new(
+        src.loc
+            + Point::from((
+                across(off_x, whole.size.w, src.size.w),
+                across(off_y, whole.size.h, src.size.h),
+            )),
+        Size::from((
+            across(visible.size.w, whole.size.w, src.size.w),
+            across(visible.size.h, whole.size.h, src.size.h),
+        )),
+    )
 }
 
 impl<E: Element> Element for RoundedElement<E> {
@@ -182,7 +226,7 @@ impl<E: Element> Element for RoundedElement<E> {
     }
 
     fn src(&self) -> Rectangle<f64, Buffer> {
-        self.element.src()
+        self.src
     }
 
     fn geometry(&self, scale: Scale<f64>) -> Rectangle<i32, Physical> {
@@ -227,7 +271,9 @@ where
         damage: &[Rectangle<i32, Physical>],
         opaque_regions: &[Rectangle<i32, Physical>],
     ) -> Result<(), R::Error> {
-        let bands = window_frame::bands(dst, self.radius);
+        // The rows cut the corners of the rect the element stands in, whatever the clip leaves of
+        // it: a window a card takes a bite out of keeps the corners it has.
+        let bands = window_frame::bands(self.whole, self.radius);
         if bands.len() <= 1 {
             return self.element.draw(frame, src, dst, damage, opaque_regions);
         }
@@ -240,6 +286,9 @@ where
                 .map(|part| Rectangle::new(part.loc - row.loc, part.size))
         };
         for row in bands {
+            let Some(row) = row.intersection(dst) else {
+                continue;
+            };
             let damage: Vec<Rectangle<i32, Physical>> = damage
                 .iter()
                 .copied()
@@ -334,6 +383,7 @@ where
                     scaled,
                     radius,
                     placement.clip,
+                    Scale::from(output_scale),
                 )))
             })
             .collect(),
@@ -350,6 +400,7 @@ where
                             ),
                             radius,
                             placement.clip,
+                            Scale::from(output_scale),
                         ))
                     }
                     crate::hdr::Piece::Rendered(element) => {
@@ -361,6 +412,7 @@ where
                             ),
                             radius,
                             placement.clip,
+                            Scale::from(output_scale),
                         ))
                     }
                 };
@@ -427,6 +479,7 @@ where
                         scaled,
                         radius,
                         placement.clip,
+                        Scale::from(output_scale),
                     ))]
                 }
                 // A window that showed an HDR rendition animates that.
@@ -439,7 +492,12 @@ where
                             placement.scale,
                         );
                         OutputRenderElement::Transformed(TransformedElement::Hdr(
-                            RoundedElement::new(scaled, radius, placement.clip),
+                            RoundedElement::new(
+                                scaled,
+                                radius,
+                                placement.clip,
+                                Scale::from(output_scale),
+                            ),
                         ))
                     })
                     .into_iter()

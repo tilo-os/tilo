@@ -201,3 +201,70 @@ fn a_float_let_go_off_the_strip_stays_over_the_desk_where_it_was_dropped() {
         "the window stands where it was let go"
     );
 }
+
+#[test]
+fn a_float_covers_the_windows_under_it_once_it_has_arrived() {
+    use crate::motion::pin_frame_at;
+
+    let (row, _taffy, _root) = make_row_with_groups_with_taffy(&[&[1], &[2]]);
+    let at = Rect::new(120.0, 60.0, 760.0, 540.0);
+    let mut now = crate::time::now();
+    let mut row = row;
+    {
+        let _frame = pin_frame_at(now);
+        row.set_floats(floats(&[(100, at)]));
+    }
+    let (mut row, _taffy, _root) = relayout_row_owned(row, FIXTURE_USABLE_PX);
+    let theme = Theme::dark();
+    let text = &mut TextRenderer::new();
+    let presence = PresenceCtx::empty();
+    let mut draw = |row: &mut GroupRow, at: crate::time::Instant| {
+        let _frame = pin_frame_at(at);
+        let mut scene = Scene::new();
+        row.draw(&mut scene, Affine::IDENTITY, text, &theme, &presence);
+    };
+    // The frame it first shows on fades it in over the desk: what it covers still shows through, so
+    // the windows under it are drawn as they stand.
+    draw(&mut row, now);
+    assert!(
+        row.drawn_covers().is_empty(),
+        "a float still arriving covers nothing"
+    );
+    for _ in 0..600 {
+        if !row.drawn_covers().is_empty() {
+            break;
+        }
+        now += std::time::Duration::from_millis(16);
+        draw(&mut row, now);
+    }
+    let covers = row.drawn_covers();
+    assert_eq!(
+        covers.len(),
+        1,
+        "the one float stands over the desk: {covers:?}"
+    );
+    let (tab, cover) = covers[0];
+    let card = row.groups[0].get_rect();
+    let bar = row.groups[0].bar_rect();
+    assert_eq!(tab, 1, "the cover is of the window it shows, by its tab");
+    assert_eq!(
+        card.union(bar),
+        card,
+        "the float is one card: its bar is the head of the window it shows, inside the card: \
+         bar {bar:?} against card {card:?}"
+    );
+    assert!(
+        bar.height() > 0.0 && card.height() > bar.height(),
+        "and the window's body under it: bar {bar:?} against card {card:?}"
+    );
+    assert_eq!(
+        cover.union(card),
+        cover,
+        "the cover holds the whole card, bar and body: {cover:?} against {card:?}"
+    );
+    assert!(
+        cover.width() > card.width() && cover.height() > card.height(),
+        "and the lift it stands on, so the windows under it are drawn around that too: \
+         {cover:?} against {card:?}"
+    );
+}

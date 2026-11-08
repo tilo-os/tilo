@@ -715,6 +715,46 @@ fn a_conversation_opens_floated_where_its_box_stood() {
 }
 
 #[test]
+fn a_floated_windows_cover_is_where_the_desk_draws_it() {
+    let (mut driver, mut policy) = mount();
+    map(&mut driver, &mut policy, 1, "so.tilo.chat");
+    let content = policy
+        .content_rect(window_tab(&policy, 1))
+        .expect("the chat window's content stands on the desk");
+    let at = [
+        content.x0 + 40.0,
+        content.y0 + 120.0,
+        content.x0 + 520.0,
+        content.y0 + 480.0,
+    ];
+    assert!(
+        policy.open_floated("so.tilo.chat", at),
+        "the desk takes the float"
+    );
+    settle(&mut driver);
+    assert!(
+        policy.float_covers().is_empty(),
+        "a place no window fills draws nothing over the desk"
+    );
+    // The window the send started takes the place the desk held.
+    map(&mut driver, &mut policy, 2, "so.tilo.chat");
+    settle(&mut driver);
+    let covers = policy.float_covers();
+    assert_eq!(covers.len(), 1, "one window floats: {covers:?}");
+    let (window, cover) = covers[0];
+    assert_eq!(window, 2, "the cover is of the window that floats");
+    assert_eq!(
+        (cover.width() > 640.0, cover.height() > 480.0),
+        (true, true),
+        "the whole of its bar and body and the lift it stands on, as the desk draws it: {cover:?}"
+    );
+    assert!(
+        policy.layout().covers == covers,
+        "the layout a surface publishes carries the covers"
+    );
+}
+
+#[test]
 fn a_window_that_names_no_title_is_tabbed_under_its_apps_name() {
     let (mut driver, mut policy) = mount();
     policy

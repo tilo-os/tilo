@@ -284,6 +284,18 @@ fn round(value: f64) -> i32 {
     value.round() as i32
 }
 
+/// `rect` of the surface, as it stands in the logical layout where the desk's origin is
+/// `(ox, oy)`.
+fn placed(rect: ui::kurbo::Rect, (ox, oy): (i32, i32)) -> LayoutRect {
+    LayoutRect::new(
+        LayoutPoint::from((
+            ox.saturating_add(round(rect.x0)),
+            oy.saturating_add(round(rect.y0)),
+        )),
+        (round(rect.width()).max(1), round(rect.height()).max(1)).into(),
+    )
+}
+
 /// The desktop drawn under every window; a clone is the same desktop.
 #[derive(Clone)]
 pub struct DesktopHost {
@@ -718,6 +730,18 @@ impl SurfaceHost for DesktopHost {
 
     fn below_windows(&self) -> bool {
         true
+    }
+
+    fn drawn_over_windows(&self) -> Vec<(u64, LayoutRect)> {
+        // The desk draws a floating window's bar and lift itself, under the windows, so the windows
+        // it covers are drawn around it.
+        let desk = self.desk.borrow();
+        let (ox, oy) = desk.host.placement().origin;
+        desk.policy
+            .float_covers()
+            .into_iter()
+            .map(|(window, cover)| (window, placed(cover, (ox, oy))))
+            .collect()
     }
 
     fn accepts_pointer(&self, x: f64, y: f64) -> bool {
