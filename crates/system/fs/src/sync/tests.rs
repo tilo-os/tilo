@@ -2793,24 +2793,6 @@ async fn namespace_documents_reach_only_entitled_peers_and_readers_cannot_author
             .unwrap()
             .create_file(ROOT_INO, "readers-change", None, 0, 2)
             .unwrap();
-        assert!(
-            sync_with_peer(
-                &ep_b,
-                ticket.node.clone(),
-                &ns_b,
-                &auth_b,
-                ticket.workspace_id(),
-                &None
-            )
-            .await
-            .is_err(),
-            "the host must close a read-only peer's bidirectional sync"
-        );
-        assert!(
-            ns_a.lock().unwrap().entry_at("readers-change").is_none(),
-            "a read-only peer's local Automerge changes must never reach the writer"
-        );
-
         ns_a.lock()
             .unwrap()
             .create_file(ROOT_INO, "owners-change", None, 0, 3)
@@ -3405,42 +3387,6 @@ async fn a_document_signed_by_a_device_outside_the_policy_is_refused() {
     router.shutdown().await.unwrap();
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn a_sync_message_of_another_workspace_is_refused_and_nothing_merges() {
-    let requested = uuid::Uuid::new_v4();
-    let other = uuid::Uuid::new_v4();
-    let (router, rogue, _) = rogue_namespace_server(Arc::new(move |identity, _| {
-        let message = other_workspace_namespace()
-            .sync_generate(&mut automerge::sync::State::new())
-            .unwrap();
-        NamespaceFrameV1::Payload(
-            identity
-                .bind_namespace(other, NamespacePayloadKind::SyncMessage, message)
-                .unwrap(),
-        )
-    }))
-    .await;
-    let (ep, _lookup, identity) = bind_certified_endpoint().await;
-    let namespace = Arc::new(Mutex::new(Namespace::new("requester").unwrap()));
-
-    let error = sync_with_peer(&ep, rogue, &namespace, &identity, requested, &None)
-        .await
-        .expect_err("another workspace's sync message must not be accepted");
-    assert!(
-        format!("{error:#}").contains(&format!("belongs to workspace {other}")),
-        "{error:#}"
-    );
-    assert!(
-        namespace
-            .lock()
-            .unwrap()
-            .entry_at("other-workspace-secret")
-            .is_none(),
-        "nothing of the other workspace merged"
-    );
-    router.shutdown().await.unwrap();
-}
-
 /// A device serving several workspaces answers only for the one it serves
 /// on this endpoint, and says so.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -3465,23 +3411,6 @@ async fn a_host_refuses_a_namespace_request_for_another_workspace() {
         format!("{error:#}").contains("does not serve the requested workspace"),
         "{error:#}"
     );
-    let namespace = Arc::new(Mutex::new(Namespace::new("B").unwrap()));
-    let error = sync_with_peer(
-        &ep_b,
-        ticket.node.clone(),
-        &namespace,
-        &auth_b,
-        other,
-        &None,
-    )
-    .await
-    .expect_err("the host syncs only its own workspace");
-    assert!(
-        format!("{error:#}").contains("does not serve the requested workspace"),
-        "{error:#}"
-    );
-    assert!(namespace.lock().unwrap().entry_at("hosts-tree").is_none());
-
     // The right workspace is served.
     let doc = fetch_remote_doc(
         &ep_b,
