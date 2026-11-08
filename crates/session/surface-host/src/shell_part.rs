@@ -193,11 +193,60 @@ pub fn screen_layer() -> RootView {
     }
 }
 
+/// The package id of the shell a device installs, and the one this build's fallback copy is.
+pub const SHELL_APP: &str = "so.tilo.shell";
+
+/// The shell package, as the session runs it: the installed `so.tilo.shell` when the person's
+/// app store holds one, and this build's copy (`compile_shell`) when it does not
+/// (shell.md §6, "Where styles come from").
+///
+/// An installed shell is read the way every tilolang app is ([`seeded_apps`]'s path): its
+/// payload from the store row, its module and the modules it uses, each of them compiled by
+/// `tilolang build`. The store is the session's own (`$TILO_APPS_DATA_DIR`, else the person's
+/// `$XDG_DATA_HOME/tilo-apps`), so a development session installs it as it installs the apps.
+///
+/// # Errors
+/// The installed shell's payload does not read. A store that holds no shell is not an error:
+/// the fallback answers.
+pub fn installed_shell() -> Result<Option<Vec<Compiled>>, String> {
+    let Ok(catalog) = package_store::Catalog::from_env() else {
+        return Ok(None);
+    };
+    let found =
+        app_catalogue::apps::read_one(&catalog, SHELL_APP).map_err(|error| error.to_string())?;
+    let Some(app) = found else {
+        return Ok(None);
+    };
+    let bundle = tilolang_tilo::bundle::Bundle::read(&app.payload_root)
+        .map_err(|error| format!("{SHELL_APP}: {error}"))?;
+    // The packages it uses come first, as a bundle holds them, the shell last: the runtime
+    // loads each before the one that uses it.
+    let mut out: Vec<Compiled> = Vec::new();
+    for import in &bundle.imports {
+        out.push(compiled_of(&import.wasm, &import.meta, ""));
+    }
+    out.push(compiled_of(&bundle.wasm, &bundle.meta, &bundle.ids));
+    Ok(Some(out))
+}
+
+/// A compiled package made of the module `wasm`, the metadata `meta` and the ids lock `ids`,
+/// as an installed payload holds them: the shape a shell's instance loads.
+fn compiled_of(wasm: &[u8], meta: &tilolang_tilo::tilolang::PackageMeta, ids: &str) -> Compiled {
+    Compiled {
+        wasm: wasm.to_vec(),
+        meta: meta.clone(),
+        ids: tilolang_tilo::tilolang::IdsLock::parse(ids).unwrap_or_default(),
+    }
+}
+
 /// The shell package, compiled: what a shell's instance loads, over the session's and the
 /// platform's descriptions. No other app's package is the shell's: the package of each app a
 /// place shows comes from the session when a place shows it ([`SessionLink::publish_packages`]).
 /// `Err` when it does not compile, which every build of the shell is checked against, so a
 /// test that fails to compile here fails loudly.
+///
+/// This is the fallback shell, for a device whose app store holds no `so.tilo.shell` (or one
+/// that does not load): [`installed_shell`] answers with the installed copy first.
 ///
 /// # Errors
 /// The package's diagnostics, rendered with their file names.
@@ -1884,6 +1933,15 @@ pub struct ShellPart {
     /// An instant the session has something of its own to draw at (the switcher's panel
     /// coming up while Alt is held): the part wakes then rather than sleeping over it.
     deadline: Option<std::time::Instant>,
+    /// The content its places' pictures are read from: the session's document media, as the
+    /// workspace in front's places stand in it. The part draws in the session's own process,
+    /// which the launcher handed no capability of its own, so what an app's connector kept for
+    /// the records a place shows is read from here (`ui::pictures::lend_content`).
+    content: Option<ui::content::ContentStore>,
+    /// The workspace the store was opened for, as the session names it: a place of another
+    /// workspace reads its pictures from that one's, and the session lends the store of the
+    /// workspace in front each pass.
+    content_workspace: String,
 }
 
 /// Which of the compositor's windows a view's window key names, if it may be pictured.
@@ -1988,6 +2046,8 @@ impl ShellPart {
             seen_heads: Vec::new(),
             previews: None,
             deadline: None,
+            content: None,
+            content_workspace: String::new(),
         };
         if seed {
             part.seed();
@@ -2229,6 +2289,24 @@ impl ShellPart {
     pub fn show_pictures(&mut self, previews: ui::widget::Previews, windows: WindowLookup) {
         self.widgets.install_previews(Some(previews.clone()));
         self.previews = Some((previews, windows));
+    }
+
+    /// Read its places' pictures from `content`, the session's document media as the workspace
+    /// `workspace` in front holds it: a place shows the records an app's connector kept stills
+    /// for, and the part draws in the session's own process, which the launcher handed no store
+    /// of its own.
+    ///
+    /// The store keeps every workspace the session draws, so one lending serves a place
+    /// whichever workspace it stands in; a part told the same store twice keeps the one it has.
+    pub fn lend_content(&mut self, workspace: &str, content: Option<ui::content::ContentStore>) {
+        if self.content_workspace == workspace && self.content.is_some() == content.is_some() {
+            return;
+        }
+        workspace.clone_into(&mut self.content_workspace);
+        self.content = content;
+        // The views asked for their pictures before one answered: the frames after this ask
+        // again, now that a store reads them.
+        self.again = true;
     }
 
     /// When the session has something of its own to draw, which the part does not know: it

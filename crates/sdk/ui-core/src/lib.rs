@@ -439,7 +439,7 @@ pub use local_state::{
 };
 pub use nav_stack::{EdgeSwipeBack, NavAction, NavStack};
 pub use paragraph::{ComposedLine, ParagraphBox, ParagraphOptions, compose_paragraph};
-pub use pictures::{BLOB_SCHEME, Pictures, Shown as ShownPicture};
+pub use pictures::{BLOB_SCHEME, Pictures, Shown as ShownPicture, lend_content};
 pub use platform::{
     DialogActionOrder, HostShortcut, Platform, PlatformConventions, Shortcut, spell_shortcut,
 };

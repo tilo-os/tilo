@@ -19,12 +19,31 @@ use crate::displays;
 use crate::panels::Held;
 
 /// The shell package and the packages it uses, compiled, the shell last: what the shell's
-/// instance runs.
+/// instance runs. The installed `so.tilo.shell` when the person's app store holds one, the
+/// build's fallback copy when it does not (shell.md §6).
 ///
 /// # Errors
-/// A package does not compile: its diagnostics.
+/// Neither the installed shell nor the fallback compiles: the fallback's diagnostics.
 pub fn compile() -> Result<Vec<tilolang_tilo::tilolang::Compiled>, String> {
-    tilo_surface_host::shell_part::compile_shell()
+    Ok(shell_packages()?.0)
+}
+
+/// [`compile`], and whether the packages are the store's installed shell rather than this
+/// build's fallback copy: what a test holds the loading path to.
+///
+/// # Errors
+/// As [`compile`].
+pub fn shell_packages() -> Result<(Vec<tilolang_tilo::tilolang::Compiled>, bool), String> {
+    match tilo_surface_host::shell_part::installed_shell() {
+        Ok(Some(packages)) => Ok((packages, true)),
+        Ok(None) => Ok((tilo_surface_host::shell_part::compile_shell()?, false)),
+        Err(error) => {
+            // A store row that does not read is the person's to see, and the desk still stands:
+            // the fallback is what a device with no shell of its own shows.
+            tracing::warn!(%error, "the installed shell does not load; the built-in one stands in");
+            Ok((tilo_surface_host::shell_part::compile_shell()?, false))
+        }
+    }
 }
 
 /// The device's resources the session publishes, as their surfaces: the sound, the network,
@@ -79,6 +98,9 @@ pub(crate) struct Shell {
     /// How many of the session's turns read some of them: what the views composed in places waited
     /// on comes in one turn for everything one run of them read, not one per resource.
     rounds: u64,
+    /// Lent last to every part, by the workspace in front and the media it was opened over: a
+    /// part told the same one again keeps the store it has.
+    lent_content: Option<(String, Option<ui::content::ContentStore>)>,
     /// The shell's record, shared by every part: one display draws what another wrote, so a change
     /// any part commits is the whole shell's.
     record: Rc<RefCell<tilo_resource::Doc>>,
@@ -131,6 +153,7 @@ impl Shell {
             rounds: 0,
             record: Rc::new(RefCell::new(tilo_resource::Doc::new())),
             parts: Vec::new(),
+            lent_content: None,
             packages,
             app,
             person: String::new(),
@@ -692,6 +715,51 @@ pub struct PartPlace {
     pub aside: bool,
 }
 
+/// Lend `shell`'s parts the content its places draw from: the document media this session serves
+/// its apps (`TILO_FS_BLOB_SOCKET`, `fs serve-media`), read as the session itself, with
+/// `workspaces` — the workspaces the desk holds — among the scopes it serves, the one in front
+/// first.
+///
+/// A place shows a record an app's connector kept stills for (`tilo-blob://<hash>`), and the
+/// parts run in this process, which the launcher handed no capability of its own: without this
+/// every still draws as its placeholder, though the bytes are here
+/// (`docs/architecture/apps.md` §1, §8).
+///
+/// The store is opened again only when the workspace in front changed: every other pass keeps
+/// the one the parts have, so a picture drawn every frame is not opened again every frame.
+fn lend_content(shell: &mut Shell, shared: &crate::Shared, workspaces: Vec<String>) {
+    if workspaces.is_empty() {
+        return;
+    }
+    let active = shared.active_workspace_id();
+    let active = if active.is_empty() {
+        workspaces.first().cloned().unwrap_or_default()
+    } else {
+        active
+    };
+    // One media store, the workspace in front first and every other beside it: a place of any
+    // workspace reads its stills through it, and a still is read through the workspace that
+    // references it.
+    let mut ordered = vec![active.clone()];
+    ordered.extend(
+        workspaces
+            .into_iter()
+            .filter(|workspace| *workspace != active),
+    );
+    ui::content::set_session_workspaces(ordered);
+    // The store is opened again only when the workspace in front changed; every part is told it
+    // every pass, so a display whose part was made since reads the same content as the others
+    // (and a part told the one it has keeps it).
+    let content = match shell.lent_content.take() {
+        Some((lent, content)) if lent == active => content,
+        _ => ui::content::session(&active),
+    };
+    for (_, part) in &shell.parts {
+        part.borrow_mut().lend_content(&active, content.clone());
+    }
+    shell.lent_content = Some((active, content));
+}
+
 /// The compositor's window for the reading's window `key` (its tab's id), when it may be pictured:
 /// this device draws the window and its app shows no secrets. A window this device does not draw,
 /// or one whose app holds secrets, is pictured by nothing, and its view shows the app's mark
@@ -1127,6 +1195,19 @@ impl crate::Session {
         shell.publish_readings(&self.shared.services.borrow());
         shell.follow_places(&arrangement, &mut self.shared.services.borrow_mut());
         shell.publish_arrangement(arrangement);
+        // What the places draw reads its pictures from the document media of the workspaces
+        // those places stand in: the parts draw in the session's own process, which the launcher
+        // handed no store of its own, so the session lends them one (`docs/architecture/apps.md`
+        // §1, the connector's stills, `fs serve-media`).
+        {
+            let workspaces: Vec<String> = self.shared.handle.read(|tree| {
+                tree.workspaces
+                    .iter()
+                    .map(|held| held.id().to_string())
+                    .collect()
+            });
+            lend_content(shell, &self.shared, workspaces);
+        }
         // What the screen says of its edges is what a bar or dock that shows only sometimes
         // follows; it moves without the desk, so it goes every turn.
         shell.publish_edges(&self.compositor);

@@ -126,6 +126,66 @@ fn a_session_s_media_server_keeps_what_the_connector_puts_for_the_window_to_read
     );
 }
 
+/// The session's own process draws a place over an app's record without any app window, and the
+/// launcher hands no app's capability to it: its store is the daemon's, opened as the session
+/// itself and scoped to the workspaces it draws (`tilo_content_device::session`). A still the
+/// app's connector kept under its own scope in that workspace is read through it, which is what
+/// fills a place's cards — without it every still stayed a placeholder though the bytes were
+/// kept.
+#[test]
+fn the_session_reads_what_the_connector_kept_through_its_own_store() {
+    let dir = tempfile::tempdir().expect("a scratch directory");
+    let server = Server::start(dir.path());
+
+    // The connector, in the app's own scope: the still goes into the workspace's reachability
+    // index, which is per workspace and not per app.
+    let connector = server.app("workspace-1", "so.tilo.lang.tube");
+    let kept = connector
+        .put(PICTURE, "image/png")
+        .expect("the connector keeps a still");
+
+    // The session's process: a plain store over the daemon's socket, as the shell part's is.
+    let session = session_store(&server.socket, "workspace-1")
+        .expect("the session reads the workspace's content through its own media");
+    assert_eq!(
+        session.read(&kept.hash).as_deref(),
+        Some(PICTURE),
+        "a place of that workspace draws the still the connector kept"
+    );
+
+    // A workspace the still was never put in holds none of it: the session's store serves what
+    // each workspace references, never another's.
+    let elsewhere =
+        session_store(&server.socket, "workspace-2").expect("a second workspace's media");
+    assert_eq!(
+        elsewhere.read(&kept.hash),
+        None,
+        "a workspace that never had the still reads none of it"
+    );
+}
+
+/// The store a session's own process reads a workspace's pictures through: the daemon at
+/// `socket`, with `workspace` one of the workspaces it draws. This is exactly what the shell part
+/// is lent (`ui::content::lend_content`).
+fn session_store(socket: &Path, workspace: &str) -> Option<tilo_content::ContentStore> {
+    let saved = std::env::var_os("TILO_FS_BLOB_SOCKET");
+    // SAFETY: the test runs alone under the environment lock every test holds.
+    unsafe { std::env::set_var("TILO_FS_BLOB_SOCKET", socket) };
+    tilo_content_device::set_session_workspaces(vec![workspace.to_owned()]);
+    let store = tilo_content_device::session(workspace);
+    match saved {
+        Some(value) => {
+            // SAFETY: as above.
+            unsafe { std::env::set_var("TILO_FS_BLOB_SOCKET", value) };
+        }
+        None => {
+            // SAFETY: as above.
+            unsafe { std::env::remove_var("TILO_FS_BLOB_SOCKET") };
+        }
+    }
+    store
+}
+
 #[test]
 fn a_server_replaces_a_socket_a_killed_session_left_behind() {
     let dir = tempfile::tempdir().expect("a scratch directory");
