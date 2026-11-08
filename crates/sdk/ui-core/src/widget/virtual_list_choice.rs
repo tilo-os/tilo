@@ -52,15 +52,6 @@ impl<M: ListModel> VirtualList<M> {
         self
     }
 
-    /// A press on a row chooses it. A list whose view reports no choice of its rows is no
-    /// picker ([`Self::choosing_on_press(false)`](Self::choosing_on_press)): a press moves the
-    /// keyboard to the row, and nothing shows as chosen, however the rows open.
-    #[must_use]
-    pub fn choosing_on_press(mut self, choosing: bool) -> Self {
-        self.choosing_on_press = choosing;
-        self
-    }
-
     /// The row the keyboard is on: the mounted row holding the focus — a control inside it
     /// counts, as `Tab` leaves it there — else the row this list's own keys last took. The
     /// row a key that acts on one row acts on.

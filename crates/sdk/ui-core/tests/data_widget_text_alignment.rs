@@ -26,9 +26,8 @@
 use std::collections::HashMap;
 
 use tilo_ui::State;
-use tilo_ui::TextRenderer;
 use tilo_ui::TextRole;
-use tilo_ui::chrome::row_bleed;
+use tilo_ui::chrome::{disclosure_gutter, row_bleed};
 use tilo_ui::component::{Described, ResourceId};
 use tilo_ui::headless::{FrameHarness, InspectionNode};
 use tilo_ui::icons::Icon;
@@ -37,8 +36,8 @@ use tilo_ui::theme::Theme;
 use tilo_ui::widget::data_table::{ColumnDef, ColumnWidth, DataTable};
 use tilo_ui::widget::{
     Banner, Button, Chart, Column, DescribedTreeView, Element, ListRowFace, SearchResultsView,
-    Section, SectionHeader, Series, StatGroup, StatTile, TREE_DISCLOSURE, TREE_INDENT,
-    TREE_ROW_HEIGHT, Text, TreeViewNodeProps, TreeViewProps, Trend,
+    Section, SectionHeader, Series, StatGroup, StatTile, TREE_ROW_HEIGHT, Text, TreeViewNodeProps,
+    TreeViewProps, Trend,
 };
 use vello::kurbo::Rect;
 
@@ -403,12 +402,18 @@ fn data_rows_centre_their_text_and_scale_once() {
             let theme = Theme::dark().with_text_scale(scale);
             // The row a tree draws is a list row standing at the tree's own row token, shorter
             // than a list's row of the same theme.
-            let mut text = TextRenderer::new();
-            let row_h = ListRowFace::new("crates")
-                .row_height(TREE_ROW_HEIGHT)
-                .height(&mut text, &theme);
-            // A chevron hangs in the gutter left of the label column, one indent a depth.
-            let label_x0 = tree.x0 + row_bleed(&theme).max(TREE_INDENT);
+            // Measured the way the row measures itself: at the theme's own text scale.
+            let row_h = tilo_ui::text_render::with_layout_renderer(theme.text_scale, |text| {
+                ListRowFace::new("crates")
+                    .row_height(TREE_ROW_HEIGHT)
+                    .height(text, &theme)
+            });
+            // A chevron stands at the row's leading edge, in the step its own depth keeps
+            // free in front of the content; the content starts one step and a bleed after it.
+            let bleed = row_bleed(&theme);
+            let step = disclosure_gutter(&theme);
+            let row_x0 = tree.x0 + bleed.max(step);
+            let label_x0 = row_x0 + bleed + step;
             let row = Rect::new(label_x0, tree.y0, label_x0 + 200.0, tree.y0 + row_h);
             let root_label = ink(&cap.image, row);
             label_ink.push(root_label);
@@ -417,12 +422,7 @@ fn data_rows_centre_their_text_and_scale_once() {
             // the 2× body size.
             assert_centered("root label", root_label, row, 2.5);
             assert_has_air("root label", root_label, row);
-            let glyph = Rect::new(
-                label_x0 - TREE_INDENT,
-                tree.y0,
-                label_x0 - TREE_INDENT + TREE_DISCLOSURE,
-                tree.y0 + row_h,
-            );
+            let glyph = Rect::new(row_x0, tree.y0, row_x0 + step, tree.y0 + row_h);
             let glyph_ink = ink(&cap.image, glyph);
             // The down-triangle's rasterized ink is optically bottom-heavy at
             // 2x even though it shares the label's centred line box.
@@ -434,7 +434,7 @@ fn data_rows_centre_their_text_and_scale_once() {
             );
             // Second row (`Sources`, depth 1): centred in its own band, which only
             // holds if the first row really is `row_h` tall.
-            let second_x0 = label_x0 + TREE_INDENT + TREE_DISCLOSURE;
+            let second_x0 = label_x0 + step;
             let second = Rect::new(
                 second_x0,
                 tree.y0 + row_h,

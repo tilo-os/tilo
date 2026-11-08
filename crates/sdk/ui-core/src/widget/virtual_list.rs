@@ -419,9 +419,6 @@ pub struct VirtualList<M: ListModel> {
     /// A press on a row opens it, without waiting for a second one
     /// ([`VirtualList::open_on_press`]).
     open_on_press: bool,
-    /// A press on a row chooses it, and a click on a list whose rows open nothing chooses
-    /// instead ([`VirtualList::choosing_on_press`]).
-    choosing_on_press: bool,
     /// A row's subtasks folded or opened ([`VirtualList::on_fold`]).
     on_fold: Option<FoldCallback<M::Key>>,
     /// Told the item the person opened where it stands ([`VirtualList::on_opened`]), and told
@@ -661,7 +658,6 @@ impl<M: ListModel> VirtualList<M> {
             opens: None,
             on_activate: None,
             open_on_press: false,
-            choosing_on_press: true,
             on_fold: None,
             on_opened: None,
             on_closed: None,

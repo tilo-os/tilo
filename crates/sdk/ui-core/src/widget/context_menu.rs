@@ -567,8 +567,6 @@ pub struct ContextMenu {
     /// While a query narrows the rows, the panel's top edge stays where it
     /// opened: the field under the person's eyes does not move.
     pinned_top: Option<f64>,
-    /// The armed cell of an emoji row while that row is armed.
-    emoji_cell: usize,
     /// Whether anything the menu paints has changed since it was last drawn.
     /// A menu that has settled says so, and the window it floats in stops
     /// asking for frames.
@@ -629,7 +627,6 @@ impl ContextMenu {
             asked: None,
             ask_at: Point::ZERO,
             pinned_top: None,
-            emoji_cell: 0,
             dirty: true,
             send_to: super::SendToBox::new(),
             alone: None,
@@ -1209,7 +1206,7 @@ impl ContextMenu {
                 self.close();
             }
             MenuItem::Emoji(row) => {
-                let picked = row.choose(self.emoji_cell);
+                let picked = row.choose(self.list.cell());
                 if picked {
                     if self.own_rows.is_none_or(|own| idx < own) {
                         self.selection = Some(idx);
