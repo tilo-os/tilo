@@ -579,6 +579,7 @@ impl NativeWorkspaceOwner {
 
     /// Publish `workspace`'s live replica whenever `changes` says a link
     /// admitted into it, until the link is gone.
+    #[cfg(not(target_arch = "wasm32"))]
     pub async fn persist_changes(
         &self,
         workspace: WorkspaceId,
@@ -824,6 +825,7 @@ impl NativeWorkspaceOwner {
 
     /// Publish `workspace`'s record as `change` leaves a copy of it, keeping
     /// this device's live replica: a change of this device's record alone.
+    #[cfg(not(target_arch = "wasm32"))]
     fn change_record<T>(
         &self,
         workspace: WorkspaceId,
