@@ -2,15 +2,10 @@
 use super::facades::{PeerMediaGovernance, PeerMediaGovernanceMut};
 use super::{
     BTreeMap, GovernedIdentity, NeighbourMsg, ROOT, ReadDoc, RevocationList, Route, SigningKey,
-    StatePeer, SystemTime, Transactable, TransportOrigin, err, workspace,
+    SystemTime, Transactable, TransportOrigin, err, workspace,
 };
 use workspace::media::{self, WorkspaceMediaV1};
 
-impl StatePeer {
-    fn require_media_governor(&self, key: &SigningKey, now: SystemTime) -> Result<(), String> {
-        self.require_governance_action(key, tilo_action_policy::roles::governance::SETTINGS, now)
-    }
-}
 impl PeerMediaGovernance<'_> {
     /// Data publication allows workspace-first missing Chat; media readiness does not.
     pub fn validate_media_governance_for_publication(self) -> Result<(), String> {
@@ -126,7 +121,11 @@ impl PeerMediaGovernanceMut<'_> {
             }
             return Ok(false);
         }
-        self.peer.require_media_governor(key, now)?;
+        self.peer.require_governance_action(
+            key,
+            tilo_action_policy::roles::governance::SETTINGS,
+            now,
+        )?;
         let mut doc = self
             .peer
             .core
@@ -195,7 +194,11 @@ impl PeerMediaGovernanceMut<'_> {
         key: &SigningKey,
         now: SystemTime,
     ) -> Result<(), String> {
-        self.peer.require_media_governor(key, now)?;
+        self.peer.require_governance_action(
+            key,
+            tilo_action_policy::roles::governance::SETTINGS,
+            now,
+        )?;
         self.peer
             .media()
             .validate_media_governance_for_publication()?;

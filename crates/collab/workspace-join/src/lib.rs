@@ -102,7 +102,7 @@ pub struct GovernedMember {
     pub display_name: Option<String>,
     pub active_device_keys: Vec<[u8; 32]>,
     pub removed: bool,
-    /// Made an administrator by the governance writer: `role` is then
+    /// Made an administrator by the workspace's members: `role` is then
     /// [`MemberRole::Editor`] holding every governance action of the
     /// workspace, bounded by that role
     /// (`tilo_action_policy::roles::administrator_grant`).

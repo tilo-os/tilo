@@ -782,10 +782,9 @@ impl StatePeer {
             .map_err(|refusal| refusal.to_string())
     }
 
-    /// A current member's device. What it writes into the workspace's membership
-    /// is admitted as far as its person's grants reach, as every receiver
-    /// admits it (`workspace::membership`); the rest of governance stays the
-    /// owner's.
+    /// A current member's device. What it writes into the workspace is admitted
+    /// as far as its person's role and grants reach, as every receiver admits
+    /// it (`workspace::membership`).
     pub(crate) fn require_member_writer(
         &self,
         key: &SigningKey,
@@ -807,15 +806,15 @@ impl StatePeer {
     }
 
     /// `device`'s certificate when it is one of the owner's devices, current
-    /// at `now`: the workspace's governance is the owner's to write, from any
-    /// device their root certifies, so no one device of theirs is needed
+    /// at `now`: the owner's own device publishes the records they wrote, from
+    /// any device their root certifies, so no one device of theirs is needed
     /// and a revoked one hands nothing over.
     fn owner_device(&self, device: &[u8; 32], now: SystemTime) -> Result<&DeviceCert, String> {
         let cert = self
             .certificate(device, now)
             .map_err(|error| error.to_string())?;
         if cert.user_public_key != self.core.owner {
-            return Err("governance writer is not the owner's device".into());
+            return Err("the publisher is not a device of the workspace's owner".into());
         }
         Ok(cert)
     }

@@ -4,9 +4,9 @@
 //! holds it on and its own settings (its name, saved grant sets and its
 //! apps' sandbox capabilities) are changed by actions, under the action
 //! policy (`tilo_action_policy::WorkspacePolicy`). Every change is judged by
-//! the action that governs it, against its writer's role there: the owner's
-//! role holds them all, so the owner's devices write every part of the
-//! workspace's governance, and anyone else writes what their role and grants
+//! the action that governs it, against its writer's role there: a role holds
+//! what it is given, so the owner's role holds every part of the workspace's
+//! governance by default, and anyone else writes what their role and grants
 //! let them.
 //!
 //! A batch is judged where its writer made it: against the workspace as it stood

@@ -63,7 +63,7 @@ pub struct WorkspaceAdmission<'a> {
     /// The workspace id as governance and capability scopes spell it.
     pub workspace: &'a str,
     pub source: Writer<'a>,
-    /// The workspace's owner, whose devices write its governance.
+    /// The workspace's owner: the person the workspace was made for.
     pub owner: &'a [u8; 32],
     /// The instant the batch is judged at, in nanoseconds since the Unix
     /// epoch: grant expiry, and the certificate a saved shortcut's proof
@@ -86,7 +86,7 @@ pub struct AdmittedWorkspace {
 /// Why a batch was refused. Display strings are the peer-state messages.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum WorkspaceRefusal {
-    /// The sender is not the governance writer and nothing is held to check
+    /// The sender is not the workspace's owner and nothing is held to check
     /// its membership against.
     GovernanceMissing,
     /// The sender may not change the workspace.
@@ -401,7 +401,7 @@ fn saved_shortcuts_proven(
     Ok(())
 }
 
-/// Whether a sender that is not the governance writer may make undoable
+/// Whether a sender that is not the workspace's owner may make undoable
 /// changes on the workspace (`true`), or only read it and so record its own
 /// effect receipts and give its own shares (`false`), decided against the
 /// policy already held — never the one the batch brings.

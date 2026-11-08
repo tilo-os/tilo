@@ -218,8 +218,8 @@ pub fn administrator_grant_id(person: &str) -> GrantId {
 ///
 /// Workspaces written before the grant took this node held it on
 /// [`workspace_resource`], where the Editor's own Deny at the same node outranked
-/// it; [`is_legacy_administrator_grant`] finds those so the governance writer
-/// rewrites them.
+/// it; [`is_legacy_administrator_grant`] finds those so a member's governance
+/// operation rewrites them.
 #[must_use]
 pub fn administrator_grant(workspace: &str, person: &str, granted_by: Subject) -> Grant {
     Grant {

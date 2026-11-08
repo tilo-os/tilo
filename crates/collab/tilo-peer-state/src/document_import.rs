@@ -268,7 +268,7 @@ mod tests {
         let before = AutoCommit::new();
         let mut after = before.clone();
         put_entry(&mut after, &entry(4, 100)).unwrap();
-        // So only the pinned governance writer may write one
+        // So only an operation that names it may write one
         // (`workspace::admit_workspace_changes`).
         assert!(!crate::workspace::governance_unchanged(
             Some(&before),
