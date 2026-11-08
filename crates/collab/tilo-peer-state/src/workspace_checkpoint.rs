@@ -8,8 +8,6 @@ pub struct CheckpointRoute {
     pub record: String,
 }
 impl CheckpointRoute {
-    /// # Errors
-    /// Rejects unbounded or malformed native routes.
     pub fn validate(&self) -> Result<(), String> {
         if self.app == "so.tilo.desktop" {
             return Err(
@@ -51,8 +49,6 @@ pub enum CheckpointCommand {
     },
 }
 impl CheckpointCommand {
-    /// # Errors
-    /// Rejects invalid names, IDs, or unsorted, duplicate, unbounded coverage.
     pub fn validate(&self) -> Result<(), String> {
         match self {
             Self::Capture {
@@ -119,8 +115,6 @@ pub struct CheckpointRequest {
 }
 impl CheckpointRequest {
     /// Stable binding of the original command and authenticated device/person evidence.
-    /// # Errors
-    /// Rejects invalid workspace, invocation, command or encoding.
     pub fn digest(&self) -> Result<[u8; 32], String> {
         if self.invocation.is_nil()
             || uuid::Uuid::parse_str(&self.workspace)

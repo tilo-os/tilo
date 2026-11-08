@@ -140,10 +140,6 @@ impl NativeWorkspaceOwner {
     /// response is retried with the exact same proof. `local` is the
     /// local slot the enrolled workspace will be shown in, where the host has
     /// slots.
-    ///
-    /// # Errors
-    /// The owner is fenced, the workspace is already enrolled or has another
-    /// proof in flight, the slot is gone or the record cannot be published.
     pub fn prepare_enrollment_into(
         &self,
         intent: &VerifiedNativeEnrollmentIntent,
@@ -372,10 +368,6 @@ impl NativeWorkspaceOwner {
         })
     }
     /// Install a completed enrollment: the workspace's first committed replica.
-    ///
-    /// # Errors
-    /// The Complete does not match the persisted proof, the admitted role
-    /// differs from the signed one, or the record cannot be published.
     pub fn install(
         &self,
         enrollment: &VerifiedNativeEnrollment,
@@ -480,10 +472,6 @@ impl NativeWorkspaceOwner {
     /// [`Self::with_current`] races another local write, which then makes it
     /// stale. A caller that needs the dense sequence prepares it inside the
     /// turn with [`Self::commit_document_with_current`].
-    ///
-    /// # Errors
-    /// The request is not an admissible local document write, its signed
-    /// sequence is stale, or the record cannot be published.
     pub fn commit_document(
         &self,
         request: crate::owner_commit::OwnerCommitRequest,

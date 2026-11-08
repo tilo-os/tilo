@@ -1128,10 +1128,6 @@ fn apply_awaiting(
 /// action, run again), any other by reverting the undo. A positive pending
 /// marker keeps such a step undone until its restoration settles. Returns
 /// the undo changes it brought back, newest first.
-///
-/// # Errors
-/// Says why nothing was redone: no undo of the scope's is in effect, a
-/// newer step of its own came after it, or a restoration cannot be applied.
 pub fn redo(
     doc: &mut AutoCommit,
     scope: &Scope,
@@ -1234,9 +1230,6 @@ pub struct Checkpoint {
 
 /// Name the document's current version `name`; naming another version
 /// with a name in use moves the name.
-///
-/// # Errors
-/// Refuses an empty or overlong name.
 pub fn checkpoint(doc: &mut AutoCommit, name: &str) -> Result<(), String> {
     let name = name.trim();
     if name.is_empty() || name.chars().count() > MAX_CHECKPOINT_NAME {
@@ -1290,9 +1283,6 @@ pub fn checkpoints(doc: &AutoCommit) -> Vec<Checkpoint> {
 
 /// The heads `version` names: a checkpoint's name, or a change id from
 /// history (at least six hex digits of it) — the document as of that change.
-///
-/// # Errors
-/// Names what a version can be, and the checkpoints there are.
 pub fn resolve(doc: &AutoCommit, version: &str) -> Result<Vec<ChangeHash>, String> {
     let version = version.trim();
     // Full hashes are immutable identities, even if a mutable checkpoint has
@@ -1434,9 +1424,6 @@ fn differs(doc: &AutoCommit, item: &Item, from: &[ChangeHash], to: &[ChangeHash]
 /// the items whose keys are `ids` (a mark, a layer, a field). Bookkeeping —
 /// what is undone, the checkpoints — stays as it is. Returns how many
 /// patches were written.
-///
-/// # Errors
-/// Says when there is nothing to restore: the document already matches.
 pub fn restore(
     doc: &mut AutoCommit,
     heads: &[ChangeHash],
@@ -1480,11 +1467,6 @@ pub const MAX_RESTORE_PATH_BYTES: usize = 1024;
 /// comparison; invalid selections are rejected together before any patch writes.
 /// Duplicate paths are harmless. Returns the number of patches written, not items.
 /// The caller owns the open transaction and its attribution/commit, as for `restore`.
-///
-/// # Errors
-/// Refuses empty/oversized selections, unknown heads, invalid, ambiguous or
-/// unchanged paths, entries whose collection was replaced (select the listed
-/// whole root instead), and comparisons with no applicable patches.
 pub fn restore_paths(
     doc: &mut AutoCommit,
     target_heads: &[ChangeHash],

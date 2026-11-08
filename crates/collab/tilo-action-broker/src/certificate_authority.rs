@@ -10,18 +10,10 @@ use crate::policy_clock::PolicyTime;
 
 pub trait CertificateAuthority: Send + Sync {
     /// Installed local runtime clock/origin; never supplied by a wire peer.
-    ///
-    /// # Errors
-    ///
-    /// Returns a message when the installed clock cannot be read.
     fn policy_time(&self) -> Result<Option<PolicyTime>, String> {
         Ok(None)
     }
     /// Checks `_certificate` for `_room` at the retained policy `_time`.
-    ///
-    /// # Errors
-    ///
-    /// Returns a message when the certificate is not authorized then; the default always refuses.
     fn authorize_with_policy_time(
         &self,
         _room: Uuid,
@@ -32,10 +24,6 @@ pub trait CertificateAuthority: Send + Sync {
     }
     /// Exact current pinned host authority for a broker-allocated private app
     /// descriptor. Ordinary and remote joins must never use this exception.
-    ///
-    /// # Errors
-    ///
-    /// Returns a message when the certificate is not the pinned host; the default always refuses.
     fn authorize_host_worker(
         &self,
         _route: &crate::route::CrdtRoute,

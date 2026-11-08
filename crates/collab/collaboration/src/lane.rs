@@ -28,9 +28,6 @@ impl<E> Lane<E> {
     }
 
     /// The live lane on `route`.
-    ///
-    /// # Errors
-    /// When no lane is live there, or the registry is poisoned.
     pub(crate) fn endpoint(&self, route: &str) -> Result<Arc<E>, String> {
         self.routes()
             .lock()
@@ -41,10 +38,6 @@ impl<E> Lane<E> {
     }
 
     /// Admit `endpoint` on `route`, reusing the slots of lanes that are gone.
-    ///
-    /// # Errors
-    /// When the route is empty or too long, already has a live lane, or too
-    /// many are live.
     pub(crate) fn admit(&self, route: String, endpoint: &Arc<E>) -> Result<(), String> {
         let mut entries = self
             .routes()

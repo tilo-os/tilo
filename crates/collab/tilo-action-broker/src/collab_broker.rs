@@ -372,9 +372,6 @@ impl BrokerDiscovery for WeakBrokerDiscovery {
 
 impl WeakAppActionBroker {
     /// Acquire a temporary facade only while the owning session still accepts work.
-    ///
-    /// # Errors
-    /// The session has dropped or stopped its actual broker.
     pub fn upgrade(&self) -> Result<AppActionBroker, String> {
         self.0.current()
     }
@@ -433,9 +430,6 @@ impl AppActionBroker {
     /// `AppBrokerState::await_membership_surface`). Ask before
     /// [`Self::change_workspace_membership`] in a workspace that may have
     /// appeared since the broker last published its workspaces' actions.
-    ///
-    /// # Errors
-    /// The broker is shutting down.
     pub fn await_membership_surface(
         &self,
         workspace: &str,
@@ -558,11 +552,6 @@ impl AppActionBroker {
 
     /// A local action door bound to an already-issued signed workspace admission and
     /// one host-issued execution. No device is enrolled and no grant is minted.
-    ///
-    /// # Errors
-    ///
-    /// Refuses unavailable/currently invalid admission, a missing registered
-    /// policy clock, or any mismatch with the transport-owned caller.
     pub fn certified_local_action_host(
         &self,
         caller: &tilo_actions::remote::Caller,
@@ -589,8 +578,6 @@ impl AppActionBroker {
     }
 
     /// Reuse the checked signed personal-cluster admission for native owner checks.
-    /// # Errors
-    /// Refuses non-person, foreign, stale or unadmitted execution; grants none.
     pub fn certified_person_context(
         &self,
         caller: &tilo_actions::remote::Caller,
@@ -600,10 +587,6 @@ impl AppActionBroker {
     }
 
     /// The durable invocation host this broker serves, while it is live.
-    ///
-    /// # Errors
-    ///
-    /// Refuses a stopped broker, or one whose journal does not admit work.
     pub fn invocation_host(&self) -> Result<uuid::Uuid, String> {
         self.state
             .while_live_fenced(AppBrokerState::invocation_host)
@@ -707,10 +690,6 @@ impl AppActionBroker {
     }
 
     /// Start a published action and return its lifecycle job.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the action is unavailable or cannot be dispatched.
     pub fn start(
         &self,
         peer_id: u64,
@@ -994,10 +973,6 @@ pub struct BrokerHandle {
 }
 impl BrokerHandle {
     /// Observe current private host-worker provenance for a native publication.
-    ///
-    /// # Errors
-    ///
-    /// Returns a message when the live broker cannot evaluate the provenance.
     pub fn is_current_host_worker(
         &self,
         peer: u64,
@@ -1132,10 +1107,6 @@ fn join_owned_thread(thread: JoinHandle<()>, identity: Option<usize>) {
     }
 }
 /// Start the production broker with explicit host-owned authority and services.
-///
-/// # Errors
-///
-/// Returns an I/O error when the broker socket or thread cannot be set up.
 pub fn spawn_with_services(
     socket: PathBuf,
     membership: Option<crate::services::WorkspaceAuthorityHandle>,
@@ -1166,10 +1137,6 @@ struct HarnessAdmission {
 }
 
 /// Native compatibility fixtures only; production callers inject current authority.
-///
-/// # Errors
-///
-/// Returns an I/O error when the broker socket or thread cannot be set up.
 #[cfg(any(test, feature = "test-support"))]
 pub fn spawn_with_test_services(
     socket: PathBuf,
@@ -1237,10 +1204,6 @@ fn spawn_inner(
 }
 
 /// Ordinary peer production constructor. All trust and durability belong to the caller's owner.
-///
-/// # Errors
-///
-/// Returns an I/O error when the publisher is not wired or the broker cannot start.
 pub fn spawn_native_peer(
     socket: PathBuf,
     membership: crate::services::WorkspaceAuthorityHandle,
@@ -1256,10 +1219,6 @@ pub fn spawn_native_peer(
     )
 }
 /// [`spawn_native_peer`] with explicit host services.
-///
-/// # Errors
-///
-/// Returns an I/O error when the publisher is not wired or the broker cannot start.
 #[expect(
     clippy::needless_pass_by_value,
     reason = "public constructor contract: callers hand over their configuration"

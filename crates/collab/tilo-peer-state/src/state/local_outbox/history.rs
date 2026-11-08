@@ -66,10 +66,6 @@ pub(super) fn key(mutation: &DocumentMutation) -> Key {
 
 /// The history of the publication `mutation` with its dependencies from
 /// `admitted`, remembered by `key`.
-///
-/// # Errors
-/// The publication does not load, or the admitted record lacks one of its
-/// dependencies or one of its changes.
 pub(super) fn of(
     key: Key,
     mutation: &DocumentMutation,

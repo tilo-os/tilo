@@ -3051,11 +3051,6 @@ impl AppBrokerState {
 
     /// Close `app_id`'s windows in `workspace` and record the terminal
     /// outcome as an invocation.
-    ///
-    /// # Errors
-    ///
-    /// Returns a message when the caller may not change the application or
-    /// the host cannot close applications.
     #[allow(
         clippy::needless_pass_by_value,
         reason = "the dispatch permit is spent here: taken by value, a caller cannot complete it twice"

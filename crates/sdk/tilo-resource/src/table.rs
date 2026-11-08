@@ -313,22 +313,13 @@ pub struct RecordDesc {
 /// Where a record being built takes its fields from, one after the other.
 pub trait FieldSource {
     /// The next field's value, put into `out`, an `Option` of its type.
-    ///
-    /// # Errors
-    /// Why the field does not read, located at it.
     fn next(&mut self, out: &mut dyn Any) -> Result<(), ModelError>;
 
     /// The field just read: read all of it (`#[model(whole)]`) and move on.
-    ///
-    /// # Errors
-    /// Why it does not read whole, located at it.
     fn read(&mut self, value: &mut dyn Any) -> Result<(), ModelError>;
 }
 
 /// The next field of `source`, a `T`.
-///
-/// # Errors
-/// Why it does not read.
 pub fn take<T: 'static>(source: &mut dyn FieldSource) -> Result<T, ModelError> {
     let mut out: Option<T> = None;
     source.next(&mut out)?;
@@ -343,9 +334,6 @@ pub fn take<T: 'static>(source: &mut dyn FieldSource) -> Result<T, ModelError> {
 /// the document holds none: a field declared `#[model(default = ..)]`, so a
 /// record missing it (written by an older app, or half-made by an edit that
 /// raced its deletion) still reads, and the next whole write stores it.
-///
-/// # Errors
-/// Why it does not read, other than being absent.
 pub fn take_or<T: 'static>(
     source: &mut dyn FieldSource,
     repair: impl FnOnce() -> T,
@@ -1202,17 +1190,11 @@ pub fn from_json(
 }
 
 /// [`Model::missing`] of a record, put into `out`.
-///
-/// # Errors
-/// Why a field has no value without one stored.
 pub fn missing(record: &RecordDesc, out: &mut dyn Any) -> Result<(), ModelError> {
     (record.build)(&mut MissingSource { record, index: 0 }, out)
 }
 
 /// [`Model::load`] of a record, put into `out`.
-///
-/// # Errors
-/// Why the stored value is not the record.
 pub fn load(
     record: &RecordDesc,
     doc: &Doc,
@@ -1228,9 +1210,6 @@ pub fn load(
 
 /// [`Fields::read_fields`](crate::Fields::read_fields), put into `out`:
 /// every stored field read in one walk of the map.
-///
-/// # Errors
-/// Why a field does not read.
 pub fn read_fields(
     record: &RecordDesc,
     doc: &Doc,
@@ -1245,9 +1224,6 @@ pub fn read_fields(
 /// concurrently each made a map for it, and the document keeps both under
 /// one key; this reads them as one item, so a field only the losing map
 /// holds is not lost.
-///
-/// # Errors
-/// Why a field does not read from any of them.
 pub(crate) fn read_fields_merged(
     record: &RecordDesc,
     doc: &Doc,
@@ -1310,9 +1286,6 @@ fn reload(
 }
 
 /// [`Fields::write_fields`](crate::Fields::write_fields) of a record.
-///
-/// # Errors
-/// The document's write error, located at the field.
 pub fn write_fields(
     record: &RecordDesc,
     value: &dyn Any,
@@ -1354,9 +1327,6 @@ fn write_fields_leaving(
 }
 
 /// [`Model::store`] of a record.
-///
-/// # Errors
-/// The document's write error.
 pub fn store(
     record: &RecordDesc,
     value: &dyn Any,
@@ -1385,9 +1355,6 @@ pub fn stores_as(record: &RecordDesc, value: &dyn Any, before: &dyn Any) -> bool
 
 /// [`Fields::write_changed_fields`](crate::Fields::write_changed_fields) of
 /// a record: each field written as `write_key_changed` writes it.
-///
-/// # Errors
-/// The document's write error, located at the field.
 pub fn write_changed_fields(
     record: &RecordDesc,
     value: &dyn Any,
@@ -1428,9 +1395,6 @@ pub(crate) fn write_key_changed(
 }
 
 /// [`Model::store_changed`] of a record.
-///
-/// # Errors
-/// The document's write error.
 pub fn store_changed(
     record: &RecordDesc,
     value: &dyn Any,
@@ -1451,9 +1415,6 @@ pub fn store_changed(
 }
 
 /// [`Model::refresh`] of a record.
-///
-/// # Errors
-/// Why a touched field does not read.
 pub fn refresh(
     record: &RecordDesc,
     target: &mut dyn Any,
@@ -1470,9 +1431,6 @@ pub fn refresh(
 
 /// [`Fields::refresh_fields`](crate::Fields::refresh_fields) of a record:
 /// a map changed all over is read anew, else each touched field.
-///
-/// # Errors
-/// Why a touched field does not read.
 pub fn refresh_fields(
     record: &RecordDesc,
     target: &mut dyn Any,
@@ -1544,9 +1502,6 @@ pub(crate) fn refresh_slot(
 
 /// Put what `slot` holds into `out`, an `Option` of `table`'s type: its
 /// value, or its missing value when it holds nothing.
-///
-/// # Errors
-/// Why it does not read.
 pub(crate) fn load_slot(
     table: &ModelTable,
     doc: &Doc,
@@ -1560,9 +1515,6 @@ pub(crate) fn load_slot(
 }
 
 /// [`Model::edit`] of a record.
-///
-/// # Errors
-/// Why the path or operation does not fit, or a refusal.
 pub fn edit(
     record: &RecordDesc,
     doc: &mut Doc,
@@ -1578,9 +1530,6 @@ pub fn edit(
 /// [`Fields::edit_fields`](crate::Fields::edit_fields) of a record: a field
 /// segment routes the edit to its field; a `set` of the record replaces it
 /// whole; the record's own check runs after.
-///
-/// # Errors
-/// Why the path or operation does not fit, or a refusal.
 pub fn edit_fields(
     record: &RecordDesc,
     doc: &mut Doc,
@@ -1740,9 +1689,6 @@ fn undeclared_read(name: &str, at: &str, refusal: &Refusal) -> ! {
 }
 
 /// [`Model::check`] of a record: its own invariant, then its fields'.
-///
-/// # Errors
-/// The first refusal.
 pub fn check(record: &RecordDesc, value: &dyn Any) -> Result<(), Refusal> {
     if !record.checks {
         return Ok(());
@@ -2017,9 +1963,6 @@ pub fn diff_into<E>(
 }
 
 /// The value a record function put into `out`.
-///
-/// # Errors
-/// When it put none: a bug in the record's description.
 pub fn filled<T>(out: Option<T>) -> Result<T, ModelError> {
     match out {
         Some(value) => Ok(value),
@@ -2322,8 +2265,6 @@ impl Run<'_> {
         filled(out)
     }
 
-    /// # Errors
-    /// Why the stored value is not the type.
     pub fn load<T: 'static>(
         &self,
         doc: &Doc,
@@ -2335,16 +2276,12 @@ impl Run<'_> {
         filled(out)
     }
 
-    /// # Errors
-    /// Why the type has no value without one stored.
     pub fn missing<T: 'static>(&self) -> Result<T, ModelError> {
         let mut out: Option<T> = None;
         (self.0.ops.missing)(self.0, &mut out)?;
         filled(out)
     }
 
-    /// # Errors
-    /// The document's write error.
     pub fn store(&self, value: &dyn Any, doc: &mut Doc, slot: Slot<'_>) -> Result<(), ModelError> {
         (self.0.ops.store)(self.0, value, doc, slot)
     }
@@ -2354,8 +2291,6 @@ impl Run<'_> {
         (self.0.ops.stores_as)(self.0, value, before)
     }
 
-    /// # Errors
-    /// The document's write error.
     pub fn store_changed(
         &self,
         value: &dyn Any,
@@ -2367,8 +2302,6 @@ impl Run<'_> {
         (self.0.ops.store_changed)(self.0, value, before, doc, slot, dirty)
     }
 
-    /// # Errors
-    /// Why the stored value is not the type.
     pub fn refresh(
         &self,
         target: &mut dyn Any,
@@ -2380,8 +2313,6 @@ impl Run<'_> {
         (self.0.ops.refresh)(self.0, target, doc, value, id, delta)
     }
 
-    /// # Errors
-    /// Why the path or operation does not fit, or a refusal.
     pub fn edit(
         &self,
         doc: &mut Doc,
@@ -2412,8 +2343,6 @@ impl Run<'_> {
         (self.0.ops.collect_text)(self.0, value, out);
     }
 
-    /// # Errors
-    /// The first refusal.
     pub fn check(&self, value: &dyn Any) -> Result<(), Refusal> {
         (self.0.ops.check)(self.0, value)
     }

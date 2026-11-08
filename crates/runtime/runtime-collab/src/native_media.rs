@@ -524,19 +524,11 @@ impl Request {
     }
 
     /// Encode a valid command for the wire.
-    ///
-    /// # Errors
-    ///
-    /// Refuses an invalid command or an encoding failure.
     pub fn encode(&self) -> Result<Vec<u8>, &'static str> {
         encode(self, self.valid())
     }
 
     /// Decode one bounded, valid command.
-    ///
-    /// # Errors
-    ///
-    /// Refuses malformed or invalid input.
     pub fn decode(bytes: &[u8]) -> Result<Self, &'static str> {
         let value: Self = decode(bytes)?;
         value
@@ -613,19 +605,11 @@ impl Snapshot {
     }
 
     /// Encode a valid status for the wire.
-    ///
-    /// # Errors
-    ///
-    /// Refuses an invalid status or an encoding failure.
     pub fn encode(&self) -> Result<Vec<u8>, &'static str> {
         encode(self, self.valid())
     }
 
     /// Decode one bounded, valid status.
-    ///
-    /// # Errors
-    ///
-    /// Refuses malformed or invalid input.
     pub fn decode(bytes: &[u8]) -> Result<Self, &'static str> {
         let value: Self = decode(bytes)?;
         value

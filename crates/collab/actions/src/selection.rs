@@ -103,11 +103,6 @@ impl SelectionPlace {
 
     /// Whether this is a well-formed place, the shape an action's place
     /// parameter accepts.
-    ///
-    /// # Errors
-    ///
-    /// Names what is wrong: an empty or oversized item, or offsets that are
-    /// neither one caret nor one ordered range.
     pub fn validate(&self) -> Result<(), String> {
         if self.item.is_empty() || self.item.len() > MAX_PLACE_ITEM_BYTES {
             return Err("a selection place names one item of bounded length".into());
@@ -317,10 +312,6 @@ impl SelectionAnchor {
     }
 
     /// Whether the anchor is within bounds, so a receiver may keep it.
-    ///
-    /// # Errors
-    ///
-    /// Names the first oversized or malformed part.
     pub fn validate(&self) -> Result<(), String> {
         if let Some(place) = &self.place {
             place.validate()?;
@@ -366,10 +357,6 @@ pub struct SelectionSubject {
 
 impl SelectionSubject {
     /// Whether the subject is within bounds, so a receiver may keep it.
-    ///
-    /// # Errors
-    ///
-    /// Names the first oversized or malformed part.
     pub fn validate(&self) -> Result<(), String> {
         for (value, maximum, name) in [
             (self.app_id.as_str(), 256, "app"),

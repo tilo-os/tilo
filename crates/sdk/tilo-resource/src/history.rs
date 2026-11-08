@@ -313,9 +313,6 @@ pub struct Written {
 /// does not hold. A reader that decodes the values itself reads each key at
 /// the change's dependencies and at the change ([`written`] reads them as
 /// JSON).
-///
-/// # Errors
-/// An operation names an object the document does not hold.
 pub fn wrote(
     doc: &automerge::Automerge,
     hash: &ChangeHash,
@@ -366,9 +363,6 @@ pub fn wrote(
 /// the change, in place. A key whose value reads the same on both sides (a
 /// write of what it held) is left out. Empty for a change `doc` does not
 /// hold.
-///
-/// # Errors
-/// A value the document holds cannot be read as JSON.
 pub fn written(
     doc: &automerge::Automerge,
     hash: &ChangeHash,
@@ -399,9 +393,6 @@ pub fn written(
 /// What the key `key` of the map `obj` held as of `heads`, as JSON, `null`
 /// where it held nothing (or `obj` did not exist yet), read in place: the
 /// cost of the value, not of the document.
-///
-/// # Errors
-/// The value cannot be read as JSON.
 pub fn held_at(
     doc: &automerge::Automerge,
     obj: &automerge::ObjId,
@@ -463,9 +454,6 @@ impl TextEdit {
 /// the document's operations: measured, see the test below.)
 ///
 /// A change that only marked a run reads as no splice ([`TextEdit::is_empty`]).
-///
-/// # Errors
-/// An operation names an object the document does not hold.
 pub fn spliced_texts(
     doc: &automerge::Automerge,
     hash: &ChangeHash,
@@ -611,9 +599,6 @@ fn chars_between(text: &str, start: usize, end: usize) -> String {
 
 /// The object the key `key` of the map `obj` holds as of `heads`, or `None` where it
 /// holds none: one seek into the map, never a walk of it.
-///
-/// # Errors
-/// The document cannot be read.
 pub fn object_at(
     doc: &automerge::Automerge,
     obj: &automerge::ObjId,

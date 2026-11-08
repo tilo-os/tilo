@@ -11,8 +11,6 @@ pub struct Subject {
     pub root_pid: u32,
 }
 impl Subject {
-    /// # Errors
-    /// Refuses invalid operation/digest labels or a zero root PID.
     pub fn validate(&self) -> io::Result<()> {
         validate_labels(&self.source_operation, &self.context_sha256)?;
         if self.root_pid == 0 {
@@ -27,8 +25,6 @@ struct Receipt {
     schema: u32,
     subject: Subject,
 }
-/// # Errors
-/// Refuses invalid subjects, oversized receipts, serialization or writer failures.
 pub fn write(writer: &mut impl Write, subject: &Subject) -> io::Result<()> {
     subject.validate()?;
     let bytes = serde_json::to_vec(&Receipt {
@@ -44,8 +40,6 @@ pub fn write(writer: &mut impl Write, subject: &Subject) -> io::Result<()> {
     writer.write_all(&bytes)?;
     writer.flush()
 }
-/// # Errors
-/// Refuses invalid, unbounded, mismatched or trailing receipt data and reader failures.
 pub fn read(reader: &mut impl Read, expected: &Subject) -> io::Result<()> {
     expected.validate()?;
     let mut length = [0; 4];
@@ -68,8 +62,6 @@ pub fn read(reader: &mut impl Read, expected: &Subject) -> io::Result<()> {
     Ok(())
 }
 
-/// # Errors
-/// Refuses noncanonical or nil operation UUIDs and noncanonical SHA-256 digests.
 pub fn validate_labels(operation: &str, digest: &str) -> io::Result<()> {
     let id = uuid::Uuid::parse_str(operation).map_err(io::Error::other)?;
     if id.is_nil()

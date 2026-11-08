@@ -19,8 +19,6 @@ pub struct Request {
 
 impl Request {
     /// Validate the bounded envelope before giving it to the host.
-    /// # Errors
-    /// Refuses malformed invocation identifiers or operations.
     pub fn validate(&self) -> Result<(), String> {
         if self.protocol != PROTOCOL
             || self.invocation.len() != 36
@@ -41,9 +39,6 @@ impl Request {
 
 /// Check the Store action label against the operation's mutation.
 /// Registry protocol labels are deliberately not Store action identifiers.
-///
-/// # Errors
-/// Refuses unsupported actions, mutation mismatches or malformed operations.
 pub fn validate_action_operation(
     action: &str,
     operation: &ExternalModerationOperation,
@@ -61,10 +56,6 @@ pub fn validate_action_operation(
 
 /// Compare the exact nested operation string in an admitted Store action.
 /// Callers must strip any action-arguments transport prefix before validation.
-///
-/// # Errors
-/// Refuses malformed or extra parameters, an empty app, unsupported actions,
-/// or any difference from the frozen operation.
 pub fn validate_action(
     action: &str,
     argument: &str,
@@ -93,8 +84,6 @@ pub fn validate_action(
 
 /// Check that a completed receipt belongs to the operation that was admitted.
 /// This is not an owner-verified transparency proof of current status.
-/// # Errors
-/// Refuses a receipt for another case, package or operation outcome.
 pub fn validate_receipt(
     request: &Request,
     case: &registry_types::ModerationCase,
@@ -126,8 +115,6 @@ pub fn validate_receipt(
 impl crate::ChannelHandle {
     /// Complete an exact moderation operation under its admitted invocation.
     /// No signature or key material is returned to the caller.
-    /// # Errors
-    /// Refuses invalid custody, oversized envelopes or invalid case receipts.
     pub async fn external_moderation(
         &self,
         command: &Request,

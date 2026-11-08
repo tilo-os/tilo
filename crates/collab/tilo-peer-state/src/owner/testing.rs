@@ -387,8 +387,6 @@ pub fn raw_fixture_at(
     .unwrap();
     (intent, bootstrap, messages, governor.device_public_key, now)
 }
-/// # Errors
-/// As the enrollment a pinned host's Complete response finalizes.
 pub fn finalize(
     intent: VerifiedNativeEnrollmentIntent,
     pending: crate::owner::PendingEnrollmentId,
@@ -411,9 +409,6 @@ pub fn ns(now: SystemTime) -> Result<u64, String> {
     crate::owner::enrollment::ns(now)
 }
 /// The exact bytes of every original outgoing entry.
-///
-/// # Errors
-/// The workspace has no publication state.
 pub fn entries(view: &NativeCommittedView) -> Result<Vec<Vec<u8>>, String> {
     Ok(publication::state(view)?
         .entries
@@ -421,8 +416,6 @@ pub fn entries(view: &NativeCommittedView) -> Result<Vec<Vec<u8>>, String> {
         .map(|entry| entry.bytes.clone())
         .collect())
 }
-/// # Errors
-/// As the owner's own outgoing encoding.
 pub fn prepare(request: &OwnerCommitRequest) -> Result<Vec<u8>, String> {
     publication::prepare(request)
 }
@@ -433,15 +426,10 @@ pub fn request(message: &NeighbourMsg) -> Result<OwnerCommitRequest, String> {
 pub fn metadata(message: &NeighbourMsg) -> Result<(u64, [u8; 32], bool), String> {
     publication::metadata(message)
 }
-/// # Errors
-/// As the owner's own local append.
 pub fn append_local(view: &mut NativeCommittedView, bytes: Vec<u8>) -> Result<(), String> {
     publication::append_local(view, bytes)
 }
 /// Record the live peer as the view's durable peer.
-///
-/// # Errors
-/// The peer cannot be saved.
 pub fn seal(view: &mut NativeCommittedView) -> Result<(), String> {
     view.record.peer = view.peer.durable()?;
     Ok(())

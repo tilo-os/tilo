@@ -34,9 +34,6 @@ pub struct LiveActivityHandle {
 
 impl LiveActivityHandle {
     /// Show `activity` as the app's live activity, or end it with `None`.
-    ///
-    /// # Errors
-    /// Refuses an oversized activity, and the host's refusal.
     pub async fn show(&self, activity: Option<&Value>) -> Result<(), NotAvailable> {
         let bytes = match activity {
             Some(activity) => serde_json::to_vec(activity)
@@ -62,9 +59,6 @@ impl LiveActivityHandle {
 
     /// The controls pressed on the app's activity after `after`, once there
     /// is one, and the serial to pass back for the next.
-    ///
-    /// # Errors
-    /// The host refuses, is unavailable, or answers malformed controls.
     pub async fn controls(&self, after: u64) -> Result<(u64, Vec<Value>), NotAvailable> {
         let reply = self
             .channel
@@ -244,9 +238,6 @@ impl Drop for LiveActivityServer {
 
 impl LiveActivityServer {
     /// Show `activity` (a JSON object) as the app's activity; empty ends it.
-    ///
-    /// # Errors
-    /// The channel's admission was withdrawn, or the activity is malformed.
     pub fn show(&self, activity: &[u8]) -> Result<(), String> {
         (self.revalidate)()?;
         if activity.len() > MAX_LIVE_ACTIVITY_BYTES {
@@ -267,9 +258,6 @@ impl LiveActivityServer {
 
     /// The controls pressed after `after`, once there is one, as a JSON
     /// array, and the serial of the last.
-    ///
-    /// # Errors
-    /// The channel's admission was withdrawn.
     #[expect(
         clippy::future_not_send,
         reason = "the host answers each app on its single-threaded broker task"

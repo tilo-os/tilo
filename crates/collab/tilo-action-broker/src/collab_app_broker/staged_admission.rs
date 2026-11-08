@@ -53,10 +53,6 @@ impl StagedJob {
 
     /// Wait for the admission without holding the broker's loop, then
     /// deliver it: only now may the asker be told it was accepted.
-    ///
-    /// # Errors
-    /// The admission could not be made durable, or its application's
-    /// stream closed.
     pub async fn start(self, state: &AppBrokerState) -> Result<InvocationJob, String> {
         self.admitted.wait().await?;
         state.start_admitted(self.start)

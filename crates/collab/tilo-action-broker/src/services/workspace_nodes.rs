@@ -27,9 +27,6 @@ pub enum WorkspaceNodeAsk {
 pub trait WorkspaceNodeActions: Send + Sync {
     /// Ask workspace `workspace` `ask` of `node` (its text form), for the person at
     /// this device. The workspace's answer arrives on the returned answer.
-    ///
-    /// # Errors
-    /// Why the ask cannot reach a workspace that decides it.
     fn ask(
         &self,
         workspace: &str,

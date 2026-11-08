@@ -111,9 +111,6 @@ pub enum Slot<'a> {
 
 impl Slot<'_> {
     /// What currently occupies this slot. A new list element holds nothing.
-    ///
-    /// # Errors
-    /// Returns the document's read error.
     pub fn current(self, doc: &Doc) -> Result<Option<(Value<'static>, ObjId)>, ModelError> {
         let found = match self {
             Slot::Key(obj, key) => doc.get(obj, key)?,
@@ -124,9 +121,6 @@ impl Slot<'_> {
     }
 
     /// Write `value` unless the slot already holds an equal scalar.
-    ///
-    /// # Errors
-    /// Returns the document's write error.
     pub fn put_scalar(self, doc: &mut Doc, value: ScalarValue) -> Result<(), ModelError> {
         match self {
             Slot::Key(obj, key) => {
@@ -148,9 +142,6 @@ impl Slot<'_> {
 
     /// The object of type `kind` in this slot, creating it (and replacing any
     /// value of another shape) when absent.
-    ///
-    /// # Errors
-    /// Returns the document's write error.
     pub fn object(self, doc: &mut Doc, kind: ObjType) -> Result<ObjId, ModelError> {
         if let Some((Value::Object(existing), id)) = self.current(doc)?
             && existing == kind
@@ -165,9 +156,6 @@ impl Slot<'_> {
     }
 
     /// Add `by` to the counter in this slot, creating it holding `by`.
-    ///
-    /// # Errors
-    /// Returns the document's write error.
     pub fn increment(self, doc: &mut Doc, by: i64) -> Result<(), ModelError> {
         let counter = matches!(
             self.current(doc)?,
@@ -199,9 +187,6 @@ impl Slot<'_> {
     }
 
     /// Remove whatever occupies this slot (a no-op for a new list element).
-    ///
-    /// # Errors
-    /// Returns the document's write error.
     pub fn remove(self, doc: &mut Doc) -> Result<(), ModelError> {
         match self {
             Slot::Key(obj, key) => {
@@ -274,9 +259,6 @@ pub trait Model: Sized + 'static {
     /// Apply the field edit `op` at `path`, below the value in `slot`,
     /// touching only what it changes, then run the invariants of the values
     /// it touched. The default edits a value only as a whole.
-    ///
-    /// # Errors
-    /// Returns why the path or operation does not fit, or a refusal.
     #[inline(never)]
     fn edit(
         doc: &mut Doc,
@@ -344,9 +326,6 @@ pub trait Model: Sized + 'static {
 
     /// Run every `#[model(check)]` invariant of this value and the values
     /// inside it.
-    ///
-    /// # Errors
-    /// Returns the first refusal.
     fn check(&self) -> Result<(), Refusal> {
         Ok(())
     }
@@ -422,9 +401,6 @@ pub trait Model: Sized + 'static {
 
     /// Write `self` into `slot`, changing only what differs from what the slot
     /// already holds.
-    ///
-    /// # Errors
-    /// Returns the document's write error.
     fn store(&self, doc: &mut Doc, slot: Slot<'_>) -> Result<(), ModelError>;
 
     /// Whether writing `self` over a slot that holds `before`, as a
@@ -448,9 +424,6 @@ pub trait Model: Sized + 'static {
     /// as `store` would. The default is `store`. An action's write is
     /// replayed on every replica, so an override that writes anything else
     /// forks the document.
-    ///
-    /// # Errors
-    /// Returns the document's write error.
     #[inline(never)]
     fn store_changed(
         &self,
@@ -499,8 +472,6 @@ pub trait Fields: Model {
     /// # Errors
     /// Returns [`ModelError`] when a field has another shape.
     fn read_fields(doc: &Doc, obj: &ObjId) -> Result<Self, ModelError>;
-    /// # Errors
-    /// Returns the document's write error.
     fn write_fields(&self, doc: &mut Doc, obj: &ObjId) -> Result<(), ModelError>;
 
     /// The items of each [`Collection`](crate::Collection) field, so actions
@@ -527,9 +498,6 @@ pub trait Fields: Model {
     /// Apply the field edit `op` at `path` below the map `obj`; see
     /// [`Model::edit`]. `#[derive(Model)]` routes each field segment to its
     /// field; the default edits nothing.
-    ///
-    /// # Errors
-    /// Returns why the path or operation does not fit, or a refusal.
     fn edit_fields(
         doc: &mut Doc,
         obj: &ObjId,
@@ -557,9 +525,6 @@ pub trait Fields: Model {
     /// each field compared to its value in `before` rather than read back
     /// (see [`Model::store_changed`]). `#[derive(Model)]` writes only the
     /// fields that changed; the default writes every field.
-    ///
-    /// # Errors
-    /// Returns the document's write error.
     fn write_changed_fields(
         &self,
         before: &Self,
@@ -745,9 +710,6 @@ pub fn refresh_key<T: Model>(
 /// a closure per call.
 pub trait LocatedAt<T> {
     /// The error, if any, located at `key`.
-    ///
-    /// # Errors
-    /// The error, located.
     fn located(self, key: &str) -> Result<T, ModelError>;
 }
 
@@ -788,9 +750,6 @@ pub fn write_key<T: Model>(
 
 /// [`Model::edit`] for a value edited only as a whole: `set` at its own
 /// path, checked before it is written.
-///
-/// # Errors
-/// Returns why the path or operation does not fit, or a refusal.
 #[inline(never)]
 pub fn edit_whole<T: Model>(
     doc: &mut Doc,
@@ -1031,9 +990,6 @@ pub const VARIANT_KEY: &str = "$variant";
 /// layout stored fields under. Concurrent edits of the same variant merge
 /// field by field, and a change of variant is one last-writer-wins write of
 /// its name.
-///
-/// # Errors
-/// Returns the document's write error.
 #[doc(hidden)]
 #[inline(never)]
 pub fn variant_map(
@@ -1135,9 +1091,6 @@ pub fn write_variant_atom<T: crate::table::Atomic>(
 }
 
 /// The variant a data enum stored at `value` (the object `id`) names.
-///
-/// # Errors
-/// Returns a shape error when the slot holds no map naming a variant.
 #[doc(hidden)]
 #[inline(never)]
 pub fn stored_variant(doc: &Doc, value: &Value<'_>, id: &ObjId) -> Result<String, ModelError> {
@@ -1155,9 +1108,6 @@ pub fn stored_variant(doc: &Doc, value: &Value<'_>, id: &ObjId) -> Result<String
 
 /// The variant name and fields of a data enum's JSON form,
 /// `{"$variant": name, field: value, ..}`.
-///
-/// # Errors
-/// Returns a shape error for any other JSON.
 #[doc(hidden)]
 #[inline(never)]
 pub fn json_variant(

@@ -148,11 +148,6 @@ impl DirectSync {
 
     /// Admit a frame a store replayed, as the retained history of its
     /// author: the same admission a live frame from that device takes.
-    ///
-    /// # Errors
-    ///
-    /// The replica refuses the frame; the caller keeps the session and
-    /// carries on with the frames after it.
     pub fn admit_retained(&self, author: [u8; 32], message: NeighbourMsg) -> Result<(), String> {
         let outcome = self.0.replica.0.lock_recover().receive_from(
             TransportOrigin::RetainedRelayDelta(author),
@@ -174,9 +169,6 @@ impl DirectSync {
 
     /// Dial the device at `addr` from `endpoint` and sync with it until the
     /// link ends.
-    ///
-    /// # Errors
-    /// The device is not in the roster, refused this one, or the link broke.
     pub async fn connect(
         &self,
         endpoint: &Endpoint,

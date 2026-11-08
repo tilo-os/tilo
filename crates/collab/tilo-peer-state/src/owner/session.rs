@@ -115,9 +115,6 @@ impl Connect {
     /// them: where a member's session goes while the governor is out of
     /// reach. A host the workspace revoked, or one naming this device, is left
     /// out.
-    ///
-    /// # Errors
-    /// The workspace is not held here.
     pub fn hosts(&self, own: &[u8; 32]) -> Result<Vec<TransportHint>, String> {
         self.owner.with_current(self.workspace, |view| {
             let governor = view.transport_hint()?.host.device_public_key;
@@ -142,9 +139,6 @@ impl Connect {
     /// The host to dial after `after` (the first when `None`) among
     /// [`Self::hosts`]: where the workspace's session goes next while its
     /// governor is out of reach. `None` once every host was tried.
-    ///
-    /// # Errors
-    /// The workspace is not held here.
     pub fn next_host(
         &self,
         own: &[u8; 32],
@@ -174,9 +168,6 @@ impl Connect {
     /// device's custody holds one: the device proves its membership with it
     /// ([`crate::owner::enroll::renew_membership`]) before its sessions dial again,
     /// as [`Self::material`] refuses custody that differs from the record.
-    ///
-    /// # Errors
-    /// The workspace is not held here or custody cannot be read.
     pub fn renewal(&self, identity: &HostIdentity) -> Result<Option<DeviceCert>, String> {
         self.owner.with_current(self.workspace, |view| {
             let (cert, _) = identity.current_native_material(view.workspace_id())?;
@@ -286,10 +277,6 @@ impl Scope {
     }
     /// Ask the pinned host to run its own checkpoint barrier, at most every
     /// 30 seconds. It grants no local admission and retires no outbox.
-    ///
-    /// # Errors
-    /// The session closed, its pin or the owner changed, or the request
-    /// cannot be sent.
     #[allow(
         clippy::significant_drop_tightening,
         reason = "the live flag and refresh cadence stay locked through the request so a close \
@@ -346,10 +333,6 @@ impl Scope {
     /// device's own custody (see
     /// [`NativeWorkspaceOwner::compact_outgoing`]). Answers how many
     /// histories were compacted.
-    ///
-    /// # Errors
-    /// This device is no longer the session's, or a compaction cannot be
-    /// committed.
     pub fn compact(
         &self,
         identity: &HostIdentity,
@@ -371,10 +354,6 @@ impl Scope {
     /// Reconcile the owner's outgoing custody and send, once per session,
     /// every entry it may send now. Sealed writes that expired in custody
     /// are not renewed: see [`Self::publish_renewing`].
-    ///
-    /// # Errors
-    /// The session closed, its pin, the owner or custody changed, or the
-    /// session refuses a frame; unsent entries stay in durable custody.
     pub fn publish(
         &self,
         session: &RelayCoeditSession,
@@ -533,9 +512,6 @@ impl Input {
     }
     /// Admit the delta into the owner while the session is still live and
     /// pinned to the owner's current material.
-    ///
-    /// # Errors
-    /// The session closed or its pin changed, or admission refuses it.
     pub fn admit(&self, identity: &HostIdentity) -> Result<crate::AdmissionReport, String> {
         Self::admit_batch(vec![self.clone()], identity)
             .inputs

@@ -113,9 +113,6 @@ impl NativeCommittedView {
     /// the document; `None` when those heads cannot vouch for the record
     /// (encrypted, incomplete or absent), and only [`Self::read_document`]
     /// can say.
-    ///
-    /// # Errors
-    /// The reader may not read the record now.
     pub fn holds_revision(
         &self,
         reader: [u8; 32],
@@ -146,10 +143,6 @@ impl NativeCommittedView {
 
     /// Read the same admitted record, opening its retained encrypted history
     /// through the owner's already-held channel keys when necessary.
-    ///
-    /// # Errors
-    /// Refuses current Read denial, invalid or incomplete sealed provenance,
-    /// unavailable held epochs, conflicting writers or an exceeded byte bound.
     pub fn read_document_with_history(
         &self,
         reader: [u8; 32],
@@ -227,9 +220,6 @@ impl NativeCommittedView {
     /// a checkpoint is pending; the document is encrypted, incomplete or
     /// absent; `heads` are not sorted and distinct or not all in the
     /// document; or the changes exceed `maximum` bytes.
-    ///
-    /// # Errors
-    /// The reader may not read the record now.
     pub fn read_changes(
         &self,
         reader: [u8; 32],

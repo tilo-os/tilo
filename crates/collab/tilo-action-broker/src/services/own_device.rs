@@ -18,12 +18,6 @@ pub trait OwnDeviceActions: Send + Sync {
     /// answer; nothing waits for it here.
     ///
     /// [`Checked::forwarded`]: tilo_actions::remote::own_device::Checked::forwarded
-    ///
-    /// # Errors
-    ///
-    /// Why it cannot be sent: the device is not one of the person's
-    /// enrolled, authenticated and unrevoked devices, the two share no
-    /// workspace, or the device is not reachable.
     fn invoke(
         &self,
         caller: &tilo_actions::remote::Caller,
@@ -40,12 +34,6 @@ pub trait OwnDeviceActions: Send + Sync {
     /// answer it; the answer names that one invocation and nothing else.
     /// `question` is what that device shows, labelled as this device shows
     /// it.
-    ///
-    /// # Errors
-    ///
-    /// Why it cannot be asked: this device holds no identity of its own to
-    /// carry the answer back on, the question names no workspace this device can
-    /// reach the person in, or no own device of theirs is reachable.
     fn ask_person(
         &self,
         caller: &tilo_actions::remote::Caller,

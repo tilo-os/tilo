@@ -220,8 +220,6 @@ pub trait NativeDocumentReads: Send + Sync {
         None
     }
     /// Commit bootstrap only after the broker checks the original creation receipt.
-    /// # Errors
-    /// Refuses unavailable custody, changed revision or failed durable publication.
     fn initialize_application(
         &self,
         context: &NativeDocumentReadContext,

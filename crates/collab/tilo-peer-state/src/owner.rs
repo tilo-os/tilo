@@ -117,16 +117,10 @@ pub(crate) fn validate_host_hint(
 pub trait Store: std::any::Any + collab_types::signer::MaybeSendSync {
     /// Durably retain immutable owner history through the existing content backend.
     /// The state publication may reference the returned address only after this succeeds.
-    ///
-    /// # Errors
-    /// Unsupported storage, quota, integrity or durable I/O failure.
     fn put_history(&self, _bytes: &[u8]) -> Result<[u8; 32], String> {
         Err("native owner history content is unavailable".into())
     }
     /// Read and verify a retained history block. Absence is an error, not UUID absence.
-    ///
-    /// # Errors
-    /// Missing, corrupt, oversized or unavailable content.
     fn read_history(&self, _hash: [u8; 32]) -> Result<Vec<u8>, String> {
         Err("native owner history content is unavailable".into())
     }
@@ -139,9 +133,6 @@ pub trait Store: std::any::Any + collab_types::signer::MaybeSendSync {
     fn slot_workspace(&self, slot: WorkspaceSlot) -> Option<WorkspaceId>;
     /// Make `next` durable, then call `install` before anyone can observe
     /// the new record. Nothing is installed when this fails.
-    ///
-    /// # Errors
-    /// The record, or the host state around it, cannot be published.
     fn publish(
         &self,
         next: &NativeAuthorityStorage,
@@ -218,9 +209,6 @@ impl NativeCommittedView {
         self.record.device == self.record.workspace_host
     }
     /// The signed invitation this device enrolled with.
-    ///
-    /// # Errors
-    /// The workspace's record holds no enrollment.
     pub fn enrollment_invitation(&self) -> Result<&[u8], String> {
         Ok(&self.enrollment()?.invitation)
     }
@@ -252,9 +240,6 @@ impl NativeCommittedView {
     /// enrollment carries, the one the host's own answer named for a workspace
     /// this device holds as a further device of its person, or, for a
     /// workspace founded here, the one its own host recorded as it founded it.
-    ///
-    /// # Errors
-    /// The workspace's record holds none of them.
     pub fn transport_hint(&self) -> Result<&crate::join::TransportHint, String> {
         self.record
             .enrollment
@@ -412,9 +397,6 @@ impl NativeWorkspaceOwner {
     /// publication ([`Change::Released`]). A workspace and its slot go
     /// together; the workspace itself, its governor and its other members are
     /// untouched. Answers whether the record held the workspace.
-    ///
-    /// # Errors
-    /// The record cannot be published.
     pub fn release_workspace(&self, workspace: WorkspaceId) -> Result<bool, String> {
         let _turn = self.0.mutation.lock();
         let mut next = self.0.authority.read().clone();
@@ -556,10 +538,6 @@ impl NativeWorkspaceOwner {
         policy_changed();
     }
     /// Admits genuine relay provenance; pending document prerequisites are also durable.
-    ///
-    /// # Errors
-    /// The message is not workspace state, the workspace is fenced, admission
-    /// refuses it or the result cannot be published.
     pub fn receive(
         &self,
         workspace: WorkspaceId,
@@ -580,9 +558,6 @@ impl NativeWorkspaceOwner {
     /// answer is one result per input. Nothing of the batch is observable,
     /// and no report is returned, before the one commit is durable: when
     /// it fails, every input fails with it.
-    ///
-    /// # Errors
-    /// The workspace is fenced, or the batch's commit cannot be published.
     pub fn receive_batch(
         &self,
         workspace: WorkspaceId,

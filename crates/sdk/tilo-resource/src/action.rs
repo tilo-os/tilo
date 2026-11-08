@@ -396,8 +396,6 @@ impl From<String> for Refusal {
 
 /// What an action method may return: nothing, or a refusal.
 pub trait Outcome {
-    /// # Errors
-    /// Returns the refusal.
     fn into_result(self) -> Result<(), Refusal>;
 }
 
@@ -437,9 +435,6 @@ pub trait Operation: Serialize + DeserializeOwned + Clone + std::fmt::Debug + 's
     }
 
     /// Run the operation's method on the record.
-    ///
-    /// # Errors
-    /// Returns the method's refusal.
     fn perform(&self, record: &mut Self::Record, cx: &mut ActionCx) -> Result<(), Refusal>;
 
     /// The units this operation may write beside the record unit (see
@@ -521,9 +516,6 @@ pub trait Operation: Serialize + DeserializeOwned + Clone + std::fmt::Debug + 's
     /// The verb that undoes this one, from the record before and after it
     /// ran and the ids it minted (`#[action(undo = path)]`). `None` when it
     /// declares none: undo then reverts the document by inverse patches.
-    ///
-    /// # Errors
-    /// Returns why the declared undo does not build.
     fn compensation(
         &self,
         before: &Self::Record,
@@ -1377,10 +1369,6 @@ impl<R, A: Serialize> ActionRef<R, A> {
 
     /// The JSON arguments this input binds to: a verb's parameter struct
     /// as its fields, or positional inputs under the declared names.
-    ///
-    /// # Errors
-    /// Returns why the input does not serialize, or does not have the shape
-    /// the declared names ask for.
     pub fn arguments(
         &self,
         input: &A,
@@ -1404,9 +1392,6 @@ impl<R, A: Serialize> ActionRef<R, A> {
     }
 
     /// [`Self::with`], reporting an input that does not bind at once.
-    ///
-    /// # Errors
-    /// Returns why the input does not bind.
     pub fn try_with(&self, input: impl Into<A>) -> Result<Invoke<R>, String> {
         let invoke = self.with(input);
         match invoke.refusal {
@@ -1835,9 +1820,6 @@ impl<R: Resource> Invoke<R> {
 
     /// Build the replayable action on this (origin) machine. A group builds
     /// with [`build_group`](crate::group::build_group).
-    ///
-    /// # Errors
-    /// Returns why the arguments do not bind.
     pub fn build(&self, now_ms: i64) -> Result<R::Action, String> {
         if let Some(refusal) = &self.refusal {
             return Err(refusal.clone());

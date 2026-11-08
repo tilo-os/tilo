@@ -298,9 +298,6 @@ fn allowed(
 }
 /// Whether a host file of layout `version` may carry `storage`. Workspace
 /// records came in with layout 4; later layouts carry them as it does.
-///
-/// # Errors
-/// A workspace record or its publication does not belong in that layout.
 pub fn validate_file_layout(
     version: u32,
     storage: &record::NativeAuthorityStorage,
@@ -993,9 +990,6 @@ impl NativeWorkspaceOwner {
     }
     /// How many of this device's committed writes to `workspace` are still in
     /// its outgoing custody: not yet admitted by the workspace's governor.
-    ///
-    /// # Errors
-    /// The workspace is not held here or is fenced.
     pub fn unadmitted_writes(&self, workspace: WorkspaceId) -> Result<usize, String> {
         self.with_current(workspace, |view| Ok(state(view)?.entries.len()))
     }
@@ -1009,10 +1003,6 @@ impl NativeWorkspaceOwner {
     }
     /// Retire every retained frame the workspace has refused or a durable
     /// receipt names, and commit the retirement.
-    ///
-    /// # Errors
-    /// The workspace is not held here or is fenced, or the retirement cannot
-    /// be committed.
     pub fn retire_outgoing(&self, workspace: WorkspaceId) -> Result<(), String> {
         let _turn = self.0.mutation.lock();
         let mut candidate = self.with_current(workspace, |view| Ok(view.clone()))?;

@@ -579,10 +579,6 @@ impl BrokerActor {
     /// the call is a run's (`run`); and, for a person, a change of the
     /// route record it acts on, so a person restricted on one record cannot
     /// act on it through an action they may otherwise use.
-    ///
-    /// # Errors
-    /// The refusal: a reserved or malformed route record, another agent
-    /// than the run's, or grants that refuse the action or the record.
     pub(crate) fn admit_published_in(
         &self,
         workspace: &tilo_desktop_model::Workspace,
@@ -1637,9 +1633,6 @@ impl VerifiedActionCaller {
     /// their device, and nothing else; the caller's delegation still decides
     /// what the invocation is owned by ([`Self::owner`]) and what it is
     /// permitted as.
-    /// # Errors
-    /// The live admission proves another person or device, or no longer
-    /// carries exactly the delegation this caller's invocation is owned by.
     fn reverified(&self, current: &Self) -> Result<(), String> {
         let (owner, current) = (self.owner()?, current.owner()?);
         match (same_root_and_device(&owner), same_root_and_device(&current)) {
@@ -2831,10 +2824,6 @@ impl ActionDirectoryRequestQueue {
         }
     }
 
-    /// # Errors
-    ///
-    /// Returns an error when the query is invalid, the bounded broker queue is
-    /// full, or the broker is unavailable.
     pub fn try_query(
         &self,
         actor: BrokerActor,
@@ -2858,10 +2847,6 @@ impl ActionDirectoryRequestQueue {
         .map(|()| response)
     }
 
-    /// # Errors
-    ///
-    /// Returns an error when the target is invalid, the bounded broker queue
-    /// is full, or the broker is unavailable.
     pub fn try_resolve(
         &self,
         actor: BrokerActor,
@@ -2898,11 +2883,6 @@ impl ActionDirectoryRequestQueue {
     }
 
     /// [`Self::try_query`] answered as a remote-action pending value.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the query is invalid, the bounded broker queue is
-    /// full, or the broker is unavailable.
     pub(crate) fn try_query_pending(
         &self,
         actor: BrokerActor,
@@ -2924,11 +2904,6 @@ impl ActionDirectoryRequestQueue {
     }
 
     /// [`Self::try_resolve`] answered as a remote-action pending value.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the target is invalid, the bounded broker queue
-    /// is full, or the broker is unavailable.
     pub(crate) fn try_resolve_pending(
         &self,
         actor: BrokerActor,
@@ -2968,10 +2943,6 @@ impl ActionDirectoryRequestQueue {
         self.deliver(request)
     }
 
-    /// # Errors
-    ///
-    /// Returns an error when invocation inputs are invalid, the bounded broker
-    /// queue is full, or the broker is unavailable.
     pub fn try_start_resolved(
         &self,
         actor: BrokerActor,
@@ -3647,10 +3618,6 @@ impl AppBrokerState {
 
     /// Allocate a private connected descriptor for an actual host-mounted worker.
     /// The peer must still prove the exact current certificate on every channel join.
-    ///
-    /// # Errors
-    ///
-    /// Returns a message when the owner is unhealthy, the route or certificate is refused, or admission is full.
     pub fn connect_local_worker(
         &self,
         route: CrdtRoute,
@@ -5400,11 +5367,6 @@ impl AppBrokerState {
     /// Address one operation back to the exact connection that published it.
     /// The returned receiver resolves only after the application reports a
     /// structured completion; dropping the connection resolves as a refusal.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the surface or action is unavailable or the
-    /// invocation cannot be sent to its owning connection.
     pub fn invoke(
         &self,
         peer_id: u64,
@@ -5418,10 +5380,6 @@ impl AppBrokerState {
     }
 
     /// Start an unconfirmed invocation.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the action is unavailable or cannot be delivered.
     pub fn start_invocation(
         &self,
         peer_id: u64,
@@ -5434,10 +5392,6 @@ impl AppBrokerState {
     }
 
     /// Prepare a one-use confirmation token bound to this exact invocation.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the action, phrase, or confirmation registry is invalid.
     pub fn prepare_confirmation(
         &self,
         peer_id: u64,
@@ -5495,13 +5449,6 @@ impl AppBrokerState {
     }
 
     /// Start an invocation with optional broker confirmation evidence.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when admission, authorization, confirmation, or delivery fails.
-    ///
-    /// Returns once the admission is durable, blocking the calling thread for
-    /// that write: never call it on the broker's loop.
     pub fn start_invocation_confirmed(
         &self,
         peer_id: u64,
@@ -6684,10 +6631,6 @@ impl AppBrokerState {
     }
 
     /// Request cooperative cancellation for an actor-owned invocation.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the invocation is unknown, foreign, or non-cancellable.
     pub(crate) fn request_cancellation(
         &self,
         id: u64,
@@ -10933,9 +10876,6 @@ pub mod tests {
     use ed25519_dalek::SigningKey;
 
     /// Prepare an owned test directory for the production broker's socket check.
-    ///
-    /// # Errors
-    /// Returns the filesystem error if the directory's mode cannot be set to 0700.
     pub fn secure_socket_parent(parent: &Path) -> std::io::Result<()> {
         use std::os::unix::fs::PermissionsExt as _;
         std::fs::set_permissions(parent, std::fs::Permissions::from_mode(0o700))

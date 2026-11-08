@@ -74,10 +74,6 @@ impl RecordSaveStatus {
 
 /// The on-disk copy of the record `record_key` of `package` in the workspace
 /// `home`, as a shared writer in `documents`.
-///
-/// # Errors
-/// Refuses a package, workspace or record name that is not a valid identity, and
-/// a store that cannot open the document.
 pub fn record_document(
     documents: &Rc<dyn DurableStore>,
     package: &str,
@@ -94,10 +90,6 @@ pub fn record_document(
 /// The on-disk copy of the workspace document of `package` in the workspace `workspace`:
 /// what an app that keeps one record for the workspace ([`StorageKey::workspace_index`])
 /// holds there, as a shared writer in `documents`.
-///
-/// # Errors
-/// Refuses a package or workspace name that is not a valid identity, and a store
-/// that cannot open the document.
 pub fn workspace_document(
     documents: &Rc<dyn DurableStore>,
     package: &str,
@@ -158,10 +150,6 @@ pub fn open_stored_adopting(
 /// Open the document `store` holds, as a workspace another host governs reads it:
 /// the broker's committed read of the workspace (`read`) merged into the on-disk
 /// copy, which keeps the merged graph from then on.
-///
-/// # Errors
-/// The copy on disk cannot be read or written, or the read is not a
-/// snapshot that loads.
 pub fn open_with_committed_read(
     mut store: DocStore,
     read: &crate::CommittedDocument,

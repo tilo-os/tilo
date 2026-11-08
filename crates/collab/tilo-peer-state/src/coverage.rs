@@ -151,10 +151,6 @@ pub fn route_key(app: &str, record: &str) -> String {
     format!("{app}\0{record}")
 }
 /// Write one coverage row.
-///
-/// # Errors
-///
-/// Returns an error if the row cannot be encoded or written.
 pub fn put(doc: &mut AutoCommit, coverage: Coverage) -> Result<(), String> {
     put_all(doc, vec![coverage])
 }

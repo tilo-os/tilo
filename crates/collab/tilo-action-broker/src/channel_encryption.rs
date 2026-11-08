@@ -412,11 +412,6 @@ impl ChannelEncryption {
     /// Open every channel state under `config.root` and register each
     /// channel's gate with the broker, so the plaintext gate holds from the
     /// first op after a restart.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the state directory cannot be created or read.
-    /// A single unreadable channel is skipped and logged instead.
     pub fn open(
         config: ChannelEncryptionConfig,
         directory: Box<dyn ChannelDirectory>,

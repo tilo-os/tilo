@@ -112,10 +112,6 @@ impl PeerGovernance<'_> {
     /// a Read Deny narrows. `route` is that record when the caller knows it
     /// ([`Self::withheld_record_readers`]). `None` when neither `route` nor a
     /// grant names the record: who may read it is then unknown, not no one.
-    ///
-    /// # Errors
-    ///
-    /// The workspace's governance is missing or cannot be read.
     pub fn channel_readers(
         self,
         now: SystemTime,
@@ -152,10 +148,6 @@ impl PeerGovernance<'_> {
     /// Read Deny (or the record being a person's own) narrows its readers.
     /// The two reader sets never share a key: a narrowed record's group holds
     /// only the devices its own policy admits.
-    ///
-    /// # Errors
-    ///
-    /// The workspace's governance is missing or cannot be read.
     pub fn unit_scope(
         self,
         now: SystemTime,
@@ -199,7 +191,6 @@ impl PeerGovernance<'_> {
     /// ([`collab_types::member_record`]); its id does not say whose. So
     /// [`RecordReaders::unrouted`] lists every member device: such a channel
     /// admits no one until a device names its record.
-    ///
     pub fn withheld_record_readers(
         self,
         now: SystemTime,

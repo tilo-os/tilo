@@ -73,9 +73,6 @@ pub trait JoinWorkspaces: Send + Sync {
     fn key(&self) -> &SigningKey;
 
     /// Fresh randomness for a challenge.
-    ///
-    /// # Errors
-    /// There is no randomness to give.
     fn nonce(&self) -> Result<[u8; 32], JoinError>;
 
     /// Run `decide` on `workspace`, locked, then make what it staged durable
@@ -105,9 +102,6 @@ fn at(now: u64) -> SystemTime {
 
 /// The workspace a join request is about, read without trusting it: the
 /// ledger then verifies it against what that workspace issued.
-///
-/// # Errors
-/// The request carries an invitation that names no workspace.
 pub fn requested_workspace(request: &JoinTransportRequest, now: u64) -> Result<String, JoinError> {
     Ok(match request {
         JoinTransportRequest::Inspect { signed_invitation } => {
@@ -126,9 +120,6 @@ pub fn requested_workspace(request: &JoinTransportRequest, now: u64) -> Result<S
 /// with `key`. Each is checked on its own and refused alone; everyone
 /// admitted is then committed, recorded in the workspace's ledger and sent,
 /// together. Answers each join in order.
-///
-/// # Errors
-/// The change cannot be committed or sent.
 pub fn admit(
     workspace: &mut dyn WorkspaceTxn,
     joins: &[Redeeming<'_>],
@@ -192,9 +183,6 @@ impl<S: JoinWorkspaces> JoinAnswer<S> {
 
     /// Decide one workspace-join request from the device at
     /// `remote_endpoint`: its answer, or why it is refused.
-    ///
-    /// # Errors
-    /// The request is refused, or its change cannot be made durable.
     pub async fn decide(
         &self,
         remote_endpoint: [u8; 32],
