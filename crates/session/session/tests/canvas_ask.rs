@@ -369,3 +369,125 @@ fn the_ask_places_the_channels_page_not_the_apps_window() {
         "the place is Chat's channel, never the app's window: {place:?}"
     );
 }
+
+/// The turn's reply is Chat's own verb offered from the moment the turn exists: the session's
+/// Chat service publishes the summons's message item with Chat's `record-work`, so the kept
+/// agent — whose tools are the broker's catalogue — is offered the address its answer goes to
+/// before any reply has been written.
+///
+/// This is the narrowest real seam the missing reply hangs on: with Chat's window closed no
+/// `chat.messages` item is published at all, so the agent's `record-work` on the turn's reply was
+/// never in its catalogue and the person's ask went unanswered (`conversation.rs`'s "the
+/// conversation publishes no `record-work` on the turn's reply"). Nothing here is a scripted
+/// model: the item is what the service publishes, and invoking it is Chat's own verb applied to
+/// Chat's own record, as the agent that answered.
+#[test]
+fn the_turn_reply_is_offered_chats_record_work_before_it_exists() {
+    let _settled = ui::motion::testing::settled();
+    let root = private_home();
+    let mut session = session(root.path());
+    ask(&mut session, "what is on my task list?");
+    let workspace = workspace(&session);
+    let runs = session.conversation_runs();
+    let turns = wait_for(&mut session, "the agent's turn", |_session| {
+        let turns = runs.runs(&workspace).ok()?;
+        (!turns.is_empty()).then_some(turns)
+    });
+    let turn = &turns[0];
+    let (address, message) = turn
+        .issue
+        .rsplit_once("/messages/")
+        .expect("the issue names the conversation's message");
+    // The summons's item, as the session's Chat service publishes it — the resource an agent
+    // names to record what it did with the message. Its `record-work` is Chat's own declaration
+    // (`ChatPart::RECORD_WORK`), its action type Chat's.
+    let item = format!("chat.messages/messages/{message}");
+    let offered = session
+        .service_resources()
+        .into_iter()
+        .find(|resource| resource.id.as_str() == item)
+        .unwrap_or_else(|| panic!("the session publishes the summons's item {item}"));
+    let record_work = offered
+        .actions
+        .iter()
+        .find(|action| action.id == "record-work")
+        .unwrap_or_else(|| {
+            let ids: Vec<&str> = offered
+                .actions
+                .iter()
+                .map(|action| action.id.as_str())
+                .collect();
+            panic!("the item offers Chat's record-work, not {ids:?}")
+        });
+    assert!(
+        record_work
+            .params()
+            .iter()
+            .any(|param| param.name.as_ref() == "message" && param.required),
+        "the item's record-work takes the message whose work it records, as Chat's window's does"
+    );
+    assert!(
+        record_work.bound().is_empty(),
+        "it is unbound: the agent names the message, exactly as it does on any message's item"
+    );
+    // The answer the agent records lands on the reply Chat derives from the summons and the
+    // agent — the very address the turn's answer is — written as the agent, before the reply
+    // existed to be published. The step runs exactly as the session's own `DoorAsk::Step` runs a
+    // step no surface door publishes: through the services, as `agent:<id>`.
+    let agent = format!("agent:{}", turn.agent);
+    let mut arguments = serde_json::Map::new();
+    arguments.insert(
+        "work".into(),
+        serde_json::json!({"state": "doing", "did": "Reading the tasks"}),
+    );
+    arguments.insert(
+        "say".into(),
+        serde_json::json!("Looking at your task list now."),
+    );
+    session
+        .invoke_service_step_as(&agent, &item, "record-work", &arguments)
+        .unwrap_or_else(|error| panic!("Chat records the work: {error}"));
+    let channel = address.rsplit('/').next().unwrap_or_default().to_owned();
+    let reply = chat::record::reply_id(
+        &tilo_resource::Id::from_raw(message),
+        &format!("agent:{}", turn.agent),
+    );
+    // The reading the page draws: Chat's own `#[view(default)]` over the channel, served by the
+    // session — the same reading a place of the conversation shows.
+    let page = session
+        .read(&format!("chat.workspace/channels/{channel}"))
+        .unwrap_or_else(|| panic!("the session serves the channel {channel}"));
+    let reply_row = page["messages"]
+        .as_array()
+        .and_then(|messages| {
+            messages
+                .iter()
+                .find(|row| row["id"].as_str() == Some(reply.as_str()))
+        })
+        .unwrap_or_else(|| panic!("the reply exists: {} in {page}", reply.as_str()));
+    assert_eq!(
+        reply_row["author"].as_str(),
+        Some(agent.as_str()),
+        "the reply is the agent's"
+    );
+    assert_eq!(
+        reply_row["text"].as_str(),
+        Some("Looking at your task list now."),
+        "the reply says the agent's words"
+    );
+    // The turn is still going — the reply is `doing`, not finished — so the item keeps its
+    // `record-work`: the agent's next record (what it did, and then its words at the end) has the
+    // address it works from, exactly as the first did. An item that vanished with the reply's
+    // first record is why an ask whose plan took several steps went unanswered halfway.
+    let still_offered = session.service_resources().into_iter().any(|resource| {
+        resource.id.as_str() == item
+            && resource
+                .actions
+                .iter()
+                .any(|action| action.id == "record-work")
+    });
+    assert!(
+        still_offered,
+        "the summons keeps its record-work while the turn is going: {item}"
+    );
+}

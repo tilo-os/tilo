@@ -142,17 +142,33 @@ impl<P: Resource> Shared<P> {
     }
 
     fn apply(&self, action: &P::Action) -> Applied {
+        self.apply_as(action, None)
+    }
+
+    /// [`Self::apply`] as `invoker` (an agent, a script), which the change is
+    /// attributed to and which [`ActionCx::author`](tilo_resource::action)
+    /// answers inside the action; the person seated here when `None`.
+    fn apply_as(&self, action: &P::Action, invoker: Option<&ActionInvoker>) -> Applied {
         let encoded = match tilo_resource::encode::<P>(action) {
             Ok(encoded) => encoded,
             Err(error) => return Applied::Done(Err(error)),
         };
         let change = action.change_kind();
+        // Who the change is: the invoker's own actor when the host names one (an agent acting in
+        // a turn, attributed as it is at an app's record origin), else the person seated here.
+        let me = invoker
+            .and_then(|invoker| (!invoker.actor.is_empty()).then_some(invoker.actor.clone()));
+        let actor = me.as_deref().unwrap_or(&self.me);
         let context = ActionContext::for_resource(P::KIND, P::KIND, P::LABEL)
             .with_app(self.app_id, self.app_title)
-            .with_invoker(ActionInvoker::actor(&self.me))
+            .with_invoker(
+                invoker
+                    .cloned()
+                    .unwrap_or_else(|| ActionInvoker::actor(actor)),
+            )
             .with_change(change);
         let edited = self.record.try_edit(change == ChangeKind::Content, |doc| {
-            let writer = ui_core::history_source::authors::device_actor(&self.me, doc.get_actor());
+            let writer = ui_core::history_source::authors::device_actor(actor, doc.get_actor());
             tilo_actions::apply_local_with_context(doc, action, encoded, Some(&writer), context)
                 .map(|_| ())
                 .map_err(|error| error.to_string())
@@ -354,6 +370,29 @@ impl<P: Resource> WorkspaceRecord<P> {
     pub fn invoke(&self, invoke: &Invoke<P>) -> Result<(), ActionError> {
         let action = self.admit(invoke)?;
         match self.shared.apply(&action) {
+            Applied::Done(result) => {
+                self.shared.refresh();
+                result
+            }
+            Applied::Waits => Err(ActionError::Refused(
+                ui_core::record::HistoryUnavailable::StoreInUse.to_string(),
+            )),
+        }
+    }
+
+    /// [`Self::invoke`] as `invoker` (an agent, a script), which the change is attributed to —
+    /// the agent's own words in Chat are written as the agent, not as the person it acts for.
+    /// The grants are the ones this record was opened with, as for the person's own call.
+    ///
+    /// # Errors
+    /// The arguments do not build the action, the grants refuse it, or the record does.
+    pub fn invoke_as(
+        &self,
+        invoker: &ActionInvoker,
+        invoke: &Invoke<P>,
+    ) -> Result<(), ActionError> {
+        let action = self.admit(invoke)?;
+        match self.shared.apply_as(&action, Some(invoker)) {
             Applied::Done(result) => {
                 self.shared.refresh();
                 result
