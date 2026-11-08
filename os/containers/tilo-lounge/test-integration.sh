@@ -7,7 +7,7 @@
 # the entrypoint reads production-shaped TILO_ROOMS_* (this test's own ports
 # and addresses), the web entry is served beside it, the host runs the packet
 # relay its pages reach their live plane through, and the people are real
-# headless Chromium contexts. The programs are the image's own,
+# headless Chromium browsers, one each. The programs are the image's own,
 # started as the image's entrypoint starts them, in a jail of the image's
 # files.
 #

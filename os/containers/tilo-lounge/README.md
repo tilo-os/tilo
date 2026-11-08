@@ -85,8 +85,9 @@ $TILO_ROOMS_STATE/$TILO_ROOMS_PERSISTENT/
   secrets/       this host's secret store (TILO_SECRETS_DIR), sealed files
 ```
 
-The layout is the one the wrapper this image replaces left on the volume: a
-migrated deployment keeps its workspace, its identity and its bot state.
+The directory layout is the one the wrapper this image replaces left on the
+volume: a migrated deployment keeps its workspace, its identity and its bot
+state.
 
 ## Building
 
@@ -101,14 +102,11 @@ entry from one commit, tests both and publishes `dev-<commit>`.
 
 `test-integration.sh` runs the image the way the deployment does and uses it:
 the entrypoint reads production-shaped `TILO_ROOMS_*` on this machine's own
-ports, the web entry is served beside it, an ingress publishes the live plane
-at a host of its own and forwards to the listener, and two headless Chromium
-contexts open it, join the Lounge through its door as two people, chat, share
-a desk and see each other present through the plane they pinned. With the
-ingress taken away, a page says in its members' place that it cannot reach
-live presence and says it once in its console. It is the gate `publish-site`
-runs before publishing, so a dispatched build publishes nothing a person
-cannot use.
+ports, the web entry is served beside it, and two headless Chromium browsers
+open it, join the Lounge through its door as two people, chat, share a desk
+and place a call they hear each other on, seeing each other present through
+the host's own packet relay. It is the gate `publish-site` runs before
+publishing, so a dispatched build publishes nothing a person cannot use.
 
 ```
 bash os/containers/tilo-lounge/test-integration.sh \
