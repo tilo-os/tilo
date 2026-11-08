@@ -43,8 +43,9 @@ use crate::{Placement, WidgetHost};
 
 /// The origin the session's resources come from: the first part of their kinds.
 pub const ORIGIN: &str = "session";
-/// The resource the session publishes its desk as, whose reading [`SessionOrigin`] writes.
-pub const DESK_RESOURCE: &str = "session:desk";
+/// The resource the session publishes its desk as, whose reading [`SessionOrigin`] writes: the
+/// door's own name for it, so the session, its broker and its views name one desk.
+pub const DESK_RESOURCE: &str = ui::tilo_actions::remote::session_actions::DESK_RESOURCE;
 /// The resource the session's chrome actions are published on.
 pub const CHROME_RESOURCE: &str = "desktop:chrome";
 /// The resource the person's arrangement is published on: what a composed view's open becomes a

@@ -11,7 +11,21 @@
 //! person's grants, the agent's, the issue's), and the session carries it out on the loop's
 //! pass, attributed to the agent and the person who asked, as a change the person takes
 //! back like any other.
+//!
+//! An app reaches the desk's invitation the same way, as the person using it: what it shows
+//! is shared by inviting people into the workspace it is in, which is the invitation the
+//! invite sheet makes ([`ISSUE_INVITATION`]) and nothing else of the desk.
 
 /// The provider the session answers its own actions under: the same name its own door
 /// publishes them as, so a catalogue that names a session action names it here too.
 pub const PROVIDER: &str = "so.tilo.session";
+
+/// The resource the session publishes its desk as: the actions the person at this device takes
+/// on the workspace itself — the invitation into it, the surface up, the agents working here —
+/// rather than on a record of an app's.
+pub const DESK_RESOURCE: &str = "session:desk";
+
+/// The desk's action making an invitation into a workspace: the link to hand to whoever is
+/// being invited, which their device joins with. An app offers inviting what it shows by asking
+/// this, and gets the invitation the invite sheet makes.
+pub const ISSUE_INVITATION: &str = "issue-invitation";

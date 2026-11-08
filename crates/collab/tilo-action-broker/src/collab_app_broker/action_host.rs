@@ -39,6 +39,7 @@ mod agent_app_list_tests;
 #[path = "governance_witness_tests.rs"]
 mod governance_witness_tests;
 
+mod app_admission;
 mod directory;
 mod launch_child;
 mod own_device;
@@ -46,6 +47,7 @@ mod publishers;
 mod readmit;
 mod shortcut_run;
 mod workspace_nodes;
+use app_admission::{invitation_request, own_view_lookup, reference_request};
 use directory::bridge_error;
 
 /// The longest a waiter on a running invocation sleeps without a signalled
@@ -656,7 +658,10 @@ impl AppBrokerState {
     /// the person's own clicks in it. Reading the catalogue needs the app to
     /// declare `[actions] query`; invoking another app's action needs
     /// `[actions] invoke` and is then decided for the app, which holds no
-    /// role and has only what the workspace grants it.
+    /// role and has only what the workspace grants it. Sharing what an app
+    /// shows is the workspace's invitation, which only its person makes: the
+    /// app asks the desk for it as that person
+    /// ([`app_admission::invitation_request`]), under their part in the workspace.
     pub(crate) fn app_door(
         &self,
         person: &Caller,
@@ -694,7 +699,10 @@ impl AppBrokerState {
                 Some(person.clone())
             }
             RemoteActionMessage::Invoke(request) => {
-                if self.app_owns(person, app_id, request) || reference_request(request) {
+                if self.app_owns(person, app_id, request)
+                    || reference_request(request)
+                    || invitation_request(request)
+                {
                     Some(person.clone())
                 } else {
                     access.invoke.then_some(as_app)
@@ -3216,106 +3224,6 @@ pub(super) fn answered_when_durable(
     });
     answered
 }
-
-/// Whether `query` asks only where one of `app_id`'s own resources is shown,
-/// as minting a link to it does. That is read-only view discovery of the
-/// app's own record, answered as the person using it, never the catalogue of
-/// what else they are offered, so it needs no declared `query` access.
-fn own_view_lookup(app_id: &str, query: &tilo_actions::remote::CatalogueQuery) -> bool {
-    query.view_resource.is_some()
-        && query
-            .provider
-            .as_deref()
-            .and_then(|provider| provider.strip_prefix("record:"))
-            .and_then(|record| record.split_once(':'))
-            .is_some_and(|(app, _)| app == app_id)
-}
-
-/// Whether `request` asks for the link to a resource or opens it:
-/// `share-link`, which the framework answers for every app and no app may
-/// publish itself, or the resource's `open` in its app
-/// ([`application_action_target`](tilo_actions::remote::application_action_target)),
-/// which shows it. Neither grants anything, so an app showing a reference (a
-/// chat message carrying a page, an issue's link) asks as the person using it
-/// without declared `invoke` access; the person's own grants on the app and
-/// the resource still decide.
-fn reference_request(request: &tilo_actions::remote::InvokeRequest) -> bool {
-    let action = request.target.address.action.as_str();
-    action == "share-link"
-        || (action == APPLICATION_OPEN_ACTION
-            && application_provider(&request.target.provider).is_some())
-}
-
-#[cfg(test)]
-mod own_view_lookup_tests {
-    use super::own_view_lookup;
-    use tilo_actions::remote::{CatalogueQuery, ViewResourceQuery};
-
-    #[test]
-    fn an_app_may_look_up_only_its_own_resources_views() {
-        let lookup = |provider: &str, view: bool| CatalogueQuery {
-            provider: Some(provider.into()),
-            view_resource: view.then(|| ViewResourceQuery {
-                id: "notes.page:1".into(),
-                kind: "notes.page".into(),
-            }),
-            ..CatalogueQuery::default()
-        };
-        assert!(own_view_lookup(
-            "so.tilo.notes",
-            &lookup("record:so.tilo.notes:", true)
-        ));
-        assert!(own_view_lookup(
-            "so.tilo.notes",
-            &lookup("record:so.tilo.notes:uuid:1", true)
-        ));
-        assert!(!own_view_lookup(
-            "so.tilo.notes",
-            &lookup("record:so.tilo.notes.evil:", true)
-        ));
-        assert!(!own_view_lookup(
-            "so.tilo.chat",
-            &lookup("record:so.tilo.notes:", true)
-        ));
-        assert!(
-            !own_view_lookup("so.tilo.notes", &lookup("record:so.tilo.notes:", false)),
-            "the action catalogue still needs declared access"
-        );
-    }
-
-    #[test]
-    fn only_linking_and_opening_a_resource_are_open_to_every_app() {
-        let request = |provider: &str, action: &str| tilo_actions::remote::InvokeRequest {
-            on_behalf_of: None,
-            invocation: tilo_actions::InvocationId::new(),
-            target: tilo_actions::remote::RemoteActionTarget {
-                provider: provider.into(),
-                address: tilo_actions::ActionAddress::new("notes.page:1", action),
-            },
-            argument: tilo_actions::remote::InvokeArgument::None,
-            context: None,
-            confirmation: None,
-            revision: None,
-            wait_ms: None,
-            appearance: None,
-        };
-        let record = "record:so.tilo.notes:";
-        let app = "application:workspace-1:so.tilo.notes:uuid:1";
-        assert!(super::reference_request(&request(record, "share-link")));
-        assert!(!super::reference_request(&request(
-            record,
-            "share-invite-link"
-        )));
-        assert!(!super::reference_request(&request(record, "rename")));
-        assert!(super::reference_request(&request(app, "open")));
-        assert!(!super::reference_request(&request(app, "rename")));
-        assert!(
-            !super::reference_request(&request("7", "open")),
-            "only the resource's own app opens it"
-        );
-    }
-}
-
 #[cfg(test)]
 mod launch_content_tests {
     use super::launch_content_hash;
