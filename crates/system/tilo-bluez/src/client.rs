@@ -58,11 +58,6 @@ pub struct BluezClient {
 
 impl BluezClient {
     /// Connect to the system bus.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the system D-Bus socket can't be reached or the
-    /// connection handshake fails.
     pub async fn connect() -> zbus::Result<Self> {
         let connection = Connection::system().await?;
         Ok(Self::with_connection(connection, DeviceNames::new()))
@@ -97,10 +92,6 @@ impl BluezClient {
     ///
     /// Must be called inside a tokio runtime; the follower runs there until
     /// every clone of the watch is dropped.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the signal subscriptions cannot be made.
     pub async fn watch_changes(&self) -> zbus::Result<BluezChanges> {
         let properties = MessageStream::for_match_rule(
             MatchRule::builder()

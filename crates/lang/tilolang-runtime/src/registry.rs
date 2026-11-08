@@ -398,10 +398,6 @@ impl Registry {
 
     /// Resolve a type name given by a caller outside any package: an id, or a name that
     /// exactly one loaded package declares.
-    ///
-    /// # Errors
-    ///
-    /// A message when no loaded package declares the type, or several do.
     pub fn resolve_global(&self, name: &str) -> Result<TypeId, String> {
         if self.types.contains_key(name) {
             return Ok(name.to_owned());
@@ -463,10 +459,6 @@ impl Registry {
 
     /// The value of `case`, named by its name or its id, as a value of `key`'s enum holds it:
     /// the enum's id, the case's id, and no fields.
-    ///
-    /// # Errors
-    ///
-    /// A message when no loaded package declares the enum, or it has no such plain case.
     pub fn enum_value(&self, key: &TypeKey, case: &str) -> Result<EnumValue, String> {
         let declared = self.enum_of(key).ok_or_else(|| {
             format!(

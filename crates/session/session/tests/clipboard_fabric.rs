@@ -1,6 +1,5 @@
-//! A copy follows the person to their other devices: what was copied here is
-//! offered to the fabric, and what they copied there joins the clipboard
-//! here, saying which device it came from.
+//! A copy follows the person to their other devices: what was copied here is offered to the fabric,
+//! and what they copied there joins the clipboard here, saying which device it came from.
 
 #![cfg(target_os = "linux")]
 #![allow(
@@ -15,12 +14,14 @@
               outlives every call made into it"
 )]
 
+mod common;
+
 use std::collections::BTreeSet;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use tilo_compositor::Selection;
 use tilo_compositor::clipboard_history::TEXT_MIME;
-use tilo_compositor::{OutputConfig, Selection};
 use tilo_device_fabric::link::{FabricLink, PersonalFabricSendError, SharedLink};
 use tilo_device_fabric::speaker_group::SpeakerFabricState;
 use tilo_device_fabric::unlock::UnlockFabricState;
@@ -31,16 +32,12 @@ use tilo_device_fabric::{
 };
 use tilo_session::{CLIPBOARD_RESOURCE, Options, Session};
 
-const WIDTH: i32 = 1280;
-const HEIGHT: i32 = 800;
-
 /// This device's fabric id.
 fn this_device() -> DeviceId {
     DeviceId::new("this-pc").expect("a device id")
 }
 
-/// The fabric as a stand-in transport keeps it, and what the session offered
-/// it.
+/// The fabric as a stand-in transport keeps it, and what the session offered it.
 #[derive(Default)]
 struct Fabric {
     converged: DeviceFabric,
@@ -160,19 +157,14 @@ impl FabricLink for FakeLink {
 
 fn session(link: &FakeLink) -> Session {
     let fabric: SharedLink = Arc::new(link.clone());
-    Session::headless(
-        Options {
-            presentation: ui::headless::fixture_runner_inputs,
-            fabric: Some(fabric),
-            ..Options::default()
-        },
-        &[OutputConfig::new("HEADLESS-1", WIDTH, HEIGHT)],
-    )
-    .expect("session")
+    crate::common::headless(Options {
+        fabric: Some(fabric),
+        ..Options::default()
+    })
 }
 
-/// Step the loop until `done` holds, for a couple of seconds: the fabric is
-/// read a few times a second, not every turn.
+/// Step the loop until `done` holds, for a couple of seconds: the fabric is read a few times a
+/// second, not every turn.
 fn when(session: &mut Session, done: impl Fn(&Session) -> bool) {
     let deadline = tilo_test_env::hang_deadline();
     while std::time::Instant::now() < deadline {
@@ -199,8 +191,7 @@ fn copy(session: &mut Session, text: &str) {
         .expect("the app copies");
 }
 
-/// The history as the session publishes it: each copy's text and where it was
-/// copied.
+/// The history as the session publishes it: each copy's text and where it was copied.
 fn history(session: &Session) -> Vec<(String, Option<String>)> {
     session
         .read(CLIPBOARD_RESOURCE)
@@ -242,8 +233,7 @@ fn a_copy_is_offered_to_the_person_s_other_devices_and_theirs_joins_the_clipboar
         "a device only shares its own copies"
     );
 
-    // What they copied on their laptop joins the history here, saying which
-    // device it came from.
+    // What they copied on their laptop joins the history here, saying which device it came from.
     link.shared_from("laptop", "made there", ui::time::unix_now_ms());
     when(&mut session, |session| {
         history(session)

@@ -12,18 +12,12 @@ pub const MAX_TEXT_BYTES: usize = 32 * 1024;
 
 /// Encode exactly one direct recipient; never fan out or use a default account.
 /// The correlation ID is not a server idempotency guarantee.
-///
-/// # Errors
-/// Refuses another service, invalid operation IDs and empty/oversized text.
 pub fn send(route: &Route, operation: &str, text: &str) -> Result<Zeroizing<Vec<u8>>, Error> {
     send_on(route, route.account(), operation, text)
 }
 
 /// Encode with the host's verified signal-cli account. Tilo's account registry
 /// ID is distinct from a Signal phone number/ACI and stays in the frozen route.
-///
-/// # Errors
-/// Refuses another service, invalid identities/operation IDs and invalid text.
 pub fn send_on(
     route: &Route,
     signal_account: &str,
@@ -95,9 +89,6 @@ impl std::fmt::Debug for Incoming {
 }
 
 /// Decode a direct text event bound to the broker's chosen account.
-///
-/// # Errors
-/// Refuses wrong-account, malformed, oversized and unsupported events.
 pub fn incoming(frame: &[u8], account: &str) -> Result<Incoming, Error> {
     let value = decode(frame)?;
     if value.get("method").and_then(Value::as_str) != Some("receive") {

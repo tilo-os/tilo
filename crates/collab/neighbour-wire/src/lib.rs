@@ -666,8 +666,8 @@ pub enum NeighbourMsg {
         cluster_id: String,
         hash: String,
     },
-    /// One bounded piece of a record's content, answering `requester`'s
-    /// [`Self::RecordContentWant`]: `bytes` start at `offset` of the
+    /// One bounded piece of a record's content, answering
+    /// `requester`'s [`Self::RecordContentWant`]: `bytes` start at `offset` of the
     /// `total`-byte content named by `hash`. The receiver keeps the content
     /// only once every piece arrived and the bytes hash to `hash`. Appended
     /// to preserve every existing Postcard discriminant.

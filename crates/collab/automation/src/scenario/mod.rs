@@ -486,7 +486,7 @@ impl StateQuery {
     }
 }
 
-/// [`StepKind::name`]: a step kind's wire name, for a report that names the
+/// [`StepKind::name`] — a step kind's wire name, for a report that names the
 /// step a scenario could not take.
 impl StepKind {
     #[must_use]

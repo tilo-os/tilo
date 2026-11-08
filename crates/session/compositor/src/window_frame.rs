@@ -39,8 +39,8 @@ use smithay::utils::{Physical, Rectangle, Transform};
 pub struct Shadow {
     /// How far below the window it sits, logical pixels.
     pub offset_y: f64,
-    /// Its blur radius, logical pixels (a Gaussian of half that as its
-    /// standard deviation, as CSS and the design tokens mean it).
+    /// Its blur radius, logical pixels (a Gaussian of half that as its standard deviation, as CSS
+    /// and the design tokens mean it).
     pub blur: f64,
     /// Its colour, straight alpha.
     pub rgba: [u8; 4],
@@ -67,8 +67,8 @@ pub struct WindowFrame {
 }
 
 impl WindowFrame {
-    /// No corners, no shadow, no edge: a window drawn as its buffer is
-    /// (a window that fills the display, which the display can scan out).
+    /// No corners, no shadow, no edge: a window drawn as its buffer is (a window that fills the
+    /// display, which the display can scan out).
     #[must_use]
     pub const fn square() -> Self {
         Self {
@@ -78,10 +78,9 @@ impl WindowFrame {
         }
     }
 
-    /// A window whose host paints it whole — its card, the lift under it
-    /// and the edge around it, in the host's own colours: the compositor
-    /// only shapes its corners to the host's card and draws nothing
-    /// around it. The desk's tiles are drawn this way.
+    /// A window whose host paints it whole — its card, the lift under it and the edge around it, in
+    /// the host's own colours: the compositor only shapes its corners to the host's card and draws
+    /// nothing around it. The desk's tiles are drawn this way.
     #[must_use]
     pub const fn corners(radius: f64) -> Self {
         Self {
@@ -103,8 +102,8 @@ impl WindowFrame {
 }
 
 impl Default for WindowFrame {
-    /// The window tile the design language draws: what every app had around
-    /// it before it was a foreign window.
+    /// The window tile the design language draws: what every app had around it before it was a
+    /// foreign window.
     fn default() -> Self {
         Self {
             radius: 14.0,
@@ -121,13 +120,12 @@ impl Default for WindowFrame {
     }
 }
 
-/// The shadow reaches this many standard deviations before it is cut, where
-/// the toolkit's blur stops painting it too.
+/// The shadow reaches this many standard deviations before it is cut, where the toolkit's blur
+/// stops painting it too.
 const REACH: f64 = 2.5;
 
-/// The most rows a corner is cut into, however large it is drawn: past this
-/// the rows grow rather than multiply, so a huge scaled window stays a few
-/// dozen elements.
+/// The most rows a corner is cut into, however large it is drawn: past this the rows grow rather
+/// than multiply, so a huge scaled window stays a few dozen elements.
 const MOST_ROWS: i32 = 32;
 
 /// One window's shadow and edge, drawn once and drawn again every frame.
@@ -152,12 +150,11 @@ struct Images {
     bytes: usize,
 }
 
-/// The most memory a desktop's window frames may hold on to: a handful of
-/// window sizes, and a start over when a session keeps resizing.
+/// The most memory a desktop's window frames may hold on to: a handful of window sizes, and a start
+/// over when a session keeps resizing.
 const BUDGET: usize = 64 * 1024 * 1024;
 
-/// What a frame image was drawn from: the same numbers always give the same
-/// image.
+/// What a frame image was drawn from: the same numbers always give the same image.
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
 struct Signature {
     /// Window size and corner radius in 1/64 pixels.
@@ -179,17 +176,16 @@ fn sixtyfourths(value: f64) -> u32 {
 }
 
 impl FrameImages {
-    /// The shadow and edge of a window `size` (logical) with `frame`, on an
-    /// output of `scale`; `None` when the frame draws nothing.
+    /// The shadow and edge of a window `size` (logical) with `frame` , on an output of `scale` ;
+    /// `None` when the frame draws nothing.
     pub(crate) fn image(
         &self,
         frame: &WindowFrame,
         size: (f64, f64),
         scale: f64,
     ) -> Option<std::rc::Rc<FrameImage>> {
-        // A frame that draws nothing around the window (its host paints the
-        // card whole) has no image at all: only its corners are drawn, from
-        // `bands`.
+        // A frame that draws nothing around the window (its host paints the card whole) has no
+        // image at all: only its corners are drawn, from `bands` .
         let shadow = frame.shadow.filter(|shadow| shadow.rgba[3] > 0);
         let edge = frame
             .edge
@@ -234,9 +230,8 @@ impl FrameImages {
             size: raster.size,
         });
         let mut images = self.images.borrow_mut();
-        // A desktop's windows come in a handful of sizes; a long-lived
-        // session resizing every window once should not keep every size it
-        // ever saw.
+        // A desktop's windows come in a handful of sizes; a long-lived session resizing every
+        // window once should not keep every size it ever saw.
         if images.bytes.saturating_add(bytes) > BUDGET {
             images.by_signature.clear();
             images.bytes = 0;
@@ -319,10 +314,9 @@ impl Raster {
                 };
                 let edge_alpha = match (edge_colour, edge) {
                     (Some(colour), Some((thickness, _))) => {
-                        // The stroke lies outside the outline, never over
-                        // the window's own pixels: the band from the
-                        // outline out to `thickness`, as much of a pixel
-                        // as it covers.
+                        // The stroke lies outside the outline, never over the window's own pixels:
+                        // the band from the outline out to `thickness` , as much of a pixel as it
+                        // covers.
                         let covered =
                             (inside + 0.5).min(thickness).max(0.0) - (inside - 0.5).max(0.0);
                         covered.clamp(0.0, 1.0) * colour[3]
@@ -367,7 +361,7 @@ impl Raster {
     }
 }
 
-/// `value` rounded, saturated to `u32`.
+/// `value` rounded, saturated to `u32` .
 fn u32_from(value: f64) -> u32 {
     if !value.is_finite() {
         return 0;
@@ -381,7 +375,7 @@ fn u32_from(value: f64) -> u32 {
     rounded
 }
 
-/// `value` rounded, saturated to `i32`.
+/// `value` rounded, saturated to `i32` .
 fn i32_from(value: u32) -> i32 {
     i32::try_from(value).unwrap_or(i32::MAX)
 }
@@ -391,7 +385,7 @@ pub(crate) fn pixels(value: f64) -> i32 {
     i32_from(u32_from(value))
 }
 
-/// `value` rounded, saturated to `u8`.
+/// `value` rounded, saturated to `u8` .
 fn u8_from(value: f64) -> u8 {
     if !value.is_finite() {
         return 0;
@@ -405,9 +399,8 @@ fn u8_from(value: f64) -> u8 {
     rounded
 }
 
-/// How far `(x, y)` is from the outside of a rounded rect of `width` by
-/// `height` whose top left is the origin: negative inside, positive
-/// outside.
+/// How far `(x, y)` is from the outside of a rounded rect of `width` by `height` whose top left is
+/// the origin: negative inside, positive outside.
 fn distance(x: f64, y: f64, width: f64, height: f64, radius: f64) -> f64 {
     let dx = (x - width / 2.0).abs() - (width / 2.0 - radius);
     let dy = (y - height / 2.0).abs() - (height / 2.0 - radius);
@@ -415,8 +408,8 @@ fn distance(x: f64, y: f64, width: f64, height: f64, radius: f64) -> f64 {
     outside + dx.max(dy).min(0.0) - radius
 }
 
-/// The complementary error function, to 1e-7 (Abramowitz and Stegun 7.1.26):
-/// the coverage of a Gaussian blur past a distance.
+/// The complementary error function, to 1e-7 (Abramowitz and Stegun 7.1.26): the coverage of a
+/// Gaussian blur past a distance.
 fn erfc(x: f64) -> f64 {
     let z = x.abs();
     let t = 1.0 / (1.0 + 0.5 * z);
@@ -434,13 +427,12 @@ fn erfc(x: f64) -> f64 {
     if x >= 0.0 { poly } else { 2.0 - poly }
 }
 
-/// The rows a window's buffer is drawn in so its corners are round: the two
-/// corner strips cut to the arc, and the rows between them whole. Front to
-/// back along `rect` (output pixels); one row when nothing is cut.
-///
-/// A row's width is the arc where the row *ends* towards the window's
-/// middle, so the buffer never shows outside the corner — the sliver the
-/// rounding leaves is what the shadow and the edge show through.
+/// The rows a window's buffer is drawn in so its corners are round: the two corner strips cut to
+/// the arc, and the rows between them whole. Front to back along `rect` (output pixels); one row
+/// when nothing is cut.
+/// A row's width is the arc where the row *ends* towards the window's middle, so the buffer never
+/// shows outside the corner — the sliver the rounding leaves is what the shadow and the edge show
+/// through.
 #[must_use]
 pub fn bands(rect: Rectangle<i32, Physical>, radius: f64) -> Vec<Rectangle<i32, Physical>> {
     let half = f64::from(rect.size.w.min(rect.size.h)) / 2.0;
@@ -480,8 +472,7 @@ pub fn bands(rect: Rectangle<i32, Physical>, radius: f64) -> Vec<Rectangle<i32, 
     bands
 }
 
-/// The row of `rect` from `from` to `to` pixels below its top, `inset`
-/// pixels in from each side.
+/// The row of `rect` from `from` to `to` pixels below its top, `inset` pixels in from each side.
 fn row(rect: Rectangle<i32, Physical>, from: i32, to: i32, inset: i32) -> Rectangle<i32, Physical> {
     let inset = inset.clamp(0, rect.size.w / 2);
     Rectangle::new(
@@ -512,8 +503,7 @@ mod tests {
         assert!(distance(50.0, 25.0, 100.0, 50.0, 10.0) < -20.0, "inside");
         assert!(distance(-1.0, 25.0, 100.0, 50.0, 10.0) > 0.0, "left");
         assert!(distance(101.0, 25.0, 100.0, 50.0, 10.0) > 0.0, "right");
-        // The corner's arc: the diagonal is outside, the middle of the side
-        // is not.
+        // The corner's arc: the diagonal is outside, the middle of the side is not.
         assert!(distance(0.5, 0.5, 100.0, 50.0, 10.0) > 0.0, "the corner");
         assert!(distance(0.5, 25.0, 100.0, 50.0, 10.0) < 0.0, "the side");
         // Square corners: the corner pixel is inside.
@@ -546,8 +536,8 @@ mod tests {
             assert!(band.loc.x >= 10 && band.loc.x + band.size.w <= 110); // allow-breakpoint: a fixed-size fixture window, not a layout width
             assert!(band.loc.y >= 20 && band.loc.y + band.size.h <= 80);
         }
-        // Rows from the top and from the bottom together cover every row of
-        // the window exactly once.
+        // Rows from the top and from the bottom together cover every row of the window exactly
+        // once.
         let mut rows: Vec<i32> = bands
             .iter()
             .flat_map(|band| (band.loc.y..band.loc.y + band.size.h).collect::<Vec<_>>())
@@ -696,9 +686,8 @@ mod tests {
         };
         let left = u32_from(-image.origin.0);
         let top = u32_from(-image.origin.1);
-        // The hairline, on its own: full strength on the first pixel outside
-        // the window, nothing one pixel further out, and nothing over the
-        // window.
+        // The hairline, on its own: full strength on the first pixel outside the window, nothing
+        // one pixel further out, and nothing over the window.
         let hairline = Raster::of(&Signature {
             edge: signature.edge,
             shadow: None,
@@ -718,9 +707,8 @@ mod tests {
             0,
             "not over the window"
         );
-        // The shadow below: half its strength where it meets the window's
-        // own silhouette (2 px down), and 0.5 · erfc(d / (8√2)) of it at
-        // `d` px below that, times the token's 71.
+        // The shadow below: half its strength where it meets the window's own silhouette (2 px
+        // down), and 0.5 · erfc(d / (8√2)) of it at `d` px below that, times the token's 71.
         for (below, alpha) in [(0.5, 34), (4.5, 20), (8.5, 10), (12.5, 4), (16.5, 1)] {
             #[allow(
                 clippy::cast_possible_truncation,

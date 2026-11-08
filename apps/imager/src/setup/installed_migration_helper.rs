@@ -133,9 +133,6 @@ fn lines(input: impl io::Read, sender: mpsc::SyncSender<Result<Command, ()>>) {
 }
 mod access;
 /// Hold an explicitly requested shared writable original-files grant until EOF.
-///
-/// # Errors
-/// Refuses unknown mount safety, changed source/target identities or UID mismatch.
 pub fn run_shared_access(
     args: impl IntoIterator<Item = OsString>,
     input: impl io::Read + Send + 'static,

@@ -97,9 +97,6 @@ fn machine_info(existing: &str, label: &str) -> String {
 /// `write-machine-info`: publish the new machine-info under a temporary name
 /// in the same directory, synced, renamed over the old one, and the
 /// directory synced.
-///
-/// # Errors
-/// A symlinked machine-info, an unreadable one, or a failed write.
 pub fn write_machine_info(path: &Path, label: &OsStr) -> Result<()> {
     let label = text(label)?;
     if path.is_symlink() {
@@ -158,9 +155,6 @@ fn choices(args: &[OsString]) -> Result<[String; 10]> {
 /// `check-prepared-choices`: an install profile in the authenticated
 /// prepared setup must equal the choices the backend acts on. The keyboard
 /// is compared as the backend splits it: Dvorak and Colemak are US variants.
-///
-/// # Errors
-/// Malformed choices or a profile that differs from them.
 pub fn check_prepared_choices(args: &[OsString], input: impl std::io::Read) -> Result<()> {
     let [
         username,
@@ -334,9 +328,6 @@ fn sfdisk_text(value: Option<&Value>) -> String {
 
 /// `gpt`: one fact from `sfdisk --json` on stdin. `Ok(None)` is a quiet
 /// "not found" (exit 1).
-///
-/// # Errors
-/// Unparseable sfdisk output or an incomplete partition identity.
 pub fn gpt(query: &str, uuid: Option<&str>, input: impl std::io::Read) -> Result<Option<String>> {
     let mut bytes = Vec::new();
     input.take(SFDISK_MAX_BYTES).read_to_end(&mut bytes)?;
@@ -439,10 +430,6 @@ fn split_line(data: &[u8]) -> Option<(&[u8], &[u8])> {
 
 /// `unpack-setup-handoff`: every `PATH\nSIZE\nBYTES` record of the payload
 /// written below `destination`.
-///
-/// # Errors
-/// A truncated or malformed record, an absolute or escaping path, or a
-/// failed write.
 pub fn unpack_setup_handoff(payload: &[u8], destination: &Path) -> Result<()> {
     let malformed = || Fail::Refusal("setup handoff payload is malformed".into());
     let mut rest = payload;

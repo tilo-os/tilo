@@ -672,7 +672,6 @@ fn build_probe(
 )]
 #[test]
 fn bound_components_keep_child_binding() {
-    // Case `real_app_descendant_focus_ime_semantics_and_measure_keep_child_binding`.
     {
         let temp = tempfile::tempdir().unwrap();
         let root = temp.path().join("state");
@@ -1086,7 +1085,6 @@ fn background_document_job_is_broker_admitted_before_its_canonical_edit() {
 )]
 #[test]
 fn bound_publication_and_cache_keep_contracts_and_id_lifetimes() {
-    // Case `task4_bound_publication_preserves_contracts_and_directed_owner`.
     {
         let mut fixture = ActionFixture::broker();
         let outer = fixture.app.state.doc.get_heads();
@@ -1173,7 +1171,6 @@ fn bound_publication_and_cache_keep_contracts_and_id_lifetimes() {
         assert_eq!(fixture.app.state.doc.get_heads(), outer);
     }
 
-    // Case `task4_bound_cache_tracks_permission_time_and_never_reuses_exhaustion`.
     {
         let mut fixture = ActionFixture::new();
         DISCOVERY_COUNT.set(0);
@@ -1216,7 +1213,6 @@ fn bound_publication_and_cache_keep_contracts_and_id_lifetimes() {
         );
     }
 
-    // Case `task4_semantic_and_palette_targets_keep_equal_id_lifetimes`.
     {
         let mut fixture = ActionFixture::new();
         fixture.app.refresh_semantic_tree();
@@ -1279,7 +1275,6 @@ fn bound_publication_and_cache_keep_contracts_and_id_lifetimes() {
         );
     }
 
-    // Case `task4_bound_directory_limits_cursors_and_alias_refusal`.
     {
         let mut fixture = ActionFixture::broker();
         let query = runtime_collab::ActionDirectoryQuery {
@@ -1416,7 +1411,6 @@ fn bound_publication_and_cache_keep_contracts_and_id_lifetimes() {
         );
     }
 
-    // Case `task4_reserved_publication_collision_never_routes_to_legacy_widget`.
     {
         let mut fixture = ActionFixture::broker();
         let alias = fixture
@@ -1470,7 +1464,6 @@ fn bound_publication_and_cache_keep_contracts_and_id_lifetimes() {
         );
     }
 
-    // Case `task4_bound_control_authority_refreshes_without_an_outer_generation_change`.
     {
         let mut fixture = ActionFixture::new();
         fixture.app.layout.walks = crate::app::runtime::TreeWalks::default();
@@ -1572,7 +1565,6 @@ fn bound_controls_read_the_host_authority_only_when_it_changes() {
 
 #[test]
 fn compound_bound_effects_preserve_typing_custody_and_redo() {
-    // Case `task4_compound_view_and_noop_effect_preserve_pending_typing`.
     {
         for (action, mode) in [("view", 0), ("follow-up", 2), ("view", 1)] {
             COMPOUND_MODE.set(mode);
@@ -1647,7 +1639,6 @@ fn compound_bound_effects_preserve_typing_custody_and_redo() {
         }
     }
 
-    // Case `task4_undeclared_effect_spans_are_retained_excluded_and_keep_custody`.
     {
         for mode in [3, 4, 5, 6] {
             COMPOUND_MODE.set(mode);
@@ -1719,7 +1710,6 @@ fn compound_bound_effects_preserve_typing_custody_and_redo() {
         }
     }
 
-    // Case `task4_compound_contextual_noop_and_failed_producers`.
     {
         for mode in [7, 9, 10] {
             COMPOUND_MODE.set(mode);
@@ -1773,7 +1763,6 @@ fn compound_bound_effects_preserve_typing_custody_and_redo() {
         }
     }
 
-    // Case `task4_compound_unwind_restores_frame_and_preserves_unrelated_redo`.
     {
         COMPOUND_MODE.set(11);
         let mut fixture = ActionFixture::with_same_record(true);
@@ -1817,7 +1806,6 @@ fn compound_bound_effects_preserve_typing_custody_and_redo() {
             .unwrap();
     }
 
-    // Case `task4_pending_status_selects_its_owner_without_closing_typing`.
     {
         let mut fixture = ActionFixture::new();
         let binding = fixture.bindings[0].clone();
@@ -1886,7 +1874,6 @@ fn compound_bound_effects_preserve_typing_custody_and_redo() {
 )]
 #[test]
 fn bound_search_and_palette_disclose_only_authorized_provider_rows() {
-    // Case `task4_denied_bound_provider_rows_are_not_disclosed`.
     {
         for initially_allowed in [false, true] {
             let mut fixture = ActionFixture::with_authority(false, true);
@@ -1994,7 +1981,6 @@ fn bound_search_and_palette_disclose_only_authorized_provider_rows() {
         }
     }
 
-    // Case `task4_completed_bound_search_validation_is_bounded`.
     {
         let mut fixture = ActionFixture::with_authority(false, true);
         let confirmation = fixture.target(1, "follow-up");
@@ -2108,7 +2094,6 @@ fn bound_search_and_palette_disclose_only_authorized_provider_rows() {
         );
     }
 
-    // Case `task4_lazy_palette_and_opaque_navigation_keep_provider_owner`.
     {
         let mut fixture = ActionFixture::new();
         fixture.app.open_action_palette();
@@ -2181,7 +2166,6 @@ fn bound_search_and_palette_disclose_only_authorized_provider_rows() {
 )]
 #[test]
 fn bound_broker_routes_keep_the_chosen_contract_and_refuse_bad_witnesses() {
-    // Case `task4_qualified_broker_request_retains_chosen_contract_and_directed_owner`.
     {
         let mut fixture = ActionFixture::broker();
         let target = fixture.target(1, "follow-up");
@@ -2312,7 +2296,6 @@ fn bound_broker_routes_keep_the_chosen_contract_and_refuse_bad_witnesses() {
         assert_eq!(fixture.app.actions.next_broker_request_id, before);
     }
 
-    // Case `task4_checked_action_reuses_same_record_frame_and_refuses_cross_record`.
     {
         for shared in [true, false] {
             let mut fixture = ActionFixture::with_same_record(shared);
@@ -2388,7 +2371,6 @@ fn bound_broker_routes_keep_the_chosen_contract_and_refuse_bad_witnesses() {
         }
     }
 
-    // Case `task4_bound_broker_route_refuses_wrong_app_workspace_record_and_missing_witness`.
     {
         let mut fixture = ActionFixture::broker();
         let target = fixture.target(1, "follow-up");

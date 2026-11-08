@@ -117,10 +117,6 @@ impl Core {
     /// The host's surfaces for the tree a boundary rendered: each item's menu, and the window's
     /// own bar, or for the page of one item the "…" beside its title. `args` are the boundary's,
     /// so the window's subject is the resource the view was opened on.
-    ///
-    /// # Errors
-    ///
-    /// An action whose presentation view traps, or a tree the arena does not hold.
     pub(crate) fn surfaces(
         &self,
         root: usize,

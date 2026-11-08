@@ -1,4 +1,4 @@
-//! [`DynAction`]: a tilolang action as a replayable tilo action.
+//! [`DynAction`] — a tilolang action as a replayable tilo action.
 //!
 //! At the origin a tilolang action runs in wasm as a planner; its writes are recorded as
 //! [`DynEdit`]s. The recorded action is plain data whose `apply` replays those edits without wasm,
@@ -415,9 +415,6 @@ impl DynAction {
     }
 
     /// Encode under [`ACTION_TYPE`], the framework's action encoding.
-    ///
-    /// # Errors
-    /// The action does not serialize.
     pub fn encode(&self) -> Result<EncodedAction, ActionError> {
         EncodedAction::encode(ACTION_TYPE, self)
     }
@@ -680,9 +677,6 @@ impl DynAction {
 ///
 /// `seed` pins the ids a minting edit would draw: edits carry their own ids, so it only has to
 /// be the same on every replica.
-///
-/// # Errors
-/// An edit names a resource that is not there, or does not fit its field.
 pub fn apply_edits(
     doc: &mut Doc,
     app: &str,
@@ -1570,9 +1564,6 @@ fn stored_map(
 
 /// Read the resource `id` of `app` from the store's `chunks`: its fields in the chunk the
 /// record's manifest places it in, and its items in the chunks their runs are in.
-///
-/// # Errors
-/// The resource is absent, or its type is not registered.
 pub fn read_resource(chunks: &Chunks, app: &str, id: &str) -> Result<DynRecord, ModelError> {
     DynRecord::read_whole(chunks, app, id)
 }

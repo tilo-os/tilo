@@ -602,23 +602,7 @@ async fn certified_person_context_uses_signed_owner_device_and_current_execution
     tokio::task::LocalSet::new()
         .run_until(async {
             let mut env = Environment::new();
-            env.route.cluster_id =
-                collab_types::personal_cluster(&env.cert.user_public_key).to_string();
-            {
-                let workspace_id =
-                    tilo_desktop_model::WorkspaceId::parse(&env.route.cluster_id).unwrap();
-                let mut membership = env.membership.write();
-                let before = membership.workspaces[0].clone();
-                let mut workspace = tilo_desktop_model::Workspace::in_workspace(
-                    before.slot,
-                    workspace_id,
-                    before.name,
-                );
-                workspace.strips = before.strips;
-                workspace.policy = before.policy;
-                workspace.policy.rehome(workspace_id.to_string());
-                membership.workspaces[0] = workspace;
-            }
+            env.rehome_personal();
             env.authority =
                 CurrentHost::new(&env.route, &env.cert, Some(env.origin.capture().unwrap()));
             let fanout = Arc::new(FanoutState::new());
@@ -672,22 +656,7 @@ async fn certified_person_context_refuses_other_workspaces_and_expired_original_
     tokio::task::LocalSet::new()
         .run_until(async {
             let mut env = Environment::new();
-            env.route.cluster_id = uuid::Uuid::new_v4().to_string();
-            {
-                let workspace_id =
-                    tilo_desktop_model::WorkspaceId::parse(&env.route.cluster_id).unwrap();
-                let mut membership = env.membership.write();
-                let before = membership.workspaces[0].clone();
-                let mut workspace = tilo_desktop_model::Workspace::in_workspace(
-                    before.slot,
-                    workspace_id,
-                    before.name,
-                );
-                workspace.strips = before.strips;
-                workspace.policy = before.policy;
-                workspace.policy.rehome(workspace_id.to_string());
-                membership.workspaces[0] = workspace;
-            }
+            env.rehome(&uuid::Uuid::new_v4().to_string());
             env.authority =
                 CurrentHost::new(&env.route, &env.cert, Some(env.origin.capture().unwrap()));
 
@@ -714,23 +683,7 @@ async fn certified_person_context_refuses_other_workspaces_and_expired_original_
                     .certified_person_context(&caller, &evidence)
                     .is_err()
             );
-            env.route.cluster_id =
-                collab_types::personal_cluster(&env.cert.user_public_key).to_string();
-            {
-                let workspace_id =
-                    tilo_desktop_model::WorkspaceId::parse(&env.route.cluster_id).unwrap();
-                let mut membership = env.membership.write();
-                let before = membership.workspaces[0].clone();
-                let mut workspace = tilo_desktop_model::Workspace::in_workspace(
-                    before.slot,
-                    workspace_id,
-                    before.name,
-                );
-                workspace.strips = before.strips;
-                workspace.policy = before.policy;
-                workspace.policy.rehome(workspace_id.to_string());
-                membership.workspaces[0] = workspace;
-            }
+            env.rehome_personal();
             env.authority =
                 CurrentHost::new(&env.route, &env.cert, Some(env.origin.capture().unwrap()));
             let (state, _) = AppBrokerState::new(

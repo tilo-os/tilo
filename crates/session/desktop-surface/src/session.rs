@@ -1,29 +1,20 @@
 //! The session a desktop serves the windows it hosts in process.
-//!
-//! A window never opens another app itself: it asks its session to open it
-//! ([`ui::session_door`]), the same request a native window hands its
-//! workspace broker. A desktop that hosts its windows in process, such as a
-//! page, answers that request here: [`serve`] makes the session the windows
-//! are handed ([`DesktopSession`], a remote action host) and the desktop's
-//! end of it ([`Openings`]), which opens each admitted app as the desktop's
-//! own launch.
-//!
-//! A window may also ask to open a resource another app keeps, by its
-//! record ([`tilo_actions::remote::application_record_target`]), as Chat's
-//! shared windows do: the desktop opens that app on that record. Any other
-//! action of an app's resource
-//! ([`tilo_actions::remote::application_action_target`]) is delivered the
-//! same way: the desktop opens the app, and once its window is up the host
-//! invokes the action there ([`Reveal`]), as the workspace broker delivers
-//! it to an app it launched.
-//!
-//! The windows ask during their frame, on the desktop's thread; the desktop
-//! opens the apps when it next takes [`Openings::open`]. Until then the ask
-//! stays pending, so a window shows its open as in progress, then done or
-//! refused, exactly as with a broker.
-//!
-//! The session also serves the workspace's activity, as a native session's
-//! broker does (`activity`).
+//! A window never opens another app itself: it asks its session to open it ([`ui::session_door`]),
+//! the same request a native window hands its workspace broker. A desktop that hosts its windows in
+//! process, such as a page, answers that request here: [`serve`] makes the session the windows are
+//! handed ([`DesktopSession`], a remote action host) and the desktop's end of it ([`Openings`]),
+//! which opens each admitted app as the desktop's own launch.
+//! A window may also ask to open a resource another app keeps, by its record
+//! ([`tilo_actions::remote::application_record_target`]), as Chat's shared windows do: the desktop
+//! opens that app on that record. Any other action of an app's resource
+//! ([`tilo_actions::remote::application_action_target`]) is delivered the same way: the desktop
+//! opens the app, and once its window is up the host invokes the action there ([`Reveal`]), as the
+//! workspace broker delivers it to an app it launched.
+//! The windows ask during their frame, on the desktop's thread; the desktop opens the apps when it
+//! next takes [`Openings::open`]. Until then the ask stays pending, so a window shows its open as
+//! in progress, then done or refused, exactly as with a broker.
+//! The session also serves the workspace's activity, as a native session's broker does
+//! (`activity`).
 
 mod activity;
 
@@ -49,18 +40,17 @@ use crate::navigation::ChromeEffect;
 /// What one admitted open answers to.
 type Answer = Completer<Result<InvocationReceipt, ActionHostError>>;
 
-/// The launch a [`crate::TileSource`] reads as opening `app` on its record
-/// `record`: `{RECORD_LAUNCH}{app}:{record}` ([`record_launch`]).
+/// The launch a [`crate::TileSource`] reads as opening `app` on its record `record` :
+/// `{RECORD_LAUNCH}{app}:{record}` ([`record_launch`]).
 pub const RECORD_LAUNCH: &str = "record:";
 
-/// The launch that opens `app` on its record `record`.
+/// The launch that opens `app` on its record `record` .
 #[must_use]
 pub fn record_launch(app: &str, record: &str) -> String {
     format!("{RECORD_LAUNCH}{app}:{record}")
 }
 
-/// The app and record a [`record_launch`] names, or `None` for a plain
-/// launch.
+/// The app and record a [`record_launch`] names, or `None` for a plain launch.
 #[must_use]
 pub fn launched_record(launch: &str) -> Option<(&str, &str)> {
     launch
@@ -69,21 +59,18 @@ pub fn launched_record(launch: &str) -> Option<(&str, &str)> {
         .filter(|(app, record)| !app.is_empty() && !record.is_empty())
 }
 
-/// The launch a [`crate::TileSource`] reads as opening `app` with the
-/// content whose hash is `hash`: `{CONTENT_LAUNCH}{app}:{hash}`
-/// ([`content_launch`]).
+/// The launch a [`crate::TileSource`] reads as opening `app` with the content whose hash is `hash`
+/// : `{CONTENT_LAUNCH}{app}:{hash}` ([`content_launch`]).
 pub const CONTENT_LAUNCH: &str = "content:";
 
-/// The launch that opens `app` with the content whose hash is `hash`, as
-/// the workspace broker opens an app with content another app handed over
-/// (a capture, a recording).
+/// The launch that opens `app` with the content whose hash is `hash` , as the workspace broker
+/// opens an app with content another app handed over (a capture, a recording).
 #[must_use]
 pub fn content_launch(app: &str, hash: &str) -> String {
     format!("{CONTENT_LAUNCH}{app}:{hash}")
 }
 
-/// The app and content hash a [`content_launch`] names, or `None` for any
-/// other launch.
+/// The app and content hash a [`content_launch`] names, or `None` for any other launch.
 #[must_use]
 pub fn launched_content(launch: &str) -> Option<(&str, &str)> {
     launch
@@ -100,15 +87,15 @@ fn content_hash(hash: &str) -> bool {
             .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
 }
 
-/// An app a window asked to open, on one of its records, with content, or
-/// on its own, waiting for the desktop.
+/// An app a window asked to open, on one of its records, with content, or on its own, waiting for
+/// the desktop.
 struct Opening {
     app: String,
     record: Option<String>,
     /// The content the app opens, by hash, which the asking window holds.
     content: Option<String>,
-    /// The resource the open names in the record, which the app's window
-    /// is to show once it is open.
+    /// The resource the open names in the record, which the app's window is to show once it is
+    /// open.
     resource: Option<String>,
     /// What the window is to do with the resource once it is open: show it
     /// ([`APPLICATION_OPEN_ACTION`]) or another of its actions.
@@ -124,8 +111,7 @@ type Asked = Arc<std::sync::Mutex<Vec<Opening>>>;
 /// What a window asked of one node of the workspace's tree.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum NodeAction {
-    /// Grant the members `access` (`view` or `edit`) on it, as share
-    /// `share`.
+    /// Grant the members `access` (`view` or `edit` ) on it, as share `share` .
     Share { share: String, access: String },
     /// Take back what share `share` granted.
     Unshare { share: String },
@@ -133,9 +119,8 @@ pub enum NodeAction {
     Permits,
 }
 
-/// A window's ask of a node, which the desktop answers through its workspace
-/// ([`NodeAsk::answer`]): the workspace decides it, as it decides everything a
-/// grant gives.
+/// A window's ask of a node, which the desktop answers through its workspace ([`NodeAsk::answer`]):
+/// the workspace decides it, as it decides everything a grant gives.
 pub struct NodeAsk {
     /// The node, in its text form.
     pub node: String,
@@ -164,7 +149,7 @@ impl NodeAsk {
     }
 }
 
-/// What a window asked of `node`, from its request's action and arguments.
+/// What a window asked of `node` , from its request's action and arguments.
 fn node_action(request: &InvokeRequest) -> Result<NodeAction, ActionHostError> {
     let text = |name: &str| match &request.argument {
         InvokeArgument::Json(arguments) => arguments
@@ -191,9 +176,8 @@ fn node_action(request: &InvokeRequest) -> Result<NodeAction, ActionHostError> {
     })
 }
 
-/// The session handed to the windows a desktop hosts in process, for the
-/// workspace `workspace`. It serves only what the desktop itself does: opening
-/// an app as a window of this desktop.
+/// The session handed to the windows a desktop hosts in process, for the workspace `workspace` . It
+/// serves only what the desktop itself does: opening an app as a window of this desktop.
 pub struct DesktopSession {
     workspace: String,
     asked: Asked,
@@ -211,16 +195,14 @@ pub struct Openings {
     reveals: std::cell::RefCell<Vec<Reveal>>,
 }
 
-/// An action a window asked of a resource in an app's record: once the
-/// window on that record is up, the host invokes it there, as the
-/// workspace broker delivers it to an app it launched. Most often the
-/// resource's `open`, which shows it.
+/// An action a window asked of a resource in an app's record: once the window on that record is up,
+/// the host invokes it there, as the workspace broker delivers it to an app it launched. Most often
+/// the resource's `open` , which shows it.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Reveal {
     /// The app, by package id.
     pub app: String,
-    /// The record, as its route names it: empty for the app's own record of
-    /// the workspace.
+    /// The record, as its route names it: empty for the app's own record of the workspace.
     pub record: String,
     /// The resource the action is of.
     pub resource: String,
@@ -230,9 +212,8 @@ pub struct Reveal {
     pub arguments: serde_json::Map<String, serde_json::Value>,
 }
 
-/// The session for the workspace `workspace`, and the desktop's end of it.
-/// `woken` is raised whenever a window asks, so the desktop's host draws a
-/// frame that takes the ask.
+/// The session for the workspace `workspace` , and the desktop's end of it. `woken` is raised
+/// whenever a window asks, so the desktop's host draws a frame that takes the ask.
 #[must_use]
 pub fn serve(
     workspace: impl Into<String>,
@@ -282,8 +263,7 @@ impl DesktopSession {
             .strip_prefix(APPLICATION_RESOURCE_PREFIX)
             .filter(|_| address.action == APPLICATION_OPEN_ACTION)
             .ok_or(ActionHostError::UnknownAction)?;
-        // As the broker: opening an app is something a workspace member
-        // asks of their workspace.
+        // As the broker: opening an app is something a workspace member asks of their workspace.
         if caller.workspace().is_none() {
             return Err(ActionHostError::UnknownAction);
         }
@@ -332,8 +312,7 @@ impl ActionHost for DesktopSession {
         _caller: &Caller,
         _query: CatalogueQuery,
     ) -> Pending<Result<CataloguePage, ActionHostError>> {
-        // The windows find what they may open in their own catalogue; this
-        // session only opens it.
+        // The windows find what they may open in their own catalogue; this session only opens it.
         Pending::ready(Ok(CataloguePage {
             exhausted: true,
             ..CataloguePage::default()
@@ -359,8 +338,8 @@ impl ActionHost for DesktopSession {
             .strip_prefix(NODE_RESOURCE_PREFIX)
             .filter(|_| provider_workspace(&request.target.provider).is_some())
         {
-            // As the broker: what a node grants is its workspace members'
-            // business, in this workspace only.
+            // As the broker: what a node grants is its workspace members' business, in this
+            // workspace only.
             if caller.workspace().is_none() {
                 return Pending::ready(Err(ActionHostError::UnknownAction));
             }
@@ -391,8 +370,7 @@ impl ActionHost for DesktopSession {
             ),
             Err(error) => return Pending::ready(Err(error)),
         };
-        // An action of an app's resource names the resource; an app's own
-        // open names the app.
+        // An action of an app's resource names the resource; an app's own open names the app.
         let resource = application_provider(&request.target.provider)
             .map(|_| request.target.address.resource.clone());
         let arguments = match request.argument {
@@ -421,8 +399,7 @@ impl ActionHost for DesktopSession {
     }
 
     fn observe(&self, caller: &Caller, id: &InvocationId) -> Option<InvocationState> {
-        // Every open is answered whole at admission; what stays open is a
-        // view of the activity.
+        // Every open is answered whole at admission; what stays open is a view of the activity.
         self.activity.observe(caller, id)
     }
 
@@ -447,8 +424,8 @@ impl Openings {
         self.activity.clone()
     }
 
-    /// What the windows asked of nodes of the workspace's tree since this
-    /// was last taken, for the desktop to ask its workspace.
+    /// What the windows asked of nodes of the workspace's tree since this was last taken, for the
+    /// desktop to ask its workspace.
     #[must_use]
     pub fn take_node_asks(&self) -> Vec<NodeAsk> {
         std::mem::take(&mut *self.nodes.lock_recover())

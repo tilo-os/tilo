@@ -108,9 +108,6 @@ pub trait Host {
 
     /// Takes the disk's exclusive lock (`flock` on its device node), held
     /// until the returned descriptor is dropped.
-    ///
-    /// # Errors
-    /// The node cannot be opened or locked.
     fn lock(&self, disk: &str) -> Result<Option<FileLock>, Error> {
         let node = std::fs::File::open(disk).map_err(|e| Error::os(&e, Path::new(disk)))?;
         FileLock::exclusive(node)
@@ -258,9 +255,6 @@ fn list(value: Option<&Value>) -> Result<Vec<Value>, Error> {
 
 /// Whether a real person is signed in: a `user`-class session of a uid in
 /// 1000..60000 that is active or online.
-///
-/// # Errors
-/// `loginctl` cannot be started.
 pub fn user_session_exists(host: &dyn Host) -> Result<bool, Error> {
     let listing = host.run(&["loginctl", "list-sessions", "--no-legend"], None)?;
     if listing.code != 0 {
@@ -310,9 +304,6 @@ pub fn user_session_exists(host: &dyn Host) -> Result<bool, Error> {
 }
 
 /// The one disk whose GPT GUID and size match the record.
-///
-/// # Errors
-/// No such disk, more than one, or a tool failure.
 pub fn find_disk(host: &dyn Host, record: &Record) -> Result<String, Error> {
     let listing = json(
         &checked(
@@ -412,9 +403,6 @@ impl Partition {
 }
 
 /// The disk's GPT, required to be the recorded one.
-///
-/// # Errors
-/// Another table, another sector size, or a tool failure.
 pub fn partition_table(
     host: &dyn Host,
     disk: &str,
@@ -461,9 +449,6 @@ pub fn partition_table(
 }
 
 /// The number at the end of a partition node (`/dev/vda6` is 6).
-///
-/// # Errors
-/// A node that does not end in digits.
 pub fn partition_number(node: &str) -> Result<u32, Error> {
     let trimmed = node.strip_suffix('\n').unwrap_or(node);
     let digits: String = trimmed

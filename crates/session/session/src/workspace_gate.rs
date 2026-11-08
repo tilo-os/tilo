@@ -1,24 +1,20 @@
-//! The workspace gate: which action in a workspace a message from another
-//! member is, and whether the workspace's policy lets them do it.
-//!
-//! One exhaustive match decides the action, with no default arm. Appending a
-//! variant to the wire vocabulary therefore fails to compile here until
-//! someone states what the new message demands, so a message that changes what
-//! members see can never ride on read access because its author forgot this
-//! table.
-//!
+//! The workspace gate: which action in a workspace a message from another member is, and whether
+//! the workspace's policy lets them do it.
+//! One exhaustive match decides the action, with no default arm. Appending a variant to the wire
+//! vocabulary therefore fails to compile here until someone states what the new message demands, so
+//! a message that changes what members see can never ride on read access because its author forgot
+//! this table.
 //! The action is then answered by the workspace's own policy
-//! ([`tilo_desktop_model::Workspace::answer_at`], the model the broker decides
-//! an app's actions with): a member the workspace narrowed to reading keeps
-//! sending what reading covers — asking to view a shared window, their
-//! presence — and nothing else.
+//! ([`tilo_desktop_model::Workspace::answer_at`], the model the broker decides an app's actions
+//! with): a member the workspace narrowed to reading keeps sending what reading covers — asking to
+//! view a shared window, their presence — and nothing else.
 
 use neighbour_wire::NeighbourMsg;
 use tilo_action_policy::{ActionKind, Answer, TreePath, roles::COMMENTS_FIELD};
 use tilo_desktop_model::DesktopTree;
 
-/// What a workspace message is: the node below the workspace it acts at, and
-/// the kind of action it is.
+/// What a workspace message is: the node below the workspace it acts at, and the kind of action it
+/// is.
 pub(crate) type WorkspaceAction = (TreePath, ActionKind);
 
 /// Whether the workspace `workspace` of `tree` lets `person` do `required`,
@@ -40,66 +36,60 @@ pub(crate) fn allows(
         })
 }
 
-/// The action `msg` is, which its sender must be allowed in the workspace it
-/// arrived in, or `None` when it is never admitted as a workspace's traffic.
-///
-/// Publishing media, injecting input, granting control, writing documents and
-/// changing the workspace are active collaboration actions and never ride on
-/// read access. `None` covers retired generations and the messages settled
-/// before the gate (identity, codec adverts, the person's own list): one of
-/// those reaching it means that earlier path was bypassed, and it is refused
-/// rather than admitted on some default.
+/// The action `msg` is, which its sender must be allowed in the workspace it arrived in, or `None`
+/// when it is never admitted as a workspace's traffic.
+/// Publishing media, injecting input, granting control, writing documents and changing the
+/// workspace are active collaboration actions and never ride on read access. `None` covers retired
+/// generations and the messages settled before the gate (identity, codec adverts, the person's own
+/// list): one of those reaching it means that earlier path was bypassed, and it is refused rather
+/// than admitted on some default.
 pub(crate) fn required_workspace_action(msg: &NeighbourMsg) -> Option<WorkspaceAction> {
     match msg {
-        // The workspace's state, published media, injected input and control
-        // consent change what other members see or run.
+        // The workspace's state, published media, injected input and control consent change what
+        // other members see or run.
         NeighbourMsg::SyncResp { .. }
         | NeighbourMsg::SurfaceFrame { .. }
         | NeighbourMsg::SurfaceStreamStart { .. }
         | NeighbourMsg::SurfaceStreamEnd { .. }
         | NeighbourMsg::RemoteInput { .. }
         | NeighbourMsg::PermissionGrant { .. } => Some((TreePath::root(), ActionKind::Undoable)),
-        // A document op: the least any op is (a comment). What each envelope
-        // changes is decided again against the author's standing by the
-        // broker.
+        // A document op: the least any op is (a comment). What each envelope changes is decided
+        // again against the author's standing by the broker.
         NeighbourMsg::AppDocument { .. } => {
             Some((TreePath::root().field(COMMENTS_FIELD), ActionKind::Undoable))
         }
-        // Asking for state the sender may read, or answering with content each
-        // piece of which is verified on its own (signed ops, content hashes).
+        // Asking for state the sender may read, or answering with content each piece of which is
+        // verified on its own (signed ops, content hashes).
         NeighbourMsg::SyncReq { .. }
         | NeighbourMsg::ScrollbackRequest { .. }
         | NeighbourMsg::ScrollbackResponse { .. }
         | NeighbourMsg::RecordContentWant { .. }
         | NeighbourMsg::RecordContentPiece { .. }
         | NeighbourMsg::RecordContentLacks { .. }
-        // A viewer asking for a keyframe of a stream it receives; the owner
-        // checks it is one.
+        // A viewer asking for a keyframe of a stream it receives; the owner checks it is one.
         | NeighbourMsg::SurfaceKeyframeRequest { .. }
-        // A member saying which of the receiving device's windows it views: it
-        // may see the workspace's windows, and is streamed them read only.
+        // A member saying which of the receiving device's windows it views: it may see the
+        // workspace's windows, and is streamed them read only.
         | NeighbourMsg::SurfaceViewRequest { .. }
-        // Ephemeral liveness of a member who can see the workspace; nothing
-        // is written to its state.
+        // Ephemeral liveness of a member who can see the workspace; nothing is written to its
+        // state.
         | NeighbourMsg::Heartbeat { .. }
         | NeighbourMsg::LivePresence { .. }
-        // The sender's own device certificate, which only the workspace's
-        // governor may promote into its governance.
+        // The sender's own device certificate, which only the workspace's governor may promote into
+        // its governance.
         | NeighbourMsg::IdentityAnnouncementV2 { .. }
-        // Each remote action is authorized per call against its own declared
-        // permission.
+        // Each remote action is authorized per call against its own declared permission.
         | NeighbourMsg::RemoteAction { .. }
-        // Channel governance is signed by a participant and checked against
-        // the membership; access requests are how a reader obtains keys.
+        // Channel governance is signed by a participant and checked against the membership; access
+        // requests are how a reader obtains keys.
         | NeighbourMsg::MlsGovernance { .. }
         | NeighbourMsg::MlsAccessRequest { .. }
         | NeighbourMsg::MlsRoutedAccessRequest { .. } => {
             Some((TreePath::root(), ActionKind::Read))
         }
-        // Settled before the gate: identity is how a sender becomes known at
-        // all; a codec advert, the person's workspace list and a device's
-        // verdicts on its siblings' writes travel only between the person's
-        // own devices, never in a workspace.
+        // Settled before the gate: identity is how a sender becomes known at all; a codec advert,
+        // the person's workspace list and a device's verdicts on its siblings' writes travel only
+        // between the person's own devices, never in a workspace.
         NeighbourMsg::IdentityHello { .. }
         | NeighbourMsg::MediaCapabilities { .. }
         | NeighbourMsg::PersonalWorkspaces { .. }
@@ -161,8 +151,8 @@ mod tests {
         ))
     }
 
-    /// One message of every variant with the action the gate must decide it
-    /// as. The gate's own match is exhaustive; this table pins each decision.
+    /// One message of every variant with the action the gate must decide it as. The gate's own
+    /// match is exhaustive; this table pins each decision.
     #[allow(
         clippy::too_many_lines,
         reason = "one entry per wire variant keeps the whole admission table in one place"

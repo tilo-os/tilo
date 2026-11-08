@@ -44,10 +44,6 @@ impl DocumentRoute {
 /// `channel-crypto` member device).
 pub trait ContentCipher: Send {
     /// Seal one cleartext document frame.
-    ///
-    /// # Errors
-    ///
-    /// Returns a description when this member cannot seal (no key).
     fn seal(
         &mut self,
         artifact: collab_types::ArtifactId,

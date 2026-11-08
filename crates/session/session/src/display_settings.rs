@@ -26,8 +26,7 @@ use tilo_compositor::DisplayConfig as CompositorDisplayConfig;
 use tilo_compositor::backend::drm::devices::RequestedMode;
 use tilo_compositor::{Backlight, Compositor, Hdr, Transform};
 
-/// The displays as the person configured them, kept in step with the ones
-/// attached.
+/// The displays as the person configured them, kept in step with the ones attached.
 #[derive(Default)]
 pub(crate) struct Displays {
     /// The monitors the applied layout is for, and their descriptors.
@@ -35,22 +34,19 @@ pub(crate) struct Displays {
     descriptors: Vec<OutputDescriptor>,
     /// The snapshot generation `set` was taken from.
     generation: Option<u64>,
-    /// The settings document last read, so an unchanged one is not read
-    /// again on every pass.
+    /// The settings document last read, so an unchanged one is not read again on every pass.
     stamp: Option<settings_store::SettingsStamp>,
     seen: bool,
     /// When the change waiting for the person is put back.
     deadline: Option<u64>,
-    /// What the compositor was last given, so it is not given the same
-    /// arrangement on every pass.
+    /// What the compositor was last given, so it is not given the same arrangement on every pass.
     applied: Option<CompositorDisplayConfig>,
-    /// The staged change last seen, to act on a change of its own rather
-    /// than on every look.
+    /// The staged change last seen, to act on a change of its own rather than on every look.
     staged: Option<DisplayTransaction>,
     /// The trusted display tools the compositor was last given.
     trusted: Option<Vec<PathBuf>>,
-    /// The built-in output last turned with the device, and the turn, so a
-    /// device that stays put is not laid out again on every pass.
+    /// The built-in output last turned with the device, and the turn, so a device that stays put is
+    /// not laid out again on every pass.
     turned: Option<(String, Transform)>,
 }
 
@@ -82,8 +78,8 @@ impl Displays {
         self.seen = true;
         self.stamp = stamp;
         self.generation = Some(generation);
-        // The tools whose risky changes apply without asking: a trust given
-        // or revoked in Settings reaches the compositor on this pass.
+        // The tools whose risky changes apply without asking: a trust given or revoked in Settings
+        // reaches the compositor on this pass.
         let trusted = trusted_tools();
         if self.trusted.as_ref() != Some(&trusted) {
             compositor.set_trusted_display_tools(trusted.clone());
@@ -137,8 +133,8 @@ impl Displays {
         Ok(())
     }
 
-    /// The change waiting for the person's answer now: its id, and when the
-    /// previous arrangement comes back without one.
+    /// The change waiting for the person's answer now: its id, and when the previous arrangement
+    /// comes back without one.
     pub(crate) fn awaiting_confirmation(&self) -> Option<(u64, Option<u64>)> {
         match &self.staged {
             Some(transaction)
@@ -172,8 +168,7 @@ impl Displays {
         Ok(true)
     }
 
-    /// Whether `turned` is a different output or a different turn from the
-    /// one last laid out.
+    /// Whether `turned` is a different output or a different turn from the one last laid out.
     fn turned_changed(&self, turned: Option<(&str, Transform)>) -> bool {
         match (&self.turned, turned) {
             (None, None) => false,
@@ -192,9 +187,9 @@ pub(crate) fn trusted_tools() -> Vec<PathBuf> {
         .collect()
 }
 
-/// Advance `transaction` as far as the attached monitors and the person's
-/// answer take it, one step at a time: an expired or reverted change puts
-/// the previous arrangement back before it counts as done.
+/// Advance `transaction` as far as the attached monitors and the person's answer take it, one step
+/// at a time: an expired or reverted change puts the previous arrangement back before it counts as
+/// done.
 fn settle(
     mut transaction: DisplayTransaction,
     descriptors: &[OutputDescriptor],
@@ -219,8 +214,8 @@ fn settle(
     transaction
 }
 
-/// One step of `transaction`: apply it, wait for the person, keep it, or
-/// put the previous arrangement back.
+/// One step of `transaction` : apply it, wait for the person, keep it, or put the previous
+/// arrangement back.
 fn reconcile(
     mut transaction: DisplayTransaction,
     descriptors: &[OutputDescriptor],
@@ -300,17 +295,13 @@ fn reconcile(
     transaction
 }
 
-/// The stored arrangement as the compositor takes it, at the night light
-/// temperature the session runs while it is on, with `turned`'s output
-/// turned the way the device is held.
-///
-/// A monitor the person never arranged for keeps the scale and rotation it
-/// was last shown at, so a familiar laptop panel is not thrown back to 1x
-/// the first time it is docked.
-///
-/// The turn goes over the stored one for that panel: a screen whose machine
-/// is held on its side is not readable at the angle its arrangement was
-/// arranged at, and the rotation lock is what pins it instead.
+/// The stored arrangement as the compositor takes it, at the night light temperature the session
+/// runs while it is on, with `turned` 's output turned the way the device is held.
+/// A monitor the person never arranged for keeps the scale and rotation it was last shown at, so a
+/// familiar laptop panel is not thrown back to 1x the first time it is docked.
+/// The turn goes over the stored one for that panel: a screen whose machine is held on its side is
+/// not readable at the angle its arrangement was arranged at, and the rotation lock is what pins it
+/// instead.
 fn sent(
     stored: &settings_store::hardware::DisplayConfig,
     descriptors: &[OutputDescriptor],
@@ -352,10 +343,9 @@ fn place(config: &mut CompositorDisplayConfig, connector: &str, output: &OutputC
     if !output.enabled {
         config.disabled.insert(connector.to_owned());
     }
-    // The display the person made primary is the one their desk's bar, new
-    // windows and sheets go to. A stored primary the person turned off
-    // stays named here and the compositor names no primary while nothing
-    // is lit on it, so the choice comes back with the display.
+    // The display the person made primary is the one their desk's bar, new windows and sheets go
+    // to. A stored primary the person turned off stays named here and the compositor names no
+    // primary while nothing is lit on it, so the choice comes back with the display.
     if output.primary {
         config.primary = Some(connector.to_owned());
     }
@@ -397,8 +387,8 @@ fn place(config: &mut CompositorDisplayConfig, connector: &str, output: &OutputC
     }
 }
 
-/// The quarter turn `transform` is, in the compositor's terms. A mirrored
-/// transform is the turn it mirrors.
+/// The quarter turn `transform` is, in the compositor's terms. A mirrored transform is the turn it
+/// mirrors.
 fn transform(transform: OutputTransform) -> Transform {
     match transform {
         OutputTransform::Normal => Transform::Normal,
@@ -408,8 +398,7 @@ fn transform(transform: OutputTransform) -> Transform {
     }
 }
 
-/// Milliseconds since the Unix epoch: the clock staged changes count down
-/// on.
+/// Milliseconds since the Unix epoch: the clock staged changes count down on.
 pub(crate) fn unix_now_ms() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -418,9 +407,9 @@ pub(crate) fn unix_now_ms() -> u64 {
         })
 }
 
-/// The built-in panel's backlight, which the idle dim lowers and puts back:
-/// on a laptop the panel itself dims, and on a desktop, a VM or an external
-/// monitor, where there is none, the compositor darkens the scene instead.
+/// The built-in panel's backlight, which the idle dim lowers and puts back: on a laptop the panel
+/// itself dims, and on a desktop, a VM or an external monitor, where there is none, the compositor
+/// darkens the scene instead.
 pub(crate) struct PanelBacklight {
     /// The panel's backlight device, when the machine has one.
     target: Option<BrightnessTarget>,
@@ -432,8 +421,8 @@ impl PanelBacklight {
         Self::of(&os_actions::brightness::monitors())
     }
 
-    /// The built-in panel's own backlight among `monitors`: never one an
-    /// external monitor answers over DDC/CI, and never a software dim.
+    /// The built-in panel's own backlight among `monitors` : never one an external monitor answers
+    /// over DDC/CI, and never a software dim.
     fn of(monitors: &[os_actions::brightness::MonitorBrightness]) -> Self {
         let target = monitors
             .iter()

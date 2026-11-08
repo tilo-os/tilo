@@ -1,14 +1,10 @@
-//! The desk's own layer: the workspace's desk, the widgets on it, and the
-//! choices those widgets draw from.
-//!
-//! The widgets sit on the wallpaper under the windows: the windows keep the
-//! pointer, and whatever they do not take the desk still sees. What the
-//! widgets show is the session's own: who is here, read from the desk's
-//! tree, and today's date, read from the clock.
-//!
-//! Their preferences are the person's setting. The session reads them once
-//! and keeps them current from the settings watch, so a frame draws from
-//! memory and never reads the settings file.
+//! The desk's own layer: the workspace's desk, the widgets on it, and the choices those widgets
+//! draw from.
+//! The widgets sit on the wallpaper under the windows: the windows keep the pointer, and whatever
+//! they do not take the desk still sees. What the widgets show is the session's own: who is here,
+//! read from the desk's tree, and today's date, read from the clock.
+//! Their preferences are the person's setting. The session reads them once and keeps them current
+//! from the settings watch, so a frame draws from memory and never reads the settings file.
 
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
@@ -37,9 +33,9 @@ pub(crate) fn prefs() -> Prefs {
 }
 
 impl crate::Shared {
-    /// Steer the player in front, as the panel's own controls do: the music
-    /// widget's play or pause, previous and next are the `media` resource's
-    /// actions, which every caller reaches through the same door.
+    /// Steer the player in front, as the panel's own controls do: the music widget's play or pause,
+    /// previous and next are the `media` resource's actions, which every caller reaches through the
+    /// same door.
     pub(crate) fn music(&self, action: Action) {
         let action = match action {
             Action::PlayPause => "play-pause",
@@ -57,8 +53,8 @@ impl crate::Shared {
     }
 }
 
-/// The apps that run now, in the states the portal asks of them: the app
-/// in front is in use, the ones behind it only run.
+/// The apps that run now, in the states the portal asks of them: the app in front is in use, the
+/// ones behind it only run.
 pub(crate) fn running_apps(compositor: &tilo_compositor::Compositor) -> Vec<(String, u32)> {
     use tilo_portal::background::{ACTIVE, RUNNING};
     let focused = compositor.focused_window().and_then(|window| window.app_id);
@@ -82,8 +78,7 @@ pub(crate) fn running_apps(compositor: &tilo_compositor::Compositor) -> Vec<(Str
     apps.into_iter().collect()
 }
 
-/// Take the choices `document` carries into `prefs`, for the layer drawing
-/// from them.
+/// Take the choices `document` carries into `prefs` , for the layer drawing from them.
 pub(crate) fn follow_prefs(prefs: &Prefs, document: &Map<String, Value>) {
     *prefs.lock_recover() = DeskWidgetPrefs::from_document(document);
 }
@@ -97,8 +92,7 @@ pub(crate) struct DeskLook {
     pub(crate) fold: DeskFold,
     /// Whether the overview is over the desk, which folds it.
     pub(crate) overview: Rc<Cell<bool>>,
-    /// What plays, as the session reads it from the player Quick Settings
-    /// shows.
+    /// What plays, as the session reads it from the player Quick Settings shows.
     pub(crate) music: DeskMusic,
     /// When each display's bar shows over the window covering it.
     pub(crate) reveals: Rc<RefCell<tilo_desktop::topbar::Reveals>>,
@@ -124,8 +118,8 @@ pub(crate) fn desk(
     let asks = Rc::new(RefCell::new(Vec::new()));
     let band_reveals = Rc::clone(&reveals);
     let (desktop, policy) = desktop_with(options.salt, options.scale, |mut surface, handle| {
-        // The desk's windows ask it for the workspace's activity, and the
-        // apps running beside it ask the same model through the broker.
+        // The desk's windows ask it for the workspace's activity, and the apps running beside it
+        // ask the same model through the broker.
         surface.set_history_source(Box::new(activity.clone()));
         surface.serve_activity(activity.requests());
         surface.set_notifications(notices.clone());
@@ -154,22 +148,21 @@ pub(crate) fn desk(
     });
     let mut policy = policy;
     policy.with_samples(Rc::new(RefCell::new(BarSamples { reveals })));
-    // A tab opens with the name of its app in the person's language, never
-    // with the app's id.
+    // A tab opens with the name of its app in the person's language, never with the app's id.
     policy.reads_app_names(Rc::new(crate::app_names::app_name));
     (desktop, policy, asks)
 }
 
-/// The policy placing the desk's windows: the desktop's strips, or the wells of the shell
-/// drawing the whole screen.
+/// The policy placing the desk's windows: the desktop's strips, or the wells of the shell drawing
+/// the whole screen.
 pub(crate) enum DeskPolicy {
     Strips(StripPolicy),
     Wells(tilo_surface_host::WellPolicy),
 }
 
 impl DeskPolicy {
-    /// The shell drawing the whole screen places the windows in its wells; otherwise the
-    /// desktop's strips do.
+    /// The shell drawing the whole screen places the windows in its wells; otherwise the desktop's
+    /// strips do.
     pub(crate) fn for_shell(shell: bool, desktop: &DesktopHost, strips: StripPolicy) -> Self {
         if shell {
             Self::Wells(desktop.well_policy())
@@ -186,7 +179,7 @@ impl DeskPolicy {
         }
     }
 
-    /// Follow the windows the compositor opens and closes with `observer`.
+    /// Follow the windows the compositor opens and closes with `observer` .
     pub(crate) fn observe_windows(
         &mut self,
         observer: std::sync::Arc<dyn tilo_surface_host::WindowObserver>,
@@ -214,9 +207,8 @@ impl DeskPolicy {
     }
 }
 
-/// What the desk's policy sends the bars' reveal: the pointer wherever it
-/// goes, presses, and fingers on the screen, which the chrome follows beyond
-/// where it draws.
+/// What the desk's policy sends the bars' reveal: the pointer wherever it goes, presses, and
+/// fingers on the screen, which the chrome follows beyond where it draws.
 struct BarSamples {
     reveals: Rc<RefCell<tilo_desktop::topbar::Reveals>>,
 }

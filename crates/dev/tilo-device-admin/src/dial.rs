@@ -154,9 +154,6 @@ impl Dialer {
     }
 
     /// Dial the device for up to `wait` and complete the handshake.
-    ///
-    /// # Errors
-    /// Unreachable, refused, or an untrustworthy answer.
     pub async fn open(&self, wait: Duration) -> Result<Session, Failure> {
         let connection = net::dial(&self.endpoint, &self.addr, wait)
             .await

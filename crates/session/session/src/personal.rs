@@ -1,19 +1,14 @@
-//! The person's own store, open to their other devices while this session
-//! runs.
-//!
-//! The store holds what this session's apps record in the person's own scope
-//! — `(app, personal)` records, routed on the cluster their identity root
-//! derives — so a record written here reaches their other devices and one
-//! written there reaches this session's apps. The broker keeps each write in
-//! it as well as in the desktop (`HostServices::personal`), and this session
-//! answers the store's link on the endpoint it already runs, beside the
-//! workspaces' traffic: its protocols are fixed when it binds, so the link is
-//! handed over with the other protocols the endpoint serves
+//! The person's own store, open to their other devices while this session runs.
+//! The store holds what this session's apps record in the person's own scope — `(app, personal)`
+//! records, routed on the cluster their identity root derives — so a record written here reaches
+//! their other devices and one written there reaches this session's apps. The broker keeps each
+//! write in it as well as in the desktop (`HostServices::personal`), and this session answers the
+//! store's link on the endpoint it already runs, beside the workspaces' traffic: its protocols are
+//! fixed when it binds, so the link is handed over with the other protocols the endpoint serves
 //! ([`crate::sync::Client::start`]).
-//!
-//! Nothing here joins anything and no workspace is involved: the link proves
-//! which of the person's devices is on the other end, and the store admits
-//! only certificates their identity root signed ([`tilo_peer_state`]).
+//! Nothing here joins anything and no workspace is involved: the link proves which of the person's
+//! devices is on the other end, and the store admits only certificates their identity root signed
+//! ([`tilo_peer_state`]).
 
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
@@ -28,8 +23,8 @@ use tilo_peer_state::{PeerPersonal, PersonalSync};
 use crate::options::Options;
 use crate::sync::SiblingDials;
 
-/// This session's door to the person's own store: the store itself, opened on
-/// the identity this device acts as, and where it is kept.
+/// This session's door to the person's own store: the store itself, opened on the identity this
+/// device acts as, and where it is kept.
 pub(crate) struct Personal {
     sync: PersonalSync,
     root: [u8; 32],
@@ -61,8 +56,8 @@ impl Personal {
         })
     }
 
-    /// What answers the store's link on this session's endpoint: the session
-    /// serves it beside its own traffic, from the pass the endpoint binds.
+    /// What answers the store's link on this session's endpoint: the session serves it beside its
+    /// own traffic, from the pass the endpoint binds.
     pub(crate) fn protocol(&self) -> (Vec<u8>, Box<dyn iroh::protocol::DynProtocolHandler>) {
         (
             tilo_peer_state::PERSONAL_ALPN.to_vec(),
@@ -75,18 +70,14 @@ impl Personal {
         &self.sync
     }
 
-    /// Take the store to the person's other devices from `endpoint`: dial the
-    /// ones this device has no link to, hand what they write to this
-    /// session's apps through `channels` and `fanout`, and keep the store
-    /// beside this session's state as it changes.
-    ///
-    /// `dials` opens the other lane to the same devices: the session between
-    /// two of the person's desks is where they tell each other what they hold
-    /// — their workspaces and their hosts — so one adopts what the other
-    /// keeps. Without it a device keeps only what it was there to make.
-    ///
-    /// The session must answer [`Self::protocol`] on `endpoint` for as long
-    /// as the door: it is what a sibling dials.
+    /// Take the store to the person's other devices from `endpoint` : dial the ones this device has
+    /// no link to, hand what they write to this session's apps through `channels` and `fanout` ,
+    /// and keep the store beside this session's state as it changes.
+    /// `dials` opens the other lane to the same devices: the session between two of the person's
+    /// desks is where they tell each other what they hold — their workspaces and their hosts — so
+    /// one adopts what the other keeps. Without it a device keeps only what it was there to make.
+    /// The session must answer [`Self::protocol`] on `endpoint` for as long as the door: it is what
+    /// a sibling dials.
     pub(crate) fn serve(
         &self,
         runtime: &tokio::runtime::Handle,
@@ -95,12 +86,12 @@ impl Personal {
         fanout: Arc<FanoutState>,
         dials: Option<SiblingDials>,
     ) -> Door {
-        // An identity is filed under its root's hex, in the profile and in
-        // the fleet of the person's devices alike.
+        // An identity is filed under its root's hex, in the profile and in the fleet of the
+        // person's devices alike.
         let person = Person::of(hex::encode(self.root), self.root);
-        // The devices the store holds once their fleet is in, before anything
-        // is spawned: what the sibling dials start from, so the door's own
-        // admission cannot come after the first pass read an empty store.
+        // The devices the store holds once their fleet is in, before anything is spawned: what the
+        // sibling dials start from, so the door's own admission cannot come after the first pass
+        // read an empty store.
         let held = personal::admit_fleet(&self.sync, &person);
         let door = Door::serve(
             runtime,
@@ -118,10 +109,9 @@ impl Personal {
     }
 }
 
-/// Dial each of the person's devices the store holds as a sibling, from the
-/// ones the fleet named at start and again whenever the store changes: what
-/// it holds is the fleet's, and the plane keeps dialling the ones that are
-/// down.
+/// Dial each of the person's devices the store holds as a sibling, from the ones the fleet named at
+/// start and again whenever the store changes: what it holds is the fleet's, and the plane keeps
+/// dialling the ones that are down.
 async fn keep_siblings(sync: PersonalSync, dials: SiblingDials, mut held: Vec<[u8; 32]>) {
     let mut changes = sync.changes();
     loop {
@@ -135,8 +125,8 @@ async fn keep_siblings(sync: PersonalSync, dials: SiblingDials, mut held: Vec<[u
     }
 }
 
-/// The devices the person's store holds: this one, and every one of theirs
-/// whose certificate the fleet admitted.
+/// The devices the person's store holds: this one, and every one of theirs whose certificate the
+/// fleet admitted.
 fn held_devices(sync: &PersonalSync) -> Vec<[u8; 32]> {
     sync.read(|store| {
         store
@@ -185,10 +175,9 @@ mod tests {
         cert
     }
 
-    /// The person's other devices are dialled as this session's siblings from
-    /// the devices their store holds, and this device is not dialled at all:
-    /// that session is where the two desks tell each other the workspaces they
-    /// hold, so one adopts what the other keeps.
+    /// The person's other devices are dialled as this session's siblings from the devices their
+    /// store holds, and this device is not dialled at all: that session is where the two desks tell
+    /// each other the workspaces they hold, so one adopts what the other keeps.
     #[test]
     fn the_persons_other_devices_are_dialled_as_siblings() {
         let root = SigningKey::from_bytes(&[7; 32]);

@@ -31,7 +31,7 @@ pub(super) fn area_of(area: Rect) -> CanvasPlace {
     place_of(area)
 }
 
-/// The rect `at` the record keeps, on the work area `area`.
+/// The rect `at` the record keeps, on the work area `area` .
 pub(super) fn rect_of(at: CanvasPlace) -> Rect {
     Rect::new(
         f64_of_i64(i64::from(at.x)),
@@ -47,8 +47,8 @@ fn workspace_with(tree: &DesktopTree, strip: StripId) -> Option<&Workspace> {
         .find(|workspace| workspace.strips.iter().any(|held| held.id == strip))
 }
 
-/// The windows of the strip `strip` the workspace has floating, each at its
-/// rect on the work area `area`.
+/// The windows of the strip `strip` the workspace has floating, each at its rect on the work area
+/// `area` .
 pub(super) fn floats_of(
     tree: &DesktopTree,
     strip: StripId,
@@ -86,8 +86,8 @@ fn workspace_mut(tree: &mut DesktopTree, slot: WorkspaceSlot) -> Option<&mut Wor
         .find(|workspace| workspace.slot == slot)
 }
 
-/// Keep the float `group` of the workspace `strip` is on as `float`, `None`
-/// putting it back in its strip. Returns whether the tree changed.
+/// Keep the float `group` of the workspace `strip` is on as `float` , `None` putting it back in its
+/// strip. Returns whether the tree changed.
 pub(super) fn set(
     shared: &mut Shared,
     strip: StripId,
@@ -106,9 +106,9 @@ pub(super) fn set(
     workspace.arrangement.set_float(group, float)
 }
 
-/// Lift the window `group` above the desk where it stands: a chord or a
-/// menu row asked, so it takes the floating size over the middle of the
-/// place it had in its strip. Returns whether the tree changed.
+/// Lift the window `group` above the desk where it stands: a chord or a menu row asked, so it takes
+/// the floating size over the middle of the place it had in its strip. Returns whether the tree
+/// changed.
 pub(super) fn lift(
     shared: &mut Shared,
     strip: StripId,
@@ -133,10 +133,9 @@ pub(super) fn lift(
     )
 }
 
-/// The float `row` reports let go, kept in the workspace's record: a window
-/// let go off the strip floats at the hand; one let go over it snaps back
-/// (the row has already moved it to its gap). Returns whether the tree
-/// changed.
+/// The float `row` reports let go, kept in the workspace's record: a window let go off the strip
+/// floats at the hand; one let go over it snaps back (the row has already moved it to its gap).
+/// Returns whether the tree changed.
 pub(super) fn carry_out(
     shared: &mut Shared,
     strip: StripId,
@@ -162,8 +161,8 @@ pub(super) fn carry_out(
             group
         }
     };
-    // The window the hand let go of is the one the person works in: it
-    // takes the keyboard, floating or back in its strip.
+    // The window the hand let go of is the one the person works in: it takes the keyboard, floating
+    // or back in its strip.
     shared.tree.set_active_group(strip, group);
     true
 }

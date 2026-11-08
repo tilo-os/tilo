@@ -82,36 +82,18 @@ fn cli_pack_inspect_unpack_and_verify_round_trip() {
         std::fs::write(&manifest_path, sample_manifest_with(&"00".repeat(32))).unwrap();
 
         let tapp = workdir.path().join("example.tapp");
-        let out = Command::new(bin_path())
-            .args([
-                "pack",
-                "--manifest",
-                manifest_path.to_str().unwrap(),
-                "--payload",
-                payload_dir.to_str().unwrap(),
-                "-o",
-                tapp.to_str().unwrap(),
-            ])
-            .output_locked()
-            .expect("run tilo-app-package pack");
-        assert!(
-            out.status.success(),
-            "pack failed: stdout={:?} stderr={:?}",
-            String::from_utf8_lossy(&out.stdout),
-            String::from_utf8_lossy(&out.stderr)
-        );
+        run(&[
+            "pack",
+            "--manifest",
+            manifest_path.to_str().unwrap(),
+            "--payload",
+            payload_dir.to_str().unwrap(),
+            "-o",
+            tapp.to_str().unwrap(),
+        ]);
         assert!(tapp.exists(), "tapp was not written");
 
-        let out = Command::new(bin_path())
-            .args(["verify", tapp.to_str().unwrap()])
-            .output_locked()
-            .expect("run tilo-app-package verify");
-        assert!(
-            out.status.success(),
-            "verify failed: stdout={:?} stderr={:?}",
-            String::from_utf8_lossy(&out.stdout),
-            String::from_utf8_lossy(&out.stderr)
-        );
+        let out = run(&["verify", tapp.to_str().unwrap()]);
         let stdout = String::from_utf8_lossy(&out.stdout);
         assert!(
             stdout.contains("verifies and publisher is trusted"),
@@ -133,19 +115,15 @@ fn cli_pack_inspect_unpack_and_verify_round_trip() {
         let tapp = workdir.path().join("example.tapp");
         std::fs::write(&tapp, b"previous valid release").unwrap();
 
-        let out = Command::new(bin_path())
-            .args([
-                "pack",
-                "--manifest",
-                manifest_path.to_str().unwrap(),
-                "--payload",
-                payload_dir.to_str().unwrap(),
-                "-o",
-                tapp.to_str().unwrap(),
-            ])
-            .output_locked()
-            .expect("run tilo-app-package pack");
-        assert!(!out.status.success(), "oversized tapp unexpectedly packed");
+        let out = fail(&[
+            "pack",
+            "--manifest",
+            manifest_path.to_str().unwrap(),
+            "--payload",
+            payload_dir.to_str().unwrap(),
+            "-o",
+            tapp.to_str().unwrap(),
+        ]);
         assert!(
             String::from_utf8_lossy(&out.stderr).contains("application tapp is"),
             "stderr: {}",
@@ -167,24 +145,17 @@ fn cli_pack_inspect_unpack_and_verify_round_trip() {
         std::fs::write(&manifest_path, sample_manifest_with(&"00".repeat(32))).unwrap();
 
         let tapp = workdir.path().join("example.tapp");
-        Command::new(bin_path())
-            .args([
-                "pack",
-                "--manifest",
-                manifest_path.to_str().unwrap(),
-                "--payload",
-                payload_dir.to_str().unwrap(),
-                "-o",
-                tapp.to_str().unwrap(),
-            ])
-            .status_locked()
-            .expect("pack");
+        run(&[
+            "pack",
+            "--manifest",
+            manifest_path.to_str().unwrap(),
+            "--payload",
+            payload_dir.to_str().unwrap(),
+            "-o",
+            tapp.to_str().unwrap(),
+        ]);
 
-        let out = Command::new(bin_path())
-            .args(["inspect", tapp.to_str().unwrap()])
-            .output_locked()
-            .expect("inspect");
-        assert!(out.status.success());
+        let out = run(&["inspect", tapp.to_str().unwrap()]);
         let stdout = String::from_utf8_lossy(&out.stdout);
         assert!(stdout.contains("package-id: tapp:"), "inspect: {stdout}");
         assert!(stdout.contains("archive-size:"), "inspect: {stdout}");
@@ -204,30 +175,23 @@ fn cli_pack_inspect_unpack_and_verify_round_trip() {
         let manifest_path = workdir.path().join("manifest.toml");
         std::fs::write(&manifest_path, sample_manifest_with(&"00".repeat(32))).unwrap();
         let tapp = workdir.path().join("example.tapp");
-        Command::new(bin_path())
-            .args([
-                "pack",
-                "--manifest",
-                manifest_path.to_str().unwrap(),
-                "--payload",
-                payload_dir.to_str().unwrap(),
-                "-o",
-                tapp.to_str().unwrap(),
-            ])
-            .status_locked()
-            .unwrap();
+        run(&[
+            "pack",
+            "--manifest",
+            manifest_path.to_str().unwrap(),
+            "--payload",
+            payload_dir.to_str().unwrap(),
+            "-o",
+            tapp.to_str().unwrap(),
+        ]);
 
         let dest = workdir.path().join("dest");
-        let out = Command::new(bin_path())
-            .args([
-                "unpack",
-                "--dest",
-                dest.to_str().unwrap(),
-                tapp.to_str().unwrap(),
-            ])
-            .output_locked()
-            .unwrap();
-        assert!(out.status.success(), "unpack: {out:?}");
+        run(&[
+            "unpack",
+            "--dest",
+            dest.to_str().unwrap(),
+            tapp.to_str().unwrap(),
+        ]);
         assert!(dest.join("bin/hello").exists());
         assert!(dest.join("manifest.toml").exists());
         let body = std::fs::read(dest.join("bin/hello")).unwrap();
@@ -251,38 +215,30 @@ fn cli_entry_emits_a_server_acceptable_signed_change() {
     let manifest_path = workdir.path().join("manifest.toml");
     std::fs::write(&manifest_path, sample_manifest_with(&"00".repeat(32))).unwrap();
     let tapp = workdir.path().join("example.tapp");
-    let packed = Command::new(bin_path())
-        .args([
-            "pack",
-            "--manifest",
-            manifest_path.to_str().unwrap(),
-            "--payload",
-            payload_dir.to_str().unwrap(),
-            "--identity",
-            identity.to_str().unwrap(),
-            "-o",
-            tapp.to_str().unwrap(),
-        ])
-        .output_locked()
-        .unwrap();
-    assert!(packed.status.success(), "pack: {packed:?}");
+    run(&[
+        "pack",
+        "--manifest",
+        manifest_path.to_str().unwrap(),
+        "--payload",
+        payload_dir.to_str().unwrap(),
+        "--identity",
+        identity.to_str().unwrap(),
+        "-o",
+        tapp.to_str().unwrap(),
+    ]);
 
-    let emitted = Command::new(bin_path())
-        .args([
-            "entry",
-            "--url",
-            "https://apps.tilo.so/artifacts/so.tilo.example.tapp",
-            "--identity",
-            identity.to_str().unwrap(),
-            "--arch",
-            "x86_64",
-            "--action",
-            "add",
-            tapp.to_str().unwrap(),
-        ])
-        .output_locked()
-        .unwrap();
-    assert!(emitted.status.success(), "entry: {emitted:?}");
+    let emitted = run(&[
+        "entry",
+        "--url",
+        "https://apps.tilo.so/artifacts/so.tilo.example.tapp",
+        "--identity",
+        identity.to_str().unwrap(),
+        "--arch",
+        "x86_64",
+        "--action",
+        "add",
+        tapp.to_str().unwrap(),
+    ]);
     let x86_request: registry_types::EntryChangeRequest =
         serde_json::from_slice(&emitted.stdout).unwrap();
     let key = hex::decode(&x86_request.entry.publisher_pubkey_hex).unwrap();
@@ -303,37 +259,29 @@ fn cli_entry_emits_a_server_acceptable_signed_change() {
     )
     .unwrap();
     let aarch_tapp = workdir.path().join("example-aarch64.tapp");
-    let packed = Command::new(bin_path())
-        .args([
-            "pack",
-            "--manifest",
-            aarch_manifest.to_str().unwrap(),
-            "--payload",
-            payload_dir.to_str().unwrap(),
-            "--identity",
-            identity.to_str().unwrap(),
-            "-o",
-            aarch_tapp.to_str().unwrap(),
-        ])
-        .output_locked()
-        .unwrap();
-    assert!(packed.status.success(), "aarch64 pack: {packed:?}");
-    let emitted = Command::new(bin_path())
-        .args([
-            "entry",
-            "--url",
-            "https://apps.tilo.so/artifacts/so.tilo.example-aarch64.tapp",
-            "--identity",
-            identity.to_str().unwrap(),
-            "--arch",
-            "aarch64",
-            "--action",
-            "add",
-            aarch_tapp.to_str().unwrap(),
-        ])
-        .output_locked()
-        .unwrap();
-    assert!(emitted.status.success(), "aarch64 entry: {emitted:?}");
+    run(&[
+        "pack",
+        "--manifest",
+        aarch_manifest.to_str().unwrap(),
+        "--payload",
+        payload_dir.to_str().unwrap(),
+        "--identity",
+        identity.to_str().unwrap(),
+        "-o",
+        aarch_tapp.to_str().unwrap(),
+    ]);
+    let emitted = run(&[
+        "entry",
+        "--url",
+        "https://apps.tilo.so/artifacts/so.tilo.example-aarch64.tapp",
+        "--identity",
+        identity.to_str().unwrap(),
+        "--arch",
+        "aarch64",
+        "--action",
+        "add",
+        aarch_tapp.to_str().unwrap(),
+    ]);
     let aarch_request: registry_types::EntryChangeRequest =
         serde_json::from_slice(&emitted.stdout).unwrap();
     assert_eq!(
@@ -350,22 +298,18 @@ fn cli_entry_emits_a_server_acceptable_signed_change() {
         serde_json::to_vec_pretty(&x86_request.entry).unwrap(),
     )
     .unwrap();
-    let retry = Command::new(bin_path())
-        .args([
-            "entry",
-            "--url",
-            "https://apps.tilo.so/artifacts/so.tilo.example.tapp",
-            "--identity",
-            identity.to_str().unwrap(),
-            "--action",
-            "update",
-            "--previous-entry",
-            previous.to_str().unwrap(),
-            tapp.to_str().unwrap(),
-        ])
-        .output_locked()
-        .unwrap();
-    assert!(retry.status.success(), "idempotent update: {retry:?}");
+    let retry = run(&[
+        "entry",
+        "--url",
+        "https://apps.tilo.so/artifacts/so.tilo.example.tapp",
+        "--identity",
+        identity.to_str().unwrap(),
+        "--action",
+        "update",
+        "--previous-entry",
+        previous.to_str().unwrap(),
+        tapp.to_str().unwrap(),
+    ]);
     let retried: registry_types::EntryChangeRequest =
         serde_json::from_slice(&retry.stdout).unwrap();
     assert_eq!(retried.entry, x86_request.entry);
@@ -389,27 +333,20 @@ fn cli_entry_emits_a_server_acceptable_signed_change() {
         .unwrap(),
     )
     .unwrap();
-    let metadata_update = Command::new(bin_path())
-        .args([
-            "entry",
-            "--url",
-            "https://apps.tilo.so/artifacts/so.tilo.example.tapp",
-            "--identity",
-            identity.to_str().unwrap(),
-            "--metadata",
-            metadata.to_str().unwrap(),
-            "--action",
-            "update",
-            "--previous-entry",
-            previous.to_str().unwrap(),
-            tapp.to_str().unwrap(),
-        ])
-        .output_locked()
-        .unwrap();
-    assert!(
-        metadata_update.status.success(),
-        "metadata update: {metadata_update:?}"
-    );
+    let metadata_update = run(&[
+        "entry",
+        "--url",
+        "https://apps.tilo.so/artifacts/so.tilo.example.tapp",
+        "--identity",
+        identity.to_str().unwrap(),
+        "--metadata",
+        metadata.to_str().unwrap(),
+        "--action",
+        "update",
+        "--previous-entry",
+        previous.to_str().unwrap(),
+        tapp.to_str().unwrap(),
+    ]);
     let localized: registry_types::EntryChangeRequest =
         serde_json::from_slice(&metadata_update.stdout).unwrap();
     registry_types::verify_change_request(&localized, &[publisher]).unwrap();
@@ -428,48 +365,61 @@ fn cli_entry_emits_a_server_acceptable_signed_change() {
         .unwrap(),
     )
     .unwrap();
-    let invalid_metadata = Command::new(bin_path())
-        .args([
-            "entry",
-            "--url",
-            "https://apps.tilo.so/artifacts/so.tilo.example.tapp",
-            "--identity",
-            identity.to_str().unwrap(),
-            "--metadata",
-            metadata.to_str().unwrap(),
-            "--action",
-            "update",
-            "--previous-entry",
-            previous.to_str().unwrap(),
-            tapp.to_str().unwrap(),
-        ])
-        .output_locked()
-        .unwrap();
-    assert!(!invalid_metadata.status.success());
+    fail(&[
+        "entry",
+        "--url",
+        "https://apps.tilo.so/artifacts/so.tilo.example.tapp",
+        "--identity",
+        identity.to_str().unwrap(),
+        "--metadata",
+        metadata.to_str().unwrap(),
+        "--action",
+        "update",
+        "--previous-entry",
+        previous.to_str().unwrap(),
+        tapp.to_str().unwrap(),
+    ]);
 
-    let missing_previous = Command::new(bin_path())
-        .args([
-            "entry",
-            "--url",
-            "https://apps.tilo.so/artifacts/so.tilo.example.tapp",
-            "--identity",
-            identity.to_str().unwrap(),
-            "--action",
-            "update",
-            tapp.to_str().unwrap(),
-        ])
-        .output_locked()
-        .unwrap();
-    assert!(!missing_previous.status.success());
+    fail(&[
+        "entry",
+        "--url",
+        "https://apps.tilo.so/artifacts/so.tilo.example.tapp",
+        "--identity",
+        identity.to_str().unwrap(),
+        "--action",
+        "update",
+        tapp.to_str().unwrap(),
+    ]);
 }
 
+/// The CLI's output for `args`.
+fn cli<I, S>(args: I) -> std::process::Output
+where
+    I: IntoIterator<Item = S>,
+    S: AsRef<std::ffi::OsStr>,
+{
+    Command::new(bin_path()).args(args).output_locked().unwrap()
+}
+
+/// The CLI's output for `args`, which must have succeeded.
 fn run(args: &[&str]) -> std::process::Output {
-    let out = Command::new(bin_path()).args(args).output_locked().unwrap();
+    let out = cli(args);
     assert!(
         out.status.success(),
         "{args:?}: stdout={:?} stderr={:?}",
         String::from_utf8_lossy(&out.stdout),
         String::from_utf8_lossy(&out.stderr)
+    );
+    out
+}
+
+/// The CLI's output for `args`, which must have failed.
+fn fail(args: &[&str]) -> std::process::Output {
+    let out = cli(args);
+    assert!(
+        !out.status.success(),
+        "{args:?} unexpectedly succeeded: stdout={:?}",
+        String::from_utf8_lossy(&out.stdout)
     );
     out
 }
@@ -508,23 +458,20 @@ fn cli_packs_a_macos_build_and_emits_its_registry_request() {
     run(&["verify", &path("hello-macos.tapp")]);
 
     let entry = |platform: &str, arch: &str| {
-        Command::new(bin_path())
-            .args([
-                "entry",
-                "--url",
-                "https://apps.tilo.so/artifacts/hello-macos.tapp",
-                "--identity",
-                &path("publisher.json"),
-                "--platform",
-                platform,
-                "--arch",
-                arch,
-                "--action",
-                "add",
-                &path("hello-macos.tapp"),
-            ])
-            .output_locked()
-            .unwrap()
+        cli([
+            "entry",
+            "--url",
+            "https://apps.tilo.so/artifacts/hello-macos.tapp",
+            "--identity",
+            &path("publisher.json"),
+            "--platform",
+            platform,
+            "--arch",
+            arch,
+            "--action",
+            "add",
+            &path("hello-macos.tapp"),
+        ])
     };
     let emitted = entry("macos", "aarch64");
     assert!(
@@ -622,10 +569,7 @@ mode = "off"
             args.extend(["--objects".into(), path("release")]);
         }
         args.push(path("release/runtime.tapp"));
-        Command::new(bin_path())
-            .args(&args)
-            .output_locked()
-            .unwrap()
+        cli(args)
     };
     let emitted = entry_args(true);
     assert!(emitted.status.success(), "entry: {emitted:?}");
@@ -678,23 +622,17 @@ impl AttestFixture {
         )
         .unwrap();
         let original = dir.path().join("original.tapp");
-        let output = Command::new(bin_path())
-            .arg("pack")
-            .arg("--manifest")
-            .arg(manifest)
-            .arg("--payload")
-            .arg(payload)
-            .arg("--identity")
-            .arg(&publisher)
-            .arg("--output")
-            .arg(&original)
-            .output_locked()
-            .unwrap();
-        assert!(
-            output.status.success(),
-            "{}",
-            String::from_utf8_lossy(&output.stderr)
-        );
+        run(&[
+            "pack",
+            "--manifest",
+            manifest.to_str().unwrap(),
+            "--payload",
+            payload.to_str().unwrap(),
+            "--identity",
+            publisher.to_str().unwrap(),
+            "--output",
+            original.to_str().unwrap(),
+        ]);
         Self {
             dir,
             publisher,
@@ -702,6 +640,28 @@ impl AttestFixture {
             attestor_public,
             original,
         }
+    }
+
+    fn attest(
+        &self,
+        input: &std::path::Path,
+        output: &std::path::Path,
+        scope: &str,
+    ) -> std::process::Output {
+        self.command(input, output, scope).output_locked().unwrap()
+    }
+
+    fn attest_ok(&self, input: &std::path::Path, output: &std::path::Path, scope: &str) {
+        let out = self.attest(input, output, scope);
+        assert!(
+            out.status.success(),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+    }
+
+    fn refuses(&self, input: &std::path::Path, output: &std::path::Path, scope: &str) -> bool {
+        !self.attest(input, output, scope).status.success()
     }
 
     fn command(&self, input: &std::path::Path, output: &std::path::Path, scope: &str) -> Command {
@@ -741,15 +701,7 @@ fn cli_attest_preserves_payload_and_original_publisher_with_scoped_recipient_tru
     let fixture = AttestFixture::new();
     let destination = fixture.dir.path().join("attested.tapp");
     let before = std::fs::read(&fixture.original).unwrap();
-    let output = fixture
-        .command(&fixture.original, &destination, "prefix:so.tilo.example")
-        .output_locked()
-        .unwrap();
-    assert!(
-        output.status.success(),
-        "{}",
-        String::from_utf8_lossy(&output.stderr)
-    );
+    fixture.attest_ok(&fixture.original, &destination, "prefix:so.tilo.example");
     let (original, original_blobs) = decoded(&fixture.original);
     let (attested, attested_blobs) = decoded(&destination);
     assert_eq!(std::fs::read(&fixture.original).unwrap(), before);
@@ -827,63 +779,26 @@ fn cli_attest_preserves_payload_and_original_publisher_with_scoped_recipient_tru
 fn cli_attest_refuses_foreign_publisher_scope_partial_and_existing_output() {
     let mut fixture = AttestFixture::new();
     let destination = fixture.dir.path().join("attested.tapp");
-    let output = fixture
-        .command(&fixture.original, &destination, "prefix:foreign.")
-        .output_locked()
-        .unwrap();
-    assert!(!output.status.success());
+    assert!(fixture.refuses(&fixture.original, &destination, "prefix:foreign."));
     assert!(!destination.exists());
     let publisher = fixture.publisher.clone();
     fixture.publisher = fixture.attestor.clone();
-    assert!(
-        !fixture
-            .command(&fixture.original, &destination, "all")
-            .output_locked()
-            .unwrap()
-            .status
-            .success()
-    );
+    assert!(fixture.refuses(&fixture.original, &destination, "all"));
     assert!(!destination.exists());
     fixture.publisher = publisher;
     let thin = fixture.dir.path().join("thin.tapp");
-    assert!(
-        Command::new(bin_path())
-            .arg("thin")
-            .arg(&fixture.original)
-            .arg("--output")
-            .arg(&thin)
-            .output_locked()
-            .unwrap()
-            .status
-            .success()
-    );
-    assert!(
-        !fixture
-            .command(&thin, &destination, "all")
-            .output_locked()
-            .unwrap()
-            .status
-            .success()
-    );
+    run(&[
+        "thin",
+        fixture.original.to_str().unwrap(),
+        "--output",
+        thin.to_str().unwrap(),
+    ]);
+    assert!(fixture.refuses(&thin, &destination, "all"));
     assert!(!destination.exists());
     std::fs::write(&destination, b"preserved").unwrap();
-    assert!(
-        !fixture
-            .command(&fixture.original, &destination, "all")
-            .output_locked()
-            .unwrap()
-            .status
-            .success()
-    );
+    assert!(fixture.refuses(&fixture.original, &destination, "all"));
     assert_eq!(std::fs::read(&destination).unwrap(), b"preserved");
-    assert!(
-        !fixture
-            .command(&fixture.original, &fixture.original, "all")
-            .output_locked()
-            .unwrap()
-            .status
-            .success()
-    );
+    assert!(fixture.refuses(&fixture.original, &fixture.original, "all"));
     assert!(decoded(&fixture.original).0.is_complete());
 }
 
@@ -931,11 +846,7 @@ fn cli_compress_writes_a_twin_that_decompresses_to_the_package() {
     // Only a package gets a twin: anything else is refused, and nothing is written.
     let other = workdir.path().join("notes.txt");
     std::fs::write(&other, b"not a package").unwrap();
-    let out = Command::new(bin_path())
-        .args(["compress", other.to_str().unwrap()])
-        .output_locked()
-        .unwrap();
-    assert!(!out.status.success());
+    fail(&["compress", other.to_str().unwrap()]);
     assert!(!workdir.path().join("notes.txt.zst").exists());
 }
 
@@ -973,13 +884,17 @@ fn bot_entry_signs_the_canonical_program() {
         entry.versions[0].bot().unwrap().program_blake3_hex,
         tilo_automation::program::program_hash(&canonical)
     );
-    let bad = Command::new(bin_path())
-        .args(["bot-entry", "--identity", identity.to_str().unwrap()])
-        .args(["--package-id", "so.tilo.bots.echo", "--version", "1.0.0"])
-        .args(["--connector", "so.tilo.discord"])
-        .arg(&file)
-        .output_locked()
-        .unwrap();
-    assert!(!bad.status.success());
+    let bad = fail(&[
+        "bot-entry",
+        "--identity",
+        identity.to_str().unwrap(),
+        "--package-id",
+        "so.tilo.bots.echo",
+        "--version",
+        "1.0.0",
+        "--connector",
+        "so.tilo.discord",
+        file.to_str().unwrap(),
+    ]);
     assert!(String::from_utf8_lossy(&bad.stderr).contains("<package id>@<min version>"));
 }

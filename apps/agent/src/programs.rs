@@ -82,9 +82,6 @@ pub struct Program {
 }
 
 /// Read a `tilo` call.
-///
-/// # Errors
-/// In words for the model: no program, or one too long.
 pub fn read_program(input: &Value) -> Result<Program, String> {
     let source = input
         .get("program")

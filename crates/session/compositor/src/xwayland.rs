@@ -30,9 +30,9 @@ use crate::policy::WindowRequest;
 use crate::state::{State, X11Server};
 use crate::{Error, LoopData};
 
-/// The directory Xwayland listens in: the compositor opens its sockets
-/// there, so it has to exist before a display is bound. A session cannot rely
-/// on the X server package's tmpfiles having made it.
+/// The directory Xwayland listens in: the compositor opens its sockets there, so it has to exist
+/// before a display is bound. A session cannot rely on the X server package's tmpfiles having made
+/// it.
 pub(crate) fn socket_directory() -> Result<(), Error> {
     const DIRECTORY: &str = "/tmp/.X11-unix";
     match std::fs::create_dir(DIRECTORY) {
@@ -46,9 +46,8 @@ pub(crate) fn socket_directory() -> Result<(), Error> {
     Ok(())
 }
 
-/// Give the X11 display `number` a window manager: its windows become toplevels of
-/// the desktop. `None` when the display cannot be managed, and then nothing
-/// can show there.
+/// Give the X11 display `number` a window manager: its windows become toplevels of the desktop.
+/// `None` when the display cannot be managed, and then nothing can show there.
 pub(crate) fn start_wm(
     data: &mut LoopData,
     socket: UnixStream,
@@ -72,14 +71,12 @@ pub(crate) fn start_wm(
         windows: None,
         display: number,
     });
-    // The session's own connection to the X server: it reads what a window
-    // says about its program, gives X input focus and tells X clients how
-    // dense the display is and which pointer to draw.
+    // The session's own connection to the X server: it reads what a window says about its program,
+    // gives X input focus and tells X clients how dense the display is and which pointer to draw.
     if let Ok(mut windows) = crate::x11_windows::X11Windows::connect(number, client) {
         let scale = crate::x11_windows::display_scale(&data.state);
         let theme = data.state.cursor.theme_name().to_owned();
-        // The layout the person chose before the server started is the one
-        // its clients are told of.
+        // The layout the person chose before the server started is the one its clients are told of.
         let keyboard = data.state.keyboard.clone();
         if let Some(server) = data.state.xwms.iter_mut().find(|server| server.id() == xwm) {
             windows.publish_x_hints(scale, &theme, &mut server.wm);
@@ -95,11 +92,9 @@ pub(crate) fn start_wm(
     Some(xwm)
 }
 
-/// Take `xwm`'s display out of the session: its windows leave the scene, and
-/// what the session kept of them goes with them.
-///
-/// Nothing else will say these windows went: their server is stopping, or is
-/// already gone.
+/// Take `xwm` 's display out of the session: its windows leave the scene, and what the session kept
+/// of them goes with them.
+/// Nothing else will say these windows went: their server is stopping, or is already gone.
 pub(crate) fn detach(data: &mut LoopData, xwm: XwmId) {
     let state = &mut data.state;
     let windows: Vec<Window> = state
@@ -128,7 +123,7 @@ pub(crate) fn forget(data: &mut LoopData, xwm: XwmId) {
     data.state.xwms.retain(|server| server.id() != xwm);
 }
 
-/// The window manager of `xwm`'s display, while it runs.
+/// The window manager of `xwm` 's display, while it runs.
 impl State {
     pub(crate) fn x11_server(&self, xwm: XwmId) -> Option<&X11Server> {
         self.xwms.iter().find(|server| server.id() == xwm)
@@ -138,7 +133,7 @@ impl State {
         self.xwms.iter_mut().find(|server| server.id() == xwm)
     }
 
-    /// The session's own connection to `xwm`'s display, while it runs.
+    /// The session's own connection to `xwm` 's display, while it runs.
     pub(crate) fn x11_windows_mut(
         &mut self,
         xwm: XwmId,
@@ -153,14 +148,14 @@ impl State {
         }
     }
 
-    /// Tell the session's displays one of `xwm`'s windows went.
+    /// Tell the session's displays one of `xwm` 's windows went.
     fn window_gone(&self, xwm: XwmId) {
         if let Some(x11) = &self.x11 {
             x11.window_gone(self, xwm);
         }
     }
 
-    /// The element showing `surface`, if it is mapped.
+    /// The element showing `surface` , if it is mapped.
     fn element_of(&self, surface: &X11Surface) -> Option<Window> {
         self.space
             .elements()
@@ -182,10 +177,9 @@ impl XWaylandShellHandler for State {
         &mut self.xwayland_shell
     }
 
-    /// Xwayland associates a window's `wl_surface` only after the window
-    /// mapped, so the keyboard focus the policy gave it had no surface to
-    /// go to yet: it is given now. A window another one took the focus from
-    /// since is no longer activated and keeps it.
+    /// Xwayland associates a window's `wl_surface` only after the window mapped, so the keyboard
+    /// focus the policy gave it had no surface to go to yet: it is given now. A window another one
+    /// took the focus from since is no longer activated and keeps it.
     fn surface_associated(&mut self, _xwm: XwmId, _surface: WlSurface, window: X11Surface) {
         if !window.is_activated() {
             return;
@@ -252,8 +246,7 @@ impl XwmHandler for State {
         if surface.is_override_redirect() {
             return;
         }
-        // An X11 app has no client of its own here: its window going says
-        // it exited.
+        // An X11 app has no client of its own here: its window going says it exited.
         if let Some(pid) = surface.pid()
             && let Ok(mut exited) = self.exited.lock()
         {
@@ -272,8 +265,8 @@ impl XwmHandler for State {
         h: Option<u32>,
         _reorder: Option<Reorder>,
     ) {
-        // A mapped managed window goes where the policy put it; it may only
-        // change its size. An unmapped one may ask for anything.
+        // A mapped managed window goes where the policy put it; it may only change its size. An
+        // unmapped one may ask for anything.
         let mapped = self.element_of(&surface).is_some();
         let mut geometry = surface.geometry();
         if !mapped {
@@ -378,8 +371,8 @@ impl XwmHandler for State {
     }
 
     fn disconnected(&mut self, _xwm: XwmId) {
-        // The window manager runs in the event loop's data, which cleans up
-        // what a stopped display leaves behind.
+        // The window manager runs in the event loop's data, which cleans up what a stopped display
+        // leaves behind.
     }
 }
 
@@ -399,8 +392,8 @@ impl State {
     }
 }
 
-/// The loop's data answers the window manager's events with the state's
-/// handler: the window manager runs in the loop, the protocol in the state.
+/// The loop's data answers the window manager's events with the state's handler: the window manager
+/// runs in the loop, the protocol in the state.
 impl LoopData {
     fn remember_icon(&mut self, xwm: XwmId, window: &X11Surface) {
         let id = window.window_id();
@@ -429,8 +422,8 @@ impl XwmHandler for LoopData {
     }
 
     fn map_window_request(&mut self, xwm: XwmId, window: X11Surface) {
-        // What the window says about its program is kept before it shows, so
-        // the desktop knows whose window it is from the first frame.
+        // What the window says about its program is kept before it shows, so the desktop knows
+        // whose window it is from the first frame.
         if let Some(x11) = self.state.x11_windows_mut(xwm) {
             x11.learn(&window);
         }
@@ -554,8 +547,8 @@ impl XwmHandler for LoopData {
     }
 
     fn disconnected(&mut self, xwm: XwmId) {
-        // The display's server exited: its windows leave the scene, and the
-        // display waits for the next app to start a fresh one.
+        // The display's server exited: its windows leave the scene, and the display waits for the
+        // next app to start a fresh one.
         match self.state.x11.clone() {
             Some(x11) => x11.server_gone(self, xwm),
             None => crate::xwayland::forget(self, xwm),

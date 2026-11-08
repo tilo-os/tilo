@@ -5,8 +5,8 @@
 use super::*;
 
 impl TopBarChrome {
-    /// How many unread notifications the application with this verified id
-    /// owns: what the bar shows on its own icon.
+    /// How many unread notifications the application with this verified id owns: what the bar shows
+    /// on its own icon.
     pub(super) fn app_badge(&self, app_id: &str) -> u32 {
         self.chrome
             .as_ref()
@@ -35,9 +35,8 @@ impl TopBarChrome {
         self.tray_pill_rect
     }
 
-    /// The slots the cluster shows: each a reading the machine has, the
-    /// bell always. A reading that never arrived contributes nothing rather
-    /// than a plausible default.
+    /// The slots the cluster shows: each a reading the machine has, the bell always. A reading that
+    /// never arrived contributes nothing rather than a plausible default.
     pub(super) fn tray_slots(&self) -> Vec<ui::widget::StatusSlot> {
         use ui::widget::StatusSlot;
         let mut slots = vec![StatusSlot::Bell {
@@ -64,8 +63,8 @@ impl TopBarChrome {
         slots
     }
 
-    /// Sizes the tray pill, paints it through the shared status cluster, and
-    /// returns the layout the application tray and media indicator read.
+    /// Sizes the tray pill, paints it through the shared status cluster, and returns the layout the
+    /// application tray and media indicator read.
     pub(super) fn draw_tray_pill_body(
         &mut self,
         scene: &mut Scene,
@@ -79,8 +78,8 @@ impl TopBarChrome {
         let pad_x = f64::from(tokens.spacing.s3);
         let rx = self.rect.x1 - pad_x;
         let slots = self.tray_slots();
-        // The battery's percentage is drawn only where the machine has a
-        // reading: an unknown battery contributes nothing, not a zero.
+        // The battery's percentage is drawn only where the machine has a reading: an unknown
+        // battery contributes nothing, not a zero.
         let status = match self.status.battery_percent() {
             Some(percent) => {
                 StatusCluster::new().battery(percent, self.status.battery_is_charging())
@@ -184,10 +183,10 @@ impl TopBarChrome {
         self.media_indicator_rect.x0 - f64::from(tokens.spacing.s3)
     }
 
-    /// Pulled at the top of [`Widget::draw`], not pushed by `update`, so a
-    /// just-dropped battery percent is drawn and counted as a change in the
-    /// same pass. Also tracks the media-use signature so a newly-started
-    /// capture announces itself as a named pill before settling into a dot.
+    /// Pulled at the top of [`Widget::draw`], not pushed by `update` , so a just-dropped battery
+    /// percent is drawn and counted as a change in the same pass. Also tracks the media-use
+    /// signature so a newly-started capture announces itself as a named pill before settling into a
+    /// dot.
     pub(super) fn refresh_status_and_media_state(&mut self) {
         self.status = self.live_status();
         self.bell.unread = self
@@ -241,10 +240,9 @@ impl TopBarChrome {
                 }));
     }
 
-    /// Running applications' status-notifier icons, drawn leftward from
-    /// `rx` beside the system tray pill. `Passive` items stay hidden, as the
-    /// protocol asks; one that needs attention carries a warning dot.
-    /// Returns where the next cluster may end.
+    /// Running applications' status-notifier icons, drawn leftward from `rx` beside the system tray
+    /// pill. `Passive` items stay hidden, as the protocol asks; one that needs attention carries a
+    /// warning dot. Returns where the next cluster may end.
     pub(super) fn draw_app_tray(
         &mut self,
         scene: &mut Scene,
@@ -288,14 +286,14 @@ impl TopBarChrome {
             let hovered = self
                 .last_cursor
                 .is_some_and(|point| hit.contains(point) && self.rect.contains(point));
-            // The lift is the bar control's own, painted by its face: no
-            // surface of the tray icon's own.
+            // The lift is the bar control's own, painted by its face: no surface of the tray icon's
+            // own.
             ui::widget::BarControlFace::new(&item.title)
                 .hovered(hovered)
                 .paint_lift(scene, transform, hit, theme, tokens.colors.surfaces.base);
             self.draw_app_tray_icon(scene, transform, theme, text_renderer, item, icon_rect);
-            // The application's own unread count: the bell's total says how
-            // many there are, this says whose.
+            // The application's own unread count: the bell's total says how many there are, this
+            // says whose.
             let unread = item
                 .owner_app
                 .as_deref()
@@ -332,7 +330,7 @@ impl TopBarChrome {
         right - f64::from(tokens.spacing.s3) + gap
     }
 
-    /// One tray item's image, or its letter badge, in `icon_rect`.
+    /// One tray item's image, or its letter badge, in `icon_rect` .
     pub(super) fn draw_app_tray_icon(
         &mut self,
         scene: &mut Scene,
@@ -385,8 +383,8 @@ impl TopBarChrome {
                     None,
                     &vello::kurbo::Circle::new(icon_rect.center(), icon_px / 2.0),
                 );
-                // The letter is one centred line, in the shared text-line
-                // painter: no bare run of its own.
+                // The letter is one centred line, in the shared text-line painter: no bare run of
+                // its own.
                 let label = letter.to_string();
                 let style = tokens.typography.style(TextRole::Caption);
                 let line = ui::widget::TextLineFace::styled(&label, &style, TextRole::Caption)
@@ -400,10 +398,9 @@ impl TopBarChrome {
         }
     }
 
-    /// A press on an application tray icon: the primary button activates
-    /// the item (or asks for its menu when it has no primary action), the
-    /// secondary button asks for its menu, the middle one runs its
-    /// secondary action.
+    /// A press on an application tray icon: the primary button activates the item (or asks for its
+    /// menu when it has no primary action), the secondary button asks for its menu, the middle one
+    /// runs its secondary action.
     pub(super) fn handle_app_tray_press(&self, event: &WindowEvent, handled: &mut bool) -> bool {
         let WindowEvent::MouseInput {
             state: winit::event::ElementState::Pressed,
@@ -439,7 +436,7 @@ impl TopBarChrome {
         true
     }
 
-    /// The bar target naming the tray item addressed by `key`.
+    /// The bar target naming the tray item addressed by `key` .
     pub(super) fn tray_target(key: &str) -> String {
         format!("{}{key}", Self::APP_TRAY_TARGET)
     }

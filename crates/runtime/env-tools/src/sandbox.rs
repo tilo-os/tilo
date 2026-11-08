@@ -499,10 +499,6 @@ impl BuildSandbox {
     /// Give everything in the scratch directory back to the caller: files
     /// rpm chowned to a subordinate id can't otherwise be moved, read or
     /// removed. Ownership is not part of an image anyway.
-    ///
-    /// # Errors
-    ///
-    /// `unshare` or `chown` can't be run.
     fn reclaim(&self) -> Result<(), SandboxError> {
         if self.identity != Identity::SubordinateIds {
             return Ok(());

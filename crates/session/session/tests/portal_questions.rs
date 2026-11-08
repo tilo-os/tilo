@@ -1,6 +1,6 @@
-//! The questions the services ask on the portal sheet, answered through
-//! its door: every answer names the question it was given for, so one that
-//! arrives after the next question opened leaves that one alone.
+//! The questions the services ask on the portal sheet, answered through its door: every answer
+//! names the question it was given for, so one that arrives after the next question opened leaves
+//! that one alone.
 
 #![cfg(target_os = "linux")]
 #![allow(
@@ -9,6 +9,8 @@
     clippy::panic,
     reason = "test fixtures: a failed step is the assertion"
 )]
+
+mod common;
 
 use std::time::Duration;
 
@@ -24,21 +26,18 @@ const SETTLE: Duration = Duration::from_millis(1);
 /// A headless session whose services ask their questions on its sheets.
 fn asking() -> (Session, tilo_service::Questions) {
     let questions = tilo_service::Questions::new();
-    let session = Session::headless(
+    let session = crate::common::headless_on(
+        &[OutputConfig::new("HEADLESS-1", 1280, 720)],
         Options {
-            presentation: ui::headless::fixture_runner_inputs,
             questions: Some(questions.clone()),
             collab: false,
             ..Options::default()
         },
-        &[OutputConfig::new("HEADLESS-1", 1280, 720)],
-    )
-    .expect("session");
+    );
     (session, questions)
 }
 
-/// The resource publishing `action` among everything the session
-/// publishes.
+/// The resource publishing `action` among everything the session publishes.
 fn publisher(session: &Session, action: &str) -> Option<String> {
     fn find(resources: &[ResourceSpec], action: &str) -> Option<String> {
         resources.iter().find_map(|resource| {
@@ -63,7 +62,7 @@ fn showing(session: &Session) -> String {
         .handle
 }
 
-/// Answer `effect` on the portal sheet's door for `handle`.
+/// Answer `effect` on the portal sheet's door for `handle` .
 #[track_caller]
 fn answer(
     session: &mut Session,

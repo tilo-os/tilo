@@ -89,9 +89,6 @@ pub enum PlanError {
 
 impl Plan {
     /// Canonical JSON (serde field order, no whitespace) and its SHA-256.
-    ///
-    /// # Errors
-    /// Returns an error if the plan cannot be serialized.
     pub fn digest(&self) -> Result<String, serde_json::Error> {
         use sha2::{Digest, Sha256};
         let bytes = serde_json::to_vec(self)?;

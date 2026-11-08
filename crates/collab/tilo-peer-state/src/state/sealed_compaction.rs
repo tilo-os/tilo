@@ -35,13 +35,6 @@ impl PeerPublicationMut<'_> {
     /// checks every keyless replica applies, so `key` must be a device the
     /// record admits as a writer of it (or the workspace's governor, compacting
     /// by its `compact` governance action).
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the record holds no sealed history, a write
-    /// does not open or merge, the sealed snapshot is not a checkpoint for
-    /// the record's channel or does not open to the merged record, or the
-    /// compaction is refused by admission; this peer is unchanged then.
     pub fn compact_sealed_history(
         self,
         app: &str,
@@ -475,12 +468,6 @@ impl PeerPublicationMut<'_> {
     /// as they open each other's writes. A record held in the clear is
     /// encrypted from it on: the key holder decides that its channel's
     /// writes are sealed.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error for a record this state does not hold, when sealing
-    /// fails or yields anything but a delta of the record's channel, or when
-    /// admission refuses the write; this peer is unchanged then.
     pub fn publish_sealed_incremental(
         self,
         app: &str,

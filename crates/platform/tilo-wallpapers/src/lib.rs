@@ -222,9 +222,6 @@ fn custom_picture_in(state: &Path) -> PathBuf {
 
 /// Keep `encoded` as the person's own picture, once it is an image the
 /// limits admit; where it was kept.
-///
-/// # Errors
-/// It is no such image, or it could not be written.
 pub fn keep_custom_picture(encoded: &[u8]) -> std::io::Result<PathBuf> {
     let path =
         custom_picture_path().ok_or_else(|| std::io::Error::other("no private state directory"))?;

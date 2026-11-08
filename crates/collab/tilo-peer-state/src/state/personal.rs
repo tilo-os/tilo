@@ -193,9 +193,6 @@ impl PersonalStore {
     /// File this device's refusal of `envelope`'s write, signed by `key`, the
     /// device's own. What the person who wrote it is shown, and what its
     /// history joins to.
-    ///
-    /// # Errors
-    /// The fact does not encode, or the key is not this device's.
     fn file_refusal(
         &mut self,
         app: &str,
@@ -279,10 +276,6 @@ impl PersonalStore {
     /// signature over exactly its contents, from a device this store holds a
     /// live certificate for. The whole set replaces that device's earlier
     /// one, so what it no longer refuses is cleared here too.
-    ///
-    /// # Errors
-    /// The source is not the device the verdicts are signed by, or holds no
-    /// certificate here.
     fn receive_refusals(
         &mut self,
         source: [u8; 32],
@@ -830,10 +823,6 @@ impl PersonalStore {
     }
 
     /// The store as bytes to keep beside the profile's workspaces.
-    ///
-    /// # Errors
-    ///
-    /// The store cannot be encoded within its limits.
     pub fn durable(&self) -> Result<Vec<u8>, String> {
         let documents = self
             .documents
@@ -884,11 +873,6 @@ impl PersonalStore {
 
     /// Open the store `bytes` holds, as `device`, which must be the device
     /// that kept them.
-    ///
-    /// # Errors
-    ///
-    /// The bytes are not this build's, belong to another device, or hold a
-    /// certificate, revocation or document this store refuses.
     pub fn restore(bytes: &[u8], device: &DeviceCert, now: SystemTime) -> Result<Self, String> {
         // A store kept before refusals were held beside the revocations is
         // read as one holding none: the person's documents are never lost to

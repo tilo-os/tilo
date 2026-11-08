@@ -374,8 +374,6 @@ pub struct SpotifyReply {
 /// driven from the [`crate::stream`] worker thread.
 pub trait MusicBackend: Send + Sync {
     /// Execute a Spotify API operation, reporting only confirmed provider state.
-    /// # Errors
-    /// Source unavailable, missing scopes, restricted device or unconfirmed state.
     fn spotify_operation(
         &self,
         _operation: &SpotifyOperation,
@@ -387,23 +385,16 @@ pub trait MusicBackend: Send + Sync {
     fn name(&self) -> &str;
 
     /// Select a catalogue or authorize it, on the background worker.
-    ///
-    /// # Errors
-    /// Source unavailable, sign-in failed or account inaccessible.
     fn select_source(&self, _spotify: bool, _sign_in: bool) -> Result<(), BackendError> {
         Err(BackendError("Spotify is unavailable in this build".into()))
     }
 
     /// Connect with profile and library read access only.
-    /// # Errors
-    /// Source unavailable, sign-in failed or account inaccessible.
     fn connect_spotify_read_only(&self) -> Result<(), BackendError> {
         Err(BackendError("Spotify is unavailable in this build".into()))
     }
 
     /// Validate Premium entitlement and the separate native playback grant.
-    /// # Errors
-    /// Unavailable support, missing sign-in, Free account or rejected grant.
     fn spotify_playback(&self, _sign_in: bool) -> Result<String, BackendError> {
         Err(BackendError(
             "Native Spotify playback is unavailable in this build".into(),
@@ -411,9 +402,6 @@ pub trait MusicBackend: Send + Sync {
     }
 
     /// Forget Spotify authorization on this device.
-    ///
-    /// # Errors
-    /// Spotify unavailable or credential custody failed.
     fn disconnect_spotify(&self) -> Result<(), BackendError> {
         Err(BackendError("Spotify is unavailable in this build".into()))
     }
@@ -450,10 +438,6 @@ pub trait MusicBackend: Send + Sync {
     /// albums, artists and playlists its suggestions name, in a fraction of
     /// the time [`Self::search_all`] takes. The search shows them first and
     /// the full answer after. Offline and by default there is none.
-    ///
-    /// # Errors
-    ///
-    /// Live: a network failure or an unparseable response.
     fn search_quick(&self, _query: &str) -> Result<SearchBundle, BackendError> {
         Ok(SearchBundle::default())
     }

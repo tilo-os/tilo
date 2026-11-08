@@ -7,7 +7,7 @@
 //! id carried across a rebuild.
 
 use super::FrameHarness;
-use crate::host_core::HostCore as _;
+use crate::host_core::{HostCore as _, KeyHost as _};
 use taffy::NodeId;
 
 impl FrameHarness {
@@ -136,12 +136,16 @@ impl FrameHarness {
         } else {
             None
         };
+        // A dialog opens on the control the person types into, ahead of its first control:
+        // what they type reaches the form it asks.
+        let entry = self.keyboard_entry(&order);
         if let Some(next) = crate::focus_navigation::reconcile_trap(
             &mut self.focus_trap_active,
             &mut before,
             self.focused,
             &order,
             trapped,
+            entry,
         ) {
             self.set_focused(next);
         }

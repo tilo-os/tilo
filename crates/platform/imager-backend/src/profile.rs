@@ -17,11 +17,6 @@ pub const PROFILE_MAGIC: &str = "TILO_INSTALL_PROFILE_V1";
 /// SHA-256 detects incomplete writes and accidental corruption. It is not an
 /// authenticity claim: the installer treats every field as untrusted input,
 /// validates it, and displays the result again on Review.
-///
-/// # Errors
-///
-/// Returns an error if the profile cannot be serialized or does not fit in the
-/// reserved block.
 pub fn encode_profile_block(profile: &InstallProfile) -> io::Result<Vec<u8>> {
     encode_profile_block_with_windows(profile, None)
 }
@@ -72,11 +67,6 @@ pub fn encode_profile_block_with_windows(
 }
 
 /// Write and read back the complete profile block at the device tail.
-///
-/// # Errors
-///
-/// Returns an error if the target is too small, cannot be opened or written,
-/// or if the complete read-back differs from the encoded profile block.
 pub fn write_profile_block(
     dst: &Path,
     target_size: u64,

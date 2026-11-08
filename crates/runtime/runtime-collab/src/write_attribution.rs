@@ -41,10 +41,6 @@ impl Request {
     }
 
     /// Validate the bounded envelope before giving it to the host.
-    ///
-    /// # Errors
-    /// Refuses another protocol, no or too many paths, and any path that is
-    /// not a clean absolute path below the root.
     pub fn validate(&self) -> Result<(), String> {
         let clean = |path: &String| {
             path.len() > 1
@@ -80,9 +76,6 @@ pub fn is_envelope(bytes: &[u8]) -> bool {
 }
 
 /// Decode and validate an envelope.
-///
-/// # Errors
-/// Refuses oversized, malformed or invalid envelopes.
 pub fn decode(bytes: &[u8]) -> Result<Request, String> {
     if bytes.len() > MAX_WIRE_BYTES {
         return Err("write attribution exceeds its bound".into());
@@ -99,10 +92,6 @@ impl crate::ChannelHandle {
     /// app's invocations, never against anything sent here, and records the
     /// agent behind those writes when an agent acting for the session's
     /// person asked for them.
-    ///
-    /// # Errors
-    /// Refuses invalid or oversized envelopes, and the host's refusal: no
-    /// such live invocation, or one nobody records an agent for.
     pub async fn attribute_writes(
         &self,
         command: &Request,

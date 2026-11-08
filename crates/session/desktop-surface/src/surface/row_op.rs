@@ -16,15 +16,15 @@ pub(super) enum RowOp {
     },
     Width(StripId, GroupId, WindowWidth),
     ToggleMaximized(StripId, GroupId),
-    /// A launched window, already in the tree at `index` of `strip`.
+    /// A launched window, already in the tree at `index` of `strip` .
     Open {
         strip: StripId,
         group: GroupId,
         index: usize,
         tab: Tab,
     },
-    /// A tab opened into a group that is already there, at `index` of its
-    /// tabs, with the tab that ends up in front.
+    /// A tab opened into a group that is already there, at `index` of its tabs, with the tab that
+    /// ends up in front.
     TabInGroup {
         strip: StripId,
         group: GroupId,
@@ -42,7 +42,6 @@ pub(super) enum RowOp {
     Pan(StripId, f64),
     Scroll(StripId, GroupId, ScrollAction),
     History(StripId, GroupId, TabId, HistoryDirection),
-    /// The share row of a window: share it with its workspace's people, or
-    /// stop sharing it.
+    /// The share row of a window: share it with its workspace's people, or stop sharing it.
     WindowShare(TabId, bool),
 }

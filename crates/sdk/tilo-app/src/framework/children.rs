@@ -92,9 +92,6 @@ pub trait ChildRecord: Resource<State: tilo_resource::Model + Default> {
     /// Refuse a place the parent does not have for one of these: under a
     /// group of the wrong kind (a channel inside a channel). Allows any
     /// listed group by default.
-    ///
-    /// # Errors
-    /// Why the parent refuses the place, as the lifecycle says it.
     fn check_group(
         parent: &<Self::Parent as Resource>::State,
         group: Option<&Id>,
@@ -586,10 +583,6 @@ impl<C: ChildRecord> ChildrenState<C> {
     }
 
     /// Carry out one lifecycle step for `invoker`. The child it concerns.
-    ///
-    /// # Errors
-    /// The participant may not, the step names no child of this kind, the
-    /// place is refused, or a record could not be written.
     pub(crate) fn lifecycle(
         &self,
         step: &Lifecycle,
@@ -803,9 +796,6 @@ impl<C: ChildRecord> ChildrenState<C> {
     /// Apply `action`, one of child `child`'s own, for `invoker`: checked
     /// against what they may do in the workspace, attributed to them and
     /// written into the child's history.
-    ///
-    /// # Errors
-    /// The participant may not, the child is not here, or it refused.
     pub(crate) fn apply_to(
         &self,
         child: &Id,

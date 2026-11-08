@@ -335,6 +335,79 @@ pub(crate) fn scoped_env(vars: &[(&'static str, &Path)]) -> tilo_test_env::Scope
     env
 }
 
+/// The registries entry naming the registry at `base_url` (owned by `owner`)
+/// as `name`.
+pub(crate) fn registry_config(name: &str, base_url: &str, owner: &SigningKey) -> RegistryConfig {
+    RegistryConfig {
+        name: name.into(),
+        base_url: base_url.into(),
+        owner_pubkey_hex: hex::encode(owner.verifying_key().to_bytes()),
+        enabled: true,
+        channel: tilo_app_package::version::ReleaseChannel::Stable,
+    }
+}
+
+/// A scratch device the CLI reads: its own config, cache and app-data
+/// directories, and the environment that points the CLI at them.
+#[allow(
+    dead_code,
+    reason = "the cache and app-data directories only need to outlive the device"
+)]
+pub(crate) struct Device {
+    pub config: tempfile::TempDir,
+    pub cache: tempfile::TempDir,
+    pub apps: tempfile::TempDir,
+    _env: tilo_test_env::ScopedEnv,
+}
+
+impl Device {
+    /// A device whose registries file names `registry` when given, with
+    /// `extra` variables set on top of the scratch directories.
+    pub(crate) fn new(registry: Option<RegistryConfig>, extra: &[(&'static str, &Path)]) -> Self {
+        let config = tempfile::tempdir().unwrap();
+        let cache = tempfile::tempdir().unwrap();
+        let apps = tempfile::tempdir().unwrap();
+        if let Some(registry) = registry {
+            std::fs::write(
+                config.path().join("registries.toml"),
+                toml::to_string_pretty(&RegistriesFile {
+                    registries: vec![registry],
+                })
+                .unwrap(),
+            )
+            .unwrap();
+        }
+        let installer = tilo_install_bin();
+        let mut env = scoped_env(&[
+            ("TILO_STORE_CONFIG_DIR", config.path()),
+            ("TILO_STORE_CACHE_DIR", cache.path()),
+            ("TILO_APPS_DATA_DIR", apps.path()),
+            ("TILO_INSTALL_BIN", &installer),
+        ]);
+        for (key, value) in extra {
+            env.set(key, value);
+        }
+        Self {
+            config,
+            cache,
+            apps,
+            _env: env,
+        }
+    }
+
+    /// Point the device's registries file at `registry`.
+    pub(crate) fn point_at(&self, registry: RegistryConfig) {
+        std::fs::write(
+            self.config.path().join("registries.toml"),
+            toml::to_string_pretty(&RegistriesFile {
+                registries: vec![registry],
+            })
+            .unwrap(),
+        )
+        .unwrap();
+    }
+}
+
 const PACKAGE_ID: &str = "so.tilo.catalogue-e2e";
 
 #[test]
@@ -365,31 +438,10 @@ fn registry_entries_install_update_and_refuse_corrupted_downloads() {
             Registry::start(signed_snapshot_json(entry, &owner), tapp)
         };
 
-        let config_dir = tempfile::tempdir().unwrap();
-        let cache_dir = tempfile::tempdir().unwrap();
-        let apps_dir = tempfile::tempdir().unwrap();
-        std::fs::write(
-            config_dir.path().join("registries.toml"),
-            toml::to_string_pretty(&RegistriesFile {
-                registries: vec![RegistryConfig {
-                    name: "local".into(),
-                    base_url: registry.base_url(),
-                    owner_pubkey_hex: hex::encode(owner.verifying_key().to_bytes()),
-                    enabled: true,
-                    channel: tilo_app_package::version::ReleaseChannel::Stable,
-                }],
-            })
-            .unwrap(),
-        )
-        .unwrap();
-
-        let installer_bin = tilo_install_bin();
-        let _env = scoped_env(&[
-            ("TILO_STORE_CONFIG_DIR", config_dir.path()),
-            ("TILO_STORE_CACHE_DIR", cache_dir.path()),
-            ("TILO_APPS_DATA_DIR", apps_dir.path()),
-            ("TILO_INSTALL_BIN", &installer_bin),
-        ]);
+        let _device = Device::new(
+            Some(registry_config("local", &registry.base_url(), &owner)),
+            &[],
+        );
 
         // 1. The registry's entry shows up as available.
         let listing = app_cli::available();
@@ -451,16 +503,7 @@ fn registry_entries_install_update_and_refuse_corrupted_downloads() {
         const UPDATE_ID: &str = "so.tilo.app-update-e2e";
         let publisher = test_publisher();
         let owner = SigningKey::from_bytes(&[12; 32]);
-        let config_dir = tempfile::tempdir().unwrap();
-        let cache_dir = tempfile::tempdir().unwrap();
-        let apps_dir = tempfile::tempdir().unwrap();
-        let installer = tilo_install_bin();
-        let _env = scoped_env(&[
-            ("TILO_STORE_CONFIG_DIR", config_dir.path()),
-            ("TILO_STORE_CACHE_DIR", cache_dir.path()),
-            ("TILO_APPS_DATA_DIR", apps_dir.path()),
-            ("TILO_INSTALL_BIN", &installer),
-        ]);
+        let device = Device::new(None, &[]);
 
         let publish = |version: &str, previous: Option<&SignedRegistrySnapshot>| {
             let tapp = author_tapp_version(UPDATE_ID, version, &publisher);
@@ -472,20 +515,7 @@ fn registry_entries_install_update_and_refuse_corrupted_downloads() {
             (artifact, registry_server, snapshot)
         };
         let configure = |registry: &Registry| {
-            std::fs::write(
-                config_dir.path().join("registries.toml"),
-                toml::to_string_pretty(&RegistriesFile {
-                    registries: vec![RegistryConfig {
-                        name: "local".into(),
-                        base_url: registry.base_url(),
-                        owner_pubkey_hex: hex::encode(owner.verifying_key().to_bytes()),
-                        enabled: true,
-                        channel: tilo_app_package::version::ReleaseChannel::Stable,
-                    }],
-                })
-                .unwrap(),
-            )
-            .unwrap();
+            device.point_at(registry_config("local", &registry.base_url(), &owner));
         };
 
         let (_v1_artifact, v1_registry, v1_snapshot) = publish("1.4.0", None);
@@ -536,31 +566,10 @@ fn registry_entries_install_update_and_refuse_corrupted_downloads() {
         let entry = signed_entry("so.tilo.catalogue-corrupt", &url, &good);
         let registry = Registry::start(signed_snapshot_json(entry, &owner), corrupted);
 
-        let config_dir = tempfile::tempdir().unwrap();
-        let cache_dir = tempfile::tempdir().unwrap();
-        let apps_dir = tempfile::tempdir().unwrap();
-        std::fs::write(
-            config_dir.path().join("registries.toml"),
-            toml::to_string_pretty(&RegistriesFile {
-                registries: vec![RegistryConfig {
-                    name: "local".into(),
-                    base_url: registry.base_url(),
-                    owner_pubkey_hex: hex::encode(owner.verifying_key().to_bytes()),
-                    enabled: true,
-                    channel: tilo_app_package::version::ReleaseChannel::Stable,
-                }],
-            })
-            .unwrap(),
-        )
-        .unwrap();
-
-        let installer = tilo_install_bin();
-        let _env = scoped_env(&[
-            ("TILO_STORE_CONFIG_DIR", config_dir.path()),
-            ("TILO_STORE_CACHE_DIR", cache_dir.path()),
-            ("TILO_APPS_DATA_DIR", apps_dir.path()),
-            ("TILO_INSTALL_BIN", &installer),
-        ]);
+        let _device = Device::new(
+            Some(registry_config("local", &registry.base_url(), &owner)),
+            &[],
+        );
 
         // The entry has to actually be on offer, or the refusal below would prove nothing about the bytes.
         let listing = app_cli::available();
@@ -655,31 +664,13 @@ fn publish_and_install(
     sign_entry(&mut entry, &key);
     let registry = Registry::start(signed_snapshot_json(entry, &owner), tapp);
 
-    let config_dir = tempfile::tempdir().unwrap();
-    let cache_dir = tempfile::tempdir().unwrap();
-    std::fs::write(
-        config_dir.path().join("registries.toml"),
-        toml::to_string_pretty(&RegistriesFile {
-            registries: vec![RegistryConfig {
-                name: "local".into(),
-                base_url: registry.base_url(),
-                owner_pubkey_hex: hex::encode(owner.verifying_key().to_bytes()),
-                enabled: true,
-                channel: tilo_app_package::version::ReleaseChannel::Stable,
-            }],
-        })
-        .unwrap(),
-    )
-    .unwrap();
-
-    let installer = tilo_install_bin();
-    let _env = scoped_env(&[
-        ("TILO_STORE_CONFIG_DIR", config_dir.path()),
-        ("TILO_STORE_CACHE_DIR", cache_dir.path()),
-        ("TILO_APPS_DATA_DIR", apps_dir),
-        ("TILO_INSTALL_BIN", &installer),
-        ("XDG_RUNTIME_DIR", runtime_dir),
-    ]);
+    let _device = Device::new(
+        Some(registry_config("local", &registry.base_url(), &owner)),
+        &[
+            ("TILO_APPS_DATA_DIR", apps_dir),
+            ("XDG_RUNTIME_DIR", runtime_dir),
+        ],
+    );
 
     app_cli::install::install(package_id)
         .unwrap_or_else(|e| panic!("install must succeed: {}", e.user_message()));
@@ -787,16 +778,7 @@ fn explicit_version_updates_an_existing_app_to_the_requested_signed_offer() {
     const ID: &str = "so.tilo.explicit-version-e2e";
     let publisher = test_publisher();
     let owner = SigningKey::from_bytes(&[12; 32]);
-    let config_dir = tempfile::tempdir().unwrap();
-    let cache_dir = tempfile::tempdir().unwrap();
-    let apps_dir = tempfile::tempdir().unwrap();
-    let installer = tilo_install_bin();
-    let _env = scoped_env(&[
-        ("TILO_STORE_CONFIG_DIR", config_dir.path()),
-        ("TILO_STORE_CACHE_DIR", cache_dir.path()),
-        ("TILO_APPS_DATA_DIR", apps_dir.path()),
-        ("TILO_INSTALL_BIN", &installer),
-    ]);
+    let device = Device::new(None, &[]);
     let mut artifacts = Vec::new();
     let mut versions = Vec::new();
     let mut latest = None;
@@ -815,20 +797,7 @@ fn explicit_version_updates_an_existing_app_to_the_requested_signed_offer() {
     entry.versions = versions;
     sign_entry(&mut entry, &SigningKey::from_bytes(&[11; 32]));
     let registry = Registry::start(signed_snapshot_json(entry, &owner), Vec::new());
-    std::fs::write(
-        config_dir.path().join("registries.toml"),
-        toml::to_string_pretty(&RegistriesFile {
-            registries: vec![RegistryConfig {
-                name: "local".into(),
-                base_url: registry.base_url(),
-                owner_pubkey_hex: hex::encode(owner.verifying_key().to_bytes()),
-                enabled: true,
-                channel: tilo_app_package::version::ReleaseChannel::Stable,
-            }],
-        })
-        .unwrap(),
-    )
-    .unwrap();
+    device.point_at(registry_config("local", &registry.base_url(), &owner));
     let install = |version: &str| {
         std::process::Command::new(tilo_test_env::package_binary!("app"))
             .args(["install", ID, "--version", version])

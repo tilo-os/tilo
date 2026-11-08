@@ -20,17 +20,11 @@ pub trait SendJournal {
     /// route and payload as STARTED before returning. Reuse, including reuse
     /// after restart/uncertainty, must fail. A failed call permits no wire write.
     /// The payload contains private text and needs host-owned private storage.
-    ///
-    /// # Errors
-    /// Refuses reused operations or unavailable/non-durable storage.
     fn begin(&mut self, operation: &str, route: &Route, payload: &[u8])
     -> Result<(), JournalError>;
 
     /// Durably store the observed result. Errors after submission mean uncertain
     /// state to the caller; they never permit another initial submission.
-    ///
-    /// # Errors
-    /// Returns an error if the result cannot be durably recorded.
     fn complete(&mut self, operation: &str, result: Completion) -> Result<(), JournalError>;
 }
 
@@ -121,18 +115,12 @@ impl<R: BufRead, W: Write> Session<R, W> {
             .map_err(CheckedSendError::Transport)
     }
     /// Bind host-owned handles to one explicitly selected account.
-    ///
-    /// # Errors
-    /// Refuses invalid account identifiers.
     pub fn new(account: String, reader: R, writer: W) -> Result<Self, Error> {
         Self::for_account(account.clone(), account, reader, writer)
     }
 
     /// Bind a Tilo account ID to its host-verified Signal phone number or ACI.
     /// Changing the binding requires a new host linking generation/journal.
-    ///
-    /// # Errors
-    /// Refuses invalid account identifiers.
     pub fn for_account(
         account: String,
         signal_account: String,
@@ -275,9 +263,6 @@ impl<R: BufRead, W: Write> Session<R, W> {
 
     /// Receive supported direct text outside a send operation. Unsupported
     /// events remain in the queue for a different explicitly supported handler.
-    ///
-    /// # Errors
-    /// Refuses oversized/truncated frames, other accounts and unsupported events.
     pub fn receive(&mut self) -> Result<Incoming, Error> {
         if !self.usable {
             return Err(Error::ConnectionUnavailable);

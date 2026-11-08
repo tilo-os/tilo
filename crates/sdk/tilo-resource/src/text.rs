@@ -29,9 +29,6 @@ pub const AUTHOR_MARK: &str = "author";
 /// Mark `inserted`, just written at the document text index `at` of the text
 /// object `obj`, as written by the author of the action applying now. Nothing
 /// is marked outside an action or for an action with no invoker.
-///
-/// # Errors
-/// Returns the document's error when the mark cannot be written.
 pub fn mark_authored(
     doc: &mut impl Transactable,
     obj: &ObjId,
@@ -89,9 +86,6 @@ impl PlainText {
 /// Copy the text object `from` onto the new text object `into`: its
 /// characters and its marks. A record's migration moves a whole value, and a
 /// text's formatting is part of what it is.
-///
-/// # Errors
-/// Returns the document's error when the text cannot be read or marked.
 pub fn copy_whole(
     doc: &mut Doc,
     from: &ObjId,

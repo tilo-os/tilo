@@ -344,9 +344,6 @@ fn token(shared: &Mutex<State>, form: &BTreeMap<String, String>) -> Reply {
 
 /// Play the system browser: `GET` `url` and follow `Location` redirects
 /// (plain `http` only) until a page answers without one. Returns that page.
-///
-/// # Errors
-/// A description of the connection or protocol failure.
 pub fn browse(url: &str) -> Result<String, String> {
     let mut current = url.to_string();
     for _ in 0..5 {

@@ -60,8 +60,6 @@ impl HttpService {
     /// proxy. Authentication still comes exclusively from the injected host
     /// authorizer; binding publicly requires host TLS via `serve_io` instead.
     /// Dropping this future or resolving `shutdown` aborts every connection.
-    /// # Errors
-    /// Rejects non-loopback listeners or failures accepting connections.
     pub async fn serve_loopback<F>(
         &self,
         listener: tokio::net::TcpListener,

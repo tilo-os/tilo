@@ -96,10 +96,6 @@ impl GovernancePump {
     /// ([`ChannelKeyAccess::pump_until_due`]) is due, whichever comes first;
     /// with nothing due it waits for a poke alone. `access`'s
     /// [`ChannelKeyAccess::with_wake`] should be `park`'s own poke.
-    ///
-    /// # Errors
-    ///
-    /// The thread could not start.
     pub fn spawn(
         name: &str,
         park: Arc<GovernancePark>,

@@ -89,9 +89,8 @@ pub(crate) fn follow_directory(
     notices: &DesktopNotifications,
     add_workspace: &dyn Fn(&directory::Joined) -> Result<(), String>,
 ) {
-    // A session the host set up to join one workspace joins it with nobody
-    // at the directory: what was granted is taken and added whether or not
-    // the sheet is open.
+    // A session the host set up to join one workspace joins it with nobody at the directory: what
+    // was granted is taken and added whether or not the sheet is open.
     let answered = directory.answered();
     for joined in directory.take_joined() {
         match add_workspace(&joined) {
@@ -132,9 +131,9 @@ pub(crate) fn follow_directory(
             seat.show(directory::view(directory, handle));
         }
     }
-    // A join the person chose closed the sheet when it started. What became
-    // of it arrives after, so a join that failed is said where the person is
-    // now — a banner — rather than in a sheet that left.
+    // A join the person chose closed the sheet when it started. What became of it arrives after, so
+    // a join that failed is said where the person is now — a banner — rather than in a sheet that
+    // left.
     for said in directory.take_failures_to_say() {
         failure_notice(notices, &said);
     }
@@ -161,8 +160,8 @@ pub(crate) fn follow_directory(
                     seat.show(directory::view(directory, handle));
                     continue;
                 }
-                // One workspace answers the search: Enter takes it, opening
-                // it when this computer holds it and joining it otherwise.
+                // One workspace answers the search: Enter takes it, opening it when this computer
+                // holds it and joining it otherwise.
                 let only: Vec<_> = seat
                     .directory()
                     .listings
@@ -184,8 +183,8 @@ pub(crate) fn follow_directory(
             }
 
             DirectoryEffect::LinkOrCode { text } => {
-                // A link or a code the person pasted joins at once: what it
-                // is decides where, and the sheet says so until it lands.
+                // A link or a code the person pasted joins at once: what it is decides where, and
+                // the sheet says so until it lands.
                 if let Err(error) = directory::take(directory, &text) {
                     directory.set_note(Some(error));
                 }
@@ -206,9 +205,9 @@ pub(crate) fn follow_directory(
     }
 }
 
-/// Go to the workspace `key` names, which this computer holds, and be done
-/// with the directory. A workspace the desk no longer admits is said where
-/// the person picked it, and the directory stays up to pick another.
+/// Go to the workspace `key` names, which this computer holds, and be done with the directory. A
+/// workspace the desk no longer admits is said where the person picked it, and the directory stays
+/// up to pick another.
 fn open_listed(
     seat: &DirectorySeat,
     handle: &DesktopHandle,
@@ -228,8 +227,8 @@ fn open_listed(
     seat.presentation().close();
 }
 
-/// Join the listing `key` names, one join at a time: the row joining says
-/// so, and pressing it again says it is on its way.
+/// Join the listing `key` names, one join at a time: the row joining says so, and pressing it again
+/// says it is on its way.
 fn join_listed(
     seat: &DirectorySeat,
     handle: &DesktopHandle,
@@ -237,8 +236,8 @@ fn join_listed(
     key: &str,
 ) {
     let Some(listing) = directory.listing(key) else {
-        // The row was drawn from a list a later read replaced: answer the
-        // press, rather than leave the row saying nothing.
+        // The row was drawn from a list a later read replaced: answer the press, rather than leave
+        // the row saying nothing.
         directory.set_note(Some(tilo_sheets::word("directory-listing-gone")));
         seat.show(directory::view(directory, handle));
         return;
@@ -254,8 +253,8 @@ fn join_listed(
         Some(_) => return,
         None => match directory::join(directory, key, &listing) {
             Ok(()) => {
-                // The join is on its way: the sheet is done with it, and the
-                // person is told when it lands (or why it did not).
+                // The join is on its way: the sheet is done with it, and the person is told when it
+                // lands (or why it did not).
                 seat.presentation().close();
                 return;
             }
@@ -265,8 +264,8 @@ fn join_listed(
     seat.show(directory::view(directory, handle));
 }
 
-/// Say the person joined `name`, where they are now: a note that the
-/// workspace is theirs, its windows open there.
+/// Say the person joined `name` , where they are now: a note that the workspace is theirs, its
+/// windows open there.
 fn joined_notice(notices: &DesktopNotifications, name: &str) {
     let mut notice = Notification::new(
         tilo_desktop_surface::i18n::t_args("session-joined-workspace", &[("name", name.into())]),
@@ -276,8 +275,8 @@ fn joined_notice(notices: &DesktopNotifications, name: &str) {
     notices.post(notice);
 }
 
-/// Say a join the person chose did not happen, and why, where they are: the
-/// workspace directory's own sentence, as a banner.
+/// Say a join the person chose did not happen, and why, where they are: the workspace directory's
+/// own sentence, as a banner.
 fn failure_notice(notices: &DesktopNotifications, said: &str) {
     let notice = Notification::new(
         tilo_desktop_surface::i18n::t("session-join-failed-title"),
@@ -287,16 +286,15 @@ fn failure_notice(notices: &DesktopNotifications, said: &str) {
     notices.post(notice);
 }
 
-/// The site `text` names, when what was typed into the search is one: a
-/// word that is no address looks at the list instead.
+/// The site `text` names, when what was typed into the search is one: a word that is no address
+/// looks at the list instead.
 fn typed_site(text: &str) -> Option<String> {
     let text = text.trim();
     (!text.is_empty() && text.contains('.') && !text.chars().any(char::is_whitespace))
         .then(|| text.to_owned())
 }
 
-/// Say the person left the workspace `name`, and what became of its
-/// windows.
+/// Say the person left the workspace `name` , and what became of its windows.
 pub(crate) fn left_workspace(notices: &DesktopNotifications, name: &str) {
     let mut notice = Notification::new(
         tilo_desktop_surface::i18n::t_args("session-left-workspace", &[("name", name.into())]),
@@ -306,12 +304,10 @@ pub(crate) fn left_workspace(notices: &DesktopNotifications, name: &str) {
     notices.post(notice);
 }
 
-/// The file beside the desk that keeps the person's list of their own
-/// workspaces.
+/// The file beside the desk that keeps the person's list of their own workspaces.
 const FILE: &str = "personal-workspaces.postcard";
 
-/// One of the person's workspaces, as their list holds it on every device of
-/// theirs.
+/// One of the person's workspaces, as their list holds it on every device of theirs.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct Listed {
     /// What the workspace is called.
@@ -320,8 +316,8 @@ pub(crate) struct Listed {
     pub(crate) host: Option<[u8; 32]>,
 }
 
-/// One of the person's devices as a workspace's settings offer it: whether
-/// the workspace shows there.
+/// One of the person's devices as a workspace's settings offer it: whether the workspace shows
+/// there.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct DeviceChoice {
     /// The device, by its key.
@@ -334,8 +330,8 @@ pub(crate) struct DeviceChoice {
     pub(crate) here: bool,
 }
 
-/// A workspace the person's list names that this device does not hold, and the
-/// device hosting it, which serves it to the person's other devices.
+/// A workspace the person's list names that this device does not hold, and the device hosting it,
+/// which serves it to the person's other devices.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct ToEnter {
     /// The workspace it names.
@@ -344,8 +340,8 @@ pub(crate) struct ToEnter {
     pub(crate) name: String,
     /// The device hosting it.
     pub(crate) host: [u8; 32],
-    /// On this desk already, held as the device this machine was copied
-    /// from: it is entered as this device without leaving the desk.
+    /// On this desk already, held as the device this machine was copied from: it is entered as this
+    /// device without leaving the desk.
     pub(crate) held: bool,
 }
 
@@ -356,17 +352,16 @@ pub(crate) struct Adoption {
     pub(crate) changed: bool,
     /// Workspaces to open here, at the device hosting them.
     pub(crate) enter: Vec<ToEnter>,
-    /// Workspaces to take off this desk: gone from the list, deleted on
-    /// another device, or no longer shown on this one.
+    /// Workspaces to take off this desk: gone from the list, deleted on another device, or no
+    /// longer shown on this one.
     pub(crate) release: Vec<WorkspaceId>,
 }
 
-/// The person's list of their own workspaces, as this device holds it and
-/// last agreed it with their others.
+/// The person's list of their own workspaces, as this device holds it and last agreed it with their
+/// others.
 pub(crate) struct Personal {
-    /// This device's collaboration identity: the list's updates are signed
-    /// with its key, and its certificate names the device to the person's
-    /// others.
+    /// This device's collaboration identity: the list's updates are signed with its key, and its
+    /// certificate names the device to the person's others.
     identity: tilo_network_actor::HostIdentity,
     directory: WorkspaceDirectory,
     /// This device, as the list's device registers name it.
@@ -375,38 +370,32 @@ pub(crate) struct Personal {
     agreed: BTreeMap<WorkspaceId, Listed>,
     /// Their order at the last reconciliation.
     agreed_order: Vec<WorkspaceId>,
-    /// Listed workspaces handed to the desk to open, until their workspace is
-    /// here: none of them is taken for one deleted here meanwhile.
+    /// Listed workspaces handed to the desk to open, until their workspace is here: none of them is
+    /// taken for one deleted here meanwhile.
     entering: BTreeSet<WorkspaceId>,
-    /// Workspaces on this desk that are someone else's, joined through their
-    /// door: the person's other devices join them each on their own, so the
-    /// list never names them.
+    /// Workspaces on this desk that are someone else's, joined through their door: the person's
+    /// other devices join them each on their own, so the list never names them.
     borrowed: BTreeSet<WorkspaceId>,
-    /// Where each workspace this device holds is hosted, as this device's
-    /// workspace itself says: the list names that device, never this one, so a
-    /// device of the person's that opens the workspace from the list enters it
-    /// at the device that hosts it.
+    /// Where each workspace this device holds is hosted, as this device's workspace itself says:
+    /// the list names that device, never this one, so a device of the person's that opens the
+    /// workspace from the list enters it at the device that hosts it.
     hosts: BTreeMap<WorkspaceId, [u8; 32]>,
-    /// The entries asked for of the person's other devices, by workspace and
-    /// the host hint they were asked at: one ask per hint, so a workspace whose
-    /// host has not answered yet is not asked for again on every pass. A device
-    /// of the person's that just came up may carry a newer hint, so its arrival
-    /// empties this.
+    /// The entries asked for of the person's other devices, by workspace and the host hint they
+    /// were asked at: one ask per hint, so a workspace whose host has not answered yet is not asked
+    /// for again on every pass. A device of the person's that just came up may carry a newer hint,
+    /// so its arrival empties this.
     asked: BTreeMap<WorkspaceId, tilo_peer_state::join::TransportHint>,
-    /// Set when the list changed without a pass over this desk writing it —
-    /// a device shown or kept off — so the person's other devices are owed
-    /// the list even though this desk wrote nothing.
+    /// Set when the list changed without a pass over this desk writing it — a device shown or kept
+    /// off — so the person's other devices are owed the list even though this desk wrote nothing.
     untold: bool,
-    /// Where the list and `agreed` survive a restart; `None` keeps them in
-    /// memory only.
+    /// Where the list and `agreed` survive a restart; `None` keeps them in memory only.
     store: Option<PathBuf>,
-    /// What the desk offered the last time [`Self::publish_local`] ran to
-    /// the end with everything written. While the desk offers the same and
-    /// neither the list nor `agreed` moved since, running it again would
-    /// write nothing, so it is skipped.
+    /// What the desk offered the last time [`Self::publish_local`] ran to the end with everything
+    /// written. While the desk offers the same and neither the list nor `agreed` moved since,
+    /// running it again would write nothing, so it is skipped.
     published: Option<PublishInputs>,
-    /// Whether the list this computer kept could not be read, until the
-    /// person is told: the list starts empty for it.
+    /// Whether the list this computer kept could not be read, until the person is told: the list
+    /// starts empty for it.
     unreadable: bool,
 }
 
@@ -438,10 +427,9 @@ impl PublishInputs {
                 .iter()
                 .filter(|workspace| !workspace.id().is_nil() && !borrowed.contains(&workspace.id()))
                 .map(|workspace| {
-                    // Where the workspace itself says it is hosted first: a
-                    // device that joined one hosted elsewhere must not name
-                    // itself, or the person's other devices enter a workspace
-                    // that is not here.
+                    // Where the workspace itself says it is hosted first: a device that joined one
+                    // hosted elsewhere must not name itself, or the person's other devices enter a
+                    // workspace that is not here.
                     let host = hosts
                         .get(&workspace.id())
                         .copied()
@@ -496,19 +484,17 @@ fn entries_of(directory: &WorkspaceDirectory) -> Vec<(WorkspaceId, WorkspaceMeta
     out
 }
 
-/// Whether `entry` shows on `device`: every device shows it unless it opted
-/// out, so a device linked later shows every workspace.
+/// Whether `entry` shows on `device` : every device shows it unless it opted out, so a device
+/// linked later shows every workspace.
 fn shows_on(entry: &WorkspaceMeta, device: &[u8; 32]) -> bool {
     !entry.kept_off_devices.contains(device)
 }
 
 impl Personal {
-    /// The person's list as this device holds it, kept beside the desk under
-    /// `state`; in memory only when there is no state directory.
-    ///
-    /// A file this build cannot read starts empty: the first pass lists this
-    /// device's workspaces again, and the person's other devices answer with
-    /// theirs.
+    /// The person's list as this device holds it, kept beside the desk under `state` ; in memory
+    /// only when there is no state directory.
+    /// A file this build cannot read starts empty: the first pass lists this device's workspaces
+    /// again, and the person's other devices answer with theirs.
     pub(crate) fn open(identity: tilo_network_actor::HostIdentity, state: Option<&Path>) -> Self {
         let user = identity.device_cert.user_public_key;
         let device = identity.device_cert.device_public_key;
@@ -583,15 +569,15 @@ impl Personal {
         personal
     }
 
-    /// Whether the list this computer kept could not be read, once: the person
-    /// is told so an empty list is not taken for workspaces that are gone.
+    /// Whether the list this computer kept could not be read, once: the person is told so an empty
+    /// list is not taken for workspaces that are gone.
     pub(crate) fn take_unreadable(&mut self) -> bool {
         std::mem::take(&mut self.unreadable)
     }
 
-    /// `workspace` arrived from a door: it is the workspace of whoever let the
-    /// person in, not one of their own, so their other devices are never told
-    /// to open it themselves — each joins it through its own invitation.
+    /// `workspace` arrived from a door: it is the workspace of whoever let the person in, not one
+    /// of their own, so their other devices are never told to open it themselves — each joins it
+    /// through its own invitation.
     pub(crate) fn joined(&mut self, workspace: WorkspaceId) {
         if workspace.is_nil() || !self.borrowed.insert(workspace) {
             return;
@@ -600,17 +586,15 @@ impl Personal {
         self.persist();
     }
 
-    /// The workspaces on this device's desk that are someone else's, joined through
-    /// their door: whose workspace they are is their host's governance's to
-    /// say, not this person's.
+    /// The workspaces on this device's desk that are someone else's, joined through their door:
+    /// whose workspace they are is their host's governance's to say, not this person's.
     pub(crate) fn borrowed(&self) -> &BTreeSet<WorkspaceId> {
         &self.borrowed
     }
 
-    /// Whether this device is the one that made `workspace`: the list names
-    /// this device as its host, or names no host yet for a workspace a pass
-    /// has not listed. A workspace another device of the person's made is
-    /// hosted there, and one this device is entering from there is not its
+    /// Whether this device is the one that made `workspace` : the list names this device as its
+    /// host, or names no host yet for a workspace a pass has not listed. A workspace another device
+    /// of the person's made is hosted there, and one this device is entering from there is not its
     /// to make: neither is founded here.
     pub(crate) fn made_here(&self, workspace: WorkspaceId) -> bool {
         if self.entering.contains(&workspace) {
@@ -623,19 +607,16 @@ impl Personal {
             .is_none_or(|host| host == self.device)
     }
 
-    /// What this person decided about the community at `site`, as all their
-    /// devices hold it: `None` while they decided nothing, which is when
-    /// their community is joined for them.
+    /// What this person decided about the community at `site` , as all their devices hold it:
+    /// `None` while they decided nothing, which is when their community is joined for them.
     pub(crate) fn community(&self, site: &str) -> Option<CommunityState> {
         self.directory.community(site)
     }
 
-    /// Record what this person decided about the community at `site`:
-    /// [`CommunityState::Pending`] as their door is asked, and
-    /// [`CommunityState::Decided`] once the site let them in — their decision
-    /// from then on, including after they leave it. It is the person's, not
-    /// this desk's, so their other devices are told of it. Whether it changed
-    /// anything.
+    /// Record what this person decided about the community at `site` : [`CommunityState::Pending`]
+    /// as their door is asked, and [`CommunityState::Decided`] once the site let them in — their
+    /// decision from then on, including after they leave it. It is the person's, not this desk's,
+    /// so their other devices are told of it. Whether it changed anything.
     pub(crate) fn decide_community(&mut self, site: &str, state: CommunityState) -> bool {
         let changed = match self.directory.set_community(site, state) {
             Ok(changed) => changed,
@@ -645,8 +626,8 @@ impl Personal {
             }
         };
         if changed {
-            // Not a pass over the desk, which is what tells the person's
-            // other devices: this device says so itself.
+            // Not a pass over the desk, which is what tells the person's other devices: this device
+            // says so itself.
             self.published = None;
             self.untold = true;
             self.persist();
@@ -726,11 +707,9 @@ impl Personal {
                 }
             }
         }
-        // A workspace agreed on and gone from this desk was taken off it
-        // here.
+        // A workspace agreed on and gone from this desk was taken off it here.
         let present: BTreeSet<WorkspaceId> = inputs.order.iter().copied().collect();
-        // A listed workspace being entered has no workspace here yet; it was
-        // not deleted here.
+        // A listed workspace being entered has no workspace here yet; it was not deleted here.
         self.entering
             .retain(|workspace| !present.contains(workspace));
         let deleted: Vec<WorkspaceId> = self
@@ -753,10 +732,9 @@ impl Personal {
         changed
     }
 
-    /// Give the workspaces this desk holds positions in the list that match
-    /// their order here, when that order moved since the last agreement. Only
-    /// entries out of place get a new position, so a concurrent move of
-    /// another workspace on another device still lands.
+    /// Give the workspaces this desk holds positions in the list that match their order here, when
+    /// that order moved since the last agreement. Only entries out of place get a new position, so
+    /// a concurrent move of another workspace on another device still lands.
     fn publish_order(&mut self, order: &[WorkspaceId]) -> bool {
         let here: Vec<WorkspaceId> = order
             .iter()
@@ -811,10 +789,9 @@ impl Personal {
         changed
     }
 
-    /// Read where each workspace this device holds is hosted, as the
-    /// workspaces themselves say: the list names the device that hosts a
-    /// workspace, so a device of the person's that opens one from the list
-    /// enters it there rather than at the device that happened to join it.
+    /// Read where each workspace this device holds is hosted, as the workspaces themselves say: the
+    /// list names the device that hosts a workspace, so a device of the person's that opens one
+    /// from the list enters it there rather than at the device that happened to join it.
     fn refresh_hosts(&mut self, engine: Option<&crate::engine::Engine>) {
         let Some(engine) = engine else {
             return;
@@ -826,19 +803,16 @@ impl Personal {
             .collect();
     }
 
-    /// Bring what changed in the list since the last agreement onto this
-    /// device's desk: the person's order, and which listed workspaces this device
-    /// lets go (gone from the list, or no longer shown on this one) or opens
-    /// at the device hosting them (listed, shown here, and not on this desk).
-    ///
-    /// A listed workspace is entered only at a host the list names: a device
-    /// must never guess where someone's workspace lives, so an entry naming
-    /// none is left until one lists it. This device enters nothing at itself.
-    ///
-    /// A workspace on this desk whose governance does not know this device
-    /// (`unknown_here`) is one a machine copied from another holds as the
-    /// device it was copied from: it is entered as this device, at the device
-    /// hosting it, and stays on the desk meanwhile.
+    /// Bring what changed in the list since the last agreement onto this device's desk: the
+    /// person's order, and which listed workspaces this device lets go (gone from the list, or no
+    /// longer shown on this one) or opens at the device hosting them (listed, shown here, and not
+    /// on this desk).
+    /// A listed workspace is entered only at a host the list names: a device must never guess where
+    /// someone's workspace lives, so an entry naming none is left until one lists it. This device
+    /// enters nothing at itself.
+    /// A workspace on this desk whose governance does not know this device (`unknown_here`) is one
+    /// a machine copied from another holds as the device it was copied from: it is entered as this
+    /// device, at the device hosting it, and stays on the desk meanwhile.
     pub(crate) fn adopt_into(
         &mut self,
         handle: &DesktopHandle,
@@ -863,8 +837,8 @@ impl Personal {
                 name: meta.name.clone(),
                 host: meta.host_devices.first().copied(),
             };
-            // On this desk already: nothing to enter, unless it is held as
-            // the device this machine was copied from.
+            // On this desk already: nothing to enter, unless it is held as the device this machine
+            // was copied from.
             if present.contains(workspace) {
                 if let Some(host) = entry.host.filter(|host| *host != self.device)
                     && unknown_here(*workspace)
@@ -907,8 +881,8 @@ impl Personal {
             }
         }
         adoption.changed = self.arrange(handle, &present, &shown_here);
-        // Both run on every pass: the list is written, and what the desk
-        // offered read again, only when one of the two moved.
+        // Both run on every pass: the list is written, and what the desk offered read again, only
+        // when one of the two moved.
         if adoption.changed || self.agreed != agreed {
             self.published = None;
             self.persist();
@@ -916,8 +890,8 @@ impl Personal {
         adoption
     }
 
-    /// Put this desk's workspaces in the person's order: the workspaces the list
-    /// names, in its order, then the rest as they were. Whether they moved.
+    /// Put this desk's workspaces in the person's order: the workspaces the list names, in its
+    /// order, then the rest as they were. Whether they moved.
     fn arrange(
         &mut self,
         handle: &DesktopHandle,
@@ -950,12 +924,10 @@ impl Personal {
         true
     }
 
-    /// The person's devices as a workspace's settings offer them, this device
-    /// always among them: whether the workspace shows on each, and which one is
-    /// this device.
-    ///
-    /// Empty for a workspace the person's list does not name: one joined
-    /// through someone else's door is not theirs to show or keep off.
+    /// The person's devices as a workspace's settings offer them, this device always among them:
+    /// whether the workspace shows on each, and which one is this device.
+    /// Empty for a workspace the person's list does not name: one joined through someone else's
+    /// door is not theirs to show or keep off.
     pub(crate) fn device_choices(&self, workspace: WorkspaceId) -> Vec<DeviceChoice> {
         let Some(entry) = entries_of(&self.directory)
             .into_iter()
@@ -987,7 +959,7 @@ impl Personal {
         *device == self.device
     }
 
-    /// Whether the workspace shows on `device`.
+    /// Whether the workspace shows on `device` .
     pub(crate) fn shown_on(&self, workspace: WorkspaceId, device: &[u8; 32]) -> Option<bool> {
         let entry = entries_of(&self.directory)
             .into_iter()
@@ -996,9 +968,8 @@ impl Personal {
         Some(shows_on(&entry, device))
     }
 
-    /// Show the workspace on `device`, or keep it off there. Only
-    /// the devices that opted out are named, so a device linked later shows
-    /// it. Returns whether the list changed.
+    /// Show the workspace on `device` , or keep it off there. Only the devices that opted out are
+    /// named, so a device linked later shows it. Returns whether the list changed.
     pub(crate) fn set_shown(
         &mut self,
         workspace: WorkspaceId,
@@ -1016,8 +987,8 @@ impl Personal {
         {
             return false;
         }
-        // Writing the choice is not a pass over the desk, which is what
-        // tells the person's other devices: this device says so itself.
+        // Writing the choice is not a pass over the desk, which is what tells the person's other
+        // devices: this device says so itself.
         self.published = None;
         self.untold = true;
         self.persist();
@@ -1043,8 +1014,8 @@ impl Personal {
         Ok(())
     }
 
-    /// Whether `update` already holds everything this device's list does, so
-    /// answering it with this device's own would tell its author nothing.
+    /// Whether `update` already holds everything this device's list does, so answering it with this
+    /// device's own would tell its author nothing.
     pub(crate) fn covered_by(&mut self, update: &DirectoryUpdate) -> bool {
         self.directory.covered_by(&update.delta)
     }
@@ -1077,8 +1048,8 @@ impl Personal {
     }
 }
 
-/// Put `tree`'s workspaces in the order `wanted` names: those it names, in
-/// its order, then the rest as they were. Whether they moved.
+/// Put `tree` 's workspaces in the order `wanted` names: those it names, in its order, then the
+/// rest as they were. Whether they moved.
 fn reorder(tree: &mut DesktopTree, wanted: &[WorkspaceId]) -> bool {
     let before: Vec<u64> = tree
         .workspaces
@@ -1101,29 +1072,26 @@ fn reorder(tree: &mut DesktopTree, wanted: &[WorkspaceId]) -> bool {
     before != after
 }
 
-/// Keep the list where it is kept: the state writer takes the write, so a pass
-/// that changes it does not wait for the disk, and the latest list wins over
-/// one still being written.
+/// Keep the list where it is kept: the state writer takes the write, so a pass that changes it does
+/// not wait for the disk, and the latest list wins over one still being written.
 fn keep(path: &Path, bytes: &[u8]) {
     tilo_durable_writer::keep(path.to_path_buf(), bytes.to_vec());
 }
 
-/// The person's own workspaces as this computer can keep them: nothing when
-/// this computer knows no identity to keep them for.
+/// The person's own workspaces as this computer can keep them: nothing when this computer knows no
+/// identity to keep them for.
 pub(crate) fn personal_for(state: Option<&Path>) -> Option<RefCell<Personal>> {
     crate::sync::device_identity().map(|identity| RefCell::new(Personal::open(identity, state)))
 }
 
-/// Take the workspace lists the person's other devices sent since the last
-/// pass: whether anything of theirs was taken, and whether a device that sent
-/// one is missing something of this one's.
+/// Take the workspace lists the person's other devices sent since the last pass: whether anything
+/// of theirs was taken, and whether a device that sent one is missing something of this one's.
 fn take_personal(personal: &mut Personal, sync: &crate::sync::Client) -> (bool, bool) {
     let mut taken = false;
     let mut missing = false;
     for (update, author) in sync.take_personal() {
-        // Asked before the merge: once theirs is taken, answering would only
-        // repeat it. Asked first, it says whether the device that sent it is
-        // missing something of this one's.
+        // Asked before the merge: once theirs is taken, answering would only repeat it. Asked
+        // first, it says whether the device that sent it is missing something of this one's.
         let behind = !personal.covered_by(&update);
         match personal.merge(&update, &author, tilo_clock::unix_now_ns()) {
             Ok(()) => {
@@ -1139,29 +1107,23 @@ fn take_personal(personal: &mut Personal, sync: &crate::sync::Client) -> (bool, 
 }
 
 impl crate::Shared {
-    /// Give every workspace on the desk that is nobody's yet the owner its
-    /// governance names: the person at this device for their own — the one
-    /// seeded here, one made here, or one made on another device of theirs —
-    /// and, for a workspace joined through its door, the owner its host's
-    /// governance has, which this device learns when the workspace comes here. A
-    /// workspace whose owner is not known here keeps none, and never takes
-    /// this person's: a host's workspace is not theirs to claim. One naming
-    /// someone else keeps that name: ownership moves through the
+    /// Give every workspace on the desk that is nobody's yet the owner its governance names: the
+    /// person at this device for their own — the one seeded here, one made here, or one made on
+    /// another device of theirs — and, for a workspace joined through its door, the owner its
+    /// host's governance has, which this device learns when the workspace comes here. A workspace
+    /// whose owner is not known here keeps none, and never takes this person's: a host's workspace
+    /// is not theirs to claim. One naming someone else keeps that name: ownership moves through the
     /// workspace's own governance, never here.
-    ///
-    /// Run after every pass, so a desk this device kept from before its
-    /// workspaces were anyone's is claimed the first time it is shown, and a
-    /// workspace made here or joined here is claimed as it arrives. A desk
-    /// kept from before this device had an identity is theirs all the same:
-    /// one naming them as the login account at it is claimed for who they
-    /// are now. A pass with nothing to claim writes nothing.
-    ///
-    /// Who each workspace has in it follows the same rule: what the
-    /// workspace's own governance here names is what the desk shows, so a
-    /// change another member's device made shows on this desk.
+    /// Run after every pass, so a desk this device kept from before its workspaces were anyone's is
+    /// claimed the first time it is shown, and a workspace made here or joined here is claimed as
+    /// it arrives. A desk kept from before this device had an identity is theirs all the same: one
+    /// naming them as the login account at it is claimed for who they are now. A pass with nothing
+    /// to claim writes nothing.
+    /// Who each workspace has in it follows the same rule: what the workspace's own governance here
+    /// names is what the desk shows, so a change another member's device made shows on this desk.
     pub(crate) fn own_workspaces(&self) {
-        // A list this computer kept but could not read starts empty here, so
-        // the person is told why instead of finding their workspaces gone.
+        // A list this computer kept but could not read starts empty here, so the person is told why
+        // instead of finding their workspaces gone.
         if let Some(personal) = &self.personal
             && personal.borrow_mut().take_unreadable()
         {
@@ -1210,19 +1172,18 @@ impl crate::Shared {
         if changed {
             self.handle.replace_tree(tree);
         }
-        // A workspace founded before its record said where its own host is
-        // reached is named now: a workspace hosted here is reached at this
-        // device, and nothing reaches its records until the record says so.
+        // A workspace founded before its record said where its own host is reached is named now: a
+        // workspace hosted here is reached at this device, and nothing reaches its records until
+        // the record says so.
         if let (Some(engine), Some(endpoint)) = (&self.engine, &endpoint) {
             engine.name_own_hosts(endpoint);
         }
         self.project_governance();
     }
 
-    /// Who the governance of a workspace names as its owner: its own, when
-    /// this device holds it, else the person at this device for a workspace of
-    /// their own that no governance here has yet. `None` for one joined through
-    /// a door whose host has not said whose it is here.
+    /// Who the governance of a workspace names as its owner: its own, when this device holds it,
+    /// else the person at this device for a workspace of their own that no governance here has yet.
+    /// `None` for one joined through a door whose host has not said whose it is here.
     fn owner_of(&self, workspace: WorkspaceId, borrowed: &BTreeSet<WorkspaceId>) -> Option<String> {
         if let Some(engine) = &self.engine
             && let Ok(owner) = engine.owner_of(&workspace.to_string())
@@ -1232,9 +1193,9 @@ impl crate::Shared {
         (!borrowed.contains(&workspace)).then(|| self.person.clone())
     }
 
-    /// Open a listed workspace on this desk, named `name`, through the
-    /// desk's own action for making one: a workspace of the person's that
-    /// their other device made opens here without joining anything anew.
+    /// Open a listed workspace on this desk, named `name` , through the desk's own action for
+    /// making one: a workspace of the person's that their other device made opens here without
+    /// joining anything anew.
     pub(crate) fn add_workspace(&self, workspace: &str, name: &str) -> Result<(), String> {
         let args = serde_json::Map::from_iter([
             (
@@ -1246,28 +1207,24 @@ impl crate::Shared {
         self.ask_of_desk("new-workspace", &args)
     }
 
-    /// Give this computer the workspace a join was granted, and redeem the
-    /// invitation it was granted with: what the workspace held before this
-    /// device arrived comes with it.
-    ///
-    /// A joined workspace the desk does not already hold is admitted before
-    /// it gets a slot ([`Self::redeem_invitation`]): a host that refuses
-    /// leaves the person where they were, with no empty workspace to arrive
-    /// in and vanish from.
+    /// Give this computer the workspace a join was granted, and redeem the invitation it was
+    /// granted with: what the workspace held before this device arrived comes with it.
+    /// A joined workspace the desk does not already hold is admitted before it gets a slot
+    /// ([`Self::redeem_invitation`]): a host that refuses leaves the person where they were, with
+    /// no empty workspace to arrive in and vanish from.
     pub(crate) fn add_joined_workspace(&self, joined: &directory::Joined) -> Result<(), String> {
         let Some(workspace) = WorkspaceId::parse(&joined.granted.workspace) else {
             return Err(tilo_desktop_surface::i18n::t(
                 "desktop-joined-workspace-unknown",
             ));
         };
-        // A workspace a door let the person into is whoever let them in's:
-        // the person's other devices join it each through their own
-        // invitation, so their list never names it.
+        // A workspace a door let the person into is whoever let them in's: the person's other
+        // devices join it each through their own invitation, so their list never names it.
         if let Some(personal) = &self.personal {
             personal.borrow_mut().joined(workspace);
         }
-        // A session the host started with a short link learns what it joined
-        // only here, and the authority it waits for is asked of it.
+        // A session the host started with a short link learns what it joined only here, and the
+        // authority it waits for is asked of it.
         self.boot_join
             .borrow_mut()
             .joined(&joined.granted.workspace);
@@ -1287,8 +1244,8 @@ impl crate::Shared {
     /// workspace is ever shown to arrive in and vanish from.
     fn redeem_invitation(&self, joined: &directory::Joined) {
         let Some(workspace) = WorkspaceId::parse(&joined.granted.workspace) else {
-            // A slot for a workspace id that cannot be parsed can never be
-            // arrived in: take it back.
+            // A slot for a workspace id that cannot be parsed can never be arrived in: take it
+            // back.
             tracing::info!(
                 target: JOIN_FLOW_TARGET,
                 workspace = %joined.granted.workspace,
@@ -1356,9 +1313,8 @@ impl crate::Shared {
         }
     }
 
-    /// Take what became of the invitations this session redeemed: the person
-    /// lands in the workspace they joined once it is held here, or it
-    /// is taken off the desk and the sheet says why.
+    /// Take what became of the invitations this session redeemed: the person lands in the workspace
+    /// they joined once it is held here, or it is taken off the desk and the sheet says why.
     pub(crate) fn follow_enrollments(&self) {
         let Some(sync) = &self.sync else {
             return;
@@ -1375,11 +1331,10 @@ impl crate::Shared {
                         .map(|workspace| workspace.name.clone())
                 })
                 .unwrap_or_else(|| key.clone());
-            // The name the site listed the workspace under, not the id the
-            // desk numbers it by: a join that is refused says which
-            // workspace stayed away by the name the person chose it under.
-            // A workspace of the person's own is named by the list it came
-            // from, which no site lists.
+            // The name the site listed the workspace under, not the id the desk numbers it by: a
+            // join that is refused says which workspace stayed away by the name the person chose it
+            // under. A workspace of the person's own is named by the list it came from, which no
+            // site lists.
             let listed = match &enrolled.name {
                 Some(name) => name.clone(),
                 None => self
@@ -1425,17 +1380,17 @@ impl crate::Shared {
                     if let Some(engine) = &self.engine {
                         engine.unbind(enrolled.slot);
                     }
-                    // Only a desk that already held the workspace has a slot
-                    // to take away: a join the host refused never had one made.
+                    // Only a desk that already held the workspace has a slot to take away: a join
+                    // the host refused never had one made.
                     if let Some(held) = self.slot_of(&key) {
                         self.release_workspace(held);
                     }
-                    // The sheet says why to a person who opens it again, and
-                    // the banner says it where they are now.
+                    // The sheet says why to a person who opens it again, and the banner says it
+                    // where they are now.
                     tracing::warn!(%key, %error, "a workspace was not joined");
-                    // A community whose host refused this device is not
-                    // joined: the join is forgotten, and the community's own
-                    // follow asks its door again when a network comes back.
+                    // A community whose host refused this device is not joined: the join is
+                    // forgotten, and the community's own follow asks its door again when a network
+                    // comes back.
                     self.directory_store.forget_community(&key);
                 }
             }
@@ -1450,45 +1405,43 @@ impl crate::Shared {
             return;
         };
         if settled {
-            // The sheet lists the directory as it now stands, a refusal
-            // included: its row says the join did not happen and offers to
-            // join again, so the directory a person opens next is not the one
-            // they left while the join was on its way.
+            // The sheet lists the directory as it now stands, a refusal included: its row says the
+            // join did not happen and offers to join again, so the directory a person opens next is
+            // not the one they left while the join was on its way.
             seat.show(directory::view(&self.directory_store, &self.handle));
             if !self.directory_store.settling() {
-                // The person lands in the workspace they joined: the
-                // directory has nothing left to say.
+                // The person lands in the workspace they joined: the directory has nothing left to
+                // say.
                 seat.presentation().close();
             }
         }
     }
 
-    /// What the person's own records say: their workspaces as all their
-    /// devices hold them, and what this device did since the last pass.
+    /// What the person's own records say: their workspaces as all their devices hold them, and what
+    /// this device did since the last pass.
     pub(crate) fn follow_records(&self) {
         self.follow_data_usage();
         self.follow_personal();
     }
 
-    /// Count what this device did since the last pass into the person's
-    /// records, through the verb of the service that holds them.
+    /// Count what this device did since the last pass into the person's records, through the verb
+    /// of the service that holds them.
     fn follow_data_usage(&self) {
         self.table.follow(&mut self.services.borrow_mut());
     }
 
-    /// Keep the person's own workspaces as all their devices hold them:
-    /// list what this desk has, take what the others listed, open here what
-    /// they made there, take off the desk what they took off theirs, and say
-    /// again what this device has when theirs was missing something.
+    /// Keep the person's own workspaces as all their devices hold them: list what this desk has,
+    /// take what the others listed, open here what they made there, take off the desk what they
+    /// took off theirs, and say again what this device has when theirs was missing something.
     pub(crate) fn follow_personal(&self) {
         let Some(personal) = &self.personal else {
             return;
         };
         let news = {
             let mut personal = personal.borrow_mut();
-            // Where this device holds each of its workspaces, as the
-            // workspaces themselves say: the list names the device hosting a
-            // workspace, never the one that happens to hold it here.
+            // Where this device holds each of its workspaces, as the workspaces themselves say: the
+            // list names the device hosting a workspace, never the one that happens to hold it
+            // here.
             personal.refresh_hosts(self.engine.as_deref());
             let mut news = personal.publish_local(&self.handle);
             // A device shown or kept off is a change this desk's pass did
@@ -1497,10 +1450,9 @@ impl crate::Shared {
             news |= personal.untold;
             personal.untold = false;
             let mut behind = false;
-            // A device that just came up has heard nothing of this device's
-            // workspaces yet, though nothing changed here since they were
-            // last said. It may carry a newer place for a workspace an entry
-            // is waiting on, so entries asked at an older one are asked again.
+            // A device that just came up has heard nothing of this device's workspaces yet, though
+            // nothing changed here since they were last said. It may carry a newer place for a
+            // workspace an entry is waiting on, so entries asked at an older one are asked again.
             let arrived = self
                 .sync
                 .as_ref()
@@ -1514,8 +1466,8 @@ impl crate::Shared {
                 personal.asked.clear();
                 behind = true;
             }
-            // A workspace whose governance holds no certificate of this
-            // device's is held as the device this machine was copied from.
+            // A workspace whose governance holds no certificate of this device's is held as the
+            // device this machine was copied from.
             let device = personal.device;
             let unknown_here = |workspace: WorkspaceId| {
                 self.engine.as_ref().is_some_and(|engine| {
@@ -1549,9 +1501,8 @@ impl crate::Shared {
             }
             news
         };
-        // The list moved, so what an open sheet says of the person's
-        // devices may have too: a device they linked, or a choice made on
-        // another one, arrives in the list alone.
+        // The list moved, so what an open sheet says of the person's devices may have too: a device
+        // they linked, or a choice made on another one, arrives in the list alone.
         if news {
             self.ws_settings_fed.set(None);
             workspace_settings::refresh(
@@ -1561,17 +1512,15 @@ impl crate::Shared {
         }
     }
 
-    /// Take one of the person's workspaces in that this device does not hold:
-    /// the list says which device hosts it and the person's devices said where
-    /// that host is reached, so this device asks the host to take it in as a
-    /// further device of the person's
-    /// ([`crate::sync::Client::enter`]). Nothing is invited here: a workspace
-    /// that never arrives leaves the desk as it found it.
+    /// Take one of the person's workspaces in that this device does not hold: the list says which
+    /// device hosts it and the person's devices said where that host is reached, so this device
+    /// asks the host to take it in as a further device of the person's
+    /// ([`crate::sync::Client::enter`]). Nothing is invited here: a workspace that never arrives
+    /// leaves the desk as it found it.
     fn enter_listed(&self, personal: &mut Personal, opened: &ToEnter) {
         let workspace = opened.workspace.to_string();
         let (Some(sync), Some(engine)) = (&self.sync, &self.engine) else {
-            // Nothing here can take a workspace in: the desk shows it as this
-            // computer keeps it.
+            // Nothing here can take a workspace in: the desk shows it as this computer keeps it.
             if let Err(error) = self.add_workspace(&workspace, &opened.name) {
                 tracing::warn!(%error, %workspace, "a workspace of the person's was not opened here");
             }
@@ -1647,8 +1596,8 @@ impl crate::Shared {
         })
     }
 
-    /// Take a workspace off this desk through the desk's own
-    /// action, which refuses to leave the person with none.
+    /// Take a workspace off this desk through the desk's own action, which refuses to leave the
+    /// person with none.
     fn release_workspace(&self, workspace: WorkspaceId) {
         let Some((id, name, strips)) = self.slot_here(workspace) else {
             tracing::info!(
@@ -1670,8 +1619,8 @@ impl crate::Shared {
                 "join: the workspace's slot is taken off this desk"
             ),
             Err(error) => {
-                // The desk keeps its one workspace: the person is never left
-                // with none, and the list brings it back on the next pass.
+                // The desk keeps its one workspace: the person is never left with none, and the
+                // list brings it back on the next pass.
                 tracing::debug!(%error, %workspace, "a workspace not shown here was not taken off the desk");
                 tracing::info!(
                     target: JOIN_FLOW_TARGET,
@@ -1685,9 +1634,8 @@ impl crate::Shared {
         }
     }
 
-    /// The workspace `workspace_id` on this desk, by the id it is shared
-    /// under: what a join was granted, whose slot is made only once its host
-    /// admits this device.
+    /// The workspace `workspace_id` on this desk, by the id it is shared under: what a join was
+    /// granted, whose slot is made only once its host admits this device.
     fn slot_of(&self, workspace_id: &str) -> Option<WorkspaceId> {
         let wanted = WorkspaceId::parse(workspace_id)?;
         self.handle.read(|tree| {
@@ -1698,8 +1646,8 @@ impl crate::Shared {
         })
     }
 
-    /// The slot the workspace `workspace` stands in on this desk: its
-    /// decimal slot id, the name it shows and how many strips it holds.
+    /// The slot the workspace `workspace` stands in on this desk: its decimal slot id, the name it
+    /// shows and how many strips it holds.
     fn slot_here(&self, workspace: WorkspaceId) -> Option<(String, String, usize)> {
         self.handle.read(|tree| {
             tree.workspaces
@@ -1715,9 +1663,9 @@ impl crate::Shared {
         })
     }
 
-    /// Open the workspace `workspace_id` on this desk under `name`, through
-    /// the desk's own action for making one: the person lands in the
-    /// workspace they joined, and the desk keeps it from then on.
+    /// Open the workspace `workspace_id` on this desk under `name` , through the desk's own action
+    /// for making one: the person lands in the workspace they joined, and the desk keeps it from
+    /// then on.
     fn open_joined_workspace(&self, workspace_id: &str, name: &str) {
         if let Err(error) = self.add_workspace(workspace_id, name) {
             tracing::warn!(%error, %workspace_id, "a joined workspace was not opened");
@@ -1732,10 +1680,9 @@ impl crate::Shared {
             self.directory_store.set_note(Some(error));
             return;
         }
-        // A community whose home this workspace is is the person's from here
-        // on: no device of theirs asks its door again — not to join it, and
-        // not to rejoin it once they left. Only now, with the workspace on the
-        // desk: a community marked decided when its host refused the
+        // A community whose home this workspace is is the person's from here on: no device of
+        // theirs asks its door again — not to join it, and not to rejoin it once they left. Only
+        // now, with the workspace on the desk: a community marked decided when its host refused the
         // enrollment was never joined, and nothing asked again.
         if let Some(site) = self.directory_store.community_of(workspace_id) {
             if let Some(personal) = &self.personal {
@@ -1754,8 +1701,8 @@ mod tests {
     use tilo_desktop_model::{IdMinter, Workspace, WorkspaceSlot};
     use tilo_desktop_surface::seed_tree;
 
-    /// The list as a later session opens it: a session flushes its writes
-    /// before it ends, and opening here stands for that start.
+    /// The list as a later session opens it: a session flushes its writes before it ends, and
+    /// opening here stands for that start.
     fn open(identity: tilo_network_actor::HostIdentity, state: Option<&Path>) -> Personal {
         written();
         Personal::open(identity, state)
@@ -1799,7 +1746,7 @@ mod tests {
         policy.handle().clone()
     }
 
-    /// The workspaces on `handle`'s desk: their id and name, in order.
+    /// The workspaces on `handle` 's desk: their id and name, in order.
     fn on_desk(handle: &DesktopHandle) -> Vec<(WorkspaceId, String)> {
         handle.read(|tree| {
             tree.workspaces
@@ -1809,8 +1756,8 @@ mod tests {
         })
     }
 
-    /// Put the workspace `workspace` on `handle`'s desk, as the desk's own action
-    /// for making one does.
+    /// Put the workspace `workspace` on `handle` 's desk, as the desk's own action for making one
+    /// does.
     fn open_here(handle: &DesktopHandle, workspace: WorkspaceId, name: &str) {
         let mut tree = handle.read(Clone::clone);
         tree.workspaces.push(Workspace::in_workspace(
@@ -1821,7 +1768,7 @@ mod tests {
         handle.replace_tree(tree);
     }
 
-    /// The list's entry for the workspace `workspace`, if it names one.
+    /// The list's entry for the workspace `workspace` , if it names one.
     fn listed(personal: &Personal, workspace: WorkspaceId) -> Option<Listed> {
         entries_of(&personal.directory)
             .into_iter()
@@ -1857,8 +1804,8 @@ mod tests {
             "the list names it, hosted by the device that made it"
         );
 
-        // Kept beside the desk: the next session starts with the same list
-        // and has nothing to write.
+        // Kept beside the desk: the next session starts with the same list and has nothing to
+        // write.
         written();
         let kept = state.path().join("tilo").join(FILE);
         let mode = std::os::unix::fs::PermissionsExt::mode(
@@ -1879,9 +1826,8 @@ mod tests {
         );
     }
 
-    /// A list this computer kept but cannot read does not leave the person
-    /// with an empty list and no word: they are told once, and what this
-    /// computer kept is not written over.
+    /// A list this computer kept but cannot read does not leave the person with an empty list and
+    /// no word: they are told once, and what this computer kept is not written over.
     #[test]
     fn a_list_that_cannot_be_read_is_told_to_the_person() {
         let state = tempfile::tempdir().expect("a state directory");
@@ -1956,9 +1902,8 @@ mod tests {
             again.enter.is_empty(),
             "a workspace now here is not opened again"
         );
-        // A machine copied from this one holds it on its desk as the device
-        // it was copied from: it is entered as this device, at its host, and
-        // stays on the desk.
+        // A machine copied from this one holds it on its desk as the device it was copied from: it
+        // is entered as this device, at its host, and stays on the desk.
         let copied = b_list.adopt_into(&b, &|workspace| workspace == a_id);
         assert_eq!(
             copied.enter,
@@ -1980,8 +1925,7 @@ mod tests {
         assert_ne!(a_device, b_device, "two devices of the same person");
     }
 
-    /// Where `identity` is reached for a workspace, as it signed it: `opaque`
-    /// says which address.
+    /// Where `identity` is reached for a workspace, as it signed it: `opaque` says which address.
     fn host_hint(
         identity: &tilo_network_actor::HostIdentity,
         opaque: &str,
@@ -1996,8 +1940,7 @@ mod tests {
         .expect("a host signs its own address")
     }
 
-    /// The workspace the person's other device made and hosts, as this
-    /// device's list names it.
+    /// The workspace the person's other device made and hosts, as this device's list names it.
     #[test]
     fn a_workspace_hosted_on_another_device_is_listed_at_that_device() {
         let state = tempfile::tempdir().expect("a state directory");
@@ -2010,9 +1953,8 @@ mod tests {
         let host = identity(0x11, 0x22, "The desktop");
         let host_device = host.device_cert.device_public_key;
         let mut personal = open(identity(0x11, 0x21, "The laptop"), Some(state.path()));
-        // The workspace this desk holds is hosted by the person's other
-        // device: the list names that device, never the one that holds it
-        // here.
+        // The workspace this desk holds is hosted by the person's other device: the list names that
+        // device, never the one that holds it here.
         personal.hosts.insert(id, host_device);
         personal.publish_local(&desk);
         assert_eq!(
@@ -2141,8 +2083,7 @@ mod tests {
         let b_device = b_identity.device_cert.device_public_key;
         let mut b_list = open(b_identity.clone(), Some(b_state.path()));
         b_list.publish_local(&b);
-        // Each device tells the other what it holds, as the sessions they
-        // keep between them do.
+        // Each device tells the other what it holds, as the sessions they keep between them do.
         b_list
             .merge(
                 &a_list.snapshot().expect("the list is signed"),
@@ -2190,8 +2131,8 @@ mod tests {
             "and keeps showing it: the choice is in their list, kept beside the desk"
         );
 
-        // The desktop learns of it and honours it: the workspace leaves its
-        // desk and is not opened there again.
+        // The desktop learns of it and honours it: the workspace leaves its desk and is not opened
+        // there again.
         b_list
             .merge(
                 &a_list.snapshot().expect("the list is signed"),
@@ -2243,7 +2184,7 @@ mod tests {
         );
     }
 
-    /// A workspace on the list this desk does not hold, hosted by `host`.
+    /// A workspace on the list this desk does not hold, hosted by `host` .
     fn to_enter(workspace: WorkspaceId, host: [u8; 32]) -> ToEnter {
         ToEnter {
             workspace,
@@ -2253,8 +2194,8 @@ mod tests {
         }
     }
 
-    /// What this device asks the host its list names for, from what it was
-    /// told: at the address the host signed, once.
+    /// What this device asks the host its list names for, from what it was told: at the address the
+    /// host signed, once.
     #[test]
     fn a_listed_workspace_is_asked_for_at_the_host_its_list_names() {
         let workspace =

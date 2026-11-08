@@ -1,11 +1,9 @@
-//! The sheets the session shows over the desktop (the power menu, the
-//! questions it asks for an app or a service, workspace settings), each an
-//! app of [`tilo_sheets`] on a layer of its own covering a display, up
-//! while its seat's presentation says so. The seat is how the session and
-//! the services behind it talk to the sheet: what it shows in, what the
-//! person chose out. Its actions are published through its door while it
-//! is up. Which display each sheet covers is placed here too, from the one
-//! the person is working on.
+//! The sheets the session shows over the desktop (the power menu, the questions it asks for an app
+//! or a service, workspace settings), each an app of [`tilo_sheets`] on a layer of its own covering
+//! a display, up while its seat's presentation says so. The seat is how the session and the
+//! services behind it talk to the sheet: what it shows in, what the person chose out. Its actions
+//! are published through its door while it is up. Which display each sheet covers is placed here
+//! too, from the one the person is working on.
 
 use tilo_actions::{ActionAddress, DoorError, ResourceSpec};
 use tilo_compositor::{HostKey, HostLayer, KeyClaim, SurfaceHost};
@@ -21,21 +19,20 @@ use crate::Session;
 /// A display's rectangle, in logical pixels: the display a sheet covers.
 pub(crate) type Place = (i32, i32, u32, u32);
 
-/// What a sheet is to the session besides a card that is up or down: a sheet
-/// is one of these, never two.
+/// What a sheet is to the session besides a card that is up or down: a sheet is one of these, never
+/// two.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Role {
     /// Up while its presentation says so, and serving then.
     Presented,
-    /// A command surface: it answers its actions and draws while it is down
-    /// too, so its key works with nothing of it shown.
+    /// A command surface: it answers its actions and draws while it is down too, so its key works
+    /// with nothing of it shown.
     ServingWhileDown,
-    /// The sheet asks the person something about what they are typing into
-    /// and leaves the keyboard where it was: it takes Enter and Escape, and
-    /// every other key reaches the field under it.
+    /// The sheet asks the person something about what they are typing into and leaves the keyboard
+    /// where it was: it takes Enter and Escape, and every other key reaches the field under it.
     AskingAboutTyping,
-    /// The lock view: drawn and serving over the session's lock, as the lock
-    /// screen's own process would.
+    /// The lock view: drawn and serving over the session's lock, as the lock screen's own process
+    /// would.
     OverLock,
 }
 
@@ -49,7 +46,7 @@ pub(crate) struct Sheet<S: Seat> {
 }
 
 impl<S: Seat> Sheet<S> {
-    /// Mount `definition` lent `seat`, as `person` on `device`.
+    /// Mount `definition` lent `seat` , as `person` on `device` .
     pub(crate) fn mount(
         definition: &'static ApplicationDefinition,
         seat: S,
@@ -57,9 +54,8 @@ impl<S: Seat> Sheet<S> {
         presentation: ComponentRunnerInputs,
         scale: f64,
     ) -> Result<Self, ui::launch::LaunchError> {
-        // The card's arrival and leaving move on the person's motion
-        // setting: the shell is where it is known, before any frame of the
-        // sheet reads its theme.
+        // The card's arrival and leaving move on the person's motion setting: the shell is where it
+        // is known, before any frame of the sheet reads its theme.
         seat.presentation().set_motion(presentation.theme.motion());
         let lent = seat.clone();
         let component =
@@ -80,25 +76,23 @@ impl<S: Seat> Sheet<S> {
         })
     }
 
-    /// The app keeps running while the sheet is down, and its actions stay
-    /// offered: what it takes is the whole point of the key that asks it.
+    /// The app keeps running while the sheet is down, and its actions stay offered: what it takes
+    /// is the whole point of the key that asks it.
     pub(crate) const fn always_serving(mut self) -> Self {
         self.role = Role::ServingWhileDown;
         self
     }
 
-    /// Ask about what the person is typing into without taking their typing
-    /// from them: the sheet answers Enter and Escape, the field keeps every
-    /// other key. A prompt that asks whether to listen has to leave the
-    /// person's typing where it was.
+    /// Ask about what the person is typing into without taking their typing from them: the sheet
+    /// answers Enter and Escape, the field keeps every other key. A prompt that asks whether to
+    /// listen has to leave the person's typing where it was.
     pub(crate) const fn typing_through(mut self) -> Self {
         self.role = Role::AskingAboutTyping;
         self
     }
 
-    /// The sheet stands over the session's lock: while the session is
-    /// locked it is the one thing drawn and the one that takes the
-    /// keyboard and the pointer. The lock view is.
+    /// The sheet stands over the session's lock: while the session is locked it is the one thing
+    /// drawn and the one that takes the keyboard and the pointer. The lock view is.
     pub(crate) const fn standing_over_lock(mut self) -> Self {
         self.role = Role::OverLock;
         self
@@ -116,9 +110,9 @@ impl<S: Seat> Sheet<S> {
         self.seat.presentation().is_drawn()
     }
 
-    /// The sheet covers the display the session placed it on, or the first
-    /// one while it named none; a sheet that stands on every display at
-    /// once covers all of them and is told where each one is.
+    /// The sheet covers the display the session placed it on, or the first one while it named none;
+    /// a sheet that stands on every display at once covers all of them and is told where each one
+    /// is.
     fn follow_place(&mut self) {
         let presentation = self.seat.presentation();
         let every = presentation.covers_every_display();
@@ -136,8 +130,8 @@ impl<S: Seat> Sheet<S> {
             scale,
         });
         if every {
-            // Its own top-left is the corner of the rectangle all of them
-            // make: a card is drawn by the app on each display there.
+            // Its own top-left is the corner of the rectangle all of them make: a card is drawn by
+            // the app on each display there.
             let displays = self
                 .outputs
                 .iter()
@@ -158,12 +152,11 @@ impl<S: Seat> Sheet<S> {
     }
 }
 
-/// The display among `outputs` a sheet covers, its rectangle as the
-/// compositor reports it: the one the session `named` while it is still
-/// there, else the first in reading order, left to right and top to bottom:
-/// a display unplugged from under a sheet takes it to the one the person's
-/// eye starts at rather than leaving it on nothing. A sheet that stands on
-/// `every` display at once covers the rectangle all of them make.
+/// The display among `outputs` a sheet covers, its rectangle as the compositor reports it: the one
+/// the session `named` while it is still there, else the first in reading order, left to right and
+/// top to bottom: a display unplugged from under a sheet takes it to the one the person's eye
+/// starts at rather than leaving it on nothing. A sheet that stands on `every` display at once
+/// covers the rectangle all of them make.
 fn covering(
     named: Option<Place>,
     outputs: &[tilo_compositor::HostedOutput],
@@ -220,8 +213,8 @@ impl<S: Seat> Published for Sheet<S> {
     }
 
     fn accessible_labels(&mut self) -> Vec<String> {
-        // A sheet that is down shows nothing to read, even one whose
-        // actions stay offered while it is.
+        // A sheet that is down shows nothing to read, even one whose actions stay offered while it
+        // is.
         if !self.drawn() {
             return Vec::new();
         }
@@ -233,8 +226,8 @@ impl<S: Seat> Published for Sheet<S> {
     }
 
     fn a11y_tree(&mut self) -> Option<ui::accesskit::TreeUpdate> {
-        // A sheet that is down shows nothing to read, even one whose
-        // actions stay offered while it is.
+        // A sheet that is down shows nothing to read, even one whose actions stay offered while it
+        // is.
         if !self.drawn() {
             return None;
         }
@@ -249,8 +242,8 @@ impl<S: Seat> Published for Sheet<S> {
         self.drawn() && Published::a11y_action(&mut self.host, target, action)
     }
 
-    /// The controls the sheet's card shows by name, where they stand on the
-    /// desktop: a sheet that is down shows nothing to read or to press.
+    /// The controls the sheet's card shows by name, where they stand on the desktop: a sheet that
+    /// is down shows nothing to read or to press.
     fn controls(&mut self) -> Vec<(String, (f64, f64, f64, f64))> {
         if !self.drawn() {
             return Vec::new();
@@ -277,18 +270,17 @@ impl<S: Seat> Published for Sheet<S> {
         SurfaceHost::wants_keyboard(self)
     }
 
-    /// The lock view is the one sheet that shows while the session is
-    /// locked, so its actions (and what assistive technology reads of it)
-    /// are offered then, as the lock screen's own process offers none.
+    /// The lock view is the one sheet that shows while the session is locked, so its actions (and
+    /// what assistive technology reads of it) are offered then, as the lock screen's own process
+    /// offers none.
     fn serves_while_locked(&self) -> bool {
         self.role == Role::OverLock && self.drawn()
     }
 }
 
 impl<S: Seat> SurfaceHost for Sheet<S> {
-    /// What the person typed into a secret field of the sheet's card: a
-    /// capture draws such a sheet as the placeholder, the display keeps
-    /// showing it.
+    /// What the person typed into a secret field of the sheet's card: a capture draws such a sheet
+    /// as the placeholder, the display keeps showing it.
     fn withholds_captures(&self) -> bool {
         self.host.withholds_captures()
     }
@@ -332,10 +324,9 @@ impl<S: Seat> SurfaceHost for Sheet<S> {
     }
 
     fn wants_keyboard(&self) -> bool {
-        // A sheet takes the keys while it is drawn, whatever window has the
-        // focus behind it: a presented modal claims input by construction.
-        // One that asks about typing leaves all but its own two keys to the
-        // field under it ([`Self::typing_through`]).
+        // A sheet takes the keys while it is drawn, whatever window has the focus behind it: a
+        // presented modal claims input by construction. One that asks about typing leaves all but
+        // its own two keys to the field under it ([`Self::typing_through`]).
         self.drawn() && self.role != Role::AskingAboutTyping
     }
 
@@ -350,8 +341,8 @@ impl<S: Seat> SurfaceHost for Sheet<S> {
     }
 
     fn claim_key(&mut self, key: &HostKey, _locked: bool, _inhibited: bool) -> KeyClaim {
-        // The card's own two keys: the primary answer on Enter, the way out
-        // on Escape. Ordinary typing is the field's.
+        // The card's own two keys: the primary answer on Enter, the way out on Escape. Ordinary
+        // typing is the field's.
         let answers = self.role == Role::AskingAboutTyping
             && self.open()
             && matches!(
@@ -371,18 +362,16 @@ impl<S: Seat> SurfaceHost for Sheet<S> {
 
     fn prepare_frame(&mut self) -> bool {
         self.follow_place();
-        // A sheet on its way out draws its card leaving until nothing of it
-        // is left; only then does the presentation say so, and the sheet
-        // stands drawn taking no input no longer. A sheet that draws its own
-        // leave (the power menu) presents no modal and keeps its way out.
+        // A sheet on its way out draws its card leaving until nothing of it is left; only then does
+        // the presentation say so, and the sheet stands drawn taking no input no longer. A sheet
+        // that draws its own leave (the power menu) presents no modal and keeps its way out.
         let presentation = self.seat.presentation();
         if presentation.phase() == tilo_sheets::Phase::Leaving
             && !self.host.app_mut().presents_modal()
         {
             presentation.gone();
         }
-        // A command surface answers the actions it is offered even with
-        // nothing of it drawn.
+        // A command surface answers the actions it is offered even with nothing of it drawn.
         (self.drawn() || self.role == Role::ServingWhileDown) && self.host.prepare_frame()
     }
 
@@ -414,11 +403,10 @@ impl<S: Seat> SurfaceHost for Sheet<S> {
 }
 
 impl Session {
-    /// Where every sheet goes: the display the person is working on, so a
-    /// question appears in front of what it is about and the power menu
-    /// where they are looking. `None` while the desk knows no such display
-    /// (one display needs no telling apart), which leaves a sheet on the
-    /// first display there is.
+    /// Where every sheet goes: the display the person is working on, so a question appears in front
+    /// of what it is about and the power menu where they are looking. `None` while the desk knows
+    /// no such display (one display needs no telling apart), which leaves a sheet on the first
+    /// display there is.
     fn sheet_place(&self) -> Option<Place> {
         let display = self.shared.handle.focused_display()?;
         let monitor = self
@@ -440,8 +428,8 @@ impl Session {
         ))
     }
 
-    /// Tell every sheet which display it covers: the one the person is
-    /// working on, whenever the desk names another.
+    /// Tell every sheet which display it covers: the one the person is working on, whenever the
+    /// desk names another.
     pub(crate) fn place_sheets(&self) {
         let place = self.sheet_place();
         for presentation in self.sheet_presentations() {

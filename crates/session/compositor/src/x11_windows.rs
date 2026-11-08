@@ -32,29 +32,27 @@ use crate::config::KeyboardLayout;
 use crate::state::State;
 use crate::{Error, io};
 
-/// The biggest edge of an icon taken from a window: larger ones are there
-/// for docks and file managers, and cost memory a tab does not need.
+/// The biggest edge of an icon taken from a window: larger ones are there for docks and file
+/// managers, and cost memory a tab does not need.
 const MAX_EDGE: u32 = 512;
 
-/// The most 32-bit units `_NET_WM_ICON` may hold: every size up to
-/// [`MAX_EDGE`] square is far below it, and a hostile client cannot make the
-/// session read a property that big.
+/// The most 32-bit units `_NET_WM_ICON` may hold: every size up to [`MAX_EDGE`] square is far below
+/// it, and a hostile client cannot make the session read a property that big.
 const MAX_ICON_UNITS: u32 = 1 << 19;
 
-/// The density a display is assumed to have at scale 1: the DPI X clients
-/// and their font settings are written in.
+/// The density a display is assumed to have at scale 1: the DPI X clients and their font settings
+/// are written in.
 const BASE_DPI: i32 = 96;
 
 /// What an X11 window says about its program.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Identity {
-    /// The process id of the program that owns the window, from the X
-    /// server's own knowledge of its clients: `_NET_WM_PID` is a claim by
-    /// the client and is never used.
+    /// The process id of the program that owns the window, from the X server's own knowledge of its
+    /// clients: `_NET_WM_PID` is a claim by the client and is never used.
     pub pid: Option<u32>,
-    /// `WM_CLASS`'s instance, the program's own name.
+    /// `WM_CLASS` 's instance, the program's own name.
     pub instance: Option<String>,
-    /// `WM_CLASS`'s class, the program's name for grouping windows.
+    /// `WM_CLASS` 's class, the program's name for grouping windows.
     pub class: Option<String>,
     /// The desktop start-up that opened it (`_NET_STARTUP_ID`).
     pub startup_id: Option<String>,
@@ -73,13 +71,11 @@ pub struct X11Icon {
     pub pixels: Vec<u8>,
 }
 
-/// The session's own X11 connection to Xwayland, and what it learned about
-/// each window.
+/// The session's own X11 connection to Xwayland, and what it learned about each window.
 pub(crate) struct X11Windows {
     connection: RustConnection,
     icon: Atom,
-    /// The root window property that says which layout types
-    /// ([`Self::publish_keyboard`]).
+    /// The root window property that says which layout types ([`Self::publish_keyboard`]).
     rules_names: Atom,
     identities: HashMap<X11Window, Identity>,
     /// The window X input focus was last set to.
@@ -88,15 +84,14 @@ pub(crate) struct X11Windows {
     client: Client,
     /// The scale last published to X clients; `0` until the first time.
     scale: f64,
-    /// The pointer theme last published to X clients; empty until the first
-    /// time.
+    /// The pointer theme last published to X clients; empty until the first time.
     cursor_theme: String,
     /// The layout last published to X clients; `None` until the first time.
     keyboard: Option<KeyboardLayout>,
 }
 
 impl X11Windows {
-    /// Connect to the X11 display `display`, Xwayland running as `client`.
+    /// Connect to the X11 display `display` , Xwayland running as `client` .
     pub(crate) fn connect(display: u32, client: Client) -> Result<Self, Error> {
         let (connection, _) = x11rb::connect(Some(&format!(":{display}"))).map_err(io)?;
         let icon = connection
@@ -163,8 +158,8 @@ impl X11Windows {
             reason = "a display's DPI, far below i32's range"
         )]
         let dpi = (f64::from(BASE_DPI) * scale).round() as i32;
-        // Fonts and cursors are drawn at scale 1's size times the scale, as
-        // X clients have no other way to grow them.
+        // Fonts and cursors are drawn at scale 1's size times the scale, as X clients have no other
+        // way to grow them.
         let cursor = dpi.saturating_mul(24).saturating_div(BASE_DPI).max(24);
         if rescaled {
             if let Some(client) = self.client.get_data::<XWaylandClientData>() {
@@ -231,7 +226,7 @@ impl X11Windows {
         Some(crate::toplevel_icon::x11_icon(icon))
     }
 
-    /// Drop what was learned about `window`.
+    /// Drop what was learned about `window` .
     pub(crate) fn forget(&mut self, window: X11Window) {
         self.identities.remove(&window);
         if self.focused == Some(window) {
@@ -244,10 +239,9 @@ impl X11Windows {
         self.identities.get(&window)
     }
 
-    /// Give X input focus to `window` of this display, and take it away when
-    /// the keyboard focus is on anything else. Xwayland leaves the focus to
-    /// the window manager, so without this a window never sees a `FocusIn`
-    /// while the keyboard already reaches it.
+    /// Give X input focus to `window` of this display, and take it away when the keyboard focus is
+    /// on anything else. Xwayland leaves the focus to the window manager, so without this a window
+    /// never sees a `FocusIn` while the keyboard already reaches it.
     pub(crate) fn follow_keyboard(&mut self, window: Option<X11Window>) {
         if window == self.focused {
             return;
@@ -264,14 +258,14 @@ impl X11Windows {
         }
     }
 
-    /// How many clients are connected to the display, the session's own
-    /// connections included: `None` when the display cannot say.
+    /// How many clients are connected to the display, the session's own connections included:
+    /// `None` when the display cannot say.
     pub(crate) fn clients(&self) -> Option<usize> {
         let reply = self.connection.res_query_clients().ok()?.reply().ok()?;
         Some(reply.clients.len())
     }
 
-    /// The window's largest usable icon from `_NET_WM_ICON`.
+    /// The window's largest usable icon from `_NET_WM_ICON` .
     fn icon(&self, window: X11Window) -> Option<X11Icon> {
         let reply = self
             .connection
@@ -291,8 +285,8 @@ impl X11Windows {
     }
 }
 
-/// The largest square icon in a `_NET_WM_ICON` value that is small enough to
-/// keep, as premultiplied RGBA.
+/// The largest square icon in a `_NET_WM_ICON` value that is small enough to keep, as premultiplied
+/// RGBA.
 fn icon(data: &[u32]) -> Option<X11Icon> {
     let mut best: Option<X11Icon> = None;
     let mut offset = 0_usize;
@@ -341,8 +335,7 @@ fn premultiplied(pixels: &[u32]) -> Vec<u8> {
     rgba
 }
 
-/// The `RESOURCE_MANAGER` text `resources` with `key` set to `value`, every
-/// other line kept.
+/// The `RESOURCE_MANAGER` text `resources` with `key` set to `value` , every other line kept.
 pub(crate) fn with_resource(resources: &str, key: &str, value: &str) -> String {
     let mut merged: String = resources
         .lines()
@@ -359,8 +352,8 @@ pub(crate) fn with_resource(resources: &str, key: &str, value: &str) -> String {
     merged
 }
 
-/// The scale X clients are told to draw at: that of the densest output, as
-/// one X server serves every output the session has.
+/// The scale X clients are told to draw at: that of the densest output, as one X server serves
+/// every output the session has.
 pub(crate) fn display_scale(state: &State) -> f64 {
     state
         .space
@@ -369,7 +362,7 @@ pub(crate) fn display_scale(state: &State) -> f64 {
         .fold(1.0, f64::max)
 }
 
-/// Write `values` under their keys in the root window's `RESOURCE_MANAGER`.
+/// Write `values` under their keys in the root window's `RESOURCE_MANAGER` .
 pub(crate) fn set_resources(
     connection: &RustConnection,
     values: &[(&str, &str)],
@@ -409,7 +402,7 @@ pub(crate) fn set_resources(
     connection.flush().map_err(io)
 }
 
-/// Write `layout` into the root window's `_XKB_RULES_NAMES`.
+/// Write `layout` into the root window's `_XKB_RULES_NAMES` .
 fn set_rules_names(
     connection: &RustConnection,
     property: Atom,
@@ -433,12 +426,12 @@ fn set_rules_names(
     connection.flush().map_err(io)
 }
 
-/// The `_XKB_RULES_NAMES` value for `layout`, as `setxkbmap` writes it: the
-/// rules set that compiled the keymap, the model, and the layouts, variants
-/// and options, each field NUL-terminated.
+/// The `_XKB_RULES_NAMES` value for `layout` , as `setxkbmap` writes it: the rules set that
+/// compiled the keymap, the model, and the layouts, variants and options, each field
+/// NUL-terminated.
 fn rules_names(layout: &KeyboardLayout) -> Vec<u8> {
-    // What xkbcommon and Xwayland compile from on Linux unless the
-    // environment names another set, which no session sets.
+    // What xkbcommon and Xwayland compile from on Linux unless the environment names another set,
+    // which no session sets.
     const RULES: &str = "evdev";
     // The model a keymap compiles for when the person chose none.
     const MODEL: &str = "pc105";

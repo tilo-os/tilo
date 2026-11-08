@@ -1,4 +1,4 @@
-//! [`ControlRow`]: a selectable row of real controls standing in the list
+//! [`ControlRow`] — a selectable row of real controls standing in the list
 //! row's selection lift.
 
 use super::{RowMetrics, row_fill};

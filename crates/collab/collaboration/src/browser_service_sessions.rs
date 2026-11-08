@@ -33,9 +33,6 @@ impl Client {
         })
     }
     /// Submit without waiting on the frame thread.
-    /// # Errors
-    /// Refuses a request another is already in flight, or a connection that
-    /// ended.
     pub fn request(
         &self,
         command: BrowserServiceSessionCommand,

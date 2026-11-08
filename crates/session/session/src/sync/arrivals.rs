@@ -1,14 +1,13 @@
-//! What the person sees of who is here with them: the bar's faces for
-//! whoever is in the workspace in front, the name that slides out when they
-//! come where people are, and a wave at them.
+//! What the person sees of who is here with them: the bar's faces for whoever is in the workspace
+//! in front, the name that slides out when they come where people are, and a wave at them.
 
 use super::{Client, Workspace};
 use tilo_desktop::chrome::{ArrivalNotice, WaveNotice};
 use tilo_desktop::here::LiveMember;
 
 impl Client {
-    /// Take the waves at this person heard since the last call: the bar
-    /// says who waved, for a moment.
+    /// Take the waves at this person heard since the last call: the bar says who waved, for a
+    /// moment.
     pub(super) fn show_waves(&self) {
         let heard = self.here.borrow_mut().take_waves();
         if let Some(last) = heard.last() {
@@ -25,8 +24,7 @@ impl Client {
         self.notice.borrow().clone()
     }
 
-    /// Hand the desktop this person and whoever is here with them in the
-    /// workspace in front.
+    /// Hand the desktop this person and whoever is here with them in the workspace in front.
     pub(super) fn show_here(&self) {
         let (own, members, workspace) = {
             let plane = self.plane.borrow();
@@ -45,9 +43,9 @@ impl Client {
         self.show_arrival(&workspace, &members);
     }
 
-    /// The person came to a workspace where people already are: the bar's
-    /// faces pulse and a short name slides out of them, once for the
-    /// workspace they came to. A workspace nobody else is in says nothing.
+    /// The person came to a workspace where people already are: the bar's faces pulse and a short
+    /// name slides out of them, once for the workspace they came to. A workspace nobody else is in
+    /// says nothing.
     fn show_arrival(&self, workspace: &str, members: &[LiveMember]) {
         let people: Vec<&LiveMember> = members
             .iter()

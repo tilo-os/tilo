@@ -45,7 +45,7 @@ impl TopBarChrome {
             .and_then(|index| self.face_rects.get(index).copied())
     }
 
-    /// The person whose face is under `point`, by roster id.
+    /// The person whose face is under `point` , by roster id.
     pub(super) fn face_at(&self, point: Point) -> Option<String> {
         // Faces overlap left over right: the later one is on top.
         self.face_rects
@@ -56,8 +56,8 @@ impl TopBarChrome {
             .map(|(_, id)| id.clone())
     }
 
-    /// What a press at `point` on the people cluster asks for: invite, open
-    /// one person, or open everyone.
+    /// What a press at `point` on the people cluster asks for: invite, open one person, or open
+    /// everyone.
     pub(super) fn people_intent_at(&self, point: Point) -> Option<ChromeIntent> {
         if self.invite_rect.contains(point) {
             return Some(ChromeIntent::Invite);
@@ -77,10 +77,9 @@ impl TopBarChrome {
         self.people_button_rect
     }
 
-    /// The people button, ending at `right_x`: the people glyph in a round
-    /// seat, plain at rest and lifting under the pointer like the bar's
-    /// other controls. It opens everyone here; the faces beside it each
-    /// open one person's card. Returns where the controls before it end.
+    /// The people button, ending at `right_x` : the people glyph in a round seat, plain at rest and
+    /// lifting under the pointer like the bar's other controls. It opens everyone here; the faces
+    /// beside it each open one person's card. Returns where the controls before it end.
     fn draw_people_button(
         &mut self,
         scene: &mut Scene,
@@ -102,8 +101,8 @@ impl TopBarChrome {
                 )
                 .contains(point)
             });
-        // The people button is one bar chip: its glyph, its own lift and its
-        // press, the same control the faces beside it compose.
+        // The people button is one bar chip: its glyph, its own lift and its press, the same
+        // control the faces beside it compose.
         let name = t("topbar-show-collaborators");
         let chip = BarChipFace::new(&name, &[])
             .icons(USERS_GLYPH)
@@ -124,10 +123,9 @@ impl TopBarChrome {
         pill.x0 - f64::from(theme.tokens.spacing.s1)
     }
 
-    /// The invite button, ending at `right_x`: a person-plus glyph in an
-    /// outlined empty seat, the seat the next person takes. Its words
-    /// ("Invite") are its accessible name. Returns where the controls
-    /// before it end.
+    /// The invite button, ending at `right_x` : a person-plus glyph in an outlined empty seat, the
+    /// seat the next person takes. Its words ("Invite") are its accessible name. Returns where the
+    /// controls before it end.
     pub(super) fn draw_invite_button(
         &mut self,
         scene: &mut Scene,
@@ -142,9 +140,9 @@ impl TopBarChrome {
             self.invite_rect = Rect::ZERO;
             return right_x;
         }
-        // The invite is one bar chip: a person-plus glyph in the seat the
-        // next person takes, lifting under the pointer like every other bar
-        // control. Its words are its accessible name.
+        // The invite is one bar chip: a person-plus glyph in the seat the next person takes,
+        // lifting under the pointer like every other bar control. Its words are its accessible
+        // name.
         let hovered = self.hovered_control().as_deref() == Some(Self::CONTROL_INVITE);
         let name = t("topbar-invite");
         let chip = BarChipFace::new(&name, &[])
@@ -166,9 +164,8 @@ impl TopBarChrome {
         pill.x0 - f64::from(theme.tokens.spacing.s2)
     }
 
-    /// The others' faces in reading order, then the "+N" badge last, the
-    /// whole stack ending at `stack_right_x`. Returns how many circles were
-    /// drawn (faces and the badge, if any).
+    /// The others' faces in reading order, then the "+N" badge last, the whole stack ending at
+    /// `stack_right_x` . Returns how many circles were drawn (faces and the badge, if any).
     pub(super) fn draw_avatar_chips(
         &mut self,
         scene: &mut Scene,
@@ -193,8 +190,7 @@ impl TopBarChrome {
                         .get(i)
                         .copied()
                         .unwrap_or(colors.intent.you),
-                    // Software is never drawn as a person: the shared agent
-                    // mark in the same ring.
+                    // Software is never drawn as a person: the shared agent mark in the same ring.
                     is_agent: self.collaborator_agents.get(i).copied().unwrap_or(false),
                     dimmed: look.is_some_and(|look| look.dimmed),
                     in_call: look.and_then(|look| look.call),
@@ -206,18 +202,17 @@ impl TopBarChrome {
             &mut ui::paint::PaintCtx::new(scene, transform, text_renderer, theme),
             (stack_right_x, center_y),
             (&faces, self.collaborator_overflow),
-            // The bar's own ground (`draw_overlay_surface`), so the gap
-            // between faces and their rings is the bar, not a grey halo.
+            // The bar's own ground (`draw_overlay_surface`), so the gap between faces and their
+            // rings is the bar, not a grey halo.
             colors.surfaces.base,
         );
         self.face_rects = rects;
         faces.len().saturating_add(usize::from(badge.is_some()))
     }
 
-    /// A quiet "+N watching" label for pages reading this workspace, left of
-    /// the invite
-    /// button, ending at `right_x`. Returns its pointer target (zero when
-    /// nobody is watching): the bar's control height, like the faces'.
+    /// A quiet "+N watching" label for pages reading this workspace, left of the invite button,
+    /// ending at `right_x` . Returns its pointer target (zero when nobody is watching): the bar's
+    /// control height, like the faces'.
     pub(super) fn draw_watching_chip(
         &self,
         scene: &mut Scene,
@@ -231,9 +226,8 @@ impl TopBarChrome {
         if watching == 0 {
             return Rect::ZERO;
         }
-        // Pages are a count, not faces: a bar chip with its words and no
-        // glyph, so it stands and lifts like every other control while it
-        // opens who is here too.
+        // Pages are a count, not faces: a bar chip with its words and no glyph, so it stands and
+        // lifts like every other control while it opens who is here too.
         let label = t_args("topbar-watching-count", &[("count", watching.into())]);
         let hovered = self.hovered_control().as_deref() == Some(Self::CONTROL_COLLABORATORS)
             && self.last_cursor.is_some_and(|point| point.x <= right_x);
@@ -256,8 +250,8 @@ impl TopBarChrome {
         pill
     }
 
-    /// Sets [`Self::avatar_stack_rect`] to the drawn faces' bounds, zero
-    /// when nobody else is here. `pos` is `(center_y, stack_right_x)`.
+    /// Sets [`Self::avatar_stack_rect`] to the drawn faces' bounds, zero when nobody else is here.
+    /// `pos` is `(center_y, stack_right_x)` .
     pub(super) fn set_avatar_stack_bounds(&mut self, pos: (f64, f64), slot_count: usize) {
         let (center_y, stack_right_x) = pos;
         if slot_count == 0 {
@@ -274,9 +268,8 @@ impl TopBarChrome {
         );
     }
 
-    /// The people cluster, right to left from `right_x`: the invite
-    /// button, the watching count, the people button, then the faces.
-    /// Returns its left edge, where the controls before it end.
+    /// The people cluster, right to left from `right_x` : the invite button, the watching count,
+    /// the people button, then the faces. Returns its left edge, where the controls before it end.
     pub(super) fn draw_people_cluster(
         &mut self,
         scene: &mut Scene,
@@ -295,8 +288,8 @@ impl TopBarChrome {
         } else {
             watching.x0 - gap
         };
-        // Anyone here, or watching, can be shown all together: the button
-        // that does it stands beside the faces whatever else is there.
+        // Anyone here, or watching, can be shown all together: the button that does it stands
+        // beside the faces whatever else is there.
         let anyone = !self.collaborator_initials.is_empty()
             || self.collaborator_overflow > 0
             || !watching.is_zero_area();
@@ -309,8 +302,7 @@ impl TopBarChrome {
         let slot_count =
             self.draw_avatar_chips(scene, transform, theme, text_renderer, center_y, right_x);
         self.set_avatar_stack_bounds((center_y, right_x), slot_count);
-        // The watching count is part of the people button: it opens who is
-        // here too.
+        // The watching count is part of the people button: it opens who is here too.
         if !watching.is_zero_area() && !self.people_button_rect.is_zero_area() {
             self.people_button_rect = self.people_button_rect.union(watching);
         }
@@ -364,8 +356,8 @@ mod tests {
         handled
     }
 
-    /// The invite button stays beside the faces once people arrive, and a
-    /// press on it invites: one step, never the list first.
+    /// The invite button stays beside the faces once people arrive, and a press on it invites: one
+    /// step, never the list first.
     #[test]
     fn invite_stays_in_the_bar_and_invites_in_one_step() {
         for people in [&[][..], &[("ada", "Ada Lovelace")][..]] {
@@ -393,8 +385,7 @@ mod tests {
         );
     }
 
-    /// Pages reading along are counted beside the invite button, never
-    /// instead of it.
+    /// Pages reading along are counted beside the invite button, never instead of it.
     #[test]
     fn watching_never_replaces_the_invite() {
         let tree = desk(&[]);
@@ -411,9 +402,8 @@ mod tests {
         assert!(bar.people_button_rect().x1 <= bar.invite_rect().x0);
     }
 
-    /// With few people here, every face opens a card: the people button
-    /// beside them is how the whole panel (and its pin) is reached by
-    /// pointer, and the bar names it so to a reader.
+    /// With few people here, every face opens a card: the people button beside them is how the
+    /// whole panel (and its pin) is reached by pointer, and the bar names it so to a reader.
     #[test]
     fn the_people_button_opens_everyone_beside_faces_that_open_cards() {
         let tree = desk(&[("ada", "Ada Lovelace")]);
@@ -454,8 +444,7 @@ mod tests {
         );
     }
 
-    /// A press on someone's face opens who is here at them; the badge
-    /// opens everyone.
+    /// A press on someone's face opens who is here at them; the badge opens everyone.
     #[test]
     fn a_face_opens_that_person() {
         let tree = desk(&[("ada", "Ada Lovelace"), ("bo", "Bo Brave")]);
@@ -485,9 +474,8 @@ mod tests {
         );
     }
 
-    /// On a laptop-wide bar a wave still says who waved, in words, beside
-    /// the faces: the notice yields to the clock, not to the whole lane
-    /// kept for an activity.
+    /// On a laptop-wide bar a wave still says who waved, in words, beside the faces: the notice
+    /// yields to the clock, not to the whole lane kept for an activity.
     #[test]
     fn a_wave_is_worded_beside_the_faces_on_a_laptop_wide_bar() {
         let tree = desk(&[("gd", "Gentle Dolphin")]);
@@ -519,9 +507,8 @@ mod tests {
         );
     }
 
-    /// A count arriving on the bell, or growing, never moves a face: the
-    /// pointer already on its way to someone still lands on them, on the
-    /// web and on the desktop alike, from nothing unread on.
+    /// A count arriving on the bell, or growing, never moves a face: the pointer already on its way
+    /// to someone still lands on them, on the web and on the desktop alike, from nothing unread on.
     #[test]
     fn the_faces_stay_put_as_unread_notifications_arrive() {
         let tree = desk(&[("ada", "Ada Lovelace"), ("bo", "Bo Brave")]);

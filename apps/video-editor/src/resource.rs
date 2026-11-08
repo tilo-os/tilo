@@ -766,9 +766,6 @@ pub fn document_of(project: &Project) -> ui::tilo_resource::Doc {
 /// track, clip or source, or an effect or marker on a clip
 /// (`<clip>/effects/<effect>`, `<clip>/markers/<marker>`, see
 /// [`crate::search`]) — refusing one that no longer exists.
-///
-/// # Errors
-/// Returns that the item is gone.
 pub fn reveal_effect(
     project: &Project,
     item: &Id,

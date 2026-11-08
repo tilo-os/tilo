@@ -78,17 +78,11 @@ pub type IoResult<T> = Result<T, String>;
 /// the caller re-reading state; implementations must not retry silently.
 pub trait Platform {
     /// The disk holding the running OS's boot volume, with its partition map.
-    /// # Errors
-    /// Returns an error if the disk cannot be probed.
     fn system_disk(&self) -> IoResult<Disk>;
     /// Windows only; `Ok(None)` on Linux.
-    /// # Errors
-    /// Returns an error if the system volume cannot be probed.
     fn system_volume(&self) -> IoResult<Option<SystemVolume>>;
     /// Linux direct Btrfs shrink facts; unsupported layouts report no eligible
     /// volume. The helper binds these facts into the reviewed plan.
-    /// # Errors
-    /// Returns an error if retained filesystem facts cannot be attested.
     fn linux_btrfs_volume(&self) -> IoResult<Option<LinuxBtrfsVolume>> {
         Ok(None)
     }
@@ -130,8 +124,6 @@ pub trait Platform {
         buf: &mut [u8],
     ) -> IoResult<()>;
     /// Flush every write to stable storage.
-    /// # Errors
-    /// Returns an error if the disk cannot be flushed.
     fn sync_disk(&mut self, disk: &Disk) -> IoResult<()>;
     /// Whether this adapter has access to the running host's UEFI firmware.
     /// Existing EFI adapters implement this surface; Linux also observes the
@@ -141,8 +133,6 @@ pub trait Platform {
     }
     /// Read an EFI global variable (`8be4df61-93ca-11d2-aa0d-00e098032b8c`).
     /// `Ok(None)` when it does not exist. Returns the payload without attributes.
-    /// # Errors
-    /// Returns an error if the variable cannot be read or decoded.
     fn get_efi_var(&self, name: &str) -> IoResult<Option<Vec<u8>>>;
     /// Create or replace a non-volatile, boot + runtime EFI global variable.
     fn set_efi_var(&mut self, name: &str, data: &[u8]) -> IoResult<()>;

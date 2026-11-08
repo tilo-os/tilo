@@ -178,9 +178,6 @@ pub(crate) fn schedule_of(alarm: &Alarm) -> (u8, u8, u8, i64) {
 /// snoozed under so an edit cancels the snooze. A snooze is an occurrence of
 /// its own: it rings once at `now_ms + minutes` even when the alarm has
 /// already turned itself off.
-///
-/// # Errors
-/// A snooze of no minutes.
 pub fn snooze(
     delivery: &mut Delivery,
     id: &Id,

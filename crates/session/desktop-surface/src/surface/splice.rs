@@ -12,10 +12,9 @@ use ui::widget::{GroupRow, TileHost, WindowGroup};
 
 use super::{descriptor, placeholder};
 
-/// Bring `row` to `strip`'s windows. A window still fading out after a
-/// close stays until its fade ends. `host_for` gives the content of a tab
-/// the row does not show yet. Tabs that left their window were taken out of
-/// it beforehand ([`super::DesktopSurface::reconcile`]).
+/// Bring `row` to `strip` 's windows. A window still fading out after a close stays until its fade
+/// ends. `host_for` gives the content of a tab the row does not show yet. Tabs that left their
+/// window were taken out of it beforehand ([`super::DesktopSurface::reconcile`]).
 pub(super) fn splice_row(
     row: &mut GroupRow,
     strip: &Strip,
@@ -47,8 +46,8 @@ pub(super) fn splice_row(
         .collect();
     let in_order = order.iter().filter(|id| shown.contains(id));
     if !in_order.eq(shown.iter()) {
-        // Each window right after the one before it in the tree; windows
-        // fading out stay where they are.
+        // Each window right after the one before it in the tree; windows fading out stay where they
+        // are.
         let mut cursor = 0usize;
         for &id in &order {
             let Some(at) = row.groups.iter().position(|g| g.id == id) else {
@@ -106,17 +105,16 @@ fn update_group(
                 group.reorder_tab(from, index);
                 group.update_tab_descriptor(descriptor(tab));
             }
-            // Mid close-fade: the window is the tree's again, so the fade
-            // is undone with it — pill and host both — and the pill takes
-            // the place the tree gives it.
+            // Mid close-fade: the window is the tree's again, so the fade is undone with it — pill
+            // and host both — and the pill takes the place the tree gives it.
             None if group.cancel_tab_close(tab.id) => {
                 if let Some(from) = group.tabs().iter().position(|t| t.id == tab.id) {
                     group.reorder_tab(from, index);
                 }
                 group.update_tab_descriptor(descriptor(tab));
             }
-            // A host outliving its pill: both leave and the window comes in
-            // again, so the bar and its hosts stay one list each.
+            // A host outliving its pill: both leave and the window comes in again, so the bar and
+            // its hosts stay one list each.
             None if group.host_for_tab_mut(tab.id).is_some() => {
                 group.detach_tab(tab.id);
                 group.insert_detached_tab(index, descriptor(tab), host_for(tab));
@@ -125,8 +123,7 @@ fn update_group(
         }
     }
     group.set_active_tab(model.active_tab);
-    // A width the person is dragging, or set here and not yet saved, is
-    // newer than the tree's.
+    // A width the person is dragging, or set here and not yet saved, is newer than the tree's.
     if !(group.edge_resize_in_flight() || group.has_pending_width_change())
         && group.width() != model.width
     {

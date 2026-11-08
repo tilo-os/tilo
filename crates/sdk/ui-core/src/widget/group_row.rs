@@ -2253,8 +2253,8 @@ impl GroupRow {
     }
 
     /// Have the parent's draw skip this row, recording only its transform,
-    /// so its owner draws it into a scene of its own with
-    /// [`Self::draw_apart`]: a presenter that pans each strip on its own
+    /// so its owner draws it into a scene of its own
+    /// with [`Self::draw_apart`]: a presenter that pans each strip on its own
     /// needs each strip's drawing apart from the others'.
     pub fn set_drawn_apart(&mut self, apart: bool) {
         self.drawn_apart = apart;

@@ -25,13 +25,18 @@
 //! `natural_scroll` inverts both, since it's the same finger-follows-content preference as
 //! regular scrolling.
 
-/// The finger count at which a gesture stops belonging to the focused client and becomes shell navigation.
+/// The finger count at which a gesture stops belonging to the focused client and becomes shell
+/// navigation.
 pub const SHELL_FINGER_THRESHOLD: u32 = 3;
 
-/// How far the gesture centre must travel, in logical pixels, before a swipe commits — large enough that a rest-and-twitch doesn't switch workspaces, small enough that a flick lands before fingers leave the pad (roughly a third of usable travel).
+/// How far the gesture centre must travel, in logical pixels, before a swipe commits — large enough
+/// that a rest-and-twitch doesn't switch workspaces, small enough that a flick lands before fingers
+/// leave the pad (roughly a third of usable travel).
 pub const SWIPE_THRESHOLD: f64 = 100.0;
 
-/// A swipe must be this many times longer on its dominant axis than the other before it counts as horizontal or vertical — otherwise a diagonal drag fires whichever axis crosses first, so the same motion means different things on different attempts.
+/// A swipe must be this many times longer on its dominant axis than the other before it counts as
+/// horizontal or vertical — otherwise a diagonal drag fires whichever axis crosses first, so the
+/// same motion means different things on different attempts.
 pub const AXIS_DOMINANCE: f64 = 1.5;
 
 /// Absolute pinch scale below which a pinch reads as "zoom out".
@@ -39,23 +44,23 @@ pub const PINCH_IN_SCALE: f64 = 0.8;
 /// Absolute pinch scale above which a pinch reads as "zoom in".
 pub const PINCH_OUT_SCALE: f64 = 1.25;
 
-/// What the shell should do about a gesture. Every variant maps onto an existing chrome operation; none is a new interaction.
+/// What the shell should do about a gesture. Every variant maps onto an existing chrome operation;
+/// none is a new interaction.
 #[derive(Copy, Clone, Debug, PartialEq)]
 pub enum GestureAction {
-    /// Total signed travel of three fingers up or down since the gesture
-    /// began, moving the strip deck with them. Positive travel goes toward
-    /// the strips below, the way Ctrl+Super+↓ does.
+    /// Total signed travel of three fingers up or down since the gesture began, moving the strip
+    /// deck with them. Positive travel goes toward the strips below, the way Ctrl+Super+↓ does.
     StripDeckUpdate { travel: f64, began: bool },
-    /// The fingers on the strip deck lifted (or the gesture was cancelled):
-    /// it settles on a strip with their momentum.
+    /// The fingers on the strip deck lifted (or the gesture was cancelled): it settles on a strip
+    /// with their momentum.
     StripDeckEnd { cancelled: bool },
     /// `chrome_state::switch_workspace` — `-1` is up the wheel, `+1` down.
     SwitchWorkspace(i32),
-    /// Total signed direct-pan travel since gesture begin. Positive travel
-    /// moves toward later groups; every update is emitted after axis lock.
+    /// Total signed direct-pan travel since gesture begin. Positive travel moves toward later
+    /// groups; every update is emitted after axis lock.
     StripPanUpdate { travel: f64, began: bool },
-    /// The direct-pan stream ended or was cancelled. The row decides whether
-    /// an elastic overpull needs to settle back to its legal boundary.
+    /// The direct-pan stream ended or was cancelled. The row decides whether an elastic overpull
+    /// needs to settle back to its legal boundary.
     StripPanEnd { cancelled: bool },
     /// Open the workspace overview (what `Super+Tab` toggles on).
     ShowOverview,
@@ -63,12 +68,14 @@ pub enum GestureAction {
     HideOverview,
 }
 
-/// Whether the shell takes a gesture with this many fingers, leaving the rest for the focused client.
+/// Whether the shell takes a gesture with this many fingers, leaving the rest for the focused
+/// client.
 pub fn claims(fingers: u32) -> bool {
     fingers >= SHELL_FINGER_THRESHOLD
 }
 
-/// Tuning the tracker reads. Split out so the direction preference can follow the user's `natural_scroll` setting without the tracker knowing where settings come from.
+/// Tuning the tracker reads. Split out so the direction preference can follow the user's
+/// `natural_scroll` setting without the tracker knowing where settings come from.
 #[derive(Copy, Clone, Debug, PartialEq)]
 pub struct GestureConfig {
     /// Invert both swipe axes, matching two-finger scrolling.
@@ -92,15 +99,14 @@ pub struct GestureTracker {
     config: GestureConfig,
     /// Fingers of the gesture in flight, `None` between gestures.
     fingers: Option<u32>,
-    /// Accumulated swipe delta since `swipe_begin`.
+    /// Accumulated swipe delta since `swipe_begin` .
     delta: (f64, f64),
     /// Set once this gesture has produced an action.
     fired: bool,
-    /// Once horizontal motion wins arbitration, keep the strip attached to
-    /// the fingers through reversals and momentary diagonal jitter.
+    /// Once horizontal motion wins arbitration, keep the strip attached to the fingers through
+    /// reversals and momentary diagonal jitter.
     strip_pan_engaged: bool,
-    /// Once vertical motion wins it, the strip deck follows the fingers the
-    /// same way.
+    /// Once vertical motion wins it, the strip deck follows the fingers the same way.
     strip_deck_engaged: bool,
 }
 
@@ -116,7 +122,8 @@ impl GestureTracker {
         }
     }
 
-    /// Re-read the direction preference. Called when settings change mid-session, so an in-flight gesture keeps the convention it began with rather than reversing under the finger.
+    /// Re-read the direction preference. Called when settings change mid-session, so an in-flight
+    /// gesture keeps the convention it began with rather than reversing under the finger.
     pub fn set_config(&mut self, config: GestureConfig) {
         self.config = config;
     }
@@ -129,7 +136,8 @@ impl GestureTracker {
         self.fingers
     }
 
-    /// True while a gesture the *shell* owns is in flight — the signal the event loop uses to keep forwarding it away from clients even though finger count is only reported on `begin`.
+    /// True while a gesture the *shell* owns is in flight — the signal the event loop uses to keep
+    /// forwarding it away from clients even though finger count is only reported on `begin` .
     pub fn shell_owns_current(&self) -> bool {
         self.fingers.is_some_and(claims)
     }
@@ -142,7 +150,8 @@ impl GestureTracker {
         self.strip_deck_engaged = false;
     }
 
-    /// Feed one swipe update. Returns the action at the moment the threshold is crossed, and `None` for every update after it.
+    /// Feed one swipe update. Returns the action at the moment the threshold is crossed, and `None`
+    /// for every update after it.
     pub fn swipe_update(&mut self, dx: f64, dy: f64) -> Option<GestureAction> {
         let fingers = self.fingers?;
         if !claims(fingers) || self.fired {
@@ -152,10 +161,9 @@ impl GestureTracker {
         self.delta.1 += dy;
         let (horizontal, vertical) = self.delta;
         let (horizontal_magnitude, vertical_magnitude) = (horizontal.abs(), vertical.abs());
-        // Horizontal strip navigation is direct manipulation rather than a
-        // thresholded one-shot focus command. Axis-lock after a tiny movement
-        // so the first visible frame carries the complete finger travel; once
-        // locked, reversals remain on the same surface.
+        // Horizontal strip navigation is direct manipulation rather than a thresholded one-shot
+        // focus command. Axis-lock after a tiny movement so the first visible frame carries the
+        // complete finger travel; once locked, reversals remain on the same surface.
         if fingers == 3
             && !self.strip_deck_engaged
             && (self.strip_pan_engaged
@@ -164,11 +172,9 @@ impl GestureTracker {
         {
             let began = !self.strip_pan_engaged;
             self.strip_pan_engaged = true;
-            // Positive travel carries the strip toward later windows, the
-            // way the person's hand carried it: with natural scrolling the
-            // content follows the fingers, so their leftward travel goes
-            // toward later windows, and without it the content goes the
-            // other way.
+            // Positive travel carries the strip toward later windows, the way the person's hand
+            // carried it: with natural scrolling the content follows the fingers, so their leftward
+            // travel goes toward later windows, and without it the content goes the other way.
             let travel = if self.config.natural_scroll {
                 -horizontal
             } else {
@@ -176,9 +182,9 @@ impl GestureTracker {
             };
             return Some(GestureAction::StripPanUpdate { travel, began });
         }
-        // Up and down, three fingers move the strip deck the same way: it
-        // follows them, and the release decides where it settles. Swiping up
-        // goes toward the strip above, as Ctrl+Super+↑ does.
+        // Up and down, three fingers move the strip deck the same way: it follows them, and the
+        // release decides where it settles. Swiping up goes toward the strip above, as Ctrl+Super+↑
+        // does.
         if fingers == 3
             && (self.strip_deck_engaged
                 || (vertical_magnitude >= 8.0
@@ -226,7 +232,8 @@ impl GestureTracker {
         self.strip_deck_engaged = false;
     }
 
-    /// Feed one pinch update. `scale` is absolute against the gesture's begin, so the thresholds are absolute too.
+    /// Feed one pinch update. `scale` is absolute against the gesture's begin, so the thresholds
+    /// are absolute too.
     pub fn pinch_update(&mut self, scale: f64) -> Option<GestureAction> {
         let fingers = self.fingers?;
         if !claims(fingers) || self.fired {
@@ -242,7 +249,8 @@ impl GestureTracker {
     }
 }
 
-/// The action a swipe of `fingers` fingers and accumulated `delta` means, or `None` while still below threshold or too diagonal to read. Pure — the tracker only handles latching.
+/// The action a swipe of `fingers` fingers and accumulated `delta` means, or `None` while still
+/// below threshold or too diagonal to read. Pure — the tracker only handles latching.
 pub fn swipe_action(
     fingers: u32,
     delta: (f64, f64),
@@ -255,17 +263,19 @@ pub fn swipe_action(
     };
     let (ax, ay) = (dx.abs(), dy.abs());
     let t = config.swipe_threshold;
-    // Vertical, four fingers: one level out, workspaces. Three fingers
-    // move the strip deck directly ([`GestureTracker::swipe_update`]).
+    // Vertical, four fingers: one level out, workspaces. Three fingers move the strip deck directly
+    // ([`GestureTracker::swipe_update`]).
     if fingers >= 4 && ay >= t && ay >= ax * AXIS_DOMINANCE {
-        // Swiping up goes up the wheel, as Super+Page Up does (dy is negative when fingers move up).
+        // Swiping up goes up the wheel, as Super+Page Up does (dy is negative when fingers move
+        // up).
         let dir = if dy < 0.0 { -1 } else { 1 };
         return Some(GestureAction::SwitchWorkspace(dir));
     }
     None
 }
 
-/// The action a pinch to absolute `scale` means. Pinching in is zooming out, which is what the overview is.
+/// The action a pinch to absolute `scale` means. Pinching in is zooming out, which is what the
+/// overview is.
 pub fn pinch_action(scale: f64) -> Option<GestureAction> {
     if scale <= PINCH_IN_SCALE {
         Some(GestureAction::ShowOverview)
@@ -295,8 +305,9 @@ mod tests {
 
     #[test]
     fn gesture_ownership_is_decided_by_finger_count() {
-        // Phase `one_and_two_finger_gestures_belong_to_the_client`.
-        // Pinch-to-zoom in a browser must keep working; the shell taking two-finger gestures would break every app that uses them.
+        // Phase `one_and_two_finger_gestures_belong_to_the_client` . Pinch-to-zoom in a browser
+        // must keep working; the shell taking two-finger gestures would break every app that uses
+        // them.
         assert!(!claims(1));
         assert!(!claims(2));
         assert!(claims(3));
@@ -312,7 +323,8 @@ mod tests {
             );
         }
         {
-            // The finger count only arrives on `begin`, so the loop needs the in-flight answer to route the updates that follow.
+            // The finger count only arrives on `begin` , so the loop needs the in-flight answer to
+            // route the updates that follow.
             let mut t = GestureTracker::new(cfg());
             t.swipe_begin(3);
             assert!(t.shell_owns_current());
@@ -336,8 +348,8 @@ mod tests {
         assert_eq!(swipe_action(3, (0.0, 150.0), &cfg()), None);
         assert_eq!(swipe_action(3, (-150.0, 0.0), &cfg()), None);
         assert_eq!(swipe_action(3, (150.0, 0.0), &cfg()), None);
-        // Phase `a_four_finger_swipe_switches_workspace_the_same_way_the_chord_does`.
-        // Four fingers are one level out, as Ctrl+Super is: Super+Page Up is `switch_workspace(-1)`.
+        // Phase `a_four_finger_swipe_switches_workspace_the_same_way_the_chord_does` . Four fingers
+        // are one level out, as Ctrl+Super is: Super+Page Up is `switch_workspace(-1)` .
         assert_eq!(
             swipe_action(4, (0.0, -150.0), &cfg()),
             Some(GestureAction::SwitchWorkspace(-1))
@@ -346,15 +358,17 @@ mod tests {
             swipe_action(4, (0.0, 150.0), &cfg()),
             Some(GestureAction::SwitchWorkspace(1))
         );
-        // Phase `a_four_finger_horizontal_swipe_does_nothing`.
-        // Deliberately unassigned: there's no third navigable axis in the spatial model, and inventing one is what the design rules out.
+        // Phase `a_four_finger_horizontal_swipe_does_nothing` . Deliberately unassigned: there's no
+        // third navigable axis in the spatial model, and inventing one is what the design rules
+        // out.
         assert_eq!(swipe_action(4, (-300.0, 0.0), &cfg()), None);
-        // Phase `a_swipe_below_threshold_does_nothing`.
-        // Three fingers resting on the pad drift. That must not switch a workspace.
+        // Phase `a_swipe_below_threshold_does_nothing` . Three fingers resting on the pad drift.
+        // That must not switch a workspace.
         assert_eq!(swipe_action(3, (0.0, -30.0), &cfg()), None);
         assert_eq!(swipe_action(3, (20.0, -20.0), &cfg()), None);
-        // Phase `a_diagonal_swipe_does_nothing_until_one_axis_dominates`.
-        // Equal on both axes: ambiguous, and picking one would make the same motion do different things on different attempts.
+        // Phase `a_diagonal_swipe_does_nothing_until_one_axis_dominates` . Equal on both axes:
+        // ambiguous, and picking one would make the same motion do different things on different
+        // attempts.
         assert_eq!(swipe_action(4, (150.0, -150.0), &cfg()), None);
         assert_eq!(
             swipe_action(4, (60.0, -150.0), &cfg()),
@@ -395,9 +409,8 @@ mod tests {
                 Some(GestureAction::StripDeckEnd { cancelled: false })
             );
         }
-        // Phase `swiping_up_goes_toward_the_strip_above_as_the_chord_does`.
-        // Ctrl+Super+Up is the strip above: fingers moving up (negative dy)
-        // carry the deck toward it (negative travel).
+        // Phase `swiping_up_goes_toward_the_strip_above_as_the_chord_does` . Ctrl+Super+Up is the
+        // strip above: fingers moving up (negative dy) carry the deck toward it (negative travel).
         {
             let mut tracker = GestureTracker::new(cfg());
             tracker.swipe_begin(3);
@@ -444,9 +457,9 @@ mod tests {
 
     #[test]
     fn horizontal_streaming_and_natural_scroll_direction() {
-        // Fingers moving left: with natural scrolling the strip goes with
-        // them, toward later windows (positive travel); without it the
-        // content goes the other way and the strip toward earlier ones.
+        // Fingers moving left: with natural scrolling the strip goes with them, toward later
+        // windows (positive travel); without it the content goes the other way and the strip toward
+        // earlier ones.
         {
             let mut tracker = GestureTracker::new(cfg());
             tracker.swipe_begin(3);
@@ -547,7 +560,8 @@ mod tests {
     #[test]
     fn swipe_actions_fire_once_mid_gesture_and_rearm() {
         {
-            // The bug this guards: firing per update would switch a workspace for every millimetre of a long swipe.
+            // The bug this guards: firing per update would switch a workspace for every millimetre
+            // of a long swipe.
             let mut t = GestureTracker::new(cfg());
             t.swipe_begin(4);
             let mut fired = Vec::new();
@@ -581,7 +595,8 @@ mod tests {
             );
         }
         {
-            // libinput can deliver an update after a cancelled end if the stream is torn; that must not accumulate into the next gesture.
+            // libinput can deliver an update after a cancelled end if the stream is torn; that must
+            // not accumulate into the next gesture.
             let mut t = GestureTracker::new(cfg());
             assert_eq!(t.swipe_update(0.0, -500.0), None);
             assert_eq!(t.active_fingers(), None);

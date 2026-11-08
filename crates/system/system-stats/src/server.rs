@@ -63,9 +63,6 @@ pub struct Server {
 
 impl Server {
     /// Serve `hub` at `path`, asking `prompter` for grants.
-    ///
-    /// # Errors
-    /// The socket cannot be bound or its thread started.
     pub fn bind(path: &Path, hub: Hub, prompter: Arc<dyn Prompter>) -> std::io::Result<Self> {
         if path.exists() {
             std::fs::remove_file(path)?;

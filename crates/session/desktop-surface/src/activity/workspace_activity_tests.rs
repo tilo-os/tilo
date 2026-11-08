@@ -2,11 +2,17 @@
 mod workspace_activity {
     use super::*;
     use crate::activity::ActivitySnapshot;
+    #[allow(
+        unused_imports,
+        reason = "the store-backed history refresh is a method of this trait"
+    )]
+    use crate::activity::testing::StoreRecords as _;
     use automerge::{
         AutoCommit, ROOT,
         transaction::{CommitOptions, Transactable},
     };
     use tilo_desktop_model::{DesktopTree, StripId, Tab, TileContent, WindowGroup, WindowWidth};
+    use ui::record::RecordStore;
 
     fn causal_workspace() -> ActivitySnapshot {
         let mut desktop = DesktopTree {
@@ -100,7 +106,8 @@ mod workspace_activity {
         pane.begin_view(tree.active.raw());
         pane.refresh(&mut tree);
         pane.refresh_records(&mut tree, &records);
-        pane.set_period(Period::AllTime);
+        pane.period = Period::AllTime;
+        pane.reinstall_filter();
         assert!(pane.replay_frames.len() >= 2);
         let tab_counts: Vec<usize> = pane
             .replay_frames
@@ -118,10 +125,12 @@ mod workspace_activity {
             tab_counts.windows(2).any(|pair| pair[0] != pair[1]),
             "causal forks must expose a changing real layout: {tab_counts:?}"
         );
-        pane.set_view(ActivityView::Replay);
+        pane.view = ActivityView::Replay;
         assert_eq!(pane.serve_replay().frames.len(), pane.replay_frames.len());
-        pane.set_author_filter(Some("absent".into()));
-        pane.set_author_filter(None);
+        pane.author = Some("absent".into());
+        pane.reinstall_filter();
+        pane.author = None;
+        pane.reinstall_filter();
         let mut presence = PresenceCtx::empty();
         let ada = ui::permissions::UserId("ada".into());
         presence.names.insert(ada.clone(), "Ada".into());
@@ -139,7 +148,7 @@ mod workspace_activity {
         assert_eq!(pointer.name, "Ada");
         assert!(pointer.desktop_space);
         pane.finish_view(tree.active.raw());
-        assert!(!pane.replay_is_playing());
+        assert!(!(pane.view == ActivityView::Replay && pane.replay_playing));
         assert_eq!(tree.doc.get_heads(), heads_before);
         assert_eq!(
             records
@@ -219,6 +228,6 @@ mod workspace_activity {
                 .iter()
                 .any(|frame| frame.entry_id == broken_id)
         );
-        assert_eq!(pane.replay_unavailable_checkpoints(), 1);
+        assert_eq!(pane.replay_unavailable, 1);
     }
 }

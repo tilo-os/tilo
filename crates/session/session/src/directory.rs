@@ -1,12 +1,9 @@
-//! The community site this computer is configured with, and the desk's own
-//! way into the workspace directory: which person a join is made as, and what
-//! the sheet shows of it.
-//!
-//! What a site lists and what its door grants is
-//! [`tilo_workspace_directory`]'s: one implementation for this session and
-//! for a browser page. Here is what is this computer's own — the
-//! administrator's or the vendor's `community.toml`, the identity a join is
-//! made as, and the workspaces the desk already holds.
+//! The community site this computer is configured with, and the desk's own way into the workspace
+//! directory: which person a join is made as, and what the sheet shows of it.
+//! What a site lists and what its door grants is [`tilo_workspace_directory`]'s: one implementation
+//! for this session and for a browser page. Here is what is this computer's own — the
+//! administrator's or the vendor's `community.toml` , the identity a join is made as, and the
+//! workspaces the desk already holds.
 
 use std::path::{Path, PathBuf};
 
@@ -27,8 +24,7 @@ pub(crate) const CONFIG_ENV: &str = "TILO_COMMUNITY_CONFIG";
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct CommunityToml {
-    /// The site whose home workspace a computer is in by default; empty for
-    /// none.
+    /// The site whose home workspace a computer is in by default; empty for none.
     #[serde(default)]
     site: String,
     /// Where a report about Tilo itself goes, when this computer offers one.
@@ -53,9 +49,8 @@ pub(crate) fn feedback() -> Option<crate::feedback::Destination> {
     configured().feedback
 }
 
-/// The paths this computer's configuration is read from, in the order they
-/// answer: the administrator's file, else the vendor's, unless the
-/// environment names the one file to read.
+/// The paths this computer's configuration is read from, in the order they answer: the
+/// administrator's file, else the vendor's, unless the environment names the one file to read.
 fn config_paths() -> Vec<PathBuf> {
     match std::env::var_os(CONFIG_ENV) {
         Some(path) => vec![PathBuf::from(path)],
@@ -68,8 +63,8 @@ fn configured() -> Configured {
     configured_from(config_paths().iter().map(PathBuf::as_path))
 }
 
-/// What the first readable file of `paths` says. A file that does not parse
-/// is reported and skipped.
+/// What the first readable file of `paths` says. A file that does not parse is reported and
+/// skipped.
 fn configured_from<'a>(paths: impl IntoIterator<Item = &'a Path>) -> Configured {
     for path in paths {
         let Ok(text) = std::fs::read_to_string(path) else {
@@ -101,8 +96,7 @@ fn configured_from<'a>(paths: impl IntoIterator<Item = &'a Path>) -> Configured 
     Configured::default()
 }
 
-/// Read the directories again: the community site's, and `site`'s when the
-/// person named one.
+/// Read the directories again: the community site's, and `site` 's when the person named one.
 pub(crate) fn ask(store: &Store, site: Option<String>) {
     store.read(community_site(), site);
 }
@@ -170,18 +164,16 @@ fn person() -> Result<Person, String> {
     })
 }
 
-/// The name this person goes by in a workspace: the one they chose, else their
-/// login account's. A workspace, a public one above all, learns nothing of this
-/// person's devices.
+/// The name this person goes by in a workspace: the one they chose, else their login account's. A
+/// workspace, a public one above all, learns nothing of this person's devices.
 pub(crate) fn own_person_name(chosen: Option<String>) -> String {
     chosen_name(chosen).unwrap_or_else(tilo_identity_host::provisioning::login_account_display_name)
 }
 
-/// The name this person goes by at their own desk: the one they chose, else
-/// the name the session already knows them by. A computer with no identity
-/// of its own goes by the login account, which is the session's person
-/// there, so the desk and its bar name them alike; a computer whose identity
-/// is in is named by its key, which is never shown as a name.
+/// The name this person goes by at their own desk: the one they chose, else the name the session
+/// already knows them by. A computer with no identity of its own goes by the login account, which
+/// is the session's person there, so the desk and its bar name them alike; a computer whose
+/// identity is in is named by its key, which is never shown as a name.
 pub(crate) fn desk_person_name(chosen: Option<String>, person: &str) -> String {
     chosen_name(chosen).unwrap_or_else(|| {
         let known = person.trim();
@@ -193,8 +185,8 @@ pub(crate) fn desk_person_name(chosen: Option<String>, person: &str) -> String {
     })
 }
 
-/// The display name `chosen` is, where it is one they gave: not blank, not
-/// the placeholder an unnamed identity carries, and one a room may take.
+/// The display name `chosen` is, where it is one they gave: not blank, not the placeholder an
+/// unnamed identity carries, and one a room may take.
 fn chosen_name(chosen: Option<String>) -> Option<String> {
     chosen
         .filter(|name| runtime_identity::is_chosen_display_name(name))
@@ -205,14 +197,13 @@ fn chosen_name(chosen: Option<String>) -> Option<String> {
         })
 }
 
-/// Whether `person` is a key rather than a name to read: the root key hex a
-/// computer's identity names them by.
+/// Whether `person` is a key rather than a name to read: the root key hex a computer's identity
+/// names them by.
 fn is_identity_key(person: &str) -> bool {
     person.len() == 64 && person.bytes().all(|byte| byte.is_ascii_hexdigit())
 }
 
-/// What the sheet shows: the workspaces this computer holds, and what the
-/// sites' directories list.
+/// What the sheet shows: the workspaces this computer holds, and what the sites' directories list.
 pub(crate) fn view(store: &Store, handle: &DesktopHandle) -> Directory {
     let held = handle.read(|tree| {
         tree.workspaces
@@ -231,8 +222,8 @@ pub(crate) fn view(store: &Store, handle: &DesktopHandle) -> Directory {
 mod tests {
     use super::*;
 
-    /// A site named is a community to join; an empty one is none, and a file
-    /// that is not there or does not parse leaves the next one to answer.
+    /// A site named is a community to join; an empty one is none, and a file that is not there or
+    /// does not parse leaves the next one to answer.
     #[test]
     fn an_empty_site_is_no_community() {
         let dir = tempfile::tempdir().expect("a directory for the configurations");
@@ -271,9 +262,8 @@ mod tests {
         );
     }
 
-    /// A computer told where reports go names the workspace and the
-    /// conversation, and one told nothing offers no report: a report with
-    /// nowhere to go is not a report.
+    /// A computer told where reports go names the workspace and the conversation, and one told
+    /// nothing offers no report: a report with nowhere to go is not a report.
     #[test]
     fn a_report_goes_where_the_config_names_or_nowhere() {
         let dir = tempfile::tempdir().expect("a directory for the configurations");

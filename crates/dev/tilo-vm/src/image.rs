@@ -48,9 +48,6 @@ const GPT_AT: std::ops::Range<usize> = 512..520;
 
 /// The format of a disk from its first bytes: a qcow2 header, or a raw disk
 /// whose LBA 1 holds a GPT header.
-///
-/// # Errors
-/// Anything else, as a sentence saying what the bytes are not.
 pub fn detect(head: &[u8]) -> Result<Format, String> {
     if head.starts_with(QCOW2_MAGIC) {
         return Ok(Format::Qcow2);
@@ -69,9 +66,6 @@ pub fn detect(head: &[u8]) -> Result<Format, String> {
 }
 
 /// [`detect`] on a file.
-///
-/// # Errors
-/// Read failures and files that are not a disk image.
 pub fn format_of(path: &Path) -> Result<Format, String> {
     let mut head = Vec::with_capacity(GPT_AT.end);
     std::fs::File::open(path)

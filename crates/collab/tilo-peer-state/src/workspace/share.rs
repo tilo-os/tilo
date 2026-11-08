@@ -37,9 +37,6 @@ pub fn share_of(grant: &GrantId) -> Option<&str> {
 /// minted the window's tab, which hosts it
 /// ([`tilo_desktop_model::window_share::device_salts`]). Nobody shares
 /// another device's window, or says what it shows.
-///
-/// # Errors
-/// Why the device may not share it.
 pub fn window_is_the_writers(
     workspace: Option<&AutoCommit>,
     device: &str,
@@ -72,9 +69,6 @@ pub fn window_is_the_writers(
 /// makes holds: they are neither banned nor restricted, the node is one
 /// record or item of the workspace, a window is theirs to share, and they hold
 /// all it gives.
-///
-/// # Errors
-/// The first of those that does not hold.
 pub fn share_grants(
     (doc, policy): (Option<&AutoCommit>, &WorkspacePolicy),
     (person, device, authority, cx): (&str, &str, &Authority<'_>, &Context<'_>),
@@ -116,9 +110,6 @@ pub fn ended_by(
 /// The share grants a member's batch gives and ends, from `held` to
 /// `wanted` on the workspace `at`, each checked as [`share_grants`] and
 /// [`ended_by`] would make it for `person` writing from `device`.
-///
-/// # Errors
-/// A share grant the writer could not have given or ended.
 pub(super) fn changed(
     (at, held, wanted): (&AutoCommit, &WorkspacePolicy, &WorkspacePolicy),
     (person, device, authority, cx): (&str, &str, &Authority<'_>, &Context<'_>),

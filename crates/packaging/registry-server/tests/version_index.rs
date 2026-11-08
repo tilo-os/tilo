@@ -12,19 +12,16 @@
     reason = "integration-test setup and assertions"
 )]
 
-use std::os::unix::fs::PermissionsExt as _;
-use std::path::{Path, PathBuf};
-use std::process::Command;
-use tilo_test_env::SpawnUnderEnvLock as _;
-
 use app_cli::client::RegistryError;
 use app_cli::config::RegistryConfig;
 use ed25519_dalek::SigningKey;
-use registry_server::{PublisherAllowlist, PublisherRow, ServerIdentity, Storage};
+use registry_server::Storage;
 use registry_types::{
     CompactRegistrySnapshot, RegistryEntry, RegistryTarget, RegistryVersion,
     SignedRegistrySnapshot, sign_entry,
 };
+use std::os::unix::fs::PermissionsExt as _;
+use std::path::{Path, PathBuf};
 
 const NOTES: &str = "so.tilo.notes";
 
@@ -50,24 +47,17 @@ fn version(number: &str) -> RegistryVersion {
 
 fn entry(package_id: &str, versions: &[&str], updated_at: u64) -> RegistryEntry {
     let publisher = SigningKey::from_bytes(&[52; 32]);
-    let mut entry = RegistryEntry {
-        package_id: package_id.into(),
-        kind: registry_types::EntryKind::App,
+    let mut entry = registry_types::RegistryEntry {
         name: "Notes".into(),
         description: "A test app".into(),
-        tagline: "Test on Tilo OS".into(),
-        images: registry_types::LocalizedImages::english_icon(
-            "https://apps.tilo.so/images/test-icon.svg",
-            "Test icon",
-        ),
-        supported_languages: vec!["en".into()],
         categories: vec!["Test".into()],
-        source_url: None,
-        homepage: None,
-        publisher_pubkey_hex: hex::encode(publisher.verifying_key().to_bytes()),
         versions: versions.iter().map(|number| version(number)).collect(),
         updated_at_unix: updated_at,
-        signature_hex: String::new(),
+        ..crate::support::entry(
+            package_id,
+            hex::encode(publisher.verifying_key().to_bytes()),
+            Vec::new(),
+        )
     };
     sign_entry(&mut entry, &publisher);
     entry
@@ -90,22 +80,16 @@ impl Registry {
         let owner_hex = hex::encode(owner.verifying_key().to_bytes());
         let publisher = SigningKey::from_bytes(&[52; 32]);
         storage
-            .save_identity(&ServerIdentity {
-                owner_pubkey_hex: owner_hex.clone(),
-                name: "test".into(),
-                description: "test".into(),
-                base_url: "http://127.0.0.1".into(),
-            })
+            .save_identity(&crate::support::identity(
+                owner_hex.clone(),
+                "http://127.0.0.1",
+            ))
             .unwrap();
         storage
-            .save_allowlist(&PublisherAllowlist {
-                publishers: vec![PublisherRow {
-                    pubkey_hex: hex::encode(publisher.verifying_key().to_bytes()),
-                    can_add_new: true,
-                    note: String::new(),
-                    namespaces: vec![registry_types::namespace::TILO_NAMESPACE.to_owned()],
-                }],
-            })
+            .save_allowlist(&crate::support::allowlist(vec![crate::support::publisher(
+                hex::encode(publisher.verifying_key().to_bytes()),
+                true,
+            )]))
             .unwrap();
         let key_path = keys.path().join("owner.seed");
         std::fs::write(&key_path, hex::encode(owner.to_bytes())).unwrap();
@@ -120,18 +104,15 @@ impl Registry {
     }
 
     fn sign(&self) -> (SignedRegistrySnapshot, CompactRegistrySnapshot) {
-        let output = Command::new(tilo_test_env::package_binary!("tilo-registry-server"))
-            .arg("--data-dir")
-            .arg(self.dir.path())
-            .args(["sign-snapshot", "--owner-key-file"])
-            .arg(&self.key_path)
-            .args(["--valid-for-seconds", "86400"])
-            .output_locked()
-            .unwrap();
-        assert!(
-            output.status.success(),
-            "{}",
-            String::from_utf8_lossy(&output.stderr)
+        crate::support::server_ok(
+            self.dir.path(),
+            &[
+                "sign-snapshot",
+                "--owner-key-file",
+                self.key_path.to_str().unwrap(),
+                "--valid-for-seconds",
+                "86400",
+            ],
         );
         (
             self.storage.load_snapshot().unwrap().unwrap(),

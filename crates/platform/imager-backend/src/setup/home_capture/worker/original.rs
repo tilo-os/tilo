@@ -393,9 +393,6 @@ impl OriginalReadClaim {
     }
     /// The reviewed nested Home exclusions, shape-checked. Never a path grant:
     /// they only remove data the person excluded.
-    ///
-    /// # Errors
-    /// Refuses unrepresentable bytes and non-relative components.
     pub fn exclusion_paths(&self) -> io::Result<Vec<std::path::PathBuf>> {
         crate::setup::source_tree::exclusion_paths(&self.exclusions)
     }

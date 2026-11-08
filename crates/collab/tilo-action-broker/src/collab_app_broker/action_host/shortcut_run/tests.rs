@@ -1,3 +1,7 @@
+#![allow(
+    clippy::significant_drop_tightening,
+    reason = "every test here keeps its fixture and guards alive through its assertions"
+)]
 use super::super::*;
 use super::*;
 use crate::collab_app_broker::InvocationOwner;
@@ -287,10 +291,6 @@ fn start_direct(
     }
 }
 
-#[allow(
-    clippy::significant_drop_tightening,
-    reason = "the test keeps its fixture and guards alive through its assertions"
-)]
 #[tokio::test(flavor = "current_thread")]
 async fn direct_palette_keyboard_and_unattended_runs_cross_signed_barriers() {
     for trigger in [
@@ -404,10 +404,6 @@ async fn direct_entry_points_refuse_missing_journal_before_spawning() {
     }
 }
 
-#[allow(
-    clippy::significant_drop_tightening,
-    reason = "the test keeps its fixture and guards alive through its assertions"
-)]
 #[tokio::test(flavor = "current_thread")]
 async fn direct_palette_refuses_native_custody_mismatch_without_fallback() {
     let mut fixture = Fixture::new();
@@ -426,10 +422,6 @@ async fn direct_palette_refuses_native_custody_mismatch_without_fallback() {
     );
 }
 
-#[allow(
-    clippy::significant_drop_tightening,
-    reason = "the test keeps its fixture and guards alive through its assertions"
-)]
 #[tokio::test(flavor = "current_thread")]
 async fn signed_run_keeps_original_uuid_owner_and_terminal_and_retries_only_once() {
     let fixture = Fixture::new();
@@ -483,10 +475,6 @@ async fn signed_run_keeps_original_uuid_owner_and_terminal_and_retries_only_once
     );
 }
 
-#[allow(
-    clippy::significant_drop_tightening,
-    reason = "the test keeps its fixture and guards alive through its assertions"
-)]
 #[tokio::test(flavor = "current_thread")]
 async fn journal_failure_starts_no_run_and_can_retry_after_repair() {
     let fixture = Fixture::new();
@@ -509,10 +497,6 @@ async fn journal_failure_starts_no_run_and_can_retry_after_repair() {
     assert_eq!(fixture.state.take_finished_shortcut_runs().len(), 1);
 }
 
-#[allow(
-    clippy::significant_drop_tightening,
-    reason = "the test keeps its fixture and guards alive through its assertions"
-)]
 #[tokio::test(flavor = "current_thread")]
 async fn certified_run_cannot_downgrade_to_an_unjournaled_job() {
     let fixture = Fixture::new();
@@ -528,10 +512,6 @@ async fn certified_run_cannot_downgrade_to_an_unjournaled_job() {
     );
 }
 
-#[allow(
-    clippy::significant_drop_tightening,
-    reason = "the test keeps its fixture and guards alive through its assertions"
-)]
 #[tokio::test(flavor = "current_thread")]
 async fn terminal_barrier_failure_never_publishes_success() {
     let fixture = Fixture::new();
@@ -555,10 +535,6 @@ async fn terminal_barrier_failure_never_publishes_success() {
     assert!(!fixture.state.has_finished_shortcut_runs());
 }
 
-#[allow(
-    clippy::significant_drop_tightening,
-    reason = "the test keeps its fixture and guards alive through its assertions"
-)]
 #[tokio::test(flavor = "current_thread")]
 async fn nested_steps_keep_original_owner_and_sign_each_steps_own_uuid() {
     let mut fixture = Fixture::new();
@@ -599,10 +575,6 @@ async fn nested_steps_keep_original_owner_and_sign_each_steps_own_uuid() {
     }
 }
 
-#[allow(
-    clippy::significant_drop_tightening,
-    reason = "the test keeps its fixture and guards alive through its assertions"
-)]
 #[tokio::test(flavor = "current_thread")]
 async fn propagated_custody_does_not_bypass_the_shortcut_grant() {
     let mut fixture = Fixture::new();
@@ -689,10 +661,6 @@ async fn wait_for_finished(fixture: &Fixture) {
     .await;
 }
 
-#[allow(
-    clippy::significant_drop_tightening,
-    reason = "the test keeps its fixture and guards alive through its assertions"
-)]
 #[tokio::test(flavor = "current_thread")]
 async fn a_stopped_run_ends_as_cancelled_keeping_the_steps_it_reached() {
     let fixture = Fixture::with_extra(waiting_shortcut());
@@ -771,10 +739,6 @@ async fn a_stopped_run_ends_as_cancelled_keeping_the_steps_it_reached() {
     );
 }
 
-#[allow(
-    clippy::significant_drop_tightening,
-    reason = "the test keeps its fixture and guards alive through its assertions"
-)]
 #[tokio::test(flavor = "current_thread")]
 async fn stopping_a_shortcut_that_is_not_running_stops_nothing_and_is_no_error() {
     let fixture = Fixture::new();
@@ -801,10 +765,6 @@ async fn stopping_a_shortcut_that_is_not_running_stops_nothing_and_is_no_error()
     );
 }
 
-#[allow(
-    clippy::significant_drop_tightening,
-    reason = "the test keeps its fixture and guards alive through its assertions"
-)]
 #[tokio::test(flavor = "current_thread")]
 async fn an_unscoped_broker_door_does_not_invent_native_custody() {
     let fixture = Fixture::new();
@@ -846,10 +806,6 @@ async fn an_unscoped_broker_door_does_not_invent_native_custody() {
     );
 }
 
-#[allow(
-    clippy::significant_drop_tightening,
-    reason = "the test keeps its fixture and guards alive through its assertions"
-)]
 #[tokio::test(flavor = "current_thread")]
 async fn mismatched_original_uuid_and_retired_host_start_nothing() {
     let mut fixture = Fixture::new();
@@ -897,10 +853,6 @@ async fn finished_run(fixture: &Fixture) -> automation::FinishedShortcutRun {
     .await
 }
 
-#[allow(
-    clippy::significant_drop_tightening,
-    reason = "the test keeps its fixture and guards alive through its assertions"
-)]
 #[tokio::test(flavor = "current_thread")]
 async fn a_continued_run_does_not_run_the_steps_before_the_one_it_goes_on_from() {
     let fixture = Fixture::with_extra(several_steps(4));
@@ -971,10 +923,6 @@ async fn a_continued_run_does_not_run_the_steps_before_the_one_it_goes_on_from()
     }
 }
 
-#[allow(
-    clippy::significant_drop_tightening,
-    reason = "the test keeps its fixture and guards alive through its assertions"
-)]
 #[tokio::test(flavor = "current_thread")]
 async fn continuing_a_run_the_broker_did_not_record_is_refused_and_starts_nothing() {
     let fixture = Fixture::with_extra(several_steps(1));
@@ -1000,10 +948,6 @@ async fn continuing_a_run_the_broker_did_not_record_is_refused_and_starts_nothin
     assert!(!fixture.state.has_finished_shortcut_runs(), "nor finishes");
 }
 
-#[allow(
-    clippy::significant_drop_tightening,
-    reason = "the test keeps its fixture and guards alive through its assertions"
-)]
 #[tokio::test(flavor = "current_thread")]
 async fn continuing_a_run_from_the_run_itself_is_refused() {
     let fixture = Fixture::with_extra(several_steps(1));

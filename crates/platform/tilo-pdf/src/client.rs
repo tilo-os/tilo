@@ -168,10 +168,6 @@ enum Payload {
 impl Sandboxed {
     /// A backend that runs `helper`. The first helper starts eagerly so a
     /// missing library or an unavailable sandbox is reported here.
-    ///
-    /// # Errors
-    ///
-    /// When the helper cannot start or confine itself.
     pub fn start(helper: &Path) -> Result<Self, Error> {
         let this = Self {
             helper: helper.to_path_buf(),
@@ -237,10 +233,6 @@ impl Sandboxed {
     }
 
     /// Register a document; it is opened in the helper lazily.
-    ///
-    /// # Errors
-    ///
-    /// Opening failures reported by the engine.
     pub fn open(
         &self,
         id: u64,

@@ -35,35 +35,30 @@ use std::path::Path;
 /// Where seatd's control socket lives when the daemon is running.
 pub const SEATD_SOCKET: &str = "/run/seatd.sock";
 
-/// Directory logind creates one file per seat in. Its absence means
-/// `systemd-logind` is not running (or not managing seats), so the logind
-/// backend cannot succeed no matter what the session variables say.
+/// Directory logind creates one file per seat in. Its absence means `systemd-logind` is not running
+/// (or not managing seats), so the logind backend cannot succeed no matter what the session
+/// variables say.
 pub const LOGIND_SEAT_DIR: &str = "/run/systemd/seats";
 
 /// Snapshot of everything [`classify`] is allowed to look at.
-///
-/// Captured once at the failure site so the verdict and the message the
-/// operator reads describe the *same* observation — re-reading the
-/// environment inside the formatter would let the two disagree.
+/// Captured once at the failure site so the verdict and the message the operator reads describe the
+/// *same* observation — re-reading the environment inside the formatter would let the two disagree.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct SeatEnvironment {
-    /// `XDG_SESSION_ID`. Empty/absent means the caller is not inside a
-    /// logind session.
+    /// `XDG_SESSION_ID` . Empty/absent means the caller is not inside a logind session.
     pub session_id: Option<String>,
-    /// `XDG_SEAT`. logind writes `seat0` for a session attached to the
-    /// physical seat; a session that owns no seat has this unset (and
-    /// `loginctl` prints `-`).
+    /// `XDG_SEAT` . logind writes `seat0` for a session attached to the physical seat; a session
+    /// that owns no seat has this unset (and `loginctl` prints `-` ).
     pub seat: Option<String>,
-    /// `XDG_VTNR` — the virtual terminal the session is on, when it has
-    /// one. A seat-owning session on a VT is exactly what the DRM backend
-    /// needs.
+    /// `XDG_VTNR` — the virtual terminal the session is on, when it has one. A seat-owning session
+    /// on a VT is exactly what the DRM backend needs.
     pub vtnr: Option<String>,
     /// Whether `/run/seatd.sock` exists.
     pub seatd_socket: bool,
     /// Whether logind is managing seats (`/run/systemd/seats` exists).
     pub logind_seats: bool,
-    /// `WAYLAND_DISPLAY` — set when a Wayland compositor is already
-    /// running and this process is one of its clients.
+    /// `WAYLAND_DISPLAY` — set when a Wayland compositor is already running and this process is one
+    /// of its clients.
     pub wayland_display: Option<String>,
     /// `DISPLAY` — the same signal for an X session.
     pub x_display: Option<String>,
@@ -75,16 +70,16 @@ impl SeatEnvironment {
         Self::detect_with(|k| std::env::var(k).ok(), |p| Path::new(p).exists())
     }
 
-    /// [`Self::detect`] with the two effects injected, so tests can build
-    /// any environment without touching the process's real one (which is
-    /// global state and would make the tests order-dependent).
+    /// [`Self::detect`] with the two effects injected, so tests can build any environment without
+    /// touching the process's real one (which is global state and would make the tests
+    /// order-dependent).
     pub fn detect_with(
         env: impl Fn(&str) -> Option<String>,
         exists: impl Fn(&str) -> bool,
     ) -> Self {
-        // An empty string is how a shell exports "unset but present"; it
-        // carries no more information than absence, so normalise it away
-        // rather than letting `Some("")` read as "we have a session".
+        // An empty string is how a shell exports "unset but present"; it carries no more
+        // information than absence, so normalise it away rather than letting `Some("")` read as "we
+        // have a session".
         let var = |k: &str| env(k).filter(|v| !v.trim().is_empty());
         Self {
             session_id: var("XDG_SESSION_ID"),
@@ -97,15 +92,14 @@ impl SeatEnvironment {
         }
     }
 
-    /// True when a display server is already running for this login —
-    /// the "another compositor holds the seat" signal.
+    /// True when a display server is already running for this login — the "another compositor holds
+    /// the seat" signal.
     fn display_server_running(&self) -> bool {
         self.wayland_display.is_some() || self.x_display.is_some()
     }
 
-    /// True when the session names a seat that could plausibly be opened.
-    /// logind writes `-` for "no seat" in `loginctl`, and some shells
-    /// export that verbatim, so treat it as absence.
+    /// True when the session names a seat that could plausibly be opened. logind writes `-` for "no
+    /// seat" in `loginctl` , and some shells export that verbatim, so treat it as absence.
     fn has_seat(&self) -> bool {
         match self.seat.as_deref() {
             None => false,
@@ -117,32 +111,29 @@ impl SeatEnvironment {
 /// What went wrong, at the level the operator can do something about.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum SeatFailureKind {
-    /// Not inside a logind session at all. Nothing about the seat can
-    /// work from here; the fix is to run from a real login on a VT.
+    /// Not inside a logind session at all. Nothing about the seat can work from here; the fix is to
+    /// run from a real login on a VT.
     NoLoginSession,
-    /// In a session, but the session owns no seat — the shape of a
-    /// `manager` session, or of a session started without a seat
-    /// assignment. Same fix as above.
+    /// In a session, but the session owns no seat — the shape of a `manager` session, or of a
+    /// session started without a seat assignment. Same fix as above.
     SessionOwnsNoSeat,
-    /// A seat exists and this session owns it, but a display server is
-    /// already running on it, so it is not free to take.
+    /// A seat exists and this session owns it, but a display server is already running on it, so it
+    /// is not free to take.
     SeatAlreadyHeld,
-    /// No usable seat backend: logind isn't managing seats and seatd
-    /// isn't running.
+    /// No usable seat backend: logind isn't managing seats and seatd isn't running.
     NoSeatBackend,
-    /// The seat and the backends look fine; the error is something else
-    /// (permissions, a driver, a libseat bug). Report it verbatim.
+    /// The seat and the backends look fine; the error is something else (permissions, a driver, a
+    /// libseat bug). Report it verbatim.
     Unclassified,
 }
 
-/// A libseat failure paired with the environment it was observed in.
-/// `Display` renders the whole operator-facing diagnosis.
+/// A libseat failure paired with the environment it was observed in. `Display` renders the whole
+/// operator-facing diagnosis.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SeatFailure {
     pub kind: SeatFailureKind,
     pub env: SeatEnvironment,
-    /// The raw error text from libseat, kept so a cause we did not
-    /// anticipate is still visible.
+    /// The raw error text from libseat, kept so a cause we did not anticipate is still visible.
     pub raw: String,
 }
 
@@ -263,15 +254,15 @@ pub fn classify(raw: &str, env: &SeatEnvironment) -> SeatFailureKind {
     if !env.logind_seats && !env.seatd_socket {
         return SeatFailureKind::NoSeatBackend;
     }
-    // A permission problem reads as EACCES/EPERM rather than the ENOSYS
-    // that "no backend was usable" produces; neither maps onto the
-    // environment, so both land here with the raw text preserved.
+    // A permission problem reads as EACCES/EPERM rather than the ENOSYS that "no backend was
+    // usable" produces; neither maps onto the environment, so both land here with the raw text
+    // preserved.
     let _ = raw;
     SeatFailureKind::Unclassified
 }
 
-/// Convenience for the runtime: build the full diagnosis from a live
-/// libseat error. Kept here so the hardware path has one call to make.
+/// Convenience for the runtime: build the full diagnosis from a live libseat error. Kept here so
+/// the hardware path has one call to make.
 pub fn diagnose_live(raw: impl Into<String>) -> SeatFailure {
     SeatFailure::diagnose(raw, SeatEnvironment::detect())
 }
@@ -280,8 +271,8 @@ pub fn diagnose_live(raw: impl Into<String>) -> SeatFailure {
 mod tests {
     use super::*;
 
-    /// The exact error the user hit: libseat tried logind, then seatd, and
-    /// reported ENOSYS because neither was usable.
+    /// The exact error the user hit: libseat tried logind, then seatd, and reported ENOSYS because
+    /// neither was usable.
     const ENOSYS: &str = "FailedToOpenSession(Os { code: 38, kind: Unsupported, message: \"Function not implemented\" })";
 
     fn env() -> SeatEnvironment {
@@ -291,9 +282,9 @@ mod tests {
     #[test]
     fn seat_detection_reads_the_environment_through_the_probe() {
         {
-            // A shell that exports XDG_SESSION_ID= (empty) is telling us the
-            // same thing as not exporting it. Treating `Some("")` as "we have
-            // a session" is exactly how the misdiagnosis happens.
+            // A shell that exports XDG_SESSION_ID= (empty) is telling us the same thing as not
+            // exporting it. Treating `Some("")` as "we have a session" is exactly how the
+            // misdiagnosis happens.
             let e = SeatEnvironment::detect_with(
                 |k| match k {
                     "XDG_SESSION_ID" => Some(String::new()),
@@ -312,9 +303,8 @@ mod tests {
             assert!(e.seatd_socket, "the seatd socket probe must be consulted");
             assert!(!e.logind_seats);
         }
-        // Phase `detect_reads_the_real_environment_without_panicking`.
-        // `detect` must not panic in a test environment and must agree with
-        // the injected form when handed the same inputs.
+        // Phase `detect_reads_the_real_environment_without_panicking` . `detect` must not panic in
+        // a test environment and must agree with the injected form when handed the same inputs.
         {
             let live = SeatEnvironment::detect();
             let kind = classify(ENOSYS, &live);
@@ -341,10 +331,9 @@ mod tests {
             assert_eq!(classify(ENOSYS, &e), SeatFailureKind::NoLoginSession);
         }
         {
-            // Running Tilo from a terminal emulator inside GNOME *and* outside
-            // a logind session (a container, say). "You are not in a session"
-            // is the actionable half; "something else holds the seat" would
-            // send the operator to kill a compositor that is not the problem.
+            // Running Tilo from a terminal emulator inside GNOME *and* outside a logind session (a
+            // container, say). "You are not in a session" is the actionable half; "something else
+            // holds the seat" would send the operator to kill a compositor that is not the problem.
             let e = SeatEnvironment {
                 session_id: None,
                 wayland_display: Some("wayland-0".into()),
@@ -362,8 +351,8 @@ mod tests {
             };
             assert_eq!(classify(ENOSYS, &e), SeatFailureKind::SessionOwnsNoSeat);
         }
-        // Phase `a_literal_dash_seat_counts_as_no_seat`.
-        // Some shells export what loginctl prints. `-` is not a seat name.
+        // Phase `a_literal_dash_seat_counts_as_no_seat` . Some shells export what loginctl prints.
+        // `-` is not a seat name.
         for name in ["-", "none", "  "] {
             let e = SeatEnvironment {
                 session_id: Some("1".into()),
@@ -399,8 +388,8 @@ mod tests {
             assert_eq!(classify(ENOSYS, &e), SeatFailureKind::SeatAlreadyHeld);
         }
         {
-            // A seat name in the environment with neither logind managing
-            // seats nor seatd listening: nothing can open it.
+            // A seat name in the environment with neither logind managing seats nor seatd
+            // listening: nothing can open it.
             let e = SeatEnvironment {
                 session_id: Some("3".into()),
                 seat: Some("seat0".into()),
@@ -422,8 +411,8 @@ mod tests {
             assert_eq!(classify(ENOSYS, &e), SeatFailureKind::Unclassified);
         }
         {
-            // A permissions failure (EACCES on the seat) looks like this: the
-            // environment is correct, so the raw error is the only evidence.
+            // A permissions failure (EACCES on the seat) looks like this: the environment is
+            // correct, so the raw error is the only evidence.
             let e = SeatEnvironment {
                 session_id: Some("3".into()),
                 seat: Some("seat0".into()),
@@ -503,9 +492,8 @@ mod tests {
             let msg = SeatFailure::diagnose(ENOSYS, e).to_string();
             assert!(msg.contains("seatd"), "{msg}");
         }
-        // Phase `every_kind_has_a_summary_and_a_remedy`.
-        // Every kind must produce a non-empty summary and remedy — a
-        // diagnosis that renders as an empty line is worse than the errno.
+        // Phase `every_kind_has_a_summary_and_a_remedy` . Every kind must produce a non-empty
+        // summary and remedy — a diagnosis that renders as an empty line is worse than the errno.
         for kind in [
             SeatFailureKind::NoLoginSession,
             SeatFailureKind::SessionOwnsNoSeat,

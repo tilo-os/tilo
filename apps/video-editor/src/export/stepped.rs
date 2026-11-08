@@ -59,9 +59,6 @@ pub(super) struct SteppedRender {
 
 impl SteppedRender {
     /// Begin rendering `project` for `destination`.
-    ///
-    /// # Errors
-    /// Why the render cannot start here.
     pub(super) fn start(
         project: &Project,
         settings: ExportSettings,

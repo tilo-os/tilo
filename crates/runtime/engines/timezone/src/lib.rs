@@ -29,9 +29,6 @@ pub use chrono_tz;
 /// The engine's check binary and the apps' `--probe-timezone-engine` call
 /// it, so a release proves the library loads and runs against the runtime
 /// it ships with, and that the apps load it themselves.
-///
-/// # Errors
-/// Names the zone or instant the database answered wrongly.
 #[cfg(feature = "thin")]
 pub fn self_check() -> Result<String, String> {
     use chrono::{Offset, TimeZone, Utc};

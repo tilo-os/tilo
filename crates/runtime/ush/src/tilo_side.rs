@@ -213,10 +213,6 @@ pub struct DevicePlace {
 impl DevicePlace {
     /// Take Ctrl-C as a request to stop what is running, not as the end of
     /// the shell, and take back the terminal from programs without stopping.
-    ///
-    /// # Errors
-    ///
-    /// The wake pipe could not be made.
     pub fn install() -> std::io::Result<Self> {
         let (wake_read, wake_write) = wake_pipe()?;
         let (suspend_read, suspend_write) = wake_pipe()?;
@@ -455,10 +451,6 @@ impl SessionStreams {
 
     /// The shell's streams over these: standard input and output, and
     /// standard error.
-    ///
-    /// # Errors
-    ///
-    /// A descriptor could not be duplicated.
     pub fn stdio(&self) -> std::io::Result<Stdio> {
         Ok(Stdio {
             stdin: Input::host(std::fs::File::from(self.stdin.try_clone()?)),
@@ -469,10 +461,6 @@ impl SessionStreams {
 
     /// [`Self::stdio`], its input read by the line editor through `field`
     /// when Terminal edits the line too ([`SessionField::keys`]).
-    ///
-    /// # Errors
-    ///
-    /// A descriptor could not be duplicated.
     pub fn stdio_editing(&self, field: Option<&Arc<SessionField>>) -> std::io::Result<Stdio> {
         let mut io = self.stdio()?;
         if let Some(field) = field {
@@ -1220,11 +1208,6 @@ impl Session {
     /// first process serves them one command at a time on `control`
     /// ([`crate::guest_exec`]). Answers the guest's process, its network
     /// namespace and its egress, which live as long as it does.
-    ///
-    /// # Errors
-    ///
-    /// The guest's network, filter or root could not be set up, or `bwrap`
-    /// could not be started.
     pub fn spawn_exec_guest(
         &self,
         resolved: &Resolved,

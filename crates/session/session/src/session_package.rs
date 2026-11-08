@@ -1,17 +1,15 @@
-//! What the session publishes, read as a package: `apps/tl/session/surface.toml`.
-//!
-//! A shell, the agent and the REPL call the session's actions as an app's: `use
-//! so.tilo.session as session`, then `session.overview()` or
-//! `session.focus(window: w)`. The device's resources and the desk are `so.tilo.device`'s
-//! ([`crate::shell::device_surfaces`]), never described here too. The description is the native apps' (`surface.toml`, read by
-//! `tilolang_tilo::catalogue`), generated here from the very resources the session's door
+//! What the session publishes, read as a package: `apps/tl/session/surface.toml` .
+//! A shell, the agent and the REPL call the session's actions as an app's:
+//! `use so.tilo.session as session` , then `session.overview()` or `session.focus(window: w)` . The
+//! device's resources and the desk are `so.tilo.device` 's ([`crate::shell::device_surfaces`]),
+//! never described here too. The description is the native apps' (`surface.toml`, read by
+//! `tilolang_tilo::catalogue` ), generated here from the very resources the session's door
 //! publishes, and a test holds the committed file to it, so it never drifts from what the door
 //! takes.
-//!
 //! Each resource the session publishes under one address says it (`id`): a call of one of its
 //! actions is sent there. A kind the session publishes one resource of per thing (a window, an
-//! agent's run, an app) says `instances`: it reads as a type, and its actions are called on one
-//! of them.
+//! agent's run, an app) says `instances` : it reads as a type, and its actions are called on one of
+//! them.
 
 use serde::Serialize;
 use tilo_actions::params::{ActionParam, ParamType};
@@ -21,7 +19,7 @@ use tilo_desktop_surface::navigation::{ChromeEffect, DeskEffect};
 use tilo_resource::Effect;
 use tilo_resource::effect::EffectDecl;
 
-/// The package id a shell `use`s.
+/// The package id a shell `use` s.
 pub const APP: &str = "so.tilo.session";
 
 /// Where the description is committed, from the repository's root.
@@ -44,8 +42,8 @@ const LEFT_OUT: &[(&str, &str)] = &[
     (tilo_desktop::desk_verbs::DESK_RESOURCE, "force-quit-app"),
 ];
 
-/// The declaration of a resource's action, by its id: where the type of a parameter its wire
-/// type says nothing of (a record or an enum, sent as an object) is read.
+/// The declaration of a resource's action, by its id: where the type of a parameter its wire type
+/// says nothing of (a record or an enum, sent as an object) is read.
 type Declared = fn(&str) -> Option<EffectDecl>;
 
 #[derive(Serialize)]
@@ -85,8 +83,8 @@ fn singletons() -> Vec<(ResourceSpec, Option<Declared>)> {
 /// The kinds the session publishes one resource of per thing, each as one of them.
 fn instances() -> Vec<(ResourceSpec, Option<Declared>)> {
     let mut out: Vec<(ResourceSpec, Option<Declared>)> = Vec::new();
-    // The desk describes each window as a resource of its own; a desk that
-    // names none leaves the kind out rather than failing the description.
+    // The desk describes each window as a resource of its own; a desk that names none leaves the
+    // kind out rather than failing the description.
     if let Some(window) = tilo_desktop::desk_verbs::desk_resource(
         &[tilo_desktop::desk_verbs::Shown {
             tab: 0,
@@ -112,7 +110,7 @@ fn instances() -> Vec<(ResourceSpec, Option<Declared>)> {
     out
 }
 
-/// An app on this device, by `app.<id>`: its own `open`, which the session carries out by
+/// An app on this device, by `app.<id>` : its own `open` , which the session carries out by
 /// starting it in the workspace in front ([`crate::Session`]'s shell serve).
 fn application() -> ResourceSpec {
     ResourceSpec::new(
@@ -140,9 +138,9 @@ fn application() -> ResourceSpec {
     ))
 }
 
-/// The type of a parameter as the description writes it. A resource is a resource of the kind
-/// it names, or of any kind: code passes the value it has (a note it found), never its id's
-/// text. An object or a list has no type tilolang code gives, so the action is left out.
+/// The type of a parameter as the description writes it. A resource is a resource of the kind it
+/// names, or of any kind: code passes the value it has (a note it found), never its id's text. An
+/// object or a list has no type tilolang code gives, so the action is left out.
 fn field_type(param: &ActionParam) -> FieldType {
     match param.ty {
         ParamType::Text | ParamType::Secret | ParamType::DateTime => FieldType::Text,
@@ -185,7 +183,7 @@ fn params(
     let (ParamType::Object | ParamType::Array, Some(declared)) = (param.ty, declared) else {
         return vec![plain(FieldType::Any)];
     };
-    // Whether it may be left out is `required`'s to say, as for every other parameter.
+    // Whether it may be left out is `required` 's to say, as for every other parameter.
     let present = |ty: FieldType| match ty {
         FieldType::Option(inner) => (*inner, true),
         ty => (ty, false),
@@ -311,8 +309,8 @@ pub fn description() -> String {
         .chain(instances().iter().map(|spec| entry(spec, true)))
         .collect();
     let body = toml::to_string(&File { resources }).unwrap_or_else(|error| {
-        // A description that does not serialize is a defect to read in the
-        // file it generates, not a reason to take the session down.
+        // A description that does not serialize is a defect to read in the file it generates, not a
+        // reason to take the session down.
         format!("# the description does not serialize: {error}")
     });
     format!(

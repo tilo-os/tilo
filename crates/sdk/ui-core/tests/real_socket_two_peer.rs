@@ -5,7 +5,6 @@ use uuid::Uuid;
 
 #[test]
 fn typed_socket_fans_out_on_its_own_route_only() {
-    // Case `typed_socket_fans_out_incremental_and_presence`.
     {
         let broker = TypedBroker::new();
         let mut peer_a = broker.manager("peer-a");
@@ -58,7 +57,6 @@ fn typed_socket_fans_out_on_its_own_route_only() {
         });
     }
 
-    // Case `route_specific_send_never_leaks_onto_the_primary_route`.
     {
         let broker = TypedBroker::new();
         let mut sender = broker.manager("agent");

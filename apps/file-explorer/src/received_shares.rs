@@ -30,11 +30,6 @@ const MAX_LINK_BYTES: usize = 16 * 1024;
 
 /// Read one received link from `input` (standard input for
 /// [`STDIN_FLAG`]).
-///
-/// # Errors
-///
-/// Returns a localized reason when the input cannot be read, is too long,
-/// is not text or is empty.
 pub fn read_link(input: impl std::io::Read) -> Result<String, String> {
     use std::io::Read as _;
     let mut bytes = Vec::new();

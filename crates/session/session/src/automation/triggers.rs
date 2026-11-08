@@ -1,15 +1,12 @@
-//! What starts a saved shortcut without anyone invoking it.
-//! A [`TriggerSource`] watches for one kind of event and turns it into
-//! [`Firing`]s for the shortcuts armed on this device; the session starts each run
-//! through the action broker, which checks again that the shortcut still exists and
-//! that its saver may still run it. Only shortcuts saved by the person this device
-//! acts for in their workspace are armed ([`armed`]), so a collaborator's shortcut
-//! never fires on someone else's behalf.
-//! A shortcut reaches every device of its saver: they rank themselves for each fire
-//! time or record change by a hash, the first runs it at once and records a
-//! [`ScheduleClaim`] that syncs like the shortcut, and each other waits
-//! [`CLAIM_GRACE`] per rank, so an asleep device is covered by the next. A
-//! schedule's next fire is persisted before it is handed over.
+//! What starts a saved shortcut without anyone invoking it. A [`TriggerSource`] watches for one
+//! kind of event and turns it into [`Firing`]s for the shortcuts armed on this device; the session
+//! starts each run through the action broker, which checks again that the shortcut still exists and
+//! that its saver may still run it. Only shortcuts saved by the person this device acts for in
+//! their workspace are armed ([`armed`]), so a collaborator's shortcut never fires on someone
+//! else's behalf. A shortcut reaches every device of its saver: they rank themselves for each fire
+//! time or record change by a hash, the first runs it at once and records a [`ScheduleClaim`] that
+//! syncs like the shortcut, and each other waits [`CLAIM_GRACE`] per rank, so an asleep device is
+//! covered by the next. A schedule's next fire is persisted before it is handed over.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
@@ -37,18 +34,17 @@ pub const MISSED_AFTER: ChronoDuration = ChronoDuration::seconds(90);
 
 pub use tilo_action_broker::automation::{MIN_INTERVAL_SECONDS, readable_folder, validate_trigger};
 
-/// How long each device waits, per device ranked before it, for a fire
-/// time to be claimed before it takes it.
+/// How long each device waits, per device ranked before it, for a fire time to be claimed before it
+/// takes it.
 pub const CLAIM_GRACE: ChronoDuration = ChronoDuration::seconds(45);
 
 /// The person's certified devices, as this device sees them.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct PersonalDevices {
-    /// This device, or `None` when it has no certified identity and so
-    /// shares its schedules with no other device.
+    /// This device, or `None` when it has no certified identity and so shares its schedules with no
+    /// other device.
     pub local: Option<String>,
-    /// The person's devices that are online now; this one counts whether
-    /// listed or not.
+    /// The person's devices that are online now; this one counts whether listed or not.
     pub online: BTreeSet<String>,
 }
 
@@ -134,7 +130,7 @@ impl DeviceDirectory for FixedDevices {
 pub trait Clock: Send + Sync {
     fn now(&self) -> DateTime<Utc>;
 
-    /// The local wall-clock offset in effect at `at`.
+    /// The local wall-clock offset in effect at `at` .
     fn offset_at(&self, at: DateTime<Utc>) -> FixedOffset;
 }
 
@@ -152,27 +148,24 @@ impl Clock for SystemClock {
     }
 }
 
-/// A shortcut this device may start, with the workspace it is saved in, the
-/// person whose device proved saving it, and the fire times of that
-/// workspace's schedules already claimed.
+/// A shortcut this device may start, with the workspace it is saved in, the person whose device
+/// proved saving it, and the fire times of that workspace's schedules already claimed.
 #[derive(Clone, Debug)]
 pub struct Armed {
     pub workspace: String,
     pub shortcut: Shortcut,
-    /// Who saved it, by their device's proof: its triggers fire on their
-    /// behalf only.
+    /// Who saved it, by their device's proof: its triggers fire on their behalf only.
     pub saver: String,
-    /// The fire times of that workspace's schedules already claimed, which
-    /// say when another of the person's devices took one.
+    /// The fire times of that workspace's schedules already claimed, which say when another of the
+    /// person's devices took one.
     pub claims: Vec<ScheduleClaim>,
 }
 
-/// Every shortcut in `workspaces` with triggers that the person this device
-/// acts for in its workspace (`local_person`) saved, by the proof of a device
-/// of theirs ([`tilo_peer_state::workspace::proven_saver`]) that holds at
-/// `now_ns` against the workspace's revocations (`revocations`, `None` for a
-/// workspace this device holds no document of). A `saved_by` without such a
-/// proof, or one for another workspace, never arms.
+/// Every shortcut in `workspaces` with triggers that the person this device acts for in its
+/// workspace (`local_person`) saved, by the proof of a device of theirs
+/// ([`tilo_peer_state::workspace::proven_saver`]) that holds at `now_ns` against the workspace's
+/// revocations (`revocations`, `None` for a workspace this device holds no document of). A
+/// `saved_by` without such a proof, or one for another workspace, never arms.
 pub fn armed(
     workspaces: &[tilo_desktop_model::Workspace],
     local_person: impl Fn(&tilo_desktop_model::Workspace) -> String,
@@ -227,7 +220,7 @@ pub fn armed(
     armed
 }
 
-/// Nanoseconds since the Unix epoch at `at`, for [`armed`].
+/// Nanoseconds since the Unix epoch at `at` , for [`armed`].
 #[must_use]
 pub fn unix_ns(at: DateTime<Utc>) -> u64 {
     at.timestamp_nanos_opt()
@@ -250,8 +243,7 @@ pub enum TriggerEvent<'a> {
     Focus(FocusState),
     /// Files changed inside watched folders since the last look.
     Files(&'a [FolderChange]),
-    /// Changes committed to records of this device's workspaces since the
-    /// last look.
+    /// Changes committed to records of this device's workspaces since the last look.
     Records(&'a [RecordEvent]),
 }
 
@@ -292,8 +284,8 @@ impl FileChange {
     }
 }
 
-/// A folder a file-changed trigger watches: the path the capability
-/// `capability` of `workspace` shares with the shortcut's saver.
+/// A folder a file-changed trigger watches: the path the capability `capability` of `workspace`
+/// shares with the shortcut's saver.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub struct WatchedFolder {
     pub workspace: String,
@@ -322,8 +314,8 @@ pub struct ChangedFile {
 }
 
 impl FolderChange {
-    /// What identifies the file this reports on, so one file settling is one
-    /// change however many kinds of change it made.
+    /// What identifies the file this reports on, so one file settling is one change however many
+    /// kinds of change it made.
     #[must_use]
     pub fn same_file(&self) -> ChangedFile {
         ChangedFile {
@@ -345,7 +337,7 @@ impl FolderChange {
     }
 }
 
-/// One trigger that fired: run `shortcut` in `workspace`, as run `run`.
+/// One trigger that fired: run `shortcut` in `workspace` , as run `run` .
 #[derive(Clone, Debug, PartialEq)]
 pub struct Firing {
     pub workspace: String,
@@ -361,8 +353,8 @@ pub struct Firing {
 }
 
 impl Firing {
-    /// `trigger` of `armed` firing with `payload`: each value the shortcut
-    /// declares an input of the same name and type for is handed to it.
+    /// `trigger` of `armed` firing with `payload` : each value the shortcut declares an input of
+    /// the same name and type for is handed to it.
     fn event(armed: &Armed, trigger: &TriggerSpec, payload: &[(&str, Value)]) -> Self {
         let inputs = payload
             .iter()
@@ -406,12 +398,11 @@ pub trait TriggerSource: Send {
         context: TriggerContext<'_>,
     ) -> Vec<Firing>;
 
-    /// Runs another of the person's devices started; a source holding one
-    /// for its turn drops it.
+    /// Runs another of the person's devices started; a source holding one for its turn drops it.
     fn forget_started(&mut self, _started: &BTreeSet<RunId>) {}
 
-    /// Firings an earlier event produced that were waiting for something to
-    /// reach the disk and may run now.
+    /// Firings an earlier event produced that were waiting for something to reach the disk and may
+    /// run now.
     fn take_settled(&mut self) -> Vec<Firing> {
         Vec::new()
     }
@@ -453,7 +444,7 @@ impl TriggerSource for KeyboardTriggers {
     }
 }
 
-/// Every trigger of the armed shortcuts that `matches`, with its payload.
+/// Every trigger of the armed shortcuts that `matches` , with its payload.
 fn fire_matching<'t>(
     armed: &[Armed],
     mut matches: impl FnMut(&Armed, &TriggerSpec) -> Option<Vec<(&'t str, Value)>>,
@@ -469,8 +460,8 @@ fn fire_matching<'t>(
     firings
 }
 
-/// Fires when an application starts publishing live actions. The first
-/// look only learns what is already running.
+/// Fires when an application starts publishing live actions. The first look only learns what is
+/// already running.
 #[derive(Debug, Default)]
 pub struct AppOpenedTriggers {
     running: Option<BTreeSet<String>>,
@@ -503,8 +494,8 @@ impl TriggerSource for AppOpenedTriggers {
     }
 }
 
-/// Fires when this device joins a workspace. The first look only learns
-/// the workspaces it is already in.
+/// Fires when this device joins a workspace. The first look only learns the workspaces it is
+/// already in.
 #[derive(Debug, Default)]
 pub struct WorkspaceJoinedTriggers {
     joined: Option<BTreeSet<String>>,
@@ -544,8 +535,8 @@ impl TriggerSource for WorkspaceJoinedTriggers {
     }
 }
 
-/// Fires for each change inside a folder a shortcut's file-changed trigger
-/// watches, in the shortcut's own workspace.
+/// Fires for each change inside a folder a shortcut's file-changed trigger watches, in the
+/// shortcut's own workspace.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct FileChangedTriggers;
 
@@ -579,8 +570,7 @@ impl TriggerSource for FileChangedTriggers {
     }
 }
 
-/// Fires when a focus mode switches on or off. The first look only learns
-/// which modes are on.
+/// Fires when a focus mode switches on or off. The first look only learns which modes are on.
 #[derive(Debug, Default)]
 pub struct FocusModeTriggers {
     last: Option<FocusState>,
@@ -622,10 +612,10 @@ impl TriggerSource for FocusModeTriggers {
     }
 }
 
-/// The folders the file-changed triggers of `armed` watch. A trigger names
-/// a capability of its shortcut's workspace; it watches that capability's
-/// folder only while the capability is a filesystem grant the saver may
-/// still read through, so a revoked or narrowed grant stops the watch.
+/// The folders the file-changed triggers of `armed` watch. A trigger names a capability of its
+/// shortcut's workspace; it watches that capability's folder only while the capability is a
+/// filesystem grant the saver may still read through, so a revoked or narrowed grant stops the
+/// watch.
 #[must_use]
 pub fn watched_folders(
     workspaces: &[tilo_desktop_model::Workspace],
@@ -669,24 +659,20 @@ struct LedgerEntry {
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 struct ScheduleLedger {
-    /// Keyed by `workspace/shortcut/trigger index`.
+    /// Keyed by `workspace/shortcut/trigger index` .
     #[serde(default)]
     schedules: BTreeMap<String, LedgerEntry>,
 }
 
-/// Fires scheduled triggers when their time comes, at most once per fire
-/// time, across restarts.
-///
-/// The ledger of next fire times is written on the state writer, because
-/// [`TriggerEvent::Tick`] arrives on the compositor's loop and the write's
-/// fsyncs can take seconds under I/O pressure. Each ledger value handed to
-/// the writer gets the next sequence number, and the firings of the tick that
-/// produced it wait under that number. The write marks its number settled
-/// (on disk, or failed and logged, which runs the firings as before) and
-/// wakes the loop; a later tick hands the firings over. A newer value that
-/// replaces a queued older one holds at least as much and settles a higher
-/// number, so it releases both. A crash before the write lands leaves the
-/// previous ledger and loses no run: none has started.
+/// Fires scheduled triggers when their time comes, at most once per fire time, across restarts.
+/// The ledger of next fire times is written on the state writer, because [`TriggerEvent::Tick`]
+/// arrives on the compositor's loop and the write's fsyncs can take seconds under I/O pressure.
+/// Each ledger value handed to the writer gets the next sequence number, and the firings of the
+/// tick that produced it wait under that number. The write marks its number settled (on disk, or
+/// failed and logged, which runs the firings as before) and wakes the loop; a later tick hands the
+/// firings over. A newer value that replaces a queued older one holds at least as much and settles
+/// a higher number, so it releases both. A crash before the write lands leaves the previous ledger
+/// and loses no run: none has started.
 pub struct ScheduleTriggers {
     ledger: ScheduleLedger,
     path: Option<PathBuf>,
@@ -697,8 +683,8 @@ pub struct ScheduleTriggers {
     settled: Arc<AtomicU64>,
     /// Firings waiting for the ledger value numbered with them.
     held: Vec<(u64, Firing)>,
-    /// Wakes the session's loop once the ledger is written, so the firings
-    /// it holds are handed over then rather than a tick later.
+    /// Wakes the session's loop once the ledger is written, so the firings it holds are handed over
+    /// then rather than a tick later.
     wake: crate::automation::Wake,
 }
 
@@ -714,13 +700,13 @@ impl std::fmt::Debug for ScheduleTriggers {
 }
 
 impl ScheduleTriggers {
-    /// Schedules persisted at `path`, or kept in memory only for `None`.
+    /// Schedules persisted at `path` , or kept in memory only for `None` .
     #[must_use]
     pub fn open(path: Option<PathBuf>, wake: crate::automation::Wake) -> Self {
         Self::open_with_writer(path, tilo_durable_writer::global(), wake)
     }
 
-    /// [`Self::open`], writing the ledger on `writer`.
+    /// [`Self::open`], writing the ledger on `writer` .
     #[must_use]
     pub fn open_with_writer(
         path: Option<PathBuf>,
@@ -760,9 +746,9 @@ impl ScheduleTriggers {
         }
     }
 
-    /// Hand the ledger to the writer and hold `due` until it is written.
-    /// Kept in memory only, or when the ledger cannot be encoded, `due` runs
-    /// at once, as it did when the write happened here.
+    /// Hand the ledger to the writer and hold `due` until it is written. Kept in memory only, or
+    /// when the ledger cannot be encoded, `due` runs at once, as it did when the write happened
+    /// here.
     fn persist(&mut self, due: Vec<Firing>) {
         let Some(path) = self.path.clone() else {
             self.held.extend(due.into_iter().map(|firing| (0, firing)));
@@ -781,8 +767,8 @@ impl ScheduleTriggers {
         self.held
             .extend(due.into_iter().map(|firing| (sequence, firing)));
         let settled = Arc::clone(&self.settled);
-        // Made on the loop's thread, so it wakes the loop that holds the
-        // firings; a no-op where no loop installed a wake.
+        // Made on the loop's thread, so it wakes the loop that holds the firings; a no-op where no
+        // loop installed a wake.
         let wake = crate::automation::Wake::clone(&self.wake);
         self.writer.submit(path.clone(), move || {
             if let Err(error) = tilo_files::native::atomic::write_creating_parent(&path, &bytes) {
@@ -872,9 +858,8 @@ impl TriggerSource for ScheduleTriggers {
         let before = self.ledger.schedules.len();
         self.ledger.schedules.retain(|key, _| live.contains(key));
         changed |= self.ledger.schedules.len() != before;
-        // Persisted before anything runs: a firing is handed over only once
-        // the ledger that moved past its fire time is written, so a crash
-        // loses at most the run, never repeats it.
+        // Persisted before anything runs: a firing is handed over only once the ledger that moved
+        // past its fire time is written, so a crash loses at most the run, never repeats it.
         if changed {
             self.persist(due_now);
         }
@@ -898,10 +883,9 @@ fn ledger_key(workspace: &str, shortcut: &str, index: usize) -> String {
     format!("{workspace}/{shortcut}/{index}")
 }
 
-/// How long after `due` this device takes the fire time of schedule `key`
-/// (trigger `index` of `armed`), or `None` when one of the person's devices
-/// already claimed it. Every device ranks the person's online devices the
-/// same way for a fire time, so they agree on who goes first without
+/// How long after `due` this device takes the fire time of schedule `key` (trigger `index` of
+/// `armed` ), or `None` when one of the person's devices already claimed it. Every device ranks the
+/// person's online devices the same way for a fire time, so they agree on who goes first without
 /// talking; ranking by fire time spreads schedules across them.
 fn turn(
     key: &str,
@@ -940,8 +924,8 @@ fn runner_rank(key: &str, due_ms: i64, device: &str) -> ([u8; 32], String) {
     (hasher.finalize().into(), device.to_string())
 }
 
-/// The run a scheduled fire starts: the same for the same fire time, so a
-/// fire that is somehow handed over twice reuses every invocation id.
+/// The run a scheduled fire starts: the same for the same fire time, so a fire that is somehow
+/// handed over twice reuses every invocation id.
 fn scheduled_run(key: &str, due: DateTime<Utc>) -> RunId {
     let mut hasher = Sha256::new();
     hasher.update(b"tilo.shortcut.schedule\0");
@@ -955,9 +939,8 @@ fn scheduled_run(key: &str, due: DateTime<Utc>) -> RunId {
     RunId(uuid::Builder::from_custom_bytes(bytes).into_uuid())
 }
 
-/// The first fire time of `schedule` strictly after `now`. An interval
-/// counts from the Unix epoch, so every device computes the same fire times
-/// whenever it armed the schedule.
+/// The first fire time of `schedule` strictly after `now` . An interval counts from the Unix epoch,
+/// so every device computes the same fire times whenever it armed the schedule.
 #[must_use]
 pub fn next_fire_time(
     schedule: &Schedule,
@@ -984,8 +967,8 @@ pub fn next_fire_time(
 
 fn local_instant(date: NaiveDate, time: NaiveTime, clock: &dyn Clock) -> Option<DateTime<Utc>> {
     let naive = date.and_time(time);
-    // Read the offset at a first guess of the instant, so a change of
-    // offset between now and then (daylight saving) is taken into account.
+    // Read the offset at a first guess of the instant, so a change of offset between now and then
+    // (daylight saving) is taken into account.
     let first_offset = clock.offset_at(naive.and_utc()).local_minus_utc();
     let guess = naive
         .and_utc()
@@ -1009,16 +992,15 @@ fn weekday_of(date: NaiveDate) -> Weekday {
     }
 }
 
-/// A record firing this device holds back while devices ranked before it
-/// get their turn.
+/// A record firing this device holds back while devices ranked before it get their turn.
 #[derive(Clone, Debug)]
 struct Held {
     firing: Firing,
     start: DateTime<Utc>,
 }
 
-/// Where `device` stands for a change; lowest first. Every device of the
-/// person ranks the same way, so they agree without talking.
+/// Where `device` stands for a change; lowest first. Every device of the person ranks the same way,
+/// so they agree without talking.
 fn change_device_rank(change: &str, device: &str) -> [u8; 32] {
     let mut hasher = Sha256::new();
     hasher.update(b"tilo.shortcut.change-runner\0");
@@ -1028,7 +1010,7 @@ fn change_device_rank(change: &str, device: &str) -> [u8; 32] {
     hasher.finalize().into()
 }
 
-/// How many online devices rank before the local one for `change`.
+/// How many online devices rank before the local one for `change` .
 fn change_rank(change: &str, devices: &PersonalDevices) -> usize {
     let Some(local) = devices.local.as_deref() else {
         return 0;
@@ -1042,10 +1024,9 @@ fn change_rank(change: &str, devices: &PersonalDevices) -> usize {
         .count()
 }
 
-/// Shared by both record sources: hold each firing for its turn and hand
-/// it over when the turn comes. The run's own first change is the claim: a
-/// held firing whose run already started elsewhere is dropped
-/// ([`TriggerSource::forget_started`]).
+/// Shared by both record sources: hold each firing for its turn and hand it over when the turn
+/// comes. The run's own first change is the claim: a held firing whose run already started
+/// elsewhere is dropped ([`TriggerSource::forget_started`]).
 #[derive(Debug, Default)]
 struct RecordElection {
     held: Vec<Held>,
@@ -1087,8 +1068,8 @@ impl RecordElection {
         self.held.retain(|held| !started.contains(&held.firing.run));
     }
 
-    /// Due firings, then the firings of `event`'s changes whose trigger
-    /// `wanted` accepts, those this device runs now.
+    /// Due firings, then the firings of `event` 's changes whose trigger `wanted` accepts, those
+    /// this device runs now.
     fn observe(
         &mut self,
         event: TriggerEvent<'_>,
@@ -1107,14 +1088,12 @@ impl RecordElection {
     }
 }
 
-/// What `event` fires among `armed` in its workspace, through the dispatcher a
-/// bot's host uses too, so both fire on a change the same way.
-///
-/// A change a shortcut's run made fires nothing here, in any workspace: a
-/// pair of shortcuts that watch each other's kind and write it would
-/// otherwise run each other for as long as the session lasts. The
-/// dispatcher says why ([`Skipped::Loop`]), and the change is passed on
-/// to nobody else on this device.
+/// What `event` fires among `armed` in its workspace, through the dispatcher a bot's host uses too,
+/// so both fire on a change the same way.
+/// A change a shortcut's run made fires nothing here, in any workspace: a pair of shortcuts that
+/// watch each other's kind and write it would otherwise run each other for as long as the session
+/// lasts. The dispatcher says why ([`Skipped::Loop`]), and the change is passed on to nobody else
+/// on this device.
 fn record_firings(
     armed: &[Armed],
     event: &RecordEvent,
@@ -1155,8 +1134,7 @@ fn record_firings(
     firings
 }
 
-/// Fires a shortcut's record-changed triggers on matching changes, on one
-/// of the saver's devices.
+/// Fires a shortcut's record-changed triggers on matching changes, on one of the saver's devices.
 #[derive(Debug, Default)]
 pub struct RecordChangedTriggers {
     election: RecordElection,
@@ -1217,8 +1195,8 @@ impl TriggerSource for AppEventTriggers {
     }
 }
 
-/// Fires a shortcut's incoming-message triggers on a message someone else
-/// received in the saver's workspaces, on one of the saver's devices.
+/// Fires a shortcut's incoming-message triggers on a message someone else received in the saver's
+/// workspaces, on one of the saver's devices.
 #[derive(Debug, Default)]
 pub struct IncomingMessageTriggers {
     election: RecordElection,
@@ -1241,8 +1219,7 @@ impl TriggerSource for IncomingMessageTriggers {
     }
 }
 
-/// Every trigger source a session runs, reading one clock and one view of
-/// the person's devices.
+/// Every trigger source a session runs, reading one clock and one view of the person's devices.
 pub struct TriggerHost {
     clock: Arc<dyn Clock>,
     devices: Arc<dyn DeviceDirectory>,
@@ -1250,8 +1227,8 @@ pub struct TriggerHost {
 }
 
 impl TriggerHost {
-    /// Keyboard and schedule triggers on `clock`, with schedules persisted
-    /// at `schedules` (in memory only for `None`).
+    /// Keyboard and schedule triggers on `clock` , with schedules persisted at `schedules` (in
+    /// memory only for `None` ).
     #[must_use]
     pub fn new(
         clock: Arc<dyn Clock>,
@@ -1275,17 +1252,15 @@ impl TriggerHost {
         }
     }
 
-    /// The session's triggers: the system clock, schedules persisted under
-    /// the state root the session keeps its desk in, in the file the shell
-    /// kept them in.
+    /// The session's triggers: the system clock, schedules persisted under the state root the
+    /// session keeps its desk in, in the file the shell kept them in.
     #[must_use]
     pub fn for_session(state: Option<&Path>, wake: crate::automation::Wake) -> Self {
         let schedules = state.map(|state| state.join("tilo/automation/schedules.json"));
         Self::new(Arc::new(SystemClock), schedules, wake)
     }
 
-    /// Read the person's devices from `devices`, so their schedules run
-    /// once across them.
+    /// Read the person's devices from `devices` , so their schedules run once across them.
     pub fn set_devices(&mut self, devices: Arc<dyn DeviceDirectory>) {
         self.devices = devices;
     }
@@ -1298,8 +1273,8 @@ impl TriggerHost {
     /// Show `event` to every source; every firing, in source order.
     pub fn observe(&mut self, event: TriggerEvent<'_>, armed: &[Armed]) -> Vec<Firing> {
         let clock = Arc::clone(&self.clock);
-        // Only schedules read the device list, and asking for it is a lock plus
-        // a copy of the personal fabric: a keystroke must not pay for it.
+        // Only schedules read the device list, and asking for it is a lock plus a copy of the
+        // personal fabric: a keystroke must not pay for it.
         let devices = if matches!(event, TriggerEvent::Key(_)) {
             PersonalDevices::default()
         } else {
@@ -1315,8 +1290,7 @@ impl TriggerHost {
             .collect()
     }
 
-    /// Runs another of the person's devices already started: no source
-    /// starts them here.
+    /// Runs another of the person's devices already started: no source starts them here.
     pub fn forget_started(&mut self, started: &BTreeSet<RunId>) {
         for source in &mut self.sources {
             source.forget_started(started);

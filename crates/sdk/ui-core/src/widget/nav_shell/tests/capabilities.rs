@@ -247,6 +247,119 @@ fn a_title_takes_the_room_its_actions_leave() {
     assert!(shown.x1 <= door.x0, "{shown:?} does not run into {door:?}");
 }
 
+/// The row's order of giving way: an action's label gives way for its icon, then what else stands
+/// in the row for the menu's door, and only then is the title cut — the primary action never
+/// leaves the row, whatever the row's width and whatever language the title speaks.
+#[test]
+fn a_title_is_cut_only_once_its_actions_have_given_what_they_can() {
+    let theme = Theme::dark();
+    let title = "Launch plan for the autumn release";
+    let needs = |title: &str| {
+        let (w, _) =
+            crate::chrome::header_row::measure_title(&mut TextRenderer::new(), &theme, title, None);
+        w
+    };
+    let actions = || {
+        vec![
+            icon("sort", Icon::ArrowUpDown, "Sort"),
+            Box::new(
+                Button::new("new", "New note")
+                    .with_icon(Icon::Plus)
+                    .role(crate::widget::ButtonRole::Primary)
+                    .on_view(|| {}),
+            ) as Element,
+            labelled("pin", "Pin", Icon::Pin),
+            Box::new(
+                Button::new("delete", "Delete note")
+                    .with_icon(Icon::Trash2)
+                    .in_menu()
+                    .on_view(|| {}),
+            ) as Element,
+        ]
+    };
+    // Every row width, in the words of two languages: the title is never cut while a label
+    // stands in the row that could be an icon, and the primary action is never missing.
+    for width in [1024, 700, 560, 460, 380, 300, 240, 200] {
+        for title in [
+            title,
+            "Sammelplan für die Herbstausgabe und alles, was er trägt",
+        ] {
+            let mut h = harness(
+                NavShell::new()
+                    .content(Probe::boxed("content").0)
+                    .content_header(title, actions()),
+                width,
+                700,
+                theme.clone(),
+            );
+            settle(&mut h, width, 700);
+            let shown = part_rect(&h, Part::Title(Column::Content));
+            let primary = part_rect(&h, Part::Action(Column::Content, 1));
+            assert!(
+                primary.width() > 0.0,
+                "at {width} the primary action left the row ({primary:?})"
+            );
+            // Nothing the row stands leaves it, however little room the column has.
+            let edge = h.root::<NavShell>().get_rect().x1;
+            for part in (0..4)
+                .map(|i| Part::Action(Column::Content, i))
+                .chain([Part::More(Column::Content)])
+            {
+                let placed = part_rect(&h, part);
+                assert!(
+                    placed.x1 <= edge + 0.5,
+                    "at {width} {part:?} runs past the row: {placed:?} beside {edge:.0}"
+                );
+            }
+            let cut = shown.width() + 1.0 < needs(title);
+            if cut {
+                let shell = h.root::<NavShell>();
+                let labelled = (0..shell.shown_actions(Column::Content)).any(|i| {
+                    shell
+                        .part(Part::Action(Column::Content, i))
+                        .and_then(|action| button_of(action))
+                        .is_some_and(|button| {
+                            button.shrinks_to_icon() && !button.is_shown_compact()
+                        })
+                });
+                assert!(
+                    !labelled,
+                    "at {width} {title:?} is cut to {:.0} of {:.0} while a label stands in the row",
+                    shown.width(),
+                    needs(title)
+                );
+            }
+        }
+    }
+}
+
+/// A header row reports what it settled on: the title's width against what it says, the room it
+/// left beside it, and what its actions kept.
+#[test]
+fn a_header_row_reports_what_it_settled_on() {
+    let shell = NavShell::new()
+        .content(Probe::boxed("content").0)
+        .content_header(
+            "Quarterly planning",
+            vec![
+                labelled("new", "New note", Icon::Plus),
+                labelled("pin", "Pin", Icon::Pin),
+            ],
+        );
+    let mut h = harness(shell, 280, 700, Theme::dark());
+    settle(&mut h, 280, 700);
+    let Some(crate::widget::LayoutInfo::Headers(rows)) = h.root::<NavShell>().layout_info() else {
+        panic!("the shell reports its header rows");
+    };
+    let row = rows.rows[Column::Content.index()].expect("the content column's row");
+    assert_eq!(row.column, "content");
+    let title = part_rect(&h, Part::Title(Column::Content));
+    assert!((f64::from(row.title_has) - title.width()).abs() < 0.5);
+    assert!(f64::from(row.title_needs) >= f64::from(row.title_has));
+    assert!(f64::from(row.free_beside_title) >= 0.0);
+    assert!(row.primary_shown, "the row keeps its primary action");
+}
+
 /// Labelled buttons collapse to their icons when the row is short; then
 /// the rest move into the More menu, and choosing one there runs it.
 #[test]
@@ -1023,5 +1136,57 @@ fn a_headers_actions_stand_at_their_columns_trailing_edge() {
     assert!(
         ends_at(own, content),
         "the detail's action ends at the detail's edge {content}: {own:?}"
+    );
+}
+
+/// A list offers its actions again as what it shows changes: the row takes the ones it is
+/// handed now, so an action that arrives with the icon it draws gives its label up for the
+/// icon, and the title keeps its words instead of standing cut beside it.
+#[test]
+fn a_row_gives_its_labels_up_when_its_actions_are_offered_again() {
+    let theme = Theme::dark();
+    let title = "Quarterly planning for the autumn release, and the review after it";
+    let primary = |icon: Option<Icon>| {
+        let button = Button::new("new", "New note")
+            .role(crate::widget::ButtonRole::Primary)
+            .on_view(|| {});
+        Box::new(match icon {
+            Some(icon) => button.with_icon(icon),
+            None => button,
+        }) as Element
+    };
+    let shell = NavShell::new()
+        .content(Probe::boxed("content").0)
+        .content_header(
+            title,
+            vec![labelled("pin", "Pin to the top", Icon::Pin), primary(None)],
+        );
+    let mut h = harness(shell, 560, 700, theme);
+    settle(&mut h, 560, 700);
+    let before = part_rect(&h, Part::Title(Column::Content));
+    let stood = part_rect(&h, Part::Action(Column::Content, 1));
+    assert!(
+        stood.width() > stood.height() * 1.5,
+        "an action with no icon to give up stands labelled ({stood:?})"
+    );
+
+    // The same action, offered again as the app draws it: its icon and its label.
+    h.root_mut::<NavShell>().set_content_header(
+        title,
+        vec![
+            labelled("pin", "Pin to the top", Icon::Pin),
+            primary(Some(Icon::Plus)),
+        ],
+    );
+    settle(&mut h, 560, 700);
+    let action = part_rect(&h, Part::Action(Column::Content, 1));
+    assert!(
+        action.width() < action.height() * 1.5,
+        "the action gave its label up ({action:?})"
+    );
+    let after = part_rect(&h, Part::Title(Column::Content));
+    assert!(
+        after.width() > before.width() + (stood.width() - action.width()) / 2.0,
+        "the title took the room the label gave up ({before:?} then {after:?})"
     );
 }

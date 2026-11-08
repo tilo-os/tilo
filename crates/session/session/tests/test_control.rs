@@ -26,7 +26,7 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use serde_json::{Value, json};
-use tilo_compositor::{KeyRepeat, OutputConfig};
+use tilo_compositor::KeyRepeat;
 use tilo_desktop::desk_verbs::{DESK_RESOURCE, SEARCH_RESOURCE};
 use tilo_desktop_model::{
     DesktopTree, Strip, StripId, Tab, TileContent, WindowGroup, WindowWidth, Workspace,
@@ -77,18 +77,13 @@ fn a_snapshot_through_the_test_control_socket_shows_the_shells_bar() {
     let _settled = ui::motion::testing::settled();
     let root = private_home();
     let socket = root.path().join("test-control.sock");
-    let mut session = Session::headless(
-        Options {
-            presentation: ui::headless::fixture_runner_inputs,
-            person: PERSON.to_owned(),
-            shell: true,
-            collab: false,
-            test_control: Some(socket.clone()),
-            ..Options::default()
-        },
-        &[OutputConfig::new("HEADLESS-1", WIDTH, HEIGHT)],
-    )
-    .expect("session");
+    let mut session = crate::common::headless(Options {
+        person: PERSON.to_owned(),
+        shell: true,
+        collab: false,
+        test_control: Some(socket.clone()),
+        ..Options::default()
+    });
     assert!(
         reached(&mut session, |session| session
             .shell_control("Notifications")
@@ -429,18 +424,13 @@ fn text_typed_through_the_socket_reaches_the_canvas_entry() {
     let _settled = ui::motion::testing::settled();
     let root = private_home();
     let socket = root.path().join("test-control.sock");
-    let mut session = Session::headless(
-        Options {
-            presentation: ui::headless::fixture_runner_inputs,
-            person: PERSON.to_owned(),
-            shell: true,
-            collab: false,
-            test_control: Some(socket.clone()),
-            ..Options::default()
-        },
-        &[OutputConfig::new("HEADLESS-1", WIDTH, HEIGHT)],
-    )
-    .expect("session");
+    let mut session = crate::common::headless(Options {
+        person: PERSON.to_owned(),
+        shell: true,
+        collab: false,
+        test_control: Some(socket.clone()),
+        ..Options::default()
+    });
     let menu = preset_menu(&mut session);
     click(&mut session, &socket, &menu);
     assert!(
@@ -508,19 +498,14 @@ fn a_note_placed_on_the_canvas_is_drawn_in_the_snapshot() {
         .id
         .as_str()
         .to_owned();
-    let mut session = Session::headless(
-        Options {
-            presentation: ui::headless::fixture_runner_inputs,
-            person: PERSON.to_owned(),
-            shell: true,
-            collab: false,
-            services: vec![Box::new(apps)],
-            test_control: Some(socket.clone()),
-            ..Options::default()
-        },
-        &[OutputConfig::new("HEADLESS-1", WIDTH, HEIGHT)],
-    )
-    .expect("session");
+    let mut session = crate::common::headless(Options {
+        person: PERSON.to_owned(),
+        shell: true,
+        collab: false,
+        services: vec![Box::new(apps)],
+        test_control: Some(socket.clone()),
+        ..Options::default()
+    });
     let menu = preset_menu(&mut session);
     click(&mut session, &socket, &menu);
     assert!(reached(&mut session, |session| session
@@ -684,17 +669,12 @@ fn active_tab(session: &Session, group: u64) -> Option<u64> {
 
 /// A headless session that shows `tree` and answers on the test-control `socket`.
 fn session_showing(tree: DesktopTree, socket: &Path) -> Session {
-    let mut session = Session::headless(
-        Options {
-            presentation: ui::headless::fixture_runner_inputs,
-            person: PERSON.to_owned(),
-            collab: false,
-            test_control: Some(socket.to_path_buf()),
-            ..Options::default()
-        },
-        &[OutputConfig::new("HEADLESS-1", WIDTH, HEIGHT)],
-    )
-    .expect("session");
+    let mut session = crate::common::headless(Options {
+        person: PERSON.to_owned(),
+        collab: false,
+        test_control: Some(socket.to_path_buf()),
+        ..Options::default()
+    });
     session.handle().replace_tree(tree);
     session
         .desktop()

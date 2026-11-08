@@ -27,9 +27,6 @@ struct Worker {
 impl Pictures {
     /// Decode and render the finder input on the worker, retaining the
     /// originating window's content store for its eventual matte.
-    ///
-    /// # Errors
-    /// Returns why the selection request or its picture cannot be prepared.
     pub fn prepare(
         &self,
         art: &Artwork,

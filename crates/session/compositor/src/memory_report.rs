@@ -21,11 +21,11 @@ use std::collections::BTreeMap;
 
 use serde_json::{Value, json};
 
-/// glibc places each non-main arena's heap at a multiple of `HEAP_MAX_SIZE`
-/// (2 × `DEFAULT_MMAP_THRESHOLD_MAX`, 64 MiB on 64-bit).
+/// glibc places each non-main arena's heap at a multiple of `HEAP_MAX_SIZE` (2 ×
+/// `DEFAULT_MMAP_THRESHOLD_MAX` , 64 MiB on 64-bit).
 const ARENA_ALIGN: u64 = 64 << 20;
-/// Largest guard below a thread stack counted as one: glibc's default is one
-/// page; Rust's `std::thread` asks for the default too.
+/// Largest guard below a thread stack counted as one: glibc's default is one page; Rust's
+/// `std::thread` asks for the default too.
 const MAX_GUARD: u64 = 64 << 10;
 /// Pages asked of `mincore` at once, so the vector stays small.
 const CHUNK_PAGES: u64 = 16 * 1024;
@@ -47,7 +47,7 @@ const GPU_LIBS: [&str; 12] = [
     "lvp",
 ];
 
-/// One line of `/proc/self/maps`.
+/// One line of `/proc/self/maps` .
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct Mapping {
     start: u64,
@@ -61,7 +61,7 @@ impl Mapping {
         self.end.saturating_sub(self.start)
     }
 
-    /// Address space only: `---p`, a guard or an arena's reserved tail.
+    /// Address space only: `---p` , a guard or an arena's reserved tail.
     fn reserved(&self) -> bool {
         self.perms.starts_with("---")
     }
@@ -90,8 +90,7 @@ fn parse_maps(text: &str) -> Vec<Mapping> {
         .collect()
 }
 
-/// The kind of memory an anonymous mapping holds; `previous` is the mapping
-/// just below it.
+/// The kind of memory an anonymous mapping holds; `previous` is the mapping just below it.
 fn anon_class(mapping: &Mapping, previous: Option<&Mapping>) -> &'static str {
     let guard_below = previous.is_some_and(|p| {
         p.end == mapping.start && p.path.is_empty() && p.reserved() && p.len() <= MAX_GUARD
@@ -109,8 +108,8 @@ fn anon_class(mapping: &Mapping, previous: Option<&Mapping>) -> &'static str {
     }
 }
 
-/// The kind of memory a mapping holds. `previous` is the mapping just below
-/// it, `exe` the running binary's path.
+/// The kind of memory a mapping holds. `previous` is the mapping just below it, `exe` the running
+/// binary's path.
 fn class_of(mapping: &Mapping, previous: Option<&Mapping>, exe: &str) -> &'static str {
     let path = mapping.path.as_str();
     match path {
@@ -149,8 +148,8 @@ fn class_of(mapping: &Mapping, previous: Option<&Mapping>, exe: &str) -> &'stati
     }
 }
 
-/// Pages of `mapping` in memory, by `mincore`; `None` when the kernel refused
-/// (the mapping went away while it was read).
+/// Pages of `mapping` in memory, by `mincore` ; `None` when the kernel refused (the mapping went
+/// away while it was read).
 #[cfg(target_os = "linux")]
 fn resident_pages(mapping: &Mapping, page: u64, scratch: &mut Vec<u8>) -> Option<u64> {
     let pages = mapping.len().checked_div(page)?;
@@ -223,8 +222,8 @@ fn threads() -> Vec<(String, u64)> {
     rows
 }
 
-/// glibc's own account of its heap, in KiB: what it holds in arenas and in
-/// separately mmapped blocks, of which in use and free.
+/// glibc's own account of its heap, in KiB: what it holds in arenas and in separately mmapped
+/// blocks, of which in use and free.
 #[cfg(all(target_os = "linux", target_env = "gnu"))]
 fn malloc_stats() -> Value {
     // SAFETY: `mallinfo2` only reads allocator statistics; it takes no
@@ -245,7 +244,7 @@ const fn malloc_stats() -> Value {
     Value::Null
 }
 
-/// Classify and measure `maps`, with pages of `page` bytes.
+/// Classify and measure `maps` , with pages of `page` bytes.
 fn breakdown(maps: &[Mapping], exe: &str, page: u64) -> Value {
     let page_kib = page / 1024;
     let mut classes: BTreeMap<&'static str, ClassTotal> = BTreeMap::new();
@@ -338,8 +337,8 @@ fn page_size() -> u64 {
     }
 }
 
-/// The whole report: status, glibc's heap, threads by name and the mapping
-/// breakdown, every size in KiB.
+/// The whole report: status, glibc's heap, threads by name and the mapping breakdown, every size in
+/// KiB.
 #[must_use]
 pub fn report() -> Value {
     let maps = parse_maps(&std::fs::read_to_string("/proc/self/maps").unwrap_or_default());

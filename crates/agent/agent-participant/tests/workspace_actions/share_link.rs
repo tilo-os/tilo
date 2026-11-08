@@ -5,10 +5,11 @@ use super::resource_support::{
     admit_person, on_messages, open_admitted_peer, part_route, published_message,
 };
 use super::{
-    ActionAddress, DeviceCapabilities, DocumentRoute, InvokeArgument, Replica, Seed, common, enrol,
+    ActionAddress, DeviceCapabilities, DocumentRoute, InvokeArgument, Seed, common, enrol,
     record_provider, request, start_browser,
 };
 use tilo_actions::remote::ReceiptStatus;
+use tilo_agent_participant::ReplicaActor;
 use tilo_peer_state::join::MemberRole;
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -41,12 +42,11 @@ async fn the_host_mints_a_message_link_with_its_range() {
     let mut publisher =
         open_admitted_peer(&hosted, &writer_device, &host, &workspace.workspace).await;
     let writer = hex::encode(writer_device.cert.user_public_key);
-    let mut source = Replica::open(
-        &common::catalogue(),
-        "so.tilo.chat",
+    let mut source = common::open_in(
         &workspace.workspace,
+        "so.tilo.chat",
         &writer,
-        tilo_agent_participant::ReplicaActor::Owner,
+        ReplicaActor::Owner,
         Seed::New,
     )
     .unwrap();

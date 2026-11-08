@@ -1,8 +1,7 @@
-//! An output that appears and disappears while the compositor runs, as a
-//! connector plugged into a running session does: it is lit and placed
-//! beside the outputs already there, clients are told it is there, the desk
-//! is told the monitors it now has, and pulling it out takes it away again
-//! and closes the hole it left.
+//! An output that appears and disappears while the compositor runs, as a connector plugged into a
+//! running session does: it is lit and placed beside the outputs already there, clients are told it
+//! is there, the desk is told the monitors it now has, and pulling it out takes it away again and
+//! closes the hole it left.
 
 #![cfg(target_os = "linux")]
 #![allow(
@@ -23,20 +22,18 @@ use tilo_compositor::{
 use wayland_client::protocol::wl_registry::{self, WlRegistry};
 use wayland_client::{Connection, Dispatch, EventQueue, QueueHandle};
 
-/// The scene's background, as a frame read back shows it: what a lit output
-/// draws where nothing else is.
+/// The scene's background, as a frame read back shows it: what a lit output draws where nothing
+/// else is.
 const BACKGROUND: [u8; 4] = [26, 27, 38, 255];
 
-/// Each output and the monitor on it, and the primary monitor, as the
-/// policy is told them.
+/// Each output and the monitor on it, and the primary monitor, as the policy is told them.
 type Told = (Vec<(LayoutRect, String)>, Option<String>);
 
-/// An output's name and the rectangle it covers in the layout, when it has
-/// a place there.
+/// An output's name and the rectangle it covers in the layout, when it has a place there.
 type Placed = (String, Option<(i32, i32, i32, i32)>);
 
-/// A policy that keeps the monitors it is last told of: the desk is told
-/// them whenever the outputs change.
+/// A policy that keeps the monitors it is last told of: the desk is told them whenever the outputs
+/// change.
 struct Monitors(Rc<RefCell<Told>>);
 
 impl WindowPolicy for Monitors {
@@ -195,9 +192,9 @@ fn an_output_plugged_in_while_the_desk_runs_is_lit_beside_the_others_and_told_to
         [("HEADLESS-1".into(), Some((0, 0, 640, 480)))]
     );
 
-    // A connector appears mid-run, asking for no place of its own: a second
-    // screen shows it beside the one already there, never over it, where
-    // the desk would take it for a mirror of that one and give it nothing.
+    // A connector appears mid-run, asking for no place of its own: a second screen shows it beside
+    // the one already there, never over it, where the desk would take it for a mirror of that one
+    // and give it nothing.
     compositor
         .add_output(&OutputConfig::new("HEADLESS-2", 1280, 720))
         .expect("output");
@@ -301,8 +298,8 @@ fn the_place_an_unplugged_output_left_closes_over() {
         "the second screen is to the right"
     );
 
-    // The one on the left goes: the one left sits where the pointer and the
-    // desk look, not 640 pixels into an empty layout.
+    // The one on the left goes: the one left sits where the pointer and the desk look, not 640
+    // pixels into an empty layout.
     compositor.remove_output("HEADLESS-1").expect("unplug");
     assert_eq!(
         rects(&compositor),
@@ -343,8 +340,8 @@ fn an_output_the_person_turned_off_keeps_no_place_when_another_is_plugged_in() {
         .expect("turn off");
     assert!(!compositor.output_lit("HEADLESS-1"));
 
-    // Another connector appears while that display is off: it takes the
-    // place the layout has, and the one turned off stays off.
+    // Another connector appears while that display is off: it takes the place the layout has, and
+    // the one turned off stays off.
     compositor
         .add_output(&OutputConfig::new("HEADLESS-3", 800, 600))
         .expect("output");
@@ -364,8 +361,7 @@ fn an_output_the_person_turned_off_keeps_no_place_when_another_is_plugged_in() {
     );
 }
 
-/// A configuration that makes `primary` the display the person chose, and
-/// turns `off` off.
+/// A configuration that makes `primary` the display the person chose, and turns `off` off.
 fn choosing(primary: &str, off: &[&str]) -> tilo_compositor::DisplayConfig {
     tilo_compositor::DisplayConfig {
         primary: Some(primary.to_owned()),
@@ -374,9 +370,8 @@ fn choosing(primary: &str, off: &[&str]) -> tilo_compositor::DisplayConfig {
     }
 }
 
-/// The display the person made primary is the one the desk is told is
-/// primary, and the choice waits for the display to come back rather than
-/// falling to whichever output is lit.
+/// The display the person made primary is the one the desk is told is primary, and the choice waits
+/// for the display to come back rather than falling to whichever output is lit.
 #[test]
 fn the_primary_chosen_in_settings_is_told_to_the_desk_and_returns_with_its_display() {
     let told = Rc::new(RefCell::new(Told::default()));
@@ -395,8 +390,8 @@ fn the_primary_chosen_in_settings_is_told_to_the_desk_and_returns_with_its_displ
         "the desk is told the display the person chose"
     );
 
-    // The cable is pulled: the other display stands in, and the choice is
-    // kept for the one that went away.
+    // The cable is pulled: the other display stands in, and the choice is kept for the one that
+    // went away.
     compositor.remove_output("HEADLESS-2").expect("unplug");
     assert_eq!(
         told_primary(&told),
@@ -413,8 +408,8 @@ fn the_primary_chosen_in_settings_is_told_to_the_desk_and_returns_with_its_displ
     );
 }
 
-/// A display turned off is never the primary one: the desk is told of none
-/// while the chosen display is dark.
+/// A display turned off is never the primary one: the desk is told of none while the chosen display
+/// is dark.
 #[test]
 fn a_display_turned_off_is_never_the_primary_one() {
     let told = Rc::new(RefCell::new(Told::default()));
@@ -445,8 +440,8 @@ fn a_display_turned_off_is_never_the_primary_one() {
     assert_eq!(told_primary(&told).as_deref(), Some("HEADLESS-2"));
 }
 
-/// The scale an output that nobody arranged comes up at follows its panel's
-/// density: a 14" 2880x1800 laptop panel at 2x, a 24" 1080p monitor at 1.
+/// The scale an output that nobody arranged comes up at follows its panel's density: a 14"
+/// 2880x1800 laptop panel at 2x, a 24" 1080p monitor at 1.
 #[test]
 fn a_panel_plugged_in_comes_up_at_the_scale_its_density_argues_for() {
     let told = Rc::new(RefCell::new(Told::default()));
@@ -469,8 +464,8 @@ fn a_panel_plugged_in_comes_up_at_the_scale_its_density_argues_for() {
         "the desk is told the logical size the person works in"
     );
 
-    // A 24" 1080p monitor beside it: ~92 dpi stays at 100%, so a monitor that
-    // was readable before is not zoomed.
+    // A 24" 1080p monitor beside it: ~92 dpi stays at 100%, so a monitor that was readable before
+    // is not zoomed.
     compositor
         .add_output(&OutputConfig::new("HDMI-A-1", 1920, 1080).panel((527, 296)))
         .expect("monitor");

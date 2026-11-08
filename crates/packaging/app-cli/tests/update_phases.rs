@@ -23,11 +23,11 @@
 use std::time::{Duration, Instant};
 use tilo_test_env::SpawnUnderEnvLock as _;
 
-use app_cli::config::{RegistriesFile, RegistryConfig};
 use ed25519_dalek::SigningKey;
 
 use crate::registry_to_installed::{
-    author_tapp_with_files, scoped_env, signed_entry_version, test_publisher, tilo_install_bin,
+    Device, author_tapp_with_files, registry_config, signed_entry_version, test_publisher,
+    tilo_install_bin,
 };
 use crate::update_latency::{FarRegistry, snapshot};
 
@@ -132,32 +132,12 @@ fn an_update_with_little_to_fetch_does_work_only_for_what_changed() {
     let base = registry.start();
     let owner = SigningKey::from_bytes(&[29_u8; 32]);
 
-    let config = tempfile::tempdir().unwrap();
-    let cache = tempfile::tempdir().unwrap();
-    let apps = tempfile::tempdir().unwrap();
-    let data = tempfile::tempdir().unwrap();
-    std::fs::write(
-        config.path().join("registries.toml"),
-        toml::to_string_pretty(&RegistriesFile {
-            registries: vec![RegistryConfig {
-                name: "near".into(),
-                base_url: base.clone(),
-                owner_pubkey_hex: hex::encode(owner.verifying_key().to_bytes()),
-                enabled: true,
-                channel: tilo_app_package::version::ReleaseChannel::Stable,
-            }],
-        })
-        .unwrap(),
-    )
-    .unwrap();
     let installer = tilo_install_bin();
-    let _env = scoped_env(&[
-        ("TILO_STORE_CONFIG_DIR", config.path()),
-        ("TILO_STORE_CACHE_DIR", cache.path()),
-        ("TILO_APPS_DATA_DIR", apps.path()),
-        ("TILO_INSTALL_BIN", &installer),
-        ("XDG_DATA_HOME", data.path()),
-    ]);
+    let data = tempfile::tempdir().unwrap();
+    let _device = Device::new(
+        Some(registry_config("near", &base, &owner)),
+        &[("XDG_DATA_HOME", data.path())],
+    );
 
     // The device: every app installed at 1.0.0.
     let mut versions = vec!["1.0.0"; APPS];

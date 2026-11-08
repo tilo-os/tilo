@@ -223,9 +223,6 @@ fn check_range(
 }
 
 /// Why `action` cannot apply to the document, before anything is written.
-///
-/// # Errors
-/// Names the stale or malformed target.
 pub(crate) fn check(
     action: &RichTextAction,
     doc: &AutoCommit,

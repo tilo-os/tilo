@@ -477,9 +477,6 @@ fn note_next(
 
 /// Write that the resource `id` is stored in `chunk`, in the manifest of `doc` (the app's
 /// record). The same write on every replica: what the action that placed it recorded.
-///
-/// # Errors
-/// The record cannot be written.
 pub fn place(doc: &mut Doc, id: &str, chunk: ChunkNo) -> Result<(), ActionError> {
     let manifest = manifest(doc)?;
     note_next(doc, &manifest, chunk)?;
@@ -490,9 +487,6 @@ pub fn place(doc: &mut Doc, id: &str, chunk: ChunkNo) -> Result<(), ActionError>
 
 /// Write that the collection `field` of `holder` has a run in `chunk` whose last order key is
 /// `last` and which holds `len` items: what the action that appended to it counted.
-///
-/// # Errors
-/// The record cannot be written.
 pub fn run(
     doc: &mut Doc,
     holder: &str,

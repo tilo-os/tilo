@@ -223,7 +223,7 @@ fn first_creation_capture_is_nonempty_loadable_and_respects_its_byte_bound() {
 }
 
 #[test]
-fn actual_empty_record_creation_is_durable_idempotent_and_reopens_with_custody() {
+fn actual_empty_record_creation_is_durable_idempotent_and_stays_kept_here() {
     let fixture = fixture();
     let workspace = crate::owner::WorkspaceId::parse(testing::WORKSPACE).unwrap();
     let path = fixture.directory.path().join("owner.json");
@@ -276,18 +276,17 @@ fn actual_empty_record_creation_is_durable_idempotent_and_reopens_with_custody()
             Ok(())
         })
         .unwrap();
-    // The original signed snapshot is in custody, published as the frame its
-    // creator signed: no checkpoint of anyone else's is needed to send it.
+    // This device keeps the workspace, so the workspace's records are already
+    // where its own write landed: no keeper elsewhere is waited for.
     let custody = reopened.outgoing_status(workspace, fixture.now).unwrap();
-    assert_eq!(custody.pending, 1);
+    assert_eq!(custody.pending, 0);
     assert_eq!(custody.blocked, 0);
-    reopened.retire_outgoing(workspace).unwrap();
     reopened
         .with_outgoing(workspace, fixture.now, |_, outgoing| {
             assert_eq!(
                 outgoing.entries().count(),
-                1,
-                "the record's own creation is published"
+                0,
+                "a workspace kept on this device queues nothing"
             );
             Ok(())
         })

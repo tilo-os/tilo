@@ -71,15 +71,11 @@ pub trait RuntimeServices: Sized {
     /// Start the services on `root`, naming each step to `stage` before taking
     /// it, so whoever waits can tell a slow start from a stuck one. Holds the
     /// profile exclusively until dropped.
-    /// # Errors
-    /// Rejects a profile in use, invalid persisted state or failed provisioning.
     fn start_reporting(root: &Path, stage: &mut dyn FnMut(&str)) -> io::Result<Self>;
 
     /// Start an isolated admission session with the already enrolled device
     /// owner's identity. This must only verify that identity: no provisioning,
     /// certificate renewal or identity/fleet persistence is permitted.
-    /// # Errors
-    /// Refuses unsupported hosts, foreign accounts, absent or invalid identity.
     fn start_admission_reporting(
         root: &Path,
         owner_uid: u32,
@@ -111,9 +107,6 @@ pub trait RuntimeServices: Sized {
     /// Select the fixed audience of a host-configured MCP endpoint. This
     /// never enrolls a workspace or changes grants. Hosts supporting shared workspaces
     /// must check their current certified admission and the profile actor.
-    ///
-    /// # Errors
-    /// Refuses any audience this host cannot currently authenticate.
     fn mcp_workspace(&self, requested: Option<&str>) -> io::Result<String> {
         let workspace = requested.unwrap_or_else(|| self.workspace());
         if workspace != self.workspace() {
@@ -132,9 +125,6 @@ pub trait RuntimeServices: Sized {
 
     /// Construct one transport run for this exact configured audience. Hosts
     /// with original certified custody override this; client labels never enter.
-    ///
-    /// # Errors
-    /// Rejects unavailable admission, an invalid audience or a missing action host.
     fn mcp_session_factory(
         &self,
         workspace: &str,

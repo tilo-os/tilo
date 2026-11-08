@@ -175,9 +175,6 @@ pub trait ContentBackend: Send + Sync {
     fn put(&self, reader: &mut dyn Read, mime: &str) -> Result<Stored, ContentError>;
 
     /// A streaming, verifying read of the content at `hash`, or `None` when it is not here.
-    ///
-    /// # Errors
-    /// I/O failures other than absence, or a malformed address.
     fn open(&self, hash: &str) -> Result<Option<ContentReader>, ContentError>;
 
     /// Whether the content at `hash` is here and intact.

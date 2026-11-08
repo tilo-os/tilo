@@ -179,10 +179,6 @@ impl SuspendTimers {
 }
 
 /// `minutes` when it is one of `choices`.
-///
-/// # Errors
-///
-/// A sentence naming the values that are offered.
 pub fn check_minutes(what: &str, choices: &[u32], minutes: u32) -> Result<u32, String> {
     if choices.contains(&minutes) {
         return Ok(minutes);

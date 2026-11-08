@@ -64,12 +64,6 @@ pub trait OffloadPeers: Send + Sync {
 
     /// Run `invocation` on `device` in `workspace` and follow it there until
     /// it settles, with the bytes of the content it produced.
-    ///
-    /// # Errors
-    ///
-    /// Why the device did not run it: what it answered, or that it could not
-    /// be reached at all. A job that did not run there is run where it was
-    /// asked, so a device that fails only ever costs time.
     fn run(
         &self,
         workspace: &str,

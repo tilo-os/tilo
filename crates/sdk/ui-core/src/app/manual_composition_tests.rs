@@ -3,7 +3,6 @@ use crate::widget::{Button, Field, Form, FormSection, Manual, MeasureConstraint,
 
 #[test]
 fn manual_composition_preserves_focus_selection_clicks_and_children_across_frames() {
-    // Case `manual_and_mixed_hosts_preserve_focus_selection_and_authored_clicks_on_resize`.
     {
         for mode in 0..3 {
             let shift = std::rc::Rc::new(std::cell::Cell::new(0.25_f64));
@@ -113,7 +112,6 @@ fn manual_composition_preserves_focus_selection_clicks_and_children_across_frame
         }
     }
 
-    // Case `removing_last_manual_region_restores_host_default_rounding`.
     {
         let manual = Manual::new(|ctx| {
             Ok(taffy::Size {
@@ -138,7 +136,6 @@ fn manual_composition_preserves_focus_selection_clicks_and_children_across_frame
         assert_eq!(app.root_widget.get_rect().height(), 40.0);
     }
 
-    // Case `manual_policy_input_moves_clean_same_viewport_frame_without_replacing_children`.
     {
         use std::{cell::Cell, rc::Rc};
         use vello::kurbo::Rect;

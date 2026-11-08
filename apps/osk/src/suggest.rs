@@ -6,8 +6,8 @@
 //! word with it. A word that names an emoji ("pizza") also gets emoji chips,
 //! which insert the emoji after the word.
 //!
-//! This module holds the **pure geometry** + the data model, mirroring
-//! [`crate::toolbar`]: [`suggestion_rects`] splits a row into evenly-spaced
+//! This module holds the **pure geometry** + the data model,
+//! mirroring [`crate::toolbar`]: [`suggestion_rects`] splits a row into evenly-spaced
 //! chips so the widget can hit-test taps the same way it does for keys and
 //! toolbar items. Rendering + theming live in [`crate::widget`].
 

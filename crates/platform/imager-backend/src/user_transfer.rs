@@ -19,9 +19,6 @@ fn failure() -> io::Error {
 }
 
 /// Read a bounded private artifact without following links or blocking on special files.
-///
-/// # Errors
-/// Refuses non-private files, oversized or non-regular artifacts, and changed directories.
 pub fn read_private_artifact(pin: &PinnedDirectory, name: &str) -> io::Result<Vec<u8>> {
     let mut options = OpenOptions::new();
     options.read(true).follow(FollowSymlinks::No).nonblock(true);
@@ -36,9 +33,6 @@ pub fn read_private_artifact(pin: &PinnedDirectory, name: &str) -> io::Result<Ve
     Ok(bytes)
 }
 /// Durably publish an immutable private artifact, accepting only an identical retry.
-///
-/// # Errors
-/// Refuses oversized data, conflicting existing artifacts, and unsafe destinations.
 pub fn publish_private_artifact(
     pin: &Arc<PinnedDirectory>,
     name: &str,
@@ -69,9 +63,6 @@ pub fn publish_private_artifact(
     }
 }
 /// Open an owner-only private workspace without following links.
-///
-/// # Errors
-/// Refuses nonprivate, redirected or unavailable workspaces.
 pub fn private_workspace(path: &Path) -> io::Result<Arc<PinnedDirectory>> {
     let pin = PinnedDirectory::open_absolute(path)?;
     pin.validate_destination()?;
@@ -79,9 +70,6 @@ pub fn private_workspace(path: &Path) -> io::Result<Arc<PinnedDirectory>> {
     Ok(pin)
 }
 /// Remove whatever an interrupted attempt left in a private workspace.
-///
-/// # Errors
-/// Refuses a changed workspace and reports removal failures.
 pub fn clear_workspace(pin: &Arc<PinnedDirectory>, path: &Path) -> io::Result<()> {
     let directory = cap_std::fs::Dir::from_std_file(durability::readable_directory(&pin.file)?);
     for entry in directory.entries()? {

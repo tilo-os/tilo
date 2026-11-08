@@ -66,9 +66,6 @@ impl EventLog {
 
     /// Append an event unless `(source, id)` is already logged. Returns its
     /// sequence number, or `None` for a duplicate.
-    ///
-    /// # Errors
-    /// The file cannot be written.
     pub fn append(
         &mut self,
         source: &str,
@@ -118,9 +115,6 @@ impl EventLog {
     /// Drop events older than the window or beyond the count and rewrite the
     /// file. Dropped ids stop deduplicating, which is fine: a service only
     /// replays recent events.
-    ///
-    /// # Errors
-    /// The file cannot be rewritten.
     pub fn prune(&mut self, now_ms: i64) -> std::io::Result<usize> {
         let before = self.events.len();
         let horizon = now_ms.saturating_sub(Self::WINDOW_MS);

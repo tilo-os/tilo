@@ -63,7 +63,6 @@ impl BoundProbe {
 )]
 #[test]
 fn typing_bursts_finalize_at_the_right_record_boundary() {
-    // Case `readonly_mount_and_noop_foreign_update_keep_one_logical_typing_burst`.
     {
         let host = ProbeHost::new();
         let first = instantiate_probe(&host, 11, LaunchTarget::New, RestoreInput::None).unwrap();
@@ -128,7 +127,6 @@ fn typing_bursts_finalize_at_the_right_record_boundary() {
         assert!(outer.get_heads().is_empty());
     }
 
-    // Case `another_instance_mutation_finalizes_the_original_record_boundary`.
     {
         let host = ProbeHost::new();
         let first = instantiate_probe(&host, 11, LaunchTarget::New, RestoreInput::None).unwrap();
@@ -164,7 +162,6 @@ fn typing_bursts_finalize_at_the_right_record_boundary() {
             .unwrap();
     }
 
-    // Case `pending_local_burst_finalizes_before_an_external_remote_merge`.
     {
         let host = ProbeHost::new();
         let component =
@@ -194,7 +191,6 @@ fn typing_bursts_finalize_at_the_right_record_boundary() {
         assert!(outer.get_heads().is_empty());
     }
 
-    // Case `foreign_noop_commit_notification_preserves_pending_owner`.
     {
         use crate::support::application::{probe_commit_drains, report_probe_action};
         let host = ProbeHost::new();
@@ -270,7 +266,6 @@ fn typing_bursts_finalize_at_the_right_record_boundary() {
 )]
 #[test]
 fn record_entry_unwind_and_restore_keep_exact_instance_ownership() {
-    // Case `nested_same_record_entry_and_return_keep_separate_owner_segments`.
     {
         let host = ProbeHost::new();
         let first = instantiate_probe(&host, 11, LaunchTarget::New, RestoreInput::None).unwrap();
@@ -304,7 +299,6 @@ fn record_entry_unwind_and_restore_keep_exact_instance_ownership() {
         assert!(outer.get_heads().is_empty());
     }
 
-    // Case `unwind_restores_owned_history_and_cross_record_entry_refuses_before_delivery`.
     {
         let host = ProbeHost::new();
         let first = instantiate_probe(&host, 11, LaunchTarget::New, RestoreInput::None).unwrap();
@@ -353,7 +347,6 @@ fn record_entry_unwind_and_restore_keep_exact_instance_ownership() {
         assert!(outer.get_heads().is_empty());
     }
 
-    // Case `bound_revision_restore_and_inverse_keep_exact_instance`.
     {
         let mut doc = AutoCommit::new();
         doc.put(ROOT, "body", "initialized").unwrap();
@@ -404,7 +397,6 @@ fn edit(doc: &mut AutoCommit, history: &mut UndoLog, instance: u64, key: &str, v
 
 #[test]
 fn instance_history_selects_only_its_own_attributed_entries() {
-    // Case `interleaved_instance_history_preserves_the_author_and_remote_changes`.
     {
         let mut doc = AutoCommit::new();
         doc.put(ROOT, "schema", "initialized").unwrap();
@@ -448,7 +440,6 @@ fn instance_history_selects_only_its_own_attributed_entries() {
         assert_eq!(read_string(&doc, "remote").as_deref(), Some("kept"));
     }
 
-    // Case `an_edit_in_b_keeps_a_redo_and_setup_is_never_undone`.
     {
         let mut doc = AutoCommit::new();
         doc.put(ROOT, "schema", "initialized").unwrap();
@@ -481,7 +472,6 @@ fn instance_history_selects_only_its_own_attributed_entries() {
         assert_eq!(read_string(&doc, "schema").as_deref(), Some("initialized"));
     }
 
-    // Case `bound_history_selection_skips_newer_foreign_and_unattributed_entries`.
     {
         let mut doc = AutoCommit::new();
         let mut history = UndoLog::new(&mut doc);

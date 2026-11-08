@@ -35,9 +35,6 @@ pub struct ReviewedProfile {
 }
 impl ReviewedProfile {
     /// Revalidate the reviewed profile and its retained directory namespace.
-    ///
-    /// # Errors
-    /// Refuses invalid profile metadata, replaced directories or unsafe namespace control.
     pub fn validate(&self) -> io::Result<()> {
         if self.exportable {
             self.profile.validate().map_err(invalid)?;
@@ -149,9 +146,6 @@ impl ReviewedProfile {
     }
 
     /// Capture the selected domains from this reviewed profile.
-    ///
-    /// # Errors
-    /// Refuses changed selections or sources, unsafe namespaces and unreadable snapshot data.
     #[cfg(any(test, feature = "test-support"))]
     pub fn capture_files(
         &self,
@@ -211,9 +205,6 @@ impl ReviewedProfile {
 
 /// Discover only recognized sources supplied by the consented account inventory.
 /// Source roots outside the granted home and incomplete scans are refused.
-///
-/// # Errors
-/// Refuses unsafe or changed directories, unrecognized sources, oversized scans and I/O failures.
 pub fn discover(home: &Path, candidates: &[Candidate]) -> io::Result<Vec<ReviewedProfile>> {
     let root = PinnedDirectory::open_absolute(home)?;
     storage(&root)?.validate_namespace_control()?;

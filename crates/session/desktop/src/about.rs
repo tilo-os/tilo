@@ -1,14 +1,11 @@
-//! What this Tilo is, said the same way wherever Tilo says it: that it is
-//! Tilo, an operating system, where it runs, which version, and where to go
-//! next (tilo.so, to get it; be told when it comes to your computer, its
-//! source, its community).
-//!
-//! [`AboutVariant`] picks the words for where Tilo runs, [`AboutLinks`] is
-//! the deployment's set of links (one left empty is not offered) and
-//! [`about_view`] lays them out. [`TiloMenu`] is the small menu behind the
-//! top bar's Tilo mark ([`crate::topbar::TopBarChrome::with_tilo_mark`])
-//! and the About sheet it opens; a host shows it under the mark when the
-//! bar asks with [`crate::chrome::ChromeIntent::ToggleTiloMenu`].
+//! What this Tilo is, said the same way wherever Tilo says it: that it is Tilo, an operating
+//! system, where it runs, which version, and where to go next (tilo.so, to get it; be told when it
+//! comes to your computer, its source, its community).
+//! [`AboutVariant`] picks the words for where Tilo runs, [`AboutLinks`] is the deployment's set of
+//! links (one left empty is not offered) and [`about_view`] lays them out. [`TiloMenu`] is the
+//! small menu behind the top bar's Tilo mark ([`crate::topbar::TopBarChrome::with_tilo_mark`]) and
+//! the About sheet it opens; a host shows it under the mark when the bar asks with
+//! [`crate::chrome::ChromeIntent::ToggleTiloMenu`].
 
 use std::cell::Cell;
 use std::collections::HashMap;
@@ -40,8 +37,8 @@ pub enum AboutVariant {
     Browser,
 }
 
-/// The deployment's links. Each is an `http(s)` URL or absent; anything else
-/// (an empty setting included) is not offered.
+/// The deployment's links. Each is an `http(s)` URL or absent; anything else (an empty setting
+/// included) is not offered.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct AboutLinks {
     /// Where to be told when Tilo comes to computers.
@@ -68,7 +65,7 @@ impl AboutLinks {
         }
     }
 
-    /// The links offered, in reading order, as `(label, url)`.
+    /// The links offered, in reading order, as `(label, url)` .
     pub fn shown(&self) -> Vec<(String, String)> {
         [
             ("tilo-about-link-notify", &self.notify),
@@ -81,8 +78,8 @@ impl AboutLinks {
     }
 }
 
-/// Read from a host's settings as `{notify, source, community}`, each a URL
-/// or empty; a missing one is empty.
+/// Read from a host's settings as `{notify, source, community}` , each a URL or empty; a missing
+/// one is empty.
 impl<'de> serde::Deserialize<'de> for AboutLinks {
     fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
         #[derive(serde::Deserialize, Default)]
@@ -113,13 +110,13 @@ pub struct AboutCopy {
     pub body: String,
     /// Which Tilo this is.
     pub version: String,
-    /// Tilo's home on the web ([`TILO_HOME`]): in a browser, where to get
-    /// Tilo; on a computer that has it, just its address.
+    /// Tilo's home on the web ([`TILO_HOME`]): in a browser, where to get Tilo; on a computer that
+    /// has it, just its address.
     pub home: String,
 }
 
-/// The words for Tilo running as `variant`. A browser tab is not "this
-/// computer": there it is About Tilo.
+/// The words for Tilo running as `variant` . A browser tab is not "this computer": there it is
+/// About Tilo.
 pub fn about_copy(variant: AboutVariant) -> AboutCopy {
     let (title, menu, body, home) = match variant {
         AboutVariant::Native => (
@@ -192,8 +189,7 @@ impl Widget for Mark {
     }
 }
 
-/// The About sheet's body: the mark, the words for `variant` and the links
-/// offered.
+/// The About sheet's body: the mark, the words for `variant` and the links offered.
 pub fn about_view(variant: AboutVariant, links: &AboutLinks) -> Column {
     let copy = about_copy(variant);
     let gap = ui::tokens::Spacing::default().s3;
@@ -209,8 +205,7 @@ pub fn about_view(variant: AboutVariant, links: &AboutLinks) -> Column {
         .push(Box::new(
             Text::new(&copy.version).with_role(TextRole::Caption),
         ));
-    // Tilo's home leads, offered everywhere: the deployment's own links
-    // follow.
+    // Tilo's home leads, offered everywhere: the deployment's own links follow.
     let mut row = Row::new()
         .with_gap(ui::tokens::Spacing::default().s4)
         .push(Box::new(Link::new(TILO_HOME).with_label(&copy.home)));
@@ -220,9 +215,9 @@ pub fn about_view(variant: AboutVariant, links: &AboutLinks) -> Column {
     column.push(Box::new(row))
 }
 
-/// One of the session's own actions, offered above About: what only the
-/// session can carry out (locking the screen, logging out, restarting the
-/// computer, shutting it down), by the id the host published it under.
+/// One of the session's own actions, offered above About: what only the session can carry out
+/// (locking the screen, logging out, restarting the computer, shutting it down), by the id the host
+/// published it under.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct TiloMenuAction {
     pub id: String,
@@ -291,8 +286,7 @@ impl TiloMenu {
         self
     }
 
-    /// [`Self::with_feedback`] for a menu already shown, once the host has
-    /// somewhere to send it.
+    /// [`Self::with_feedback`] for a menu already shown, once the host has somewhere to send it.
     pub fn offer_feedback(&mut self) {
         if self.offers_feedback {
             return;
@@ -301,8 +295,8 @@ impl TiloMenu {
         self.rebuild();
     }
 
-    /// List the session's own actions above About, in the order the host
-    /// publishes them; About and Feedback follow behind a separator.
+    /// List the session's own actions above About, in the order the host publishes them; About and
+    /// Feedback follow behind a separator.
     pub fn set_actions(&mut self, actions: Vec<TiloMenuAction>) {
         if self.actions == actions {
             return;
@@ -311,8 +305,8 @@ impl TiloMenu {
         self.rebuild();
     }
 
-    /// Lay the menu's rows out again: the session's actions, About, and
-    /// Feedback where the host has somewhere to send it.
+    /// Lay the menu's rows out again: the session's actions, About, and Feedback where the host has
+    /// somewhere to send it.
     fn rebuild(&mut self) {
         let mut items = Vec::with_capacity(self.actions.len().saturating_add(3));
         for (index, action) in self.actions.iter().enumerate() {
@@ -338,20 +332,19 @@ impl TiloMenu {
         self.menu.set_items(items);
     }
 
-    /// Whether Feedback was chosen since the last call; the host opens it
-    /// about the window in front.
+    /// Whether Feedback was chosen since the last call; the host opens it about the window in
+    /// front.
     pub fn take_feedback(&mut self) -> bool {
         std::mem::take(&mut self.feedback)
     }
 
-    /// The session action chosen since the last call, by the id its host
-    /// published it under: the host carries it out.
+    /// The session action chosen since the last call, by the id its host published it under: the
+    /// host carries it out.
     pub fn take_action(&mut self) -> Option<String> {
         self.picked.take()
     }
 
-    /// Open the menu under `anchor` (the mark) within `viewport`, or close
-    /// it when it is open.
+    /// Open the menu under `anchor` (the mark) within `viewport` , or close it when it is open.
     pub fn toggle(&mut self, anchor: Rect, viewport: Rect) {
         if self.menu.is_open() {
             self.menu.close();
@@ -361,9 +354,8 @@ impl TiloMenu {
         }
     }
 
-    /// Show the About sheet (the menu's first entry). The menu goes at
-    /// once: fading out under the sheet's scrim it showed through it, over
-    /// what the scrim dims.
+    /// Show the About sheet (the menu's first entry). The menu goes at once: fading out under the
+    /// sheet's scrim it showed through it, over what the scrim dims.
     pub fn show_about(&mut self) {
         self.menu.close_at_once();
         self.about.set_open(true);
@@ -373,8 +365,8 @@ impl TiloMenu {
         self.menu.is_open()
     }
 
-    /// Where the menu stands while it is open: as big as its rows, which no
-    /// anchor says, so a press that misses it can close it.
+    /// Where the menu stands while it is open: as big as its rows, which no anchor says, so a press
+    /// that misses it can close it.
     pub fn menu_rect(&self) -> Option<Rect> {
         self.menu.is_open().then(|| self.menu.get_rect())
     }
@@ -388,8 +380,7 @@ impl TiloMenu {
         self.is_menu_open() || self.is_about_open()
     }
 
-    /// Apply what the person chose since the last call; true when anything
-    /// changed.
+    /// Apply what the person chose since the last call; true when anything changed.
     pub fn settle(&mut self) -> bool {
         let mut changed = false;
         match self.chosen.take() {
@@ -543,8 +534,8 @@ mod tests {
         }
         assert!(browser.title.contains("Tilo"), "{}", browser.title);
         assert!(native.title.contains("computer"), "{}", native.title);
-        // Both say which Tilo this is, and where to find it on the web; the
-        // browser says that is where to get it.
+        // Both say which Tilo this is, and where to find it on the web; the browser says that is
+        // where to get it.
         for copy in [&browser, &native] {
             assert!(
                 copy.version.contains(env!("CARGO_PKG_VERSION")),
@@ -556,8 +547,8 @@ mod tests {
         assert_eq!(native.home, "tilo.so");
     }
 
-    /// Choosing About takes the menu away at once: a menu still fading out
-    /// showed through the sheet's scrim, over the window it dims.
+    /// Choosing About takes the menu away at once: a menu still fading out showed through the
+    /// sheet's scrim, over the window it dims.
     #[test]
     fn about_takes_the_menu_away_at_once() {
         ui::i18n::I18nManager::init("en-US");
@@ -599,8 +590,8 @@ mod tests {
         );
     }
 
-    /// The session's own rows lead, About and Feedback follow behind a
-    /// separator, and choosing one hands its id back once.
+    /// The session's own rows lead, About and Feedback follow behind a separator, and choosing one
+    /// hands its id back once.
     #[test]
     fn session_actions_lead_the_menu_and_come_back_by_id() {
         ui::i18n::I18nManager::init("en-US");

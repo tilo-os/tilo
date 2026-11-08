@@ -62,17 +62,7 @@ impl Widget for DeclaredDirectory {
     );
 
     fn sync(&mut self, _: &AppModel, _: &ModelPath) {}
-    fn build_layout(
-        &mut self,
-        t: &mut TaffyTree<()>,
-        _: &Theme,
-        _: &mut HashMap<NodeId, *mut dyn Widget>,
-    ) -> NodeId {
-        t.new_leaf(taffy::Style::default()).unwrap()
-    }
-    fn name(&self) -> &'static str {
-        "declared-directory"
-    }
+    crate::testing::inert_widget_methods!(unregistered_leaf_layout, name = "declared-directory");
     fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
         self.semantic_calls.set(self.semantic_calls.get() + 1);
         Some(crate::a11y::AccessNode::new(crate::a11y::Role::Group))
@@ -558,7 +548,6 @@ fn retained_local_directory_byte_pressure_preserves_old_revision_and_reclaims_dr
 
 #[test]
 fn directory_snapshot_pages_and_resolves_without_redeclaring_resources() {
-    // Case `directory_snapshot_resources_only_root_parent_and_exact_without_redeclaration`.
     {
         let (mut app, calls) = declared_directory(1);
         publish_declared_directory(&mut app);
@@ -585,7 +574,6 @@ fn directory_snapshot_pages_and_resolves_without_redeclaring_resources() {
         );
     }
 
-    // Case `directory_snapshot_pages_roots_and_resumes_byte_and_work_limits`.
     {
         let (mut app, calls) = declared_directory(137);
         publish_declared_directory(&mut app);
@@ -611,7 +599,6 @@ fn directory_snapshot_pages_and_resolves_without_redeclaring_resources() {
         assert_eq!(calls.get(), 1);
     }
 
-    // Case `directory_snapshot_mixed_provider_keeps_only_unprojected_tail`.
     {
         let mut app = App::new_with_controlled_inputs(
             State::new(),
@@ -639,7 +626,6 @@ fn directory_snapshot_pages_and_resolves_without_redeclaring_resources() {
         assert_eq!(ids, ["test.counter", "test.counter:1", "test.counter:2"]);
     }
 
-    // Case `directory_snapshot_parent_actions_page_and_effects_do_not_invent_container_visibility`.
     {
         let (mut app, calls) = declared_directory(1);
         app.state_mut_for_test()
@@ -689,7 +675,6 @@ fn directory_snapshot_pages_and_resolves_without_redeclaring_resources() {
         assert_eq!(visibility.contract.kind, tilo_actions::ActionKind::Undoable);
     }
 
-    // Case `directory_snapshot_parent_merges_exact_provider_extensions_without_duplicates`.
     {
         let mut app = App::new_with_controlled_inputs(State::new(), Box::new(ExtendedDirectory));
         app.action_registry_mut()
@@ -738,7 +723,6 @@ fn directory_snapshot_pages_and_resolves_without_redeclaring_resources() {
         ));
     }
 
-    // Case `directory_snapshot_depth_ceiling_disables_further_descent`.
     {
         let (mut app, _) = declared_directory(1);
         let mut resources = app.publication_resources();
@@ -758,7 +742,6 @@ fn directory_snapshot_pages_and_resolves_without_redeclaring_resources() {
         assert!(!page.rows[0].has_children);
     }
 
-    // Case `directory_snapshot_remote_requests_do_not_rebuild_semantics_or_execute_prompt_closures`.
     {
         let calls = std::rc::Rc::new(Cell::new(0));
         let semantics = std::rc::Rc::new(Cell::new(0));
@@ -801,7 +784,6 @@ fn directory_snapshot_pages_and_resolves_without_redeclaring_resources() {
 
 #[test]
 fn directory_snapshot_revision_evicts_on_every_semantic_change() {
-    // Case `directory_snapshot_unchanged_publish_stable_but_mutation_and_max_evict`.
     {
         let (mut app, calls) = declared_directory(1);
         app.actions.resource_generation.set(u64::MAX);
@@ -840,7 +822,6 @@ fn directory_snapshot_revision_evicts_on_every_semantic_change() {
         );
     }
 
-    // Case `directory_snapshot_permission_change_at_max_evicts_without_committing_pending_doc`.
     {
         let (mut app, calls) = declared_directory(1);
         app.state_mut_for_test()
@@ -879,7 +860,6 @@ fn directory_snapshot_revision_evicts_on_every_semantic_change() {
         );
     }
 
-    // Case `directory_snapshot_hierarchy_change_invalidates_cursor_even_with_same_descriptors`.
     {
         let (mut app, _) = declared_directory(2);
         publish_declared_directory(&mut app);
@@ -899,7 +879,6 @@ fn directory_snapshot_revision_evicts_on_every_semantic_change() {
         assert_eq!(parent.rows[1].resource, "declared:1");
     }
 
-    // Case `directory_snapshot_provider_generation_expires_cached_projection`.
     {
         let provider = LargeDirectoryProvider::new(1);
         let catalog = provider.catalog.clone();
@@ -928,7 +907,6 @@ fn directory_snapshot_revision_evicts_on_every_semantic_change() {
         assert!(app.actions.action_directory_snapshot.is_none());
     }
 
-    // Case `directory_snapshot_old_descriptor_never_bypasses_changed_confirmation_contract`.
     {
         let (mut app, _) = declared_directory(1);
         publish_declared_directory(&mut app);
@@ -999,17 +977,7 @@ impl Widget for ExtendedDirectory {
         dyn crate::widget::ResourceOperations
     );
 
-    fn build_layout(
-        &mut self,
-        t: &mut TaffyTree<()>,
-        _: &Theme,
-        _: &mut HashMap<NodeId, *mut dyn Widget>,
-    ) -> NodeId {
-        t.new_leaf(taffy::Style::default()).unwrap()
-    }
-    fn name(&self) -> &'static str {
-        "extended-directory"
-    }
+    crate::testing::inert_widget_methods!(unregistered_leaf_layout, name = "extended-directory");
 }
 
 impl crate::widget::ResourceOperations for ExtendedDirectory {
@@ -1094,7 +1062,6 @@ fn a_pass_that_changes_nothing_listed_keeps_the_revision_and_its_cursor() {
 #[cfg(all(unix, feature = "broker-transport"))]
 #[test]
 fn directory_lifecycle_publishes_once_ready_and_refreshes_on_idle() {
-    // Case `a_manager_that_connects_after_launch_publishes_the_action_surface_once_ready`.
     {
         use crate::collaboration::CollaborationState;
         let (mut app, _) = declared_directory(1);
@@ -1126,7 +1093,6 @@ fn directory_lifecycle_publishes_once_ready_and_refreshes_on_idle() {
         );
     }
 
-    // Case `directory_lifecycle_idle_refreshes_after_normal_sync_without_remote_query`.
     {
         let (mut app, calls) = connected_declared_directory();
         let revision = app.action_directory_revision();
@@ -1174,7 +1140,6 @@ fn directory_lifecycle_publishes_once_ready_and_refreshes_on_idle() {
         assert_eq!(app.action_directory_revision(), revision);
     }
 
-    // Case `directory_lifecycle_presence_eviction_recovers_on_normal_idle_without_input`.
     {
         let (mut app, calls) = connected_declared_directory();
         app.apply_collab_event_for_test(CollabEvent::RemoteCursorMoved {
@@ -1215,17 +1180,7 @@ struct DescribedSearch {
 impl Widget for DescribedSearch {
     crate::provides!(dyn crate::search::capability::SearchSource);
 
-    fn build_layout(
-        &mut self,
-        t: &mut TaffyTree<()>,
-        _: &Theme,
-        _: &mut HashMap<NodeId, *mut dyn Widget>,
-    ) -> NodeId {
-        t.new_leaf(taffy::Style::default()).unwrap()
-    }
-    fn name(&self) -> &'static str {
-        "described-search"
-    }
+    crate::testing::inert_widget_methods!(unregistered_leaf_layout, name = "described-search");
 }
 impl crate::search::capability::SearchSource for DescribedSearch {
     fn search_providers(&self) -> Vec<Box<dyn crate::search::SearchProvider>> {

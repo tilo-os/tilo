@@ -36,18 +36,17 @@ pub struct WaveFrom {
     pub name: String,
 }
 
-/// The waves a device heard: each publisher heard from, with the count of
-/// the wave its presence last carried.
+/// The waves a device heard: each publisher heard from, with the count of the wave its presence
+/// last carried.
 #[derive(Debug, Default)]
 pub struct WaveEar {
     seen: HashMap<String, Option<u32>>,
 }
 
 impl WaveEar {
-    /// Whether `publisher`'s presence, carrying `wave`, brings a new wave
-    /// at the person listening (`for_me` says whether a publisher is one of
-    /// their devices). Called with every presence heard, wave or not: the
-    /// first one heard from a publisher only sets where its count stands.
+    /// Whether `publisher` 's presence, carrying `wave` , brings a new wave at the person listening
+    /// (`for_me` says whether a publisher is one of their devices). Called with every presence
+    /// heard, wave or not: the first one heard from a publisher only sets where its count stands.
     pub fn hear(
         &mut self,
         publisher: &str,
@@ -62,8 +61,7 @@ impl WaveEar {
     }
 }
 
-/// The waves a device sent: its latest, which its presence carries, and
-/// when it last waved at whom.
+/// The waves a device sent: its latest, which its presence carries, and when it last waved at whom.
 #[derive(Debug, Default)]
 pub struct WaveOut {
     sent: Option<Wave>,
@@ -72,9 +70,8 @@ pub struct WaveOut {
 }
 
 impl WaveOut {
-    /// Wave at `target` (a live publisher) at `now_ms`; the wave to put on
-    /// this device's presence, or `None` when they were waved at within
-    /// [`WAVE_AGAIN_MS`].
+    /// Wave at `target` (a live publisher) at `now_ms` ; the wave to put on this device's presence,
+    /// or `None` when they were waved at within [`WAVE_AGAIN_MS`].
     pub fn wave_at(&mut self, target: &str, now_ms: u64) -> Option<Wave> {
         if target.is_empty() || self.waved_recently(target, now_ms) {
             return None;
@@ -110,8 +107,8 @@ impl WaveOut {
             .collect()
     }
 
-    /// When the first row that shows a wave this device sent is drawn again
-    /// without one: the earliest of them stops showing then.
+    /// When the first row that shows a wave this device sent is drawn again without one: the
+    /// earliest of them stops showing then.
     #[must_use]
     pub fn waved_until(&self, now_ms: u64) -> Option<ui::time::Instant> {
         let earliest = self
@@ -162,9 +159,8 @@ impl HereState {
         self.waves.heard.extend(heard);
     }
 
-    /// Wave at `target` (a member's live publisher) at `now_ms`: this
-    /// page's presence carries it next. `false` when they were waved at
-    /// within [`WAVE_AGAIN_MS`], or are this person.
+    /// Wave at `target` (a member's live publisher) at `now_ms` : this page's presence carries it
+    /// next. `false` when they were waved at within [`WAVE_AGAIN_MS`], or are this person.
     pub fn wave_at(&mut self, target: &str, now_ms: u64) -> bool {
         if self.is_own_person(target) || self.waves.out.wave_at(target, now_ms).is_none() {
             return false;
@@ -183,8 +179,7 @@ impl HereState {
         self.waves.out.waved(now_ms)
     }
 
-    /// When the first row that shows a wave this page sent is drawn again
-    /// without one.
+    /// When the first row that shows a wave this page sent is drawn again without one.
     #[must_use]
     pub fn waved_until(&self, now_ms: u64) -> Option<ui::time::Instant> {
         self.waves.out.waved_until(now_ms)
@@ -228,9 +223,8 @@ mod tests {
         here
     }
 
-    /// A wave already there when the page arrived is not news; a new one
-    /// at this person shows once, however often the frame is restated, and
-    /// a wave at someone else shows nothing here.
+    /// A wave already there when the page arrived is not news; a new one at this person shows once,
+    /// however often the frame is restated, and a wave at someone else shows nothing here.
     #[test]
     fn a_new_wave_at_this_person_shows_once() {
         let mut here = here();
@@ -296,8 +290,8 @@ mod tests {
         assert_eq!(here.take_waves().len(), 1);
     }
 
-    /// Waving puts a new wave on this page's presence, and the same person
-    /// is waved at again only after a while.
+    /// Waving puts a new wave on this page's presence, and the same person is waved at again only
+    /// after a while.
     #[test]
     fn waving_counts_up_and_waits_before_the_same_person_again() {
         let mut here = here();

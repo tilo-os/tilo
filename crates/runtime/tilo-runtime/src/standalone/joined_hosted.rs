@@ -86,9 +86,6 @@ impl Joined {
     /// device's host and enroll in it, unless this profile holds it
     /// already: the workspace is held when this returns, and synced once its
     /// session is held ([`Self::hold_session`]).
-    ///
-    /// # Errors
-    /// No host runs, it refused the workspace, or the enrollment failed.
     pub(in crate::standalone) async fn place(
         &self,
         workspace: WorkspaceId,

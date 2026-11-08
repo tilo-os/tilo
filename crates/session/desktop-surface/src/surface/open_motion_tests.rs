@@ -1,6 +1,5 @@
-//! Where a window opened from search lands: whole on screen beside the
-//! window the person was in, which keeps its name in view, as the native
-//! desktop places it.
+//! Where a window opened from search lands: whole on screen beside the window the person was in,
+//! which keeps its name in view, as the native desktop places it.
 
 use super::*;
 use ui::widget::TileContent;
@@ -140,8 +139,8 @@ fn an_opened_window_lands_whole_beside_the_one_in_use_which_keeps_its_name() {
     }
 }
 
-/// A window's tab wears its app's mark, the one the native title bar
-/// shows, both for a window already there and for one just opened.
+/// A window's tab wears its app's mark, the one the native title bar shows, both for a window
+/// already there and for one just opened.
 #[test]
 fn each_tab_wears_its_apps_mark() {
     let mut desk = Desk::with_chat(1440);

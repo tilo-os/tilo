@@ -41,11 +41,9 @@ mod nested {
     const CLOSING: Duration = Duration::from_secs(5);
     /// How long either may take for a person not to wait on it.
     const PROMPT: Duration = Duration::from_secs(1);
-    /// How long the session is watched doing nothing, and following the
-    /// pointer.
+    /// How long the session is watched doing nothing, and following the pointer.
     const IDLE: Duration = Duration::from_secs(3);
-    /// One display's refresh: how often a desktop asks its clients for their
-    /// next frame.
+    /// One display's refresh: how often a desktop asks its clients for their next frame.
     const REFRESH: Duration = Duration::from_millis(16);
 
     /// The window fills the output, and follows it when it changes.
@@ -90,8 +88,8 @@ mod nested {
         }
     }
 
-    /// The session's window: it is killed if it is still running when the test
-    /// ends, so a failed run leaves nothing behind.
+    /// The session's window: it is killed if it is still running when the test ends, so a failed
+    /// run leaves nothing behind.
     struct Session(Child);
 
     impl Drop for Session {
@@ -119,10 +117,9 @@ mod nested {
         let mut session = Session(
             Command::new(binary())
                 .args(["--backend", "nested", "--size", "800x600"])
-                // Nothing of this desktop: no bus, no Xwayland of its own, and
-                // a runtime directory of its own. The window opens on the
-                // compositor here and nowhere else, so the run shows nothing
-                // on the display this process was started from.
+                // Nothing of this desktop: no bus, no Xwayland of its own, and a runtime directory
+                // of its own. The window opens on the compositor here and nowhere else, so the run
+                // shows nothing on the display this process was started from.
                 .args(["--session-bus", "none", "--system-bus", "none"])
                 .arg("--no-x11")
                 .env("WAYLAND_DISPLAY", &socket)
@@ -158,9 +155,8 @@ mod nested {
             (window.1.2, window.1.3)
         );
 
-        // Nothing happens, then the pointer moves across the window: what the
-        // session costs the machine while it waits, and while it follows the
-        // pointer.
+        // Nothing happens, then the pointer moves across the window: what the session costs the
+        // machine while it waits, and while it follows the pointer.
         let (idle, passes) = during(&mut outer, &session, IDLE, |_| None);
         eprintln!(
             "{IDLE:?} idle: the session used {} of CPU over {passes} frames",
@@ -178,9 +174,8 @@ mod nested {
             cpu(moving)
         );
 
-        // Resizes of the output the window fills, one after the other: the
-        // session is asked for a window of that size and must draw it at
-        // that size, each time it happens.
+        // Resizes of the output the window fills, one after the other: the session is asked for a
+        // window of that size and must draw it at that size, each time it happens.
         for size in [(1000, 700), (500, 400), (1200, 800)] {
             resize(&mut outer, &mut session, size);
         }
@@ -203,8 +198,8 @@ mod nested {
         assert!(closed <= PROMPT, "closing took {closed:?}");
     }
 
-    /// Ask the output the window fills for `size`, and answer how long the
-    /// session took to draw at it.
+    /// Ask the output the window fills for `size` , and answer how long the session took to draw at
+    /// it.
     fn resize(outer: &mut Compositor, session: &mut Session, size: (i32, i32)) -> Duration {
         let (width, height) = size;
         let resized = Instant::now();
@@ -249,9 +244,9 @@ mod nested {
         )
     }
 
-    /// Run `compositor` for `for_`, sending each pass what `event` makes of
-    /// it at one display's refresh, and answer how much CPU the session used
-    /// meanwhile, and how many frames it was asked for.
+    /// Run `compositor` for `for_` , sending each pass what `event` makes of it at one display's
+    /// refresh, and answer how much CPU the session used meanwhile, and how many frames it was
+    /// asked for.
     fn during(
         compositor: &mut Compositor,
         session: &Session,
@@ -269,8 +264,8 @@ mod nested {
             compositor.dispatch(REFRESH).expect("dispatch");
             let _ = compositor.render();
             frames = frames.saturating_add(1);
-            // A desktop asks for the next frame at its refresh, not whenever
-            // the last one's events were handled.
+            // A desktop asks for the next frame at its refresh, not whenever the last one's events
+            // were handled.
             if let Some(rest) = REFRESH.checked_sub(tick.elapsed()) {
                 std::thread::sleep(rest);
             }
@@ -278,7 +273,7 @@ mod nested {
         (cpu_time(&session.0).saturating_sub(before), frames)
     }
 
-    /// The CPU time the process has used, from `/proc/<pid>/stat`.
+    /// The CPU time the process has used, from `/proc/<pid>/stat` .
     fn cpu_time(session: &Child) -> Duration {
         let Ok(stat) = std::fs::read_to_string(format!("/proc/{}/stat", session.id())) else {
             return Duration::ZERO;
@@ -287,8 +282,8 @@ mod nested {
         let Some((_, fields)) = stat.rsplit_once(')') else {
             return Duration::ZERO;
         };
-        // Each field after the name, from the state on: the user and system
-        // times are the twelfth and thirteenth.
+        // Each field after the name, from the state on: the user and system times are the twelfth
+        // and thirteenth.
         let fields: Vec<&str> = fields.split_whitespace().collect();
         let ticks: u64 = [fields.get(11), fields.get(12)]
             .into_iter()
@@ -304,8 +299,7 @@ mod nested {
         format!("{} ms", used.as_millis())
     }
 
-    /// Pump `compositor` until `done` has an answer, the session exits, or
-    /// `within` passes.
+    /// Pump `compositor` until `done` has an answer, the session exits, or `within` passes.
     fn pump_until<T>(
         compositor: &mut Compositor,
         session: &mut Session,

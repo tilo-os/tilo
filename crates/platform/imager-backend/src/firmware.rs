@@ -3,8 +3,6 @@
 use crate::{efi, platform::Platform};
 
 /// Firmware facts of the running host, as the plan's basis records them.
-/// # Errors
-/// Returns an error if firmware variables cannot be read or decoded.
 pub fn read_firmware(
     platform: &dyn Platform,
 ) -> super::platform::IoResult<super::plan::FirmwareFacts> {

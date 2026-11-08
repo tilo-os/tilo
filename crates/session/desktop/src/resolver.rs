@@ -9,8 +9,8 @@ use ui::record::RecordCheckout;
 use ui::widget::{AppWidget, TileHost};
 
 pub struct TileRequest<'a> {
-    /// The workspace the tile is resolved in. The field keeps its name: hosts
-    /// outside this crate (the apps and the session) build requests by it.
+    /// The workspace the tile is resolved in. The field keeps its name: hosts outside this crate
+    /// (the apps and the session) build requests by it.
     pub room: WorkspaceId,
     pub tab: &'a Tab,
 }
@@ -41,10 +41,9 @@ pub enum TileResolution {
     },
     /// Retain failed setup owners, including retryable persistence reports.
     Failed(LaunchError),
-    /// The app's record is still being opened off the frame loop (see
-    /// [`LaunchError::is_opening`]): its window reserves the place for the
-    /// app's arrival, and the tab is resolved again on the next
-    /// reconciliation, which the host's storage wake causes.
+    /// The app's record is still being opened off the frame loop (see [`LaunchError::is_opening`]):
+    /// its window reserves the place for the app's arrival, and the tab is resolved again on the
+    /// next reconciliation, which the host's storage wake causes.
     Opening,
 }
 pub trait TileResolver {
@@ -52,8 +51,8 @@ pub trait TileResolver {
     fn ready_to_replace(&self, _tab: &Tab) -> bool {
         true
     }
-    /// The application's own artwork for `tab`, shown in place of its kind's
-    /// glyph. Only the host can resolve it (icon theme, window-set icons).
+    /// The application's own artwork for `tab` , shown in place of its kind's glyph. Only the host
+    /// can resolve it (icon theme, window-set icons).
     fn tab_icon(&self, _tab: &Tab) -> Option<ui::icons::AppImage> {
         None
     }
@@ -162,8 +161,7 @@ impl TileResolution {
                 }
             }
             Self::App(component, collaboration) => {
-                // The portable toolkit has no App runner: there a component
-                // is its own tile.
+                // The portable toolkit has no App runner: there a component is its own tile.
                 #[cfg(not(target_arch = "wasm32"))]
                 let mounted = app_tile(component, collaboration, move |_| wake())
                     .map(|app| TileHost::new(ui::widget::TileContent::App(app)));
@@ -221,8 +219,8 @@ pub fn app_tile(
     wake: impl Fn(ui::WakeEvent) + Send + Sync + 'static,
 ) -> Result<Box<dyn AppWidget>, LaunchError> {
     let inputs = ui::application::ComponentRunnerInputs::from_native_process();
-    // A private window has no collaboration route; its actions still reach
-    // this device's own automation, and nothing beyond it.
+    // A private window has no collaboration route; its actions still reach this device's own
+    // automation, and nothing beyond it.
     let device_local = component.is_private();
     let app = match collaboration {
         Some(collaboration) => {

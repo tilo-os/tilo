@@ -36,8 +36,8 @@ type DocumentTextSource = Box<dyn FnMut(&AutoCommit, &ObjId) -> String>;
 /// font size.
 pub use crate::text_metrics::centered_text_top;
 
-/// Test helper shared by the widgets that centre a line with
-/// [`centered_text_top`]: asserts that glyph run `run_index` of `scene` sits
+/// Test helper shared by the widgets that centre a line
+/// with [`centered_text_top`]: asserts that glyph run `run_index` of `scene` sits
 /// where `text` in `style` lands when its *measured* line is centred in the
 /// band `band_y0 ..= band_y0 + band_height`. The expectation is a reference
 /// `draw_style` at the computed top rather than an assumed baseline offset,

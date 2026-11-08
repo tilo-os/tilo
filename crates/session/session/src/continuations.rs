@@ -31,9 +31,8 @@ use tilo_action_broker::services::ContinuationServices;
 use tilo_desktop_model::WorkspaceId;
 use tilo_lock::MutexRecover as _;
 
-/// How many of a window's answers wait to be taken up before the oldest are
-/// let go: a step of a move is asked one at a time, and a session that stopped
-/// taking them up has no move to finish.
+/// How many of a window's answers wait to be taken up before the oldest are let go: a step of a
+/// move is asked one at a time, and a session that stopped taking them up has no move to finish.
 const WAITING: usize = 256;
 
 /// One answer a window's app gave about a handoff step, and whose it is.
@@ -83,8 +82,8 @@ impl Continuations {
         shown.clear();
         for (instance, routes) in windows {
             let mut records = routes.into_iter().filter(|route| {
-                // The route a window's app speaks to the session on names the
-                // window's instance, not a record the window shows.
+                // The route a window's app speaks to the session on names the window's instance,
+                // not a record the window shows.
                 !route.record_id.is_empty()
                     && route
                         .record_id
@@ -110,8 +109,8 @@ impl Continuations {
         }
     }
 
-    /// The record each window shows, by tab: what the desk keeps beside its
-    /// windows, so a place comes back showing the record it was made on.
+    /// The record each window shows, by tab: what the desk keeps beside its windows, so a place
+    /// comes back showing the record it was made on.
     pub(crate) fn records(&self) -> BTreeMap<u64, String> {
         self.shown
             .lock_recover()
@@ -120,8 +119,8 @@ impl Continuations {
             .collect()
     }
 
-    /// The record each window in `workspace` shows, by tab: what a write of
-    /// that workspace's layout record notes beside its windows.
+    /// The record each window in `workspace` shows, by tab: what a write of that workspace's layout
+    /// record notes beside its windows.
     pub(crate) fn of_workspace(&self, workspace: WorkspaceId) -> Vec<(u64, String)> {
         self.shown
             .lock_recover()
@@ -141,15 +140,14 @@ impl Continuations {
         Some((record, kind))
     }
 
-    /// Take up what the windows' apps answered about a handoff step since the
-    /// last pass: what a move under way waits on.
+    /// Take up what the windows' apps answered about a handoff step since the last pass: what a
+    /// move under way waits on.
     pub(crate) fn take_handoffs(&self) -> Vec<HandoffNote> {
         self.handoffs.lock_recover().drain(..).collect()
     }
 }
 
-/// The desk's reading of the notes: what the surface asks of the window a
-/// person may share.
+/// The desk's reading of the notes: what the surface asks of the window a person may share.
 pub(crate) struct DeskNotes(pub(crate) std::sync::Arc<Continuations>);
 
 impl tilo_desktop_policy::WindowNotes for DeskNotes {
@@ -220,7 +218,7 @@ impl ContinuationServices for Continuations {
 mod tests {
     use super::*;
 
-    /// A window's app holding `records`, in `workspace`.
+    /// A window's app holding `records` , in `workspace` .
     fn held(workspace: WorkspaceId, instance: u64, records: &[&str]) -> Vec<(u64, CrdtRoute)> {
         records
             .iter()

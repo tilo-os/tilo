@@ -1,7 +1,6 @@
-//! The running desk's file access list, as the Files daemon reads it: the
-//! session writes it as it starts and again when it changes, so taking a
-//! folder or a member's role away reaches the app at its next open instead of
-//! waiting for the next login. The daemon re-reads the file on change and
+//! The running desk's file access list, as the Files daemon reads it: the session writes it as it
+//! starts and again when it changes, so taking a folder or a member's role away reaches the app at
+//! its next open instead of waiting for the next login. The daemon re-reads the file on change and
 //! signs it into the workspace authority every mount enforces.
 
 #![cfg(target_os = "linux")]
@@ -52,8 +51,8 @@ fn the_session_writes_its_file_access_list_for_the_files_daemon() {
         !written.workspace_members.is_empty(),
         "every workspace says who may read it: {written:?}"
     );
-    // A desk change that grants nothing new does not rewrite the list: the
-    // daemon signs every list it reads into a new revision.
+    // A desk change that grants nothing new does not rewrite the list: the daemon signs every list
+    // it reads into a new revision.
     let before = std::fs::read(&acl).unwrap();
     common::show_preset(&mut session, "Frames");
     for _ in 0..5 {
@@ -66,8 +65,8 @@ fn the_session_writes_its_file_access_list_for_the_files_daemon() {
     );
 }
 
-/// Someone the person admits to the workspace in front, as their person id
-/// (the hex of the key their devices act under).
+/// Someone the person admits to the workspace in front, as their person id (the hex of the key
+/// their devices act under).
 const MEMBER: &str = "2222222222222222222222222222222222222222222222222222222222222222";
 const NOTE: &str = "/var/workspace/brief/plan.md";
 
@@ -75,9 +74,9 @@ fn member_key() -> [u8; 32] {
     hex::decode(MEMBER).unwrap().try_into().unwrap()
 }
 
-/// Can `MEMBER` reach `path` with `access` in the list the daemon reads?
-/// This is [`collab_types::decide_capability`], the decision every Files open
-/// asks, over the written bytes rather than a session-side copy.
+/// Can `MEMBER` reach `path` with `access` in the list the daemon reads? This is
+/// [`collab_types::decide_capability`], the decision every Files open asks, over the written bytes
+/// rather than a session-side copy.
 fn member_may(
     list: &collab_types::FsAuthority,
     path: &str,
@@ -103,9 +102,8 @@ fn change_workspace(session: &Session, change: impl FnOnce(&mut tilo_desktop_mod
     session.handle().replace_tree(tree);
 }
 
-/// Give `MEMBER` `role` in the workspace in front and wait for the list the
-/// daemon reads to say so: the session notices the replica's change on its
-/// own, with no timer and no request for it.
+/// Give `MEMBER` `role` in the workspace in front and wait for the list the daemon reads to say so:
+/// the session notices the replica's change on its own, with no timer and no request for it.
 fn written_after_role(
     session: &mut Session,
     acl: &Path,
@@ -144,8 +142,7 @@ fn a_role_change_reaches_the_daemon_and_a_removal_takes_the_files_away() {
         "someone outside the workspace is granted nothing"
     );
 
-    // Admitted read-only, they read the workspace's files and cannot write
-    // them.
+    // Admitted read-only, they read the workspace's files and cannot write them.
     let read_only = written_after_role(
         &mut session,
         &acl,
@@ -174,8 +171,8 @@ fn a_role_change_reaches_the_daemon_and_a_removal_takes_the_files_away() {
         "the daemon reads the editor's access"
     );
 
-    // Removed from the workspace, their device reaches nothing at its next
-    // open, and the relay membership drops them in the same revision.
+    // Removed from the workspace, their device reaches nothing at its next open, and the relay
+    // membership drops them in the same revision.
     let owner = common::PERSON.to_owned();
     change_workspace(&session, |workspace| {
         tilo_desktop::workspace_settings::remove_member(workspace, &owner, &MEMBER.to_owned())

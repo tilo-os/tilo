@@ -202,10 +202,6 @@ impl MySqlEngine {
 
     /// Run a single SQL statement and collect the result. Empty column list
     /// means the statement was DML/DDL — reported via affected rows.
-    ///
-    /// # Errors
-    /// Returns the driver's error string if `sql` fails to execute, or if a
-    /// row can't be read back from the connection.
     pub fn run(&mut self, sql: &str) -> Result<QueryResult, String> {
         let trimmed = sql.trim();
         if trimmed.is_empty() {

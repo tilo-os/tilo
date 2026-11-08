@@ -14,11 +14,6 @@ impl PeerWorkspace<'_> {
     /// `TaskDelegation::encode` wrote it): it verifies as a chain from the
     /// workspace's device list, whose certificate for the signing device is
     /// current, not revoked and its person's, a member here.
-    ///
-    /// # Errors
-    /// The agent was removed or its admission lapsed, its delegation does not
-    /// verify (expired, another workspace, an uncertified or revoked device), or
-    /// the workspace's document is unavailable.
     pub fn check_admitted_agent(
         self,
         agent_id: &str,

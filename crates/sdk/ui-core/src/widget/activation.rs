@@ -879,8 +879,8 @@ impl PaintedTargets {
             .collect()
     }
 
-    /// Route an assistive-technology action on one of
-    /// [`Self::accessibility_children`]: forward the host's
+    /// Route an assistive-technology action on one
+    /// of [`Self::accessibility_children`]: forward the host's
     /// `Widget::perform_action` key path here.
     pub fn perform_action(&mut self, action: &crate::a11y::Action, key_path: &[u64]) -> bool {
         let Some(&key) = key_path.first() else {

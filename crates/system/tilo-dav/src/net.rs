@@ -71,18 +71,12 @@ pub struct DavClient {
 
 impl DavClient {
     /// A client for `options`, fetching directly.
-    ///
-    /// # Errors
-    /// If the TLS/HTTP stack cannot be initialised.
     pub fn new(options: &Options) -> Result<Self, Error> {
         Self::with_fetch_proxy(options, ProxyUse::Never)
     }
 
     /// A client that, in a page, may reach servers through the host's fetch
     /// proxy (see [`tilo_net::proxy`]).
-    ///
-    /// # Errors
-    /// If the TLS/HTTP stack cannot be initialised.
     pub fn with_fetch_proxy(options: &Options, proxy: ProxyUse) -> Result<Self, Error> {
         let mut builder = tilo_net::Client::builder()
             .timeout(options.timeout)
@@ -113,9 +107,6 @@ impl DavClient {
     }
 
     /// `PROPFIND` for `props` at `depth`.
-    ///
-    /// # Errors
-    /// On transport failure.
     pub async fn propfind(
         &self,
         url: &str,
@@ -131,9 +122,6 @@ impl DavClient {
     }
 
     /// `REPORT` with an XML `body` (see [`crate::body`]).
-    ///
-    /// # Errors
-    /// On transport failure.
     pub async fn report(
         &self,
         url: &str,
@@ -149,17 +137,11 @@ impl DavClient {
     }
 
     /// `GET`.
-    ///
-    /// # Errors
-    /// On transport failure.
     pub async fn get(&self, url: &str) -> Result<DavResponse, Error> {
         send(self.request(Method::GET, url)).await
     }
 
     /// `PUT` `body` under `precondition`, declaring `content_type` if given.
-    ///
-    /// # Errors
-    /// On transport failure.
     pub async fn put(
         &self,
         url: &str,
@@ -175,9 +157,6 @@ impl DavClient {
     }
 
     /// `DELETE` under `precondition`.
-    ///
-    /// # Errors
-    /// On transport failure.
     pub async fn delete(
         &self,
         url: &str,
@@ -187,17 +166,11 @@ impl DavClient {
     }
 
     /// `MKCOL`.
-    ///
-    /// # Errors
-    /// On transport failure.
     pub async fn mkcol(&self, url: &str) -> Result<DavResponse, Error> {
         send(self.request(method(b"MKCOL"), url)).await
     }
 
     /// `MOVE` to `destination`; `overwrite: false` sends `Overwrite: F`.
-    ///
-    /// # Errors
-    /// On transport failure.
     pub async fn move_to(
         &self,
         url: &str,

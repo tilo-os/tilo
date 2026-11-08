@@ -1,25 +1,19 @@
 //! The file access list the running desk hands the Files daemon.
-//!
-//! The Files mount decides every open and read against a signed capability
-//! list, and the session is what keeps that list current: while it runs it
-//! publishes the desk's file capabilities on every change, so taking a
-//! folder away stops the app that holds it at its next open — without
-//! closing the app, restarting it, or asking it to notice anything.
-//!
-//! The list is the workspace's own permissions in the mount's terms: the
-//! grants apps hold through portals, and what each member's role lets them
-//! reach in the workspace's files (a viewer reads, an editor writes). Both
-//! follow the desk's replica revision, so a role change or a removed member
+//! The Files mount decides every open and read against a signed capability list, and the session is
+//! what keeps that list current: while it runs it publishes the desk's file capabilities on every
+//! change, so taking a folder away stops the app that holds it at its next open — without closing
+//! the app, restarting it, or asking it to notice anything.
+//! The list is the workspace's own permissions in the mount's terms: the grants apps hold through
+//! portals, and what each member's role lets them reach in the workspace's files (a viewer reads,
+//! an editor writes). Both follow the desk's replica revision, so a role change or a removed member
 //! reaches the daemon in the same pass, never on a timer.
-//!
 //! The daemon signs the list it reads into the ACL every mount enforces
-//! (`WorkspaceAuthority::apply`), so writing the file is the session's whole
-//! part wherever the daemon holds the governor key. A desktop that keeps that
-//! key out of reach — a host install, where only the protected signing
-//! session may use it — names a signer in `TILO_FS_AUTHORITY_PUBLISHER` and
-//! the session runs it after each write. Publishing is coalesced: a burst of
-//! desk changes publishes the newest list, and an unchanged list is neither
-//! rewritten nor published again.
+//! (`WorkspaceAuthority::apply`), so writing the file is the session's whole part wherever the
+//! daemon holds the governor key. A desktop that keeps that key out of reach — a host install,
+//! where only the protected signing session may use it — names a signer in
+//! `TILO_FS_AUTHORITY_PUBLISHER` and the session runs it after each write. Publishing is coalesced:
+//! a burst of desk changes publishes the newest list, and an unchanged list is neither rewritten
+//! nor published again.
 
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Condvar, Mutex, OnceLock};
@@ -33,22 +27,20 @@ use collab_types::crypto::Ed25519PublicKey;
 use tilo_desktop_model::DesktopTree;
 use tilo_lock::MutexRecover as _;
 
-/// The program that signs a list this desktop cannot sign itself. Absent
-/// where the daemon holds the governor key and signs the list it reads.
+/// The program that signs a list this desktop cannot sign itself. Absent where the daemon holds the
+/// governor key and signs the list it reads.
 const PUBLISHER_ENV: &str = "TILO_FS_AUTHORITY_PUBLISHER";
 /// How long one list is retried while the daemon is not serving yet.
 const RETRY_BUDGET: Duration = Duration::from_secs(60);
 const FIRST_RETRY: Duration = Duration::from_millis(100);
 const LAST_RETRY: Duration = Duration::from_secs(5);
 
-/// The desk's file capabilities and each workspace's readers, as the Files
-/// daemon enforces them for this device.
-///
-/// Every workspace exports together (one mount serves them all), so two
-/// workspaces granting the same path to different people union. A grant to
-/// this person is exported twice: once by the person's key and once by this
-/// device's, which is the identity the mount itself authenticates as, so
-/// translation can never widen a grant and a revoked one takes both away.
+/// The desk's file capabilities and each workspace's readers, as the Files daemon enforces them for
+/// this device.
+/// Every workspace exports together (one mount serves them all), so two workspaces granting the
+/// same path to different people union. A grant to this person is exported twice: once by the
+/// person's key and once by this device's, which is the identity the mount itself authenticates as,
+/// so translation can never widen a grant and a revoked one takes both away.
 #[must_use]
 pub(crate) fn list(
     tree: &DesktopTree,
@@ -65,11 +57,10 @@ pub(crate) fn list(
         }) {
             push_with_device(&mut capabilities, capability, actor.as_ref(), device);
         }
-        // What the workspace's roles let each member reach in its files. The
-        // roles are the workspace's one statement of who may do what, so a
-        // role change rewrites this list and the daemon enforces the new
-        // answer at the next open; a member removed from the workspace holds
-        // nothing here, and their device stops at once without being told.
+        // What the workspace's roles let each member reach in its files. The roles are the
+        // workspace's one statement of who may do what, so a role change rewrites this list and the
+        // daemon enforces the new answer at the next open; a member removed from the workspace
+        // holds nothing here, and their device stops at once without being told.
         for (member, role) in workspace.roster() {
             let capability = CapOverride::grant(
                 Subject::person(member.clone()),
@@ -79,8 +70,8 @@ pub(crate) fn list(
             .with_id(role_capability_id(&workspace.id().to_string(), &member));
             push_with_device(&mut capabilities, &capability, actor.as_ref(), device);
         }
-        // Signed membership is a separate projection from Files access: who
-        // the workspace's policy lets read it, per relay shard.
+        // Signed membership is a separate projection from Files access: who the workspace's policy
+        // lets read it, per relay shard.
         workspace_members.insert(
             tilo_network_actor::workspace_topic_id(workspace.id()).to_string(),
             workspace
@@ -101,12 +92,12 @@ fn person_key(person: &str) -> Option<Ed25519PublicKey> {
     Some(Ed25519PublicKey::from_bytes(bytes))
 }
 
-/// Where a workspace's files appear in the mount (see
-/// `fs::WORKSPACE_FILES_PATH`): the path a role's access ranges over.
+/// Where a workspace's files appear in the mount (see `fs::WORKSPACE_FILES_PATH` ): the path a
+/// role's access ranges over.
 const WORKSPACE_FILES: &str = "/var/workspace";
 
-/// What a member's role lets them do to the workspace's files: a viewer and
-/// a commenter read them, an editor and everything above changes them.
+/// What a member's role lets them do to the workspace's files: a viewer and a commenter read them,
+/// an editor and everything above changes them.
 const fn role_files_access(role: Role) -> Access {
     match role {
         Role::Viewer | Role::Commenter => Access::Read,
@@ -114,15 +105,15 @@ const fn role_files_access(role: Role) -> Access {
     }
 }
 
-/// The id of the capability a workspace's role gives a member, so the same
-/// member's grant is recognisable across revisions and in the daemon's log.
+/// The id of the capability a workspace's role gives a member, so the same member's grant is
+/// recognisable across revisions and in the daemon's log.
 fn role_capability_id(workspace: &str, member: &str) -> String {
     format!("role:{workspace}:{member}")
 }
 
-/// Publish `capability` as it stands, and again bound to this device's key
-/// when it is the key of the person sitting here: the mount acts as the
-/// device, so the person's grants must reach it without widening anything.
+/// Publish `capability` as it stands, and again bound to this device's key when it is the key of
+/// the person sitting here: the mount acts as the device, so the person's grants must reach it
+/// without widening anything.
 fn push_with_device(
     capabilities: &mut Vec<CapOverride>,
     capability: &CapOverride,
@@ -159,11 +150,10 @@ pub(crate) fn device_key() -> Option<[u8; 32]> {
     })
 }
 
-/// Writes the access list where the daemon's `--acl` reads it, then has it
-/// signed and published, newest list first.
-///
-/// One publisher serves a session: the daemon reads one file and holds one
-/// authority, so two publishers would race revisions against each other.
+/// Writes the access list where the daemon's `--acl` reads it, then has it signed and published,
+/// newest list first.
+/// One publisher serves a session: the daemon reads one file and holds one authority, so two
+/// publishers would race revisions against each other.
 pub(crate) struct Publisher {
     inner: Arc<Inner>,
 }
@@ -173,13 +163,13 @@ struct Inner {
     signer: Option<Signer>,
     acl: PathBuf,
     state: Mutex<State>,
-    /// Signalled when the worker goes idle, so a test (or a session ending)
-    /// can wait for what is in flight.
+    /// Signalled when the worker goes idle, so a test (or a session ending) can wait for what is in
+    /// flight.
     idle: Condvar,
 }
 
-/// A program that signs a written list and hands it to the daemon's
-/// authority, and the socket directory it reaches that daemon on.
+/// A program that signs a written list and hands it to the daemon's authority, and the socket
+/// directory it reaches that daemon on.
 struct Signer {
     program: PathBuf,
     socket_dir: PathBuf,
@@ -196,8 +186,8 @@ struct State {
 }
 
 impl Publisher {
-    /// The publisher of this person's session, where the Files mount of this
-    /// device serves; `None` when this user session has no Files workspace.
+    /// The publisher of this person's session, where the Files mount of this device serves; `None`
+    /// when this user session has no Files workspace.
     pub(crate) fn for_session() -> Option<Self> {
         let var = |name: &str| std::env::var_os(name).filter(|value| !value.is_empty());
         let home = PathBuf::from(var("HOME")?);
@@ -225,8 +215,8 @@ impl Publisher {
         }
     }
 
-    /// Hand a list to the daemon. `false` when it is already in force or
-    /// already on its way: most desk changes touch nothing Files enforces.
+    /// Hand a list to the daemon. `false` when it is already in force or already on its way: most
+    /// desk changes touch nothing Files enforces.
     pub(crate) fn publish(&self, authority: &FsAuthority) -> bool {
         let Ok(bytes) = serde_json::to_vec_pretty(authority) else {
             return false;
@@ -253,9 +243,8 @@ impl Publisher {
         true
     }
 
-    /// Whether the newest list handed over did not reach the daemon, and no
-    /// worker is still trying it: nothing of what the desk decided then is
-    /// enforced until one does.
+    /// Whether the newest list handed over did not reach the daemon, and no worker is still trying
+    /// it: nothing of what the desk decided then is enforced until one does.
     pub(crate) fn unpublished(&self) -> bool {
         let state = self.inner.state.lock_recover();
         state.last_error.is_some() && !state.running && state.pending.is_none()
@@ -308,8 +297,8 @@ fn work(inner: &Inner) {
                 }
                 Err(error) => {
                     note_failure(inner, &error);
-                    // A newer list makes this one pointless; wait for it here
-                    // instead of publishing a list already replaced.
+                    // A newer list makes this one pointless; wait for it here instead of publishing
+                    // a list already replaced.
                     if started.elapsed() >= RETRY_BUDGET || newer_list(inner, backoff) {
                         break;
                     }
@@ -329,8 +318,8 @@ fn note_failure(inner: &Inner, error: &str) {
     state.last_error = Some(error.to_owned());
 }
 
-/// Wait `backoff` for a newer list, or for the worker to be asked to stop:
-/// `true` when this list should not be retried any more.
+/// Wait `backoff` for a newer list, or for the worker to be asked to stop: `true` when this list
+/// should not be retried any more.
 fn newer_list(inner: &Inner, backoff: Duration) -> bool {
     let waited = inner.idle.wait_timeout(inner.state.lock_recover(), backoff);
     let state = match waited {
@@ -342,9 +331,9 @@ fn newer_list(inner: &Inner, backoff: Duration) -> bool {
     replaced
 }
 
-/// The newest list handed over, or `None` after going idle. Taking the list
-/// and going idle happen under one lock, so a list handed over as this
-/// worker stops is either taken here or starts another worker: never lost.
+/// The newest list handed over, or `None` after going idle. Taking the list and going idle happen
+/// under one lock, so a list handed over as this worker stops is either taken here or starts
+/// another worker: never lost.
 fn take_pending(inner: &Inner) -> Option<Vec<u8>> {
     let mut state = inner.state.lock_recover();
     if let Some(bytes) = state.pending.take() {
@@ -356,11 +345,9 @@ fn take_pending(inner: &Inner) -> Option<Vec<u8>> {
     None
 }
 
-/// Write the list the daemon's `--acl` reads, then have it signed when this
-/// desktop names a signer.
-///
-/// The write is atomic: the daemon mounts this file and must never read a
-/// half-written list and conclude the person has no permissions.
+/// Write the list the daemon's `--acl` reads, then have it signed when this desktop names a signer.
+/// The write is atomic: the daemon mounts this file and must never read a half-written list and
+/// conclude the person has no permissions.
 fn write_and_publish(inner: &Inner, bytes: &[u8]) -> Result<(), String> {
     write_atomically(&inner.acl, bytes)
         .map_err(|error| format!("write the access list {}: {error}", inner.acl.display()))?;
@@ -458,10 +445,9 @@ mod tests {
         )
     }
 
-    /// Does the list the session published let `actor` read `path`? This is
-    /// the decision every Files open asks
-    /// ([`collab_types::decide_capability`]), so an answer here is the
-    /// daemon's answer.
+    /// Does the list the session published let `actor` read `path` ? This is the decision every
+    /// Files open asks ([`collab_types::decide_capability`]), so an answer here is the daemon's
+    /// answer.
     fn may_read(list: &FsAuthority, actor: &Actor, path: &str) -> bool {
         collab_types::decide_capability(
             actor,
@@ -597,8 +583,8 @@ mod tests {
         );
     }
 
-    /// A stand-in for the Files daemon: records each publication and copies
-    /// the list it was handed, so a test reads exactly what would be signed.
+    /// A stand-in for the Files daemon: records each publication and copies the list it was handed,
+    /// so a test reads exactly what would be signed.
     fn stand_in(dir: &Path) -> (PathBuf, PathBuf) {
         use std::os::unix::fs::PermissionsExt as _;
         let seen = dir.join("seen");
@@ -745,13 +731,13 @@ mod tests {
             dir.path().join("config/fs-capabilities.json"),
         );
         publisher.publish(&list(&tree_with(app_folder_grant()), PERSON, None, 0));
-        // The first attempt is refused before the gate exists: the daemon's own
-        // word for that is what this waits on, so nothing here races the clock.
+        // The first attempt is refused before the gate exists: the daemon's own word for that is
+        // what this waits on, so nothing here races the clock.
         tilo_test_env::wait_until("the daemon refusing the first attempt", || {
             seen.join("refused").is_file()
         });
-        // Its refusal reaches the publisher a moment after the daemon said it, and
-        // the worker goes on trying the list: the desk leaves it to the worker.
+        // Its refusal reaches the publisher a moment after the daemon said it, and the worker goes
+        // on trying the list: the desk leaves it to the worker.
         assert!(
             !publisher.unpublished(),
             "a worker is still trying the list"

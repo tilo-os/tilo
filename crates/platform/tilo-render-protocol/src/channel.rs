@@ -55,11 +55,6 @@ impl Channel {
     }
 
     /// Wrap a connected `SOCK_SEQPACKET` socket handed over by a broker.
-    ///
-    /// # Errors
-    ///
-    /// When `socket` is not a sequenced-packet socket: a stream socket would
-    /// lose message boundaries.
     pub fn from_socket(socket: OwnedFd) -> io::Result<Self> {
         if rustix::net::sockopt::socket_type(&socket)? != SocketType::SEQPACKET {
             return Err(io::Error::new(
@@ -159,20 +154,12 @@ impl Channel {
 
     /// End the channel in both directions: a receive waiting on it, on any
     /// thread, returns [`ChannelError::Closed`], and so does every later one.
-    ///
-    /// # Errors
-    ///
-    /// When the socket refuses the shutdown.
     pub fn shut_down(&self) -> io::Result<()> {
         rustix::net::shutdown(&self.socket, rustix::net::Shutdown::Both)?;
         Ok(())
     }
 
     /// Make receives return `WouldBlock` instead of waiting.
-    ///
-    /// # Errors
-    ///
-    /// When the descriptor's flags cannot be changed.
     pub fn set_nonblocking(&self, nonblocking: bool) -> io::Result<()> {
         let flags = rustix::fs::fcntl_getfl(&self.socket)?;
         let flags = if nonblocking {

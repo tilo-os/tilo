@@ -923,10 +923,6 @@ impl InputPrefs {
     /// Set which shortcut pastes in `app` when the shell pastes for the
     /// person (Super+V with an image or files), or `default` to go back to
     /// what its app id suggests (Ctrl+Shift+V for terminals, else Ctrl+V).
-    ///
-    /// # Errors
-    ///
-    /// No app id, or a shortcut that is none of those.
     pub fn set_paste_shortcut(&mut self, app: &str, shortcut: &str) -> Result<(), String> {
         use settings_store::paste_shortcut as paste;
         let app = app.trim();

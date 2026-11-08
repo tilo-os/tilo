@@ -1,4 +1,4 @@
-//! [`FsStore`]: the [`DurableStore`] over a local profile directory.
+//! [`FsStore`] — the [`DurableStore`] over a local profile directory.
 //!
 //! Keys map onto the same files the canonical record owner has always used,
 //! so existing profiles open unchanged:
@@ -293,10 +293,6 @@ fn package_dir_in(root: &Path, package: &str) -> Result<PathBuf, StoreError> {
 /// whose entries change with that index, which a watcher arms on to hear of
 /// every record the workspace has taken in or let go. The directory of every
 /// workspace of that package is its parent.
-///
-/// # Errors
-/// A package or workspace name that is not an identity, a root that is not an
-/// absolute directory, or a key that names no document.
 pub fn workspace_index_directory(
     root: &Path,
     package: &str,

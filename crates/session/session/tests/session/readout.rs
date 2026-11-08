@@ -1,18 +1,14 @@
-//! The readout that answers a media or mode key: what it says, where it
-//! stands, and what it leaves alone.
-//!
-//! Key presses go through the seat the way a person's do, and what the
-//! readout says is read from the session's accessible labels — the same words
-//! a screen reader gets.
+//! The readout that answers a media or mode key: what it says, where it stands, and what it leaves
+//! alone.
+//! Key presses go through the seat the way a person's do, and what the readout says is read from
+//! the session's accessible labels — the same words a screen reader gets.
 
 use super::*;
 
-/// Step the session until its readout says `words`, and what it says there.
-///
-/// The readout is up for a moment of its own, and a machine running a whole
-/// suite at once can spend that moment on the turn that raised it: the turns
-/// that wait for it and the read of what it says happen at one reading of the
-/// clock, so the readout the key raised is the one read.
+/// Step the session until its readout says `words` , and what it says there.
+/// The readout is up for a moment of its own, and a machine running a whole suite at once can spend
+/// that moment on the turn that raised it: the turns that wait for it and the read of what it says
+/// happen at one reading of the clock, so the readout the key raised is the one read.
 #[track_caller]
 pub(super) fn readout_saying(session: &mut Session, words: &str) -> String {
     ui::time::testing::with_monotonic_time(ui::time::now(), || {
@@ -48,16 +44,11 @@ fn a_volume_key_names_the_output_it_changed() {
             ..tilo_audio_service::sound::Device::default()
         }];
     }
-    let mut session = Session::headless(
-        Options {
-            presentation: ui::headless::fixture_runner_inputs,
-            services: vec![Box::new(headphones)],
-            collab: false,
-            ..Options::default()
-        },
-        &[OutputConfig::new("HEADLESS-1", WIDTH, HEIGHT)],
-    )
-    .expect("session");
+    let mut session = crate::common::headless(Options {
+        services: vec![Box::new(headphones)],
+        collab: false,
+        ..Options::default()
+    });
     tap(&mut session, keys::VOLUME_UP);
     assert_eq!(
         readout_saying(&mut session, "Studio headphones"),
@@ -70,19 +61,17 @@ fn a_volume_key_names_the_output_it_changed() {
 fn a_brightness_key_answers_on_the_display_it_changed() {
     let _settled = ui::motion::testing::settled();
     let dials = Dials::with(&[("eDP-1", 0.5), ("HEADLESS-2", 0.5)]);
-    let mut session = Session::headless(
-        Options {
-            presentation: ui::headless::fixture_runner_inputs,
-            backlights: Some(Box::new(dials.clone())),
-            collab: false,
-            ..Options::default()
-        },
+    let mut session = crate::common::headless_on(
         &[
             OutputConfig::new("eDP-1", WIDTH, HEIGHT),
             OutputConfig::new("HEADLESS-2", WIDTH, HEIGHT),
         ],
-    )
-    .expect("session");
+        Options {
+            backlights: Some(Box::new(dials.clone())),
+            collab: false,
+            ..Options::default()
+        },
+    );
     pump(&mut session, &mut [], |_, _| true);
     let first = session
         .compositor()
@@ -169,15 +158,10 @@ fn a_mode_change_is_confirmed_in_words() {
 #[test]
 fn a_brightness_key_on_a_machine_that_dims_nothing_says_so() {
     let _settled = ui::motion::testing::settled();
-    let mut session = Session::headless(
-        Options {
-            presentation: ui::headless::fixture_runner_inputs,
-            collab: false,
-            ..Options::default()
-        },
-        &[OutputConfig::new("HEADLESS-1", WIDTH, HEIGHT)],
-    )
-    .expect("session");
+    let mut session = crate::common::headless(Options {
+        collab: false,
+        ..Options::default()
+    });
     tap(&mut session, keys::BRIGHTNESS_DOWN);
     pump(&mut session, &mut [], |session, _| {
         session

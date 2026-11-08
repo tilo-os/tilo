@@ -1,4 +1,4 @@
-//! [`Press`]: what pressing a control that stands inside another widget does — a menu row, a
+//! [`Press`] — what pressing a control that stands inside another widget does — a menu row, a
 //! swipe, a nav place, a tree node, a card's face.
 //!
 //! A view binds those presses as it binds a button's: the event is the action the view attached

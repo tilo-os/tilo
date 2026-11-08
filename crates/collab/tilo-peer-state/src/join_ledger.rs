@@ -129,9 +129,6 @@ pub struct Governed<'a> {
 /// Where a governor keeps the signed governance a joining member admits.
 pub trait GovernanceMessages {
     /// That governance, oldest first.
-    ///
-    /// # Errors
-    /// The workspace's governance does not encode.
     fn governance_messages(&self) -> Result<Vec<Vec<u8>>, String>;
 }
 
@@ -154,9 +151,6 @@ impl GovernanceMessages for crate::StatePeer {
 
 impl Governed<'_> {
     /// The bootstrap a device admitted as `role` with `invite_id` receives.
-    ///
-    /// # Errors
-    /// The workspace's governance does not encode.
     pub fn bootstrap(
         &self,
         invite_id: [u8; 32],
@@ -351,10 +345,6 @@ fn bootstrap_digest(bootstrap: &JoinBootstrap) -> Result<[u8; 32], JoinError> {
 }
 
 /// The idempotency digest of a request.
-///
-/// # Errors
-///
-/// The request cannot be encoded.
 pub fn request_digest(value: &impl Serialize) -> Result<[u8; 32], JoinError> {
     postcard::to_stdvec(value)
         .map(|bytes| *blake3::hash(&bytes).as_bytes())
@@ -363,10 +353,6 @@ pub fn request_digest(value: &impl Serialize) -> Result<[u8; 32], JoinError> {
 
 /// The workspace an invitation names, read without trusting it: the workspace it
 /// names is then verified against what that workspace issued.
-///
-/// # Errors
-///
-/// The invitation does not decode or verify.
 pub fn invitation_workspace(signed_invitation: &[u8], now_ns: u64) -> Result<String, JoinError> {
     let join =
         decode_and_verify_invitation(signed_invitation, None, &RevocationList::new(), now_ns)?;
@@ -448,11 +434,6 @@ impl JoinLedger {
 
     /// Record an invitation `request` asks of `workspace`, signed by `signer` (the
     /// workspace's governor) and reached through `transport`.
-    ///
-    /// # Errors
-    ///
-    /// The request ID names a different request, the request is invalid or
-    /// the invitation cannot be signed.
     pub fn issue(
         &mut self,
         workspace: &Governed<'_>,
@@ -521,11 +502,6 @@ impl JoinLedger {
 
     /// Cancel an unredeemed invitation. Answers whether the ledger changed;
     /// the same cancellation asked again changes nothing.
-    ///
-    /// # Errors
-    ///
-    /// The request ID names a different request, or the invitation does not
-    /// exist or was cancelled by another request.
     pub fn cancel(&mut self, request: &CancelInvitationRequest) -> Result<bool, JoinError> {
         let digest = request_digest(request)?;
         if let Some(prior) = self
@@ -615,10 +591,6 @@ impl JoinLedger {
 
     /// The invitation `signed_invitation`, verified against what this workspace
     /// issued and has not cancelled.
-    ///
-    /// # Errors
-    ///
-    /// The workspace did not issue it, cancelled it, or it does not verify.
     pub fn inspect(
         &self,
         workspace: &Governed<'_>,
@@ -812,10 +784,6 @@ impl JoinLedger {
     }
 
     /// Whether invitation `invite_id` may still be redeemed.
-    ///
-    /// # Errors
-    ///
-    /// It was not issued here, was redeemed or was cancelled.
     pub fn redeemable(&self, invite_id: [u8; 32]) -> Result<(), JoinError> {
         if self.issued(invite_id)?.cancellation.is_some() {
             return Err(JoinError::new("invitation was cancelled"));
@@ -867,10 +835,6 @@ impl JoinLedger {
     /// answers for it from now on, with the challenge it proved and the
     /// invitation it spent let go. Answers each join's bootstrap or refusal,
     /// in order.
-    ///
-    /// # Errors
-    ///
-    /// A receipt cannot be encoded.
     pub fn complete(
         &mut self,
         workspace: &Governed<'_>,
@@ -1043,10 +1007,6 @@ impl JoinLedger {
     }
 
     /// Whether administration request `request_id` was committed before.
-    ///
-    /// # Errors
-    ///
-    /// The request ID names a different operation.
     pub fn administered(
         &self,
         request_id: [u8; 32],

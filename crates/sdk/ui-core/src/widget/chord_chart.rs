@@ -9,7 +9,7 @@ use std::collections::HashMap;
 use std::f64::consts::{FRAC_PI_2, TAU};
 use tilo_sort::CompactSort as _;
 use vello::Scene;
-use vello::kurbo::{Affine, Arc, BezPath, Point, Rect, Shape, Stroke};
+use vello::kurbo::{Affine, BezPath, Point, Rect, Shape, Stroke};
 use vello::peniko::{Color, Fill};
 
 use crate::paint::with_alpha;
@@ -17,20 +17,10 @@ use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use crate::tokens::TextRole;
 use crate::widget::chart_data::{ChartLink, ChartNode, graph_items};
+use crate::widget::chart_geometry::{annulus, append_arc, polar};
 use crate::widget::chart_labels::format_compact;
 use crate::widget::chart_navigation::draw_title;
 use crate::widget::plot::{Plot, PlotFrame, PlotItem, PlotMarks};
-
-fn polar(center: Point, radius: f64, angle: f64) -> Point {
-    Point::new(
-        angle.cos().mul_add(radius, center.x),
-        angle.sin().mul_add(radius, center.y),
-    )
-}
-fn append_arc(path: &mut BezPath, center: Point, radius: f64, start: f64, sweep: f64) {
-    Arc::new(center, (radius, radius), start, sweep, 0.0)
-        .to_cubic_beziers(0.1, |a, b, c| path.curve_to(a, b, c));
-}
 
 #[derive(Clone, Debug)]
 pub struct ChordStyle {
@@ -262,15 +252,6 @@ impl ChordMarks {
     }
 }
 
-fn annulus(center: Point, inner: f64, outer: f64, start: f64, end: f64) -> BezPath {
-    let mut p = BezPath::new();
-    p.move_to(polar(center, outer, start));
-    append_arc(&mut p, center, outer, start, end - start);
-    p.line_to(polar(center, inner, end));
-    append_arc(&mut p, center, inner, end, start - end);
-    p.close_path();
-    p
-}
 fn ribbon(center: Point, radius: f64, a0: f64, a1: f64, b0: f64, b1: f64) -> BezPath {
     let mut p = BezPath::new();
     p.move_to(polar(center, radius, a0));

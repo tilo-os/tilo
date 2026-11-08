@@ -1800,9 +1800,6 @@ impl Music {
     }
 
     /// Show `place`, once it is still in the library.
-    ///
-    /// # Errors
-    /// Why `place` is not there to show any more.
     pub(super) fn show(&mut self, place: crate::actions::Place) -> Result<(), String> {
         use crate::actions::Place;
         match place {

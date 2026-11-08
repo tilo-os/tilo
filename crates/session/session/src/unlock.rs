@@ -1,13 +1,10 @@
 //! Whether a password unlocks the session.
-//!
-//! The session links no PAM: a running session has no greetd socket, so it
-//! asks the one privileged helper (`tilo-unlock-helper`), the user name on
-//! its command line and the password on its standard input (never on the
-//! command line, where `/proc/*/cmdline` would show it), and reads the
-//! verdict from its exit status. Where the helper is not installed, the login
-//! that started this session is checked the way it was admitted: greetd's own
-//! PAM conversation, at the socket it left behind. With neither, nothing
-//! unlocks.
+//! The session links no PAM: a running session has no greetd socket, so it asks the one privileged
+//! helper (`tilo-unlock-helper`), the user name on its command line and the password on its
+//! standard input (never on the command line, where `/proc/*/cmdline` would show it), and reads the
+//! verdict from its exit status. Where the helper is not installed, the login that started this
+//! session is checked the way it was admitted: greetd's own PAM conversation, at the socket it left
+//! behind. With neither, nothing unlocks.
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -19,18 +16,18 @@ use zeroize::Zeroizing;
 pub const UNLOCK_HELPER: &str = "/usr/libexec/tilo-unlock-helper";
 
 /// The variable a development build reads another helper's path from, answering as
-/// [`UNLOCK_HELPER`] does: 0 for the person's password, 1 for another, 2 when it cannot
-/// check. The session's end-to-end lock proof uses it, because a container has neither the
-/// installed helper's PAM stack nor a login to check against. A production build never
-/// reads it (`tools/policy/check_dev_overrides_contract.py`).
+/// [`UNLOCK_HELPER`] does: 0 for the person's password, 1 for another, 2 when it cannot check. The
+/// session's end-to-end lock proof uses it, because a container has neither the installed helper's
+/// PAM stack nor a login to check against. A production build never reads it
+/// (`tools/policy/check_dev_overrides_contract.py`).
 pub const UNLOCK_HELPER_ENV: &str = "TILO_UNLOCK_HELPER";
 
-/// Whether this build honours [`UNLOCK_HELPER_ENV`]: development builds and the dev
-/// image's release ones, the builds that open the test-control socket.
+/// Whether this build honours [`UNLOCK_HELPER_ENV`]: development builds and the dev image's release
+/// ones, the builds that open the test-control socket.
 const OVERRIDABLE: bool = cfg!(any(debug_assertions, feature = "dev-overrides"));
 
-/// Upper bound on one check: a slow PAM stack takes seconds, a wedged
-/// helper must not keep the lock screen checking forever.
+/// Upper bound on one check: a slow PAM stack takes seconds, a wedged helper must not keep the lock
+/// screen checking forever.
 const HELPER_TIMEOUT: Duration = Duration::from_secs(20);
 
 /// What came of checking a password.
@@ -44,20 +41,19 @@ pub enum Verdict {
     Unavailable,
 }
 
-/// Checks a password for a user. `Send + Sync`: a check runs off the
-/// session's loop.
+/// Checks a password for a user. `Send + Sync` : a check runs off the session's loop.
 pub trait PasswordVerifier: Send + Sync {
     fn verify(&self, user: &str, password: &str) -> Verdict;
 
-    /// Whether a check can be made here at all. A session whose verifier
-    /// cannot take one does not lock: it could not be left again.
+    /// Whether a check can be made here at all. A session whose verifier cannot take one does not
+    /// lock: it could not be left again.
     fn available(&self) -> bool {
         true
     }
 }
 
-/// The helper as a verifier: `program[0]` the executable, then leading
-/// arguments; the user name comes last.
+/// The helper as a verifier: `program[0]` the executable, then leading arguments; the user name
+/// comes last.
 #[derive(Debug, Clone)]
 pub struct HelperVerifier {
     program: Vec<String>,
@@ -110,8 +106,8 @@ impl PasswordVerifier for HelperVerifier {
     }
 }
 
-/// The login's own check: greetd's PAM conversation at its socket, the one
-/// the login was admitted through, stopped before any session starts.
+/// The login's own check: greetd's PAM conversation at its socket, the one the login was admitted
+/// through, stopped before any session starts.
 #[derive(Debug, Clone)]
 pub struct GreetdVerifier {
     socket: String,
@@ -136,8 +132,8 @@ impl PasswordVerifier for GreetdVerifier {
                 reason: Denial::Credentials,
                 ..
             }) => Verdict::Wrong,
-            // The socket is gone, the account is locked, or greetd cannot be
-            // talked to: the check could not be made, and the lock stays.
+            // The socket is gone, the account is locked, or greetd cannot be talked to: the check
+            // could not be made, and the lock stays.
             Err(error) => {
                 tracing::warn!(error = ?error, user, "a password could not be checked; the lock stays");
                 Verdict::Unavailable
@@ -160,10 +156,10 @@ impl PasswordVerifier for Unavailable {
     }
 }
 
-/// Whose password the lock checks: the login this session runs as. `$USER`
-/// when the login set it, else the name the login database has for the user
-/// this session runs as — a session started outside a login still locks with
-/// its person's name on the screen, and still takes that person's password.
+/// Whose password the lock checks: the login this session runs as. `$USER` when the login set it,
+/// else the name the login database has for the user this session runs as — a session started
+/// outside a login still locks with its person's name on the screen, and still takes that person's
+/// password.
 #[must_use]
 pub fn login_user() -> String {
     let named = std::env::var("USER").unwrap_or_default();
@@ -179,7 +175,7 @@ pub fn login_user() -> String {
     String::new()
 }
 
-/// The name the login database has for `uid`, when it has one.
+/// The name the login database has for `uid` , when it has one.
 #[cfg(target_os = "linux")]
 fn user_name(uid: u32) -> Option<String> {
     let mut pwd = std::mem::MaybeUninit::<libc::passwd>::uninit();
@@ -205,23 +201,21 @@ fn user_name(uid: u32) -> Option<String> {
     Some(name.to_string_lossy().into_owned())
 }
 
-/// What [`installed`] picked to check a password with, named so the choice
-/// can be asserted on without taking a verifier apart.
+/// What [`installed`] picked to check a password with, named so the choice can be asserted on
+/// without taking a verifier apart.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Choice {
     /// The privileged helper at these arguments: its program, then its own.
     Helper(Vec<String>),
-    /// greetd's PAM conversation at this socket, for the login that started
-    /// the session.
+    /// greetd's PAM conversation at this socket, for the login that started the session.
     Greetd(String),
     /// Nothing here can check a password.
     Unavailable,
 }
 
-/// The selection policy, as a pure function of what the machine has: the
-/// helper a build names or the installed helper, which check against the
-/// machine's own accounts; else the login's greetd socket, which checked the
-/// password the login took; else nothing. A socket named empty is none.
+/// The selection policy, as a pure function of what the machine has: the helper a build names or
+/// the installed helper, which check against the machine's own accounts; else the login's greetd
+/// socket, which checked the password the login took; else nothing. A socket named empty is none.
 #[must_use]
 pub fn select(helper: Option<Vec<String>>, greetd_socket: Option<String>) -> Choice {
     if let Some(program) = helper {
@@ -233,9 +227,8 @@ pub fn select(helper: Option<Vec<String>>, greetd_socket: Option<String>) -> Cho
     }
 }
 
-/// The verifier of this machine: the helper a development build names or the
-/// installed one, else the greetd conversation of the login that started this
-/// session, else none.
+/// The verifier of this machine: the helper a development build names or the installed one, else
+/// the greetd conversation of the login that started this session, else none.
 #[must_use]
 pub fn installed() -> std::sync::Arc<dyn PasswordVerifier> {
     match select(
@@ -252,9 +245,8 @@ pub fn installed() -> std::sync::Arc<dyn PasswordVerifier> {
     }
 }
 
-/// Which program checks a password, as `program[0]` and its leading arguments: the one a
-/// build that honours [`UNLOCK_HELPER_ENV`] names, else the installed helper when it is
-/// there, else none.
+/// Which program checks a password, as `program[0]` and its leading arguments: the one a build that
+/// honours [`UNLOCK_HELPER_ENV`] names, else the installed helper when it is there, else none.
 fn helper_program(
     overrides: bool,
     named: Option<std::ffi::OsString>,
@@ -272,9 +264,8 @@ mod tests {
 
     use super::*;
 
-    /// A `/bin/sh` script with `body` standing in for the helper, run as
-    /// `sh <script>` so the fresh file is read, not executed (no race with
-    /// a concurrent fork holding it open for writing).
+    /// A `/bin/sh` script with `body` standing in for the helper, run as `sh <script>` so the fresh
+    /// file is read, not executed (no race with a concurrent fork holding it open for writing).
     fn fake_helper(dir: &Path, body: &str) -> HelperVerifier {
         let path = dir.join("helper.sh");
         let mut file = std::fs::File::create(&path).unwrap();
@@ -315,8 +306,8 @@ mod tests {
         assert_eq!(silent.verify("bob", "s3cr3t"), Verdict::Unavailable);
     }
 
-    /// A session started outside a login shell knows who is at the desk from
-    /// the login database, so its lock still checks that person's password.
+    /// A session started outside a login shell knows who is at the desk from the login database, so
+    /// its lock still checks that person's password.
     #[test]
     fn the_login_the_session_runs_as_is_always_named() {
         assert!(!login_user().is_empty(), "the lock knows whose it is");
@@ -358,9 +349,8 @@ mod tests {
         );
     }
 
-    /// The helper checks against the machine's accounts; where it is not
-    /// installed, the login's own greetd conversation is the fallback, and
-    /// with neither the lock can never be lifted.
+    /// The helper checks against the machine's accounts; where it is not installed, the login's own
+    /// greetd conversation is the fallback, and with neither the lock can never be lifted.
     #[test]
     fn the_helper_else_the_logins_greetd_else_nothing() {
         assert_eq!(
@@ -384,16 +374,16 @@ mod tests {
         );
     }
 
-    /// A greetd socket that is not there checks nothing: the lock stays, and
-    /// says the check could not be made.
+    /// A greetd socket that is not there checks nothing: the lock stays, and says the check could
+    /// not be made.
     #[test]
     fn a_greetd_conversation_that_cannot_be_reached_locks_out() {
         let verifier = GreetdVerifier::new("/nonexistent/greetd.sock");
         assert_eq!(verifier.verify("ada", "sesame"), Verdict::Unavailable);
     }
 
-    /// A development build may name the helper that checks a password, and a production
-    /// build never hears of it: the variable is no way into a shipped desktop.
+    /// A development build may name the helper that checks a password, and a production build never
+    /// hears of it: the variable is no way into a shipped desktop.
     #[test]
     fn a_development_build_may_name_the_helper_and_a_production_one_never_does() {
         let named = || Some(std::ffi::OsString::from("/scratch/helper"));

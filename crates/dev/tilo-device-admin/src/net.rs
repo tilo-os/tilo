@@ -42,9 +42,6 @@ impl Relays {
 }
 
 /// Bind an endpoint with `secret` that uses `relays`.
-///
-/// # Errors
-/// When the endpoint cannot bind its sockets.
 pub async fn bind(
     secret: iroh::SecretKey,
     relays: &Relays,

@@ -107,8 +107,8 @@ mod send_check {
 /// decompress bodies, as before.
 #[cfg(all(feature = "http", not(target_family = "wasm")))]
 pub mod http {
-    /// The one blocking client a caller keeps for its requests, built by
-    /// [`blocking_client`]: its own type, so a caller can hold it without
+    /// The one blocking client a caller keeps for its requests, built
+    /// by [`blocking_client`]: its own type, so a caller can hold it without
     /// naming `reqwest`, and so one client's pool and TLS setup are shared by
     /// every request it makes.
     #[cfg(feature = "blocking")]

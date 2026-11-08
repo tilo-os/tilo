@@ -10,12 +10,12 @@
 )]
 
 use std::os::unix::fs::PermissionsExt as _;
-use std::process::{Command, Stdio};
+use std::process::Stdio;
 use tilo_test_env::SpawnUnderEnvLock as _;
 
 use ed25519_dalek::SigningKey;
-use registry_server::{PublisherAllowlist, PublisherRow, ServerIdentity, Storage};
-use registry_types::{RegistryEntry, RegistryTarget, RegistryVersion, sign_entry};
+use registry_server::{PublisherRow, ServerIdentity, Storage};
+use registry_types::sign_entry;
 
 fn wait_for_registry_lock_waiter(pid: u32) {
     let pid = pid.to_string();
@@ -33,18 +33,27 @@ fn wait_for_registry_lock_waiter(pid: u32) {
     panic!("registry CLI process never waited on the held registry lock");
 }
 
+/// The CLI arguments signing a snapshot with the key at `key_path`.
+fn sign_args(key_path: &std::path::Path) -> [&str; 5] {
+    [
+        "sign-snapshot",
+        "--owner-key-file",
+        key_path.to_str().unwrap(),
+        "--valid-for-seconds",
+        "3600",
+    ]
+}
+
 fn write_secret(path: &std::path::Path, key: &SigningKey) {
     std::fs::write(path, hex::encode(key.to_bytes())).unwrap();
     std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600)).unwrap();
 }
 
 fn identity(owner: &SigningKey) -> ServerIdentity {
-    ServerIdentity {
-        owner_pubkey_hex: hex::encode(owner.verifying_key().to_bytes()),
-        name: "test".into(),
-        description: "test".into(),
-        base_url: "https://registry.test".into(),
-    }
+    crate::support::identity(
+        hex::encode(owner.verifying_key().to_bytes()),
+        "https://registry.test",
+    )
 }
 
 #[test]
@@ -57,57 +66,35 @@ fn offline_command_publishes_a_verifiable_snapshot_without_server_private_key() 
     let owner_hex = hex::encode(owner.verifying_key().to_bytes());
     let publisher_hex = hex::encode(publisher.verifying_key().to_bytes());
     storage
-        .save_identity(&ServerIdentity {
-            owner_pubkey_hex: owner_hex.clone(),
-            name: "test".into(),
-            description: "test".into(),
-            base_url: "https://registry.test".into(),
-        })
+        .save_identity(&crate::support::identity(
+            owner_hex.clone(),
+            "https://registry.test",
+        ))
         .unwrap();
     storage
-        .save_allowlist(&PublisherAllowlist {
-            publishers: vec![PublisherRow {
-                pubkey_hex: publisher_hex.clone(),
-                can_add_new: true,
-                note: "not public".into(),
-                namespaces: vec![registry_types::namespace::TILO_NAMESPACE.to_owned()],
-            }],
-        })
+        .save_allowlist(&crate::support::allowlist(vec![PublisherRow {
+            pubkey_hex: publisher_hex.clone(),
+            can_add_new: true,
+            note: "not public".into(),
+            namespaces: vec![registry_types::namespace::TILO_NAMESPACE.to_owned()],
+        }]))
         .unwrap();
-    let mut entry = RegistryEntry {
-        package_id: "so.tilo.test".into(),
-        kind: registry_types::EntryKind::App,
+    let mut entry = registry_types::RegistryEntry {
         name: "Test".into(),
         description: "Test app".into(),
-        tagline: "Test on Tilo OS".into(),
-        images: registry_types::LocalizedImages::english_icon(
-            "https://apps.tilo.so/images/test-icon.svg",
-            "Test icon",
-        ),
-        supported_languages: vec!["en".into()],
         categories: vec!["Test".into()],
-        source_url: None,
-        homepage: None,
-        publisher_pubkey_hex: publisher_hex,
-        versions: vec![RegistryVersion {
-            version: "1".into(),
-            released_at_unix: 1,
-            artifact: registry_types::VersionArtifact::Tapp(registry_types::TappArtifact {
-                tapp_url: "https://apps.tilo.so/artifacts/test-x86_64.tapp".into(),
-                tapp_root_hash_hex: "ab".repeat(32),
-                tapp_size_bytes: 1,
-                tapp_blake3_hex: "cd".repeat(32),
-                target: RegistryTarget {
-                    platform: registry_types::TILO_OS_PLATFORM.into(),
-                    architecture: "x86_64".into(),
-                    isa: "x86_64-v3".into(),
-                    runtime: None,
-                    interfaces: Vec::new(),
-                },
-            }),
-        }],
-        updated_at_unix: 1,
-        signature_hex: String::new(),
+        versions: vec![crate::support::version(
+            "1",
+            1,
+            crate::support::tapp(
+                "https://apps.tilo.so/artifacts/test-x86_64.tapp",
+                "ab".repeat(32),
+                1,
+                "cd".repeat(32),
+                None,
+            ),
+        )],
+        ..crate::support::entry("so.tilo.test", publisher_hex, Vec::new())
     };
     sign_entry(&mut entry, &publisher);
     storage.save_entry(&entry).unwrap();
@@ -115,21 +102,7 @@ fn offline_command_publishes_a_verifiable_snapshot_without_server_private_key() 
     let key_path = offline.path().join("offline-owner.seed");
     std::fs::write(&key_path, hex::encode(owner.to_bytes())).unwrap();
     std::fs::set_permissions(&key_path, std::fs::Permissions::from_mode(0o600)).unwrap();
-    let output = Command::new(tilo_test_env::package_binary!("tilo-registry-server"))
-        .arg("--data-dir")
-        .arg(temp.path())
-        .arg("sign-snapshot")
-        .arg("--owner-key-file")
-        .arg(&key_path)
-        .arg("--valid-for-seconds")
-        .arg("3600")
-        .output_locked()
-        .unwrap();
-    assert!(
-        output.status.success(),
-        "{}",
-        String::from_utf8_lossy(&output.stderr)
-    );
+    crate::support::server_ok(temp.path(), &sign_args(&key_path));
     let snapshot = storage.load_snapshot().unwrap().unwrap();
     registry_types::verify_snapshot(&snapshot, &owner_hex, snapshot.issued_at_unix).unwrap();
     assert_eq!(snapshot.entries, vec![entry.clone()]);
@@ -152,39 +125,20 @@ fn offline_command_publishes_a_verifiable_snapshot_without_server_private_key() 
     replacement.updated_at_unix = 2;
     sign_entry(&mut replacement, &publisher);
     storage.save_entry(&replacement).unwrap();
-    let second = Command::new(tilo_test_env::package_binary!("tilo-registry-server"))
-        .arg("--data-dir")
-        .arg(temp.path())
-        .arg("sign-snapshot")
-        .arg("--owner-key-file")
-        .arg(&key_path)
-        .arg("--valid-for-seconds")
-        .arg("3600")
-        .output_locked()
-        .unwrap();
-    assert!(
-        second.status.success(),
-        "{}",
-        String::from_utf8_lossy(&second.stderr)
-    );
+    crate::support::server_ok(temp.path(), &sign_args(&key_path));
     assert_eq!(storage.load_snapshot().unwrap().unwrap().sequence, 2);
 
-    let rollback = Command::new(tilo_test_env::package_binary!("tilo-registry-server"))
-        .arg("--data-dir")
-        .arg(temp.path())
-        .arg("rollback-snapshot")
-        .arg("--to-sequence")
-        .arg("1")
-        .arg("--owner-key-file")
-        .arg(&key_path)
-        .arg("--valid-for-seconds")
-        .arg("3600")
-        .output_locked()
-        .unwrap();
-    assert!(
-        rollback.status.success(),
-        "{}",
-        String::from_utf8_lossy(&rollback.stderr)
+    crate::support::server_ok(
+        temp.path(),
+        &[
+            "rollback-snapshot",
+            "--to-sequence",
+            "1",
+            "--owner-key-file",
+            key_path.to_str().unwrap(),
+            "--valid-for-seconds",
+            "3600",
+        ],
     );
     let rolled_back = storage.load_snapshot().unwrap().unwrap();
     assert_eq!(rolled_back.sequence, 3);
@@ -197,14 +151,15 @@ fn offline_command_publishes_a_verifiable_snapshot_without_server_private_key() 
     );
 
     std::fs::set_permissions(&key_path, std::fs::Permissions::from_mode(0o644)).unwrap();
-    let refused = Command::new(tilo_test_env::package_binary!("tilo-registry-server"))
-        .arg("--data-dir")
-        .arg(temp.path())
-        .arg("sign-snapshot")
-        .arg("--owner-key-file")
-        .arg(&key_path)
-        .output_locked()
-        .unwrap();
+    let refused = crate::support::server(
+        temp.path(),
+        &[
+            "sign-snapshot",
+            "--owner-key-file",
+            key_path.to_str().unwrap(),
+        ],
+    )
+    .unwrap();
     assert!(!refused.status.success());
     assert_eq!(storage.load_snapshot().unwrap().unwrap().sequence, 3);
 }
@@ -220,14 +175,7 @@ fn signing_and_rollback_read_owner_identity_only_after_acquiring_the_registry_lo
     storage.save_identity(&identity(&owner_a)).unwrap();
 
     let transaction = storage.lock_snapshot().unwrap();
-    let signer = Command::new(tilo_test_env::package_binary!("tilo-registry-server"))
-        .arg("--data-dir")
-        .arg(temp.path())
-        .arg("sign-snapshot")
-        .arg("--owner-key-file")
-        .arg(&key_path)
-        .arg("--valid-for-seconds")
-        .arg("3600")
+    let signer = crate::support::server_command(temp.path(), &sign_args(&key_path))
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn_locked()
@@ -245,39 +193,27 @@ fn signing_and_rollback_read_owner_identity_only_after_acquiring_the_registry_lo
 
     storage.save_identity(&identity(&owner_a)).unwrap();
     for _ in 0..2 {
-        let signed = Command::new(tilo_test_env::package_binary!("tilo-registry-server"))
-            .arg("--data-dir")
-            .arg(temp.path())
-            .arg("sign-snapshot")
-            .arg("--owner-key-file")
-            .arg(&key_path)
-            .arg("--valid-for-seconds")
-            .arg("3600")
-            .output_locked()
-            .unwrap();
-        assert!(
-            signed.status.success(),
-            "{}",
-            String::from_utf8_lossy(&signed.stderr)
-        );
+        crate::support::server_ok(temp.path(), &sign_args(&key_path));
     }
     assert_eq!(storage.load_snapshot().unwrap().unwrap().sequence, 2);
 
     let transaction = storage.lock_snapshot().unwrap();
-    let rollback = Command::new(tilo_test_env::package_binary!("tilo-registry-server"))
-        .arg("--data-dir")
-        .arg(temp.path())
-        .arg("rollback-snapshot")
-        .arg("--to-sequence")
-        .arg("1")
-        .arg("--owner-key-file")
-        .arg(&key_path)
-        .arg("--valid-for-seconds")
-        .arg("3600")
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn_locked()
-        .unwrap();
+    let rollback = crate::support::server_command(
+        temp.path(),
+        &[
+            "rollback-snapshot",
+            "--to-sequence",
+            "1",
+            "--owner-key-file",
+            key_path.to_str().unwrap(),
+            "--valid-for-seconds",
+            "3600",
+        ],
+    )
+    .stdout(Stdio::piped())
+    .stderr(Stdio::piped())
+    .spawn_locked()
+    .unwrap();
     wait_for_registry_lock_waiter(rollback.id());
     storage.save_identity(&identity(&owner_b)).unwrap();
     drop(transaction);

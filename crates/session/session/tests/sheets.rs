@@ -1,9 +1,7 @@
-//! The wireless display sheet: Super+P puts it up over the desktop with the
-//! layouts the attached displays allow and the receivers the projector
-//! service found; a receiver that asks for a PIN is chosen first, the PIN is
-//! typed into its field, and Enter streams to it through the projector. The
-//! sheet shows the stream while it runs, and the same key on the receiver
-//! stops it.
+//! The wireless display sheet: Super+P puts it up over the desktop with the layouts the attached
+//! displays allow and the receivers the projector service found; a receiver that asks for a PIN is
+//! chosen first, the PIN is typed into its field, and Enter streams to it through the projector.
+//! The sheet shows the stream while it runs, and the same key on the receiver stops it.
 
 #![cfg(target_os = "linux")]
 #![allow(
@@ -46,19 +44,17 @@ const KEY_ENTER: u32 = 28;
 const KEY_DOWN: u32 = 108;
 const KEY_LEFT_META: u32 = 125;
 
-/// A session on `outputs`, its wireless display sheet speaking to the
-/// projector on `projector` (`None`: the service's own socket).
+/// A session on `outputs` , its wireless display sheet speaking to the projector on `projector`
+/// (`None`: the service's own socket).
 fn session(outputs: &[OutputConfig], projector: Option<PathBuf>) -> Session {
-    let mut session = Session::headless(
+    let mut session = crate::common::headless_on(
+        outputs,
         Options {
-            presentation: ui::headless::fixture_runner_inputs,
             collab: false,
             projector,
             ..Options::default()
         },
-        outputs,
-    )
-    .expect("session");
+    );
     session.step(Duration::from_millis(1)).expect("step");
     session
 }
@@ -97,10 +93,8 @@ fn chord(session: &mut Session, keys: &[u32]) {
 }
 
 /// Step the session until `done` holds.
-///
-/// Counting steps would not do: the projector answers on its own socket and
-/// thread, and a busy machine can take many steps' worth of time to get to
-/// it.
+/// Counting steps would not do: the projector answers on its own socket and thread, and a busy
+/// machine can take many steps' worth of time to get to it.
 #[track_caller]
 fn until(session: &mut Session, mut done: impl FnMut(&mut Session) -> bool) {
     let at = std::panic::Location::caller();
@@ -125,8 +119,8 @@ fn up(session: &Session) -> bool {
         .is_some_and(|seat| seat.presentation().is_open())
 }
 
-/// A stand-in for the projector service on a real socket: it answers the one
-/// connection the session holds with a receiver, and records what crossed.
+/// A stand-in for the projector service on a real socket: it answers the one connection the session
+/// holds with a receiver, and records what crossed.
 struct Broker {
     socket: PathBuf,
     log: Arc<Mutex<Vec<String>>>,
@@ -134,8 +128,8 @@ struct Broker {
 }
 
 impl Broker {
-    /// A broker that finds `receiver`, streams it once it is asked to, and
-    /// stops when it is told to.
+    /// A broker that finds `receiver` , streams it once it is asked to, and stops when it is told
+    /// to.
     fn answering(receiver: ProjectionDevice) -> Self {
         let runtime = tempfile::tempdir().expect("runtime dir");
         let socket = runtime.path().join("control.sock");
@@ -231,8 +225,8 @@ fn super_p_opens_the_wireless_display_sheet() {
         "the sheet is on screen"
     );
 
-    // Two displays can be arranged every way the sheet offers, and the one
-    // they show now is the highlight.
+    // Two displays can be arranged every way the sheet offers, and the one they show now is the
+    // highlight.
     let open = shown(&session);
     assert_eq!(
         open.layouts
@@ -280,8 +274,8 @@ fn a_chosen_receiver_is_asked_for_its_pin_and_projected_to() {
     assert!(receiver.asks_pin, "an AirPlay receiver asks for its PIN");
     assert_eq!(receiver.link, Link::Idle);
 
-    // Down walks from the current layout's row to the receiver, and Enter
-    // chooses it: nothing connects until its PIN is typed.
+    // Down walks from the current layout's row to the receiver, and Enter chooses it: nothing
+    // connects until its PIN is typed.
     let rows = found.layouts.len();
     for _ in 0..rows {
         tap(&mut session, KEY_DOWN);
@@ -301,8 +295,8 @@ fn a_chosen_receiver_is_asked_for_its_pin_and_projected_to() {
         "no session starts before the PIN is given"
     );
 
-    // The PIN field holds the keyboard now: what is typed is what the
-    // receiver is given, and Enter connects with it.
+    // The PIN field holds the keyboard now: what is typed is what the receiver is given, and Enter
+    // connects with it.
     for digit in [KEY_4, KEY_8, KEY_2, KEY_1] {
         tap(&mut session, digit);
     }
@@ -322,8 +316,7 @@ fn a_chosen_receiver_is_asked_for_its_pin_and_projected_to() {
     assert_eq!(stream.fps, 60);
     assert!(stream.audio, "the sound goes with the picture");
 
-    // Down leaves the PIN field for the receiver's row, and Enter on it stops
-    // the stream.
+    // Down leaves the PIN field for the receiver's row, and Enter on it stops the stream.
     tap(&mut session, KEY_DOWN);
     tap(&mut session, KEY_ENTER);
     until(&mut session, |session| {
@@ -351,7 +344,7 @@ fn displayed(session: &mut Session) -> Screenshot {
         .unwrap_or_else(|error| panic!("a frame of HEADLESS-1: {error}"))
 }
 
-/// The colours in `frame` inside `rect`, inset by `margin` pixels.
+/// The colours in `frame` inside `rect` , inset by `margin` pixels.
 fn colours_in(frame: &Screenshot, rect: (u32, u32, u32, u32), margin: u32) -> BTreeSet<[u8; 4]> {
     let (x0, y0, x1, y1) = rect;
     ((y0 + margin)..=(y1 - margin))
@@ -360,8 +353,8 @@ fn colours_in(frame: &Screenshot, rect: (u32, u32, u32, u32), margin: u32) -> BT
         .collect()
 }
 
-/// The rectangle `(x0, y0, x1, y1)` inside which `after` differs from
-/// `before`: what a capture of the same display changed.
+/// The rectangle `(x0, y0, x1, y1)` inside which `after` differs from `before` : what a capture of
+/// the same display changed.
 #[track_caller]
 fn differed(before: &Screenshot, after: &Screenshot) -> (u32, u32, u32, u32) {
     let (mut x0, mut y0, mut x1, mut y1) = (u32::MAX, u32::MAX, 0, 0);
@@ -379,14 +372,14 @@ fn differed(before: &Screenshot, after: &Screenshot) -> (u32, u32, u32, u32) {
     (x0, y0, x1, y1)
 }
 
-/// A capture taken while a receiver's PIN sheet is up never shows what the
-/// person typed into it: the sheet is one flat placeholder in the copy, and
-/// the display in front of them shows it as it is.
+/// A capture taken while a receiver's PIN sheet is up never shows what the person typed into it:
+/// the sheet is one flat placeholder in the copy, and the display in front of them shows it as it
+/// is.
 #[test]
 fn a_capture_of_the_pin_sheet_withholds_the_pin_and_the_display_shows_it() {
     let _settled = ui::motion::testing::settled();
-    // The two captures this test compares are of the same display: the bar's
-    // own minute turning over between them is not a change the sheet made.
+    // The two captures this test compares are of the same display: the bar's own minute turning
+    // over between them is not a change the sheet made.
     let _clock = tilo_test_env::held_wall_clock();
     let broker = Broker::answering(television());
     let mut session = session(&docked(), Some(broker.socket));
@@ -423,8 +416,7 @@ fn a_capture_of_the_pin_sheet_withholds_the_pin_and_the_display_shows_it() {
         1,
         "one flat placeholder where the sheet was: {withheld:?}"
     );
-    // The person's own display still shows the sheet, its label and the
-    // field the PIN went into.
+    // The person's own display still shows the sheet, its label and the field the PIN went into.
     let shown_to_the_person = colours_in(&display, (x0, y0, x1, y1), 8);
     assert!(
         shown_to_the_person.len() > 8,

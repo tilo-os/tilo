@@ -100,9 +100,6 @@ impl Reply {
 /// record whose comments an older version stored with each mark's value and
 /// block attribute flat beside its variant's name
 /// ([`retype_variant_fields`](tilo_resource::evolution::retype_variant_fields)).
-///
-/// # Errors
-/// Returns why a comment's paragraphs do not read, or the document's error.
 pub fn store_bodies_by_variant(
     doc: &mut tilo_resource::Doc,
     obj: &automerge::ObjId,

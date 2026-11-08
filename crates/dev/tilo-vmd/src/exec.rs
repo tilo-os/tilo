@@ -113,9 +113,6 @@ pub fn in_session(pid: u32, user: &str, env: &[(String, String)], args: &[String
 
 /// Run `command`, copying its stdout and stderr to `out` and `err` as they
 /// come, and kill it after `timeout` or once `max_bytes` of output passed.
-///
-/// # Errors
-/// The command could not be started.
 pub fn run_bounded(
     mut command: Command,
     timeout: Duration,

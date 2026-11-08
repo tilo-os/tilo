@@ -4,7 +4,6 @@
 )]
 #[test]
 fn native_bound_sync_routes_verified_bytes_and_preserves_undo_retries_and_dependencies() {
-    // Case `native_bound_sync_routes_notebook_bytes_and_preserves_local_undo_and_retries`:
     // Exercise the same record selection, serialization and merge used by App's
     // broker pump. The fixture provides an admitted route without a live socket.
     {
@@ -138,7 +137,6 @@ fn native_bound_sync_routes_verified_bytes_and_preserves_undo_retries_and_depend
         assert!(fixture.app.actions.bound_record_sync.is_none());
     }
 
-    // Case `native_bound_sync_refuses_foreign_or_corrupt_bytes_without_closing_typing`.
     {
         let mut fixture = ActionFixture::broker();
         let binding = fixture.bindings[0].clone();
@@ -220,7 +218,6 @@ fn native_bound_sync_routes_verified_bytes_and_preserves_undo_retries_and_depend
         fixture.app.close_components();
     }
 
-    // Case `native_bound_sync_retains_out_of_order_dependencies_without_echoing_them`.
     {
         let mut fixture = ActionFixture::broker();
         let (initial, heads) = fixture.app.pending_primary_document().unwrap().unwrap();
@@ -281,7 +278,6 @@ fn native_bound_sync_routes_verified_bytes_and_preserves_undo_retries_and_depend
         fixture.app.close_components();
     }
 
-    // Case `native_bound_sync_requires_live_matching_route_and_resends_after_reconnection`.
     {
         let mut fixture = ActionFixture::broker();
         let (initial, heads) = fixture.app.pending_primary_document().unwrap().unwrap();

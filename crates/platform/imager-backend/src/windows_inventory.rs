@@ -146,9 +146,6 @@ pub struct Budget {
 impl Inventory {
     /// All roots must be absolute, non-overlapping and admitted before scanning.
     /// No environment-derived home/profile is consulted.
-    ///
-    /// # Errors
-    /// Rejects excessive, overlapping, invalid or changed selected grants.
     pub fn discover(selected: &[SelectedRoot]) -> Result<Self, String> {
         if selected.len() > 64 {
             return Err("too many selected Windows roots".into());
@@ -298,10 +295,6 @@ impl Inventory {
     /// Exclude reviewed subtrees of one selected root. Each prefix must name an
     /// entry of that root's own inventory, so a selection can never reach data
     /// outside the grant, and excluding a folder excludes everything beneath it.
-    ///
-    /// # Errors
-    /// Refuses unknown or covered sources, non-relative prefixes and prefixes
-    /// that do not match the reviewed inventory.
     pub fn select_exclusions(
         &mut self,
         source_id: &str,
@@ -363,9 +356,6 @@ impl Inventory {
     }
 
     /// Refuse output within any granted source, even if that source is retained.
-    ///
-    /// # Errors
-    /// Refuses an export destination inside any selected source.
     pub fn validate_export_destination(&self, parent: &PinnedDirectory) -> Result<(), String> {
         if self
             .roots
@@ -379,9 +369,6 @@ impl Inventory {
 
     /// Execute only an explicitly reviewed Copy selection with the verified
     /// copier. Skipped placeholders remain at source and are not copied.
-    ///
-    /// # Errors
-    /// Refuses unreviewed selections, changed grants and verified-copy failures.
     pub fn copy_selected(
         &self,
         source_id: &str,

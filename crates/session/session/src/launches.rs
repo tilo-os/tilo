@@ -27,12 +27,11 @@ use tilo_app_launch::doors::ancestry;
 use tilo_desktop_model::Workspace;
 use tilo_lock::MutexRecover as _;
 
-/// How long a service, an app or an agent waits for the session's loop to
-/// answer a launch it asked for.
+/// How long a service, an app or an agent waits for the session's loop to answer a launch it asked
+/// for.
 const LAUNCH_ANSWER_WAIT: Duration = Duration::from_secs(10);
-/// The most launches one pass may find waiting: more than any person's apps
-/// ask for at once, and enough to keep a runaway asker from growing the
-/// queue without bound.
+/// The most launches one pass may find waiting: more than any person's apps ask for at once, and
+/// enough to keep a runaway asker from growing the queue without bound.
 const MAX_WAITING_LAUNCHES: usize = 64;
 
 /// One launch the session made: which app it started, in which workspace,
@@ -43,15 +42,14 @@ struct Launch {
     workspace: String,
     /// The process's start time, in clock ticks since boot.
     start: u64,
-    /// The launch bound the session's documents store into the app, where
-    /// the app opens the files the person chose for it: the launcher does
-    /// that for a package, whose sandbox holds nothing else of the host, and
-    /// for no other kind.
+    /// The launch bound the session's documents store into the app, where the app opens the files
+    /// the person chose for it: the launcher does that for a package, whose sandbox holds nothing
+    /// else of the host, and for no other kind.
     sandboxed: bool,
 }
 
-/// One window of a running app the session is connecting: the window's own
-/// instance, and the launch whose process it opens in.
+/// One window of a running app the session is connecting: the window's own instance, and the launch
+/// whose process it opens in.
 struct Window {
     app: String,
     workspace: String,
@@ -60,21 +58,19 @@ struct Window {
     launch: Option<u32>,
 }
 
-/// A launch a service, an app or an agent asked this session for, waiting for
-/// the pass that starts it: only the loop starts processes, so whoever asks
-/// hands the launch over here and is told how it went.
+/// A launch a service, an app or an agent asked this session for, waiting for the pass that starts
+/// it: only the loop starts processes, so whoever asks hands the launch over here and is told how
+/// it went.
 pub(crate) struct LaunchRequest {
-    /// What to start: a package or a host application, at the place it is
-    /// shown and with what it opens.
+    /// What to start: a package or a host application, at the place it is shown and with what it
+    /// opens.
     pub launch: tilo_app_launch::Launch,
-    /// The workspace it belongs to, as the asker named it; empty for a launch
-    /// into no workspace.
+    /// The workspace it belongs to, as the asker named it; empty for a launch into no workspace.
     pub workspace: String,
-    /// Whether the app's window already showing is raised, or a new one
-    /// opens beside it.
+    /// Whether the app's window already showing is raised, or a new one opens beside it.
     pub place: LaunchPlace,
-    /// What a tool was asked to show, for the tool the launch opens
-    /// (`TILO_TOOL_CONTEXT`): a terminal at a folder, a settings route.
+    /// What a tool was asked to show, for the tool the launch opens (`TILO_TOOL_CONTEXT`): a
+    /// terminal at a folder, a settings route.
     pub context: Option<String>,
     /// Told once the launch was made, or why it was not.
     reply: SyncSender<Result<(), String>>,
@@ -87,39 +83,37 @@ impl LaunchRequest {
     }
 }
 
-/// The launches this session made, and the window connections it is making
-/// for them.
+/// The launches this session made, and the window connections it is making for them.
 #[derive(Default)]
 pub struct Launches {
-    /// What each window this session runs shows, read from the broker every
-    /// pass: a window's instance is its tab's id, which the session tells the
-    /// app when it starts it ([`crate::continuations`]).
+    /// What each window this session runs shows, read from the broker every pass: a window's
+    /// instance is its tab's id, which the session tells the app when it starts it
+    /// ([`crate::continuations`]).
     notes: std::sync::Arc<crate::continuations::Continuations>,
     started: Mutex<BTreeMap<u32, Launch>>,
     windows: Mutex<Vec<Window>>,
-    /// The launch each window's shell-ui connection belongs to, by app, while
-    /// the connection is being made: the shell-ui service reads it for the
-    /// connection from the session's own process.
+    /// The launch each window's shell-ui connection belongs to, by app, while the connection is
+    /// being made: the shell-ui service reads it for the connection from the session's own process.
     shell_ui: Mutex<Vec<(String, u32)>>,
-    /// This device's apps, as the session's lists last read them: what a
-    /// service asking the launcher is told of every app it could open.
+    /// This device's apps, as the session's lists last read them: what a service asking the
+    /// launcher is told of every app it could open.
     applications: Mutex<Option<crate::lists::Lists>>,
-    /// The launches asked for since the last pass of the session's loop: the
-    /// one path everything that is not the desk itself starts apps through.
+    /// The launches asked for since the last pass of the session's loop: the one path everything
+    /// that is not the desk itself starts apps through.
     waiting: Mutex<Vec<LaunchRequest>>,
     /// What wakes that loop when a launch is waiting for it.
     wake: Mutex<Option<tilo_service::Wake>>,
 }
 
 impl Launches {
-    /// What the windows this session runs show, kept with its launches: one
-    /// store for the desk, the layout record and the arrangement.
+    /// What the windows this session runs show, kept with its launches: one store for the desk, the
+    /// layout record and the arrangement.
     pub(crate) fn notes(&self) -> std::sync::Arc<crate::continuations::Continuations> {
         std::sync::Arc::clone(&self.notes)
     }
 
-    /// Wake the session's loop with `wake` when a launch is waiting for it:
-    /// the loop is the only thread that starts a process.
+    /// Wake the session's loop with `wake` when a launch is waiting for it: the loop is the only
+    /// thread that starts a process.
     pub fn waking(&self, wake: tilo_service::Wake) {
         *self.wake.lock_recover() = Some(wake);
     }
@@ -167,14 +161,13 @@ impl Launches {
         }
     }
 
-    /// The launches waiting for this pass, oldest first: taken once, by the
-    /// loop that starts them.
+    /// The launches waiting for this pass, oldest first: taken once, by the loop that starts them.
     pub(crate) fn take_waiting(&self) -> Vec<LaunchRequest> {
         std::mem::take(&mut *self.waiting.lock_recover())
     }
 
-    /// Whether a launch waits for the loop: what a pass that starts nothing
-    /// else still has to settle.
+    /// Whether a launch waits for the loop: what a pass that starts nothing else still has to
+    /// settle.
     pub(crate) fn waiting(&self) -> bool {
         !self.waiting.lock_recover().is_empty()
     }
@@ -188,13 +181,11 @@ impl Launches {
         *self.applications.lock_recover() = Some(lists);
     }
 
-    /// Record that `pid` runs `app` in `workspace`, as this session started
-    /// it: the
-    /// app's connection is admitted from here. A pid whose process cannot be
-    /// read is recorded by nothing and starts an app that reaches no service.
-    ///
-    /// `sandboxed` is whether the launch bound the session's documents store
-    /// into it, which only a package's sandbox is given.
+    /// Record that `pid` runs `app` in `workspace` , as this session started it: the app's
+    /// connection is admitted from here. A pid whose process cannot be read is recorded by nothing
+    /// and starts an app that reaches no service.
+    /// `sandboxed` is whether the launch bound the session's documents store into it, which only a
+    /// package's sandbox is given.
     pub fn started(&self, pid: u32, app: &str, workspace: &str, sandboxed: bool) {
         let Some(start) = start_time(pid) else {
             tracing::warn!(
@@ -215,11 +206,10 @@ impl Launches {
         );
     }
 
-    /// Record that the session is about to connect window `instance` of `app`
-    /// in `workspace`, a window of the launch whose process is `launch` while
-    /// it runs. A window has one record: recording it again replaces the one it
-    /// had. Only the session records windows, and only the connection naming
-    /// the instance spends the record.
+    /// Record that the session is about to connect window `instance` of `app` in `workspace` , a
+    /// window of the launch whose process is `launch` while it runs. A window has one record:
+    /// recording it again replaces the one it had. Only the session records windows, and only the
+    /// connection naming the instance spends the record.
     pub fn window(&self, app: &str, workspace: &str, instance: u64, launch: Option<u32>) {
         let mut windows = self.windows.lock_recover();
         windows.retain(|window| !window.is(app, workspace, instance));
@@ -231,34 +221,33 @@ impl Launches {
         });
     }
 
-    /// The session gave the connection it recorded up before the broker could
-    /// attest it: its record ends.
+    /// The session gave the connection it recorded up before the broker could attest it: its record
+    /// ends.
     pub fn window_withdrawn(&self, app: &str, workspace: &str, instance: u64) {
         self.windows
             .lock_recover()
             .retain(|window| !window.is(app, workspace, instance));
     }
 
-    /// Record that the session is about to connect the shell-ui socket for a
-    /// window of `app` the launch in `launcher` runs: the shell-ui service
-    /// reads it for a connection from the session's own process.
+    /// Record that the session is about to connect the shell-ui socket for a window of `app` the
+    /// launch in `launcher` runs: the shell-ui service reads it for a connection from the session's
+    /// own process.
     pub fn window_shell_ui(&self, app: &str, launcher: u32) {
         self.shell_ui
             .lock_recover()
             .push((app.to_owned(), launcher));
     }
 
-    /// The launch a connection from the session's own process for a window of
-    /// `app` belongs to: the one it recorded while making the connection.
+    /// The launch a connection from the session's own process for a window of `app` belongs to: the
+    /// one it recorded while making the connection.
     pub fn take_window_shell_ui(&self, app: &str) -> Option<u32> {
         let mut pending = self.shell_ui.lock_recover();
         let index = pending.iter().position(|(asked, _)| asked == app)?;
         Some(pending.remove(index).1)
     }
 
-    /// The apps this session started with the documents store bound into
-    /// them, and that still run: the ones a portal answer can name a store
-    /// path for.
+    /// The apps this session started with the documents store bound into them, and that still run:
+    /// the ones a portal answer can name a store path for.
     #[must_use]
     pub fn sandboxed_apps(&self) -> Vec<String> {
         let mut apps: Vec<String> = self
@@ -273,9 +262,8 @@ impl Launches {
         apps
     }
 
-    /// The apps this session started that still run, one entry per app: what
-    /// an application-opened trigger follows, so an app the person starts
-    /// again after closing it shows up again.
+    /// The apps this session started that still run, one entry per app: what an application-opened
+    /// trigger follows, so an app the person starts again after closing it shows up again.
     #[must_use]
     pub fn running_apps(&self) -> std::collections::BTreeSet<String> {
         self.started
@@ -286,8 +274,8 @@ impl Launches {
             .collect()
     }
 
-    /// The workspace of the launch that `pid` is or was started by, when it
-    /// runs `app`: the app a connection came from, as the window it names.
+    /// The workspace of the launch that `pid` is or was started by, when it runs `app` : the app a
+    /// connection came from, as the window it names.
     pub fn workspace_of(&self, pid: u32, app: &str) -> Option<String> {
         let lineage = ancestry(pid);
         let launched = self
@@ -300,9 +288,9 @@ impl Launches {
         (start_time(launched) == Some(start)).then_some(workspace)
     }
 
-    /// The launch `pid` is or descends from, while that launch still runs:
-    /// the app window a process belongs to, so two windows of one app are
-    /// told apart rather than the app being asked about as a whole.
+    /// The launch `pid` is or descends from, while that launch still runs: the app window a process
+    /// belongs to, so two windows of one app are told apart rather than the app being asked about
+    /// as a whole.
     #[must_use]
     pub fn launch_of(&self, pid: u32) -> Option<u32> {
         let lineage = ancestry(pid);
@@ -315,10 +303,9 @@ impl Launches {
         (start_time(launched.0) == Some(launched.1)).then_some(launched.0)
     }
 
-    /// The app this session launched that `pid` descends from, while that
-    /// launch still runs: the app a program of the login is running in, such
-    /// as the terminal that started it. `None` when no launch is an ancestor
-    /// of `pid`.
+    /// The app this session launched that `pid` descends from, while that launch still runs: the
+    /// app a program of the login is running in, such as the terminal that started it. `None` when
+    /// no launch is an ancestor of `pid` .
     #[must_use]
     pub fn app_of_descendant(&self, pid: u32) -> Option<String> {
         let lineage = ancestry(pid);
@@ -332,8 +319,8 @@ impl Launches {
         (start_time(launched) == Some(start)).then_some(app)
     }
 
-    /// The start time of the process `pid` started, when that process is the
-    /// launch of `app` in `workspace` and still runs.
+    /// The start time of the process `pid` started, when that process is the launch of `app` in
+    /// `workspace` and still runs.
     fn live(&self, pid: u32, app: &str, workspace: &str) -> Option<u64> {
         let start = match self.started.lock_recover().get(&pid) {
             Some(launch) if launch.app == app && launch.workspace == workspace => launch.start,
@@ -342,9 +329,9 @@ impl Launches {
         (start_time(pid) == Some(start)).then_some(start)
     }
 
-    /// The window record a connection from the session's own process naming
-    /// `app` in `workspace` and `instance` spends, while the launch it belongs
-    /// to runs. Nothing else spends it, and it is spent once.
+    /// The window record a connection from the session's own process naming `app` in `workspace`
+    /// and `instance` spends, while the launch it belongs to runs. Nothing else spends it, and it
+    /// is spent once.
     fn take_window(
         &self,
         pid: u32,
@@ -385,9 +372,8 @@ impl Window {
 }
 
 impl LauncherServices for Launches {
-    /// This device's apps, as its lists last read them: what an app or a
-    /// service asking the action door may open here, and what each app
-    /// declared it may do.
+    /// This device's apps, as its lists last read them: what an app or a service asking the action
+    /// door may open here, and what each app declared it may do.
     fn applications(&self) -> Vec<LaunchableApplication> {
         self.applications
             .lock_recover()
@@ -434,9 +420,8 @@ impl LauncherServices for Launches {
         self.live(pid, app, workspace).is_some()
     }
 
-    /// The connection proved the process the session started is the one
-    /// holding it (the kernel's credentials and the challenge answered on
-    /// them): the launch stands only while both name it.
+    /// The connection proved the process the session started is the one holding it (the kernel's
+    /// credentials and the challenge answered on them): the launch stands only while both name it.
     fn attest_executing_process(
         &self,
         launcher_pid: u32,
@@ -473,13 +458,12 @@ impl LauncherServices for Launches {
     }
 }
 
-/// A process's start time, in clock ticks since boot, read from
-/// `/proc/<pid>/stat`: what tells a process from a later one that reused its
-/// pid.
+/// A process's start time, in clock ticks since boot, read from `/proc/<pid>/stat` : what tells a
+/// process from a later one that reused its pid.
 fn start_time(pid: u32) -> Option<u64> {
     let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
-    // comm is parenthesised and may hold spaces or parentheses: index from
-    // the last ')'. Field 3 (state) comes first, so starttime is field 19.
+    // comm is parenthesised and may hold spaces or parentheses: index from the last ')'. Field 3
+    // (state) comes first, so starttime is field 19.
     let rest = stat.rsplit_once(") ")?.1;
     let fields: Vec<&str> = rest.split_whitespace().collect();
     // ignored-failure: a stat field that is no number names no process start
@@ -492,10 +476,9 @@ mod tests {
     #[cfg(target_os = "linux")]
     use tilo_test_env::SpawnUnderEnvLock as _;
 
-    /// A window's own connection is spent by the one connection naming its
-    /// app, workspace and instance, and only the session's own process makes
-    /// one:
-    /// nothing else is admitted by it, and nothing is left for a second.
+    /// A window's own connection is spent by the one connection naming its app, workspace and
+    /// instance, and only the session's own process makes one: nothing else is admitted by it, and
+    /// nothing is left for a second.
     #[test]
     #[cfg(target_os = "linux")]
     fn a_window_connection_is_spent_once_by_the_window_it_names() {
@@ -541,8 +524,8 @@ mod tests {
         );
     }
 
-    /// The session gave the connection up before the broker saw it: the
-    /// record ends with it, and nothing is admitted for that window.
+    /// The session gave the connection up before the broker saw it: the record ends with it, and
+    /// nothing is admitted for that window.
     #[test]
     #[cfg(target_os = "linux")]
     fn a_withdrawn_window_connection_admits_nothing() {
@@ -560,8 +543,8 @@ mod tests {
         );
     }
 
-    /// A window of a launch runs in that launch's process: once the process
-    /// is over its windows are too, and their connections are nobody's.
+    /// A window of a launch runs in that launch's process: once the process is over its windows are
+    /// too, and their connections are nobody's.
     #[test]
     #[cfg(target_os = "linux")]
     fn a_window_of_an_ended_launch_is_not_admitted() {
@@ -616,9 +599,8 @@ mod tests {
         );
     }
 
-    /// A program's app is the launch it descends from, while that launch
-    /// runs: the terminal that started it, not any other launch of the
-    /// session.
+    /// A program's app is the launch it descends from, while that launch runs: the terminal that
+    /// started it, not any other launch of the session.
     #[test]
     #[cfg(target_os = "linux")]
     fn a_program_s_app_is_the_launch_it_descends_from() {
@@ -655,8 +637,8 @@ mod tests {
         );
     }
 
-    /// The shell-ui service learns which launch a window connection from the
-    /// session's own process belongs to, once for each window it connects.
+    /// The shell-ui service learns which launch a window connection from the session's own process
+    /// belongs to, once for each window it connects.
     #[test]
     fn a_window_s_shell_ui_connection_names_its_launch_once() {
         let launches = Launches::default();

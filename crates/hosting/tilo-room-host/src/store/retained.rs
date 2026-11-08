@@ -1089,8 +1089,8 @@ impl WorkspaceStore {
     /// Stage the checkpoint `bytes` on `channel` as the next generation of
     /// its lineage, and make the stage durable, all outside the workspace's
     /// order: everything [`RetainBuild`] writes before its commit for such
-    /// a checkpoint. The owner's turn is left with the commit,
-    /// [`Self::start_fresh_retain`]: one barrier instead of three rounds of
+    /// a checkpoint. The owner's turn is left with the
+    /// commit, [`Self::start_fresh_retain`]: one barrier instead of three rounds of
     /// them and every read of what the lineage held.
     ///
     /// A checkpoint is staged so when it starts its lineage (the identity

@@ -57,8 +57,6 @@ pub trait NativeAdapter: Send {
         Box::pin(async { Err(SendError::Unavailable) })
     }
     /// Admit recipient evidence only from the runtime's own SDK subscription.
-    /// # Errors
-    /// Refuses an unsupported service, foreign SDK client or unrelated receipt.
     #[cfg(feature = "whatsapp-sdk")]
     fn whatsapp_receipt(
         &mut self,
@@ -184,8 +182,6 @@ pub trait ExternalAuthority: Send + Sync {
     /// Resolve one exact provider identity through current reviewed Contacts.
     /// Ambiguous associations must refuse; names and alternate JIDs are not
     /// identity evidence. The default provides no inbound permission.
-    /// # Errors
-    /// Refuses absent or revoked receive authority and ambiguous identities.
     fn incoming(&self, _recipient: &str) -> Result<Authorization, SendError> {
         Err(SendError::Unavailable)
     }
@@ -207,8 +203,6 @@ impl ExternalBroker {
     /// The host supplies the authenticated provider handle and current grant
     /// gate. This path never connects to an ambient service or creates keys.
     /// Run on the account supervisor's worker, not the rendering thread.
-    /// # Errors
-    /// Refuses absent/locked custody, wrong ownership or invalid private state.
     pub fn open_system(
         root: &std::path::Path,
         adapter: Box<dyn NativeAdapter>,
@@ -229,8 +223,6 @@ impl ExternalBroker {
         Self::new(adapter, history, scope, authority)
     }
     /// Bind an already verified runtime and encrypted store; creates no grant.
-    /// # Errors
-    /// Refuses another owner, unsupported service or missing provider namespace.
     pub fn new(
         adapter: Box<dyn NativeAdapter>,
         history: History,
@@ -266,8 +258,6 @@ impl ExternalBroker {
     /// Read one host-selected native SMS into exact-route encrypted history.
     /// The supervisor supplies the object and holds the current SIM lease.
     /// No Create, Send, Store, Delete or acknowledgement is performed.
-    /// # Errors
-    /// Refuses another service, stale grants, foreign objects and incomplete SMS.
     #[cfg(all(target_os = "linux", feature = "sms-dbus"))]
     pub async fn observe_sms_message(
         &self,

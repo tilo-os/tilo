@@ -185,10 +185,6 @@ impl NativeWorkspaceOwner {
     /// device's person's slice of the workspace, signed by `key`, the device's
     /// own, and published as any workspace change of its own. Original
     /// arguments and results never enter the workspace.
-    ///
-    /// # Errors
-    /// Refuses invalid receipts, a key that is not this device's, another's
-    /// receipt, changed retries or failed durable publication.
     pub fn commit_effect_receipt(
         &self,
         request: &OwnerCommitRequest,

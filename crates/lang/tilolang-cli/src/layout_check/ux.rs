@@ -92,6 +92,7 @@ pub fn inspect(root: &InspectionNode, viewport: (u32, u32), declared: &Declared)
     names(root, &mut Vec::new(), &mut out);
     verbs(root, declared, &mut Vec::new(), &mut out);
     cards(root, &mut Vec::new(), false, &mut out);
+    opens(root, None, &mut BTreeSet::new(), &mut Vec::new(), &mut out);
     gutter(root, f64::from(viewport.0), &mut Vec::new(), &mut out);
     out
 }
@@ -555,6 +556,111 @@ fn cards(node: &InspectionNode, keys: &mut Vec<String>, in_card: bool, out: &mut
     if pushed {
         keys.pop();
     }
+}
+
+// --- an item open where it stands ---------------------------------------------------------------
+
+/// An item open where it stands is a row of the list the person sees: the row that opened it
+/// stands in a list, within the columns the list's own box spans, and one list shows one item
+/// open at a time. An item shown beside the list, or over the part of it on screen, is not the
+/// item where it stands in the list they are reading. Its box may reach below the list's, or be
+/// scrolled part way above its top: a document longer than the list is read by scrolling it.
+fn opens(
+    node: &InspectionNode,
+    list: Option<&InspectionNode>,
+    shown: &mut BTreeSet<String>,
+    keys: &mut Vec<String>,
+    out: &mut Vec<Problem>,
+) {
+    let list = if is_list(node) { Some(node) } else { list };
+    // A list gives each row a node of its own in the tree a reader is handed, standing under the
+    // list rather than as a widget of its own: that node is where the row's box is read. A
+    // heading the list publishes says it is expanded too, and a tree's branch stays expanded
+    // while its subtasks show, so only an item's own node is read, and only a list's row is
+    // counted as an item standing open.
+    if let Some(semantics) = &node.semantics {
+        for item in &semantics.children {
+            let is_item = matches!(item.role, Role::ListItem | Role::TreeItem);
+            if !is_item || item.state.expanded != Some(true) {
+                continue;
+            }
+            if let Some(row) = item.bounds.map(ui::a11y::AccessBounds::to_rect)
+                && let Some(detail) = outside_list(list, row)
+            {
+                push(out, Kind::OpenOutsideList, node, keys, detail);
+            }
+            if item.role == Role::ListItem && second_open(list, shown) {
+                push(
+                    out,
+                    Kind::OpenOutsideList,
+                    node,
+                    keys,
+                    "a second row stands open in one list: a list opens one item at a time"
+                        .to_owned(),
+                );
+            }
+        }
+    }
+    // A row drawn as a widget of its own, outside a list's own nodes: the same rule, read from
+    // the widget's box.
+    let open = role(node) == Some(Role::ListItem)
+        && node
+            .semantics
+            .as_ref()
+            .is_some_and(|semantics| semantics.state.expanded == Some(true));
+    if open {
+        if let Some(detail) = outside_list(list, rect(node)) {
+            push(out, Kind::OpenOutsideList, node, keys, detail);
+        }
+        if second_open(list, shown) {
+            push(
+                out,
+                Kind::OpenOutsideList,
+                node,
+                keys,
+                format!(
+                    "a second {} stands open in one list: a list opens one item at a time",
+                    node.widget
+                ),
+            );
+        }
+    }
+    let pushed = node.test_id.clone().map(|id| keys.push(id)).is_some();
+    for child in &node.children {
+        opens(child, list, shown, keys, out);
+    }
+    if pushed {
+        keys.pop();
+    }
+}
+
+/// What standing open says of an item whose box is `row`: the list it belongs to shows it where
+/// it stands, or it stands outside the list the person is reading. A box reaching below the list
+/// is fine — a document longer than the list is read by scrolling it — and so is one scrolled
+/// part way above its top, which still reaches into it; a row lying wholly above the list stands
+/// beside it, over the part of the list on screen.
+fn outside_list(list: Option<&InspectionNode>, row: Rect) -> Option<String> {
+    let Some(list) = list else {
+        return Some(
+            "the item stands open outside a list: a row opens where it stands in the list that \
+             shows it, never beside it"
+                .to_owned(),
+        );
+    };
+    let boxed = rect(list);
+    let outside =
+        row.x0 < boxed.x0 - SLACK || row.x1 > boxed.x1 + SLACK || row.y1 <= boxed.y0 + SLACK;
+    outside.then(|| {
+        format!(
+            "the row it opened stands outside the list it is in ({:.0}, {:.0})×({:.0}, {:.0})",
+            row.x0, row.y0, row.x1, row.y1
+        )
+    })
+}
+
+/// Whether this is the second item standing open in `list`.
+fn second_open(list: Option<&InspectionNode>, shown: &mut BTreeSet<String>) -> bool {
+    !shown.insert(list.map_or_else(String::new, |list| list.path.clone()))
 }
 
 // --- the gutter a narrow window keeps -----------------------------------------------------------
@@ -1059,5 +1165,138 @@ mod tests {
         assert!(found(Kind::NestedCard, &card(vec![]), (1280, 800)).is_empty());
         let problems = found(Kind::NestedCard, &card(vec![card(vec![])]), (1280, 800));
         assert_eq!(problems.len(), 1, "{problems:?}");
+    }
+
+    /// An item standing open where it stands: the row of the list, below its top edge.
+    fn opened(id: &str, rect: [f64; 4], role: Role) -> InspectionNode {
+        let mut row = node("ListItem", id, rect, Some(role));
+        row.semantics =
+            Some(AccessNode::new(role).with_state(ui::a11y::AccessState::new().expanded(true)));
+        row
+    }
+
+    fn list_of(rows: Vec<InspectionNode>) -> InspectionNode {
+        let mut list = holding("VirtualList", "list", Some(Role::List), rows);
+        list.rect = [0.0, 100.0, 600.0, 700.0];
+        list
+    }
+
+    #[test]
+    fn an_open_item_is_a_row_of_the_list_the_person_sees() {
+        let inside = list_of(vec![opened(
+            "row",
+            [16.0, 120.0, 584.0, 420.0],
+            Role::ListItem,
+        )]);
+        assert!(found(Kind::OpenOutsideList, &inside, (1280, 800)).is_empty());
+
+        // A document longer than the list is read by scrolling: its row may reach below it.
+        let long = list_of(vec![opened(
+            "row",
+            [16.0, 120.0, 584.0, 2400.0],
+            Role::ListItem,
+        )]);
+        assert!(found(Kind::OpenOutsideList, &long, (1280, 800)).is_empty());
+
+        // An item standing open beside the list is not the item where it stands in it.
+        let beside = holding(
+            "Stack",
+            "window",
+            None,
+            vec![
+                list_of(vec![named(
+                    "ListRow",
+                    "row",
+                    [16.0, 120.0, 584.0, 156.0],
+                    Role::ListItem,
+                    "A task",
+                )]),
+                opened("page", [620.0, 120.0, 1200.0, 420.0], Role::ListItem),
+            ],
+        );
+        assert_eq!(
+            found(Kind::OpenOutsideList, &beside, (1280, 800)).len(),
+            1,
+            "an item shown beside its list"
+        );
+
+        // An item open with no list at all, and two open rows of one list.
+        let alone = opened("page", [0.0, 0.0, 600.0, 300.0], Role::ListItem);
+        assert_eq!(found(Kind::OpenOutsideList, &alone, (1280, 800)).len(), 1);
+        let twice = list_of(vec![
+            opened("one", [16.0, 120.0, 584.0, 420.0], Role::ListItem),
+            opened("two", [16.0, 430.0, 584.0, 700.0], Role::ListItem),
+        ]);
+        assert_eq!(found(Kind::OpenOutsideList, &twice, (1280, 800)).len(), 1);
+
+        // A tree's branches open and fold their items, which is not an item showing where it
+        // stands.
+        let folded = list_of(vec![opened(
+            "branch",
+            [16.0, 120.0, 584.0, 156.0],
+            Role::TreeItem,
+        )]);
+        assert!(found(Kind::OpenOutsideList, &folded, (1280, 800)).is_empty());
+    }
+
+    /// A list's rows are the nodes the list publishes under its own, not widgets of their own: a
+    /// row open where it stands is read from the box its node reports.
+    #[test]
+    fn a_row_a_list_publishes_says_where_it_stands_in_it() {
+        fn published(rows: Vec<ui::a11y::AccessNode>) -> InspectionNode {
+            let mut list = list_of(vec![]);
+            list.semantics = Some(AccessNode::new(Role::List).with_children(rows));
+            list
+        }
+        fn row(role: Role, rect: [f64; 4]) -> ui::a11y::AccessNode {
+            AccessNode::new(role)
+                .with_state(ui::a11y::AccessState::new().expanded(true))
+                .with_bounds(Rect::new(
+                    rect[0],
+                    rect[1],
+                    rect[0] + rect[2],
+                    rect[1] + rect[3],
+                ))
+        }
+
+        let inside = published(vec![row(Role::ListItem, [16.0, 120.0, 584.0, 2400.0])]);
+        assert!(found(Kind::OpenOutsideList, &inside, (1280, 800)).is_empty());
+
+        // Scrolled part way out of the list's top, the row still reaches into it.
+        let scrolled = published(vec![row(Role::ListItem, [16.0, 60.0, 584.0, 300.0])]);
+        assert!(found(Kind::OpenOutsideList, &scrolled, (1280, 800)).is_empty());
+
+        // Lying wholly above the list's top, the row stands beside what the person reads.
+        let above = published(vec![row(Role::ListItem, [16.0, 20.0, 584.0, 60.0])]);
+        assert_eq!(
+            found(Kind::OpenOutsideList, &above, (1280, 800)).len(),
+            1,
+            "an item the list publishes over the top of its own box"
+        );
+
+        let beside = published(vec![row(Role::ListItem, [620.0, 120.0, 580.0, 300.0])]);
+        assert_eq!(
+            found(Kind::OpenOutsideList, &beside, (1280, 800)).len(),
+            1,
+            "an item the list publishes beside its own box"
+        );
+
+        let twice = published(vec![
+            row(Role::ListItem, [16.0, 120.0, 584.0, 300.0]),
+            row(Role::ListItem, [16.0, 430.0, 584.0, 270.0]),
+        ]);
+        assert_eq!(
+            found(Kind::OpenOutsideList, &twice, (1280, 800)).len(),
+            1,
+            "two rows of one list standing open"
+        );
+
+        // A tree's branch says it is expanded while its subtasks show, which is not an item
+        // standing open where it stands.
+        let branch = published(vec![
+            row(Role::TreeItem, [16.0, 120.0, 584.0, 36.0]),
+            row(Role::TreeItem, [16.0, 160.0, 584.0, 36.0]),
+        ]);
+        assert!(found(Kind::OpenOutsideList, &branch, (1280, 800)).is_empty());
     }
 }

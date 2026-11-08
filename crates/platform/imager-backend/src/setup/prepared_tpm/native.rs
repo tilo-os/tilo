@@ -111,11 +111,6 @@ pub fn validate_signed(target: &SignedTarget, public_key_pem: &str) -> io::Resul
 /// Verify one authority-signed sidecar against the exact target UKI and the
 /// release authority. Nothing here contacts or trusts the TPM: this proves what
 /// the future boot will measure, which is what sealing binds.
-///
-/// # Errors
-///
-/// The prediction or target signature does not verify against the authority, or
-/// the generation and policy shape are unsupported.
 pub fn review(
     prediction_json: &[u8],
     public_key_pem: &[u8],
@@ -467,10 +462,6 @@ fn read_caller_package(
 }
 
 /// Write the sidecar beside a package in a private directory.
-///
-/// # Errors
-///
-/// The sidecar is invalid or its private file cannot be written.
 pub fn write_sidecar(directory: &Path, sealed: &SealedPreparation) -> io::Result<PathBuf> {
     let path = directory.join(SIDECAR_FILE);
     tilo_files::native::atomic::write_with_mode(&path, &sealed.encode()?, 0o600)?;
@@ -571,10 +562,6 @@ fn receiver_name(runner: &dyn Runner, ws: &Workspace) -> io::Result<Vec<u8>> {
 
 /// Seal the machine-generated package secret to the verified target policy and
 /// this actual TPM. No PIN and no login password participate.
-///
-/// # Errors
-///
-/// The target policy, secret, workspace, or TPM operation is invalid.
 pub fn seal(
     runner: &dyn Runner,
     ws: &Workspace,
@@ -921,10 +908,6 @@ pub fn read_prepared_handoff(
 /// medium's own signed bundle when this process is that image, otherwise the
 /// small bundle published by the release catalog. A host that cannot prove a
 /// signed target keeps the deferred journal instead of claiming a TPM binding.
-///
-/// # Errors
-///
-/// The policy cannot be downloaded, or the acquired bundle does not match it.
 pub fn target_for_preparation(
     request: &super::AcquireRequest<'_>,
 ) -> io::Result<Option<TargetAcquisition>> {

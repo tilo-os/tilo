@@ -33,16 +33,15 @@ use crate::navigation::{self, Admitted, RouteIds};
 pub(crate) enum Step {
     /// Another window of the strip.
     Window(GroupId, TabId),
-    /// Onto display `.0`, to its window `.1` nearest the seam crossed, or
-    /// to none when it shows no window.
+    /// Onto display `.0` , to its window `.1` nearest the seam crossed, or to none when it shows no
+    /// window.
     Display(u32, Option<GroupId>),
 }
 
-/// The step `steps` windows from `from` (the focused window, when focus is
-/// on one) along `strip`. On one display that walks the strip's windows
-/// and stops at either end. Across several it walks the focused display's
-/// windows and, past its first or last, crosses to the neighbouring
-/// display, landing on the window nearest the seam.
+/// The step `steps` windows from `from` (the focused window, when focus is on one) along `strip` .
+/// On one display that walks the strip's windows and stops at either end. Across several it walks
+/// the focused display's windows and, past its first or last, crosses to the neighbouring display,
+/// landing on the window nearest the seam.
 pub(crate) fn step(
     tree: &DesktopTree,
     strip: &Strip,
@@ -71,8 +70,8 @@ pub(crate) fn step(
     if let Some((group, tab)) = target(&on) {
         return Some(Step::Window(group, tab));
     }
-    // Past either end of the display, or no window focused on it: on to
-    // the neighbouring display, onto the strip it shows.
+    // Past either end of the display, or no window focused on it: on to the neighbouring display,
+    // onto the strip it shows.
     let next = partition.neighbour(display, steps.signum())?;
     let arriving = tree
         .strip_shown_on(next)
@@ -127,9 +126,8 @@ pub(crate) fn lanes(
         .collect()
 }
 
-/// What one strip on the desk is laid out and shown as: the displays it is
-/// shown on, its window groups in lane order (display by display), and which
-/// display each belongs to.
+/// What one strip on the desk is laid out and shown as: the displays it is shown on, its window
+/// groups in lane order (display by display), and which display each belongs to.
 pub(crate) struct StripPlan {
     pub(crate) strip: StripId,
     pub(crate) displays: Vec<u32>,
@@ -137,9 +135,8 @@ pub(crate) struct StripPlan {
     pub(crate) assignment: HashMap<u64, u32>,
 }
 
-/// Which strip each display shows in the active workspace, one plan per
-/// strip with the displays showing it. Every display shows one, and the
-/// display focus is on shows the active strip
+/// Which strip each display shows in the active workspace, one plan per strip with the displays
+/// showing it. Every display shows one, and the display focus is on shows the active strip
 /// ([`DesktopTree::strip_shown_on`]).
 pub(crate) fn display_strips(tree: &DesktopTree) -> Vec<StripPlan> {
     let mut plans: Vec<StripPlan> = Vec::new();
@@ -181,8 +178,8 @@ pub(crate) fn display_strips(tree: &DesktopTree) -> Vec<StripPlan> {
     plans
 }
 
-/// The display among `displays` (in the surface's coordinates, the surface
-/// at `surface`) holding point `p`.
+/// The display among `displays` (in the surface's coordinates, the surface at `surface` ) holding
+/// point `p` .
 pub(crate) fn display_at(displays: &[Display], surface: Rect, p: Point) -> Option<u32> {
     displays
         .iter()
@@ -195,18 +192,17 @@ pub(crate) fn display_at(displays: &[Display], surface: Rect, p: Point) -> Optio
 }
 
 impl Shared {
-    /// Move focus to `display`, onto `pick` when it is there, else the
-    /// window last focused there, else its first; a display with no window
-    /// takes focus with none, so the next window opens there. The strip the
-    /// display shows becomes the active one, so focus and the strip the
-    /// person works in travel together; every other display keeps its own.
+    /// Move focus to `display` , onto `pick` when it is there, else the window last focused there,
+    /// else its first; a display with no window takes focus with none, so the next window opens
+    /// there. The strip the display shows becomes the active one, so focus and the strip the person
+    /// works in travel together; every other display keeps its own.
     pub(super) fn focus_display(&mut self, display: u32, pick: Option<GroupId>) -> bool {
         let tree = &mut self.tree;
         if !tree.is_partitioned() || !tree.outputs.displays.iter().any(|d| d.id == display) {
             return false;
         }
-        // The strip the display shows, read before focus moves: the focused
-        // display answers with the active strip.
+        // The strip the display shows, read before focus moves: the focused display answers with
+        // the active strip.
         let own = tree
             .active_workspace()
             .and_then(|workspace| tree.outputs.shown_on(display, workspace.slot));
@@ -250,9 +246,8 @@ impl Shared {
         }
     }
 
-    /// Step focus `steps` windows along the shown strip ([`step`]): queue
-    /// the window it lands on, or move focus to the display it crosses to.
-    /// False when there is nowhere to go.
+    /// Step focus `steps` windows along the shown strip ([`step`]): queue the window it lands on,
+    /// or move focus to the display it crosses to. False when there is nowhere to go.
     pub(super) fn step_focus(&mut self, steps: i32) -> bool {
         // A step queued since the last update has moved focus already.
         let queued = self.queue.iter().rev().find_map(|admitted| match admitted {
@@ -304,9 +299,9 @@ impl Shared {
 }
 
 impl DesktopSurface {
-    /// Build the rows of the strips the other displays show, so every
-    /// display has the strip it keeps. The one the person works in is the
-    /// shown row; these are drawn behind it, each in its own display's lane.
+    /// Build the rows of the strips the other displays show, so every display has the strip it
+    /// keeps. The one the person works in is the shown row; these are drawn behind it, each in its
+    /// own display's lane.
     pub(super) fn show_display_strips(&mut self) {
         let shared = self.shared.borrow();
         let tree = &shared.tree;
@@ -343,8 +338,8 @@ impl DesktopSurface {
         }
     }
 
-    /// The strip a pointer event belongs to: the row under the pointer, else
-    /// the one the person works in. A key or a resize belongs to that one.
+    /// The strip a pointer event belongs to: the row under the pointer, else the one the person
+    /// works in. A key or a resize belongs to that one.
     pub(super) fn strip_for_pointer(&self, event: &WindowEvent) -> Option<StripId> {
         let pointer = matches!(
             event,
@@ -360,8 +355,7 @@ impl DesktopSurface {
             .or(self.shown)
     }
 
-    /// Draw the rows of the strips the other displays show, before the one
-    /// the person works in.
+    /// Draw the rows of the strips the other displays show, before the one the person works in.
     pub(super) fn draw_display_strips(
         &mut self,
         scene: &mut Scene,
@@ -399,9 +393,8 @@ impl DesktopSurface {
         }
     }
 
-    /// A press on a display the person is not working on makes that
-    /// display's strip the one they work in, so the window pressed answers
-    /// the same press.
+    /// A press on a display the person is not working on makes that display's strip the one they
+    /// work in, so the window pressed answers the same press.
     pub(super) fn focus_pressed_display(&mut self) {
         if self
             .shown_row_ref()
@@ -418,7 +411,7 @@ impl DesktopSurface {
     }
 }
 
-/// The rows `strips` names in `rows`, in that order.
+/// The rows `strips` names in `rows` , in that order.
 pub(super) fn drawn_rows<'a>(
     rows: &'a HashMap<StripId, GroupRow>,
     strips: &[StripId],
@@ -426,7 +419,7 @@ pub(super) fn drawn_rows<'a>(
     strips.iter().filter_map(|strip| rows.get(strip)).collect()
 }
 
-/// The rows `strips` names in `rows`, in that order, each writable.
+/// The rows `strips` names in `rows` , in that order, each writable.
 pub(super) fn drawn_rows_mut<'a>(
     rows: &'a mut HashMap<StripId, GroupRow>,
     strips: &[StripId],
@@ -441,11 +434,9 @@ pub(super) fn drawn_rows_mut<'a>(
 }
 
 impl DesktopHandle {
-    /// The displays the desktop spreads over, primary first, in the
-    /// surface's coordinates; a mirror set is one display. Groups move
-    /// between them as [`OutputPartition::reconcile`] says, and the surface
-    /// lays each display's lane out on its next pass. Whether anything
-    /// changed.
+    /// The displays the desktop spreads over, primary first, in the surface's coordinates; a mirror
+    /// set is one display. Groups move between them as [`OutputPartition::reconcile`] says, and the
+    /// surface lays each display's lane out on its next pass. Whether anything changed.
     ///
     /// [`OutputPartition::reconcile`]: tilo_desktop_model::OutputPartition::reconcile
     pub fn set_displays(&self, displays: &[Display]) -> bool {
@@ -479,9 +470,8 @@ impl DesktopHandle {
         })
     }
 
-    /// The primary display: the one the person chose in Settings while it
-    /// is connected, else the first. `None` while the desk carries no
-    /// partition, as one display needs no telling apart.
+    /// The primary display: the one the person chose in Settings while it is connected, else the
+    /// first. `None` while the desk carries no partition, as one display needs no telling apart.
     #[must_use]
     pub fn primary_display(&self) -> Option<u32> {
         self.read(|tree| tree.outputs.primary())
@@ -497,9 +487,9 @@ impl DesktopHandle {
         })
     }
 
-    /// Move focus to `display`, on the next update pass: to the window last
-    /// focused there, else its first, else to no window, so the next one
-    /// opens there. False when there is no such display.
+    /// Move focus to `display` , on the next update pass: to the window last focused there, else
+    /// its first, else to no window, so the next one opens there. False when there is no such
+    /// display.
     pub fn focus_display(&self, display: u32) -> bool {
         let focusable = self.read(|tree| {
             tree.is_partitioned() && tree.outputs.displays.iter().any(|d| d.id == display)
@@ -510,17 +500,15 @@ impl DesktopHandle {
         }
     }
 
-    /// Step focus `steps` windows along the shown strip, on the next update
-    /// pass, crossing to the neighbouring display past either end of the
-    /// focused one. False when there is nowhere to go.
+    /// Step focus `steps` windows along the shown strip, on the next update pass, crossing to the
+    /// neighbouring display past either end of the focused one. False when there is nowhere to go.
     pub fn step_focus(&self, steps: i32) -> bool {
         self.shared.borrow_mut().step_focus(steps)
     }
 
-    /// Move the focused window to the display `steps` places to its right
-    /// (left when negative). It keeps focus, and its place in the strip's
-    /// order among that display's windows. False when there is no such
-    /// display or no focused window.
+    /// Move the focused window to the display `steps` places to its right (left when negative). It
+    /// keeps focus, and its place in the strip's order among that display's windows. False when
+    /// there is no such display or no focused window.
     pub fn move_focused_to_display(&self, steps: i32) -> bool {
         let mut shared = self.shared.borrow_mut();
         let tree = &mut shared.tree;
@@ -572,9 +560,8 @@ impl DesktopSurface {
                 {
                     tree.outputs.note_focus(strip_id, group);
                 }
-                // Every display keeps the strip it shows; one never told
-                // takes the active strip, and the focused display follows
-                // it.
+                // Every display keeps the strip it shows; one never told takes the active strip,
+                // and the focused display follows it.
                 tree.note_shown_strip();
                 let displays = tree.outputs.displays.clone();
                 let order = tree.outputs.reading_order();
@@ -616,9 +603,8 @@ impl DesktopSurface {
         }
     }
 
-    /// The strips the surface draws this frame: the ones other displays
-    /// show, then the focused display's, which is the row the person works
-    /// in.
+    /// The strips the surface draws this frame: the ones other displays show, then the focused
+    /// display's, which is the row the person works in.
     pub(super) fn drawn_strips(&self) -> Vec<StripId> {
         self.behind
             .iter()
@@ -628,8 +614,7 @@ impl DesktopSurface {
             .collect()
     }
 
-    /// The strip shown on the display under the pointer: the row a pointer
-    /// event belongs to.
+    /// The strip shown on the display under the pointer: the row a pointer event belongs to.
     pub(super) fn strip_under_pointer(&self) -> Option<StripId> {
         self.behind.iter().copied().chain(self.shown).find(|strip| {
             self.rows
@@ -638,8 +623,7 @@ impl DesktopSurface {
         })
     }
 
-    /// A press at `p` on no window: across several displays, focus moves
-    /// to the display pressed on.
+    /// A press at `p` on no window: across several displays, focus moves to the display pressed on.
     pub(super) fn focus_display_at(&self, p: Point) {
         let mut shared = self.shared.borrow_mut();
         if !shared.tree.is_partitioned() {
@@ -711,8 +695,7 @@ mod tests {
         }
     }
 
-    /// A tree whose one strip holds groups `ids`, the first `left` of them
-    /// on the left display.
+    /// A tree whose one strip holds groups `ids` , the first `left` of them on the left display.
     fn docked(ids: &[GroupId], left: usize) -> DesktopTree {
         let mut workspace = Workspace::new(WorkspaceSlot(1), "Desk");
         let mut strip = Strip::new(StripId(1), "S");

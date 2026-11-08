@@ -32,9 +32,6 @@ pub struct Network {
 }
 
 /// Writes the owner's unlock networks into `dir` and returns their paths.
-///
-/// # Errors
-/// When a profile has an unusable name or cannot be written.
 pub fn write_profiles(dir: &Path, networks: &[material::Network]) -> Result<Vec<PathBuf>> {
     std::fs::create_dir_all(dir).with_context(|| format!("could not create {}", dir.display()))?;
     let mut written = Vec::new();
@@ -72,9 +69,6 @@ pub fn remove_profiles(keyfiles: &[PathBuf]) {
 
 impl Network {
     /// Writes the profiles and starts `NetworkManager`.
-    ///
-    /// # Errors
-    /// When the profiles cannot be written or the unit cannot be started.
     pub fn up(networks: &[material::Network]) -> Result<Self> {
         let keyfiles = write_profiles(Path::new(KEYFILE_DIR), networks)?;
         let mut network = Self {

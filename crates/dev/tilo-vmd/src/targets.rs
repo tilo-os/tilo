@@ -68,9 +68,6 @@ impl TargetStore {
     }
 
     /// Mark `worktree` as used now; creates the record on first use.
-    ///
-    /// # Errors
-    /// Invalid ids and I/O failures.
     pub fn touch(&self, worktree: &str, owner: Owner) -> Result<TargetRecord, DaemonError> {
         if !valid_worktree_id(worktree) {
             return Err(DaemonError::InvalidParams(format!(
@@ -90,9 +87,6 @@ impl TargetStore {
     }
 
     /// Measure `target/` and record its size.
-    ///
-    /// # Errors
-    /// I/O failures writing the record.
     pub fn measure(&self, worktree: &str) -> Result<u64, DaemonError> {
         let bytes = fsutil::allocated_bytes(&self.src(worktree).join("target"));
         if let Some(mut record) = self.load(worktree) {
@@ -169,9 +163,6 @@ impl TargetStore {
     }
 
     /// Delete a worktree's `target/` (its synced sources stay).
-    ///
-    /// # Errors
-    /// I/O failures.
     pub fn evict(&self, worktree: &str) -> Result<(), DaemonError> {
         let target = self.src(worktree).join("target");
         if target.exists() {

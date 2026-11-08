@@ -61,10 +61,6 @@ pub fn parse_tagline(source: &str) -> Option<String> {
 
 /// Every language's tag line for the app in `app_dir`, by tag; empty for an
 /// app with no `search/` directory or no `app-tagline` messages.
-///
-/// # Errors
-///
-/// Returns why a file cannot be read or is named for no language.
 pub fn read_taglines(app_dir: &Path) -> Result<BTreeMap<String, String>, String> {
     let mut found = BTreeMap::new();
     for (tag, source) in sources(app_dir)? {
@@ -105,11 +101,6 @@ fn sources(app_dir: &Path) -> Result<Vec<(String, String)>, String> {
 
 /// Every language's keywords for the app in `app_dir`, by tag; empty for an
 /// app with no `search/` directory.
-///
-/// # Errors
-///
-/// Returns why a file cannot be read, is named for no language, or lacks the
-/// message.
 pub fn read(app_dir: &Path) -> Result<BTreeMap<String, Vec<String>>, String> {
     let mut found = BTreeMap::new();
     for (tag, source) in sources(app_dir)? {

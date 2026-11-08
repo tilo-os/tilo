@@ -96,10 +96,6 @@ impl HostWorkers {
 
 impl AppBrokerState {
     /// Host-local observation only; this predicate is never a wire proof.
-    ///
-    /// # Errors
-    ///
-    /// Returns a message when the host worker registry is unavailable.
     pub fn is_current_host_worker(
         &self,
         peer: u64,

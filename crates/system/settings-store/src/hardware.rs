@@ -491,9 +491,6 @@ impl DisplayTransaction {
     /// Construct an admitted request without writing storage. Its identity
     /// stays unique among requests in this process even within one clock tick.
     /// The request becomes effective only after its normal durable save.
-    ///
-    /// # Errors
-    /// Returns an error if the request identity counter is exhausted.
     pub fn prepare_request(set: DisplaySet, candidate: DisplayConfig) -> std::io::Result<Self> {
         use std::sync::atomic::{AtomicU64, Ordering};
         static LAST_REQUEST: AtomicU64 = AtomicU64::new(0);
@@ -1247,10 +1244,6 @@ impl DisplayConfig {
     }
 
     /// Remember this as the layout for `set`.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the profiles can't be serialised or written.
     pub fn save_for(&self, set: &DisplaySet) -> std::io::Result<()> {
         let mut profiles = DisplayProfiles::load();
         profiles.remember(set, self);
@@ -2239,10 +2232,6 @@ impl QuickSettingsConfig {
     }
 
     /// [`Self::save`] into `source`.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the setting cannot be serialized or persisted.
     pub fn save_in(&self, source: &dyn crate::SettingsSource) -> std::io::Result<()> {
         source.update_section("quick_settings", self.section()?)
     }
@@ -2588,10 +2577,6 @@ impl ShortcutConfig {
     /// Whether `chord` may run the published action `target`: a valid,
     /// unreserved chord that is neither one of the shell's fixed chords, nor
     /// bound to a configurable desktop action, nor running another action.
-    ///
-    /// # Errors
-    ///
-    /// Why the chord cannot be bound.
     pub fn check_action_chord(
         &self,
         chord: &KeyChord,
@@ -2775,20 +2760,11 @@ impl ShortcutConfig {
     }
 
     /// [`Self::save`] into `source`.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if `self` can't be serialised or the section can't
-    /// be written.
     pub fn save_in(&self, source: &dyn crate::SettingsSource) -> std::io::Result<()> {
         source.update_section("shortcuts", self.section()?)
     }
 
     /// The `shortcuts` section holding this configuration.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if `self` can't be serialised.
     pub fn section(&self) -> std::io::Result<serde_json::Map<String, serde_json::Value>> {
         let value = serde_json::to_value(self).map_err(std::io::Error::other)?;
         Ok(value.as_object().cloned().unwrap_or_default())

@@ -1109,10 +1109,6 @@ impl<R> Edit<R> {
     /// record but the record itself starts at the field after it. A record
     /// read nests its fields under such a name (a timeline's `project`), and
     /// callers send `project.name` back.
-    ///
-    /// # Errors
-    /// The path names the record and nothing in it, or a field in it that
-    /// is not ordinary: the refusal says where the path starts.
     pub(crate) fn past_record_name(
         self,
         root: crate::Shape,

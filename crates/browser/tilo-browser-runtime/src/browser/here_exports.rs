@@ -7,13 +7,11 @@ use wasm_bindgen::prelude::*;
 
 use super::{error, with_mount, with_mount_quietly};
 
-/// Who is in the workspace's live layer now: `{own: {publisher, label, user},
-/// members: [{publisher, kind, label, focus, activity, place}] | null,
-/// unavailable: string | null}`, `members` null while the layer is not live
-/// and `unavailable` the reason a page cannot join it at all (a browser
-/// without WebTransport, whose plane has no fallback), shown in their place.
-/// The bar, the People popover and the windows show them, each in the colour
-/// the workspace settles for them; nothing is written to the workspace.
+/// This page's own person, for a desktop that has no live plane to read it
+/// from: `{own: {publisher, label, user}}`. A desktop in a workspace reads
+/// itself and everyone else from the presence board each frame, so this only
+/// names the person where there is none. Nothing is written to the
+/// workspace.
 ///
 /// # Errors
 ///
@@ -23,8 +21,6 @@ pub fn desktop_set_people(id: u64, people: &str) -> Result<(), JsValue> {
     #[derive(serde::Deserialize)]
     struct People {
         own: Option<tilo_desktop::here::LiveMember>,
-        members: Option<Vec<tilo_desktop::here::LiveMember>>,
-        unavailable: Option<String>,
     }
     let people: People = serde_json::from_str(people).map_err(error)?;
     with_mount(id, |m| {
@@ -32,12 +28,7 @@ pub fn desktop_set_people(id: u64, people: &str) -> Result<(), JsValue> {
             .desktop
             .as_ref()
             .ok_or_else(|| error("Desktop unavailable"))?;
-        let changed = {
-            let mut here = desktop.here.borrow_mut();
-            let members = here.set_members(people.own, people.members);
-            let note = here.set_unavailable(people.unavailable);
-            members || note
-        };
+        let changed = desktop.here.borrow_mut().set_members(people.own, None);
         if changed {
             desktop.announce_arrivals();
             // The bar reads the strips' counts in its update pass, which a

@@ -19,9 +19,6 @@ use agent_provider_config::protocol::{
 use agent_provider_config::{ProviderProfile, ProviderProtocol, TokenLimitParam};
 
 /// The request body asking `model` of `profile` for the next turn of `request`.
-///
-/// # Errors
-/// A request with no messages, or a tool call whose arguments are not an object.
 pub fn body(
     profile: &ProviderProfile,
     model: &str,
@@ -47,9 +44,6 @@ pub fn body(
 }
 
 /// The turn out of a provider's answer `body` to [`body`].
-///
-/// # Errors
-/// An answer that is not the dialect's, or carries a malformed tool call.
 pub fn response(protocol: ProviderProtocol, body: &str) -> Result<ModelResponse, ModelError> {
     let value: Value =
         serde_json::from_str(body).map_err(|_| ModelError::new(ErrorKind::InvalidResponse))?;

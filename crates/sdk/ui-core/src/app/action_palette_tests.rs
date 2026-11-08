@@ -231,7 +231,6 @@ include!("../resource_projection_tests.rs");
 
 #[test]
 fn palette_catalog_materializes_once_per_generation_under_fresh_authority() {
-    // Case `control_refresh_without_action_bindings_does_not_materialize_catalog`.
     {
         use std::sync::atomic::Ordering;
         let calls = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
@@ -258,7 +257,6 @@ fn palette_catalog_materializes_once_per_generation_under_fresh_authority() {
         assert_eq!(calls.load(Ordering::Relaxed), 1);
     }
 
-    // Case `resource_tree_is_materialized_once_per_exact_generation`.
     {
         use std::sync::atomic::Ordering;
 
@@ -285,7 +283,6 @@ fn palette_catalog_materializes_once_per_generation_under_fresh_authority() {
         assert_eq!(calls.load(Ordering::Relaxed), 3);
     }
 
-    // Case `exhausted_resource_generation_evicts_instead_of_reusing_a_snapshot`.
     {
         use std::sync::atomic::Ordering;
 
@@ -308,7 +305,6 @@ fn palette_catalog_materializes_once_per_generation_under_fresh_authority() {
         );
     }
 
-    // Case `exhausted_permission_generation_evicts_the_old_authority_projection`.
     {
         let mut app = App::new_with_controlled_inputs(State::new(), Box::new(Publisher));
         app.action_registry_mut().register::<Flip>(FLIP_TYPE);
@@ -326,7 +322,6 @@ fn palette_catalog_materializes_once_per_generation_under_fresh_authority() {
         );
     }
 
-    // Case `reopening_palette_reuses_live_resource_index_until_state_mutates`.
     {
         let mut app = App::new(State::new(), Box::new(Publisher));
         app.action_registry_mut().register::<Flip>(FLIP_TYPE);
@@ -356,7 +351,6 @@ fn palette_catalog_materializes_once_per_generation_under_fresh_authority() {
         assert!(app.actions.open_resource_search_cache.borrow().is_none());
     }
 
-    // Case `denied_lazy_search_action_never_crosses_the_host_permission_door`.
     {
         let mut app = App::new_with_controlled_inputs(State::new(), Box::new(Publisher));
         app.action_registry_mut().register::<Flip>(FLIP_TYPE);
@@ -598,7 +592,6 @@ fn native_directional_keys_reach_the_focused_control_before_host_navigation() {
 
 #[test]
 fn palette_dispatch_routes_through_the_app_and_its_visible_controls() {
-    // Case `ctrl_k_scopes_to_resources_then_dispatch_mutates_doc_and_records_undo`.
     {
         let mut app = App::new_with_controlled_inputs(State::new(), Box::new(Publisher));
         app.action_registry_mut().register::<Flip>(FLIP_TYPE);
@@ -664,7 +657,6 @@ fn palette_dispatch_routes_through_the_app_and_its_visible_controls() {
         );
     }
 
-    // Case `synthesized_semantic_action_routes_back_to_its_visible_control`.
     {
         let mut app = App::new(
             State::new(),
@@ -687,7 +679,6 @@ fn palette_dispatch_routes_through_the_app_and_its_visible_controls() {
         assert!(!route.disabled);
     }
 
-    // Case `exact_widget_palette_request_resolves_only_declared_actions`.
     {
         let mut app = App::new(State::new(), Box::new(Publisher));
         app.action_registry_mut().register::<Flip>(FLIP_TYPE);
@@ -707,7 +698,6 @@ fn palette_dispatch_routes_through_the_app_and_its_visible_controls() {
         );
     }
 
-    // Case `ctrl_k_content_row_navigates_through_the_app`:
     // A content row does NOT dispatch — it hands its id back through
     // [`Widget::activate_search_result`] instead.
     {
@@ -756,7 +746,6 @@ fn palette_dispatch_routes_through_the_app_and_its_visible_controls() {
         );
     }
 
-    // Case `projected_view_preserves_pending_edit_and_eventual_attribution`.
     {
         let peeked = std::rc::Rc::new(std::cell::Cell::new(0));
         let mut app = App::new_with_controlled_inputs(
@@ -802,8 +791,7 @@ fn palette_dispatch_routes_through_the_app_and_its_visible_controls() {
         );
     }
 
-    // Case `ctrl_k_lists_no_projected_control_verb_for_people`: a control's
-    // own verbs (focus it, press it) are how agents and scripts drive what
+    // A control's own verbs (focus it, press it) are how agents and scripts drive what
     // a person presses directly, never a row of their own.
     {
         let button = Button::new("drive-me", "Drive me");

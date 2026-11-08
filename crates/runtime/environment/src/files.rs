@@ -161,10 +161,6 @@ impl FileAction {
     /// every path it reads readable, every path it writes writable. The
     /// answer is the first path refused, so a command with forty operands is
     /// refused in one piece, or nothing.
-    ///
-    /// # Errors
-    ///
-    /// Why the invocation as a whole is refused.
     pub fn admit(&self, grants: &[CapOverride], now: Option<u64>) -> Result<(), String> {
         let named = self.paths().len();
         if named > MAX_OPERANDS {

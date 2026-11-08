@@ -25,9 +25,6 @@ fn selection(session: &SessionCookies) -> SessionSelection {
 /// Verify cookie and raw origin-storage custody codecs before qualifying consumers.
 ///
 /// No native engine, account store, keychain, network or provider is accessed.
-/// # Errors
-/// A supported codec no longer round-trips, leaks diagnostics, accepts foreign
-/// identity/setup/selection bindings, or accepts foreign origin storage.
 pub fn probe_service_session_codecs() -> Result<Vec<SessionSelection>, String> {
     use browser_continuity::sessions::{Cookie, OriginStorage, SameSite};
     let failure = || "Selected account consumer contract failed".to_owned();

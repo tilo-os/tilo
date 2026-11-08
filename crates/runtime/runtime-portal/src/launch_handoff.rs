@@ -32,9 +32,6 @@ pub const FRAMING: Framing = Framing::little_endian(1024).reject_empty();
 
 /// Name the app and room a collaboration connection is for, as the first
 /// thing on it: what the broker attests against the session's launch record.
-///
-/// # Errors
-/// The stream refuses the write.
 pub fn write(stream: &mut UnixStream, app_id: &str, workspace_id: &str) -> std::io::Result<()> {
     write_launch(
         stream,
@@ -50,9 +47,6 @@ pub fn write(stream: &mut UnixStream, app_id: &str, workspace_id: &str) -> std::
 /// session makes for one of its windows is for: the broker attests it
 /// against the launch record of exactly that window, so two windows of one
 /// app in one room never take each other's.
-///
-/// # Errors
-/// The stream refuses the write.
 pub fn write_window(
     stream: &mut UnixStream,
     app_id: &str,
@@ -75,9 +69,6 @@ pub fn write_window(
 /// broker then binds the connection to the process executing the task
 /// ([`crate::process_binding`]). Hosts without the custody protocol take it
 /// as the plain handoff.
-///
-/// # Errors
-/// The stream refuses the write.
 pub fn write_executing(
     stream: &mut UnixStream,
     app_id: &str,

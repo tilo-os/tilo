@@ -40,20 +40,19 @@ static DEV_IMAGE_SESSION_BUILD_MARKER: [u8; 27] = *b"tilo-dev-image-session-v1--
 fn main() -> std::process::ExitCode {
     use std::process::ExitCode;
 
-    // A workspace this session joins is decoded in a worker process started
-    // from this executable; that worker is served here and exits. This comes
-    // before anything here starts a thread, as serving one requires.
+    // A workspace this session joins is decoded in a worker process started from this executable;
+    // that worker is served here and exits. This comes before anything here starts a thread, as
+    // serving one requires.
     if let Some(code) = tilo_automerge_isolate::dispatch_early() {
         return ExitCode::from(code);
     }
-    // The earliest point the process can measure itself from: what the
-    // session's own startup marks are read against.
+    // The earliest point the process can measure itself from: what the session's own startup marks
+    // are read against.
     tilo_startup_metrics::init();
     let _startup_metrics = tilo_startup_metrics::ScopedDumper;
     tilo_startup_metrics::mark("main-start");
-    // Everything this process reports, and the panic that would end it, goes
-    // through the one log from here on — including the render service, which
-    // is this binary in its own mode.
+    // Everything this process reports, and the panic that would end it, goes through the one log
+    // from here on — including the render service, which is this binary in its own mode.
     tilo_session_logging::install();
     // Libraries that parallelise on their own (message groups, text layout,
     // rendering) build rayon's process-wide pool on first use: build it here,
@@ -61,20 +60,19 @@ fn main() -> std::process::ExitCode {
     tilo_rt::bound_parallel_pool();
 
     let args: Vec<String> = std::env::args().skip(1).collect();
-    // An app's workspace render service is this binary in its own mode: it
-    // opens no display and starts no session (`tilo-render-service`).
+    // An app's workspace render service is this binary in its own mode: it opens no display and
+    // starts no session (`tilo-render-service`).
     if let Some(code) = tilo_render_service::dispatch(&args) {
         return code;
     }
     let (ours, command) = split_command(&args);
-    // `--firstboot` is the host package's wrapper hook, which goes on to the
-    // session it was starting.
+    // `--firstboot` is the host package's wrapper hook, which goes on to the session it was
+    // starting.
     let host_desktop = ours.iter().any(|arg| arg == "--host-desktop");
     if host_desktop {
-        // A session installed on another distribution keeps its device
-        // identity where that login can write, and every child it starts —
-        // the launcher, the brokers — reads the same tree. This runs before
-        // anything here starts a thread, as it requires.
+        // A session installed on another distribution keeps its device identity where that login
+        // can write, and every child it starts — the launcher, the brokers — reads the same tree.
+        // This runs before anything here starts a thread, as it requires.
         match tilo_onboarding_host::identity_provisioning::configure_host_identity_root() {
             Ok(root) => eprintln!(
                 "Tilo host session: device identity will be stored under {}",
@@ -86,8 +84,8 @@ fn main() -> std::process::ExitCode {
             }
         }
     }
-    // The desktop's tilolang surfaces start compiled once Cranelift compiled them in an
-    // earlier session.
+    // The desktop's tilolang surfaces start compiled once Cranelift compiled them in an earlier
+    // session.
     if let Some(cache) = tilo_paths::xdg::cache_home()
         && let Err(error) = tilolang_tilo::runtime::engine::keep_compiled_in(
             cache.join("tilo").join("tilolang-compiled"),
@@ -137,7 +135,7 @@ fn main() -> std::process::ExitCode {
     start(ours, command, line, host_desktop, &identity)
 }
 
-/// The session's own arguments and the command it starts, split at `--`.
+/// The session's own arguments and the command it starts, split at `--` .
 #[cfg(target_os = "linux")]
 fn split_command(args: &[String]) -> (&[String], &[String]) {
     match args.iter().position(|arg| arg == "--") {
@@ -149,9 +147,8 @@ fn split_command(args: &[String]) -> (&[String], &[String]) {
     }
 }
 
-/// The machine's first boot: setup runs and the process stops there, before
-/// any GPU, font or session state is opened. What it returns is the code the
-/// process exits with when it stops here.
+/// The machine's first boot: setup runs and the process stops there, before any GPU, font or
+/// session state is opened. What it returns is the code the process exits with when it stops here.
 #[cfg(target_os = "linux")]
 fn first_boot(ours: &[String], host_desktop: bool) -> Option<std::process::ExitCode> {
     use std::process::ExitCode;
@@ -166,8 +163,8 @@ fn first_boot(ours: &[String], host_desktop: bool) -> Option<std::process::ExitC
         }),
         Ok(Some(OneShot::SetupThenSession)) => {
             if let Err(error) = firstboot::run_setup(host_desktop) {
-                // A machine that cannot be prepared still boots: the person
-                // sees what is missing rather than a login that never comes.
+                // A machine that cannot be prepared still boots: the person sees what is missing
+                // rather than a login that never comes.
                 eprintln!("tilo-session: first boot setup failed: {error}; starting anyway");
             }
             None
@@ -180,19 +177,17 @@ fn first_boot(ours: &[String], host_desktop: bool) -> Option<std::process::ExitC
     }
 }
 
-/// What the command line asked of the session: the backend it runs on, the
-/// size of a headless or nested one, and what it reaches of the desktop it
-/// runs in.
+/// What the command line asked of the session: the backend it runs on, the size of a headless or
+/// nested one, and what it reaches of the desktop it runs in.
 #[cfg(target_os = "linux")]
 struct CommandLine {
     backend: Backend,
     size: (u16, u16),
-    /// The scale a headless output draws at (`--scale`), or the physical size
-    /// of its panel (`--panel-mm`), which decides the scale
-    /// ([`tilo_compositor::panel_scale`]). `None` draws at 1.
+    /// The scale a headless output draws at (`--scale`), or the physical size of its panel
+    /// (`--panel-mm`), which decides the scale ([`tilo_compositor::panel_scale`]). `None` draws at
+    /// 1.
     headless: HeadlessPanel,
-    /// The connector a headless session's first output carries
-    /// (`--connector`).
+    /// The connector a headless session's first output carries (`--connector`).
     connector: String,
     /// The displays a headless session opens after the first (`--output`).
     outputs: Vec<NamedOutput>,
@@ -203,15 +198,14 @@ struct CommandLine {
     /// (`--admit-repl PATH`, as often as they name one): their decision,
     /// made as they start the session.
     admit_repl: Vec<std::path::PathBuf>,
-    /// Where the development test-control socket opens, when the command
-    /// line named one and this build opens it.
+    /// Where the development test-control socket opens, when the command line named one and this
+    /// build opens it.
     test_control: Option<std::path::PathBuf>,
-    /// Where the owner's control socket opens, when this session serves one:
-    /// the path the command line named, else the seat's own
-    /// (`--headless-owner-control` opts a headless session in).
+    /// Where the owner's control socket opens, when this session serves one: the path the command
+    /// line named, else the seat's own (`--headless-owner-control` opts a headless session in).
     admin_control: Option<std::path::PathBuf>,
-    /// Whether the session publishes the records of the tilolang apps installed in its app
-    /// store (`--seed-apps`, in a development build).
+    /// Whether the session publishes the records of the tilolang apps installed in its app store
+    /// (`--seed-apps`, in a development build).
     seed_apps: bool,
 }
 
@@ -232,9 +226,8 @@ fn device_owner() -> std::io::Result<bool> {
     )
 }
 
-/// The density a headless output comes up at: a scale named outright, or the
-/// panel's physical size, from which the scale is derived as a real
-/// connector's is.
+/// The density a headless output comes up at: a scale named outright, or the panel's physical size,
+/// from which the scale is derived as a real connector's is.
 #[cfg(target_os = "linux")]
 #[derive(Clone, Copy, Debug, PartialEq)]
 enum HeadlessPanel {
@@ -244,7 +237,7 @@ enum HeadlessPanel {
     Millimetres((u32, u32)),
 }
 
-/// The argument `flag` names on `ours`.
+/// The argument `flag` names on `ours` .
 #[cfg(target_os = "linux")]
 fn value<'a>(ours: &'a [String], flag: &str) -> Option<&'a str> {
     ours.iter()
@@ -253,7 +246,7 @@ fn value<'a>(ours: &'a [String], flag: &str) -> Option<&'a str> {
         .map(String::as_str)
 }
 
-/// Every argument `flag` names on `ours`, in order.
+/// Every argument `flag` names on `ours` , in order.
 #[cfg(target_os = "linux")]
 fn values<'a>(ours: &'a [String], flag: &str) -> Vec<&'a str> {
     ours.iter()
@@ -269,8 +262,8 @@ fn values<'a>(ours: &'a [String], flag: &str) -> Vec<&'a str> {
 #[cfg(target_os = "linux")]
 type NamedOutput = (String, (u16, u16), Option<(i32, i32)>);
 
-/// The headless display `value` names: `WxH`, `WxH@X,Y`, and `NAME=` before
-/// either to name the connector, which is `HEADLESS-{index}` otherwise.
+/// The headless display `value` names: `WxH` , `WxH@X,Y` , and `NAME=` before either to name the
+/// connector, which is `HEADLESS-{index}` otherwise.
 #[cfg(target_os = "linux")]
 fn named_output(value: &str, index: usize) -> Option<NamedOutput> {
     let (name, rest) = match value.split_once('=') {
@@ -349,8 +342,8 @@ mod tests {
     }
 }
 
-/// The output `ours` asks for: its backend, the panel it draws, and whether
-/// the tilolang shell runs.
+/// The output `ours` asks for: its backend, the panel it draws, and whether the tilolang shell
+/// runs.
 #[cfg(target_os = "linux")]
 struct Output {
     backend: Backend,
@@ -358,11 +351,10 @@ struct Output {
     size: (u16, u16),
     /// The density a headless output draws at.
     headless: HeadlessPanel,
-    /// The connector a headless session's first output carries, so a desk
-    /// can be posed as one whose panel is a named connector.
+    /// The connector a headless session's first output carries, so a desk can be posed as one whose
+    /// panel is a named connector.
     connector: String,
-    /// The displays a headless session opens after the first, each its own
-    /// output where it is put.
+    /// The displays a headless session opens after the first, each its own output where it is put.
     outputs: Vec<NamedOutput>,
     shell: bool,
 }
@@ -386,9 +378,8 @@ fn parse_output(ours: &[String]) -> Option<Output> {
         .and_then(|size| size.split_once('x'))
         .and_then(|(w, h)| Some((w.parse().ok()?, h.parse().ok()?)))
         .unwrap_or((1280, 720));
-    // A headless output's density, as DRM takes its own from the connector:
-    // a scale named outright, or the panel's physical size, from which the
-    // scale is derived. Without either it draws at 1.
+    // A headless output's density, as DRM takes its own from the connector: a scale named outright,
+    // or the panel's physical size, from which the scale is derived. Without either it draws at 1.
     let headless = match (value(ours, "--scale"), value(ours, "--panel-mm")) {
         (Some(scale), _) => match scale.parse::<f64>() {
             Ok(scale) if scale.is_finite() && scale > 0.0 => HeadlessPanel::Scale(scale),
@@ -444,8 +435,7 @@ fn parse_output(ours: &[String]) -> Option<Output> {
     })
 }
 
-/// The panel's physical size `--panel-mm` names: across and down, in whole
-/// millimetres.
+/// The panel's physical size `--panel-mm` names: across and down, in whole millimetres.
 #[cfg(target_os = "linux")]
 fn millimetres(mm: &str) -> Option<(u32, u32)> {
     let (across, down) = mm.split_once('x')?;
@@ -465,8 +455,8 @@ fn bus(ours: &[String], flag: &str) -> Bus {
     }
 }
 
-/// What a session in a window of another desktop reaches of it: no bus of it
-/// unless a flag names one, and no displays exported to it.
+/// What a session in a window of another desktop reaches of it: no bus of it unless a flag names
+/// one, and no displays exported to it.
 #[cfg(target_os = "linux")]
 fn reach(ours: &[String], backend: Backend) -> Reach {
     Reach::new(
@@ -478,8 +468,8 @@ fn reach(ours: &[String], backend: Backend) -> Reach {
     )
 }
 
-/// The programs the person admits to act as them at the agent door
-/// (`--admit-repl PATH`, as often as they name one).
+/// The programs the person admits to act as them at the agent door (`--admit-repl PATH`, as often
+/// as they name one).
 #[cfg(target_os = "linux")]
 fn admit_repl(ours: &[String]) -> Vec<std::path::PathBuf> {
     ours.iter()
@@ -489,8 +479,8 @@ fn admit_repl(ours: &[String]) -> Vec<std::path::PathBuf> {
         .collect()
 }
 
-/// Where the development test-control socket opens, when the command line
-/// named one and this build opens it.
+/// Where the development test-control socket opens, when the command line named one and this build
+/// opens it.
 #[cfg(target_os = "linux")]
 fn test_control(ours: &[String]) -> Option<std::path::PathBuf> {
     let named = value(ours, "--test-control");
@@ -505,9 +495,8 @@ fn test_control(ours: &[String]) -> Option<std::path::PathBuf> {
 /// Where the owner's control socket opens, when this session serves one.
 #[cfg(target_os = "linux")]
 fn admin_control(ours: &[String], backend: Backend) -> Option<std::path::PathBuf> {
-    // The owner's door: the seat's own for a session that owns the machine, the
-    // headless session's own when it was asked to open one, and nothing for a
-    // session in another desktop's window.
+    // The owner's door: the seat's own for a session that owns the machine, the headless session's
+    // own when it was asked to open one, and nothing for a session in another desktop's window.
     let named = ours
         .iter()
         .position(|arg| arg == "--admin-control")
@@ -562,8 +551,7 @@ fn seed_apps(ours: &[String]) -> bool {
     seed
 }
 
-/// The command line `ours` parsed, or `None` when it names a backend there
-/// is not.
+/// The command line `ours` parsed, or `None` when it names a backend there is not.
 #[cfg(target_os = "linux")]
 fn command_line(ours: &[String]) -> Option<CommandLine> {
     let output = parse_output(ours)?;
@@ -613,35 +601,31 @@ fn start(
         seed_apps,
     } = line;
     let buses = reach.buses.clone();
-    // A mark never waits for the disk from here on: the session is several
-    // threads already, and the file is written beside them.
+    // A mark never waits for the disk from here on: the session is several threads already, and the
+    // file is written beside them.
     tilo_startup_metrics::start_writer();
     tilo_startup_metrics::mark("services-start");
-    // Who sits here, read now and kept current by workers: nothing the loop
-    // asks of the identity directory waits on the disk.
+    // Who sits here, read now and kept current by workers: nothing the loop asks of the identity
+    // directory waits on the disk.
     tilo_session::identity::install();
     tilo_startup_metrics::mark("identity-installed");
-    // The font system every renderer shares is built on a thread from here:
-    // the services, the desk build and the compositor's first frame run
-    // beside it, and what needs text finds it ready. Building it on this
-    // thread instead put font discovery and face mapping (the font index
-    // alone is a large read) in front of everything the session says to its
-    // first client.
+    // The font system every renderer shares is built on a thread from here: the services, the desk
+    // build and the compositor's first frame run beside it, and what needs text finds it ready.
+    // Building it on this thread instead put font discovery and face mapping (the font index alone
+    // is a large read) in front of everything the session says to its first client.
     let _warmup = ui::warmup::spawn_warmup();
     let wake = tilo_service::LoopWake::default();
-    // The person's settings, read once here: the power policy they resolve is
-    // part of them.
+    // The person's settings, read once here: the power policy they resolve is part of them.
     let config = tilo_session::SessionConfig::load();
     tilo_startup_metrics::mark("settings-read");
-    // The machine's power: that policy, applied by the session's loop and
-    // acted on over logind by the service started beside the others. A
-    // headless session has no lid, keys or person at a seat: it would act on
-    // the battery and idle of a machine whose own session does that.
+    // The machine's power: that policy, applied by the session's loop and acted on over logind by
+    // the service started beside the others. A headless session has no lid, keys or person at a
+    // seat: it would act on the battery and idle of a machine whose own session does that.
     let power =
         (backend != Backend::Headless).then(|| tilo_session_power::PowerLink::new(config.power));
-    // A session in a window of another desktop runs on that desktop's
-    // machine: its services stay off the host's daemons, its device stays
-    // the host's, and no session action it takes reaches the host.
+    // A session in a window of another desktop runs on that desktop's machine: its services stay
+    // off the host's daemons, its device stays the host's, and no session action it takes reaches
+    // the host.
     let machine = if matches!(backend, Backend::Nested) {
         tilo_session::Machine::Window
     } else {
@@ -662,22 +646,21 @@ fn start(
             .as_ref()
             .map(|power_link| power_link.registry().clone()),
     );
-    // Where input captures and the shared screens are is the portal's: its
-    // capture broker tells them what the session's seat and outputs are.
+    // Where input captures and the shared screens are is the portal's: its capture broker tells
+    // them what the session's seat and outputs are.
     let portal = desktop
         .as_ref()
         .and_then(|desktop| desktop.portal())
         .map(|serving| portal_link.with_captures(serving.input_captures().clone()));
     tell_the_person(backend, desktop.as_deref());
-    // The apps this session opens start from its own displays and the
-    // person's variables, once the compositor has bound its socket.
+    // The apps this session opens start from its own displays and the person's variables, once the
+    // compositor has bound its socket.
     let launch = std::rc::Rc::new(tilo_session::mount::apps::Apps::new(
         tilo_app_launch::SessionEnvironment::from_process(),
         Some(wake.handle()),
     ));
-    // A drive the person plugs in is announced like any other news, and the
-    // eject the notice offers goes over the system bus the desktop services
-    // already hold.
+    // A drive the person plugs in is announced like any other news, and the eject the notice offers
+    // goes over the system bus the desktop services already hold.
     let drives = drives(backend, desktop.as_ref(), &wake);
     tilo_startup_metrics::mark("services-done");
     let mut options = Options {
@@ -699,8 +682,8 @@ fn start(
         admin_control,
         ..device_options(machine, config)
     };
-    // A headless session has no input device: nothing the person does can
-    // ever reset its idle timers, so they would only blank and lock it.
+    // A headless session has no input device: nothing the person does can ever reset its idle
+    // timers, so they would only blank and lock it.
     if backend == Backend::Headless {
         options.config.idle = tilo_compositor::IdleConfig::never();
     }
@@ -711,22 +694,21 @@ fn start(
             Ok(apps) => options.services.push(Box::new(apps)),
             Err(error) => eprintln!("tilo-session: the seeded apps did not load: {error}"),
         }
-        // A Rust app's sample resources and views, so a shell draws them live: a development
-        // shot of a Rust view on the canvas builds with `dev-rust-views`.
+        // A Rust app's sample resources and views, so a shell draws them live: a development shot
+        // of a Rust view on the canvas builds with `dev-rust-views` .
         #[cfg(feature = "dev-rust-views")]
         options
             .services
             .push(Box::new(tilo_session::dev_rust_views::RustApps::new()));
     }
-    // A signal ends the loop rather than the process, so the session drops
-    // what it holds as it does when it ends on its own.
+    // A signal ends the loop rather than the process, so the session drops what it holds as it does
+    // when it ends on its own.
     if let Err(error) = tilo_session::termination::install(options.wake.handle()) {
         eprintln!("tilo-session: a signal ends this session without its cleanup: {error}");
     }
-    // The lock record is the login's, kept by the session that owns the
-    // machine: one in a window of another desktop, or a headless one, keeps no
-    // record of its host's login. A record that cannot be armed stops the
-    // login rather than start one that a crash would leave unlocked.
+    // The lock record is the login's, kept by the session that owns the machine: one in a window of
+    // another desktop, or a headless one, keeps no record of its host's login. A record that cannot
+    // be armed stops the login rather than start one that a crash would leave unlocked.
     if backend == Backend::Drm {
         match tilo_session::recovery::Recovery::from_environment() {
             Ok(recovery) => options.recovery = recovery,
@@ -779,8 +761,7 @@ struct Doors<'a> {
     admin: Option<&'a std::path::Path>,
 }
 
-/// The session on `backend`'s displays, at `size` where the backend runs in
-/// one.
+/// The session on `backend` 's displays, at `size` where the backend runs in one.
 fn start_session(
     backend: Backend,
     options: tilo_session::Options,
@@ -794,8 +775,8 @@ fn start_session(
     match backend {
         Backend::Headless => {
             let output = OutputConfig::new(connector, i32::from(size.0), i32::from(size.1));
-            // The scale a real connector starts at: the one named, or the one
-            // its panel's density argues for, as DRM derives it.
+            // The scale a real connector starts at: the one named, or the one its panel's density
+            // argues for, as DRM derives it.
             let output = match headless {
                 HeadlessPanel::Scale(scale) => output.with_scale(scale),
                 HeadlessPanel::Millimetres(mm) => output.panel(mm),
@@ -849,14 +830,14 @@ fn run(
     };
     tilo_startup_metrics::mark("display-bound");
     println!("WAYLAND_DISPLAY={socket}");
-    // A session added to this machine's own login serves the installed folder
-    // importer: whether identity setup is over, on the socket named for this
-    // session's display, and the review the person left to be opened after it.
+    // A session added to this machine's own login serves the installed folder importer: whether
+    // identity setup is over, on the socket named for this session's display, and the review the
+    // person left to be opened after it.
     if host_desktop && let Err(error) = session.serve_folder_import(std::ffi::OsStr::new(&socket)) {
         tracing::warn!(%error, display = %socket, "Add folders cannot ask whether setup is done");
     }
-    // Where a program of this login asks to work here as an agent: what
-    // `tilolang repl --door` connects to. The session bound it as it started.
+    // Where a program of this login asks to work here as an agent: what `tilolang repl --door`
+    // connects to. The session bound it as it started.
     if let Some(door) = doors.agent.filter(|door| door.exists()) {
         println!("TILO_AGENT_DOOR={}", door.display());
     }
@@ -872,17 +853,16 @@ fn run(
             admin.display()
         );
     }
-    // X11 is served per workspace: each gets a display when an app is launched
-    // into it, and its server starts when that app connects. `--no-x11` serves
-    // none of them.
+    // X11 is served per workspace: each gets a display when an app is launched into it, and its
+    // server starts when that app connects. `--no-x11` serves none of them.
     let x11 = session.compositor().x11_displays();
     match &x11 {
         Some(displays) if ours.iter().any(|arg| arg == "--no-x11") => displays.disable(),
         Some(_) => {}
         None => tracing::warn!("the compositor serves no X11 display: no X11 apps"),
     }
-    // The apps opened from now on connect where the person's windows are, and
-    // each is told the display of the workspace it is launched into.
+    // The apps opened from now on connect where the person's windows are, and each is told the
+    // display of the workspace it is launched into.
     if let Some(launch) = launch {
         launch.set_displays(
             tilo_paths::xdg::runtime_dir_or_default().join(&socket),
@@ -914,10 +894,9 @@ fn run(
     }
 }
 
-/// What this desktop knows of its own machine reaches the person through
-/// their notifications. Only the session that owns the machine tells them: a
-/// session in a window of another desktop, or a headless one, has that
-/// machine's storage, updates and history to leave alone.
+/// What this desktop knows of its own machine reaches the person through their notifications. Only
+/// the session that owns the machine tells them: a session in a window of another desktop, or a
+/// headless one, has that machine's storage, updates and history to leave alone.
 #[cfg(target_os = "linux")]
 fn tell_the_person(
     backend: Backend,
@@ -930,9 +909,9 @@ fn tell_the_person(
     }
 }
 
-/// The drives this desktop announces, when it owns the machine and the
-/// desktop services hold a system bus to ask udisks over: a session in a
-/// window of another desktop leaves that desktop's drives to it.
+/// The drives this desktop announces, when it owns the machine and the desktop services hold a
+/// system bus to ask udisks over: a session in a window of another desktop leaves that desktop's
+/// drives to it.
 #[cfg(target_os = "linux")]
 fn drives(
     backend: Backend,
@@ -950,10 +929,10 @@ fn drives(
     )))
 }
 
-/// A main loop that stops for good keeps the display frozen on its last frame
-/// and the keyboard unread; the watchdog records why and ends the process, so
-/// the person comes back to the login screen. Only the TTY backend owns the
-/// display; a window or a headless run leaves nothing to hand back.
+/// A main loop that stops for good keeps the display frozen on its last frame and the keyboard
+/// unread; the watchdog records why and ends the process, so the person comes back to the login
+/// screen. Only the TTY backend owns the display; a window or a headless run leaves nothing to hand
+/// back.
 #[cfg(target_os = "linux")]
 fn watch_the_loop(backend: Backend, session: &mut tilo_session::Session) {
     if backend == Backend::Drm
@@ -992,11 +971,10 @@ fn desktop_services(
     }
 }
 
-/// What the session reads of this device: the person's `config` as read once
-/// at startup, their search, quick settings over its own backends and the
-/// players, its session actions and who unlocks it. A session in a window of
-/// another desktop ([`tilo_session::Machine::Window`]) reads no device of its
-/// own and carries out no session action: the window's machine is the host's.
+/// What the session reads of this device: the person's `config` as read once at startup, their
+/// search, quick settings over its own backends and the players, its session actions and who
+/// unlocks it. A session in a window of another desktop ([`tilo_session::Machine::Window`]) reads
+/// no device of its own and carries out no session action: the window's machine is the host's.
 #[cfg(target_os = "linux")]
 fn device_options(
     machine: tilo_session::Machine,
@@ -1010,20 +988,18 @@ fn device_options(
     Options {
         config,
         search: search_options(),
-        // The apps this session starts reach its services over the socket the
-        // launcher hands them; a session inside another desktop's window
-        // serves them on a socket of its own, leaving that desktop's alone.
+        // The apps this session starts reach its services over the socket the launcher hands them;
+        // a session inside another desktop's window serves them on a socket of its own, leaving
+        // that desktop's alone.
         action_plane: ActionPlane::for_machine(machine),
-        // A program of this login asks the person at the seat's agent door
-        // to work in a workspace as an agent; a session in another
-        // desktop's window serves none.
+        // A program of this login asks the person at the seat's agent door to work in a workspace
+        // as an agent; a session in another desktop's window serves none.
         agent_door: owned.then(tilo_session::agent_door::path).flatten(),
-        // A session in another desktop's window dims none of the window's
-        // machine: the display it draws in is that desktop's.
+        // A session in another desktop's window dims none of the window's machine: the display it
+        // draws in is that desktop's.
         backlights: owned.then(|| Box::new(Screens) as Box<dyn Backlights>),
-        // The controllers in the room drive the desktop of the session that
-        // owns the machine; a session in another desktop's window leaves
-        // them to that desktop.
+        // The controllers in the room drive the desktop of the session that owns the machine; a
+        // session in another desktop's window leaves them to that desktop.
         controllers: owned.then_some(tilo_session::controllers::Source::Machine),
         session_actions: if owned {
             os_actions::perform_session_action
@@ -1039,20 +1015,19 @@ fn device_options(
         user: tilo_session::unlock::login_user(),
         verifier: tilo_session::unlock::installed(),
         state: tilo_paths::state_dir(),
-        // The desk the shell this session replaces kept here, brought over on
-        // the first start that has no desk of its own.
+        // The desk the shell this session replaces kept here, brought over on the first start that
+        // has no desk of its own.
         old_desk: tilo_session::shell_state_path(),
-        // A session in a window of another desktop leaves the machine's
-        // traffic to the session that owns it.
+        // A session in a window of another desktop leaves the machine's traffic to the session that
+        // owns it.
         vpn: owned.then(Vpn::machine),
         ..Options::default()
     }
 }
 
-/// The surface apps the session starts itself: its lock screen, its on-screen
-/// keyboard, and quick settings. Each runs when what
-/// it shows is wanted; a machine without one loses that surface, never the
-/// session.
+/// The surface apps the session starts itself: its lock screen, its on-screen keyboard, and quick
+/// settings. Each runs when what it shows is wanted; a machine without one loses that surface,
+/// never the session.
 #[cfg(target_os = "linux")]
 fn surfaces() -> Vec<tilo_session::surfaces::Surface> {
     let mut surfaces = lock_screen();
@@ -1067,9 +1042,8 @@ fn surfaces() -> Vec<tilo_session::surfaces::Surface> {
     surfaces
 }
 
-/// The lock screen, when one is installed: the app whose window asks the
-/// compositor for the session's lock, drawn on every output and given every
-/// input while the session is locked.
+/// The lock screen, when one is installed: the app whose window asks the compositor for the
+/// session's lock, drawn on every output and given every input while the session is locked.
 #[cfg(target_os = "linux")]
 fn lock_screen() -> Vec<tilo_session::surfaces::Surface> {
     let program = match tilo_session::surfaces::program_path("tilo-lock-screen") {
@@ -1086,8 +1060,8 @@ fn lock_screen() -> Vec<tilo_session::surfaces::Surface> {
     ]
 }
 
-/// `program` started with `rest` on `environment`'s displays and, when a
-/// flag named the session bus, on that bus rather than the one it inherits.
+/// `program` started with `rest` on `environment` 's displays and, when a flag named the session
+/// bus, on that bus rather than the one it inherits.
 #[cfg(target_os = "linux")]
 fn start_command(
     program: &str,
@@ -1099,8 +1073,8 @@ fn start_command(
     started
         .args(rest)
         .env("WAYLAND_DISPLAY", &environment.wayland_display);
-    // A display belongs to a workspace: an app started with the session is in
-    // none, and gets the display of the workspace it is launched into later.
+    // A display belongs to a workspace: an app started with the session is in none, and gets the
+    // display of the workspace it is launched into later.
     started.env_remove("DISPLAY");
     if let Some(address) = session_bus {
         started.env("DBUS_SESSION_BUS_ADDRESS", address);
@@ -1132,8 +1106,8 @@ fn services(
     let mut services: Vec<Box<dyn tilo_session::Service>> = Vec::new();
     let mut following: Following = Vec::new();
     services.push(Box::new(tilo_settings_service::SettingsService::new()));
-    // What this session ran into: the list as the resource's reading and
-    // each record's text as its own, which Settings reads as an app does.
+    // What this session ran into: the list as the resource's reading and each record's text as its
+    // own, which Settings reads as an app does.
     services.push(Box::new(tilo_crash_records::CrashRecords::new()));
     if !machine.is_owned() {
         return (services, following);
@@ -1182,8 +1156,7 @@ fn services(
     (services, following)
 }
 
-/// The audio service (`tilo-audio`): beside the session, else where the
-/// image installs it.
+/// The audio service (`tilo-audio`): beside the session, else where the image installs it.
 #[cfg(target_os = "linux")]
 fn audio_helper() -> Option<std::path::PathBuf> {
     let beside = std::env::current_exe()
@@ -1195,10 +1168,9 @@ fn audio_helper() -> Option<std::path::PathBuf> {
         .find(|path| path.exists())
 }
 
-/// What search reads of this device: the Tilo apps installed here and the
-/// machine's own and the apps the person can get, each followed as it
-/// changes, what apps hold, the person's files, the records the workspaces
-/// hold, and the search sources they switched off.
+/// What search reads of this device: the Tilo apps installed here and the machine's own and the
+/// apps the person can get, each followed as it changes, what apps hold, the person's files, the
+/// records the workspaces hold, and the search sources they switched off.
 #[cfg(target_os = "linux")]
 fn search_options() -> tilo_session::SearchOptions {
     use std::sync::Arc;
@@ -1210,8 +1182,8 @@ fn search_options() -> tilo_session::SearchOptions {
             .map(Arc::new);
         (home.clone(), FileNames::scan(home), content)
     });
-    // What a reference written under an app's earlier id names, for search
-    // and for every decision this process makes.
+    // What a reference written under an app's earlier id names, for search and for every decision
+    // this process makes.
     let content = tilo_desktop_search::content_index::session();
     match app_catalogue::apps::earlier_ids_from_env() {
         Ok(earlier) => {
@@ -1228,8 +1200,8 @@ fn search_options() -> tilo_session::SearchOptions {
             &settings_store::load_section(tilo_desktop_search::preferences::SECTION),
         ),
         places: tilo_desktop_search::providers::places::RecentPlaces::default(),
-        // The records the workspaces on this device hold, read now and
-        // followed as the apps of those workspaces name more.
+        // The records the workspaces on this device hold, read now and followed as the apps of
+        // those workspaces name more.
         records: Some(tilo_session::Records::of_device()),
     }
 }

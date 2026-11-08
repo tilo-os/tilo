@@ -1,9 +1,7 @@
 //! The platform-neutral desktop, as widgets over the shared desktop model.
-//!
-//! Every model type (workspaces, strips, groups, tabs, the workspace schema and
-//! desktop commands) comes from [`tilo_desktop_model`]; this crate holds
-//! none. Hosts supply platform reads through snapshot fields and traits
-//! (chrome, activity, tile resolution) and apply the intents it emits.
+//! Every model type (workspaces, strips, groups, tabs, the workspace schema and desktop commands)
+//! comes from [`tilo_desktop_model`]; this crate holds none. Hosts supply platform reads through
+//! snapshot fields and traits (chrome, activity, tile resolution) and apply the intents it emits.
 #![cfg_attr(
     test,
     allow(
@@ -54,9 +52,9 @@ pub mod workspace_menu;
 mod workspace_names;
 pub mod workspace_settings;
 
-// The workspace history pane, the notification stack and centre, the
-// drill-in list and the desktop's catalogue are portable: they live with the
-// desktop surface, which the browser builds too.
+// The workspace history pane, the notification stack and centre, the drill-in list and the
+// desktop's catalogue are portable: they live with the desktop surface, which the browser builds
+// too.
 pub use tilo_desktop_surface::{activity, drill_in, history_log, i18n, notifications};
 
 #[cfg(test)]

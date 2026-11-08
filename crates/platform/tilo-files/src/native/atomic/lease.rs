@@ -69,11 +69,6 @@ pub struct FileLease {
 
 impl FileLease {
     /// Block until `mode` can be acquired on `file`.
-    ///
-    /// # Errors
-    ///
-    /// Returns the native I/O error when the operating system cannot acquire
-    /// the requested lease.
     pub fn acquire(file: File, mode: LeaseMode) -> io::Result<Self> {
         FileLock::lock(file, mode.into()).map(|lock| Self { lock })
     }
@@ -93,19 +88,12 @@ impl FileLease {
     }
 
     /// Query native identity through the handle that owns the lease.
-    ///
-    /// # Errors
-    /// Returns the native metadata error when identity cannot be observed.
     #[cfg(any(unix, windows))]
     pub fn identity(&self) -> io::Result<crate::native::atomic::FileIdentity> {
         crate::native::atomic::FileIdentity::of(self.lock.file())
     }
 
     /// Read metadata through the handle that owns the lease.
-    ///
-    /// # Errors
-    ///
-    /// Returns the native I/O error when metadata cannot be read.
     pub fn metadata(&self) -> io::Result<Metadata> {
         self.lock.file().metadata()
     }

@@ -90,9 +90,6 @@ pub const CHILD_FD: i32 = 33;
 /// Open and authenticate the app's connection, when it declares
 /// `system-info` and the session serves it. A session without the service
 /// costs the app its readings, never its launch.
-///
-/// # Errors
-/// The handoff cannot be written on a connection that was opened.
 pub fn resolve_bind(
     manifest: &ManifestView,
     plan: &CapabilityPlan,

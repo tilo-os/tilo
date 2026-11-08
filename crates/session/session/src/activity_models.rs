@@ -1,19 +1,17 @@
-//! The model that names what a run of changes was: the one the person's AI
-//! settings choose for Activity, else their default, asked through the model
-//! gateway as Activity, which may ask a completion without tools and nothing
-//! more. A session with no provider configured never asks, and its history
-//! keeps the deterministic digest.
+//! The model that names what a run of changes was: the one the person's AI settings choose for
+//! Activity, else their default, asked through the model gateway as Activity, which may ask a
+//! completion without tools and nothing more. A session with no provider configured never asks, and
+//! its history keeps the deterministic digest.
 
 use agent_provider_config::ProviderConfig;
 use tilo_desktop_surface::activity::describer;
 
-/// The package the describer asks as: what the person's AI settings can
-/// choose a model for, and what the gateway authorizes for a plain
-/// completion.
+/// The package the describer asks as: what the person's AI settings can choose a model for, and
+/// what the gateway authorizes for a plain completion.
 pub(crate) const PACKAGE: &str = "so.tilo.activity";
 
-/// Whether the person chose any model for Activity: what the describer asks
-/// of the desk's thread, before a request is worth building.
+/// Whether the person chose any model for Activity: what the describer asks of the desk's thread,
+/// before a request is worth building.
 pub(crate) fn configured() -> bool {
     ProviderConfig::load().selection_for(PACKAGE).is_some()
 }
@@ -31,8 +29,8 @@ pub(crate) fn ask(job: &tilo_desktop_surface::activity::describer::Job) -> Optio
     Some(describer::answer_text(&answer))
 }
 
-/// The model Activity asks, as a capability of this session; `None` while
-/// settings choose none or no gateway runs in this session.
+/// The model Activity asks, as a capability of this session; `None` while settings choose none or
+/// no gateway runs in this session.
 pub(crate) fn models() -> Option<ui::models::Models> {
     let config = ProviderConfig::load();
     let (profile_id, model_id) = config
@@ -52,8 +50,8 @@ pub(crate) fn models() -> Option<ui::models::Models> {
     }
 }
 
-/// A connection to this session's model gateway, made for Activity the way
-/// the launcher makes one for an app it starts.
+/// A connection to this session's model gateway, made for Activity the way the launcher makes one
+/// for an app it starts.
 fn gateway() -> Option<std::os::fd::OwnedFd> {
     let name = launcher::services::MODEL_GATEWAY_SERVICE;
     let requirement = launcher::manifest::ServiceReq::parse(

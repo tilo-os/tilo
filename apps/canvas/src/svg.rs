@@ -760,9 +760,6 @@ impl Writer {
 }
 
 /// The SVG an import names: markup itself, a file, or stored content.
-///
-/// # Errors
-/// Returns why the SVG cannot be had.
 pub fn source(svg: &str) -> Result<String, String> {
     let trimmed = svg.trim_start();
     if trimmed.starts_with('<') {

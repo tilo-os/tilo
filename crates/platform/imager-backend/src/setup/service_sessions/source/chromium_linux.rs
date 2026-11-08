@@ -25,9 +25,6 @@ pub struct ChromiumLinux {
 impl ChromiumLinux {
     /// The brand must come from the user's recognized source selection. No keyring
     /// is contacted until an actual selected v11 cookie needs its existing password.
-    ///
-    /// # Errors
-    /// Refuses non-Chromium, foreign/elevated users, and unsafe profile custody.
     pub fn for_grant(grant: &SourceGrant, brand: ChromiumBrand) -> Result<Self, SourceError> {
         if brand == ChromiumBrand::Slack452178 {
             return Err(SourceError::UnsupportedEncryption);

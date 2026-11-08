@@ -62,6 +62,22 @@ fn done_day(node: &UiNode, name: &str) -> bool {
     crate::reconcile::flag(node, &format!("{name}_done"))
 }
 
+/// A choice's case as a row tells it at its trailing edge, where the choice says what its cases
+/// hold (`case:as`): a moment as a person reads the hour ("15:00", "Sat 09:00"), a length of
+/// time as they read it ("1 hr 30 min"). `None` where the case's value is not of that kind,
+/// so a choice of words shows its labels alone.
+#[must_use]
+pub fn shown_case(node: &UiNode, value: &str) -> Option<String> {
+    let Some(Value::Text(kind)) = node.props.get("case:as") else {
+        return None;
+    };
+    match kind.as_str() {
+        "time" => moment_of(value).map(|at| ui::format::moment_fact(&at)),
+        "duration" => duration_of(value).map(ui::format::duration),
+        _ => None,
+    }
+}
+
 /// How the stored `value` of a day or a time of day (`kind` is `date` or `time`) reads in a
 /// sentence where no view can stand beside it: a day as the day fact (`Today`, `Friday`,
 /// `Jun 29`), a time of day as a list shows when something came. Anything else, and text that

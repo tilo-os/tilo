@@ -39,11 +39,6 @@ pub(crate) struct ConfinedRead {
 
 impl ConfinedRead {
     /// Mount `record` of `app_id` in `workspace` over `source` under `policy`.
-    ///
-    /// # Errors
-    ///
-    /// The worker did not start or confine itself, or the component did not
-    /// mount.
     pub(crate) fn prepare(
         app_id: &str,
         workspace: &str,
@@ -63,10 +58,6 @@ impl ConfinedRead {
     }
 
     /// Replace the component's permissions with `policy`.
-    ///
-    /// # Errors
-    ///
-    /// The worker could not be asked.
     pub(crate) fn set_policy(&mut self, policy: &ViewReadPolicy) -> Result<(), String> {
         done(self.process.call(&Request::ReadPolicy {
             policy: json(policy)?,
@@ -74,19 +65,11 @@ impl ConfinedRead {
     }
 
     /// The registered reads the component offers now.
-    ///
-    /// # Errors
-    ///
-    /// The worker could not be asked.
     pub(crate) fn operations(&mut self) -> Result<Vec<ActionDescriptor>, String> {
         descriptors(self.process.call(&Request::ReadOperations)?)
     }
 
     /// Perform one registered read.
-    ///
-    /// # Errors
-    ///
-    /// The door's refusal, or the worker could not run it.
     pub(crate) fn invoke(
         &mut self,
         address: &ActionAddress,
@@ -113,11 +96,6 @@ pub(crate) struct ConfinedViews {
 
 impl ConfinedViews {
     /// Load `doc`, a document of `app_id`.
-    ///
-    /// # Errors
-    ///
-    /// The worker did not start or confine itself, or the bytes are not a
-    /// document.
     pub(crate) fn load(app_id: &str, doc: Vec<u8>) -> Result<Self, String> {
         let mut process = Process::start(Mode::Views)?;
         done(process.call(&Request::ViewsLoad {
@@ -128,10 +106,6 @@ impl ConfinedViews {
     }
 
     /// The views `wanted` offers under `policy`: [`crate::AppCatalogue::resource_views`].
-    ///
-    /// # Errors
-    ///
-    /// The worker could not be asked.
     pub(crate) fn views(
         &mut self,
         wanted: &ViewResourceQuery,
@@ -154,10 +128,6 @@ pub(crate) struct ConfinedTitles {
 impl ConfinedTitles {
     /// What `doc`, a document of `app_id`, is called:
     /// [`crate::AppCatalogue::resource_title`].
-    ///
-    /// # Errors
-    ///
-    /// The worker did not start or confine itself, or could not be asked.
     pub(crate) fn title(&mut self, app_id: &str, doc: Vec<u8>) -> Result<Option<String>, String> {
         let process = match &mut self.process {
             Some(process) => process,

@@ -1,6 +1,5 @@
-//! The parts of the session that are assembled beside the desk: each in a
-//! file of its own, installed in one place, so a part can be written and
-//! read without reading the whole host.
+//! The parts of the session that are assembled beside the desk: each in a file of its own,
+//! installed in one place, so a part can be written and read without reading the whole host.
 
 pub mod agents;
 pub mod app_tabs;

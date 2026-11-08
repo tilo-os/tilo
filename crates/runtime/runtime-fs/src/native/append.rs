@@ -18,8 +18,6 @@ impl FsSession {
     /// Validate a genuine Write lease and existing positioned writable file.
     /// This probe never reads, creates, truncates, reopens a path or changes
     /// descriptor flags; future writes still recheck live authority.
-    /// # Errors
-    /// Refuses stale scope, missing Write, readonly/special/append descriptors.
     pub fn validate_write(&self, file: &FileGrant) -> Result<(), FsError> {
         let table = self.call()?;
         let descriptor = self.writable_file(&table, file)?;
@@ -104,8 +102,6 @@ impl FsSession {
 impl FsAppendHandle {
     /// Perform exactly one bounded atomic kernel append; return a partial count.
     /// A lost RPC reply has an unknown effect and must never be retried blindly.
-    /// # Errors
-    /// Refuses stale or revoked custody and oversized payloads; returns host IO.
     pub fn append(&self, bytes: &[u8]) -> Result<u32, FsError> {
         let table = self.session.call()?;
         let original = self.session.writable_file(&table, &self.file)?;

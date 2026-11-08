@@ -1,17 +1,13 @@
 //! An output's colour: ICC calibration and HDR signalling.
-//!
-//! An output with an ICC profile, or driven in HDR, gets a final GLES pass:
-//! the scene renders into an offscreen texture, and one element draws that
-//! texture onto the output through a shader that applies the profile (a 3D
-//! lookup table sampled from the qcms transform sRGB to the panel) and, for
-//! HDR, composites the per-surface layers the scene recorded at their own
-//! precision and encodes the result as a PQ BT.2020 signal with SDR white at
-//! the person's chosen brightness ([`hdr_layers`]). HDR also tells the
-//! display: the connector's `HDR_OUTPUT_METADATA`, `Colorspace` and
-//! `max bpc`, and the output's swapchain moves to 10 bits a channel where the
-//! GPU draws into such a buffer and the primary plane shows it
-//! ([`depth_formats`]), so the PQ signal does not band. Outputs without
-//! either keep the plain path, planes and direct scanout included.
+//! An output with an ICC profile, or driven in HDR, gets a final GLES pass: the scene renders into
+//! an offscreen texture, and one element draws that texture onto the output through a shader that
+//! applies the profile (a 3D lookup table sampled from the qcms transform sRGB to the panel) and,
+//! for HDR, composites the per-surface layers the scene recorded at their own precision and encodes
+//! the result as a PQ BT.2020 signal with SDR white at the person's chosen brightness
+//! ([`hdr_layers`]). HDR also tells the display: the connector's `HDR_OUTPUT_METADATA` ,
+//! `Colorspace` and `max bpc` , and the output's swapchain moves to 10 bits a channel where the GPU
+//! draws into such a buffer and the primary plane shows it ([`depth_formats`]), so the PQ signal
+//! does not band. Outputs without either keep the plain path, planes and direct scanout included.
 
 use std::path::{Path, PathBuf};
 
@@ -41,10 +37,9 @@ use tilo_color_pipeline::hdr_surface::HdrLayer;
 /// Grid points a side of the calibration lookup table.
 pub(crate) const GRID: u32 = 33;
 
-/// The calibration lookup table for `transform` (RGBA8 in, RGBA8 out): the
-/// grid's colours run through it, laid out as `GRID` blue slices side by
-/// side, red across each slice, green down. RGBA8 rows, `GRID * GRID`
-/// pixels wide, `GRID` high.
+/// The calibration lookup table for `transform` (RGBA8 in, RGBA8 out): the grid's colours run
+/// through it, laid out as `GRID` blue slices side by side, red across each slice, green down.
+/// RGBA8 rows, `GRID * GRID` pixels wide, `GRID` high.
 pub(crate) fn lut_atlas(transform: impl Fn(&mut [u8])) -> Vec<u8> {
     let step = |index: u32| -> u8 {
         u8::try_from(
@@ -81,9 +76,9 @@ pub(crate) fn icc_atlas(path: &Path) -> Option<Vec<u8>> {
     Some(lut_atlas(|pixels| transform.apply(pixels)))
 }
 
-/// Length of `struct hdr_output_metadata` in `drm_mode.h`: a `u32` type and
-/// the 26-byte `hdr_metadata_infoframe`, padded to the struct's 4-byte
-/// alignment. The kernel refuses a blob of any other size.
+/// Length of `struct hdr_output_metadata` in `drm_mode.h` : a `u32` type and the 26-byte
+/// `hdr_metadata_infoframe` , padded to the struct's 4-byte alignment. The kernel refuses a blob of
+/// any other size.
 pub(crate) const HDR_OUTPUT_METADATA_BYTES: usize = 32;
 
 /// CTA-861-G EOTF code for SMPTE ST 2084 (PQ).
@@ -100,10 +95,10 @@ pub(crate) fn hdr_output_metadata(hdr: &Hdr) -> [u8; HDR_OUTPUT_METADATA_BYTES] 
         u16::try_from(micro.checked_div(20).unwrap_or(0).min(50_000)).unwrap_or(50_000)
     };
     let mut fields: Vec<u8> = Vec::with_capacity(HDR_OUTPUT_METADATA_BYTES);
-    // `metadata_type`: HDMI_STATIC_METADATA_TYPE1.
+    // `metadata_type` : HDMI_STATIC_METADATA_TYPE1.
     fields.extend_from_slice(&0_u32.to_le_bytes());
     fields.push(EOTF_SMPTE_ST2084);
-    // Infoframe `metadata_type`: static metadata type 1.
+    // Infoframe `metadata_type` : static metadata type 1.
     fields.push(0);
     for (x, y) in hdr.primaries.iter().chain([&hdr.white_point]) {
         fields.extend_from_slice(&chroma(*x).to_le_bytes());
@@ -123,9 +118,9 @@ pub(crate) fn hdr_output_metadata(hdr: &Hdr) -> [u8; HDR_OUTPUT_METADATA_BYTES] 
     blob
 }
 
-/// Whether HDR can be signalled on `connector` at all: the driver offers the
-/// metadata property, a BT.2020 colourspace and ten bits a channel. What
-/// [`signal_hdr`] needs, asked without switching anything.
+/// Whether HDR can be signalled on `connector` at all: the driver offers the metadata property, a
+/// BT.2020 colourspace and ten bits a channel. What [`signal_hdr`] needs, asked without switching
+/// anything.
 pub(crate) fn hdr_supported(
     device: &DrmDevice,
     connector: connector::Handle,
@@ -170,10 +165,9 @@ pub(crate) fn hdr_supported(
     }
 }
 
-/// The ICC profiles a person may choose, path → the name they read: every
-/// profile in the system's and the person's ICC directories that qcms can
-/// build a transform from, so the list never offers a profile that cannot be
-/// applied. Read once; the directories do not change under a session.
+/// The ICC profiles a person may choose, path → the name they read: every profile in the system's
+/// and the person's ICC directories that qcms can build a transform from, so the list never offers
+/// a profile that cannot be applied. Read once; the directories do not change under a session.
 pub(crate) fn color_profiles() -> std::collections::BTreeMap<String, String> {
     static PROFILES: std::sync::OnceLock<std::collections::BTreeMap<String, String>> =
         std::sync::OnceLock::new();
@@ -245,8 +239,7 @@ pub(crate) fn color_profiles() -> std::collections::BTreeMap<String, String> {
         .clone()
 }
 
-/// The most profiles offered, so a machine with a profile library cannot
-/// make the list endless.
+/// The most profiles offered, so a machine with a profile library cannot make the list endless.
 const MAX_PROFILES: usize = 128;
 /// The largest file read as an ICC profile.
 const MAX_PROFILE_BYTES: u64 = 16 * 1024 * 1024;
@@ -267,8 +260,7 @@ pub(crate) fn colorspace_values<'a>(
     Some((default?, bt2020?))
 }
 
-/// The link depth HDR needs: ten bits a channel, or more when the connector
-/// already runs deeper.
+/// The link depth HDR needs: ten bits a channel, or more when the connector already runs deeper.
 pub(crate) fn hdr_max_bpc(current: u64, range_max: u64) -> Option<u64> {
     (range_max >= 10).then(|| current.max(10).min(range_max))
 }
@@ -276,8 +268,8 @@ pub(crate) fn hdr_max_bpc(current: u64, range_max: u64) -> Option<u64> {
 /// The 8-bit formats an output's swapchain uses, best first.
 pub(crate) const SDR_FORMATS: [Fourcc; 2] = [Fourcc::Argb8888, Fourcc::Xrgb8888];
 
-/// The 10-bit formats an HDR output's swapchain may use, best first: opaque
-/// ones (the commonest on primary planes) before those with alpha.
+/// The 10-bit formats an HDR output's swapchain may use, best first: opaque ones (the commonest on
+/// primary planes) before those with alpha.
 pub(crate) const HDR_FORMATS: [Fourcc; 4] = [
     Fourcc::Xrgb2101010,
     Fourcc::Xbgr2101010,
@@ -334,8 +326,8 @@ pub(crate) struct ColorPass {
     age: usize,
     program: GlesTexProgram,
     lut: Option<GlesTexture>,
-    /// The scene drawn again with each described surface in its weight channel
-    /// colour: how much of each layer reaches a pixel.
+    /// The scene drawn again with each described surface in its weight channel colour: how much of
+    /// each layer reaches a pixel.
     lit: Option<GlesTexture>,
     lit_damage: OutputDamageTracker,
     /// The HDR layers the scene drew this frame and the planes they sample.
@@ -352,7 +344,7 @@ impl ColorPass {
         &self.wanted
     }
 
-    /// The pass for `output` as `wanted`, on the renderer drawing it.
+    /// The pass for `output` as `wanted` , on the renderer drawing it.
     #[allow(
         clippy::cast_precision_loss,
         reason = "an output's size in pixels is below 2^24, exactly representable as f32"
@@ -399,8 +391,8 @@ impl ColorPass {
             }
             None => None,
         };
-        // Unit 0 draws the scene; the calibration table, the weight pass's
-        // scene and the three layer planes take the units after it.
+        // Unit 0 draws the scene; the calibration table, the weight pass's scene and the three
+        // layer planes take the units after it.
         let flag = |on: bool| if on { 1.0_f32 } else { 0.0 };
         let matrix = wanted.filter.matrix();
         let mut uniforms = vec![
@@ -448,10 +440,9 @@ impl ColorPass {
         })
     }
 
-    /// Render the scene offscreen; the pass's element then draws it. `hdr` are
-    /// the layers the scene recorded, and `weights` the same scene drawn with
-    /// each of them in its weight channel colour: an HDR output composites
-    /// their own light on top of what they leave.
+    /// Render the scene offscreen; the pass's element then draws it. `hdr` are the layers the scene
+    /// recorded, and `weights` the same scene drawn with each of them in its weight channel colour:
+    /// an HDR output composites their own light on top of what they leave.
     pub(crate) fn render<'r>(
         &mut self,
         renderer: &mut Renderer<'r>,
@@ -495,8 +486,8 @@ impl ColorPass {
         Ok(states)
     }
 
-    /// The scene drawn again with each described surface in its layer's weight
-    /// channel colour, into the texture the shader reads the weights from.
+    /// The scene drawn again with each described surface in its layer's weight channel colour, into
+    /// the texture the shader reads the weights from.
     fn render_weights<'r>(
         &mut self,
         renderer: &mut Renderer<'r>,
@@ -509,8 +500,7 @@ impl ColorPass {
                 .map_err(|error| format!("offscreen layer weights: {error:?}"))?;
             self.lit = Some(texture);
         }
-        // Every weight can have changed wherever a layer is, so the pass is
-        // drawn whole.
+        // Every weight can have changed wherever a layer is, so the pass is drawn whole.
         let Some(texture) = self.lit.as_mut() else {
             return Ok(());
         };
@@ -674,10 +664,9 @@ impl<'r> RenderElement<Renderer<'r>> for ColorPass {
     }
 }
 
-/// Switch HDR signalling on `connector` on (with `hdr`) or off. Properties
-/// the driver lacks are skipped; a display that cannot take HDR shows the
-/// PQ picture washed out, which the session avoids by asking only for
-/// displays whose EDID offers PQ.
+/// Switch HDR signalling on `connector` on (with `hdr` ) or off. Properties the driver lacks are
+/// skipped; a display that cannot take HDR shows the PQ picture washed out, which the session
+/// avoids by asking only for displays whose EDID offers PQ.
 pub(crate) fn signal_hdr(
     device: &DrmDevice,
     connector: connector::Handle,

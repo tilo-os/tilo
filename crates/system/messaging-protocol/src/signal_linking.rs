@@ -98,8 +98,6 @@ impl SignalEnrollment {
     }
     /// The result is private identity evidence awaiting explicit host review.
     /// It does not publish an account, grant access or activate a receiver.
-    /// # Errors
-    /// Refuses stale/expired attempts, retirement or a malformed provider ACI.
     pub async fn finish(&self, attempt: String) -> Result<VerifiedSignalEnrollment, SendError> {
         let account = self.linker.finish(attempt).await?;
         Ok(VerifiedSignalEnrollment {
@@ -248,8 +246,6 @@ impl SignalLinking {
     }
     /// Begin only after the native setup door confirms the user operation.
     /// Cancellation interrupts only this owned stream, without replay.
-    /// # Errors
-    /// Refuses revoked authority, repeated setup or invalid private provider data.
     pub async fn begin(self: &Arc<Self>) -> Result<SignalPairing, SendError> {
         self.reserve(FRESH, STARTING)?;
         let mut guard = Interrupted::new(self.clone());
@@ -297,8 +293,6 @@ impl SignalLinking {
     }
     /// Finish exactly the displayed attempt and the native host's frozen ACI.
     /// A timeout or wrong account retires this generation; neither is replayed.
-    /// # Errors
-    /// Refuses stale attempts, expiry, revoked authority or another linked ACI.
     pub async fn finish(
         self: &Arc<Self>,
         attempt: String,

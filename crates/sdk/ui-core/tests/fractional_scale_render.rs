@@ -30,7 +30,6 @@ const LOGICAL_B: f64 = 50.0;
 scale factor (1.25/1.75), always positive and well within u32's range"
 )]
 fn fractional_scales_map_logical_edges_to_proportional_physical_edges() {
-    // Case `fractional_scale_maps_logical_to_physical_with_a_hard_edge`.
     {
         fn fractional_scale_maps_logical_to_physical_with_a_hard_edge() {
             let scale = 1.5_f64;
@@ -101,7 +100,6 @@ fn fractional_scales_map_logical_edges_to_proportional_physical_edges() {
         fractional_scale_maps_logical_to_physical_with_a_hard_edge();
     }
 
-    // Case `different_fractional_factors_place_the_edge_proportionally`.
     {
         fn different_fractional_factors_place_the_edge_proportionally() {
             // Proves the placement scales with the factor, not a fixed rounding.

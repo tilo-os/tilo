@@ -47,9 +47,6 @@ const PROGRAM_WAIT_MS: u64 = super::super::MAX_WAIT_MS;
 pub trait TaskHosts: Send + Sync {
     /// Start the host of the task `task` (the agent run) in `workspace`: the door's end of the task's
     /// program connection.
-    ///
-    /// # Errors
-    /// The host could not be started.
     fn start(&self, workspace: &str, task: &str) -> std::io::Result<std::os::fd::OwnedFd>;
 }
 
@@ -896,9 +893,6 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
     /// shares the same host and `let` scope as the agent's own `tilo` calls. The program's
     /// step is [`PersonStep`]: the `ProgramStep` the run records, and the references a later
     /// program may take (`t3`).
-    ///
-    /// # Errors
-    /// The host could not be started, or the program could not be sent.
     pub async fn person_line(&self, source: &str) -> Result<PersonStep, String> {
         let (text, answer) = self.run_as_person(source, &self.program_author()).await?;
         let failed = !matches!(

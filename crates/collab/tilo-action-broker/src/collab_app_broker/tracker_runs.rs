@@ -81,9 +81,6 @@ pub(super) fn reports_on_own_issue(
 }
 
 /// The steering page of `run` for an agent whose lease reached `revision`.
-///
-/// # Errors
-/// The lease claims messages the agent never took in.
 pub(super) fn control_of(
     run: &TrackerRun,
     revision: u64,
@@ -261,9 +258,6 @@ impl AppBrokerState {
     }
 
     /// The tracker's current record of `run`, a run of one of its issues.
-    ///
-    /// # Errors
-    /// The tracker cannot be read, or holds no such run any more.
     pub(super) fn tracker_run_of(&self, run: &PendingTaskRun) -> Result<TrackerRun, String> {
         let binding = &run.native;
         let runs = self
@@ -363,10 +357,6 @@ impl AppBrokerState {
     /// What an agent polling `run` is told: cancelled once the tracker no
     /// longer holds it as going, else the messages to it it has not taken
     /// in.
-    ///
-    /// # Errors
-    /// The tracker cannot be read, or the lease claims messages it never
-    /// took in.
     pub(super) fn tracker_status(
         &self,
         run: &PendingTaskRun,
@@ -427,9 +417,6 @@ impl AppBrokerState {
     /// An agent's report on its run of an issue. The tracker is told by the
     /// agent itself, through the tracker's actions; here a run that ends
     /// stops its children and goes to history, as one run to undo whole.
-    ///
-    /// # Errors
-    /// The run's children cannot be stopped.
     pub(super) fn report_tracker_run(
         &self,
         run: &PendingTaskRun,
@@ -523,10 +510,6 @@ impl AppBrokerState {
     /// The person's answer to a child of `run` that asks first, as
     /// [`native_confirmation_for`](Self::native_confirmation_for) decides it
     /// for a workspace task.
-    ///
-    /// # Errors
-    /// The child waits for the person (ask on the issue), the person
-    /// declined it, or the run or action can no longer be read.
     pub(super) fn tracker_confirmation(
         &self,
         run: &PendingTaskRun,
@@ -606,9 +589,6 @@ impl AppBrokerState {
 
     /// Admit a host activation for `run`'s child as [`Self::admit_tracker_action`]
     /// admits the child.
-    ///
-    /// # Errors
-    /// As the run's admission.
     pub(super) fn admit_task_launch(
         &self,
         run: &PendingTaskRun,
@@ -632,9 +612,6 @@ impl AppBrokerState {
     }
 
     /// The revision of steering `run`'s agent has applied.
-    ///
-    /// # Errors
-    /// The run ended or cannot be read.
     pub(super) fn applied_task_revision(&self, run: &PendingTaskRun) -> Result<u64, String> {
         Ok(self.tracker_run_of(run)?.applied_revision())
     }

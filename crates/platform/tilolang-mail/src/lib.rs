@@ -70,9 +70,6 @@ pub fn live_origin(
 
 /// The origin of an instance in a tilolang host, over the mail connector process at the far end
 /// of `stream`, waking the instance with `wake` when it says something.
-///
-/// # Errors
-/// The socket cannot be shared with the thread that reads it.
 pub fn remote_origin(
     stream: std::os::unix::net::UnixStream,
     wake: tilolang_tilo::background::Waker,
@@ -143,9 +140,6 @@ pub const CONNECTOR_ORIGIN_ENV: &str = runtime_portal::origin_connector::ORIGIN_
 /// Run the connector for `origin` this process was started as (`TILO_TILOLANG_CONNECTOR`), on
 /// the door the launcher handed it, for the settings' accounts, until the session closes the
 /// door.
-///
-/// # Errors
-/// An origin this crate has no connector for, or no door to take instances from.
 #[cfg(feature = "engine")]
 pub fn run_connector(origin: &str) -> Result<(), String> {
     if origin != "imap" {

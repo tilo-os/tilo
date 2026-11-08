@@ -75,18 +75,12 @@ pub fn needs_adoption_at(doc: &Doc, at: &ObjId) -> bool {
 /// Drop the version keys this one replaced: the document keeps its version
 /// under [`VERSION_KEY`], or names none because it is at the first. Returns
 /// whether it dropped any.
-///
-/// # Errors
-/// Returns the document's write error.
 pub fn adopt(doc: &mut Doc) -> Result<bool, ModelError> {
     adopt_at(doc, &ROOT)
 }
 
 /// [`adopt`] of the document whose root is `at`, for a document another
 /// document embeds (a page inside an app's record).
-///
-/// # Errors
-/// Returns the document's write error.
 pub fn adopt_at(doc: &mut Doc, at: &ObjId) -> Result<bool, ModelError> {
     if !needs_adoption_at(doc, at) {
         return Ok(false);
@@ -103,17 +97,11 @@ pub fn adopt_at(doc: &mut Doc, at: &ObjId) -> Result<bool, ModelError> {
 
 /// Record that `doc` is at `version` (nothing for the first version, so
 /// documents of apps that never changed their storage stay as they are).
-///
-/// # Errors
-/// Returns the document's write error.
 pub fn write_version(doc: &mut Doc, version: u32) -> Result<(), ModelError> {
     write_version_at(doc, &ROOT, version)
 }
 
 /// [`write_version`] of the document whose root is `at`.
-///
-/// # Errors
-/// Returns the document's write error.
 pub fn write_version_at(doc: &mut Doc, at: &ObjId, version: u32) -> Result<(), ModelError> {
     if version > 1 || doc.get(at, VERSION_KEY)?.is_some() {
         doc.put(at, VERSION_KEY, ScalarValue::Uint(u64::from(version)))?;
@@ -388,9 +376,6 @@ fn fixture_value(
 
 /// The map stored under `key` of `obj`, when it holds one: a nested record
 /// or a present `Option` of one, which a migration rewrites inside.
-///
-/// # Errors
-/// Returns the document's read error.
 pub fn map_at(doc: &Doc, obj: &ObjId, key: &str) -> Result<Option<ObjId>, ModelError> {
     Ok(match doc.get(obj, key)? {
         Some((Value::Object(automerge::ObjType::Map), map)) => Some(map),
@@ -401,9 +386,6 @@ pub fn map_at(doc: &Doc, obj: &ObjId, key: &str) -> Result<Option<ObjId>, ModelE
 /// The value maps of the items of the [`Collection`](crate::Collection)
 /// stored under `key` of the map `obj`, in no particular order: what a
 /// migration walks to rewrite a field of every item.
-///
-/// # Errors
-/// Returns the document's read error.
 pub fn collection_items(doc: &Doc, obj: &ObjId, key: &str) -> Result<Vec<ObjId>, ModelError> {
     let Some((Value::Object(automerge::ObjType::Map), items)) = doc.get(obj, key)? else {
         return Ok(Vec::new());
@@ -423,9 +405,6 @@ pub fn collection_items(doc: &Doc, obj: &ObjId, key: &str) -> Result<Vec<ObjId>,
 
 /// The maps stored as the values of the map under `key` of `obj` (a
 /// `BTreeMap<String, T>` or [`Map`](crate::Map) of records), by key.
-///
-/// # Errors
-/// Returns the document's read error.
 pub fn map_values(doc: &Doc, obj: &ObjId, key: &str) -> Result<Vec<(String, ObjId)>, ModelError> {
     let Some((Value::Object(automerge::ObjType::Map), map)) = doc.get(obj, key)? else {
         return Ok(Vec::new());

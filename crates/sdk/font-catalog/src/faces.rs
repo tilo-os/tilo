@@ -157,10 +157,6 @@ impl FaceIndex {
     }
 
     /// Write the record into the catalog at `root`.
-    ///
-    /// # Errors
-    ///
-    /// When it cannot be written.
     pub fn write(&self, root: &Path) -> Result<(), Error> {
         let path = root.join(FILE);
         let mut bytes = serde_json::to_vec_pretty(self).map_err(|e| Error::at(&path, e))?;

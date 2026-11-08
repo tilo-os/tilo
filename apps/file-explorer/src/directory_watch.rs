@@ -7,8 +7,8 @@
 //!
 //! A watch only sees changes made through this machine's kernel. Where the
 //! filesystem can change underneath it (a network filesystem, or a FUSE mount
-//! that does not tell the kernel of its remote edits), the watch is
-//! [`Coverage::Partial`]: local edits still show at once, and the caller keeps
+//! that does not tell the kernel of its remote edits), the watch
+//! is [`Coverage::Partial`]: local edits still show at once, and the caller keeps
 //! polling for the rest. tilo-fs tells the kernel of each edit a peer made,
 //! so a watch there is [`Coverage::Complete`]. The watch never opens a file,
 //! so it hydrates nothing.

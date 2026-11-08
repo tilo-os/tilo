@@ -16,9 +16,6 @@ pub struct OsRelease {
 }
 
 /// Parse os-release as data, without expansion, execution, or `ID_LIKE` inheritance.
-///
-/// # Errors
-/// Rejects duplicate keys, malformed assignments/quoting and invalid identities.
 pub fn parse_os_release(input: &str) -> Result<OsRelease, String> {
     let mut fields = HashMap::new();
     for line in input.lines() {

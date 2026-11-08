@@ -638,9 +638,6 @@ pub struct TransferWorker {
 impl TransferWorker {
     /// Drain thread-local source leases after observing a terminal event.
     /// Headless helpers call this before exiting; UI callers retain nonblocking Drop.
-    ///
-    /// # Errors
-    /// Refuses joining an active worker or reports a panicked worker.
     pub fn join_finished(&mut self) -> Result<(), String> {
         if !self.terminal {
             return Err("The transfer worker has not finished".into());

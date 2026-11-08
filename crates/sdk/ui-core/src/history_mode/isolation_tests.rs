@@ -23,9 +23,33 @@ use winit::event::WindowEvent;
 fn resource() -> tilo_actions::ResourceSpec {
     resource_for("live", "fixture.export")
 }
+/// The continuation identity both fixture operations declare: this fixture's keys over the
+/// resource and the operation.
+fn fixture_identity(
+    target: String,
+    handler: String,
+) -> impl for<'a> Fn(tilo_actions::ContinuationQuery<'a>) -> Option<tilo_actions::ContinuationEvidence>
+{
+    let key = move |namespace: &'static str, part: &str| {
+        tilo_actions::ContinuationKey::new(namespace, [part.as_bytes()])
+    };
+    move |query| {
+        let handler_key = || key("ui.history.fixture.handler", &handler);
+        Some(match query {
+            tilo_actions::ContinuationQuery::Exact(_) => {
+                tilo_actions::ContinuationEvidence::Exact {
+                    target: key("ui.history.fixture.target", &target),
+                    handler: handler_key(),
+                }
+            }
+            tilo_actions::ContinuationQuery::Draft => tilo_actions::ContinuationEvidence::Draft {
+                resolution_domain: key("ui.history.fixture.domain", &target),
+                handler: handler_key(),
+            },
+        })
+    }
+}
 fn resource_for(id: &str, operation: &str) -> tilo_actions::ResourceSpec {
-    let target = id.to_owned();
-    let handler = operation.to_owned();
     tilo_actions::ResourceSpec::new(id, "fixture", "Live owner").with_action(
         tilo_actions::ActionSpec::operation(
             "export",
@@ -37,32 +61,7 @@ fn resource_for(id: &str, operation: &str) -> tilo_actions::ResourceSpec {
         .unwrap()
         .execution(tilo_actions::ExecutionMode::Background { cancellable: false })
         .returns(tilo_actions::ResultSpec::Job)
-        .with_continuation_identity(move |query| match query {
-            tilo_actions::ContinuationQuery::Exact(_) => {
-                Some(tilo_actions::ContinuationEvidence::Exact {
-                    target: tilo_actions::ContinuationKey::new(
-                        "ui.history.fixture.target",
-                        [target.as_bytes()],
-                    ),
-                    handler: tilo_actions::ContinuationKey::new(
-                        "ui.history.fixture.handler",
-                        [handler.as_bytes()],
-                    ),
-                })
-            }
-            tilo_actions::ContinuationQuery::Draft => {
-                Some(tilo_actions::ContinuationEvidence::Draft {
-                    resolution_domain: tilo_actions::ContinuationKey::new(
-                        "ui.history.fixture.domain",
-                        [target.as_bytes()],
-                    ),
-                    handler: tilo_actions::ContinuationKey::new(
-                        "ui.history.fixture.handler",
-                        [handler.as_bytes()],
-                    ),
-                })
-            }
-        }),
+        .with_continuation_identity(fixture_identity(id.to_owned(), operation.to_owned())),
     )
 }
 fn prompted_resource_for(
@@ -83,37 +82,10 @@ fn prompted_resource_for(
         },
     );
     spec.type_mut().contract.confirmation = confirmation;
-    let target = id.to_owned();
-    let handler = operation.to_owned();
     let spec = spec
         .execution(tilo_actions::ExecutionMode::Background { cancellable: false })
         .returns(tilo_actions::ResultSpec::Job)
-        .with_continuation_identity(move |query| match query {
-            tilo_actions::ContinuationQuery::Exact(_) => {
-                Some(tilo_actions::ContinuationEvidence::Exact {
-                    target: tilo_actions::ContinuationKey::new(
-                        "ui.history.fixture.target",
-                        [target.as_bytes()],
-                    ),
-                    handler: tilo_actions::ContinuationKey::new(
-                        "ui.history.fixture.handler",
-                        [handler.as_bytes()],
-                    ),
-                })
-            }
-            tilo_actions::ContinuationQuery::Draft => {
-                Some(tilo_actions::ContinuationEvidence::Draft {
-                    resolution_domain: tilo_actions::ContinuationKey::new(
-                        "ui.history.fixture.domain",
-                        [target.as_bytes()],
-                    ),
-                    handler: tilo_actions::ContinuationKey::new(
-                        "ui.history.fixture.handler",
-                        [handler.as_bytes()],
-                    ),
-                })
-            }
-        });
+        .with_continuation_identity(fixture_identity(id.to_owned(), operation.to_owned()));
     tilo_actions::ResourceSpec::new(id, "fixture", "Live owner").with_action(spec)
 }
 

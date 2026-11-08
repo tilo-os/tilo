@@ -195,7 +195,6 @@ fn frame(app: &mut App, width: u32) {
 }
 #[test]
 fn viewport_changes_recompose_like_a_fresh_app_before_paint() {
-    // Case `legacy_composition_matches_fresh_at_multiple_viewports_before_paint`.
     {
         let builds = Rc::new(Cell::new(0));
         let mut app = App::new_with_controlled_inputs(
@@ -241,7 +240,6 @@ fn viewport_changes_recompose_like_a_fresh_app_before_paint() {
         );
     }
 
-    // Case `logical_viewport_changes_recompose_even_at_unchanged_physical_size`.
     {
         let builds = Rc::new(Cell::new(0));
         let mut app = App::new_with_controlled_inputs(
@@ -264,7 +262,6 @@ fn viewport_changes_recompose_like_a_fresh_app_before_paint() {
         );
     }
 
-    // Case `pending_structure_rebuild_is_measured_at_an_unchanged_viewport`.
     {
         let mut app = App::new_with_controlled_inputs(
             State::new(),
@@ -283,7 +280,6 @@ fn viewport_changes_recompose_like_a_fresh_app_before_paint() {
         );
     }
 
-    // Case `oscillating_composition_is_bounded_and_headless_skips_paint`.
     {
         let root = ResponsiveRoot::new(Rc::default());
         let oscillate = root.oscillate.clone();
@@ -318,7 +314,6 @@ fn viewport_changes_recompose_like_a_fresh_app_before_paint() {
         assert!(app.layout.last_layout_logical.is_none());
     }
 
-    // Case `review_failed_headless_resize_can_return_to_last_successful_size`.
     {
         let root = ResponsiveRoot::new(Rc::default());
         let oscillate = root.oscillate.clone();
@@ -334,7 +329,6 @@ fn viewport_changes_recompose_like_a_fresh_app_before_paint() {
         assert_eq!(driver.inspection().root.children.len(), 2);
     }
 
-    // Case `review_native_views_mount_only_after_successful_final_composition`.
     {
         let mut root = ResponsiveRoot::new(Rc::default());
         let calls = Rc::new(std::cell::RefCell::new(Vec::new()));
@@ -428,7 +422,6 @@ fn editing_fixture() -> (State, ResponsiveRoot) {
 
 #[test]
 fn resize_restores_editor_identity_selection_and_focus() {
-    // Case `resize_restores_fresh_editor_by_identity_with_selection_and_scroll`.
     {
         let (state, root) = editing_fixture();
         let scroll = root.scroll.clone();
@@ -475,7 +468,6 @@ fn resize_restores_editor_identity_selection_and_focus() {
         }
     }
 
-    // Case `headless_resize_matches_fresh_and_preserves_selected_edit_target`.
     {
         let builds = Rc::new(Cell::new(0));
         let mut driver = harness(State::new(), ResponsiveRoot::new(builds.clone()), 1200);
@@ -529,7 +521,6 @@ fn resize_restores_editor_identity_selection_and_focus() {
         );
     }
 
-    // Case `review_active_trap_retains_keyed_selection_after_replacing_and_reordering_controls`.
     {
         let (state, mut root) = editing_fixture();
         root.trap = true;
@@ -567,7 +558,6 @@ fn resize_restores_editor_identity_selection_and_focus() {
         }
     }
 
-    // Case `review_new_modal_does_not_restore_outside_focus_or_copy_selection_to_fallback`.
     {
         let (state, mut root) = editing_fixture();
         root.modal_on_narrow = true;

@@ -181,9 +181,6 @@ impl Inhibitor {
 /// `tilo-vmd awake-hold`: keep a lock in place until the lease in `path`
 /// ends, taking a new one (before dropping the old) whenever its deadline
 /// moves.
-///
-/// # Errors
-/// `systemd-inhibit` could not be started.
 pub fn hold(path: &Path) -> std::io::Result<()> {
     let mut current: Option<Inhibitor> = None;
     loop {

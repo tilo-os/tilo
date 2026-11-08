@@ -191,10 +191,6 @@ impl Root {
     /// `trusted_path`: every component from the root down must be a real
     /// directory (the last a regular file when `regular`), owned by the
     /// owner and not group- or world-writable.
-    ///
-    /// # Errors
-    /// A symlink, a foreign owner, a writable component, the wrong type, or
-    /// a component that cannot be examined.
     pub fn trusted_path(&self, relative: &str, regular: bool) -> Result<PathBuf> {
         let parts: Vec<&str> = relative
             .split('/')
@@ -299,9 +295,6 @@ fn names<'a>(list: &[&'a str]) -> BTreeSet<&'a str> {
 }
 
 /// The profile's fields, or `None` when the image has no hardware profile.
-///
-/// # Errors
-/// A profile, definition or update origin the module refuses.
 pub fn read_profile(root: &Root) -> Result<Option<Map<String, Value>>> {
     if !root.present(PROFILE_PATH) {
         require(
@@ -411,9 +404,6 @@ fn optional_list<'a>(
 }
 
 /// `validate_definition`.
-///
-/// # Errors
-/// Every refusal of the module's own validation.
 pub fn validate_definition(data: Value) -> Result<Map<String, Value>> {
     let Value::Object(data) = data else {
         return Err(Error::value(
@@ -832,9 +822,6 @@ fn validate_dmi(data: &Map<String, Value>) -> Result<()> {
 /// `validate_target_imgref(value, root=root)`: a development image's bound
 /// origin, a tilo-vm image under its dev flavour and repository policy, or a
 /// signature-required release repository.
-///
-/// # Errors
-/// Any other update origin.
 pub fn validate_target_imgref(value: &Value, root: &Root) -> Result<()> {
     if let Some(bound) = development_origin(root)? {
         require(
@@ -905,9 +892,6 @@ pub struct DevelopmentTarget {
 
 /// `development_target(value, architecture)`: one explicitly selected
 /// development repository, never production.
-///
-/// # Errors
-/// Anything else.
 pub fn development_target(
     value: &Value,
     architecture: Option<&Value>,
@@ -982,9 +966,6 @@ fn development_policy(repository: &str) -> Value {
 
 /// `development_origin(root)`: the bound development update origin of a
 /// development image, `None` for any other image.
-///
-/// # Errors
-/// A development image whose trust inputs do not bind each other.
 pub fn development_origin(root: &Root) -> Result<Option<Value>> {
     if !root.present(DEVELOPMENT_PATH) {
         return Ok(None);
@@ -1159,10 +1140,6 @@ pub const DEFAULT_TARGET_IMGREF: &str = "registry.tilo.so/tilo/tilo:latest";
 /// follows. A hardware profile's reviewed reference wins and an `override`
 /// may only repeat it; without a profile, the override, the development
 /// image's bound origin or the official default, validated against `root`.
-///
-/// # Errors
-/// A profile or origin the reader refuses, or an override that conflicts
-/// with the profile.
 pub fn install_update_origin(root: &Root, override_ref: &str) -> Result<String> {
     let bound_development = development_origin(root)?;
     let Some(profile) = read_profile(root)? else {

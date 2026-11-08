@@ -171,8 +171,6 @@ impl CaptureAdmission {
     /// Attach only after the exact sealed inventory facts enter this admission's
     /// root-authenticated read claim. The caller retains source guards through
     /// child quiescence; original credentials are changed by the existing shim.
-    /// # Errors
-    /// Refuses duplicate sources, invalid claim bindings, changed descriptors or retired custody.
     pub fn with_original_flatpak_sources(
         mut self,
         binding: OriginalFlatpakBinding,

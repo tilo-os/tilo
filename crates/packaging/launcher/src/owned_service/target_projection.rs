@@ -93,9 +93,6 @@ pub trait TargetProjectionAuthority: super::ServiceAuthority {
     /// Default deny. Only the setup-private adapter retaining the genuine root
     /// edit admission AND constructed filtered source supplies this live object.
     /// Mode or descriptive scope fields alone never establish source rights.
-    ///
-    /// # Errors
-    /// Implementations fail if the live edit admission cannot be revalidated.
     fn selected_parent_edit(&self) -> io::Result<Option<&dyn SelectedParentEditAuthority>> {
         Ok(None)
     }

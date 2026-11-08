@@ -20,7 +20,8 @@ use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 
 /// What a key shows: its character, or the icon of what it does.
-enum Face {
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum KeyFace {
     Text(String),
     Icon(Icon),
 }
@@ -243,18 +244,21 @@ impl PasscodeKeyboard {
         }
     }
 
-    fn face(self, key: PasscodeKey) -> Face {
+    /// What `key` shows on this keyboard: the character it types (shift
+    /// applied), its layer's word, or the icon of what it does.
+    #[must_use]
+    pub fn face(self, key: PasscodeKey) -> KeyFace {
         if let Some(character) = self.character(key) {
-            return Face::Text(character);
+            return KeyFace::Text(character);
         }
         match key {
-            PasscodeKey::Char(_) | PasscodeKey::Space => Face::Text(String::new()),
-            PasscodeKey::Letters => Face::Text("ABC".into()),
-            PasscodeKey::Shift => Face::Icon(Icon::ArrowBigUp),
-            PasscodeKey::Symbols if self.symbols => Face::Text("abc".into()),
-            PasscodeKey::Symbols => Face::Text("?123".into()),
-            PasscodeKey::Backspace => Face::Icon(Icon::Delete),
-            PasscodeKey::Enter => Face::Icon(Icon::CornerDownLeft),
+            PasscodeKey::Char(_) | PasscodeKey::Space => KeyFace::Text(String::new()),
+            PasscodeKey::Letters => KeyFace::Text("ABC".into()),
+            PasscodeKey::Shift => KeyFace::Icon(Icon::ArrowBigUp),
+            PasscodeKey::Symbols if self.symbols => KeyFace::Text("abc".into()),
+            PasscodeKey::Symbols => KeyFace::Text("?123".into()),
+            PasscodeKey::Backspace => KeyFace::Icon(Icon::Delete),
+            PasscodeKey::Enter => KeyFace::Icon(Icon::CornerDownLeft),
         }
     }
 
@@ -293,9 +297,9 @@ impl PasscodeKeyboard {
             )]
             let size = (key_height * 0.45).clamp(12.0, 28.0) as f32;
             let label = match self.face(key) {
-                Face::Text(label) if label.is_empty() => continue,
-                Face::Text(label) => label,
-                Face::Icon(icon) => {
+                KeyFace::Text(label) if label.is_empty() => continue,
+                KeyFace::Text(label) => label,
+                KeyFace::Icon(icon) => {
                     let side = f64::from(size);
                     let center = key_rect.center();
                     icon.draw(

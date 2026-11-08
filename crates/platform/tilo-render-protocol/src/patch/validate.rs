@@ -353,9 +353,6 @@ impl<'a> Validator<'a> {
     }
 
     /// Check the node's own parts, not its children, against its kind.
-    ///
-    /// # Errors
-    /// A part of it its kind does not take.
     pub fn shape(&self, node: &Node, depth: usize) -> Result<(), Refused> {
         if let Some(name) = node.kind.strip_prefix(COMPONENT_PREFIX) {
             let description = self

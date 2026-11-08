@@ -491,6 +491,12 @@ impl<M: ListModel> VirtualList<M> {
             self.fold_row(&key, !folded);
             return;
         }
+        // A press on the row standing open landed inside the item it shows — in its
+        // document, or on the row over it — not on a row of the list: what the item's own
+        // controls did not take, the item keeps.
+        if self.open.as_ref() == Some(&key) {
+            return;
+        }
         self.click_row(key, modifiers);
     }
 

@@ -1,12 +1,10 @@
-//! The "Following Ada" banner: what says, while this person's view tracks
-//! someone else's, whose view it is and how to stop.
-//!
-//! A 2 px frame in their colour runs round the work area, and a small bar
-//! hangs in the transients' zone under the top bar (never on a window's
-//! bar) with their face, "Following Ada" and Stop. When the person's own
-//! input ends it, the bar says "Stopped following" for a moment. The
-//! native shell and the browser paint the same banner; each host keeps its
-//! own follow state and tells the banner when following starts and ends.
+//! The "Following Ada" banner: what says, while this person's view tracks someone else's, whose
+//! view it is and how to stop.
+//! A 2 px frame in their colour runs round the work area, and a small bar hangs in the transients'
+//! zone under the top bar (never on a window's bar) with their face, "Following Ada" and Stop. When
+//! the person's own input ends it, the bar says "Stopped following" for a moment. The native shell
+//! and the browser paint the same banner; each host keeps its own follow state and tells the banner
+//! when following starts and ends.
 
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
@@ -22,8 +20,7 @@ use ui::widget::{Button, ButtonFace, ButtonRole};
 use crate::collaborators::RosterRow;
 use crate::i18n::{t, t_args};
 
-/// How long "Stopped following" stays after the person's own input ended
-/// following.
+/// How long "Stopped following" stays after the person's own input ended following.
 pub const STOPPED_FOR: Duration = Duration::from_secs(1);
 
 /// Where the banner may go this frame, and how it moves.
@@ -49,8 +46,8 @@ pub struct FollowBanner {
     shown: Option<RosterRow>,
     chip: Rect,
     stop: Rect,
-    /// What the banner says as painted ("Following Ada", "Stopped
-    /// following"), and its Stop's words while following.
+    /// What the banner says as painted ("Following Ada", "Stopped following"), and its Stop's words
+    /// while following.
     said: (String, String),
 }
 
@@ -72,8 +69,8 @@ impl FollowBanner {
             .show(true, Appear::SPEC, motion, source, now);
     }
 
-    /// Following ended; `by_own_input` when the person took their view
-    /// back by doing something of their own (the bar says so a moment).
+    /// Following ended; `by_own_input` when the person took their view back by doing something of
+    /// their own (the bar says so a moment).
     pub fn ended(
         &mut self,
         by_own_input: bool,
@@ -101,9 +98,8 @@ impl FollowBanner {
         self.stop
     }
 
-    /// The banner for assistive technology, while it is up: a polite
-    /// status saying whose view this follows (or that it stopped), with
-    /// its Stop ([`STOP_TARGET`]) while following.
+    /// The banner for assistive technology, while it is up: a polite status saying whose view this
+    /// follows (or that it stopped), with its Stop ([`STOP_TARGET`]) while following.
     #[must_use]
     pub fn accessibility(&self) -> Option<ui::a11y::AccessNode> {
         use ui::a11y::{AccessNode, AccessState, Politeness, Role};
@@ -138,9 +134,9 @@ impl FollowBanner {
         self.stopped.and_then(|at| at.checked_add(STOPPED_FOR))
     }
 
-    /// Paint the banner. `following` is the followed person's row while
-    /// following, as the host knows it now. Returns `false` when following
-    /// lost its person (they are gone from the roster): the host stops.
+    /// Paint the banner. `following` is the followed person's row while following, as the host
+    /// knows it now. Returns `false` when following lost its person (they are gone from the
+    /// roster): the host stops.
     pub fn draw(
         &mut self,
         scene: &mut Scene,

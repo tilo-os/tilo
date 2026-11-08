@@ -24,10 +24,6 @@ pub fn generation(doc: &AutoCommit) -> u64 {
 
 /// A document holding `doc`'s state as it stands, in one change by `actor`
 /// with no dependencies, at the next base generation.
-///
-/// # Errors
-///
-/// The document does not read, or the copy cannot be written.
 pub fn rebase(doc: &AutoCommit, actor: ActorId) -> Result<AutoCommit, automerge::AutomergeError> {
     let next = generation(doc).saturating_add(1);
     let automerge::hydrate::Value::Map(state) = doc.hydrate(ROOT, None)? else {

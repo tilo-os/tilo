@@ -6,8 +6,6 @@ use std::{io, path::Path, sync::Arc};
 
 /// Hold `root` exclusively for this process, recording the owner so a
 /// second start can name it.
-/// # Errors
-/// Rejects a profile another process holds, or a public or foreign profile.
 pub fn lock(root: &Path) -> io::Result<advisory_lock::FileLock> {
     unix::private_directory(root)?;
     let lock_path = root.join("runtime.lock");

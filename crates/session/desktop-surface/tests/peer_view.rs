@@ -1,6 +1,6 @@
-//! Another device's shared window, as this desktop shows it: a stream arriving
-//! from a peer is decoded into its tab's tile, published there as a resource
-//! with a picture, and driven by the actions that resource publishes.
+//! Another device's shared window, as this desktop shows it: a stream arriving from a peer is
+//! decoded into its tab's tile, published there as a resource with a picture, and driven by the
+//! actions that resource publishes.
 
 #![cfg(not(target_arch = "wasm32"))]
 #![allow(
@@ -36,8 +36,8 @@ const APP: &str = "so.tilo.writer";
 const WIDTH: u32 = 64;
 const HEIGHT: u32 = 48;
 
-/// A host that holds only a notice for each tab, so a shared window taking its
-/// tab over is what the tile shows.
+/// A host that holds only a notice for each tab, so a shared window taking its tab over is what the
+/// tile shows.
 struct HostTiles;
 
 impl TileSource for HostTiles {
@@ -66,8 +66,7 @@ fn peer_tab(minter: &mut IdMinter) -> Tab {
     }
 }
 
-/// A desktop showing one window another device shares, in the toolkit's own
-/// frame pipeline.
+/// A desktop showing one window another device shares, in the toolkit's own frame pipeline.
 fn desk() -> (FrameHarness, DesktopHandle, TabId) {
     let mut minter = IdMinter::new(7);
     let tab = peer_tab(&mut minter);
@@ -88,8 +87,8 @@ fn desk() -> (FrameHarness, DesktopHandle, TabId) {
     (driver, handle, tab_id)
 }
 
-/// The stream start the sender's announcement carries, as this desktop reads
-/// it: the same tab on both devices, and whether it may type into the window.
+/// The stream start the sender's announcement carries, as this desktop reads it: the same tab on
+/// both devices, and whether it may type into the window.
 fn stream_start(tab: TabId, writable: bool) -> PeerStreamStart {
     let announcement = NeighbourMsg::SurfaceStreamStart {
         surface: SURFACE,
@@ -120,9 +119,8 @@ fn frame(seq: u64, unit: Vec<u8>) -> NeighbourMsg {
     }
 }
 
-/// The frames of `count` keyframes the crate's own VP9 encoder makes from a
-/// gradient, so what arrives is a real stream rather than bytes shaped like
-/// one.
+/// The frames of `count` keyframes the crate's own VP9 encoder makes from a gradient, so what
+/// arrives is a real stream rather than bytes shaped like one.
 fn keyframes(count: usize) -> Vec<Vec<u8>> {
     let mut encoder =
         tilo_callstream::VideoEncoder::new(tilo_callstream::StreamCodec::Vp9, WIDTH, HEIGHT, 30)
@@ -137,7 +135,7 @@ fn keyframes(count: usize) -> Vec<Vec<u8>> {
     units
 }
 
-/// A gradient that moves with `step`, so each frame is a different picture.
+/// A gradient that moves with `step` , so each frame is a different picture.
 fn gradient(step: usize) -> Vec<u8> {
     let mut out = Vec::with_capacity((WIDTH as usize) * (HEIGHT as usize) * 4);
     for y in 0..HEIGHT {
@@ -161,8 +159,8 @@ fn published(driver: &FrameHarness, surface: SurfaceId) -> Option<tilo_actions::
         .find(|resource| resource.id.as_str() == id)
 }
 
-/// Drive frames until the tile has its picture, and say what it publishes
-/// then: decoding happens off the frame the unit is pushed on, as in a host.
+/// Drive frames until the tile has its picture, and say what it publishes then: decoding happens
+/// off the frame the unit is pushed on, as in a host.
 fn settle(driver: &mut FrameHarness, handle: &DesktopHandle, tab: TabId) -> PeerRead {
     let deadline = Instant::now() + Duration::from_secs(30);
     loop {
@@ -175,9 +173,9 @@ fn settle(driver: &mut FrameHarness, handle: &DesktopHandle, tab: TabId) -> Peer
     }
 }
 
-/// Push `unit` at `tile` and settle its picture, as the desktop's frame passes
-/// do: a push never waits, so a picture still decoding is collected once it is
-/// out. A window's paint is what the tile has not had in between.
+/// Push `unit` at `tile` and settle its picture, as the desktop's frame passes do: a push never
+/// waits, so a picture still decoding is collected once it is out. A window's paint is what the
+/// tile has not had in between.
 fn push_settled(tile: &Rc<RefCell<PeerSurface>>, seq: u64, unit: &[u8]) -> PeerOutcome {
     let outcome = tile.borrow_mut().push(seq, unit);
     if outcome != PeerOutcome::Pending {
@@ -305,8 +303,8 @@ fn a_pointer_and_a_key_reach_a_writable_share_and_a_read_only_one_refuses_them()
         ("x".to_string(), serde_json::Value::from(12.5)),
         ("y".to_string(), serde_json::Value::from(34.0)),
     ]);
-    // A point on the picture is the sender's own pixel, whatever size this
-    // desktop drew the window at.
+    // A point on the picture is the sender's own pixel, whatever size this desktop drew the window
+    // at.
     driver
         .invoke_published(&id, "pointer-motion", &motion)
         .expect("a writable share takes pointer motion");

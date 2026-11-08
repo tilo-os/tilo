@@ -10,10 +10,6 @@ pub use seat_peer::{PeerFacts, Seat};
 use super::Caller;
 
 /// Decide whether `peer` may ask anything at all.
-///
-/// # Errors
-///
-/// Why it is turned away.
 pub fn decide(seat: &Seat, peer: &PeerFacts) -> Result<Caller, String> {
     if seat.is_seat_shell(peer) {
         Ok(Caller { uid: peer.uid })

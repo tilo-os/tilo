@@ -167,10 +167,6 @@ pub fn dev_web(start: &Path, request: &DevRequest, options: &WebDevOptions) -> R
 
 /// `tilo-app run --platform web`: build once and serve the bundle until the
 /// process stops.
-///
-/// # Errors
-///
-/// When the address is invalid, the build fails or serving cannot start.
 pub fn run_web(start: &Path, options: &WebDevOptions) -> Result<()> {
     serve_web(start, options, false, ServeOptions::default().debounce)
 }

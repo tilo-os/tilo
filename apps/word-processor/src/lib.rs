@@ -143,11 +143,6 @@ impl WpFormat {
     /// `name`, as: the one the bytes hold, whatever the name says (content
     /// travels under any name, "Sofia details" for a Word file); the name's
     /// only for text, whose kinds only a name tells apart.
-    ///
-    /// # Errors
-    ///
-    /// Content Writer does not import (a PDF, a workbook, a picture), named
-    /// with what opens it.
     pub fn of_content(name: &str, bytes: &[u8]) -> Result<Self, String> {
         if let Some(format) = tilo_content::document_format(bytes) {
             return match format.extension {

@@ -80,8 +80,8 @@ pub const SIDE_BY_SIDE_MIN_PX: f64 = 480.0;
 /// `screen_px` is the display the strip stands on, its edge gutters
 /// included, and only decides whether that display is wide enough to split:
 /// the widths are fractions of the usable width either way. `None` when the
-/// two already fit, or when the display has no room for two windows of
-/// [`SIDE_BY_SIDE_MIN_PX`]: the strip scrolls then, framing the new window
+/// two already fit, or when the display has no room for two windows
+/// of [`SIDE_BY_SIDE_MIN_PX`]: the strip scrolls then, framing the new window
 /// whole on its own.
 ///
 /// The window the person was in keeps its width when the space beside it

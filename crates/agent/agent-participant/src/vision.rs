@@ -343,11 +343,6 @@ fn addresses(text: &str) -> impl Iterator<Item = String> + '_ {
 /// through; anything else is shrunk and written out again in the confined
 /// worker, which also drops what a photo says about itself (where and when
 /// it was taken).
-///
-/// # Errors
-///
-/// Why it is not shown: not a picture, too large to read, or the worker
-/// could not write it out within the limits.
 pub fn prepare(content: &str, bytes: &[u8], rendered: bool) -> Result<Picture, String> {
     let content = content_hash(content)
         .map(|hash| content_address(&hash))

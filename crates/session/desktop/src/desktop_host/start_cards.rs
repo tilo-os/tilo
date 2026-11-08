@@ -1,10 +1,8 @@
-//! The start cards on a desk with no window: one pad per display that shows
-//! none, centred in that display, so a desk spanning several displays shows
-//! the cards on each empty display rather than one grid across them.
-//!
-//! A pad asks for nothing of its own: what a person chooses on it leaves as
-//! the host action its card declares, the same door every other host action
-//! comes through.
+//! The start cards on a desk with no window: one pad per display that shows none, centred in that
+//! display, so a desk spanning several displays shows the cards on each empty display rather than
+//! one grid across them.
+//! A pad asks for nothing of its own: what a person chooses on it leaves as the host action its
+//! card declares, the same door every other host action comes through.
 
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -28,11 +26,11 @@ use crate::launchpad::{CollaborationLaunchpad, LaunchpadPress};
 /// where that display stands in the desk, whether it shows no window, and
 /// the launchpad itself.
 pub(super) struct DisplayPad {
-    /// The display it belongs to; `None` on a desk of one display, where the
-    /// cards take the whole desk.
+    /// The display it belongs to; `None` on a desk of one display, where the cards take the whole
+    /// desk.
     pub(super) display: Option<u32>,
-    /// The display's top-left corner in the desk's coordinates, and its
-    /// extent: the part of the desk its cards centre in.
+    /// The display's top-left corner in the desk's coordinates, and its extent: the part of the
+    /// desk its cards centre in.
     pub(super) place: Rect,
     /// Whether the display shows no window, and so shows its start cards.
     pub(super) shown: bool,
@@ -40,8 +38,8 @@ pub(super) struct DisplayPad {
 }
 
 impl DisplayPad {
-    /// Centre the cards across this display's part of the desk, so an empty
-    /// display shows its own cards rather than a grid spanning the desk.
+    /// Centre the cards across this display's part of the desk, so an empty display shows its own
+    /// cards rather than a grid spanning the desk.
     pub(super) fn present(&mut self) {
         let rect = self.launchpad.get_rect();
         let area = self.display.map(|_| {
@@ -63,12 +61,11 @@ pub(super) struct PadWant {
     pub(super) shown: bool,
 }
 
-/// The start cards of every display that shows no window. A desk spanning
-/// several displays shows them on each empty display, centred there; a desk
-/// of one display shows them once, over the whole desk, while it has no
-/// window. What a person chooses on any of them leaves as the host action
-/// its card declares ([`LaunchpadAction::host_id`]), the same door every
-/// other host action comes through.
+/// The start cards of every display that shows no window. A desk spanning several displays shows
+/// them on each empty display, centred there; a desk of one display shows them once, over the whole
+/// desk, while it has no window. What a person chooses on any of them leaves as the host action its
+/// card declares ([`LaunchpadAction::host_id`]), the same door every other host action comes
+/// through.
 pub(super) struct EmptyWorkspace {
     /// What each pad is made from: the words and scope the host gave it.
     pub(super) template: CollaborationLaunchpad,
@@ -80,10 +77,9 @@ pub(super) struct EmptyWorkspace {
 }
 
 impl EmptyWorkspace {
-    /// What each display's pad should show now: on a desk spanning several
-    /// displays, one pad per display in reading order, shown while the strip
-    /// that display shows has no window homed there; on a desk of one
-    /// display, one pad over the whole desk while it has no window.
+    /// What each display's pad should show now: on a desk spanning several displays, one pad per
+    /// display in reading order, shown while the strip that display shows has no window homed
+    /// there; on a desk of one display, one pad over the whole desk while it has no window.
     pub(super) fn wants(tree: &DesktopTree) -> Vec<PadWant> {
         if !tree.is_partitioned() {
             return vec![PadWant {
@@ -118,10 +114,9 @@ impl EmptyWorkspace {
             .collect()
     }
 
-    /// The pad the person works on: the display in use while it shows no
-    /// window, else the first one that does. Its cards are the ones the
-    /// reader and the keyboard address; the others are the same cards shown
-    /// on their own displays.
+    /// The pad the person works on: the display in use while it shows no window, else the first one
+    /// that does. Its cards are the ones the reader and the keyboard address; the others are the
+    /// same cards shown on their own displays.
     fn working_pad(&self) -> Option<usize> {
         let in_use = self.handle.read(|tree| tree.outputs.focused_display());
         self.pads
@@ -169,9 +164,9 @@ impl Widget for EmptyWorkspace {
         theme: &Theme,
         map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
-        // Each launchpad keeps the node it is drawn in, so an action
-        // addressed to a control of it reaches that launchpad; this workspace
-        // is the node around them rather than a second claimant of one.
+        // Each launchpad keeps the node it is drawn in, so an action addressed to a control of it
+        // reaches that launchpad; this workspace is the node around them rather than a second
+        // claimant of one.
         let pads: Vec<NodeId> = self
             .pads
             .iter_mut()
@@ -235,9 +230,9 @@ impl Widget for EmptyWorkspace {
             .unwrap_or_default()
     }
 
-    /// Every pad is laid out in this node, also the ones whose display shows
-    /// a window and so draws and routes nothing: a pad is a place in the
-    /// retained tree, not only something the person can reach.
+    /// Every pad is laid out in this node, also the ones whose display shows a window and so draws
+    /// and routes nothing: a pad is a place in the retained tree, not only something the person can
+    /// reach.
     fn for_each_layout_child(&self, visitor: &mut dyn FnMut(&dyn Widget)) -> bool {
         for pad in &self.pads {
             visitor(&pad.launchpad);
@@ -350,9 +345,8 @@ mod tests {
         tree
     }
 
-    /// On two displays only the display showing no window shows the start
-    /// cards, and its cards centre in that display rather than across the
-    /// desk.
+    /// On two displays only the display showing no window shows the start cards, and its cards
+    /// centre in that display rather than across the desk.
     #[test]
     fn an_empty_display_shows_its_own_start_cards() {
         let mut tree = desk();
@@ -370,8 +364,8 @@ mod tests {
         assert_eq!(wants[1].place, Rect::new(1280.0, 0.0, 2560.0, 800.0));
     }
 
-    /// A desk of one display shows the start cards once, over the whole
-    /// desk, while it has no window.
+    /// A desk of one display shows the start cards once, over the whole desk, while it has no
+    /// window.
     #[test]
     fn a_desk_of_one_display_shows_the_cards_while_it_has_no_window() {
         let mut tree = desk();

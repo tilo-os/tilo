@@ -1,12 +1,9 @@
-//! The compositor's side of the display settings bridge: what the outputs
-//! are and where they sit, published where Settings and the session read it.
-//!
-//! Settings is not allowed to probe DRM itself, so the process that owns KMS
-//! is the one authority for which outputs exist, which modes and features
-//! they can be driven with and where they sit right now. That is a
-//! [`DisplayHardwareSnapshot`]: written to the private runtime directory for
-//! Settings, and kept in memory for the session, which reads it on its own
-//! loop.
+//! The compositor's side of the display settings bridge: what the outputs are and where they sit,
+//! published where Settings and the session read it.
+//! Settings is not allowed to probe DRM itself, so the process that owns KMS is the one authority
+//! for which outputs exist, which modes and features they can be driven with and where they sit
+//! right now. That is a [`DisplayHardwareSnapshot`]: written to the private runtime directory for
+//! Settings, and kept in memory for the session, which reads it on its own loop.
 
 use std::collections::BTreeMap;
 
@@ -19,31 +16,27 @@ use smithay::utils::Transform as SmithayTransform;
 
 use crate::output::Monitor;
 
-/// What the sink on an output and the pipeline driving it can do beyond what
-/// the output itself reports.
-///
-/// A backend with no hardware (headless, a session in a window) has nothing
-/// to add and returns none of these, which says of its simulated outputs
-/// exactly what is true: no sink supports anything special.
+/// What the sink on an output and the pipeline driving it can do beyond what the output itself
+/// reports.
+/// A backend with no hardware (headless, a session in a window) has nothing to add and returns none
+/// of these, which says of its simulated outputs exactly what is true: no sink supports anything
+/// special.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Capability {
     /// The output's connector name, the key that joins these to an output.
     pub connector: String,
     /// A panel built into the machine.
     pub builtin: bool,
-    /// Whether the display asks for HDR in its EDID, and why HDR cannot be
-    /// driven here when it does.
+    /// Whether the display asks for HDR in its EDID, and why HDR cannot be driven here when it
+    /// does.
     pub sink_hdr: bool,
     pub hdr_unavailable: Option<HdrUnavailable>,
-    /// Whether the display reports adaptive sync, and why it cannot be used
-    /// here when it does.
+    /// Whether the display reports adaptive sync, and why it cannot be used here when it does.
     pub sink_vrr: bool,
     pub vrr_unavailable: Option<AdaptiveSyncUnavailable>,
-    /// Why a connected display is dark: the compositor tried to light it and
-    /// could not.
+    /// Why a connected display is dark: the compositor tried to light it and could not.
     pub unavailable_reason: Option<OutputUnavailable>,
-    /// The ICC profiles that may be chosen here, path → the name a person
-    /// reads.
+    /// The ICC profiles that may be chosen here, path → the name a person reads.
     pub color_profiles: BTreeMap<String, String>,
 }
 
@@ -68,12 +61,10 @@ impl Capability {
     }
 }
 
-/// The snapshot of `outputs` (`on` while the output is lit), with what
-/// `capabilities` say about their sinks, `backend` naming how they are
-/// driven and `publisher` this process's snapshot lease.
-///
-/// Without a lease (no runtime directory) the snapshot is still exact, only
-/// untrusted by a reader, so it is in memory and never written to a file.
+/// The snapshot of `outputs` (`on` while the output is lit), with what `capabilities` say about
+/// their sinks, `backend` naming how they are driven and `publisher` this process's snapshot lease.
+/// Without a lease (no runtime directory) the snapshot is still exact, only untrusted by a reader,
+/// so it is in memory and never written to a file.
 #[must_use]
 pub fn snapshot(
     outputs: &[(Output, bool)],
@@ -144,9 +135,8 @@ pub fn snapshot(
     }
 }
 
-/// The current rotation of every output, by connector: what a layout that
-/// names no rotation for an output keeps, and what a person reads as its
-/// rotation now.
+/// The current rotation of every output, by connector: what a layout that names no rotation for an
+/// output keeps, and what a person reads as its rotation now.
 #[must_use]
 pub fn rotations(outputs: &[(Output, bool)]) -> BTreeMap<String, OutputTransform> {
     outputs
@@ -155,16 +145,16 @@ pub fn rotations(outputs: &[(Output, bool)]) -> BTreeMap<String, OutputTransform
         .collect()
 }
 
-/// `output`'s rectangle in the logical desktop: its place, and its extent
-/// after scale and rotation.
+/// `output` 's rectangle in the logical desktop: its place, and its extent after scale and
+/// rotation.
 fn rectangle(output: &Output, mode: SmithayMode) -> (i32, i32, u32, u32) {
     let location = output.current_location();
     let (width, height) = extent(mode, scale_of(output), output.current_transform());
     (location.x, location.y, width, height)
 }
 
-/// The logical extent of `mode` at `scale`, turned with `transform`: what
-/// clients are told the output's logical size is.
+/// The logical extent of `mode` at `scale` , turned with `transform` : what clients are told the
+/// output's logical size is.
 fn extent(mode: SmithayMode, scale: f64, transform: SmithayTransform) -> (u32, u32) {
     #[allow(
         clippy::cast_possible_truncation,
@@ -184,8 +174,7 @@ fn extent(mode: SmithayMode, scale: f64, transform: SmithayTransform) -> (u32, u
     }
 }
 
-/// The scale clients render at; a value that is not a scale at all counts
-/// as 1.
+/// The scale clients render at; a value that is not a scale at all counts as 1.
 fn scale_of(output: &Output) -> f64 {
     let scale = output.current_scale().fractional_scale();
     if scale.is_finite() && scale > 0.0 {
@@ -195,7 +184,7 @@ fn scale_of(output: &Output) -> f64 {
     }
 }
 
-/// `output`'s modes as Settings persists them: smallest first, each once.
+/// `output` 's modes as Settings persists them: smallest first, each once.
 fn modes_of(output: &Output) -> Vec<OutputMode> {
     let mut modes: Vec<OutputMode> = output.modes().into_iter().map(mode_of).collect();
     modes.sort_by_key(|mode| (mode.width, mode.height, mode.refresh_mhz));
@@ -217,8 +206,8 @@ fn mode_of(mode: SmithayMode) -> OutputMode {
     }
 }
 
-/// The stored transform `transform` is: the four quarter turns, anything
-/// mirrored as the turn it mirrors.
+/// The stored transform `transform` is: the four quarter turns, anything mirrored as the turn it
+/// mirrors.
 fn transform_of(transform: SmithayTransform) -> OutputTransform {
     if transform == SmithayTransform::_90 {
         OutputTransform::Rotate90
@@ -231,25 +220,23 @@ fn transform_of(transform: SmithayTransform) -> OutputTransform {
     }
 }
 
-/// The snapshot this compositor last published, kept so a new one reaches
-/// the file only when something about the outputs changed, and so the
-/// session reads the outputs without reading the file.
+/// The snapshot this compositor last published, kept so a new one reaches the file only when
+/// something about the outputs changed, and so the session reads the outputs without reading the
+/// file.
 #[derive(Default)]
 pub(crate) struct Published {
     snapshot: Option<DisplayHardwareSnapshot>,
     /// This process's snapshot lease, looked for once.
     publisher: Option<(u32, u64)>,
     lease_looked_for: bool,
-    /// Counts the snapshots this process has taken: readers that only need
-    /// to know whether the displays changed compare it instead of copying
-    /// the snapshot on every pass.
+    /// Counts the snapshots this process has taken: readers that only need to know whether the
+    /// displays changed compare it instead of copying the snapshot on every pass.
     generation: u64,
 }
 
 impl Published {
-    /// Take `outputs` as they are now, with what `capabilities` say about
-    /// their sinks driven by `backend`, and publish them if they differ from
-    /// what was published last.
+    /// Take `outputs` as they are now, with what `capabilities` say about their sinks driven by
+    /// `backend` , and publish them if they differ from what was published last.
     pub(crate) fn refresh(
         &mut self,
         outputs: &[(Output, bool)],
@@ -285,15 +272,15 @@ impl Published {
         self.snapshot.as_ref()
     }
 
-    /// How many snapshots have been taken: it changes exactly when the
-    /// displays, their modes or their layout do.
+    /// How many snapshots have been taken: it changes exactly when the displays, their modes or
+    /// their layout do.
     pub(crate) fn generation(&self) -> u64 {
         self.generation
     }
 }
 
-/// Whether `left` and `right` say the same about the outputs: everything but
-/// when the snapshot was taken.
+/// Whether `left` and `right` say the same about the outputs: everything but when the snapshot was
+/// taken.
 fn same(left: &DisplayHardwareSnapshot, right: &DisplayHardwareSnapshot) -> bool {
     left.backend == right.backend && left.outputs == right.outputs && left.layout == right.layout
 }

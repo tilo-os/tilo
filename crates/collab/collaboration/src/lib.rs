@@ -282,10 +282,6 @@ use std::sync::mpsc;
 /// Invoke the shell's launcher-authenticated, sealed Wi-Fi continuity path.
 /// Without the broker transport there is no certified collaboration service
 /// to carry it, so this reports the service as unavailable.
-///
-/// # Errors
-///
-/// Always returns an unavailable message in this build.
 #[cfg(not(feature = "broker-transport"))]
 pub fn wifi_continuity_command(
     _command: runtime_collab::WifiContinuityCommand,
@@ -295,10 +291,6 @@ pub fn wifi_continuity_command(
 
 /// Ask the shell's speaker-group authority. Without the broker transport
 /// there is no certified collaboration service to carry it.
-///
-/// # Errors
-///
-/// Always returns an unavailable message in this build.
 #[cfg(not(feature = "broker-transport"))]
 pub fn speaker_command(
     _command: runtime_collab::SpeakerCommand,
@@ -307,9 +299,6 @@ pub fn speaker_command(
 }
 
 /// The native display control service is unavailable without an admitted broker.
-///
-/// # Errors
-/// Always reports unavailable on this transport.
 #[cfg(not(feature = "broker-transport"))]
 pub fn display_control(_command: Vec<u8>, _origin: DisplayOrigin) -> Result<Vec<u8>, String> {
     Err("Displays need the certified collaboration service.".into())
@@ -323,9 +312,6 @@ pub struct SessionResource;
 
 #[cfg(not(feature = "broker-transport"))]
 impl SessionResource {
-    /// # Errors
-    ///
-    /// Always reports unavailable on this transport.
     pub fn open(_resource: &str) -> Result<Self, String> {
         Err("Published resources need the certified collaboration service.".into())
     }
@@ -339,9 +325,6 @@ impl SessionResource {
     /// Nothing is watched on this transport, so no reading wakes a view.
     pub fn attach(&self, _wake: tilo_rt::wake::WakeHandle) {}
 
-    /// # Errors
-    ///
-    /// Always reports unavailable on this transport.
     pub fn invoke(
         &self,
         _action: &str,
@@ -448,9 +431,6 @@ pub enum NativeConnection {
 pub trait DocumentCustody: Send + Sync + std::fmt::Debug {
     /// Whether the change's body and its current contributors are bound to
     /// `route`.
-    ///
-    /// # Errors
-    /// Why the custody does not cover this change on this route.
     fn check(&self, route: &RouteSpec, mutation: &DocumentMutation) -> Result<(), String>;
     /// The bytes the custody holds while its change waits in the transport's
     /// queue, counted against the queue's budget; `None` when they overflow.
@@ -1211,10 +1191,6 @@ impl CollaborationManager {
     /// Join `checkout`'s route in place of the primary route this manager
     /// is still joining, without waiting: the broker's answer to the new
     /// route arrives as the last one would have ([`Self::poll`]).
-    ///
-    /// # Errors
-    ///
-    /// No route was requested, or the connection refused the request.
     pub fn retarget_join(
         &mut self,
         checkout: &crate::record::RecordCheckout,
@@ -1512,11 +1488,6 @@ impl CollaborationManager {
     /// provisioning and durable secret storage intentionally remain outside
     /// the UI process; callers should obtain the group from the workspace
     /// identity service and must reinstall it after a process restart.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error for a route/channel mismatch, an unavailable or
-    /// stopped collaboration worker, or a route that cannot be joined.
     pub fn install_document_encryption(
         &mut self,
         route: RouteSpec,

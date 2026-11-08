@@ -245,9 +245,6 @@ pub struct ModelResponse {
 impl ModelResponse {
     /// Validate the entire turn before exposing any calls, in source order.
     /// A truncated turn is never executable, even if an earlier call parsed.
-    ///
-    /// # Errors
-    /// Rejects refused, truncated, malformed, or duplicate tool calls.
     pub fn tool_calls(&self) -> Result<Vec<&ToolCall>, ModelError> {
         if self.stop_reason == StopReason::Refusal {
             return Err(ModelError {
@@ -313,9 +310,6 @@ impl Conversation {
     }
 
     /// Commit a validated turn and its matching tool results.
-    ///
-    /// # Errors
-    /// Rejects invalid turns, replayed calls, or missing and mismatched results.
     pub fn push(
         &mut self,
         response: ModelResponse,

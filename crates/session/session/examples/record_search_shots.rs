@@ -30,8 +30,8 @@ use ui::search::index_publication::{IndexDelta, IndexEntry, IndexKind, IndexPers
 /// The app whose records are read.
 const CHAT: &str = "so.tilo.chat";
 
-/// One entry an app published of a record: what a hit opens, what it says
-/// and where the panel lists it.
+/// One entry an app published of a record: what a hit opens, what it says and where the panel lists
+/// it.
 fn entry(key: &str, title: &str, subtitle: Option<&str>) -> IndexEntry {
     IndexEntry {
         key: key.to_owned(),
@@ -49,8 +49,8 @@ fn entry(key: &str, title: &str, subtitle: Option<&str>) -> IndexEntry {
     }
 }
 
-/// `entries` published as what `record` of `workspace` holds, as the app's
-/// own record reader publishes them.
+/// `entries` published as what `record` of `workspace` holds, as the app's own record reader
+/// publishes them.
 fn published(content: &AppContentIndex, workspace: &str, record: &str, entries: Vec<IndexEntry>) {
     let delta = IndexDelta {
         reset: true,
@@ -62,12 +62,10 @@ fn published(content: &AppContentIndex, workspace: &str, record: &str, entries: 
         .expect("the index takes the publication");
 }
 
-/// The chat this workspace's records hold, as a person's Chat would have
-/// written it: a conversation named for its work, the message that asks an
-/// agent into it, and the agent itself.
+/// The chat this workspace's records hold, as a person's Chat would have written it: a conversation
+/// named for its work, the message that asks an agent into it, and the agent itself.
 fn hold(content: &AppContentIndex, workspace: &str) {
-    /// A person as the rows say them: their name, the entry that opens them
-    /// and their identity.
+    /// A person as the rows say them: their name, the entry that opens them and their identity.
     fn person(name: &str, anchor: &str, identity: &str, agent: bool) -> IndexPerson {
         IndexPerson {
             name: name.to_owned(),
@@ -137,9 +135,9 @@ fn hold(content: &AppContentIndex, workspace: &str) {
 }
 
 fn main() -> std::process::ExitCode {
-    // A session's workers are this same binary in their own modes, so it
-    // serves them first: a worker that fell through to the capture would be
-    // a session starting inside a session's worker.
+    // A session's workers are this same binary in their own modes, so it serves them first: a
+    // worker that fell through to the capture would be a session starting inside a session's
+    // worker.
     if let Some(code) = tilo_automerge_isolate::dispatch_early() {
         return std::process::ExitCode::from(code);
     }
@@ -189,8 +187,8 @@ fn main() -> std::process::ExitCode {
         .expect("a workspace");
     hold(&content, &workspace);
 
-    // The person types `ada` into search: the conversation, the message and
-    // the agent it names come up, each from its own record.
+    // The person types `ada` into search: the conversation, the message and the agent it names come
+    // up, each from its own record.
     let query = serde_json::Map::from_iter([(
         "query".to_owned(),
         serde_json::Value::String("ada".to_owned()),
@@ -198,8 +196,8 @@ fn main() -> std::process::ExitCode {
     session
         .invoke(DESK_RESOURCE, "search", &query)
         .expect("search opens");
-    // The panel's rows are the desk's own resources: every hit the person
-    // sees is one, so the picture is of a search that found them.
+    // The panel's rows are the desk's own resources: every hit the person sees is one, so the
+    // picture is of a search that found them.
     let mut titles = Vec::new();
     for _ in 0..200 {
         session.step(Duration::from_millis(16)).expect("step");

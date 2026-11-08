@@ -1,4 +1,4 @@
-//! [`Pose`]: how a moving surface is drawn this frame: an opacity and a
+//! [`Pose`] — how a moving surface is drawn this frame: an opacity and a
 //! transform in its own coordinates.
 
 use vello::Scene;

@@ -1912,8 +1912,8 @@ impl Widget for BrowserShell {
         }
     }
 
-    /// The page asks for animation frames by this, not by
-    /// [`Self::needs_redraw`]: a hint drawn by the shell itself, not by a
+    /// The page asks for animation frames by this, not
+    /// by [`Self::needs_redraw`]: a hint drawn by the shell itself, not by a
     /// child, says here that it moves.
     fn needs_animation_frame(&self) -> bool {
         self.hints.needs_animation_frame(ui::time::now())

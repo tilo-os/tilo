@@ -26,10 +26,9 @@ use serde_json::{Value, json};
 use tilo_actions::OperationKind;
 use tilo_actions::door::{ActionAddress, ActionDescriptor};
 use tilo_agent_participant::apps::readable;
-use tilo_agent_participant::{ConfinedReplica, Replica, ReplicaActor, Seed};
+use tilo_agent_participant::{ConfinedReplica, ReplicaActor, Seed};
 use tilo_content::ContentStore;
 
-const WORKSPACE: &str = "6f1d3a52-1c7e-4b8e-9d2a-0f4a8c3e5b71";
 const MESSAGES: &str = "so.tilo.messages";
 /// The resource every record-level operation is addressed to.
 const RECORD: &str = "tilo.messages";
@@ -117,17 +116,9 @@ fn messages_is_in_the_agents_catalogue() {
 #[allow(clippy::too_many_lines, reason = "one scenario, read top to bottom")]
 fn an_agent_reads_searches_answers_and_exports_sms_delivered_into_a_record() {
     let workspace = ContentStore::memory();
-    let catalogue = catalogue();
-    let agent = ConfinedReplica::open(
-        &catalogue,
-        MESSAGES,
-        WORKSPACE,
-        "assistant",
-        &ReplicaActor::Agent,
-        Seed::New,
-    )
-    .expect("a Messages record is held in a confined worker")
-    .lending(workspace.clone());
+    let agent = common::confined(MESSAGES, "assistant", &ReplicaActor::Agent, Seed::New)
+        .expect("a Messages record is held in a confined worker")
+        .lending(workspace.clone());
     assert_ne!(agent.worker_id(), Some(std::process::id()));
     let genesis = agent.take_mutation().unwrap().expect("a new record");
 
@@ -254,10 +245,8 @@ fn an_agent_reads_searches_answers_and_exports_sms_delivered_into_a_record() {
     let DocumentMutation::Snapshot(snapshot) = genesis else {
         panic!("a new record is published whole");
     };
-    let mut page = Replica::open(
-        &catalogue,
+    let mut page = common::open(
         MESSAGES,
-        WORKSPACE,
         "ada",
         ReplicaActor::Owner,
         Seed::Existing {

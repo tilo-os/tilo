@@ -175,9 +175,6 @@ pub struct Handoff {
 }
 
 /// Write `handoff` as the first bytes on `stream`.
-///
-/// # Errors
-/// The stream refuses the write, or the handoff does not fit its frame.
 pub fn write_handoff<W: std::io::Write + ?Sized>(
     stream: &mut W,
     handoff: &Handoff,

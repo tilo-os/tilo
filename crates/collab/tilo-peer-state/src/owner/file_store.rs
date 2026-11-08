@@ -266,26 +266,16 @@ fn index_bytes(record: &NativeAuthorityStorage, held: &Held) -> Result<Vec<u8>, 
 /// Read the record kept at `path`: the index beside it and the workspace
 /// files the index names, or the whole file a build before the split wrote
 /// there. Empty when there is neither.
-///
-/// # Errors
-/// It cannot be read or holds an invalid record, or a workspace the record
-/// names has no file at the revision it names.
 pub fn read_file(path: &Path) -> Result<NativeAuthorityStorage, String> {
     read_record(path).map(|(record, _)| record)
 }
 
 /// Open the owner whose record is the file at `path`, starting empty.
-///
-/// # Errors
-/// The file cannot be read or holds an invalid record.
 pub fn open_file(path: &Path) -> Result<NativeWorkspaceOwner, String> {
     open_file_with(path, Arc::new(NoHost))
 }
 
 /// [`open_file`] for a host that follows each publication through `host`.
-///
-/// # Errors
-/// The file cannot be read or holds an invalid record.
 pub fn open_file_with(
     path: &Path,
     host: Arc<dyn FileHost>,

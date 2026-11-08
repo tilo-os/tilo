@@ -142,7 +142,6 @@ fn render_group_themed(
 
 #[test]
 fn window_group_journey_is_deterministic_and_distinguishes_states_in_both_themes() {
-    // Case `window_group_visual_journey_distinguishes_all_states`.
     // If any two states hash the same, either a paint branch (focus ring,
     // maximized floating controls, tab-close path) regressed, or a state
     // change silently stopped affecting output.
@@ -196,7 +195,6 @@ fn window_group_journey_is_deterministic_and_distinguishes_states_in_both_themes
         );
     }
 
-    // Case `window_group_visual_journey_distinguishes_all_states_in_light`.
     // The same journey on the **light** preset. The maximized chrome's chips
     // are quiet pills whose edge is derived from the chip fill; a light-theme frame
     // is where a declared or literal-white edge used to vanish, so the four
@@ -247,7 +245,6 @@ fn window_group_journey_is_deterministic_and_distinguishes_states_in_both_themes
         );
     }
 
-    // Case `window_group_fresh_render_is_deterministic`.
     // This is the invariant the journey test relies on — without it, its
     // pixel-hash comparisons are meaningless. Compared with
     // [`OffscreenRenderer::pixels_differing_beyond_aa`], not byte equality:

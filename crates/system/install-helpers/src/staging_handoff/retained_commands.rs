@@ -299,9 +299,6 @@ pub fn preflight_retained(
 }
 
 /// Read the target regular-account policy, never the retained source's policy.
-///
-/// # Errors
-/// Unsafe ownership/type/mode, excessive size, duplicate or malformed ranges.
 pub fn regular_user_range() -> Result<(u32, u32)> {
     let fd = rustix::fs::open(
         "/etc/login.defs",

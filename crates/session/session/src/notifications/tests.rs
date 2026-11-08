@@ -66,7 +66,7 @@ fn rig() -> Rig {
     rig_at(None)
 }
 
-/// A rig whose centre is kept at `history`, so a next session can open it.
+/// A rig whose centre is kept at `history` , so a next session can open it.
 fn rig_at(history: Option<std::path::PathBuf>) -> Rig {
     let daemon = Notifications::new();
     let heard = Arc::new(Heard::default());
@@ -131,8 +131,8 @@ impl Rig {
         self.bridge.borrow().ask(ask);
     }
 
-    /// What the banners were last handed: the desktop's live banners, once
-    /// the bridge published them.
+    /// What the banners were last handed: the desktop's live banners, once the bridge published
+    /// them.
     fn feed(&self) -> tilo_desktop_surface::notifications::BannerFeed {
         assert_eq!(
             self.bridge.borrow().published,
@@ -192,9 +192,9 @@ fn urgency_and_timeout_set_how_long_a_banner_stays() {
     }
 }
 
-/// The desktop's own notice is the system speaking, not a sender: it keeps
-/// the name it carries and leads with the system's mark. A program nobody
-/// attributed is still shown as making a claim, never as who it is.
+/// The desktop's own notice is the system speaking, not a sender: it keeps the name it carries and
+/// leads with the system's mark. A program nobody attributed is still shown as making a claim,
+/// never as who it is.
 #[test]
 fn the_desktops_own_notice_is_the_systems_never_a_claim() {
     let mut notice = sent(8);
@@ -260,9 +260,9 @@ fn only_an_attributed_app_is_named_and_a_person_needs_a_name() {
     assert!(!named.bypass_dnd, "an app never pierces Do Not Disturb");
 }
 
-/// A program the session proved with no installed app behind it is named by
-/// the name it gives itself, and by its file's words when it gives none: a
-/// banner and the centre never show the path it runs from.
+/// A program the session proved with no installed app behind it is named by the name it gives
+/// itself, and by its file's words when it gives none: a banner and the centre never show the path
+/// it runs from.
 #[test]
 fn a_program_is_named_by_itself_never_by_its_path() {
     let mut program = sent(6);
@@ -447,8 +447,8 @@ fn read_in_full_moves_it_to_the_centre() {
     assert_eq!(rig.history(), ["New mail"]);
 }
 
-/// Opening the centre is the person reading it: the bar's bell stops
-/// counting, and what the centre keeps stays kept.
+/// Opening the centre is the person reading it: the bar's bell stops counting, and what the centre
+/// keeps stays kept.
 #[test]
 fn opening_the_centre_reads_what_it_keeps() {
     let rig = rig();
@@ -467,9 +467,8 @@ fn opening_the_centre_reads_what_it_keeps() {
     );
 }
 
-/// A banner over an open centre would take the presses meant for its rows:
-/// an arrival while the centre is open goes straight into it, and banners
-/// come back once it closes.
+/// A banner over an open centre would take the presses meant for its rows: an arrival while the
+/// centre is open goes straight into it, and banners come back once it closes.
 #[test]
 fn an_open_centre_holds_new_banners_until_it_closes() {
     let rig = rig();
@@ -494,8 +493,8 @@ fn an_open_centre_holds_new_banners_until_it_closes() {
     assert_eq!(rig.feed().banners.len(), 1, "and shows again after");
 }
 
-/// What the centre kept is written where this person's state lives, and the
-/// next session opens the centre the last one left.
+/// What the centre kept is written where this person's state lives, and the next session opens the
+/// centre the last one left.
 #[test]
 fn the_centre_opens_with_what_the_last_session_kept() {
     let path = tilo_paths::memory_temp_dir()
@@ -526,10 +525,9 @@ fn the_centre_opens_with_what_the_last_session_kept() {
     let _ = std::fs::remove_file(&path);
 }
 
-/// The centre's own resource is what the desk reads and invokes: how many
-/// it keeps, and the verbs that dismiss, run, clear and bring back. What
-/// people said to this person is personal, so only a caller the workspace
-/// grants reads it.
+/// The centre's own resource is what the desk reads and invokes: how many it keeps, and the verbs
+/// that dismiss, run, clear and bring back. What people said to this person is personal, so only a
+/// caller the workspace grants reads it.
 #[test]
 fn the_centre_publishes_what_it_keeps_and_the_verbs_that_change_it() {
     let rig = rig();
@@ -607,7 +605,7 @@ fn centre_of(served: &Served) -> NotificationCentre {
         .expect("a reading")
 }
 
-/// Invoke one of the centre's verbs with `arguments`, as the panel does.
+/// Invoke one of the centre's verbs with `arguments` , as the panel does.
 fn invoke(served: &mut Served, action: &str, arguments: serde_json::Value) {
     let arguments: Map<String, Value> =
         serde_json::from_value(arguments).expect("the verb's arguments");
@@ -637,8 +635,8 @@ fn do_not_disturb_holds_the_banner_and_the_bar_says_why() {
     assert!(!rig.signals.quiet());
 }
 
-/// The switch the panel shows is a verb of the centre: turning it on holds
-/// the next banner back, and the centre says why it is held.
+/// The switch the panel shows is a verb of the centre: turning it on holds the next banner back,
+/// and the centre says why it is held.
 #[test]
 fn the_do_not_disturb_switch_is_a_verb_of_the_centre() {
     let rig = rig();
@@ -667,10 +665,9 @@ fn the_do_not_disturb_switch_is_a_verb_of_the_centre() {
     assert!(rig.bridge.borrow().quiet_status().is_none());
 }
 
-/// While an app presents it holds the machine from going idle, which is how
-/// the desk knows the screen is being watched by others: a notification
-/// arriving then makes no sound, its banner is held, and the bar and the
-/// centre say why without the person's own Do Not Disturb switch moving.
+/// While an app presents it holds the machine from going idle, which is how the desk knows the
+/// screen is being watched by others: a notification arriving then makes no sound, its banner is
+/// held, and the bar and the centre say why without the person's own Do Not Disturb switch moving.
 #[test]
 fn presenting_holds_the_banner_and_silences_it_without_touching_do_not_disturb() {
     let rig = rig();
@@ -726,8 +723,8 @@ fn presenting_holds_the_banner_and_silences_it_without_touching_do_not_disturb()
     );
 }
 
-/// An app the person silenced on screen still tells them what arrived: the
-/// banner is held, the centre keeps it and the bar counts it unread.
+/// An app the person silenced on screen still tells them what arrived: the banner is held, the
+/// centre keeps it and the bar counts it unread.
 #[test]
 fn an_app_with_its_banners_off_still_reaches_the_centre() {
     let rig = rig();
@@ -757,8 +754,8 @@ fn an_app_with_its_banners_off_still_reaches_the_centre() {
     assert_eq!(rig.signals.unread(), 2);
 }
 
-/// An app whose previews are off shows its banner without the body, and
-/// the centre still has what was said.
+/// An app whose previews are off shows its banner without the body, and the centre still has what
+/// was said.
 #[test]
 fn an_app_with_previews_off_shows_no_body_on_its_banner() {
     let rig = rig();
@@ -786,8 +783,8 @@ fn an_app_with_previews_off_shows_no_body_on_its_banner() {
     );
 }
 
-/// An app the person keeps off the lock screen is marked so, while an app
-/// following the global preference is shown there.
+/// An app the person keeps off the lock screen is marked so, while an app following the global
+/// preference is shown there.
 #[test]
 fn an_app_kept_off_the_lock_screen_says_so_on_its_notification() {
     let rig = rig();
@@ -963,8 +960,7 @@ fn a_critical_arrival_gets_the_error_sound_and_a_silenced_one_none() {
 
 // ---- Notifications that continue on the person's other devices ----
 
-/// What this session asked the person's other devices to show, and what it
-/// told them.
+/// What this session asked the person's other devices to show, and what it told them.
 struct FakeFabric {
     local: DeviceId,
     online: BTreeSet<DeviceId>,
@@ -1057,8 +1053,7 @@ fn rig_on_fabric(permitted: bool) -> (Rig, Arc<FakeFabric>) {
     (rig, fabric)
 }
 
-/// What another of the person's devices projected: a mail to Ada, with its
-/// archive action.
+/// What another of the person's devices projected: a mail to Ada, with its archive action.
 fn projection() -> ContinuityNotificationProjection {
     ContinuityNotificationProjection {
         id: ContinuityNotificationId {
@@ -1083,8 +1078,8 @@ fn laptop() -> DeviceId {
     laptop
 }
 
-/// The desktop's own notice is about the machine that raises it: it is not
-/// an app's message to continue on the person's other devices.
+/// The desktop's own notice is about the machine that raises it: it is not an app's message to
+/// continue on the person's other devices.
 #[test]
 fn the_desktops_own_notice_stays_on_this_machine() {
     let (rig, fabric) = rig_on_fabric(true);
@@ -1191,9 +1186,9 @@ fn a_notification_from_the_persons_other_device_is_named_after_it() {
     );
 }
 
-/// The banner a person meets leads with the app's own mark, whichever device
-/// told it: the projection carries the app's id, so the other device's Mail
-/// draws Mail's mark here rather than a generic window.
+/// The banner a person meets leads with the app's own mark, whichever device told it: the
+/// projection carries the app's id, so the other device's Mail draws Mail's mark here rather than a
+/// generic window.
 #[test]
 fn another_devices_notification_leads_with_the_same_mark_as_here() {
     let here = {
@@ -1401,9 +1396,8 @@ fn an_expired_projection_is_never_shown() {
     assert!(rig.desktop.log().active().is_empty());
 }
 
-/// A collaborator's device at another protocol version reaches the desk as an
-/// ordinary banner naming it: the person reads what to update, not an
-/// operator's log line.
+/// A collaborator's device at another protocol version reaches the desk as an ordinary banner
+/// naming it: the person reads what to update, not an operator's log line.
 #[test]
 fn a_device_on_another_version_is_named_on_the_desk() {
     let rig = rig();

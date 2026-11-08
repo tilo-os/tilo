@@ -1,3 +1,7 @@
+#![allow(
+    clippy::significant_drop_tightening,
+    reason = "every test here keeps its fixture and guards alive through its assertions"
+)]
 use super::*;
 use crate::collab_app_broker::{BrokerChannels, FanoutState, PeerPublisher};
 use crate::services::{HostServices, WorkspaceGovernanceRequest, WorkspaceGovernanceServices};
@@ -16,10 +20,6 @@ pub(super) fn at_effect_barrier() {
     }
 }
 
-#[allow(
-    clippy::significant_drop_tightening,
-    reason = "the test keeps its fixture and guards alive through its assertions"
-)]
 #[test]
 fn registered_services_recheck_original_certificate_after_signed_admission() {
     use super::super::host_steps::signed_test_support::Fixture;
@@ -239,10 +239,6 @@ impl WorkspaceGovernanceServices for LostGovernance {
     }
 }
 
-#[allow(
-    clippy::significant_drop_tightening,
-    reason = "the test keeps its fixture and guards alive through its assertions"
-)]
 #[test]
 fn lost_governance_answer_has_signed_uncertain_terminal() {
     use super::super::host_steps::signed_test_support::Fixture;
@@ -404,10 +400,6 @@ fn registered_governance_never_runs_before_durable_admission() {
     }
 }
 
-#[allow(
-    clippy::significant_drop_tightening,
-    reason = "the test keeps its fixture and guards alive through its assertions"
-)]
 #[test]
 fn registered_governance_keeps_original_uuid_context_and_terminal_owner() {
     let root = tempfile::tempdir().unwrap();
@@ -549,10 +541,6 @@ impl crate::services::ShortcutLibraryServices for Library {
     }
 }
 
-#[allow(
-    clippy::significant_drop_tightening,
-    reason = "the test keeps its fixture and guards alive through its assertions"
-)]
 #[test]
 fn keyboard_and_library_effects_require_admission_and_keep_request_identity() {
     use super::super::invocation_journal::{BarrierFailure, InvocationJournal};

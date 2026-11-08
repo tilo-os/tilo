@@ -1,24 +1,17 @@
-//! What the session settles about this device's identity before it opens a
-//! display: whether the identity the machine already holds verifies, whether
-//! its owner must unlock or restore it first, and whether the clock reads far
-//! enough for the certificate the device carries.
-//!
-//! Nothing here replaces an identity. A record whose chain does not verify
-//! opens trusted recovery, where only the person can unlock the store holding
-//! the key or bring the identity back from another of their devices; a
-//! certificate the clock reads as not yet valid opens the wait for the clock
-//! ([`BeforeDesk::WaitForClock`]), because the identity itself is intact and
-//! waiting is all that is asked of it. Anything else that fails (a store that
-//! cannot be read, a permission this account does not have) stops the session
-//! instead of guessing, so a machine whose person cannot be established never
-//! reaches a desktop under an identity that is not theirs.
-//!
-//! A verified identity is also kept alive: this device's expiring certificates
-//! are renewed in the background for as long as the session runs.
-//!
-//! The two headless commands run here as well: they settle the same identity
-//! in a login that starts no display, which is how an installer and a test
-//! provision and verify one.
+//! What the session settles about this device's identity before it opens a display: whether the
+//! identity the machine already holds verifies, whether its owner must unlock or restore it first,
+//! and whether the clock reads far enough for the certificate the device carries.
+//! Nothing here replaces an identity. A record whose chain does not verify opens trusted recovery,
+//! where only the person can unlock the store holding the key or bring the identity back from
+//! another of their devices; a certificate the clock reads as not yet valid opens the wait for the
+//! clock ([`BeforeDesk::WaitForClock`]), because the identity itself is intact and waiting is all
+//! that is asked of it. Anything else that fails (a store that cannot be read, a permission this
+//! account does not have) stops the session instead of guessing, so a machine whose person cannot
+//! be established never reaches a desktop under an identity that is not theirs.
+//! A verified identity is also kept alive: this device's expiring certificates are renewed in the
+//! background for as long as the session runs.
+//! The two headless commands run here as well: they settle the same identity in a login that starts
+//! no display, which is how an installer and a test provision and verify one.
 
 use std::path::{Path, PathBuf};
 
@@ -33,9 +26,9 @@ use tilo_user_identity::{CertificateClockError, IdentityPaths};
 use crate::clock_wait::ClockWait;
 use crate::setup::BeforeDesk;
 
-/// How many times startup asks for the identity's key before giving up on the
-/// Secret Service: a login starts the keyring daemon and this session at the
-/// same moment, so the first asks come before it answers.
+/// How many times startup asks for the identity's key before giving up on the Secret Service: a
+/// login starts the keyring daemon and this session at the same moment, so the first asks come
+/// before it answers.
 const SECRET_SERVICE_ATTEMPTS: usize = 8;
 
 /// How long to wait before asking again.
@@ -44,51 +37,47 @@ const SECRET_SERVICE_RETRY: std::time::Duration = std::time::Duration::from_mill
 /// What this device's identity admits before a display opens.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Identity {
-    /// The desk opens: the identity the device holds verifies, or it holds
-    /// none yet and setup asks its person for one before the desk is used.
+    /// The desk opens: the identity the device holds verifies, or it holds none yet and setup asks
+    /// its person for one before the desk is used.
     Desk,
-    /// The record is intact but the certificate it carries is outside its
-    /// validity at the clock's reading. The desk waits for the clock: what
-    /// opens is the wait [`BeforeDesk::WaitForClock`], and the desk takes
-    /// its place once the clock admits the certificate.
+    /// The record is intact but the certificate it carries is outside its validity at the clock's
+    /// reading. The desk waits for the clock: what opens is the wait [`BeforeDesk::WaitForClock`],
+    /// and the desk takes its place once the clock admits the certificate.
     WaitForClock {
-        /// The directory the identity this device holds lives in, which the
-        /// wait verifies again.
+        /// The directory the identity this device holds lives in, which the wait verifies again.
         identity_dir: PathBuf,
         /// What the clock read and what the certificate needs instead.
         refusal: CertificateClockError,
     },
-    /// The record is here but its chain does not verify. Its owner unlocks
-    /// what holds its key or restores the identity; trusted recovery opens in
-    /// place of the desk.
+    /// The record is here but its chain does not verify. Its owner unlocks what holds its key or
+    /// restores the identity; trusted recovery opens in place of the desk.
     Recovery(IdentityProblem),
-    /// Nothing proved the stored identity invalid, so the session stops
-    /// rather than start a desk under an identity nobody could check.
+    /// Nothing proved the stored identity invalid, so the session stops rather than start a desk
+    /// under an identity nobody could check.
     Refused(String),
 }
 
 /// What a verification that did not pass calls for.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Failure {
-    /// The identity is intact and its certificate is outside its validity at
-    /// the clock's reading: the desk waits for the clock, and offers neither
-    /// recovery nor a replacement.
+    /// The identity is intact and its certificate is outside its validity at the clock's reading:
+    /// the desk waits for the clock, and offers neither recovery nor a replacement.
     WaitForClock(CertificateClockError),
-    /// The record is here but does not verify: its owner unlocks or restores
-    /// it. Never a reason to make a second identity.
+    /// The record is here but does not verify: its owner unlocks or restores it. Never a reason to
+    /// make a second identity.
     Recovery(IdentityProblem),
-    /// The error proves nothing about the identity (a store or permission
-    /// failure, a keyring that never came up): stop.
+    /// The error proves nothing about the identity (a store or permission failure, a keyring that
+    /// never came up): stop.
     Refused,
 }
 
 /// The headless identity command a `tilo-session` command line asks for.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Command {
-    /// `--provision-identity`: establish the machine's identity, then stop.
+    /// `--provision-identity` : establish the machine's identity, then stop.
     Provision,
-    /// `--verify-collaboration-identity`: prove the identity this device
-    /// holds verifies, then stop.
+    /// `--verify-collaboration-identity` : prove the identity this device holds verifies, then
+    /// stop.
     Verify,
 }
 
@@ -113,10 +102,9 @@ pub fn command(args: &[String]) -> Result<Option<Command>, String> {
     }
 }
 
-/// Carry out `command`, which opens no display: what it prints and the code
-/// the process stops with are its whole answer. `host_desktop` is a session
-/// added to an operating system Tilo does not control, whose identity setup
-/// differs from the image's.
+/// Carry out `command` , which opens no display: what it prints and the code the process stops with
+/// are its whole answer. `host_desktop` is a session added to an operating system Tilo does not
+/// control, whose identity setup differs from the image's.
 pub fn run(command: Command, host_desktop: bool) -> std::process::ExitCode {
     use std::process::ExitCode;
     let store = match DiskIdentityStore::from_env() {
@@ -137,8 +125,8 @@ pub fn run(command: Command, host_desktop: bool) -> std::process::ExitCode {
     }
 }
 
-/// Prove the identity this device holds verifies, as a release gate runs it on
-/// an installed machine.
+/// Prove the identity this device holds verifies, as a release gate runs it on an installed
+/// machine.
 fn verify_only(identity_dir: &Path, paths: &IdentityPaths) -> std::process::ExitCode {
     use std::process::ExitCode;
     match firstboot::verify_collaboration_identity(identity_dir, paths, tilo_clock::unix_now_ns()) {
@@ -153,9 +141,9 @@ fn verify_only(identity_dir: &Path, paths: &IdentityPaths) -> std::process::Exit
     }
 }
 
-/// Establish the machine's identity, or prove the one it holds verifies. An
-/// identity already here is never replaced: this repairs a missing or damaged
-/// chain, it does not mint a second person onto a used machine.
+/// Establish the machine's identity, or prove the one it holds verifies. An identity already here
+/// is never replaced: this repairs a missing or damaged chain, it does not mint a second person
+/// onto a used machine.
 fn provision(
     store: &DiskIdentityStore,
     identity_dir: &Path,
@@ -200,10 +188,9 @@ fn provision(
 /// once this returns.
 #[must_use]
 pub fn identity() -> Identity {
-    // A device enrolled without the person's root (a node's session, certified
-    // when its node was installed) takes up the identity it holds before the
-    // store below is asked what is here, so this login reads the person's
-    // record rather than the absence setup would take as a first use.
+    // A device enrolled without the person's root (a node's session, certified when its node was
+    // installed) takes up the identity it holds before the store below is asked what is here, so
+    // this login reads the person's record rather than the absence setup would take as a first use.
     if let Err(error) = tilo_onboarding_host::identity_provisioning::complete_enrolled_device() {
         tracing::warn!(%error, "the enrolled device could not take up its identity");
     }
@@ -212,9 +199,9 @@ pub fn identity() -> Identity {
         Err(error) => return Identity::Refused(format!("no identity store: {error}")),
     };
     if needs_first_run_flow(&store) {
-        // No record at all, or one that does not even parse: setup asks the
-        // person for an identity and validates what is there before it writes
-        // anything, so nothing here has to decide for them.
+        // No record at all, or one that does not even parse: setup asks the person for an identity
+        // and validates what is there before it writes anything, so nothing here has to decide for
+        // them.
         return Identity::Desk;
     }
     let Some(identity_dir) = store.path().parent() else {
@@ -253,9 +240,8 @@ pub fn identity() -> Identity {
     }
 }
 
-/// What this session shows before its desk is used, given what `identity`
-/// settled: the wait for the clock, the setup this device still needs, or
-/// nothing and the desk opens.
+/// What this session shows before its desk is used, given what `identity` settled: the wait for the
+/// clock, the setup this device still needs, or nothing and the desk opens.
 #[must_use]
 pub fn before_desk(identity: &Identity, host_desktop: bool) -> Option<BeforeDesk> {
     match identity {
@@ -273,10 +259,9 @@ pub fn before_desk(identity: &Identity, host_desktop: bool) -> Option<BeforeDesk
     }
 }
 
-/// The setup this device still needs once its identity verifies: the first
-/// use when it has no identity yet, setup it started and did not finish, the
-/// recovery of its identity when startup found it unusable; `None` when there
-/// is nothing left to set up.
+/// The setup this device still needs once its identity verifies: the first use when it has no
+/// identity yet, setup it started and did not finish, the recovery of its identity when startup
+/// found it unusable; `None` when there is nothing left to set up.
 #[must_use]
 pub(crate) fn setup_due_now(host_desktop: bool) -> Option<OnboardingView> {
     use crate::mount::firstboot::setup_due;
@@ -301,15 +286,12 @@ pub(crate) fn setup_due_now(host_desktop: bool) -> Option<OnboardingView> {
 }
 
 /// How startup handles a verification that did not pass.
-///
-/// The clock's reading is asked first because a refusal for it alone is
-/// reported as [`std::io::ErrorKind::InvalidData`] too, and it is the one
-/// failure that leaves the identity intact. A chain that does not verify is
-/// the person's to unlock or restore. Everything else — a store or permission
-/// failure, a keyring that never came up — proves nothing about the stored
-/// identity and is not readable as permission to replace it, so the session
-/// stops and the login is tried again rather than open a desk nobody could
-/// establish.
+/// The clock's reading is asked first because a refusal for it alone is reported as
+/// [`std::io::ErrorKind::InvalidData`] too, and it is the one failure that leaves the identity
+/// intact. A chain that does not verify is the person's to unlock or restore. Everything else — a
+/// store or permission failure, a keyring that never came up — proves nothing about the stored
+/// identity and is not readable as permission to replace it, so the session stops and the login is
+/// tried again rather than open a desk nobody could establish.
 #[must_use]
 pub fn failure(error: &std::io::Error) -> Failure {
     if let Some(refusal) = CertificateClockError::in_io(error) {
@@ -323,8 +305,7 @@ pub fn failure(error: &std::io::Error) -> Failure {
     Failure::Refused
 }
 
-/// Verify the identity this device already holds, asking again while the
-/// Secret Service comes up.
+/// Verify the identity this device already holds, asking again while the Secret Service comes up.
 fn verify(identity_dir: &Path, paths: &IdentityPaths) -> std::io::Result<()> {
     let mut attempt = 1;
     loop {
@@ -379,11 +360,10 @@ pub(crate) fn settle(identity_dir: &Path) -> Result<(), String> {
     Ok(())
 }
 
-/// A setup journal left behind when the identity was written is residue once
-/// the identity verifies, not a reason to send an established person through
-/// recovery again. `Err` says the person's own setup cannot be told apart from
-/// an interrupted one, which is theirs to keep: the session stops rather than
-/// open a desk that hides it.
+/// A setup journal left behind when the identity was written is residue once the identity verifies,
+/// not a reason to send an established person through recovery again. `Err` says the person's own
+/// setup cannot be told apart from an interrupted one, which is theirs to keep: the session stops
+/// rather than open a desk that hides it.
 fn reconcile(identity_dir: &Path) -> Result<(), String> {
     match tilo_onboarding_host::view::clear_verified_pre_acquisition_progress(identity_dir) {
         Ok(true) => {
@@ -402,8 +382,8 @@ fn reconcile(identity_dir: &Path) -> Result<(), String> {
     }
 }
 
-/// Point setup at trusted recovery for `problem`, which this session's view
-/// reads from its own environment.
+/// Point setup at trusted recovery for `problem` , which this session's view reads from its own
+/// environment.
 #[allow(
     clippy::disallowed_methods,
     reason = "the marker is how the session's own setup learns which recovery to open, and it is set before any thread that reads the environment is started"

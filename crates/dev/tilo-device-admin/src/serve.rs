@@ -81,9 +81,6 @@ impl Service {
 }
 
 /// Bind the device's admin endpoint and start accepting the route.
-///
-/// # Errors
-/// No readable device key, or an endpoint that cannot bind.
 pub async fn start(options: &Options) -> anyhow::Result<Service> {
     if options.daemon.is_empty() {
         anyhow::bail!("no daemon command to bridge sessions to");

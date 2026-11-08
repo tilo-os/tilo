@@ -7,8 +7,8 @@
 //! different workspace's valid tree, which Automerge would merge without a
 //! complaint.
 //!
-//! Every namespace payload that crosses the wire therefore travels with a
-//! [`NamespaceBindingV1`]: a whole document, the changes beyond a set of
+//! Every namespace payload that crosses the wire therefore travels with
+//! a [`NamespaceBindingV1`]: a whole document, the changes beyond a set of
 //! heads, and each Automerge sync message. The sending device signs the
 //! workspace it serves, the kind of payload and the BLAKE3 digest of its
 //! exact bytes. A receiver applies the payload only when

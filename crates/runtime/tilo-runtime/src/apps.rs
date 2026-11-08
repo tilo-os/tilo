@@ -210,12 +210,6 @@ impl Apps {
 
     /// Launch `app_id` into this profile's workspace through the platform
     /// launcher; the launch's handle, recorded for attestation.
-    ///
-    /// # Errors
-    ///
-    /// Refuses an app that is not installed or has no window, a workspace this
-    /// profile does not serve, and a platform with no launcher or a payload
-    /// it cannot verify; returns spawn errors.
     pub fn start(&self, app_id: &str, workspace: &str) -> Result<Launch, String> {
         if workspace != self.workspace {
             return Err(format!(

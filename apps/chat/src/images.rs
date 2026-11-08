@@ -2,8 +2,8 @@
 //!
 //! Image attachments are painted through the shared [`ui::ImageStore`], which
 //! fetches + decodes + caches off the UI thread and hands back a GPU-ready
-//! `peniko::ImageData` on a later frame. This module supplies the injected
-//! [`ui::Fetcher`]: the transport that turns an attachment's blob key into raw
+//! `peniko::ImageData` on a later frame. This module supplies the
+//! injected [`ui::Fetcher`]: the transport that turns an attachment's blob key into raw
 //! encoded bytes.
 //!
 //! Chat images are content-addressed bytes in the app's content store, not

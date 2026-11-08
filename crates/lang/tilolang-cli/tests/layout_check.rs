@@ -86,7 +86,9 @@ fn every_kind_of_broken_layout_is_caught_at_the_view_that_breaks_it() {
             | Kind::PastWindow
             | Kind::TitleClippedWithRoom
             // The fixture's windows ship one language: nothing reads from another catalogue.
-            | Kind::MixedLanguage => "(no view)",
+            | Kind::MixedLanguage
+            // No window in this fixture opens an item under its row.
+            | Kind::OpenOutsideList => "(no view)",
         };
         assert_eq!(
             finding.view,

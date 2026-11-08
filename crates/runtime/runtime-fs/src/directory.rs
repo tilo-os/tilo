@@ -52,8 +52,6 @@ impl DirectoryCapability {
     /// Open only an existing no-follow regular child. Write truncates; Append
     /// atomically appends; `ReadWriteExisting` and `WriteExisting` preserve length. Missing files are never
     /// silently created: creation must have an actual durable native job.
-    /// # Errors
-    /// Refuses absent rights, wrong type, substituted inode, stale scope or IO.
     pub fn open_file(
         &self,
         name: &EntryName,

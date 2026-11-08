@@ -276,10 +276,6 @@ impl IndexDelta {
     }
 
     /// The delta `bytes` encode, within [`MAX_DELTA_BYTES`].
-    ///
-    /// # Errors
-    ///
-    /// The bytes are too many or not a delta.
     pub fn decode(bytes: &[u8]) -> Result<Self, String> {
         if bytes.len() > MAX_DELTA_BYTES {
             return Err(format!(

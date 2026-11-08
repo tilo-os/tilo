@@ -1076,9 +1076,6 @@ pub mod live {
     }
 
     /// Build the shared rustls client config against the system trust bundle.
-    ///
-    /// # Errors
-    /// The system's trust could not be read.
     fn build_tls_config() -> Result<Arc<rustls::ClientConfig>, String> {
         tilo_net::client_config()
             .map(Arc::new)

@@ -6,7 +6,8 @@
 use std::collections::{HashMap, HashSet};
 
 use super::{
-    ListModel, ListModelChange, MountedRow, MountedRowState, RowSelection, VirtualList, groups,
+    ListModel, ListModelChange, MountedRow, MountedRowState, RowBuild, RowSelection, VirtualList,
+    groups,
 };
 use crate::virtual_viewport::SparseAnchor;
 
@@ -42,6 +43,7 @@ impl<M: ListModel> VirtualList<M> {
     pub(super) fn reconcile_model(&mut self, anchor: Option<&SparseAnchor<M::Key>>) {
         // What the rows were grouped by may have moved with them.
         self.regrouped();
+        self.close_open_leaving();
         self.viewport
             .reconcile(self.model.len(), |key| self.model.index_of(key), anchor);
         self.selection
@@ -181,6 +183,28 @@ impl<M: ListModel> VirtualList<M> {
         self.capture_list_change(changes);
         self.apply_model_changes(changes);
         self.reconcile_model(anchor.as_ref());
+    }
+
+    /// Close the row standing open when its item left the list: what the person is reading
+    /// where it stands is always a row of the list they see, so an item that goes — to another
+    /// place, another query, away — closes with it.
+    pub(super) fn close_open_leaving(&mut self) {
+        let Some(open) = self.open.as_ref() else {
+            return;
+        };
+        if self.model.index_of(open).is_some() {
+            return;
+        }
+        let open = self.open.take();
+        // The row that went takes its growth with it: nothing measures it again, and a
+        // height on its way nowhere would ask for frames that never settle.
+        if let Some(open) = &open {
+            self.growing.remove(open);
+            self.growth.retain(|(grown, _)| grown != open);
+        }
+        // A host keeping which item is open hears it close with its row, so the list it builds
+        // for the place the person moved to holds nothing open.
+        self.report_open();
     }
 
     pub fn invalidate_rows(&mut self, keys: impl IntoIterator<Item = M::Key>) {
@@ -332,9 +356,15 @@ impl<M: ListModel> VirtualList<M> {
                 previous => {
                     replaced = true;
                     let widget = match &mounted_state {
-                        MountedRowState::Ready => {
-                            (self.row_builder)(&self.model, index, &key, selection)
-                        }
+                        MountedRowState::Ready => (self.row_builder)(
+                            &self.model,
+                            index,
+                            &key,
+                            RowBuild {
+                                selection,
+                                expanded: self.open.as_ref() == Some(&key),
+                            },
+                        ),
                         state => self.arriving_row(index, state),
                     };
                     self.row_builds = self.row_builds.wrapping_add(1);

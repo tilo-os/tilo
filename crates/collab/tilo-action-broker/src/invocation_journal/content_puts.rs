@@ -82,10 +82,6 @@ pub(super) struct ContentPutsStore {
 
 impl ContentPutsStore {
     /// The store `root`'s attribution file holds.
-    ///
-    /// # Errors
-    ///
-    /// Returns why the file cannot be read as this store.
     pub(super) fn read(root: &Path) -> Result<Self, String> {
         let mut file = match File::open(root.join(CONTENT_PUTS_FILE)) {
             Ok(file) => file,
@@ -286,10 +282,6 @@ fn snapshot_of(puts: &[ContentPutRecord]) -> Result<Vec<u8>, String> {
 
 /// Every attribution `root`'s file holds, as a journal opened there reads
 /// them: what a restart keeps.
-///
-/// # Errors
-///
-/// Returns why the file cannot be read.
 #[cfg(test)]
 pub(crate) fn attributions(root: &Path) -> Result<Vec<ContentPutRecord>, String> {
     ContentPutsStore::read(root)?.held()
@@ -298,10 +290,6 @@ pub(crate) fn attributions(root: &Path) -> Result<Vec<ContentPutRecord>, String>
 impl InvocationJournal {
     /// Stage `record` for the journal's writer, after every write staged
     /// before it; its ticket resolves once the line is durable.
-    ///
-    /// # Errors
-    ///
-    /// Returns why it cannot be staged.
     pub(crate) fn record_content_put(
         &mut self,
         record: &ContentPutRecord,

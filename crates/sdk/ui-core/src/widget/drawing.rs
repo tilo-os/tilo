@@ -1,4 +1,4 @@
-//! [`Drawing`]: shapes drawn with the design system (docs/designs/app-language/components.md
+//! [`Drawing`] — shapes drawn with the design system (docs/designs/app-language/components.md
 //! §4.1, the custom-widget ladder's second step).
 //!
 //! A drawing is a list of [`Shape`] values over its own box: coordinates are fractions of the

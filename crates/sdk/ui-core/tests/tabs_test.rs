@@ -2,7 +2,6 @@ use tilo_ui::widget::{TabBar, TabDescriptor};
 
 #[test]
 fn tab_bar_activates_reorders_and_stubs_render() {
-    // Case `tabbar_activates_by_index`.
     {
         let mut bar = TabBar::new(
             "g1",
@@ -18,7 +17,6 @@ fn tab_bar_activates_reorders_and_stubs_render() {
         assert_eq!(bar.active_id(), 3);
     }
 
-    // Case `tabbar_reorder_swaps_positions`.
     {
         let mut bar = TabBar::new(
             "g1",
@@ -34,7 +32,6 @@ fn tab_bar_activates_reorders_and_stubs_render() {
         assert_eq!(ids, vec![2, 3, 1]);
     }
 
-    // Case `tile_content_stub_renders_label`.
     {
         let tc = TileContent::Stub {
             kind: AppKind::Browser,

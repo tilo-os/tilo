@@ -200,8 +200,6 @@ impl PendingHandoffRegistry {
     }
     /// Register the exact accepted pending transport before its QPE/RPC work.
     /// Only the owned source supervisor calls this with its actual held cap.
-    /// # Errors
-    /// Refuses an absent, replayed, mismatched or closed actual registry route.
     pub fn begin_pending(
         &self,
         ticket: [u8; 16],
@@ -217,8 +215,6 @@ impl PendingHandoffRegistry {
         result
     }
     /// Register only the SAME actual consumed Read subject's accepted socket.
-    /// # Errors
-    /// Refuses absent/replayed/mismatched or closed actual source routes.
     pub fn begin_read(
         &self,
         ticket: [u8; 16],
@@ -259,8 +255,6 @@ impl PendingHandoffRegistry {
     }
     /// Called only AFTER the owned supervisor has joined the exact child.
     /// Its RPC thread has already drained every submitted blocking callback.
-    /// # Errors
-    /// Refuses an unobservable registry, absent route or duplicate join.
     pub fn observed_join(&self, ticket: [u8; 16], result: Result<(), String>) -> io::Result<()> {
         let mut state = self
             .state
@@ -348,8 +342,6 @@ impl PendingHandoffRegistry {
         }
     }
     /// Consume an actual Read capability once; it cannot select Pending or `WorkspaceFs`.
-    /// # Errors
-    /// Refuses closed/replayed/expired tickets or current original Read loss.
     pub fn take_read(
         &self,
         ticket: [u8; 16],
@@ -380,8 +372,6 @@ impl PendingHandoffRegistry {
     }
     /// Consume once only after authenticating the owned source connection.
     /// This returns the existing native object, never reconstructs Work from data.
-    /// # Errors
-    /// Refuses closed, expired, replayed, mismatched or revoked reservations.
     pub fn take(
         &self,
         ticket: [u8; 16],
@@ -411,8 +401,6 @@ impl PendingHandoffRegistry {
         Ok(entry.pending)
     }
     /// Close routing before joining every owned handoff and native callback.
-    /// # Errors
-    /// Refuses an unobservable poisoned registry.
     pub fn close(&self) -> io::Result<()> {
         let mut state = self
             .state
@@ -441,8 +429,6 @@ impl WorkspaceBackend for ClosedBackend {
 /// Serve ONLY this actual held pending capability on an independently kernel
 /// authenticated connection. Opens no path, selects no arbitrary object, and
 /// supplies no `WorkspaceFs` bootstrap or native authority constructor.
-/// # Errors
-/// Refuses revoked native Work or failure to own the exact RPC server.
 pub fn serve_pending_connected(
     stream: std::os::unix::net::UnixStream,
     pending: Arc<dyn WorkspacePendingReplacementBackend>,
@@ -492,8 +478,6 @@ pub fn serve_pending_connected(
 
 /// Serve ONLY a genuine original Read subject after independent source QPE.
 /// No record mapping, byte grant, Pending or `WorkspaceFs` fallback.
-/// # Errors
-/// Refuses source retirement or inability to own the exact connected server.
 pub fn serve_history_read_connected(
     stream: std::os::unix::net::UnixStream,
     subject: Arc<dyn crate::directory_backend::WorkspaceHistoryReadSubjectBackend>,

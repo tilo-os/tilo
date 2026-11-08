@@ -23,7 +23,6 @@ fn editable_component(host: &ProbeHost, instance: u64) -> AppComponent {
 
 #[test]
 fn prepared_services_and_theme_polls_keep_explicit_presentation_inputs() {
-    // Case `prepared_native_services_keep_explicit_presentation_and_watch_system_updates`.
     {
         fn services(
             inputs: crate::application::ComponentRunnerInputs,
@@ -64,7 +63,6 @@ fn prepared_services_and_theme_polls_keep_explicit_presentation_inputs() {
         assert!(app.component_close_reports()[0].record_error.is_none());
     }
 
-    // Case `prepared_native_due_theme_poll_preserves_explicit_inputs_without_discovery`.
     {
         let host = ProbeHost::new();
         let component = editable_component(&host, 11);
@@ -105,7 +103,6 @@ fn prepared_services_and_theme_polls_keep_explicit_presentation_inputs() {
         app.close_components();
     }
 
-    // Case `legacy_theme_poll_keeps_due_stamp_and_reload_behavior_with_controlled_sources`.
     {
         let mut app = App::from_factory_with_controlled_inputs(State::new(), || {
             Box::new(crate::widget::Column::new())
@@ -451,7 +448,6 @@ fn native_idle_model_persists_a_bound_edit_before_any_close() {
 
 #[test]
 fn prepared_autosave_and_close_retain_original_owners_for_retry() {
-    // Case `prepared_native_autosave_tick_acknowledges_original_writer_before_close`.
     {
         let host = ProbeHost::new();
         let component = editable_component(&host, 11);
@@ -467,7 +463,6 @@ fn prepared_autosave_and_close_retain_original_owners_for_retry() {
         app.close_components();
     }
 
-    // Case `prepared_native_autosave_tick_reaches_distinct_embedded_owners_before_close`.
     {
         let first_host = ProbeHost::new();
         let first = editable_component(&first_host, 11);
@@ -501,7 +496,6 @@ fn prepared_autosave_and_close_retain_original_owners_for_retry() {
 
 #[test]
 fn prepared_close_retains_the_original_store_and_rejects_stale_results() {
-    // Case `prepared_three_runner_close_retains_original_view_store_for_retry`.
     {
         for mode in 0..3 {
             let host = ProbeHost::new();
@@ -535,7 +529,6 @@ fn prepared_close_retains_the_original_store_and_rejects_stale_results() {
             assert_eq!(saved.workspace_id, WORKSPACE);
         }
     }
-    // Case `prepared_native_close_retains_original_recovery_and_is_idempotent`.
     {
         let host = ProbeHost::new();
         let component = runner_probe_definition()
@@ -567,7 +560,6 @@ fn prepared_close_retains_the_original_store_and_rejects_stale_results() {
         assert!(path.is_file());
         assert!(app.take_component_close_reports().is_empty());
     }
-    // Case `prepared_three_runner_close_cancels_local_operations_and_rejects_stale_results`.
     {
         for mode in 0..3 {
             let host = ProbeHost::new();
@@ -708,7 +700,6 @@ impl Runner {
 )]
 #[test]
 fn prepared_runners_share_factory_view_action_and_palette_behaviour() {
-    // Case `prepared_three_runner_factory_record_view_action_and_denial_parity`.
     {
         let seed = ProbeHost::new();
         let mut component = runner_probe_definition()
@@ -830,7 +821,6 @@ fn prepared_runners_share_factory_view_action_and_palette_behaviour() {
         assert_eq!(results, vec![b"\"edited\"".to_vec(); 3]);
     }
 
-    // Case `component_palette_uses_host_text_through_prompt_confirmation_and_reopen`.
     {
         let host = ProbeHost::new();
         let component = runner_probe_definition()
@@ -993,7 +983,6 @@ fn request_another_record(component: &AppComponent) -> crate::record::RecordId {
 
 #[test]
 fn a_window_shows_the_record_its_component_asked_for_in_its_place() {
-    // Case `the_native_window_swaps_its_component_and_keeps_the_outgoing_writers_work`.
     {
         let host = ProbeHost::new();
         let component = editable_component(&host, 31);
@@ -1018,7 +1007,6 @@ fn a_window_shows_the_record_its_component_asked_for_in_its_place() {
         app.close_components();
     }
 
-    // Case `a_withdrawn_request_leaves_the_window_as_it_is`.
     {
         let host = ProbeHost::new();
         let component = editable_component(&host, 33);
@@ -1047,7 +1035,6 @@ fn a_window_shows_the_record_its_component_asked_for_in_its_place() {
         app.close_components();
     }
 
-    // Case `a_tile_swaps_its_component_on_its_next_sync`.
     {
         let host = ProbeHost::new();
         let component = editable_component(&host, 32);

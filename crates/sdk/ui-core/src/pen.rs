@@ -7,8 +7,8 @@
 //! `CursorMoved` or `MouseInput`.
 //!
 //! The platform reports a pen as `WindowEvent::PenSample` immediately before
-//! each pointer event it makes. Hosts pass every window event through
-//! [`PenInput::route`]: it keeps the sample, which no widget sees as an event
+//! each pointer event it makes. Hosts pass every window event
+//! through [`PenInput::route`]: it keeps the sample, which no widget sees as an event
 //! of its own, and hands it to the pointer event that follows for exactly
 //! that event's dispatch. A mouse's events carry none.
 

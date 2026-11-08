@@ -32,9 +32,6 @@ pub use mail_parser;
 ///
 /// The engine's check binary calls it, so a release proves the library loads
 /// and runs against the runtime it ships with.
-///
-/// # Errors
-/// Names the step that failed or what was read back wrongly.
 #[cfg(feature = "thin")]
 pub fn self_check() -> Result<String, String> {
     use std::str::FromStr as _;

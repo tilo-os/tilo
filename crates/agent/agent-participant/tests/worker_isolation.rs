@@ -24,7 +24,7 @@ use common::{Body as _, catalogue, pdf};
 use tilo_actions::OperationKind;
 use tilo_actions::door::{ActionAddress, ActionDescriptor, DoorError};
 use tilo_agent_participant::worker::{ProbeReport, probe_confinement};
-use tilo_agent_participant::{ConfinedReplica, Replica, ReplicaActor, Seed};
+use tilo_agent_participant::{ConfinedReplica, ReplicaActor, Seed};
 use tilo_content::ContentStore;
 use tilo_test_env::SpawnUnderEnvLock as _;
 
@@ -33,17 +33,8 @@ const WORKSPACE: &str = "6f1d3a52-1c7e-4b8e-9d2a-0f4a8c3e5b71";
 #[test]
 fn a_confined_record_kept_at_an_older_storage_version_sends_its_migration() {
     use ui::tilo_resource::evolution::{VERSION_KEY, stored_version};
-    let catalogue = catalogue();
     let app = "so.tilo.chat";
-    let mut page = Replica::open(
-        &catalogue,
-        app,
-        WORKSPACE,
-        "ada",
-        ReplicaActor::Owner,
-        Seed::New,
-    )
-    .unwrap();
+    let mut page = common::open(app, "ada", ReplicaActor::Owner, Seed::New).unwrap();
     let Some(DocumentMutation::Snapshot(snapshot)) = page.take_mutation() else {
         panic!("a new record is published whole");
     };
@@ -59,10 +50,8 @@ fn a_confined_record_kept_at_an_older_storage_version_sends_its_migration() {
 
     // As a host holds a bot's record: in a worker, its changes admitted to
     // the host's mirror of the workspace's document.
-    let held = ConfinedReplica::open(
-        &catalogue,
+    let held = common::confined(
         app,
-        WORKSPACE,
         "host",
         &ReplicaActor::Owner,
         Seed::Existing {
@@ -119,12 +108,10 @@ fn a_confined_workspace_record_is_created_under_the_package_primary_route() {
 
 fn assert_seed_route(app: &str, default: ui::record::RecordId) {
     let catalogue = catalogue();
-    let source = ConfinedReplica::open(
-        &catalogue,
+    let source = common::confined(
         app,
-        WORKSPACE,
         "host",
-        &tilo_agent_participant::ReplicaActor::Owner,
+        &ReplicaActor::Owner,
         Seed::NewAt(default.clone()),
     )
     .unwrap();
@@ -148,12 +135,10 @@ fn assert_seed_route(app: &str, default: ui::record::RecordId) {
         );
     }
     // Both route shapes must reopen through the actual confined factory.
-    ConfinedReplica::open(
-        &catalogue,
+    common::confined(
         app,
-        WORKSPACE,
         "member",
-        &tilo_agent_participant::ReplicaActor::Owner,
+        &ReplicaActor::Owner,
         Seed::Existing {
             record: source.record_id().clone(),
             changes: vec![genesis],
@@ -168,27 +153,16 @@ fn edit(text: &str) -> serde_json::Map<String, serde_json::Value> {
 
 #[test]
 fn a_confined_record_is_edited_in_its_worker_and_converges_with_a_page() {
-    let catalogue = catalogue();
     let app = "so.tilo.scratchpad";
     let note = common::scratchpad_body("").0;
-    let mut page = Replica::open(
-        &catalogue,
-        app,
-        WORKSPACE,
-        "ada",
-        tilo_agent_participant::ReplicaActor::Owner,
-        Seed::New,
-    )
-    .unwrap();
+    let mut page = common::open(app, "ada", ReplicaActor::Owner, Seed::New).unwrap();
     let Some(DocumentMutation::Snapshot(snapshot)) = page.take_mutation() else {
         panic!("a new record is published whole");
     };
-    let agent = ConfinedReplica::open(
-        &catalogue,
+    let agent = common::confined(
         app,
-        WORKSPACE,
         "writer",
-        &tilo_agent_participant::ReplicaActor::Agent,
+        &ReplicaActor::Agent,
         Seed::Existing {
             record: page.record_id().clone(),
             changes: vec![snapshot],
@@ -239,13 +213,10 @@ fn a_confined_record_is_edited_in_its_worker_and_converges_with_a_page() {
 
 #[test]
 fn bytes_that_are_not_automerge_never_reach_the_worker() {
-    let catalogue = catalogue();
-    let agent = ConfinedReplica::open(
-        &catalogue,
+    let agent = common::confined(
         "so.tilo.scratchpad",
-        WORKSPACE,
         "writer",
-        &tilo_agent_participant::ReplicaActor::Agent,
+        &ReplicaActor::Agent,
         Seed::New,
     )
     .unwrap();
@@ -265,14 +236,11 @@ fn bytes_that_are_not_automerge_never_reach_the_worker() {
 
 #[test]
 fn a_dead_worker_is_replaced_from_what_the_host_holds() {
-    let catalogue = catalogue();
     let note = common::scratchpad_body("").0;
-    let agent = ConfinedReplica::open(
-        &catalogue,
+    let agent = common::confined(
         "so.tilo.scratchpad",
-        WORKSPACE,
         "writer",
-        &tilo_agent_participant::ReplicaActor::Agent,
+        &ReplicaActor::Agent,
         Seed::New,
     )
     .unwrap();
@@ -332,27 +300,16 @@ fn appearances(change: &DocumentMutation) -> Vec<Option<tilo_actions::Appearance
 
 #[test]
 fn an_appearance_given_to_the_worker_is_recorded_on_the_change() {
-    let catalogue = catalogue();
     let app = "so.tilo.scratchpad";
     let note = common::scratchpad_body("").0;
-    let mut page = Replica::open(
-        &catalogue,
-        app,
-        WORKSPACE,
-        "ada",
-        tilo_agent_participant::ReplicaActor::Owner,
-        Seed::New,
-    )
-    .unwrap();
+    let mut page = common::open(app, "ada", ReplicaActor::Owner, Seed::New).unwrap();
     let Some(DocumentMutation::Snapshot(snapshot)) = page.take_mutation() else {
         panic!("a new record is published whole");
     };
-    let agent = ConfinedReplica::open(
-        &catalogue,
+    let agent = common::confined(
         app,
-        WORKSPACE,
         "writer",
-        &tilo_agent_participant::ReplicaActor::Agent,
+        &ReplicaActor::Agent,
         Seed::Existing {
             record: page.record_id().clone(),
             changes: vec![snapshot],
@@ -385,15 +342,7 @@ const SHEETS: &str = "so.tilo.sheets";
 /// A new record of `app` held for an agent, lent `workspace`'s content when
 /// there is a workspace.
 fn agents_record(app: &str, workspace: Option<&ContentStore>) -> ConfinedReplica {
-    let agent = ConfinedReplica::open(
-        &catalogue(),
-        app,
-        WORKSPACE,
-        "painter",
-        &ReplicaActor::Agent,
-        Seed::New,
-    )
-    .unwrap();
+    let agent = common::confined(app, "painter", &ReplicaActor::Agent, Seed::New).unwrap();
     let agent = match workspace {
         Some(workspace) => agent.lending(workspace.clone()),
         None => agent,
@@ -556,15 +505,7 @@ fn an_agent_is_offered_the_effects_and_views_that_answer() {
     }));
 
     // A record held for the workspace's owner lists no views.
-    let owners = ConfinedReplica::open(
-        &catalogue(),
-        CANVAS,
-        WORKSPACE,
-        "workspace",
-        &ReplicaActor::Owner,
-        Seed::New,
-    )
-    .unwrap();
+    let owners = common::confined(CANVAS, "workspace", &ReplicaActor::Owner, Seed::New).unwrap();
     assert!(
         owners
             .survey()
@@ -630,10 +571,8 @@ fn an_agent_exports_its_artwork_as_content_the_workspace_keeps() {
     // Another worker holding the same record, given no content but the
     // workspace's, exports the same picture: what the record refers to is put
     // into its worker before the export runs.
-    let exporting = ConfinedReplica::open(
-        &catalogue(),
+    let exporting = common::confined(
         CANVAS,
-        WORKSPACE,
         "exporter",
         &ReplicaActor::Agent,
         Seed::Existing {
@@ -913,10 +852,8 @@ fn an_agent_reads_a_pdf_the_workspace_holds_in_its_worker() {
     // Another worker on the same record, lent the workspace, asks for the PDF
     // it lacks and reads it; one lent nothing says it cannot.
     let open = |lent: Option<&ContentStore>| {
-        let replica = ConfinedReplica::open(
-            &catalogue(),
+        let replica = common::confined(
             PDF,
-            WORKSPACE,
             "reader",
             &ReplicaActor::Agent,
             Seed::Existing {

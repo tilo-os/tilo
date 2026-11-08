@@ -169,10 +169,6 @@ fn newest_package(dist: &Path) -> Result<PathBuf> {
 /// The workspace's `install-app` for the package `package` built from the app in
 /// `app_dir`: the surface its changes name (the BLAKE3 of the app's
 /// `surface.toml`), the package's `tapp:` hash and the key that signed it.
-///
-/// # Errors
-/// The package does not read as a signed package of an app, or the app has
-/// no surface.
 pub fn app_push(app_dir: &Path, package: &Path, dev: bool) -> Result<Push> {
     let file =
         std::fs::File::open(package).with_context(|| format!("open {}", package.display()))?;
@@ -214,9 +210,6 @@ pub fn app_push(app_dir: &Path, package: &Path, dev: bool) -> Result<Push> {
 }
 
 /// The workspace's `request-bot` carrying the program in `program`.
-///
-/// # Errors
-/// The program cannot be read or does not parse.
 pub fn bot_push(program: &Path, entry: &str, version: &str) -> Result<Push> {
     let text =
         std::fs::read_to_string(program).with_context(|| format!("read {}", program.display()))?;

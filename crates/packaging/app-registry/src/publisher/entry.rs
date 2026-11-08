@@ -82,10 +82,6 @@ pub struct Checked {
 }
 
 /// Decode `tapp_bytes` and check it the way the registry will.
-///
-/// # Errors
-///
-/// Why the registry would refuse the package.
 pub fn check_package(tapp_bytes: &[u8], publisher: [u8; 32]) -> Result<Checked> {
     check_package_with(tapp_bytes, publisher, None)
 }
@@ -95,11 +91,6 @@ pub fn check_package(tapp_bytes: &[u8], publisher: [u8; 32]) -> Result<Checked> 
 /// `tilo-app-package split` wrote, published beside the thin `.tapp`) and
 /// checked against its hash, so the payload shape and size limits are
 /// checked on what installs will actually materialize.
-///
-/// # Errors
-///
-/// Why the registry would refuse the package, or a blob neither carried nor
-/// in `objects`.
 pub fn check_package_with(
     tapp_bytes: &[u8],
     publisher: [u8; 32],

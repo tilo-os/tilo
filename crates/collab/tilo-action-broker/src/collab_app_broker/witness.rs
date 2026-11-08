@@ -409,10 +409,6 @@ impl AppBrokerState {
     /// change them ([`tilo_actions::Draft::apply_edits`]); the caller is
     /// handed the changed arguments to invoke with, and any others are
     /// refused at admission like a confirmation for other arguments.
-    ///
-    /// # Errors
-    /// The edits change what the draft does not offer for editing, or the
-    /// confirmation could not be kept.
     fn witness_answer(
         &self,
         question: &Question,

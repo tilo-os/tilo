@@ -61,9 +61,6 @@ pub trait TaskDoor {
     /// The fields of the resource `item` (its id in its record) of the app `app`, its type `ty`,
     /// as [`Host::read_values`] answers them. A native app's id names the item alone; `ty` says
     /// which of the app's collections a program holds it by ([`crate::native`]).
-    ///
-    /// # Errors
-    /// Why it cannot be read: the task may not, the app does not run, the resource is gone.
     fn read(&self, app: &str, item: &str, ty: &str) -> Result<Json, String>;
 
     /// Invoke `call` (`{app, resource, action, arguments}`) as the task.
@@ -71,9 +68,6 @@ pub trait TaskDoor {
 
     /// What the app `app` answers to a program's `request` to read it (`grep`, `find`, `read`,
     /// `describe`: a [`tilolang_runtime::reads::ReadRequest`]), read as the task.
-    ///
-    /// # Errors
-    /// Why it cannot be read.
     fn query(&self, app: &str, request: &Json) -> Result<Json, String>;
 
     /// A program starts: what was read for an earlier one is read again
@@ -145,9 +139,6 @@ impl TaskSession {
     /// them. A program names and type-checks every app of them; a native one it names the record
     /// of, invokes and assigns fields of, and reads what it holds through the app
     /// ([`crate::native::NativeReads`]), which `door` carries too.
-    ///
-    /// # Errors
-    /// The runtime cannot start or a package does not load.
     pub fn new(
         person: Option<&str>,
         door: &Rc<dyn TaskDoor>,

@@ -1,17 +1,15 @@
-//! What this computer holds of its workspaces: the ones it joined, who they
-//! have in them, and what their apps recorded before it arrived.
-//!
-//! A joined workspace is held by the engine beside the desk
-//! ([`crate::engine`]). These are what a person and the apps meet of it:
-//! which workspaces reached this computer, who is in them, and what they
-//! hold.
+//! What this computer holds of its workspaces: the ones it joined, who they have in them, and what
+//! their apps recorded before it arrived.
+//! A joined workspace is held by the engine beside the desk ([`crate::engine`]). These are what a
+//! person and the apps meet of it: which workspaces reached this computer, who is in them, and what
+//! they hold.
 
 use crate::Person;
 use crate::Session;
 
 impl Session {
-    /// The workspaces this device holds: those whose content reached this
-    /// computer, joined ones included.
+    /// The workspaces this device holds: those whose content reached this computer, joined ones
+    /// included.
     #[must_use]
     pub fn held_workspaces(&self) -> Vec<String> {
         self.shared

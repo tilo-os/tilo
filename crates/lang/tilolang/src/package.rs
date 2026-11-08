@@ -889,9 +889,6 @@ pub struct CompiledProgram {
 
 /// Compiles an agent's program (agents.md, "One language, one tool"): statements over every visible
 /// app, run as an action whose parameters are the names a session bound before (`bound`).
-///
-/// # Errors
-/// The diagnostics, located in `source`.
 pub fn compile_program(
     source: &str,
     visible: &[PackageMeta],
@@ -904,9 +901,6 @@ pub fn compile_program(
 /// programs call it and its id) that its host does not hold: `grep(re, in: chat)`,
 /// `describe(chat)` and a reference to one of their resources are read through the platform
 /// (agents.md, "Querying").
-///
-/// # Errors
-/// The diagnostics, located in `source`.
 pub fn compile_program_reading(
     source: &str,
     visible: &[PackageMeta],

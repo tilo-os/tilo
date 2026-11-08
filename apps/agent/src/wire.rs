@@ -143,12 +143,6 @@ impl Link {
     /// Connect to an explicit typed collaboration socket. This is for headless
     /// diagnostics that run outside the launcher but still exercise the
     /// production protocol.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the Unix socket at `path` cannot be connected
-    /// to, or when the typed collaboration client fails its handshake over
-    /// that socket.
     pub fn connect_endpoint(
         path: &Path,
         app_id: &str,
@@ -198,10 +192,6 @@ impl Link {
     }
 
     /// Enqueue one request and record an ordered receipt for document publications.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the request or its document completion marker cannot enqueue.
     pub fn send(&mut self, req: &CollabRequest) -> Result<()> {
         let queued = self.manager.send(req.clone());
         self.record_enqueue(req, queued)
@@ -349,10 +339,6 @@ impl Link {
     /// sent, so a later request still reaches the broker after this one.
     ///
     /// A cancellation poll's answer is kept for [`Self::take_detached`].
-    ///
-    /// # Errors
-    ///
-    /// When `request` has no correlated answer to detach, or cannot enqueue.
     pub fn send_detached(&mut self, request: &CollabRequest) -> Result<()> {
         let CollabRequest::TaskRunCancellation { request_id, .. } = request else {
             anyhow::bail!("only cancellation polls are detached");

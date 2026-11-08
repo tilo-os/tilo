@@ -82,14 +82,10 @@ impl Authorization {
 pub trait SignalAuthority: Send + Sync {
     /// Revalidate the frozen account independently of any recipient route.
     /// A host without a current account producer cannot publish readiness.
-    /// # Errors
-    /// Refuses an absent, disabled, changed or closed original account owner.
     fn check_account(&self) -> Result<(), SendError> {
         Err(SendError::Unavailable)
     }
     /// Bind a verified provider self identity to this frozen current account.
-    /// # Errors
-    /// Refuses a different provider scope or a missing current account producer.
     fn check_account_scope(&self, _scope: &str) -> Result<(), SendError> {
         Err(SendError::Unavailable)
     }
@@ -119,8 +115,6 @@ pub struct SignalBroker {
 impl SignalBroker {
     /// Register an already owned adapter and history with authenticated authority.
     /// No login/key provisioning or persistent grant is created.
-    /// # Errors
-    /// Refuses a mismatched owner, service or Signal identity.
     pub fn new(
         mut runtime: SignalRuntime,
         history: History,
@@ -152,8 +146,6 @@ impl SignalBroker {
         })
     }
     /// Assemble from a supervisor's verified handle and existing OS custody.
-    /// # Errors
-    /// Refuses absent/locked keychain, mismatched state or unusable daemon.
     pub fn open_system(
         root: &std::path::Path,
         owner: crate::journal::Owner,
@@ -179,8 +171,6 @@ impl SignalBroker {
         Self::new(runtime, history, authority, signal_account)
     }
     /// Frozen authority for host registration, never inferred from metadata.
-    /// # Errors
-    /// Refuses a poisoned/retired owner worker.
     pub fn owner(&self) -> Result<crate::journal::Owner, SendError> {
         Ok(self
             .worker
@@ -377,8 +367,6 @@ impl SignalBroker {
     }
     /// Start independent inbound persistence under this frozen owner.
     /// The host retains the guard; dropping it shuts down only this connection.
-    /// # Errors
-    /// Refuses another owner/provider or unavailable receive handle.
     pub fn start_receiver(
         &self,
         mut receiver: crate::signal_runtime::SignalReceiver,

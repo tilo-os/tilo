@@ -1,5 +1,5 @@
-//! `Table` — a CRDT-native **editable grid**, not a read-oriented list view like
-//! [`crate::widget::data_table::DataTable`]: the user types into cells and adds and removes rows
+//! `Table` — a CRDT-native **editable grid**, not a read-oriented list view
+//! like [`crate::widget::data_table::DataTable`]: the user types into cells and adds and removes rows
 //! and columns from affordances in the gutters. The widget only reads the document: every change
 //! is a [`TableEdit`] its owner takes ([`Table::take_edits`]) and submits as an action, applying
 //! it with [`apply`].

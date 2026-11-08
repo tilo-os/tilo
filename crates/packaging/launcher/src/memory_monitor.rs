@@ -107,10 +107,6 @@ pub struct Watch {
 impl Watch {
     /// Watch pressure through `source`, carrying out what the policy decides
     /// with `effects`, on a thread named `name`.
-    ///
-    /// # Errors
-    ///
-    /// No descriptor to stop it with or no thread to run it on.
     pub fn spawn(
         name: &str,
         source: Box<dyn Source>,

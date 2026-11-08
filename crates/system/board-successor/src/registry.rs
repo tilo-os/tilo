@@ -35,9 +35,6 @@ impl Registry {
     /// Copies the first present authfile under `root` (checked by `trusted`
     /// and required to be a private regular file owned by `owner`), or `{}`
     /// when there is none, into a fresh 0700 directory in `temporary`.
-    ///
-    /// # Errors
-    /// Exposed, oversized or malformed credentials, or a failed write.
     pub fn new(
         root: &Path,
         trusted: &dyn Fn(&str) -> Result<PathBuf>,

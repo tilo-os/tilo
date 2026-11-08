@@ -21,9 +21,11 @@ app tilo.std "Standard library"
 /// its own, never folded into a run. Items whose type has a window of their own open in the next
 /// column; the list follows which one is open.
 ///
-/// The items of a list down a column of rows, each built as it shows: choosing a row opens its
-/// item beside the list and activating it opens it in front, as every list of the platform does,
-/// and the row says who else is at the item.
+/// The items of a list down a column of rows, each built as it shows: a row with a document of
+/// its own opens into it where it stands — the row grows into the item's page, and pressing it
+/// again, Escape or a press beside it closes it — while a row whose item the window shows
+/// elsewhere opens it beside the list when chosen and in front when activated, as every list of
+/// the platform does; and the row says who else is at the item.
 ///
 /// `row` draws an item, handed the item and who else is at it, and writes the `ui.ListItem` the
 /// list shows: its `group:`, its `parent:` and its `tail:` say the list's grouping, nesting and
@@ -38,6 +40,10 @@ template view list<T>(
     tail_title: Option<Text> = .none,
     row: (T, Option<Principal>) -> View,
 ) {
+    // The item the person opened where it stands: the row grows into it, and pressing it again,
+    // Escape, or a press beside it closes it. A row without a document opens elsewhere, in the
+    // window's pane, so the list keeps nothing of it.
+    state open_item: Option<T> = .none
     ui.VirtualList(
         selection_follows_focus: true,
         multi_select: true,
@@ -45,9 +51,12 @@ template view list<T>(
         tree: tree,
         ungrouped_title: ungrouped,
         tail_title: tail_title,
+        open: open_item,
     ) {
         on select(x: T): open(x, front: false)
         on activate(x: T): open(x)
+        on opened(x: T): set(open_item, x)
+        on closed: set(open_item, .none)
         for x in items {
             row(x, lenses(x).find(l -> not l.mine)?.who)
         }

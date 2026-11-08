@@ -11,9 +11,6 @@ const BLOCK: usize = 512;
 
 /// Unpack the archive `from` reads into `dest`, a directory nothing else writes. Returns the
 /// number of files written.
-///
-/// # Errors
-/// A malformed archive, or a file that could not be written.
 pub fn unpack(from: &mut impl Read, dest: &Path) -> io::Result<u64> {
     let mut files = 0_u64;
     let mut long_name: Option<Vec<u8>> = None;

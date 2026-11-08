@@ -54,29 +54,26 @@ use crate::nearby_transfer::NearbyTransfer;
 use crate::panels::Held;
 use crate::sheets::Sheet;
 
-/// One frame every this long: the replay buffer's rate, so a recording and
-/// a clip of what just happened share one encode.
+/// One frame every this long: the replay buffer's rate, so a recording and a clip of what just
+/// happened share one encode.
 const FRAME_INTERVAL: Duration = Duration::from_millis(1_000 / 30);
 
-/// Frames dropped in a row before the person is told again that the encoder
-/// cannot keep up.
+/// Frames dropped in a row before the person is told again that the encoder cannot keep up.
 const FALLING_BEHIND: u64 = 30;
 
 /// The columns and rows of a receipt's thumbnail.
 const PREVIEW: (u8, u8) = (12, 8);
 
-/// How wide the shot's picture is on the floating layer's card, in pixels: the
-/// card heads itself with it at nine sixteenths of its width, so this stays
-/// crisp on a high-density display.
+/// How wide the shot's picture is on the floating layer's card, in pixels: the card heads itself
+/// with it at nine sixteenths of its width, so this stays crisp on a high-density display.
 const CARD_PICTURE: u32 = 640;
 
-/// How long the last screenshot stays on the floating layer: as long as the
-/// studio's own receipt stays up on its bar.
+/// How long the last screenshot stays on the floating layer: as long as the studio's own receipt
+/// stays up on its bar.
 const SHOT_SHOWN: Duration = Duration::from_millis(5_500);
 
-/// How long a capture that could not be saved stays on the floating layer:
-/// longer than a receipt, because it asks the person to read why and choose
-/// what to do with the picture instead.
+/// How long a capture that could not be saved stays on the floating layer: longer than a receipt,
+/// because it asks the person to read why and choose what to do with the picture instead.
 const FAILED_SHOWN: Duration = Duration::from_millis(12_000);
 
 /// The capture studio as the session runs it, and what it is doing.
@@ -84,8 +81,7 @@ pub(crate) struct CaptureStudio {
     seat: Studio,
     /// The folder screenshots and recordings are written to.
     directory: PathBuf,
-    /// The one worker that encodes a recording and writes every capture's
-    /// file.
+    /// The one worker that encodes a recording and writes every capture's file.
     io: Rc<CaptureIo>,
     /// What became of the recorder's work, as the loop takes it up.
     notes: Receiver<Note>,
@@ -97,33 +93,31 @@ pub(crate) struct CaptureStudio {
     clips: VecDeque<Receiver<Result<usize, String>>>,
     /// The last screenshot, for its receipt and for opening it again.
     last: Option<Kept>,
-    /// The session's transfer engine, when this session runs on a device
-    /// fabric: who a screenshot may be sent to.
+    /// The session's transfer engine, when this session runs on a device fabric: who a screenshot
+    /// may be sent to.
     nearby: Option<Arc<NearbyTransfer>>,
     /// The screenshots on their way to those devices.
     sends: Sends,
-    /// What became of sending the last screenshot, while its receipt shows
-    /// that.
+    /// What became of sending the last screenshot, while its receipt shows that.
     sent: Option<Sent>,
-    /// Why the last capture the person took did not come out, while the bar
-    /// says so.
+    /// Why the last capture the person took did not come out, while the bar says so.
     failed: Option<Failed>,
-    /// How many of the person's captures did not come out: what tells two
-    /// alike failures apart, so taking the same capture again says it again.
+    /// How many of the person's captures did not come out: what tells two alike failures apart, so
+    /// taking the same capture again says it again.
     failures: u64,
-    /// The run whose unread frames were already said: a capture that reads no
-    /// frame says it once, not on every frame.
+    /// The run whose unread frames were already said: a capture that reads no frame says it once,
+    /// not on every frame.
     unread_said: Option<u64>,
-    /// An app's screenshot of what only the person can name, while it waits
-    /// for them: the studio is up choosing exactly that.
+    /// An app's screenshot of what only the person can name, while it waits for them: the studio is
+    /// up choosing exactly that.
     asking: Option<Asked>,
     /// What feeds the recorder now: a recording, or the replay buffer.
     feeding: Option<Feeding>,
-    /// The number of the recorder that runs, a recording or the replay
-    /// buffer: what the worker's notes about one are about.
+    /// The number of the recorder that runs, a recording or the replay buffer: what the worker's
+    /// notes about one are about.
     run: u64,
-    /// What the machine can record, probed once the bar first comes up: a
-    /// session that never records opens no probe.
+    /// What the machine can record, probed once the bar first comes up: a session that never
+    /// records opens no probe.
     audio: Cell<Option<Availability>>,
     /// The recording that runs, as the studio shows it.
     recording: Option<Recording>,
@@ -133,39 +127,33 @@ pub(crate) struct CaptureStudio {
     replay: Option<u8>,
     /// How many clips the replay buffer gave.
     replay_saves: u64,
-    /// Where what the studio is doing shows while its own bar is down: the
-    /// apps' live activities, which the bar's pill and the floating layer
-    /// draw.
+    /// Where what the studio is doing shows while its own bar is down: the apps' live activities,
+    /// which the bar's pill and the floating layer draw.
     board: Arc<runtime_collab::LiveActivities>,
-    /// The serial of the last control the person pressed on that activity
-    /// that the studio took up.
+    /// The serial of the last control the person pressed on that activity that the studio took up.
     pressed: u64,
-    /// What the studio shows there now, so a pass that changes nothing says
-    /// nothing.
+    /// What the studio shows there now, so a pass that changes nothing says nothing.
     activity: Option<serde_json::Value>,
-    /// The screenshot the floating layer shows, while it shows it, and the
-    /// number of the shot, so the person's putting one away does not put
-    /// away the next.
+    /// The screenshot the floating layer shows, while it shows it, and the number of the shot, so
+    /// the person's putting one away does not put away the next.
     shown_shot: Option<ShownShot>,
     /// How many screenshots were shown there.
     shots_shown: u64,
-    /// The shot from the desk that could not be saved, while its card says so
-    /// and offers to copy what it caught.
+    /// The shot from the desk that could not be saved, while its card says so and offers to copy
+    /// what it caught.
     failed_shot: Option<FailedShot>,
 }
 
 /// A screenshot being written off the loop.
 struct Shot {
-    /// Where its file was to go: what a failure names as the folder it could
-    /// not be saved in.
+    /// Where its file was to go: what a failure names as the folder it could not be saved in.
     folder: PathBuf,
-    /// The picture itself, when it may be copied instead: a shot taken from
-    /// the desk, whose card offers that once its file could not be written.
+    /// The picture itself, when it may be copied instead: a shot taken from the desk, whose card
+    /// offers that once its file could not be written.
     picture: Option<Arc<image::RgbaImage>>,
     /// What its receipt shows, when the person took it.
     receipt: Option<Receipt>,
-    /// The app waiting for the file, when it asked for a picture of what
-    /// only the person can name.
+    /// The app waiting for the file, when it asked for a picture of what only the person can name.
     reply: Option<tokio::sync::oneshot::Sender<Result<PathBuf, CaptureError>>>,
     /// What the worker wrote, taken up on a later pass.
     answer: Receiver<Result<Written, WriteFailed>>,
@@ -179,17 +167,16 @@ struct Receipt {
     preview: CapturePreview,
     /// Whether the file goes on the clipboard too.
     copy: bool,
-    /// Whether the person took it from outside the studio, whose bar is down:
-    /// the shot then shows on the floating layer, where the card is the only
-    /// thing saying it was taken.
+    /// Whether the person took it from outside the studio, whose bar is down: the shot then shows
+    /// on the floating layer, where the card is the only thing saying it was taken.
     floating: bool,
-    /// The picture the floating layer heads the shot's card with, when it
-    /// shows there: a `data:` picture.
+    /// The picture the floating layer heads the shot's card with, when it shows there: a `data:`
+    /// picture.
     thumb: String,
 }
 
-/// The screenshot the floating layer is showing: what it made, the picture
-/// its card is headed with, and when it was taken.
+/// The screenshot the floating layer is showing: what it made, the picture its card is headed with,
+/// and when it was taken.
 struct ShownShot {
     path: PathBuf,
     thumb: String,
@@ -197,9 +184,8 @@ struct ShownShot {
     at: Instant,
 }
 
-/// A screenshot the person took from the desk that could not be saved: the
-/// card says it in their words, with what they can do instead, while the
-/// picture is still here to do it with.
+/// A screenshot the person took from the desk that could not be saved: the card says it in their
+/// words, with what they can do instead, while the picture is still here to do it with.
 struct FailedShot {
     /// What the person tried to keep.
     picture: Arc<image::RgbaImage>,
@@ -207,8 +193,7 @@ struct FailedShot {
     thumb: String,
     /// Why it was not saved, in their words.
     words: String,
-    /// How many shots have shown, so putting this one away does not put away
-    /// the next.
+    /// How many shots have shown, so putting this one away does not put away the next.
     number: u64,
     /// When it was taken: the card goes away once it has been up long enough.
     at: Instant,
@@ -216,13 +201,11 @@ struct FailedShot {
 
 /// A screenshot an app asked the person for.
 struct Asked {
-    /// The request it belongs to, so a request the app closed takes only its
-    /// own selection down.
+    /// The request it belongs to, so a request the app closed takes only its own selection down.
     id: u64,
     /// What the person is asked to select.
     selection: Selection,
-    /// Where the picture is written: the portal's own folder, never the
-    /// person's.
+    /// Where the picture is written: the portal's own folder, never the person's.
     directory: PathBuf,
     reply: tokio::sync::oneshot::Sender<Result<PathBuf, CaptureError>>,
 }
@@ -232,21 +215,18 @@ struct Feeding {
     take: Take,
     /// The sound going into it, in the recorder's track order.
     audio: Vec<AudioTrack>,
-    /// The file written: the recording's, or `None` while only the replay
-    /// buffer is fed.
+    /// The file written: the recording's, or `None` while only the replay buffer is fed.
     path: Option<PathBuf>,
     last: Option<Instant>,
-    /// How long it has recorded, the paused time left out: what the
-    /// floating layer counts while the studio's bar is down.
+    /// How long it has recorded, the paused time left out: what the floating layer counts while the
+    /// studio's bar is down.
     elapsed: Duration,
     paused: bool,
-    /// A source of its sound stopped: the bar says the recording carries no
-    /// more of it, once.
+    /// A source of its sound stopped: the bar says the recording carries no more of it, once.
     sound_lost: bool,
 }
 
-/// Mount the capture studio over the desktop, and hand back the session's end
-/// of it.
+/// Mount the capture studio over the desktop, and hand back the session's end of it.
 pub(crate) fn mount(
     compositor: &mut Compositor,
     doors: &mut Doors,
@@ -325,21 +305,20 @@ impl CaptureStudio {
         tilo_sheets::Seat::presentation(&self.seat)
     }
 
-    /// Open the studio on what an app asked for, as the person's own shortcut
-    /// opens it: the bar comes up choosing that kind of capture.
+    /// Open the studio on what an app asked for, as the person's own shortcut opens it: the bar
+    /// comes up choosing that kind of capture.
     pub(crate) fn open_asked(&self, mode: ui::floating_surface::CaptureStudioProtocolMode) {
         self.seat.link().open_on(mode.into());
         self.presentation().open(false);
     }
 
-    /// Answer what the studio asked since the last pass, feed the recorder
-    /// and hand back what came of it.
+    /// Answer what the studio asked since the last pass, feed the recorder and hand back what came
+    /// of it.
     pub(crate) fn serve(&mut self, compositor: &mut Compositor) {
         if let Some(sent) = self.sends.take() {
             self.sent = Some(sent);
         }
-        // What the worker made of the last pass is said before this one asks
-        // for more.
+        // What the worker made of the last pass is said before this one asks for more.
         self.take_notes();
         self.take_shots(compositor);
         self.take_copies(compositor);
@@ -347,14 +326,14 @@ impl CaptureStudio {
         for ask in self.seat.link().take_asks() {
             self.answer(ask, compositor);
         }
-        // Asked after what the person took, so a screenshot that settled an
-        // app's request is an answer rather than a selection left closed.
+        // Asked after what the person took, so a screenshot that settled an app's request is an
+        // answer rather than a selection left closed.
         self.cancel_asking();
         self.feed(compositor);
         self.tell_sound_lost();
         self.publish(compositor);
-        // What the person pressed on the floating layer's card is the same
-        // ask as the button it stands for.
+        // What the person pressed on the floating layer's card is the same ask as the button it
+        // stands for.
         self.take_presses(compositor);
         self.publish_activity();
     }
@@ -363,8 +342,8 @@ impl CaptureStudio {
     fn take_notes(&mut self) {
         while let Ok(note) = self.notes.try_recv() {
             match note {
-                // What became of a recorder that has since been replaced says
-                // nothing about the one that runs now.
+                // What became of a recorder that has since been replaced says nothing about the one
+                // that runs now.
                 Note::Opened { run, .. }
                 | Note::Frame { run, .. }
                 | Note::SoundLost { run, .. }
@@ -391,8 +370,8 @@ impl CaptureStudio {
                     } else {
                         Failure::RecordingStopped(error)
                     });
-                    // Whatever was written stays in a file that is finished
-                    // rather than left behind.
+                    // Whatever was written stays in a file that is finished rather than left
+                    // behind.
                     self.end_feeding();
                     self.io.stop();
                 }
@@ -433,9 +412,8 @@ impl CaptureStudio {
         }
     }
 
-    /// Take up the screenshots the worker wrote since the last pass: the
-    /// person's receipt, and the app that asked for what only they could
-    /// name.
+    /// Take up the screenshots the worker wrote since the last pass: the person's receipt, and the
+    /// app that asked for what only they could name.
     fn take_shots(&mut self, compositor: &mut Compositor) {
         loop {
             let Some(shot) = self.shots.front() else {
@@ -443,8 +421,8 @@ impl CaptureStudio {
             };
             let answer = match shot.answer.try_recv() {
                 Ok(answer) => answer,
-                // Not written yet: it and every shot after it wait for
-                // their turn on the one worker.
+                // Not written yet: it and every shot after it wait for their turn on the one
+                // worker.
                 Err(TryRecvError::Empty) => return,
                 Err(TryRecvError::Disconnected) => Err(WriteFailed {
                     folder: shot.folder.clone(),
@@ -487,11 +465,11 @@ impl CaptureStudio {
                         height: receipt.height,
                         preview: receipt.preview,
                     });
-                    // A shot that came out supersedes the one whose card says
-                    // it could not be saved.
+                    // A shot that came out supersedes the one whose card says it could not be
+                    // saved.
                     self.failed_shot = None;
-                    // The person took it from outside the studio: its card
-                    // says so, with what it caught.
+                    // The person took it from outside the studio: its card says so, with what it
+                    // caught.
                     if receipt.floating {
                         self.shots_shown = self.shots_shown.wrapping_add(1);
                         self.shown_shot = Some(ShownShot {
@@ -506,8 +484,8 @@ impl CaptureStudio {
                 Err(error) => {
                     tracing::warn!(%error, "a screenshot was not written");
                     match shot.reply {
-                        // An app asked for this one: it is answered, not the
-                        // person, who never saw the capture.
+                        // An app asked for this one: it is answered, not the person, who never saw
+                        // the capture.
                         Some(reply) => {
                             let _ = reply.send(Err(CaptureError::Failed(error.to_string())));
                         }
@@ -566,9 +544,8 @@ impl CaptureStudio {
             .is_some_and(|feeding| feeding.path.is_none())
     }
 
-    /// Say on the bar what went wrong with the capture the person took: the
-    /// reason stays on the thing they touched, and a capture taken again says
-    /// itself again.
+    /// Say on the bar what went wrong with the capture the person took: the reason stays on the
+    /// thing they touched, and a capture taken again says itself again.
     fn failed(&mut self, failure: Failure) {
         self.failures = self.failures.wrapping_add(1);
         self.failed = Some(Failed {
@@ -577,10 +554,9 @@ impl CaptureStudio {
         });
     }
 
-    /// Say that a screenshot the person took was not saved: the bar says it in
-    /// their words where they touched it, and a shot taken from the desk —
-    /// whose bar is down — is said on the floating layer's card, which offers
-    /// to copy the picture instead.
+    /// Say that a screenshot the person took was not saved: the bar says it in their words where
+    /// they touched it, and a shot taken from the desk — whose bar is down — is said on the
+    /// floating layer's card, which offers to copy the picture instead.
     fn shot_not_saved(&mut self, shot: Shot, why: &WriteFailed) {
         self.failed(Failure::NotWritten {
             folder: why.folder.clone(),
@@ -614,9 +590,9 @@ impl CaptureStudio {
         }
     }
 
-    /// Ask the person for what an app's screenshot of `target` needs: the
-    /// window they pick or the area they draw. The app is answered once
-    /// they took it, or that it was cancelled when they close the bar.
+    /// Ask the person for what an app's screenshot of `target` needs: the window they pick or the
+    /// area they draw. The app is answered once they took it, or that it was cancelled when they
+    /// close the bar.
     pub(crate) fn ask_selection(
         &mut self,
         target: tilo_portal::CaptureTarget,
@@ -656,8 +632,8 @@ impl CaptureStudio {
         self.presentation().close();
     }
 
-    /// The person closed the selector without taking anything: the app is
-    /// told it was cancelled rather than left waiting.
+    /// The person closed the selector without taking anything: the app is told it was cancelled
+    /// rather than left waiting.
     fn cancel_asking(&mut self) {
         if self.asking.is_none() || self.presentation().is_drawn() {
             return;
@@ -701,17 +677,16 @@ impl CaptureStudio {
         }
     }
 
-    /// Hold the recorder where it is, or let it write frames again: no frame
-    /// is read back while it is held, and the sound of that time is dropped
-    /// rather than written as a gap.
+    /// Hold the recorder where it is, or let it write frames again: no frame is read back while it
+    /// is held, and the sound of that time is dropped rather than written as a gap.
     fn paused(&mut self, paused: bool) {
         if self.feeding.is_some() {
             self.io.paused(paused);
         }
         if let Some(feeding) = &mut self.feeding {
             feeding.paused = paused;
-            // The pause is not counted: the frame after it starts the count
-            // again rather than adding the time the recorder was held.
+            // The pause is not counted: the frame after it starts the count again rather than
+            // adding the time the recorder was held.
             if paused {
                 feeding.last = None;
             }
@@ -721,9 +696,8 @@ impl CaptureStudio {
         }
     }
 
-    /// Offer the last screenshot to one of the person's other devices, by the
-    /// id the studio listed: the screenshot the studio wrote, never what a
-    /// private window showed.
+    /// Offer the last screenshot to one of the person's other devices, by the id the studio listed:
+    /// the screenshot the studio wrote, never what a private window showed.
     fn send_last_to(&mut self, id: &str) {
         // A new send: what was said of the last one is not about this one.
         self.sent = None;
@@ -734,9 +708,9 @@ impl CaptureStudio {
         self.sent = self.sends.send(id, kept.path.clone());
     }
 
-    /// Copy the last screenshot into this workspace's files, under
-    /// `Screenshots`, where the person's collaborators see it: the screenshot
-    /// the studio wrote, never what a private window showed.
+    /// Copy the last screenshot into this workspace's files, under `Screenshots` , where the
+    /// person's collaborators see it: the screenshot the studio wrote, never what a private window
+    /// showed.
     fn send_last_to_workspace(&mut self) {
         // A new send: what was said of the last one is not about this one.
         self.sent = None;
@@ -756,16 +730,15 @@ impl CaptureStudio {
                 return;
             }
         };
-        // The first frame and the encoder are the worker's: building an
-        // encoder stalls one pass of the loop, and this one has a desk to
-        // keep drawing.
+        // The first frame and the encoder are the worker's: building an encoder stalls one pass of
+        // the loop, and this one has a desk to keep drawing.
         let path = crate::capture::unique(
             &self.directory,
             "Recording",
             tilo_capture_studio::extension(!audio.is_empty()),
         );
-        // The file is opened by the frame the worker encodes: a folder that
-        // cannot be written is said rather than shown as a recording.
+        // The file is opened by the frame the worker encodes: a folder that cannot be written is
+        // said rather than shown as a recording.
         self.run = self.run.wrapping_add(1);
         let run = self.run;
         let names = audio.iter().map(|track| track.name().to_owned()).collect();
@@ -797,8 +770,8 @@ impl CaptureStudio {
             self.feeding = Some(feeding);
             return;
         }
-        // What was heard up to the stop is in the file too, and the
-        // recorders end with the file: Drop kills each process group.
+        // What was heard up to the stop is in the file too, and the recorders end with the file:
+        // Drop kills each process group.
         let sound = feeding.drain_audio(true);
         self.io.sound(sound);
         feeding.audio.clear();
@@ -846,8 +819,8 @@ impl CaptureStudio {
         self.clips.push_back(clip);
     }
 
-    /// When the recorder next takes a frame: only a buffer that runs and is
-    /// not paused feeds itself.
+    /// When the recorder next takes a frame: only a buffer that runs and is not paused feeds
+    /// itself.
     pub(crate) fn next_deadline(&self) -> Option<Instant> {
         let feeding = self
             .feeding
@@ -859,15 +832,13 @@ impl CaptureStudio {
                     .and_then(|last| last.checked_add(FRAME_INTERVAL))
                     .unwrap_or_else(Instant::now)
             });
-        // A shot's card goes away once it has been up long enough: the pass
-        // that takes it down is due then, rather than waiting for the person
-        // to touch something.
+        // A shot's card goes away once it has been up long enough: the pass that takes it down is
+        // due then, rather than waiting for the person to touch something.
         let shot = self
             .shown_shot
             .as_ref()
             .and_then(|shot| shot.at.checked_add(SHOT_SHOWN));
-        // So does a card that says a shot could not be saved, which the
-        // person may never touch.
+        // So does a card that says a shot could not be saved, which the person may never touch.
         let failed = self
             .failed_shot
             .as_ref()
@@ -875,9 +846,8 @@ impl CaptureStudio {
         feeding.into_iter().chain(shot).chain(failed).min()
     }
 
-    /// Take one frame into the recorder when it is due: read back here, and
-    /// handed to the worker, which drops it rather than waiting when the
-    /// encoder is behind.
+    /// Take one frame into the recorder when it is due: read back here, and handed to the worker,
+    /// which drops it rather than waiting when the encoder is behind.
     fn feed(&mut self, compositor: &mut Compositor) {
         let place = self.presentation().place();
         let io = Rc::clone(&self.io);
@@ -912,8 +882,8 @@ impl CaptureStudio {
                 return;
             }
         };
-        // What the floating layer counts while the studio's bar is down: the
-        // time the recorder was fed, never the pauses.
+        // What the floating layer counts while the studio's bar is down: the time the recorder was
+        // fed, never the pauses.
         if let Some(last) = feeding.last {
             feeding.elapsed += now.saturating_duration_since(last);
         }
@@ -936,8 +906,8 @@ impl CaptureStudio {
         }
     }
 
-    /// A screenshot the person took: what an app asked for, when it asked
-    /// for exactly that, or the studio's own.
+    /// A screenshot the person took: what an app asked for, when it asked for exactly that, or the
+    /// studio's own.
     fn screenshot_asked(&mut self, take: &Take, compositor: &mut Compositor) {
         let asking = self
             .asking
@@ -969,9 +939,8 @@ impl CaptureStudio {
         self.screenshot(take, compositor);
     }
 
-    /// Take a screenshot of `take` and keep it: a file, and the clipboard
-    /// when asked, both written off the loop, so the receipt shows once its
-    /// file is there.
+    /// Take a screenshot of `take` and keep it: a file, and the clipboard when asked, both written
+    /// off the loop, so the receipt shows once its file is there.
     fn screenshot(&mut self, take: &Take, compositor: &mut Compositor) {
         let frame = match grab(compositor, take, self.presentation().place()) {
             Ok(frame) => frame,
@@ -993,8 +962,8 @@ impl CaptureStudio {
             height: frame.height,
             preview: preview(&frame),
             copy: take.destination != CaptureDestination::File,
-            // A shot the person took from outside the studio has no bar to
-            // show its receipt: its card shows it instead.
+            // A shot the person took from outside the studio has no bar to show its receipt: its
+            // card shows it instead.
             floating: !self.presentation().is_drawn(),
             thumb: if self.presentation().is_drawn() {
                 String::new()
@@ -1002,8 +971,8 @@ impl CaptureStudio {
                 ui::held_images::hero(&picture, CARD_PICTURE)
             },
         };
-        // A shot taken from the desk keeps its picture until its card is
-        // gone: a file that could not be written can still be copied.
+        // A shot taken from the desk keeps its picture until its card is gone: a file that could
+        // not be written can still be copied.
         let picture = Arc::new(picture);
         let keep = receipt.floating.then(|| Arc::clone(&picture));
         let answer = self.io.write(picture, self.directory.clone(), receipt.copy);
@@ -1016,8 +985,7 @@ impl CaptureStudio {
         });
     }
 
-    /// Open the capture at `path` in the person's app for it, or show it in
-    /// Files.
+    /// Open the capture at `path` in the person's app for it, or show it in Files.
     fn open(&mut self, path: &Path, reveal: bool) {
         let path = if reveal {
             path.parent().unwrap_or_else(|| Path::new("."))
@@ -1033,8 +1001,8 @@ impl CaptureStudio {
         }
     }
 
-    /// What this machine can record, probed when the bar is first up: the
-    /// person's toggles offer only sounds that would start.
+    /// What this machine can record, probed when the bar is first up: the person's toggles offer
+    /// only sounds that would start.
     fn audio_availability(&self) -> Availability {
         if let Some(audio) = self.audio.get() {
             return audio;
@@ -1071,8 +1039,8 @@ impl CaptureStudio {
             devices,
             sent: self.sent.clone(),
             failed: self.failed.clone(),
-            // Frames the encoder was too far behind to take so far: the
-            // studio says them while the recording runs and on its receipt.
+            // Frames the encoder was too far behind to take so far: the studio says them while the
+            // recording runs and on its receipt.
             recording: self.recording.as_ref().map(|recording| Recording {
                 skipped: self.io.dropped(),
                 ..recording.clone()
@@ -1086,8 +1054,8 @@ impl CaptureStudio {
         self.seat.link().publish(scene);
     }
 
-    /// What the person pressed on the floating layer's card, as the ask the
-    /// button it stands for would be.
+    /// What the person pressed on the floating layer's card, as the ask the button it stands for
+    /// would be.
     fn take_presses(&mut self, compositor: &mut Compositor) {
         let Some((serial, controls)) = self
             .board
@@ -1122,8 +1090,8 @@ impl CaptureStudio {
                 }
             }
             "dismiss-shot" => self.shown_shot = None,
-            // The card of a shot that could not be saved: its picture is
-            // copied instead, without a file of its own.
+            // The card of a shot that could not be saved: its picture is copied instead, without a
+            // file of its own.
             "copy-failed-shot" => {
                 if let Some(failed) = self.failed_shot.as_ref() {
                     let encode = self.io.encode(Arc::clone(&failed.picture));
@@ -1150,10 +1118,10 @@ impl CaptureStudio {
         }
     }
 
-    /// Show on the floating layer what the studio is doing, while its own bar
-    /// is down: the recording or the replay buffer that runs, and the shot
-    /// that was just taken. The bar's pill and the floating layer draw it, so
-    /// a recording the person walked away from is still a control away.
+    /// Show on the floating layer what the studio is doing, while its own bar is down: the
+    /// recording or the replay buffer that runs, and the shot that was just taken. The bar's pill
+    /// and the floating layer draw it, so a recording the person walked away from is still a
+    /// control away.
     fn publish_activity(&mut self) {
         let activity = self.activity_now();
         if activity == self.activity {
@@ -1165,8 +1133,8 @@ impl CaptureStudio {
 
     /// What the floating layer shows now, if anything.
     fn activity_now(&mut self) -> Option<serde_json::Value> {
-        // With the bar up the studio says it on its own status bar; the card
-        // would only say the same thing twice.
+        // With the bar up the studio says it on its own status bar; the card would only say the
+        // same thing twice.
         let summary = if self.presentation().is_drawn() {
             self.shown_shot = None;
             self.failed_shot = None;
@@ -1198,9 +1166,8 @@ impl CaptureStudio {
             {
                 self.failed_shot = None;
             }
-            // What could not be saved is said before what was: a card asking
-            // the person to choose something comes before one that only
-            // shows a shot.
+            // What could not be saved is said before what was: a card asking the person to choose
+            // something comes before one that only shows a shot.
             self.failed_shot_summary().or_else(|| self.shot_summary())
         };
         let summary = summary?;
@@ -1214,8 +1181,8 @@ impl CaptureStudio {
             .ok()
     }
 
-    /// The recording that runs, as the card says it: how long it has run and
-    /// the controls that end it or hold it.
+    /// The recording that runs, as the card says it: how long it has run and the controls that end
+    /// it or hold it.
     fn recording_summary(&self) -> ui::live_activity::Summary {
         use ui::live_activity::{Control, ControlKind, Kind, Summary};
         let elapsed = self
@@ -1269,8 +1236,8 @@ impl CaptureStudio {
         ))
     }
 
-    /// The replay buffer, as the card says it: how much of the last half
-    /// minute it keeps, and the controls that save it or let it go.
+    /// The replay buffer, as the card says it: how much of the last half minute it keeps, and the
+    /// controls that save it or let it go.
     fn replay_summary(&self) -> ui::live_activity::Summary {
         use ui::live_activity::{Control, ControlKind, Kind, Summary};
         let kept = self.replay.unwrap_or(0);
@@ -1298,8 +1265,8 @@ impl CaptureStudio {
         ))
     }
 
-    /// A shot from the desk that could not be saved, as its card says it: why
-    /// in the person's words, and the one action that keeps what they caught.
+    /// A shot from the desk that could not be saved, as its card says it: why in the person's
+    /// words, and the one action that keeps what they caught.
     fn failed_shot_summary(&self) -> Option<ui::live_activity::Summary> {
         use ui::live_activity::{Control, ControlKind, Kind, Summary};
         let failed = self.failed_shot.as_ref()?;
@@ -1372,8 +1339,8 @@ impl CaptureStudio {
         )
     }
 
-    /// What the recording or the buffer takes, in the person's words: the
-    /// desktop, a window, or an area of it.
+    /// What the recording or the buffer takes, in the person's words: the desktop, a window, or an
+    /// area of it.
     fn target_line(&self) -> String {
         let Some(feeding) = self.feeding.as_ref() else {
             return String::new();
@@ -1386,8 +1353,8 @@ impl CaptureStudio {
     }
 }
 
-/// Why a screenshot's file was not written, in the person's words: the card
-/// says it under the title that says what happened.
+/// Why a screenshot's file was not written, in the person's words: the card says it under the title
+/// that says what happened.
 fn failed_words(why: &WriteFailed) -> String {
     let key = format!("capture-failed-not-saved-{}", why.cause.words());
     crate::i18n::t_args(
@@ -1405,11 +1372,10 @@ fn clock(seconds: u64) -> String {
 }
 
 impl Feeding {
-    /// Take the sound captured since the last pass into what goes to the
-    /// recorder, in the recorder's track order: with `keep` false — a pause —
-    /// it is discarded, so the recording resumes at the current sound. A
-    /// source that ended is dropped with a warning rather than written as a
-    /// silent gap.
+    /// Take the sound captured since the last pass into what goes to the recorder, in the
+    /// recorder's track order: with `keep` false — a pause — it is discarded, so the recording
+    /// resumes at the current sound. A source that ended is dropped with a warning rather than
+    /// written as a silent gap.
     fn drain_audio(&mut self, keep: bool) -> Sound {
         let mut sound = Vec::new();
         let mut ended = Vec::new();
@@ -1435,9 +1401,8 @@ impl Feeding {
     }
 }
 
-/// The answer of the oldest job `queue` holds, taken off it; `None` while
-/// none has landed, so a job whose answer is not there holds up the ones
-/// behind it.
+/// The answer of the oldest job `queue` holds, taken off it; `None` while none has landed, so a job
+/// whose answer is not there holds up the ones behind it.
 fn next_answer<T>(queue: &mut VecDeque<Receiver<Result<T, String>>>) -> Option<Result<T, String>> {
     let front = queue.front()?;
     let answer = match front.try_recv() {
@@ -1459,9 +1424,8 @@ fn clipboard(png: Vec<u8>, compositor: &mut Compositor) -> Result<(), String> {
         .map_err(|error| error.to_string())
 }
 
-/// The windows a capture may take, as the studio lists them: where they
-/// stand on the display the studio covers, which is the surface it draws on
-/// and the one a press lands on.
+/// The windows a capture may take, as the studio lists them: where they stand on the display the
+/// studio covers, which is the surface it draws on and the one a press lands on.
 fn windows(compositor: &Compositor, place: Option<Place>) -> Vec<CaptureTarget> {
     let focused = compositor.focused_shareable_window();
     let (left, top) = place.map_or((0, 0), |(x, y, _, _)| (x, y));
@@ -1491,8 +1455,7 @@ fn windows(compositor: &Compositor, place: Option<Place>) -> Vec<CaptureTarget> 
         .collect()
 }
 
-/// A display's rectangle, as the sheet it carries is placed: its corner in
-/// the layout.
+/// A display's rectangle, as the sheet it carries is placed: its corner in the layout.
 type Place = (i32, i32, u32, u32);
 
 /// `take`'s picture, for the worker that writes it: what an app is handed,
@@ -1507,7 +1470,7 @@ fn picture(
         .ok_or_else(|| "a frame of the wrong size".to_owned())
 }
 
-/// What the studio selects for the portal's `target`.
+/// What the studio selects for the portal's `target` .
 fn selection_of(target: tilo_portal::CaptureTarget) -> Option<Selection> {
     match target {
         tilo_portal::CaptureTarget::Window => Some(Selection::Window),
@@ -1553,16 +1516,14 @@ fn grab(compositor: &mut Compositor, take: &Take, place: Option<Place>) -> Resul
     }
 }
 
-/// The selections taken from the display the studio is over, next to each
-/// other as they were made.
+/// The selections taken from the display the studio is over, next to each other as they were made.
 fn regions(
     compositor: &mut Compositor,
     regions: &[Rect],
     place: Option<Place>,
 ) -> Result<Frame, String> {
-    // A selection is drawn where the studio is, and its coordinates start at
-    // that display's corner: what is captured is that display, never another
-    // one that happens to be listed first.
+    // A selection is drawn where the studio is, and its coordinates start at that display's corner:
+    // what is captured is that display, never another one that happens to be listed first.
     let outputs = compositor.outputs();
     let covered = place
         .and_then(|(x, y, w, h)| {
@@ -1576,8 +1537,7 @@ fn regions(
     let whole = compositor
         .read_back(&Target::output(covered.name.clone()))
         .map_err(|error| error.to_string())?;
-    // What is captured is in the studio's own pixels: the frame is in the
-    // output's.
+    // What is captured is in the studio's own pixels: the frame is in the output's.
     let scale = f64::from(whole.width) / f64::from(width.max(1));
     let mut shots = Vec::new();
     for region in regions {
@@ -1639,7 +1599,7 @@ fn compose(mut shots: Vec<Screenshot>) -> Result<Frame, String> {
     Frame::new(width, height, pixels)
 }
 
-/// The thumbnail a receipt shows of `frame`.
+/// The thumbnail a receipt shows of `frame` .
 fn preview(frame: &Frame) -> CapturePreview {
     let (columns, rows) = PREVIEW;
     let mut pixels = Vec::with_capacity(usize::from(columns) * usize::from(rows));
@@ -1671,10 +1631,9 @@ mod tests {
 
     use super::*;
 
-    /// The studio over a headless compositor, keeping its captures in
-    /// `pictures`, and where what became of the recorder is said: the
-    /// worker's own notes go nowhere, so a test says what a failing encoder
-    /// says.
+    /// The studio over a headless compositor, keeping its captures in `pictures` , and where what
+    /// became of the recorder is said: the worker's own notes go nowhere, so a test says what a
+    /// failing encoder says.
     fn studio(pictures: &Path) -> (CaptureStudio, Compositor, Sender<Note>) {
         let options = Options {
             presentation: ui::headless::fixture_runner_inputs,
@@ -1713,9 +1672,9 @@ mod tests {
         (run, recording.path)
     }
 
-    /// A recording whose file the encoder could not finish is said on the
-    /// studio it was started from, with the file it kept or that it kept
-    /// none: the person sees what became of it rather than nothing.
+    /// A recording whose file the encoder could not finish is said on the studio it was started
+    /// from, with the file it kept or that it kept none: the person sees what became of it rather
+    /// than nothing.
     #[test]
     fn a_recording_the_encoder_could_not_finish_says_so_and_what_it_kept() {
         let pictures = tempfile::tempdir().expect("a folder");
@@ -1781,9 +1740,9 @@ mod tests {
         serde_json::from_value(activity).expect("a live activity")
     }
 
-    /// A shot taken while the bar was down is said on the floating layer with
-    /// what it caught, and the card's own controls act on it: the person sees
-    /// the shot at once and can put it away from there.
+    /// A shot taken while the bar was down is said on the floating layer with what it caught, and
+    /// the card's own controls act on it: the person sees the shot at once and can put it away from
+    /// there.
     #[test]
     fn a_shot_the_bar_was_down_for_shows_a_card_with_its_picture() {
         let pictures = tempfile::tempdir().expect("a folder");
@@ -1846,9 +1805,8 @@ mod tests {
         );
     }
 
-    /// The shot's card goes away on its own: the session comes back for it
-    /// when it has been up long enough, rather than leaving it over the desk
-    /// until the person touches something.
+    /// The shot's card goes away on its own: the session comes back for it when it has been up long
+    /// enough, rather than leaving it over the desk until the person touches something.
     #[test]
     fn the_shots_card_goes_away_on_its_own() {
         let pictures = tempfile::tempdir().expect("a folder");
@@ -1890,8 +1848,8 @@ mod tests {
         assert!(studio.next_deadline().is_none(), "and nothing else is due");
     }
 
-    /// A recording that runs while the bar is down is a card that counts the
-    /// time and stops where the person presses it.
+    /// A recording that runs while the bar is down is a card that counts the time and stops where
+    /// the person presses it.
     #[test]
     fn a_recording_the_bar_was_down_for_counts_its_time_and_stops_on_its_card() {
         let pictures = tempfile::tempdir().expect("a folder");
@@ -1934,16 +1892,15 @@ mod tests {
         );
     }
 
-    /// A shot from the desk whose file could not be written is said in the
-    /// person's words, never the system's, and the card offers to copy what
-    /// it caught while the picture is still here.
+    /// A shot from the desk whose file could not be written is said in the person's words, never
+    /// the system's, and the card offers to copy what it caught while the picture is still here.
     #[test]
     fn a_shot_from_the_desk_that_could_not_be_saved_offers_to_copy_it() {
         let pictures = tempfile::tempdir().expect("a folder");
         let (mut studio, mut compositor, _said) = studio(pictures.path());
         let folder = pictures.path().join("Screenshots");
-        // Nothing writes it: the worker is gone, which is a folder that took
-        // no file as far as the person reads it.
+        // Nothing writes it: the worker is gone, which is a folder that took no file as far as the
+        // person reads it.
         let (writer, answer) = std::sync::mpsc::channel();
         drop(writer);
         studio.shots.push_back(Shot {
@@ -1986,8 +1943,8 @@ mod tests {
             "the bar says what it means for the person, not what the system said: {words}"
         );
 
-        // Its card says the same, heads itself with the picture, and offers
-        // the one thing that keeps it.
+        // Its card says the same, heads itself with the picture, and offers the one thing that
+        // keeps it.
         let summary = shown(&studio).summary.expect("the failure's card");
         assert_eq!(summary.title, "Couldn't save the screenshot");
         assert_eq!(summary.art, ui::live_activity::Art::Hero);
@@ -2004,8 +1961,8 @@ mod tests {
             .collect();
         assert_eq!(controls, ["copy-failed-shot", "dismiss-failed-shot"]);
 
-        // Copying it instead puts the picture on its way to the clipboard
-        // without a file of its own.
+        // Copying it instead puts the picture on its way to the clipboard without a file of its
+        // own.
         studio.board.press(
             tilo_capture_studio::APP_ID,
             serde_json::json!({"command": "copy-failed-shot"}),
@@ -2017,8 +1974,8 @@ mod tests {
             "the picture is encoded to be copied"
         );
 
-        // The card goes away by itself once it has been up long enough, and
-        // the session comes back for it rather than leaving it over the desk.
+        // The card goes away by itself once it has been up long enough, and the session comes back
+        // for it rather than leaving it over the desk.
         let due = studio.next_deadline().expect("the card is due to go");
         let now = Instant::now();
         assert!(

@@ -50,39 +50,39 @@ use tokio::sync::watch;
 
 /// How long a request to the helper may take.
 const HELPER_TIMEOUT: Duration = Duration::from_secs(10);
-/// Where the person's device VPN choices are published: the settings section
-/// whose actions change them.
+/// Where the person's device VPN choices are published: the settings section whose actions change
+/// them.
 pub(crate) const SETTINGS_SECTION: &str = "settings:settings.device-vpn";
 /// How often the person's online devices are asked what they offer.
 const PROBE_EVERY: Duration = Duration::from_secs(300);
-/// How long the relays' names may take to resolve before the route opens
-/// without exempting them: opening the tunnel never waits on a lookup.
+/// How long the relays' names may take to resolve before the route opens without exempting them:
+/// opening the tunnel never waits on a lookup.
 const RELAY_LOOKUP: Duration = Duration::from_secs(2);
 
-/// The person's VPN profile kill switches and their device route, as this
-/// session runs them, and this device as an exit for their other devices.
+/// The person's VPN profile kill switches and their device route, as this session runs them, and
+/// this device as an exit for their other devices.
 pub struct Vpn {
     /// The helper's socket.
     helper: PathBuf,
-    /// Where `NetworkManager`'s VPNs come from.
+    /// Where `NetworkManager` 's VPNs come from.
     vpns: Vpns,
-    /// This device as an exit for the person's other devices: what answers
-    /// one of them asking to route through this one, and who may.
+    /// This device as an exit for the person's other devices: what answers one of them asking to
+    /// route through this one, and who may.
     exit: Exit<SessionAuthority, HelperExit>,
-    /// Who may route through this device, kept current by the session's
-    /// passes ([`Routes::follow`]) and read by the exit as it answers.
+    /// Who may route through this device, kept current by the session's passes ([`Routes::follow`])
+    /// and read by the exit as it answers.
     authority: SessionAuthority,
 }
 
 impl Vpn {
-    /// The machine's own: the installed helper and its `NetworkManager`.
+    /// The machine's own: the installed helper and its `NetworkManager` .
     #[must_use]
     pub fn machine() -> Self {
         Self::with(Sources::system())
     }
 
-    /// Against `sources`: a session that is not on the machine the helper
-    /// runs on follows what it is given.
+    /// Against `sources` : a session that is not on the machine the helper runs on follows what it
+    /// is given.
     #[must_use]
     pub fn with(sources: Sources) -> Self {
         let authority = SessionAuthority::default();
@@ -99,10 +99,10 @@ impl Vpn {
         }
     }
 
-    /// What this device answers on the session's endpoint beside its own
-    /// planes: another of the person's devices reaching this one to route
-    /// through it. An endpoint's protocols are fixed once it binds, so the
-    /// session hands these over before it binds ([`crate::sync::Client::start`]).
+    /// What this device answers on the session's endpoint beside its own planes: another of the
+    /// person's devices reaching this one to route through it. An endpoint's protocols are fixed
+    /// once it binds, so the session hands these over before it binds
+    /// ([`crate::sync::Client::start`]).
     #[must_use]
     pub fn served(&self) -> tilo_network_actor::local_host::Protocols {
         vec![(
@@ -111,15 +111,13 @@ impl Vpn {
         )]
     }
 
-    /// Run for the rest of the session: the profile kill switches from now
-    /// on, and the routes, which follow the person's devices as the session
-    /// passes ([`Routes::follow`]).
+    /// Run for the rest of the session: the profile kill switches from now on, and the routes,
+    /// which follow the person's devices as the session passes ([`Routes::follow`]).
     pub(crate) fn start(self) -> Routes {
         let live = LiveSettings::start(|| {});
         let publisher = Publisher::default();
-        // Published once before anything blocks, so Settings can tell that
-        // this session runs even while nothing is blocked and nothing
-        // routes.
+        // Published once before anything blocks, so Settings can tell that this session runs even
+        // while nothing is blocked and nothing routes.
         publisher.set_profile_block(ProfileBlockStatus::default());
         let blocking = publisher.clone();
         profile_block::start_with(
@@ -143,8 +141,8 @@ impl Vpn {
     }
 }
 
-/// Who may route through this device, as the exit decides: one of the
-/// person's devices, and only while the person turned this device's exit on.
+/// Who may route through this device, as the exit decides: one of the person's devices, and only
+/// while the person turned this device's exit on.
 #[derive(Clone, Default)]
 struct SessionAuthority(Arc<Mutex<Allowed>>);
 
@@ -209,9 +207,9 @@ impl ExitDevices for HelperExit {
     }
 }
 
-/// The session's side of its route through another of the person's devices:
-/// what the person chose, which of their devices could carry it, and the
-/// task that carries it out — and this device as an exit for theirs.
+/// The session's side of its route through another of the person's devices: what the person chose,
+/// which of their devices could carry it, and the task that carries it out — and this device as an
+/// exit for theirs.
 pub(crate) struct Routes {
     /// The helper's socket.
     helper: PathBuf,
@@ -221,8 +219,8 @@ pub(crate) struct Routes {
     publisher: Publisher,
     /// What the route's task follows.
     inputs: watch::Sender<Inputs>,
-    /// Whether that task runs: it starts with the first pass that has this
-    /// device's endpoint and its fabric.
+    /// Whether that task runs: it starts with the first pass that has this device's endpoint and
+    /// its fabric.
     started: std::cell::Cell<bool>,
     /// What the session's passes remember between them.
     follow: std::cell::RefCell<Follow>,
@@ -257,9 +255,8 @@ impl Routes {
             follow.stop = settings::STOP.from_section(&section);
         }
         self.publisher.set_exit_on(follow.exit_on);
-        // This device offers an exit only when it can carry one: the helper
-        // that opens its TUN is installed, and its endpoint answers another
-        // device dialling the tunnel.
+        // This device offers an exit only when it can carry one: the helper that opens its TUN is
+        // installed, and its endpoint answers another device dialling the tunnel.
         self.publisher
             .set_exit_available(self.helper.exists() && sync.serves(ALPN));
         if !self.started.get() {
@@ -267,9 +264,8 @@ impl Routes {
             self.start(endpoint);
         }
 
-        // The person's devices as their fabric names them: whose name to
-        // show beside the route, which of them could carry it, and which of
-        // them may route through this one.
+        // The person's devices as their fabric names them: whose name to show beside the route,
+        // which of them could carry it, and which of them may route through this one.
         let devices = fabric.device_fabric();
         let mut labels = BTreeMap::new();
         let mut online = BTreeSet::new();
@@ -295,8 +291,8 @@ impl Routes {
         }
         follow.authorised.clone_from(&allowed);
         if narrowed {
-            // A device that may no longer route through this one is told so
-            // now, not when it next sends something.
+            // A device that may no longer route through this one is told so now, not when it next
+            // sends something.
             self.exit.recheck();
         }
         if let Some(stop) = follow.stop.clone()
@@ -324,8 +320,7 @@ impl Routes {
         self.publisher.take_clearing()
     }
 
-    /// Start the task that dials and carries the route, for the rest of the
-    /// session.
+    /// Start the task that dials and carries the route, for the rest of the session.
     fn start(&self, endpoint: Endpoint) {
         let helper = self.helper.clone();
         let publisher = self.publisher.clone();
@@ -365,13 +360,12 @@ struct Follow {
     /// The last request to stop a device routing through this one.
     stop: Option<StopRequest>,
     stop_done: Option<u64>,
-    /// The devices that may route through this one, as the last pass found
-    /// them: one gone from the person's fabric is told so at once.
+    /// The devices that may route through this one, as the last pass found them: one gone from the
+    /// person's fabric is told so at once.
     authorised: BTreeSet<[u8; 32]>,
 }
 
-/// What the route's task follows: the person's choice, and their devices
-/// with a session right now.
+/// What the route's task follows: the person's choice, and their devices with a session right now.
 #[derive(Clone, Default)]
 struct Inputs {
     want: Option<Want>,
@@ -386,12 +380,10 @@ fn key_of(device: &tilo_device_fabric::DeviceId) -> Option<[u8; 32]> {
 }
 
 /// What this session published of its device VPN, and the file it wrote.
-///
-/// The kill switches and the route report from their own threads; every part
-/// is written out as one [`DeviceVpnStatus`], since Settings reads one file
-/// and a part written alone would say the rest is off. The first report of
-/// any part writes, even when the status is all defaults: Settings reads it
-/// to know this session runs.
+/// The kill switches and the route report from their own threads; every part is written out as one
+/// [`DeviceVpnStatus`], since Settings reads one file and a part written alone would say the rest
+/// is off. The first report of any part writes, even when the status is all defaults: Settings
+/// reads it to know this session runs.
 #[derive(Clone, Default)]
 struct Publisher(Arc<Mutex<Published>>);
 
@@ -405,19 +397,18 @@ struct Published {
     labels: BTreeMap<[u8; 32], String>,
     offered: Vec<[u8; 32]>,
     client: Option<(Want, ClientState)>,
-    /// This session's lease on the status file, and the status as last
-    /// written.
+    /// This session's lease on the status file, and the status as last written.
     lease: Option<(u32, u64)>,
     written: Option<DeviceVpnStatus>,
-    /// The device that stopped this one, which the session's next pass takes
-    /// out of the person's choice: the route's task cannot change a setting
-    /// itself, since a published action is the session's to invoke.
+    /// The device that stopped this one, which the session's next pass takes out of the person's
+    /// choice: the route's task cannot change a setting itself, since a published action is the
+    /// session's to invoke.
     clearing: Option<[u8; 32]>,
 }
 
 impl Publisher {
-    /// Leave `device` for the session's next pass to take out of the person's
-    /// choice: it stopped this one.
+    /// Leave `device` for the session's next pass to take out of the person's choice: it stopped
+    /// this one.
     fn clear_through(&self, device: [u8; 32]) {
         self.0.lock_recover().clearing = Some(device);
     }
@@ -447,8 +438,8 @@ impl Publisher {
         published.write();
     }
 
-    /// Whether this session can be an exit at all: the helper is installed
-    /// and its endpoint answers the tunnel.
+    /// Whether this session can be an exit at all: the helper is installed and its endpoint answers
+    /// the tunnel.
     fn set_exit_available(&self, available: bool) {
         let mut published = self.0.lock_recover();
         if published.written.is_some() && published.exit_available == available {
@@ -591,8 +582,7 @@ fn set_state(publisher: &Publisher, want: &Want, state: ClientState) {
     publisher.set_client(Some((want.clone(), state)));
 }
 
-/// Resolves once the person's choice is no longer `want`. Never, once nobody
-/// can change it.
+/// Resolves once the person's choice is no longer `want` . Never, once nobody can change it.
 async fn choice_changes(inputs: &mut watch::Receiver<Inputs>, want: &Want) {
     loop {
         if inputs.changed().await.is_err() {
@@ -626,8 +616,8 @@ async fn open_link(helper: &Path, link: &ClientLink) -> Result<TunDevice, Proble
     }
 }
 
-/// The relays' addresses, kept from the last lookup that found any: a lookup
-/// while the kill switch blocks finds none.
+/// The relays' addresses, kept from the last lookup that found any: a lookup while the kill switch
+/// blocks finds none.
 static RELAYS: Mutex<Vec<IpAddr>> = Mutex::new(Vec::new());
 
 async fn relay_addresses() -> Vec<IpAddr> {
@@ -660,8 +650,7 @@ async fn relay_addresses() -> Vec<IpAddr> {
     kept.clone()
 }
 
-/// What must reach the exit outside the tunnel: this endpoint's sockets and
-/// the relays.
+/// What must reach the exit outside the tunnel: this endpoint's sockets and the relays.
 async fn carrier(endpoint: &Endpoint) -> Carrier {
     let mut udp_ports: Vec<u16> = endpoint
         .bound_sockets()
@@ -679,10 +668,9 @@ async fn carrier(endpoint: &Endpoint) -> Carrier {
 }
 
 impl crate::Shared {
-    /// Follow where this device routes through another of the person's
-    /// devices, and what it carries for them: the route follows what they
-    /// chose on the pass they chose it on, and a device that stopped this one
-    /// takes their choice off through the action that made it.
+    /// Follow where this device routes through another of the person's devices, and what it carries
+    /// for them: the route follows what they chose on the pass they chose it on, and a device that
+    /// stopped this one takes their choice off through the action that made it.
     pub(crate) fn follow_device_vpn(&self, fabric: &SharedLink) {
         let Some(routes) = &self.vpn else {
             return;
@@ -706,8 +694,7 @@ impl crate::Shared {
     }
 }
 
-/// Stop `device` (hex) routing through this one, as the person asked from
-/// Settings.
+/// Stop `device` (hex) routing through this one, as the person asked from Settings.
 fn stop_peer(exit: &Exit<SessionAuthority, HelperExit>, device: &str) {
     let mut key = [0_u8; 32];
     if hex::decode_to_slice(device.trim(), &mut key).is_ok()
@@ -717,8 +704,7 @@ fn stop_peer(exit: &Exit<SessionAuthority, HelperExit>, device: &str) {
     }
 }
 
-/// Do what `after` says, then wait as long as it says or until the choice
-/// changes.
+/// Do what `after` says, then wait as long as it says or until the choice changes.
 async fn settle(
     helper: &Path,
     publisher: &Publisher,
@@ -731,9 +717,9 @@ async fn settle(
         release(helper, held).await;
     }
     if after.clear_through {
-        // The device this one routes through stopped it: the session takes it
-        // out of the person's choice on its next pass, through the settings
-        // action, since their settings change through their actions.
+        // The device this one routes through stopped it: the session takes it out of the person's
+        // choice on its next pass, through the settings action, since their settings change through
+        // their actions.
         publisher.clear_through(want.device);
     }
     set_state(publisher, want, after.state);
@@ -748,8 +734,8 @@ async fn settle(
     }
 }
 
-/// The helper's link for `offer`: the one held when it still fits, else a
-/// new one. On failure, what to do instead.
+/// The helper's link for `offer` : the one held when it still fits, else a new one. On failure,
+/// what to do instead.
 async fn link_up(
     helper: &Path,
     endpoint: &Endpoint,
@@ -803,8 +789,8 @@ async fn drive(
 ) {
     let mut held: Option<Held> = None;
     let mut attempt: u32 = 0;
-    // A route a crashed session left with its kill switch: undone unless the
-    // person still wants it, when the new link replaces it.
+    // A route a crashed session left with its kill switch: undone unless the person still wants it,
+    // when the new link replaces it.
     let mut stale = Path::new("/sys/class/net").join(CLIENT_INTERFACE).exists();
     loop {
         let current = inputs.borrow_and_update().clone();
@@ -898,8 +884,8 @@ async fn drive(
     }
 }
 
-/// Learn which of the person's online devices offer themselves: when the
-/// online devices change, and every [`PROBE_EVERY`].
+/// Learn which of the person's online devices offer themselves: when the online devices change, and
+/// every [`PROBE_EVERY`].
 async fn probe_exits(
     endpoint: &Endpoint,
     publisher: &Publisher,

@@ -1,11 +1,8 @@
-//! The questions the services ask the person, shown on the session's
-//! sheets: the portal's and the authentication agent's on the portal
-//! sheet, the file chooser's on the chooser sheet.
-//!
-//! A question is up while it is pending, and answered through
-//! [`Questions`] once the person decides. What is typed stays in the
-//! sheet's own buffers until then, so a password never travels as an
-//! action's arguments.
+//! The questions the services ask the person, shown on the session's sheets: the portal's and the
+//! authentication agent's on the portal sheet, the file chooser's on the chooser sheet.
+//! A question is up while it is pending, and answered through [`Questions`] once the person
+//! decides. What is typed stays in the sheet's own buffers until then, so a password never travels
+//! as an action's arguments.
 
 use std::cell::RefCell;
 use std::path::PathBuf;
@@ -112,8 +109,8 @@ struct Binding {
     changed: bool,
 }
 
-/// An allowance a question leaves behind, which the sheet shows at once so
-/// the person can take it back.
+/// An allowance a question leaves behind, which the sheet shows at once so the person can take it
+/// back.
 #[derive(Clone)]
 struct Grant {
     app_id: String,
@@ -123,8 +120,8 @@ struct Grant {
 
 /// The question that is up, as the person left it.
 struct Shown {
-    /// The question it answers; `None` for what the sheet says after
-    /// answering one, which asks nothing.
+    /// The question it answers; `None` for what the sheet says after answering one, which asks
+    /// nothing.
     handle: Option<String>,
     /// The details it was shown from: the service may change them.
     details: Value,
@@ -142,15 +139,14 @@ pub(crate) struct Asker {
     questions: Option<Questions>,
     portal: Option<PortalSeat>,
     picker: Option<FilePickerSeat>,
-    /// What the session publishes, to take an allowance back through the
-    /// portal's own action.
+    /// What the session publishes, to take an allowance back through the portal's own action.
     services: Rc<RefCell<Services>>,
     shown: RefCell<Option<Shown>>,
 }
 
 impl Asker {
-    /// An asker showing its questions on `portal` and `picker`, taking
-    /// allowances back through `services`.
+    /// An asker showing its questions on `portal` and `picker` , taking allowances back through
+    /// `services` .
     pub(crate) const fn new(
         questions: Option<Questions>,
         portal: Option<PortalSeat>,
@@ -166,17 +162,15 @@ impl Asker {
         }
     }
 
-    /// Take what the person decided since the last pass, and put up the
-    /// oldest question nothing shows yet. The sheet draws on the display
-    /// the session put it on.
+    /// Take what the person decided since the last pass, and put up the oldest question nothing
+    /// shows yet. The sheet draws on the display the session put it on.
     pub(crate) fn follow(&self) {
         let Some(questions) = &self.questions else {
             return;
         };
         self.settle(questions);
         self.retire(questions);
-        // The sheet saying what was granted makes way for a question that
-        // arrived meanwhile.
+        // The sheet saying what was granted makes way for a question that arrived meanwhile.
         if self.shown.borrow().is_some() && !questions.pending().is_empty() {
             let standing = self
                 .shown
@@ -199,8 +193,7 @@ impl Asker {
         }
     }
 
-    /// Answer with what the person did on the sheet that is up, if they
-    /// decided anything.
+    /// Answer with what the person did on the sheet that is up, if they decided anything.
     fn settle(&self, questions: &Questions) {
         if self.shown.borrow().is_none() {
             return;
@@ -233,9 +226,8 @@ impl Asker {
                         return;
                     };
                     for effect in portal.take_asked() {
-                        // An answer asked of another question than the one
-                        // up answers nothing: it expired with its request.
-                        // What the sheet says once a question is answered
+                        // An answer asked of another question than the one up answers nothing: it
+                        // expired with its request. What the sheet says once a question is answered
                         // names itself, and its answers name that.
                         if effect.handle() != shown.dialog.handle {
                             tracing::debug!(
@@ -304,8 +296,8 @@ impl Asker {
         }
     }
 
-    /// Put up `grant` as the sheet's own word on what the person just
-    /// allowed, with the press that takes it back.
+    /// Put up `grant` as the sheet's own word on what the person just allowed, with the press that
+    /// takes it back.
     fn show_grant(&self, sheet: Sheet, grant: Grant) {
         let Sheet::Portal = sheet else {
             self.take_down(sheet);
@@ -346,8 +338,8 @@ impl Asker {
         }));
     }
 
-    /// Take the allowance `app_label` gave `capability` back, through the
-    /// action the portal publishes for it.
+    /// Take the allowance `app_label` gave `capability` back, through the action the portal
+    /// publishes for it.
     fn revoke(&self, app_id: &str, app_label: &str, capability: &str) {
         fn standing<'a>(
             resources: &'a [ResourceSpec],
@@ -391,8 +383,8 @@ impl Asker {
         }
     }
 
-    /// Take the sheet down when its question is gone from under it, or
-    /// show it again when its service changed what it asks.
+    /// Take the sheet down when its question is gone from under it, or show it again when its
+    /// service changed what it asks.
     fn retire(&self, questions: &Questions) {
         let current = self.shown.borrow().as_ref().map(Shown::state);
         let Some((handle, sheet, details)) = current else {
@@ -436,7 +428,7 @@ impl Asker {
         }
     }
 
-    /// Show `question`, unless nothing shows its kind: whether it is up.
+    /// Show `question` , unless nothing shows its kind: whether it is up.
     fn show(&self, question: Question) -> bool {
         if question.kind == tilo_portal::file_chooser::FILE_CHOOSER_QUESTION {
             let Ok(asked) = serde_json::from_value::<FileChooserQuestion>(question.details.clone())
@@ -512,14 +504,13 @@ impl Shown {
             }
             PortalEffect::Bind { keys, .. } => self.rebind(Some(keys)),
             PortalEffect::Unbind { .. } => self.rebind(None),
-            // Keys and typing are the sheet's own: what is typed stays in
-            // its buffers until the person confirms.
+            // Keys and typing are the sheet's own: what is typed stays in its buffers until the
+            // person confirms.
             PortalEffect::Next { .. }
             | PortalEffect::Back { .. }
             | PortalEffect::Type { .. }
             | PortalEffect::TypeSecret { .. } => Step::Nothing,
-            // Confirming answers with the highlight as it stands; an
-            // answer names its own.
+            // Confirming answers with the highlight as it stands; an answer names its own.
             PortalEffect::Confirm { .. } => self.decide(seat, None),
             PortalEffect::Answer { index, .. } => self.decide(seat, Some(*index)),
             PortalEffect::Submit { .. } => match self.plan {
@@ -553,9 +544,8 @@ impl Shown {
 
     /// The person confirmed, having picked `index` or the highlight.
     fn decide(&self, seat: &PortalSeat, index: Option<u32>) -> Step {
-        // A sheet that asks nothing of the person has nothing to decide:
-        // confirming a code on show leaves the question waiting until the
-        // other device has finished.
+        // A sheet that asks nothing of the person has nothing to decide: confirming a code on show
+        // leaves the question waiting until the other device has finished.
         if matches!(self.plan, Plan::Nothing) {
             return Step::Nothing;
         }
@@ -574,7 +564,7 @@ impl Shown {
         self.dialog.error = None;
     }
 
-    /// Tick or untick the row `index`.
+    /// Tick or untick the row `index` .
     fn toggle(&mut self, index: u32) {
         let index = usize::try_from(index).unwrap_or(usize::MAX);
         match &mut self.dialog.body {
@@ -587,7 +577,7 @@ impl Shown {
         }
     }
 
-    /// Bind the highlighted row to `keys`, or clear it.
+    /// Bind the highlighted row to `keys` , or clear it.
     fn rebind(&mut self, keys: Option<&str>) -> Step {
         let Plan::Bind(bindings) = &mut self.plan else {
             return Step::Nothing;
@@ -620,8 +610,7 @@ impl Shown {
         Step::Redraw
     }
 
-    /// The person confirmed `dialog`: what the service is answered, or
-    /// why it cannot be.
+    /// The person confirmed `dialog` : what the service is answered, or why it cannot be.
     fn confirm(&self, dialog: &Dialog, seat: &PortalSeat) -> Result<Answer, String> {
         match &self.plan {
             Plan::Choose(choices) => Ok(Answer {
@@ -631,8 +620,7 @@ impl Shown {
             Plan::Confirm | Plan::Password { .. } | Plan::Secrets { .. } | Plan::Revoke { .. } => {
                 Ok(Answer::default())
             }
-            // `decide` answers nothing for a sheet that asks nothing, so
-            // this never runs.
+            // `decide` answers nothing for a sheet that asks nothing, so this never runs.
             Plan::Nothing => Ok(Answer::default()),
             Plan::Agree => Ok(Answer {
                 choice: Some(0),
@@ -717,15 +705,15 @@ fn bindings_answer(bindings: &[Binding]) -> Answer {
     }
 }
 
-/// A question's sheet: what it shows, what its answer means, and the
-/// allowance it leaves when it may leave one.
+/// A question's sheet: what it shows, what its answer means, and the allowance it leaves when it
+/// may leave one.
 struct Composed {
     dialog: Dialog,
     plan: Plan,
     grant: Option<Grant>,
 }
 
-/// The sheet's dialog for `question`, and what its answer means.
+/// The sheet's dialog for `question` , and what its answer means.
 fn compose(question: &Question) -> Option<Composed> {
     let who = who(question);
     let details = question.details.clone();
@@ -774,8 +762,8 @@ fn compose(question: &Question) -> Option<Composed> {
     })
 }
 
-/// The allowance `question` leaves when the person may remember their
-/// answer: what the sheet shows at once so it can be taken back.
+/// The allowance `question` leaves when the person may remember their answer: what the sheet shows
+/// at once so it can be taken back.
 fn grant_of(question: &Question) -> Option<Grant> {
     if question.kind != tilo_portal::consent::ACCESS_QUESTION {
         return None;
@@ -799,8 +787,8 @@ fn keeps_answer(shown: &Shown, answer: &Answer) -> bool {
             ))
 }
 
-/// Who asks, as the person reads it: the app's own name where this device knows
-/// the app, else the id it claims.
+/// Who asks, as the person reads it: the app's own name where this device knows the app, else the
+/// id it claims.
 fn who(question: &Question) -> String {
     match &question.app_id {
         Some(app_id) => claimant(app_id),
@@ -808,7 +796,7 @@ fn who(question: &Question) -> String {
     }
 }
 
-/// A sheet that asks the person to allow `detail`, and nothing else.
+/// A sheet that asks the person to allow `detail` , and nothing else.
 fn review(handle: &str, title: String, who: String, detail: String) -> Dialog {
     Dialog {
         handle: handle.to_owned(),
@@ -850,10 +838,9 @@ fn access(handle: &str, who: &str, details: Value) -> Option<(Dialog, Plan)> {
     Some((dialog, Plan::Choose(allowances)))
 }
 
-/// The agent door's question: a program of this login wants to work in the
-/// workspace in front as an agent. Answering admits it — as an agent member
-/// of that workspace, or for this connection only — and refusing leaves it
-/// with no access at all.
+/// The agent door's question: a program of this login wants to work in the workspace in front as an
+/// agent. Answering admits it — as an agent member of that workspace, or for this connection only —
+/// and refusing leaves it with no access at all.
 fn admitted(handle: &str, who: &str, details: Value) -> Option<(Dialog, Plan)> {
     let asked: crate::agent_door::Admission = serde_json::from_value(details).ok()?;
     if asked.as_person {
@@ -929,8 +916,8 @@ fn risk(name: &str) -> String {
     }
 }
 
-/// Another of the person's devices asks for its disk-unlock half: the code on
-/// its boot screen is shown beside the one the person answers with.
+/// Another of the person's devices asks for its disk-unlock half: the code on its boot screen is
+/// shown beside the one the person answers with.
 fn device_unlock(handle: &str, details: Value) -> Option<(Dialog, Plan)> {
     let asked: crate::network::UnlockQuestion = serde_json::from_value(details).ok()?;
     let mut dialog = review(
@@ -1346,8 +1333,8 @@ fn say(text: &Words) -> String {
     }
 }
 
-/// The network secrets sheet: the fields the network asks for, typed into
-/// the sheet and answered through the question, never through an effect.
+/// The network secrets sheet: the fields the network asks for, typed into the sheet and answered
+/// through the question, never through an effect.
 fn network_secrets(handle: &str, details: Value) -> Option<(Dialog, Plan)> {
     let asked: SecretsDetails = serde_json::from_value(details).ok()?;
     let retry = word("portal-network-retry");
@@ -1393,9 +1380,8 @@ fn network_secrets(handle: &str, details: Value) -> Option<(Dialog, Plan)> {
     Some((dialog, plan))
 }
 
-/// What the network is, in its own words, and whether it said the last
-/// secret was refused: that reads as the reason the field is wrong, not as
-/// what the network is, so it is left out here.
+/// What the network is, in its own words, and whether it said the last secret was refused: that
+/// reads as the reason the field is wrong, not as what the network is, so it is left out here.
 fn what_the_network_is(asked: &SecretsDetails, retry: &str) -> (String, bool) {
     let mut retried = false;
     let said = asked
@@ -1411,8 +1397,7 @@ fn what_the_network_is(asked: &SecretsDetails, retry: &str) -> (String, bool) {
     (said, retried)
 }
 
-/// The fields the network wants typed, what confirming it says, and why it
-/// refused the last answer.
+/// The fields the network wants typed, what confirming it says, and why it refused the last answer.
 fn what_it_asks(
     asked: &SecretsDetails,
     retry: &str,
@@ -1466,8 +1451,8 @@ fn what_it_asks(
                 initial: String::new(),
             }],
         ),
-        // The question reads back the PUK and the new PIN; the sheet asks
-        // the PIN twice so a typo does not lock the SIM again.
+        // The question reads back the PUK and the new PIN; the sheet asks the PIN twice so a typo
+        // does not lock the SIM again.
         SimUnlockStep::Puk => (
             PromptKind::SimPuk {
                 attempts_left: sim.attempts_left,
@@ -1576,8 +1561,8 @@ fn pairing(handle: &str, details: Value) -> Option<(Dialog, Plan)> {
             }
             dialog.detail = detail;
             dialog.code.clone_from(&asked.code);
-            // A code on show has nothing to agree to: the sheet says it
-            // and offers only the press that stops the pairing.
+            // A code on show has nothing to agree to: the sheet says it and offers only the press
+            // that stops the pairing.
             dialog.body = Body::Answers {
                 choices: Vec::new(),
                 suggested: 0,
@@ -1590,7 +1575,7 @@ fn pairing(handle: &str, details: Value) -> Option<(Dialog, Plan)> {
     Some((dialog, plan))
 }
 
-/// The chooser's request for the portal's question `question`.
+/// The chooser's request for the portal's question `question` .
 fn request(question: &Question, asked: &FileChooserQuestion) -> FileRequest {
     let home = tilo_paths::home();
     let start = home.clone().unwrap_or_else(|| PathBuf::from("/"));
@@ -1628,7 +1613,7 @@ fn request(question: &Question, asked: &FileChooserQuestion) -> FileRequest {
 mod tests {
     use super::*;
 
-    /// The sheet `kind` composes from `details`.
+    /// The sheet `kind` composes from `details` .
     fn sheet(kind: &str, details: Value) -> Composed {
         compose(&Question {
             handle: "asked".into(),

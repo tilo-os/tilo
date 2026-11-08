@@ -941,9 +941,6 @@ pub fn link_url(entry: &str, token: &str) -> String {
 }
 
 /// Edit the reply `kept` names to `content`, its button gone.
-///
-/// # Errors
-/// Discord refused it or could not be reached.
 pub async fn edit_reply(
     rest: &crate::rest::Rest,
     kept: &crate::Interaction,

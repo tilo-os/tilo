@@ -82,8 +82,6 @@ impl FsSession {
 impl NativeHistoryReadSubject {
     /// Validate original authority and held readable inode independently of its
     /// current name. This does not authorize a history query for a moved name.
-    /// # Errors
-    /// Refuses retired source/person scope, revoked grants or wrong source root.
     pub fn check_scope(&self) -> Result<(), FsError> {
         let table = self.session.call()?;
         self.scope_locked(&table)
@@ -163,8 +161,6 @@ impl NativeHistoryReadSubject {
         ))
     }
     /// Bounded descriptive locus only, checked before and after observation.
-    /// # Errors
-    /// Refuses changed named identity or retired original Read custody.
     pub fn observe(&self) -> Result<NativeHistoryReadObservation, FsError> {
         self.check()?;
         let observed = self.observation.clone();

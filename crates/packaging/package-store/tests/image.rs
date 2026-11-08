@@ -121,6 +121,17 @@ fn seal(
     (dir, packed)
 }
 
+/// Seals the standard runtime tree, signed by `identity`.
+fn sealed_runtime(identity: &SigningIdentity) -> (tempfile::TempDir, Packed) {
+    seal(
+        Kind::EnvRuntime,
+        "so.tilo.env-runtime",
+        None,
+        identity,
+        runtime_tree,
+    )
+}
+
 fn mode(path: &Path) -> u32 {
     std::fs::metadata(path).unwrap().permissions().mode() & 0o777
 }
@@ -128,13 +139,7 @@ fn mode(path: &Path) -> u32 {
 #[test]
 fn a_fetched_runtime_materialises_its_whole_tree_read_only() {
     let ci = SigningIdentity::generate();
-    let (_src, runtime) = seal(
-        Kind::EnvRuntime,
-        "so.tilo.env-runtime",
-        None,
-        &ci,
-        runtime_tree,
-    );
+    let (_src, runtime) = sealed_runtime(&ci);
     let mut registry = Registry::default();
     registry.publish(&runtime);
     let registry = Shared(std::sync::Arc::new(registry));
@@ -182,13 +187,7 @@ fn a_fetched_runtime_materialises_its_whole_tree_read_only() {
 fn untrusted_revoked_and_substituted_images_are_refused() {
     let ci = SigningIdentity::generate();
     let stranger = SigningIdentity::generate();
-    let (_a, trusted) = seal(
-        Kind::EnvRuntime,
-        "so.tilo.env-runtime",
-        None,
-        &ci,
-        runtime_tree,
-    );
+    let (_a, trusted) = sealed_runtime(&ci);
     let (_b, foreign) = seal(
         Kind::EnvRuntime,
         "so.example.env",
@@ -245,13 +244,7 @@ fn untrusted_revoked_and_substituted_images_are_refused() {
 fn a_device_signed_tool_is_bound_to_its_runtime() {
     let ci = SigningIdentity::generate();
     let device = SigningIdentity::generate();
-    let (_a, runtime) = seal(
-        Kind::EnvRuntime,
-        "so.tilo.env-runtime",
-        None,
-        &ci,
-        runtime_tree,
-    );
+    let (_a, runtime) = sealed_runtime(&ci);
     let (_b, tool) = seal(
         Kind::Tool,
         "so.tilo.tool.pandoc",
@@ -302,13 +295,7 @@ fn a_device_signed_tool_is_bound_to_its_runtime() {
 #[test]
 fn system_images_open_offline_and_images_are_not_applications() {
     let ci = SigningIdentity::generate();
-    let (_a, runtime) = seal(
-        Kind::EnvRuntime,
-        "so.tilo.env-runtime",
-        None,
-        &ci,
-        runtime_tree,
-    );
+    let (_a, runtime) = sealed_runtime(&ci);
 
     // The OS image installs the runtime into its read-only store.
     let system = scratch();
@@ -643,13 +630,7 @@ impl PackageFetcher for Offline {
 #[test]
 fn system_image_overlay_lowers_are_materialized_locally_with_current_trust_and_integrity() {
     let ci = SigningIdentity::generate();
-    let (_source, runtime) = seal(
-        Kind::EnvRuntime,
-        "so.tilo.env-runtime",
-        None,
-        &ci,
-        runtime_tree,
-    );
+    let (_source, runtime) = sealed_runtime(&ci);
     let system = scratch();
     PackageStore::at(system.path())
         .install_image(
@@ -750,13 +731,7 @@ fn sparse_system_runtime(
 #[test]
 fn a_sparse_system_image_is_rebuilt_from_its_tree_and_the_host_files_it_names() {
     let ci = SigningIdentity::generate();
-    let (_source, runtime) = seal(
-        Kind::EnvRuntime,
-        "so.tilo.env-runtime",
-        None,
-        &ci,
-        runtime_tree,
-    );
+    let (_source, runtime) = sealed_runtime(&ci);
     let (system, _host) = sparse_system_runtime(&runtime, &bytes(2, 60_000));
     let user = scratch();
     let store = Store::new(PackageStore::at(user.path()))
@@ -783,13 +758,7 @@ fn a_sparse_system_image_is_rebuilt_from_its_tree_and_the_host_files_it_names() 
 #[test]
 fn a_host_file_that_is_not_the_signed_bytes_is_refused() {
     let ci = SigningIdentity::generate();
-    let (_source, runtime) = seal(
-        Kind::EnvRuntime,
-        "so.tilo.env-runtime",
-        None,
-        &ci,
-        runtime_tree,
-    );
+    let (_source, runtime) = sealed_runtime(&ci);
     // The host's libc changed under the image (an update, or tampering).
     let (system, _host) = sparse_system_runtime(&runtime, b"a different libc");
     let user = scratch();
@@ -802,13 +771,7 @@ fn a_host_file_that_is_not_the_signed_bytes_is_refused() {
 #[test]
 fn a_host_sources_file_names_only_signed_files_by_plain_absolute_paths() {
     let ci = SigningIdentity::generate();
-    let (_source, runtime) = seal(
-        Kind::EnvRuntime,
-        "so.tilo.env-runtime",
-        None,
-        &ci,
-        runtime_tree,
-    );
+    let (_source, runtime) = sealed_runtime(&ci);
     let (system, host) = sparse_system_runtime(&runtime, &bytes(2, 60_000));
     let sources = package_store::Layout::new(system.path())
         .meta_dir(runtime.meta.id)
@@ -861,13 +824,7 @@ fn a_host_sources_file_names_only_signed_files_by_plain_absolute_paths() {
 #[test]
 fn modified_system_image_is_not_imported_as_a_signed_overlay_lower() {
     let ci = SigningIdentity::generate();
-    let (_source, runtime) = seal(
-        Kind::EnvRuntime,
-        "so.tilo.env-runtime",
-        None,
-        &ci,
-        runtime_tree,
-    );
+    let (_source, runtime) = sealed_runtime(&ci);
     let system = scratch();
     PackageStore::at(system.path())
         .install_image(

@@ -99,6 +99,35 @@ pub struct RowLayout {
     pub marks_left: Option<f32>,
 }
 
+/// One column's header row as the shell laid it out: what its title says against what the row
+/// gave it, and what its actions kept of their labels and their place in the row.
+///
+/// An audit reads this to hold a header to the rule the row lays itself out by: a title is cut
+/// short only once every action in the row has given what it can — its label first, then its
+/// place in the row for the menu's door — and the app's primary action never leaves the row.
+#[derive(serde::Serialize, Clone, Copy, Debug, PartialEq)]
+pub struct HeaderRow {
+    /// The column the row heads: `sidebar`, `overview`, `content` or `inspector`.
+    pub column: &'static str,
+    /// How wide the title says it is.
+    pub title_needs: f32,
+    /// How wide the row gave it.
+    pub title_has: f32,
+    /// How much room stood empty beyond it, before the next thing in the row.
+    pub free_beside_title: f32,
+    /// Whether an action standing in the row kept a label it could have shown as its icon.
+    pub labelled_action: bool,
+    /// Whether the column's primary action stands in the row: a column without one answers
+    /// `true`.
+    pub primary_shown: bool,
+}
+
+/// The header rows one shell laid out, one per column it shows.
+#[derive(serde::Serialize, Clone, Copy, Debug, PartialEq)]
+pub struct HeaderRows {
+    pub rows: [Option<HeaderRow>; 4],
+}
+
 /// Concrete layout policies. Manual layout information can extend this enum.
 #[derive(serde::Serialize, Clone, Copy, Debug, PartialEq)]
 pub enum LayoutInfo {
@@ -109,6 +138,7 @@ pub enum LayoutInfo {
     Manual(ManualLayout),
     Scroll(ScrollLayout),
     Row(RowLayout),
+    Headers(HeaderRows),
 }
 
 /// Which way a scroll view lets its content go on past its own box.

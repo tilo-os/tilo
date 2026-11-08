@@ -1,4 +1,4 @@
-//! [`AbsolutePath`]: the one type an action takes a file or folder on this
+//! [`AbsolutePath`] — the one type an action takes a file or folder on this
 //! device as.
 //!
 //! A relative path names a different place depending on where the app's

@@ -737,9 +737,6 @@ pub struct Reply {
 }
 
 /// Send `actions` to a running `input-serve`.
-///
-/// # Errors
-/// No server listening, or the server's own failure.
 pub fn send(socket: &Path, actions: &[InputAction]) -> std::io::Result<Reply> {
     let mut stream = std::os::unix::net::UnixStream::connect(socket)?;
     stream.set_read_timeout(Some(std::time::Duration::from_secs(60)))?;
@@ -845,9 +842,6 @@ impl Devices {
 /// Serve input requests for `seat` on `socket` until killed. The pointer
 /// spans `geometry.desktop`, touch and pen `geometry.touch`; without a
 /// geometry both span the seat's output.
-///
-/// # Errors
-/// Device creation and socket failures.
 pub fn serve(seat: &str, socket: &Path, geometry: Option<Geometry>) -> Result<(), DaemonError> {
     let fallback = || output_size(seat);
     let mut devices = Devices {

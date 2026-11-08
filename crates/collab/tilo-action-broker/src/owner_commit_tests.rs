@@ -2018,37 +2018,7 @@ mod owner_commit_tests {
         caller: &VerifiedActionCaller,
         actor: &str,
     ) -> Result<invocation_journal::PreparedEffect, String> {
-        let key = f
-            .state
-            .caller_key(caller, tilo_actions::InvocationId::new())?;
-        let context = tilo_actions::ActionContext::default();
-        let contract = tilo_actions::ActionContract::default();
-        let intent = serde_json::json!({"operation_kind":tilo_actions::OperationKind::Effect,"context":context,
-            "actor":actor,"contract":contract,"app_id":f.route.app_id,
-            "resource":format!("app.{}", f.route.app_id),"resource_kind":"app","action":"open"});
-        let update = tilo_actions::InvocationUpdate::Succeeded {
-            invocation: key.invocation,
-            output: tilo_actions::ActionOutput::default(),
-        };
-        let mut effect = tilo_desktop_model::WorkspaceEffectReceipt::redacted(
-            key.invocation,
-            actor,
-            context,
-            tilo_actions::EffectReceiptStatus::Succeeded,
-            tilo_clock::unix_now_i64(),
-        );
-        effect.completed_at = 100;
-        let request = tilo_peer_state::owner_commit::OwnerCommitRequest {
-            workspace: f.route.cluster_id.clone(),
-            operation: tilo_peer_state::owner_commit::CommitOperation::EffectReceipt {
-                invocation: key.invocation.0,
-                redacted: serde_json::to_vec(&effect).map_err(|error| error.to_string())?,
-            },
-        };
-        let mut guard = f.state.journal.lock().unwrap();
-        let journal = guard.as_mut().unwrap().as_mut().unwrap();
-        journal.admit(key.clone(), intent, 1)?;
-        journal.prepare_effect(&key, update, &request)
+        prepare_owner_effect_as(f, caller, actor).map(|(_, _, prepared)| prepared)
     }
 
     /// The MCP door hands a person's certified session to their agent, and
@@ -2202,11 +2172,27 @@ mod owner_commit_tests {
         tilo_peer_state::owner_commit::OwnerCommitRequest,
         invocation_journal::PreparedEffect,
     ) {
+        let actor = caller.admitted.broker_actor().id;
+        prepare_owner_effect_as(f, caller, &actor).unwrap()
+    }
+
+    /// An effect terminal `caller` prepares over its own journal invocation,
+    /// receipted as `actor`, with the request that carries it.
+    fn prepare_owner_effect_as(
+        f: &OwnerFixture,
+        caller: &VerifiedActionCaller,
+        actor: &str,
+    ) -> Result<
+        (
+            InvocationKey,
+            tilo_peer_state::owner_commit::OwnerCommitRequest,
+            invocation_journal::PreparedEffect,
+        ),
+        String,
+    > {
         let key = f
             .state
-            .caller_key(caller, tilo_actions::InvocationId::new())
-            .unwrap();
-        let actor = caller.admitted.broker_actor().id;
+            .caller_key(caller, tilo_actions::InvocationId::new())?;
         let context = tilo_actions::ActionContext::default();
         let contract = tilo_actions::ActionContract::default();
         let intent = serde_json::json!({"operation_kind":tilo_actions::OperationKind::Effect,"context":context,
@@ -2218,7 +2204,7 @@ mod owner_commit_tests {
         };
         let mut effect = tilo_desktop_model::WorkspaceEffectReceipt::redacted(
             key.invocation,
-            &actor,
+            actor,
             context,
             tilo_actions::EffectReceiptStatus::Succeeded,
             tilo_clock::unix_now_i64(),
@@ -2228,13 +2214,13 @@ mod owner_commit_tests {
             workspace: f.route.cluster_id.clone(),
             operation: tilo_peer_state::owner_commit::CommitOperation::EffectReceipt {
                 invocation: key.invocation.0,
-                redacted: serde_json::to_vec(&effect).unwrap(),
+                redacted: serde_json::to_vec(&effect).map_err(|error| error.to_string())?,
             },
         };
         let mut guard = f.state.journal.lock().unwrap();
         let journal = guard.as_mut().unwrap().as_mut().unwrap();
-        journal.admit(key.clone(), intent, 1).unwrap();
-        let prepared = journal.prepare_effect(&key, update, &request).unwrap();
-        (key, request, prepared)
+        journal.admit(key.clone(), intent, 1)?;
+        let prepared = journal.prepare_effect(&key, update, &request)?;
+        Ok((key, request, prepared))
     }
 }

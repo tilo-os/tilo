@@ -232,10 +232,6 @@ enum IdentityProvisioningContext {
 /// into Secret Service or the explicitly reported private-file fallback.
 ///
 /// Idempotent: an existing file is returned as [`ProvisionOutcome::Existing`] with no modification.
-///
-/// # Errors
-///
-/// Returns an error if file system operations fail (permission denied, I/O error, etc.).
 pub fn ensure_primary_identity(
     identity_dir: &Path,
     storage: IdentityStorage,
@@ -250,10 +246,6 @@ pub fn ensure_primary_identity(
 /// Create the personal identity explicitly chosen during installer preparation.
 /// Unlike automatic first-login provisioning, an existing identity is refused.
 /// The signing share immediately enters the canonical platform secret provider.
-///
-/// # Errors
-///
-/// Refuses an empty name, an existing primary identity, or unavailable custody.
 pub fn create_primary_identity(
     identity_dir: &Path,
     display_name: &str,
@@ -346,14 +338,6 @@ fn ensure_primary_identity_in_context(
 /// single transport identity used by the shell, filesystem synchroniser, and
 /// hosted relay. Existing records are migrated idempotently; an existing
 /// device key is never replaced.
-///
-/// # Errors
-///
-/// Returns an error if the identity directory can't be created or its
-/// permissions set, if the primary identity can't be provisioned or loaded,
-/// if it isn't a single-device identity, if the device key or certificate
-/// can't be created, loaded, verified, or signed, or if the identity
-/// registry can't be migrated or saved.
 pub fn ensure_collaboration_identity(
     identity_dir: &Path,
     paths: &IdentityPaths,
@@ -427,12 +411,6 @@ pub fn ensure_foreign_collaboration_identity(
 /// visibly associated with the already-authenticated Unix user. An existing
 /// identity record is used as-is: this compatibility path does not introduce
 /// another login, password, or storage migration.
-///
-/// # Errors
-///
-/// Returns an error if the identity directory cannot be created or its
-/// permissions set, or if the identity and its certified device key cannot be
-/// provisioned, loaded, verified, migrated, or saved.
 pub fn ensure_collaboration_identity_for_legacy_linux_host(
     identity_dir: &Path,
     paths: &IdentityPaths,
@@ -471,11 +449,6 @@ pub struct JoinedDeviceLayout<'a> {
 /// identity record, a fleet that includes this machine, and this machine's
 /// home peers. This machine's fleet remembers the new device, so each side
 /// can admit the other when they meet.
-///
-/// # Errors
-///
-/// Returns an error if the account name is unsafe, this machine's device
-/// certificate cannot be read, or any target file cannot be written.
 pub fn install_joined_device(
     layout: &JoinedDeviceLayout<'_>,
     user_public_key: [u8; 32],
@@ -622,10 +595,6 @@ fn install_joined_device_presented(
 /// Loads the active record under `layout.local_identity_dir`, signs with that
 /// person's non-exportable share, and otherwise matches
 /// [`install_joined_device`].
-///
-/// # Errors
-///
-/// Returns an error if the active identity cannot be loaded or signing fails.
 pub fn enroll_from_local_identity(
     layout: &JoinedDeviceLayout<'_>,
     display_name: &str,
@@ -669,11 +638,6 @@ pub fn enroll_from_local_identity(
 /// by a relay that writes it only the certificate and the person's public
 /// key. Answers whether `paths` holds such a device; idempotent, and never
 /// writes a root or replaces an active identity.
-///
-/// # Errors
-///
-/// Returns an error if the enrolled certificate is not this device's, does
-/// not verify, or a file cannot be written.
 pub fn complete_enrolled_device(
     identity_dir: &Path,
     paths: &IdentityPaths,
@@ -1011,10 +975,6 @@ fn validate_throwaway_identity_paths(paths: &IdentityPaths) -> io::Result<()> {
 /// transaction or its first-use crash journal is written. Keeping this as one
 /// operation prevents the journal preflight and the identity writer from
 /// disagreeing about directory permissions.
-/// # Errors
-///
-/// Rejects a symlink or a directory owned by another user, and returns any
-/// error creating it or setting its permissions.
 pub fn prepare_identity_directory(identity_dir: &Path) -> io::Result<()> {
     fs::create_dir_all(identity_dir)?;
     let metadata = fs::symlink_metadata(identity_dir)?;
@@ -1287,12 +1247,6 @@ fn read_claimed_owner(path: &Path) -> io::Result<[u8; 32]> {
 ///
 /// Only public material is read — the active record's metadata, the owner
 /// claim and the certificate — so the answer needs no unlocked secret.
-///
-/// # Errors
-///
-/// Fails when the owner claim, the device certificate, the device key or the
-/// active identity record exists but cannot be read, or when the primary
-/// certificate does not verify.
 pub fn active_identity_owns_device(identity_dir: &Path, paths: &IdentityPaths) -> io::Result<bool> {
     let Some(record) = runtime_identity::resolve_active_identity(identity_dir) else {
         return Ok(false);
@@ -1321,12 +1275,6 @@ pub fn active_identity_owns_device(identity_dir: &Path, paths: &IdentityPaths) -
 ///
 /// This keeps app signing and collaboration transport authentication on the
 /// same `identity -> device` chain immediately after setup/import.
-///
-/// # Errors
-///
-/// Returns an error if the record at `record_path` can't be loaded, or if
-/// the device key or its certificate can't be created, loaded, verified, or
-/// signed.
 pub fn ensure_device_certificate_for_record(
     record_path: &Path,
     paths: &IdentityPaths,
@@ -1466,11 +1414,6 @@ fn issue_device_certificate_at(
 /// public key and certificate must describe the same root and device, and the
 /// certificate must be valid at `now_ns`. Missing, malformed, weakly-permissioned
 /// or mismatched state is an error; this function never creates or repairs it.
-///
-/// # Errors
-///
-/// Returns an I/O error when any identity artifact is missing, insecure,
-/// malformed, expired, or inconsistent with the root/device chain.
 pub fn verify_collaboration_identity(
     identity_dir: &Path,
     paths: &IdentityPaths,

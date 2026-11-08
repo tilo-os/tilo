@@ -87,9 +87,6 @@ where
 {
     /// Start reading `reader` on a thread of its own, handing what arrives
     /// to `handler`, and write to `writer`.
-    ///
-    /// # Errors
-    /// The reading thread could not be started.
     pub fn start(
         name: &str,
         reader: impl Read + Send + 'static,

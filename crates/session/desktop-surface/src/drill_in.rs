@@ -22,46 +22,42 @@ use ui::widget::{Button, ButtonFace};
 
 // ---------- one rhythm for the whole panel (HIG §7b) ----------
 
-/// Panel padding: the root's grid, every list row and every header chip
-/// start this far inside the panel edge (`s4`, HIG §9.6).
+/// Panel padding: the root's grid, every list row and every header chip start this far inside the
+/// panel edge (`s4`, HIG §9.6).
 pub const PANEL_PAD: f64 = Spacing::BASE.s4 as f64;
-/// Gap between Panel sections — title band, tiles, sliders, cards, power
-/// row (`s4`, HIG §9.6).
+/// Gap between Panel sections — title band, tiles, sliders, cards, power row (`s4`, HIG §9.6).
 pub const SECTION_GAP: f64 = Spacing::BASE.s4 as f64;
 /// Gap between sibling controls of equal weight in a grid: tile ↔ tile,
 /// card ↔ card, chip ↔ chip (`s3`).
 pub const SIBLING_GAP: f64 = Spacing::BASE.s3 as f64;
-/// Gap between related rows that read as one group: list rows, the two
-/// slider bands, a card's icon row and its label block (`s2`).
+/// Gap between related rows that read as one group: list rows, the two slider bands, a card's icon
+/// row and its label block (`s2`).
 pub const RELATED_GAP: f64 = Spacing::BASE.s2 as f64;
 /// Vertical padding inside a Control (`s2`).
 pub const CONTROL_PAD: f64 = Spacing::BASE.s2 as f64;
-/// Leading / trailing inset of a glyph, toggle or chevron inside a Control
-/// (`s3`).
+/// Leading / trailing inset of a glyph, toggle or chevron inside a Control (`s3`).
 pub const CONTROL_INSET: f64 = Spacing::BASE.s3 as f64;
 /// A list row / Control height (HIG §9.6: 44).
 pub const ROW_HEIGHT: f64 = Metrics::BASE.panel_row_height as f64;
 /// The standard row glyph (`icon_md`).
 pub const GLYPH: f64 = Metrics::BASE.icon_md as f64;
-/// The pointer floor: header chips, the edit-mode action button and the
-/// drill-in target on a card are this square (HIG §9.6).
+/// The pointer floor: header chips, the edit-mode action button and the drill-in target on a card
+/// are this square (HIG §9.6).
 pub const TARGET: f64 = Metrics::BASE.min_pointer_target as f64;
 /// The drill-in title band: a pointer-floor back button on `s2` of air.
 pub const HEADER_HEIGHT: f64 = TARGET + 2.0 * RELATED_GAP;
-/// Where a drill-in's first row starts: the title band plus one related
-/// step.
+/// Where a drill-in's first row starts: the title band plus one related step.
 pub const LIST_TOP: f64 = HEADER_HEIGHT + RELATED_GAP;
-/// The compact switch on a Quick Settings row: as tall as the row glyph and
-/// two knob positions wide less the `s1` they share.
+/// The compact switch on a Quick Settings row: as tall as the row glyph and two knob positions wide
+/// less the `s1` they share.
 pub const TOGGLE_H: f64 = GLYPH;
 pub const TOGGLE_W: f64 = 2.0 * TOGGLE_H - Spacing::BASE.s1 as f64;
 /// The "connected" dot on a row's trailing inset: half a glyph.
 pub const STATUS_DOT: f64 = GLYPH / 2.0;
-/// A Control's fill: the shared hover tier when hovered, otherwise a quiet
-/// floor on the same ramp so tiles and rows read as surfaces rather than as
-/// bare text on the panel. Both states sit on the one ordered
-/// [`selection_floor_ramp`], so hover is always the more prominent (asserted
-/// per theme in the tests).
+/// A Control's fill: the shared hover tier when hovered, otherwise a quiet floor on the same ramp
+/// so tiles and rows read as surfaces rather than as bare text on the panel. Both states sit on the
+/// one ordered [`selection_floor_ramp`], so hover is always the more prominent (asserted per theme
+/// in the tests).
 pub fn control_fill(theme: &Theme, hovered: bool) -> Color {
     selection_floor_ramp(
         theme,
@@ -75,10 +71,9 @@ pub fn control_radius(theme: &Theme, rect: Rect) -> f64 {
     ChromeRole::Control.radius(theme, rect.height())
 }
 
-/// Paint one Control-role surface (HIG §9.1 / §9.5): its fill with the
-/// derived rest edge (`ui::surface::card`) at the Control radius, and the
-/// toolkit `Button`'s 2 px focus ring on top when `focused`. One painter for
-/// every tile, card, power row, edit row and list row in the
+/// Paint one Control-role surface (HIG §9.1 / §9.5): its fill with the derived rest edge
+/// (`ui::surface::card`) at the Control radius, and the toolkit `Button` 's 2 px focus ring on top
+/// when `focused` . One painter for every tile, card, power row, edit row and list row in the
 /// panel, so they cannot drift apart again.
 pub fn paint_control(
     scene: &mut Scene,
@@ -101,37 +96,35 @@ pub fn paint_control(
     }
 }
 
-/// A `glyph`-sized box on `row`'s leading `inset`, centred on its centre
-/// line.
+/// A `glyph` -sized box on `row` 's leading `inset` , centred on its centre line.
 pub fn leading_glyph(row: Rect, inset: f64, glyph: f64) -> Rect {
     let y = row.center().y - glyph / 2.0;
     Rect::new(row.x0 + inset, y, row.x0 + inset + glyph, y + glyph)
 }
 
-/// Centre of the "connected" dot: a [`STATUS_DOT`] disc on the trailing
-/// `inset`.
+/// Centre of the "connected" dot: a [`STATUS_DOT`] disc on the trailing `inset` .
 pub fn trailing_dot_center(row: Rect, inset: f64) -> Point {
     Point::new(row.x1 - inset - STATUS_DOT / 2.0, row.center().y)
 }
 
-/// The status glyph slot before the dot (a battery, signal bars): one related
-/// step inboard of it, centred on the row's centre line.
+/// The status glyph slot before the dot (a battery, signal bars): one related step inboard of it,
+/// centred on the row's centre line.
 pub fn trailing_status_glyph(row: Rect, inset: f64, glyph: f64) -> Rect {
     let x1 = row.x1 - inset - STATUS_DOT - RELATED_GAP;
     let y = row.center().y - glyph / 2.0;
     Rect::new(x1 - glyph, y, x1, y + glyph)
 }
 
-/// Top of a text block `h` tall centred on `row`'s centre line.
+/// Top of a text block `h` tall centred on `row` 's centre line.
 pub fn centred_text_top(row: Rect, h: f64) -> f64 {
     row.center().y - h / 2.0
 }
 
 fn discovery_label_width(row: Rect, glyph: Rect, trailing_reserve: f64) -> f64 {
     let label_x = glyph.x1 + CONTROL_INSET;
-    // Every discovery row owns two fixed trailing status slots. Individual
-    // panes may reserve more (for example Wi-Fi's connection status), but
-    // never less than the shared glyph/dot geometry requires.
+    // Every discovery row owns two fixed trailing status slots. Individual panes may reserve more
+    // (for example Wi-Fi's connection status), but never less than the shared glyph/dot geometry
+    // requires.
     let status_slots = 2.0 * GLYPH + CONTROL_INSET + RELATED_GAP;
     (row.x1 - trailing_reserve.max(status_slots) - label_x).max(1.0)
 }
@@ -198,9 +191,8 @@ impl DrillInList {
             .and_then(|slot| self.rows.get(slot))
     }
 
-    /// The pointer-floor back button in the title band's leading corner, on
-    /// `s2` of air. The overlay host's chevron hit rect reads the same
-    /// function, so paint and input cannot disagree.
+    /// The pointer-floor back button in the title band's leading corner, on `s2` of air. The
+    /// overlay host's chevron hit rect reads the same function, so paint and input cannot disagree.
     pub fn back_rect(panel: Rect) -> Rect {
         Rect::new(
             panel.x0 + RELATED_GAP,
@@ -210,9 +202,8 @@ impl DrillInList {
         )
     }
 
-    /// The height a drill-in needs for `rows` rows below `list_top`: an
-    /// empty list keeps one row's band for its message, then the panel
-    /// padding closes the page.
+    /// The height a drill-in needs for `rows` rows below `list_top` : an empty list keeps one row's
+    /// band for its message, then the panel padding closes the page.
     pub fn list_height(list_top: f64, rows: usize) -> f64 {
         let rows = f64_of_usize(rows.max(1));
         list_top + rows * ROW_HEIGHT + (rows - 1.0) * RELATED_GAP + PANEL_PAD
@@ -283,9 +274,8 @@ impl DrillInList {
         Self::draw_empty_from(scene, transform, text, theme, panel, message, LIST_TOP);
     }
 
-    /// Centred dim empty-state message in the band the first row would
-    /// occupy under `list_top` — without it the pane read as broken rather
-    /// than "nothing here yet".
+    /// Centred dim empty-state message in the band the first row would occupy under `list_top` —
+    /// without it the pane read as broken rather than "nothing here yet".
     pub fn draw_empty_from(
         scene: &mut Scene,
         transform: Affine,
@@ -313,10 +303,9 @@ impl DrillInList {
         );
     }
 
-    /// Shared row treatment and label placement for discovery lists. Every
-    /// real item gets the same Control surface; the former special-cased
-    /// first item made a list of two look like one selected card plus stray
-    /// text. Returns the leading glyph box for the owning pane to paint.
+    /// Shared row treatment and label placement for discovery lists. Every real item gets the same
+    /// Control surface; the former special-cased first item made a list of two look like one
+    /// selected card plus stray text. Returns the leading glyph box for the owning pane to paint.
     pub fn draw_discovery_row(
         ctx: &mut ui::paint::PaintCtx<'_>,
         row: Rect,
@@ -330,10 +319,9 @@ impl DrillInList {
         let hovered = cursor.is_some_and(|point| row.contains(point));
         paint_control(scene, transform, theme, row, hovered, false);
         let glyph = leading_glyph(row, CONTROL_INSET, GLYPH);
-        // Wi-Fi strength, Bluetooth battery and the connected dot occupy the
-        // trailing edge of a discovery row: two glyph slots on the inset and
-        // a related step. Never let a long SSID or device name paint under
-        // those truthful status indicators.
+        // Wi-Fi strength, Bluetooth battery and the connected dot occupy the trailing edge of a
+        // discovery row: two glyph slots on the inset and a related step. Never let a long SSID or
+        // device name paint under those truthful status indicators.
         let label_x = glyph.x1 + CONTROL_INSET;
         let label_width = discovery_label_width(row, glyph, trailing_reserve);
         let style = theme.text(TextRole::Caption);
@@ -345,9 +333,9 @@ impl DrillInList {
         let label = text.elide_to_width_style(label, label_width, &style);
         let (_, label_height) =
             text.measure_style(&label, None, &style.clone().with_weight(TextWeight::Medium));
-        // A status line (`Connected`) stacks under the label and the pair is
-        // centred as one block, so it stays inside the row at any name length
-        // instead of hanging below it at a fixed offset.
+        // A status line (`Connected`) stacks under the label and the pair is centred as one block,
+        // so it stays inside the row at any name length instead of hanging below it at a fixed
+        // offset.
         let detail = detail.map(|(detail, color)| {
             let detail = text.elide_to_width_style(detail, label_width, &style);
             let (_, height) = text.measure_style(&detail, None, &style);
@@ -388,11 +376,10 @@ mod tests {
         reason = "one scenario test keeps each merged phase and its fresh fixture visible"
     )]
     fn drill_in_rows_keep_token_tiers_glyphs_and_panel_rhythm() {
-        /// HIG §9.3: a control that gives its idle state a floor must keep every
-        /// state on one ordered ramp, or the hovered row can end up quieter
-        /// than the idle one on a palette whose `lift` falls back to a derived
-        /// step. `lift` moves from `surfaces.base`, so the order is measured
-        /// from there: hover must travel further along the ramp than the floor.
+        /// HIG §9.3: a control that gives its idle state a floor must keep every state on one
+        /// ordered ramp, or the hovered row can end up quieter than the idle one on a palette whose
+        /// `lift` falls back to a derived step. `lift` moves from `surfaces.base` , so the order is
+        /// measured from there: hover must travel further along the ramp than the floor.
         fn row_floor_stays_below_the_hover_tier() {
             for theme in [Theme::dark(), Theme::light(), Theme::high_contrast()] {
                 let origin = relative_luminance(theme.tokens.colors.surfaces.base);
@@ -431,9 +418,8 @@ mod tests {
             }
         }
 
-        /// The glyph box a pane paints into is the standard `icon_md` glyph on
-        /// the `s3` inset, centred on the row — not a 20 in a 12 that happens to
-        /// match those tokens today.
+        /// The glyph box a pane paints into is the standard `icon_md` glyph on the `s3` inset,
+        /// centred on the row — not a 20 in a 12 that happens to match those tokens today.
         fn discovery_row_glyph_is_the_token_glyph_centred_on_the_row() {
             let theme = Theme::dark();
             let mut text = TextRenderer::new();
@@ -467,9 +453,8 @@ mod tests {
             );
         }
 
-        /// One rhythm (HIG §7b): rows are the Control height on the panel
-        /// padding, one related step apart, and the trailing slots never reach
-        /// into each other or the row's inset.
+        /// One rhythm (HIG §7b): rows are the Control height on the panel padding, one related step
+        /// apart, and the trailing slots never reach into each other or the row's inset.
         fn list_rows_keep_the_panel_rhythm_and_trailing_slots_do_not_touch() {
             let panel = Rect::new(100.0, 50.0, 500.0, 500.0);
             let mut list = DrillInList::default();

@@ -71,10 +71,6 @@ impl Default for LinuxPhysicalGamepadCatalog {
 impl LinuxPhysicalGamepadCatalog {
     /// Enumerate only evdev character devices classified exclusively as a
     /// joystick/game controller by udev.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the local input directory cannot be enumerated.
     pub fn discover(&self) -> io::Result<Vec<PhysicalGamepadInfo>> {
         let mut controllers = Vec::new();
         let entries = match fs::read_dir(&self.input) {
@@ -128,11 +124,6 @@ impl LinuxPhysicalGamepadCatalog {
 
     /// Open a previously discovered controller, rechecking its identity and
     /// udev classification to close replacement races.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the id is outside the catalog, no longer names an
-    /// exclusive controller, cannot be opened, or has invalid axis metadata.
     pub fn open(&self, id: &PhysicalGamepadId) -> io::Result<LinuxPhysicalGamepadSource> {
         if id.0.parent() != Some(self.input.as_path())
             || !id
@@ -159,11 +150,6 @@ impl LinuxPhysicalGamepadCatalog {
     /// Watch udev's device database, which is written once a newly attached
     /// input device has been classified, so callers rescan on hotplug
     /// instead of polling.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when inotify is unavailable or the udev database
-    /// directory cannot be watched.
     pub fn hotplug_watch(&self) -> io::Result<PhysicalGamepadHotplug> {
         use rustix::fs::inotify;
         let fd = inotify::init(inotify::CreateFlags::CLOEXEC | inotify::CreateFlags::NONBLOCK)?;
@@ -200,10 +186,6 @@ pub struct PhysicalGamepadHotplug {
 
 impl PhysicalGamepadHotplug {
     /// A duplicate of the watch descriptor for an event loop to poll.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the descriptor cannot be duplicated.
     pub fn wake_fd(&self) -> io::Result<OwnedFd> {
         self.fd.try_clone()
     }
@@ -276,10 +258,6 @@ impl LinuxPhysicalGamepadSource {
 
     /// A duplicate of the evdev descriptor for an event loop to poll. Reads
     /// still go through [`Self::drain`].
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the descriptor cannot be duplicated.
     pub fn wake_fd(&self) -> io::Result<OwnedFd> {
         self.file.as_fd().try_clone_to_owned()
     }

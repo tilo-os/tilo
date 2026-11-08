@@ -1,34 +1,26 @@
-//! Pure-logic helpers for the DRM backend: filtering DRM device paths and
-//! picking a preferred mode out of a list of advertised modes.
-//!
-//! Hardware-touching code stays in `super::runtime`; this module exists so
-//! the device-selection policy is testable on a dev machine with no seat /
-//! TTY / GPU it can claim. Policy: pick the highest-resolution mode at the
-//! highest refresh rate, breaking ties by preferring the connector's
-//! preferred-flagged mode; `None` when no modes are available, so the
-//! caller can log + skip the connector rather than panic.
-//!
-//! Render-only nodes (`/dev/dri/renderD*`) are excluded — they cannot do
-//! KMS / page-flips, and the backend needs `cardN` nodes specifically.
-//!
+//! Pure-logic helpers for the DRM backend: filtering DRM device paths and picking a preferred mode
+//! out of a list of advertised modes.
+//! Hardware-touching code stays in `super::runtime` ; this module exists so the device-selection
+//! policy is testable on a dev machine with no seat / TTY / GPU it can claim. Policy: pick the
+//! highest-resolution mode at the highest refresh rate, breaking ties by preferring the connector's
+//! preferred-flagged mode; `None` when no modes are available, so the caller can log + skip the
+//! connector rather than panic.
+//! Render-only nodes (`/dev/dri/renderD*`) are excluded — they cannot do KMS / page-flips, and the
+//! backend needs `cardN` nodes specifically.
 //! Tests below are pure-CPU; they don't touch /dev/dri.
 
 use std::path::{Path, PathBuf};
 
 /// Order KMS nodes by the connectors they can actually drive.
-///
-/// Every node is opened and driven; the order only decides whose outputs
-/// are adopted (and numbered) first and which card the backend reports as
-/// its primary. `udev::all_gpus` is not a primary-display ordering: on hybrid
-/// systems it commonly returns a connectorless discrete GPU before the
-/// integrated GPU that owns the internal panel.
-///
-/// Prefer the node with the greatest number of connected connectors, using a
-/// connected internal panel (`eDP`, `LVDS`, or `DSI`) as the tie-breaker. That
-/// keeps a dock with multiple live outputs ahead of a still-connected laptop
-/// panel. Remaining ties keep udev's order, and an unreadable sysfs tree keeps
-/// the complete input order as a safe fallback. This only orders scanout
-/// candidates; render-node selection remains independent.
+/// Every node is opened and driven; the order only decides whose outputs are adopted (and numbered)
+/// first and which card the backend reports as its primary. `udev::all_gpus` is not a
+/// primary-display ordering: on hybrid systems it commonly returns a connectorless discrete GPU
+/// before the integrated GPU that owns the internal panel.
+/// Prefer the node with the greatest number of connected connectors, using a connected internal
+/// panel (`eDP`, `LVDS` , or `DSI` ) as the tie-breaker. That keeps a dock with multiple live
+/// outputs ahead of a still-connected laptop panel. Remaining ties keep udev's order, and an
+/// unreadable sysfs tree keeps the complete input order as a safe fallback. This only orders
+/// scanout candidates; render-node selection remains independent.
 pub fn order_by_connected_connectors<I, P>(paths: I, drm_sysfs: &Path) -> Vec<PathBuf>
 where
     I: IntoIterator<Item = P>,
@@ -85,22 +77,20 @@ fn connector_score(card_path: &Path, drm_sysfs: &Path) -> (usize, usize) {
     (connected, internal)
 }
 
-/// Holds the subset of `drm::control::Mode` fields needed to compare two
-/// modes. Mirrors the upstream layout but stays plain-data so tests can
-/// build instances without a real DRM device.
+/// Holds the subset of `drm::control::Mode` fields needed to compare two modes. Mirrors the
+/// upstream layout but stays plain-data so tests can build instances without a real DRM device.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ModeInfo {
     pub width: u16,
     pub height: u16,
-    /// Vertical refresh in millihertz (60Hz = 60000). DRM exposes this
-    /// as `vrefresh` in plain Hz, but milli-Hz keeps tie-break logic
-    /// honest for 59.94 vs 60.00.
+    /// Vertical refresh in millihertz (60Hz = 60000). DRM exposes this as `vrefresh` in plain Hz,
+    /// but milli-Hz keeps tie-break logic honest for 59.94 vs 60.00.
     pub refresh_mhz: u32,
-    /// Set when the connector marks this mode as its preferred one
-    /// (DRM flag `DRM_MODE_TYPE_PREFERRED`). Its size is the native
-    /// resolution; its rate is not the fastest the panel offers.
+    /// Set when the connector marks this mode as its preferred one (DRM flag
+    /// `DRM_MODE_TYPE_PREFERRED` ). Its size is the native resolution; its rate is not the fastest
+    /// the panel offers.
     pub preferred: bool,
-    /// DRM flag `DRM_MODE_FLAG_INTERLACE`: the rate counts fields.
+    /// DRM flag `DRM_MODE_FLAG_INTERLACE` : the rate counts fields.
     pub interlaced: bool,
 }
 
@@ -113,11 +103,10 @@ pub struct RequestedMode {
     pub refresh_mhz: u32,
 }
 
-/// Filter `/dev/dri/*` candidate paths down to KMS-capable `cardN` nodes.
-/// `renderD*` nodes are render-only — using one as the primary GPU would
-/// deadlock at the first `set_crtc`. Filtered by file-name prefix rather
-/// than a second udev syscall; callers already get `card*`-only paths from
-/// `all_gpus`, but this costs nothing as defence-in-depth.
+/// Filter `/dev/dri/*` candidate paths down to KMS-capable `cardN` nodes. `renderD*` nodes are
+/// render-only — using one as the primary GPU would deadlock at the first `set_crtc` . Filtered by
+/// file-name prefix rather than a second udev syscall; callers already get `card*` -only paths from
+/// `all_gpus` , but this costs nothing as defence-in-depth.
 pub fn filter_kms_nodes<I, P>(paths: I) -> Vec<PathBuf>
 where
     I: IntoIterator<Item = P>,
@@ -130,27 +119,24 @@ where
         .collect()
 }
 
-/// True iff `path`'s file name looks like a KMS card node
-/// (`/dev/dri/cardN`, where `N` is a digit). Render nodes
-/// (`/dev/dri/renderD128`) and arbitrary other entries return false.
+/// True iff `path` 's file name looks like a KMS card node (`/dev/dri/cardN`, where `N` is a
+/// digit). Render nodes (`/dev/dri/renderD128`) and arbitrary other entries return false.
 pub fn is_kms_node(path: &Path) -> bool {
     let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
         return false;
     };
-    // `strip_prefix` avoids a manual byte-index slice (which clippy can't
-    // prove stays on a UTF-8 char boundary, even though "card" is ASCII).
+    // `strip_prefix` avoids a manual byte-index slice (which clippy can't prove stays on a UTF-8
+    // char boundary, even though "card" is ASCII).
     let Some(digits) = name.strip_prefix("card") else {
         return false;
     };
     !digits.is_empty() && digits.chars().all(|c| c.is_ascii_digit())
 }
 
-/// Whether a card node advertises connectors in `/sys/class/drm`.
-///
-/// A GPU's `cardN` node without KMS has none: the Raspberry Pi's V3D, for
-/// one, exposes `card0` for rendering only, and `drmGetResources` on it fails
-/// with `EOPNOTSUPP`, so it can never scan out. `None` when the sysfs tree
-/// cannot be read, which says nothing about the node.
+/// Whether a card node advertises connectors in `/sys/class/drm` .
+/// A GPU's `cardN` node without KMS has none: the Raspberry Pi's V3D, for one, exposes `card0` for
+/// rendering only, and `drmGetResources` on it fails with `EOPNOTSUPP` , so it can never scan out.
+/// `None` when the sysfs tree cannot be read, which says nothing about the node.
 pub fn has_connectors(card_path: &Path, drm_sysfs: &Path) -> Option<bool> {
     let card_name = card_path.file_name().and_then(|name| name.to_str())?;
     let prefix = format!("{card_name}-");
@@ -162,8 +148,8 @@ pub fn has_connectors(card_path: &Path, drm_sysfs: &Path) -> Option<bool> {
     )
 }
 
-/// The connector's default mode: [`select_mode`] with no configured mode.
-/// `None` only when `modes` is empty.
+/// The connector's default mode: [`select_mode`] with no configured mode. `None` only when `modes`
+/// is empty.
 #[cfg(test)]
 fn preferred_mode(modes: &[ModeInfo]) -> Option<ModeInfo> {
     select_mode(modes, None).and_then(|index| modes.get(index).copied())
@@ -174,21 +160,17 @@ fn preferred_mode(modes: &[ModeInfo]) -> Option<ModeInfo> {
 /// 5120x2160), never as a real panel's native resolution.
 const MIN_TRUSTED_PREFERRED_WIDTH: u16 = 1024;
 
-/// Largest mode taken when the PREFERRED flag sits on such a placeholder: a
-/// window-sized virtual display, not the host's largest advertised mode.
+/// Largest mode taken when the PREFERRED flag sits on such a placeholder: a window-sized virtual
+/// display, not the host's largest advertised mode.
 const PLACEHOLDER_FALLBACK_MAX: (u16, u16) = (1920, 1080);
 
 /// The index in `modes` to drive the connector at.
-///
-/// A configured mode (the Settings pane or the `display.refresh-rate`
-/// action) is honoured when the connector still advertises it; a zero
-/// `refresh_mhz` there names only the resolution. Otherwise the connector
-/// runs at its native resolution (the PREFERRED mode's size) and the
-/// fastest progressive rate the connector offers at that size. The kernel
-/// flags one mode PREFERRED, usually the panel's 60 Hz timing, while the
-/// same resolution at 90 or 120 Hz is listed beside it unflagged, so taking
-/// the flagged mode itself would leave a fast panel at 60 Hz.
-///
+/// A configured mode (the Settings pane or the `display.refresh-rate` action) is honoured when the
+/// connector still advertises it; a zero `refresh_mhz` there names only the resolution. Otherwise
+/// the connector runs at its native resolution (the PREFERRED mode's size) and the fastest
+/// progressive rate the connector offers at that size. The kernel flags one mode PREFERRED, usually
+/// the panel's 60 Hz timing, while the same resolution at 90 or 120 Hz is listed beside it
+/// unflagged, so taking the flagged mode itself would leave a fast panel at 60 Hz.
 /// `None` only when `modes` is empty.
 pub fn select_mode(modes: &[ModeInfo], requested: Option<RequestedMode>) -> Option<usize> {
     if let Some(wanted) = requested {
@@ -220,8 +202,8 @@ fn area(mode: &ModeInfo) -> u32 {
     width.saturating_mul(height)
 }
 
-/// The resolution the connector is built for: the largest PREFERRED mode's
-/// size, or the largest size when nothing is flagged.
+/// The resolution the connector is built for: the largest PREFERRED mode's size, or the largest
+/// size when nothing is flagged.
 fn native_size(modes: &[ModeInfo]) -> Option<(u32, u32)> {
     let preferred = modes.iter().filter(|m| m.preferred).max_by_key(|m| area(m));
     let native = match preferred {
@@ -238,9 +220,8 @@ fn native_size(modes: &[ModeInfo]) -> Option<(u32, u32)> {
     native.map(size_of)
 }
 
-/// The fastest mode of `size`: progressive before interlaced (an interlaced
-/// mode's rate counts fields, not frames), then the highest refresh, then
-/// the kernel's order.
+/// The fastest mode of `size` : progressive before interlaced (an interlaced mode's rate counts
+/// fields, not frames), then the highest refresh, then the kernel's order.
 fn fastest_at(modes: &[ModeInfo], size: (u32, u32)) -> Option<usize> {
     modes
         .iter()
@@ -257,9 +238,9 @@ mod tests {
 
     #[test]
     fn kms_node_detection_accepts_only_primary_cards() {
-        // Phase `card0_is_kms_node`.
+        // Phase `card0_is_kms_node` .
         assert!(is_kms_node(Path::new("/dev/dri/card0")));
-        // Phase `renderd128_is_not_kms_node`.
+        // Phase `renderd128_is_not_kms_node` .
         assert!(!is_kms_node(Path::new("/dev/dri/renderD128")));
         assert!(!is_kms_node(Path::new("/tmp/cardN")));
         assert!(!is_kms_node(Path::new("/dev/dri/card")));
@@ -287,8 +268,8 @@ mod tests {
         for connector in ["card1-HDMI-A-1", "card1-Writeback-1"] {
             std::fs::create_dir(sysfs.path().join(connector)).expect("connector");
         }
-        // The Raspberry Pi's V3D exposes card0 for rendering only; the display
-        // controller's card1 carries the connectors.
+        // The Raspberry Pi's V3D exposes card0 for rendering only; the display controller's card1
+        // carries the connectors.
         assert_eq!(
             has_connectors(Path::new("/dev/dri/card0"), sysfs.path()),
             Some(false)
@@ -474,9 +455,8 @@ mod runtime_mode_policy_tests {
     use super::ModeInfo;
     #[test]
     fn preferred_mode_selection_picks_first_preferred_or_falls_back_to_highest() {
-        // Phase `preferred_mode_selection_picks_first_preferred`.
-        // The `preferred` flag is honored: a preferred mode in the list is
-        // the one picked.
+        // Phase `preferred_mode_selection_picks_first_preferred` . The `preferred` flag is honored:
+        // a preferred mode in the list is the one picked.
         {
             use super::preferred_mode;
             let modes = [
@@ -510,8 +490,9 @@ mod runtime_mode_policy_tests {
             assert_eq!(picked.width, 1920);
             assert_eq!(picked.height, 1080);
         }
-        // Phase `preferred_mode_selection_falls_back_to_highest_when_no_preferred`.
-        // And when none of the modes are flagged preferred, the policy falls back to the highest resolution × refresh.
+        // Phase `preferred_mode_selection_falls_back_to_highest_when_no_preferred` . And when none
+        // of the modes are flagged preferred, the policy falls back to the highest resolution ×
+        // refresh.
         {
             use super::preferred_mode;
             let modes = [
@@ -551,9 +532,8 @@ mod refresh_selection_tests {
         }
     }
 
-    /// A 2880x1800 laptop panel as its kernel lists it: the PREFERRED mode
-    /// is the 60 Hz timing, 90 Hz sits beside it unflagged, and a scaled
-    /// lower resolution offers an even higher rate.
+    /// A 2880x1800 laptop panel as its kernel lists it: the PREFERRED mode is the 60 Hz timing, 90
+    /// Hz sits beside it unflagged, and a scaled lower resolution offers an even higher rate.
     fn fast_panel() -> Vec<ModeInfo> {
         vec![
             mode(2880, 1800, 60_000, true),

@@ -1,15 +1,14 @@
-//! Who is here, and where: the people a workspace's collaborators name, the
-//! window each is in, and the calls in progress in its workspace. This is
-//! what the empty launcher lists first.
+//! Who is here, and where: the people a workspace's collaborators name, the window each is in, and
+//! the calls in progress in its workspace. This is what the empty launcher lists first.
 
 use tilo_desktop_search::providers::happening::{CallHere, PersonHere, WindowHere, WorkspaceHere};
 
 use crate::Shared;
 
 impl Shared {
-    /// Who is in each workspace now, and the calls in progress there, as
-    /// the desk's collaborators and the presence say: what the empty palette
-    /// lists first, by workspace, the one in front first.
+    /// Who is in each workspace now, and the calls in progress there, as the desk's collaborators
+    /// and the presence say: what the empty palette lists first, by workspace, the one in front
+    /// first.
     pub(crate) fn here_now(&self) -> Vec<WorkspaceHere> {
         let calls = self
             .sync
@@ -39,8 +38,8 @@ impl Shared {
                             person,
                             now,
                         ),
-                        // Idle and away dim their face everywhere else; the
-                        // launcher says it in words.
+                        // Idle and away dim their face everywhere else; the launcher says it in
+                        // words.
                         away: away(person),
                         tab: person.active_tab,
                     };
@@ -78,8 +77,8 @@ impl Shared {
                                 .people
                                 .iter()
                                 .map(|caller| {
-                                    // Who they are on the desk, when it lists
-                                    // them: the same face and name.
+                                    // Who they are on the desk, when it lists them: the same face
+                                    // and name.
                                     workspace
                                         .collaborators
                                         .iter()
@@ -118,8 +117,7 @@ impl Shared {
 }
 
 impl Shared {
-    /// The calls this person is in, on any of their devices: what a Join is
-    /// not offered for.
+    /// The calls this person is in, on any of their devices: what a Join is not offered for.
     fn calls_this_person_is_in(&self) -> Vec<String> {
         let Some(sync) = self.sync.as_ref() else {
             return Vec::new();
@@ -133,8 +131,8 @@ impl Shared {
     }
 }
 
-/// Whether the desk's row for someone says they are away from their
-/// machine: what dims their face, and what the launcher says in words.
+/// Whether the desk's row for someone says they are away from their machine: what dims their face,
+/// and what the launcher says in words.
 fn away(person: &tilo_desktop_model::Collaborator) -> bool {
     person
         .availability

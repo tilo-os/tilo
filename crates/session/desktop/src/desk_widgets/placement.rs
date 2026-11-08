@@ -1,17 +1,12 @@
 //! Where a desk widget rests, and how far an open card reaches from it.
-//!
-//! A widget rests wherever the person put it, on whichever display: its place
-//! is kept per display as fractions of the space its resting form can move in
-//! there ([`ui::desk_widgets::Place`]), so a widget against an edge or in a
-//! corner stays there when the resolution changes.
-//!
-//! A widget's open card grows from its resting form toward the middle of the
-//! display ([`open_rect`]): from the corner of the form nearest the display's
-//! nearer sides, so opening never pushes it off the screen and the form and
-//! the card share that corner.
-//!
-//! Everything here is pure geometry in desktop coordinates, tested on its
-//! own; the desk feeds it displays and widgets.
+//! A widget rests wherever the person put it, on whichever display: its place is kept per display
+//! as fractions of the space its resting form can move in there ([`ui::desk_widgets::Place`]), so a
+//! widget against an edge or in a corner stays there when the resolution changes.
+//! A widget's open card grows from its resting form toward the middle of the display
+//! ([`open_rect`]): from the corner of the form nearest the display's nearer sides, so opening
+//! never pushes it off the screen and the form and the card share that corner.
+//! Everything here is pure geometry in desktop coordinates, tested on its own; the desk feeds it
+//! displays and widgets.
 
 #![allow(
     clippy::arithmetic_side_effects,
@@ -21,17 +16,16 @@
 use ui::tokens::EffectiveMotion;
 use vello::kurbo::{Point, Rect, Size, Vec2};
 
-/// Gap between a widget and the display edge, and between neighbours drawn
-/// onto each other.
+/// Gap between a widget and the display edge, and between neighbours drawn onto each other.
 pub const MARGIN: f64 = ui::tokens::Spacing::BASE.s3 as f64;
-/// How far around a resting form a pointer coming to rest still counts as
-/// reaching for it; against a display edge the zone runs on to that edge.
+/// How far around a resting form a pointer coming to rest still counts as reaching for it; against
+/// a display edge the zone runs on to that edge.
 pub const REACH_PAD: f64 = ui::tokens::Spacing::BASE.s2 as f64;
-/// How near an edge, a corner, the middle line or another widget a drop
-/// must land to be drawn onto it.
+/// How near an edge, a corner, the middle line or another widget a drop must land to be drawn onto
+/// it.
 pub const MAGNET: f64 = ui::tokens::Spacing::BASE.s8 as f64;
-/// Below this share of its area on any display, a released widget was
-/// thrown off the screen: it is removed.
+/// Below this share of its area on any display, a released widget was thrown off the screen: it is
+/// removed.
 pub const THROWN_OFF_SHARE: f64 = 0.4;
 /// The span of samples a release velocity is read over, in seconds.
 pub const VELOCITY_WINDOW: f64 = 0.08;
@@ -44,7 +38,7 @@ fn room(area: Rect, size: Size) -> Rect {
     Rect::new(x0, y0, x1, y1)
 }
 
-/// `size` at fractions `(x, y)` of its space in `area`.
+/// `size` at fractions `(x, y)` of its space in `area` .
 #[must_use]
 pub fn rect_at(area: Rect, size: Size, (x, y): (f64, f64)) -> Rect {
     let room = room(area, size);
@@ -55,8 +49,8 @@ pub fn rect_at(area: Rect, size: Size, (x, y): (f64, f64)) -> Rect {
     Rect::from_origin_size(origin, size)
 }
 
-/// The fractions `rect` stands at in its space in `area`: the inverse of
-/// [`rect_at`]. A rect outside that space reads as the nearest edge.
+/// The fractions `rect` stands at in its space in `area` : the inverse of [`rect_at`]. A rect
+/// outside that space reads as the nearest edge.
 #[must_use]
 pub fn fractions(area: Rect, rect: Rect) -> (f64, f64) {
     let room = room(area, rect.size());
@@ -73,7 +67,7 @@ pub fn fractions(area: Rect, rect: Rect) -> (f64, f64) {
     )
 }
 
-/// `rect` moved the least distance that puts it inside `area`'s margins.
+/// `rect` moved the least distance that puts it inside `area` 's margins.
 #[must_use]
 pub fn clamp(area: Rect, rect: Rect) -> Rect {
     let room = room(area, rect.size());
@@ -84,17 +78,16 @@ pub fn clamp(area: Rect, rect: Rect) -> Rect {
     Rect::from_origin_size(origin, rect.size())
 }
 
-/// Which way an open card grows from the resting form at fractions
-/// `(x, y)`: toward the display's middle. `(right, bottom)`: whether the
-/// form and the card share their right edge, and their bottom edge.
+/// Which way an open card grows from the resting form at fractions `(x, y)` : toward the display's
+/// middle. `(right, bottom)` : whether the form and the card share their right edge, and their
+/// bottom edge.
 #[must_use]
 pub fn anchor(fractions: (f64, f64)) -> (bool, bool) {
     (fractions.0 >= 0.5, fractions.1 >= 0.5)
 }
 
-/// The open card of `size` for the resting form at `glance` in `area`:
-/// sharing the form's corner nearest the display's nearer sides, then kept
-/// on the display.
+/// The open card of `size` for the resting form at `glance` in `area` : sharing the form's corner
+/// nearest the display's nearer sides, then kept on the display.
 #[must_use]
 pub fn open_rect(area: Rect, glance: Rect, size: Size) -> Rect {
     let (right, bottom) = anchor(fractions(area, glance));
@@ -111,10 +104,9 @@ pub fn open_rect(area: Rect, glance: Rect, size: Size) -> Rect {
     clamp(area, Rect::from_origin_size(Point::new(x0, y0), size))
 }
 
-/// The resting form of `size` whose open card is `open` in `area`: the
-/// inverse of [`open_rect`], for a widget dragged and dropped open. Of the
-/// corners it could share with the card, the one whose own place grows the
-/// card back to `open`, preferring the card's own side of the display.
+/// The resting form of `size` whose open card is `open` in `area` : the inverse of [`open_rect`],
+/// for a widget dragged and dropped open. Of the corners it could share with the card, the one
+/// whose own place grows the card back to `open` , preferring the card's own side of the display.
 #[must_use]
 pub fn glance_in(area: Rect, open: Rect, size: Size) -> Rect {
     let corner = |(right, bottom): (bool, bool)| {
@@ -142,9 +134,8 @@ pub fn glance_in(area: Rect, open: Rect, size: Size) -> Rect {
     .unwrap_or_else(|| corner((right, bottom)))
 }
 
-/// Where a pointer coming to rest reaches for the form at `glance`: the
-/// form padded, run on to each display edge it rests against, so throwing
-/// the pointer into its corner finds it.
+/// Where a pointer coming to rest reaches for the form at `glance` : the form padded, run on to
+/// each display edge it rests against, so throwing the pointer into its corner finds it.
 #[must_use]
 pub fn reach_zone(area: Rect, glance: Rect) -> Rect {
     let pad = glance.inflate(REACH_PAD, REACH_PAD);
@@ -174,11 +165,10 @@ pub fn reach_zone(area: Rect, glance: Rect) -> Rect {
     .intersect(area)
 }
 
-/// Lay `rects` (in their order) out of each other's way and out of
-/// `occupied` (a live call card, the strip switcher), within `area`: each
-/// one that overlaps something placed before it steps along the edge it
-/// rests nearest, toward the display's middle, until it is clear. What is
-/// stored never changes; this is only where each is drawn now.
+/// Lay `rects` (in their order) out of each other's way and out of `occupied` (a live call card,
+/// the strip switcher), within `area` : each one that overlaps something placed before it steps
+/// along the edge it rests nearest, toward the display's middle, until it is clear. What is stored
+/// never changes; this is only where each is drawn now.
 pub fn resolve(area: Rect, rects: &mut [Rect], occupied: &[Rect]) {
     let mut taken: Vec<Rect> = occupied.to_vec();
     for rect in rects.iter_mut() {
@@ -193,8 +183,7 @@ pub fn resolve(area: Rect, rects: &mut [Rect], occupied: &[Rect]) {
         while let Some(blocker) = taken.iter().find(|t| t.overlaps(*rect)).copied() {
             tries += 1;
             if tries > 2 * taken.len() + 2 {
-                // Nowhere along this way: try the other, and past that
-                // stay put rather than loop.
+                // Nowhere along this way: try the other, and past that stay put rather than loop.
                 if step_dir == forward {
                     step_dir = !forward;
                     *rect = start;
@@ -222,8 +211,8 @@ pub fn resolve(area: Rect, rects: &mut [Rect], occupied: &[Rect]) {
     }
 }
 
-/// One axis's candidate lines for a span `[at, at + len]`: the nearest
-/// within [`MAGNET`] of `targets`, as the start it would give.
+/// One axis's candidate lines for a span `[at, at + len]` : the nearest within [`MAGNET`] of
+/// `targets` , as the start it would give.
 fn nearest(at: f64, targets: impl IntoIterator<Item = f64>) -> Option<f64> {
     targets
         .into_iter()
@@ -231,18 +220,17 @@ fn nearest(at: f64, targets: impl IntoIterator<Item = f64>) -> Option<f64> {
         .min_by(|a, b| (a - at).abs().total_cmp(&(b - at).abs()))
 }
 
-/// `rect` dropped in `area` among `others` (other widgets on the same
-/// display): drawn onto a display edge or corner, the display's middle
-/// line, or beside or in line with a neighbour, each axis on its own, when
-/// it lands within [`MAGNET`] of one; otherwise exactly where it was let
-/// go. Then kept on the display.
+/// `rect` dropped in `area` among `others` (other widgets on the same display): drawn onto a
+/// display edge or corner, the display's middle line, or beside or in line with a neighbour, each
+/// axis on its own, when it lands within [`MAGNET`] of one; otherwise exactly where it was let go.
+/// Then kept on the display.
 #[must_use]
 pub fn magnet(area: Rect, rect: Rect, others: &[Rect]) -> Rect {
     let rect = clamp(area, rect);
     let room = room(area, rect.size());
     let (w, h) = (rect.width(), rect.height());
-    // A neighbour pulls along an axis only while the two are near on the
-    // other one: beside it, not anywhere in its column.
+    // A neighbour pulls along an axis only while the two are near on the other one: beside it, not
+    // anywhere in its column.
     let near_rows = |other: &Rect| other.y0 - MAGNET < rect.y1 && rect.y0 < other.y1 + MAGNET;
     let near_cols = |other: &Rect| other.x0 - MAGNET < rect.x1 && rect.x0 < other.x1 + MAGNET;
     let xs = [room.x0, room.x1, area.center().x - w / 2.0]
@@ -266,10 +254,9 @@ pub fn magnet(area: Rect, rect: Rect, others: &[Rect]) -> Rect {
     clamp(area, Rect::from_origin_size(Point::new(x, y), rect.size()))
 }
 
-/// How fast the pointer was moving at release, from its recent samples
-/// (time in seconds since some instant, position): over the last
-/// [`VELOCITY_WINDOW`] seconds, so a hand that stopped before letting go
-/// throws nothing.
+/// How fast the pointer was moving at release, from its recent samples (time in seconds since some
+/// instant, position): over the last [`VELOCITY_WINDOW`] seconds, so a hand that stopped before
+/// letting go throws nothing.
 #[must_use]
 pub fn release_velocity(samples: &[(f64, Point)]) -> Vec2 {
     let Some(&(t1, p1)) = samples.last() else {
@@ -285,10 +272,9 @@ pub fn release_velocity(samples: &[(f64, Point)]) -> Vec2 {
     (p1 - p0) / (t1 - t0)
 }
 
-/// Where `rect`, let go moving at `velocity` (px/s), coasts to: the
-/// projection a throw is judged by ([`ui::motion::Snap::rest_for`]).
-/// Slower than [`ui::tokens::motion::FLING_MIN_VELOCITY`] it stays where it
-/// was let go.
+/// Where `rect` , let go moving at `velocity` (px/s), coasts to: the projection a throw is judged
+/// by ([`ui::motion::Snap::rest_for`]). Slower than [`ui::tokens::motion::FLING_MIN_VELOCITY`] it
+/// stays where it was let go.
 #[must_use]
 pub fn landing(rect: Rect, velocity: Vec2, motion: EffectiveMotion) -> Rect {
     if velocity.hypot() < ui::tokens::motion::FLING_MIN_VELOCITY {
@@ -299,7 +285,7 @@ pub fn landing(rect: Rect, velocity: Vec2, motion: EffectiveMotion) -> Rect {
     Rect::from_origin_size(Point::new(x, y), rect.size())
 }
 
-/// The largest share of `rect`'s area on any of `displays`.
+/// The largest share of `rect` 's area on any of `displays` .
 #[must_use]
 pub fn on_screen_share(displays: &[Rect], rect: Rect) -> f64 {
     let area = rect.area().max(1.0);
@@ -309,13 +295,11 @@ pub fn on_screen_share(displays: &[Rect], rect: Rect) -> f64 {
         .fold(0.0, f64::max)
 }
 
-/// Whether a widget let go at `rect` moving at `velocity` was thrown off
-/// the screen (or dragged mostly off it): what lands it less than
-/// [`THROWN_OFF_SHARE`] on any display.
+/// Whether a widget let go at `rect` moving at `velocity` was thrown off the screen (or dragged
+/// mostly off it): what lands it less than [`THROWN_OFF_SHARE`] on any display.
 #[must_use]
 pub fn thrown_off(displays: &[Rect], rect: Rect, velocity: Vec2, motion: EffectiveMotion) -> bool {
-    // Reduced motion projects nothing further, but a throw is still a
-    // throw.
+    // Reduced motion projects nothing further, but a throw is still a throw.
     let coast = f64::from(motion.tokens().gesture.fling_projection_ms) / 1000.0;
     let projected = if velocity.hypot() < ui::tokens::motion::FLING_MIN_VELOCITY {
         rect
@@ -325,8 +309,8 @@ pub fn thrown_off(displays: &[Rect], rect: Rect, velocity: Vec2, motion: Effecti
     on_screen_share(displays, projected) < THROWN_OFF_SHARE
 }
 
-/// The index of the display in `displays` a widget centred at `p` lands
-/// on: the one holding `p`, else the nearest.
+/// The index of the display in `displays` a widget centred at `p` lands on: the one holding `p` ,
+/// else the nearest.
 #[must_use]
 pub fn display_at(displays: &[Rect], p: Point) -> Option<usize> {
     displays.iter().position(|d| d.contains(p)).or_else(|| {

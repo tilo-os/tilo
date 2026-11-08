@@ -435,9 +435,6 @@ settings_store::read_through_json_value!(ModelRequestLimits);
 
 impl ModelRequestLimits {
     /// Validate bounded settings without estimating the token count of a prompt.
-    ///
-    /// # Errors
-    /// Returns a diagnostic for an invalid allowance or contradictory context.
     pub fn validate(&self, source_context: Option<u32>) -> Result<(), &'static str> {
         if self.max_output_tokens == 0 || self.max_output_tokens > 65_536 {
             return Err("Output allowance must be between 1 and 65536 tokens.");
@@ -970,9 +967,6 @@ impl ProviderConfig {
 
     /// Choose `chosen` of a profile for `kind`, or with `None` let that kind
     /// follow the default again.
-    ///
-    /// # Errors
-    /// When no profile offers that model.
     pub fn set_interaction_model(
         &mut self,
         kind: Interaction,
@@ -1078,11 +1072,6 @@ impl ProviderConfig {
     /// Merge our single configuration payload into the shared settings file.
     /// Other Settings panes retain their sections, and no secret can enter the
     /// document because `ProviderProfile` exposes a reference only.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the configuration cannot be serialised or the
-    /// shared settings document cannot be updated.
     pub fn save(&self) -> std::io::Result<()> {
         let (local, hosted) = self.sections()?;
         settings_store::update_section(SETTINGS_SECTION, local)?;
@@ -1091,9 +1080,6 @@ impl ProviderConfig {
 
     /// Atomically save only if the currently stored descriptions still equal
     /// `expected`.
-    ///
-    /// # Errors
-    /// Returns persistence or unsupported-source errors; `false` is a conflict.
     pub fn compare_save(&self, expected: &Self) -> std::io::Result<bool> {
         let source = settings_store::source()
             .ok_or_else(|| std::io::Error::other("no config directory available"))?;
@@ -1117,11 +1103,6 @@ impl ProviderConfig {
     }
 
     /// Save this configuration to `source`: another profile's settings.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the configuration cannot be serialised or
-    /// `source` cannot be updated.
     pub fn save_in(&self, source: &dyn settings_store::SettingsSource) -> std::io::Result<()> {
         let (local, hosted) = self.sections()?;
         source.update_section(SETTINGS_SECTION, local)?;

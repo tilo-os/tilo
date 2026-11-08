@@ -281,11 +281,6 @@ impl Foreign {
     /// The field `field` of `target` (its name, then its id) as its declared type, from the
     /// reading now. A record inside the reading (a row of a menu) is a resource of the app too:
     /// its own fields read the same way, from where the reading holds it.
-    ///
-    /// # Errors
-    ///
-    /// A message when no reading of it arrived yet, or the reading holds no value of the
-    /// field's type: what a service publishes and what its surface declares differ.
     pub(crate) fn field(
         &mut self,
         target: &ResourceRef,

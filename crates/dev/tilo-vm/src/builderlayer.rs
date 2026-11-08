@@ -94,9 +94,6 @@ pub fn remote_command(builder: &[String], component: &Component, extra: &[String
 /// `tilo-vm layer-pack`, on the builder: build `name` from the worktree in
 /// the current directory, lay it out, and write the framed layer to stdout.
 /// The build's own output goes to stderr.
-///
-/// # Errors
-/// An unknown component, a failed build or installer, I/O.
 pub fn pack(name: &str, profile: &str, extra: &[String]) -> Result<(), CliError> {
     pack_with_source(name, profile, extra, None, &[], false)
 }
@@ -318,8 +315,6 @@ impl<'a, W: Write> Lines<'a, W> {
     }
 
     /// Finish the legacy builder frames with their archive digest.
-    /// # Errors
-    /// An output write failure.
     pub fn finish(mut self) -> std::io::Result<(String, u64)> {
         self.emit()?;
         Ok((hex::encode(self.hasher.finalize()), self.bytes))

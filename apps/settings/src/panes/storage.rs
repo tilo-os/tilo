@@ -377,14 +377,8 @@ pub(crate) trait StorageDevice: Send + Sync {
     /// Measure the device's storage.
     fn scan(&self) -> StorageScan;
     /// Remove every cache item `preview` lists.
-    ///
-    /// # Errors
-    /// Why the caches could not be removed.
     fn clean_up(&self, preview: &CleanupPreview) -> Result<(), String>;
     /// Ask the shell to open a storage tool.
-    ///
-    /// # Errors
-    /// Why the shell did not open it.
     fn open_tool(&self, intent: ToolIntent, on_behalf_of: Option<[u8; 16]>) -> Result<(), String>;
 }
 

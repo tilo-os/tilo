@@ -33,23 +33,22 @@ use tilo_runtime::offload::{BindError, BlobScope, MediaFuture, WorkspaceMedia};
 
 use crate::sync::Outgoing;
 
-/// Where record content is kept under the session's state: beside the
-/// engine's records, apart from the blocks their history keeps.
+/// Where record content is kept under the session's state: beside the engine's records, apart from
+/// the blocks their history keeps.
 const CONTENT_DIR: &str = "record-content";
 /// The longest a workspace or app name may be, as a content store names one.
 const MAX_SCOPE_COMPONENT: usize = 128;
-/// Record scopes whose store this device keeps open at once. Content itself
-/// stays on disk; this is only what one pass over many workspaces holds.
+/// Record scopes whose store this device keeps open at once. Content itself stays on disk; this is
+/// only what one pass over many workspaces holds.
 const MAX_OPEN_SCOPES: usize = 32;
 /// Devices whose address this device remembers to answer them at.
 const MAX_REMEMBERED_REQUESTERS: usize = 256;
-/// Members' messages waiting for the content service. Past it, an ask is
-/// dropped and asked again when the devices that could answer change.
+/// Members' messages waiting for the content service. Past it, an ask is dropped and asked again
+/// when the devices that could answer change.
 const MAX_QUEUED: usize = 512;
 
-/// The session's side of the records' content: the broker's service, the
-/// workspace's topic as its route, and the worker that takes members' asks
-/// and answers off the session's loop.
+/// The session's side of the records' content: the broker's service, the workspace's topic as its
+/// route, and the worker that takes members' asks and answers off the session's loop.
 pub(crate) struct Plane {
     route: Arc<RouteContent>,
     shelf: Arc<Shelf>,
@@ -58,9 +57,9 @@ pub(crate) struct Plane {
 }
 
 impl Plane {
-    /// The record-content plane of a session whose state is `state`: content
-    /// under it outlives the session, as the records do. A session that keeps
-    /// no state keeps content for as long as it runs.
+    /// The record-content plane of a session whose state is `state` : content under it outlives the
+    /// session, as the records do. A session that keeps no state keeps content for as long as it
+    /// runs.
     pub(crate) fn open(state: Option<&Path>) -> Arc<Self> {
         let shelf = Arc::new(Shelf {
             root: state.map(|state| state.join("tilo").join(CONTENT_DIR)),
@@ -87,8 +86,7 @@ impl Plane {
         })
     }
 
-    /// What the broker's `offerBlob`, `wantBlob` and `subscribeBlobs` answer
-    /// through.
+    /// What the broker's `offerBlob` , `wantBlob` and `subscribeBlobs` answer through.
     pub(crate) fn route(&self) -> Arc<RouteContent> {
         Arc::clone(&self.route)
     }
@@ -114,16 +112,14 @@ impl Plane {
         Ok(hash)
     }
 
-    /// This device's content as an offload route reads and keeps it: the
-    /// invoking app's scope in its workspace, through the same store the
-    /// app's own `offerBlob` and `wantBlob` reach.
+    /// This device's content as an offload route reads and keeps it: the invoking app's scope in
+    /// its workspace, through the same store the app's own `offerBlob` and `wantBlob` reach.
     pub(crate) fn media(self: &Arc<Self>) -> Arc<dyn WorkspaceMedia> {
         Arc::new(Media(Arc::clone(&self.shelf)))
     }
 
-    /// Whether this device keeps `digest` of `app`'s content in `workspace`:
-    /// what this session says of itself when another of the person's devices
-    /// offers it work reading that content.
+    /// Whether this device keeps `digest` of `app` 's content in `workspace` : what this session
+    /// says of itself when another of the person's devices offers it work reading that content.
     pub(crate) fn holds(&self, workspace: &str, app: &str, digest: [u8; 32]) -> bool {
         let scope = ContentScope {
             workspace: workspace.to_owned(),
@@ -134,9 +130,9 @@ impl Plane {
             .is_some_and(|store| store.has(&hex::encode(digest)))
     }
 
-    /// `digest` of `app`'s content in `workspace`, once it is here: what this
-    /// device keeps already, else what the workspace's other devices hand
-    /// over within `within`. `None` when it does not arrive in time.
+    /// `digest` of `app` 's content in `workspace` , once it is here: what this device keeps
+    /// already, else what the workspace's other devices hand over within `within` . `None` when it
+    /// does not arrive in time.
     pub(crate) async fn fetch(
         &self,
         workspace: &str,
@@ -146,8 +142,7 @@ impl Plane {
     ) -> Option<Vec<u8>> {
         let hash = hex::encode(digest);
         let route = CrdtRoute::app(app, workspace);
-        // Subscribed before it is asked for, so content that arrives at once
-        // is not missed.
+        // Subscribed before it is asked for, so content that arrives at once is not missed.
         let mut news = self.route.subscribe(&route);
         self.route.want(&route, &hash);
         let started = tokio::time::Instant::now();
@@ -159,16 +154,16 @@ impl Plane {
                 {
                     return Some(arrived.bytes);
                 }
-                // Where another want of this scope got to, or what the
-                // devices connected could answer: this one is still coming.
+                // Where another want of this scope got to, or what the devices connected could
+                // answer: this one is still coming.
                 Ok(Some(_)) => {}
                 Ok(None) | Err(_) => return None,
             }
         }
     }
 
-    /// Where this device's plane says and hears on the network: the
-    /// workspace topics it publishes on, and this device's handle there.
+    /// Where this device's plane says and hears on the network: the workspace topics it publishes
+    /// on, and this device's handle there.
     pub(crate) fn bind(
         &self,
         outgoing: tokio::sync::mpsc::UnboundedSender<Outgoing>,
@@ -177,17 +172,16 @@ impl Plane {
         self.peers.bind(outgoing, publisher);
     }
 
-    /// The devices this session reaches in the workspace on `ws` changed: what
-    /// is wanted there is asked of those that connected, and where each want
-    /// stands follows.
+    /// The devices this session reaches in the workspace on `ws` changed: what is wanted there is
+    /// asked of those that connected, and where each want stands follows.
     pub(crate) fn sources_changed(&self, ws: WorkspaceId, sources: ContentSources) {
         self.peers.know(ws, sources);
         self.route.sources_changed();
     }
 
-    /// A message `from` published on the topic of `ws`, which is the workspace
-    /// `workspace`: whether it was about a record's content, which this plane
-    /// takes and the session's loop then leaves to it.
+    /// A message `from` published on the topic of `ws` , which is the workspace `workspace` :
+    /// whether it was about a record's content, which this plane takes and the session's loop then
+    /// leaves to it.
     pub(crate) fn heard(
         &self,
         ws: WorkspaceId,
@@ -198,16 +192,16 @@ impl Plane {
         let Some(entry) = inbound(ws, workspace, from, msg, &self.peers) else {
             return false;
         };
-        // A full queue drops what a member said here; the devices that could
-        // answer are told again when they change, and ask again from there.
+        // A full queue drops what a member said here; the devices that could answer are told again
+        // when they change, and ask again from there.
         let _ = self.inbound.try_send(entry);
         true
     }
 }
 
-/// What this session's plane holds of a record's content, as an offload round
-/// that ran its invocation on another device reads what that device produced:
-/// [`Plane::fetch`] from the devices that have it.
+/// What this session's plane holds of a record's content, as an offload round that ran its
+/// invocation on another device reads what that device produced: [`Plane::fetch`] from the devices
+/// that have it.
 impl tilo_runtime::offload::OutputContent for Plane {
     fn content<'a>(
         &'a self,
@@ -220,8 +214,8 @@ impl tilo_runtime::offload::OutputContent for Plane {
     }
 }
 
-/// What a message from a workspace's member says about content, when it says
-/// anything about it: the record's route, and the ask or answer it carries.
+/// What a message from a workspace's member says about content, when it says anything about it: the
+/// record's route, and the ask or answer it carries.
 fn inbound(
     ws: WorkspaceId,
     workspace: &str,
@@ -239,8 +233,8 @@ fn inbound(
             if *cluster_id != workspace || *requester == peers.own() {
                 return None;
             }
-            // The route is the member's own device, as the transport
-            // authenticated it: an ask naming another device is nobody's.
+            // The route is the member's own device, as the transport authenticated it: an ask
+            // naming another device is nobody's.
             if *requester != peer_handle(from.as_bytes()) {
                 return None;
             }
@@ -319,14 +313,14 @@ enum Inbound {
     },
 }
 
-/// Hand what the workspace's members said about content to `content`, off the
-/// session's loop: the service reads and writes this device's store, which the
-/// loop, which walks no path, must not do itself. Ends when the plane drops.
+/// Hand what the workspace's members said about content to `content` , off the session's loop: the
+/// service reads and writes this device's store, which the loop, which walks no path, must not do
+/// itself. Ends when the plane drops.
 fn serve(content: &RouteContent, arriving: &Receiver<Inbound>) {
     while let Ok(entry) = arriving.recv() {
         match entry {
-            // A member that reached here was admitted to the workspace by its
-            // policy, which lets it read the records the content belongs to.
+            // A member that reached here was admitted to the workspace by its policy, which lets it
+            // read the records the content belongs to.
             Inbound::Want { on, peer, hash } => content.peer_wants(&on, peer, true, &hash),
             Inbound::Piece { on, piece } => content.peer_piece(&on, &piece),
             Inbound::Lacks { on, peer, hash } => content.peer_lacks(&on, peer, &hash),
@@ -334,8 +328,7 @@ fn serve(content: &RouteContent, arriving: &Receiver<Inbound>) {
     }
 }
 
-/// This device's record content: the store of each record scope under the
-/// session's state.
+/// This device's record content: the store of each record scope under the session's state.
 struct Shelf {
     /// Where the stores live, or `None` on a session that keeps no state.
     root: Option<PathBuf>,
@@ -343,8 +336,7 @@ struct Shelf {
 }
 
 impl Shelf {
-    /// The store of `scope`, when the scope names a directory this device
-    /// keeps content in.
+    /// The store of `scope` , when the scope names a directory this device keeps content in.
     fn store(&self, scope: &ContentScope) -> Option<ContentStore> {
         if !component(&scope.workspace) || !component(&scope.app) {
             return None;
@@ -369,8 +361,8 @@ impl Shelf {
 
 impl ContentShelf for Shelf {
     fn read(&self, scope: &ContentScope, hash: &str) -> Option<Vec<u8>> {
-        // What this device keeps, never a fetch of what it lacks: a peer's
-        // ask must not set this device looking for bytes nowhere has yet.
+        // What this device keeps, never a fetch of what it lacks: a peer's ask must not set this
+        // device looking for bytes nowhere has yet.
         self.store(scope)?.read(hash)
     }
 
@@ -387,12 +379,11 @@ impl ContentShelf for Shelf {
     }
 }
 
-/// This device's content as an offload route measures, reads and keeps it:
-/// the store of the scope the route names, and nothing else.
+/// This device's content as an offload route measures, reads and keeps it: the store of the scope
+/// the route names, and nothing else.
 struct Media(Arc<Shelf>);
 
-/// The record scope a route names, when it names one this device keeps
-/// content in.
+/// The record scope a route names, when it names one this device keeps content in.
 fn scoped(scope: &BlobScope) -> ContentScope {
     ContentScope {
         workspace: scope.workspace().to_owned(),
@@ -522,19 +513,17 @@ impl ContentSink for Upload {
     }
 }
 
-/// How this device reaches the other devices of each workspace: what it
-/// publishes on their topics, and the address of each device that asked it
-/// for content through them.
+/// How this device reaches the other devices of each workspace: what it publishes on their topics,
+/// and the address of each device that asked it for content through them.
 #[derive(Default)]
 struct Peers {
-    /// Where this device's plane is reached on the network, once it runs: its
-    /// handle there and the channel it says a message on.
+    /// Where this device's plane is reached on the network, once it runs: its handle there and the
+    /// channel it says a message on.
     link: Mutex<Option<Link>>,
-    /// The devices this device reaches in each workspace, as the workspaces
-    /// reported them.
+    /// The devices this device reaches in each workspace, as the workspaces reported them.
     sources: Mutex<HashMap<WorkspaceId, ContentSources>>,
-    /// The device behind each handle that asked this one, per workspace: an
-    /// answer goes to that device alone.
+    /// The device behind each handle that asked this one, per workspace: an answer goes to that
+    /// device alone.
     requesters: Mutex<HashMap<(WorkspaceId, ContentPeer), EndpointId>>,
 }
 
@@ -552,8 +541,7 @@ impl Peers {
         });
     }
 
-    /// This device's handle here, or zero while the plane runs nowhere: no
-    /// message names it then.
+    /// This device's handle here, or zero while the plane runs nowhere: no message names it then.
     fn own(&self) -> ContentPeer {
         self.link.lock_recover().as_ref().map_or(0, |link| link.own)
     }
@@ -574,7 +562,7 @@ impl Peers {
         self.requesters.lock_recover().get(&(ws, peer)).copied()
     }
 
-    /// Say `msg` on the topic of `ws`, when this device's plane runs.
+    /// Say `msg` on the topic of `ws` , when this device's plane runs.
     fn say(&self, ws: WorkspaceId, msg: NeighbourMsg) {
         if let Some(link) = self.link.lock_recover().as_ref() {
             let _ = link.outgoing.send(Outgoing::Publish {
@@ -584,9 +572,8 @@ impl Peers {
         }
     }
 
-    /// Send `msg` to `target` on `ws`: directly when the workspace admits that
-    /// device, else through the workspace's hosts, which hand it to that
-    /// device alone.
+    /// Send `msg` to `target` on `ws` : directly when the workspace admits that device, else
+    /// through the workspace's hosts, which hand it to that device alone.
     fn send(&self, ws: WorkspaceId, target: Option<EndpointId>, msg: NeighbourMsg) {
         if let Some(link) = self.link.lock_recover().as_ref() {
             let _ =
@@ -653,16 +640,14 @@ impl ContentPeers for Peers {
     }
 }
 
-/// The topic a record's content travels on: its workspace's, and none for a
-/// record of no workspace.
+/// The topic a record's content travels on: its workspace's, and none for a record of no workspace.
 fn topic(route: &CrdtRoute) -> Option<WorkspaceId> {
     let workspace = ModelWorkspaceId::parse(&route.cluster_id)?;
     (!workspace.is_nil()).then(|| workspace_topic_id(workspace))
 }
 
-/// The devices a workspace's topic carries to this session, from what the
-/// plane heard: those that published there, and the workspace's hosts, which
-/// the members it reaches are behind.
+/// The devices a workspace's topic carries to this session, from what the plane heard: those that
+/// published there, and the workspace's hosts, which the members it reaches are behind.
 #[derive(Debug, Default)]
 pub(crate) struct Topology {
     peers: BTreeSet<EndpointId>,
@@ -675,8 +660,7 @@ impl Topology {
         self.peers.insert(device)
     }
 
-    /// `host` serves the workspace: what its topic publishes, and the members
-    /// it reports reaching.
+    /// `host` serves the workspace: what its topic publishes, and the members it reports reaching.
     pub(crate) fn host(&mut self, host: EndpointId) -> bool {
         self.hosts.insert(host)
     }
@@ -688,8 +672,8 @@ impl Topology {
         peer || host
     }
 
-    /// The devices of the workspace this session reaches now: those heard on
-    /// its topic and the hosts that serve it, never `own`, this device.
+    /// The devices of the workspace this session reaches now: those heard on its topic and the
+    /// hosts that serve it, never `own` , this device.
     pub(crate) fn devices(&self, own: EndpointId) -> BTreeSet<EndpointId> {
         self.peers
             .iter()
@@ -699,8 +683,8 @@ impl Topology {
             .collect()
     }
 
-    /// The devices that could hand the workspace's content over, as the
-    /// content service names them: never `own`, this device.
+    /// The devices that could hand the workspace's content over, as the content service names them:
+    /// never `own` , this device.
     pub(crate) fn sources(&self, own: EndpointId) -> ContentSources {
         ContentSources {
             peers: self

@@ -154,9 +154,6 @@ pub trait ResourceApp: 'static {
     /// depend on device services. A pending or failed import must leave the
     /// document unchanged; returning an error withholds the resource. Reopening
     /// retries the import, so retain acknowledged writes across pending retries.
-    ///
-    /// # Errors
-    /// Returns a safe, user-visible reason why the record cannot yet open.
     fn import_record(context: &HostContext) -> Result<(), String> {
         let _ = context;
         Ok(())
@@ -609,7 +606,7 @@ pub(crate) struct AppHooks {
     id: &'static str,
     title: &'static str,
     icon: Option<&'static str>,
-    /// [`ResourceApp::named`]: the app's name when the launch gives it.
+    /// [`ResourceApp::named`] — the app's name when the launch gives it.
     named: fn() -> Option<AppName>,
     /// [`ResourceApp::member_record`].
     member_record: fn() -> bool,
@@ -654,7 +651,7 @@ pub(crate) struct AppHooks {
     file_history_witness: fn() -> &'static ui_core::history_mode::HistoryDefinition,
 }
 
-/// [`AppHooks::new_record`]: the context, and what the launch named.
+/// [`AppHooks::new_record`] — the context, and what the launch named.
 type NewRecord = fn(
     &mut HostContext,
     &[String],
@@ -662,7 +659,7 @@ type NewRecord = fn(
     &[ui_core::application::LaunchOption],
 ) -> Result<(), LaunchError>;
 
-/// [`AppHooks::open_hosted`]: the context, who edits, the connection to the
+/// [`AppHooks::open_hosted`] — the context, who edits, the connection to the
 /// session and the resource address it publishes at.
 type OpenHosted = fn(
     &mut HostContext,
@@ -671,7 +668,7 @@ type OpenHosted = fn(
     &str,
 ) -> Result<Box<dyn ui_core::widget::AppWidget>, LaunchError>;
 
-/// [`AppHooks::open`]: the context, who edits, whether it is a capture and
+/// [`AppHooks::open`] — the context, who edits, whether it is a capture and
 /// whether the launch created the record.
 type OpenRoot = fn(
     &mut HostContext,
@@ -1748,9 +1745,6 @@ fn launch_options(app: &AppHooks, args: &LaunchArgs) -> Vec<ui_core::application
 /// Hand a prepared component what its launch named: the arguments, and the
 /// file the first one names when the app opens its type and it is a path
 /// rather than a URL.
-///
-/// # Errors
-/// A file of a type the app opens that cannot be read.
 #[cfg(tilo_native_runner)]
 pub(crate) fn hand_launch(
     definition: &ApplicationDefinition,
@@ -1763,9 +1757,6 @@ pub(crate) fn hand_launch(
 /// Hand `context` what a launch naming `arguments` names: the arguments,
 /// and on a device with paths the file the first one names when the app
 /// opens its type.
-///
-/// # Errors
-/// A file of a type the app opens that cannot be read.
 #[cfg_attr(
     not(tilo_native_runner),
     expect(
@@ -1827,9 +1818,6 @@ fn open_in_place(
 
 /// The file at `path` to hand the component, when `definition` opens its
 /// type; `None` for any other argument (a URL, a folder, another type).
-///
-/// # Errors
-/// A file of a type the app opens that cannot be read.
 #[cfg(tilo_native_runner)]
 fn launched_file(
     definition: &ApplicationDefinition,

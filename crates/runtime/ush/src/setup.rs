@@ -50,9 +50,6 @@ impl SetupReport {
 
 /// Adopt the inherited terminal descriptor named by `--terminal-fd`, closed
 /// on exec from here on: only the guest's first process is handed it again.
-///
-/// # Errors
-/// Returns why `raw` is not an open descriptor this process may take.
 pub fn adopt_terminal(raw: &str) -> anyhow::Result<OwnedFd> {
     let fd: RawFd = raw.parse()?;
     // SAFETY: fcntl only probes the supplied integer; ownership begins below.

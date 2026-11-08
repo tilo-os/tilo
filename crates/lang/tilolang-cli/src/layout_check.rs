@@ -203,8 +203,9 @@ pub struct Options {
     /// that is not the declaration's default.
     pub states: Vec<String>,
     /// Controls pressed by the words they carry, in order, before each window is read: what a
-    /// person opens by pressing it (`--press "Since you looked"`), where a click is the only
-    /// way to reach it. A label under `keys`' rules: it reaches the window at the `dump` size.
+    /// person opens by pressing it (`--press "Since you looked"`, or the row of a task, which
+    /// opens where it stands), where a click is the only way to reach it. A label under
+    /// `keys`' rules: it reaches the window at the `dump` size.
     pub presses: Vec<String>,
     /// Key presses sent to each window before it is read, in order, as
     /// [`ui::headless::FrameHarness::key`] names them (`Tab`, `Down`, `Space`, or a chord that
@@ -327,9 +328,6 @@ impl Report {
 }
 
 /// The ids an allow-list file names: one per line, `#` starting a comment.
-///
-/// # Errors
-/// The file cannot be read.
 pub fn read_allow(path: &Path) -> Result<BTreeSet<String>, String> {
     let text = std::fs::read_to_string(path).map_err(|e| format!("{}: {e}", path.display()))?;
     Ok(text
@@ -345,9 +343,6 @@ pub fn read_allow(path: &Path) -> Result<BTreeSet<String>, String> {
 /// The clock is the one a capture pins ([`ui::clock::freeze_for_capture`]): the app's queries
 /// and the days its window writes read the same instant, and every run lays out the same
 /// dates.
-///
-/// # Errors
-/// An app does not compile, or its window refuses what it sends.
 pub fn check(options: &Options) -> Result<Report, String> {
     let started = std::time::Instant::now();
     // Without the product's catalog this process's text falls back to the host's faces, so
@@ -488,9 +483,6 @@ fn unreached_views(apps: &[App], shown: &[Shown]) -> Vec<Unreached> {
 /// Stage the person the run lays its windows out for, in place of whatever locale this machine
 /// runs in: every window's language is chosen from theirs, so the same sources lay out in the
 /// same words on every machine ([`Options::locale`]).
-///
-/// # Errors
-/// `locale` names no language.
 fn stage_person_locale(locale: &str) -> Result<(), String> {
     let language = tilo_process::environment::parse_posix_locale(locale)
         .ok_or_else(|| format!("--locale {locale}: names no language (write `en-US`)"))?;
@@ -1066,12 +1058,16 @@ fn primary_labels(meta: &tilolang::PackageMeta) -> Vec<&str> {
     labels
 }
 
-/// The test id of the first button under `node` named `label` that a person can press.
+/// The test id of the first control under `node` named `label` that a person can press: a
+/// button, or a row of a list or a tree, which a press opens where it stands.
 fn button_named(node: &ui::headless::InspectionNode, label: &str) -> Option<String> {
     let pressable = node.semantics.as_ref().is_some_and(|access| {
         matches!(
             access.role,
-            ui::a11y::Role::Button | ui::a11y::Role::ToggleButton
+            ui::a11y::Role::Button
+                | ui::a11y::Role::ToggleButton
+                | ui::a11y::Role::ListItem
+                | ui::a11y::Role::TreeItem
         ) && !access.state.disabled
             && access.name.as_deref() == Some(label)
     });

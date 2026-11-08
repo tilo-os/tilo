@@ -83,9 +83,6 @@ pub enum AppearanceError {
 
 impl Appearance {
     /// An appearance whose name is trimmed and NFC-normalized, then checked.
-    ///
-    /// # Errors
-    /// The first rule the value breaks.
     pub fn new(
         name: &str,
         avatar: Option<String>,
@@ -102,9 +99,6 @@ impl Appearance {
 
     /// Check a value as received: it must already be in the form
     /// [`Self::new`] makes, so two readers never disagree on the name.
-    ///
-    /// # Errors
-    /// The first rule the value breaks.
     pub fn validate(&self) -> Result<(), AppearanceError> {
         if let Some(hidden) = self.name.chars().find(|c| hidden(*c)) {
             return Err(AppearanceError::HiddenCharacter(u32::from(hidden)));

@@ -484,6 +484,17 @@ pub(crate) fn run_with(
     run_chained(host, hooks, shortcut, run_id, mode, Vec::new())
 }
 
+/// [`run_with`] for a run of `shortcut` no person is watching.
+fn unattended(host: &FakeHost, shortcut: &Shortcut) -> RunReport {
+    run_with(
+        host,
+        &Hooks::default(),
+        shortcut,
+        RunId::new(),
+        RunMode::Unattended,
+    )
+}
+
 /// [`run_with`], for a run whose host says other shortcuts are already
 /// running above it.
 fn run_chained(
@@ -538,13 +549,7 @@ fn a_retried_step_succeeds_against_a_flaky_app_without_acting_twice() {
             }),
         ],
     );
-    let report = run_with(
-        &host,
-        &Hooks::default(),
-        &tidy,
-        RunId::new(),
-        RunMode::Unattended,
-    );
+    let report = unattended(&host, &tidy);
     assert_eq!(report.outcome, RunOutcome::Completed, "{report:?}");
     let [made] = report.steps.as_slice() else {
         panic!("one step: {report:?}");
@@ -592,13 +597,7 @@ fn a_retried_step_that_keeps_failing_stops_the_run_with_every_try_recorded() {
             }),
         ],
     );
-    let report = run_with(
-        &host,
-        &Hooks::default(),
-        &tidy,
-        RunId::new(),
-        RunMode::Unattended,
-    );
+    let report = unattended(&host, &tidy);
     let (path, why) = failure(&report).expect("the run stopped at the step");
     assert_eq!(path, &StepPath::root().child(0));
     assert_eq!(why.code(), "remote_actions_unavailable");
@@ -630,13 +629,7 @@ fn a_step_passed_over_with_its_default_carries_on_and_degrades_the_run() {
             ),
         ],
     );
-    let report = run_with(
-        &host,
-        &Hooks::default(),
-        &tidy,
-        RunId::new(),
-        RunMode::Unattended,
-    );
+    let report = unattended(&host, &tidy);
     assert_eq!(report.outcome, RunOutcome::Completed, "{report:?}");
     assert!(
         report.is_degraded(),
@@ -706,13 +699,7 @@ fn a_fallback_runs_in_the_failed_steps_place_and_marks_the_run_degraded() {
             }),
         ],
     );
-    let report = run_with(
-        &host,
-        &Hooks::default(),
-        &tidy,
-        RunId::new(),
-        RunMode::Unattended,
-    );
+    let report = unattended(&host, &tidy);
     assert_eq!(report.outcome, RunOutcome::Completed, "{report:?}");
     assert_eq!(
         report
@@ -1000,13 +987,7 @@ fn a_shortcut_grant_answers_what_a_step_needs_not_its_kind() {
 
     let own_step = step(own);
     assert_eq!(check(&own_step, &host.catalog(), &NoShortcuts), Ok(()));
-    let report = run_with(
-        &host,
-        &Hooks::default(),
-        &own_step,
-        RunId::new(),
-        RunMode::Unattended,
-    );
+    let report = unattended(&host, &own_step);
     assert!(failure(&report).is_none(), "{report:?}");
     assert_eq!(host.started().len(), 1);
 
@@ -1018,13 +999,7 @@ fn a_shortcut_grant_answers_what_a_step_needs_not_its_kind() {
             .any(|error| matches!(error.kind, CheckErrorKind::OutsideGrant { .. })),
         "{errors:?}"
     );
-    let report = run_with(
-        &host,
-        &Hooks::default(),
-        &shared_step,
-        RunId::new(),
-        RunMode::Unattended,
-    );
+    let report = unattended(&host, &shared_step);
     assert!(
         matches!(
             failure(&report),
@@ -1050,13 +1025,7 @@ fn confirmation_is_refused_unattended_and_asked_for_interactively() {
     );
     assert_eq!(check(&purge, &host.catalog(), &NoShortcuts), Ok(()));
 
-    let report = run_with(
-        &host,
-        &Hooks::default(),
-        &purge,
-        RunId::new(),
-        RunMode::Unattended,
-    );
+    let report = unattended(&host, &purge);
     assert!(
         matches!(
             failure(&report),
@@ -1192,13 +1161,7 @@ fn an_attended_action_is_never_consented_to_in_advance() {
         KindSet::ALL,
         Answer::Allow,
     ));
-    let report = run_with(
-        &host,
-        &Hooks::default(),
-        &attach,
-        RunId::new(),
-        RunMode::Unattended,
-    );
+    let report = unattended(&host, &attach);
     assert!(
         matches!(
             failure(&report),
@@ -1258,13 +1221,7 @@ fn a_retried_run_reuses_its_invocation_ids_and_acts_once() {
         "the retry observed, it did not re-run"
     );
 
-    let other = run_with(
-        &host,
-        &Hooks::default(),
-        &tidy,
-        RunId::new(),
-        RunMode::Unattended,
-    );
+    let other = unattended(&host, &tidy);
     assert!(other.invocations().iter().all(|id| !ids.contains(id)));
     assert_eq!(host.started().len(), 6);
 }
@@ -1388,13 +1345,7 @@ fn a_verb_answers_the_item_it_created_and_a_null_option_is_omitted() {
     );
     send.grant.push(app_rule(MAIL));
     assert_eq!(check(&send, &host.catalog(), &NoShortcuts), Ok(()));
-    let report = run_with(
-        &host,
-        &Hooks::default(),
-        &send,
-        RunId::new(),
-        RunMode::Unattended,
-    );
+    let report = unattended(&host, &send);
     assert_eq!(report.outcome, RunOutcome::Completed, "{report:?}");
     let started = host.started();
     assert_eq!(
@@ -1512,13 +1463,7 @@ fn for_each_runs_its_body_per_item_and_if_takes_one_branch() {
         ],
     );
     assert_eq!(check(&tidy, &host.catalog(), &NoShortcuts), Ok(()));
-    let report = run_with(
-        &host,
-        &Hooks::default(),
-        &tidy,
-        RunId::new(),
-        RunMode::Unattended,
-    );
+    let report = unattended(&host, &tidy);
     assert_eq!(report.outcome, RunOutcome::Completed, "{report:?}");
 
     let started = host.started();
@@ -1676,13 +1621,7 @@ fn an_ai_step_is_an_invocation_of_the_agent_transform() {
     digest.output = Some(Binding::step("sum", ""));
     assert_eq!(check(&digest, &host.catalog(), &NoShortcuts), Ok(()));
 
-    let report = run_with(
-        &host,
-        &Hooks::default(),
-        &digest,
-        RunId::new(),
-        RunMode::Unattended,
-    );
+    let report = unattended(&host, &digest);
     assert_eq!(report.outcome, RunOutcome::Completed, "{report:?}");
     assert_eq!(report.output, Some(json!("summary of long text")));
     let started = host.started();
@@ -1715,13 +1654,7 @@ fn an_ai_step_declares_its_output_type() {
     digest.output = Some(Binding::step("sum", "/moved"));
     assert_eq!(check(&digest, &host.catalog(), &NoShortcuts), Ok(()));
 
-    let report = run_with(
-        &host,
-        &Hooks::default(),
-        &digest,
-        RunId::new(),
-        RunMode::Unattended,
-    );
+    let report = unattended(&host, &digest);
     assert_eq!(report.outcome, RunOutcome::Completed, "{report:?}");
     assert_eq!(report.output, Some(json!(3)));
 }
@@ -1748,13 +1681,7 @@ fn a_task_step_waits_for_the_tasks_typed_summary() {
     tidy.output = Some(Binding::step("task", "/tidy"));
     assert_eq!(check(&tidy, &host.catalog(), &NoShortcuts), Ok(()));
 
-    let report = run_with(
-        &host,
-        &Hooks::default(),
-        &tidy,
-        RunId::new(),
-        RunMode::Unattended,
-    );
+    let report = unattended(&host, &tidy);
     assert_eq!(report.outcome, RunOutcome::Completed, "{report:?}");
     assert_eq!(report.output, Some(json!(true)));
     let started = host.started();
@@ -1780,13 +1707,7 @@ fn a_task_step_waits_for_the_tasks_typed_summary() {
         )],
     );
     loose.grant.push(app_rule(AGENT_APP_ID));
-    let report = run_with(
-        &host,
-        &Hooks::default(),
-        &loose,
-        RunId::new(),
-        RunMode::Unattended,
-    );
+    let report = unattended(&host, &loose);
     assert!(
         matches!(
             report.outcome,
@@ -1952,13 +1873,7 @@ fn an_unattended_run_cannot_ask() {
             },
         )],
     );
-    let report = run_with(
-        &host,
-        &Hooks::default(),
-        &asking,
-        RunId::new(),
-        RunMode::Unattended,
-    );
+    let report = unattended(&host, &asking);
     assert!(
         matches!(failure(&report), Some((_, StepFailure::NeedsPerson))),
         "{report:?}"

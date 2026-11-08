@@ -1,16 +1,12 @@
-//! The person's other devices in quick settings: what pressing one of the
-//! section's rows does with what plays here.
-//!
-//! The panel reads `session:devices` itself, so the rows, the count on the
-//! root page and the card's offer are the published reading. A pressed row is
-//! one of that resource's verbs, which the session carries out here
-//! ([`press`]): sending what plays here to that device, answering a device
-//! asking for this one's sound, stopping a route, or opening Settings where
-//! the device is managed.
-//!
-//! The sounding out, the routes those sounds travel on and the devices asking
-//! for this device's sound belong to the remote audio service. The chosen
-//! sound lives here because a press names only the row it was made on.
+//! The person's other devices in quick settings: what pressing one of the section's rows does with
+//! what plays here.
+//! The panel reads `session:devices` itself, so the rows, the count on the root page and the card's
+//! offer are the published reading. A pressed row is one of that resource's verbs, which the
+//! session carries out here ([`press`]): sending what plays here to that device, answering a device
+//! asking for this one's sound, stopping a route, or opening Settings where the device is managed.
+//! The sounding out, the routes those sounds travel on and the devices asking for this device's
+//! sound belong to the remote audio service. The chosen sound lives here because a press names only
+//! the row it was made on.
 
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -23,24 +19,22 @@ use tilo_speaker_service::remote_audio;
 
 use crate::{Shared, devices};
 
-/// What a press on a row of the Devices section may use up: the sound picked
-/// for it, and the presses the loop carries out.
+/// What a press on a row of the Devices section may use up: the sound picked for it, and the
+/// presses the loop carries out.
 #[derive(Default)]
 pub(crate) struct Devices {
-    /// The sound of this device's that a press on a device would send, as
-    /// the reading carries it.
+    /// The sound of this device's that a press on a device would send, as the reading carries it.
     pub(crate) chosen: Rc<RefCell<Option<u64>>>,
     /// The presses the published verb took, carried out by the loop.
     pub(crate) pressed: Rc<RefCell<Vec<devices::Press>>>,
-    /// The accessories the person asked to move to another device, carried
-    /// out by the loop.
+    /// The accessories the person asked to move to another device, carried out by the loop.
     pub(crate) handed: Rc<RefCell<Vec<devices::HandOff>>>,
 }
 
 impl Shared {
-    /// Carry out the presses the published verb took and holds here: a press
-    /// on a row of the person's devices, which sends what plays here over the
-    /// fabric, wakes the device or opens Settings where it is managed.
+    /// Carry out the presses the published verb took and holds here: a press on a row of the
+    /// person's devices, which sends what plays here over the fabric, wakes the device or opens
+    /// Settings where it is managed.
     pub(crate) fn carry_out_presses(&self) {
         let pressed = std::mem::take(&mut *self.devices.pressed.borrow_mut());
         for asked in pressed {
@@ -53,10 +47,9 @@ impl Shared {
     }
 }
 
-/// What pressing `part` of `row` does: pick a sound to send, send what was
-/// picked, answer a device asking for this one's sound, stop a route, or open
-/// Settings where a device is managed. A button a row does not offer, and a
-/// row whose device left the fabric, do nothing.
+/// What pressing `part` of `row` does: pick a sound to send, send what was picked, answer a device
+/// asking for this one's sound, stop a route, or open Settings where a device is managed. A button
+/// a row does not offer, and a row whose device left the fabric, do nothing.
 pub(crate) fn press(shared: &Shared, row: &str, part: RowPart) {
     let Some(fabric) = &shared.fabric else {
         return;
@@ -74,8 +67,7 @@ pub(crate) fn press(shared: &Shared, row: &str, part: RowPart) {
         answered(fabric, id, part);
         return;
     }
-    // A device row's press is its body; the action named beside it is the
-    // same send, said in words.
+    // A device row's press is its body; the action named beside it is the same send, said in words.
     if !matches!(part, RowPart::Row | RowPart::Action) {
         return;
     }
@@ -94,8 +86,8 @@ pub(crate) fn press(shared: &Shared, row: &str, part: RowPart) {
     if device.local {
         return;
     }
-    // A device that is away and offered a way to be woken takes a wake-up
-    // signal: nothing plays there to take, so this is what its press is for.
+    // A device that is away and offered a way to be woken takes a wake-up signal: nothing plays
+    // there to take, so this is what its press is for.
     if !device.online && device.wakeable {
         if let Err(refusal) = shared.waking.request(shared, row) {
             // The panel has no line to show a refusal on; a wake that could
@@ -105,9 +97,8 @@ pub(crate) fn press(shared: &Shared, row: &str, part: RowPart) {
         }
         return;
     }
-    // A sound of this device's that was picked goes to this device, which the
-    // service offers it to; the picker's entry is spent with it, so the next
-    // press sends what plays here again.
+    // A sound of this device's that was picked goes to this device, which the service offers it to;
+    // the picker's entry is spent with it, so the next press sends what plays here again.
     let chosen = *shared.devices.chosen.borrow();
     if let Some(token) = chosen
         && device.online
@@ -160,8 +151,8 @@ fn stopped(fabric: &SharedLink, id: &str) {
     }
 }
 
-/// Answer a device asking to play a sound of this one's: its allowance or its
-/// refusal, and nothing for a press on anything else.
+/// Answer a device asking to play a sound of this one's: its allowance or its refusal, and nothing
+/// for a press on anything else.
 fn answered(fabric: &SharedLink, id: &str, part: RowPart) {
     let approved = match part {
         RowPart::Allow => true,

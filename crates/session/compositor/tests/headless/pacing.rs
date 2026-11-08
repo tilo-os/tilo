@@ -1,12 +1,10 @@
-//! A display shows one frame per refresh: a change that arrives between two
-//! vertical blanks waits for the blank that shows it, and what arrives before
-//! that blank joins the frame it is shown in.
+//! A display shows one frame per refresh: a change that arrives between two vertical blanks waits
+//! for the blank that shows it, and what arrives before that blank joins the frame it is shown in.
 
 use super::*;
 
-/// A display shows one frame per refresh: a change right after a frame waits
-/// for the blank that shows it, and the loop sleeps until then instead of
-/// drawing again at once.
+/// A display shows one frame per refresh: a change right after a frame waits for the blank that
+/// shows it, and the loop sleeps until then instead of drawing again at once.
 #[test]
 fn a_display_shows_one_frame_per_refresh() {
     let mut compositor = Compositor::headless(Box::new(StackPolicy)).expect("compositor");
@@ -18,8 +16,8 @@ fn a_display_shows_one_frame_per_refresh() {
 
     // Marking an app private changes what the desk a picture stands on draws.
     compositor.protect_app("org.example.shared", true);
-    // The blank the change is shown at is ahead of now, whether the frame
-    // just drawn took most of the tenth of a second or almost none of it.
+    // The blank the change is shown at is ahead of now, whether the frame just drawn took most of
+    // the tenth of a second or almost none of it.
     let wait = compositor.next_wait().expect("the blank that shows it");
     assert!(
         wait > Duration::ZERO && wait <= Duration::from_millis(100),
@@ -39,9 +37,9 @@ fn a_display_shows_one_frame_per_refresh() {
     );
 }
 
-/// What arrives while a frame is held for its blank joins that frame: the
-/// wait takes the client's commit in, and the frame the blank shows carries
-/// it, rather than the commit taking a turn of its own first.
+/// What arrives while a frame is held for its blank joins that frame: the wait takes the client's
+/// commit in, and the frame the blank shows carries it, rather than the commit taking a turn of its
+/// own first.
 #[test]
 fn a_held_frame_shows_what_arrived_before_its_blank() {
     let mut compositor = Compositor::headless(Box::new(StackPolicy)).expect("compositor");

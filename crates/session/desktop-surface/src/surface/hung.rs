@@ -43,8 +43,7 @@ pub(super) struct Hung {
     pub tab: TabId,
     /// The window's name, from its bar.
     pub title: String,
-    /// Where the whole window stands in the surface's coordinates: the card
-    /// sits over its middle.
+    /// Where the whole window stands in the surface's coordinates: the card sits over its middle.
     pub over: Rect,
 }
 
@@ -71,22 +70,21 @@ pub(crate) struct HungApps {
     pressed: Option<(TabId, LivenessChoice)>,
     /// What the person chose, for the host to carry out.
     chosen: Vec<(TabId, LivenessChoice)>,
-    /// The windows the person answered since the host last said which windows
-    /// stopped answering: their cards stay away until it says again, so a
-    /// press is answered once and not drawn back before the host acts on it.
+    /// The windows the person answered since the host last said which windows stopped answering:
+    /// their cards stay away until it says again, so a press is answered once and not drawn back
+    /// before the host acts on it.
     answered: Vec<TabId>,
-    /// The revision `answered` belongs to: the host's revision the cards were
-    /// laid out for.
+    /// The revision `answered` belongs to: the host's revision the cards were laid out for.
     revision: u64,
-    /// The host's revision now. A new one lays the cards out again, so the
-    /// cards a host reports reach the desk in the frame it reports them in.
+    /// The host's revision now. A new one lays the cards out again, so the cards a host reports
+    /// reach the desk in the frame it reports them in.
     wanted: u64,
     dirty: Cell<bool>,
 }
 
 impl HungApps {
-    /// The windows that say they stopped responding, as of the desk's last
-    /// layout, at the host's revision `revision`.
+    /// The windows that say they stopped responding, as of the desk's last layout, at the host's
+    /// revision `revision` .
     pub(super) fn set_hung(&mut self, revision: u64, mut hung: Vec<Hung>) {
         if self.revision != revision {
             self.revision = revision;
@@ -101,9 +99,8 @@ impl HungApps {
         }
     }
 
-    /// The host's revision `revision`: a new one means the windows that say
-    /// they stopped responding may have changed, and the next layout places
-    /// their cards.
+    /// The host's revision `revision` : a new one means the windows that say they stopped
+    /// responding may have changed, and the next layout places their cards.
     pub(super) fn follow(&mut self, revision: u64) {
         self.wanted = revision;
     }
@@ -122,7 +119,7 @@ impl HungApps {
             .map(|painted| (painted.card, painted.buttons.to_vec()))
     }
 
-    /// The face of the card at `point`, if any.
+    /// The face of the card at `point` , if any.
     fn under(&self, point: Point) -> Option<(TabId, LivenessChoice)> {
         self.painted.iter().find_map(|card| {
             card.buttons
@@ -132,8 +129,8 @@ impl HungApps {
         })
     }
 
-    /// Whether `point` lands on a card at all: its own presses reach neither
-    /// the window below nor the desktop.
+    /// Whether `point` lands on a card at all: its own presses reach neither the window below nor
+    /// the desktop.
     fn on_card(&self, point: Point) -> bool {
         self.painted.iter().any(|card| card.card.contains(point))
     }
@@ -144,8 +141,8 @@ impl HungApps {
         if !self.answered.contains(&tab) {
             self.answered.push(tab);
         }
-        // The card goes at once, so the press answers where it was made; a
-        // window that is still silent says so again once the host says so.
+        // The card goes at once, so the press answers where it was made; a window that is still
+        // silent says so again once the host says so.
         self.hung.retain(|hung| hung.tab != tab);
         self.painted.retain(|painted| painted.tab != tab);
         self.dirty.set(true);
@@ -200,8 +197,8 @@ impl HungApps {
                     (area.y1 - margin - height).max(area.y0 + margin),
                 );
                 let card = Rect::new(x, y, x + width, y + height);
-                // Both ways out stand together at the card's foot, the
-                // person's hand on the sadder one last.
+                // Both ways out stand together at the card's foot, the person's hand on the sadder
+                // one last.
                 let top = card.y1 - pad - button;
                 let quit_rect = Rect::new(card.x1 - pad - quit_w, top, card.x1 - pad, top + button);
                 let wait_rect = Rect::new(
@@ -223,8 +220,8 @@ impl HungApps {
             .collect()
     }
 
-    /// Paint one card: its ground, the warning mark, what happened, whose
-    /// window it is, and its two ways out.
+    /// Paint one card: its ground, the warning mark, what happened, whose window it is, and its two
+    /// ways out.
     fn paint(
         &self,
         painted: &Painted,
@@ -365,8 +362,8 @@ impl Widget for HungApps {
         self.dirty.get()
     }
 
-    /// A press on a card's face is the person's choice; a press anywhere on
-    /// the card is the card's, never the silent window's below.
+    /// A press on a card's face is the person's choice; a press anywhere on the card is the card's,
+    /// never the silent window's below.
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
         match event {
             WindowEvent::CursorMoved { position, .. } => {
@@ -493,8 +490,7 @@ impl Widget for HungApps {
 }
 
 impl DesktopSurface {
-    /// Lay a card over each window whose app stopped answering, as the host
-    /// last told the desk.
+    /// Lay a card over each window whose app stopped answering, as the host last told the desk.
     pub(super) fn place_hung_apps(&mut self) {
         let revision = self.shared.borrow().unresponsive_revision;
         let hung = {
@@ -559,8 +555,7 @@ mod tests {
         }
     }
 
-    /// A desk whose one window is the compositor's window `window`, drawn
-    /// once, and its handle.
+    /// A desk whose one window is the compositor's window `window` , drawn once, and its handle.
     fn desk(window: u64) -> (ui::headless::FrameHarness, DesktopHandle, TabId) {
         let mut minter = IdMinter::new(11);
         let tab = Tab {
@@ -636,8 +631,8 @@ mod tests {
         );
     }
 
-    /// Wait is the person's choice on the card, given to the host that owns
-    /// the compositor; the card goes at once, so the press answers.
+    /// Wait is the person's choice on the card, given to the host that owns the compositor; the
+    /// card goes at once, so the press answers.
     #[test]
     fn waiting_on_the_card_is_the_persons_choice() {
         let (mut frame, handle, tab) = desk(91);

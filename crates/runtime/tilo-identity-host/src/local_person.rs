@@ -49,10 +49,6 @@ pub fn proof_message(
 
 /// The identity this device is bound to and the device's own key, from its
 /// certificate, which that identity must have issued to it.
-///
-/// # Errors
-///
-/// The binding cannot be read, or the certificate is not the identity's.
 pub fn device_binding(paths: &IdentityPaths) -> io::Result<([u8; 32], [u8; 32])> {
     let invalid = |message: String| io::Error::new(io::ErrorKind::InvalidData, message);
     let owner = persist::read_public_key(&paths.user_pubkey)

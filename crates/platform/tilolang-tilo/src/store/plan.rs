@@ -587,9 +587,6 @@ pub(super) fn edit_of(prefix: &[Segment], m: &Mutation) -> Result<Edit<DynRecord
 /// The edit that brings a rich text field to read as `value`: splices and marks of the
 /// paragraphs that differ, the edit native rich text takes. One form for every writer of a
 /// rich text: a view of the package's own, and a view of another app's sent to its door.
-///
-/// # Errors
-/// The rich text action does not serialize.
 pub(crate) fn rich_edit(
     value: &tilolang_runtime::rich::RichValue,
 ) -> Result<EditOp, serde_json::Error> {

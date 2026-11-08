@@ -347,9 +347,6 @@ impl RichValue {
 
 /// Write `value` as the rich text under the map `obj` of `doc`, making the rich text there
 /// first when there is none: as splices and marks of the paragraphs that differ.
-///
-/// # Errors
-/// A message when the document cannot be written.
 pub fn store_under(doc: &mut AutoCommit, obj: &ObjId, value: &RichValue) -> Result<(), String> {
     if tilo_doc::model::open(doc, obj).is_err() {
         tilo_doc::model::init(doc, obj);
@@ -360,9 +357,6 @@ pub fn store_under(doc: &mut AutoCommit, obj: &ObjId, value: &RichValue) -> Resu
 }
 
 /// Make the field `key` of the map `parent` hold rich text, empty, when it holds none yet.
-///
-/// # Errors
-/// A message when the document cannot be written.
 pub fn ensure_field(doc: &mut AutoCommit, parent: &ObjId, key: &str) -> Result<ObjId, String> {
     use automerge::ReadDoc as _;
     if let Ok(Some((automerge::Value::Object(ObjType::Map), obj))) = doc.get(parent, key) {

@@ -1,7 +1,6 @@
-//! An app process reads, watches and invokes what the session's services
-//! publish, over the one wire it already speaks to the session: the socket
-//! the launcher names the app on, for the sound service's `sound` resource
-//! and the crash records Settings lists.
+//! An app process reads, watches and invokes what the session's services publish, over the one wire
+//! it already speaks to the session: the socket the launcher names the app on, for the sound
+//! service's `sound` resource and the crash records Settings lists.
 
 #![cfg(target_os = "linux")]
 #![allow(
@@ -30,17 +29,16 @@ use tilo_crash_records::CrashRecords;
 use tilo_service::LoopWake;
 use tilo_session::{ActionPlane, Options, Service, Session};
 
-/// The session the app talks to: headless, hosting the services `services`
-/// makes for its loop, and the plane on a socket of its own.
+/// The session the app talks to: headless, hosting the services `services` makes for its loop, and
+/// the plane on a socket of its own.
 fn session_hosting(
     socket: &std::path::Path,
     services: impl FnOnce(&LoopWake) -> Vec<Box<dyn Service>>,
 ) -> Session {
     let wake = LoopWake::default();
     let services = services(&wake);
-    // The app speaks from this test's own process, so the launch the session
-    // would have recorded for it names that process: what the broker admits
-    // the connection by.
+    // The app speaks from this test's own process, so the launch the session would have recorded
+    // for it names that process: what the broker admits the connection by.
     let launches = std::sync::Arc::new(tilo_session::Launches::default());
     launches.started(
         std::process::id(),
@@ -48,9 +46,9 @@ fn session_hosting(
         "the-workspace",
         true,
     );
-    Session::headless(
+    crate::common::headless_on(
+        &[OutputConfig::new("HEADLESS-1", 1280, 720)],
         Options {
-            presentation: ui::headless::fixture_runner_inputs,
             services,
             collab: false,
             wake,
@@ -58,13 +56,10 @@ fn session_hosting(
             action_plane: ActionPlane::At(socket.to_path_buf()),
             ..Options::default()
         },
-        &[OutputConfig::new("HEADLESS-1", 1280, 720)],
     )
-    .expect("session")
 }
 
-/// The session the app talks to: hosting the sound service, over a card in
-/// memory.
+/// The session the app talks to: hosting the sound service, over a card in memory.
 fn session(socket: &std::path::Path) -> Session {
     session_hosting(socket, |wake| {
         let card: Arc<dyn Graph> = Arc::new(Card::new(AudioGraph {
@@ -94,8 +89,8 @@ struct Seen {
     changed: String,
 }
 
-/// The app's side of the wire: the launcher's handoff on a connection to
-/// `socket`, then what it reads, watches and invokes of the session's sound.
+/// The app's side of the wire: the launcher's handoff on a connection to `socket` , then what it
+/// reads, watches and invokes of the session's sound.
 fn app(socket: &std::path::Path, seen: &std::sync::mpsc::Sender<Seen>) {
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
@@ -135,8 +130,8 @@ fn app(socket: &std::path::Path, seen: &std::sync::mpsc::Sender<Seen>) {
             .invoke("sound", "set-volume", &arguments)
             .await
             .expect("the session invokes the action");
-        // The reading moves when the action is taken and again when the
-        // device has landed it: the app reads until the card is at 70%.
+        // The reading moves when the action is taken and again when the device has landed it: the
+        // app reads until the card is at 70%.
         let mut changed = None;
         for _ in 0..500 {
             let reading = readings
@@ -318,8 +313,7 @@ fn an_app_that_invokes_what_the_session_cannot_do_is_told_why() {
     }
 }
 
-/// The record of a desktop that stopped responding, as the crash log
-/// writes it.
+/// The record of a desktop that stopped responding, as the crash log writes it.
 const FREEZE: &str = "2026-10-24-225201-412-freeze.log";
 const FREEZE_STACK: &str = "Mutex::lock_contended";
 const FREEZE_RECORD: &str = "tilo session freeze\n===================\n\
@@ -335,9 +329,8 @@ fn crash_dir() -> tempfile::TempDir {
     dir
 }
 
-/// Settings lists the records the session publishes and reads one, over the
-/// session's own broker: what each is without its stack, and the stack of
-/// the record it names.
+/// Settings lists the records the session publishes and reads one, over the session's own broker:
+/// what each is without its stack, and the stack of the record it names.
 #[test]
 fn the_settings_app_lists_and_reads_a_crash_record_the_session_publishes() {
     let root = common::private_home();

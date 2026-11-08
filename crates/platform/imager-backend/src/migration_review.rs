@@ -379,9 +379,6 @@ impl SourceInventory {
     /// Apply nested, root-relative exclusions from an explicit source selection.
     /// Shape is checked here; existence is checked against the pinned source by
     /// the caller, so a stale selection refuses instead of silently widening.
-    ///
-    /// # Errors
-    /// Refuses unbounded or non-relative exclusion paths.
     pub fn set_exclusions(&mut self, exclusions: &[PathBuf]) -> io::Result<()> {
         crate::setup::source_tree::exclusion_paths(
             &exclusions
@@ -400,9 +397,6 @@ impl SourceInventory {
     /// Re-walk this review with nested exclusions applied. The walk is the same
     /// canonical producer, so every downstream consumer (archive, verification,
     /// totals and the installed import) sees one consistent inventory.
-    ///
-    /// # Errors
-    /// Refuses exclusions that are missing, linked or outside the source.
     pub(crate) fn with_exclusions(
         mut self,
         root: &Arc<PinnedDirectory>,

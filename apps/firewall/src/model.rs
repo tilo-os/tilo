@@ -647,11 +647,6 @@ impl Firewall {
 /// Validate a user-authored port or inclusive port range. Firewalld itself is
 /// still authoritative, but rejecting malformed values here keeps invalid
 /// shared state and misleading dry-run plans out of the system.
-///
-/// # Errors
-///
-/// Returns a human-readable reason when `port` is empty, out of range, or has
-/// a descending/malformed range.
 pub fn validate_port(port: &str) -> Result<(), String> {
     let value = port.trim();
     if value.is_empty() {

@@ -32,13 +32,11 @@ use crate::mount::clipboard::Clipboard;
 use crate::sheets::Sheet;
 use crate::{Held, Options};
 
-/// How much of what is being heard the card shows: the last words, so the
-/// person sees the recognizer following them without the sheet working
-/// through a long transcript every frame.
+/// How much of what is being heard the card shows: the last words, so the person sees the
+/// recognizer following them without the sheet working through a long transcript every frame.
 const PREVIEW_SCALARS: usize = 160;
 
-/// Dictation as the session has it: the service's handle, and the sheet the
-/// person is asked on.
+/// Dictation as the session has it: the service's handle, and the sheet the person is asked on.
 pub(crate) struct Dictation {
     link: DictationLink,
     /// The card's seat; `None` when the sheet did not mount.
@@ -52,8 +50,7 @@ pub(crate) struct Dictation {
 }
 
 impl Dictation {
-    /// Start the dictation service and mount the sheet that asks about the
-    /// microphone.
+    /// Start the dictation service and mount the sheet that asks about the microphone.
     pub(crate) fn mount(
         compositor: &mut Compositor,
         doors: &mut crate::Doors,
@@ -78,8 +75,7 @@ impl Dictation {
         self.model_setup.replace(false)
     }
 
-    /// The card's presentation: where it sits; `None` when the sheet did
-    /// not mount.
+    /// The card's presentation: where it sits; `None` when the sheet did not mount.
     pub(crate) fn presentation(&self) -> Option<&tilo_sheets::Presentation> {
         self.seat.as_ref().map(tilo_sheets::Seat::presentation)
     }
@@ -95,8 +91,8 @@ impl Dictation {
         self.link.request(request);
     }
 
-    /// Carry the dictation on: what was asked of it, what the person answered
-    /// on the sheet, what the recognizer heard, and the field it writes into.
+    /// Carry the dictation on: what was asked of it, what the person answered on the sheet, what
+    /// the recognizer heard, and the field it writes into.
     pub(crate) fn step(
         &self,
         compositor: &mut Compositor,
@@ -105,8 +101,8 @@ impl Dictation {
         locked: bool,
         now: Instant,
     ) {
-        // Locking ends a dictation and keeps nothing: what was heard stays on
-        // this device and only for the person who is here.
+        // Locking ends a dictation and keeps nothing: what was heard stays on this device and only
+        // for the person who is here.
         if locked {
             self.link.discard();
         }
@@ -119,12 +115,12 @@ impl Dictation {
         self.show();
     }
 
-    /// Carry out one request, as far as it goes on its own: the rest waits on
-    /// the person or the recognizer, and [`Self::step`] follows it.
+    /// Carry out one request, as far as it goes on its own: the rest waits on the person or the
+    /// recognizer, and [`Self::step`] follows it.
     fn ask(&self, request: Request, now: Instant) {
         match request {
-            // The dictation key stops what is listening and starts nothing
-            // while a dictation or its transcript still owns the seat.
+            // The dictation key stops what is listening and starts nothing while a dictation or its
+            // transcript still owns the seat.
             Request::Toggle => match self.link.status() {
                 DictationStatus::Listening => {
                     if let Some(id) = self.link.id() {
@@ -162,10 +158,9 @@ impl Dictation {
         }
     }
 
-    /// Ask for a dictation in the field the person is in. It records nothing
-    /// until they allow the microphone on the card, and the field is looked
-    /// at as the dictation prepares: an app may still be enabling the field
-    /// the person just focused.
+    /// Ask for a dictation in the field the person is in. It records nothing until they allow the
+    /// microphone on the card, and the field is looked at as the dictation prepares: an app may
+    /// still be enabling the field the person just focused.
     fn start(&self, now: Instant) {
         // The field is read on the next step, as the dictation prepares.
         if let Err(error) = self.link.begin(now) {
@@ -218,9 +213,8 @@ impl Dictation {
                     self.link.discard_recovery(SessionId::new(id));
                 }
                 Answer::SetUp(id) => {
-                    // The model the dictation needed is installed where the
-                    // person manages them: the card closes, and the session
-                    // takes them there (`take_model_setup`).
+                    // The model the dictation needed is installed where the person manages them:
+                    // the card closes, and the session takes them there (`take_model_setup`).
                     self.link.cancel(SessionId::new(id));
                     self.model_setup.set(true);
                 }
@@ -228,8 +222,8 @@ impl Dictation {
         }
     }
 
-    /// Put the card up with where the dictation stands, and take it down when
-    /// there is nothing left to answer.
+    /// Put the card up with where the dictation stands, and take it down when there is nothing left
+    /// to answer.
     fn show(&self) {
         let Some(seat) = &self.seat else {
             return;
@@ -281,8 +275,8 @@ impl Dictation {
         Some(prompt)
     }
 
-    /// The last words of what is being heard, and nothing else: the card
-    /// shows the live hypothesis while the recognizer fills it.
+    /// The last words of what is being heard, and nothing else: the card shows the live hypothesis
+    /// while the recognizer fills it.
     fn preview(&self) -> String {
         let Some(id) = self.link.id() else {
             return String::new();
@@ -301,8 +295,7 @@ impl Dictation {
     }
 }
 
-/// The stage the card shows for `status`; `None` when there is nothing to
-/// show.
+/// The stage the card shows for `status` ; `None` when there is nothing to show.
 const fn stage(status: DictationStatus) -> Option<Stage> {
     Some(match status {
         DictationStatus::Idle => return None,
@@ -346,11 +339,10 @@ const fn recognizer_failure(reason: &str) -> Failure {
     }
 }
 
-/// The fields dictation may write into, in the session's terms: what the
-/// compositor's text-input boundary sees, and what the session draws itself.
-///
-/// One target, one contract: a dictation binds a field and its revision, and
-/// text goes in only while that is still the field the person types into.
+/// The fields dictation may write into, in the session's terms: what the compositor's text-input
+/// boundary sees, and what the session draws itself.
+/// One target, one contract: a dictation binds a field and its revision, and text goes in only
+/// while that is still the field the person types into.
 struct Fields<'a> {
     compositor: &'a mut dyn CompositorFields,
     own: &'a dyn OwnFields,
@@ -358,10 +350,9 @@ struct Fields<'a> {
 
 impl Target for Fields<'_> {
     fn field(&mut self) -> Result<Field, FieldRefusal> {
-        // What the session draws itself stands over the windows it shows:
-        // while the person types into the desk's own search, that is the
-        // field. It answers whether it owns the keys at all, so a refusal
-        // there never falls through into a window behind it.
+        // What the session draws itself stands over the windows it shows: while the person types
+        // into the desk's own search, that is the field. It answers whether it owns the keys at
+        // all, so a refusal there never falls through into a window behind it.
         match self.own.field() {
             Some(field) => field,
             None => self.compositor.field(),
@@ -376,12 +367,12 @@ impl Target for Fields<'_> {
     }
 }
 
-/// The identity space of the fields the session draws itself: above the
-/// compositor's, so a field dictation bound is never taken for another.
+/// The identity space of the fields the session draws itself: above the compositor's, so a field
+/// dictation bound is never taken for another.
 const OWN_FIELD: u64 = 1 << 63;
 
-/// The compositor's fields, translated into the dictation's terms. The
-/// compositor reads them at the text-input boundary of the apps it shows.
+/// The compositor's fields, translated into the dictation's terms. The compositor reads them at the
+/// text-input boundary of the apps it shows.
 trait CompositorFields {
     fn field(&self) -> Result<Field, FieldRefusal>;
 
@@ -421,13 +412,13 @@ impl CompositorFields for Compositor {
     }
 }
 
-/// The fields the session draws itself, which no compositor's text-input
-/// boundary sees: the desktop's own search.
+/// The fields the session draws itself, which no compositor's text-input boundary sees: the
+/// desktop's own search.
 pub(crate) trait OwnFields {
-    /// The field the session draws that takes the typing, or `None` when
-    /// nothing of its own does and the windows' fields stand. It answers
-    /// `Some` with a refusal while something of the session's holds the keys
-    /// without a field to write into, so nothing behind it takes the words.
+    /// The field the session draws that takes the typing, or `None` when nothing of its own does
+    /// and the windows' fields stand. It answers `Some` with a refusal while something of the
+    /// session's holds the keys without a field to write into, so nothing behind it takes the
+    /// words.
     fn field(&self) -> Option<Result<Field, FieldRefusal>>;
 
     fn insert(&self, field: Field, text: &str) -> Insertion;
@@ -441,9 +432,8 @@ impl OwnFields for DesktopHandle {
                 revision: field.revision,
                 multiline: field.multiline,
             })),
-            // The open search takes the keys even where its own field does
-            // not: its rows, not a window behind them, are what the person
-            // sees.
+            // The open search takes the keys even where its own field does not: its rows, not a
+            // window behind them, are what the person sees.
             Err(refusal) if self.search_open() => Some(Err(match refusal {
                 TypedRefusal::Secret => FieldRefusal::Secret,
                 TypedRefusal::NoField => FieldRefusal::NoField,
@@ -475,8 +465,8 @@ impl OwnFields for DesktopHandle {
     }
 }
 
-/// Mount the dictation sheet: it asks, and the session answers, without
-/// taking the person's typing from the field they are dictating into.
+/// Mount the dictation sheet: it asks, and the session answers, without taking the person's typing
+/// from the field they are dictating into.
 fn mount_sheet(
     compositor: &mut Compositor,
     doors: &mut crate::Doors,
@@ -547,8 +537,8 @@ mod tests {
         }
 
         fn insert(&self, field: Field, text: &str) -> Insertion {
-            // A field that moved since it was bound takes nothing, as the
-            // desk's own field rechecks its revision.
+            // A field that moved since it was bound takes nothing, as the desk's own field rechecks
+            // its revision.
             if self.field != Some(Ok(field)) {
                 return Insertion::Changed;
             }

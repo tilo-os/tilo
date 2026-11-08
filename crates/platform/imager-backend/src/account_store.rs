@@ -33,9 +33,6 @@ impl Drop for PrivateSecret {
 /// Publish an imported grant, or verify that an existing grant is identical.
 /// The caller supplies its pinned destination metadata reader; it is invoked
 /// again before publication, just as for a newly connected account.
-///
-/// # Errors
-/// Refuses conflicting accounts, missing credentials or unavailable storage.
 pub fn persist_import(
     root: &Path,
     mut load_store: impl FnMut() -> Result<AccountStore, ConnectionError>,
@@ -67,9 +64,6 @@ pub fn persist_import(
 
 /// Publish a grant to the native vault before making its metadata visible.
 /// The reader runs only after the secret is protected by zeroizing ownership.
-///
-/// # Errors
-/// Refuses unreadable metadata, vault recovery failures or failed durable writes.
 pub fn persist(
     root: &Path,
     mut load_store: impl FnMut() -> Result<AccountStore, ConnectionError>,

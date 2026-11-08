@@ -241,10 +241,6 @@ pub struct MountedFile {
 
 impl MountedFile {
     /// Open `path` for a history read or restore.
-    ///
-    /// # Errors
-    ///
-    /// The I/O error from opening `path`.
     pub fn open(path: &Path) -> io::Result<Self> {
         Ok(Self {
             file: File::open(path)?,

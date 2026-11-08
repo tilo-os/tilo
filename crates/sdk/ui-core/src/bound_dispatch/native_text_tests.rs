@@ -1,7 +1,6 @@
 use super::*;
 use automerge::ReadDoc;
 use serde::{Deserialize, Serialize};
-use taffy::TaffyTree;
 use tilo_actions::{Action, ActionError, ActionTransport};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -40,18 +39,7 @@ impl Widget for TextOwner {
         dyn crate::history_mode::capability::DocumentHistory,
         dyn crate::widget::controls::ActionControls
     );
-    fn sync(&mut self, _: &crate::widget::AppModel, _: &crate::widget::ModelPath) {}
-    fn build_layout(
-        &mut self,
-        tree: &mut TaffyTree<()>,
-        _: &crate::Theme,
-        _: &mut HashMap<NodeId, *mut dyn Widget>,
-    ) -> NodeId {
-        tree.new_leaf(taffy::Style::default()).unwrap()
-    }
-    fn name(&self) -> &str {
-        "Text owner"
-    }
+    crate::testing::inert_widget_methods!(unregistered_leaf_layout, name = "Text owner");
 }
 impl crate::widget::controls::ActionControls for TextOwner {
     fn take_control_invocation(&mut self) -> Option<tilo_actions::ControlInvocation> {

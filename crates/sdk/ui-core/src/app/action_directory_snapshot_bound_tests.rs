@@ -10,7 +10,6 @@ fn capture_bound_directory(fixture: &mut ActionFixture) -> String {
 
 #[test]
 fn directory_snapshot_bound_projection_expires_or_revises_on_owner_changes() {
-    // Case `directory_snapshot_bound_route_permission_and_closed_owner_expire_projection`.
     {
         let mut fixture = ActionFixture::broker();
         let revision = capture_bound_directory(&mut fixture);
@@ -66,7 +65,6 @@ fn directory_snapshot_bound_projection_expires_or_revises_on_owner_changes() {
         assert!(fixture.app.actions.action_directory_snapshot.is_none());
     }
 
-    // Case `directory_snapshot_bound_document_mutation_and_remounted_owner_change_revision`.
     {
         let mut fixture = ActionFixture::broker();
         let revision = capture_bound_directory(&mut fixture);

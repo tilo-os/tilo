@@ -127,6 +127,15 @@ impl Board {
     }
 }
 
+/// The field-edit operation among `published`'s actions.
+fn field_edit(published: &tilo_actions::ResourceSpec) -> &tilo_actions::ActionSpec {
+    published
+        .actions
+        .iter()
+        .find(|spec| spec.id == tilo_resource::FIELD_EDIT)
+        .unwrap()
+}
+
 #[test]
 fn an_atom_is_written_whole_and_the_last_writer_wins() {
     let mut a = Replica::<Board>::new();
@@ -151,11 +160,7 @@ fn an_atom_is_written_whole_and_the_last_writer_wins() {
 #[test]
 fn an_atom_is_listed_as_set_whole_and_a_text_by_character() {
     let published = Replica::<Board>::new().published().unwrap();
-    let spec = published
-        .actions
-        .iter()
-        .find(|spec| spec.id == tilo_resource::FIELD_EDIT)
-        .unwrap();
+    let spec = field_edit(&published);
     let schema = spec.params()[0].schema.as_deref().unwrap().clone();
     let (layer, _) = described(&schema, "layer");
     assert!(layer.starts_with("- `layer`: set \u{2014}"), "{layer}");
@@ -270,11 +275,7 @@ fn any_door_reads_a_field_edit_s_confirmation_from_the_published_contract() {
     use tilo_actions::ConfirmationPolicy;
     let board = Replica::<Board>::new();
     let published = board.published().unwrap();
-    let spec = published
-        .actions
-        .iter()
-        .find(|spec| spec.id == tilo_resource::FIELD_EDIT)
-        .unwrap();
+    let spec = field_edit(&published);
     let paths = Board::paths();
     let note = Id::from_raw("n");
     let door = |edit: &dyn erased_edit::Encode| {
@@ -340,11 +341,7 @@ fn a_guarded_field_asks_before_any_edit_and_a_weakening_one_is_privileged() {
     assert_eq!(lock.state().unwrap().minutes, 0);
 
     let published = lock.published().unwrap();
-    let spec = published
-        .actions
-        .iter()
-        .find(|spec| spec.id == tilo_resource::FIELD_EDIT)
-        .unwrap();
+    let spec = field_edit(&published);
     let door = |edit: &dyn erased_edit::Encode| {
         let argument = format!(
             "{}{}",
@@ -528,11 +525,7 @@ fn only_a_change_making_a_field_weaker_asks_and_is_privileged() {
     assert_eq!(screen.state().unwrap().lock_minutes, 5);
 
     let published = screen.published().unwrap();
-    let spec = published
-        .actions
-        .iter()
-        .find(|spec| spec.id == tilo_resource::FIELD_EDIT)
-        .unwrap();
+    let spec = field_edit(&published);
     let door = |edit: &dyn erased_edit::Encode| {
         let argument = format!(
             "{}{}",
@@ -753,11 +746,7 @@ fn an_agent_builds_a_field_edit_from_the_published_descriptor_alone() {
         )
         .unwrap();
     let published = board.published().unwrap();
-    let spec = published
-        .actions
-        .iter()
-        .find(|spec| spec.id == tilo_resource::FIELD_EDIT)
-        .unwrap();
+    let spec = field_edit(&published);
     let schema = spec.params()[0].schema.as_deref().unwrap().clone();
 
     // Every editable path is described: title, ops, value, flags.
@@ -1512,11 +1501,7 @@ impl Frame {
 #[test]
 fn a_records_fields_only_ever_set_are_named_on_its_line() {
     let published = Replica::<Frame>::new().published().unwrap();
-    let spec = published
-        .actions
-        .iter()
-        .find(|spec| spec.id == tilo_resource::FIELD_EDIT)
-        .unwrap();
+    let spec = field_edit(&published);
     let schema = spec.params()[0].schema.as_deref().unwrap().clone();
     let (look, _) = described(&schema, "look");
     assert!(

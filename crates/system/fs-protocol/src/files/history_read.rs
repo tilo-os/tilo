@@ -97,8 +97,6 @@ impl FileHistoryReadQueryV1 {
         format!("{HISTORY_READ_XATTR}.{kind}.{digest}.{}", id.0.simple())
     }
     /// Parse one canonical versioned query name.
-    /// # Errors
-    /// Rejects unsupported versions, malformed fields and overlong names.
     pub fn parse_xattr(name: &str) -> Result<Self, FileHistoryReadErrorV1> {
         use FileHistoryReadErrorV1::InvalidRequest;
         if name == HISTORY_READ_XATTR {

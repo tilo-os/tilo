@@ -144,7 +144,6 @@ fn assert_rects_aligned(label: &str, rects: &[(&'static str, Rect)]) {
 fn mixed_controls_share_one_centre_line_across_themes_scales_and_resize() {
     // Motion reads at its end: this test checks the resting frame.
     let _settled = tilo_ui::motion::testing::settled();
-    // Case `mixed_controls_in_one_row_share_a_centre_line_in_every_theme`.
     {
         for (name, theme) in [
             ("dark", Theme::dark()),
@@ -157,7 +156,6 @@ fn mixed_controls_share_one_centre_line_across_themes_scales_and_resize() {
         }
     }
 
-    // Case `mixed_controls_keep_one_centre_line_at_two_x_text`.
     {
         let harness = FrameHarness::new_with_theme(
             State::new(),
@@ -168,7 +166,6 @@ fn mixed_controls_share_one_centre_line_across_themes_scales_and_resize() {
         assert_row_is_aligned("dark @ 2× text", &harness);
     }
 
-    // Case `every_control_kind_in_one_row_shares_the_centre_line_at_one_and_two_x`.
     {
         for (name, theme, viewport) in [
             ("dark", Theme::dark(), (1200, 200)),
@@ -222,7 +219,6 @@ fn mixed_controls_share_one_centre_line_across_themes_scales_and_resize() {
         }
     }
 
-    // Case `mixed_controls_keep_one_centre_line_after_a_resize`.
     {
         let mut harness = FrameHarness::new(State::new(), fixture_row(), (1000, 200));
         harness.resize((1400, 320)).expect("resize settles");
@@ -234,7 +230,6 @@ fn mixed_controls_share_one_centre_line_across_themes_scales_and_resize() {
 fn fixed_controls_keep_their_size_and_labels_beside_fluid_fields() {
     // Motion reads at its end: this test checks the resting frame.
     let _settled = tilo_ui::motion::testing::settled();
-    // Case `fixed_controls_keep_their_size_beside_a_fluid_field`.
     // Fixed controls beside a fluid field laid directly in the row: the field
     // takes the remaining width and every fixed control keeps its target size
     // and the shared centre line. Fails before the Toggle pinned `flex_shrink: 0`
@@ -269,7 +264,6 @@ fn fixed_controls_keep_their_size_and_labels_beside_fluid_fields() {
         }
     }
 
-    // Case `default_buttons_are_regular_controls_that_grow_with_their_label`.
     // A default `Button::new` is a Regular control: 32 px tall at 1×, as wide
     // as its label (at least twice its height). At 2× text the label's line
     // no longer fits, so the face follows the line, and both buttons in the

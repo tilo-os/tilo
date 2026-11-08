@@ -89,9 +89,9 @@ fn internal(outputs: &[OutputInfo]) -> Option<&str> {
         .map(|output| output.name.as_str())
 }
 
-/// What a person calls `output`: the panel by its role, a monitor by the
-/// model its EDID names, and a monitor that names none by its role too —
-/// its connector is how the machine knows it, not what a person calls it.
+/// What a person calls `output` : the panel by its role, a monitor by the model its EDID names, and
+/// a monitor that names none by its role too — its connector is how the machine knows it, not what
+/// a person calls it.
 fn display_name(output: &OutputInfo) -> String {
     if built_in(&output.name) {
         t("session-display-builtin")
@@ -102,25 +102,25 @@ fn display_name(output: &OutputInfo) -> String {
     }
 }
 
-/// A display the compositor's outputs put somewhere: its connector, whether it
-/// is on, where it stands in logical `(x, y, w, h)` and the scale it draws at.
-/// What the shell's parts and the panel's readout both read.
+/// A display the compositor's outputs put somewhere: its connector, whether it is on, where it
+/// stands in logical `(x, y, w, h)` and the scale it draws at. What the shell's parts and the
+/// panel's readout both read.
 #[derive(Clone, Debug)]
 pub(crate) struct Placed {
     /// The connector (`eDP-1`), which tells the displays apart.
     pub(crate) connector: String,
     /// Whether the display is on now.
     pub(crate) on: bool,
-    /// Where it stands, logical `(x, y, w, h)`: signed, since a display left of
-    /// or above the first starts below zero.
+    /// Where it stands, logical `(x, y, w, h)` : signed, since a display left of or above the first
+    /// starts below zero.
     pub(crate) rect: (i32, i32, i32, i32),
     /// The scale it draws at: what is painted on it is as crisp as the panel.
     pub(crate) scale: f64,
 }
 
 impl Placed {
-    /// Where a surface host stands on it: its rectangle with sides at least one
-    /// pixel, in the unsigned coordinates hosts lay a part out in.
+    /// Where a surface host stands on it: its rectangle with sides at least one pixel, in the
+    /// unsigned coordinates hosts lay a part out in.
     pub(crate) fn part_rect(&self) -> (i32, i32, u32, u32) {
         let (x, y, width, height) = self.rect;
         let side = |side: i32| u32::try_from(side.max(1)).unwrap_or(1);
@@ -128,8 +128,8 @@ impl Placed {
     }
 }
 
-/// Every display `outputs` put somewhere, in the order the compositor lists
-/// them: the ones with no rectangle are shown nowhere.
+/// Every display `outputs` put somewhere, in the order the compositor lists them: the ones with no
+/// rectangle are shown nowhere.
 #[must_use]
 pub(crate) fn placed(outputs: &[OutputInfo]) -> Vec<Placed> {
     outputs
@@ -169,8 +169,8 @@ pub fn current(outputs: &[OutputInfo]) -> DisplayMode {
     }
 }
 
-/// The changes that arrange `outputs` as `mode`; none with a single
-/// display, where there is nothing to arrange.
+/// The changes that arrange `outputs` as `mode` ; none with a single display, where there is
+/// nothing to arrange.
 #[must_use]
 pub fn arrange(mode: DisplayMode, outputs: &[OutputInfo]) -> Vec<OutputChange> {
     if outputs.len() < 2 {
@@ -193,8 +193,8 @@ pub fn arrange(mode: DisplayMode, outputs: &[OutputInfo]) -> Vec<OutputChange> {
     let is_internal = |output: &OutputInfo| Some(&output.name) == internal.as_ref();
     match mode {
         DisplayMode::Next | DisplayMode::Extend => {
-            // Left to right: the displays on now in the order they are
-            // known, then those off, whose size is not known yet.
+            // Left to right: the displays on now in the order they are known, then those off, whose
+            // size is not known yet.
             let mut x = 0;
             let (lit, dark): (Vec<&OutputInfo>, Vec<&OutputInfo>) =
                 outputs.iter().partition(|output| output.rect.is_some());
@@ -244,8 +244,8 @@ pub const KIND: &str = "session.displays";
 /// How far a brightness key moves a display, as a share of full brightness.
 pub const BRIGHTNESS_STEP: f32 = 0.1;
 
-/// The displays as a view of another language reads and changes them: the reading
-/// ([`Reading`]) as their fields and [`DisplaysAction`] as their verbs.
+/// The displays as a view of another language reads and changes them: the reading ([`Reading`]) as
+/// their fields and [`DisplaysAction`] as their verbs.
 #[must_use]
 pub fn surface() -> tilo_resource::surface::Surface {
     tilo_resource::surface::reading_surface::<Reading, DisplaysAction>("displays", "Displays")
@@ -267,7 +267,6 @@ pub enum DisplaysAction {
         mode: String,
     },
     /// Bring up the display sheet
-    ///
     /// Where the layouts and the wireless displays are chosen.
     #[effect(own_device, icon = "monitor")]
     OpenSheet,
@@ -275,9 +274,8 @@ pub enum DisplaysAction {
     #[effect(own_device, idempotent)]
     CloseSheet,
     /// Make the display brighter
-    ///
-    /// The display the person works on, or with `all` every display that can
-    /// be dimmed, each keeping its share of the brightest one.
+    /// The display the person works on, or with `all` every display that can be dimmed, each
+    /// keeping its share of the brightest one.
     #[effect(own_device, icon = "sun")]
     BrightnessUp {
         /// Whether every display moves together, as Shift does on the key.
@@ -285,13 +283,11 @@ pub enum DisplaysAction {
         all: Option<bool>,
     },
     /// Make the display dimmer
-    ///
-    /// The display the person works on, or with `all` every display that can
-    /// be dimmed, each keeping its share of the brightest one.
+    /// The display the person works on, or with `all` every display that can be dimmed, each
+    /// keeping its share of the brightest one.
     #[effect(own_device, icon = "sun")]
     BrightnessDown { all: Option<bool> },
     /// Set the brightness
-    ///
     /// The display the person works on, or the first one that can be dimmed.
     #[effect(own_device, idempotent, icon = "sun")]
     SetBrightness {
@@ -309,43 +305,39 @@ pub enum DisplaysAction {
     },
 }
 
-/// The machine's brightness controls, as this service reaches them: the OS
-/// brightness service in a session on a machine, a stand-in in a test.
+/// The machine's brightness controls, as this service reaches them: the OS brightness service in a
+/// session on a machine, a stand-in in a test.
 pub trait Backlights {
     /// Every display whose brightness this machine can set, built-in first,
     /// and how bright it is now (`0.0..=1.0`).
     fn levels(&self) -> Vec<MonitorLevel>;
 
-    /// Set `connector` to `percent` (`0..=100`). Whether this machine has such
-    /// a display to set.
+    /// Set `connector` to `percent` (`0..=100`). Whether this machine has such a display to set.
     fn set(&self, connector: &str, percent: f32) -> bool;
 
-    /// The displays the session shows: one it shows nothing on gets no
-    /// brightness control.
+    /// The displays the session shows: one it shows nothing on gets no brightness control.
     fn show_only(&self, connectors: &[String]);
 
-    /// Every display this machine dims in software, by connector, and how
-    /// dark it is on its slider (`0.0..=1.0`): the ones with neither a
-    /// backlight nor DDC/CI, which the compositor darkens instead.
+    /// Every display this machine dims in software, by connector, and how dark it is on its slider
+    /// (`0.0..=1.0`): the ones with neither a backlight nor DDC/CI, which the compositor darkens
+    /// instead.
     fn software_levels(&self) -> Vec<(String, f32)>;
 
-    /// Bumped whenever the software-dimmed levels or the displays they are
-    /// of change; equal values mean [`Self::software_levels`] answers the
-    /// same, so a pass that sees no change skips it. Controls that cannot
-    /// tell answer `0` and are asked every pass.
+    /// Bumped whenever the software-dimmed levels or the displays they are of change; equal values
+    /// mean [`Self::software_levels`] answers the same, so a pass that sees no change skips it.
+    /// Controls that cannot tell answer `0` and are asked every pass.
     fn generation(&self) -> u64 {
         0
     }
 
-    /// Wake `wake` when a level or the displays it controls change, for
-    /// controls that report changes made elsewhere (a brightness key another
-    /// program handled, a slider on another desktop): the software dimming
-    /// follows on the next pass.
+    /// Wake `wake` when a level or the displays it controls change, for controls that report
+    /// changes made elsewhere (a brightness key another program handled, a slider on another
+    /// desktop): the software dimming follows on the next pass.
     fn watch(&self, _wake: &tilo_service::Wake) {}
 }
 
-/// The screens of this machine, as the OS brightness service reaches them: the
-/// panel's backlight and every external monitor that speaks DDC/CI.
+/// The screens of this machine, as the OS brightness service reaches them: the panel's backlight
+/// and every external monitor that speaks DDC/CI.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct Screens;
 
@@ -361,8 +353,8 @@ impl Backlights for Screens {
     fn show_only(&self, connectors: &[String]) {
         BrightnessService::global().show_only(SessionDisplays {
             connectors: connectors.to_vec(),
-            // A display with neither a backlight nor DDC/CI is dimmed by the
-            // compositor darkening what it shows, so it keeps a control.
+            // A display with neither a backlight nor DDC/CI is dimmed by the compositor darkening
+            // what it shows, so it keeps a control.
             software_dim: true,
         });
     }
@@ -381,18 +373,17 @@ impl Backlights for Screens {
     }
 }
 
-/// The displays as one reads them now: which ones the session shows, how
-/// bright each is, and which one the person works on.
+/// The displays as one reads them now: which ones the session shows, how bright each is, and which
+/// one the person works on.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, tilo_resource::JsonSchema)]
 pub struct Reading {
     /// Every display the session shows, the built-in one first.
     pub displays: Vec<Display>,
-    /// The connector of the display the person works on, when the desk names
-    /// one of the displays shown.
+    /// The connector of the display the person works on, when the desk names one of the displays
+    /// shown.
     pub focused: Option<String>,
-    /// How bright the display a brightness key and `set-brightness` are about
-    /// is ([`Reading::brightness`]), when one can be dimmed: what a slider
-    /// over the displays shows.
+    /// How bright the display a brightness key and `set-brightness` are about is
+    /// ([`Reading::brightness`]), when one can be dimmed: what a slider over the displays shows.
     #[serde(default)]
     pub level: Option<f32>,
 }
@@ -417,17 +408,17 @@ impl Reading {
 /// One display the session shows.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, tilo_resource::JsonSchema)]
 pub struct Display {
-    /// Its DRM connector (`eDP-1`, `DP-2`), which its brightness is set by.
+    /// Its DRM connector (`eDP-1`, `DP-2` ), which its brightness is set by.
     pub connector: String,
     /// What a person knows it by: the panel, its own name, else its connector.
     pub name: String,
-    /// How bright it is, `0.0..=1.0`, when this machine can set it.
+    /// How bright it is, `0.0..=1.0` , when this machine can set it.
     pub brightness: Option<f32>,
-    /// Whether its brightness is its own hardware — a backlight or DDC/CI —
-    /// rather than the compositor darkening what it shows.
+    /// Whether its brightness is its own hardware — a backlight or DDC/CI — rather than the
+    /// compositor darkening what it shows.
     pub backlight: bool,
-    /// The colour it shows: what its sink accepts and the signal it is
-    /// driven with, so what is shown on it is prepared for it.
+    /// The colour it shows: what its sink accepts and the signal it is driven with, so what is
+    /// shown on it is prepared for it.
     pub colour: DisplayCapabilities,
 }
 
@@ -447,8 +438,8 @@ impl Clone for Displays {
 /// What the session knows of its displays between passes.
 #[derive(Default)]
 struct Inner {
-    /// The machine's brightness controls; `None` in a session that dims
-    /// nothing (a test, a window inside another desktop).
+    /// The machine's brightness controls; `None` in a session that dims nothing (a test, a window
+    /// inside another desktop).
     backlights: Option<Box<dyn Backlights>>,
     /// Where the arrangements land, for the loop to carry out.
     commands: Rc<RefCell<Vec<SessionCommand>>>,
@@ -458,12 +449,10 @@ struct Inner {
     focused: Option<String>,
     /// The connectors the brightness controls were last told of.
     told: Vec<String>,
-    /// The connector and the light each display the compositor dims in
-    /// software was last told to show, so an unchanged level is not written
-    /// again on every pass.
+    /// The connector and the light each display the compositor dims in software was last told to
+    /// show, so an unchanged level is not written again on every pass.
     dimmed: Vec<(String, f32)>,
-    /// The software-dimmed generation `dimmed` was worked out from, when the
-    /// controls can tell.
+    /// The software-dimmed generation `dimmed` was worked out from, when the controls can tell.
     dim_generation: Option<u64>,
 }
 
@@ -477,8 +466,8 @@ struct Shown {
 }
 
 impl Inner {
-    /// The reading as it stands now: every display shown, with how bright it
-    /// is when this machine can set that.
+    /// The reading as it stands now: every display shown, with how bright it is when this machine
+    /// can set that.
     fn reading(&self) -> Reading {
         let levels = self.levels();
         let mut reading = Reading {
@@ -506,8 +495,7 @@ impl Inner {
         reading
     }
 
-    /// The displays that can be dimmed now: the machine's, of those the
-    /// session shows.
+    /// The displays that can be dimmed now: the machine's, of those the session shows.
     fn levels(&self) -> Vec<MonitorLevel> {
         let Some(backlights) = &self.backlights else {
             return Vec::new();
@@ -523,8 +511,7 @@ impl Inner {
 }
 
 impl Displays {
-    /// The displays over `backlights`, whose arrangements land as `commands`
-    /// the loop carries out.
+    /// The displays over `backlights` , whose arrangements land as `commands` the loop carries out.
     #[must_use]
     pub fn new(
         backlights: Option<Box<dyn Backlights>>,
@@ -539,8 +526,8 @@ impl Displays {
         }
     }
 
-    /// Mount it as one of the session's services, and hand back the handle the
-    /// loop tells which displays it shows.
+    /// Mount it as one of the session's services, and hand back the handle the loop tells which
+    /// displays it shows.
     pub fn mount(
         services: &Rc<RefCell<tilo_service::Services>>,
         backlights: Option<Box<dyn Backlights>>,
@@ -551,9 +538,9 @@ impl Displays {
         displays
     }
 
-    /// The compositor shows `outputs` now, and the person works on the display
-    /// `handle` names: take them in, and tell the brightness controls which
-    /// displays are shown, so a monitor nothing is shown on has no control.
+    /// The compositor shows `outputs` now, and the person works on the display `handle` names: take
+    /// them in, and tell the brightness controls which displays are shown, so a monitor nothing is
+    /// shown on has no control.
     pub fn land(&self, handle: &DesktopHandle, outputs: &[OutputInfo]) {
         let shown: Vec<Shown> = outputs
             .iter()
@@ -590,9 +577,9 @@ impl Displays {
         inner.focused = focused;
     }
 
-    /// Wake the session's loop whenever the brightness controls report a
-    /// change, so a level set anywhere — the brightness keys, a slider, a
-    /// script — reaches the software dimming on the next pass.
+    /// Wake the session's loop whenever the brightness controls report a change, so a level set
+    /// anywhere — the brightness keys, a slider, a script — reaches the software dimming on the
+    /// next pass.
     pub fn watch(&self, wake: &tilo_service::Wake) {
         if let Some(backlights) = &self.inner.borrow().backlights {
             backlights.watch(wake);
@@ -640,10 +627,9 @@ impl Displays {
         Ok(())
     }
 
-    /// The colour of the display on `monitor`: what a picture shown there
-    /// is prepared for. A tile the desk gives no display of its own — one
-    /// picture on every output — is shown on all of them, so it is only
-    /// prepared for HDR while every one of them is driven with it, and no
+    /// The colour of the display on `monitor` : what a picture shown there is prepared for. A tile
+    /// the desk gives no display of its own — one picture on every output — is shown on all of
+    /// them, so it is only prepared for HDR while every one of them is driven with it, and no
     /// brighter than the dimmest.
     #[must_use]
     pub fn colour(&self, monitor: Option<&str>) -> DisplayCapabilities {
@@ -663,8 +649,8 @@ impl Displays {
             .unwrap_or_else(DisplayCapabilities::sdr_default)
     }
 
-    /// The display a level or step without one named is about: the one the
-    /// person works on when it can be dimmed, else the first that can.
+    /// The display a level or step without one named is about: the one the person works on when it
+    /// can be dimmed, else the first that can.
     fn target(&self) -> Result<String, DoorError> {
         let inner = self.inner.borrow();
         let levels = inner.levels();
@@ -677,9 +663,8 @@ impl Displays {
             .ok_or_else(nothing_dimmable)
     }
 
-    /// Move the display the person works on by `delta`, or with `all` every
-    /// display that can be dimmed, each keeping its share of the brightest
-    /// one's level.
+    /// Move the display the person works on by `delta` , or with `all` every display that can be
+    /// dimmed, each keeping its share of the brightest one's level.
     fn step(&self, delta: f32, all: bool) -> Result<(), DoorError> {
         let inner = self.inner.borrow();
         let levels = inner.levels();
@@ -727,9 +712,8 @@ impl Displays {
     }
 }
 
-/// The colour that suits a picture shown on a display showing `one` and on
-/// one showing `other`: HDR only while both are driven with it, and no
-/// brighter than the dimmer of them.
+/// The colour that suits a picture shown on a display showing `one` and on one showing `other` :
+/// HDR only while both are driven with it, and no brighter than the dimmer of them.
 fn shared_colour(one: DisplayCapabilities, other: DisplayCapabilities) -> DisplayCapabilities {
     if !(one.supports_pq_output && other.supports_pq_output) {
         return DisplayCapabilities::sdr_default();
@@ -769,8 +753,7 @@ impl Service for Displays {
     fn resources(&self) -> Vec<ResourceSpec> {
         let mut resource =
             offer::<DisplaysAction>(ResourceSpec::new(RESOURCE, KIND, t("session-displays")));
-        // The arrangements and the sheet keep the words the rest of the
-        // desktop names them by.
+        // The arrangements and the sheet keep the words the rest of the desktop names them by.
         for spec in &mut resource.actions {
             let label = match spec.id.as_str() {
                 "next-mode" => t("session-displays-next"),
@@ -830,8 +813,7 @@ impl Service for Displays {
 }
 
 impl Displays {
-    /// Queue `command` for the loop, which is the only one reaching the
-    /// compositor.
+    /// Queue `command` for the loop, which is the only one reaching the compositor.
     fn command(&self, command: SessionCommand) {
         self.inner.borrow().commands.borrow_mut().push(command);
     }
@@ -908,8 +890,8 @@ mod tests {
             dials
         }
 
-        /// The same, with `levels` dimmed in software instead of by their own
-        /// hardware: the displays the compositor darkens.
+        /// The same, with `levels` dimmed in software instead of by their own hardware: the
+        /// displays the compositor darkens.
         fn software(levels: &[(&str, f32)]) -> Self {
             let dials = Self::with(levels);
             for level in &mut dials.0.borrow_mut().levels {
@@ -918,8 +900,8 @@ mod tests {
             dials
         }
 
-        /// A level a display was set to by something other than this session
-        /// (a key another program handled, a slider elsewhere).
+        /// A level a display was set to by something other than this session (a key another program
+        /// handled, a slider elsewhere).
         fn changed_elsewhere(&self, connector: &str, level: f32) {
             let mut inner = self.0.borrow_mut();
             if let Some(entry) = inner
@@ -982,7 +964,7 @@ mod tests {
         }
     }
 
-    /// A session showing `shown` (connector, name), over `backlights`.
+    /// A session showing `shown` (connector, name), over `backlights` .
     fn showing(backlights: Option<Dials>, shown: &[(&str, &str)]) -> Displays {
         let displays = Displays::new(
             backlights.map(|dials| Box::new(dials) as Box<dyn Backlights>),
@@ -1006,8 +988,8 @@ mod tests {
         displays
     }
 
-    /// The display on `connector` showing `colour`, as its sink and the
-    /// signal it is sent would say.
+    /// The display on `connector` showing `colour` , as its sink and the signal it is sent would
+    /// say.
     fn showing_colour(displays: &Displays, connector: &str, colour: DisplayCapabilities) {
         let mut inner = displays.inner.borrow_mut();
         if let Some(shown) = inner
@@ -1114,7 +1096,7 @@ mod tests {
         serde_json::from_value(published).expect("the reading reads back")
     }
 
-    /// `actual` is `expected`, within the precision a percentage is set at.
+    /// `actual` is `expected` , within the precision a percentage is set at.
     #[track_caller]
     fn close(actual: Option<f32>, expected: f32) -> bool {
         actual.is_some_and(|actual| (actual - expected).abs() < 0.001)
@@ -1191,7 +1173,7 @@ mod tests {
         assert!(close(dials.at("eDP-1"), 0.6));
         assert!(close(dials.at("HDMI-A-1"), 0.3));
 
-        // Without `all`, only the display the person works on moves.
+        // Without `all` , only the display the person works on moves.
         let mut inner = service.inner.borrow_mut();
         inner.focused = Some("HDMI-A-1".into());
         drop(inner);
@@ -1256,8 +1238,7 @@ mod tests {
             "the reading says the compositor darkens it, not its own hardware"
         );
 
-        // A level set elsewhere reaches the compositor, and leaving it alone
-        // writes nothing again.
+        // A level set elsewhere reaches the compositor, and leaving it alone writes nothing again.
         dials.changed_elsewhere("eDP-1", 0.25);
         displays.dim(&mut compositor).expect("the dim lands");
         let light = dim_of(&compositor, "eDP-1").expect("still dimmed");

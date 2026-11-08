@@ -32,6 +32,13 @@ guest sees that `product_uuid` differs from the one recorded beside its
 device key, so it knows it was branched and gives itself a new device
 identity, keeping its secrets; the source keeps its UUID and so its identity.
 
+The guest records that UUID only when it boots an image that has
+`tilo-device-branch.service`. A source that never booted such an image has no
+record, so its branches would all keep its device key and be one device.
+**Boot the source once on a current image before you branch it** (`tilo-vm
+vm start`, or `tilo-vm vm upgrade` and let it reboot). tilo-vm cannot see
+which image a stopped VM last booted, so it does not check this for you.
+
 **Slot.** Your private piece of a VM: Linux user `tds-<slot>`, session unit
 `tilo-vm-session@<slot>`, and an ordered list of layers. Your default slot
 is named after your branch; `TILO_VM_SLOT` or `slot = "<name>"` in the

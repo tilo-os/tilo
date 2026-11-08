@@ -58,8 +58,6 @@ impl Network {
     /// Construct native providers for the original approved account and egress.
     /// This performs no connection, login or permission change. The authority
     /// must retain both the account's original grant and protected egress consent.
-    /// # Errors
-    /// Refuses revoked authority or missing existing system certificate roots.
     pub fn native(
         authority: Arc<dyn AccountAuthority>,
     ) -> std::result::Result<Self, tilo_messaging::SendError> {

@@ -22,7 +22,7 @@
 //! [`Relay::serve`], which is the same admission preface, `moq-lite` session
 //! and copying relay the native carrier reaches over iroh.
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::net::SocketAddr;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
@@ -140,7 +140,7 @@ type Grants = HashMap<GrantKey, Arc<Grant>>;
 
 /// Every device the plane admits over iroh, by the device and workspace it
 /// presented.
-type Members = std::collections::BTreeMap<DeviceKey, Arc<Grant>>;
+type Members = BTreeMap<DeviceKey, Arc<Grant>>;
 
 /// The live plane's authority: the pages the relay's HTTPS routes admitted and
 /// the devices the workspaces' governance admits.
@@ -188,6 +188,45 @@ impl Pages {
                 );
             }
         }
+    }
+
+    /// Who the plane carries now: every person with an admitted participant,
+    /// with the devices they are here on. One person on two devices is one
+    /// entry. A plane is the one account of who is here: a native device and a
+    /// page alike reach it, and nothing counts a page that never joined.
+    pub(crate) fn participants(&self) -> BTreeMap<[u8; 32], BTreeSet<[u8; 32]>> {
+        let mut people: BTreeMap<[u8; 32], BTreeSet<[u8; 32]>> = BTreeMap::new();
+        for grant in self.carried() {
+            if grant.admitted() {
+                people
+                    .entry(grant.peer.user_public_key)
+                    .or_default()
+                    .insert(grant.peer.device_public_key);
+            }
+        }
+        people
+    }
+
+    /// Every grant the plane carries: a host hands out its own and its
+    /// members' alike, and both count as here once admitted.
+    fn carried(&self) -> Vec<Arc<Grant>> {
+        let grants = self.grants.lock_recover();
+        let members = self.members.lock_recover();
+        grants.values().chain(members.values()).cloned().collect()
+    }
+
+    /// The devices the plane carries in `workspace` now, each with the person
+    /// it is certified as: who a page there pairs with before anyone speaks.
+    pub(crate) fn persons_in(&self, workspace: u64) -> Vec<([u8; 32], [u8; 32])> {
+        let mut persons: Vec<([u8; 32], [u8; 32])> = self
+            .carried()
+            .into_iter()
+            .filter(|grant| grant.admitted() && grant.workspace == workspace)
+            .map(|grant| (grant.peer.device_public_key, grant.peer.user_public_key))
+            .collect();
+        persons.sort_unstable();
+        persons.dedup();
+        persons
     }
 
     /// Re-answer every granted participant: is its device admitted to its

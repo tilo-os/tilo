@@ -33,9 +33,6 @@ pub enum ModerationClientError {
 /// Submit one signed mutation and validate the receipt's deterministic
 /// projection. Callers must not treat this receipt as a verified status; only
 /// [`fetch_verified_case`] anchors status in an owner-signed snapshot.
-///
-/// # Errors
-/// Returns endpoint-safety, connectivity, refusal, or response-shape errors.
 pub fn submit(
     base_url: &str,
     request: &SignedModerationMutation,
@@ -130,9 +127,6 @@ fn validate_case_id(case_id: &str) -> Result<(), ModerationClientError> {
 }
 
 /// Fetch one bounded public transparency page.
-///
-/// # Errors
-/// Returns endpoint-safety, connectivity, refusal, or decoding errors.
 pub fn fetch_transparency(
     base_url: &str,
     from: u64,

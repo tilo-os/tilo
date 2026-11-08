@@ -1,15 +1,12 @@
-//! The desktop's search in the native session: the shared desktop search
-//! ([`tilo_desktop_search`]) the desk opens, over what is published and
-//! what the session's services answer, each row run by its address.
-//!
-//! The desk lists the windows, the people and the desktop's own commands.
-//! The session adds what only a device has: the apps installed here and the
-//! machine's own (with the person's switch), Settings' pages, the store's
-//! catalogue, what apps hold (the content index), the person's files, where
-//! their windows were, the actions open apps publish through the action
-//! host and the jobs it runs, and the session's own published actions. A
-//! chosen row the session carries out: its own action through its own
-//! published surface, an app's through the action host by address (the app
+//! The desktop's search in the native session: the shared desktop search ([`tilo_desktop_search`])
+//! the desk opens, over what is published and what the session's services answer, each row run by
+//! its address.
+//! The desk lists the windows, the people and the desktop's own commands. The session adds what
+//! only a device has: the apps installed here and the machine's own (with the person's switch),
+//! Settings' pages, the store's catalogue, what apps hold (the content index), the person's files,
+//! where their windows were, the actions open apps publish through the action host and the jobs it
+//! runs, and the session's own published actions. A chosen row the session carries out: its own
+//! action through its own published surface, an app's through the action host by address (the app
 //! started first when it is closed), an app's start, an address.
 
 use std::cell::{Cell, RefCell};
@@ -50,13 +47,12 @@ use tilo_desktop_surface::{SearchHost, SearchHostFeed};
 use ui::record::{RecordCheckout, RecordId, RecordKind};
 use ui::search::Scope;
 
-/// The action host as the session's search reaches it: what open apps
-/// publish and run, and running what is chosen by address.
+/// The action host as the session's search reaches it: what open apps publish and run, and running
+/// what is chosen by address.
 pub trait AppActions {
-    /// What the apps publish through the action host, by app and workspace:
-    /// those open now and those that closed after publishing, which a chosen
-    /// row starts again. `workspace` narrows it to one workspace, and the
-    /// empty string asks for every workspace's.
+    /// What the apps publish through the action host, by app and workspace: those open now and
+    /// those that closed after publishing, which a chosen row starts again. `workspace` narrows it
+    /// to one workspace, and the empty string asks for every workspace's.
     fn published(&self, workspace: &str) -> Vec<PublishedActions>;
     /// The invocations the action host follows for the person.
     fn jobs(&self) -> Vec<JobEntry>;
@@ -111,39 +107,36 @@ pub trait AppActions {
 /// What the session's search reaches beyond the desktop.
 #[derive(Default)]
 pub struct SearchOptions {
-    /// The Tilo apps installed here, the machine's own and the apps a
-    /// person can get, as they are now.
+    /// The Tilo apps installed here, the machine's own and the apps a person can get, as they are
+    /// now.
     pub lists: Lists,
     /// What apps hold, as they published it.
     pub content: Option<Arc<AppContentIndex>>,
-    /// The person's home folder, its names as walked, and the index of
-    /// what the files hold.
+    /// The person's home folder, its names as walked, and the index of what the files hold.
     pub files: Option<(PathBuf, FileNames, Option<Arc<FilesIndex>>)>,
     /// The sources the person switched off.
     pub preferences: SearchPreferences,
     /// Where the person's windows were.
     pub places: RecentPlaces,
-    /// The records the workspaces on this device hold: what search finds by
-    /// name across them, and where a record brought here is named.
+    /// The records the workspaces on this device hold: what search finds by name across them, and
+    /// where a record brought here is named.
     pub records: Option<Records>,
 }
 
-/// The sources the session keeps between searches, each indexed once per
-/// reading of the lists they are built from.
+/// The sources the session keeps between searches, each indexed once per reading of the lists they
+/// are built from.
 struct Kept {
     /// The lists the sources below were built from.
     lists: Arc<AppLists>,
     host_apps: Arc<HostApps>,
     content: Option<Arc<IndexedContent>>,
     files: Option<Arc<Files>>,
-    /// Settings' pages and the store's catalogue, for the workspace they
-    /// were built for.
+    /// Settings' pages and the store's catalogue, for the workspace they were built for.
     workspace: Option<(String, Arc<Settings>, Arc<StoreCatalogue>)>,
 }
 
-/// The programs the person downloaded, as the registry last read them, and
-/// the session's published actions for them: the apps, the offers, and what
-/// a row whose file is gone runs.
+/// The programs the person downloaded, as the registry last read them, and the session's published
+/// actions for them: the apps, the offers, and what a row whose file is gone runs.
 #[derive(Default)]
 struct DownloadedRows {
     reading: downloaded_wire::DownloadedApps,
@@ -153,52 +146,47 @@ struct DownloadedRows {
 /// The session's part in the desk's search.
 pub(crate) struct SessionSearch {
     lists: Lists,
-    /// The sources the person switched off, as kept: what the next search
-    /// leaves out, and what a switch from search changes.
+    /// The sources the person switched off, as kept: what the next search leaves out, and what a
+    /// switch from search changes.
     preferences: RefCell<SearchPreferences>,
     places: RefCell<RecentPlaces>,
-    /// What the person chose before; `None` until they chose or it was
-    /// restored.
+    /// What the person chose before; `None` until they chose or it was restored.
     usage: RefCell<Option<Usage>>,
-    /// The parts of the history changed since they were last kept: the
-    /// choices, the places.
+    /// The parts of the history changed since they were last kept: the choices, the places.
     unkept: Cell<(bool, bool)>,
     kept: RefCell<Kept>,
     apps: Option<Rc<dyn AppActions>>,
     /// The records the workspaces on this device hold.
     records: Option<Records>,
-    /// What the session itself publishes, as of the last frame: the desk
-    /// cannot read its own tree while it opens search.
+    /// What the session itself publishes, as of the last frame: the desk cannot read its own tree
+    /// while it opens search.
     own: RefCell<Vec<tilo_actions::ActionDescriptor>>,
-    /// What the resources the session publishes are, by id, as of the last
-    /// frame: what a query naming a type ("my mails") finds them by.
+    /// What the resources the session publishes are, by id, as of the last frame: what a query
+    /// naming a type ("my mails") finds them by.
     own_types: RefCell<std::collections::BTreeMap<String, tilo_actions::ResourceType>>,
     /// The windows open, as of the last frame.
     open_tabs: RefCell<Vec<u64>>,
     /// The live notifications the session publishes, as of the last frame.
     notifications: RefCell<Vec<tilo_actions::ResourceSpec>>,
-    /// The workspaces the desk shows, by id and the name it gives them: what
-    /// a row of another workspace says.
+    /// The workspaces the desk shows, by id and the name it gives them: what a row of another
+    /// workspace says.
     workspaces: RefCell<Vec<(String, String)>>,
-    /// Who is in each workspace and the calls in progress, as the desk and
-    /// the presence it holds say: what the empty palette's first group
-    /// lists.
+    /// Who is in each workspace and the calls in progress, as the desk and the presence it holds
+    /// say: what the empty palette's first group lists.
     here: RefCell<Vec<WorkspaceHere>>,
     /// The downloaded programs, as of the last reading of the registry.
     downloaded: RefCell<DownloadedRows>,
-    /// The question search answered, and the answer as it is being written:
-    /// kept across the builds of the rows so what arrives stays where the
-    /// person asked it.
+    /// The question search answered, and the answer as it is being written: kept across the builds
+    /// of the rows so what arrives stays where the person asked it.
     ask: crate::search_ask::Shared,
-    /// What wakes the session's loop as an answer is written, so the row
-    /// shows it as it lands.
+    /// What wakes the session's loop as an answer is written, so the row shows it as it lands.
     wake: Option<tilo_service::Wake>,
 }
 
 /// The resource of the section keeping search's history.
 pub(crate) const HISTORY: &str = "settings:settings.search_history";
 
-/// The field edit setting the history's field `field` to `value`.
+/// The field edit setting the history's field `field` to `value` .
 fn set_field(field: &str, value: &serde_json::Value) -> serde_json::Map<String, serde_json::Value> {
     let mut edit = serde_json::Map::new();
     edit.insert(
@@ -252,9 +240,8 @@ impl SessionSearch {
         }
     }
 
-    /// What the session publishes now, the windows open and the downloaded
-    /// programs as the registry reads them: read after each frame, outside
-    /// the desktop's trees.
+    /// What the session publishes now, the windows open and the downloaded programs as the registry
+    /// reads them: read after each frame, outside the desktop's trees.
     pub(crate) fn observe(
         &self,
         own: &[tilo_actions::ResourceSpec],
@@ -279,10 +266,9 @@ impl SessionSearch {
                 && address.action == "search";
             !searching && !opening
         });
-        // The desk's own resources are named after the person and the
-        // desktop, not after the thing an action acts on: matched as a
-        // word, that name would list every one of the desk's actions for a
-        // query that names the person.
+        // The desk's own resources are named after the person and the desktop, not after the thing
+        // an action acts on: matched as a word, that name would list every one of the desk's
+        // actions for a query that names the person.
         for action in &mut published {
             if matches!(
                 action.address.resource.as_str(),
@@ -310,14 +296,14 @@ impl SessionSearch {
         }
     }
 
-    /// Who is in the person's workspaces now, as their presence and the
-    /// desk's collaborators say it: the empty palette's first group.
+    /// Who is in the person's workspaces now, as their presence and the desk's collaborators say
+    /// it: the empty palette's first group.
     pub(crate) fn set_here(&self, workspaces: Vec<WorkspaceHere>) {
         *self.here.borrow_mut() = workspaces;
     }
 
-    /// The workspaces this device shows, by id and the name the desk gives
-    /// it: what a row says of a record the workspace in front does not hold.
+    /// The workspaces this device shows, by id and the name the desk gives it: what a row says of a
+    /// record the workspace in front does not hold.
     pub(crate) fn set_workspaces(&self, workspaces: Vec<(String, String)>) {
         if let Some(records) = &self.records {
             records.set_workspaces(workspaces.clone());
@@ -325,9 +311,8 @@ impl SessionSearch {
         *self.workspaces.borrow_mut() = workspaces;
     }
 
-    /// Search `source` from now on, or stop: the person's choice, kept in
-    /// the settings' `search` section so it holds whichever desktop searches
-    /// and outlasts this session.
+    /// Search `source` from now on, or stop: the person's choice, kept in the settings' `search`
+    /// section so it holds whichever desktop searches and outlasts this session.
     fn prefer(&self, source: &str, enabled: bool) {
         let mut preferences = self.preferences.borrow_mut();
         if preferences.enabled(source) == enabled {
@@ -336,8 +321,8 @@ impl SessionSearch {
         preferences.set_enabled(source, enabled);
         let next = preferences.clone();
         drop(preferences);
-        // The machine's apps leave out what is switched off as they are
-        // built, so the search after this one reads that list again.
+        // The machine's apps leave out what is switched off as they are built, so the search after
+        // this one reads that list again.
         let read = self.lists.latest();
         self.kept.borrow_mut().host_apps = Arc::new(HostApps::new(read.host_apps.clone(), &next));
         if let Err(error) = settings_store::update_section(preferences::SECTION, next.to_values()) {
@@ -345,11 +330,10 @@ impl SessionSearch {
         }
     }
 
-    /// The results of the one search the palette and an agent's `tilo` tool
-    /// run, over the sources the person has on, in the ranking's order: what
-    /// text typed on the canvas places (shell.md §8). Every one, as ranked:
-    /// the best resource to place may stand below many actions the text names
-    /// ("Inbox" under each conversation's "Move to inbox").
+    /// The results of the one search the palette and an agent's `tilo` tool run, over the sources
+    /// the person has on, in the ranking's order: what text typed on the canvas places (shell.md
+    /// §8). Every one, as ranked: the best resource to place may stand below many actions the text
+    /// names ("Inbox" under each conversation's "Move to inbox").
     #[must_use]
     pub(crate) fn find(&self, needle: &str) -> Vec<tilo_desktop_search::Hit> {
         let needle = needle.trim();
@@ -395,12 +379,11 @@ impl SessionSearch {
             published,
         )));
         let refs: Vec<&dyn Source> = sources.iter().map(|source| &**source).collect();
-        // The search over everything but the answers a query that is not a
-        // name gets (a sum, a web search): text typed on the canvas names a
-        // resource to place, never a sentence to search the web for.
-        // The one ranking, with what the person chose before: a tool that
-        // places text on the canvas and the palette lead with the same
-        // documents, apps and actions in the same order.
+        // The search over everything but the answers a query that is not a name gets (a sum, a web
+        // search): text typed on the canvas names a resource to place, never a sentence to search
+        // the web for. The one ranking, with what the person chose before: a tool that places text
+        // on the canvas and the palette lead with the same documents, apps and actions in the same
+        // order.
         let now = ui::time::unix_now();
         let usage = self.usage.borrow();
         let groups = tilo_desktop_search::search(needle, &refs, 0, &|hit| match usage.as_ref() {
@@ -410,7 +393,7 @@ impl SessionSearch {
         groups.into_iter().flat_map(|group| group.results).collect()
     }
 
-    /// A window was at `place`.
+    /// A window was at `place` .
     pub(crate) fn record_place(&self, place: Place) {
         let mut places = self.places.borrow_mut();
         let before = places.places().first().cloned();
@@ -421,8 +404,7 @@ impl SessionSearch {
         }
     }
 
-    /// Take up the history as the search history section ([`HISTORY`])
-    /// keeps it.
+    /// Take up the history as the search history section ([`HISTORY`]) keeps it.
     pub(crate) fn restore(&self, kept: &serde_json::Value) {
         let text = |field: &str| kept.get(field).and_then(serde_json::Value::as_str);
         if let (Some(chosen), Some(for_text)) = (text("chosen"), text("chosen_for_text"))
@@ -445,8 +427,8 @@ impl SessionSearch {
         }
     }
 
-    /// The field edits that keep what changed of the history since it was
-    /// last kept, for the search history section's `field-edit`.
+    /// The field edits that keep what changed of the history since it was last kept, for the search
+    /// history section's `field-edit` .
     pub(crate) fn take_unkept(&self) -> Vec<serde_json::Map<String, serde_json::Value>> {
         let (chosen, places) = self.unkept.replace((false, false));
         let mut edits = Vec::new();
@@ -464,14 +446,14 @@ impl SessionSearch {
         edits
     }
 
-    /// This device's app lists as last read: what a surface names an
-    /// application by, without reading the disk again.
+    /// This device's app lists as last read: what a surface names an application by, without
+    /// reading the disk again.
     pub(crate) fn app_lists(&self) -> Arc<AppLists> {
         self.lists.latest()
     }
 
-    /// The agents, people and conversations `query` names, as a window's box
-    /// lists whom a message could go to.
+    /// The agents, people and conversations `query` names, as a window's box lists whom a message
+    /// could go to.
     pub(crate) fn recipients(&self, query: &str) -> Vec<ui::floating_surface::Recipient> {
         self.kept
             .borrow()
@@ -480,15 +462,14 @@ impl SessionSearch {
             .map_or_else(Vec::new, |content| content.recipients(query))
     }
 
-    /// The apps this session opens, for what it asks to be opened outside a
-    /// search: a link a page names, a page a sheet asks for.
+    /// The apps this session opens, for what it asks to be opened outside a search: a link a page
+    /// names, a page a sheet asks for.
     pub(crate) fn apps(&self) -> Option<Rc<dyn AppActions>> {
         self.apps.clone()
     }
 
-    /// The lists as last read, with the sources built from them rebuilt
-    /// when they were read again since: the machine's apps here, Settings
-    /// and the catalogue at their workspace's next search.
+    /// The lists as last read, with the sources built from them rebuilt when they were read again
+    /// since: the machine's apps here, Settings and the catalogue at their workspace's next search.
     fn current_lists(&self) -> Arc<AppLists> {
         let latest = self.lists.latest();
         let mut kept = self.kept.borrow_mut();
@@ -503,8 +484,8 @@ impl SessionSearch {
         latest
     }
 
-    /// Settings and the catalogue for `workspace`, built once per workspace
-    /// and reading of the lists.
+    /// Settings and the catalogue for `workspace` , built once per workspace and reading of the
+    /// lists.
     fn for_workspace(&self, workspace: &str) -> (Arc<Settings>, Arc<StoreCatalogue>) {
         let lists = self.current_lists();
         let mut kept = self.kept.borrow_mut();
@@ -513,8 +494,7 @@ impl SessionSearch {
         {
             return (Arc::clone(settings), Arc::clone(catalogue));
         }
-        // Settings the settings service changes in place are found as its
-        // actions.
+        // Settings the settings service changes in place are found as its actions.
         let in_place: std::collections::HashSet<String> = self
             .own
             .borrow()
@@ -536,9 +516,8 @@ impl SessionSearch {
         (settings, catalogue)
     }
 
-    /// Carry out `target`, chosen in search in `workspace`: through the
-    /// action host, or for the session's own actions through `own`, the
-    /// session's published surface.
+    /// Carry out `target` , chosen in search in `workspace` : through the action host, or for the
+    /// session's own actions through `own` , the session's published surface.
     pub(crate) fn perform(
         &self,
         workspace: &str,
@@ -548,8 +527,8 @@ impl SessionSearch {
         self.perform_checked(workspace, target, own)
     }
 
-    /// [`Self::perform`], saying whether it was carried out: a caller that
-    /// has another way to reach the same place needs to know.
+    /// [`Self::perform`], saying whether it was carried out: a caller that has another way to reach
+    /// the same place needs to know.
     pub(crate) fn perform_checked(
         &self,
         workspace: &str,
@@ -600,15 +579,12 @@ impl SessionSearch {
         }
     }
 
-    /// Bring the record a row names into `workspace`: the
-    /// reference the workspace holds from then on. The record is named as the
-    /// row carried it — its id and kind — so what arrives is the record, not
-    /// a copy of it.
-    ///
-    /// A record kept as a file is also opened, so bringing it here and
-    /// opening it are one gesture. The reference is named first and the
-    /// launch reported after it: a record whose file is gone is still one
-    /// this workspace now holds, and a refusal to open leaves it held.
+    /// Bring the record a row names into `workspace` : the reference the workspace holds from then
+    /// on. The record is named as the row carried it — its id and kind — so what arrives is the
+    /// record, not a copy of it.
+    /// A record kept as a file is also opened, so bringing it here and opening it are one gesture.
+    /// The reference is named first and the launch reported after it: a record whose file is gone
+    /// is still one this workspace now holds, and a refusal to open leaves it held.
     fn bring_here(&self, workspace: &str, invoke: &InvokeTarget) -> Result<(), DoorError> {
         let Some(records) = &self.records else {
             return Err(DoorError::Unavailable {
@@ -637,10 +613,9 @@ impl SessionSearch {
                 "{id} is not a record id"
             )));
         };
-        // Rows are collected when search opens and chosen afterwards, and an
-        // app may have stopped naming the record in between: a row that names
-        // a record no workspace holds any more is refused rather than
-        // written, so search never brings a record that is gone into a
+        // Rows are collected when search opens and chosen afterwards, and an app may have stopped
+        // naming the record in between: a row that names a record no workspace holds any more is
+        // refused rather than written, so search never brings a record that is gone into a
         // workspace as if it were still there.
         if !records.holds(id.as_str()) {
             return Err(DoorError::Unavailable {
@@ -654,10 +629,9 @@ impl SessionSearch {
             &package,
             RecordCheckout::new(id, RecordKind::new(kind)),
         );
-        // A record kept as a file is opened as well, as the document it is:
-        // `file:/…` is a record id, not a link, so it is the path the app is
-        // given. It opens after the reference is named, so a file that is
-        // gone leaves the record held and says so.
+        // A record kept as a file is opened as well, as the document it is: `file:/…` is a record
+        // id, not a link, so it is the path the app is given. It opens after the reference is
+        // named, so a file that is gone leaves the record held and says so.
         let Some(path) = path else {
             return Ok(());
         };
@@ -683,10 +657,9 @@ impl SessionSearch {
 }
 
 impl SearchHost for SessionSearch {
-    /// The apps this session opens: every app of this device's lists, Tilo's
-    /// own and the machine's, each by the launch its own row starts. A
-    /// window group's new tab and the empty desk's launchpad search the
-    /// applications alone, and the session's tile source lists none — the
+    /// The apps this session opens: every app of this device's lists, Tilo's own and the machine's,
+    /// each by the launch its own row starts. A window group's new tab and the empty desk's
+    /// launchpad search the applications alone, and the session's tile source lists none — the
     /// session is what starts them — so this is what those searches offer.
     fn applications(&self) -> Vec<tilo_desktop_search::providers::AppEntry> {
         let lists = self.current_lists();
@@ -717,8 +690,8 @@ impl SearchHost for SessionSearch {
         let now = ui::time::unix_now();
         let (settings, catalogue) = self.for_workspace(workspace);
         let kept = self.kept.borrow();
-        // Every workspace's places name their workspace when the search is
-        // widened; the one in front needs no name.
+        // Every workspace's places name their workspace when the search is widened; the one in
+        // front needs no name.
         let continue_places = match scope {
             Scope::Everywhere => Continue::everywhere(
                 &self.places.borrow(),
@@ -833,9 +806,8 @@ impl ResourceSearch for SearchThrough {
     }
 }
 
-/// A host's [`ResourceSearch`] that asks the thread holding the desktop, as
-/// the session's own doors are asked: the session's search is not `Send`, and
-/// every call of it runs on the loop's pass.
+/// A host's [`ResourceSearch`] that asks the thread holding the desktop, as the session's own doors
+/// are asked: the session's search is not `Send` , and every call of it runs on the loop's pass.
 pub(crate) struct SearchThrough(std::sync::Arc<dyn Fn(String, FoundSearch) + Send + Sync>);
 
 /// Where the session's answer to a search goes.
@@ -851,33 +823,30 @@ impl SearchThrough {
     }
 }
 
-/// The search hits `found` names, as a caller who addresses resources reads
-/// them: the resource each is about, best first, and never below the one
-/// `place_found` places. The canvas stands the hit [`arrangement::placed`]
-/// chooses; `find` leads with that same hit, so an agent asked for a text
-/// answers with what typing it would place, then with what else the search
-/// found under it. Without one (a file, a command, a window's focus), the
-/// resources the search does name stand on their own.
+/// The search hits `found` names, as a caller who addresses resources reads them: the resource each
+/// is about, best first, and never below the one `place_found` places. The canvas stands the hit
+/// [`arrangement::placed`] chooses; `find` leads with that same hit, so an agent asked for a text
+/// answers with what typing it would place, then with what else the search found under it. Without
+/// one (a file, a command, a window's focus), the resources the search does name stand on their
+/// own.
 pub(crate) fn found_all(
     text: &str,
     hits: Vec<tilo_desktop_search::Hit>,
     shows: impl Fn(&str) -> bool,
 ) -> Vec<Found> {
-    // The lead is the hit the canvas places, by the canvas's own ranking of
-    // these hits: the top one that names a resource a place can show. Its
-    // own row leads even when another row about the same resource ranks
-    // above it (an action on it), which is what typing the text stands. A
-    // row that names a resource a place cannot show (`session`'s own
-    // places, a record no app publishes as placeable) stands in the way of
-    // nothing, exactly as it does on the canvas.
+    // The lead is the hit the canvas places, by the canvas's own ranking of these hits: the top one
+    // that names a resource a place can show. Its own row leads even when another row about the
+    // same resource ranks above it (an action on it), which is what typing the text stands. A row
+    // that names a resource a place cannot show (`session`'s own places, a record no app publishes
+    // as placeable) stands in the way of nothing, exactly as it does on the canvas.
     let lead = crate::arrangement::placed(&hits, text, shows);
     let mut out: Vec<Found> = Vec::new();
     for (at, hit) in hits.into_iter().enumerate() {
         let Some(found) = found_of(&hit) else {
             continue;
         };
-        // Above the lead, only the lead's own resource stands: a row the
-        // canvas would step past is a row the query did not name.
+        // Above the lead, only the lead's own resource stands: a row the canvas would step past is
+        // a row the query did not name.
         if lead.is_some_and(|lead| at < lead) {
             continue;
         }
@@ -911,10 +880,9 @@ fn found_of(hit: &tilo_desktop_search::Hit) -> Option<Found> {
                 })
                 .unwrap_or_default(),
         ),
-        // Everything else (an app to launch, a window, a command, a
-        // worked-out answer, a file to open, a job to stop) is not a
-        // resource of an app's that a path names: it is left out, as the
-        // palette's own rows are for a caller that places what it finds.
+        // Everything else (an app to launch, a window, a command, a worked-out answer, a file to
+        // open, a job to stop) is not a resource of an app's that a path names: it is left out, as
+        // the palette's own rows are for a caller that places what it finds.
         Target::Launch { .. }
         | Target::Window { .. }
         | Target::Command { .. }
@@ -923,10 +891,9 @@ fn found_of(hit: &tilo_desktop_search::Hit) -> Option<Found> {
         | Target::Cancel { .. }
         | Target::Prefer { .. } => return None,
     };
-    // The app a caller names the resource by: the provider that published
-    // the row, unless that is the desktop publishing on an app's behalf.
-    // A workspace's record carries its app in the id it published it under
-    // (`tl:<app>:…`), which a caller lists the app's directory by.
+    // The app a caller names the resource by: the provider that published the row, unless that is
+    // the desktop publishing on an app's behalf. A workspace's record carries its app in the id it
+    // published it under (`tl:<app>:…`), which a caller lists the app's directory by.
     let app = match &hit.target {
         Target::Invoke(invoke) if invoke.app != DESKTOP_APP => Some(invoke.app.clone()),
         _ => None,
@@ -972,8 +939,8 @@ mod tests {
 
     use super::*;
 
-    /// The action host a test session reaches: it notes what search opens in
-    /// which workspace, and carries out nothing else.
+    /// The action host a test session reaches: it notes what search opens in which workspace, and
+    /// carries out nothing else.
     struct Opening(Rc<std::cell::RefCell<Vec<(String, String)>>>);
 
     fn unsupported() -> DoorError {
@@ -1016,8 +983,7 @@ mod tests {
         }
     }
 
-    /// The lists a test device has: an installed app and a host app for
-    /// each line of `file`.
+    /// The lists a test device has: an installed app and a host app for each line of `file` .
     fn lists_in(file: PathBuf) -> impl Fn() -> AppLists + Send + Sync + 'static {
         move || {
             let text = std::fs::read_to_string(&file).unwrap_or_default();
@@ -1051,8 +1017,7 @@ mod tests {
         }
     }
 
-    /// The installed apps and the host apps matching `needle` that a search
-    /// opened now is fed.
+    /// The installed apps and the host apps matching `needle` that a search opened now is fed.
     fn found(search: &SessionSearch, needle: &str) -> (Vec<String>, Vec<String>) {
         let feed = search.feed("workspace", &Scope::Workspace);
         let applications = feed.applications.into_iter().map(|app| app.title).collect();
@@ -1086,8 +1051,8 @@ mod tests {
             None,
             None,
         );
-        // Starting the lists reads them on a worker, so the first search
-        // waits for that read to land before it can see what they hold.
+        // Starting the lists reads them on a worker, so the first search waits for that read to
+        // land before it can see what they hold.
         tilo_test_env::wait_until("the lists' first read", || {
             found(&search, "viewer").0 == ["Sheets"]
         });
@@ -1113,15 +1078,14 @@ mod tests {
         );
     }
 
-    /// A row is collected from one reading of the device's indexes and chosen
-    /// later, so the record it names may have been dropped from every index
-    /// in between: it is refused rather than named in a workspace as if it
-    /// were still there.
+    /// A row is collected from one reading of the device's indexes and chosen later, so the record
+    /// it names may have been dropped from every index in between: it is refused rather than named
+    /// in a workspace as if it were still there.
     #[test]
     fn a_row_for_a_record_no_workspace_names_any_more_is_refused() {
         let home = tilo_test_env::TestHome::new().expect("a home");
-        // An index this device keeps, naming a record that is not the row's:
-        // the row names one no workspace holds.
+        // An index this device keeps, naming a record that is not the row's: the row names one no
+        // workspace holds.
         let directory =
             app_state::workspace_index_directory(home.data(), "so.tilo.notes", "elsewhere")
                 .expect("an index directory");
@@ -1165,9 +1129,9 @@ mod tests {
         );
     }
 
-    /// A record kept as a file is brought here and opened: the row a person
-    /// chose in search leaves the workspace naming the record *and* shows
-    /// them the document, in the app that takes its type.
+    /// A record kept as a file is brought here and opened: the row a person chose in search leaves
+    /// the workspace naming the record *and* shows them the document, in the app that takes its
+    /// type.
     #[test]
     fn a_file_record_chosen_in_search_is_brought_here_and_opened() {
         let home = tilo_test_env::TestHome::new().expect("a home");
@@ -1239,8 +1203,7 @@ mod tests {
         );
     }
 
-    /// The places the search over `scope` lists, each with the facts it
-    /// shows about it.
+    /// The places the search over `scope` lists, each with the facts it shows about it.
     fn places_listed(
         search: &SessionSearch,
         workspace: &str,
@@ -1301,8 +1264,7 @@ mod tests {
             ["Groceries"]
         );
 
-        // Widened, another workspace's place is found beside its own, saying
-        // where it is.
+        // Widened, another workspace's place is found beside its own, saying where it is.
         let wide = places_listed(&search, "here", &Scope::Everywhere);
         let elsewhere = wide
             .iter()

@@ -55,30 +55,18 @@ fn namespaces() -> io::Result<Vec<(u64, u64)>> {
 pub trait RetainedIoAuthority: super::ServiceAuthority {
     /// Only the concrete current certified daemon/source adapter provides this
     /// held sealed root descriptor. Browsing has no verifier or raw fallback.
-    ///
-    /// # Errors
-    /// Returns an error if the held verifier cannot be authenticated or cloned.
     fn native_history_verifier(&self) -> io::Result<Option<File>> {
         Ok(None)
     }
 
     /// Held root-sealed selected edit derivative, never caller supplied bytes.
-    ///
-    /// # Errors
-    /// Returns an error if the held edit permit cannot be authenticated or cloned.
     fn selected_replacement_permit(&self) -> io::Result<Option<File>> {
         Ok(None)
     }
 
     /// Obtain the independently admitted original source credentials.
-    ///
-    /// # Errors
-    /// Refuses unavailable or no longer authenticated source credentials.
     fn source_credentials(&self) -> io::Result<RetainedIoCredentials>;
     /// Obtain the canonical retained native owner's identity.
-    ///
-    /// # Errors
-    /// Refuses absent or invalid independently admitted owner custody.
     fn native_owner_sha256(&self) -> io::Result<[u8; 32]> {
         Err(refused(
             "Canonical retained native owner was not independently admitted",
@@ -91,16 +79,10 @@ pub trait RetainedIoAuthority: super::ServiceAuthority {
         ))
     }
     /// Retain namespace custody for recovery after the worker stops.
-    ///
-    /// # Errors
-    /// Returns an error if the adapter cannot retain this native owner.
     fn retain_native_owner(&self, _owner: RetainedNativeOwner) -> io::Result<()> {
         Ok(())
     }
     /// Confirm that native namespace obligations have been retired.
-    ///
-    /// # Errors
-    /// Refuses unavailable retirement custody or outstanding recovery obligations.
     fn confirm_native_retirement(&self) -> io::Result<()> {
         Err(refused("Native source retirement custody is unavailable"))
     }
@@ -116,10 +98,6 @@ pub struct RetainedIoCredentials {
 }
 impl RetainedIoCredentials {
     /// Admit canonical source credentials from a root-only source record.
-    ///
-    /// # Errors
-    /// Refuses non-root callers, root or sentinel identities, and oversized,
-    /// unsorted or duplicate supplementary groups.
     pub fn admitted(uid: u32, gid: u32, groups: &[u32]) -> io::Result<Self> {
         root()?;
         validate_credentials(uid, gid, groups)?;
@@ -305,10 +283,6 @@ impl RetainedIoAdmission {
     /// The root adapter obtains these inputs from `TrustedCaptureService`; no
     /// launch option, environment variable or publisher in an untrusted DTO
     /// supplies that policy. The runtime directory is internal metadata custody.
-    ///
-    /// # Errors
-    /// Refuses revoked custody, duplicate runtime admission or an invalid signed
-    /// runtime; propagates runtime directory and executable verification errors.
     pub fn with_native_runtime(
         mut self,
         runtime: &std::path::Path,
@@ -334,10 +308,6 @@ impl RetainedIoAdmission {
     }
     /// Bind exactly the actual sidecar installation already verified against
     /// the host application's embedded service identity, without registry lookup.
-    ///
-    /// # Errors
-    /// Refuses revoked custody, duplicate installation admission or an invalid
-    /// signed worker package; propagates path and installation verification errors.
     pub fn with_installation(
         mut self,
         installed: package_store::InstalledPackage,

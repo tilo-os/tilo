@@ -1,16 +1,12 @@
-//! "Ask <provider> …": a question typed into search, answered by the model
-//! the person's AI settings choose, streamed into the row as the answer is
-//! written. The row the person is on never moves while the text arrives: the
-//! rows are built again around the same selection. Choosing the row copies
-//! the answer.
-//!
-//! With no provider set up the one row opens the page that sets one up, so a
-//! question is never a dead end and search never explains a setting by name.
-//!
-//! The ask goes through the session's model gateway as Activity does
-//! ([`crate::activity_models`]), on a thread of its own; nothing typed leaves
-//! the machine before the person asks, and nothing about a failure reaches
-//! anything but the row's own line.
+//! "Ask <provider> …": a question typed into search, answered by the model the person's AI settings
+//! choose, streamed into the row as the answer is written. The row the person is on never moves
+//! while the text arrives: the rows are built again around the same selection. Choosing the row
+//! copies the answer.
+//! With no provider set up the one row opens the page that sets one up, so a question is never a
+//! dead end and search never explains a setting by name.
+//! The ask goes through the session's model gateway as Activity does ([`crate::activity_models`]),
+//! on a thread of its own; nothing typed leaves the machine before the person asks, and nothing
+//! about a failure reaches anything but the row's own line.
 
 use std::sync::mpsc::{self, Receiver, Sender, TryRecvError};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
@@ -35,8 +31,8 @@ const PROVIDERS_ANCHOR: &str = "settings.section:agent_models";
 const QUESTION: &str = "Answer the question in a few sentences, in plain text, \
      as the person would say it to a well-read colleague. The question is: ";
 
-/// The most of an answer a row keeps: a search answer reads at a glance, and
-/// asking for more is asking again.
+/// The most of an answer a row keeps: a search answer reads at a glance, and asking for more is
+/// asking again.
 const MAX_ANSWER: usize = 4000;
 
 /// What the answering thread sends as it writes.
@@ -60,8 +56,8 @@ pub(crate) struct Answering {
     deltas: Option<Receiver<Chunk>>,
 }
 
-/// What the session keeps of the ask between rows: the same answer is still
-/// there when search is built again (a widened scope, a filled-in frame).
+/// What the session keeps of the ask between rows: the same answer is still there when search is
+/// built again (a widened scope, a filled-in frame).
 pub(crate) type Shared = Arc<Mutex<Answering>>;
 
 /// The search's answer source, in one workspace.
@@ -69,8 +65,7 @@ pub(crate) struct Ask {
     state: Shared,
     /// The workspace the setup row opens Settings in.
     workspace: String,
-    /// What wakes the session's loop as the answer is written, so the row
-    /// shows it as it lands.
+    /// What wakes the session's loop as the answer is written, so the row shows it as it lands.
     wake: Option<tilo_service::Wake>,
 }
 
@@ -87,8 +82,7 @@ impl Ask {
         self.state.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
-    /// Ask `needle` of the chosen provider, unless it is already asked or
-    /// answered.
+    /// Ask `needle` of the chosen provider, unless it is already asked or answered.
     fn ask(&self, needle: &str, provider: &str, model: &str) {
         let mut state = self.answered();
         let answered = state.question == needle
@@ -189,8 +183,8 @@ fn chosen() -> Option<(String, String)> {
     Some((profile.label.clone(), model.label.clone()))
 }
 
-/// Ask `question` through the session's model gateway, on this thread (the
-/// ask is started on one of its own), sending what comes as it is written.
+/// Ask `question` through the session's model gateway, on this thread (the ask is started on one of
+/// its own), sending what comes as it is written.
 fn answer(question: String, deltas: &Sender<Chunk>, wake: Option<&tilo_service::Wake>) {
     let Some(models) = crate::activity_models::models() else {
         land(
@@ -336,9 +330,8 @@ mod tests {
         Ask::new(Shared::default(), workspace, None)
     }
 
-    /// A question with nothing set up leads to the place that sets it up:
-    /// the row opens Settings at its providers, in the workspace the
-    /// search was opened in.
+    /// A question with nothing set up leads to the place that sets it up: the row opens Settings at
+    /// its providers, in the workspace the search was opened in.
     #[test]
     fn without_a_provider_the_one_row_opens_the_setup() {
         let ask = setup("workspace");
@@ -365,8 +358,8 @@ mod tests {
         }
     }
 
-    /// The text arrives a delta at a time, the row says what is known so
-    /// far, and the same question is not asked twice.
+    /// The text arrives a delta at a time, the row says what is known so far, and the same question
+    /// is not asked twice.
     #[test]
     fn an_answer_written_into_the_row_keeps_the_question_it_answers() {
         let ask = setup("workspace");
@@ -397,8 +390,7 @@ mod tests {
         assert_eq!(text, "A conflict-free replicated data type.");
     }
 
-    /// A provider that writes its answer a piece at a time, as a streaming
-    /// gateway does.
+    /// A provider that writes its answer a piece at a time, as a streaming gateway does.
     struct Writing(Vec<&'static str>);
 
     impl agent_provider_config::protocol::ModelBackend for Writing {
@@ -434,8 +426,8 @@ mod tests {
         }
     }
 
-    /// The answer arrives a piece at a time and the row shows it as it is
-    /// written, then stops asking.
+    /// The answer arrives a piece at a time and the row shows it as it is written, then stops
+    /// asking.
     #[test]
     fn a_streamed_answer_writes_itself_into_the_row() {
         let ask = setup("workspace");
@@ -456,8 +448,8 @@ mod tests {
             "replicated data type.",
         ])));
         answer_with(&models, "what is a CRDT?".into(), &sender, None);
-        // The gateway returns, so nothing more comes: the thread that would
-        // have written more is gone with its end of the channel.
+        // The gateway returns, so nothing more comes: the thread that would have written more is
+        // gone with its end of the channel.
         drop(sender);
         let changed = ask.poll();
         assert!(changed, "what arrived is worth drawing");

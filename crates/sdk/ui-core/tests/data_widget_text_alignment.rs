@@ -351,7 +351,6 @@ fn legacy_cards() -> Element {
 )]
 #[test]
 fn data_rows_centre_their_text_and_scale_once() {
-    // Case `data_table_header_and_rows_centre_text_and_scale_once`.
     {
         let mut header_ink = Vec::new();
         for scale in [1.0, 2.0] {
@@ -396,7 +395,6 @@ fn data_rows_centre_their_text_and_scale_once() {
         assert_scaled_once("data table header", header_ink[0], header_ink[1]);
     }
 
-    // Case `tree_view_rows_centre_labels_and_scale_once`.
     {
         let mut label_ink = Vec::new();
         for scale in [1.0, 2.0] {
@@ -450,7 +448,6 @@ fn data_rows_centre_their_text_and_scale_once() {
         assert_scaled_once("tree label", label_ink[0], label_ink[1]);
     }
 
-    // Case `search_results_centre_single_line_titles_and_scale_once`.
     {
         let mut title_ink = Vec::new();
         for scale in [1.0, 2.0] {
@@ -526,7 +523,6 @@ fn data_rows_centre_their_text_and_scale_once() {
 )]
 #[test]
 fn card_headers_centre_on_their_icon_line_and_scale_once() {
-    // Case `banner_text_block_centres_on_the_icon_line_and_scales_once`.
     {
         let mut text_ink = Vec::new();
         for scale in [1.0, 2.0] {
@@ -562,7 +558,6 @@ fn card_headers_centre_on_their_icon_line_and_scale_once() {
         assert_scaled_once("banner text", text_ink[0], text_ink[1]);
     }
 
-    // Case `stat_tile_label_sits_on_its_line_and_scales_once`.
     {
         let mut caption_ink = Vec::new();
         for scale in [1.0, 2.0] {
@@ -579,7 +574,6 @@ fn card_headers_centre_on_their_icon_line_and_scale_once() {
         assert_scaled_once("tile caption", caption_ink[0], caption_ink[1]);
     }
 
-    // Case `chart_header_centres_title_and_legend_and_scales_once`.
     {
         let mut title_ink = Vec::new();
         for scale in [1.0, 2.0] {
@@ -608,7 +602,6 @@ fn card_headers_centre_on_their_icon_line_and_scale_once() {
         assert_scaled_once("chart title", title_ink[0], title_ink[1]);
     }
 
-    // Case `section_titles_use_the_heading_role_and_the_related_gap`.
     {
         let mut title_heights = Vec::new();
         for scale in [1.0_f32, 2.0] {

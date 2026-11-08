@@ -23,20 +23,12 @@ use memmap2::{Mmap, MmapMut, MmapOptions};
 /// is a diagnostic label.
 ///
 /// A file can be sized only once on macOS: create it at its final size.
-///
-/// # Errors
-///
-/// Creation or sizing failures.
 pub fn create(name: &str, len: u64) -> io::Result<File> {
     sys::create(name, len)
 }
 
 /// A read-only memory file holding a copy of `bytes`, sealed where the
 /// platform can seal.
-///
-/// # Errors
-///
-/// Creation, write or sealing failures.
 pub fn from_bytes(name: &str, bytes: &[u8]) -> io::Result<OwnedFd> {
     let len = bytes.len() as u64;
     let file = create(name, len)?;
@@ -84,11 +76,6 @@ impl AsRef<[u8]> for Bytes {
 /// The first `len` bytes of a descriptor received from a less trusted
 /// process, which cannot change afterwards: a verified sealed mapping on
 /// Linux, a private copy where memory cannot be sealed.
-///
-/// # Errors
-///
-/// A descriptor that is not a sealed memfd (Linux), is shorter than `len`,
-/// is empty, or cannot be mapped.
 pub fn map_sealed(fd: &OwnedFd, len: u64) -> io::Result<Bytes> {
     let file = File::from(fd.as_fd().try_clone_to_owned()?);
     let actual = file.metadata()?.len();
@@ -130,10 +117,6 @@ pub fn map_sealed(fd: &OwnedFd, len: u64) -> io::Result<Bytes> {
 /// (a memory file's size can exceed its content). A concurrent truncation
 /// by the sender can only fault this process, so use it where this process
 /// is the confined one.
-///
-/// # Errors
-///
-/// Mapping failures, a file shorter than `len`, or no bytes.
 pub fn map_document(file: &File, len: Option<u64>) -> io::Result<Bytes> {
     let actual = file.metadata()?.len();
     let len = len.unwrap_or(actual);
@@ -161,10 +144,6 @@ pub fn map_document(file: &File, len: Option<u64>) -> io::Result<Bytes> {
 
 /// Map a memory file this process shares with another read-only, for
 /// memory the other side writes on request (a render target).
-///
-/// # Errors
-///
-/// Mapping failures.
 pub fn map_shared(file: &File) -> io::Result<Mmap> {
     // SAFETY: the peer writes this memory only while serving a request the
     // caller made and waits for; callers treat the bytes as plain data.
@@ -172,10 +151,6 @@ pub fn map_shared(file: &File) -> io::Result<Mmap> {
 }
 
 /// Map a memory file writable.
-///
-/// # Errors
-///
-/// Mapping failures.
 pub fn map_writable(file: &File) -> io::Result<MmapMut> {
     // SAFETY: the file is a memory file shared only with a peer that reads
     // it after this side reports the write complete. Populated up front,

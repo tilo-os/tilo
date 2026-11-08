@@ -5861,9 +5861,6 @@ impl Default for StopGraces {
 /// poweroff, then power it off hard where the hypervisor can. Each step waits its grace for the VM to be
 /// down; only a VM the hypervisor reports still running moves on. Returns
 /// whether it is down (`None`: nothing can tell) and the last step taken.
-///
-/// # Errors
-/// A hypervisor command could not run.
 pub fn stop_escalating(
     runner: &mut dyn Runner,
     adapter: &dyn Hypervisor,
@@ -5994,10 +5991,6 @@ impl AppsRuntimeBuild {
 /// package), so the builder choice only decides where cargo runs: `--builder
 /// host` is accepted on a Linux host of the device's own architecture, and is
 /// the default when no remote builder is configured.
-///
-/// # Errors
-/// `--builder vm`, and `--builder host` where this host cannot build for the
-/// device.
 pub fn plan_apps_runtime_build(
     builder: Option<Builder>,
     device_arch: &str,
@@ -6029,10 +6022,6 @@ pub fn plan_apps_runtime_build(
 /// it is a Linux machine of the device's architecture (the default when no
 /// remote builder is configured), or the remote builder. The device itself
 /// never compiles an app.
-///
-/// # Errors
-/// `--builder vm`, and `--builder host` where this host cannot build for the
-/// device.
 pub fn plan_device_app_build(
     dir: &str,
     builder: Option<Builder>,
@@ -6117,10 +6106,6 @@ pub fn check_app_lock(
 }
 
 /// Which builder `swap --from worktree` uses.
-///
-/// # Errors
-/// `--builder host` off Linux, and `--builder vm` (or no choice off Linux)
-/// when the VM's image cannot build.
 pub fn choose_builder(
     explicit: Option<Builder>,
     tools: &VmTools,
@@ -6154,9 +6139,6 @@ pub fn choose_builder(
 }
 
 /// `tilo-vm input` arguments as protocol actions.
-///
-/// # Errors
-/// Unknown buttons, and keys or characters that cannot be sent.
 pub fn input_actions(command: InputCommand) -> Result<Vec<InputAction>, CliError> {
     let action = match command {
         InputCommand::Key { combos } => InputAction::Key { combos },

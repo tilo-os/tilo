@@ -36,10 +36,6 @@ pub enum Repr {
 }
 
 /// Parse a type as written in metadata; unqualified record names belong to `app`.
-///
-/// # Errors
-///
-/// A message naming the malformed type.
 pub fn parse_ty(text: &str, app: &str) -> Result<Ty, String> {
     Ty::parse_meta(text, app).ok_or_else(|| format!("cannot read the type `{text}`"))
 }

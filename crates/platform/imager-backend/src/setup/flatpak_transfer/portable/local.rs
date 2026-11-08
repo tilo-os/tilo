@@ -66,10 +66,6 @@ impl SealedApplications {
 
     /// Seal the reviewed original deployments into `workspace`, or reopen the
     /// unit an earlier attempt sealed there.
-    ///
-    /// # Errors
-    /// Refuses a nonprivate workspace, changed originals, missing signing
-    /// authority, insufficient space or a changed sealed unit.
     pub fn seal(
         source: &Arc<PortableFlatpakSource>,
         runner: &impl OfflineRunner,
@@ -124,9 +120,6 @@ impl SealedApplications {
 
     /// Reopen the unit sealed in `workspace`, re-attesting the package and its
     /// admitted tree. Returns `None` when nothing was sealed there yet.
-    ///
-    /// # Errors
-    /// Refuses a changed package, admitted tree or record.
     pub fn reopen(workspace: &Path, cancel: &AtomicBool) -> io::Result<Option<Self>> {
         let pin = private(workspace)?;
         let bytes = match read_private_artifact(&pin, UNIT) {
@@ -168,9 +161,6 @@ impl SealedApplications {
     }
 
     /// Deploy the unit into the target user installation.
-    ///
-    /// # Errors
-    /// Refuses a changed unit, a conflicting user version or a failed deployment.
     pub fn apply(
         &self,
         runner: &impl OfflineRunner,

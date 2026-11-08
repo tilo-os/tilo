@@ -50,9 +50,6 @@ impl Names {
 }
 
 /// Whether something already holds the directory entry `path`.
-///
-/// # Errors
-/// Returns why an entry could not be examined.
 pub(crate) fn occupied(path: &Path) -> Result<bool, Failure> {
     match fs::symlink_metadata(path) {
         Ok(_) => Ok(true),
@@ -84,9 +81,6 @@ pub(crate) fn occupied_at(
 
 /// The first name `name` may take in `folder` without replacing anything, or
 /// `None` when every numbered name is taken.
-///
-/// # Errors
-/// Returns why a candidate could not be examined.
 pub fn free_name(folder: &Path, name: &OsStr) -> Result<Option<PathBuf>, Failure> {
     let names = Names::new(name);
     for number in 1..MAX_NUMBER {

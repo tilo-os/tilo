@@ -108,9 +108,6 @@ fn file_digest(path: &Path) -> std::io::Result<String> {
 }
 
 /// Collect every path below `root` (relative, depth-first), not following symlinks.
-///
-/// # Errors
-/// I/O failures.
 pub fn walk(root: &Path, relative: &Path, out: &mut Vec<PathBuf>) -> std::io::Result<()> {
     for entry in fs::read_dir(root.join(relative))? {
         let entry = entry?;

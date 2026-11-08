@@ -350,9 +350,6 @@ impl ArtworkFile {
     }
 
     /// Read an artwork's JSON.
-    ///
-    /// # Errors
-    /// Says why the bytes are not an artwork this version reads.
     pub fn parse(bytes: &[u8]) -> Result<Self, String> {
         let file: Self = serde_json::from_slice(bytes)
             .map_err(|error| format!("this is not a Canvas artwork: {error}"))?;
@@ -468,9 +465,6 @@ impl RecentArtworks {
 /// `store` holds, as the bytes it holds them as. Also the pictures it does
 /// not hold, by address: the file opens without them, as the artwork shows
 /// now.
-///
-/// # Errors
-/// Says why the package cannot be written (in memory, it always can).
 pub fn pack(
     file: &ArtworkFile,
     store: &tilo_content::ContentStore,
@@ -606,9 +600,6 @@ pub fn save(
 
 /// Write an export's `bytes` to `path`, a path ending in one of
 /// `extensions`; answers the path written.
-///
-/// # Errors
-/// Says why the path is not one or cannot be written.
 pub fn export_to(
     path: &std::path::Path,
     extensions: &[&str],
@@ -633,9 +624,6 @@ pub fn export_to(
 }
 
 /// Write `bytes` to the file at `path`, replacing it.
-///
-/// # Errors
-/// Says why the file cannot be written.
 pub fn write(path: &std::path::Path, bytes: &[u8]) -> Result<(), String> {
     let cannot = |error: tilo_files::FsError| format!("cannot write {}: {error}", path.display());
     let (dir, name) = tilo_files::file_at(path).map_err(cannot)?;
@@ -644,9 +632,6 @@ pub fn write(path: &std::path::Path, bytes: &[u8]) -> Result<(), String> {
 
 /// Read the artwork file at `path`, its pictures put in the app's content
 /// store.
-///
-/// # Errors
-/// Says why it cannot be read or is not an artwork.
 pub fn read(path: &std::path::Path) -> Result<ArtworkFile, String> {
     let bytes = crate::resource::read_file(&path.display().to_string(), MAX_FILE_BYTES)?;
     unpack(&bytes, &crate::content::store())

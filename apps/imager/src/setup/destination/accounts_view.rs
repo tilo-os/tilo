@@ -196,9 +196,6 @@ impl AccountsForm {
     }
 
     /// Copy a suggestion into the editable form without granting mail consent.
-    ///
-    /// # Errors
-    /// Rejects pending authorization or an index outside the current hints.
     pub fn choose_hint(&self, index: usize) -> Result<(), FormError> {
         if self.status.with(|s| {
             matches!(

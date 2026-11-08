@@ -20,7 +20,6 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use serde_json::{Value, json};
-use tilo_compositor::OutputConfig;
 use tilo_desktop_model::{
     DesktopTree, Strip, StripId, Tab, TileContent, WindowGroup, WindowWidth, Workspace,
     WorkspaceSlot,
@@ -29,14 +28,12 @@ use tilo_session::surfaces::Surface;
 use tilo_session::{Options, Session};
 use tilo_test_env::ScopedEnv;
 
-const WIDTH: i32 = 1280;
-const HEIGHT: i32 = 800;
 const PERSON: &str = "Pat";
 /// The window the desk shows: what the lock must not tell the owner's door about.
 const TITLE: &str = "Groceries";
 
-/// The ops only a development session's test-control socket answers: synthetic input, the
-/// hosted surfaces' controls, the fixtures and a picture of the screen.
+/// The ops only a development session's test-control socket answers: synthetic input, the hosted
+/// surfaces' controls, the fixtures and a picture of the screen.
 const DEV_ONLY: [&str; 17] = [
     "click_at",
     "click_named",
@@ -62,8 +59,8 @@ fn reached(session: &mut Session, mut done: impl FnMut(&mut Session) -> bool) ->
     common::reached(session, |session| done(session))
 }
 
-/// Send `request` on the socket at `socket` as `tilo-control` does, running the session until
-/// it answers.
+/// Send `request` on the socket at `socket` as `tilo-control` does, running the session until it
+/// answers.
 fn ask(session: &mut Session, socket: &Path, request: &Value) -> Value {
     let socket = socket.to_path_buf();
     let request = request.to_string();
@@ -124,43 +121,38 @@ fn desk_tree() -> DesktopTree {
     tree
 }
 
-/// The probe this package's tests ship, standing in for the lock screen: it connects and stays
-/// up while the session keeps it, as the screen that shows the lock does.
+/// The probe this package's tests ship, standing in for the lock screen: it connects and stays up
+/// while the session keeps it, as the screen that shows the lock does.
 fn lock_screen() -> PathBuf {
     tilo_test_env::sibling_binary("tilo-session", "tilo-surface-probe")
 }
 
-/// Keep the stand-in lock screen up for the test's life: a screen that draws nothing and ends
-/// only when the session stops it, which is what keeps the session locked.
+/// Keep the stand-in lock screen up for the test's life: a screen that draws nothing and ends only
+/// when the session stops it, which is what keeps the session locked.
 fn lock_environment() -> ScopedEnv {
     let mut environment = ScopedEnv::new();
     environment.set("SURFACE_PROBE_STAY", "1");
     environment
 }
 
-/// The headless session: its desk with one window on it, both control sockets, and a lock
-/// screen that stays up.
+/// The headless session: its desk with one window on it, both control sockets, and a lock screen
+/// that stays up.
 fn session(root: &Path) -> Session {
-    let mut session = Session::headless(
-        Options {
-            presentation: ui::headless::fixture_runner_inputs,
-            person: PERSON.to_owned(),
-            collab: false,
-            surfaces: vec![Surface::new("lock", lock_screen()).person(PERSON).lock()],
-            test_control: Some(root.join("test-control.sock")),
-            admin_control: Some(root.join("admin-control.sock")),
-            ..Options::default()
-        },
-        &[OutputConfig::new("HEADLESS-1", WIDTH, HEIGHT)],
-    )
-    .expect("session");
+    let mut session = crate::common::headless(Options {
+        person: PERSON.to_owned(),
+        collab: false,
+        surfaces: vec![Surface::new("lock", lock_screen()).person(PERSON).lock()],
+        test_control: Some(root.join("test-control.sock")),
+        admin_control: Some(root.join("admin-control.sock")),
+        ..Options::default()
+    });
     session.handle().replace_tree(desk_tree());
     session.step(Duration::from_millis(1)).expect("a turn");
     session
 }
 
-/// The owner's door serves the action model and the state it shows, and refuses every op only
-/// a development session's socket answers.
+/// The owner's door serves the action model and the state it shows, and refuses every op only a
+/// development session's socket answers.
 #[test]
 fn the_owner_door_serves_the_action_model_and_the_state_it_shows() {
     let _settled = ui::motion::testing::settled();
@@ -169,8 +161,8 @@ fn the_owner_door_serves_the_action_model_and_the_state_it_shows() {
     let dev = root.path().join("test-control.sock");
     let mut session = session(root.path());
 
-    // A person's own scripts drive the desktop through the model it publishes: the actions it
-    // lists and invokes, and the state it shows.
+    // A person's own scripts drive the desktop through the model it publishes: the actions it lists
+    // and invokes, and the state it shows.
     let listed = ask(&mut session, &owner, &json!({"op": "actions_enumerate"}));
     assert!(
         listed["answer"]["actions"].is_array(),
@@ -228,8 +220,8 @@ fn the_owner_door_serves_the_action_model_and_the_state_it_shows() {
         json!({"ok": {}})
     );
 
-    // Every op that reaches into the seat — injected input, screenshots of the person's
-    // screen, the hosted surfaces' controls, the fixtures — is refused there, by name.
+    // Every op that reaches into the seat — injected input, screenshots of the person's screen, the
+    // hosted surfaces' controls, the fixtures — is refused there, by name.
     for op in DEV_ONLY {
         let refused = ask(&mut session, &owner, &json!({"op": op}));
         assert_eq!(
@@ -265,8 +257,8 @@ fn the_owner_door_serves_the_action_model_and_the_state_it_shows() {
     assert!(message.contains("`state_dump`"), "{unknown}");
 }
 
-/// A locked session invokes nothing through the owner's door, and shows nothing of what the
-/// lock covers — while the development socket, which drives the seat, still sees the desk.
+/// A locked session invokes nothing through the owner's door, and shows nothing of what the lock
+/// covers — while the development socket, which drives the seat, still sees the desk.
 #[test]
 fn a_locked_session_invokes_nothing_through_the_owner_door() {
     let _settled = ui::motion::testing::settled();
@@ -342,9 +334,8 @@ fn a_locked_session_invokes_nothing_through_the_owner_door() {
     unlock_through_the_development_socket(&mut session, root.path(), &dev, &owner);
 }
 
-/// A tool that drives the display unlocks the session the one way it unlocks — and the
-/// picture it takes before that says it is of the lock, so it never reads a dark lock as
-/// the desk behind it.
+/// A tool that drives the display unlocks the session the one way it unlocks — and the picture it
+/// takes before that says it is of the lock, so it never reads a dark lock as the desk behind it.
 fn unlock_through_the_development_socket(
     session: &mut Session,
     root: &Path,
@@ -394,9 +385,9 @@ fn unlock_through_the_development_socket(
     );
 }
 
-/// The chrome advertises its shortcuts by the table's own ids, and a person's
-/// door runs an advertised one: asking for a shortcut the desk publishes is
-/// never answered as an action that does not exist.
+/// The chrome advertises its shortcuts by the table's own ids, and a person's door runs an
+/// advertised one: asking for a shortcut the desk publishes is never answered as an action that
+/// does not exist.
 #[test]
 fn the_door_runs_an_advertised_desktop_shortcut() {
     let _settled = ui::motion::testing::settled();

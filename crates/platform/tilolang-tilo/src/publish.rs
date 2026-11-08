@@ -2373,9 +2373,6 @@ pub fn host_resource(committer: &Arc<dyn Committer>) -> ResourceSpec {
 
 /// The plain edit a bound control makes: set `value` into the field `field` of the resource
 /// `id` of the type `type_name`. It needs no planner, since it is not module code.
-///
-/// # Errors
-/// The type or field is not registered, or the value does not fit the field.
 pub fn edit_action(
     meta: &Meta,
     type_name: &str,

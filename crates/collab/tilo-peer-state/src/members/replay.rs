@@ -327,9 +327,6 @@ fn op_effect(policy: &mut WorkspacePolicy, op: &SignedMembershipOp) {
 /// This is the writer's side of [`replay`]: a device that changed the
 /// workspace's rows writes the steps that lead from the membership it held to
 /// the one it holds now, and every device reads them back with [`replay`].
-///
-/// # Errors
-/// The difference is not the workspace's governance to change.
 pub fn steps(from: &WorkspacePolicy, to: &WorkspacePolicy) -> Result<Vec<Change>, String> {
     if from.workspace != to.workspace || from.owner != to.owner {
         return Err("a workspace's owner and identity are not a membership change".into());
@@ -399,10 +396,6 @@ pub fn steps(from: &WorkspacePolicy, to: &WorkspacePolicy) -> Result<Vec<Change>
 /// Admission refuses a batch that changes or removes a held operation: an
 /// operation is immutable, and a device that cannot drop one cannot drop the
 /// change it made.
-///
-/// # Errors
-/// A held operation is changed or removed, or an added one does not prove its
-/// writer.
 pub fn growth(before: Option<&AutoCommit>, candidate: &AutoCommit) -> Result<usize, String> {
     let held = raw(candidate);
     if let Some(before) = before {
@@ -455,9 +448,6 @@ fn raw(doc: &AutoCommit) -> BTreeMap<String, Vec<u8>> {
 ///
 /// A workspace whose operations do not start yet is left as it is: its rows
 /// govern until its owner's device starts its log.
-///
-/// # Errors
-/// The document cannot be written.
 pub fn settle(doc: &mut AutoCommit, workspace: &str) -> Result<(), String> {
     let held = ops(doc);
     if start(doc, workspace, &held).is_none() {
@@ -474,9 +464,6 @@ pub fn settle(doc: &mut AutoCommit, workspace: &str) -> Result<(), String> {
 ///
 /// They are a projection and never an authority: a device re-projects them
 /// from the operations it holds.
-///
-/// # Errors
-/// The document cannot be written.
 pub fn materialise(doc: &mut AutoCommit, policy: &WorkspacePolicy) -> Result<bool, String> {
     use tilo_desktop_model::projection::{
         WORKSPACE_GRANTS_KEY, WORKSPACE_MEMBERS_JOINED_KEY, WORKSPACE_MEMBERS_KEY,

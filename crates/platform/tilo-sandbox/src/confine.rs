@@ -114,8 +114,8 @@ pub fn share_allocator_arenas() {
 /// descendant. Never call this from a process that must keep running
 /// unconfined (a test harness).
 ///
-/// Every policy this installs refuses `exec`, so the process also declares
-/// [`declare_no_exec`]: nothing it starts would run anyway.
+/// Every policy this installs refuses `exec`, so the process also
+/// declares [`declare_no_exec`]: nothing it starts would run anyway.
 ///
 /// # Errors
 ///

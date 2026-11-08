@@ -96,18 +96,15 @@ impl DeskFold {
     }
 }
 
-/// How long the person must stop typing before widgets come back to their
-/// glance form.
-///
-/// Keystroke-logging research reads a gap of two seconds or more as a
-/// planning pause; the gaps inside a word or between words are well under a
-/// second. Three seconds is past that threshold, so hesitating over the next
-/// word or clause never makes the edges flicker, and still soon enough that
-/// sitting back to read what you wrote brings the widgets.
+/// How long the person must stop typing before widgets come back to their glance form.
+/// Keystroke-logging research reads a gap of two seconds or more as a planning pause; the gaps
+/// inside a word or between words are well under a second. Three seconds is past that threshold, so
+/// hesitating over the next word or clause never makes the edges flicker, and still soon enough
+/// that sitting back to read what you wrote brings the widgets.
 pub const GLANCE_AFTER_PAUSE: Duration = Duration::from_secs(3);
 
-/// How long a widget brought by reaching for it stays once the pointer has
-/// left its reach zone without coming back.
+/// How long a widget brought by reaching for it stays once the pointer has left its reach zone
+/// without coming back.
 pub const REACH_HOLD: Duration = Duration::from_millis(600);
 
 // How a widget comes and goes is the standard ambient motion
@@ -132,8 +129,7 @@ pub struct Slot {
     pub glance: Rect,
     /// Its open card.
     pub open: Rect,
-    /// Where a pointer reaching for it comes to rest
-    /// ([`placement::reach_zone`]).
+    /// Where a pointer reaching for it comes to rest ([`placement::reach_zone`]).
     pub reach: Rect,
     /// Whether it has anything to show (a player, someone else here).
     pub has_content: bool,
@@ -148,15 +144,14 @@ pub struct Context<'a> {
     pub strip: Option<u64>,
     /// The whole Super surface is up: every widget with content is open.
     pub super_surface: bool,
-    /// The Super surface's quiet first stage (Super held, not yet grown):
-    /// every widget with content in its glance form, whatever the person
-    /// was doing.
+    /// The Super surface's quiet first stage (Super held, not yet grown): every widget with content
+    /// in its glance form, whatever the person was doing.
     pub super_glance: bool,
-    /// Another surface owns the desk (Quick Settings, the overview, plain
-    /// search, a sheet): widgets stay away under it.
+    /// Another surface owns the desk (Quick Settings, the overview, plain search, a sheet): widgets
+    /// stay away under it.
     pub covered: bool,
-    /// The widget under the hand: the pointer is on it, or a press on it is
-    /// held. It keeps its form.
+    /// The widget under the hand: the pointer is on it, or a press on it is held. It keeps its
+    /// form.
     pub engaged: Option<WidgetId>,
     pub slots: &'a [Slot],
 }
@@ -169,13 +164,12 @@ pub struct DeskBoard {
     last_typed: Option<Instant>,
     /// The widget the pointer reached for, and when that was last confirmed.
     reached: Option<(WidgetId, Instant)>,
-    /// The pointer is still in the reach zone of the widget it reached for:
-    /// the reach holds without a timer until it moves.
+    /// The pointer is still in the reach zone of the widget it reached for: the reach holds without
+    /// a timer until it moves.
     in_reach: bool,
     opened: Option<WidgetId>,
     forms: BTreeMap<WidgetId, Form>,
-    /// Widgets that would have appeared under a settled pointer and wait
-    /// for it to leave.
+    /// Widgets that would have appeared under a settled pointer and wait for it to leave.
     held: BTreeSet<WidgetId>,
 }
 
@@ -186,8 +180,8 @@ impl DeskBoard {
         self.forms.get(&id).copied().unwrap_or_default()
     }
 
-    /// Whether the person is typing at `now`: a key reached the focused
-    /// window less than [`GLANCE_AFTER_PAUSE`] ago.
+    /// Whether the person is typing at `now` : a key reached the focused window less than
+    /// [`GLANCE_AFTER_PAUSE`] ago.
     #[must_use]
     pub fn typing(&self, now: Instant) -> bool {
         self.typing_until().is_some_and(|until| now < until)
@@ -206,9 +200,8 @@ impl DeskBoard {
         self.last_typed
     }
 
-    /// A key reached the focused window at `at`. Widgets go away (an open
-    /// card the pointer is not on folds too); reaching for one is
-    /// forgotten.
+    /// A key reached the focused window at `at` . Widgets go away (an open card the pointer is not
+    /// on folds too); reaching for one is forgotten.
     pub fn note_typed(&mut self, at: Instant, slots: &[Slot]) {
         if self.last_typed.is_some_and(|last| last >= at) {
             return;
@@ -240,8 +233,8 @@ impl DeskBoard {
         self.hold_reach(slots, now);
     }
 
-    /// Refresh the reach while the pointer stays in the reached widget's
-    /// zone or on the form it brought.
+    /// Refresh the reach while the pointer stays in the reached widget's zone or on the form it
+    /// brought.
     fn hold_reach(&mut self, slots: &[Slot], now: Instant) {
         self.in_reach = match (self.reached, self.pointer) {
             (Some((id, _)), Some(p)) => slots.iter().any(|slot| {
@@ -284,12 +277,12 @@ impl DeskBoard {
         self.reached.map(|(id, _)| id)
     }
 
-    /// Advance the timers to `ctx.now` and decide every widget's form.
-    /// Returns whether any form changed.
+    /// Advance the timers to `ctx.now` and decide every widget's form. Returns whether any form
+    /// changed.
     pub fn update(&mut self, ctx: &Context<'_>) -> bool {
         let now = ctx.now;
-        // A pointer thrown at an edge stops there with no slow sample; once
-        // it has been still a moment, that rest is the reach.
+        // A pointer thrown at an edge stops there with no slow sample; once it has been still a
+        // moment, that rest is the reach.
         let reachable: Vec<&Slot> = ctx.slots.iter().filter(|slot| slot.has_content).collect();
         let zones: Vec<Rect> = reachable.iter().map(|slot| slot.reach).collect();
         if let Some(slot) = self
@@ -312,11 +305,10 @@ impl DeskBoard {
         for slot in ctx.slots {
             let before = self.form(slot.id);
             let mut form = self.decide(slot, ctx);
-            // Under the hand a widget keeps its form, whatever else
-            // changed: it never flips between a press and its release, or
-            // while the pointer is on it. Only a widget that was showing
-            // holds; one that is away holds nothing to keep. Asking for it
-            // (opening, closing, Super, removing it) still goes through.
+            // Under the hand a widget keeps its form, whatever else changed: it never flips between
+            // a press and its release, or while the pointer is on it. Only a widget that was
+            // showing holds; one that is away holds nothing to keep. Asking for it (opening,
+            // closing, Super, removing it) still goes through.
             let asked = ctx.super_surface || ctx.super_glance || self.opened == Some(slot.id);
             let removed = !ctx.prefs.get(slot.id).enabled || !slot.has_content;
             if ctx.engaged == Some(slot.id)
@@ -328,9 +320,9 @@ impl DeskBoard {
             {
                 form = before;
             }
-            // Never appear under a pointer resting there: it is aiming at
-            // what the widget would cover. Reaching for the widget itself
-            // is the exception, and the Super surface is asked for.
+            // Never appear under a pointer resting there: it is aiming at what the widget would
+            // cover. Reaching for the widget itself is the exception, and the Super surface is
+            // asked for.
             let settled_under = self.pointer.is_some_and(|p| {
                 slot.glance.inflate(4.0, 4.0).contains(p) && self.aim.settled(now)
             });
@@ -396,8 +388,8 @@ impl DeskBoard {
         }
     }
 
-    /// When the board next changes with no further input, so the loop can
-    /// sleep until then instead of pumping frames.
+    /// When the board next changes with no further input, so the loop can sleep until then instead
+    /// of pumping frames.
     #[must_use]
     pub fn deadline(&self, now: Instant) -> Option<Instant> {
         let pause = self.typing_until().filter(|at| *at > now);
@@ -405,8 +397,8 @@ impl DeskBoard {
             .reached
             .filter(|_| !self.in_reach)
             .and_then(|(_, at)| at.checked_add(REACH_HOLD));
-        // Settling only matters while something waits on it: a held widget
-        // or a pointer that may be resting in a reach zone.
+        // Settling only matters while something waits on it: a held widget or a pointer that may be
+        // resting in a reach zone.
         let settle = (!self.held.is_empty() || self.pointer.is_some())
             .then(|| self.aim.deadline(now))
             .flatten();
@@ -593,8 +585,8 @@ mod tests {
         );
     }
 
-    /// Resting on a glance, however long, is not a request; a tap is, and
-    /// only a tap (or Escape, or typing away from it) folds it again.
+    /// Resting on a glance, however long, is not a request; a tap is, and only a tap (or Escape, or
+    /// typing away from it) folds it again.
     #[test]
     fn only_a_tap_opens_a_glance_and_nothing_folds_it_on_a_timer() {
         let t0 = Instant::now();
@@ -681,8 +673,8 @@ mod tests {
         );
     }
 
-    /// Under the hand a widget never flips: typing while the pointer is on
-    /// a glance keeps it, and it goes once the hand leaves.
+    /// Under the hand a widget never flips: typing while the pointer is on a glance keeps it, and
+    /// it goes once the hand leaves.
     #[test]
     fn a_widget_under_the_hand_keeps_its_form() {
         let t0 = Instant::now();
@@ -712,9 +704,8 @@ mod tests {
         let mut rig = Rig::new();
         rig.typed(t0);
         rig.at(t0);
-        // The pointer rests where the music pill would be, aiming at the
-        // app's control underneath; it arrived slowly from inside, not by
-        // reaching for the corner.
+        // The pointer rests where the music pill would be, aiming at the app's control underneath;
+        // it arrived slowly from inside, not by reaching for the corner.
         rig.pointer((1420.0, 870.0), ms(t0, 100));
         rig.pointer((1420.0, 870.0), ms(t0, 200));
         let pause = t0 + GLANCE_AFTER_PAUSE;
@@ -729,8 +720,8 @@ mod tests {
         assert_eq!(rig.at(pause + Duration::from_millis(200)).0, Form::Glance);
     }
 
-    /// Super held, before it grows: the glance forms, even mid-typing and
-    /// for "only when I ask" widgets; nothing opens until the surface grows.
+    /// Super held, before it grows: the glance forms, even mid-typing and for "only when I ask"
+    /// widgets; nothing opens until the surface grows.
     #[test]
     fn the_super_quiet_stage_brings_every_glance_and_opens_none() {
         let t0 = Instant::now();

@@ -56,10 +56,6 @@ impl Storage {
 
     /// Write the twin of the stored payload object `hash` from the object
     /// on disk, checked against its name first, unless it has one.
-    ///
-    /// # Errors
-    /// Returns an error if the object is missing, does not match its name,
-    /// or the twin cannot be written.
     pub fn ensure_payload_twin(&self, hash: &BlobHash) -> Result<Option<u64>, StorageError> {
         if self.payload_twin_path(hash).exists() {
             return Ok(None);
@@ -125,10 +121,6 @@ impl Storage {
     /// artifact: the one-time backfill for objects stored before twins
     /// existed. Each object is checked against its name before it is
     /// compressed. Safe to rerun and to run beside `serve`.
-    ///
-    /// # Errors
-    /// Returns an error if an object cannot be read, does not match its
-    /// name, or a twin cannot be written.
     pub fn compress_stored_objects(&self) -> Result<TwinReport, StorageError> {
         let mut report = TwinReport::default();
         let mut count = |raw: u64, written: Option<u64>| match written {

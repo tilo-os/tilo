@@ -66,8 +66,6 @@ impl NamespaceWitness {
     /// Verify this opaque witness against the independently authenticated
     /// executing launcher. Package and session admission remain the root actor's
     /// responsibility; this establishes kernel ancestry and held namespaces.
-    /// # Errors
-    /// Refuses a stopped launcher/init, redirected handle or foreign namespace.
     pub fn validate_for_launcher(
         &self,
         peer: &runtime_portal::process_binding::ExecutingPeer,
@@ -113,8 +111,6 @@ impl NamespaceWitness {
     /// Qualify a genuine executing task inside this actual consuming namespace.
     /// A PID label or a shared numeric UID cannot replace the retained peer.
     /// This proves process membership, never file or source authority.
-    /// # Errors
-    /// Refuses foreign namespaces, tasks outside the init ancestry or retirement.
     pub fn validate_member(
         &self,
         member: &runtime_portal::process_binding::ExecutingPeer,
@@ -183,8 +179,6 @@ impl NamespaceWitness {
     /// Receive only from the actor's independently authenticated actual
     /// launcher peer. Wire process numbers are checked against every held
     /// kernel descriptor and the actual live launcher before construction.
-    /// # Errors
-    /// Refuses mismatched task handles, namespace files, ancestry or framing.
     pub fn receive(
         stream: &mut UnixStream,
         peer: &runtime_portal::process_binding::ExecutingPeer,

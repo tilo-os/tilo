@@ -1,13 +1,9 @@
-//! History for a desktop kept as one document, and the older logs it came
-//! from.
-//!
-//! A host that keeps its desktop as a shared desktop record
-//! ([`tilo_desktop_model::shared_record`]) stamps each change of it with when
-//! it was made and who made it ([`record`]); so does a host that keeps the
-//! desk's own document ([`tilo_desktop_model::desktop_doc`]). A desk an older
-//! build logged is read into that document once ([`desk_document`]), keeping
-//! the author and the time of every change it made, so the pane lists the
-//! same history it listed before.
+//! History for a desktop kept as one document, and the older logs it came from.
+//! A host that keeps its desktop as a shared desktop record ([`tilo_desktop_model::shared_record`])
+//! stamps each change of it with when it was made and who made it ([`record`]); so does a host that
+//! keeps the desk's own document ([`tilo_desktop_model::desktop_doc`]). A desk an older build
+//! logged is read into that document once ([`desk_document`]), keeping the author and the time of
+//! every change it made, so the pane lists the same history it listed before.
 use std::collections::BTreeMap;
 
 use automerge::AutoCommit;
@@ -16,12 +12,10 @@ use tilo_desktop_model::desktop_doc;
 use tilo_desktop_model::ownership::SharedDesktop;
 use tilo_desktop_model::shared_record;
 
-/// A change written before changes named their action names its author
-/// after this prefix.
+/// A change written before changes named their action names its author after this prefix.
 const AUTHOR_PREFIX: &str = "author:";
 
-/// The desktop a host value carries: `{ tree, records?, authors? }`, or a
-/// bare tree.
+/// The desktop a host value carries: `{ tree, records?, authors? }` , or a bare tree.
 fn desktop_of(value: &serde_json::Value) -> Option<SharedDesktop> {
     if value.get("tree").is_some() {
         return serde_json::from_value(value.clone()).ok();
@@ -32,10 +26,9 @@ fn desktop_of(value: &serde_json::Value) -> Option<SharedDesktop> {
     })
 }
 
-/// Write `value` to `log` as one change by `author` at `time` (seconds since
-/// the epoch) when what the record keeps of it differs from what the log
-/// holds; which window is focused is not kept, so moving focus records
-/// nothing. Returns whether it wrote.
+/// Write `value` to `log` as one change by `author` at `time` (seconds since the epoch) when what
+/// the record keeps of it differs from what the log holds; which window is focused is not kept, so
+/// moving focus records nothing. Returns whether it wrote.
 pub fn record(log: &mut AutoCommit, value: &serde_json::Value, author: &str, time: i64) -> bool {
     let Some(desktop) = desktop_of(value) else {
         return false;
@@ -53,8 +46,8 @@ pub fn record(log: &mut AutoCommit, value: &serde_json::Value, author: &str, tim
     }
 }
 
-/// Commit what `doc` holds as one change, by `author` at `time` (seconds
-/// since the epoch), so the desk's history says who did it and when.
+/// Commit what `doc` holds as one change, by `author` at `time` (seconds since the epoch), so the
+/// desk's history says who did it and when.
 pub fn commit(doc: &mut AutoCommit, author: &str, time: i64) {
     doc.commit_with(
         CommitOptions::default()
@@ -91,8 +84,8 @@ pub fn latest_author(log: &AutoCommit) -> Option<String> {
     })
 }
 
-/// The shared workspace renamed by a change merged into `log`, which took
-/// its desktop from `before` to `after`: who renamed it, and to what.
+/// The shared workspace renamed by a change merged into `log` , which took its desktop from
+/// `before` to `after` : who renamed it, and to what.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct WorkspaceRename {
     pub author: String,
@@ -100,9 +93,9 @@ pub struct WorkspaceRename {
 }
 
 impl WorkspaceRename {
-    /// The rename `log`'s newest change made, if the workspace in front is
-    /// named differently in `after` than in `before`. The first desktop a
-    /// host receives (`before` is `None`) renames nothing.
+    /// The rename `log` 's newest change made, if the workspace in front is named differently in
+    /// `after` than in `before` . The first desktop a host receives (`before` is `None` ) renames
+    /// nothing.
     pub fn merged(
         log: &AutoCommit,
         before: Option<&serde_json::Value>,
@@ -116,8 +109,8 @@ impl WorkspaceRename {
         })
     }
 
-    /// The notice for the person `me`, naming the author as `name_of` does:
-    /// none for a rename they made themselves.
+    /// The notice for the person `me` , naming the author as `name_of` does: none for a rename they
+    /// made themselves.
     pub fn notice_for(
         &self,
         me: &str,
@@ -137,14 +130,12 @@ impl WorkspaceRename {
 }
 
 /// The desk an older build logged, read into the desk's one document
-/// ([`tilo_desktop_model::desktop_doc`]): every change of `log` becomes a
-/// change of the document (in causal order), by the author it named and at
-/// the time it was made, and `stored` — what the older build kept beside the
-/// log, which the log never recorded — becomes the newest change, by `actor`
-/// at `time`. A change that moved nothing of the desk adds nothing.
-///
-/// The names the old changes are known by go in with them, so the desktop's
-/// history names the same people it did before.
+/// ([`tilo_desktop_model::desktop_doc`]): every change of `log` becomes a change of the document
+/// (in causal order), by the author it named and at the time it was made, and `stored` — what the
+/// older build kept beside the log, which the log never recorded — becomes the newest change, by
+/// `actor` at `time` . A change that moved nothing of the desk adds nothing.
+/// The names the old changes are known by go in with them, so the desktop's history names the same
+/// people it did before.
 pub fn desk_document(
     log: &mut AutoCommit,
     stored: Option<&SharedDesktop>,
@@ -181,10 +172,9 @@ pub fn desk_document(
     doc
 }
 
-/// The actor a change of an old log is attributed to in the document: the
-/// author it named, under one actor per author — the log wrote every change
-/// under one actor and named the author in the change itself, and the pane
-/// names an actor by the identity it reads.
+/// The actor a change of an old log is attributed to in the document: the author it named, under
+/// one actor per author — the log wrote every change under one actor and named the author in the
+/// change itself, and the pane names an actor by the identity it reads.
 fn actor_of(change: &automerge::Change) -> automerge::ActorId {
     change_author(change.message()).map_or_else(
         || change.actor_id().clone(),
@@ -206,13 +196,13 @@ fn names_in(log: &mut AutoCommit) -> BTreeMap<String, String> {
         .collect()
 }
 
-/// The name and colour presence shows for an author (the principal a
-/// desktop change names), when the host knows them.
+/// The name and colour presence shows for an author (the principal a desktop change names), when
+/// the host knows them.
 pub type PersonOf<'a> = &'a dyn Fn(&str) -> Option<(String, (u8, u8, u8))>;
 
-/// Who each actor of the desk's document `doc` writes for, by actor (hex):
-/// the names the document holds ([`desktop_doc::author_names`]) and those
-/// its changes name, so a pane names every change of the desk by its person.
+/// Who each actor of the desk's document `doc` writes for, by actor (hex): the names the document
+/// holds ([`desktop_doc::author_names`]) and those its changes name, so a pane names every change
+/// of the desk by its person.
 pub fn authors_of(doc: &mut AutoCommit) -> BTreeMap<String, String> {
     let mut authors = desktop_doc::author_names(doc);
     for change in doc.get_changes(&[]) {
@@ -226,10 +216,9 @@ pub fn authors_of(doc: &mut AutoCommit) -> BTreeMap<String, String> {
     authors
 }
 
-/// Name `authors`' actors in `directory`, as one participant per author.
-/// An author `person` knows reads as presence shows them, by the same
-/// name and in the same colour as their avatar; a change names its author
-/// by their principal (a key, in a workspace), never something to show.
+/// Name `authors` ' actors in `directory` , as one participant per author. An author `person` knows
+/// reads as presence shows them, by the same name and in the same colour as their avatar; a change
+/// names its author by their principal (a key, in a workspace), never something to show.
 pub fn register_authors(
     directory: &mut ui::AuthorDirectory,
     authors: &BTreeMap<String, String>,
@@ -279,8 +268,8 @@ mod tests {
         serde_json::json!({ "tree": tree, "records": [] })
     }
 
-    /// A desktop opened with Notes, then Sheets opened beside it by
-    /// someone else, then Notes closed; focus moved in between.
+    /// A desktop opened with Notes, then Sheets opened beside it by someone else, then Notes
+    /// closed; focus moved in between.
     fn log() -> (AutoCommit, DesktopTree) {
         let mut minter = IdMinter::new(7);
         let notes = app(&mut minter, "Notes");
@@ -297,8 +286,8 @@ mod tests {
             maximized: false,
             focus_history: Vec::new(),
         });
-        // Tab opens are View and omitted from the explorer feed; rename so
-        // Grace still authors a feed-visible Change.
+        // Tab opens are View and omitted from the explorer feed; rename so Grace still authors a
+        // feed-visible Change.
         tree.workspaces[0].name = "Studio · shared".into();
         let mut peer = log.fork();
         assert!(record(&mut peer, &stored(&tree), "Grace", 2_000));
@@ -315,9 +304,8 @@ mod tests {
         (log, tree)
     }
 
-    /// Someone else renaming the shared workspace is news, named in words
-    /// with who did it; the first desktop received and a rename of one's
-    /// own are not.
+    /// Someone else renaming the shared workspace is news, named in words with who did it; the
+    /// first desktop received and a rename of one's own are not.
     #[test]
     fn a_rename_by_someone_else_is_noticed_with_their_name() {
         let mut minter = IdMinter::new(7);
@@ -362,9 +350,9 @@ mod tests {
         );
     }
 
-    /// The desk an older build logged opens as the desk's one document, with
-    /// every change it made in it, by the same author and at the same time:
-    /// the pane lists the history the person saw before.
+    /// The desk an older build logged opens as the desk's one document, with every change it made
+    /// in it, by the same author and at the same time: the pane lists the history the person saw
+    /// before.
     #[test]
     fn a_desktop_log_becomes_the_desks_document_with_its_authors_and_times() {
         let (mut log, tree) = log();
@@ -427,9 +415,8 @@ mod tests {
         );
     }
 
-    /// A workspace's changes name their author by principal (a key); History
-    /// shows them as presence does, by name and colour, not by the key's
-    /// first letter in a colour of its own.
+    /// A workspace's changes name their author by principal (a key); History shows them as presence
+    /// does, by name and colour, not by the key's first letter in a colour of its own.
     #[test]
     fn an_author_presence_knows_reads_by_their_name_and_colour() {
         let key = "b46342a2fe9dd341355944fb4be947d6";
@@ -449,9 +436,8 @@ mod tests {
         assert_eq!(unknown.resolve("aa").name, key, "nobody to name them by");
     }
 
-    /// Two peers each change the desk and merge: each reads the one desk
-    /// with both changes, and the pane lists each change by the person who
-    /// made it.
+    /// Two peers each change the desk and merge: each reads the one desk with both changes, and the
+    /// pane lists each change by the person who made it.
     #[test]
     fn a_merged_desk_lists_both_peers_changes_by_name() {
         let mut minter = IdMinter::new(7);
@@ -527,8 +513,8 @@ mod tests {
         assert_eq!(log.get_changes(&[]).len(), 1);
     }
 
-    /// A log kept away and read back makes the same document: what the pane
-    /// lists of the desk a person left is what they come back to.
+    /// A log kept away and read back makes the same document: what the pane lists of the desk a
+    /// person left is what they come back to.
     #[test]
     fn a_log_saved_and_read_back_makes_the_same_document() {
         let (mut log, _tree) = log();

@@ -17,11 +17,6 @@ impl AgentParticipant {
     /// business days after 2026-10-14`, `289 - 50`). The
     /// notes the host wrote beside dates and amounts in a read's answer
     /// ([`values::annotate_json`]) come out of what a step copied from it.
-    ///
-    /// # Errors
-    ///
-    /// The reference or expression that could not be filled in, named:
-    /// the step fails, and the task's repair plans around it.
     pub(super) fn bind_values(
         &mut self,
         step: &Step,

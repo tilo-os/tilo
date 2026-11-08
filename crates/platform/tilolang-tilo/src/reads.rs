@@ -6,7 +6,8 @@
 //! size of the resource. Materializing the resource as a [`crate::DynRecord`] instead
 //! would read every item of every collection in it for each field a view reads.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::rc::Rc;
 
 use automerge::legacy::Key as LegacyKey;
 use automerge::{Change, ObjId, ObjType, Prop, ReadDoc, ScalarValue, Value as AmValue};
@@ -49,6 +50,23 @@ pub fn resource_obj(doc: &Doc, app: &str, id: &str) -> Option<ObjId> {
             .rev()
             .find_map(|held| map_at(doc, held, id))
     })
+}
+
+/// The ids of the resources the document `doc` holds: the keys below the levels above the
+/// records, under every copy of them a replica made. A chunk of a record's items holds the items
+/// of a few resources of the app, never all of them, so a step of a build reads the items of the
+/// ones a chunk names rather than look each resource of the store up in each chunk.
+#[must_use]
+pub fn held_ids(doc: &Doc) -> BTreeSet<String> {
+    let mut out = BTreeSet::new();
+    for records in crate::containers::reach(doc, &automerge::ROOT, &[RECORDS_KEY]) {
+        for stored in doc.keys(&records) {
+            for app in crate::containers::maps(doc, &records, &stored) {
+                out.extend(doc.keys(&app));
+            }
+        }
+    }
+    out
 }
 
 /// The type stored in `$type` of the map `obj`.
@@ -392,6 +410,23 @@ pub type By = BTreeMap<DocId, Option<String>>;
 pub type Placed = BTreeMap<DocId, BTreeMap<String, bool>>;
 
 impl Changed {
+    /// Whether the change wrote anything but where the record places its resources (`$chunks`):
+    /// whether it names a resource at all, and so whether its message is read for one.
+    ///
+    /// A run's tail in the manifest is written once an item of a collection, names no resource,
+    /// makes no version of one and places no item the item's own chunk does not
+    /// ([`written_by`]), so a workspace of a hundred thousand items holds a hundred thousand
+    /// changes this says nothing of.
+    #[must_use]
+    pub fn wrote(&self) -> bool {
+        !self.docs.is_empty()
+            || !self.placed.is_empty()
+            || !self.nested.is_empty()
+            || self.structure
+            || self.unplaced
+            || self.layout
+    }
+
     /// What `other` changed as well: the changes of another document of the record, read on
     /// that document.
     pub fn take_in(&mut self, other: Self) {
@@ -434,67 +469,225 @@ impl Changed {
 /// collections whose items are resources of their own.
 ///
 /// Each op names its object and key; the object's place in the record is found by walking up
-/// its parents, one lookup per level. (Automerge's own patches would name the same places, but
-/// building one walks every entry of each map above the change, which in a collection of 10,000
-/// items costs milliseconds per keystroke.) Ops overwritten by a concurrent op are named as
-/// well: a view re-reading a field that did not change shows the same thing.
+/// its parents ([`Places`]). (Automerge's own patches would name the same places, but building
+/// one walks every entry of each map above the change, which in a collection of 10,000 items
+/// costs milliseconds per keystroke.) Ops overwritten by a concurrent op are named as well: a
+/// view re-reading a field that did not change shows the same thing.
 #[must_use]
 pub fn changed_by(
     changes: &[Change],
     doc: &Doc,
     index: &BTreeMap<DocId, (AppId, TypeId)>,
 ) -> Changed {
-    let mut out = ChangedBuilder::default();
+    let mut out = Changed::default();
+    let mut places = Places::of(doc);
     for change in changes {
-        // Per object, the keys written and whether an object was made under each.
-        let mut writes: BTreeMap<String, BTreeMap<Option<String>, bool>> = BTreeMap::new();
-        for op in change.decode().operations {
-            let key = match op.key {
-                LegacyKey::Map(key) => Some(key.to_string()),
+        out.take_in(places.written(change, index));
+    }
+    out
+}
+
+/// The changes of `doc` that wrote a resource of the record, and whose messages are read for
+/// one: a change that wrote nothing but where the record places its resources (`$chunks`) names
+/// no resource and makes no version of one ([`Changed::wrote`]).
+#[must_use]
+pub fn naming<'c>(changes: &'c [Change], doc: &Doc) -> Vec<&'c Change> {
+    let mut places = Places::of(doc);
+    changes
+        .iter()
+        .filter(|change| places.wrote(change))
+        .collect()
+}
+
+/// Where the objects of a document stand, walked once: a step of a build reads a hundred
+/// thousand changes on one document, and they write few of its objects — every item of a
+/// collection writes the tail of its run in the manifest ([`Changed::wrote`]) — so each object
+/// is walked up to its place once, and every change after it reads that place from here.
+///
+/// Automerge answers an object's parents by finding the op that made it, which searches the
+/// document's op ids: walking up from each op's object cost about a tenth of a millisecond per
+/// change, and a hundred thousand of them half a minute.
+pub struct Places<'d> {
+    doc: &'d Doc,
+    /// The place from the record's root of each object walked, by the id Automerge prints for
+    /// it; `None` for one the document does not hold.
+    at: HashMap<String, Option<Rc<[Prop]>>>,
+}
+
+impl<'d> Places<'d> {
+    /// Where the objects of `doc` stand, none walked yet.
+    #[must_use]
+    pub fn of(doc: &'d Doc) -> Self {
+        Self {
+            doc,
+            at: HashMap::new(),
+        }
+    }
+
+    /// What `change` wrote of the record, and whether it wrote more than where the record
+    /// places its resources (`$chunks`) at all ([`Changed::wrote`]).
+    ///
+    /// A run's tail in the manifest is written once an item of a collection, so a workspace of a
+    /// hundred thousand items has a hundred thousand changes that name no resource and make no
+    /// version of one: their ops all point into the manifest, the walk of each op says so, and
+    /// their messages are never read.
+    pub fn written(
+        &mut self,
+        change: &Change,
+        index: &BTreeMap<DocId, (AppId, TypeId)>,
+    ) -> Changed {
+        let doc = self.doc;
+        let expanded = change.decode();
+        let mut out = ChangedBuilder::default();
+        // The objects the change wrote, each where it stands in the record and the keys written
+        // of it: a change on a workspace of a hundred thousand items writes one key of one
+        // object, and the record's own document holds a hundred thousand such changes.
+        let mut writes: Vec<Writes<'_>> = Vec::new();
+        // Where each object the change wrote stands, once walked: a change writes few objects,
+        // and a hundred thousand of them write one each.
+        let mut known: Vec<(automerge::legacy::ObjectId, Option<usize>)> = Vec::new();
+        for op in &expanded.operations {
+            let at = if let Some((_, at)) = known.iter().find(|(obj, _)| *obj == op.obj) {
+                *at
+            } else {
+                let at = writes.len();
+                let walked = match self.path(&op.obj.to_string()) {
+                    // Where the record places its resources: written once an item, and no
+                    // resource's fields, place or version is read of it.
+                    Some(path) if places_only(&path) => None,
+                    Some(path) => {
+                        writes.push(Writes {
+                            path: Some(path),
+                            keys: Vec::new(),
+                        });
+                        Some(at)
+                    }
+                    None => {
+                        writes.push(Writes {
+                            path: None,
+                            keys: Vec::new(),
+                        });
+                        Some(at)
+                    }
+                };
+                known.push((op.obj.clone(), walked));
+                walked
+            };
+            let Some(at) = at else {
+                continue;
+            };
+            let Some(wrote) = writes.get_mut(at) else {
+                continue;
+            };
+            let key = match &op.key {
+                LegacyKey::Map(key) => Some(key.as_str()),
                 LegacyKey::Seq(_) => None,
             };
             let made = matches!(op.action, automerge::legacy::OpType::Make(_));
-            let held = writes
-                .entry(op.obj.to_string())
-                .or_default()
-                .entry(key)
-                .or_default();
-            *held = *held || made;
+            match wrote.keys.iter_mut().find(|(seen, _)| *seen == key) {
+                Some((_, held)) => *held = *held || made,
+                None => wrote.keys.push((key, made)),
+            }
+        }
+        if writes.is_empty() {
+            return out.finish();
         }
         out.maker = maker_of(change);
-        for (obj, keys) in writes {
-            let Some(path) = path_of(doc, &obj) else {
+        for wrote in writes {
+            let Some(path) = wrote.path else {
                 out.unplaced = true;
                 continue;
             };
-            for (key, made) in keys {
+            for (key, made) in wrote.keys {
                 let mut props: Vec<&Prop> = path.iter().collect();
-                let own = key.map(Prop::Map);
+                let own = key.map(str::to_owned).map(Prop::Map);
                 if let Some(own) = own.as_ref() {
                     props.push(own);
                 }
                 out.patch(&props, made, (doc, index));
             }
         }
+        out.finish()
     }
-    out.finish()
+
+    /// [`Self::written`], for a change read only for whether it wrote a resource at all.
+    pub fn wrote(&mut self, change: &Change) -> bool {
+        self.written(change, &BTreeMap::new()).wrote()
+    }
+
+    /// The keys from the record's root down to the object `obj` (as Automerge prints its id),
+    /// walking no further than the first object this already walked.
+    fn path(&mut self, obj: &str) -> Option<Rc<[Prop]>> {
+        if let Some(held) = self.at.get(obj) {
+            return held.clone();
+        }
+        let place = self.walk(obj);
+        self.at.insert(obj.to_owned(), place.clone());
+        place
+    }
+
+    fn walk(&mut self, obj: &str) -> Option<Rc<[Prop]>> {
+        let mut here = self.doc.import_obj(obj).ok()?;
+        if here == automerge::ROOT {
+            return Some(Rc::from(Vec::new() as Vec<Prop>));
+        }
+        // The keys from the object up to the first one already walked (or to the root), the
+        // object each led to, and the place of that one.
+        let mut above: Vec<Prop> = Vec::new();
+        let mut led: Vec<String> = Vec::new();
+        let base = loop {
+            let parent = self
+                .doc
+                .parents(&here)
+                .ok()
+                .and_then(|mut parents| parents.next())?;
+            above.push(parent.prop);
+            here = parent.obj;
+            if here == automerge::ROOT {
+                break Some(Rc::from(Vec::new() as Vec<Prop>));
+            }
+            let id = here.to_string();
+            if let Some(held) = self.at.get(&id) {
+                break held.clone();
+            }
+            led.push(id);
+        };
+        let Some(base) = base else {
+            // An object whose parents lead nowhere is not in the tree: nothing stands above it.
+            return None;
+        };
+        // Each key on the way up stands in the one above it: the object `led[i]` is the
+        // `i`th this walked up to, and its place is the base and the keys from it on.
+        for (at, id) in led.iter().enumerate() {
+            let mut path: Vec<Prop> = base.iter().cloned().collect();
+            path.extend(above.iter().skip(at.saturating_add(1)).rev().cloned());
+            self.at.insert(id.clone(), Some(Rc::from(path)));
+        }
+        let mut path: Vec<Prop> = base.iter().cloned().collect();
+        path.extend(above.iter().rev().cloned());
+        Some(Rc::from(path))
+    }
+}
+
+/// The keys a change wrote of one object of the record, and whether it made an object under
+/// each: a key written twice (made, then a value put in it) is read once, as made.
+struct Writes<'a> {
+    /// Where the object stands in the record; `None` when its place could not be walked.
+    path: Option<Rc<[Prop]>>,
+    keys: Vec<(Option<&'a str>, bool)>,
+}
+
+/// Whether an object stands where the record places its resources (`$chunks`): a write there
+/// names no resource, and makes no version of one.
+fn places_only(path: &[Prop]) -> bool {
+    path.first()
+        .is_some_and(|prop| key_of(prop) == Some(crate::chunk::CHUNKS_KEY))
 }
 
 /// The person the change `change` names as the one who made it, when its message names one.
 fn maker_of(change: &Change) -> Option<String> {
     let context = tilo_actions::ActionContext::from_change_message(change.message()?)?;
     context.invoker.map(|invoker| invoker.actor)
-}
-
-/// The keys from the record's root down to the object `obj` (as Automerge prints its id).
-fn path_of(doc: &Doc, obj: &str) -> Option<Vec<Prop>> {
-    let obj = doc.import_obj(obj).ok()?;
-    if obj == automerge::ROOT {
-        return Some(Vec::new());
-    }
-    let mut path: Vec<Prop> = doc.parents(&obj).ok()?.map(|parent| parent.prop).collect();
-    path.reverse();
-    Some(path)
 }
 
 #[derive(Default)]
@@ -527,7 +720,13 @@ impl ChangedBuilder {
     ) {
         // tl / <app> / <id> / <field> ...
         let keys: Vec<Option<&str>> = props.iter().map(|p| key_of(p)).collect();
-        if keys.first().copied().flatten() != Some(RECORDS_KEY) {
+        let above = keys.first().copied().flatten();
+        if above == Some(crate::chunk::CHUNKS_KEY) {
+            // Where the record places its resources: written once an item of a collection, and
+            // no resource's fields, place or version is read of it.
+            return;
+        }
+        if above != Some(RECORDS_KEY) {
             return;
         }
         let Some(Some(doc)) = keys.get(2).copied() else {

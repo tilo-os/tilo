@@ -956,11 +956,6 @@ pub fn open_observed_playback(
 /// A running capture stream. Dropping it stops the stream.
 pub trait CaptureStream: Send {
     /// Everything captured since the last call.
-    ///
-    /// # Errors
-    ///
-    /// Returns why the stream stopped: the target went away, another node was
-    /// linked into it, or the daemon ended it.
     fn drain(&mut self) -> Result<Vec<CaptureChunk>, String>;
 }
 

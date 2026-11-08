@@ -3,7 +3,7 @@ use automerge::AutoCommit;
 use std::cell::Cell;
 use std::io::{Read, Write};
 use std::os::fd::FromRawFd;
-use std::sync::{mpsc, Arc, Mutex};
+use std::sync::{Arc, Mutex, mpsc};
 use tilo_test_env::SpawnUnderEnvLock as _;
 
 const TYPE: &str = "test.native-pty";
@@ -124,14 +124,7 @@ impl Widget for PtyRoot {
             .put(ROOT, "pty-output", self.queued.as_str())
             .unwrap();
     }
-    fn build_layout(
-        &mut self,
-        taffy: &mut TaffyTree<()>,
-        _: &Theme,
-        _: &mut HashMap<NodeId, *mut dyn Widget>,
-    ) -> NodeId {
-        taffy.new_leaf(taffy::Style::default()).unwrap()
-    }
+    crate::testing::inert_widget_methods!(unregistered_leaf_layout);
     fn draw(&mut self, _: &mut Scene, _: Affine, _: &mut TextRenderer, _: &Theme, _: &PresenceCtx) {
         panic!("hidden PTY progress must not paint");
     }

@@ -1,6 +1,6 @@
 use std::path::Path;
-use std::process::{Command, Output};
-use tilo_test_env::SpawnUnderEnvLock as _;
+
+use crate::support::server as run;
 
 use anyhow::{Result, anyhow, ensure};
 use ed25519_dalek::SigningKey;
@@ -47,14 +47,6 @@ fn fixture() -> Result<(tempfile::TempDir, Storage, PublisherApplication)> {
         &Proofs(proof_token(&application.pubkey_hex)),
     )?;
     Ok((directory, storage, application))
-}
-
-fn run(directory: &Path, arguments: &[&str]) -> std::io::Result<Output> {
-    Command::new(tilo_test_env::package_binary!("tilo-registry-server"))
-        .arg("--data-dir")
-        .arg(directory)
-        .args(arguments)
-        .output_locked()
 }
 
 fn show(directory: &Path, pubkey: &str) -> Result<serde_json::Value> {

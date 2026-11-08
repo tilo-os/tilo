@@ -1,7 +1,6 @@
-//! The clipboard on a headless compositor with real Wayland clients: what a
-//! client copies is read as its bytes arrive, secret offers are kept out of
-//! the history, and only clients the session trusts see every selection
-//! through data control.
+//! The clipboard on a headless compositor with real Wayland clients: what a client copies is read
+//! as its bytes arrive, secret offers are kept out of the history, and only clients the session
+//! trusts see every selection through data control.
 
 #![cfg(target_os = "linux")]
 #![allow(
@@ -160,8 +159,8 @@ impl TestClient {
             source.offer((*mime).into());
         }
         self.seen.payload = payload.to_vec();
-        // Data control's serials and this one are not tracked: what the
-        // protocol asks of a copy is that its client has the keyboard.
+        // Data control's serials and this one are not tracked: what the protocol asks of a copy is
+        // that its client has the keyboard.
         self.data_device
             .as_ref()
             .unwrap()
@@ -264,8 +263,8 @@ fn a_clients_copy_is_read_as_its_bytes_arrive_and_secrets_are_kept_out() {
     assert_eq!(mimes, [TEXT_MIME.to_owned()]);
     let mime = kept_mime(&mimes).expect("text is kept");
 
-    // The read is the loop's: nothing arrives until the app is asked, and
-    // asking never blocks the loop.
+    // The read is the loop's: nothing arrives until the app is asked, and asking never blocks the
+    // loop.
     let mut pull = compositor
         .pull_selection(Selection::Clipboard, mime)
         .expect("the read starts");
@@ -302,8 +301,8 @@ fn a_clients_copy_is_read_as_its_bytes_arrive_and_secrets_are_kept_out() {
         Some(Some("copied in the editor"))
     );
 
-    // The same app copies a password: the marker travels with the copy, and
-    // the history keeps none of it.
+    // The same app copies a password: the marker travels with the copy, and the history keeps none
+    // of it.
     let marked = compositor.selection_changes(Selection::Clipboard);
     client.copy(
         &[TEXT_MIME, SECRET_MIME, PASSWORD_MANAGER_HINT_MIME],
@@ -396,8 +395,7 @@ impl Dispatch<wl_data_device::WlDataDevice, ()> for Seen {
     ) {
     }
 
-    // The compositor hands an offer for what it offers, which this client
-    // never takes.
+    // The compositor hands an offer for what it offers, which this client never takes.
     event_created_child!(Seen, WlDataDevice, [
         wl_data_device::EVT_DATA_OFFER_OPCODE => (WlDataOffer, ()),
     ]);

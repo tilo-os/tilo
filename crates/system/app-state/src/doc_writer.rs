@@ -123,9 +123,6 @@ pub struct DecodedBytes {
 impl StoredBytes {
     /// Decode the document, dropping a torn tail into a private repair when the owner read
     /// them to recover one.
-    ///
-    /// # Errors
-    /// Refuses empty, incomplete, corrupt or unsupported documents.
     pub fn decode(self) -> Result<DecodedBytes, StoreError> {
         let (doc, repair) = decode_canonical_with(
             &self.bytes,
@@ -277,9 +274,6 @@ impl DocOwner {
     }
 
     /// Decode the stored document only when its change graph is complete.
-    ///
-    /// # Errors
-    /// Refuses empty, incomplete, corrupt or unsupported documents.
     pub fn load_complete(&self) -> Result<Option<StoredLoad>, StoreError> {
         self.load_with(false)
     }
@@ -590,10 +584,6 @@ impl DocWriter {
     /// Recover this session's slot evidence whose document history survived too.
     /// Other slots and evidence evicted by bounded replacement are not included.
     /// This never treats an admission as publication authority.
-    ///
-    /// # Errors
-    /// Returns an error if private history could not be opened or either the
-    /// private action checkpoint or document checkpoint is not durable.
     pub fn private_actions(&self, doc: &AutoCommit) -> Result<Vec<crate::PrivateAction>, String> {
         let history = self.private_history.as_ref().map_err(Clone::clone)?;
         match history.durability() {

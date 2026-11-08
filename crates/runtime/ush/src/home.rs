@@ -14,10 +14,6 @@ use crate::supervisor::{Resolved, Session};
 
 impl Session {
     /// The record this session names ([`Records::resolve`]), with its home.
-    ///
-    /// # Errors
-    ///
-    /// The record could not be resolved or given its home.
     pub fn resolve_record(&self) -> anyhow::Result<(String, Environment)> {
         let records = self.records();
         let (key, environment) =
@@ -35,10 +31,6 @@ impl Session {
 /// a grant the person revokes later stays revoked. Nothing an environment
 /// held is moved or deleted: what its home in the store held before stays
 /// where it is, granted read-only so the shell still reads it at that path.
-///
-/// # Errors
-///
-/// The record refused the change or could not be written.
 pub fn with_home(
     records: &Records,
     store: &Store,

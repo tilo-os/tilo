@@ -21,7 +21,6 @@ use vello::peniko::Color;
 
 #[test]
 fn a_notification_card_registers_its_edge() {
-    // Case `toast_card_edge_registers_in_both_themes`.
     // HIG §9.5 "Rest edges": a settled toast card is a Panel whose edge is
     // derived against the ground and visibly moves against the card's own
     // fill, at 1× on the dark and the light preset alike. The declared

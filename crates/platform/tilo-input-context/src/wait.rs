@@ -43,9 +43,6 @@ impl Nudge {
 
 impl ConnectionWait {
     /// Wait on `connection`'s socket.
-    ///
-    /// # Errors
-    /// The socket cannot be duplicated or the nudge socket created.
     #[cfg(feature = "client")]
     pub fn for_connection(
         connection: &wayland_client::Connection,
@@ -54,9 +51,6 @@ impl ConnectionWait {
     }
 
     /// Wait on `socket`, a connection's descriptor this wait owns.
-    ///
-    /// # Errors
-    /// The nudge socket cannot be created.
     pub fn for_socket(socket: OwnedFd) -> std::io::Result<(Self, Nudge)> {
         let (nudged, nudge) = UnixStream::pair()?;
         nudged.set_nonblocking(true)?;

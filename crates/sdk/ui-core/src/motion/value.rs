@@ -1,4 +1,4 @@
-//! [`MotionValue`]: a value that follows its target on a spring, and can be
+//! [`MotionValue`] — a value that follows its target on a spring, and can be
 //! sent somewhere else at any moment without a jump.
 
 use super::spring::SpringSpec;

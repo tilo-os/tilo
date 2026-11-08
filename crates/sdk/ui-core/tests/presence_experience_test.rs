@@ -20,7 +20,6 @@ fn app() -> App {
 
 #[test]
 fn workspace_arrivals_status_and_follow_reach_the_right_surface() {
-    // Case `remote_arrival_on_tab_flags_the_right_nav_item`.
     // `peers_on(that tab)` returns them, the exact query the notes sidebar /
     // sheets tab strip use to paint "Alice is on the Contacts screen".
     {
@@ -64,7 +63,6 @@ fn workspace_arrivals_status_and_follow_reach_the_right_surface() {
         );
     }
 
-    // Case `follow_offscreen_peer_by_clicking_their_mist`.
     // Clicking the edge-mist band latches the follow target to that peer and
     // resolves to their live pointer.
     {
@@ -100,7 +98,6 @@ fn workspace_arrivals_status_and_follow_reach_the_right_surface() {
 
     // Kept last: this case already fails at base in the local (macOS) run, and
     // running it last keeps the other cases observable.
-    // Case `workspace_status_arrives_with_honest_provenance_and_can_be_cleared`.
     {
         let mut a = app();
         let workspace = PresenceKey::Workspace {
@@ -147,7 +144,6 @@ fn workspace_arrivals_status_and_follow_reach_the_right_surface() {
 )]
 #[test]
 fn remote_writing_tints_once_per_run() {
-    // Case `remote_typing_event_records_fading_tint`.
     // Lands as a fading highlighter span in `PresenceCtx`, scoped to the
     // block they typed in — exactly what the block editor / text input read
     // to paint the marker.
@@ -175,7 +171,6 @@ fn remote_writing_tints_once_per_run() {
         );
     }
 
-    // Case `caret_only_peer_still_gets_a_highlight`.
     // A collaborator that publishes **only** a caret — never `Typing` — still
     // gets a highlighter over the run it just wrote.
     //
@@ -219,7 +214,6 @@ fn remote_writing_tints_once_per_run() {
         assert!(marks[0].1 > 0.5, "a just-written span is near full opacity");
     }
 
-    // Case `toolkit_peer_sending_both_tints_once`.
     // A peer publishing `Typing` *and* an advanced caret for the same run
     // must read as one marker, not two tints stacked into a darker, less
     // legible band.
@@ -256,7 +250,6 @@ fn remote_writing_tints_once_per_run() {
         assert_eq!((marks[0].0.start, marks[0].0.end), (4, 9));
     }
 
-    // Case `an_explicit_typing_report_needs_no_edit_pulse`.
     // An explicit `Typing` payload is a peer *stating* it wrote something, and is
     // not gated: it is a report, not an inference.
     {
@@ -281,7 +274,6 @@ fn remote_writing_tints_once_per_run() {
 
 #[test]
 fn caret_motion_that_is_not_writing_marks_nothing() {
-    // Case `retreating_caret_marks_nothing`.
     // Deleting is not writing. A caret that moves *back* — backspace, or an arrow
     // key — leaves no marker, or every backspace would paint the text it just
     // removed.
@@ -305,7 +297,6 @@ fn caret_motion_that_is_not_writing_marks_nothing() {
         );
     }
 
-    // Case `a_caret_moving_without_an_edit_marks_nothing`.
     // Reading is not writing: a caret sweeping forward through a document
     // nobody is editing — clicking into a paragraph, arrowing along a line,
     // dragging to select — must leave no marker. The caret says *who* and
@@ -336,7 +327,6 @@ fn caret_motion_that_is_not_writing_marks_nothing() {
         );
     }
 
-    // Case `an_absurd_caret_jump_is_a_click_and_not_a_run`.
     // The cap exists for exactly one case: a pointer landing far down a long
     // paragraph while an edit happens to have landed a moment earlier, which
     // would otherwise paint the whole span it crossed.
@@ -364,7 +354,6 @@ fn caret_motion_that_is_not_writing_marks_nothing() {
         );
     }
 
-    // Case `your_own_edits_do_not_highlight_on_your_own_screen`.
     // A marker following your own cursor is noise, and on a busy document
     // would be a stripe under every word you wrote. The frames a session
     // publishes come back to it (the same person may have the document open

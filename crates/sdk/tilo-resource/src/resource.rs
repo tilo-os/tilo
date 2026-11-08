@@ -157,9 +157,6 @@ pub trait Resource: Sized + 'static {
     /// owner, a first-run import of settings that already exist) is the app's
     /// seed, applied as actions right after the genesis (`ResourceApp::seed`
     /// in `tilo-app`).
-    ///
-    /// # Errors
-    /// Returns the document's write error.
     fn initialize(_doc: &mut Doc) -> Result<(), ModelError> {
         Ok(())
     }
@@ -350,9 +347,6 @@ pub trait Resource: Sized + 'static {
     /// title and blocks). Read from `doc`, the committed document, so the
     /// answer is never older than the action that preceded it. Called only
     /// when [`READABLE`](Self::READABLE) is set.
-    ///
-    /// # Errors
-    /// A message naming why: no such item, or a document that cannot be read.
     fn read_content(
         state: &Self::State,
         doc: &Doc,
@@ -381,9 +375,6 @@ pub trait Resource: Sized + 'static {
     /// compare field by field, so keep a list's order meaningful and its
     /// items' keys stable. Called only when [`HAS_FACTS`](Self::HAS_FACTS)
     /// is set.
-    ///
-    /// # Errors
-    /// A message naming why the facts could not be read.
     fn facts(state: &Self::State, doc: &Doc) -> Result<serde_json::Value, String> {
         let _ = (state, doc);
         Err(format!("a {} states no facts", Self::LABEL))
@@ -427,9 +418,6 @@ pub trait Resource: Sized + 'static {
     /// Bring a document stored at version `from` up to [`Self::VERSION`],
     /// reading its old shape with the model helpers. Called once per
     /// document by [`crate::evolution::migrate`].
-    ///
-    /// # Errors
-    /// Returns why the document cannot be migrated.
     fn migrate(doc: &mut Doc, from: u32) -> Result<(), ModelError> {
         let _ = doc;
         Err(ModelError::invalid(format!(
@@ -1443,9 +1431,6 @@ impl<R: Resource> ActionDecl<R> {
     }
 
     /// The action it builds from `args` at `now_ms`.
-    ///
-    /// # Errors
-    /// Why the arguments do not make the action.
     pub fn build_action(&self, args: &ActionArgs, now_ms: i64) -> Result<R::Action, String> {
         typed::<R>((self.decl.build)(args, now_ms)?)
     }
@@ -2428,9 +2413,6 @@ fn publish_own(
 
 /// Build the action a declaration produces for JSON arguments, validating them
 /// against its parameters exactly as the host does.
-///
-/// # Errors
-/// Returns why the action is unknown or the arguments do not bind.
 pub fn build_action<R: Resource>(
     id: &str,
     arguments: &serde_json::Map<String, serde_json::Value>,

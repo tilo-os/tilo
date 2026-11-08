@@ -37,8 +37,6 @@ const MAX_MODEL_BYTES: u64 = 256 * 1024 * 1024;
 /// Recheck a selected installed object against the actual trusted catalogue
 /// and license record. Size and digest are checked on the same open file whose
 /// bytes the decoder receives, avoiding a path-replacement gap.
-/// # Errors
-/// Rejects missing, unsigned, unaccepted, changed, oversized or unsafe objects.
 pub fn speech_model_file(
     root: &Path,
     catalog: &VerifiedCatalog,
@@ -195,8 +193,6 @@ pub struct SpeechEngine(NonNull<c_void>);
 impl SpeechEngine {
     /// Install the owned worker's lock-free provisional-inference stop signal.
     /// Call before Ready; failure never advertises support or opens capture.
-    /// # Errors
-    /// Fails if the private signal handler or signal mask cannot be installed.
     pub fn enable_draft_interrupt() -> Result<(), SpeechError> {
         // SAFETY: called once in the owned worker; the native signal handler
         // only stores a lock-free atomic flag and never touches Rust state.
@@ -225,8 +221,6 @@ impl SpeechEngine {
     /// Configure bounded native vocabulary tokens without rewriting output.
     /// Set before starting a new recognition session. Failed replacement clears
     /// the old binding; do not reuse a recognition draft cache across changes.
-    /// # Errors
-    /// Invalid hints, oversized input or native tokenizer failure.
     pub fn set_vocabulary(&mut self, hints: &[String]) -> Result<(), SpeechError> {
         // SAFETY: the exclusively owned live context synchronously wipes its
         // token array; the static NUL string is valid even for empty input.
@@ -265,8 +259,6 @@ impl SpeechEngine {
     }
     /// Parse the verified immutable descriptor after worker confinement.
     /// No native file path or Rust callback crosses this boundary.
-    /// # Errors
-    /// Rejects invalid headers, a changed seal or failed native loading.
     pub fn load_file(model: &SealedSpeechModel) -> Result<Self, SpeechError> {
         use std::os::fd::AsRawFd as _;
         use std::os::unix::fs::FileExt as _;
@@ -288,8 +280,6 @@ impl SpeechEngine {
     }
 
     /// Load already receipt-checked model bytes synchronously in the worker.
-    /// # Errors
-    /// Rejects invalid headers, oversized models or failed native loading.
     pub fn load(bytes: &mut [u8]) -> Result<Self, SpeechError> {
         if bytes.len() < 64
             || u64::try_from(bytes.len()).map_or(true, |len| len > MAX_MODEL_BYTES)
@@ -306,8 +296,6 @@ impl SpeechEngine {
     }
     /// Match the worker's one- or two-CPU budget without oversubscribing it.
     /// Query the available CPUs before confinement, then pass only this count.
-    /// # Errors
-    /// Rejects any count outside the existing two-thread maximum.
     pub fn set_threads(&mut self, threads: usize) -> Result<(), SpeechError> {
         let threads = i32::try_from(threads).map_err(|_| SpeechError::Protocol)?;
         // SAFETY: the exclusive context is live; this stores only a bounded
@@ -320,8 +308,6 @@ impl SpeechEngine {
     }
     /// Allocate CPU decoder arenas after releasing the verified input bytes.
     /// Call before announcing readiness or opening a microphone.
-    /// # Errors
-    /// Rejects failed native allocation under the existing worker limit.
     pub fn prepare(&mut self) -> Result<(), SpeechError> {
         // SAFETY: this exclusively owned handle stays live throughout the
         // synchronous arena allocation; no input pointers are retained.
@@ -421,8 +407,6 @@ impl Default for SpeechInput {
 }
 impl SpeechInput {
     /// Parse one real framed request and reject replay, gaps and discontinuity.
-    /// # Errors
-    /// Rejects malformed headers, sequences, PCM or unexpected control payloads.
     pub fn accept<'a>(&mut self, frame: &'a [u8]) -> Result<(RequestKind, &'a [u8]), SpeechError> {
         let sequence = u64::from_le_bytes(
             frame

@@ -81,7 +81,7 @@ fn draw_own(
     draw_in(HOST, overlay, frame, own, pictures);
 }
 
-/// [`draw`] in `host`, with this person's own row (`own`) leading.
+/// [`draw`] in `host` , with this person's own row (`own`) leading.
 fn draw_in(
     host: Rect,
     overlay: &mut PeopleOverlay,
@@ -128,9 +128,8 @@ fn shown_overlay() -> PeopleOverlay {
     }
 }
 
-/// A person's own words lead their row; a model's description comes only
-/// when they wrote none, and is marked as a model's; where they are is
-/// the last resort.
+/// A person's own words lead their row; a model's description comes only when they wrote none, and
+/// is marked as a model's; where they are is the last resort.
 #[test]
 fn their_own_words_come_first_and_a_models_are_marked() {
     let mut ada = row("ada", "Ada");
@@ -156,9 +155,9 @@ fn their_own_words_come_first_and_a_models_are_marked() {
     );
 }
 
-/// A row says what someone is doing with where they are under it: their
-/// own words plainly, an automatic description (a model's, or the host's
-/// reading of what they did) marked; without either, only where they are.
+/// A row says what someone is doing with where they are under it: their own words plainly, an
+/// automatic description (a model's, or the host's reading of what they did) marked; without
+/// either, only where they are.
 #[test]
 fn a_row_says_what_they_do_then_where_and_marks_what_software_wrote() {
     let mut ada = row("ada", "Ada");
@@ -266,8 +265,8 @@ fn their_own_row_edits_what_they_are_doing_in_place() {
     assert!(!overlay.composing(), "clearing takes no keyboard");
 }
 
-/// Agents are listed after the people, under their own heading; invited
-/// people and this person's other devices are not in the overlay.
+/// Agents are listed after the people, under their own heading; invited people and this person's
+/// other devices are not in the overlay.
 #[test]
 fn agents_follow_the_people_under_their_own_heading() {
     let mut agent = row("bot", "Scribe");
@@ -336,8 +335,8 @@ fn dragging_the_panel_moves_it_and_reports_its_new_edge() {
     );
 }
 
-/// Passing over a row opens nothing; resting on it a quarter second opens
-/// its peek, and the pointer can travel into the peek without closing it.
+/// Passing over a row opens nothing; resting on it a quarter second opens its peek, and the pointer
+/// can travel into the peek without closing it.
 #[test]
 fn a_peek_opens_on_a_rest_not_a_pass() {
     let rows = vec![row("ada", "Ada"), row("ben", "Ben")];
@@ -463,9 +462,8 @@ fn a_peek_opens_at_twice_the_density_on_the_frame_it_asks_for() {
     );
 }
 
-/// Their screen is built from their presence: a window on something shared
-/// with this person shows this device's own picture of it; any other
-/// asks for no picture and shows only its app.
+/// Their screen is built from their presence: a window on something shared with this person shows
+/// this device's own picture of it; any other asks for no picture and shows only its app.
 #[test]
 fn only_shared_windows_are_pictured() {
     let rows = vec![row("ada", "Ada")];
@@ -487,8 +485,8 @@ fn only_shared_windows_are_pictured() {
     assert!(!screens[0].windows[1].shared());
 }
 
-/// Follow is on the row and in the peek, and both say the same thing: the
-/// host toggles the one follow it keeps.
+/// Follow is on the row and in the peek, and both say the same thing: the host toggles the one
+/// follow it keeps.
 #[test]
 fn follow_is_one_press_from_the_row_and_the_peek() {
     let rows = vec![row("ada", "Ada")];
@@ -518,8 +516,8 @@ fn follow_is_one_press_from_the_row_and_the_peek() {
     assert_eq!(hit, Some(PeopleHit::ToggleFollow("ada".into())));
 }
 
-/// At its edge the panel stands where a desk widget would: past a widget
-/// or a call card already waiting there, never on top of it.
+/// At its edge the panel stands where a desk widget would: past a widget or a call card already
+/// waiting there, never on top of it.
 #[test]
 fn the_panel_steps_past_what_already_waits_at_its_edge() {
     let rows = vec![row("ada", "Ada")];

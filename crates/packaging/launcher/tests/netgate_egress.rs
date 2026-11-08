@@ -898,8 +898,8 @@ const ENV_LOCAL_LAN: &str = "TILO_NETGATE_LOCAL_LAN";
 /// Name to ask the gate for, when a gate is present.
 const ENV_LOCAL_NAME: &str = "TILO_NETGATE_LOCAL_NAME";
 
-/// The in-sandbox half of the device-local tests. Same dispatcher shape as
-/// [`netns_probe`]: a no-op unless the outer test selected it.
+/// The in-sandbox half of the device-local tests. Same dispatcher shape
+/// as [`netns_probe`]: a no-op unless the outer test selected it.
 #[test]
 fn device_local_probe() {
     let Ok(loopback) = std::env::var(ENV_LOCAL_LOOPBACK) else {

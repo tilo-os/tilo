@@ -77,8 +77,8 @@ pub const HOST_ROOMS_RESOURCE: &str = "host.rooms";
 pub const CREATE_ROOM: &str = "room.create";
 /// Every workspace the host governs, each as a [`WorkspaceListing`].
 pub const LIST_ROOMS: &str = "room.list";
-/// Admit the calling device to `workspace` as one of its owner's. Answers an
-/// [`EnteredWorkspace`]: the invitation the device redeems to hold the workspace,
+/// Admit the calling device to `workspace` as one of its owner's. Answers
+/// an [`EnteredWorkspace`]: the invitation the device redeems to hold the workspace,
 /// restricted to its person and redeemable `expires_in_seconds` (600 when
 /// omitted).
 pub const ENTER_ROOM: &str = "room.enter";

@@ -1,11 +1,8 @@
-//! The window menu is a third party's to drive: a process the session starts
-//! reads the menu the session publishes and chooses a row from it, exactly as
-//! the desktop's own view does.
-//!
-//! The probe is the session package's own (`.tests/bin/surface_probe.rs`): it
-//! is an ordinary app started the way the session starts a panel, admitted by
-//! the launch the session records for it, reading and invoking through the
-//! connection the session's broker gives it.
+//! The window menu is a third party's to drive: a process the session starts reads the menu the
+//! session publishes and chooses a row from it, exactly as the desktop's own view does.
+//! The probe is the session package's own (`.tests/bin/surface_probe.rs`): it is an ordinary app
+//! started the way the session starts a panel, admitted by the launch the session records for it,
+//! reading and invoking through the connection the session's broker gives it.
 
 #![cfg(target_os = "linux")]
 #![allow(
@@ -25,7 +22,6 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use serde_json::{Value, json};
-use tilo_compositor::OutputConfig;
 use tilo_desktop_model::{
     DesktopTree, Strip, StripId, Tab, TileContent, WindowGroup, WindowWidth, Workspace,
     WorkspaceSlot,
@@ -35,8 +31,7 @@ use tilo_session::surfaces::Surface;
 use tilo_session::{ActionPlane, Options, Session};
 use tilo_test_env::ScopedEnv;
 
-/// One display's refresh: how often the session asks its clients for their
-/// next frame.
+/// One display's refresh: how often the session asks its clients for their next frame.
 const REFRESH: Duration = Duration::from_millis(16);
 
 fn window(id: u64, title: &str, app: &str) -> Tab {
@@ -86,19 +81,13 @@ fn probe_binary() -> PathBuf {
     tilo_test_env::sibling_binary("tilo-session", "tilo-surface-probe")
 }
 
-/// The session the probe talks to: headless, its plane on `socket`, showing
-/// one window.
+/// The session the probe talks to: headless, its plane on `socket` , showing one window.
 fn session_with(socket: &Path, tree: DesktopTree) -> Session {
-    let mut session = Session::headless(
-        Options {
-            presentation: ui::headless::fixture_runner_inputs,
-            collab: false,
-            action_plane: ActionPlane::At(socket.to_path_buf()),
-            ..Options::default()
-        },
-        &[OutputConfig::new("HEADLESS-1", 1280, 800)],
-    )
-    .expect("session");
+    let mut session = crate::common::headless(Options {
+        collab: false,
+        action_plane: ActionPlane::At(socket.to_path_buf()),
+        ..Options::default()
+    });
     session.handle().replace_tree(tree);
     session.step(REFRESH).expect("a turn of the session");
     session
@@ -121,7 +110,7 @@ fn until_reported(session: &mut Session, report: &Path) -> String {
     }
 }
 
-/// The reading named on the line that starts with `prefix`.
+/// The reading named on the line that starts with `prefix` .
 fn reading(report: &str, prefix: &str) -> Value {
     let line = report
         .lines()
@@ -130,7 +119,7 @@ fn reading(report: &str, prefix: &str) -> Value {
     serde_json::from_str(line).expect("a reading is JSON")
 }
 
-/// Whether the desk still holds the window `tab`.
+/// Whether the desk still holds the window `tab` .
 fn holds(session: &Session, tab: u64) -> bool {
     session.handle().read(|tree| {
         tree.workspaces
@@ -148,8 +137,8 @@ fn a_window_the_session_starts_reads_the_menu_and_chooses_a_row() {
     let socket = root.path().join("collab.sock");
     let report = root.path().join("report");
     let mut environment = ScopedEnv::new();
-    // What the probe is to read and choose, beside what the session writes on
-    // its environment when it starts it.
+    // What the probe is to read and choose, beside what the session writes on its environment when
+    // it starts it.
     environment.set("SURFACE_PROBE_REPORT", &report);
     environment.set("SURFACE_PROBE_RESOURCE", WINDOW_MENU);
     environment.set("SURFACE_PROBE_ACTION", "choose");
@@ -158,8 +147,8 @@ fn a_window_the_session_starts_reads_the_menu_and_chooses_a_row() {
         json!({ "row": "window-close-window" }).to_string(),
     );
     let mut session = session_with(&socket, desk_tree());
-    // The menu is up before the probe starts, so what it reads is the menu a
-    // person sees and not an empty desk.
+    // The menu is up before the probe starts, so what it reads is the menu a person sees and not an
+    // empty desk.
     session
         .invoke(
             WINDOW_MENU,

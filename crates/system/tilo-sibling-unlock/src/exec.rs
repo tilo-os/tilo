@@ -8,10 +8,6 @@ use std::process::{Command, Stdio};
 use zeroize::Zeroizing;
 
 /// Runs `program` with `args`, feeding `stdin`, and returns its stdout.
-///
-/// # Errors
-/// When the program cannot run or exits unsuccessfully; the error carries the
-/// last line of its stderr.
 pub fn run<I, S>(program: &str, args: I, stdin: Option<&[u8]>) -> Result<Zeroizing<Vec<u8>>>
 where
     I: IntoIterator<Item = S>,

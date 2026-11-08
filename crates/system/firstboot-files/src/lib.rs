@@ -139,9 +139,6 @@ pub type Writer<'a> = dyn FnMut(&OsStr) -> Result<()> + 'a;
 pub trait Files {
     /// The names in `directory`, without `.` and `..`, in directory order
     /// (`os.listdir`).
-    ///
-    /// # Errors
-    /// The directory cannot be read.
     fn list(&self, directory: BorrowedFd<'_>) -> Result<Vec<OsString>> {
         let mut entries = Dir::read_from(directory).map_err(on("listdir"))?;
         let mut names = Vec::new();
@@ -156,9 +153,6 @@ pub trait Files {
     }
 
     /// Flushes `fd` to stable storage.
-    ///
-    /// # Errors
-    /// The kernel refused.
     fn fsync(&self, fd: BorrowedFd<'_>) -> Result<()> {
         rustix::fs::fsync(fd).map_err(on("fsync"))
     }
@@ -323,10 +317,6 @@ fn lstat_at(directory: BorrowedFd<'_>, name: &OsStr) -> Result<rustix::fs::Stat,
 /// symlinks with their target, each owned by `owner`. Whatever already exists
 /// in `destination` is kept, and a directory there is descended into only
 /// through a descriptor that refuses a symlink.
-///
-/// # Errors
-/// Any failed call; a source entry that is not a directory, regular file or
-/// symlink.
 pub fn defaults<F: Files + ?Sized>(
     files: &F,
     source: BorrowedFd<'_>,
@@ -389,10 +379,6 @@ pub fn defaults<F: Files + ?Sized>(
 /// Gives everything in `directory`, and `directory` itself, to `owner`,
 /// recursively and without following a symlink. A regular file with a second
 /// link is refused rather than handed over, before and after it is opened.
-///
-/// # Errors
-/// Any failed call; a hard-linked file; an entry that is not a directory,
-/// regular file or symlink.
 pub fn ownership<F: Files + ?Sized>(
     files: &F,
     directory: BorrowedFd<'_>,

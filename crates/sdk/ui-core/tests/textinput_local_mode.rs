@@ -13,7 +13,6 @@ use winit::event::{Ime, Modifiers, WindowEvent};
 
 #[test]
 fn local_textinput_reports_typing_but_not_programmatic_text() {
-    // Case `local_textinput_accepts_typed_characters_and_reports_via_take_dirty`.
     {
         let mut input = TextInput::local().with_initial_value("hi");
         let mut taffy = TaffyTree::<()>::new();
@@ -65,7 +64,6 @@ fn local_textinput_reports_typing_but_not_programmatic_text() {
         assert_eq!(input.value(), "hi!");
     }
 
-    // Case `local_textinput_set_text_overrides_without_marking_dirty`.
     {
         let mut input = TextInput::local().with_initial_value("#ff0000");
         assert_eq!(input.value(), "#ff0000");

@@ -50,8 +50,8 @@ pub(super) fn desk_with(
     DesktopSurface::new(tree, 7, tiles)
 }
 
-/// A desk whose one window holds `windows` windows' tabs on its bar, as a
-/// strip does once the windows have been gathered into one.
+/// A desk whose one window holds `windows` windows' tabs on its bar, as a strip does once the
+/// windows have been gathered into one.
 pub(super) fn one_window_desk(windows: usize) -> (DesktopSurface, DesktopHandle) {
     let mut minter = IdMinter::new(7);
     let tabs = windows_tabs(&mut minter, windows);
@@ -82,9 +82,8 @@ fn held_by(name: &str) -> ui::widget::TabHolder {
     }
 }
 
-/// A window another guest opened on a shared desktop is theirs to close:
-/// asked to close it, the desktop refuses at once, says why, and the
-/// strip keeps every window where it was.
+/// A window another guest opened on a shared desktop is theirs to close: asked to close it, the
+/// desktop refuses at once, says why, and the strip keeps every window where it was.
 #[test]
 fn a_window_someone_else_holds_is_not_closed_and_the_desktop_says_why() {
     let (surface, handle) = desktop(3);
@@ -121,8 +120,8 @@ fn a_window_someone_else_holds_is_not_closed_and_the_desktop_says_why() {
         .unwrap();
 }
 
-/// Workspace and strip edits go through the model's commands: a strip
-/// made that way is shown, and a name the model refuses changes nothing.
+/// Workspace and strip edits go through the model's commands: a strip made that way is shown, and a
+/// name the model refuses changes nothing.
 #[test]
 fn workspace_and_strip_commands_run_through_the_models_reduction() {
     use tilo_desktop_model::commands::DesktopCommand;
@@ -171,11 +170,10 @@ fn workspace_and_strip_commands_run_through_the_models_reduction() {
     );
 }
 
-/// Hover never moves a window: the pointer over a window's bar, above
-/// its top edge, on its body or in the gap beside it leaves every
-/// window's frame, bar and body where they were, and focus where it
-/// was (a focused window's edge is drawn in another colour, never
-/// further out). Hover may recolour, never lift or grow.
+/// Hover never moves a window: the pointer over a window's bar, above its top edge, on its body or
+/// in the gap beside it leaves every window's frame, bar and body where they were, and focus where
+/// it was (a focused window's edge is drawn in another colour, never further out). Hover may
+/// recolour, never lift or grow.
 #[test]
 fn hovering_a_window_leaves_every_window_where_it_was() {
     let (surface, _handle) = desktop(2);
@@ -249,8 +247,8 @@ fn hovering_a_window_leaves_every_window_where_it_was() {
     }
 }
 
-/// A window's search control opens search, over what that window shows:
-/// the control is never a dead one in this desktop.
+/// A window's search control opens search, over what that window shows: the control is never a dead
+/// one in this desktop.
 #[test]
 fn a_windows_search_control_opens_search() {
     let (surface, handle) = desktop(1);
@@ -262,8 +260,8 @@ fn a_windows_search_control_opens_search() {
     );
     frame.relayout();
     assert!(!handle.search_open());
-    // The window bar's own search control: with nothing to search in
-    // place, it opens the platform search narrowed to the window's app.
+    // The window bar's own search control: with nothing to search in place, it opens the platform
+    // search narrowed to the window's app.
     let control = frame
         .root::<DesktopSurface>()
         .shown_row_ref()
@@ -299,8 +297,8 @@ impl TileSource for Installed {
     }
 }
 
-/// "All apps" under the apps of the empty palette opens the catalogue:
-/// every installed app, by its name, with nothing typed.
+/// "All apps" under the apps of the empty palette opens the catalogue: every installed app, by its
+/// name, with nothing typed.
 #[test]
 fn the_all_apps_row_opens_the_catalogue() {
     let (surface, handle) = desk_with(1, Box::new(Installed));
@@ -340,8 +338,8 @@ fn the_all_apps_row_opens_the_catalogue() {
     );
 }
 
-/// Search over one window stands over that window, as an app's own
-/// palette does, not centred on the screen over another window.
+/// Search over one window stands over that window, as an app's own palette does, not centred on the
+/// screen over another window.
 #[test]
 fn a_windows_search_stands_over_that_window() {
     let (surface, handle) = desktop(2);
@@ -376,8 +374,8 @@ fn a_windows_search_stands_over_that_window() {
         frame.relayout();
     }
     assert!(handle.search_open());
-    // What search stands over is the window it was opened from, under that
-    // window's bar: the chrome draws the card there, over the windows.
+    // What search stands over is the window it was opened from, under that window's bar: the chrome
+    // draws the card there, over the windows.
     let area = handle
         .search_area()
         .expect("search says what it stands over");
@@ -391,8 +389,8 @@ fn a_windows_search_stands_over_that_window() {
     );
 }
 
-/// An acknowledgement is said politely over the desktop, wakes the host
-/// for its fade and end, and is no notification.
+/// An acknowledgement is said politely over the desktop, wakes the host for its fade and end, and
+/// is no notification.
 #[test]
 fn an_acknowledgement_passes_over_the_desktop_without_a_notification() {
     let (mut surface, handle) = desktop(1);
@@ -420,8 +418,8 @@ fn an_acknowledgement_passes_over_the_desktop_without_a_notification() {
     assert_eq!(notifications.counts(), (0, 0));
 }
 
-/// Each select a host sends applies in the frame its wake draws, in
-/// order, while the strip pans between windows.
+/// Each select a host sends applies in the frame its wake draws, in order, while the strip pans
+/// between windows.
 #[test]
 fn selects_apply_in_the_frame_they_wake() {
     let (surface, handle) = desktop(3);
@@ -447,11 +445,10 @@ fn selects_apply_in_the_frame_they_wake() {
     }
 }
 
-/// A window's frame, border and rounded corners included, stands inside
-/// the desktop with wallpaper around it at the strip's home and at its
-/// end: past the leading edge, before the trailing edge and above the
-/// bottom edge, by at least the gap between two windows. Its bar stands
-/// above the frame, so the top is the bar's to keep.
+/// A window's frame, border and rounded corners included, stands inside the desktop with wallpaper
+/// around it at the strip's home and at its end: past the leading edge, before the trailing edge
+/// and above the bottom edge, by at least the gap between two windows. Its bar stands above the
+/// frame, so the top is the bar's to keep.
 #[test]
 fn windows_stand_clear_of_the_desktop_edges_at_both_ends_of_the_strip() {
     let gap = ui::widget::HANDLE_SLOT_PX;
@@ -541,10 +538,9 @@ fn windows_stand_clear_of_the_desktop_edges_at_both_ends_of_the_strip() {
     }
 }
 
-/// A tiled strip keeps wallpaper above and below its windows — a step under
-/// the bar, so their own top edge and corners stand clear of it, and a band
-/// at the bottom edge — and a maximized window takes both bands: it runs
-/// from the bar's band to the desktop's bottom edge, and they come back
+/// A tiled strip keeps wallpaper above and below its windows — a step under the bar, so their own
+/// top edge and corners stand clear of it, and a band at the bottom edge — and a maximized window
+/// takes both bands: it runs from the bar's band to the desktop's bottom edge, and they come back
 /// when it is restored.
 #[test]
 fn the_strip_keeps_the_bands_above_and_below_it_and_a_maximized_window_takes_both() {
@@ -660,8 +656,8 @@ fn clicking_a_window_body_makes_it_active() {
     assert_ne!(clicked, first, "the window under the pointer takes focus");
 }
 
-/// A window dragged wider by its trailing edge keeps the width the person
-/// dragged, over the frames that follow.
+/// A window dragged wider by its trailing edge keeps the width the person dragged, over the frames
+/// that follow.
 #[test]
 fn an_edge_drag_sets_the_width_and_the_strip_keeps_it() {
     let (surface, handle) = desktop(3);
@@ -723,9 +719,9 @@ fn an_edge_drag_sets_the_width_and_the_strip_keeps_it() {
     );
 }
 
-/// The desk mints its ids under the device's range, and a tree kept beside the
-/// device's state file carries none of its own: installing the kept tree lays
-/// this device's changes in this desk's range, not in "nobody's".
+/// The desk mints its ids under the device's range, and a tree kept beside the device's state file
+/// carries none of its own: installing the kept tree lays this device's changes in this desk's
+/// range, not in "nobody's".
 #[test]
 fn a_tree_kept_beside_the_state_file_installs_in_this_desks_range() {
     let (_surface, handle) = desktop(1);
@@ -928,14 +924,13 @@ fn ms(start: Instant, ms: u64) -> Instant {
     start.checked_add(Duration::from_millis(ms)).unwrap()
 }
 
-/// A sideways wheel turned `rightward` lines (negative: leftward), as
-/// winit reports it: negated.
+/// A sideways wheel turned `rightward` lines (negative: leftward), as winit reports it: negated.
 fn lines(rightward: f32) -> MouseScrollDelta {
     MouseScrollDelta::LineDelta(-rightward, 0.0)
 }
 
-/// One notch of a sideways wheel spun `rightward` as Firefox reports
-/// it: six lines (negative: leftward).
+/// One notch of a sideways wheel spun `rightward` as Firefox reports it: six lines (negative:
+/// leftward).
 fn notch(rightward: f32) -> MouseScrollDelta {
     lines(6.0 * rightward)
 }
@@ -950,8 +945,8 @@ fn wheel(surface: &mut DesktopSurface, delta: MouseScrollDelta, at: Instant) -> 
     surface.route_strip_swipe(travel, at) || surface.take_sideways(travel, false, at)
 }
 
-/// Route one wheel event over content that scrolls sideways with it, which
-/// takes the gesture's first event.
+/// Route one wheel event over content that scrolls sideways with it, which takes the gesture's
+/// first event.
 fn wheel_in_app(surface: &mut DesktopSurface, delta: MouseScrollDelta, at: Instant) -> bool {
     surface.end_idle_swipe(at);
     let Some(travel) = surface.strip_travel(delta, 1.0) else {
@@ -977,8 +972,8 @@ fn a_wheel_spin_steps_a_strip_that_cannot_pan_by_its_travel() {
         at += gap;
         assert!(wheel(&mut surface, notch(1.0), ms(t, at)));
     }
-    // Eight notches of six lines travel 8 × 6 × line_of_wheel(): the first
-    // notch's step and one per STEP_TRAVEL_PX after it.
+    // Eight notches of six lines travel 8 × 6 × line_of_wheel(): the first notch's step and one per
+    // STEP_TRAVEL_PX after it.
     assert_eq!(
         focused(&mut surface, &handle),
         4,
@@ -1112,8 +1107,8 @@ fn strip_offset(frame: &ui::headless::FrameHarness) -> f64 {
         .scroll_x()
 }
 
-/// Frames at 60 Hz from `t` until nothing on the desktop is moving, handing
-/// each frame's strip offset to `watch`.
+/// Frames at 60 Hz from `t` until nothing on the desktop is moving, handing each frame's strip
+/// offset to `watch` .
 fn settle_frames(
     frame: &mut ui::headless::FrameHarness,
     t: ui::time::Instant,
@@ -1127,8 +1122,8 @@ fn settle_frames(
         });
         watch(offset);
         if !frame.frame_schedule().needs_animation_frame {
-            // The pass that brings the strip to rest may queue the change it
-            // leaves: the frames after it apply that.
+            // The pass that brings the strip to rest may queue the change it leaves: the frames
+            // after it apply that.
             for step in 1..=3u64 {
                 let later = at.checked_add(Duration::from_millis(step)).unwrap_or(at);
                 ui::time::testing::with_monotonic_time(later, || frame.relayout());
@@ -1140,9 +1135,9 @@ fn settle_frames(
     panic!("the strip is still moving after ten seconds of frames");
 }
 
-/// Three fingers on the pad carry the strip shown: one pixel of their travel
-/// is one of its own from the first report on, past either end against the
-/// rubber band, and a strip whose windows all fit steps focus by their travel.
+/// Three fingers on the pad carry the strip shown: one pixel of their travel is one of its own from
+/// the first report on, past either end against the rubber band, and a strip whose windows all fit
+/// steps focus by their travel.
 #[test]
 fn three_fingers_carry_the_strip_under_them() {
     let (mut frame, _handle) = laid_out(5);
@@ -1175,8 +1170,8 @@ fn three_fingers_carry_the_strip_under_them() {
     }
     drop(surface);
 
-    // Past the end the strip pulls against the rubber band: the fingers
-    // still move it, by less, and letting go springs it back to the end.
+    // Past the end the strip pulls against the rubber band: the fingers still move it, by less, and
+    // letting go springs it back to the end.
     let max = frame
         .root::<DesktopSurface>()
         .shown_row_ref()
@@ -1210,9 +1205,8 @@ fn three_fingers_carry_the_strip_under_them() {
     );
 }
 
-/// Letting go of three fingers leaves the strip coasting at the speed they
-/// let go at and then resting, with focus on the window it left in view; the
-/// hand taken back throws it nowhere.
+/// Letting go of three fingers leaves the strip coasting at the speed they let go at and then
+/// resting, with focus on the window it left in view; the hand taken back throws it nowhere.
 #[test]
 fn letting_go_of_three_fingers_coasts_the_strip_and_focus_follows() {
     for cancelled in [false, true] {
@@ -1220,8 +1214,7 @@ fn letting_go_of_three_fingers_coasts_the_strip_and_focus_follows() {
         let start = strip_offset(&frame);
         let t = ui::time::now();
         let mut surface = frame.root_mut::<DesktopSurface>();
-        // A flick, its last frames fast enough to carry on past the window
-        // the fingers let go of.
+        // A flick, its last frames fast enough to carry on past the window the fingers let go of.
         for (i, travel) in [150.0, 500.0, 900.0, 1300.0].into_iter().enumerate() {
             ui::time::testing::with_monotonic_time(ms(t, 16 * i as u64), || {
                 surface.carry_strip(travel, i == 0)
@@ -1233,8 +1226,7 @@ fn letting_go_of_three_fingers_coasts_the_strip_and_focus_follows() {
             "carried to {carried}"
         );
         drop(surface);
-        // The frame that shows the last report, and the fingers lifting in
-        // it.
+        // The frame that shows the last report, and the fingers lifting in it.
         let left = ui::time::testing::with_monotonic_time(ms(t, 64), || {
             frame.relayout();
             let released = frame.root_mut::<DesktopSurface>().release_strip(cancelled);
@@ -1276,8 +1268,8 @@ fn letting_go_of_three_fingers_coasts_the_strip_and_focus_follows() {
     }
 }
 
-/// Focusing a window past the edge of the screen slides the strip to it over
-/// the toolkit's motion rather than cutting to it, and leaves it in view.
+/// Focusing a window past the edge of the screen slides the strip to it over the toolkit's motion
+/// rather than cutting to it, and leaves it in view.
 #[test]
 fn focusing_a_window_off_screen_slides_the_strip_into_frame() {
     let (mut frame, handle) = laid_out(5);
@@ -1448,8 +1440,8 @@ fn a_mouse_pans_the_strip_from_empty_canvas() {
         frame.relayout();
     }
 
-    // Windows and the seams between them cover the strip; canvas shows
-    // past the last window once the strip is panned to its end.
+    // Windows and the seams between them cover the strip; canvas shows past the last window once
+    // the strip is panned to its end.
     let t = ui::time::now();
     for i in 0..40 {
         wheel(
@@ -1502,9 +1494,9 @@ fn a_mouse_pans_the_strip_from_empty_canvas() {
     );
 }
 
-// A mouse with only a vertical wheel pans the strip over the strip's own
-// chrome — canvas, and a window's tab bar, which is the desktop's and not
-// the app's; over the app's content the wheel stays the app's.
+// A mouse with only a vertical wheel pans the strip over the strip's own chrome — canvas, and a
+// window's tab bar, which is the desktop's and not the app's; over the app's content the wheel
+// stays the app's.
 #[test]
 fn a_plain_wheel_over_a_windows_bar_pans_the_strip() {
     fn scroll(frame: &ui::headless::FrameHarness) -> f64 {
@@ -1635,8 +1627,8 @@ fn what_an_app_leaves_of_a_sideways_wheel_pans_the_strip_it_stands_in() {
         .active_tab_id();
     let start = scroll(&frame);
 
-    // The app of a window on the shown strip did not scroll with its
-    // sideways wheel: the strip moves by what it left, toward later windows.
+    // The app of a window on the shown strip did not scroll with its sideways wheel: the strip
+    // moves by what it left, toward later windows.
     handle.sideways_wheel(shown, 120.0);
     frame.relayout();
     assert!(frame.settle_for_capture(Duration::from_secs(2)));
@@ -1711,8 +1703,8 @@ fn workspace_window(group: u64, tab: TabId, title: &str) -> tilo_desktop_model::
     }
 }
 
-/// A desktop of one window with someone else's Notes, just arrived from
-/// the workspace, three windows further along the strip than the view reaches.
+/// A desktop of one window with someone else's Notes, just arrived from the workspace, three
+/// windows further along the strip than the view reaches.
 fn notes_opened_out_of_sight() -> (ui::headless::FrameHarness, TabId) {
     crate::i18n::ensure();
     let (width, height) = (1440_u32, 900_u32);
@@ -1750,8 +1742,8 @@ fn notes_opened_out_of_sight() -> (ui::headless::FrameHarness, TabId) {
     for _ in 0..4 {
         frame.relayout();
     }
-    // The window that had the strip to itself narrows to give the new ones
-    // workspace; its motion runs on presented frames.
+    // The window that had the strip to itself narrows to give the new ones workspace; its motion
+    // runs on presented frames.
     play_frames(&mut frame, 40);
     (frame, notes)
 }
@@ -1761,9 +1753,8 @@ thread_local! {
     static CLOCK: std::cell::Cell<Option<Instant>> = const { std::cell::Cell::new(None) };
 }
 
-/// Run `step` on the frame clock moved on by `after`: these tests' frames
-/// last exactly as long as a 60 Hz display's, however fast or loaded the
-/// machine running them is.
+/// Run `step` on the frame clock moved on by `after` : these tests' frames last exactly as long as
+/// a 60 Hz display's, however fast or loaded the machine running them is.
 fn on_clock<T>(after: Duration, step: impl FnOnce() -> T) -> T {
     let at = CLOCK
         .get()
@@ -1774,8 +1765,7 @@ fn on_clock<T>(after: Duration, step: impl FnOnce() -> T) -> T {
     ui::time::testing::with_monotonic_time(at, step)
 }
 
-/// `count` frames of a 60 Hz display, each presented, on the clock motion
-/// runs by.
+/// `count` frames of a 60 Hz display, each presented, on the clock motion runs by.
 fn play_frames(frame: &mut ui::headless::FrameHarness, count: usize) {
     for _ in 0..count {
         on_clock(Duration::from_millis(16), || {
@@ -1784,10 +1774,9 @@ fn play_frames(frame: &mut ui::headless::FrameHarness, count: usize) {
     }
 }
 
-/// Someone else opening a window out of sight leaves the view where it was
-/// and says so at the edge it lies beyond: "Kim opened Notes", clear of the
-/// windows' bars. A click on it brings the window into view, and the hint
-/// goes.
+/// Someone else opening a window out of sight leaves the view where it was and says so at the edge
+/// it lies beyond: "Kim opened Notes", clear of the windows' bars. A click on it brings the window
+/// into view, and the hint goes.
 #[test]
 fn a_window_someone_else_opens_out_of_sight_is_pointed_at_from_the_edge() {
     let (mut frame, notes) = notes_opened_out_of_sight();
@@ -1842,8 +1831,8 @@ fn a_window_someone_else_opens_out_of_sight_is_pointed_at_from_the_edge() {
     );
 }
 
-/// Only what someone else opened in a strip already here is pointed at:
-/// not this page's own windows, and not a whole strip arriving.
+/// Only what someone else opened in a strip already here is pointed at: not this page's own
+/// windows, and not a whole strip arriving.
 #[test]
 fn only_windows_others_open_in_a_known_strip_are_arrivals() {
     let (_surface, handle) = desktop(1);
@@ -1864,9 +1853,9 @@ fn only_windows_others_open_in_a_known_strip_are_arrivals() {
     assert!(arrivals::opened_elsewhere(&before, &new_strip, &[]).is_empty());
 }
 
-/// A page opening its workspace's app before the workspace's desktop arrived finds
-/// the workspace's window of it once it has, instead of adding one of its own
-/// for everyone: a visitor's arrival never puts a window in the strip.
+/// A page opening its workspace's app before the workspace's desktop arrived finds the workspace's
+/// window of it once it has, instead of adding one of its own for everyone: a visitor's arrival
+/// never puts a window in the strip.
 #[test]
 fn opening_an_app_finds_the_window_a_desktop_arriving_meanwhile_brings() {
     let (surface, handle) = desktop(2);
@@ -1899,9 +1888,8 @@ fn opening_an_app_finds_the_window_a_desktop_arriving_meanwhile_brings() {
     assert_eq!(focused.app.as_deref(), Some("so.tilo.app1"));
 }
 
-/// A person names a window: the tab shows their name in place of the
-/// window's title, keeps it when the window renames itself, and gives the
-/// window's title back when they clear it.
+/// A person names a window: the tab shows their name in place of the window's title, keeps it when
+/// the window renames itself, and gives the window's title back when they clear it.
 #[test]
 fn a_window_takes_the_name_the_person_gives_it_and_gives_it_back() {
     fn rename(
@@ -1955,8 +1943,7 @@ fn a_window_takes_the_name_the_person_gives_it_and_gives_it_back() {
         shown.iter().any(|title| title == "Quarterly plan"),
         "{shown:?}"
     );
-    // The window's own title still arrives behind the name, and shows once
-    // the name is cleared.
+    // The window's own title still arrives behind the name, and shows once the name is cleared.
     handle.read(|tree| {
         assert!(find_tab(tree, route.ids().unwrap().strip, route.tab.parse().unwrap()).is_some());
     });
@@ -1974,9 +1961,8 @@ fn a_window_takes_the_name_the_person_gives_it_and_gives_it_back() {
     assert!(refusal.contains("too long"), "{refusal}");
 }
 
-/// A tile source that counts the windows it builds content for, so a move
-/// that carries a window's live content over is told from one that builds
-/// the window again.
+/// A tile source that counts the windows it builds content for, so a move that carries a window's
+/// live content over is told from one that builds the window again.
 struct Counted {
     built: std::rc::Rc<std::cell::Cell<usize>>,
 }
@@ -2006,8 +1992,8 @@ fn counted_desktop(
     (surface, handle, built)
 }
 
-/// Drag the window `tab` of the shown strip out to `release`: the bar
-/// reports the release, as a person letting go of a dragged tab does.
+/// Drag the window `tab` of the shown strip out to `release` : the bar reports the release, as a
+/// person letting go of a dragged tab does.
 fn drag_out(frame: &mut ui::headless::FrameHarness, tab: TabId, below: bool) -> bool {
     let staged = frame.widget_mut::<GroupRow>().is_some_and(|row| {
         let band = row.get_rect();
@@ -2023,8 +2009,7 @@ fn drag_out(frame: &mut ui::headless::FrameHarness, tab: TabId, below: bool) -> 
         group.bar_mut_for_tests().pending_detach = Some((tab, Point::new(x, y)));
         true
     });
-    // The release the bar reports, and the pass that sweeps it into the
-    // row's own detach.
+    // The release the bar reports, and the pass that sweeps it into the row's own detach.
     frame.send_host_event(&ui::synthetic_input::cursor_moved(900.0, 700.0));
     for _ in 0..4 {
         frame.relayout();
@@ -2032,8 +2017,8 @@ fn drag_out(frame: &mut ui::headless::FrameHarness, tab: TabId, below: bool) -> 
     staged
 }
 
-/// A window dragged out of its strip lands in the strip below it and the
-/// desk follows it there, live content and all.
+/// A window dragged out of its strip lands in the strip below it and the desk follows it there,
+/// live content and all.
 #[test]
 fn a_window_dragged_out_of_its_strip_moves_to_the_strip_below_it() {
     use tilo_desktop_model::commands::DesktopCommand;
@@ -2148,9 +2133,9 @@ fn a_window_dragged_off_the_only_strip_stays_where_it_was() {
     assert_eq!(after.active_strip, before.active_strip);
 }
 
-/// Drag `tab` sideways along its own bar and let go over the gap before
-/// the tab at `at` (the end of the bar when `at` is the tab count): the
-/// pointer presses the pill, moves past it and releases, as a hand does.
+/// Drag `tab` sideways along its own bar and let go over the gap before the tab at `at` (the end of
+/// the bar when `at` is the tab count): the pointer presses the pill, moves past it and releases,
+/// as a hand does.
 fn drag_along_bar(
     frame: &mut ui::headless::FrameHarness,
     group: GroupId,
@@ -2166,8 +2151,8 @@ fn drag_along_bar(
             let from = group.tabs().iter().position(|t| t.id == tab)?;
             let pill = rects.get(from)?;
             let y = pill.center().y;
-            // Let go between the midpoints of the pills either side of the
-            // gap, which is the gap the bar resolves and the drop line shows.
+            // Let go between the midpoints of the pills either side of the gap, which is the gap
+            // the bar resolves and the drop line shows.
             let x = rects.get(at).map_or(rects.last()?.x1, |next| next.x0);
             Some((Point::new(pill.center().x, y), Point::new(x, y)))
         });
@@ -2194,9 +2179,8 @@ fn bar_order(frame: &ui::headless::FrameHarness, group: GroupId) -> Vec<TabId> {
         .unwrap_or_default()
 }
 
-/// A tab dragged along its own bar stays where it was let go: the desk's
-/// tree holds that order, not the one it had before the drag, and the
-/// window the person pressed is still the one they are on.
+/// A tab dragged along its own bar stays where it was let go: the desk's tree holds that order, not
+/// the one it had before the drag, and the window the person pressed is still the one they are on.
 #[test]
 fn a_tab_dragged_along_its_bar_keeps_the_order_it_lands_in() {
     let (surface, handle) = one_window_desk(3);
@@ -2257,9 +2241,8 @@ fn a_tab_dragged_along_its_bar_keeps_the_order_it_lands_in() {
     assert_eq!(on, tabs[0], "and the person is still on that window");
 }
 
-/// A window's own icon — the one its program set for that window — is on its
-/// tab, where its app's artwork stands, and goes when the window lets go of
-/// it.
+/// A window's own icon — the one its program set for that window — is on its tab, where its app's
+/// artwork stands, and goes when the window lets go of it.
 #[test]
 fn a_windows_own_icon_is_on_its_tab() {
     struct Own;

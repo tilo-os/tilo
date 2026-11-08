@@ -68,8 +68,6 @@ pub fn recv_with_fds(sock: impl AsFd) -> io::Result<(Vec<u8>, Vec<OwnedFd>)> {
 }
 
 /// Receive bounded data, refusing and closing every ancillary descriptor.
-/// # Errors
-/// Rejects empty/oversized buffers, truncation and unexpected rights.
 #[cfg(target_os = "linux")]
 pub(crate) fn recv_data(sock: impl AsFd, buffer: &mut [u8]) -> io::Result<usize> {
     if buffer.is_empty() || buffer.len() > 16384 {

@@ -28,10 +28,6 @@ const QUALITIES: [u8; 3] = [85, 70, 55];
 /// `bytes`, a picture of any format the worker reads, at most `max_side`
 /// pixels a side and `max_bytes` long, decoded and written out again in a
 /// confined worker.
-///
-/// # Errors
-///
-/// The worker did not start, or could not read or shrink the picture.
 pub(crate) fn shrink_picture(
     bytes: &[u8],
     max_side: u32,

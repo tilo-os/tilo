@@ -1,5 +1,5 @@
-//! The workspace settings sheet: what its tabs show of the workspace in
-//! front, and what a person's choices there change.
+//! The workspace settings sheet: what its tabs show of the workspace in front, and what a person's
+//! choices there change.
 
 use super::*;
 
@@ -23,8 +23,8 @@ fn own_workspace(session: &Session, members: &[&str]) {
     session.handle().replace_tree(tree);
 }
 
-/// The sheet as a person presses it: the app the session hosts, lent the
-/// seat the session lends its own, so a press arrives as the person's own.
+/// The sheet as a person presses it: the app the session hosts, lent the seat the session lends its
+/// own, so a press arrives as the person's own.
 fn sheet(session: &Session) -> HeadlessApp<WorkspaceSettingsApp> {
     let seat = session
         .workspace_settings()
@@ -37,8 +37,8 @@ fn sheet(session: &Session) -> HeadlessApp<WorkspaceSettingsApp> {
     app
 }
 
-/// Write what the sheet shows where a person can look at it, when the run
-/// asked for shots: `TILO_SURFACE_SHOTS` names where they go.
+/// Write what the sheet shows where a person can look at it, when the run asked for shots:
+/// `TILO_SURFACE_SHOTS` names where they go.
 fn capture(app: &mut HeadlessApp<WorkspaceSettingsApp>, name: &str) {
     let Some(directory) = std::env::var_os("TILO_SURFACE_SHOTS").map(std::path::PathBuf::from)
     else {
@@ -73,7 +73,7 @@ fn shown_review(session: &Session) -> tilo_sheets::workspace_settings::AgentRevi
     agents_shown(session).review.expect("the review is up")
 }
 
-/// The app `scope`'s row in the review the Agents tab shows now.
+/// The app `scope` 's row in the review the Agents tab shows now.
 fn listed_app(session: &Session, scope: &str) -> tilo_sheets::workspace_settings::AccessApp {
     shown_review(session)
         .apps
@@ -92,7 +92,7 @@ fn front_workspace(session: &Session) -> String {
     })
 }
 
-/// Press the control `id` of `app`, as a person's own gesture.
+/// Press the control `id` of `app` , as a person's own gesture.
 fn press(app: &mut HeadlessApp<WorkspaceSettingsApp>, id: &str) {
     app.harness()
         .perform_named(id, &ui::a11y::Action::Activate)
@@ -100,8 +100,8 @@ fn press(app: &mut HeadlessApp<WorkspaceSettingsApp>, id: &str) {
     app.settle();
 }
 
-/// Activate the element `name` says, as a screen reader does: the menu items
-/// a control opens have no id of their own, only what they say.
+/// Activate the element `name` says, as a screen reader does: the menu items a control opens have
+/// no id of their own, only what they say.
 fn activate(app: &mut HeadlessApp<WorkspaceSettingsApp>, name: &str) {
     let node = app
         .harness()
@@ -113,8 +113,8 @@ fn activate(app: &mut HeadlessApp<WorkspaceSettingsApp>, name: &str) {
     app.settle();
 }
 
-/// Choose what the control `name` says at `choice`, as a screen reader does:
-/// the choice is one segment of the control.
+/// Choose what the control `name` says at `choice` , as a screen reader does: the choice is one
+/// segment of the control.
 fn choose(app: &mut HeadlessApp<WorkspaceSettingsApp>, name: &str, choice: &str) {
     let nodes = app.harness().a11y_nodes();
     let group = app
@@ -145,8 +145,8 @@ fn choose(app: &mut HeadlessApp<WorkspaceSettingsApp>, name: &str, choice: &str)
     app.settle();
 }
 
-/// Show `tab` in the sheet, as pressing its tab does, and let the session
-/// answer with the tab it shows.
+/// Show `tab` in the sheet, as pressing its tab does, and let the session answer with the tab it
+/// shows.
 fn show_tab(
     session: &mut Session,
     app: &mut HeadlessApp<WorkspaceSettingsApp>,
@@ -173,8 +173,8 @@ fn search_open(session: &Session) -> Option<ResourceSpec> {
     )
 }
 
-/// The People tab gives each member another role, and the workspace holds
-/// both afterwards, with the sheet's rows saying so.
+/// The People tab gives each member another role, and the workspace holds both afterwards, with the
+/// sheet's rows saying so.
 #[test]
 fn workspace_settings_sets_each_members_role() {
     let _settled = ui::motion::testing::settled();
@@ -228,9 +228,8 @@ fn workspace_settings_sets_each_members_role() {
     }
 }
 
-/// The People tab says what the owner's role is instead of offering it: who
-/// owns the workspace is a fact of it, so their row has no role control and
-/// no one chooses a new owner here.
+/// The People tab says what the owner's role is instead of offering it: who owns the workspace is a
+/// fact of it, so their row has no role control and no one chooses a new owner here.
 #[test]
 fn the_people_tab_offers_the_owners_role_as_a_fact() {
     let _settled = ui::motion::testing::settled();
@@ -283,9 +282,9 @@ fn the_people_tab_offers_the_owners_role_as_a_fact() {
     );
 }
 
-/// No tab of workspace settings sends a person to the search: every control
-/// there changes the workspace or asks the session for a surface it shows, so
-/// none of them opens a search that finds nothing.
+/// No tab of workspace settings sends a person to the search: every control there changes the
+/// workspace or asks the session for a surface it shows, so none of them opens a search that finds
+/// nothing.
 #[test]
 fn no_workspace_settings_tab_leads_into_the_search() {
     let _settled = ui::motion::testing::settled();
@@ -315,8 +314,8 @@ fn no_workspace_settings_tab_leads_into_the_search() {
             "the {tab} tab opens no search"
         );
     }
-    // The two controls that used to, when the governance actions they
-    // searched were published, are gone.
+    // The two controls that used to, when the governance actions they searched were published, are
+    // gone.
     show_tab(
         &mut session,
         &mut app,
@@ -334,8 +333,8 @@ fn no_workspace_settings_tab_leads_into_the_search() {
     }
 }
 
-/// The Permissions tab gives ada a permission beyond her role, and takes it
-/// back: the workspace holds it in between, and the sheet lists it.
+/// The Permissions tab gives ada a permission beyond her role, and takes it back: the workspace
+/// holds it in between, and the sheet lists it.
 #[test]
 fn workspace_settings_gives_and_revokes_a_permission() {
     let _settled = ui::motion::testing::settled();
@@ -398,8 +397,7 @@ fn workspace_settings_gives_and_revokes_a_permission() {
     );
 }
 
-/// Have `app` hold a capability here, so the workspace shows it and the
-/// sheet offers it.
+/// Have `app` hold a capability here, so the workspace shows it and the sheet offers it.
 fn app_here(session: &Session, app: &str) {
     let mut tree = session.handle().read(Clone::clone);
     let workspace = tree.active_workspace_mut().expect("a workspace in front");
@@ -412,8 +410,7 @@ fn app_here(session: &Session, app: &str) {
     session.handle().replace_tree(tree);
 }
 
-/// The agent's answer for one kind of action at one app, as the domain
-/// reads the workspace.
+/// The agent's answer for one kind of action at one app, as the domain reads the workspace.
 fn answer(
     session: &Session,
     agent: &str,
@@ -441,8 +438,8 @@ fn settle(session: &mut Session, app: &mut HeadlessApp<WorkspaceSettingsApp>) {
     app.settle();
 }
 
-/// Its keeper dresses it from its row: the palette opens under it, and the
-/// colour picked is the one its devices draw it in.
+/// Its keeper dresses it from its row: the palette opens under it, and the colour picked is the one
+/// its devices draw it in.
 fn recolour(session: &mut Session, app: &mut HeadlessApp<WorkspaceSettingsApp>) {
     press(app, "ws-agents-palette-helper");
     settle(session, app);
@@ -478,9 +475,8 @@ fn settings_offer_a_model() {
         .expect("save the providers this device offers");
 }
 
-/// The Agents tab shows an agent's answers, changes one, returns them to
-/// what its admission says, chooses its model and takes the agent out of the
-/// workspace.
+/// The Agents tab shows an agent's answers, changes one, returns them to what its admission says,
+/// chooses its model and takes the agent out of the workspace.
 #[test]
 fn workspace_settings_answers_for_an_agent_and_takes_it_out() {
     use tilo_action_policy::ActionKind;
@@ -544,8 +540,8 @@ fn workspace_settings_answers_for_an_agent_and_takes_it_out() {
         "the review says the app was customised"
     );
 
-    // The model it plans with is the keeper's to choose, from this device's
-    // Settings, and the review says it chose.
+    // The model it plans with is the keeper's to choose, from this device's Settings, and the
+    // review says it chose.
     assert!(
         review
             .models
@@ -687,13 +683,12 @@ fn workspace_settings_pins_an_app_for_the_workspace() {
     );
 }
 
-/// What Chat's record of `workspace`'s emoji holds, as the device's store keeps
-/// it: read without taking its writer (Chat owns the record), the changes a
-/// window made committed as the store writes them.
-///
-/// Read on a thread of its own: the session's loop never waits on storage
-/// and is told "not yet" instead, while this asks the disk itself, as the
-/// session's own reader of other apps' records does.
+/// What Chat's record of `workspace` 's emoji holds, as the device's store keeps it: read without
+/// taking its writer (Chat owns the record), the changes a window made committed as the store
+/// writes them.
+/// Read on a thread of its own: the session's loop never waits on storage and is told "not yet"
+/// instead, while this asks the disk itself, as the session's own reader of other apps' records
+/// does.
 fn chat_emoji(home: &tilo_test_env::TestHome, workspace: &str) -> Option<Vec<String>> {
     let data = home.data().to_path_buf();
     let workspace = workspace.to_owned();
@@ -719,9 +714,9 @@ fn read_chat_emoji(data: &std::path::Path, workspace: &str) -> Option<Vec<String
     )
     .ok()
     .flatten()?;
-    // A window appends to the record as it changes it, and this read may land
-    // on a tail it has not finished writing: what came before it is the
-    // record as the last finished write left it, which is what Chat loads.
+    // A window appends to the record as it changes it, and this read may land on a tail it has not
+    // finished writing: what came before it is the record as the last finished write left it, which
+    // is what Chat loads.
     let options = automerge::LoadOptions::new().on_partial_load(automerge::OnPartialLoad::Ignore);
     let doc = automerge::AutoCommit::load_with_options(&stored.bytes, options).ok()?;
     let state =
@@ -744,8 +739,8 @@ fn read_chat_emoji(data: &std::path::Path, workspace: &str) -> Option<Vec<String
 #[test]
 fn workspace_settings_adds_and_removes_the_workspaces_emoji() {
     let _settled = ui::motion::testing::settled();
-    // The device store every app's records are kept in, here a home of the
-    // test's own: what the tab adds reaches no other test's workspace.
+    // The device store every app's records are kept in, here a home of the test's own: what the tab
+    // adds reaches no other test's workspace.
     let home = tilo_test_env::TestHome::new().expect("a home of its own");
     let picture = home.home().join("wave.png");
     image::save_buffer(
@@ -788,8 +783,8 @@ fn workspace_settings_adds_and_removes_the_workspaces_emoji() {
         !listing.reading && listing.entries.iter().any(|entry| entry.name == "wave.png")
     });
     let select = FilePickerEffect::SELECT.id;
-    // The chooser's own resource: "select" is a control of the sheet's tabs
-    // as well, and the action is taken by the app that publishes it.
+    // The chooser's own resource: "select" is a control of the sheet's tabs as well, and the action
+    // is taken by the app that publishes it.
     let chooser = publishers(&session, select)
         .into_iter()
         .find(|resource| resource.starts_with("file-chooser"))
@@ -813,9 +808,8 @@ fn workspace_settings_adds_and_removes_the_workspaces_emoji() {
         )
         .expect("confirm");
 
-    // The tab shows the emoji, and Chat's record holds it: the store commits
-    // what a window changed after a debounce, so what the device holds is
-    // read again until the emoji is in it.
+    // The tab shows the emoji, and Chat's record holds it: the store commits what a window changed
+    // after a debounce, so what the device holds is read again until the emoji is in it.
     pump(&mut session, &mut [], |_, _| {
         app.settle();
         app.harness().a11y_node_named(":wave:").is_some()
@@ -846,8 +840,8 @@ fn workspace_settings_adds_and_removes_the_workspaces_emoji() {
     );
 }
 
-/// What Chat's record of `workspace` holds once `done` says it does, stepping the
-/// session meanwhile: the store commits a window's change after a debounce.
+/// What Chat's record of `workspace` holds once `done` says it does, stepping the session
+/// meanwhile: the store commits a window's change after a debounce.
 fn held_by_chat(
     session: &mut Session,
     home: &tilo_test_env::TestHome,
@@ -864,8 +858,7 @@ fn held_by_chat(
     }
 }
 
-/// Every name the sheet says, with what it says of it, as a screen reader
-/// reads it.
+/// Every name the sheet says, with what it says of it, as a screen reader reads it.
 fn said(app: &mut HeadlessApp<WorkspaceSettingsApp>) -> Vec<(String, String)> {
     app.harness()
         .a11y_nodes()
@@ -937,8 +930,8 @@ fn workspace_settings_general_leaves_the_workspace() {
     let mut session = session();
     session.step(Duration::from_millis(1)).unwrap();
     invoke(&mut session, CHROME_RESOURCE, "new-workspace");
-    // Leaving is for a workspace that stays with the people in it: the new
-    // one has someone else in it, so leaving it means something.
+    // Leaving is for a workspace that stays with the people in it: the new one has someone else in
+    // it, so leaving it means something.
     own_workspace(&session, &["ada"]);
     invoke(&mut session, CHROME_RESOURCE, "workspace-settings");
     assert_eq!(
@@ -958,9 +951,9 @@ fn workspace_settings_general_leaves_the_workspace() {
     );
 }
 
-/// One agent as Chat's record of `workspace` holds it: its id, its name, the
-/// model it plans with, whether it still works here, what it may spend a day
-/// and the day it last counted, with what it spent.
+/// One agent as Chat's record of `workspace` holds it: its id, its name, the model it plans with,
+/// whether it still works here, what it may spend a day and the day it last counted, with what it
+/// spent.
 type StoredAgent = (
     String,
     String,
@@ -970,9 +963,9 @@ type StoredAgent = (
     Option<(String, u64)>,
 );
 
-/// What Chat's record of `workspace`'s agents holds, as the device's store
-/// keeps it: read without taking its writer (Chat owns the record), the
-/// changes a window made committed as the store writes them.
+/// What Chat's record of `workspace` 's agents holds, as the device's store keeps it: read without
+/// taking its writer (Chat owns the record), the changes a window made committed as the store
+/// writes them.
 fn chat_agents(home: &tilo_test_env::TestHome, workspace: &str) -> Option<Vec<StoredAgent>> {
     let data = home.data().to_path_buf();
     let workspace = workspace.to_owned();
@@ -1027,9 +1020,8 @@ fn read_chat_agents(data: &std::path::Path, workspace: &str) -> Option<Vec<Store
     )
 }
 
-/// What Chat's record of `workspace` holds once `done` says it does, stepping
-/// the session meanwhile: the store commits a window's change after a
-/// debounce.
+/// What Chat's record of `workspace` holds once `done` says it does, stepping the session
+/// meanwhile: the store commits a window's change after a debounce.
 fn held_agents(
     session: &mut Session,
     home: &tilo_test_env::TestHome,
@@ -1061,8 +1053,8 @@ fn agents_tab(session: &mut Session) -> HeadlessApp<WorkspaceSettingsApp> {
     app
 }
 
-/// `name` typed into the Agents tab's field and added: the tab makes an agent
-/// where Chat's record keeps it.
+/// `name` typed into the Agents tab's field and added: the tab makes an agent where Chat's record
+/// keeps it.
 fn make_agent(session: &mut Session, app: &mut HeadlessApp<WorkspaceSettingsApp>, name: &str) {
     press(app, "ws-agents-new");
     app.harness()
@@ -1081,9 +1073,8 @@ fn make_agent(session: &mut Session, app: &mut HeadlessApp<WorkspaceSettingsApp>
     });
 }
 
-/// The Agents tab makes an agent named in its field, where Chat's record
-/// keeps it, admits it to the workspace, and its keeper chooses the model it
-/// plans with.
+/// The Agents tab makes an agent named in its field, where Chat's record keeps it, admits it to the
+/// workspace, and its keeper chooses the model it plans with.
 #[test]
 fn workspace_settings_makes_the_workspaces_agents() {
     let _settled = ui::motion::testing::settled();
@@ -1194,8 +1185,8 @@ fn workspace_settings_retires_the_workspaces_agents() {
     assert_eq!(live, 0, "the workspace holds nothing of the agent again");
 }
 
-/// An agent's keeper sets what it may spend a day from its review: the
-/// record keeps the limit, and the row counts the day against it.
+/// An agent's keeper sets what it may spend a day from its review: the record keeps the limit, and
+/// the row counts the day against it.
 #[test]
 fn workspace_settings_sets_what_an_agent_may_spend_a_day() {
     let _settled = ui::motion::testing::settled();
@@ -1225,8 +1216,8 @@ fn workspace_settings_sets_what_an_agent_may_spend_a_day() {
     let limit = shown_review(&session).limit.expect("the day's limit");
     assert_eq!(limit.summary, "$5 a day", "the limit is the record's now");
     assert_eq!(limit.today, "$0 today");
-    // The field takes the room, Set keeps its own at the row's right end, and
-    // the two share one line on the desk as they do in the sheet.
+    // The field takes the room, Set keeps its own at the row's right end, and the two share one
+    // line on the desk as they do in the sheet.
     let drawn = app.harness().targets();
     let field = drawn["ws-agent-limit-field"];
     let button = drawn["ws-agent-limit-set"];
@@ -1278,8 +1269,8 @@ fn workspace_settings_reads_an_agents_admission_into_chats_record() {
     session.step(Duration::from_millis(1)).unwrap();
     own_workspace(&session, &["ada"]);
     let workspace = front_workspace(&session);
-    // The admission as workspaces stored it before records: a grant naming
-    // the agent, held by the workspace, given by the person who admitted it.
+    // The admission as workspaces stored it before records: a grant naming the agent, held by the
+    // workspace, given by the person who admitted it.
     let mut tree = session.handle().read(Clone::clone);
     let front = tree.active_workspace_mut().expect("a workspace in front");
     front.policy.grants.push(tilo_action_policy::Grant::new(

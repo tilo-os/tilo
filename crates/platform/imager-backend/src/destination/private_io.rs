@@ -22,9 +22,6 @@ pub fn stderr_is_terminal() -> bool {
 
 /// The private recipe on inherited descriptor `fd`, read through a
 /// duplicate of it, within [`MAX_RECIPE_BYTES`].
-///
-/// # Errors
-/// The sentence that says why it cannot be read.
 pub fn read_private_fd(fd: RawFd) -> Result<Zeroizing<Vec<u8>>, String> {
     // SAFETY: the caller named an inherited descriptor; dup gives this process
     // an independently owned one without closing theirs.
@@ -48,9 +45,6 @@ pub fn read_private_fd(fd: RawFd) -> Result<Zeroizing<Vec<u8>>, String> {
 
 /// The private recipe at `path`: a single regular file of this installer
 /// or root, readable by no other account, opened without following a link.
-///
-/// # Errors
-/// The sentence that says why it cannot be read.
 pub fn read_private_file(path: &Path) -> Result<Zeroizing<Vec<u8>>, String> {
     let c_path = std::ffi::CString::new(path.as_os_str().as_bytes())
         .map_err(|_| "The unattended recipe path contains a NUL".to_string())?;
@@ -104,9 +98,6 @@ fn read_bounded(file: &mut std::fs::File, what: &str) -> Result<Zeroizing<Vec<u8
 
 /// The recovery key's destination on inherited descriptor `fd`, through a
 /// duplicate of it.
-///
-/// # Errors
-/// The sentence that says why it cannot be written.
 pub fn writable_fd(fd: RawFd) -> Result<std::fs::File, String> {
     // SAFETY: the caller named an inherited descriptor; dup gives this process
     // an independently owned one without closing theirs.
@@ -122,9 +113,6 @@ pub fn writable_fd(fd: RawFd) -> Result<std::fs::File, String> {
 }
 
 /// Make the directory at `path` reachable by its owner alone (0700).
-///
-/// # Errors
-/// When its permissions cannot be changed.
 pub fn restrict_to_owner(path: &Path) -> io::Result<()> {
     use std::os::unix::fs::PermissionsExt as _;
     std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700))
@@ -132,9 +120,6 @@ pub fn restrict_to_owner(path: &Path) -> io::Result<()> {
 
 /// A new private (0600) file at `path` for the recovery key: never a
 /// path that exists already, never through a final symlink.
-///
-/// # Errors
-/// The sentence that says why it cannot be created.
 pub fn open_private_output(path: &Path) -> Result<std::fs::File, String> {
     let parent = path
         .parent()

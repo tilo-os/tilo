@@ -72,12 +72,12 @@ fn first_route(handle: &DesktopHandle) -> RouteIds {
     })
 }
 
-/// The tab of the `group`th window of the first strip.
+/// The tab of the `group` th window of the first strip.
 fn tab_at(handle: &DesktopHandle, group: usize) -> TabId {
     handle.read(|tree| tree.workspaces[0].strips[0].window_groups[group].tabs[0].id)
 }
 
-/// The group at `route`, as the tree holds it.
+/// The group at `route` , as the tree holds it.
 fn group_at(tree: &DesktopTree, route: RouteIds) -> tilo_desktop_model::WindowGroup {
     tree.workspaces
         .iter()
@@ -93,13 +93,13 @@ fn group_at(tree: &DesktopTree, route: RouteIds) -> tilo_desktop_model::WindowGr
         .expect("the window is in the tree")
 }
 
-/// The row `id`, in the menu or in one of its submenus.
+/// The row `id` , in the menu or in one of its submenus.
 fn row<'a>(rows: &'a [Row], id: &str) -> Option<&'a Row> {
     rows.iter().find_map(|row| row.find(id))
 }
 
-/// The ids of the rows the menu lists, its rules and the rows of its
-/// submenus included, in the order a person reads them.
+/// The ids of the rows the menu lists, its rules and the rows of its submenus included, in the
+/// order a person reads them.
 fn ids(rows: &[Row]) -> Vec<&str> {
     let mut found = Vec::new();
     for row in rows {
@@ -111,8 +111,8 @@ fn ids(rows: &[Row]) -> Vec<&str> {
     found
 }
 
-/// A window offers every row the desktop has for it, in the groups the
-/// desktop shows them in, and each means the command it names.
+/// A window offers every row the desktop has for it, in the groups the desktop shows them in, and
+/// each means the command it names.
 #[test]
 fn every_row_the_desktop_has_for_a_window_is_offered_in_its_order() {
     let (_surface, handle) = apps_desk(1);
@@ -152,8 +152,7 @@ fn every_row_the_desktop_has_for_a_window_is_offered_in_its_order() {
         "covering and filling the window, lifting it over the desk, its share of
             the strip, what it shows, and closing it"
     );
-    // Nowhere to move it to: the place offers no row at all, rather than one
-    // that cannot be chosen.
+    // Nowhere to move it to: the place offers no row at all, rather than one that cannot be chosen.
     for place in [MOVE_TO_STRIP, MOVE_TO_WORKSPACE, MOVE_TO_DISPLAY] {
         assert!(row(&rows, place).is_none(), "{place}");
     }
@@ -180,8 +179,7 @@ fn every_row_the_desktop_has_for_a_window_is_offered_in_its_order() {
             "{listed:?} is a command, not a submenu"
         );
     }
-    // A window of one tab is its own tab: it offers no split and no close of
-    // the tab alone.
+    // A window of one tab is its own tab: it offers no split and no close of the tab alone.
     assert!(row(&rows, CLOSE).is_none());
     assert!(row(&rows, SPLIT_RIGHT).is_none());
     assert_eq!(row(&rows, CLOSE_WINDOW).unwrap().label, "Close this window");
@@ -189,8 +187,7 @@ fn every_row_the_desktop_has_for_a_window_is_offered_in_its_order() {
     assert!(row(&rows, RENAME).is_none());
 }
 
-/// The row of a window asking for the person takes them to it, and is gone
-/// once they are there.
+/// The row of a window asking for the person takes them to it, and is gone once they are there.
 #[test]
 fn a_window_asking_for_the_person_offers_to_be_gone_to_first() {
     let (surface, handle) = desk(2);
@@ -220,8 +217,8 @@ fn a_window_asking_for_the_person_offers_to_be_gone_to_first() {
     assert!(row(&handle.window_menu(tab), REVEAL).is_none());
 }
 
-/// The full screen row covers the display with the window and gives it
-/// back, and the tree keeps which window covers it.
+/// The full screen row covers the display with the window and gives it back, and the tree keeps
+/// which window covers it.
 #[test]
 fn the_full_screen_row_covers_the_display_and_gives_it_back() {
     let (surface, handle) = desk(2);
@@ -271,8 +268,8 @@ fn the_full_screen_row_covers_the_display_and_gives_it_back() {
     );
 }
 
-/// The float row lifts the window over the desk at the floating size, and
-/// the row then offers to put it back into its strip.
+/// The float row lifts the window over the desk at the floating size, and the row then offers to
+/// put it back into its strip.
 #[test]
 fn the_float_row_lifts_the_window_over_the_desk_and_puts_it_back() {
     let (surface, handle) = apps_desk(2);
@@ -334,8 +331,7 @@ fn the_float_row_lifts_the_window_over_the_desk_and_puts_it_back() {
     assert_eq!(row(&handle.window_menu(route.tab), SNAP_BACK), None);
 }
 
-/// Filling the strip is offered, and once filled the row gives the strip
-/// back.
+/// Filling the strip is offered, and once filled the row gives the strip back.
 #[test]
 fn filling_the_strip_is_offered_and_then_giving_it_back() {
     let (surface, handle) = apps_desk(1);
@@ -355,9 +351,8 @@ fn filling_the_strip_is_offered_and_then_giving_it_back() {
     assert!(!handle.read(|tree| group_at(tree, route).maximized));
 }
 
-/// Each width row gives the window the share of its strip it names, and the
-/// wider and narrower rows step between the same shares, stopping at both
-/// ends with a row that says why.
+/// Each width row gives the window the share of its strip it names, and the wider and narrower rows
+/// step between the same shares, stopping at both ends with a row that says why.
 #[test]
 fn every_width_row_gives_the_window_the_share_it_names() {
     let (surface, handle) = apps_desk(1);
@@ -546,8 +541,8 @@ fn a_window_moves_to_another_workspace_by_its_name() {
     assert_eq!(home, vec![WorkspaceSlot(91)], "the window is there now");
 }
 
-/// Renders every tab as a notice of its own, and records the windows the
-/// session is asked to carry, as the session's own source does.
+/// Renders every tab as a notice of its own, and records the windows the session is asked to carry,
+/// as the session's own source does.
 struct Carrying {
     carried: std::rc::Rc<std::cell::RefCell<Vec<(TabId, WorkspaceSlot)>>>,
 }
@@ -566,10 +561,9 @@ impl TileSource for Carrying {
     }
 }
 
-/// The window of an app this device started runs in the workspace that started
-/// it, with its grants and its records: its tab does not cross by itself, and
-/// the desk hands the move to the session instead, leaving the tab where it is
-/// until the session carries it.
+/// The window of an app this device started runs in the workspace that started it, with its grants
+/// and its records: its tab does not cross by itself, and the desk hands the move to the session
+/// instead, leaving the tab where it is until the session carries it.
 #[test]
 fn a_running_apps_window_is_handed_to_the_session_instead_of_crossing_by_its_tab() {
     let carried = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
@@ -624,10 +618,9 @@ fn a_running_apps_window_is_handed_to_the_session_instead_of_crossing_by_its_tab
     );
 }
 
-/// A program of this machine runs with no workspace around it: no grants, no
-/// records. The session carries its window at once, as it does a Tilo app's
-/// after the app has started again — the surface only ever hands the move
-/// over, and the session decides what crosses.
+/// A program of this machine runs with no workspace around it: no grants, no records. The session
+/// carries its window at once, as it does a Tilo app's after the app has started again — the
+/// surface only ever hands the move over, and the session decides what crosses.
 #[test]
 fn a_programs_window_is_handed_over_too_and_the_session_moves_it_at_once() {
     let carried = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
@@ -661,8 +654,7 @@ fn a_programs_window_is_handed_over_too_and_the_session_moves_it_at_once() {
     );
 }
 
-/// A window shows on another display, by that display's name, as the
-/// keyboard chord does.
+/// A window shows on another display, by that display's name, as the keyboard chord does.
 #[test]
 fn a_window_moves_to_another_display_by_its_name() {
     let (surface, handle) = apps_desk(1);
@@ -805,8 +797,8 @@ fn only_a_window_the_sharing_app_lists_offers_the_share_row() {
     ));
 }
 
-/// Only a host (non-Tilo) window's tab offers a name; it names the window
-/// in place, and a name too long to show is refused.
+/// Only a host (non-Tilo) window's tab offers a name; it names the window in place, and a name too
+/// long to show is refused.
 #[test]
 fn only_a_host_windows_tab_offers_a_name() {
     let (surface, handle) = apps_desk(1);
@@ -853,8 +845,7 @@ fn only_a_host_windows_tab_offers_a_name() {
     assert_eq!(named, "Shell");
 }
 
-/// Split right takes the tab out into a window of its own, right after the
-/// one it was in.
+/// Split right takes the tab out into a window of its own, right after the one it was in.
 #[test]
 fn split_right_splits_a_tab_into_the_window_beside_it() {
     let (surface, handle) = one_window_desk(2);
@@ -891,8 +882,7 @@ fn split_right_splits_a_tab_into_the_window_beside_it() {
     );
 }
 
-/// Move to a new window takes the tab to a window of its own at the strip's
-/// end.
+/// Move to a new window takes the tab to a window of its own at the strip's end.
 #[test]
 fn a_tab_moves_to_a_new_window_at_the_strips_end() {
     let (surface, handle) = one_window_desk(3);
@@ -921,8 +911,8 @@ fn a_tab_moves_to_a_new_window_at_the_strips_end() {
     );
 }
 
-/// A tabbed window offers closing the tab and closing the window; closing
-/// the window takes every tab with it, and a reopen brings it back.
+/// A tabbed window offers closing the tab and closing the window; closing the window takes every
+/// tab with it, and a reopen brings it back.
 #[test]
 fn closing_the_tab_leaves_the_window_that_closing_it_ends() {
     let (surface, handle) = one_window_desk(2);
@@ -1001,8 +991,8 @@ fn stopping_desktop_control_takes_the_grant_back() {
     assert!(row(&handle.window_menu(route.tab), STOP_DESKTOP_CONTROL).is_none());
 }
 
-/// A window someone else holds is theirs to move and to close: those rows
-/// say whose it is, and choosing one is refused.
+/// A window someone else holds is theirs to move and to close: those rows say whose it is, and
+/// choosing one is refused.
 #[test]
 fn someone_elses_window_offers_no_move_nor_close() {
     let (_surface, handle) = one_window_desk(2);

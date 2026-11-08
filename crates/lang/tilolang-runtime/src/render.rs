@@ -365,10 +365,6 @@ impl Core {
     /// reading is still coming rather than failing the screen around it. The boundary reads the
     /// slot that moves when the reading comes, so it runs again then, and the reading is asked
     /// of the host in the meantime. A failure for any other reason is the caller's to report.
-    ///
-    /// # Errors
-    ///
-    /// A view that traps or returns no node, and anything else but a missing reading.
     pub(crate) fn render_boundary_waiting(
         &self,
         target: &ViewTarget,
@@ -1168,10 +1164,6 @@ impl Core {
     }
 
     /// Run a block's `b_main`, which takes no arguments, and read its value.
-    ///
-    /// # Errors
-    ///
-    /// A trap or a value of the wrong type.
     pub fn eval_block(
         &self,
         pkg: &Package,

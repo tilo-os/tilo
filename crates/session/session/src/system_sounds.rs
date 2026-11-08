@@ -1,10 +1,9 @@
 //! The one place the session plays a system event sound.
-//!
-//! Every caller names a [`SystemSoundEvent`]; this reads the person's
-//! "System sounds" preference and the quiet state out of the settings
-//! document, applies [`settings_store::system_sounds::should_play`], and
-//! hands a cue to the bounded [`EventSoundPlayer`] worker (a `pw-play` of
-//! the resolved theme file). Nothing here blocks the loop.
+//! Every caller names a [`SystemSoundEvent`]; this reads the person's "System sounds" preference
+//! and the quiet state out of the settings document, applies
+//! [`settings_store::system_sounds::should_play`], and hands a cue to the bounded
+//! [`EventSoundPlayer`] worker (a `pw-play` of the resolved theme file). Nothing here blocks the
+//! loop.
 
 use media::event_sound::{EventSoundPlayer, SoundCue};
 use settings_store::system_sounds::{QuietState, SystemSoundEvent, SystemSoundPrefs, should_play};
@@ -21,10 +20,9 @@ impl SystemSounds {
         }
     }
 
-    /// Play `event` if the person's preference and the quiet state allow
-    /// it. `delivery_allows` is the caller's own verdict for this instance
-    /// (a notification's sender policy has already applied Do Not Disturb
-    /// and focus time; a `suppress-sound` hint makes it `false`). Returns
+    /// Play `event` if the person's preference and the quiet state allow it. `delivery_allows` is
+    /// the caller's own verdict for this instance (a notification's sender policy has already
+    /// applied Do Not Disturb and focus time; a `suppress-sound` hint makes it `false` ). Returns
     /// whether a cue was queued.
     pub(crate) fn play(
         &self,

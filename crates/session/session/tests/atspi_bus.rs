@@ -37,22 +37,17 @@ use std::process::{Child, Command, Stdio};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use tilo_compositor::OutputConfig;
 use tilo_session::{Options, Session};
 use tilo_test_env::{PrivateBus, SpawnUnderEnvLock as _};
 
-const WIDTH: i32 = 1280;
-const HEIGHT: i32 = 800;
 const REFRESH: Duration = Duration::from_millis(16);
-/// The session's AT-SPI application root: every window it publishes hangs
-/// under it.
+/// The session's AT-SPI application root: every window it publishes hangs under it.
 const ROOT_PATH: &str = "/org/a11y/atspi/accessible/root";
-/// What the empty desk calls the way into the app palette, as the installed
-/// image's external AT-SPI client looks for it.
+/// What the empty desk calls the way into the app palette, as the installed image's external AT-SPI
+/// client looks for it.
 const OPEN_APP: &str = "Open an app";
-/// `AtspiRole::Frame`: a top level window with a title, which is what the
-/// accessibility stack turns a window root into. AT-SPI's `window` role is
-/// the untitled variant of it.
+/// `AtspiRole::Frame` : a top level window with a title, which is what the accessibility stack
+/// turns a window root into. AT-SPI's `window` role is the untitled variant of it.
 const ROLE_FRAME: u32 = 23;
 
 /// A child the test ends when it is done with it.
@@ -65,14 +60,13 @@ impl Drop for Guard {
     }
 }
 
-/// Which bus a call is made on: the session's, or the accessibility bus the
-/// registry names.
+/// Which bus a call is made on: the session's, or the accessibility bus the registry names.
 enum Bus<'a> {
     Session,
     Address(&'a str),
 }
 
-/// One `gdbus call`, as the acceptance client of the installed image makes it.
+/// One `gdbus call` , as the acceptance client of the installed image makes it.
 fn call(
     bus: &Bus<'_>,
     dest: &str,
@@ -124,8 +118,8 @@ fn paths(reply: &str) -> Vec<String> {
         .collect()
 }
 
-/// The whole tree under the root, bounded as a screen reader bounds its walk:
-/// every path with the name it says.
+/// The whole tree under the root, bounded as a screen reader bounds its walk: every path with the
+/// name it says.
 fn tree(bus: &Bus<'_>, dest: &str, limit: usize) -> Result<Vec<(String, String)>, String> {
     let mut pending = vec![ROOT_PATH.to_owned()];
     let mut seen = std::collections::HashSet::new();
@@ -170,8 +164,8 @@ fn connection_of(address: &str, pid: u32) -> Option<String> {
     None
 }
 
-/// Turn assistive technology on, as the bus reports it: the adapter wakes on a
-/// change of this, never on the value it starts at.
+/// Turn assistive technology on, as the bus reports it: the adapter wakes on a change of this,
+/// never on the value it starts at.
 fn set_enabled(enabled: bool) -> Result<String, String> {
     call(
         &Bus::Session,
@@ -216,8 +210,8 @@ fn a_screen_reader_reads_and_drives_the_session_over_atspi() {
     let mut home = tilo_test_env::TestHome::new().unwrap();
     home.env()
         .set("DBUS_SESSION_BUS_ADDRESS", session_bus.address());
-    // The registry keeps its enabled flag in GSettings, and this bus serves no
-    // dconf: a memory backend lets the flag take the value a screen reader sets.
+    // The registry keeps its enabled flag in GSettings, and this bus serves no dconf: a memory
+    // backend lets the flag take the value a screen reader sets.
     home.env().set("GSETTINGS_BACKEND", "memory");
     let _registry = Guard(
         Command::new("/usr/libexec/at-spi-bus-launcher")
@@ -229,21 +223,15 @@ fn a_screen_reader_reads_and_drives_the_session_over_atspi() {
     );
     let address = tilo_test_env::wait_for("the accessibility registry's address", atspi_address);
 
-    let mut session = Session::headless(
-        Options {
-            presentation: ui::headless::fixture_runner_inputs,
-            collab: false,
-            state: Some(home.state().to_path_buf()),
-            ..Options::default()
-        },
-        &[OutputConfig::new("HEADLESS-1", WIDTH, HEIGHT)],
-    )
-    .expect("session");
+    let mut session = crate::common::headless(Options {
+        collab: false,
+        state: Some(home.state().to_path_buf()),
+        ..Options::default()
+    });
     session.step(REFRESH).expect("a turn of the session");
-    // Off, then on: the session's adapters wait for assistive technology to
-    // arrive, and arrive they must now that it has. The bus follows that
-    // property from the moment its registry knows of a listener, so the
-    // session's first windows are made before the change is made.
+    // Off, then on: the session's adapters wait for assistive technology to arrive, and arrive they
+    // must now that it has. The bus follows that property from the moment its registry knows of a
+    // listener, so the session's first windows are made before the change is made.
     std::thread::sleep(Duration::from_millis(500));
     set_enabled(false).expect("the registry takes the change");
     std::thread::sleep(Duration::from_millis(300));
@@ -257,8 +245,8 @@ fn a_screen_reader_reads_and_drives_the_session_over_atspi() {
         |_| connection_of(&address, pid).is_some(),
     );
     let dest = connection_of(&address, pid).expect("the session's connection");
-    // A client that read a window makes the session build its tree on the
-    // loop; a reader waits that long for a desktop, so the walk below may.
+    // A client that read a window makes the session build its tree on the loop; a reader waits that
+    // long for a desktop, so the walk below may.
     for _ in 0..40 {
         session.step(REFRESH).expect("a turn of the session");
         std::thread::sleep(Duration::from_millis(20));
@@ -319,9 +307,8 @@ fn a_screen_reader_reads_and_drives_the_session_over_atspi() {
         "the way into the palette a screen reader reads is one it can press: {actions}"
     );
 
-    // What the assistive bus reports while the person presses it: the focus
-    // that follows the press is an event, not just a tree the next reader
-    // would have to re-read.
+    // What the assistive bus reports while the person presses it: the focus that follows the press
+    // is an event, not just a tree the next reader would have to re-read.
     let mut monitor = Guard(
         Command::new("stdbuf")
             .args(["-oL", "dbus-monitor", "--address", &address])

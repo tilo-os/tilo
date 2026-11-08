@@ -1,5 +1,5 @@
-//! Retained notifications as the notification centre shows them: grouped by
-//! verified app, newest first, with the words a screen reader hears for each.
+//! Retained notifications as the notification centre shows them: grouped by verified app, newest
+//! first, with the words a screen reader hears for each.
 
 use std::collections::{BTreeSet, HashMap};
 
@@ -8,11 +8,10 @@ use ui::time::Instant;
 use super::model::{Notification, NotificationSeverity};
 use crate::i18n::{t, t_args};
 
-/// Identity of the group a retained notification belongs to. Only the
-/// launcher-attributed app id (and, for a notification mirrored from
-/// another device, the caption naming that device) is used: a
-/// sender-controlled name never decides grouping. The desktop's own
-/// notifications have no verified app and stay ungrouped.
+/// Identity of the group a retained notification belongs to. Only the launcher-attributed app id
+/// (and, for a notification mirrored from another device, the caption naming that device) is used:
+/// a sender-controlled name never decides grouping. The desktop's own notifications have no
+/// verified app and stay ungrouped.
 pub fn group_key(notification: &Notification) -> Option<String> {
     let app_id = notification.app_id.as_deref()?;
     Some(match notification.app_name.as_deref() {
@@ -43,8 +42,8 @@ pub enum HistoryRow {
 }
 
 impl HistoryRow {
-    /// Stable identity of the row across re-derivations, used to keep the
-    /// keyboard selection on the same row when history changes under it.
+    /// Stable identity of the row across re-derivations, used to keep the keyboard selection on the
+    /// same row when history changes under it.
     pub fn identity(&self, history: &[Notification]) -> Option<RowIdentity> {
         match self {
             Self::Group { key, .. } => Some(RowIdentity::Group(key.clone())),
@@ -59,10 +58,9 @@ pub enum RowIdentity {
     Item(u64),
 }
 
-/// Derive the centre's rows from the oldest-first history. Groups sort by
-/// their newest member, so a fresh notification lifts its whole app to the
-/// top; members follow their header newest first. An app with a single
-/// retained notification shows that notification as a plain row.
+/// Derive the centre's rows from the oldest-first history. Groups sort by their newest member, so a
+/// fresh notification lifts its whole app to the top; members follow their header newest first. An
+/// app with a single retained notification shows that notification as a plain row.
 pub fn history_rows(history: &[Notification], collapsed: &BTreeSet<String>) -> Vec<HistoryRow> {
     let mut members: HashMap<String, Vec<usize>> = HashMap::new();
     for (index, notification) in history.iter().enumerate() {
@@ -115,8 +113,8 @@ pub fn history_rows(history: &[Notification], collapsed: &BTreeSet<String>) -> V
 pub enum HistoryActivation {
     /// The default action was sent to the originating app or device.
     Invoked,
-    /// The sender is gone (the entry was restored after a restart, or the
-    /// host has no route back to it); open the verified app instead.
+    /// The sender is gone (the entry was restored after a restart, or the host has no route back to
+    /// it); open the verified app instead.
     OpenApp { app_id: String, label: String },
     /// Nothing can act on this entry; it stays in history.
     Unavailable,
@@ -140,8 +138,8 @@ fn severity_label(severity: NotificationSeverity) -> String {
     }
 }
 
-/// Screen-reader description for one retained notification row, from the
-/// same source and age the painted row shows.
+/// Screen-reader description for one retained notification row, from the same source and age the
+/// painted row shows.
 pub fn accessible_description(notification: &Notification, now: Instant) -> String {
     let severity = severity_label(notification.severity);
     let time = relative_time(notification, now);

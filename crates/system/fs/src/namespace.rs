@@ -3447,11 +3447,6 @@ impl Namespace {
         tilo_doc::model::block_text(&self.doc, &containers, block_id)
     }
 
-    pub fn document_remove_block(&mut self, ino: u64, block_id: &str) -> bool {
-        self.with_doc_mut(ino, |d| d.remove_block(block_id))
-            .is_some()
-    }
-
     pub fn document_snapshot(&self, ino: u64) -> Option<tilo_doc::DocSnapshot> {
         let id = self.ino_to_id.get(&ino)?;
         let root = self.document_root(id)?;

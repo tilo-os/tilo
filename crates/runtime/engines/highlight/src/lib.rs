@@ -38,9 +38,6 @@ const _: tilo_highlight::GrammarsEntry = tilo_highlight_engine_entry;
 ///
 /// The engine's check binary calls it, so a release proves the library loads
 /// and runs against the runtime it ships with.
-///
-/// # Errors
-/// Names what the grammars classified wrongly.
 #[cfg(feature = "thin")]
 pub fn self_check() -> Result<String, String> {
     use tilo_highlight::TokenKind;

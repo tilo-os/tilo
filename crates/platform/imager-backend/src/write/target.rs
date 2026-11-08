@@ -238,9 +238,6 @@ pub fn eject_target(target: &TargetDrive) -> io::Result<()> {
 
 /// Eject the written drive, where this platform cannot do it: there is
 /// nothing to run, and [`can_eject`] said so.
-///
-/// # Errors
-/// Always: the platform has no eject.
 #[cfg(not(any(
     test,
     feature = "test-support",

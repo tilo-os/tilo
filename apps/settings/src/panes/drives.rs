@@ -112,15 +112,9 @@ pub(crate) fn answer(
 /// captures.
 pub trait DriveService: Send + Sync {
     /// The person's remembered drives.
-    ///
-    /// # Errors
-    /// When the service is unreachable or refuses.
     fn remembered(&self) -> Result<Vec<RememberedDrive>, Unreachable>;
 
     /// Carry out one change.
-    ///
-    /// # Errors
-    /// The service's reason, for a change it did not make.
     fn change(&self, request: Request) -> Result<(), String>;
 }
 

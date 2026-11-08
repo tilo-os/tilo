@@ -35,6 +35,15 @@ impl Dial {
     /// How a page dials: under a key derived from its store's channel vault, so
     /// a reload — and the planes beside the session — speak as the same
     /// endpoint.
+    /// The endpoint this session dials and joins planes from, with this
+    /// device's statement that it speaks for the device; `None` before the
+    /// first connect.
+    #[cfg(feature = "iroh")]
+    pub(super) fn plane(&self) -> Option<(iroh::Endpoint, Vec<u8>)> {
+        let endpoint = self.endpoint.clone()?;
+        Some((endpoint, self.delegation.clone().unwrap_or_default()))
+    }
+
     pub(super) fn for_page(vault: &[u8; 32]) -> Self {
         Self {
             #[cfg(feature = "iroh")]
@@ -86,7 +95,7 @@ pub(super) async fn connect(
                 relay.clone(),
             )
             .await?;
-            let delegation = sign_delegation(
+            sign_delegation(
                 signer,
                 config.cert.device_public_key,
                 &endpoint,
@@ -100,18 +109,14 @@ pub(super) async fn connect(
             tilo_relay_session::RelayClient::connect_with_signer(
                 endpoint.clone(),
                 host,
-                Some(config.cert.user_public_key),
+                Some(config.host_cert.user_public_key),
                 Some(config.host_cert.device_public_key),
                 config.cert.clone(),
                 signer,
                 config.revocations.clone(),
             )
             .await
-            .map(|client| Link::Iroh {
-                client,
-                endpoint,
-                delegation,
-            })
+            .map(|client| Link::Iroh { client })
             .map_err(iroh_link_error)
         }
     }
@@ -142,8 +147,8 @@ async fn bind_endpoint(
     Ok(endpoint)
 }
 
-/// This device's statement that `endpoint` speaks for `device`, for as long as
-/// [`DELEGATION_LIFETIME_NS`]: empty for a device whose endpoint is its own
+/// This device's statement that `endpoint` speaks for `device`, for as long
+/// as [`DELEGATION_LIFETIME_NS`]: empty for a device whose endpoint is its own
 /// key, and the device's own signature otherwise (through custody, which keeps
 /// a page's key unextractable).
 #[cfg(feature = "iroh")]

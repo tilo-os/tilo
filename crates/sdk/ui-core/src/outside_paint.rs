@@ -31,8 +31,8 @@ pub fn note() {
 
 /// Whether the frame on screen stands on a reading from outside the tree,
 /// and so is stale as soon as input reaches it ([`crate::input_generation`]).
-/// A host reads this when it records the frame it drew, then
-/// [`forget_on_screen`]: frames that draw such a part note it again.
+/// A host reads this when it records the frame it drew,
+/// then [`forget_on_screen`]: frames that draw such a part note it again.
 #[must_use]
 pub fn on_screen() -> bool {
     ON_SCREEN.with(Cell::get)

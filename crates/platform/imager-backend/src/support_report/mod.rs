@@ -663,8 +663,6 @@ impl SupportReport {
     /// The bytes are unsigned evidence the person supplied, not installation
     /// authority: they are relabelled as imported, validated for shape and
     /// bounds, and every mutation still re-checks the destination itself.
-    /// # Errors
-    /// Rejects oversized, malformed, unspecific or unsupported reports.
     pub fn import_json(bytes: &[u8]) -> Result<Self, String> {
         if bytes.len() > MAX_REPORT_BYTES {
             return Err("The hardware report is too large.".into());
@@ -680,8 +678,6 @@ impl SupportReport {
     }
 
     /// Serialize a report so it can be carried to the preparing computer.
-    /// # Errors
-    /// Returns why the report cannot be serialized.
     pub fn to_json(&self) -> Result<Vec<u8>, String> {
         serde_json::to_vec_pretty(self).map_err(|error| error.to_string())
     }

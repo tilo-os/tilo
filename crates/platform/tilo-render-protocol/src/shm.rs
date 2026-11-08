@@ -165,10 +165,6 @@ fn memfd(name: &str) -> io::Result<OwnedFd> {
 
 /// A memfd holding `bytes`, sealed immutable: what an app registers an
 /// image's pixels or a font's bytes in.
-///
-/// # Errors
-///
-/// When the memfd cannot be created, filled or sealed.
 pub fn sealed_blob(name: &str, bytes: &[u8]) -> io::Result<OwnedFd> {
     let fd = memfd(name)?;
     let mut written = 0_usize;
@@ -201,10 +197,6 @@ unsafe impl Send for RingWriter {}
 
 impl RingWriter {
     /// A ring of `len` bytes, sealed against resizing.
-    ///
-    /// # Errors
-    ///
-    /// When the memfd cannot be created, sized, sealed or mapped.
     pub fn create(len: usize) -> io::Result<Self> {
         let fd = memfd("tilo-render-ring")?;
         rustix::fs::ftruncate(&fd, len as u64)?;
@@ -330,10 +322,6 @@ unsafe impl Send for SharedMemory {}
 
 impl SharedMemory {
     /// `len` zeroed bytes.
-    ///
-    /// # Errors
-    ///
-    /// When the memfd cannot be created, sized, sealed or mapped.
     pub fn create(name: &str, len: usize) -> io::Result<Self> {
         let fd = memfd(name)?;
         rustix::fs::ftruncate(&fd, len as u64)?;

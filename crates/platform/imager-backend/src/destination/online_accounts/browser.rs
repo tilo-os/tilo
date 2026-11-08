@@ -93,9 +93,6 @@ struct OpenRequest {
 
 impl LiveBrowserOpener {
     /// Capture the current Cage session and start its unprivileged supervisor.
-    ///
-    /// # Errors
-    /// Refuses root, missing/unowned display sockets and thread creation failure.
     pub fn new() -> Result<Self, BrowserError> {
         unprivileged()?;
         let runtime = std::env::var_os("XDG_RUNTIME_DIR")

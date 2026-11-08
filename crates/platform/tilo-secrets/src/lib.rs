@@ -160,9 +160,6 @@ pub trait SecretBackend: Send + Sync {
     fn delete(&self, app: &str, key: &str) -> Result<(), SecretError>;
     /// Whether the store answers at all on this session, without touching a
     /// secret.
-    ///
-    /// # Errors
-    /// Why it does not.
     fn probe(&self) -> Result<(), SecretError> {
         Ok(())
     }
@@ -348,9 +345,6 @@ impl SecretStore {
 
     /// Whether the store answers on this session, blocking the calling
     /// thread. The web store always answers.
-    ///
-    /// # Errors
-    /// Why it does not.
     pub fn probe_blocking(&self) -> Result<(), SecretError> {
         match &self.backend {
             Backend::Sync(backend) => backend.probe(),

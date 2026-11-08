@@ -10,9 +10,6 @@ use super::TransferObserver;
 /// Copy the tree at `source` to exactly `destination`, which must not exist.
 /// A file keeps its bytes, permission bits and when it last changed; a folder
 /// keeps its tree and its permission bits; a link is copied as the link it is.
-///
-/// # Errors
-/// Returns what the filesystem says, or the refusal of an admission hook.
 pub(crate) fn copy_tree(
     source: &Path,
     destination: &Path,

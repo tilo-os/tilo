@@ -125,11 +125,13 @@ test('refusals, undeliverable frames and silence become typed errors', async () 
 
 test('agent cursors come from presence that says agent; delegations verify in wasm', () => {
   const live = {
-    remoteState: () => [
-      {publisher: AGENT, seq: 3, focus: {app: 'so.tilo.scratchpad', record: 'r1'}, pointer: {window: {app: 'so.tilo.scratchpad', record: 'r1'}, at: [10, 20]}, selection: null, stale: false,
-        participant: {kind: 'agent', label: 'Writer helper', color: '#7c3aed', activity: 'Edit note · Note'}},
-      {publisher: 'ff'.repeat(32), seq: 9, pointer: {strip: '1', at: [1, 2]}, participant: {kind: 'person', label: 'Ada', color: '#0ea5e9', activity: null}},
-      {publisher: '11'.repeat(32), seq: 1, pointer: {strip: '1', at: [5, 5]}, participant: null},
+    presenceMembers: () => [
+      {publisher: AGENT, epoch: 1, agent: true, focus: {app: 'so.tilo.scratchpad', record: 'r1'}, pointer: {tab: '4', at: [10, 20], ageMs: 0}, selection: null,
+        label: 'Writer helper', colour: '#7c3aed', activity: 'Edit note · Note'},
+      {publisher: 'ff'.repeat(32), epoch: 1, agent: false, focus: null, pointer: {tab: '1', at: [1, 2], ageMs: 0}, selection: null,
+        label: 'Ada', colour: '#0ea5e9', activity: null},
+      {publisher: '11'.repeat(32), epoch: 1, agent: true, focus: null, pointer: null, selection: null,
+        label: 'Idle helper', colour: '#f97316', activity: null},
     ],
   };
   const calls = [];
@@ -141,10 +143,12 @@ test('agent cursors come from presence that says agent; delegations verify in wa
     },
   };
   const agents = createAgents({peer: fakePeer(() => undefined), runtime, workspace: WORKSPACE, hostDevice: HOST, userPublicKey: USER, live, wallNow: () => 42});
-  assert.deepEqual(agents.cursors(), [{
-    device: AGENT, label: 'Writer helper', color: '#7c3aed', activity: 'Edit note · Note',
-    focus: {app: 'so.tilo.scratchpad', record: 'r1'}, pointer: {window: {app: 'so.tilo.scratchpad', record: 'r1'}, at: [10, 20]}, selection: null, stale: false,
-  }]);
+  assert.deepEqual(agents.cursors(), [
+    {device: AGENT, label: 'Writer helper', color: '#7c3aed', activity: 'Edit note · Note',
+      focus: {app: 'so.tilo.scratchpad', record: 'r1'}, pointer: {tile: {tab: '4'}, at: [10, 20]}, selection: null, stale: false},
+    {device: '11'.repeat(32), label: 'Idle helper', color: '#f97316', activity: null,
+      focus: null, pointer: null, selection: null, stale: true},
+  ]);
   assert.equal(agents.verify({id: 'writer', device: AGENT, delegation: 'good'}).agentId, 'writer');
   assert.deepEqual(calls[0], {delegation: 'good', user: USER, nowMs: 42});
   assert.equal(agents.verify({id: 'writer', device: AGENT, delegation: 'forged'}), null);

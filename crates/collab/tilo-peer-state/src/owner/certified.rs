@@ -78,8 +78,6 @@ impl VerifiedNativeEnrollmentIntent {
     pub fn proof_digest(&self) -> [u8; 32] {
         *blake3::hash(self.complete_bytes()).as_bytes()
     }
-    /// # Errors
-    /// The intent exceeds its bound.
     pub fn durable_bytes(&self) -> Result<Vec<u8>, String> {
         let bytes = postcard::to_stdvec(&self.record).map_err(|e| e.to_string())?;
         if bytes.len() > MAX_INTENT_BYTES {

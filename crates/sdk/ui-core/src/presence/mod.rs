@@ -432,8 +432,8 @@ pub enum RemotePresenceEffect {
 /// briefly delayed. See [`PresenceCtx::prune_pointers`].
 pub const POINTER_IDLE: Duration = Duration::from_secs(5);
 
-/// How long a quiet peer's pointer takes to fade out, ending at
-/// [`POINTER_IDLE`]: the standard fade of a stream gone quiet
+/// How long a quiet peer's pointer takes to fade out, ending
+/// at [`POINTER_IDLE`]: the standard fade of a stream gone quiet
 /// ([`crate::motion::Follow::FADE`]). See [`PresenceCtx::pointer_opacity`].
 pub const POINTER_FADE: Duration = crate::motion::Follow::FADE;
 

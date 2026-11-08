@@ -112,9 +112,6 @@ impl DavClient {
     }
 
     /// `PROPFIND` for `props` at `depth`.
-    ///
-    /// # Errors
-    /// On transport failure.
     pub fn propfind(
         &self,
         url: impl IntoUrl,
@@ -130,9 +127,6 @@ impl DavClient {
     }
 
     /// `REPORT` with an XML `body` (see [`crate::body`]).
-    ///
-    /// # Errors
-    /// On transport failure.
     pub fn report(
         &self,
         url: impl IntoUrl,
@@ -148,17 +142,11 @@ impl DavClient {
     }
 
     /// `GET`.
-    ///
-    /// # Errors
-    /// On transport failure.
     pub fn get(&self, url: impl IntoUrl) -> Result<DavResponse, Error> {
         send(self.request(Method::GET, url))
     }
 
     /// `PUT` `body` under `precondition`, declaring `content_type` if given.
-    ///
-    /// # Errors
-    /// On transport failure.
     pub fn put(
         &self,
         url: impl IntoUrl,
@@ -174,9 +162,6 @@ impl DavClient {
     }
 
     /// `DELETE` under `precondition`.
-    ///
-    /// # Errors
-    /// On transport failure.
     pub fn delete(
         &self,
         url: impl IntoUrl,
@@ -186,17 +171,11 @@ impl DavClient {
     }
 
     /// `MKCOL`.
-    ///
-    /// # Errors
-    /// On transport failure.
     pub fn mkcol(&self, url: impl IntoUrl) -> Result<DavResponse, Error> {
         send(self.request(method(b"MKCOL"), url))
     }
 
     /// `MOVE` to `destination`; `overwrite: false` sends `Overwrite: F`.
-    ///
-    /// # Errors
-    /// On transport failure.
     pub fn move_to(
         &self,
         url: impl IntoUrl,
@@ -215,9 +194,6 @@ impl DavClient {
     /// `None`) under `precondition`. A server that ignores ranges answers
     /// 200 with the whole body; check the status and its `Content-Range`
     /// header.
-    ///
-    /// # Errors
-    /// On transport failure.
     pub fn get_range(
         &self,
         url: impl IntoUrl,
@@ -236,9 +212,6 @@ impl DavClient {
 
     /// Any method with extra headers and a body. For protocol extensions
     /// (chunked upload sessions, `COPY`) the typed methods do not cover.
-    ///
-    /// # Errors
-    /// On transport failure, or an invalid method token.
     pub fn send(
         &self,
         method_name: &str,

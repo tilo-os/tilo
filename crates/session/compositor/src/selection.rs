@@ -49,8 +49,8 @@ use crate::state::{ClientState, State};
 /// UTF-8 text, the form every text offer is also given in.
 pub const TEXT_MIME: &str = "text/plain;charset=utf-8";
 
-/// The names text goes by, most specific first: X11 clients ask for the
-/// older ones through Xwayland.
+/// The names text goes by, most specific first: X11 clients ask for the older ones through
+/// Xwayland.
 const TEXT_MIMES: [&str; 5] = [TEXT_MIME, "text/plain", "UTF8_STRING", "STRING", "TEXT"];
 
 /// Cap on the formats one offer advertises.
@@ -90,21 +90,21 @@ impl From<Selection> for SelectionTarget {
 /// Who serves a selection the compositor set on the seat.
 #[derive(Clone, Debug)]
 pub enum Served {
-    /// An X11 client of `xwm`'s display, through its window manager.
+    /// An X11 client of `xwm` 's display, through its window manager.
     X11(XwmId),
     /// A hosted surface app: these bytes per format.
     Host(Arc<BTreeMap<String, Vec<u8>>>),
 }
 
-/// The compositor's side of the selections: the data-control globals and
-/// what each selection offers now.
+/// The compositor's side of the selections: the data-control globals and what each selection offers
+/// now.
 pub(crate) struct Selections {
     wlr: DataControlState,
     ext: ExtDataControlState,
     /// The formats each selection offers, whoever owns it.
     offered: [Vec<String>; 2],
-    /// How often each selection changed hands: a snapshot of `offered`
-    /// and this number tells a new selection from none.
+    /// How often each selection changed hands: a snapshot of `offered` and this number tells a new
+    /// selection from none.
     changes: [u64; 2],
 }
 
@@ -126,8 +126,8 @@ impl Selections {
         }
     }
 
-    /// Who offers `selection` now, as a number that changes with every
-    /// selection that is set or dropped.
+    /// Who offers `selection` now, as a number that changes with every selection that is set or
+    /// dropped.
     pub(crate) fn changes(&self, selection: Selection) -> u64 {
         let [clipboard, primary] = self.changes;
         match selection {
@@ -136,7 +136,7 @@ impl Selections {
         }
     }
 
-    /// `selection` now offers `mimes`.
+    /// `selection` now offers `mimes` .
     fn set_offered(&mut self, selection: Selection, mimes: Vec<String>) {
         let [clipboard, primary] = &mut self.offered;
         let [changed_clipboard, changed_primary] = &mut self.changes;
@@ -172,9 +172,8 @@ fn valid_mime(mime: &str) -> bool {
         && !mime.chars().any(|c| c.is_control() || c.is_whitespace())
 }
 
-/// The formats an offer advertises: valid names only, bounded, and text
-/// under every name text goes by, UTF-8 first so old clients do not pick an
-/// ambiguous X11 alias.
+/// The formats an offer advertises: valid names only, bounded, and text under every name text goes
+/// by, UTF-8 first so old clients do not pick an ambiguous X11 alias.
 pub(crate) fn normalized_mimes(mimes: impl IntoIterator<Item = String>) -> Vec<String> {
     let mut mimes: Vec<String> = mimes
         .into_iter()
@@ -194,7 +193,7 @@ pub(crate) fn normalized_mimes(mimes: impl IntoIterator<Item = String>) -> Vec<S
     mimes
 }
 
-/// The bytes an offer holds for `mime`, text under any of its names.
+/// The bytes an offer holds for `mime` , text under any of its names.
 pub(crate) fn value_for<'a>(values: &'a BTreeMap<String, Vec<u8>>, mime: &str) -> Option<&'a [u8]> {
     values.get(mime).map(Vec::as_slice).or_else(|| {
         is_text_mime(mime)
@@ -204,8 +203,8 @@ pub(crate) fn value_for<'a>(values: &'a BTreeMap<String, Vec<u8>>, mime: &str) -
     })
 }
 
-/// A hosted app's offer as the compositor keeps it: valid formats, within
-/// [`MAX_SELECTION_BYTES`]; `None` when it holds nothing to offer.
+/// A hosted app's offer as the compositor keeps it: valid formats, within [`MAX_SELECTION_BYTES`];
+/// `None` when it holds nothing to offer.
 pub(crate) fn host_offer(offer: Vec<(String, Vec<u8>)>) -> Option<BTreeMap<String, Vec<u8>>> {
     let mut total = 0usize;
     let mut values = BTreeMap::new();
@@ -222,8 +221,8 @@ pub(crate) fn host_offer(offer: Vec<(String, Vec<u8>)>) -> Option<BTreeMap<Strin
     (!values.is_empty()).then_some(values)
 }
 
-/// Write `bytes` to a reader's pipe off the loop: a reader that is slow or
-/// never reads must not stall the compositor. Closing the pipe is the end.
+/// Write `bytes` to a reader's pipe off the loop: a reader that is slow or never reads must not
+/// stall the compositor. Closing the pipe is the end.
 pub(crate) fn serve(fd: OwnedFd, bytes: Vec<u8>) {
     std::thread::spawn(move || {
         if let Err(error) = std::fs::File::from(fd).write_all(&bytes) {
@@ -233,8 +232,8 @@ pub(crate) fn serve(fd: OwnedFd, bytes: Vec<u8>) {
 }
 
 impl State {
-    /// Put a hosted app's offer on the seat (an empty one clears the
-    /// selection when a hosted app owns it).
+    /// Put a hosted app's offer on the seat (an empty one clears the selection when a hosted app
+    /// owns it).
     pub(crate) fn set_host_selection(
         &mut self,
         selection: Selection,
@@ -248,9 +247,8 @@ impl State {
                     Selection::Primary => clear_primary_selection(&display, &self.seat),
                 }
                 self.offer_to_x11(selection, None);
-                // A cleared selection offers nothing: whoever watches the
-                // formats sees the bytes are gone, as they do when a client
-                // drops its own.
+                // A cleared selection offers nothing: whoever watches the formats sees the bytes
+                // are gone, as they do when a client drops its own.
                 self.selections.set_offered(selection, Vec::new());
             }
             return;
@@ -269,7 +267,7 @@ impl State {
         self.selections.set_offered(selection, mimes);
     }
 
-    /// Who serves `selection`, when the compositor set it.
+    /// Who serves `selection` , when the compositor set it.
     fn served(&self, selection: Selection) -> Option<Served> {
         match selection {
             Selection::Clipboard => {
@@ -281,7 +279,7 @@ impl State {
         }
     }
 
-    /// Read `selection` as `mime` into `fd`, whoever owns it.
+    /// Read `selection` as `mime` into `fd` , whoever owns it.
     pub(crate) fn receive_selection(
         &mut self,
         selection: Selection,
@@ -309,8 +307,7 @@ impl State {
         }
     }
 
-    /// Ask the X11 owner of `selection` on `xwm`'s display for `mime` into
-    /// `fd`.
+    /// Ask the X11 owner of `selection` on `xwm` 's display for `mime` into `fd` .
     fn send_to_x11_reader(
         &mut self,
         xwm: XwmId,
@@ -331,11 +328,9 @@ impl State {
     }
 
     /// Tell the displays what `selection` offers now (`None`: nothing).
-    ///
-    /// An X11 client's copy stays on its display: the apps of its workspace
-    /// read it there, and no other display is told of it. What a Wayland
-    /// client or a hosted app copied goes to every display, as it does to
-    /// every Wayland client.
+    /// An X11 client's copy stays on its display: the apps of its workspace read it there, and no
+    /// other display is told of it. What a Wayland client or a hosted app copied goes to every
+    /// display, as it does to every Wayland client.
     fn offer_to_x11(&mut self, selection: Selection, mimes: Option<&[String]>) {
         let owner = match self.served(selection) {
             Some(Served::X11(xwm)) => Some(xwm),
@@ -374,15 +369,14 @@ impl State {
         self.x11_focused(xwm)
     }
 
-    /// An X11 client reads `selection` as `mime` into `fd`, from the display
-    /// that serves it.
+    /// An X11 client reads `selection` as `mime` into `fd` , from the display that serves it.
     pub(crate) fn x11_reads_selection(&mut self, selection: Selection, mime: &str, fd: OwnedFd) {
         if let Err(error) = self.receive_selection(selection, mime, fd) {
             tracing::debug!(%error, "X11 selection read refused");
         }
     }
 
-    /// An X11 client of `xwm`'s display set `selection`.
+    /// An X11 client of `xwm` 's display set `selection` .
     pub(crate) fn x11_set_selection(
         &mut self,
         xwm: XwmId,
@@ -401,8 +395,7 @@ impl State {
         self.selections.set_offered(selection, mimes);
     }
 
-    /// An X11 client of `xwm`'s display dropped `selection`; cleared if it
-    /// still owns it.
+    /// An X11 client of `xwm` 's display dropped `selection` ; cleared if it still owns it.
     pub(crate) fn x11_cleared_selection(&mut self, xwm: XwmId, selection: Selection) {
         if !matches!(self.served(selection), Some(Served::X11(owner)) if owner == xwm) {
             return;
@@ -415,8 +408,7 @@ impl State {
         self.selections.set_offered(selection, Vec::new());
     }
 
-    /// The server of `xwm`'s display is gone: a selection its clients owned
-    /// is gone with it.
+    /// The server of `xwm` 's display is gone: a selection its clients owned is gone with it.
     pub(crate) fn forget_x11_selection(&mut self, xwm: XwmId) {
         for selection in [Selection::Clipboard, Selection::Primary] {
             if !matches!(self.served(selection), Some(Served::X11(owner)) if owner == xwm) {
@@ -431,8 +423,8 @@ impl State {
         }
     }
 
-    /// Send keyboard focus's client the selections (`wl_data_device` and
-    /// primary selection follow focus).
+    /// Send keyboard focus's client the selections (`wl_data_device` and primary selection follow
+    /// focus).
     pub(crate) fn selection_focus(
         &self,
         client: Option<&smithay::reexports::wayland_server::Client>,

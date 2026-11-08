@@ -15,8 +15,6 @@ use std::{
 };
 
 /// Create `path` as a directory only this user can enter.
-/// # Errors
-/// Rejects a symlink or a directory owned by someone else.
 pub(crate) fn private_directory(path: &Path) -> io::Result<()> {
     let mut builder = std::fs::DirBuilder::new();
     builder.recursive(true).mode(0o700).create(path)?;

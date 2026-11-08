@@ -676,7 +676,7 @@ fn link_target(what: crate::text_detect::Detected, text: &str) -> Option<String>
     }
 }
 
-/// [`TextInput::accessibility_state`]: the state, selection and accessory
+/// [`TextInput::accessibility_state`] — the state, selection and accessory
 /// a field's accessibility node is built from.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) struct TextAccessibilityState {

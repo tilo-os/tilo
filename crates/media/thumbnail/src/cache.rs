@@ -186,20 +186,12 @@ impl ThumbCache {
     /// Open (creating if needed) a cache rooted at `dir` with default bounds:
     /// previews in a content store under `dir/content`, the key index under
     /// `dir/index`.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if `dir` can't be created.
     pub fn open(dir: impl AsRef<Path>) -> std::io::Result<Self> {
         Self::with_limits(dir, 512, 4096)
     }
 
     /// Open with explicit memory (`mem_capacity` entries) and index
     /// (`max_entries` previews) bounds.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if `dir` can't be created.
     pub fn with_limits(
         dir: impl AsRef<Path>,
         mem_capacity: u64,
@@ -218,10 +210,6 @@ impl ThumbCache {
 
     /// A cache over `store`, which must hold nothing but previews (pruning
     /// collects whatever the index at `index` no longer names).
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if `index` can't be created.
     pub fn with_store(
         store: ContentStore,
         index: impl Into<PathBuf>,

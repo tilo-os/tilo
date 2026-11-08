@@ -107,9 +107,6 @@ impl Bundle {
     /// The bundle of the compiled module `wasm`, its ids lock `ids` and the compiled modules of
     /// the packages it uses (`imports`), as a package's payload holds them: what a tilolang host
     /// is handed for each instance.
-    ///
-    /// # Errors
-    /// The module or an import carries no metadata.
     pub fn from_parts(
         wasm: Vec<u8>,
         ids: String,
@@ -143,9 +140,6 @@ impl Bundle {
     }
 
     /// The bundle in the payload directory `dir`.
-    ///
-    /// # Errors
-    /// A file is missing or unreadable, or the module carries no metadata.
     pub fn read(dir: &Path) -> Result<Self, BundleError> {
         let wasm_path = dir.join(WASM_FILE);
         let wasm = read(&wasm_path)?;
@@ -247,9 +241,6 @@ impl Bundle {
 
     /// Write the bundle into `dir` (created when missing): module, ids lock, imports and
     /// surface. The icon is the caller's, since it is drawn by the platform.
-    ///
-    /// # Errors
-    /// A file cannot be written.
     pub fn write(&self, dir: &Path) -> Result<(), BundleError> {
         let write = |path: PathBuf, bytes: &[u8]| {
             if let Some(parent) = path.parent() {

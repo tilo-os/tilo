@@ -249,7 +249,6 @@ fn labels() -> [&'static str; 4] {
 fn context_menu_highlight_is_visible_by_pointer_keyboard_and_theme() {
     // Motion reads at its end: this test checks the resting frame.
     let _settled = tilo_ui::motion::testing::settled();
-    // Case `context_menu_pointer_hover_is_visible_in_both_themes`.
     {
         for (name, theme) in themes() {
             let mut menu = ContextMenu::new();
@@ -278,7 +277,6 @@ fn context_menu_highlight_is_visible_by_pointer_keyboard_and_theme() {
         }
     }
 
-    // Case `context_menu_keyboard_highlight_is_visible_when_anchored`.
     {
         for (name, theme) in themes() {
             let mut menu = ContextMenu::new();
@@ -313,7 +311,6 @@ fn context_menu_highlight_is_visible_by_pointer_keyboard_and_theme() {
         }
     }
 
-    // Case `context_menu_highlight_is_visible_in_every_shipped_theme`.
     // Every preset `Theme::named` resolves, including the accessibility track:
     // the veneer polarity and the accent are per-theme decisions, so a highlight
     // that survives the two defaults can still vanish on a preset.
@@ -358,7 +355,6 @@ fn context_menu_highlight_is_visible_by_pointer_keyboard_and_theme() {
 fn list_menu_cursor_rows_are_visible_in_both_themes() {
     // Motion reads at its end: this test checks the resting frame.
     let _settled = tilo_ui::motion::testing::settled();
-    // Case `dropdown_open_list_highlight_is_visible_in_both_themes`.
     {
         for (name, theme) in themes() {
             let options: Vec<String> = labels().iter().map(|s| (*s).to_string()).collect();
@@ -396,7 +392,6 @@ fn list_menu_cursor_rows_are_visible_in_both_themes() {
         }
     }
 
-    // Case `autocomplete_pointer_hover_is_visible_in_both_themes`.
     {
         for (name, theme) in themes() {
             let mut ac = Autocomplete::new();
@@ -433,7 +428,6 @@ fn list_menu_cursor_rows_are_visible_in_both_themes() {
         }
     }
 
-    // Case `slash_menu_cursor_row_is_visible_in_both_themes`.
     {
         for (name, theme) in themes() {
             let mut menu = SlashMenu::new();
@@ -468,7 +462,6 @@ fn list_menu_cursor_rows_are_visible_in_both_themes() {
 fn closed_dropdown_hover_is_visible_on_an_opaque_ground() {
     // Motion reads at its end: this test checks the resting frame.
     let _settled = tilo_ui::motion::testing::settled();
-    // Case `window_ground_is_opaque_so_samples_are_meaningful`.
     {
         // Guards the sampling method itself: every case composites over the
         // theme's window ground, so a transparent ground would make each ΔL*
@@ -480,7 +473,6 @@ fn closed_dropdown_hover_is_visible_on_an_opaque_ground() {
         }
     }
 
-    // Case `dropdown_closed_control_hover_is_visible_in_both_themes`.
     // The closed control itself: a pointer resting on a dropdown must be
     // answered (HIG §7), which the widget tracked but never painted.
     {

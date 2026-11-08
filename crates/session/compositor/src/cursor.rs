@@ -1,18 +1,12 @@
-//! The pointer's image: the surface a client set, or a named shape from
-//! the cursor theme.
-//!
-//! Backends that own the screen draw it in front of everything else (the
-//! DRM backend's `DrmCompositor` puts it on the cursor plane where there is
-//! one). Named shapes come from the cursor theme the person chose
-//! ([`CursorA11y::theme`](crate::CursorA11y::theme)), or, until they choose
-//! one, the theme `XCURSOR_THEME` names (`default` otherwise), at
-//! `XCURSOR_SIZE` (24) times the output's scale; without a theme a plain
-//! arrow is drawn.
-//!
-//! A named image's buffer is made at the output's scale, so every renderer
-//! draws its pixels at the size the person set: the composited scene and a
-//! hardware cursor plane alike. Carrying the scale in the buffer rather
-//! than in an element size override is what makes the plane agree; see
+//! The pointer's image: the surface a client set, or a named shape from the cursor theme.
+//! Backends that own the screen draw it in front of everything else (the DRM backend's
+//! `DrmCompositor` puts it on the cursor plane where there is one). Named shapes come from the
+//! cursor theme the person chose ([`CursorA11y::theme`](crate::CursorA11y::theme)), or, until they
+//! choose one, the theme `XCURSOR_THEME` names (`default` otherwise), at `XCURSOR_SIZE` (24) times
+//! the output's scale; without a theme a plain arrow is drawn.
+//! A named image's buffer is made at the output's scale, so every renderer draws its pixels at the
+//! size the person set: the composited scene and a hardware cursor plane alike. Carrying the scale
+//! in the buffer rather than in an element size override is what makes the plane agree; see
 //! [`Image`].
 
 #![allow(
@@ -42,8 +36,7 @@ use crate::state::State;
 /// The cursor size, in logical pixels, when `XCURSOR_SIZE` does not say.
 const DEFAULT_SIZE: u32 = 24;
 
-/// The cursor theme drawn when neither the person nor `XCURSOR_THEME` names
-/// one.
+/// The cursor theme drawn when neither the person nor `XCURSOR_THEME` names one.
 const DEFAULT_THEME: &str = "default";
 
 /// One image of a named shape at one size.
@@ -68,8 +61,8 @@ struct Image {
     size: Size<i32, Physical>,
     /// The hotspot, in the image's pixels.
     hotspot: Point<i32, Physical>,
-    /// The logical pixels its buffer is one whole number of: the output
-    /// scale it was loaded for, rounded.
+    /// The logical pixels its buffer is one whole number of: the output scale it was loaded for,
+    /// rounded.
     buffer_scale: i32,
 }
 
@@ -86,8 +79,8 @@ impl Image {
         Rectangle::from_size(self.size.to_f64().to_logical(f64::from(self.buffer_scale)))
     }
 
-    /// The size its element is drawn at, in the logical pixels of an output
-    /// at `scale`: the size the person set.
+    /// The size its element is drawn at, in the logical pixels of an output at `scale` : the size
+    /// the person set.
     fn logical_size(&self, scale: f64) -> Size<i32, Logical> {
         let scale = if scale.is_finite() && scale > 0.0 {
             scale
@@ -98,8 +91,7 @@ impl Image {
     }
 }
 
-/// What the pointer shows, the theme it is drawn from and the theme images
-/// loaded so far.
+/// What the pointer shows, the theme it is drawn from and the theme images loaded so far.
 pub(crate) struct Cursor {
     pub(crate) status: CursorImageStatus,
     theme: xcursor::CursorTheme,
@@ -129,9 +121,8 @@ impl Cursor {
         }
     }
 
-    /// Draw the pointer from the theme `theme` names, loading it now when it
-    /// is not the theme in use; an empty `theme` leaves the environment's
-    /// (`XCURSOR_THEME`, else `default`) in force.
+    /// Draw the pointer from the theme `theme` names, loading it now when it is not the theme in
+    /// use; an empty `theme` leaves the environment's (`XCURSOR_THEME`, else `default` ) in force.
     pub(crate) fn set_theme(&mut self, theme: &str) {
         if theme == self.chosen_theme {
             return;
@@ -139,8 +130,7 @@ impl Cursor {
         theme.clone_into(&mut self.chosen_theme);
         self.theme_name = theme_in_force(theme);
         self.theme = xcursor::CursorTheme::load(&self.theme_name);
-        // Images are cached per theme as much as per size: the old ones only
-        // take room.
+        // Images are cached per theme as much as per size: the old ones only take room.
         self.images.borrow_mut().clear();
     }
 
@@ -149,8 +139,8 @@ impl Cursor {
         &self.theme_name
     }
 
-    /// Show the pointer at `size` logical pixels, inside what a person can
-    /// still aim with; `1` when it is not set.
+    /// Show the pointer at `size` logical pixels, inside what a person can still aim with; `1` when
+    /// it is not set.
     pub(crate) fn set_size(&mut self, size: u32) {
         let size = size.clamp(1, crate::a11y::MAX_CURSOR_SIZE);
         if size == self.size {
@@ -161,9 +151,8 @@ impl Cursor {
         self.images.borrow_mut().clear();
     }
 
-    /// The image of `icon` for the person's `size` logical pixels on an
-    /// output at `scale`, loaded on first use: the theme's image nearest
-    /// those pixels, its buffer at that scale.
+    /// The image of `icon` for the person's `size` logical pixels on an output at `scale` , loaded
+    /// on first use: the theme's image nearest those pixels, its buffer at that scale.
     fn image(&self, icon: CursorIcon, size: u32, scale: f64) -> Image {
         let pixels = cursor_pixels(size, scale);
         let theme = &self.theme;
@@ -177,9 +166,8 @@ impl Cursor {
     }
 }
 
-/// The theme directory to load for the person's `chosen` theme: that one
-/// once they chose it, else the environment's (`XCURSOR_THEME`), else the
-/// plain `default` theme.
+/// The theme directory to load for the person's `chosen` theme: that one once they chose it, else
+/// the environment's (`XCURSOR_THEME`), else the plain `default` theme.
 fn theme_in_force(chosen: &str) -> String {
     if !chosen.is_empty() {
         return chosen.to_owned();
@@ -187,8 +175,8 @@ fn theme_in_force(chosen: &str) -> String {
     std::env::var("XCURSOR_THEME").unwrap_or_else(|_| DEFAULT_THEME.to_owned())
 }
 
-/// `icon` from the theme, under its name or an older alias, at the size
-/// nearest `pixels`, its buffer at `scale`.
+/// `icon` from the theme, under its name or an older alias, at the size nearest `pixels` , its
+/// buffer at `scale` .
 fn themed(
     theme: &xcursor::CursorTheme,
     icon: CursorIcon,
@@ -226,8 +214,8 @@ fn themed(
     })
 }
 
-/// A plain arrow, white with a black edge, `pixels` tall, for systems with
-/// no cursor theme, its buffer at `scale`.
+/// A plain arrow, white with a black edge, `pixels` tall, for systems with no cursor theme, its
+/// buffer at `scale` .
 fn arrow(pixels: u32, scale: f64) -> Image {
     let side = pixels.max(8);
     let rgba = arrow_pixels(side);
@@ -247,8 +235,8 @@ fn arrow(pixels: u32, scale: f64) -> Image {
     }
 }
 
-/// RGBA rows of a `side`-pixel arrow: a right triangle with its point at
-/// the top left, as wide as it is tall at the bottom row's half.
+/// RGBA rows of a `side` -pixel arrow: a right triangle with its point at the top left, as wide as
+/// it is tall at the bottom row's half.
 fn arrow_pixels(side: u32) -> Vec<u8> {
     let mut rgba = Vec::with_capacity((side * side * 4) as usize);
     for y in 0..side {
@@ -269,8 +257,8 @@ fn arrow_pixels(side: u32) -> Vec<u8> {
 }
 
 impl State {
-    /// What the pointer shows now: a hosted surface under it chooses its
-    /// shape, else the focused client.
+    /// What the pointer shows now: a hosted surface under it chooses its shape, else the focused
+    /// client.
     fn cursor_status(&self) -> CursorImageStatus {
         match self.host_under_pointer() {
             Some(host) => CursorImageStatus::Named(host.cursor()),
@@ -278,8 +266,8 @@ impl State {
         }
     }
 
-    /// The pointer's image at `scale`: its size and hotspot in physical
-    /// pixels; `None` while it is hidden.
+    /// The pointer's image at `scale` : its size and hotspot in physical pixels; `None` while it is
+    /// hidden.
     pub(crate) fn cursor_shape(
         &self,
         scale: f64,
@@ -301,8 +289,8 @@ impl State {
         }
     }
 
-    /// The pointer's elements on `output`, front first, in its physical
-    /// pixels; none when the pointer is elsewhere or hidden.
+    /// The pointer's elements on `output` , front first, in its physical pixels; none when the
+    /// pointer is elsewhere or hidden.
     pub(crate) fn cursor_elements<R>(
         &self,
         renderer: &mut R,
@@ -324,8 +312,8 @@ impl State {
         self.cursor_elements_at(renderer, at, scale)
     }
 
-    /// The pointer's elements with its hotspot at `at` (physical pixels of
-    /// whatever they are drawn into) at `scale`; none while it is hidden.
+    /// The pointer's elements with its hotspot at `at` (physical pixels of whatever they are drawn
+    /// into) at `scale` ; none while it is hidden.
     pub(crate) fn cursor_elements_at<R>(
         &self,
         renderer: &mut R,
@@ -365,12 +353,11 @@ impl State {
     }
 }
 
-/// The element a named pointer `image` draws as, with its top left at
-/// `origin` (the output's physical pixels) on an output at `scale`.
-///
-/// The image's pixels are the output's, so the element draws all of them
-/// over the logical extent its buffer's scale names: at 2 a 48-pixel
-/// pointer image covers 24 logical pixels at those 48 device pixels.
+/// The element a named pointer `image` draws as, with its top left at `origin` (the output's
+/// physical pixels) on an output at `scale` .
+/// The image's pixels are the output's, so the element draws all of them over the logical extent
+/// its buffer's scale names: at 2 a 48-pixel pointer image covers 24 logical pixels at those 48
+/// device pixels.
 fn named_element<R>(
     renderer: &mut R,
     image: &Image,
@@ -394,13 +381,11 @@ where
     ))
 }
 
-/// The scale a named image's buffer is made at, from the output's: the
-/// nearest whole device pixels per logical pixel, at least `1`.
-///
-/// The buffer scale is what makes the drawn size the pointer's: an element
-/// takes its `src` from its buffer, so a 48-pixel image in a scale-2 buffer
-/// is 24 logical pixels and covers every one of its 48 device pixels, which
-/// is what lets a hardware cursor plane copy it whole.
+/// The scale a named image's buffer is made at, from the output's: the nearest whole device pixels
+/// per logical pixel, at least `1` .
+/// The buffer scale is what makes the drawn size the pointer's: an element takes its `src` from its
+/// buffer, so a 48-pixel image in a scale-2 buffer is 24 logical pixels and covers every one of its
+/// 48 device pixels, which is what lets a hardware cursor plane copy it whole.
 fn buffer_scale(scale: f64) -> i32 {
     if scale.is_finite() && scale >= 1.0 {
         #[allow(
@@ -425,7 +410,7 @@ fn surface_hotspot(surface: &WlSurface) -> Point<i32, Logical> {
     })
 }
 
-/// The physical size of a `size`-logical-pixel cursor at `scale`.
+/// The physical size of a `size` -logical-pixel cursor at `scale` .
 fn cursor_pixels(size: u32, scale: f64) -> u32 {
     let pixels = (f64::from(size) * scale).round();
     if pixels.is_finite() && pixels >= 1.0 && pixels <= f64::from(u16::MAX) {
@@ -459,9 +444,8 @@ mod tests {
         assert_eq!(cursor_pixels(24, 0.0), 24);
     }
 
-    /// The box the pointer's element draws into, in the output's physical
-    /// pixels, from the elements [`State::cursor_elements_at`] makes for a
-    /// pointer at the top left of an output at `scale`.
+    /// The box the pointer's element draws into, in the output's physical pixels, from the elements
+    /// [`State::cursor_elements_at`] makes for a pointer at the top left of an output at `scale` .
     fn drawn_box(scale: f64) -> (i32, i32) {
         let mut compositor = crate::Compositor::headless(Box::new(crate::StackPolicy))
             .expect("a headless compositor");
@@ -475,10 +459,9 @@ mod tests {
         (geometry.size.w, geometry.size.h)
     }
 
-    /// The pointer covers the person's 24 logical pixels at every scale: at 2
-    /// it is drawn with twice the pixels of a 24-pixel pointer, not twice the
-    /// size. An image loaded at 24 times the scale and then given a logical
-    /// size of its own pixels would cover 48 logical pixels at 2.
+    /// The pointer covers the person's 24 logical pixels at every scale: at 2 it is drawn with
+    /// twice the pixels of a 24-pixel pointer, not twice the size. An image loaded at 24 times the
+    /// scale and then given a logical size of its own pixels would cover 48 logical pixels at 2.
     #[test]
     fn the_pointer_is_the_persons_size_in_logical_pixels_at_two() {
         let (plain_w, plain_h) = drawn_box(1.0);
@@ -520,7 +503,7 @@ mod tests {
         }
     }
 
-    /// The pointer's element from `image` on an output at `scale`.
+    /// The pointer's element from `image` on an output at `scale` .
     fn element_of(
         renderer: &mut PixmanRenderer,
         image: &Image,
@@ -595,14 +578,12 @@ mod tests {
             .collect()
     }
 
-    /// The hardware cursor plane's buffer holds the whole pointer at the
-    /// person's size on a 2 display: the arrow's bright bottom-right pixel
-    /// is there, and the image fills exactly 48 by 48 pixels of the plane.
-    ///
-    /// This is what a 2 display showed wrong: the element's `src` was 24 of
-    /// the image's pixels over a 48-pixel box, so the plane held a doubled
-    /// top-left quarter — the pointer twice the size, its lower half cut
-    /// off.
+    /// The hardware cursor plane's buffer holds the whole pointer at the person's size on a 2
+    /// display: the arrow's bright bottom-right pixel is there, and the image fills exactly 48 by
+    /// 48 pixels of the plane.
+    /// This is what a 2 display showed wrong: the element's `src` was 24 of the image's pixels over
+    /// a 48-pixel box, so the plane held a doubled top-left quarter — the pointer twice the size,
+    /// its lower half cut off.
     #[test]
     fn the_cursor_plane_holds_the_whole_pointer_at_forty_eight_pixels() {
         let mut renderer = PixmanRenderer::new().expect("pixman");
@@ -676,8 +657,8 @@ mod tests {
         }
     }
 
-    /// The drawn pointer covers the person's 24 logical pixels at every
-    /// scale, whatever scale its image was loaded at.
+    /// The drawn pointer covers the person's 24 logical pixels at every scale, whatever scale its
+    /// image was loaded at.
     #[test]
     fn the_pointer_is_the_persons_size_in_logical_pixels_at_every_scale() {
         for scale in [1.0, 1.25, 1.5, 2.0, 2.5, 3.0] {
@@ -712,10 +693,9 @@ mod tests {
         }
     }
 
-    /// The person's theme is the one the pointer is drawn from, and the one
-    /// Xwayland's clients are told; until they choose one, the environment's
-    /// is (`default` when it names none). Neither has to be installed here:
-    /// a theme the machine lacks draws the plain arrow.
+    /// The person's theme is the one the pointer is drawn from, and the one Xwayland's clients are
+    /// told; until they choose one, the environment's is (`default` when it names none). Neither
+    /// has to be installed here: a theme the machine lacks draws the plain arrow.
     #[test]
     fn the_pointer_draws_the_theme_the_person_chose() {
         let mut cursor = Cursor::new();
@@ -739,8 +719,8 @@ mod tests {
             let at = (y * 16 + x) * 4;
             rgba.get(at..at + 4).map(<[u8]>::to_vec)
         };
-        // The point is opaque, the far top right is clear, the middle of
-        // the bottom-left half is white.
+        // The point is opaque, the far top right is clear, the middle of the bottom-left half is
+        // white.
         assert_eq!(pixel(0, 0), Some(vec![0, 0, 0, 255]));
         assert_eq!(pixel(15, 0), Some(vec![0, 0, 0, 0]));
         assert_eq!(pixel(2, 10), Some(vec![255, 255, 255, 255]));

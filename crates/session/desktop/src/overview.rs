@@ -26,8 +26,8 @@ pub trait OverviewHost: WindowSource {
     /// The person at this device.
     fn local_user(&self) -> &str;
 
-    /// What a capability covers, in the words the host's workspace settings
-    /// use, so a share here is recognisable where it is revoked.
+    /// What a capability covers, in the words the host's workspace settings use, so a share here is
+    /// recognisable where it is revoked.
     fn scope_label(&self, scope: &Scope) -> String;
 
     /// Where in the workspace a grant applies, in the same words.
@@ -92,14 +92,14 @@ impl Default for OverviewView {
 // Workspaces: people, sharing, and where you are
 // ---------------------------------------------------------------------------
 
-/// `role` and `present` are kept apart on purpose: role is what the
-/// workspace's capabilities say this person *may* do, present is whether
-/// they're here *now*. A member who has gone home is still a member.
+/// `role` and `present` are kept apart on purpose: role is what the workspace's capabilities say
+/// this person *may* do, present is whether they're here *now*. A member who has gone home is still
+/// a member.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct WorkspacePerson {
     pub id: UserId,
-    /// Display name if this session has met them, else the principal
-    /// itself — at least the string you would revoke.
+    /// Display name if this session has met them, else the principal itself — at least the string
+    /// you would revoke.
     pub name: String,
     pub role: CapRole,
     pub present: bool,
@@ -107,13 +107,12 @@ pub struct WorkspacePerson {
     pub is_you: bool,
 }
 
-/// A capability naming a *resource* — a path, document, device — held
-/// by a person. Workspace membership is [`WorkspaceCard::people`] instead, so
-/// "shared one file with Bob" can't collapse into "Bob is a member".
+/// A capability naming a *resource* — a path, document, device — held by a person. Workspace
+/// membership is [`WorkspaceCard::people`] instead, so "shared one file with Bob" can't collapse
+/// into "Bob is a member".
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct WorkspaceShare {
-    /// In `workspace_settings::scope_label`'s own words, so a revoke
-    /// there is recognisable here.
+    /// In `workspace_settings::scope_label` 's own words, so a revoke there is recognisable here.
     pub what: String,
     pub with: Vec<String>,
     /// Whether any holder may write, not just read.
@@ -128,9 +127,9 @@ pub struct OverviewTab {
     pub is_active: bool,
     /// The application the tab shows, drawn by its mark.
     pub app: WindowApp,
-    /// Present collaborators whose published focus points at this tab.
-    /// The local person is deliberately absent: an untouched solo workspace
-    /// should look like a desktop, not a collaboration dashboard.
+    /// Present collaborators whose published focus points at this tab. The local person is
+    /// deliberately absent: an untouched solo workspace should look like a desktop, not a
+    /// collaboration dashboard.
     pub people: Vec<WorkspacePerson>,
 }
 
@@ -138,8 +137,8 @@ pub struct OverviewTab {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct OverviewGroup {
     pub id: GroupId,
-    /// Persisted share of the strip's usable width. Rendering may compress
-    /// all groups to fit, but retains these proportions.
+    /// Persisted share of the strip's usable width. Rendering may compress all groups to fit, but
+    /// retains these proportions.
     pub width_permille: u32,
     pub is_current: bool,
     pub tabs: Vec<OverviewTab>,
@@ -195,8 +194,8 @@ impl WorkspaceCard {
         self.strips.iter().map(|strip| strip.groups.len()).sum()
     }
 
-    /// The applications open in the workspace, each once, in tree order: what a
-    /// glance at its row should recognise it by.
+    /// The applications open in the workspace, each once, in tree order: what a glance at its row
+    /// should recognise it by.
     pub fn apps(&self) -> Vec<&WindowApp> {
         let mut apps: Vec<&WindowApp> = Vec::new();
         for tab in self
@@ -213,9 +212,8 @@ impl WorkspaceCard {
     }
 }
 
-/// Falls back to the principal itself rather than a placeholder — a
-/// row labelled "Unknown" tells the reader nothing, while the raw
-/// subject is both true and the value a revoke would name.
+/// Falls back to the principal itself rather than a placeholder — a row labelled "Unknown" tells
+/// the reader nothing, while the raw subject is both true and the value a revoke would name.
 fn display_name(id: &UserId, ws: &Workspace, tree: &DesktopTree) -> String {
     known_collaborator(id, ws, tree).map_or_else(|| id.clone(), |c| c.name.clone())
 }
@@ -231,8 +229,7 @@ fn known_collaborator<'a>(
         .find(|c| &c.id == id)
 }
 
-/// Everyone who may be in `ws` at unix time `now`, and whether they are
-/// here now.
+/// Everyone who may be in `ws` at unix time `now` , and whether they are here now.
 pub fn workspace_people(
     ws: &Workspace,
     tree: &DesktopTree,
@@ -267,8 +264,8 @@ pub fn workspace_people(
         .collect()
 }
 
-/// Grouped by what is shared (scope, not capability): two grants on
-/// the same folder to two people are one share with two holders.
+/// Grouped by what is shared (scope, not capability): two grants on the same folder to two people
+/// are one share with two holders.
 pub fn workspace_shares(
     ws: &Workspace,
     tree: &DesktopTree,
@@ -292,8 +289,8 @@ pub fn workspace_shares(
             writable,
         }),
     };
-    // What one person was given beyond their role in the workspace: a grant on a
-    // part of it, or a file reached outside the sandbox's own.
+    // What one person was given beyond their role in the workspace: a grant on a part of it, or a
+    // file reached outside the sandbox's own.
     let node = ws.node();
     let cx = tilo_desktop_model::context_at(now);
     for grant in &ws.policy.grants {
@@ -321,8 +318,7 @@ pub fn workspace_shares(
         }
         let holder = match &cap.subject {
             Subject::Principal(Principal::Person(p)) => p.clone(),
-            // Resolving the durable name here stops one holder
-            // appearing twice on the same share.
+            // Resolving the durable name here stops one holder appearing twice on the same share.
             Subject::User(key) => match Principal::person_from_key(*key) {
                 Principal::Person(p) => p,
                 _ => continue,
@@ -339,7 +335,7 @@ pub fn workspace_shares(
     out
 }
 
-/// Every workspace as the overview shows it at unix time `now`.
+/// Every workspace as the overview shows it at unix time `now` .
 pub fn workspace_cards(
     tree: &DesktopTree,
     host: &dyn OverviewHost,
@@ -417,9 +413,8 @@ fn overview_strips(
         .collect()
 }
 
-/// Names people while it helps, counts once it stops: "Shared with
-/// Ada, Bob, Cleo, Dara, Eve" is a wall of text where "Shared with Ada
-/// and 4 others" is a fact.
+/// Names people while it helps, counts once it stops: "Shared with Ada, Bob, Cleo, Dara, Eve" is a
+/// wall of text where "Shared with Ada and 4 others" is a fact.
 pub fn workspace_access_label(card: &WorkspaceCard) -> String {
     let others: Vec<&WorkspacePerson> = card.others().collect();
     let name = |index: usize| others.get(index).map_or("", |p| p.name.as_str());
@@ -482,22 +477,21 @@ pub enum PressSource {
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum PressEnd {
-    /// Released where it began: a click or a tap on `tab`'s preview, or on
-    /// the panel when `tab` is `None`.
+    /// Released where it began: a click or a tap on `tab` 's preview, or on the panel when `tab` is
+    /// `None` .
     Tap {
         tab: Option<TabId>,
         at: vello::kurbo::Point,
     },
-    /// `tab`'s preview was dragged and let go at `at`.
+    /// `tab` 's preview was dragged and let go at `at` .
     Drop { tab: TabId, at: vello::kurbo::Point },
     /// Dragged from somewhere with nothing to carry.
     Nothing,
 }
 
-/// One press on the overview, from down to up: a pointer button or a
-/// finger. It carries the window whose preview it began on, and turns
-/// into a drag once it travels past the slop, so a tap and a drag are told
-/// apart the same way for a mouse and for a finger.
+/// One press on the overview, from down to up: a pointer button or a finger. It carries the window
+/// whose preview it began on, and turns into a drag once it travels past the slop, so a tap and a
+/// drag are told apart the same way for a mouse and for a finger.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct OverviewPress {
     pub source: PressSource,
@@ -520,12 +514,12 @@ impl OverviewPress {
         }
     }
 
-    /// The pointer or finger moved to `to`.
+    /// The pointer or finger moved to `to` .
     pub fn moved(&mut self, to: vello::kurbo::Point) {
         self.at = to;
         let slop = match self.source {
-            // The toolkit's own thresholds, so a preview starts dragging
-            // exactly when anything else dragged would.
+            // The toolkit's own thresholds, so a preview starts dragging exactly when anything else
+            // dragged would.
             PressSource::Mouse => ui::dnd::DRAG_START_THRESHOLD_PX,
             PressSource::Touch(_) => ui::gesture::TouchGestureArena::TAP_SLOP,
         };
@@ -539,7 +533,7 @@ impl OverviewPress {
         self.dragging && self.tab.is_some()
     }
 
-    /// Let go at `at`.
+    /// Let go at `at` .
     pub fn release(mut self, at: vello::kurbo::Point) -> PressEnd {
         self.moved(at);
         match (self.dragging, self.tab) {
@@ -697,8 +691,8 @@ mod workspace_tests {
             // Ada holds a file, not the workspace: she is not a member…
             assert!(card.is_private(), "a file grant must not admit a member");
             assert_eq!(workspace_access_label(card), "Private to you");
-            // …and the file shows up as exactly one share, named the way the
-            // permissions pane names it.
+            // …and the file shows up as exactly one share, named the way the permissions pane names
+            // it.
             assert_eq!(card.shares.len(), 1);
             assert_eq!(card.shares[0].with, vec!["ada".to_string()]);
             assert_eq!(

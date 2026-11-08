@@ -1,10 +1,8 @@
-//! The person's device fabric lives on the session: a copy made on one
-//! device reaches the other, and an action reaches the one device it is
-//! addressed to and no other.
-//!
-//! The sessions here run on this machine's loopback with the real peer
-//! actor and real certificates of one person, so what is checked is the
-//! transport and the fabric runtime together, not a stand-in link.
+//! The person's device fabric lives on the session: a copy made on one device reaches the other,
+//! and an action reaches the one device it is addressed to and no other.
+//! The sessions here run on this machine's loopback with the real peer actor and real certificates
+//! of one person, so what is checked is the transport and the fabric runtime together, not a
+//! stand-in link.
 
 #![cfg(target_os = "linux")]
 #![allow(
@@ -37,8 +35,8 @@ use tilo_user_identity::{DeviceCapabilities, DeviceCert, sign_device_cert};
 /// One pass of the session's loop, as the session runs it on its own clock.
 const PASS: Duration = Duration::from_millis(20);
 
-/// One of the person's devices, on its own loopback endpoint, taking part
-/// in the collaboration plane as its certified self.
+/// One of the person's devices, on its own loopback endpoint, taking part in the collaboration
+/// plane as its certified self.
 struct Device {
     client: Client,
     id: DeviceId,
@@ -58,8 +56,8 @@ fn person() -> ed25519_dalek::SigningKey {
     ed25519_dalek::SigningKey::from_bytes(&[21; 32])
 }
 
-/// The person's continuity switches as their settings leave them: nothing
-/// turned off, so media moves between their devices.
+/// The person's continuity switches as their settings leave them: nothing turned off, so media
+/// moves between their devices.
 fn permitted() -> Continuity {
     let continuity = Continuity::default();
     let document: serde_json::Map<String, serde_json::Value> =
@@ -69,7 +67,7 @@ fn permitted() -> Continuity {
     continuity
 }
 
-/// One of the person's devices, certified by `person`, on its own key.
+/// One of the person's devices, certified by `person` , on its own key.
 fn device(person: &ed25519_dalek::SigningKey, seed: u8, label: &str) -> Device {
     let key = ed25519_dalek::SigningKey::from_bytes(&[seed; 32]);
     let mut cert = DeviceCert {
@@ -114,11 +112,10 @@ fn pass(devices: &[&Device]) {
     }
 }
 
-/// Run the sessions' passes until `done` holds: whether it held before the
-/// suite's hang bound ran out.
+/// Run the sessions' passes until `done` holds: whether it held before the suite's hang bound ran
+/// out.
 fn until(devices: &[&Device], mut done: impl FnMut() -> bool) -> bool {
-    // The bound is the suite's own, so a busy machine slows the passes instead
-    // of failing them.
+    // The bound is the suite's own, so a busy machine slows the passes instead of failing them.
     let deadline = tilo_test_env::hang_deadline();
     loop {
         pass(devices);
@@ -149,8 +146,8 @@ fn a_remote_audio_route_gets_the_clock_it_plays_the_other_device_by() {
         "the two devices' sessions came up"
     );
 
-    // What a route playing the desk's sound holds while it runs: until the
-    // desk answers, its audio may not start.
+    // What a route playing the desk's sound holds while it runs: until the desk answers, its audio
+    // may not start.
     let clock = hold_fabric_clock_sync(desk.id.clone());
     assert_eq!(
         clock.state(),
@@ -226,8 +223,8 @@ fn a_wake_reaches_the_other_session() {
     let person = person();
     let laptop = device(&person, 1, "Laptop");
     let desk = device(&person, 2, "Desk");
-    // Not in the session at all: a wake names a device of the person's by
-    // its fabric id, so the waker need not have a session with it.
+    // Not in the session at all: a wake names a device of the person's by its fabric id, so the
+    // waker need not have a session with it.
     let pod = device(&person, 3, "Pod");
     laptop.client.connect(desk.client.endpoint_addr());
 
@@ -301,8 +298,8 @@ fn an_action_addressed_to_a_third_device_is_not_delivered() {
     });
 
     assert!(arrived, "the pod was handed the action addressed to it");
-    // Whatever the transport did with the frame would have happened by now:
-    // the desk's session with the laptop runs on the same passes.
+    // Whatever the transport did with the frame would have happened by now: the desk's session with
+    // the laptop runs on the same passes.
     for _ in 0..5 {
         pass(&[&laptop, &desk, &pod]);
         at_desk.extend(desk.client.fabric_actions());

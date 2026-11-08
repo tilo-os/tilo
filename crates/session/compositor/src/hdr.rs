@@ -78,8 +78,8 @@ use tilo_color_pipeline::hdr_tonemap::HdrTonemapConfig;
 
 use crate::render::OutputRenderElement;
 
-/// One drawn piece of a window that carries an HDR signal: a surface as
-/// usual, or its rendition where the described surface itself would be.
+/// One drawn piece of a window that carries an HDR signal: a surface as usual, or its rendition
+/// where the described surface itself would be.
 pub(crate) enum Piece<R: Renderer> {
     Surface(WaylandSurfaceRenderElement<R>),
     Rendered(MemoryRenderBufferRenderElement<R>),
@@ -128,8 +128,8 @@ thread_local! {
     static PASS: RefCell<Pass> = RefCell::new(Pass::default());
 }
 
-/// A pass that draws every HDR surface as something other than its
-/// rendition; the thread draws as usual again where it ends.
+/// A pass that draws every HDR surface as something other than its rendition; the thread draws as
+/// usual again where it ends.
 #[must_use = "the pass lasts while the guard lives"]
 pub(crate) struct Substitute {
     previous: Pass,
@@ -141,14 +141,14 @@ impl Drop for Substitute {
     }
 }
 
-/// A pass that draws every HDR surface's rendition as opaque black: the SDR
-/// desktop with the layers left out.
+/// A pass that draws every HDR surface's rendition as opaque black: the SDR desktop with the layers
+/// left out.
 pub(crate) fn black() -> Substitute {
     substitute(Appearance::Black, &[])
 }
 
-/// A pass that draws each surface's rendition in its layer's weight channel
-/// colour (`channels`: plane id and channel, from the recorded layers).
+/// A pass that draws each surface's rendition in its layer's weight channel colour (`channels`:
+/// plane id and channel, from the recorded layers).
 pub(crate) fn lit(channels: &[(u64, u8)]) -> Substitute {
     substitute(Appearance::Lit, channels)
 }
@@ -182,8 +182,7 @@ fn channel_of(plane: u64) -> Option<u8> {
 struct Kept {
     commit: CommitCounter,
     colorimetry: Colorimetry,
-    /// The volume the content was mastered for, which its SDR rendition is
-    /// tone-mapped from.
+    /// The volume the content was mastered for, which its SDR rendition is tone-mapped from.
     tonemap: HdrTonemapConfig,
     /// The signal at the buffer's precision, and the SDR rendition.
     surface: Arc<HdrSurface>,
@@ -198,8 +197,8 @@ struct Kept {
 pub(crate) struct HdrSurfaces(RefCell<HashMap<u64, Kept>>);
 
 impl HdrSurfaces {
-    /// The window's HDR plane: the one kept for its latest commit, or one
-    /// built from the buffer that commit attached.
+    /// The window's HDR plane: the one kept for its latest commit, or one built from the buffer
+    /// that commit attached.
     pub(crate) fn surface(
         &self,
         id: u64,
@@ -207,9 +206,8 @@ impl HdrSurfaces {
         description: (Colorimetry, Option<Hdr10Metadata>),
     ) -> Option<Arc<HdrSurface>> {
         let (colorimetry, metadata) = description;
-        // The luminance range the content was mastered in decides how it is
-        // compressed for an SDR output; a client that named none gets the
-        // HDR10 baseline.
+        // The luminance range the content was mastered in decides how it is compressed for an SDR
+        // output; a client that named none gets the HDR10 baseline.
         let tonemap = HdrTonemapConfig::from_metadata(metadata);
         // An SDR description is what the 8-bit desktop already shows.
         let signal = SurfaceSignal::for_colorimetry(colorimetry, tonemap)?;
@@ -259,8 +257,8 @@ impl HdrSurfaces {
         Some(surface)
     }
 
-    /// The rendition buffer kept for the plane `plane` a window draws, when
-    /// it is that window's latest commit.
+    /// The rendition buffer kept for the plane `plane` a window draws, when it is that window's
+    /// latest commit.
     fn rendition(&self, id: u64, plane: u64) -> Option<MemoryRenderBuffer> {
         let known = self.0.borrow();
         known
@@ -269,27 +267,26 @@ impl HdrSurfaces {
             .map(|kept| kept.rendition.clone())
     }
 
-    /// The rendition of the window `id`'s plane and its logical size: what
-    /// the window shows on screen, for its close to animate.
+    /// The rendition of the window `id` 's plane and its logical size: what the window shows on
+    /// screen, for its close to animate.
     pub(crate) fn shown(&self, id: u64) -> Option<(MemoryRenderBuffer, Size<i32, Logical>)> {
         let known = self.0.borrow();
         let kept = known.get(&id)?;
         Some((kept.rendition.clone(), kept.logical))
     }
 
-    /// Forget `id`: no plane is kept for it.
+    /// Forget `id` : no plane is kept for it.
     pub(crate) fn forget(&self, id: u64) {
         self.0.borrow_mut().remove(&id);
     }
 }
 
-/// `surface`'s committed buffer as an HDR plane, and the buffer's scale.
+/// `surface` 's committed buffer as an HDR plane, and the buffer's scale.
 fn read(surface: &WlSurface, signal: SurfaceSignal) -> Option<(HdrSurface, i32)> {
     with_states(surface, |states| {
         let data = states.data_map.get::<RendererSurfaceStateUserData>()?;
         let state = data.lock().unwrap_or_else(PoisonError::into_inner);
-        // The plane sits where the rendition is drawn, which a rotated
-        // buffer would move.
+        // The plane sits where the rendition is drawn, which a rotated buffer would move.
         if state.buffer_transform() != Transform::Normal {
             return None;
         }
@@ -301,8 +298,8 @@ fn read(surface: &WlSurface, signal: SurfaceSignal) -> Option<(HdrSurface, i32)>
     })
 }
 
-/// The buffer's samples as normalised signal values, when it holds them at a
-/// precision beyond 8 bits.
+/// The buffer's samples as normalised signal values, when it holds them at a precision beyond 8
+/// bits.
 fn pixels(buffer: &WlBuffer) -> Option<(u32, u32, Vec<[f32; 3]>)> {
     if let Ok(read) = smithay::wayland::shm::with_buffer_contents(buffer, from_shm)
         && let Some(read) = read
@@ -316,16 +313,16 @@ fn pixels(buffer: &WlBuffer) -> Option<(u32, u32, Vec<[f32; 3]>)> {
 /// How a buffer's words hold a signal.
 #[derive(Clone, Copy)]
 enum Layout {
-    /// One word per pixel, ten bits each, red in the low bits (`Xbgr2101010`)
-    /// or in the high ones (`Xrgb2101010`).
+    /// One word per pixel, ten bits each, red in the low bits (`Xbgr2101010`) or in the high ones
+    /// (`Xrgb2101010`).
     Rgb10 { red_low: bool },
     /// Four IEEE half floats per pixel, red first.
     Half,
 }
 
 impl Layout {
-    /// The layout of a 10-bit or half-float buffer format; `None` for a
-    /// format whose samples are 8-bit or packed differently.
+    /// The layout of a 10-bit or half-float buffer format; `None` for a format whose samples are
+    /// 8-bit or packed differently.
     fn of_fourcc(fourcc: Fourcc) -> Option<Self> {
         match fourcc {
             Fourcc::Xbgr2101010 | Fourcc::Abgr2101010 => Some(Self::Rgb10 { red_low: true }),
@@ -382,7 +379,7 @@ impl Layout {
     }
 }
 
-/// Rows `stride` apart from `offset`, decoded as `layout` says.
+/// Rows `stride` apart from `offset` , decoded as `layout` says.
 fn decode(
     layout: Layout,
     data: &[u8],
@@ -409,8 +406,7 @@ fn decode(
     Some((width, height, rgb))
 }
 
-/// A `wl_shm` buffer's samples; `None` for one that is not 10-bit or
-/// half-float.
+/// A `wl_shm` buffer's samples; `None` for one that is not 10-bit or half-float.
 fn from_shm(
     ptr: *const u8,
     len: usize,
@@ -435,8 +431,8 @@ fn from_shm(
     )
 }
 
-/// A single-plane linear dma-buf's samples, read through a mapping; `None`
-/// for a buffer the CPU cannot read in place (tiled, inverted, multi-plane).
+/// A single-plane linear dma-buf's samples, read through a mapping; `None` for a buffer the CPU
+/// cannot read in place (tiled, inverted, multi-plane).
 fn from_dmabuf(
     dmabuf: &smithay::backend::allocator::dmabuf::Dmabuf,
 ) -> Option<(u32, u32, Vec<[f32; 3]>)> {
@@ -482,10 +478,9 @@ fn from_dmabuf(
     decoded
 }
 
-/// The window's pieces when it carries an HDR signal: its described surface
-/// drawn as its rendition (or as the pass being built draws there) where it
-/// stands, and its popups and subsurfaces as usual. `None` for an ordinary
-/// window, which the caller draws as it always has.
+/// The window's pieces when it carries an HDR signal: its described surface drawn as its rendition
+/// (or as the pass being built draws there) where it stands, and its popups and subsurfaces as
+/// usual. `None` for an ordinary window, which the caller draws as it always has.
 pub(crate) fn pieces<R>(
     renderer: &mut R,
     state: &crate::state::State,
@@ -505,8 +500,8 @@ where
     let plane = hdr.surface(id, window, description)?;
     let scale = Scale::from(output_scale);
     let mut pieces = Vec::new();
-    // A popup is a surface of its own: it is drawn as usual, in its place
-    // over the window. Only the window's own surface carries a layer here.
+    // A popup is a surface of its own: it is drawn as usual, in its place over the window. Only the
+    // window's own surface carries a layer here.
     for (popup, popup_offset) in PopupManager::popups_for_surface(&surface) {
         let offset = (window.geometry().loc + popup_offset - popup.geometry().loc)
             .to_physical_precise_round(scale);
@@ -578,8 +573,8 @@ where
     Some(pieces)
 }
 
-/// A described surface as a pass draws it: the window it belongs to, its
-/// signal at the buffer's precision, and the pass's scale and opacity.
+/// A described surface as a pass draws it: the window it belongs to, its signal at the buffer's
+/// precision, and the pass's scale and opacity.
 #[derive(Clone, Copy)]
 struct Drawn<'a> {
     /// The window whose surface it is.
@@ -592,9 +587,8 @@ struct Drawn<'a> {
     opacity: f32,
 }
 
-/// The described surface itself: its rendition where it stands, or whatever
-/// the pass being built draws there, registered as the layer this frame
-/// composites.
+/// The described surface itself: its rendition where it stands, or whatever the pass being built
+/// draws there, registered as the layer this frame composites.
 fn piece<R>(
     renderer: &mut R,
     hdr: &HdrSurfaces,
@@ -614,8 +608,8 @@ where
         opacity,
     } = drawn;
     let channel = channel_of(plane.plane().id());
-    // The rendition covers the surface's logical extent; a substitute is a
-    // single pixel of its colour stretched over the same extent.
+    // The rendition covers the surface's logical extent; a substitute is a single pixel of its
+    // colour stretched over the same extent.
     let (buffer, src) = match appearance() {
         Appearance::Rendered => (hdr.rendition(id, plane.plane().id())?, view.src),
         Appearance::Black => (
@@ -657,8 +651,8 @@ where
     .map(Piece::Rendered)
 }
 
-/// A one-pixel buffer of `colour` (R, G, B, A), drawn stretched over a
-/// surface's extent: what a substitution pass puts in its place.
+/// A one-pixel buffer of `colour` (R, G, B, A), drawn stretched over a surface's extent: what a
+/// substitution pass puts in its place.
 fn solid(colour: [u8; 4]) -> MemoryRenderBuffer {
     MemoryRenderBuffer::from_slice(
         &colour,
@@ -679,12 +673,11 @@ fn channel_colour(channel: u8) -> [u8; 4] {
     colour
 }
 
-/// The composited frame: `first` (the scene with every layer black) with each
-/// HDR layer's light from `second` (the same scene with the layers in their
-/// channel colours), as the 8-bit SDR desktop shows it.
-///
-/// Both are the output's pixels in R, G, B, A order, `width` × `height`. A
-/// pixel no layer covers is left as `first` has it.
+/// The composited frame: `first` (the scene with every layer black) with each HDR layer's light
+/// from `second` (the same scene with the layers in their channel colours), as the 8-bit SDR
+/// desktop shows it.
+/// Both are the output's pixels in R, G, B, A order, `width` × `height` . A pixel no layer covers
+/// is left as `first` has it.
 pub(crate) fn composite(
     first: &[u8],
     second: &[u8],

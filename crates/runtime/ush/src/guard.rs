@@ -328,11 +328,6 @@ pub fn provenance(path: &Path, images: &[(String, PathBuf)]) -> Option<String> {
 /// Move a file into the quarantine, clearing its executable bits.
 /// The original path stops resolving, so nothing can find it to run —
 /// that's the whole mechanism.
-///
-/// # Errors
-///
-/// Returns an error if `quarantine_dir` can't be created, the file can't be
-/// moved or copied into it, or its permissions can't be cleared.
 pub fn quarantine_add(path: &Path, quarantine_dir: &Path) -> std::io::Result<PathBuf> {
     use std::os::unix::fs::PermissionsExt;
     std::fs::create_dir_all(quarantine_dir)?;
@@ -388,11 +383,6 @@ pub fn quarantine_list(quarantine_dir: &Path) -> Vec<QuarantineEntry> {
 }
 
 /// Put a quarantined file back where it came from.
-///
-/// # Errors
-///
-/// Returns an error if the original path's parent can't be created, or the
-/// file can't be moved or copied back.
 pub fn quarantine_restore(entry: &QuarantineEntry) -> std::io::Result<()> {
     if let Some(parent) = entry.original.parent() {
         std::fs::create_dir_all(parent)?;

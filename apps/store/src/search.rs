@@ -135,9 +135,6 @@ fn resource_id(item: &StoreItem) -> String {
 
 /// What showing the search anchor `anchor` is: the details of the app it
 /// names.
-///
-/// # Errors
-/// Refuses an anchor that names no app.
 pub(crate) fn opened(
     anchor: &str,
 ) -> Result<crate::resource::StoreEffect, ui::tilo_resource::Refusal> {

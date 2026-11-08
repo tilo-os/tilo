@@ -1,7 +1,7 @@
 //! The tilolang shell on every display: one part per output, standing on its own display's
 //! rectangle (each part follows an output added, moved or taken away), not stretched across the
-//! displays' bounding box as one; and a part steps aside on the display a fullscreen window
-//! owns, from the signal the compositor names those displays by.
+//! displays' bounding box as one; and a part steps aside on the display a fullscreen window owns,
+//! from the signal the compositor names those displays by.
 
 #![cfg(target_os = "linux")]
 #![allow(
@@ -36,7 +36,7 @@ fn options() -> Options {
     }
 }
 
-/// A session on `outputs`, each `WIDTH` x `HEIGHT` at its place.
+/// A session on `outputs` , each `WIDTH` x `HEIGHT` at its place.
 fn session(places: &[(i32, i32)]) -> Session {
     let outputs: Vec<OutputConfig> = places
         .iter()
@@ -60,8 +60,8 @@ fn until(session: &mut Session, mut done: impl FnMut(&mut Session) -> bool) {
     });
 }
 
-/// Where the part on `output` stands, `(x, y, w, h)`, and whether it stepped aside: `None`
-/// while no part stands there.
+/// Where the part on `output` stands, `(x, y, w, h)` , and whether it stepped aside: `None` while
+/// no part stands there.
 fn part(session: &Session, output: &str) -> Option<((i32, i32, u32, u32), bool)> {
     session
         .shell_parts()
@@ -205,10 +205,9 @@ fn a_part_steps_aside_on_the_display_a_fullscreen_window_owns() {
     });
 }
 
-/// The shell on a `HiDPI` display draws at that display's scale: its part
-/// paints the pixels the panel shows, so the bar and the desk are as crisp
-/// as the display allows rather than one scale's worth stretched over
-/// twice the area.
+/// The shell on a `HiDPI` display draws at that display's scale: its part paints the pixels the
+/// panel shows, so the bar and the desk are as crisp as the display allows rather than one scale's
+/// worth stretched over twice the area.
 #[test]
 fn a_shell_on_a_scaled_display_draws_at_that_scale() {
     let _settled = ui::motion::testing::settled();
@@ -239,25 +238,22 @@ fn a_shell_on_a_scaled_display_draws_at_that_scale() {
     );
 }
 
-/// The shell's bar sits at the top of the display at every scale: its band
-/// starts at the display's very top and covers the same logical height at 2
-/// as at 1, rather than being a band drawn at one scale and stretched over
-/// twice the area (which puts its edge where the panel's pixels say not).
+/// The shell's bar sits at the top of the display at every scale: its band starts at the display's
+/// very top and covers the same logical height at 2 as at 1, rather than being a band drawn at one
+/// scale and stretched over twice the area (which puts its edge where the panel's pixels say not).
 #[test]
 fn the_shell_bar_band_sits_at_the_top_of_the_display_at_every_scale() {
     let _settled = ui::motion::testing::settled();
     let mut bands = Vec::new();
     for (scale, pixels) in [(1.0, 1), (2.0, 2)] {
-        let mut session = Session::headless(
+        let mut session = crate::common::headless_on(
+            &[OutputConfig::new("HEADLESS-1", WIDTH * pixels, HEIGHT * pixels).with_scale(scale)],
             Options {
-                presentation: ui::headless::fixture_runner_inputs,
                 person: "Pat".to_owned(),
                 shell: true,
                 ..Options::default()
             },
-            &[OutputConfig::new("HEADLESS-1", WIDTH * pixels, HEIGHT * pixels).with_scale(scale)],
-        )
-        .expect("session");
+        );
         for _ in 0..400 {
             session.settle_services();
             session.step(Duration::from_millis(1)).unwrap();
@@ -296,30 +292,25 @@ fn the_shell_bar_band_sits_at_the_top_of_the_display_at_every_scale() {
     );
 }
 
-/// A bar flush with the display's edges paints them in its own colour: its
-/// top row and its first and last columns are the body's colour at 2, with
-/// no edge highlight along the screen's sides.
-///
-/// The theme's glass body lights a rim along its outline. On a bar edge to
-/// edge with the screen that rim fell on the display's own top row and end
-/// columns, reading as a glass line between the bar and the bezel rather
-/// than as the bar reaching the edge.
+/// A bar flush with the display's edges paints them in its own colour: its top row and its first
+/// and last columns are the body's colour at 2, with no edge highlight along the screen's sides.
+/// The theme's glass body lights a rim along its outline. On a bar edge to edge with the screen
+/// that rim fell on the display's own top row and end columns, reading as a glass line between the
+/// bar and the bezel rather than as the bar reaching the edge.
 #[test]
 fn a_bar_flush_with_the_display_paints_its_edges_its_own_colour() {
     let _settled = ui::motion::testing::settled();
     let width = WIDTH * 2;
     let height = HEIGHT * 2;
-    let mut session = Session::headless(
+    let mut session = crate::common::headless_on(
+        &[OutputConfig::new("HEADLESS-1", width, height).with_scale(2.0)],
         Options {
-            presentation: ui::headless::fixture_runner_inputs,
             person: "Pat".to_owned(),
             shell: true,
             collab: false,
             ..Options::default()
         },
-        &[OutputConfig::new("HEADLESS-1", width, height).with_scale(2.0)],
-    )
-    .expect("session");
+    );
     until(&mut session, |session| !session.shell_parts().is_empty());
     // The translucent style is where the glass rim shows.
     session
@@ -334,11 +325,10 @@ fn a_bar_flush_with_the_display_paints_its_edges_its_own_colour() {
         .compositor()
         .screenshot("HEADLESS-1")
         .expect("a frame");
-    // The glass body lights a rim one pixel thick along its outline. On a
-    // bar edge to edge with the screen that rim lands on the display's own
-    // top row and end columns: compare each edge pixel with the one just
-    // inside it, so the material's own sheen — a smooth gradient across the
-    // body — is not read as an edge, and a one-pixel line of light is.
+    // The glass body lights a rim one pixel thick along its outline. On a bar edge to edge with the
+    // screen that rim lands on the display's own top row and end columns: compare each edge pixel
+    // with the one just inside it, so the material's own sheen — a smooth gradient across the body
+    // — is not read as an edge, and a one-pixel line of light is.
     let step = |a: Option<[u8; 4]>, b: Option<[u8; 4]>| -> i32 {
         let (a, b) = (a.expect("a pixel"), b.expect("a pixel"));
         (0..3)

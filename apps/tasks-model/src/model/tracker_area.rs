@@ -72,9 +72,6 @@ pub struct TrackerArea {
 
 impl TrackerArea {
     /// Whether it may be stored as it is: it has a name that fits on a line.
-    ///
-    /// # Errors
-    /// Refuses a blank or too long name.
     pub fn valid(&self) -> Result<(), Refusal> {
         let name = self.name.trim();
         if name.is_empty() {

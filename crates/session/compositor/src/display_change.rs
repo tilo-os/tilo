@@ -1,11 +1,9 @@
 //! "Keep this display change?" for display tools.
-//!
-//! A tool's configuration (`wlr-output-management`) that could leave the
-//! person unable to see or reach their screen applies, and then the session
-//! asks whether to keep it; without an answer it reverts after
-//! [`CONFIRM_FOR`]. A tool the person trusts skips the question unless the
-//! change leaves no display on. Right after the person reverted a layout, a
-//! tool cannot put the same layout straight back.
+//! A tool's configuration (`wlr-output-management`) that could leave the person unable to see or
+//! reach their screen applies, and then the session asks whether to keep it; without an answer it
+//! reverts after [`CONFIRM_FOR`]. A tool the person trusts skips the question unless the change
+//! leaves no display on. Right after the person reverted a layout, a tool cannot put the same
+//! layout straight back.
 
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
@@ -26,8 +24,8 @@ const REAPPLY_AFTER_REVERT: Duration = Duration::from_secs(60);
 pub(crate) enum ChangeRisk {
     /// Applies directly, the way every other compositor treats the tool.
     Safe,
-    /// Could leave the person unable to see or reach their screen: they are
-    /// asked to keep it, unless they trust the tool.
+    /// Could leave the person unable to see or reach their screen: they are asked to keep it,
+    /// unless they trust the tool.
     Risky,
     /// Leaves no display on. Asked about whoever the tool is.
     NoDisplay,
@@ -52,8 +50,8 @@ pub(crate) struct Shown {
 }
 
 impl Shown {
-    /// Enough for every scale step and a monitor's usual modes; the oldest
-    /// entry makes room for a new one.
+    /// Enough for every scale step and a monitor's usual modes; the oldest entry makes room for a
+    /// new one.
     const LIMIT: usize = 32;
 
     fn has_mode(&self, mode: Mode) -> bool {
@@ -85,12 +83,10 @@ fn same_scale(a: f64, b: f64) -> bool {
 }
 
 /// How risky applying `changes` to `heads` is.
-///
-/// Risky is: a mode the connector does not list; turning off a display the
-/// person is using (`watched`); or giving a display they are using a mode
-/// or scale it has never shown in a layout that was kept. Everything else
-/// (arranging, rotating, lighting up a newly plugged monitor at a listed
-/// mode) is safe.
+/// Risky is: a mode the connector does not list; turning off a display the person is using
+/// (`watched`); or giving a display they are using a mode or scale it has never shown in a layout
+/// that was kept. Everything else (arranging, rotating, lighting up a newly plugged monitor at a
+/// listed mode) is safe.
 pub(crate) fn assess_change(
     changes: &[OutputChange],
     heads: &[HeadNow],
@@ -141,9 +137,8 @@ pub(crate) fn assess_change(
 /// What the session hears about display tools' changes.
 #[derive(Clone, Debug, PartialEq)]
 pub enum DisplayEvent {
-    /// A tool's change applied and the person must keep it within
-    /// `within`, or it reverts: show the question, answer with
-    /// [`crate::Compositor::keep_display_change`] or
+    /// A tool's change applied and the person must keep it within `within` , or it reverts: show
+    /// the question, answer with [`crate::Compositor::keep_display_change`] or
     /// [`crate::Compositor::revert_display_change`].
     Confirm {
         id: u64,
@@ -155,8 +150,8 @@ pub enum DisplayEvent {
     Reverted { id: u64 },
     /// A tool's change is kept: remember it as the person's configuration.
     Kept { changes: Vec<OutputChange> },
-    /// A tool tried to put back the layout the person just reverted; it was
-    /// refused. Told once per revert.
+    /// A tool tried to put back the layout the person just reverted; it was refused. Told once per
+    /// revert.
     RefusedReapply { tool: Option<PathBuf> },
 }
 
@@ -219,8 +214,8 @@ impl DisplayChanges {
         assess_change(changes, heads, watched, &self.shown)
     }
 
-    /// Whether `tool` sending `plan` repeats a layout the person just
-    /// reverted. The first repeat tells the session.
+    /// Whether `tool` sending `plan` repeats a layout the person just reverted. The first repeat
+    /// tells the session.
     pub(crate) fn refuses_reapply(
         &mut self,
         tool: Option<&PathBuf>,
@@ -261,8 +256,8 @@ impl DisplayChanges {
         self.events.push(DisplayEvent::Kept { changes: plan });
     }
 
-    /// An applied change waits for the person. A question still open keeps
-    /// its way back, so reverting returns to the layout before either.
+    /// An applied change waits for the person. A question still open keeps its way back, so
+    /// reverting returns to the layout before either.
     pub(crate) fn ask(
         &mut self,
         tool: Option<PathBuf>,
@@ -292,7 +287,7 @@ impl DisplayChanges {
         id
     }
 
-    /// The person kept change `id`; false when it is not the open question.
+    /// The person kept change `id` ; false when it is not the open question.
     pub(crate) fn keep(&mut self, id: u64, heads: &[HeadNow]) -> bool {
         if self.asked.as_ref().is_none_or(|asked| asked.id != id) {
             return false;
@@ -304,7 +299,7 @@ impl DisplayChanges {
         true
     }
 
-    /// The person reverted change `id`: what puts the outputs back.
+    /// The person reverted change `id` : what puts the outputs back.
     pub(crate) fn revert(&mut self, id: u64, now: Instant) -> Option<Vec<OutputChange>> {
         if self.asked.as_ref().is_none_or(|asked| asked.id != id) {
             return None;
@@ -352,8 +347,8 @@ impl State {
             .collect()
     }
 
-    /// The outputs the person is using: under the pointer, and showing the
-    /// window with keyboard focus.
+    /// The outputs the person is using: under the pointer, and showing the window with keyboard
+    /// focus.
     pub(crate) fn watched_outputs(&self) -> HashSet<String> {
         let mut watched: HashSet<String> = self
             .space
@@ -382,8 +377,7 @@ impl State {
         watched
     }
 
-    /// The changes that put the outputs `changes` names back as they are
-    /// now.
+    /// The changes that put the outputs `changes` names back as they are now.
     pub(crate) fn undo_for(&self, changes: &[OutputChange]) -> Vec<OutputChange> {
         changes
             .iter()

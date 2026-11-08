@@ -324,8 +324,6 @@ impl EnrolledVerifier {
     }
     /// Call only after independently validating the actual daemon role and
     /// current certified device. Matching wire values never establish authority.
-    /// # Errors
-    /// Refuses changed context/nonces/device or invalid signature.
     pub fn verify(
         &self,
         context: &EnrollmentContext,
@@ -336,8 +334,6 @@ impl EnrolledVerifier {
     }
     /// Verify a new refresh challenge without rewriting the originally enrolled
     /// context or treating an earlier reply as fresh certification.
-    /// # Errors
-    /// Refuses zero/replayed requester nonce, changed context/daemon or signature.
     pub fn verify_refresh(
         &self,
         context: &EnrollmentContext,

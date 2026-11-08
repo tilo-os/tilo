@@ -36,8 +36,7 @@ pub(super) const GLANCE_AVATARS: usize = 5;
 const TEAM_HEADER: f64 = ui::tokens::Layout::BASE.row_header as f64;
 const TEAM_ROW: f64 = ui::tokens::Layout::BASE.team_row as f64;
 const TEAM_MORE: f64 = ui::tokens::Spacing::BASE.s6 as f64;
-/// The band above an open card holding its collapse, pin and remove
-/// controls.
+/// The band above an open card holding its collapse, pin and remove controls.
 pub(super) const BAND: f64 = ui::tokens::Spacing::BASE.s8 as f64;
 /// One band control's square.
 pub(super) const CONTROL: f64 = ui::tokens::Layout::BASE.pin as f64;
@@ -47,14 +46,13 @@ pub(super) const BADGE: f64 = ui::tokens::Layout::BASE.desk_badge as f64;
 pub(super) const MONITOR_GLANCE: Size = Size::new(176.0, 40.0);
 const MONITOR_HEADER: f64 = ui::tokens::Layout::BASE.row_header as f64;
 const MONITOR_ROW: f64 = ui::tokens::Metrics::BASE.bar_height as f64;
-/// The resize handle in a card's free corner, and the band along its free
-/// side that resizes too.
+/// The resize handle in a card's free corner, and the band along its free side that resizes too.
 pub(super) const GRIP: f64 = ui::tokens::Layout::BASE.desk_grip as f64;
 const GRIP_EDGE: f64 = ui::tokens::Layout::BASE.resize_grip as f64;
 /// Inset of a card's content from its edge.
 const PAD: f64 = ui::tokens::Spacing::BASE.s4 as f64;
 
-/// Run `paint` at `alpha`, in a layer only while it is fading.
+/// Run `paint` at `alpha` , in a layer only while it is fading.
 pub(super) fn with_alpha(
     scene: &mut Scene,
     transform: Affine,
@@ -77,8 +75,7 @@ pub(super) fn card_rect(open: Rect) -> Rect {
     Rect::new(open.x0, open.y0 + BAND, open.x1, open.y1)
 }
 
-/// The open card's band controls: collapse at its left edge, pin and remove
-/// at its right.
+/// The open card's band controls: collapse at its left edge, pin and remove at its right.
 pub(super) fn collapse_rect(open: Rect) -> Rect {
     Rect::new(open.x0, open.y0, open.x0 + CONTROL, open.y0 + CONTROL)
 }
@@ -96,16 +93,15 @@ pub(super) fn remove_rect(open: Rect) -> Rect {
     )
 }
 
-/// The remove badge of a hovered glance at `glance`, on its corner toward
-/// the display's middle so it is never off the screen.
+/// The remove badge of a hovered glance at `glance` , on its corner toward the display's middle so
+/// it is never off the screen.
 pub(super) fn badge_rect(glance: Rect, (right, bottom): (bool, bool)) -> Rect {
     let x = if right { glance.x0 } else { glance.x1 };
     let y = if bottom { glance.y0 } else { glance.y1 };
     Rect::from_center_size(Point::new(x, y), (BADGE, BADGE))
 }
 
-/// The team card's rows at `stage`: one rect per person shown, under the
-/// header.
+/// The team card's rows at `stage` : one rect per person shown, under the header.
 pub(super) fn team_rows(card: Rect, stage: Stage, people: usize) -> Vec<Rect> {
     let (row, max) = team_row_shape(stage);
     (0..people.min(max))
@@ -144,7 +140,7 @@ pub(super) fn team_glance_size(vertical: bool, people: usize) -> Size {
     }
 }
 
-/// A calendar row's height at `stage` and `width`.
+/// A calendar row's height at `stage` and `width` .
 fn calendar_row(stage: Stage, width: f64) -> f64 {
     match stage {
         Stage::Compact | Stage::Regular => CALENDAR_ROW,
@@ -206,14 +202,12 @@ pub(super) fn grip_edge(card: Rect, (right, _): (bool, bool)) -> Rect {
 }
 
 /// The ground every desk card stands on: the one floating card
-/// ([`ui::widget::floating_surface::paint_card`]), as banners and the
-/// palette.
+/// ([`ui::widget::floating_surface::paint_card`]), as banners and the palette.
 pub(super) fn paint_card_ground(scene: &mut Scene, transform: Affine, theme: &Theme, rect: Rect) {
     ui::widget::floating_surface::paint_card(scene, transform, rect, theme);
 }
 
-/// The deeper shadow of a widget lifted under the hand, `lift` of the way
-/// up.
+/// The deeper shadow of a widget lifted under the hand, `lift` of the way up.
 pub(super) fn paint_lift(
     scene: &mut Scene,
     transform: Affine,
@@ -286,8 +280,8 @@ fn paint_avatar(
     rect: Rect,
     member: &TeamMember,
 ) {
-    // The one face people have everywhere: one initial (or the agent mark)
-    // in a ring of their colour, dimmed while idle, ringed while in a call.
+    // The one face people have everywhere: one initial (or the agent mark) in a ring of their
+    // colour, dimmed while idle, ringed while in a call.
     let face = ui::presence::Face {
         is_agent: member.row.is_agent,
         dimmed: member.row.availability.dims(),
@@ -320,8 +314,7 @@ pub(super) fn paint_team_glance(
         };
         Rect::from_origin_size(origin, (AVATAR, AVATAR))
     };
-    // Past the last place, a drawn count of everyone else takes it, as in
-    // every face stack.
+    // Past the last place, a drawn count of everyone else takes it, as in every face stack.
     let (shown, more) = if members.len() > GLANCE_AVATARS {
         let shown = GLANCE_AVATARS - 1;
         (shown, members.len() - shown)
@@ -364,8 +357,7 @@ fn draw_header(
     );
 }
 
-/// The team's open card: everyone here, each with what they are doing and
-/// where they are.
+/// The team's open card: everyone here, each with what they are doing and where they are.
 #[allow(
     clippy::cast_possible_truncation,
     reason = "widths are bounded by the display; f32 is the shaping precision"
@@ -444,8 +436,8 @@ pub(super) fn paint_team_card(
         }
         line_y += f64::from(name_h);
         if let Some(status) = member.row.status.as_ref() {
-            // Who wrote the line: a pencil for their own words, sparkles
-            // for a line their machine generated.
+            // Who wrote the line: a pencil for their own words, sparkles for a line their machine
+            // generated.
             let icon = match status.source {
                 crate::collaborators::LineSource::Written => ui::icons::Icon::Pencil,
                 crate::collaborators::LineSource::Generated
@@ -495,7 +487,7 @@ pub(super) fn paint_team_card(
     }
 }
 
-/// Draw `line` centred on `center` in `style` and `color`.
+/// Draw `line` centred on `center` in `style` and `color` .
 fn draw_centered(
     text: &mut TextRenderer,
     scene: &mut Scene,
@@ -641,8 +633,7 @@ pub(super) fn paint_calendar_card(
     }
 }
 
-/// One band control (collapse, pin, remove): the face every plain toggle
-/// uses.
+/// One band control (collapse, pin, remove): the face every plain toggle uses.
 pub(super) fn paint_band_control(
     scene: &mut Scene,
     transform: Affine,
@@ -659,8 +650,7 @@ pub(super) fn paint_band_control(
     ui::widget::Button::paint(scene, transform, text, theme, &face);
 }
 
-/// The remove badge on a hovered glance: a small round X on the overlay
-/// ground.
+/// The remove badge on a hovered glance: a small round X on the overlay ground.
 pub(super) fn paint_badge(
     scene: &mut Scene,
     transform: Affine,
@@ -763,9 +753,8 @@ pub(super) fn paint_monitor_glance(
     }
 }
 
-/// The system monitor's open card: compact, load and memory as two large
-/// readouts; otherwise one row per reading the machine offers, each with a
-/// quiet meter, roomier when large.
+/// The system monitor's open card: compact, load and memory as two large readouts; otherwise one
+/// row per reading the machine offers, each with a quiet meter, roomier when large.
 #[allow(clippy::too_many_lines, reason = "one card's readouts at each stage")]
 pub(super) fn paint_monitor_card(
     scene: &mut Scene,
@@ -908,8 +897,8 @@ pub(super) fn paint_monitor_card(
     }
 }
 
-/// The resize handle: the corner grip in the card's free corner, pointing
-/// the way a drag grows the card, brighter under the pointer.
+/// The resize handle: the corner grip in the card's free corner, pointing the way a drag grows the
+/// card, brighter under the pointer.
 pub(super) fn paint_grip(
     scene: &mut Scene,
     transform: Affine,
@@ -923,9 +912,8 @@ pub(super) fn paint_grip(
     } else {
         ui::paint::with_alpha_scaled(theme.tokens.colors.text_dim, 0.7)
     };
-    // The handle stands on the side the card is free on (the display's
-    // middle is behind it), so its arrow points out of the card: the way a
-    // drag grows it.
+    // The handle stands on the side the card is free on (the display's middle is behind it), so its
+    // arrow points out of the card: the way a drag grows it.
     let icon = match (right, bottom) {
         (true, true) => ui::icons::Icon::ArrowUpLeft,
         (true, false) => ui::icons::Icon::ArrowDownLeft,
@@ -945,13 +933,12 @@ pub(super) fn desk_widget_title(id: WidgetId) -> String {
     })
 }
 
-/// The music widget's glance form: the cover, what plays, and its
-/// play/pause and open controls at its end.
+/// The music widget's glance form: the cover, what plays, and its play/pause and open controls at
+/// its end.
 pub(super) const MUSIC_GLANCE: Size = Size::new(268.0, 40.0);
 /// The compact music card's artwork.
 const COMPACT_ART: f64 = ui::tokens::Layout::BASE.desk_art as f64;
-/// The regular music card's height: the song's lines, the playhead and the
-/// transport.
+/// The regular music card's height: the song's lines, the playhead and the transport.
 const MUSIC_ROWS: f64 = 124.0;
 /// One round control on the music widget.
 const CONTROL_SIDE: f64 = 32.0;
@@ -976,8 +963,7 @@ pub(super) fn music_glance_play(rect: Rect) -> Rect {
     )
 }
 
-/// The open target at the very end of the music glance: a press there opens
-/// the card.
+/// The open target at the very end of the music glance: a press there opens the card.
 pub(super) fn music_glance_expand(rect: Rect) -> Rect {
     let side = rect.height();
     Rect::new(rect.x1 - side + 6.0, rect.y0, rect.x1, rect.y1)
@@ -991,14 +977,14 @@ pub(super) fn music_compact_play(card: Rect) -> Rect {
     )
 }
 
-/// The large music card's artwork side at `width`, and the height of the
-/// band it stands in above the song's lines.
+/// The large music card's artwork side at `width` , and the height of the band it stands in above
+/// the song's lines.
 pub(super) fn music_large_art(width: f64) -> (f64, f64) {
     let side = 180.0f64.min(width - 2.0 * PAD).max(0.0);
     (side, side + PAD)
 }
 
-/// The music card's height at `stage` and `width`.
+/// The music card's height at `stage` and `width` .
 pub(super) fn music_card_height(stage: Stage, width: f64) -> f64 {
     match stage {
         Stage::Compact => COMPACT_ART + 2.0 * PAD,
@@ -1007,9 +993,8 @@ pub(super) fn music_card_height(stage: Stage, width: f64) -> f64 {
     }
 }
 
-/// The music card's transport, as the buttons it draws and the rects they
-/// take a press on: previous, play or pause and next at its lower right, or
-/// play or pause alone in the compact card.
+/// The music card's transport, as the buttons it draws and the rects they take a press on:
+/// previous, play or pause and next at its lower right, or play or pause alone in the compact card.
 pub(super) fn music_transport(card: Rect, stage: Stage) -> Vec<(MusicAction, Rect)> {
     if stage == Stage::Compact {
         return vec![(MusicAction::PlayPause, music_compact_play(card))];
@@ -1027,15 +1012,14 @@ pub(super) fn music_transport(card: Rect, stage: Stage) -> Vec<(MusicAction, Rec
     ]
 }
 
-/// The playhead's track under the song's lines, and where the lines have
-/// workspace.
+/// The playhead's track under the song's lines, and where the lines have workspace.
 fn music_track(card: Rect) -> Rect {
     let y = card.y1 - PAD - CONTROL_SIDE - 12.0 - TRACK;
     Rect::new(card.x0 + PAD, y, card.x1 - PAD, y + TRACK)
 }
 
-/// A round control on the music widget: a disc under the pointer, its glyph
-/// brighter with it, or the one filled control.
+/// A round control on the music widget: a disc under the pointer, its glyph brighter with it, or
+/// the one filled control.
 fn paint_control(
     scene: &mut Scene,
     transform: Affine,
@@ -1094,8 +1078,8 @@ fn play_icon(playing: bool) -> ui::icons::Icon {
     }
 }
 
-/// The music widget's glance: the cover, what plays, and the two controls
-/// at its end — play or pause, and open.
+/// The music widget's glance: the cover, what plays, and the two controls at its end — play or
+/// pause, and open.
 #[allow(
     clippy::cast_possible_truncation,
     reason = "widths are bounded by the display; f32 is the shaping precision"
@@ -1160,8 +1144,7 @@ pub(super) fn paint_music_glance(
     );
 }
 
-/// The compact music card: the song beside its artwork, play or pause at the
-/// end.
+/// The compact music card: the song beside its artwork, play or pause at the end.
 fn paint_music_compact(
     scene: &mut Scene,
     transform: Affine,
@@ -1210,8 +1193,7 @@ fn paint_music_compact(
     );
 }
 
-/// The music card: the cover, the song, where it is in it, and the
-/// transport that steers it.
+/// The music card: the cover, the song, where it is in it, and the transport that steers it.
 #[allow(
     clippy::cast_possible_truncation,
     reason = "widths are bounded by the display; f32 is the shaping precision"
@@ -1236,8 +1218,8 @@ pub(super) fn paint_music_card(
     let face = ui::widget::SongFace::showing(&playing.song());
     let now = ui::time::now();
     let radius = |rect: Rect| ui::chrome::ChromeRole::Selector.radius(theme, rect.height());
-    // From the regular stage up: the cover, the lines beside it or under
-    // it, the playhead under them and the transport at the lower right.
+    // From the regular stage up: the cover, the lines beside it or under it, the playhead under
+    // them and the transport at the lower right.
     let large = stage == Stage::Large;
     let content = if large {
         let (_, band) = music_large_art(card.width());

@@ -795,9 +795,6 @@ pub fn history(doc: &AutoCommit, last: usize, words: &dyn HistoryWords) -> Value
 }
 
 /// Answer a history view.
-///
-/// # Errors
-/// The payload is no history view, or names a version there is none of.
 pub fn answer(
     doc: &AutoCommit,
     payload: &[u8],

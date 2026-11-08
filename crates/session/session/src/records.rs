@@ -48,8 +48,8 @@ const MAX_INDEX_BYTES: u64 = 16 * 1024 * 1024;
 struct Held {
     id: String,
     kind: String,
-    /// The app whose index named it first: the app that opens it, and whose
-    /// index the reference goes into when the record is brought here.
+    /// The app whose index named it first: the app that opens it, and whose index the reference
+    /// goes into when the record is brought here.
     package: String,
     /// Every workspace whose index names it.
     workspaces: Vec<String>,
@@ -57,35 +57,33 @@ struct Held {
 
 /// The device's record indexes, as search offers them.
 pub struct Records {
-    /// Where the indexes are, and where this session's own references are
-    /// written.
+    /// Where the indexes are, and where this session's own references are written.
     root: PathBuf,
     /// The indexes as last read.
     reading: Reading,
-    /// The name the desk gives each workspace, as of its last frame: a
-    /// record held elsewhere is offered under the name of the workspace that
-    /// holds it, and a workspace id alone names nothing a person knows.
+    /// The name the desk gives each workspace, as of its last frame: a record held elsewhere is
+    /// offered under the name of the workspace that holds it, and a workspace id alone names
+    /// nothing a person knows.
     names: RefCell<Vec<(String, String)>>,
 }
 
-/// How the indexes are read: by a worker following their directories, or —
-/// where they cannot be followed — once, when the session starts.
+/// How the indexes are read: by a worker following their directories, or — where they cannot be
+/// followed — once, when the session starts.
 enum Reading {
     Followed(Watched<Vec<Held>>),
     Once(Arc<Vec<Held>>),
 }
 
 impl Records {
-    /// The records this device keeps, read now and followed from then on:
-    /// the same documents the apps of its workspaces write, in the platform
-    /// data directory.
+    /// The records this device keeps, read now and followed from then on: the same documents the
+    /// apps of its workspaces write, in the platform data directory.
     #[must_use]
     pub fn of_device() -> Self {
         Self::of(cli::data_home())
     }
 
-    /// [`Self::of_device`] over the store rooted at `root`, for a session
-    /// whose device keeps its state somewhere else.
+    /// [`Self::of_device`] over the store rooted at `root` , for a session whose device keeps its
+    /// state somewhere else.
     #[must_use]
     pub fn of(root: PathBuf) -> Self {
         let store: Rc<dyn DurableStore> = Rc::new(app_state::FsStore::new(&root));
@@ -93,10 +91,9 @@ impl Records {
             tracing::warn!(%error, "the workspace indexes of this device are not listed");
             Vec::new()
         });
-        // Each index directory, and the directory of workspaces holding it:
-        // a workspace made after this session started keeps its index in a
-        // directory nothing watches yet, so the workspace appearing next to
-        // the others is what tells the worker to read the indexes again.
+        // Each index directory, and the directory of workspaces holding it: a workspace made after
+        // this session started keeps its index in a directory nothing watches yet, so the workspace
+        // appearing next to the others is what tells the worker to read the indexes again.
         let mut directories: BTreeSet<PathBuf> = BTreeSet::new();
         for (package, workspace) in &indexes {
             match app_state::workspace_index_directory(&root, package, workspace) {
@@ -132,22 +129,21 @@ impl Records {
         }
     }
 
-    /// Where this device keeps its record indexes, and where a record's
-    /// document is.
+    /// Where this device keeps its record indexes, and where a record's document is.
     #[must_use]
     pub(crate) fn root(&self) -> PathBuf {
         self.root.clone()
     }
 
-    /// The workspaces this device shows, by id and the name the desk gives
-    /// it: what a row says of a record no workspace in front holds.
+    /// The workspaces this device shows, by id and the name the desk gives it: what a row says of a
+    /// record no workspace in front holds.
     pub(crate) fn set_workspaces(&self, workspaces: Vec<(String, String)>) {
         *self.names.borrow_mut() = workspaces;
     }
 
-    /// The records the workspaces on this device hold, as search offers them
-    /// in the workspace `workspace`: one row per record, saying whether this
-    /// workspace holds it and, when another one does, which.
+    /// The records the workspaces on this device hold, as search offers them in the workspace
+    /// `workspace` : one row per record, saying whether this workspace holds it and, when another
+    /// one does, which.
     #[must_use]
     pub(crate) fn held(&self, workspace: &str) -> Vec<HeldRecord> {
         let held = self.latest();
@@ -172,20 +168,19 @@ impl Records {
             .collect()
     }
 
-    /// Whether any workspace on this device still names `record`. A row is
-    /// collected from one reading of the indexes and chosen later, and an app
-    /// may have stopped naming the record in between: naming it here would
-    /// hold a record no workspace has, so such a row is refused instead.
+    /// Whether any workspace on this device still names `record` . A row is collected from one
+    /// reading of the indexes and chosen later, and an app may have stopped naming the record in
+    /// between: naming it here would hold a record no workspace has, so such a row is refused
+    /// instead.
     #[must_use]
     pub(crate) fn holds(&self, record: &str) -> bool {
         self.latest().iter().any(|held| held.id == record)
     }
 
-    /// Name `record` in the workspace `workspace`, in the index of `package`:
-    /// the reference it holds from then on, and the whole of what bringing a
-    /// record here does. Written away from the loop, since the workspace may
-    /// be one whose index no app of this process has opened yet; the index
-    /// directory changing is what makes search read the indexes again.
+    /// Name `record` in the workspace `workspace` , in the index of `package` : the reference it
+    /// holds from then on, and the whole of what bringing a record here does. Written away from the
+    /// loop, since the workspace may be one whose index no app of this process has opened yet; the
+    /// index directory changing is what makes search read the indexes again.
     pub(crate) fn bring_here(&self, workspace: &str, package: &str, record: RecordCheckout) {
         let data_home = self.root.clone();
         let (workspace, package) = (workspace.to_owned(), package.to_owned());
@@ -222,14 +217,13 @@ impl Records {
     }
 }
 
-/// `read` over `root`: the indexes the worker reads.
+/// `read` over `root` : the indexes the worker reads.
 fn reader(root: PathBuf) -> impl Fn() -> Vec<Held> + Send + Sync + 'static {
     move || read_indexes(&root)
 }
 
-/// Every record the indexes under `root` name, by id, with the workspaces
-/// that name it. A record two workspaces hold is one entry here: it is one
-/// record.
+/// Every record the indexes under `root` name, by id, with the workspaces that name it. A record
+/// two workspaces hold is one entry here: it is one record.
 fn read_indexes(root: &Path) -> Vec<Held> {
     let store: Rc<dyn DurableStore> = Rc::new(app_state::FsStore::new(root));
     let indexes = match store.workspace_indexes() {
@@ -258,9 +252,9 @@ fn read_indexes(root: &Path) -> Vec<Held> {
     held.into_values().collect()
 }
 
-/// The records `package`'s index for `workspace` names, as the store holds it.
-/// Read without taking a writer: an app of the workspace owns the index, and
-/// a lane of search opening must not wait for it.
+/// The records `package` 's index for `workspace` names, as the store holds it. Read without taking
+/// a writer: an app of the workspace owns the index, and a lane of search opening must not wait for
+/// it.
 fn named_in(store: &dyn DurableStore, package: &str, workspace: &str) -> Vec<RecordCheckout> {
     let key = StorageKey::workspace_index(package, workspace);
     let stored = match store.read(&key) {
@@ -276,9 +270,9 @@ fn named_in(store: &dyn DurableStore, package: &str, workspace: &str) -> Vec<Rec
             return Vec::new();
         }
     };
-    // An app keeping the index appends to it, and this read may land on a tail
-    // it has not finished writing: the changes before it are the index as of
-    // the last write that completed, which is what the app itself loads.
+    // An app keeping the index appends to it, and this read may land on a tail it has not finished
+    // writing: the changes before it are the index as of the last write that completed, which is
+    // what the app itself loads.
     let options = LoadOptions::new().on_partial_load(OnPartialLoad::Ignore);
     match AutoCommit::load_with_options(&stored.bytes, options) {
         Ok(doc) => ui::record::index::discoverable_references(&doc),

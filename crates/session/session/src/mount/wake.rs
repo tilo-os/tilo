@@ -32,16 +32,14 @@ use tilo_device_fabric::{
 
 use crate::{Shared, notifications::SessionNotifications};
 
-/// This machine's own network interfaces, as wake routes: read from the
-/// system, or fixed in a test that must not depend on the machine running
-/// it.
+/// This machine's own network interfaces, as wake routes: read from the system, or fixed in a test
+/// that must not depend on the machine running it.
 pub trait WakeInterfaces: Send + Sync {
     /// What the interfaces offer now.
     fn routes(&self) -> Vec<WakeRoute>;
 }
 
-/// The machine this session runs on: `/sys/class/net` and the drivers'
-/// magic-packet settings.
+/// The machine this session runs on: `/sys/class/net` and the drivers' magic-packet settings.
 #[derive(Clone, Copy, Debug, Default)]
 pub(crate) struct SysInterfaces;
 
@@ -59,11 +57,10 @@ pub struct Seams {
     pub interfaces: Option<Arc<dyn WakeInterfaces>>,
 }
 
-/// This session's wakes: what it sends, what it answers and what it waits
-/// for. Called once per pass of the session's loop.
+/// This session's wakes: what it sends, what it answers and what it waits for. Called once per pass
+/// of the session's loop.
 pub(crate) struct Wake {
-    /// The socket the packets leave through; a test's own, so no test
-    /// broadcasts.
+    /// The socket the packets leave through; a test's own, so no test broadcasts.
     packets: Arc<dyn MagicPackets>,
     interfaces: Arc<dyn WakeInterfaces>,
     waker: RefCell<Waker>,
@@ -74,8 +71,8 @@ pub(crate) struct Wake {
 }
 
 impl Wake {
-    /// The session's wakes over `seams`: the real socket and this machine's
-    /// interfaces unless a test brought its own.
+    /// The session's wakes over `seams` : the real socket and this machine's interfaces unless a
+    /// test brought its own.
     pub(crate) fn new(seams: &Seams) -> Rc<Self> {
         Rc::new(Self {
             packets: seams
@@ -92,16 +89,16 @@ impl Wake {
         })
     }
 
-    /// Offer this machine's interfaces to the person's devices, probe the
-    /// devices it woke, give up on the ones that do not come back, and tell
-    /// the person how each of their requests ended. Called every pass.
+    /// Offer this machine's interfaces to the person's devices, probe the devices it woke, give up
+    /// on the ones that do not come back, and tell the person how each of their requests ended.
+    /// Called every pass.
     pub(crate) fn follow(&self, shared: &Shared) {
         let Some(fabric) = &shared.fabric else {
             return;
         };
         self.publish(fabric);
-        // A device back on the person's fabric is awake: its session coming
-        // up is the answer a probe would have asked for.
+        // A device back on the person's fabric is awake: its session coming up is the answer a
+        // probe would have asked for.
         let online = fabric.online_device_ids();
         let back = self.waker.borrow_mut().rejoins(&online);
         for step in back {
@@ -118,8 +115,8 @@ impl Wake {
         self.tell(shared);
     }
 
-    /// When this device next reads its interfaces again, or a wake it is
-    /// watching needs a probe or runs out of time.
+    /// When this device next reads its interfaces again, or a wake it is watching needs a probe or
+    /// runs out of time.
     pub(crate) fn next_deadline(&self) -> Option<Instant> {
         let scan = self
             .scanned
@@ -131,8 +128,8 @@ impl Wake {
             .min()
     }
 
-    /// Answer the wake actions one of the person's other devices sent this
-    /// one. Whether `envelope` was one of them.
+    /// Answer the wake actions one of the person's other devices sent this one. Whether `envelope`
+    /// was one of them.
     pub(crate) fn handle_action(
         &self,
         shared: &Shared,
@@ -230,8 +227,8 @@ impl Wake {
         }
     }
 
-    /// Send this machine's magic packets for `target` and start watching for
-    /// it on behalf of `requester`.
+    /// Send this machine's magic packets for `target` and start watching for it on behalf of
+    /// `requester` .
     fn wake_from_here(
         &self,
         fabric: &SharedLink,
@@ -262,8 +259,8 @@ impl Wake {
         WakeOutcome::Sent { subnet }
     }
 
-    /// Do the next thing a watch asks for: ask the woken device whether it is
-    /// back, or tell whoever asked how it ended.
+    /// Do the next thing a watch asks for: ask the woken device whether it is back, or tell whoever
+    /// asked how it ended.
     fn carry_out(&self, shared: &Shared, fabric: &SharedLink, step: WatchStep) {
         match step {
             WatchStep::Probe { target, nonce } => {
@@ -295,8 +292,8 @@ impl Wake {
         }
     }
 
-    /// This machine's wake routes, re-read at most every
-    /// [`ROUTE_SCAN_INTERVAL`], offered to the person's devices.
+    /// This machine's wake routes, re-read at most every [`ROUTE_SCAN_INTERVAL`], offered to the
+    /// person's devices.
     fn publish(&self, fabric: &SharedLink) -> Vec<WakeRoute> {
         let now = Instant::now();
         let fresh = self
@@ -467,7 +464,7 @@ pub(crate) fn ipv4_subnets() -> std::collections::BTreeMap<String, Ipv4Subnet> {
     subnets
 }
 
-/// Whether the driver reports magic-packet wake enabled (`ethtool` `g`).
+/// Whether the driver reports magic-packet wake enabled (`ethtool` `g` ).
 #[cfg(target_os = "linux")]
 fn magic_packet_enabled(interface: &str) -> bool {
     const SIOCETHTOOL: libc::c_ulong = 0x8946;

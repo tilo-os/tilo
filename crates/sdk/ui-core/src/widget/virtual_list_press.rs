@@ -15,6 +15,17 @@ impl<M: ListModel> VirtualList<M> {
         let state = modifiers.state();
         let toggle = state.control_key() || state.super_key();
         let extend = state.shift_key();
+        // A row open into its item opens with a press, as a disclosure does: one gesture
+        // shows what the row holds, without a second press to activate it.
+        let opens_here = self
+            .model
+            .index_of(&key)
+            .is_some_and(|index| self.model.opens_in_place(index));
+        if opens_here && !toggle && !extend {
+            self.focus_row(key.clone());
+            self.activate_key(key);
+            return;
+        }
         if self.open_on_press && !toggle && !extend {
             // Opening the row is one act: the selection it moves onto the way is not reported
             // as a choice of its own.
@@ -38,6 +49,18 @@ impl<M: ListModel> VirtualList<M> {
     /// action when the host bound one, else the activation callback. A list whose
     /// rows open nothing chooses the row instead, as its click does.
     pub(super) fn activate_key(&mut self, key: M::Key) {
+        // A row that opens where it stands opens there, whether or not anything else listens:
+        // the list holds the item open, the row grows into its document, and the host hears
+        // nothing it must show itself.
+        if self
+            .model
+            .index_of(&key)
+            .is_some_and(|index| self.model.opens_in_place(index))
+        {
+            self.choose_quietly(key.clone());
+            self.open_where_it_stands(key);
+            return;
+        }
         if self.opens.is_none() && self.on_activate.is_none() {
             self.apply_selection(key, false, false, Choosing::ByHand);
             return;

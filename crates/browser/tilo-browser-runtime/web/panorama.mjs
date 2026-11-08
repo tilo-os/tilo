@@ -2,8 +2,14 @@
  * No input, document edits, presence publication, discovery or animation loop.
  * A pointer is an observed LIVE_V1 pointer, never inferred from an MCP session.
  */
-import {STALE_AFTER_MS} from './live-presence.mjs';
-import {markerText} from './live-cursors.mjs';
+/** A member whose pointer was heard longer ago than this is not drawn. */
+export const STALE_AFTER_MS = 10000;
+/** A marker's text: the member's label, and for an agent what it is doing,
+ * so a watcher sees which control it works on. */
+function markerText(publisher, participant) {
+  const label = participant?.label ?? publisher.slice(0, 8);
+  return participant?.kind === 'agent' && participant.activity ? `${label} · ${participant.activity}` : label;
+}
 
 const sources = new WeakMap();
 const sourceCanvases = new WeakSet();
@@ -30,25 +36,12 @@ function intersects(a,b) { return a[0]<b[0]+b[2]&&b[0]<a[0]+a[2]&&a[1]<b[1]+b[3]
 export function createPresentedSource({audience,app,canvas,layer,valid,now=()=>performance.now(),makeCanvas=makeSurface}) {
   sourceCanvases.add(canvas);
   const handle=Object.freeze({});
-  let users=0,closed=false,copy,packet,error,observedLayer,stopMembers,lastGeneration=-1,lastFrame=-1,lastGeometry;
+  let users=0,closed=false,copy,packet,error,observedLayer,lastGeneration=-1,lastFrame=-1,lastGeometry;
+  /** The stay here the board holds for each member, as last read. */
   const epochs=new Map();
   function release() {
     copy && (copy.width=copy.height=0);copy=undefined;packet=undefined;error=undefined;
-    stopMembers?.();stopMembers=undefined;observedLayer=undefined;epochs.clear();
-  }
-  function watch(current) {
-    if (current===observedLayer) return;
-    stopMembers?.();epochs.clear();observedLayer=current;
-    const members=current?.members()??[];
-    if(members.length>MAX_PRESENCES)throw Error('presence capacity exceeded');
-    for (const id of members) epochs.set(id,Symbol());
-    stopMembers=current?.onMember(({publisher,active})=>{
-      if(!active)epochs.delete(publisher);
-      else if(!epochs.has(publisher)){
-        if(epochs.size>=MAX_PRESENCES){error=Error('presence capacity exceeded');packet=undefined;}
-        else epochs.set(publisher,Symbol());
-      }
-    });
+    observedLayer=undefined;epochs.clear();
   }
   const source={audience,
     acquire(){ if(closed)throw Error('source unavailable');users++;return()=>{if(--users===0)release();}; },
@@ -80,15 +73,19 @@ export function createPresentedSource({audience,app,canvas,layer,valid,now=()=>p
           if(!same(lastGeometry,geometry))throw Error('geometry changed without a new presentation');
           return;
         }
-        const current=layer();watch(current);
+        const current=layer();
+        observedLayer=current;
         const at=state.observedPresentedAtMs??now();
-        if((current?.members().length??0)>MAX_PRESENCES)throw Error('presence capacity exceeded');
         // An agent's pointer over this tab is a point in the record's own
         // surface, which this pane shows. An agent's presence always names
         // its colour.
         const tab=/^[0-9a-f]+$/.test(String(state.tab??''))?BigInt(`0x${state.tab}`):null;
-        const overPanesTab=pointer=>tab!==null&&typeof pointer?.tile?.tab==='string'&&/^(?:0|[1-9][0-9]*)$/.test(pointer.tile.tab)&&BigInt(pointer.tile.tab)===tab;
-        const pointers=(current?.remoteState(at)??[]).filter(p=>epochs.has(p.publisher)&&!p.stale&&p.participant?.kind==='agent'&&overPanesTab(p.pointer)&&finite(p.pointer.at)&&p.pointer.at.length===2&&p.pointer.at[0]>=0&&p.pointer.at[1]>=0&&p.pointer.at[0]<size[0]&&p.pointer.at[1]<size[1]).map(p=>({publisher:p.publisher,seq:p.seq,receivedAtMs:p.receivedAtMs,pointer:[...p.pointer.at],participant:structuredClone(p.participant),epoch:epochs.get(p.publisher)}));
+        const overPanesTab=pointer=>tab!==null&&typeof pointer?.tab==='string'&&/^(?:0|[1-9][0-9]*)$/.test(pointer.tab)&&BigInt(pointer.tab)===tab;
+        const members=current?.presenceMembers?.()??[];
+        epochs.clear();
+        for(const member of members)epochs.set(member.publisher,member.epoch);
+        if(epochs.size>MAX_PRESENCES)throw Error('presence capacity exceeded');
+        const pointers=members.filter(p=>p.agent&&p.pointer&&p.pointer.ageMs<=STALE_AFTER_MS&&overPanesTab(p.pointer)&&finite(p.pointer.at)&&p.pointer.at.length===2&&p.pointer.at[0]>=0&&p.pointer.at[1]>=0&&p.pointer.at[0]<size[0]&&p.pointer.at[1]<size[1]).map(p=>({publisher:p.publisher,seq:0,receivedAtMs:at-p.pointer.ageMs,pointer:[...p.pointer.at],participant:{kind:'agent',label:p.label,color:p.colour,activity:p.activity},epoch:p.epoch}));
         if(pointers.length>MAX_PRESENCES)throw Error('presence capacity exceeded');
         copy??=makeCanvas(canvas.width,canvas.height);
         if(copy.width!==canvas.width)copy.width=canvas.width;

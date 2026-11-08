@@ -114,14 +114,14 @@ enum Phase {
     Retiring { token: u64, since: Instant },
     /// The app the tab left is letting go of its record.
     Releasing {
-        /// The heads its app gave with the retirement: the record as it was before the
-        /// stamp, which a retired record cannot be read as it stands.
+        /// The heads its app gave with the retirement: the record as it was before the stamp, which
+        /// a retired record cannot be read as it stands.
         until: Option<Vec<ChangeHash>>,
         since: Instant,
         poll: Option<Receiver<Result<Option<AutoCommit>, Fault>>>,
     },
-    /// What the app the tab left wrote last is being merged into the record; `reopen`
-    /// is whether the destination's window was closed for it.
+    /// What the app the tab left wrote last is being merged into the record; `reopen` is whether
+    /// the destination's window was closed for it.
     Catching {
         source: AutoCommit,
         answers: Receiver<Result<Merged, Fault>>,
@@ -148,8 +148,8 @@ pub(crate) struct Moves {
 }
 
 impl Moves {
-    /// Carries asked about on `notices`, whose answers come back here, and whose
-    /// windows are reached through `continuing`.
+    /// Carries asked about on `notices` , whose answers come back here, and whose windows are
+    /// reached through `continuing` .
     pub(crate) fn new(notices: DesktopNotifications, continuing: Arc<Continuations>) -> Self {
         let (answered, answers) = mpsc::channel();
         notices.on_outcome(move |outcome| {
@@ -202,9 +202,8 @@ impl Moves {
         self.notes.borrow_mut().clear();
     }
 
-    /// The person carried `tab` to the workspace at `to`: the app it shows starts again
-    /// there on the record it shows, and a move that touches other people is asked
-    /// about first.
+    /// The person carried `tab` to the workspace at `to` : the app it shows starts again there on
+    /// the record it shows, and a move that touches other people is asked about first.
     fn consider(
         &self,
         shared: &Shared,
@@ -220,8 +219,8 @@ impl Moves {
             })
         });
         let Some((here, there)) = read else {
-            // Nothing of an app shows in the tab any more, or its destination went: the tab
-            // goes where the person put it.
+            // Nothing of an app shows in the tab any more, or its destination went: the tab goes
+            // where the person put it.
             let _ = shared.desktop.with_policy(|policy| policy.carry(tab, to));
             return;
         };
@@ -250,8 +249,8 @@ impl Moves {
         }
     }
 
-    /// Ask the person what the move means before anything crosses: the window and the
-    /// record it takes are other people's to see, or leaving takes them away.
+    /// Ask the person what the move means before anything crosses: the window and the record it
+    /// takes are other people's to see, or leaving takes them away.
     fn ask(&self, asked: Asked, here: bool, there: bool) {
         let title = t_args(
             "window-move-ask-title",
@@ -288,8 +287,7 @@ impl Moves {
         self.asking.borrow_mut().insert(id, asked);
     }
 
-    /// Carry the tab to the workspace the person chose, and take the record the window
-    /// shows along.
+    /// Carry the tab to the workspace the person chose, and take the record the window shows along.
     fn carry(&self, shared: &Shared, handoff: Option<&SessionFollowDispatcher>, asked: Asked) {
         let Asked {
             tab,
@@ -368,15 +366,15 @@ impl Moves {
         }
     }
 
-    /// The record the window at `tab` shows, when it is a record of its own that may
-    /// leave the workspace: one the workspace keeps for the app goes with the workspace.
+    /// The record the window at `tab` shows, when it is a record of its own that may leave the
+    /// workspace: one the workspace keeps for the app goes with the workspace.
     fn travelling(shared: &Shared, tab: TabId) -> Option<RecordId> {
         let (id, _) = shared.notes.window_record(tab)?;
         RecordId::parse(&id).filter(|id| !id.is_package_primary())
     }
 
-    /// [`Self::travelling`], naming the profiles it is kept in: where the window shows
-    /// it, and the one of the workspace the tab went to.
+    /// [`Self::travelling`], naming the profiles it is kept in: where the window shows it, and the
+    /// one of the workspace the tab went to.
     fn record(shared: &Shared, crossing: &Crossing, from_id: &str) -> Option<Travelling> {
         let id = Self::travelling(shared, crossing.tab)?;
         let home = launcher::appdir::host_data_home()?;
@@ -601,7 +599,8 @@ impl Moves {
                 );
             }
             Ok(Ok(Merged::Held)) if reopen => {
-                // The window its app opened again took the record before the last changes could be written.
+                // The window its app opened again took the record before the last changes could be
+                // written.
                 self.give_up(shared, &crossing, &t("window-move-reason-busy"));
             }
             Ok(Ok(Merged::Held)) => {
@@ -679,8 +678,8 @@ impl Moves {
         self.waiting(crossing, Phase::Importing(answers));
     }
 
-    /// Start the window's app in the workspace the person carried the tab to, on the
-    /// record that came along when one did.
+    /// Start the window's app in the workspace the person carried the tab to, on the record that
+    /// came along when one did.
     fn start(&self, shared: &Shared, crossing: Crossing, reopening: bool) {
         let on = crossing
             .record
@@ -717,8 +716,8 @@ impl Moves {
         self.waiting(crossing, Phase::Opening { since, reopening });
     }
 
-    /// The new window is up: the window the tab left is asked to stamp its record
-    /// retired, and then closes.
+    /// The new window is up: the window the tab left is asked to stamp its record retired, and then
+    /// closes.
     fn retire(
         &self,
         shared: &Shared,
@@ -759,8 +758,8 @@ impl Moves {
         self.waiting(crossing, Phase::Retiring { token, since });
     }
 
-    /// The window the tab left is closed: read what its app wrote last, for a merge
-    /// where the destination can take it.
+    /// The window the tab left is closed: read what its app wrote last, for a merge where the
+    /// destination can take it.
     fn release(&self, shared: &Shared, compositor: &mut Compositor, crossing: Crossing) {
         compositor.close_window(crossing.window);
         let until = crossing
@@ -805,8 +804,8 @@ impl Moves {
         window_transfer::off_loop(move || window_transfer::merge(&destination, &target, &source))
     }
 
-    /// The destination's window holds the record the last changes belong in: put a card
-    /// in its tab, close it, and merge once it has let go.
+    /// The destination's window holds the record the last changes belong in: put a card in its tab,
+    /// close it, and merge once it has let go.
     fn close(
         &self,
         shared: &Shared,
@@ -854,8 +853,8 @@ impl Moves {
         }
     }
 
-    /// The tab went while its record was on its way: the copy it made where it arrived
-    /// is retired as one nothing opened.
+    /// The tab went while its record was on its way: the copy it made where it arrived is retired
+    /// as one nothing opened.
     fn closed(crossing: &Crossing) {
         let Some(record) = crossing.record.as_ref() else {
             return;
@@ -864,8 +863,8 @@ impl Moves {
             return;
         };
         let destination = record.destination.clone();
-        // The copy is a record of the destination with its own id there; the one it was
-        // read from exists only where the window was.
+        // The copy is a record of the destination with its own id there; the one it was read from
+        // exists only where the window was.
         let copy = Origin::Record(arrived.target.clone());
         if let Err(error) = window_transfer::off_loop_detached(move || {
             if let Err(fault) = window_transfer::retire(&destination, &copy, &Retirement::Abandoned)
@@ -883,8 +882,8 @@ impl Moves {
         }
     }
 
-    /// The move cannot be made: the copy is retired as one nothing opened, the tab goes
-    /// back where it was, and the person is told why.
+    /// The move cannot be made: the copy is retired as one nothing opened, the tab goes back where
+    /// it was, and the person is told why.
     fn give_up(&self, shared: &Shared, crossing: &Crossing, why: &str) {
         Self::closed(crossing);
         Self::put_back(shared, crossing.tab, crossing.from, &crossing.app);
@@ -943,14 +942,13 @@ impl Moves {
         Notice::new(t("window-move-app-name"), 1, title, body).tell_desk(&self.notices);
     }
 
-    /// Put the move back in flight, waiting for `phase`.
+    /// Put the move back in flight, waiting for `phase` .
     fn waiting(&self, mut crossing: Crossing, phase: Phase) {
         crossing.phase = phase;
         self.crossing.borrow_mut().push(crossing);
     }
 
-    /// What the window's app said about the step asked under `token`, if it
-    /// said anything.
+    /// What the window's app said about the step asked under `token` , if it said anything.
     fn claim(&self, crossing: &Crossing, token: u64) -> Option<HandoffReport> {
         let (from, app, instance) = (
             crossing.from_id.as_str(),
@@ -1010,7 +1008,7 @@ fn window_of(shared: &Shared, tab: TabId) -> Option<u64> {
     })
 }
 
-/// Whether the tab at `tab` took a window other than `window`.
+/// Whether the tab at `tab` took a window other than `window` .
 fn landed(shared: &Shared, tab: TabId, window: u64) -> Landed {
     shared.desktop.with_policy(|policy| {
         policy.handle().read(|tree| match tab_tile(tree, tab) {
@@ -1042,13 +1040,13 @@ struct WorkspaceRead {
     slot: WorkspaceSlot,
     id: String,
     name: String,
-    /// Whether anyone besides this person belongs to it: what it holds is shared with
-    /// them whether or not they are here.
+    /// Whether anyone besides this person belongs to it: what it holds is shared with them whether
+    /// or not they are here.
     others: bool,
 }
 
-/// What stands at `tab`: the window filling it, the app that window belongs to, and
-/// the workspace it is in.
+/// What stands at `tab` : the window filling it, the app that window belongs to, and the workspace
+/// it is in.
 struct Standing {
     app: String,
     window: u64,
@@ -1066,8 +1064,8 @@ fn tab_tile(tree: &DesktopTree, tab: TabId) -> Option<&TileContent> {
         .map(|held| &held.tile)
 }
 
-/// The window `tab` shows and the workspace the tab stands in; `None` when the tab
-/// is not on the desk or holds no window of an app this device started.
+/// The window `tab` shows and the workspace the tab stands in; `None` when the tab is not on the
+/// desk or holds no window of an app this device started.
 fn standing(tree: &DesktopTree, tab: TabId, person: &str, earlier: &[String]) -> Option<Standing> {
     let TileContent::Foreign { app_id, surface_id } = tab_tile(tree, tab)? else {
         return None;
@@ -1112,7 +1110,7 @@ fn read(workspace: &Workspace, person: &str, earlier: &[String]) -> WorkspaceRea
     }
 }
 
-/// What the person calls `app`, when this machine knows a package by that name.
+/// What the person calls `app` , when this machine knows a package by that name.
 fn app_name(app: &str) -> String {
     app_catalogue::apps::read_one_from_env(app)
         .ok()
@@ -1156,7 +1154,7 @@ mod tests {
     /// See [`WIDTH`].
     const HEIGHT: i32 = 800;
 
-    /// A workspace owned by `owner`, with `members` in it.
+    /// A workspace owned by `owner` , with `members` in it.
     fn workspace(owner: &str, members: &[&str]) -> Workspace {
         let mut workspace = Workspace::create("Studio");
         workspace.set_owner(owner.to_owned());
@@ -1166,9 +1164,9 @@ mod tests {
         workspace
     }
 
-    /// A move crosses a sharing boundary exactly when someone besides the
-    /// person may read the workspace it leaves or enters: the window and the
-    /// record it takes are theirs to see, or leaving takes it from them.
+    /// A move crosses a sharing boundary exactly when someone besides the person may read the
+    /// workspace it leaves or enters: the window and the record it takes are theirs to see, or
+    /// leaving takes it from them.
     #[test]
     fn a_move_is_shared_when_someone_else_may_read_either_workspace() {
         let alone = workspace("pat", &[]);
@@ -1194,8 +1192,8 @@ mod tests {
         );
     }
 
-    /// A desk with a session on it, and the window of [`PROBE`] in a tab of the
-    /// workspace in front, showing `record`.
+    /// A desk with a session on it, and the window of [`PROBE`] in a tab of the workspace in front,
+    /// showing `record` .
     struct Desk {
         _home: tilo_test_env::TestHome,
         /// Where each start is written down.
@@ -1303,8 +1301,7 @@ mod tests {
             launcher::appdir::host_app_dir(&data_home, &slug, PROBE).join(".local/share")
         }
 
-        /// The record the window shows: one the app wrote in the workspace it
-        /// is in.
+        /// The record the window shows: one the app wrote in the workspace it is in.
         fn showing(&self, body: &str) -> RecordCheckout {
             let root = Self::profile(&self.from);
             let checkout = RecordCheckout::new(RecordId::minted(), RecordKind::new(NOTE));
@@ -1322,8 +1319,8 @@ mod tests {
                 })
                 .expect("the record is open");
             records.try_flush().expect("the record is written");
-            // The session notes what a window shows as its app holds it: this
-            // one holds the record it was launched on.
+            // The session notes what a window shows as its app holds it: this one holds the record
+            // it was launched on.
             self.session.shared.notes.read(&[(
                 self.tab,
                 CrdtRoute::record(PROBE, self.from.clone(), checkout.id.as_str()),
@@ -1346,8 +1343,8 @@ mod tests {
                 .expect("a frame");
         }
 
-        /// Wait for the app the move starts where the window went, and what it
-        /// was handed: the workspace, and the record it opens.
+        /// Wait for the app the move starts where the window went, and what it was handed: the
+        /// workspace, and the record it opens.
         fn arrived(&mut self) -> (String, RecordId) {
             wait(
                 &mut self.session,
@@ -1403,7 +1400,7 @@ mod tests {
         }
     }
 
-    /// What the record `id` of `workspace` holds in the profile at `root`.
+    /// What the record `id` of `workspace` holds in the profile at `root` .
     fn stored_at(root: &Path, workspace: &str, id: &RecordId) -> Option<automerge::AutoCommit> {
         let store = app_state::FsStore::new(root.to_path_buf());
         let key = StorageKey::record(PROBE, workspace, id.storage_key());
@@ -1413,8 +1410,8 @@ mod tests {
         Some(doc)
     }
 
-    /// The app writes `body` into the record `id` of `workspace`: what it does
-    /// while a window moves.
+    /// The app writes `body` into the record `id` of `workspace` : what it does while a window
+    /// moves.
     fn edit_at(root: &Path, workspace: &str, id: &RecordId, body: &str) {
         let mut owners = RecordOwners::new(root.to_path_buf());
         let records = owners
@@ -1430,8 +1427,8 @@ mod tests {
         records.try_flush().expect("the record is written");
     }
 
-    /// The desk this device left: the workspace in front with a strip the app's
-    /// window takes, and one behind it.
+    /// The desk this device left: the workspace in front with a strip the app's window takes, and
+    /// one behind it.
     fn save_desk(state: &Path) {
         let mut home = Workspace::new(WorkspaceSlot(1), "Home");
         home.strips = vec![Strip::new(StripId(1), "Main")];
@@ -1450,8 +1447,8 @@ mod tests {
         fs::write(&path, serde_json::to_string(&tree).expect("a desk")).expect("the desk is saved");
     }
 
-    /// Install [`PROBE`] in the home's own app store: a package whose
-    /// entrypoint is the launcher's to start.
+    /// Install [`PROBE`] in the home's own app store: a package whose entrypoint is the launcher's
+    /// to start.
     fn install(home: &mut tilo_test_env::TestHome) {
         let store = home.data().join("tilo-apps");
         let payload = store.join("payload").join(PROBE);
@@ -1531,7 +1528,7 @@ mod tests {
             .unwrap_or_default()
     }
 
-    /// What the last start the launcher recorded was handed for `flag`.
+    /// What the last start the launcher recorded was handed for `flag` .
     fn handed(arguments: &Path, flag: &str) -> String {
         let recorded = fs::read_to_string(arguments).expect("the launcher recorded its start");
         let arguments: Vec<&str> = recorded
@@ -1603,10 +1600,9 @@ mod tests {
         }
     }
 
-    /// A window the person moves to another workspace takes the record it shows
-    /// along: it is kept where it went, under an id of its own there, what the
-    /// window's app wrote before it closed is merged in, and the record it left
-    /// says where it went.
+    /// A window the person moves to another workspace takes the record it shows along: it is kept
+    /// where it went, under an id of its own there, what the window's app wrote before it closed is
+    /// merged in, and the record it left says where it went.
     #[test]
     fn a_moved_window_takes_the_record_it_shows_to_the_workspace_it_moves_to() {
         let _settled = ui::motion::testing::settled();
@@ -1657,10 +1653,9 @@ mod tests {
         );
     }
 
-    /// An app that opens no window where the person put its tab: the tab goes
-    /// back where it was, still showing the window it had, the copy the move
-    /// made where it arrived is retired as one nothing opened, the record it
-    /// left lives on, and the person is told why.
+    /// An app that opens no window where the person put its tab: the tab goes back where it was,
+    /// still showing the window it had, the copy the move made where it arrived is retired as one
+    /// nothing opened, the record it left lives on, and the person is told why.
     #[test]
     fn a_move_whose_app_opens_no_window_puts_the_tab_back() {
         let _settled = ui::motion::testing::settled();
@@ -1719,8 +1714,8 @@ mod tests {
         assert_eq!(body(&left).as_deref(), Some("first draft"));
     }
 
-    /// [`wait`] with a bound of its own: a step of the product is timed out
-    /// before the move answers.
+    /// [`wait`] with a bound of its own: a step of the product is timed out before the move
+    /// answers.
     #[track_caller]
     fn wait_maybe<T>(
         session: &mut Session,

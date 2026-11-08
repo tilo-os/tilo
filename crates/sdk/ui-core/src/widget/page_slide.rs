@@ -1,4 +1,4 @@
-//! [`PageSlide`]: the page a panel shows, and the page it replaced sliding
+//! [`PageSlide`] — the page a panel shows, and the page it replaced sliding
 //! out beside it when the view swaps one for another.
 //!
 //! A view that shows one page of a stack in one place builds the page in

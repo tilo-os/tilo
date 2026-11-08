@@ -167,10 +167,6 @@ pub struct TestEnv {
 
 impl TestEnv {
     /// Create the fixture tree and point the environment at it.
-    ///
-    /// # Errors
-    ///
-    /// Returns the I/O error if the temporary tree cannot be created.
     pub fn new() -> io::Result<Self> {
         Ok(Self {
             home: TestHome::new()?,
@@ -184,11 +180,6 @@ impl TestEnv {
     ///
     /// Parent directories are created. A path that is absolute is written
     /// where it names, for a fixture a caller placed itself.
-    ///
-    /// # Errors
-    ///
-    /// Returns the I/O error if a file or one of its directories cannot be
-    /// written.
     pub fn with_files(self, tree: &[(impl AsRef<Path>, &[u8])]) -> io::Result<Self> {
         for (path, contents) in tree {
             let path = self.home.home().join(path.as_ref());

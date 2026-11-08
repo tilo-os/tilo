@@ -10,8 +10,6 @@ use std::path::{Path, PathBuf};
 pub const OFFLINE_PREFIX: &str = "offline:sha256:";
 
 /// Check a declared offline identity, including equality to its signed receipt.
-/// # Errors
-/// Rejects unknown schemes, malformed digests, zero sizes or mismatched identity.
 pub fn validate_offline_pin(artifact: &PinnedArtifact) -> Result<(), ServiceError> {
     crate::validate_sha256(&artifact.sha256)?;
     if artifact.size_bytes == 0
@@ -31,8 +29,6 @@ pub struct OfflineTransport {
 
 impl OfflineTransport {
     /// Construct only after verifying the developer catalogue signature.
-    /// # Errors
-    /// Refuses conflicting locations or invalid declared receipt identities.
     pub fn new(root: &Path, catalog: &CatalogPayload) -> Result<Self, ServiceError> {
         let mut pins = BTreeMap::new();
         for pin in catalog.models.iter().map(|model| &model.artifact).chain(

@@ -230,9 +230,6 @@ pub fn draw(
 }
 
 /// A rendered export's RGBA as the file's bytes in `format`.
-///
-/// # Errors
-/// Says why the encoder failed.
 pub fn encode_raster(
     rgba: &[u8],
     width: u32,

@@ -160,8 +160,6 @@ pub(in crate::owned_service::capture::original) fn publish(
 }
 /// Signed original worker only; named/unsealed files and ordinary request JSON
 /// cannot mint this type. The caller must already verify its canonical FD50 claim.
-/// # Errors
-/// Refuses missing/unsealed receipts, a changed claim, or any changed projection.
 pub fn verify_original_mounted_roots(
     binding: Option<&OriginalMountedBinding>,
 ) -> io::Result<Option<VerifiedOriginalMountedRoots>> {

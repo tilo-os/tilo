@@ -20,9 +20,6 @@ pub struct NetworkWakeStatus {
 }
 
 /// Read the saved profile and the active driver's magic-packet setting.
-///
-/// # Errors
-/// Refuses invalid profiles, unsupported profile types and unreadable settings.
 pub fn status(profile: &str) -> Result<NetworkWakeStatus, String> {
     observe(profile, &SystemProfiles, &system_command)
 }
@@ -204,9 +201,6 @@ fn driver(interface: &str, wifi: bool, run: &Runner<'_>) -> Result<(bool, bool),
 /// Whether the Wi-Fi radio `phy` (`phy0`, the name under
 /// `/sys/class/ieee80211`) wakes the machine on a magic packet now. Wi-Fi
 /// drivers do not answer the ethtool wake query that Ethernet ones do.
-///
-/// # Errors
-/// Refuses an invalid radio name; reports an unreadable configuration.
 pub fn wifi_magic_packet_enabled(phy: &str) -> Result<bool, String> {
     if !phy
         .strip_prefix("phy")

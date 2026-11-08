@@ -47,10 +47,6 @@ impl std::fmt::Debug for Request {
 impl Request {
     /// Content-address the complete immutable capture, except the address itself.
     /// Callers generate `capture_id` once and preserve it on every retry.
-    ///
-    /// # Errors
-    ///
-    /// When the capture cannot be encoded or digested.
     pub fn bound_invocation(&self) -> Result<uuid::Uuid, String> {
         let mut value = serde_json::to_value(self).map_err(|_| "local report encoding failed")?;
         value

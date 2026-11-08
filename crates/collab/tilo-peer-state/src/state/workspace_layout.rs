@@ -1,12 +1,10 @@
-//! The workspace's layout scope, which its governor alone writes.
+//! A workspace's layout scope: whether its members' strips and windows are
+//! shared with everyone or stay on their own devices
+//! ([`tilo_desktop_model::projection::WorkspaceLayout`]).
 //!
-//! In a personal workspace each member's strips and windows stay on their device;
-//! the workspace shares its apps' records and its people
-//! ([`tilo_desktop_model::projection::WorkspaceLayout`]). Its governor records the
-//! scope ([`tilo_desktop_model::projection::WORKSPACE_LAYOUT_KEY`]) for every
-//! member to read. The layout itself is the workspace's shared desktop record; a
-//! workspace document still holds the windows devices from before put there, and
-//! the governor of a personal workspace removes them.
+//! Its governance records the scope for every member to read
+//! ([`tilo_desktop_model::projection::WORKSPACE_LAYOUT_KEY`]). The layout itself
+//! is the workspace's shared desktop record.
 use super::facades::{PeerGovernance, PeerGovernanceMut};
 use super::{ROOT, SystemTime, err};
 use automerge::transaction::Transactable as _;

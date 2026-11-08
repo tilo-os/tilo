@@ -2379,7 +2379,7 @@ impl App {
         answering.next().is_none().then_some(single)
     }
 
-    /// [`Self::rebuild_structure`]: whether a control asked for the keyboard in the tree it
+    /// [`Self::rebuild_structure`] — whether a control asked for the keyboard in the tree it
     /// built ([`Widget::take_focus_request`]) and has it. That request is where the keyboard
     /// goes, over where it was before the rebuild: a caller restoring the focus it captured
     /// before must leave it.

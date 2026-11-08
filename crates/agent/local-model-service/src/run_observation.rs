@@ -289,8 +289,6 @@ fn limit(path: &Path) -> Observed<String> {
     }
 }
 /// Observe one process's aggregate cgroup and fence process/cgroup lifetime.
-/// # Errors
-/// Refuses missing identities, inaccessible mount roots and PID/cgroup reuse.
 pub(crate) fn sample_process(pid: u32) -> Result<CgroupSample, String> {
     let (identity, group) = process_identity(pid)?;
     let mut counters = BTreeMap::new();
@@ -392,8 +390,6 @@ fn validate_checkpoint(checkpoint: &RunCheckpoint) -> Result<String, String> {
 }
 
 /// Retain a new exclusive private checkpoint, never rewriting an earlier run.
-/// # Errors
-/// Refuses malformed custody, unsafe storage and duplicate checkpoints.
 pub(crate) fn retain(root: &Path, checkpoint: &RunCheckpoint) -> Result<(), String> {
     let name = validate_checkpoint(checkpoint)?;
     let bytes = serde_json::to_vec(checkpoint).map_err(|e| e.to_string())?;

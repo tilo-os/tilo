@@ -16,10 +16,6 @@ const REFRESH: Duration = Duration::from_secs(10);
 
 /// Feed host search from `host`, as the profile's owner `actor` confined
 /// to the profile's `workspace`: the caller MCP acts as.
-///
-/// # Errors
-///
-/// Returns an error when the app runtime cannot start.
 pub(crate) fn start<H>(host: H, workspace: &str, actor: &str) -> io::Result<Arc<OsSearch>>
 where
     H: ActionHost + Send + Sync + 'static,

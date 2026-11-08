@@ -210,9 +210,6 @@ pub trait SettingsSource: Send + Sync {
     /// Merge only if the current section still equals `expected`, under the
     /// same lock that protects persistence and external-write adoption.
     /// `Superseded` means a newer document replaced the caller's intent.
-    ///
-    /// # Errors
-    /// Storage failed, or this source cannot provide atomic comparison.
     fn compare_update_section(
         &self,
         _name: &str,
@@ -227,9 +224,6 @@ pub trait SettingsSource: Send + Sync {
 
     /// Atomically compare and merge display transaction/profile intent in
     /// its single device record.
-    ///
-    /// # Errors
-    /// Storage failed, or the source cannot provide atomic display updates.
     fn compare_display_update(&self, _update: DisplayUpdate) -> std::io::Result<ConditionalUpdate> {
         Err(std::io::Error::new(
             std::io::ErrorKind::Unsupported,
@@ -239,9 +233,6 @@ pub trait SettingsSource: Send + Sync {
 
     /// Compare a host-owned display transaction, including an absent section.
     /// Main's atomic display update also protects the observed profile state.
-    ///
-    /// # Errors
-    /// Refuses stale intent, unsupported sources or failed durable persistence.
     fn compare_display_transaction(
         &self,
         expected: Option<&Value>,
