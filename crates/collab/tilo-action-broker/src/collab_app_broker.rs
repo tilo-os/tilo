@@ -8242,31 +8242,6 @@ impl AppBrokerState {
         ))
     }
 
-    /// Ask one local subscriber of every record channel in `cluster_id` for
-    /// its document snapshot, on behalf of no local connection: how another
-    /// device that just came back catches up on what it missed. Returns how
-    /// many channels were asked.
-    pub fn request_workspace_snapshots(&self, cluster_id: &str) -> usize {
-        let channels: Vec<String> = self
-            .channels
-            .lock()
-            .map(|channels| {
-                channels
-                    .keys()
-                    .filter(|key| {
-                        let route = CrdtRoute::from_channel_key(key);
-                        route.cluster_id == cluster_id && !route.record_id.is_empty()
-                    })
-                    .cloned()
-                    .collect()
-            })
-            .unwrap_or_default();
-        channels
-            .iter()
-            .filter(|channel| self.request_document_snapshot(channel, u64::MAX))
-            .count()
-    }
-
     /// Direct a late-join snapshot request to one established subscriber on
     /// the exact route. Lowest broker peer id makes selection deterministic;
     /// the requester is excluded so it never snapshots its own empty state.
@@ -14409,42 +14384,6 @@ pub mod tests {
             [Sent::Signed { cluster_id, record_id, .. }]
                 if *cluster_id == route.cluster_id && record_id == "watch-history"
         ));
-    }
-
-    /// A device that came back is caught up by the local apps holding the
-    /// personal cluster's records: each record channel of that workspace, and only of
-    /// that workspace, is asked for its snapshot.
-    #[test]
-    fn workspace_snapshot_requests_reach_only_that_workspaces_record_channels() {
-        let fanout = Arc::new(FanoutState::new());
-        let (state, _bridge_rx) = AppBrokerState::new(
-            &fanout,
-            Arc::new(Mutex::new(BrokerChannels::default())),
-            PeerPublisher::disabled(),
-            None,
-            None,
-        );
-        fanout.attach_app_broker(Arc::clone(&state));
-        let personal_cluster = collab_types::personal_cluster(&[29; 32]).to_string();
-        let history = CrdtRoute::record("so.tilo.tube", personal_cluster.as_str(), "watch-history");
-        let words = CrdtRoute::record("so.tilo.dict", personal_cluster.as_str(), "learned");
-        let unscoped = CrdtRoute::cluster(personal_cluster.as_str());
-        let shared = CrdtRoute::record("so.tilo.tube", "workspace-1", "watch-history");
-        let mut receivers: Vec<_> = [&history, &words, &unscoped, &shared]
-            .into_iter()
-            .zip(2_u64..)
-            .map(|(route, peer)| {
-                state.ensure_channel(&route.channel_key());
-                state.subscribe_context(&route.channel_key(), peer, None)
-            })
-            .collect();
-
-        assert_eq!(fanout.request_workspace_snapshots(&personal_cluster), 2);
-        let asked: Vec<bool> = receivers
-            .iter_mut()
-            .map(|rx| matches!(rx.try_recv(), Ok(ContextUpdate::SnapshotRequested)))
-            .collect();
-        assert_eq!(asked, [true, true, false, false]);
     }
 
     #[test]

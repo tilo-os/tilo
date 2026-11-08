@@ -243,13 +243,6 @@ impl FanoutState {
             .unwrap_or_default()
     }
 
-    /// Ask the local apps holding records in `cluster_id` to publish their
-    /// snapshots; see [`AppBrokerState::request_workspace_snapshots`].
-    pub fn request_workspace_snapshots(&self, cluster_id: &str) -> usize {
-        self.app_broker()
-            .map_or(0, |state| state.request_workspace_snapshots(cluster_id))
-    }
-
     /// [`Self::fanout_to_route`] for a local app's presence: delivered to
     /// whoever `scope` (the workspace) addresses, while in-process subscribers
     /// are told the `origin` route it came from — which app, which record —
