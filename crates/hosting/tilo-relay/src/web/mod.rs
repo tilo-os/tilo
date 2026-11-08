@@ -175,7 +175,7 @@ impl crate::peer::HereBoard for Board {
     {
         Box::pin(async move {
             request.validate().map_err(ToString::to_string)?;
-            if !self.presence.admits_page(peer, request.workspace_id) {
+            if !self.presence.admits_page(peer, request.workspace_id).await {
                 return Err("not admitted to this workspace".into());
             }
             let workspace_id = request.workspace_id;

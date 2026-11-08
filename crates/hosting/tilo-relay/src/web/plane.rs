@@ -165,23 +165,47 @@ impl Authority {
     /// Whether the workspace lets `peer`s device be a page in its plane now: a
     /// page asks who is here over its session, which no session token names, so
     /// the answer comes from the workspace itself.
-    pub(crate) fn admits_page(&self, peer: &AuthenticatedPeer, workspace: u64) -> bool {
+    pub(crate) async fn admits_page(&self, peer: &AuthenticatedPeer, workspace: u64) -> bool {
         self.admits_as(peer, workspace, WorkspaceOperation::Live)
+            .await
     }
 
     /// Re-answer every participant: does its workspace admit its device now?
     /// Called on each relay-wide authority change, never on a timer.
-    fn refresh(&self) {
+    async fn refresh(&self) {
         let members: Vec<Arc<Grant>> = self.members.lock_recover().values().cloned().collect();
         for grant in members {
-            grant.set(self.admits_as(&grant.peer, grant.workspace, WorkspaceOperation::Publish));
+            let admitted = self
+                .admits_as(&grant.peer, grant.workspace, WorkspaceOperation::Publish)
+                .await;
+            grant.set(admitted);
         }
     }
 
     /// Whether the workspace's governance admits `peer`'s device to `op` now:
     /// the same answer every plane of the workspace takes, read from the
     /// workspace as it stands.
-    fn admits_as(&self, peer: &AuthenticatedPeer, workspace: u64, op: WorkspaceOperation) -> bool {
+    async fn admits_as(
+        &self,
+        peer: &AuthenticatedPeer,
+        workspace: u64,
+        op: WorkspaceOperation,
+    ) -> bool {
+        let workspace = {
+            let workspaces = self.relay.workspaces.lock().await;
+            workspaces.get(&workspace).cloned()
+        };
+        let Some(workspace) = workspace else {
+            return false;
+        };
+        let runtime = workspace.lock().await;
+        workspace_access::decide(&runtime, &self.relay.trust(), peer, op).admitted()
+    }
+
+    /// [`Self::admits_as`] for the carrier's own admission, which the relay
+    /// runs on a task that cannot wait for the workspace: a busy lock admits
+    /// nobody, and the device redials once the workspace has answered.
+    fn admits_now(&self, peer: &AuthenticatedPeer, workspace: u64, op: WorkspaceOperation) -> bool {
         let Ok(workspaces) = self.relay.workspaces.try_lock() else {
             return false;
         };
@@ -234,7 +258,7 @@ impl Authority {
             device_public_key: device,
             cert: certificate,
         };
-        if !self.admits_as(&peer, id, WorkspaceOperation::Publish) {
+        if !self.admits_now(&peer, id, WorkspaceOperation::Publish) {
             return Err(Denied);
         }
         let key = DeviceKey {
@@ -284,7 +308,7 @@ impl Plane {
         let refresh = tokio::spawn(async move {
             let mut epoch = crate::authority_epoch::subscribe();
             while epoch.changed().await.is_ok() {
-                refreshing.refresh();
+                refreshing.refresh().await;
             }
         });
         Self {
