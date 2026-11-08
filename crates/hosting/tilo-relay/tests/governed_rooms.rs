@@ -536,6 +536,8 @@ type = "String"
         move |_| Some(hash),
     );
     let Governed {
+        // The relay's storage: kept alive for the whole test.
+        state: _state,
         laptop,
         relay,
         mut alice_peer,
@@ -636,6 +638,8 @@ params = []
         move |_| Some(hash),
     );
     let Governed {
+        // The relay's storage: kept alive for the whole test.
+        state: _state,
         laptop,
         phone,
         relay,
