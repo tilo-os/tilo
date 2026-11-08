@@ -49,13 +49,60 @@ pub(crate) fn wire_role(name: &str) -> Result<WorkspaceRole, JsError> {
         .ok_or_else(|| js_error(format!("no such role: {name}")))
 }
 
+/// The key a request names as `what`, refused when it names none.
+fn named_key(key: Option<&String>, what: &str) -> Result<[u8; 32], JsError> {
+    let key = key.ok_or_else(|| js_error(format!("the request names no {what}")))?;
+    device_key(key)
+}
+
 impl RoomsArgs {
-    fn key(&self, key: Option<&String>, what: &str) -> Result<[u8; 32], JsError> {
-        let key = key.ok_or_else(|| js_error(format!("the request names no {what}")))?;
-        device_key(key)
-    }
     fn role(&self) -> Result<WorkspaceRole, JsError> {
         wire_role(&self.role)
+    }
+
+    /// The invitation to `workspace` these arguments ask for: an editor's
+    /// unless they name a role.
+    fn invitation(&self, workspace: String) -> Result<WorkspacesRequest, JsError> {
+        Ok(WorkspacesRequest::Invite {
+            workspace,
+            request_id: new_request_id()?,
+            role: match self.role.as_str() {
+                "" => WorkspaceRole::Editor,
+                _ => self.role()?,
+            },
+            expires_at_ns: ui::time::unix_now_ns()
+                .saturating_add(seconds(self.expires_in_seconds)?.saturating_mul(1_000_000_000)),
+            inviter_name: self.inviter_name.clone(),
+            wait_list_entry: self
+                .wait_list_entry
+                .as_deref()
+                .map(device_key)
+                .transpose()?,
+            recipient: None,
+        })
+    }
+
+    /// Removing, banning or unbanning the person these arguments name.
+    fn about_member(&self, op: &str, workspace: String) -> Result<WorkspacesRequest, JsError> {
+        let user_public_key = named_key(self.user_public_key.as_ref(), "person")?;
+        let request_id = new_request_id()?;
+        Ok(match op {
+            "remove" => WorkspacesRequest::Remove {
+                workspace,
+                request_id,
+                user_public_key,
+            },
+            "ban" => WorkspacesRequest::Ban {
+                workspace,
+                request_id,
+                user_public_key,
+            },
+            _ => WorkspacesRequest::Unban {
+                workspace,
+                request_id,
+                user_public_key,
+            },
+        })
     }
 }
 
@@ -188,26 +235,7 @@ impl WasmPeer {
                 })
                 .await?)?,
             "invite" => {
-                let reply = self
-                    .rooms_request(WorkspacesRequest::Invite {
-                        workspace: room.clone(),
-                        request_id: new_request_id()?,
-                        role: match args.role.as_str() {
-                            "" => WorkspaceRole::Editor,
-                            _ => args.role()?,
-                        },
-                        expires_at_ns: ui::time::unix_now_ns().saturating_add(
-                            seconds(args.expires_in_seconds)?.saturating_mul(1_000_000_000),
-                        ),
-                        inviter_name: args.inviter_name.clone(),
-                        wait_list_entry: args
-                            .wait_list_entry
-                            .as_deref()
-                            .map(device_key)
-                            .transpose()?,
-                        recipient: None,
-                    })
-                    .await?;
+                let reply = self.rooms_request(args.invitation(room.clone())?).await?;
                 Value::String(invitation_text(reply)?)
             }
             "list" => {
@@ -225,7 +253,7 @@ impl WasmPeer {
             "unlist" => entries(
                 self.rooms_request(WorkspacesRequest::Unlist {
                     workspace: room.clone(),
-                    request_id: args.key(args.request_id.as_ref(), "wait-list entry")?,
+                    request_id: named_key(args.request_id.as_ref(), "wait-list entry")?,
                 })
                 .await?,
                 "wait list",
@@ -233,7 +261,7 @@ impl WasmPeer {
             "mailInvite" => entries(
                 self.rooms_request(WorkspacesRequest::MailInvite {
                     workspace: room.clone(),
-                    wait_list_entry: args.key(args.request_id.as_ref(), "wait-list entry")?,
+                    wait_list_entry: named_key(args.request_id.as_ref(), "wait-list entry")?,
                     link: args.link.clone(),
                 })
                 .await?,
@@ -243,37 +271,18 @@ impl WasmPeer {
                 .rooms_request(WorkspacesRequest::SetRole {
                     workspace: room.clone(),
                     request_id: new_request_id()?,
-                    user_public_key: args.key(args.user_public_key.as_ref(), "person")?,
+                    user_public_key: named_key(args.user_public_key.as_ref(), "person")?,
                     role: args.role()?,
                 })
                 .await?)?,
-            "remove" | "ban" | "unban" => {
-                let user_public_key = args.key(args.user_public_key.as_ref(), "person")?;
-                let request_id = new_request_id()?;
-                let request = match op {
-                    "remove" => WorkspacesRequest::Remove {
-                        workspace: room.clone(),
-                        request_id,
-                        user_public_key,
-                    },
-                    "ban" => WorkspacesRequest::Ban {
-                        workspace: room.clone(),
-                        request_id,
-                        user_public_key,
-                    },
-                    _ => WorkspacesRequest::Unban {
-                        workspace: room.clone(),
-                        request_id,
-                        user_public_key,
-                    },
-                };
-                one(self.rooms_request(request).await?)?
-            }
+            "remove" | "ban" | "unban" => one(self
+                .rooms_request(args.about_member(op, room.clone())?)
+                .await?)?,
             "cancel" => entries(
                 self.rooms_request(WorkspacesRequest::Cancel {
                     workspace: room.clone(),
                     request_id: new_request_id()?,
-                    invite_id: args.key(args.invite_id.as_ref(), "invitation")?,
+                    invite_id: named_key(args.invite_id.as_ref(), "invitation")?,
                 })
                 .await?,
                 "invitations",
