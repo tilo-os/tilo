@@ -7,8 +7,97 @@
 use iroh::{EndpointAddr, EndpointId};
 use neighbour_wire::{NeighbourMsg, PeerId};
 
+/// A host's own transport of the collaboration plane, as it and the session hand each other what
+/// they have: the session says `outgoing`, reads what `arrived` and what became of what it asked a
+/// workspace's host for, and the transport holds the other ends.
+pub struct Transport {
+    /// What the session says to the plane.
+    pub outgoing: tokio::sync::mpsc::UnboundedSender<Cmd>,
+    /// What the plane heard, as the session reads it.
+    pub arrived: std::sync::mpsc::Receiver<Event>,
+    /// What became of the enrollments and entries asked for since the last call.
+    pub enrolled: std::sync::mpsc::Receiver<crate::sync::Enrolled>,
+}
+
+/// What a host's transport announces about the device it runs for: where the plane knows it and
+/// where the others reach it, and the person and the name its certificate gives it.
+#[derive(Clone, Debug)]
+pub struct Device {
+    /// Where the plane knows this device.
+    pub publisher: EndpointId,
+    /// Where the others reach it.
+    pub endpoint: EndpointAddr,
+    /// The person this device belongs to, by their root key, as its certificate names them.
+    pub person: Option<[u8; 32]>,
+    /// What this device calls itself, from its certificate.
+    pub name: String,
+}
+
+/// Something the plane heard, as every host hands it to the session.
+#[derive(Debug)]
+#[cfg_attr(
+    target_arch = "wasm32",
+    allow(dead_code, reason = "the page's transport is handed these next")
+)]
+pub enum Event {
+    /// A member of `ws` said `msg`.
+    Msg {
+        ws: Topic,
+        peer: EndpointId,
+        msg: Box<NeighbourMsg>,
+    },
+    /// A member of `ws` is gone.
+    PeerLeft { ws: Topic, peer: EndpointId },
+    /// A member of `ws` this device reaches through the workspace host `host` joined (`active`) or
+    /// left the host's live plane.
+    HostMember {
+        ws: Topic,
+        host: EndpointId,
+        device: EndpointId,
+        active: bool,
+    },
+    /// A host of `ws` finished subscribing to this workspace.
+    HostReady { ws: Topic, peer: EndpointId },
+    /// One of the person's devices proved itself, or proved itself anew.
+    Sibling {
+        peer: EndpointId,
+        certs: Vec<tilo_user_identity::DeviceCert>,
+        revocations: Vec<tilo_user_identity::RevocationEntry>,
+    },
+    /// The session with one of the person's devices ended.
+    SiblingLeft { peer: EndpointId },
+    /// One of the person's devices sent `msg` on its session.
+    SiblingMsg {
+        peer: EndpointId,
+        msg: Box<NeighbourMsg>,
+    },
+    /// What one of the person's devices says of its fabric.
+    #[cfg(target_os = "linux")]
+    PersonalFabric {
+        peer: EndpointId,
+        payload: tilo_network_actor::PersonalFabricPayload,
+        /// When the frame reached this device, read where it was taken off the wire.
+        received: std::time::Instant,
+    },
+    /// How far a stream this device is sending got.
+    #[cfg(target_os = "linux")]
+    NearbyTransferProgress {
+        transfer_id: [u8; 16],
+        sent_bytes: u64,
+        total_bytes: u64,
+        status: tilo_network_actor::PersonalTransferStatus,
+    },
+}
+
 /// How the plane numbers one workspace's topic.
-pub(crate) type Topic = u64;
+pub type Topic = u64;
+
+/// The topic a workspace's plane numbers itself by, from the workspace's id: number 0 for a desk
+/// that shows no workspace.
+#[must_use]
+pub fn topic_of(workspace: tilo_desktop_model::WorkspaceId) -> Topic {
+    tilo_relay_protocol::workspace_topic(&workspace.to_string())
+}
 
 /// A command a session sends to the plane.
 #[derive(Debug)]
@@ -16,7 +105,7 @@ pub(crate) type Topic = u64;
     target_arch = "wasm32",
     allow(dead_code, reason = "the page's transport is handed these next")
 )]
-pub(crate) enum Cmd {
+pub enum Cmd {
     /// Take part in the topic of a workspace.
     Join(Topic),
     /// Stop taking part in the topic of a workspace.

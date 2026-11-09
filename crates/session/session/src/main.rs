@@ -777,6 +777,7 @@ struct Doors<'a> {
 }
 
 /// The session on `backend` 's displays, at `size` where the backend runs in one.
+#[cfg(target_os = "linux")]
 fn start_session(
     backend: Backend,
     options: tilo_session::Options,

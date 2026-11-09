@@ -12,6 +12,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use crate::fabric::Continuity;
+use crate::platform::plane::Event;
 use channel_crypto::{ChannelGroup, MemberKey, VaultKey};
 use collab_types::presence::{Availability, Payload, Presence};
 use collab_types::{ChannelRoute, Ed25519PublicKey};
@@ -24,7 +25,7 @@ use tilo_action_broker::channel_encryption::{
 use tilo_action_broker::collab_core::BrokerChannels;
 use tilo_compositor::OutputConfig;
 use tilo_desktop_model::{DesktopTree, Workspace, WorkspaceId, WorkspaceSlot};
-use tilo_network_actor::{HostIdentity, NetEvent, workspace_topic_id};
+use tilo_network_actor::{HostIdentity, workspace_topic_id};
 
 use super::*;
 use crate::sync::{Client, Entry, OwnPresence};
@@ -256,18 +257,16 @@ fn step(session: &mut Session) {
 }
 
 /// One thing `from` said in the workspace.
-fn said(from: u8, msg: neighbour_wire::NeighbourMsg) -> NetEvent {
-    NetEvent::Msg {
+fn said(from: u8, msg: neighbour_wire::NeighbourMsg) -> Event {
+    Event::Msg {
         ws: workspace_topic_id(workspace_id()),
         peer: public(from),
-        membership_epoch: None,
-        replayed: false,
-        msg,
+        msg: Box::new(msg),
     }
 }
 
 /// A device's identity: the person it is a device of, and its name here.
-fn hello(from: u8, label: &str) -> NetEvent {
+fn hello(from: u8, label: &str) -> Event {
     let device_key = public(from);
     let root = ed25519_dalek::SigningKey::from_bytes(&[from; 32]);
     let mut cert = tilo_user_identity::DeviceCert {

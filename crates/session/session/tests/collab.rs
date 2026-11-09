@@ -33,8 +33,8 @@ use tilo_desktop_model::{
 };
 use tilo_desktop_search::providers::PublishedActions;
 use tilo_desktop_search::providers::jobs::JobEntry;
-use tilo_network_actor::{NetEvent, workspace_topic_id};
-use tilo_session::sync::{Client, OwnPresence};
+use tilo_network_actor::workspace_topic_id;
+use tilo_session::sync::{Client, Event, OwnPresence};
 use tilo_session::{AppActions, Options, Session};
 
 type Arguments = serde_json::Map<String, serde_json::Value>;
@@ -89,13 +89,11 @@ fn desk() -> DesktopTree {
 }
 
 /// One thing the other device said in the workspace.
-fn said(from: u8, msg: NeighbourMsg) -> NetEvent {
-    NetEvent::Msg {
+fn said(from: u8, msg: NeighbourMsg) -> Event {
+    Event::Msg {
         ws: workspace_topic_id(workspace_id()),
         peer: device(from),
-        membership_epoch: None,
-        replayed: false,
-        msg,
+        msg: Box::new(msg),
     }
 }
 
@@ -109,12 +107,12 @@ fn person(seed: u8) -> String {
 }
 
 /// A device's identity: the person it is a device of, and its name here.
-fn hello(from: u8, label: &str) -> NetEvent {
+fn hello(from: u8, label: &str) -> Event {
     hello_of(from, from, label)
 }
 
 /// The device `device` of the person `person` : their certificate here.
-fn hello_of(person: u8, at: u8, label: &str) -> NetEvent {
+fn hello_of(person: u8, at: u8, label: &str) -> Event {
     let device_key = device(at);
     let root = ed25519_dalek::SigningKey::from_bytes(&[person; 32]);
     let mut cert = tilo_user_identity::DeviceCert {

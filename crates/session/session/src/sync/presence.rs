@@ -2,14 +2,17 @@
 //! themselves there, and this device's own word on it. Every host drives the same board and says
 //! what it owes on its own transport; nothing here knows one.
 
-use crate::platform::plane::Topic;
+use crate::platform::plane::{Event, Topic};
 use collab_types::presence::{Availability, Presence, Shown};
 use iroh::EndpointId;
 use neighbour_wire::NeighbourMsg;
 use tilo_desktop::here::LiveMember;
 use tilo_desktop_model::WorkspaceId as DeskWorkspaceId;
+use tilo_desktop_surface::host::records::{app_of, wire_record};
 use tilo_live::presence;
 use tilo_live::presence::{Board, Device};
+use tilo_relay_protocol::live::LiveRecord;
+use ui::record::RecordId;
 
 /// What this session says of itself here.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -176,6 +179,19 @@ impl Plane {
         }
     }
 
+    /// Take one thing the plane heard that its boards keep.
+    pub(super) fn apply(&mut self, event: Event) {
+        match event {
+            Event::Msg { ws, peer, msg } => self.message(ws, peer, *msg),
+            Event::PeerLeft { ws, peer } => {
+                if let Some(workspace) = self.workspace(ws) {
+                    workspace.board.depart(*peer.as_bytes());
+                }
+            }
+            _ => {}
+        }
+    }
+
     /// How many times what the workspace in front knows of its people changed.
     pub(super) fn revision(&self) -> u64 {
         self.front()
@@ -218,4 +234,40 @@ impl Plane {
         let desk = DeskWorkspaceId::parse(&workspace.id)?;
         Some((desk, workspace.board.due(now_ms)?))
     }
+}
+
+/// Who each window of this desk is, by tab, as presence names records: the short digest of the app
+/// and the record its component bound. What places a person in the window they work in, and a
+/// follower's view bringing it forward.
+#[must_use]
+pub(crate) fn bindings(
+    tree: &tilo_desktop_model::DesktopTree,
+    records: &std::collections::BTreeMap<tilo_desktop_model::TabId, String>,
+) -> Vec<(tilo_desktop_model::TabId, String)> {
+    records
+        .iter()
+        .filter_map(|(&tab, record)| {
+            Some((
+                tab,
+                hex::encode(live_record(tree, tab, record)?.short_digest()),
+            ))
+        })
+        .collect()
+}
+
+/// What the window `tab` shows, as presence names it to the others: the app it runs and its record's
+/// wire spelling ([`wire_record`]), the spelling a receiver matches against its own records. `None`
+/// for a window that runs no app, or shows a record this session does not know yet.
+pub(crate) fn live_record(
+    tree: &tilo_desktop_model::DesktopTree,
+    tab: tilo_desktop_model::TabId,
+    record: &str,
+) -> Option<LiveRecord> {
+    let app = app_of(tree, tab)?;
+    let record =
+        RecordId::parse(record).map_or_else(|| record.to_owned(), |id| wire_record(&id).to_owned());
+    Some(LiveRecord {
+        app: app.to_owned(),
+        record,
+    })
 }

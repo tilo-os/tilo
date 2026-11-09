@@ -9,8 +9,77 @@ use iroh::{EndpointAddr, EndpointId};
 use tilo_endpoint_reachability::Reachability;
 use tilo_network_actor::{HostIdentity, NetCmd, NetEvent};
 
+use crate::platform::plane::Event;
+
 use super::adopt::{enter, redeem};
 use super::{ChannelLink, Cmd, DeviceActions, Engine, Enrolled, carry_out, endpoint_for, heard};
+
+/// What the peer actor heard, as the session's own vocabulary says it: the transport keeps the
+/// differences an endpoint's, and the session hears one kind of word from every host.
+pub(super) fn event_of(event: NetEvent) -> Option<Event> {
+    Some(match event {
+        NetEvent::Msg { ws, peer, msg, .. } => Event::Msg {
+            ws,
+            peer,
+            msg: Box::new(msg),
+        },
+        NetEvent::PeerLeft { ws, peer, .. } => Event::PeerLeft { ws, peer },
+        NetEvent::HostReady { ws, peer } => Event::HostReady { ws, peer },
+        NetEvent::HostMember {
+            ws,
+            host,
+            device,
+            active,
+        } => Event::HostMember {
+            ws,
+            host,
+            device,
+            active,
+        },
+        NetEvent::Sibling {
+            peer,
+            certs,
+            revocations,
+            ..
+        } => Event::Sibling {
+            peer,
+            certs,
+            revocations,
+        },
+        NetEvent::SiblingLeft { peer, .. } => Event::SiblingLeft { peer },
+        NetEvent::SiblingMsg { peer, msg, .. } => Event::SiblingMsg {
+            peer,
+            msg: Box::new(msg),
+        },
+        NetEvent::PersonalFabric {
+            peer,
+            payload,
+            received,
+            ..
+        } => Event::PersonalFabric {
+            peer,
+            payload,
+            received,
+        },
+        NetEvent::NearbyTransferProgress {
+            transfer_id,
+            sent_bytes,
+            total_bytes,
+            status,
+            ..
+        } => Event::NearbyTransferProgress {
+            transfer_id,
+            sent_bytes,
+            total_bytes,
+            status,
+        },
+        // Taken off this path before it gets here: what a host replays into the workspaces this
+        // device holds is admitted on its own thread, and the rest is the plane's own bookkeeping.
+        NetEvent::NativeInput(_) | NetEvent::RecordOpened { .. } | NetEvent::OwnReplay { .. } => {
+            return None;
+        }
+    })
+}
 
 /// The runtime the collaboration plane's thread runs on: two workers of its own, so what the plane
 /// settles never waits behind what a session shows.
@@ -102,7 +171,7 @@ pub(super) fn run(
     identity: Option<HostIdentity>,
     engine: Option<Arc<Engine>>,
     mut commands: tokio::sync::mpsc::UnboundedReceiver<Cmd>,
-    arrivals: std::sync::mpsc::Sender<NetEvent>,
+    arrivals: std::sync::mpsc::Sender<Event>,
     enrollments: std::sync::mpsc::Sender<Enrolled>,
     ready: std::sync::mpsc::Sender<Result<(EndpointId, EndpointAddr, Reachability), String>>,
     wake: Arc<dyn Fn() + Send + Sync>,
@@ -275,7 +344,7 @@ impl Asking {
 async fn listening(
     identity: Option<&HostIdentity>,
     engine: Option<&Arc<Engine>>,
-    arrivals: std::sync::mpsc::Sender<NetEvent>,
+    arrivals: std::sync::mpsc::Sender<Event>,
     wake: Arc<dyn Fn() + Send + Sync>,
     ready: &std::sync::mpsc::Sender<Result<(EndpointId, EndpointAddr, Reachability), String>>,
     Beside {

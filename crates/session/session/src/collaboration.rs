@@ -2,12 +2,11 @@
 //! the invitations they redeemed, whose view this device follows, and where this person is on the
 //! desk for everyone here to read.
 
+use crate::sync::presence::live_record;
 use collab_types::presence::{ShellPresence, ShellWindow};
-use tilo_desktop_surface::host::records::{app_of, wire_record};
 use tilo_desktop_surface::navigation;
 use tilo_live::presence::{Point, Tile, anchor};
 use tilo_relay_protocol::live::{LiveLayout, LiveRecord};
-use ui::record::RecordId;
 
 use crate::Session;
 
@@ -151,42 +150,6 @@ fn shell(
         chat: None,
         reaction: None,
     }))
-}
-
-/// Who each window of this desk is, by tab, as presence names records: the short digest of the app
-/// and the record its component bound. What places a person in the window they work in, and a
-/// follower's view bringing it forward.
-#[must_use]
-pub(crate) fn bindings(
-    tree: &tilo_desktop_model::DesktopTree,
-    records: &std::collections::BTreeMap<tilo_desktop_model::TabId, String>,
-) -> Vec<(tilo_desktop_model::TabId, String)> {
-    records
-        .iter()
-        .filter_map(|(&tab, record)| {
-            Some((
-                tab,
-                hex::encode(live_record(tree, tab, record)?.short_digest()),
-            ))
-        })
-        .collect()
-}
-
-/// What the window `tab` shows, as presence names it to the others: the app it runs and its record's
-/// wire spelling ([`wire_record`]), the spelling a receiver matches against its own records. `None`
-/// for a window that runs no app, or shows a record this session does not know yet.
-pub(crate) fn live_record(
-    tree: &tilo_desktop_model::DesktopTree,
-    tab: tilo_desktop_model::TabId,
-    record: &str,
-) -> Option<LiveRecord> {
-    let app = app_of(tree, tab)?;
-    let record =
-        RecordId::parse(record).map_or_else(|| record.to_owned(), |id| wire_record(&id).to_owned());
-    Some(LiveRecord {
-        app: app.to_owned(),
-        record,
-    })
 }
 
 #[cfg(test)]

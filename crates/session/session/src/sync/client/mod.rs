@@ -7,76 +7,76 @@
 //! publishes nothing and keeps no relay.
 
 use std::cell::{Cell, RefCell};
-use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use crate::fabric::{Continuity, SessionFabric};
 use collab_types::presence::{Presence, ShellPresence, Shown};
 use iroh::{EndpointAddr, EndpointId};
 use neighbour_wire::NeighbourMsg;
-use tilo_action_broker::record_content::ContentSources;
 use tilo_desktop::chrome::{ArrivalNotice, WaveNotice};
 use tilo_desktop::here::{Here, LiveMember, Wave};
-use tilo_desktop_model::{
-    DesktopTree, TabId, WorkspaceId as DeskWorkspaceId, WorkspaceSlot as DeskSlot,
-};
+use tilo_desktop_model::{DesktopTree, TabId, WorkspaceId as DeskWorkspaceId};
 use tilo_desktop_surface::DesktopHandle;
-use tilo_device_fabric::DeviceId;
-use tilo_device_fabric::runtime::FabricRuntime;
-use tilo_endpoint_reachability::{Need, Reachability};
+#[cfg(target_os = "linux")]
 use tilo_live::live::Track;
 use tilo_live::plane::Heard;
 use tilo_live::presence;
 use tilo_live::presence::Board;
+
+#[cfg(target_os = "linux")]
+use super::Entering;
+use super::presence::{OwnPresence, Plane, Workspace, now_ms};
+use super::{Enrolled, InCall, LiveCall};
+use crate::platform::plane::{Cmd, Device, Event, Topic, Transport, topic_of};
+
+#[cfg(target_os = "linux")]
+use crate::channels::ChannelLink;
+#[cfg(target_os = "linux")]
+use crate::content;
+#[cfg(target_os = "linux")]
+use crate::device_actions::DeviceActions;
+#[cfg(target_os = "linux")]
+use crate::engine::Engine;
+#[cfg(target_os = "linux")]
+use crate::fabric::{Continuity, SessionFabric};
+#[cfg(target_os = "linux")]
+use crate::sync::Enrolling;
+#[cfg(target_os = "linux")]
+use std::collections::HashMap;
+#[cfg(target_os = "linux")]
+use tilo_action_broker::record_content::ContentSources;
+#[cfg(target_os = "linux")]
+use tilo_device_fabric::DeviceId;
+#[cfg(target_os = "linux")]
+use tilo_device_fabric::runtime::FabricRuntime;
+#[cfg(target_os = "linux")]
+use tilo_endpoint_reachability::{Need, Reachability};
+#[cfg(target_os = "linux")]
 use tilo_network_actor::{
     HostIdentity, NetCmd, NetEvent, WorkspaceControlRoute, WorkspaceId, native_ingress,
-    workspace_topic_id,
 };
 
-use super::presence::{OwnPresence, Plane, Workspace, now_ms};
-use super::{InCall, LiveCall};
-use crate::channels::ChannelLink;
-use crate::content;
-use crate::device_actions::DeviceActions;
-use crate::engine::Engine;
-use crate::platform::plane::Cmd;
-
+#[cfg(target_os = "linux")]
 mod adopt;
 mod arrivals;
 mod gate;
+#[cfg(target_os = "linux")]
 mod plane;
 
-use plane::{Serving, run};
-
-/// How long redeeming an invitation to a workspace may take: the host is asked three times, each
-/// exchange with its own bound.
-const REDEEM_WITHIN: Duration = Duration::from_secs(120);
-
-/// How long taking the granted workspace in may take: installing what the host granted and telling
-/// the plane to carry it is this device's own work, and the person is told a join did not happen
-/// rather than left waiting on it.
-const SETTLE_WITHIN: Duration = Duration::from_secs(30);
-
-/// How long a join may take before the person is told it did not happen: the
-/// host's answer may take [`REDEEM_WITHIN`], and taking the granted workspace
-/// in [`SETTLE_WITHIN`] after it. A test waiting for a join waits past this,
-/// so what it reports is the join's outcome, never its own patience running
-/// out first.
-pub const JOIN_PATIENCE: Duration = Duration::from_secs(
-    REDEEM_WITHIN
-        .as_secs()
-        .saturating_add(SETTLE_WITHIN.as_secs()),
-);
+#[cfg(target_os = "linux")]
+use plane::{Serving, event_of, run};
 
 /// How long the session waits for this device's endpoint to bind before it starts without one: a
 /// desktop with no one else on it, rather than a session that never opens.
+#[cfg(target_os = "linux")]
 const BIND_WITHIN: Duration = Duration::from_secs(30);
 
 /// The endpoint the thread bound, within [`BIND_WITHIN`]: what publishes on it, the endpoint
 /// itself, and whether this device can be reached.
+#[cfg(target_os = "linux")]
 type Bound = (EndpointId, EndpointAddr, Reachability);
 
+#[cfg(target_os = "linux")]
 fn wait_for_bound(
     bound: &std::sync::mpsc::Receiver<Result<Bound, String>>,
 ) -> std::io::Result<Bound> {
@@ -93,10 +93,11 @@ fn wait_for_bound(
 
 /// One window stream's message as it reached this device: another member's shared window, or a
 /// member's ask to view one of this device's.
+#[cfg(target_os = "linux")]
 #[derive(Clone, Debug)]
 pub(crate) struct ReceivedSurface {
     /// The workspace's topic it came in on.
-    pub(crate) ws: WorkspaceId,
+    pub(crate) ws: Topic,
     /// The device that published it.
     pub(crate) from: EndpointId,
     pub(crate) msg: NeighbourMsg,
@@ -105,6 +106,7 @@ pub(crate) struct ReceivedSurface {
 /// The person's other devices, dialled as this device's siblings: the session between two of their
 /// desks is where each tells the other the workspaces it holds, and what it hosts, so one can adopt
 /// what the other keeps.
+#[cfg(target_os = "linux")]
 #[derive(Clone)]
 pub(crate) struct SiblingDials {
     /// This device's endpoint id: its own session is never dialled.
@@ -112,8 +114,9 @@ pub(crate) struct SiblingDials {
     outgoing: tokio::sync::mpsc::UnboundedSender<Cmd>,
 }
 
+#[cfg(target_os = "linux")]
 impl SiblingDials {
-    /// Dial from `ours` , the endpoint this device's sessions run on.
+    /// Dial from `ours`, the endpoint this device's sessions run on.
     pub(crate) fn new(ours: [u8; 32], outgoing: tokio::sync::mpsc::UnboundedSender<Cmd>) -> Self {
         Self { ours, outgoing }
     }
@@ -132,58 +135,6 @@ impl SiblingDials {
             .outgoing
             .send(Cmd::ConnectDevice(EndpointAddr::new(id)));
     }
-}
-
-/// A workspace this session is joining: the invitation that admits this
-/// device to its workspace, and the workspace on the desk made for it,
-/// which is where what the workspace holds arrives.
-#[derive(Debug)]
-pub struct Enrolling {
-    /// The slot the desk made for it.
-    pub slot: DeskSlot,
-    /// The workspace the invitation grants.
-    pub workspace_id: DeskWorkspaceId,
-    /// The invitation itself, verified for this person before it got here.
-    pub invitation: String,
-    /// Renewing this device's certificate before it is presented, when this device joined a
-    /// person's identity: the ask the session's pass may already have under way, waited for rather
-    /// than presented past.
-    pub(crate) renewal: Option<std::sync::Arc<crate::mount::renewal::FleetRenewal>>,
-}
-
-/// One of the person's workspaces this device holds nothing of yet: it takes the workspace in as a
-/// further device of their person, at the device hosting it. A device certified by a member's root
-/// is that member's device, so nothing has to be invited here
-/// ([`tilo_peer_state::owner::enroll::admit_as_member`]).
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Entering {
-    /// The slot the desk makes for it.
-    pub slot: DeskSlot,
-    /// The workspace the person's list names.
-    pub workspace_id: DeskWorkspaceId,
-    /// What the person's list calls it.
-    pub name: String,
-    /// Where the device hosting it is reached, as its host signed it.
-    pub host: tilo_peer_state::join::TransportHint,
-    /// Already on this desk, held as the device this machine was copied
-    /// from: an entry that does not land leaves it where it is.
-    pub held: bool,
-}
-
-/// What became of an enrollment or an entry, and the workspace it was for.
-#[derive(Debug)]
-pub struct Enrolled {
-    pub slot: DeskSlot,
-    pub workspace_id: DeskWorkspaceId,
-    /// Whether this device entered one of the person's own workspaces as their further device,
-    /// rather than redeeming an invitation into someone's.
-    pub member: bool,
-    /// The name the person's list gave it, when it was entered from there.
-    pub name: Option<String>,
-    /// `Ok` once this device holds the workspace and takes part in it.
-    pub result: Result<(), String>,
-    /// The entry was for a workspace already on this desk ([`Entering::held`]).
-    pub held: bool,
 }
 
 /// Where this person is on this desk, as presence says it: their pointer over a tile here, and
@@ -212,6 +163,10 @@ impl Where {
 
 /// The session's client of the collaboration plane: the workspaces it shows,
 /// this person's presence in them, and everyone else's.
+#[cfg_attr(
+    target_arch = "wasm32",
+    allow(dead_code, reason = "the page's transport feeds these next")
+)]
 pub struct Client {
     plane: RefCell<Plane>,
     own: RefCell<OwnPresence>,
@@ -236,9 +191,10 @@ pub struct Client {
     /// The arrival the bar shows.
     arrival: RefCell<Option<ArrivalNotice>>,
     outgoing: tokio::sync::mpsc::UnboundedSender<Cmd>,
-    arrived: std::sync::mpsc::Receiver<NetEvent>,
+    arrived: std::sync::mpsc::Receiver<Event>,
     /// The window streams that reached this device: their frames, starts,
     /// ends and control, which the shares take ([`Self::take_surfaces`]).
+    #[cfg(target_os = "linux")]
     surfaces: RefCell<Vec<ReceivedSurface>>,
     /// The call audio the workspaces' live planes heard since the last call,
     /// each with the workspace it was heard in: what the calls playing it take
@@ -251,10 +207,12 @@ pub struct Client {
     enrolled: std::sync::mpsc::Receiver<Enrolled>,
     /// This device's workspaces, which a join enrolls into: `None` when the session keeps no state
     /// to hold them in.
+    #[cfg(target_os = "linux")]
     engine: Option<Arc<Engine>>,
     /// What the session's channels hear and say on this plane: the governance of the workspaces'
     /// sealed records, and the devices each workspace admits. What the engine holds, so a session
     /// that runs no channel service has none.
+    #[cfg(target_os = "linux")]
     link: Option<Arc<ChannelLink>>,
     /// The person this device belongs to, by their root key, as its certificate names them.
     user: Option<[u8; 32]>,
@@ -263,15 +221,18 @@ pub struct Client {
     device: String,
     /// The collaborator's devices the plane heard at another peer protocol version since the last
     /// call: what the person is answered.
+    #[cfg(target_os = "linux")]
     versions: std::sync::mpsc::Receiver<crate::network::VersionMismatch>,
     /// The desk this session shows, whose workspaces' policies hold every member's messages to what
     /// the workspace grants them: `None` until the session hands it over ([`Self::attach_desk`]).
     desk: RefCell<Option<DesktopHandle>>,
     /// The records' content this session keeps and asks the workspaces for: `None` until the
     /// session hands its plane over ([`Self::attach_content`]).
+    #[cfg(target_os = "linux")]
     content: RefCell<Option<Arc<content::Plane>>>,
     /// The devices each workspace's record content reaches this one from: those heard on its topic,
     /// and its hosts.
+    #[cfg(target_os = "linux")]
     topologies: RefCell<std::collections::BTreeMap<WorkspaceId, content::Topology>>,
     /// The certificates each of the person's other devices was heard with,
     /// by its publisher.
@@ -295,6 +256,7 @@ pub struct Client {
     /// The person's own store this session keeps for their other devices: what the broker keeps
     /// their own records in as well, served on this device's endpoint from the pass it binds.
     /// `None` on a session that has no state to keep it in.
+    #[cfg(target_os = "linux")]
     personal_store: RefCell<Option<crate::personal::Personal>>,
     /// Where this device's endpoint is reached, as other devices dial it.
     endpoint: EndpointAddr,
@@ -303,23 +265,29 @@ pub struct Client {
     endpoint_handle: Arc<std::sync::OnceLock<iroh::Endpoint>>,
     /// This device's fabric, when it is a certified device of the person's: `None` on a session
     /// that takes part as nobody.
+    #[cfg(target_os = "linux")]
     fabric: Option<Arc<SessionFabric>>,
     /// This session's Nearby Send, once the session made it: what a transfer one of the person's
     /// devices offers, streams or finishes means for what Files shows.
+    #[cfg(target_os = "linux")]
     nearby: RefCell<Option<Arc<crate::nearby_transfer::NearbyTransfer>>>,
     /// Where this device's actions are served, and how an app here reaches the person's other
     /// devices: `None` until the endpoint has bound.
+    #[cfg(target_os = "linux")]
     device_actions: Arc<std::sync::OnceLock<DeviceActions>>,
     /// This device's relays, held back until a workspace this session takes part in has someone
     /// else in it.
+    #[cfg(target_os = "linux")]
     reachability: Reachability,
     /// The protocols this session was handed to serve beside its own, by ALPN: what it answers on
     /// this device's endpoint, so the session can say whether it serves one ([`Self::serves`]).
     beside: Vec<Vec<u8>>,
     /// The workspaces' live plane: their relays and this device's sessions in them, on a thread of
     /// its own.
+    #[cfg(target_os = "linux")]
     live: Option<crate::live::Live>,
     /// The thread running the peer actor, stopped when this drops.
+    #[cfg(target_os = "linux")]
     thread: Option<std::thread::JoinHandle<()>>,
 }
 
@@ -344,31 +312,19 @@ impl Drop for Client {
     fn drop(&mut self) {
         // The live planes dial through this endpoint: they end before it does,
         // and before the thread that holds it joins.
+        #[cfg(target_os = "linux")]
         drop(self.live.take());
         let _ = self.outgoing.send(Cmd::Stop);
+        #[cfg(target_os = "linux")]
         if let Some(thread) = self.thread.take() {
             let _ = thread.join();
         }
     }
 }
 
-impl Plane {
-    /// Take one event from the plane.
-    pub(super) fn apply(&mut self, event: NetEvent) {
-        match event {
-            NetEvent::Msg { ws, peer, msg, .. } => self.message(ws, peer, msg),
-            NetEvent::PeerLeft { ws, peer, .. } => {
-                if let Some(workspace) = self.workspace(ws) {
-                    workspace.board.depart(*peer.as_bytes());
-                }
-            }
-            _ => {}
-        }
-    }
-}
-
 /// What this device brings as it enters the collaboration plane: the identity its endpoint runs on,
 /// where it dials, and how it hears back.
+#[cfg(target_os = "linux")]
 pub struct Entry {
     /// This device's collaboration identity, on whose key the endpoint runs: with it, every
     /// workspace is told which device and which person is here. Without one — a test, a stand-in
@@ -385,6 +341,10 @@ pub struct Entry {
     pub wake: Arc<dyn Fn() + Send + Sync>,
 }
 
+#[cfg_attr(
+    target_arch = "wasm32",
+    allow(dead_code, reason = "the page's transport feeds these next")
+)]
 impl Client {
     /// Take part in the collaboration plane: bind this device's endpoint, start the peer actor,
     /// and from then on hear the workspaces the session joins. `beside` is what else this session
@@ -393,6 +353,7 @@ impl Client {
     ///
     /// # Errors
     /// The endpoint could not be bound.
+    #[cfg(target_os = "linux")]
     pub fn start(
         entry: Entry,
         engine: Option<Arc<Engine>>,
@@ -448,47 +409,30 @@ impl Client {
         if let Some(link) = &link {
             link.attach(outgoing.clone());
         }
-        let sync = Self {
-            plane: RefCell::new(Plane::new(publisher)),
-            own: RefCell::new(entry.own),
-            says: RefCell::default(),
-            here: Here::default(),
-            wave_seq: Cell::new(0),
-            #[cfg(test)]
-            said: RefCell::new(Vec::new()),
-            sent_wave: RefCell::new(None),
-            notice: RefCell::new(None),
-            arrived_in: RefCell::new(None),
-            arrival: RefCell::new(None),
-            outgoing,
-            arrived,
-            surfaces: RefCell::new(Vec::new()),
-            call_audio: RefCell::new(Vec::new()),
-            call_pictures: RefCell::new(Vec::new()),
-            enrolled,
-            engine,
-            link,
-            user,
-            device,
-            desk: RefCell::new(None),
-            content: RefCell::new(None),
-            topologies: RefCell::new(std::collections::BTreeMap::new()),
-            siblings: RefCell::new(std::collections::BTreeMap::new()),
-            host_hints: RefCell::new(std::collections::BTreeMap::new()),
-            sibling_arrived: std::cell::Cell::new(false),
-            personal: RefCell::new(Vec::new()),
-            personal_store: RefCell::new(None),
-            endpoint,
-            endpoint_handle,
-            fabric,
-            nearby: RefCell::new(None),
-            device_actions,
-            reachability,
-            beside: served,
-            live,
-            versions,
-            thread: Some(thread),
-        };
+        let mut sync = Self::over(
+            Transport {
+                outgoing,
+                arrived,
+                enrolled,
+            },
+            Device {
+                publisher,
+                endpoint,
+                person: user,
+                name: device,
+            },
+            entry.own,
+        );
+        sync.engine = engine;
+        sync.link = link;
+        sync.endpoint_handle = endpoint_handle;
+        sync.fabric = fabric;
+        sync.device_actions = device_actions;
+        sync.reachability = reachability;
+        sync.beside = served;
+        sync.live = live;
+        sync.versions = versions;
+        sync.thread = Some(thread);
         // The person's other devices are heard from the start, so a list one of them published is
         // taken even when this session shows none of their workspaces yet.
         let _ = sync.outgoing.send(Cmd::WatchSiblings);
@@ -498,6 +442,71 @@ impl Client {
             let _ = sync.outgoing.send(Cmd::Connect(host));
         }
         Ok(sync)
+    }
+
+    /// A client on a transport another host brings: it says what the session says through `plane`,
+    /// and reads on every [`Self::follow`] what the transport delivered there. What only a desktop
+    /// keeps — its workspaces, their channels and this device's fabric — is absent until the
+    /// session hands its own over.
+    #[must_use]
+    pub fn over(plane: Transport, device: Device, own: OwnPresence) -> Self {
+        Self {
+            plane: RefCell::new(Plane::new(device.publisher)),
+            own: RefCell::new(own),
+            says: RefCell::default(),
+            here: Here::default(),
+            wave_seq: Cell::new(0),
+            #[cfg(test)]
+            said: RefCell::new(Vec::new()),
+            sent_wave: RefCell::new(None),
+            notice: RefCell::new(None),
+            arrived_in: RefCell::new(None),
+            arrival: RefCell::new(None),
+            outgoing: plane.outgoing,
+            arrived: plane.arrived,
+            #[cfg(target_os = "linux")]
+            surfaces: RefCell::new(Vec::new()),
+            call_audio: RefCell::new(Vec::new()),
+            call_pictures: RefCell::new(Vec::new()),
+            enrolled: plane.enrolled,
+            user: device.person,
+            device: device.name,
+            desk: RefCell::new(None),
+            siblings: RefCell::new(std::collections::BTreeMap::new()),
+            host_hints: RefCell::new(std::collections::BTreeMap::new()),
+            sibling_arrived: std::cell::Cell::new(false),
+            personal: RefCell::new(Vec::new()),
+            endpoint: device.endpoint,
+            endpoint_handle: Arc::new(std::sync::OnceLock::new()),
+            beside: Vec::new(),
+            #[cfg(target_os = "linux")]
+            engine: None,
+            #[cfg(target_os = "linux")]
+            link: None,
+            #[cfg(target_os = "linux")]
+            versions: {
+                let (_said, versions) = std::sync::mpsc::channel();
+                versions
+            },
+            #[cfg(target_os = "linux")]
+            content: RefCell::new(None),
+            #[cfg(target_os = "linux")]
+            topologies: RefCell::new(std::collections::BTreeMap::new()),
+            #[cfg(target_os = "linux")]
+            personal_store: RefCell::new(None),
+            #[cfg(target_os = "linux")]
+            fabric: None,
+            #[cfg(target_os = "linux")]
+            nearby: RefCell::new(None),
+            #[cfg(target_os = "linux")]
+            device_actions: Arc::new(std::sync::OnceLock::new()),
+            #[cfg(target_os = "linux")]
+            reachability: Reachability::default(),
+            #[cfg(target_os = "linux")]
+            live: None,
+            #[cfg(target_os = "linux")]
+            thread: None,
+        }
     }
 
     /// This device's publisher here: the endpoint id every workspace names it by.
@@ -516,6 +525,7 @@ impl Client {
     /// The collaborator's devices heard on this plane at another peer protocol version since the
     /// last call, each once per device and version: one of the two devices must update before the
     /// two work together again.
+    #[cfg(target_os = "linux")]
     pub(crate) fn take_version_mismatches(&self) -> Vec<crate::network::VersionMismatch> {
         self.versions.try_iter().collect()
     }
@@ -528,6 +538,7 @@ impl Client {
 
     /// This device's workspaces, when this session holds any.
     #[must_use]
+    #[cfg(target_os = "linux")]
     pub fn engine(&self) -> Option<&Arc<Engine>> {
         self.engine.as_ref()
     }
@@ -535,6 +546,7 @@ impl Client {
     /// The workspaces' live plane: what this session says into and hears from each of them, and the
     /// relay each one is carried by; `None` when this session holds no workspaces.
     #[must_use]
+    #[cfg(target_os = "linux")]
     pub fn live(&self) -> Option<&crate::live::Live> {
         self.live.as_ref()
     }
@@ -544,6 +556,7 @@ impl Client {
     ///
     /// # Errors
     /// The plane takes no enrollment: this session holds no workspaces, or it has stopped.
+    #[cfg(target_os = "linux")]
     pub fn enroll(&self, request: Enrolling) -> Result<(), String> {
         if self.engine.is_none() {
             return Err("this session keeps no workspaces to enroll into".into());
@@ -559,6 +572,7 @@ impl Client {
     ///
     /// # Errors
     /// The plane takes no entry: this session holds no workspaces, or it has stopped.
+    #[cfg(target_os = "linux")]
     pub fn enter(&self, request: Entering) -> Result<(), String> {
         if self.engine.is_none() {
             return Err("this session keeps no workspaces to take in".into());
@@ -651,21 +665,16 @@ impl Client {
     /// Follow `tree` 's workspaces: take part in each, leave the ones gone, and remember which is
     /// in front. Whether that changed anything.
     pub fn follow_desktop(&self, tree: &DesktopTree) -> bool {
-        let live: Vec<(WorkspaceId, String)> = tree
+        let live: Vec<(Topic, String)> = tree
             .workspaces
             .iter()
             .filter(|workspace| !workspace.id().is_nil())
-            .map(|workspace| {
-                (
-                    workspace_topic_id(workspace.id()),
-                    workspace.id().to_string(),
-                )
-            })
+            .map(|workspace| (topic_of(workspace.id()), workspace.id().to_string()))
             .collect();
         let active = tree
             .active_workspace()
             .filter(|workspace| !workspace.id().is_nil())
-            .map(|workspace| workspace_topic_id(workspace.id()));
+            .map(|workspace| topic_of(workspace.id()));
         let mut joined = Vec::new();
         let mut left = Vec::new();
         let mut changed = false;
@@ -678,6 +687,7 @@ impl Client {
                     plane
                         .workspaces
                         .push(Workspace::new(*ws, id.clone(), publisher));
+                    #[cfg(target_os = "linux")]
                     self.topologies
                         .borrow_mut()
                         .insert(*ws, content::Topology::default());
@@ -698,13 +708,15 @@ impl Client {
         }
         for (ws, id) in joined {
             let _ = self.outgoing.send(Cmd::Join(ws));
-            if let Some(desk) = DeskWorkspaceId::parse(&id) {
+            if DeskWorkspaceId::parse(&id).is_some() {
                 self.say_into(&id);
                 // This device takes part in the workspace through its own custody session too, the
                 // one that carries the workspace's app records: a device that was away comes back
                 // with every record it missed, and a device that restarted into a workspace it
                 // already held reaches its records again.
-                if let Some(connect) = self.engine.as_ref().and_then(|engine| {
+                #[cfg(target_os = "linux")]
+                if let Some(connect) = DeskWorkspaceId::parse(&id).and_then(|desk| {
+                    let engine = self.engine.as_ref()?;
                     native_ingress::Connect::new(engine.owner().clone(), desk).ok()
                 }) {
                     let _ = self.outgoing.send(Cmd::TakePart(connect));
@@ -714,6 +726,7 @@ impl Client {
         }
         for ws in left {
             let _ = self.outgoing.send(Cmd::Leave(ws));
+            #[cfg(target_os = "linux")]
             self.topologies.borrow_mut().remove(&ws);
             changed = true;
         }
@@ -722,6 +735,7 @@ impl Client {
             // there at once.
             self.say_own();
         }
+        #[cfg(target_os = "linux")]
         self.note_reachability();
         if changed {
             self.show_here();
@@ -745,21 +759,24 @@ impl Client {
             self.hear(event);
             heard = true;
         }
-        if self.hear_live() {
-            heard = true;
-        }
-        // What arrived moved this device's fabric — a copy from another device, a device that is
-        // gone: the person's other devices hear so on the same pass.
-        self.announce_fabric();
-        // The clock of every peer something holds in sync: its probes leave here, so the audio
-        // timed against them can play in time.
-        if let Some(fabric) = &self.fabric {
-            fabric.pump_clock();
-        }
-        // What no device acknowledged of a send this device made is offered again, and what the
-        // person's devices offered here waits for their answer.
-        if let Some(nearby) = self.nearby() {
-            nearby.pump();
+        #[cfg(target_os = "linux")]
+        {
+            if self.hear_live() {
+                heard = true;
+            }
+            // What arrived moved this device's fabric — a copy from another device, a device that
+            // is gone: the person's other devices hear so on the same pass.
+            self.announce_fabric();
+            // The clock of every peer something holds in sync: its probes leave here, so the audio
+            // timed against them can play in time.
+            if let Some(fabric) = &self.fabric {
+                fabric.pump_clock();
+            }
+            // What no device acknowledged of a send this device made is offered again, and what the
+            // person's devices offered here waits for their answer.
+            if let Some(nearby) = self.nearby() {
+                nearby.pump();
+            }
         }
         if self.pump_presence() {
             heard = true;
@@ -769,6 +786,7 @@ impl Client {
 
     /// Take every object the workspaces' live planes heard since the last call: a member's presence
     /// frame, or a call's voice or pictures. Whether any did.
+    #[cfg(target_os = "linux")]
     fn hear_live(&self) -> bool {
         let Some(live) = &self.live else {
             return false;
@@ -827,6 +845,7 @@ impl Client {
     }
 
     /// One member's presence frame as its track carried it, opened by the workspace's board.
+    #[cfg(target_os = "linux")]
     fn heard_body(&self, workspace: &str, from: EndpointId, body: &[u8]) {
         self.heard_word(workspace, from, |board, now| {
             board.heard(*from.as_bytes(), body, now)
@@ -857,6 +876,7 @@ impl Client {
         if !changed {
             return;
         }
+        #[cfg(target_os = "linux")]
         self.note_reachability();
         self.show_here();
         self.show_waves();
@@ -865,13 +885,13 @@ impl Client {
     /// Take one thing the plane heard, and hand the desktop who is here now: who said they are
     /// here, what they said of themselves, where their pointer went. A session's loop calls this
     /// for everything the peer actor hands it.
-    pub fn hear(&self, event: NetEvent) {
+    pub fn hear(&self, event: Event) {
         // Every message from another member is the workspace's to admit before anything here takes
         // it: what a member the workspace's policy narrowed may send is what that policy grants
         // them, and nothing else. A refused message is dropped where it arrives, with the reason
         // said here.
         if let Some(reason) = self.refusal(&event) {
-            if let NetEvent::Msg { ws, peer, msg, .. } = &event {
+            if let Event::Msg { ws, peer, msg } = &event {
                 tracing::warn!(
                     ws,
                     peer = %peer,
@@ -883,64 +903,67 @@ impl Client {
             return;
         }
         self.keep_personal(&event);
-        // What a workspace says of its channels' governance is the session's channels' to take in,
-        // wherever the message came from.
-        if let (Some(link), NetEvent::Msg { msg, .. }) = (&self.link, &event) {
-            link.heard(msg);
-        }
-        if let Some(fabric) = &self.fabric {
+        #[cfg(target_os = "linux")]
+        {
+            // What a workspace says of its channels' governance is the session's channels' to take
+            // in, wherever the message came from.
+            if let (Some(link), Event::Msg { msg, .. }) = (&self.link, &event) {
+                link.heard(msg);
+            }
+            if let Some(fabric) = &self.fabric {
+                match &event {
+                    Event::Sibling {
+                        peer,
+                        certs,
+                        revocations,
+                    } => fabric.sibling(*peer, certs, revocations),
+                    Event::SiblingLeft { peer } => fabric.sibling_left(*peer),
+                    Event::PersonalFabric {
+                        peer,
+                        payload,
+                        received,
+                    } => {
+                        fabric.arrived(*peer, payload, *received);
+                    }
+                    _ => {}
+                }
+            }
+            // What a device coming or going means for what Files may offer, and how far a stream
+            // this device is sending got: the Nearby Send engine keeps both.
             match &event {
-                NetEvent::Sibling {
-                    peer,
-                    certs,
-                    revocations,
-                    ..
-                } => fabric.sibling(*peer, certs, revocations),
-                NetEvent::SiblingLeft { peer, .. } => fabric.sibling_left(*peer),
-                NetEvent::PersonalFabric {
-                    peer,
-                    payload,
-                    received,
-                    ..
+                Event::Sibling { .. } | Event::SiblingLeft { .. } => {
+                    if let Some(nearby) = self.nearby() {
+                        nearby.devices_changed();
+                    }
+                }
+                Event::NearbyTransferProgress {
+                    transfer_id,
+                    sent_bytes,
+                    total_bytes,
+                    status,
                 } => {
-                    fabric.arrived(*peer, payload, *received);
+                    if let Some(nearby) = self.nearby() {
+                        nearby.progress(*transfer_id, *sent_bytes, *total_bytes, *status);
+                    }
                 }
                 _ => {}
             }
-        }
-        // What a device coming or going means for what Files may offer, and how far a stream this
-        // device is sending got: the Nearby Send engine keeps both.
-        match &event {
-            NetEvent::Sibling { .. } | NetEvent::SiblingLeft { .. } => {
-                if let Some(nearby) = self.nearby() {
-                    nearby.devices_changed();
-                }
-            }
-            NetEvent::NearbyTransferProgress {
-                transfer_id,
-                sent_bytes,
-                total_bytes,
-                status,
-                ..
-            } => {
-                if let Some(nearby) = self.nearby() {
-                    nearby.progress(*transfer_id, *sent_bytes, *total_bytes, *status);
-                }
-            }
-            _ => {}
+            // What a workspace's members say about a record's content is the records' own plane's
+            // to take, and the devices it can be handed over from follow them.
+            self.follow_content_sources(&event);
         }
         // A window's stream is not presence: it goes to the shares, which read it on the pass
         // ([`Self::take_surfaces`]).
+        #[cfg(target_os = "linux")]
         if self.keep_surface(&event) {
             return;
         }
-        // What a workspace's members say about a record's content is the records' own plane's to
-        // take, and the devices it can be handed over from follow them.
-        self.follow_content_sources(&event);
+        #[cfg(target_os = "linux")]
         if self.keep_content(&event) {
             return;
         }
         self.plane.borrow_mut().apply(event);
+        #[cfg(target_os = "linux")]
         self.note_reachability();
         self.show_here();
         self.show_waves();
@@ -950,6 +973,7 @@ impl Client {
     /// records' routes, and what it asks for and answers there travels with this device's own
     /// messages. A session takes part in the plane of the client it was given
     /// ([`Self::attach_desk`]).
+    #[cfg(target_os = "linux")]
     pub(crate) fn attach_content(&self, content: Arc<content::Plane>) {
         content.bind(self.outgoing.clone(), self.publisher());
         self.content.replace(Some(content));
@@ -958,12 +982,14 @@ impl Client {
     /// Take the person's own store, opened where this session keeps its state, to their other
     /// devices: what the broker keeps their own records in, and what a sibling's writes reach this
     /// session's apps through.
+    #[cfg(target_os = "linux")]
     pub(crate) fn attach_personal(&self, personal: crate::personal::Personal) {
         self.personal_store.replace(Some(personal));
     }
 
     /// The person's own store this session keeps, once it has one.
     #[must_use]
+    #[cfg(target_os = "linux")]
     pub(crate) fn personal(&self) -> Option<std::cell::Ref<'_, crate::personal::Personal>> {
         std::cell::Ref::filter_map(self.personal_store.borrow(), Option::as_ref).ok()
     }
@@ -971,20 +997,21 @@ impl Client {
     /// Keep what reached here of the devices a workspace's content can be handed over from: those
     /// that said anything on its topic, the hosts that serve it and the members they report, and
     /// those that left. A record's content follows them ([`content::Plane::sources_changed`]).
-    fn follow_content_sources(&self, event: &NetEvent) {
+    #[cfg(target_os = "linux")]
+    fn follow_content_sources(&self, event: &Event) {
         let Some(content) = self.content.borrow().clone() else {
             return;
         };
         let (ws, changed) = match event {
-            NetEvent::Msg { ws, peer, .. } => (
+            Event::Msg { ws, peer, .. } => (
                 *ws,
                 self.content_devices(*ws, |devices| devices.heard(*peer)),
             ),
-            NetEvent::HostReady { ws, peer } => (
+            Event::HostReady { ws, peer } => (
                 *ws,
                 self.content_devices(*ws, |devices| devices.host(*peer)),
             ),
-            NetEvent::HostMember {
+            Event::HostMember {
                 ws,
                 host,
                 device,
@@ -1004,7 +1031,7 @@ impl Client {
                     }),
                 )
             }
-            NetEvent::PeerLeft { ws, peer, .. } => (
+            Event::PeerLeft { ws, peer } => (
                 *ws,
                 self.content_devices(*ws, |devices| devices.left(*peer)),
             ),
@@ -1045,6 +1072,7 @@ impl Client {
 
     /// Apply `change` to the devices this session reaches in the workspace on `ws` ; whether that
     /// was news.
+    #[cfg(target_os = "linux")]
     fn content_devices(
         &self,
         ws: WorkspaceId,
@@ -1060,11 +1088,12 @@ impl Client {
     /// Hand `event` to the content plane when it is one of a record's content messages; whether it
     /// was, in which case nothing else here takes it. Every such message reached here through the
     /// workspace's policy, which admitted the device that sent it.
-    fn keep_content(&self, event: &NetEvent) -> bool {
+    #[cfg(target_os = "linux")]
+    fn keep_content(&self, event: &Event) -> bool {
         let Some(content) = self.content.borrow().clone() else {
             return false;
         };
-        let NetEvent::Msg { ws, peer, msg, .. } = event else {
+        let Event::Msg { ws, peer, msg } = event else {
             return false;
         };
         let workspace = self
@@ -1081,12 +1110,13 @@ impl Client {
     }
 
     /// Keep `event` 's message for the shares if it is one of a window's stream; whether it was.
-    fn keep_surface(&self, event: &NetEvent) -> bool {
-        let NetEvent::Msg { ws, peer, msg, .. } = event else {
+    #[cfg(target_os = "linux")]
+    fn keep_surface(&self, event: &Event) -> bool {
+        let Event::Msg { ws, peer, msg } = event else {
             return false;
         };
         if !matches!(
-            msg,
+            &**msg,
             NeighbourMsg::SurfaceStreamStart { .. }
                 | NeighbourMsg::SurfaceFrame { .. }
                 | NeighbourMsg::SurfaceStreamEnd { .. }
@@ -1099,13 +1129,14 @@ impl Client {
         self.surfaces.borrow_mut().push(ReceivedSurface {
             ws: *ws,
             from: *peer,
-            msg: msg.clone(),
+            msg: (**msg).clone(),
         });
         true
     }
 
     /// Take the window-stream messages that reached this device since the last call.
     #[must_use]
+    #[cfg(target_os = "linux")]
     pub(crate) fn take_surfaces(&self) -> Vec<ReceivedSurface> {
         std::mem::take(&mut *self.surfaces.borrow_mut())
     }
@@ -1131,7 +1162,7 @@ impl Client {
     /// workspace.
     pub(crate) fn publish_surface(
         &self,
-        ws: WorkspaceId,
+        ws: Topic,
         msg: NeighbourMsg,
         viewers: &[neighbour_wire::PeerId],
     ) {
@@ -1144,7 +1175,7 @@ impl Client {
 
     /// Say `msg` to `target` alone, as a workspace-control message on the topic of the workspace
     /// `ws` .
-    pub(crate) fn publish_control(&self, ws: WorkspaceId, msg: NeighbourMsg, target: EndpointId) {
+    pub(crate) fn publish_control(&self, ws: Topic, msg: NeighbourMsg, target: EndpointId) {
         let _ = self.outgoing.send(Cmd::SendControl {
             ws,
             msg: Box::new(msg),
@@ -1154,7 +1185,7 @@ impl Client {
 
     /// The topic of the workspace `workspace` , while this session takes part in it.
     #[must_use]
-    pub(crate) fn workspace_topic(&self, workspace: &str) -> Option<WorkspaceId> {
+    pub(crate) fn workspace_topic(&self, workspace: &str) -> Option<Topic> {
         self.plane
             .borrow()
             .workspaces
@@ -1192,67 +1223,64 @@ impl Client {
 
     /// Keep what the person's other devices said of their workspaces: a device's certificates when
     /// its session comes up, and the lists it publishes with the certificate that signed them.
-    fn keep_personal(&self, event: &NetEvent) {
+    fn keep_personal(&self, event: &Event) {
         match event {
-            NetEvent::Sibling { peer, certs, .. } => {
+            Event::Sibling { peer, certs, .. } => {
                 self.siblings.borrow_mut().insert(*peer, certs.clone());
                 self.sibling_arrived.set(true);
             }
-            NetEvent::SiblingLeft { peer, .. } => {
+            Event::SiblingLeft { peer } => {
                 self.siblings.borrow_mut().remove(peer);
             }
-            NetEvent::SiblingMsg {
-                peer,
-                msg: NeighbourMsg::PersonalWorkspaces { update, .. },
-                ..
-            } => {
-                // The update names its author; the certificate the device was heard by is the only
-                // one that says who it is, and the list checks it against the person's root before
-                // it merges.
-                let author = self
-                    .siblings
-                    .borrow()
-                    .get(peer)
-                    .and_then(|certs| author_of(certs, update));
-                if let Some(author) = author {
-                    self.personal
-                        .borrow_mut()
-                        .push(((**update).clone(), author));
-                } else {
-                    tracing::debug!(
-                        device = %hex::encode(update.author_device_public_key),
-                        "a device's workspaces arrived before its certificate"
-                    );
-                }
-            }
-            NetEvent::SiblingMsg {
-                msg:
-                    NeighbourMsg::PersonalHosts {
-                        user_public_key,
-                        hosts,
-                    },
-                ..
-            } => {
-                // Only this person's workspaces are entered, and only through a host the
-                // workspace's own governance signed for.
-                if Some(*user_public_key) != self.user {
-                    return;
-                }
-                for host in hosts {
-                    match postcard::from_bytes::<tilo_peer_state::join::TransportHint>(&host.hint) {
-                        Ok(hint) => {
-                            self.host_hints
-                                .borrow_mut()
-                                .insert(host.workspace.clone(), hint);
-                        }
-                        Err(error) => tracing::warn!(
-                            workspace = %host.workspace,
-                            %error,
-                            "a device's host hint did not decode"
-                        ),
+            Event::SiblingMsg { peer, msg } => match &**msg {
+                NeighbourMsg::PersonalWorkspaces { update, .. } => {
+                    // The update names its author; the certificate the device was heard by is the
+                    // only one that says who it is, and the list checks it against the person's
+                    // root before it merges.
+                    let author = self
+                        .siblings
+                        .borrow()
+                        .get(peer)
+                        .and_then(|certs| author_of(certs, update));
+                    if let Some(author) = author {
+                        self.personal
+                            .borrow_mut()
+                            .push(((**update).clone(), author));
+                    } else {
+                        tracing::debug!(
+                            device = %hex::encode(update.author_device_public_key),
+                            "a device's workspaces arrived before its certificate"
+                        );
                     }
                 }
-            }
+                NeighbourMsg::PersonalHosts {
+                    user_public_key,
+                    hosts,
+                } => {
+                    // Only this person's workspaces are entered, and only through a host the
+                    // workspace's own governance signed for.
+                    if Some(*user_public_key) != self.user {
+                        return;
+                    }
+                    for host in hosts {
+                        match postcard::from_bytes::<tilo_peer_state::join::TransportHint>(
+                            &host.hint,
+                        ) {
+                            Ok(hint) => {
+                                self.host_hints
+                                    .borrow_mut()
+                                    .insert(host.workspace.clone(), hint);
+                            }
+                            Err(error) => tracing::warn!(
+                                workspace = %host.workspace,
+                                %error,
+                                "a device's host hint did not decode"
+                            ),
+                        }
+                    }
+                }
+                _ => {}
+            },
             _ => {}
         }
     }
@@ -1270,11 +1298,7 @@ impl Client {
                 update: Box::new(update.clone()),
             },
         )));
-        let hosts = self
-            .engine
-            .as_ref()
-            .map(|engine| engine.host_hints())
-            .unwrap_or_default();
+        let hosts = self.host_hints_to_say();
         if hosts.is_empty() {
             return;
         }
@@ -1287,6 +1311,20 @@ impl Client {
                     .map(|(workspace, hint)| neighbour_wire::PersonalHost { workspace, hint })
                     .collect(),
             })));
+    }
+
+    /// Where the workspaces this device holds are hosted, as its other devices are told: what a
+    /// device of the person opens at the device hosting it.
+    fn host_hints_to_say(&self) -> Vec<(String, Vec<u8>)> {
+        #[cfg(target_os = "linux")]
+        {
+            self.engine
+                .as_ref()
+                .map(|engine| engine.host_hints())
+                .unwrap_or_default()
+        }
+        #[cfg(not(target_os = "linux"))]
+        Vec::new()
     }
 
     /// Take the workspace lists the person's other devices sent since the last call, each with the
@@ -1309,6 +1347,7 @@ impl Client {
     /// Tell the person's other devices what this device says of itself, when that moved since they
     /// last heard: the session's pass calls this once it offered the clipboard, so a copy leaves on
     /// the pass that made it.
+    #[cfg(target_os = "linux")]
     pub fn announce_fabric(&self) {
         if let Some(fabric) = &self.fabric {
             fabric.announce_if_changed();
@@ -1317,6 +1356,7 @@ impl Client {
 
     /// This device's fabric, when the person certified it: the link the session's services act on.
     #[must_use]
+    #[cfg(target_os = "linux")]
     pub fn fabric(&self) -> Option<tilo_device_fabric::link::SharedLink> {
         self.fabric
             .as_ref()
@@ -1325,12 +1365,14 @@ impl Client {
 
     /// This session's Nearby Send, when the session made one.
     #[must_use]
+    #[cfg(target_os = "linux")]
     pub(crate) fn nearby(&self) -> Option<Arc<crate::nearby_transfer::NearbyTransfer>> {
         self.nearby.borrow().clone()
     }
 
     /// Give this session's Nearby Send the fabric it runs on: what the person's devices offer and
     /// stream here, and what they say of a transfer's progress, reaches it.
+    #[cfg(target_os = "linux")]
     pub(crate) fn attach_nearby(&self, nearby: Arc<crate::nearby_transfer::NearbyTransfer>) {
         if let Some(fabric) = &self.fabric {
             fabric.attach_nearby(Arc::clone(&nearby));
@@ -1342,6 +1384,7 @@ impl Client {
     /// other devices: `None` on a session that takes part as nobody, which has no key of its own to
     /// ask with.
     #[must_use]
+    #[cfg(target_os = "linux")]
     pub(crate) fn device_actions(&self) -> Option<DeviceActions> {
         self.device_actions.get().cloned()
     }
@@ -1351,6 +1394,7 @@ impl Client {
     /// engine: the offer, the checkpoint, the withdrawal and the ending of a transfer are the
     /// engine's to take, whether or not a session runs on this client.
     #[must_use]
+    #[cfg(target_os = "linux")]
     pub fn fabric_actions(&self) -> Vec<tilo_device_fabric::PersonalFabricActionEnvelope> {
         let actions = self
             .fabric
@@ -1393,6 +1437,7 @@ impl Client {
 
     /// Dial one of the person's own devices, whose address this session was told: the session
     /// between the two carries their device fabric.
+    #[cfg(target_os = "linux")]
     pub fn connect(&self, addr: EndpointAddr) {
         // An action for this device is sent to where it was told to be,
         // without waiting for the two sessions to meet first.
@@ -1405,6 +1450,7 @@ impl Client {
     /// Where the person's own devices are dialled as this device's siblings from a thread of their
     /// own (the store's), once the endpoint has bound.
     #[must_use]
+    #[cfg(target_os = "linux")]
     pub(crate) fn sibling_dials(&self) -> Option<SiblingDials> {
         Some(SiblingDials::new(
             *self.endpoint()?.id().as_bytes(),
@@ -1416,6 +1462,7 @@ impl Client {
     /// shows has someone else here. A host is dialled at start and on every reconnect, and the peer
     /// actor holds the relays up for every remote party it is connected to or keeps dialling
     /// ([`tilo_endpoint_reachability::Need::Transport`]).
+    #[cfg(target_os = "linux")]
     fn reachability_need(&self) -> Option<&'static str> {
         let plane = self.plane.borrow();
         let own = plane.publisher;
@@ -1432,6 +1479,7 @@ impl Client {
 
     /// Tell the relays what this session has recorded: they stay up while a workspace it shows has
     /// someone else here, and may rest once none does ([`tilo_endpoint_reachability::REST_AFTER`]).
+    #[cfg(target_os = "linux")]
     fn note_reachability(&self) {
         self.reachability
             .need(Need::Session, self.reachability_need());
@@ -1504,14 +1552,19 @@ impl Client {
         self.said
             .borrow_mut()
             .extend(frames.iter().map(|(_, frame)| frame.clone()));
-        let Some(live) = &self.live else {
-            return;
-        };
-        for (sequence, frame) in frames {
-            if let Err(error) = live.say(ws, sequence, &frame) {
-                tracing::warn!(%error, "presence was not said on the live plane");
+        #[cfg(target_os = "linux")]
+        {
+            let Some(live) = &self.live else {
+                return;
+            };
+            for (sequence, frame) in frames {
+                if let Err(error) = live.say(ws, sequence, &frame) {
+                    tracing::warn!(%error, "presence was not said on the live plane");
+                }
             }
         }
+        #[cfg(not(target_os = "linux"))]
+        let _ = (ws, frames);
     }
 
     /// What this device said since the last call, as a session with no plane of its own would have
@@ -1522,12 +1575,14 @@ impl Client {
     }
 
     /// This device's presence handle, as a publish stamps it.
+    #[cfg(target_os = "linux")]
     fn peer_hash(&self) -> u64 {
         tilo_network_actor::behaviour::peer_liveness_handle(&self.plane.borrow().publisher)
     }
 
     /// This device's handle in a workspace, as a window's stream names it.
     #[must_use]
+    #[cfg(target_os = "linux")]
     pub(crate) fn peer(&self) -> neighbour_wire::PeerId {
         self.peer_hash()
     }
@@ -1619,7 +1674,7 @@ impl Client {
     ) -> Vec<tilo_desktop::here::Person> {
         self.here.borrow().people(
             tree,
-            &crate::collaboration::bindings(tree, records),
+            &super::presence::bindings(tree, records),
             app_name,
             ui::time::unix_now_ms(),
         )
@@ -1643,7 +1698,7 @@ impl Client {
     /// does, so what a test hands it is what the desktop shows.
     #[must_use]
     pub fn untethered(publisher: EndpointId, own: OwnPresence) -> Self {
-        Self::planeless(publisher, own, Vec::new(), Reachability::default()).0
+        Self::planeless(publisher, own, Vec::new()).0
     }
 
     /// A session taking part in a plane with no transport, for tests that hand it what it would
@@ -1653,28 +1708,7 @@ impl Client {
         publisher: EndpointId,
         own: OwnPresence,
     ) -> (Self, tokio::sync::mpsc::UnboundedReceiver<Cmd>) {
-        Self::offline_at(publisher, own, Vec::new())
-    }
-
-    /// [`Self::offline`] with the hosts the real client would dial.
-    #[cfg(test)]
-    fn offline_at(
-        publisher: EndpointId,
-        own: OwnPresence,
-        hosts: Vec<EndpointAddr>,
-    ) -> (Self, tokio::sync::mpsc::UnboundedReceiver<Cmd>) {
-        Self::offline_reaching(publisher, own, hosts, Reachability::default())
-    }
-
-    /// [`Self::offline_at`] with the relays the real client holds back.
-    #[cfg(test)]
-    fn offline_reaching(
-        publisher: EndpointId,
-        own: OwnPresence,
-        hosts: Vec<EndpointAddr>,
-        reachability: Reachability,
-    ) -> (Self, tokio::sync::mpsc::UnboundedReceiver<Cmd>) {
-        Self::planeless(publisher, own, hosts, reachability)
+        Self::planeless(publisher, own, Vec::new())
     }
 
     /// A client of a plane with no transport: what both the real client and [`Self::untethered`]
@@ -1684,63 +1718,28 @@ impl Client {
         publisher: EndpointId,
         own: OwnPresence,
         hosts: Vec<EndpointAddr>,
-        reachability: Reachability,
     ) -> (Self, tokio::sync::mpsc::UnboundedReceiver<Cmd>) {
         let (outgoing, said) = tokio::sync::mpsc::unbounded_channel();
         let (_unheard, arrived) = std::sync::mpsc::channel();
-        for host in hosts {
-            let _ = outgoing.send(Cmd::Connect(host));
-        }
-        (
-            Self {
-                plane: RefCell::new(Plane::new(publisher)),
-                own: RefCell::new(own),
-                says: RefCell::default(),
-                here: Here::default(),
-                wave_seq: Cell::new(0),
-                #[cfg(test)]
-                said: RefCell::new(Vec::new()),
-                versions: {
-                    let (_said, versions) = std::sync::mpsc::channel();
-                    versions
-                },
-                sent_wave: RefCell::new(None),
-                notice: RefCell::new(None),
-                arrived_in: RefCell::new(None),
-                arrival: RefCell::new(None),
+        let (_unlanded, enrolled) = std::sync::mpsc::channel();
+        let client = Self::over(
+            Transport {
                 outgoing,
                 arrived,
-                surfaces: RefCell::new(Vec::new()),
-                call_audio: RefCell::new(Vec::new()),
-                call_pictures: RefCell::new(Vec::new()),
-                enrolled: {
-                    let (_landed, enrolled) = std::sync::mpsc::channel();
-                    enrolled
-                },
-                engine: None,
-                link: None,
-                user: None,
-                device: String::new(),
-                desk: RefCell::new(None),
-                content: RefCell::new(None),
-                topologies: RefCell::new(std::collections::BTreeMap::new()),
-                siblings: RefCell::new(std::collections::BTreeMap::new()),
-                host_hints: RefCell::new(std::collections::BTreeMap::new()),
-                sibling_arrived: std::cell::Cell::new(false),
-                personal: RefCell::new(Vec::new()),
-                personal_store: RefCell::new(None),
-                endpoint: EndpointAddr::new(publisher),
-                endpoint_handle: Arc::new(std::sync::OnceLock::new()),
-                fabric: None,
-                nearby: RefCell::new(None),
-                device_actions: Arc::new(std::sync::OnceLock::new()),
-                reachability,
-                beside: Vec::new(),
-                live: None,
-                thread: None,
+                enrolled,
             },
-            said,
-        )
+            Device {
+                publisher,
+                endpoint: EndpointAddr::new(publisher),
+                person: None,
+                name: String::new(),
+            },
+            own,
+        );
+        for host in hosts {
+            let _ = client.outgoing.send(Cmd::Connect(host));
+        }
+        (client, said)
     }
 
     /// The same plane, taken part in as `person` (their user root, hex): what a device's
@@ -1758,6 +1757,7 @@ impl Client {
     }
 }
 
+#[cfg(target_os = "linux")]
 /// This device's collaboration identity: the key and certificate this session's endpoint runs on,
 /// when this machine has been provisioned.
 /// A session on a machine without one takes part in no workspace as anybody: it binds a fresh key
@@ -1780,6 +1780,7 @@ pub fn device_identity() -> Option<HostIdentity> {
     })
 }
 
+#[cfg(target_os = "linux")]
 /// The workspace hosts this session was started to dial: an always-on peer that keeps what the
 /// person's devices publish while the others are away, named by `TILO_COLLAB_HOST` (one address or
 /// endpoint id) or `TILO_COLLAB_HOSTS` (a JSON array of addresses).
@@ -1807,6 +1808,7 @@ pub fn configured_hosts() -> Vec<EndpointAddr> {
     hosts
 }
 
+#[cfg(target_os = "linux")]
 /// A configured host, as its JSON address or as a bare endpoint id.
 fn host_addr(value: &str) -> Option<EndpointAddr> {
     serde_json::from_str(value)
@@ -1814,6 +1816,7 @@ fn host_addr(value: &str) -> Option<EndpointAddr> {
         .or_else(|| value.parse::<EndpointId>().ok().map(EndpointAddr::new))
 }
 
+#[cfg(target_os = "linux")]
 /// Who this device's certificate says its person is, and what the device calls itself: the id that
 /// stays the person's, and the name its other devices are told apart by.
 fn certified_as(identity: Option<&HostIdentity>) -> (Option<[u8; 32]>, String) {
@@ -1828,6 +1831,7 @@ fn certified_as(identity: Option<&HostIdentity>) -> (Option<[u8; 32]>, String) {
     )
 }
 
+#[cfg(target_os = "linux")]
 /// This device's fabric before the endpoint runs, so a device that proves itself at the actor's
 /// first tick is recorded with it: the record it keeps is this device's, named by its certificate.
 fn restored_fabric(
@@ -1850,6 +1854,7 @@ fn restored_fabric(
     ))
 }
 
+#[cfg(target_os = "linux")]
 /// The endpoint the peer actor binds, and the relays held back from it until something needs this
 /// device dialable: number 0's for a device with an identity, none for a session that takes part as
 /// nobody and stays on this machine's loopback.
@@ -1883,6 +1888,7 @@ fn endpoint_for(
 /// Where an admitted peer's app document goes so this device's apps see it as they see this
 /// device's own writes: the broker's channels, which record it and answer an app's subscription,
 /// and its fan-out, which shows it to the apps that hold its route open.
+#[cfg(target_os = "linux")]
 #[derive(Clone)]
 pub struct PeerDocuments {
     channels: Arc<std::sync::Mutex<tilo_action_broker::collab_core::BrokerChannels>>,
@@ -1891,6 +1897,7 @@ pub struct PeerDocuments {
     changes: Option<Arc<dyn tilo_action_broker::services::RecordIndexChanges>>,
 }
 
+#[cfg(target_os = "linux")]
 impl PeerDocuments {
     /// Hand peer app documents to the broker's `channels` and show them to the apps through
     /// `fanout` .
@@ -1935,13 +1942,14 @@ impl PeerDocuments {
     }
 }
 
+#[cfg(target_os = "linux")]
 /// Hear the peer actor: what it says reaches the session, and what a workspace's host says after
 /// this device joined it is taken in where this device's workspaces are kept, on a thread of its
 /// own and in the host's order. What admission takes in from another device goes to this device's
 /// apps through `documents`.
 fn heard(
     holds_custody: bool,
-    arrivals: std::sync::mpsc::Sender<NetEvent>,
+    arrivals: std::sync::mpsc::Sender<Event>,
     wake: Arc<dyn Fn() + Send + Sync>,
     link: Option<Arc<ChannelLink>>,
     documents: Option<PeerDocuments>,
@@ -1963,7 +1971,9 @@ fn heard(
             if let (NetEvent::NativeInput(input), Some(say)) = (&event, admissions.as_ref()) {
                 let _ = say.send(input.as_ref().clone());
             }
-            if arrivals.send(event).is_err() {
+            if let Some(event) = event_of(event)
+                && arrivals.send(event).is_err()
+            {
                 break;
             }
             (wake)();
@@ -1972,6 +1982,7 @@ fn heard(
     (events, carrying, attending)
 }
 
+#[cfg(target_os = "linux")]
 /// Take what hosts replay into the workspaces this device holds, as it arrives: each run of one
 /// session admitted together and in the order the host said it, on a blocking thread so no replay
 /// holds up the collaboration plane.
@@ -2008,6 +2019,7 @@ async fn take_in(
     }
 }
 
+#[cfg(target_os = "linux")]
 /// Admit one session's inputs, as one commit of the workspace they belong to.
 async fn admit(
     inputs: Vec<native_ingress::Input>,
@@ -2055,6 +2067,7 @@ async fn admit(
     }
 }
 
+#[cfg(target_os = "linux")]
 /// Give one command from the session to the plane: whether it was taken, or `None` when it is the
 /// command that ends it.
 async fn carry_out(

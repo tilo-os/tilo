@@ -35,15 +35,7 @@ pub const DEFAULT_WS_TOPIC: u64 = 0;
 /// Stable transport/host shard for a durable workspace. Local workspace handles are
 /// deliberately not used: they differ between devices.
 pub fn workspace_topic_id(workspace: tilo_desktop_model::WorkspaceId) -> u64 {
-    if workspace.is_nil() {
-        return DEFAULT_WS_TOPIC;
-    }
-    // `workspace.to_string()` is `Uuid::to_string()`, which `room_workspace_id`
-    // can always re-parse, so the `Err` path is unreachable in practice.
-    // Fall back to the "no workspace identity" topic rather than panic on this
-    // hot path — `room_workspace_id` never returns 0 on success, so a real
-    // topic id can't collide with the fallback.
-    tilo_relay_protocol::room_workspace_id(&workspace.to_string()).unwrap_or(DEFAULT_WS_TOPIC)
+    tilo_relay_protocol::workspace_topic(&workspace.to_string())
 }
 
 /// A workspace host connection's error, as the actor reports it. A host at

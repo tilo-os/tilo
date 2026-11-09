@@ -17,7 +17,7 @@ fn device(seed: u8) -> EndpointId {
 }
 
 fn topic(workspace: &str) -> WorkspaceId {
-    workspace_topic_id(ModelWorkspaceId::parse(workspace).expect("a workspace id"))
+    super::topic_of(ModelWorkspaceId::parse(workspace).expect("a workspace id"))
 }
 
 /// A desktop showing one workspace, in `workspace` .
@@ -63,11 +63,7 @@ fn list_of(
     );
     let workspace = ModelWorkspaceId::parse(workspace).expect("a workspace id");
     directory
-        .add_workspace_with_topic(
-            workspace_topic_id(workspace),
-            &workspace.to_string(),
-            "Desk",
-        )
+        .add_workspace_with_topic(super::topic_of(workspace), &workspace.to_string(), "Desk")
         .expect("a listed workspace");
     let update = directory
         .signed_snapshot(signing, tilo_clock::unix_now_ns())
@@ -193,7 +189,7 @@ fn person(seed: u8) -> String {
     )
 }
 
-fn hello(from: u8, user: u8, device_label: &str) -> NetEvent {
+fn hello(from: u8, user: u8, device_label: &str) -> Event {
     let from = device(from);
     let root = ed25519_dalek::SigningKey::from_bytes(&[user; 32]);
     let mut cert = DeviceCert {
@@ -216,16 +212,14 @@ fn hello(from: u8, user: u8, device_label: &str) -> NetEvent {
         issuer: None,
     };
     tilo_user_identity::sign_device_cert(&mut cert, &root).expect("a certified device");
-    NetEvent::Msg {
+    Event::Msg {
         ws: topic(WORKSPACE),
         peer: from,
-        membership_epoch: None,
-        replayed: false,
-        msg: NeighbourMsg::IdentityHello {
+        msg: Box::new(NeighbourMsg::IdentityHello {
             protocol: neighbour_wire::PEER_PROTOCOL_VERSION,
             cert: Box::new(cert),
             revocations: Vec::new(),
-        },
+        }),
     }
 }
 
@@ -241,6 +235,56 @@ fn pointer_cleared(sync: &Client, from: u8, workspace: &str, tab: u64) {
     sync.heard_presence(workspace, device(from), &frame);
 }
 
+/// A client whose transport another host brings: what it says leaves on that transport, and what
+/// the transport hands it is who is here.
+#[test]
+fn a_transport_another_host_brings_carries_the_same_words() {
+    let publisher = device(0x31);
+    let (outgoing, mut said) = tokio::sync::mpsc::unbounded_channel();
+    let (heard, arrived) = std::sync::mpsc::channel();
+    let (_landed, enrolled) = std::sync::mpsc::channel();
+    let sync = Client::over(
+        Transport {
+            outgoing,
+            arrived,
+            enrolled,
+        },
+        Device {
+            publisher,
+            endpoint: EndpointAddr::new(publisher),
+            person: Some(root(0x04)),
+            name: "Laptop".to_owned(),
+        },
+        OwnPresence {
+            label: "Quinten".to_owned(),
+            ..OwnPresence::default()
+        },
+    );
+    sync.follow_desktop(&desk(WORKSPACE));
+    let commands = sent(&mut said);
+    assert!(
+        commands
+            .iter()
+            .any(|command| matches!(command, Cmd::Join(ws) if *ws == topic(WORKSPACE))),
+        "the client takes part in the workspace its desk shows"
+    );
+    heard
+        .send(hello(2, 0x04, "Phone"))
+        .expect("the transport hands what it heard");
+    sync.follow();
+    // The device's own word arrives on the workspace's live plane, which this host's transport
+    // carries as the desktop's does.
+    here(&sync, 2);
+    named(&sync, 2, "Ana");
+    let here = sync.members(WORKSPACE);
+    assert_eq!(here.len(), 1, "the device that said hello is here");
+    assert_eq!(here[0].label, "Ana", "by the person's own word");
+    assert_eq!(
+        here[0].device, "Phone",
+        "and its certificate says which device"
+    );
+}
+
 #[test]
 fn a_device_of_the_person_coming_up_owes_it_the_list() {
     let (sync, _said) = session("Desk", Some(0x04));
@@ -248,9 +292,8 @@ fn a_device_of_the_person_coming_up_owes_it_the_list() {
         !sync.sibling_arrived(),
         "no device of the person said anything yet"
     );
-    sync.keep_personal(&NetEvent::Sibling {
+    sync.keep_personal(&Event::Sibling {
         peer: device(0x11),
-        membership_epoch: tilo_network_actor::MembershipEpoch::for_test(1),
         certs: Vec::new(),
         revocations: Vec::new(),
     });
@@ -526,11 +569,9 @@ fn a_peer_who_leaves_leaves_the_roster() {
             .len(),
         1
     );
-    sync.hear(NetEvent::PeerLeft {
+    sync.hear(Event::PeerLeft {
         ws: topic(WORKSPACE),
         peer: device(1),
-        cause: tilo_network_actor::PeerDepartureCause::HostSessionClosed,
-        membership_epoch: None,
     });
     assert!(
         sync.show(&mut desk(WORKSPACE), &no_records(), &|_| None)
@@ -582,8 +623,8 @@ fn the_relays_wait_until_a_workspace_with_someone_else_is_shown() {
         label: "Quinten".into(),
         ..OwnPresence::default()
     };
-    let (sync, _said) =
-        Client::offline_reaching(device(0xf0), own, Vec::new(), reachability.clone());
+    let (mut sync, _said) = Client::offline(device(0xf0), own);
+    sync.reachability = reachability.clone();
     sync.follow_desktop(&desk(WORKSPACE));
 
     // Nobody else in the workspace this desktop shows: it names no relay,
@@ -749,11 +790,9 @@ fn pointers_are_followed_on_the_room_tile() {
     pointer_cleared(&sync, 1, WORKSPACE, 3);
     let left = sync.presence_revision();
     assert_ne!(left, drawn, "a leaving pointer asked for no frame");
-    sync.hear(NetEvent::PeerLeft {
+    sync.hear(Event::PeerLeft {
         ws: topic(WORKSPACE),
         peer: device(1),
-        cause: tilo_network_actor::PeerDepartureCause::HostSessionClosed,
-        membership_epoch: None,
     });
     assert_ne!(
         sync.presence_revision(),
@@ -885,7 +924,7 @@ fn a_configured_host_is_read_as_an_id_or_an_address() {
 #[test]
 fn a_host_is_dialled_before_the_workspaces_it_carries() {
     let host = device(7);
-    let (sync, mut said) = Client::offline_at(
+    let (sync, mut said) = Client::planeless(
         device(0xf0),
         OwnPresence::default(),
         vec![EndpointAddr::new(host)],
@@ -976,16 +1015,15 @@ fn a_device_of_the_person_says_where_its_workspaces_are_reached() {
         "no device of the person said where a workspace is reached yet"
     );
     let (cert, hint) = host_hint(0x04, 0x21, "one address");
-    sync.keep_personal(&NetEvent::SiblingMsg {
+    sync.keep_personal(&Event::SiblingMsg {
         peer: device(0x11),
-        membership_epoch: tilo_network_actor::MembershipEpoch::for_test(1),
-        msg: NeighbourMsg::PersonalHosts {
+        msg: Box::new(NeighbourMsg::PersonalHosts {
             user_public_key: root(0x04),
             hosts: vec![neighbour_wire::PersonalHost {
                 workspace: WORKSPACE.to_owned(),
                 hint: postcard::to_stdvec(&hint).expect("a signed address"),
             }],
-        },
+        }),
     });
     let kept = sync
         .host_hint(WORKSPACE)
@@ -1002,16 +1040,15 @@ fn another_persons_host_hints_are_not_where_this_persons_workspaces_are() {
     let (sync, _said) = session("Desk", Some(0x04));
     let sync = sync.taking_part_as(&person(0x04));
     let (_, hint) = host_hint(0x05, 0x22, "someone else's address");
-    sync.keep_personal(&NetEvent::SiblingMsg {
+    sync.keep_personal(&Event::SiblingMsg {
         peer: device(0x12),
-        membership_epoch: tilo_network_actor::MembershipEpoch::for_test(1),
-        msg: NeighbourMsg::PersonalHosts {
+        msg: Box::new(NeighbourMsg::PersonalHosts {
             user_public_key: root(0x05),
             hosts: vec![neighbour_wire::PersonalHost {
                 workspace: WORKSPACE.to_owned(),
                 hint: postcard::to_stdvec(&hint).expect("a signed address"),
             }],
-        },
+        }),
     });
     assert!(
         sync.host_hint(WORKSPACE).is_none(),
