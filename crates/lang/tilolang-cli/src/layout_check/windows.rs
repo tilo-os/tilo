@@ -215,10 +215,65 @@ fn row_marks(
     out
 }
 
-/// The changes the rows of `staged`'s window show, as who made it, what they are called and
-/// what they did: a list row draws its mark in the row instead of holding a node of it, so
-/// what the person reads is read off the rows themselves.
-fn row_changes(staged: &stage::Staged) -> Vec<(String, String, String)> {
+/// The changes the rows of `staged`'s window set down, as the row they stand in, who made it
+/// and what they did: a row the app draws at the item's page holds the mark as a node of its
+/// own, where a list row draws it in the row instead.
+fn staged_changes(staged: &mut stage::Staged) -> Vec<(String, String, String)> {
+    let rows = staged.rows();
+    let mut changes = Vec::new();
+    for (key, row) in &rows {
+        for mark in nodes_of(row, "ui.ChangeMark") {
+            let identity = match mark.props.get("by") {
+                Some(tilo_render_protocol::patch::Value::Principal(who)) => who.id.clone(),
+                other => panic!("a marked row names who changed it: {other:?}"),
+            };
+            let said = match mark.props.get("said") {
+                Some(tilo_render_protocol::patch::Value::Text(said)) => said.clone(),
+                other => panic!("a marked row says what they did: {other:?}"),
+            };
+            changes.push((key.clone(), identity, said));
+        }
+    }
+    changes
+}
+
+/// How many pixels of `rect` the frame paints in something other than the content's ground: a
+/// mark a person reads is painted where it stands, not only built.
+#[allow(
+    clippy::cast_possible_truncation,
+    clippy::cast_precision_loss,
+    clippy::cast_sign_loss,
+    clippy::arithmetic_side_effects,
+    reason = "frame and mark sizes are small counts, far inside usize and f64"
+)]
+fn painted(staged: &stage::Staged, rect: Rect, viewport: (usize, usize)) -> usize {
+    let rgba = staged.harness().render_rgba();
+    let (wide, tall) = viewport;
+    assert!(!rgba.is_empty(), "the frame renders");
+    let device = rgba.len() / 4;
+    let scale = ((device / (wide * tall)) as f64).sqrt().round().max(1.0) as usize;
+    let ground = ui::Theme::light().tokens.colors.surfaces.content.to_rgba8();
+    let ground = [ground.r, ground.g, ground.b];
+    let mut inked = 0;
+    for y in (rect.y0 as usize * scale)..(rect.y1 as usize * scale) {
+        for x in (rect.x0 as usize * scale)..(rect.x1 as usize * scale) {
+            let at = (y * wide * scale + x) * 4;
+            let painted = [rgba[at], rgba[at + 1], rgba[at + 2]];
+            if !painted
+                .iter()
+                .zip(ground)
+                .all(|(painted, beneath)| painted.abs_diff(beneath) <= 12)
+            {
+                inked += 1;
+            }
+        }
+    }
+    inked
+}
+
+/// The rows the window of `staged` laid out, as the person has them: a list keeps the row of an
+/// item under the swipe the item has, not among its children.
+fn list_rows(staged: &stage::Staged) -> Vec<&ui::widget::ListRow> {
     fn collect<'a>(root: &'a dyn ui::widget::Widget, out: &mut Vec<&'a ui::widget::ListRow>) {
         if let Some(row) = root
             .as_any()
@@ -229,7 +284,6 @@ fn row_changes(staged: &stage::Staged) -> Vec<(String, String, String)> {
         for child in root.children() {
             collect(child, out);
         }
-        // A row that swipes holds its row inside itself, not among its children.
         if let Some(widget) = root.as_any() {
             if let Some(swipe) = widget.downcast_ref::<ui::widget::SwipeRow>() {
                 collect(swipe.content(), out);
@@ -243,11 +297,17 @@ fn row_changes(staged: &stage::Staged) -> Vec<(String, String, String)> {
     }
     let mut rows = Vec::new();
     collect(staged.harness().root_widget(), &mut rows);
+    rows
+}
 
+/// The changes the rows of `staged`'s window show, as who made it, what they are called and
+/// what they did: a list row draws its mark in the row instead of holding a node of it, so
+/// what the person reads is read off the rows themselves.
+fn row_changes(staged: &stage::Staged) -> Vec<(String, String, String)> {
     // One change reads once however many rows show it: a task open where it stands shows it
     // on its row and again over the step that made it, and both are the same change.
     let mut changes = Vec::new();
-    for change in rows
+    for change in list_rows(staged)
         .into_iter()
         .filter_map(ui::widget::ListRow::shown_change)
     {
@@ -261,6 +321,54 @@ fn row_changes(staged: &stage::Staged) -> Vec<(String, String, String)> {
         }
     }
     changes
+}
+
+/// What a mark of a change the person has not seen says of it: who changed it, never the
+/// person's own step, and what they did, in words of "it".
+fn a_change_names_its_maker(identity: &str, said: &str) {
+    assert!(
+        !identity.is_empty() && identity != "ada",
+        "a marked row names who changed it, never the person's own step: {identity}"
+    );
+    assert!(
+        !said.is_empty() && !said.contains("this") && !said.contains("done to"),
+        "a marked row says what they did, in words, of \"it\": {said}"
+    );
+}
+
+/// The mark the header of `staged`'s window carries for the `count` changes the person has not
+/// seen: first among the header's actions, opening the catch-up that names each of them.
+fn the_windows_header_mark(staged: &mut stage::Staged, count: i64) -> tilo_ui_host::UiNode {
+    let composed = staged.composed().expect("the window composed its view");
+    let window = window_mark(&composed)
+        .unwrap_or_else(|| panic!("the window's header says what changed in it: {composed:?}"));
+    assert!(
+        matches!(
+            window.props.get("count"),
+            Some(tilo_render_protocol::patch::Value::Int(counted)) if *counted == count
+        ),
+        "the window counts the {count} changes she has not seen: {window:?}"
+    );
+    the_catch_up_names_each_item_it_changed(&window);
+    // The list is the window's content, so its header is the window's: the mark stands among
+    // the header actions, first, in the row that carries the title it counts.
+    let mut slots = Vec::new();
+    nodes(&composed, "slot", &mut slots);
+    let header = slots
+        .iter()
+        .find(|slot| {
+            slot.props.get("name") == Some(&tilo_render_protocol::patch::Value::text("actions"))
+                && slot
+                    .children
+                    .iter()
+                    .any(|child| child.kind == "ui.ChangeMark")
+        })
+        .unwrap_or_else(|| panic!("the window's header holds the window's mark: {composed:?}"));
+    assert_eq!(
+        header.children[0].kind, "ui.ChangeMark",
+        "the window's mark stands first among the header's actions: {header:?}"
+    );
+    window
 }
 
 /// The mark a window's header carries: what changed in what it shows, and by whom.
@@ -1056,60 +1164,63 @@ fn a_capture_writes_the_scenarios_steps_down_so_what_changed_shows() {
         ui::clock::freeze_for_capture();
         let packages = tasks_packages();
         let mut away = away_at(&packages, (1280, 800));
-        let rows = row_changes(&away);
-        // The two tasks of today's list that someone else changed while she was away: Bo took
-        // the mail and her agent moved the survey to today, each row saying so in its words.
+        // The two tasks someone else changed while she was away: Bo took the mail and her agent
+        // moved the survey to today, each row setting down who changed it and what they did.
+        let changed = staged_changes(&mut away);
         assert_eq!(
-            rows.len(),
+            changed.len(),
             2,
-            "the two rows of the tasks Bo and her agent changed are marked: {rows:?}"
+            "the two rows of the tasks Bo and her agent changed are marked: {changed:?}"
         );
-        for (identity, name, said) in &rows {
-            assert!(
-                !identity.is_empty() && identity != "ada",
-                "a marked row names who changed it, never the person's own step: {identity}"
-            );
-            assert!(!name.is_empty(), "a marked row names the changer: {name}");
-            assert!(
-                !said.is_empty() && !said.contains("this") && !said.contains("done to"),
-                "a marked row says what they did, in words, of \"it\": {said}"
-            );
+        for (_, identity, said) in &changed {
+            a_change_names_its_maker(identity, said);
         }
         assert!(
-            rows.iter()
+            changed
+                .iter()
                 .any(|(_, _, said)| said.contains("assigned") && said.contains("you")),
-            "the mail Bo gave her says it was given to her: {rows:?}"
+            "the mail Bo gave her says it was given to her: {changed:?}"
         );
-        let composed = away.composed().expect("the window composed its view");
-        let window = window_mark(&composed)
-            .unwrap_or_else(|| panic!("the window's header says what changed in it: {composed:?}"));
-        // Three: Bo's assign, and the agent's two, one of them the task that is in Done now.
-        assert!(
-            matches!(
-                window.props.get("count"),
-                Some(tilo_render_protocol::patch::Value::Int(3))
-            ),
-            "the window counts the three changes she has not seen: {window:?}"
-        );
-        the_catch_up_names_each_item_it_changed(&window);
-        // The list is the window's content, so its header is the window's: the mark stands among
-        // the header actions, first, in the row that carries the title it counts.
-        let mut slots = Vec::new();
-        nodes(&composed, "slot", &mut slots);
-        let header = slots
-            .iter()
-            .find(|slot| {
-                slot.props.get("name") == Some(&tilo_render_protocol::patch::Value::text("actions"))
-                    && slot
-                        .children
-                        .iter()
-                        .any(|child| child.kind == "ui.ChangeMark")
-            })
-            .unwrap_or_else(|| panic!("the window's header holds the window's mark: {composed:?}"));
+        // The task that is still a row of the list says so under the row's title, where a person
+        // reads it.
+        let rows = row_changes(&away);
         assert_eq!(
-            header.children[0].kind, "ui.ChangeMark",
-            "the window's mark stands first among the header's actions: {header:?}"
+            rows.len(),
+            1,
+            "the row of the task Bo took says so under its title: {rows:?}"
         );
+        for (identity, name, said) in &rows {
+            a_change_names_its_maker(identity, said);
+            assert!(!name.is_empty(), "a marked row names the changer: {name}");
+            assert!(
+                said.contains("assigned") && said.contains("you"),
+                "the mail Bo gave her says it was given to her: {said}"
+            );
+        }
+        // The task she opened stands as its own page, its title written once, so what her agent
+        // changed is marked on the page the row became: the face of who changed it, on it.
+        let opened = changed
+            .iter()
+            .find(|(_, _, said)| said.contains("Today"))
+            .map(|(key, _, _)| key.clone())
+            .expect("her agent moved the survey to today");
+        let face = {
+            let wanted = format!("{opened}~change");
+            let root = away.harness().root_widget();
+            named(root, "Chip")
+                .into_iter()
+                .find(|chip| chip.test_id().is_some_and(|id| id == wanted))
+                .map_or_else(
+                    || panic!("the item she opened carries the face of who changed it: {wanted}"),
+                    Widget::get_rect,
+                )
+        };
+        assert!(
+            face.width() > 8.0 && face.height() > 8.0,
+            "the face stands on the page it marks, at a size a person reads: {face:?}"
+        );
+        // Three: Bo's assign, and the agent's two, one of them the task that is in Done now.
+        the_windows_header_mark(&mut away, 3);
         // A node in the tree is not a pixel: the mark stands in the window's own header row,
         // over the rows it counts, and the frame has its ink there.
         let mark = floating_rect(&away, "ChangeMark").expect("the window's mark is laid out");
@@ -1117,8 +1228,13 @@ fn a_capture_writes_the_scenarios_steps_down_so_what_changed_shows() {
             mark.width() > 40.0 && mark.height() > 20.0,
             "the mark has room to stand in the header: {mark:?}"
         );
-        let listed = rects(&away, "ListRow");
+        // The rows the window lays out stand under the mark that counts them, inside it.
+        let listed: Vec<Rect> = list_rows(&away)
+            .into_iter()
+            .map(ui::widget::Widget::get_rect)
+            .collect();
         assert!(!listed.is_empty(), "the window lists the tasks it marks");
+
         assert!(
             listed.iter().all(|row| mark.y1 <= row.y0),
             "the mark stands over the rows it counts, not among them: mark {mark:?}, rows {listed:?}"
@@ -1127,32 +1243,21 @@ fn a_capture_writes_the_scenarios_steps_down_so_what_changed_shows() {
             mark.x0 >= 0.0 && mark.x1 <= 1280.0,
             "the mark stands inside the window it counts: {mark:?}"
         );
-        let rgba = away.harness().render_rgba();
-        let (wide, tall) = (1280usize, 800usize);
-        assert!(!rgba.is_empty(), "the frame renders");
-        let device = rgba.len() / 4;
-        let scale = ((device / (wide * tall)) as f64).sqrt().round().max(1.0) as usize;
-        let ground = ui::Theme::light().tokens.colors.surfaces.content.to_rgba8();
-        let ground = [ground.r, ground.g, ground.b];
-        let pixel = |x: usize, y: usize| {
-            let at = (y * wide * scale + x) * 4;
-            [rgba[at], rgba[at + 1], rgba[at + 2]]
-        };
-        let mut inked = 0;
-        for y in (mark.y0 as usize * scale)..(mark.y1 as usize * scale) {
-            for x in (mark.x0 as usize * scale)..(mark.x1 as usize * scale) {
-                if !pixel(x, y)
-                    .iter()
-                    .zip(ground)
-                    .all(|(painted, beneath)| painted.abs_diff(beneath) <= 12)
-                {
-                    inked += 1;
-                }
-            }
-        }
         assert!(
-            inked > 500,
-            "the mark is painted in the header, not only built: {inked} px in {mark:?}"
+            mark.y1 <= face.y0 && face.x0 >= 0.0 && face.x1 <= 1280.0,
+            "the face of the change stands under the mark, on the page in the window: \
+             face {face:?}, mark {mark:?}"
+        );
+        let ink = |rect: Rect| painted(&away, rect, (1280, 800));
+        assert!(
+            ink(mark) > 500,
+            "the mark is painted in the header, not only built: {} px in {mark:?}",
+            ink(mark)
+        );
+        assert!(
+            ink(face) > 100,
+            "the face on the page the row became is painted, not only built: {} px in {face:?}",
+            ink(face)
         );
     });
 }

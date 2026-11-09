@@ -947,6 +947,10 @@ fn bare_row(
         let breadcrumb =
             parent_title.filter(|_| !tree.is_some_and(|marks| marks.is_nested(&key.to_owned())));
         let shortcuts = declared_shortcuts(&menu, &attached.menu);
+        // The mark the item's page takes where the row stands open into it: the row the page
+        // takes the place of is not drawn, and the change the person has not seen goes with the
+        // item, never away with it.
+        let page_mark = change.as_ref().map(ChangeMarkProps::again);
         // What someone else changed and the person has not seen, at the row's own height: on a
         // list row their face on its trailing edge and their colour under it; beside a row's
         // own view their face alone.
@@ -1000,6 +1004,7 @@ fn bare_row(
                 let view = with_mark(
                     view,
                     change.and_then(|change| change.face(&format!("{key}~change"))),
+                    Align::Center,
                 );
                 match tree {
                     Some(marks) => {
@@ -1015,12 +1020,30 @@ fn bare_row(
         // the row's own, written once, and what the item holds follows under them. A view takes
         // the step a tree gives a row's view, a list row the one it gives a row's content.
         let row = match (expanded, detail) {
-            (true, ItemRow::View(document)) => match tree {
-                Some(marks) => indent_view(document, marks.depth(&key.to_owned()), nest, None),
-                None => document,
-            },
+            (true, ItemRow::View(document)) => {
+                // The face stands on the page's own line, where the row's line was, not down
+                // the middle of a page that runs far below it.
+                let document = with_mark(
+                    document,
+                    page_mark.and_then(|change| change.face(&format!("{key}~change"))),
+                    Align::Start,
+                );
+                match tree {
+                    Some(marks) => indent_view(document, marks.depth(&key.to_owned()), nest, None),
+                    None => document,
+                }
+            }
             (true, ItemRow::Row(props)) => {
                 let mut document = ListRow::from_props(key, *props);
+                if let Some(mark) = page_mark.and_then(ChangeMarkProps::row) {
+                    document = document.change(
+                        mark.identity,
+                        mark.name,
+                        mark.spoken,
+                        mark.said,
+                        mark.show,
+                    );
+                }
                 if let Some(marks) = tree {
                     document = document.depth(marks.depth(&key.to_owned()));
                 }
@@ -1047,8 +1070,9 @@ fn nesting_parent(
     rows.key_presenting(&parent.0)
 }
 
-/// `row` with a change mark after it, on its line, when it has one.
-fn with_mark(row: Element, mark: Option<crate::widget::Chip>) -> Element {
+/// `row` with a change mark after it, on its line, when it has one: beside the row's own line,
+/// or at `align` down it where what the mark stands beside is an item's page.
+fn with_mark(row: Element, mark: Option<crate::widget::Chip>, align: Align) -> Element {
     match mark {
         Some(mark) => {
             let mut row = Slot::new(row);
@@ -1057,7 +1081,7 @@ fn with_mark(row: Element, mark: Option<crate::widget::Chip>) -> Element {
             Box::new(
                 Row::row()
                     .fill_width()
-                    .align(Align::Center)
+                    .align(align)
                     .push_slot(row)
                     .push(Box::new(mark)),
             )
@@ -2025,6 +2049,74 @@ mod tests {
         press_row(&mut column, 1, left, 400.0);
         let list = column.list().expect("the list stands");
         assert_eq!(list.selection_len(), 1, "a column's rows are chosen");
+    }
+
+    /// The change a person has not seen is marked on the item, whether the item stands as a row
+    /// or as the page its row opened into: the page takes the row's place, so the mark goes with
+    /// the item rather than vanishing with the row.
+    #[test]
+    fn the_page_a_row_opens_into_carries_the_mark_of_the_change() {
+        fn rows_of(root: &dyn crate::widget::Widget, out: &mut Vec<String>) {
+            if let Some(row) = root
+                .as_any()
+                .and_then(|widget| widget.downcast_ref::<ListRow>())
+                && let Some(change) = row.shown_change()
+            {
+                out.push(change.said.to_owned());
+            }
+            for child in root.children() {
+                rows_of(child, out);
+            }
+        }
+        let items: Vec<ListItemProps> = (0..3)
+            .map(|at| ListItemProps {
+                key: format!("row-{at}"),
+                item: Some(ResourceId(format!("task-{at}"))),
+                row: ItemRow::Row(Box::new(ListRowProps {
+                    title: format!("row {at}"),
+                    ..ListRowProps::default()
+                })),
+                detail: ItemRow::Row(Box::new(ListRowProps {
+                    title: format!("what row {at} is about"),
+                    secondary: Some("with the notes written about it".to_owned()),
+                    ..ListRowProps::default()
+                })),
+                change: (at == 1).then(|| ChangeMarkProps {
+                    by: Some(Person {
+                        identity: "person:bo".to_owned(),
+                        name: "Bo".to_owned(),
+                    }),
+                    said: Some("moved it to Today".to_owned()),
+                    ..ChangeMarkProps::default()
+                }),
+                ..ListItemProps::default()
+            })
+            .collect();
+        let list = DescribedList::from_props(
+            "list",
+            VirtualListProps {
+                open: Some(ResourceId("task-1".to_owned())),
+                rows: DescribedRows {
+                    held: Held::Given(Rc::new(items)),
+                    ..DescribedRows::default()
+                },
+                ..VirtualListProps::default()
+            },
+        );
+        let mut harness = crate::headless::FrameHarness::for_root(
+            crate::State::new(),
+            list,
+            (900, 600),
+            crate::theme::Theme::dark(),
+        );
+        harness.relayout();
+        let mut marked = Vec::new();
+        rows_of(harness.root_widget(), &mut marked);
+        assert_eq!(
+            marked,
+            vec!["Bo moved it to Today".to_owned()],
+            "the page the row became carries the mark of the change, in its words"
+        );
     }
 
     /// A menu opened over a row that opens where it stands is about that row alone: choosing
