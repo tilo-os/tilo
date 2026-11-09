@@ -260,4 +260,7 @@ report.returned = back;
 if (!signedUp.user || back.user !== signedUp.user) {
   await fail(`the returning tab is ${back.user ?? 'nobody'}, not the person who set up (${signedUp.user ?? 'unknown'})`);
 }
+// Signed in, it opens the person's own workspace, as the first tab did.
+await until(second, `!/lounge/i.test(JSON.stringify({title: document.title, own: globalThis.tiloMount?.state?.()?.entry ?? null}))`,
+  'the returning tab in the person\'s own workspace, not the Lounge', 60_000);
 await finish(0);
