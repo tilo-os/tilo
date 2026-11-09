@@ -76,22 +76,16 @@ impl HostIdentity {
         })
     }
 
-    /// Read this device's current custody for enrolled operations.
-    /// Configured disk failures never fall back to an old in-memory
-    /// certificate or revocation snapshot.
+    /// Read this device's current custody for enrolled operations, with the workspace it acts in
+    /// when it falls back to what is kept beside the device's own.
+    /// A store that cannot be read never falls back to an old in-memory certificate or revocation
+    /// snapshot.
     ///
     /// # Errors
     /// The stored device key or certificate changed, cannot be read or does
     /// not verify, this login holds no record of the person the device signs
     /// as, or the device is revoked.
-    pub fn current_native_material(
-        &self,
-        ws: WorkspaceId,
-    ) -> Result<(DeviceCert, Vec<RevocationEntry>), String> {
-        self.current_material(Some(ws))
-    }
-
-    fn current_material(
+    pub fn current_material(
         &self,
         ws: Option<WorkspaceId>,
     ) -> Result<(DeviceCert, Vec<RevocationEntry>), String> {

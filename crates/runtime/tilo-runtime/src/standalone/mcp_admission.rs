@@ -124,7 +124,7 @@ impl Joined {
         // a confirmed change rather than a read that failed.
         let (certificate, _) = self
             .custody
-            .current_native_material(workspace_topic(workspace)?)?;
+            .current_material(Some(workspace_topic(workspace)?))?;
         let enrollment = self.owner.with_current(workspace, |view| {
             Ok((view.transport_hint()?.clone(), view.continuity()))
         })?;

@@ -81,7 +81,7 @@ pub(crate) struct Issued {
 /// The workspace id each workspace on the desk is held under, as the engine's record names them and
 /// the desk names its own.
 #[derive(Default)]
-struct Slots(std::sync::Mutex<BTreeMap<WorkspaceSlot, WorkspaceId>>);
+pub(crate) struct Slots(std::sync::Mutex<BTreeMap<WorkspaceSlot, WorkspaceId>>);
 
 impl std::fmt::Debug for Slots {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -164,6 +164,7 @@ pub struct Engine {
     unfounded: std::sync::Mutex<std::collections::BTreeSet<WorkspaceId>>,
     /// This device's workspaces as its other devices reach them, when it keeps a state directory to
     /// hold their frames in.
+    #[cfg(not(target_arch = "wasm32"))]
     directed: Option<tilo_peer_state::direct::Owning>,
 }
 
@@ -186,11 +187,32 @@ impl std::fmt::Debug for Engine {
 }
 
 impl Engine {
+    /// This device's workspaces as `owner` holds them, with the identity they are held under: what
+    /// a host supplies whichever file, store or record it keeps them in.
+    #[must_use]
+    pub(crate) fn holding(
+        owner: NativeWorkspaceOwner,
+        slots: Arc<Slots>,
+        identity: HostIdentity,
+    ) -> Self {
+        Self {
+            owner,
+            slots,
+            identity,
+            keys: ChannelKeyProvider::default(),
+            link: std::sync::Mutex::new(None),
+            unfounded: std::sync::Mutex::new(std::collections::BTreeSet::new()),
+            #[cfg(not(target_arch = "wasm32"))]
+            directed: None,
+        }
+    }
+
     /// Open this device's workspaces under `state`, with the workspaces the desk
     /// already holds. A session that keeps no state (a screenshot, a test without a
     /// state directory) holds no workspace.
     /// # Errors
     /// The record holds no valid state, or the file cannot be written.
+    #[cfg(not(target_arch = "wasm32"))]
     pub fn open(
         identity: HostIdentity,
         state: Option<&Path>,
@@ -206,12 +228,14 @@ impl Engine {
             &owner_file_of(&path),
             Arc::clone(&slots) as Arc<dyn FileHost>,
         )?;
+        let mut engine = Self::holding(owner.clone(), slots, identity);
         // What the workspaces' other devices reach this one at, keeping the frames each brings: a
         // device that holds a workspace is a store device of it.
-        let directed = match tilo_peer_state::store::Store::open(frames_path(state), FRAMES_KEPT) {
+        engine.directed = match tilo_peer_state::store::Store::open(frames_path(state), FRAMES_KEPT)
+        {
             Ok(store) => Some(tilo_peer_state::direct::Owning::new(
-                owner.clone(),
-                identity.device_signing_key.clone(),
+                owner,
+                engine.identity.device_signing_key.clone(),
                 Arc::new(store),
             )),
             Err(error) => {
@@ -219,15 +243,7 @@ impl Engine {
                 None
             }
         };
-        Ok(Self {
-            owner,
-            slots,
-            identity,
-            keys: ChannelKeyProvider::default(),
-            link: std::sync::Mutex::new(None),
-            unfounded: std::sync::Mutex::new(std::collections::BTreeSet::new()),
-            directed,
-        })
+        Ok(engine)
     }
 
     /// This device's engine, when this computer has an identity and a state directory to keep its
@@ -786,6 +802,7 @@ impl Engine {
     /// What this device answers for the workspaces it holds, beside the planes its endpoint already
     /// serves: the direct link their other devices sync on, and catch up from the frames this one
     /// kept.
+    #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn direct_protocols(
         &self,
     ) -> Vec<(Vec<u8>, Box<dyn iroh::protocol::DynProtocolHandler>)> {

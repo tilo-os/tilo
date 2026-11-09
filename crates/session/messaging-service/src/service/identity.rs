@@ -150,7 +150,7 @@ impl Identity {
         let (certificate, _) = self
             .custody
             .host
-            .current_native_material(self.custody.workspace)
+            .current_material(Some(self.custody.workspace))
             .map_err(|_| SendError::Revoked)?;
         if self.owner.principal != self.custody.principal
             || self.owner.device != self.custody.device

@@ -81,7 +81,7 @@ impl Connect {
     /// continuity its record is at ([`Self::material`]).
     pub fn custody(&self, identity: &HostIdentity) -> Result<(DeviceCert, u64), String> {
         self.owner.with_current(self.workspace, |view| {
-            let (cert, entries) = identity.current_native_material(view.workspace_id())?;
+            let (cert, entries) = identity.current_material(Some(view.workspace_id()))?;
             if &cert != view.device() {
                 return Err("native custody differs from enrollment".into());
             }
@@ -146,7 +146,7 @@ impl Connect {
     pub fn hosted_here(&self, identity: &HostIdentity) -> bool {
         self.owner
             .with_current(self.workspace, |view| {
-                let (cert, _) = identity.current_native_material(view.workspace_id())?;
+                let (cert, _) = identity.current_material(Some(view.workspace_id()))?;
                 Ok(view.transport_hint()?.host.device_public_key == cert.device_public_key)
             })
             .unwrap_or(false)
@@ -157,7 +157,7 @@ impl Connect {
     /// as [`Self::material`] refuses custody that differs from the record.
     pub fn renewal(&self, identity: &HostIdentity) -> Result<Option<DeviceCert>, String> {
         self.owner.with_current(self.workspace, |view| {
-            let (cert, _) = identity.current_native_material(view.workspace_id())?;
+            let (cert, _) = identity.current_material(Some(view.workspace_id()))?;
             Ok(crate::owner::renewal::renews(&cert, view.device()).then_some(cert))
         })
     }
@@ -349,7 +349,7 @@ impl Scope {
                 {
                     return Err("native publication authority changed".into());
                 }
-                let (selected, _) = identity.current_native_material(view.workspace_id())?;
+                let (selected, _) = identity.current_material(Some(view.workspace_id()))?;
                 if &selected != view.device() {
                     return Err("native publication custody changed".into());
                 }
