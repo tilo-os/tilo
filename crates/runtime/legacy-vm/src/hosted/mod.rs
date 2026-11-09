@@ -67,6 +67,7 @@ pub mod guest;
 pub mod jail;
 pub mod meter;
 pub mod network;
+pub mod placement;
 pub mod plan;
 pub mod service;
 pub mod size;

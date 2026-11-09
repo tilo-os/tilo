@@ -25,6 +25,11 @@
 //!   shows the person the same prompt.
 //! - Anything else fails with the refusal's words.
 //!
+//! When the hosts have no room for the VM right now ([`Reply::Busy`]: every
+//! machine full, another one starting), the command waits, a person's and an
+//! agent's alike, after one line saying so; it is never refused for it.
+//! Interrupting it ends it having run nothing.
+//!
 //! A program whose input and output are the session's terminal runs on a
 //! pseudo-terminal in the VM ([`Relay::Terminal`]): the session's keys go
 //! to it as typed (the session's terminal is raw meanwhile; the VM's
@@ -64,6 +69,9 @@ pub mod test_host;
 
 /// How long a wake may take, a first boot included.
 const WAKE_PATIENCE: Duration = Duration::from_secs(300);
+
+/// How often a command waiting for room asks its host again.
+const BUSY_RETRY: Duration = Duration::from_secs(2);
 
 /// Where a hosted session's programs run, and who pays.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -201,6 +209,43 @@ impl Write for OutputWriter<'_> {
     }
 }
 
+/// Wait `wait`, looking at `stop` as a running program's flag is looked
+/// at: whether the wait ran out rather than being stopped.
+fn pause(wait: Duration, stop: Option<&dyn Fn() -> bool>) -> bool {
+    let started = std::time::Instant::now();
+    while started.elapsed() < wait {
+        if stop.is_some_and(|stopped| stopped()) {
+            return false;
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    true
+}
+
+/// A command the hosts have no room for yet: say so once, wait a while, and
+/// end it, having run nothing, if it was cancelled meanwhile.
+fn wait_for_room(
+    name: &str,
+    io: &Stdio,
+    words: &str,
+    told: &mut bool,
+    stop: Option<&dyn Fn() -> bool>,
+) -> Result<(), Program> {
+    if !*told {
+        let _ = io
+            .stderr
+            .write_str(&format!("ush: {name}: {words} Waiting; Ctrl+C cancels.\n"));
+        *told = true;
+    }
+    if pause(BUSY_RETRY, stop) {
+        return Ok(());
+    }
+    let _ = io.stderr.write_str(&format!(
+        "ush: {name}: cancelled. Nothing ran, because no machine had room yet.\n"
+    ));
+    Err(Program::Exited(130))
+}
+
 fn failed(name: &str, io: &Stdio, reason: &str) -> Program {
     let _ = io.stderr.write_str(&format!("ush: {name}: {reason}\n"));
     Program::Exited(126)
@@ -217,6 +262,7 @@ impl HostedPrograms {
         stop: Option<&dyn Fn() -> bool>,
     ) -> Result<AgentLink, Program> {
         let mut waiting: Option<Hold> = None;
+        let mut busy_told = false;
         loop {
             let refusal = match control::ask(&self.target.socket, &self.request(), WAKE_PATIENCE) {
                 Ok(Some(Reply::Ready { link, .. })) => {
@@ -224,6 +270,10 @@ impl HostedPrograms {
                         self.mark(io, &released_mark);
                     }
                     return Ok(link);
+                }
+                Ok(Some(Reply::Busy(words))) => {
+                    wait_for_room(name, io, &words, &mut busy_told, stop)?;
+                    continue;
                 }
                 Ok(Some(Reply::Refused(refusal))) => refusal,
                 Ok(Some(Reply::Error(error))) => return Err(failed(name, io, &error)),
@@ -996,6 +1046,50 @@ mod tests {
                  the command again.\n"
             ),
             "{terminal:?}"
+        );
+    }
+
+    #[test]
+    fn a_command_waits_while_no_machine_has_room_then_runs() {
+        let dir = tempfile::tempdir().unwrap();
+        let host = test_host::TestHost::start(dir.path());
+        std::fs::write(host.plans(), b"{}").unwrap();
+        host.full_for(2);
+        let (programs, io, out, err) = session(&host, "acct-1");
+        // An agent's command waits too: being full is never a refusal.
+        let ran = programs.run(
+            &["cargo".into(), "build".into()],
+            &[("USH_RENDER".into(), "agent".into())],
+            Path::new("/"),
+            &io,
+            None,
+        );
+        assert_eq!(ran, Program::Exited(0));
+        assert_eq!(host.wakes_asked(), 3, "asked again until there was room");
+        assert_eq!(String::from_utf8(out.take()).unwrap(), "ran cargo build\n");
+        assert_eq!(
+            String::from_utf8(err.take()).unwrap(),
+            "ush: cargo: Starting another machine for it, about 3 minutes. Waiting; Ctrl+C \
+             cancels.\n",
+            "said once, however long it waits"
+        );
+    }
+
+    #[test]
+    fn a_command_waiting_for_room_ends_when_cancelled_having_run_nothing() {
+        let dir = tempfile::tempdir().unwrap();
+        let host = test_host::TestHost::start(dir.path());
+        std::fs::write(host.plans(), b"{}").unwrap();
+        host.full_for(usize::MAX);
+        let (programs, io, out, err) = session(&host, "acct-1");
+        let stop = || true;
+        let ran = programs.run(&["cargo".into()], &[], Path::new("/"), &io, Some(&stop));
+        assert_eq!(ran, Program::Exited(130));
+        assert!(out.take().is_empty());
+        assert!(
+            String::from_utf8(err.take()).unwrap().ends_with(
+                "ush: cargo: cancelled. Nothing ran, because no machine had room yet.\n"
+            )
         );
     }
 

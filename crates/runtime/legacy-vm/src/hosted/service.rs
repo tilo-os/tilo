@@ -23,7 +23,7 @@ use std::time::Duration;
 
 use legacy_agent_protocol::link::AgentLink;
 
-use super::control::{FRAMING, Reply, Request, ShareRequest, VmRequest, VmStatus};
+use super::control::{FRAMING, HostLoad, Reply, Request, ShareRequest, VmRequest, VmStatus};
 use super::files::Served;
 use super::firecracker::VmFiles;
 use super::meter::{Ledger, Meter, VmIdentity, summarize};
@@ -34,6 +34,15 @@ use tilo_actions::remote::host_account;
 
 /// How often awake VMs are asked what runs in them.
 pub const POLL: Duration = Duration::from_secs(1);
+
+/// What a wake that waits for room is told, and its caller shows: a
+/// placer starts another machine for the demand (about three minutes on
+/// Azure), or a VM going idle makes room sooner.
+pub const BUSY: &str = "Starting another machine for it, about 3 minutes.";
+
+/// How long a waiting wake counts as demand after it last asked: its
+/// caller asks again every few seconds while it waits.
+const WAITING_FOR_MS: u64 = 15_000;
 
 /// Where a host keeps its VMs and what it boots them with.
 #[derive(Clone, Debug)]
@@ -105,6 +114,8 @@ pub struct Service {
     /// The most memory the VMs awake on this host may take together, by
     /// their sizes; `None` bounds them by the slots alone.
     memory_budget_mib: Option<u64>,
+    /// Wakes waiting for room: what each asks for, and when it last asked.
+    waiting: Mutex<BTreeMap<String, (u64, u64)>>,
 }
 
 /// Why a wake did not happen.
@@ -115,11 +126,9 @@ pub enum EnsureError {
     Vm(VmError),
     /// The host is being taken back; the VM continues on another one.
     Moving,
-    /// Waking it would take the host's VMs past its memory budget.
-    HostFull {
-        awake_mib: u64,
-        budget_mib: u64,
-    },
+    /// Waking it would take the host's VMs past its memory budget: it
+    /// waits for room ([`BUSY`]).
+    HostFull,
 }
 
 impl std::fmt::Display for EnsureError {
@@ -132,16 +141,7 @@ impl std::fmt::Display for EnsureError {
                 "the workspace's Linux VM is moving to another host, saved as it was; \
                  run the command again in a minute",
             ),
-            Self::HostFull {
-                awake_mib,
-                budget_mib,
-            } => write!(
-                f,
-                "the host's Linux VMs are using {} of its {} GiB, so it has no room for this one \
-                 right now; run the command again in a few minutes",
-                awake_mib / 1024,
-                budget_mib / 1024
-            ),
+            Self::HostFull => f.write_str(BUSY),
         }
     }
 }
@@ -164,6 +164,7 @@ impl Service {
             admission: Mutex::new(()),
             evicting: AtomicBool::new(false),
             memory_budget_mib: None,
+            waiting: Mutex::new(BTreeMap::new()),
             config,
         };
         let vms_dir = service.config.state.join("vms");
@@ -276,12 +277,11 @@ impl Service {
                     .map(|entry| lock(&entry.size).memory_mib())
                     .sum();
                 if awake_mib.saturating_add(request.size.memory_mib()) > budget_mib {
-                    return Err(EnsureError::HostFull {
-                        awake_mib,
-                        budget_mib,
-                    });
+                    lock(&self.waiting).insert(id, (request.size.memory_mib(), (self.clock)()));
+                    return Err(EnsureError::HostFull);
                 }
             }
+            lock(&self.waiting).remove(&id);
             let mine: Vec<&Arc<Entry>> = vms
                 .values()
                 .filter(|entry| entry.account == request.account)
@@ -429,6 +429,25 @@ impl Service {
         self.evicting.load(Ordering::SeqCst)
     }
 
+    /// What the awake VMs take of the memory budget, and what waiting
+    /// wakes ask for.
+    #[must_use]
+    pub fn load(&self) -> HostLoad {
+        let awake_mib = lock(&self.vms)
+            .values()
+            .filter(|entry| entry.awake.load(Ordering::SeqCst))
+            .map(|entry| lock(&entry.size).memory_mib())
+            .sum();
+        let now = (self.clock)();
+        let mut waiting = lock(&self.waiting);
+        waiting.retain(|_, (_, at)| now.saturating_sub(*at) <= WAITING_FOR_MS);
+        HostLoad {
+            budget_mib: self.memory_budget_mib,
+            awake_mib,
+            waiting_mib: waiting.values().map(|(mib, _)| mib).sum(),
+        }
+    }
+
     #[must_use]
     pub fn status(&self) -> Vec<VmStatus> {
         let entries: Vec<Arc<Entry>> = lock(&self.vms).values().cloned().collect();
@@ -455,6 +474,7 @@ impl Service {
             Request::Ensure { vm, shares } => match self.ensure(&vm, &shares) {
                 Ok((link, woke_ms)) => Reply::Ready { link, woke_ms },
                 Err(EnsureError::Refused(refusal)) => Reply::Refused(refusal),
+                Err(EnsureError::HostFull) => Reply::Busy(BUSY.to_owned()),
                 Err(error) => Reply::Error(error.to_string()),
             },
             Request::Suspend {
@@ -469,7 +489,13 @@ impl Service {
             } => self
                 .stop(&workspace, &environment)
                 .map_or_else(|error| Reply::Error(error.to_string()), |()| Reply::Done),
-            Request::Status => Reply::Status(self.status()),
+            Request::Status => Reply::Status {
+                vms: self.status(),
+                load: self.load(),
+            },
+            Request::Place { .. } => {
+                Reply::Error("a host runs VMs; a placer answers where".to_owned())
+            }
             Request::Usage {
                 account,
                 from_ms,
@@ -524,6 +550,33 @@ impl Service {
         self.suspend_all();
         let _ = std::fs::remove_file(&socket);
         Ok(())
+    }
+}
+
+impl Service {
+    /// Answer [`Request::Status`] on `listener`, and nothing else: what a
+    /// placer reads of this host over the network. Waking, stopping and usage
+    /// stay on the service's own socket.
+    pub fn serve_status(self: &Arc<Self>, listener: std::net::TcpListener) {
+        let service = Arc::clone(self);
+        std::thread::spawn(move || {
+            for stream in listener.incoming() {
+                let Ok(mut stream) = stream else {
+                    continue;
+                };
+                let service = Arc::clone(&service);
+                std::thread::spawn(move || {
+                    let _ = stream.set_read_timeout(Some(Duration::from_secs(10)));
+                    if let Ok(Some(request)) = FRAMING.read_value::<_, Request>(&mut stream) {
+                        let reply = match request {
+                            Request::Status => service.handle(Request::Status),
+                            _ => Reply::Error("this listener answers Status only".to_owned()),
+                        };
+                        let _ = FRAMING.write_value(&mut stream, &reply);
+                    }
+                });
+            }
+        });
     }
 }
 
@@ -709,12 +762,25 @@ mod tests {
         admitted("ws2", VmSize::Small).unwrap();
         // phase: a VM already awake is not counted twice
         admitted("ws1", VmSize::Default).unwrap();
-        // phase: one more would pass the budget, whoever asks
-        let full = admitted("ws3", VmSize::Small).unwrap_err();
+        // phase: one more would pass the budget, whoever asks: it waits, and is demand
+        assert!(matches!(
+            admitted("ws3", VmSize::Small),
+            Err(EnsureError::HostFull)
+        ));
+        let Reply::Busy(words) = service.handle(Request::Ensure {
+            vm: request("ws3", "acct-ws3", VmSize::Small),
+            shares: Vec::new(),
+        }) else {
+            panic!("a full host makes the wake wait");
+        };
+        assert_eq!(words, "Starting another machine for it, about 3 minutes.");
         assert_eq!(
-            full.to_string(),
-            "the host's Linux VMs are using 12 of its 12 GiB, so it has no room for this one \
-             right now; run the command again in a few minutes"
+            service.load(),
+            HostLoad {
+                budget_mib: Some(12 * 1024),
+                awake_mib: 12 * 1024,
+                waiting_mib: 4 * 1024,
+            }
         );
         // phase: once one sleeps there is room again
         service
@@ -723,6 +789,7 @@ mod tests {
             .awake
             .store(false, Ordering::SeqCst);
         admitted("ws3", VmSize::Small).unwrap();
+        assert_eq!(service.load().waiting_mib, 0, "a woken VM waits no more");
     }
 
     #[test]

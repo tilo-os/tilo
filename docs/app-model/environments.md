@@ -350,6 +350,15 @@ that workspace environment's own, never in a guest sharing the host's kernel
   agent, on Firecracker: a restored VM maps its memory file and reads pages
   as the guest touches them, and a suspend writes only the pages written
   since the last one. The crate docs have the measurements behind the choice.
+- **More than one host:** a VM stays on the host that first woke it, where
+  its disk is. A placer (`tilo-legacy hosted place`) says which host runs a
+  workspace's VM: the one holding it, else the first host with room for its
+  size, the always-up one first. Each host reports what its awake VMs take of
+  its memory budget and what waiting wakes ask for. The placer starts another
+  host once the awake VMs pass three quarters of the hosts' budget, or a VM
+  waits, and never takes one away itself. A wake with no room waits, a
+  person's and an agent's alike, after one line ("Starting another machine
+  for it, about 3 minutes."); it is never refused for room.
 - **Eviction:** a host the cloud takes back at short notice (an Azure Spot
   VM, about 30 seconds) is told by a file appearing (`--evict-notice`, written
   by whatever watches the cloud's notice). It then wakes no more VMs, saying

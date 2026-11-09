@@ -1,5 +1,7 @@
 //! The hosted-VM service's socket: ush asks it for a workspace's VM, and
-//! operators ask it what runs.
+//! operators ask it what runs. A placer ([`super::placement`]) speaks the same
+//! protocol: it reads each host's [`Request::Status`] and answers
+//! [`Request::Place`] with the host a workspace's VM runs on.
 
 use std::io;
 use std::os::unix::net::UnixStream;
@@ -56,6 +58,12 @@ pub enum Request {
         from_ms: u64,
         to_ms: u64,
     },
+    /// Which host runs this VM (a placer's question): the one holding it,
+    /// else the first with room. New variants go last: the encoding names
+    /// a variant by its place.
+    Place {
+        vm: VmRequest,
+    },
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -69,6 +77,27 @@ pub struct VmStatus {
     pub snapshot_bytes: Option<u64>,
 }
 
+/// What a host's VMs take of its memory budget, by their sizes.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+pub struct HostLoad {
+    /// The most its awake VMs may take together; `None` when only its slots
+    /// bound them.
+    pub budget_mib: Option<u64>,
+    /// What its awake VMs take.
+    pub awake_mib: u64,
+    /// What wakes waiting for room on it ask for.
+    pub waiting_mib: u64,
+}
+
+impl HostLoad {
+    /// What one more VM may take here now.
+    #[must_use]
+    pub fn free_mib(&self) -> u64 {
+        self.budget_mib
+            .map_or(u64::MAX, |budget| budget.saturating_sub(self.awake_mib))
+    }
+}
+
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub enum Reply {
     Ready {
@@ -80,12 +109,22 @@ pub enum Reply {
     /// ran it, and what would let it through.
     Refused(tilo_actions::remote::host_account::Refusal),
     Done,
-    Status(Vec<VmStatus>),
+    Status {
+        vms: Vec<VmStatus>,
+        load: HostLoad,
+    },
     Usage {
         records: Vec<UsageRecord>,
         by_size: Vec<SizeUsage>,
     },
     Error(String),
+    /// Not now, and not refused: the VM waits for room (a machine being
+    /// started, or VMs going idle), in words for whoever ran it. Ask again.
+    Busy(String),
+    /// The host the VM runs on (a placer's answer).
+    Placed {
+        host: String,
+    },
 }
 
 /// One request, one reply. `None` when no service listens at `socket`.

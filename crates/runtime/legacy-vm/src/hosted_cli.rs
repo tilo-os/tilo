@@ -19,7 +19,7 @@ usage: tilo-legacy hosted <command>
 
   serve --state DIR --run DIR --kernel VMLINUX [--initramfs FILE] [--cmdline TEXT]
         [--disk-image RAW] [--firecracker PATH] [--plans FILE] [--idle-suspend SECONDS]
-        [--evict-notice FILE] [--memory-mib MIB]
+        [--evict-notice FILE] [--memory-mib MIB] [--status-listen ADDR]
         (--jail-helper PATH [--jail-config FILE] | --unjailed)
                          own this host's workspace VMs; listens on RUN/hosted.sock.
                          Each VM runs jailed, with a network, through the
@@ -30,8 +30,16 @@ usage: tilo-legacy hosted <command>
                          cloud's notice that it takes this host back), every
                          VM is suspended onto STATE and no more are woken.
                          --memory-mib bounds what the VMs awake at once take
-                         together, by their sizes
+                         together, by their sizes; a wake past it waits.
+                         --status-listen answers Status alone over TCP, for a
+                         placer
   status --run DIR       every VM, its phase and its last wake
+  place --listen ADDR --record FILE --statefulset NAMESPACE/NAME --max N
+        --status-port PORT
+                         say which host runs each workspace's VM (the one holding
+                         it, else the first with room), and start hosts, the
+                         StatefulSet's pods NAME-0, NAME-1, …, as their VMs fill
+                         them: past three quarters, or for any VM waiting
   fetch-guest --images DIR [--ref REF]
                          fetch the pinned guest image into DIR and print the
                          kernel's and the root filesystem's paths
@@ -109,6 +117,7 @@ pub fn main(args: &[String]) -> Result<ExitCode, String> {
         "fetch-guest" => fetch_guest(&Flags::parse(rest, &[])?),
         "status" => ask(&Flags::parse(rest, &[])?, &Request::Status),
         "run" => run(rest),
+        "place" => place(&Flags::parse(rest, &[])?),
         "usage" => {
             let flags = Flags::parse(rest, &[])?;
             let number = |name: &str, default: u64| {
@@ -229,6 +238,11 @@ fn serve(flags: &Flags) -> Result<ExitCode, String> {
         service = service.with_memory_budget(mib);
     }
     let service = Arc::new(service);
+    if let Some(address) = flags.get("--status-listen") {
+        let listener = std::net::TcpListener::bind(address)
+            .map_err(|e| format!("--status-listen {address}: {e}"))?;
+        service.serve_status(listener);
+    }
     eprintln!(
         "tilo-legacy hosted: serving {}",
         service.config().socket().display()
@@ -237,6 +251,120 @@ fn serve(flags: &Flags) -> Result<ExitCode, String> {
     service
         .serve(&STOP, evict_notice.as_deref())
         .map_err(|e| e.to_string())?;
+    Ok(ExitCode::SUCCESS)
+}
+
+/// The VM hosts as a Kubernetes `StatefulSet`: its replicas, read and set
+/// through the API server with the pod's service account.
+struct StatefulSetScale {
+    namespace: String,
+    name: String,
+}
+
+impl StatefulSetScale {
+    const ACCOUNT: &'static str = "/var/run/secrets/kubernetes.io/serviceaccount";
+
+    fn call(&self, method: &str, body: Option<&str>) -> Result<serde_json::Value, String> {
+        let token = std::fs::read_to_string(format!("{}/token", Self::ACCOUNT))
+            .map_err(|e| format!("the service account's token: {e}"))?;
+        let url = format!(
+            "https://kubernetes.default.svc/apis/apps/v1/namespaces/{}/statefulsets/{}/scale",
+            self.namespace, self.name
+        );
+        let mut command = std::process::Command::new("curl");
+        command
+            .args(["-fsS", "--max-time", "10", "-X", method])
+            .args(["--cacert", &format!("{}/ca.crt", Self::ACCOUNT)])
+            .args(["-H", &format!("Authorization: Bearer {}", token.trim())]);
+        if let Some(body) = body {
+            command
+                .args(["-H", "Content-Type: application/merge-patch+json"])
+                .args(["--data", body]);
+        }
+        let output = command
+            .arg(url)
+            .output()
+            .map_err(|e| format!("curl: {e}"))?;
+        if !output.status.success() {
+            return Err(String::from_utf8_lossy(&output.stderr).trim().to_owned());
+        }
+        serde_json::from_slice(&output.stdout).map_err(|e| e.to_string())
+    }
+}
+
+impl legacy_vm::hosted::placement::Scale for StatefulSetScale {
+    fn hosts(&self) -> Result<usize, String> {
+        let scale = self.call("GET", None)?;
+        scale
+            .get("spec")
+            .and_then(|spec| spec.get("replicas"))
+            .and_then(serde_json::Value::as_u64)
+            .and_then(|count| usize::try_from(count).ok())
+            .ok_or_else(|| format!("no replicas in {scale}"))
+    }
+
+    fn set_hosts(&self, count: usize) -> Result<(), String> {
+        eprintln!("tilo-legacy hosted place: starting hosts up to {count}");
+        self.call(
+            "PATCH",
+            Some(&format!(r#"{{"spec":{{"replicas":{count}}}}}"#)),
+        )
+        .map(|_| ())
+    }
+}
+
+/// Place VMs on the `StatefulSet`'s hosts and scale them.
+fn place(flags: &Flags) -> Result<ExitCode, String> {
+    use legacy_vm::hosted::placement::{Placer, read_load};
+
+    let (namespace, name) = flags
+        .need("--statefulset")?
+        .split_once('/')
+        .ok_or("--statefulset takes NAMESPACE/NAME")?;
+    let max: usize = flags
+        .need("--max")?
+        .parse()
+        .map_err(|_| "--max takes a count".to_string())?;
+    let port = flags.need("--status-port")?;
+    let suffix = format!(".{name}.{namespace}.svc:{port}");
+    let placer = Arc::new(
+        Placer::new(
+            &flags.path("--record")?,
+            &format!("{name}-"),
+            max,
+            Box::new(StatefulSetScale {
+                namespace: namespace.to_owned(),
+                name: name.to_owned(),
+            }),
+            Box::new(read_load),
+            system_clock(),
+        )?
+        .with_status_suffix(&suffix),
+    );
+    let address = flags.need("--listen")?;
+    let listener =
+        std::net::TcpListener::bind(address).map_err(|e| format!("--listen {address}: {e}"))?;
+    let answering = Arc::clone(&placer);
+    std::thread::spawn(move || {
+        for stream in listener.incoming() {
+            let Ok(mut stream) = stream else {
+                continue;
+            };
+            let placer = Arc::clone(&answering);
+            std::thread::spawn(move || {
+                let _ = stream.set_read_timeout(Some(Duration::from_secs(10)));
+                if let Ok(Some(request)) = control::FRAMING.read_value::<_, Request>(&mut stream) {
+                    let reply = placer.handle(request);
+                    let _ = control::FRAMING.write_value(&mut stream, &reply);
+                }
+            });
+        }
+    });
+    eprintln!("tilo-legacy hosted place: placing on {name}-N{suffix}, at most {max}, on {address}");
+    while !STOP.load(Ordering::SeqCst) {
+        placer.rescale();
+        std::thread::sleep(Duration::from_secs(10));
+    }
     Ok(ExitCode::SUCCESS)
 }
 
@@ -271,9 +399,22 @@ fn run(args: &[String]) -> Result<ExitCode, String> {
         shares: Vec::new(),
     };
     let socket = flags.path("--run")?.join("hosted.sock");
-    let link = match control::ask(&socket, &request, Duration::from_secs(300))
-        .map_err(|e| e.to_string())?
-    {
+    let mut told = false;
+    let link = loop {
+        match control::ask(&socket, &request, Duration::from_secs(300))
+            .map_err(|e| e.to_string())?
+        {
+            Some(Reply::Busy(message)) => {
+                if !told {
+                    eprintln!("tilo-legacy hosted: {message}");
+                    told = true;
+                }
+                std::thread::sleep(Duration::from_secs(2));
+            }
+            other => break other,
+        }
+    };
+    let link = match link {
         Some(Reply::Ready { link, woke_ms }) => {
             if let Some(ms) = woke_ms {
                 eprintln!("tilo-legacy hosted: the VM woke in {ms} ms");
@@ -349,7 +490,14 @@ fn ask(flags: &Flags, request: &Request) -> Result<ExitCode, String> {
         .map_err(|e| e.to_string())?
         .ok_or_else(|| format!("no hosted-VM service listens at {}", socket.display()))?;
     match reply {
-        Reply::Status(vms) => {
+        Reply::Status { vms, load } => {
+            println!(
+                "memory: {} MiB awake of {}, {} MiB waiting",
+                load.awake_mib,
+                load.budget_mib
+                    .map_or_else(|| "no budget".to_owned(), |mib| format!("{mib} MiB")),
+                load.waiting_mib
+            );
             for vm in vms {
                 println!(
                     "{:<40} {:<8} {:<10} {:<10} wake {} snapshot {}",
@@ -382,7 +530,11 @@ fn ask(flags: &Flags, request: &Request) -> Result<ExitCode, String> {
             Ok(ExitCode::SUCCESS)
         }
         Reply::Done | Reply::Ready { .. } => Ok(ExitCode::SUCCESS),
+        Reply::Placed { host } => {
+            println!("{host}");
+            Ok(ExitCode::SUCCESS)
+        }
         Reply::Refused(refusal) => Err(refusal.message),
-        Reply::Error(message) => Err(message),
+        Reply::Busy(message) | Reply::Error(message) => Err(message),
     }
 }

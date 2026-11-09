@@ -97,7 +97,7 @@ impl HostedAccount {
             _ => Vec::new(),
         };
         let running: Vec<String> = match control::ask(socket, &Request::Status, PATIENCE) {
-            Ok(Some(Reply::Status(vms))) => vms
+            Ok(Some(Reply::Status { vms, .. })) => vms
                 .into_iter()
                 .filter(|vm| vm.account == self.account)
                 .filter(|vm| matches!(vm.phase.as_str(), "Running" | "Starting"))

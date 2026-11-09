@@ -21,6 +21,8 @@ inside() { b run "$container" -- "$@"; }
 inside jailer --version | grep -q 'v1.17.0' || die 'not the jailer of Firecracker 1.17.0'
 inside pasta --version >/dev/null || die 'no pasta'
 inside skopeo --version >/dev/null || die 'no skopeo'
+inside curl --version >/dev/null || die 'no curl for the placer'
+inside tilo-legacy hosted help | grep -q -- 'place --listen' || die 'tilo-legacy hosted lacks place'
 inside mkfs.xfs -V >/dev/null || die 'no mkfs.xfs'
 inside tilo-legacy hosted help | grep -q -- '--evict-notice' || die 'tilo-legacy hosted lacks --evict-notice'
 inside tilo-legacy hosted help | grep -q -- '--memory-mib' || die 'tilo-legacy hosted lacks --memory-mib'

@@ -68,6 +68,8 @@ pub struct TestHost {
     dir: PathBuf,
     /// Every wake it was asked for, by account.
     asked: Arc<Mutex<Vec<String>>>,
+    /// How many wakes from now it answers that it has no room yet.
+    full_for: Arc<Mutex<usize>>,
 }
 
 impl TestHost {
@@ -81,16 +83,21 @@ impl TestHost {
         let host = Self {
             dir: dir.to_path_buf(),
             asked: Arc::new(Mutex::new(Vec::new())),
+            full_for: Arc::new(Mutex::new(0)),
         };
         host.write(&selling());
         let service = tilo_files::native::socket::bind(&host.socket()).expect("the service socket");
         let agent =
             tilo_files::native::socket::bind(&host.agent_socket()).expect("the agent socket");
-        let (plans, agent_socket, asked) =
-            (host.plans(), host.agent_socket(), Arc::clone(&host.asked));
+        let (plans, agent_socket, asked, full_for) = (
+            host.plans(),
+            host.agent_socket(),
+            Arc::clone(&host.asked),
+            Arc::clone(&host.full_for),
+        );
         std::thread::spawn(move || {
             for stream in service.incoming().flatten() {
-                answer(stream, &plans, &agent_socket, &asked);
+                answer(stream, &plans, &agent_socket, &asked, &full_for);
             }
         });
         std::thread::spawn(move || {
@@ -143,6 +150,12 @@ impl TestHost {
         self.write(&plans);
     }
 
+    /// Have no room for the next `wakes` wakes: each is answered as a
+    /// full host answers, with [`legacy_vm::hosted::service::BUSY`].
+    pub fn full_for(&self, wakes: usize) {
+        *self.full_for.lock().unwrap_or_else(PoisonError::into_inner) = wakes;
+    }
+
     /// How many wakes it was asked for.
     #[must_use]
     pub fn wakes_asked(&self) -> usize {
@@ -161,7 +174,13 @@ impl TestHost {
     }
 }
 
-fn answer(mut stream: UnixStream, plans: &Path, agent: &Path, asked: &Mutex<Vec<String>>) {
+fn answer(
+    mut stream: UnixStream,
+    plans: &Path,
+    agent: &Path,
+    asked: &Mutex<Vec<String>>,
+    full_for: &Mutex<usize>,
+) {
     let Ok(Some(request)) = FRAMING.read_value::<_, Request>(&mut stream) else {
         return;
     };
@@ -171,6 +190,16 @@ fn answer(mut stream: UnixStream, plans: &Path, agent: &Path, asked: &Mutex<Vec<
                 .lock()
                 .unwrap_or_else(PoisonError::into_inner)
                 .push(vm.account.clone());
+            let mut full = full_for.lock().unwrap_or_else(PoisonError::into_inner);
+            if *full > 0 {
+                *full = full.saturating_sub(1);
+                let _ = FRAMING.write_value(
+                    &mut stream,
+                    &Reply::Busy(legacy_vm::hosted::service::BUSY.to_owned()),
+                );
+                return;
+            }
+            drop(full);
             match Plans::load(plans) {
                 Err(error) => Reply::Error(error),
                 Ok(plans) => {

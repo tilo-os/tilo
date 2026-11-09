@@ -30,10 +30,11 @@ LABEL org.opencontainers.image.title="Tilo hosted VM host" \
 
 # passt is pasta (each VM's network), skopeo fetches the guest, xfsprogs makes
 # the state disk's filesystem, libcap2-bin gives the helper its capabilities,
-# util-linux's setpriv drops to the service's uid.
+# util-linux's setpriv drops to the service's uid, curl lets the placer
+# (`tilo-legacy hosted place`) scale the hosts through the Kubernetes API.
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
-       ca-certificates libcap2-bin passt skopeo util-linux xfsprogs \
+       ca-certificates curl libcap2-bin passt skopeo util-linux xfsprogs \
     && rm -rf /var/lib/apt/lists/*
 
 ARG FIRECRACKER_ASSET=firecracker-v1.17.0-x86_64.tgz
