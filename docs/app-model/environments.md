@@ -352,7 +352,32 @@ that workspace environment's own, never in a guest sharing the host's kernel
   since the last one. The crate docs have the measurements behind the choice.
 - **Files:** the environment's granted directories, at the same paths, served
   over vsock (the agent mounts them as FUSE). Each is served by its own host
-  process held to that directory by Landlock.
+  process held to that directory by Landlock, in user, mount, network and IPC
+  namespaces of its own where the jails and the service's sockets do not
+  exist.
+- **Jail:** each VM runs as a uid of its own (a host has slots; slot `n` is
+  uid `base + 2n`), in Firecracker's jailer: a chroot holding only its
+  devices, its state, its sockets and the guest kernel; a cgroup bounding
+  its memory, CPU and processes; a mount and network namespace of its own.
+  The service is unprivileged; one small helper, `tilo-hosted-jail`, starts,
+  stops and releases a slot's VM. It is root-owned, runnable only by the
+  service's group, holds `cap_setuid,cap_setgid` to become root, refuses any
+  caller but the service, reads only a root-owned configuration
+  (`/etc/tilo/hosted-jail.json`), and takes the VM's directories as
+  descriptors the service opened. Releasing a slot hands every file back to
+  the service and removes the jail, so the next VM in the slot inherits
+  nothing.
+- **Network:** the public internet, nothing of the host's. In the VM's
+  network namespace (owned, through a user namespace, by the slot's network
+  uid) Firecracker's tap and `pasta`'s are bridged, and a bridge filter drops
+  frames to private, shared, link-local (the metadata endpoint
+  169.254.169.254), loopback, multicast and reserved networks, Azure's
+  168.63.129.16 and any network the host adds; IPv6 is off. `pasta` makes
+  every connection from a socket of the host's and forwards nothing inwards,
+  so the host routes and translates nothing, and in Kubernetes the pod's
+  network policy applies to VM traffic too. Every VM has the same address
+  (10.0.2.15, gateway .2, DNS .3), so a snapshot restores anywhere.
+  Firecracker's rate limiters bound each VM's bandwidth.
 - **Metering:** each run of the VM's process and each held snapshot is a
   usage record (VM, workspace, account, size, start, end, seconds) in the
   account's ledger, billed per second with the sub-second rest carried to
@@ -363,7 +388,9 @@ that workspace environment's own, never in a guest sharing the host's kernel
 - **ush** runs the program through the VM's agent with the shell's streams
   relayed, when the host names its hosted-VM service (`TILO_HOSTED_VM_SOCKET`,
   `TILO_HOSTED_ACCOUNT`, `TILO_HOSTED_VM_SIZE`). Run records are the shell's,
-  unchanged.
+  unchanged. A program whose input and output are the session's terminal
+  runs on a terminal in the VM: the keys are relayed as typed, the size
+  follows, and the output is recorded like any other.
 - **The guest image** is one signed OCI image holding two files: an
   uncompressed x86-64 kernel built from a pinned kernel.org longterm release
   with everything a VM needs built in (virtio-mmio, blk, net, vsock, FUSE,
