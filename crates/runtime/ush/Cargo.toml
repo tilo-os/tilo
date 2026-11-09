@@ -84,6 +84,9 @@ workspace-hack = { version = "0.1" }
 
 [dev-dependencies]
 base64.workspace = true
+# The real guest agent behind a fake VM link: a hosted program's terminal
+# relay is tested against what serves it in the VM.
+legacy-agent = { path = "../legacy-agent" }
 ed25519-dalek.workspace = true
 serde_json.workspace = true
 tempfile.workspace = true

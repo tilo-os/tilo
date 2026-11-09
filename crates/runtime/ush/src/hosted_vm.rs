@@ -12,15 +12,28 @@
 //! account's plan does not allow the VM, the program fails with the plan's
 //! refusal, word for word, so the agent that ran it can act on it.
 //!
+//! A program whose input and output are the session's terminal runs on a
+//! pseudo-terminal in the VM ([`Relay::Terminal`]): the session's keys go
+//! to it as typed (the session's terminal is raw meanwhile; the VM's
+//! terminal does the line editing and turns Ctrl-C into a signal there),
+//! its output comes back as the program's standard output, recorded like
+//! any other, and the VM's terminal follows the session's size. So
+//! editors, prompts and pagers work as they do on a device.
+//!
 //! A host turns this on for its sessions with [`SOCKET_ENV`], naming the
 //! account billed with [`ACCOUNT_ENV`] and the VM's size with [`SIZE_ENV`].
 
 use std::io::{Read, Write};
+use std::os::fd::{AsRawFd as _, OwnedFd};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
-use legacy_agent_protocol::client::{self, LaunchIo};
-use legacy_agent_protocol::{AGENT_PORT, Display, Launch, ProtocolError, Signal, Stdio as Relay};
+use legacy_agent_protocol::client::{self, LaunchIo, LaunchSignals};
+use legacy_agent_protocol::link::AgentStream;
+use legacy_agent_protocol::{
+    AGENT_PORT, Display, Launch, ProtocolError, Signal, Stdio as Relay, TerminalSize,
+};
 use legacy_vm::hosted::control::{self, Reply, Request, ShareRequest, VmRequest};
 use legacy_vm::hosted::size::VmSize;
 use ush_shell::{Input, Output, Program, Std, Stdio};
@@ -71,6 +84,9 @@ pub struct HostedPrograms {
     environment: String,
     /// The directories the environment grants now: writable ones read-write.
     shares: Box<Shares>,
+    /// The session's terminal, when it has one: programs on it run on a
+    /// terminal in the VM.
+    terminal: Option<OwnedFd>,
 }
 
 impl HostedPrograms {
@@ -86,7 +102,16 @@ impl HostedPrograms {
             workspace,
             environment,
             shares,
+            terminal: None,
         }
+    }
+
+    /// Programs whose input and output are the session's own get a
+    /// terminal in the VM sized and fed from `terminal`, when it is one.
+    #[must_use]
+    pub fn terminal(mut self, terminal: OwnedFd) -> Self {
+        self.terminal = is_terminal(&terminal).then_some(terminal);
+        self
     }
 
     fn request(&self) -> Request {
@@ -188,24 +213,29 @@ impl Programs for HostedPrograms {
             Ok(stream) => stream,
             Err(error) => return failed(name, io, &format!("this workspace's Linux VM: {error}")),
         };
+        let terminal = self.terminal.as_ref().filter(|_| {
+            io.stdin.host_stream() == Some(Std::In) && io.stdout.host_stream() == Some(Std::Out)
+        });
         let launch = Launch {
             argv: argv.to_vec(),
             cwd: Some(cwd.display().to_string()),
             env: env.to_vec(),
-            stdio: Relay::Relay,
+            stdio: terminal.map_or(Relay::Relay, |fd| Relay::Terminal(terminal_size(fd))),
             display: Display::None,
         };
-        // The VM has no terminal of the session's: a program reading the
+        // On the session's terminal the keys are relayed below. Otherwise
+        // the VM has no terminal of the session's: a program reading the
         // terminal gets an empty input rather than taking the shell's keys.
         let stdin: Option<Box<dyn Read + Send>> = match io.stdin.host_stream() {
             Some(Std::In) => None,
             _ => Some(Box::new(InputReader(io.stdin.clone()))),
         };
         let (mut stdout, mut stderr) = (OutputWriter(&io.stdout), OutputWriter(&io.stderr));
-        let (handing, handed) = std::sync::mpsc::channel();
+        let (handing, handed) = std::sync::mpsc::channel::<LaunchSignals<AgentStream>>();
+        let finished = AtomicBool::new(false);
         let result = std::thread::scope(|scope| {
             let running = scope.spawn(|| {
-                client::launch(
+                let result = client::launch(
                     stream,
                     &launch,
                     LaunchIo {
@@ -217,18 +247,25 @@ impl Programs for HostedPrograms {
                     move |signals| {
                         let _ = handing.send(signals);
                     },
-                )
+                );
+                finished.store(true, Ordering::SeqCst);
+                result
             });
-            // Ended from outside (the job was killed): end it in the VM.
-            if let Some(stop) = stop
-                && let Ok(signals) = handed.recv()
-            {
-                while !running.is_finished() {
-                    if stop() {
-                        let _ = signals.send(Signal::Kill);
-                        break;
+            if let Ok(signals) = handed.recv() {
+                if let Some(fd) = terminal {
+                    let relay = signals.clone();
+                    let finished = &finished;
+                    scope.spawn(move || relay_terminal(fd, &relay, finished));
+                }
+                // Ended from outside (the job was killed): end it in the VM.
+                if let Some(stop) = stop {
+                    while !running.is_finished() {
+                        if stop() {
+                            let _ = signals.send(Signal::Kill);
+                            break;
+                        }
+                        std::thread::sleep(Duration::from_millis(50));
                     }
-                    std::thread::sleep(Duration::from_millis(50));
                 }
             }
             running.join().unwrap_or(Err(ProtocolError::Closed))
@@ -241,6 +278,116 @@ impl Programs for HostedPrograms {
                 Program::NotFound
             }
             Err(error) => failed(name, io, &format!("this workspace's Linux VM: {error}")),
+        }
+    }
+}
+
+fn is_terminal(fd: &OwnedFd) -> bool {
+    // SAFETY: `isatty` only inspects the descriptor.
+    unsafe { libc::isatty(fd.as_raw_fd()) == 1 }
+}
+
+/// The terminal's size, 80x24 when it will not say.
+fn terminal_size(fd: &OwnedFd) -> TerminalSize {
+    // SAFETY: TIOCGWINSZ writes only into the struct, which lives across
+    // the call.
+    let mut size: libc::winsize = unsafe { std::mem::zeroed() };
+    // SAFETY: as above.
+    if unsafe { libc::ioctl(fd.as_raw_fd(), libc::TIOCGWINSZ, &raw mut size) } == 0
+        && size.ws_col > 0
+        && size.ws_row > 0
+    {
+        TerminalSize {
+            cols: size.ws_col,
+            rows: size.ws_row,
+        }
+    } else {
+        TerminalSize { cols: 80, rows: 24 }
+    }
+}
+
+/// The session's terminal in raw mode while a program in the VM has it:
+/// every key goes to the VM's terminal, which edits lines and makes Ctrl-C
+/// a signal there. Restored when dropped.
+struct Raw<'a> {
+    fd: &'a OwnedFd,
+    cooked: Option<libc::termios>,
+}
+
+impl<'a> Raw<'a> {
+    fn new(fd: &'a OwnedFd) -> Self {
+        // SAFETY: tcgetattr and tcsetattr read and write only the termios
+        // structs owned here.
+        unsafe {
+            let mut cooked: libc::termios = std::mem::zeroed();
+            if libc::tcgetattr(fd.as_raw_fd(), &raw mut cooked) != 0 {
+                return Self { fd, cooked: None };
+            }
+            let mut raw = cooked;
+            libc::cfmakeraw(&raw mut raw);
+            raw.c_cc[libc::VMIN] = 1;
+            raw.c_cc[libc::VTIME] = 0;
+            let set = libc::tcsetattr(fd.as_raw_fd(), libc::TCSADRAIN, &raw const raw) == 0;
+            Self {
+                fd,
+                cooked: set.then_some(cooked),
+            }
+        }
+    }
+}
+
+impl Drop for Raw<'_> {
+    fn drop(&mut self) {
+        if let Some(cooked) = self.cooked {
+            // SAFETY: as in `new`.
+            unsafe { libc::tcsetattr(self.fd.as_raw_fd(), libc::TCSADRAIN, &raw const cooked) };
+        }
+    }
+}
+
+/// How often a waiting relay looks at the terminal's size and whether the
+/// program ended.
+const RELAY_TICK: Duration = Duration::from_millis(100);
+
+/// Relay the session's keys and size to a program on a terminal in the VM
+/// until it ends. Reads only what is ready, so no read is left waiting for
+/// a key the shell needs next.
+fn relay_terminal(fd: &OwnedFd, signals: &LaunchSignals<AgentStream>, finished: &AtomicBool) {
+    let _raw = Raw::new(fd);
+    let mut size = terminal_size(fd);
+    let mut buffer = [0_u8; 4096];
+    let tick = libc::c_int::try_from(RELAY_TICK.as_millis()).unwrap_or(100);
+    while !finished.load(Ordering::SeqCst) {
+        let mut poll = libc::pollfd {
+            fd: fd.as_raw_fd(),
+            events: libc::POLLIN,
+            revents: 0,
+        };
+        // SAFETY: one pollfd, owned here, for the length of the call.
+        let ready = unsafe { libc::poll(&raw mut poll, 1, tick) };
+        if ready > 0 && poll.revents & libc::POLLIN != 0 {
+            // SAFETY: `buffer` is valid for writes of its length.
+            let read =
+                unsafe { libc::read(fd.as_raw_fd(), buffer.as_mut_ptr().cast(), buffer.len()) };
+            let Ok(read) = usize::try_from(read) else {
+                continue;
+            };
+            if read == 0
+                || signals
+                    .input(buffer.get(..read).unwrap_or_default())
+                    .is_err()
+            {
+                return;
+            }
+        } else if ready > 0 && poll.revents & (libc::POLLHUP | libc::POLLERR) != 0 {
+            return;
+        }
+        let now = terminal_size(fd);
+        if now != size {
+            size = now;
+            if signals.resize(size).is_err() {
+                return;
+            }
         }
     }
 }
@@ -326,5 +473,159 @@ mod tests {
             String::from_utf8(err.take()).unwrap(),
             "ush: cargo: Your plan runs at most 1 Linux VM at a time.\n"
         );
+    }
+
+    /// A hybrid-vsock socket whose port connections reach a real agent
+    /// running here as the current user.
+    fn fake_vm(dir: &Path) -> PathBuf {
+        use std::io::BufRead as _;
+        let socket = dir.join("v.sock");
+        let listener = std::os::unix::net::UnixListener::bind(&socket).unwrap();
+        let user = legacy_agent::user::GuestUser {
+            name: "me".into(),
+            uid: rustix::process::getuid().as_raw(),
+            gid: rustix::process::getgid().as_raw(),
+            home: std::env::temp_dir(),
+            shell: "/bin/sh".into(),
+        };
+        let agent = std::sync::Arc::new(legacy_agent::server::Agent::new(user, "boot".into()));
+        std::thread::spawn(move || {
+            for stream in listener.incoming() {
+                let mut stream = stream.unwrap();
+                let agent = std::sync::Arc::clone(&agent);
+                std::thread::spawn(move || {
+                    let mut line = String::new();
+                    let mut reader = std::io::BufReader::new(stream.try_clone().unwrap());
+                    reader.read_line(&mut line).unwrap();
+                    assert_eq!(line, format!("CONNECT {AGENT_PORT}\n"));
+                    stream.write_all(b"OK 1\n").unwrap();
+                    let _ = agent.serve(stream);
+                });
+            }
+        });
+        socket
+    }
+
+    /// The hosted-VM service, answering every wake with `link`.
+    fn fake_service(dir: &Path, vm: PathBuf) -> PathBuf {
+        let socket = dir.join("hosted.sock");
+        let listener = std::os::unix::net::UnixListener::bind(&socket).unwrap();
+        std::thread::spawn(move || {
+            for stream in listener.incoming() {
+                let mut stream = stream.unwrap();
+                let _: Option<Request> = control::FRAMING.read_value(&mut stream).unwrap();
+                control::FRAMING
+                    .write_value(
+                        &mut stream,
+                        &Reply::Ready {
+                            link: legacy_agent_protocol::link::AgentLink::Hybrid {
+                                socket: vm.clone(),
+                            },
+                            woke_ms: None,
+                        },
+                    )
+                    .unwrap();
+            }
+        });
+        socket
+    }
+
+    #[test]
+    fn a_program_on_the_sessions_terminal_gets_its_keys_and_size_in_the_vm() {
+        use std::os::fd::FromRawFd as _;
+        let dir = tempfile::tempdir().unwrap();
+        let socket = fake_service(dir.path(), fake_vm(dir.path()));
+        // The session's terminal: the test types into its master.
+        let (mut master, mut slave) = (-1, -1);
+        let size = libc::winsize {
+            ws_row: 33,
+            ws_col: 101,
+            ws_xpixel: 0,
+            ws_ypixel: 0,
+        };
+        // SAFETY: out-parameters and a size that live across the call.
+        let opened = unsafe {
+            libc::openpty(
+                &raw mut master,
+                &raw mut slave,
+                std::ptr::null_mut(),
+                std::ptr::null(),
+                &raw const size,
+            )
+        };
+        assert_eq!(opened, 0);
+        // SAFETY: openpty succeeded; both descriptors are owned only here.
+        let (master, slave) =
+            unsafe { (OwnedFd::from_raw_fd(master), OwnedFd::from_raw_fd(slave)) };
+        let mut keys = std::fs::File::from(master);
+        let programs = HostedPrograms::new(
+            HostedTarget {
+                socket,
+                account: "acct-1".into(),
+                size: VmSize::Small,
+            },
+            "ws1".into(),
+            "default".into(),
+            Box::new(Vec::new),
+        )
+        .terminal(slave.try_clone().unwrap());
+        assert!(programs.terminal.is_some(), "a pty is a terminal");
+        let (stdout, out) = Output::buffer();
+        let io = Stdio {
+            stdin: Input::host(std::fs::File::from(slave.try_clone().unwrap())),
+            stdout: Output::host(Std::Out, OutputWriter2(stdout)),
+            stderr: Output::null(),
+        };
+        let typist = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(500));
+            keys.write_all(b"secret\r").unwrap();
+            keys
+        });
+        let ran = programs.run(
+            &[
+                "/bin/sh".into(),
+                "-c".into(),
+                "stty size; printf 'name? '; read name; echo \"hi $name\"".into(),
+            ],
+            &[],
+            Path::new("/"),
+            &io,
+            None,
+        );
+        let _keys = typist.join().unwrap();
+        assert_eq!(ran, Program::Exited(0));
+        let out = String::from_utf8(out.take()).unwrap();
+        assert!(
+            out.contains("33 101"),
+            "the VM's terminal has the session's size: {out:?}"
+        );
+        assert!(out.contains("name? "), "{out:?}");
+        assert!(
+            out.contains("hi secret"),
+            "the typed line reached the program: {out:?}"
+        );
+        // The session's terminal is back as it was: canonical, echoing.
+        // SAFETY: tcgetattr fills the struct owned here.
+        let mut modes: libc::termios = unsafe { std::mem::zeroed() };
+        // SAFETY: as above.
+        assert_eq!(
+            unsafe { libc::tcgetattr(slave.as_raw_fd(), &raw mut modes) },
+            0
+        );
+        assert_ne!(modes.c_lflag & libc::ICANON, 0);
+    }
+
+    /// An [`Output`] as a writer, for nesting a buffer under a host stream.
+    struct OutputWriter2(Output);
+
+    impl Write for OutputWriter2 {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            self.0.write_all(buf)?;
+            Ok(buf.len())
+        }
+
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
     }
 }

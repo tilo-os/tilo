@@ -1006,7 +1006,7 @@ impl Session {
         record: &Arc<RecordEnvironment>,
     ) -> Arc<dyn ush_tilo::Programs> {
         let grants = Arc::clone(record);
-        Arc::new(crate::hosted_vm::HostedPrograms::new(
+        let programs = crate::hosted_vm::HostedPrograms::new(
             target,
             self.store.workspace_id().to_string(),
             key.to_string(),
@@ -1015,7 +1015,13 @@ impl Session {
                 let now = Some(unix_now());
                 crate::hosted_vm::shares_of(policy.trusted_dirs(now), policy.readable_dirs(now))
             }),
-        ))
+        );
+        // The session's terminal is its standard input, as for programs on
+        // a device.
+        Arc::new(match std::io::stdin().as_fd().try_clone_to_owned() {
+            Ok(terminal) => programs.terminal(terminal),
+            Err(_) => programs,
+        })
     }
 
     fn tilo_side_in(
