@@ -1034,12 +1034,13 @@ fn entry_work(paragraphs: usize) -> (u64, u64, usize) {
     drop(editors);
     ada.sync_with(&mut bo);
     // Reading the entry's diff: the change Bo made, as the history reads it.
-    let change = bo
-        .doc
-        .get_changes(&[])
-        .last()
-        .map(|change| change.hash().to_string())
-        .expect("Bo's change");
+    let change = ada
+        .host
+        .store()
+        .field_changed(&at, "body")
+        .unwrap()
+        .expect("the change that wrote the body")
+        .change;
     let before = ada.host.store().read_stats().doc;
     let work = automerge::work();
     let written = ada
