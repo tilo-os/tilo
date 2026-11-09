@@ -1343,6 +1343,32 @@ impl Conversation {
         self.folded.as_ref().map_or(2, |(through, _)| *through)
     }
 
+    /// The calls a turn asked for, parsed and structurally valid, before they
+    /// are checked against the tools' own declarations: what
+    /// [`Self::calls`] refuses for its arguments can still be answered as an
+    /// error result and corrected.
+    ///
+    /// # Errors
+    ///
+    /// A body that is not a model response this conversation can read, or a
+    /// turn the conversation may not replay (a consumed call id, a refusal, a
+    /// truncated turn).
+    pub fn read_calls(&self, body: &str) -> Result<Vec<ToolCall>, String> {
+        #[cfg(test)]
+        if let Some(legacy) = &self.legacy {
+            return legacy.read_calls(body);
+        }
+        let response: agent_provider_config::protocol::ModelResponse =
+            serde_json::from_str(body).map_err(|_| "invalid gateway completion".to_string())?;
+        Ok(self
+            .history
+            .validate_response(&response)
+            .map_err(|error| error.to_string())?
+            .into_iter()
+            .cloned()
+            .collect())
+    }
+
     /// Validate the complete response before any tools may execute.
     pub fn calls(&self, body: &str) -> Result<(Value, Vec<ToolCall>), String> {
         #[cfg(test)]
@@ -1363,6 +1389,49 @@ impl Conversation {
         }
         tools::validate_loop_calls(&calls)?;
         Ok((serde_json::json!(response), calls))
+    }
+
+    /// Answer a turn whose own calls the loop refused (a call missing an
+    /// argument its declaration requires, one naming a tool that is not
+    /// offered) with an error result per call, so the model reads what was
+    /// wrong and corrects itself on its next turn instead of the run ending.
+    /// The turn is recorded as the model sent it, exactly as [`Self::push`]
+    /// records one that ran, so its call ids stay consumed and cannot replay.
+    ///
+    /// # Errors
+    ///
+    /// A body that is not a model response this conversation can read, or an
+    /// assistant turn with no call to answer.
+    pub fn refuse(&mut self, body: &str, refused: &[(String, String)]) -> Result<(), String> {
+        #[cfg(test)]
+        if let Some(legacy) = &mut self.legacy {
+            let (assistant, _) = legacy.calls_unchecked(body)?;
+            legacy.push(assistant, refused.to_vec());
+            return Ok(());
+        }
+        let response: agent_provider_config::protocol::ModelResponse =
+            serde_json::from_str(body).map_err(|_| "invalid gateway completion".to_string())?;
+        if response.message.content.iter().all(|content| {
+            !matches!(
+                content,
+                agent_provider_config::protocol::Content::ToolCall(_)
+            )
+        }) {
+            return Err("the model called no tool".into());
+        }
+        let results = refused
+            .iter()
+            .map(
+                |(call_id, content)| agent_provider_config::protocol::ToolResult {
+                    call_id: call_id.clone(),
+                    content: content.clone(),
+                    is_error: true,
+                },
+            )
+            .collect::<Vec<_>>();
+        self.history
+            .push(response, results)
+            .map_err(|error| error.to_string())
     }
 
     /// Append a validated response and its ordered results atomically.
@@ -1531,15 +1600,31 @@ impl LegacyConversation {
 
     /// The assistant turn and its tool calls, in call order.
     pub fn calls(&self, body: &str) -> Result<(Value, Vec<ToolCall>), String> {
-        let (assistant, calls) = match self.dialect {
-            Dialect::Anthropic => anthropic_calls(body)?,
-            Dialect::OpenAi => openai_calls(body)?,
-        };
+        let (assistant, calls) = self.calls_unchecked(body)?;
         tools::validate_loop_calls(&calls)?;
         if calls.is_empty() {
             return Err("the model called no tool".into());
         }
         Ok((assistant, calls))
+    }
+
+    /// The assistant turn and its calls as the dialect reads them, before the
+    /// loop's own argument checks: what [`Conversation::refuse`] answers when
+    /// those checks are what refused the turn.
+    pub fn calls_unchecked(&self, body: &str) -> Result<(Value, Vec<ToolCall>), String> {
+        let (assistant, calls) = match self.dialect {
+            Dialect::Anthropic => anthropic_calls(body)?,
+            Dialect::OpenAi => openai_calls(body)?,
+        };
+        if calls.is_empty() {
+            return Err("the model called no tool".into());
+        }
+        Ok((assistant, calls))
+    }
+
+    /// The calls as the dialect reads them, before the loop's own checks.
+    pub fn read_calls(&self, body: &str) -> Result<Vec<ToolCall>, String> {
+        self.calls_unchecked(body).map(|(_, calls)| calls)
     }
 
     /// Record the assistant turn and one result per call (by call id).

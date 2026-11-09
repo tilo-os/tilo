@@ -105,6 +105,26 @@ pub(super) const MAX_IN_FLIGHT: usize = 4;
 /// deprecated: `tilo.deprecated:<replacement>` (Writer's `DEPRECATED_TAG`).
 pub(super) const DEPRECATED_TAG: &str = "tilo.deprecated:";
 
+/// How many turns one task answers with "what was wrong" after refusing the
+/// model's own calls for their shape or arguments (a call missing an argument
+/// its declaration requires, a value outside the choices it advertised). A
+/// model that corrects itself takes one of them; one that keeps calling the
+/// same way ends the task rather than looping.
+const MOST_MALFORMED_TURNS: usize = 2;
+
+/// The error results answering `body`, the model's latest turn, when the loop
+/// refused its calls for their shape or arguments rather than for failing to
+/// be a turn at all: what is wrong with each call and what it needs, by call
+/// id, ready for [`Conversation::refuse`]. `None` when nothing can be fed
+/// back — a body that is not a readable model turn, a consumed call id, a
+/// refusal or truncation, or a call with no id or name to answer — and the
+/// run ends with the reason instead.
+fn malformed_turn(conversation: &Conversation, body: &str) -> Option<Vec<(String, String)>> {
+    let calls = conversation.read_calls(body).ok()?;
+    let refused = tools::refused_results(&calls)?;
+    (!refused.is_empty()).then_some(refused)
+}
+
 /// The loop's system prompt. Generic on purpose: it names no application and
 /// no operation.
 pub(super) const LOOP_SYSTEM: &str = "\
@@ -196,6 +216,10 @@ pub(super) struct ActiveTurn {
     completed: usize,
     /// Calls the stream has begun, by index.
     begun: HashSet<usize>,
+    /// The body as the model sent it and why the loop refused its calls for
+    /// their shape or arguments, kept whole so the loop answers them with
+    /// what was wrong rather than ending the run on the model's own slip.
+    refused: Option<(String, String)>,
     /// Stops the turn when the loop lets go of it.
     #[allow(
         dead_code,
@@ -216,6 +240,7 @@ impl ActiveTurn {
             published_at: ui::time::now(),
             completed: 0,
             begun: HashSet::new(),
+            refused: None,
             stop: None,
         }
     }
@@ -367,6 +392,11 @@ pub(super) struct LoopState {
     pictures: Vec<String>,
     /// The workspace's tilolang apps as this task's programs reach them.
     programs: program_steps::ProgramWorld,
+    /// Turns answered with "what was wrong" after the loop refused the
+    /// model's own calls for their shape or arguments, so it may correct:
+    /// bounded, so a model that keeps calling the same way ends the task
+    /// rather than looping.
+    malformed_turns: usize,
 }
 
 /// An independent invoke running in its application while the turn goes on.
@@ -556,6 +586,7 @@ impl LoopState {
             steps_told: 0,
             pictures: Vec::new(),
             programs: program_steps::ProgramWorld::default(),
+            malformed_turns: 0,
         }
     }
 
@@ -1322,7 +1353,7 @@ impl Session {
         // does not count against the model.
         let mut stepping = Duration::ZERO;
         let mut validated = false;
-        let body = loop {
+        let (body, refused_turn) = loop {
             if self.task_budget_expired() {
                 let message = self.interrupt_turn_presentation(
                     run,
@@ -1357,6 +1388,7 @@ impl Session {
             // in order, only after validating every call and the terminal status.
             if !validated && let Some(active) = &mut self.turn {
                 active.ready.clear();
+                active.refused = None;
                 if let Some(Ok(body)) = &active.finished {
                     match conversation.calls(body) {
                         Ok((_, calls)) => {
@@ -1371,7 +1403,16 @@ impl Session {
                             ));
                             validated = true;
                         }
-                        Err(error) => active.finished = Some(Err(active.retained_failure(&error))),
+                        // The model's calls were refused for their shape or
+                        // arguments: the body is kept whole beside the reason
+                        // so the loop can answer its calls with what was wrong
+                        // instead of ending the run. Retaining the text as a
+                        // failure stays for a turn that cannot be answered,
+                        // which the loop judges below.
+                        Err(error) => {
+                            active.refused = Some((body.clone(), active.retained_failure(&error)));
+                            active.finished = Some(Err(active.retained_failure(&error)));
+                        }
                     }
                 }
             }
@@ -1396,8 +1437,8 @@ impl Session {
             let finished = self.turn.as_mut().and_then(|turn| {
                 turn.ready
                     .is_empty()
-                    .then(|| turn.finished.take())
-                    .flatten()
+                    .then(|| (turn.finished.take(), turn.refused.take()))
+                    .and_then(|(finished, refused)| finished.map(|finished| (finished, refused)))
             });
             if let Some(finished) = finished {
                 break finished;
@@ -1432,6 +1473,31 @@ impl Session {
                     .mark(tilo_model_client::TraceEvent::PlanFailed, turn);
                 if let Some(end) = state.finished_despite_failed_plan(&error) {
                     return Ok(Some(end));
+                }
+                // The model's own calls were refused for their shape or
+                // arguments (a call missing an argument its declaration
+                // requires, one naming a tool that is not offered): it is the
+                // model's to correct, not the model or transport failing.
+                // Answer its calls with what was wrong as tool error results
+                // and take another turn, bounded, so one that keeps calling
+                // the same way ends the task instead of looping.
+                if let Some((raw, _)) = &refused_turn
+                    && let Some(refused) = malformed_turn(conversation, raw)
+                    && state.malformed_turns < MOST_MALFORMED_TURNS
+                {
+                    state.malformed_turns += 1;
+                    tracing::info!(
+                        turn,
+                        %error,
+                        calls = refused.len(),
+                        "the model's calls were refused; answering them with what was wrong"
+                    );
+                    conversation
+                        .refuse(raw, &refused)
+                        .map_err(anyhow::Error::msg)?;
+                    // Nothing of this turn ran; the run takes another turn,
+                    // as after any turn that dispatched no finish.
+                    return Ok(None);
                 }
                 return Ok(Some(LoopEnd::Failed(format!(
                     "The model call failed: {error}. Check the model in Settings, under Agent \

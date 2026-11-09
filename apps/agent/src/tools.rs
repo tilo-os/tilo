@@ -1203,44 +1203,131 @@ pub fn validate_loop_calls(calls: &[ToolCall]) -> Result<(), String> {
         if !ids.insert(&call.id) {
             return Err("duplicate tool call id".into());
         }
-        validate_discovery_input(&call.name, &call.input)?;
-        match call.name.as_str() {
-            LIST_APPLICATIONS | LIST_OPERATIONS | DESCRIBE_OPERATION => {}
-            INVOKE => {
-                // Preserve the documented legacy alias and nullary form.
-                let mut input = call.input.clone();
-                let object = input.as_object_mut().ok_or("invoke needs an object")?;
-                let arguments = object.remove("arguments");
-                let parameters = object
-                    .entry(INVOKE_PARAMETERS)
-                    .or_insert_with(|| arguments.unwrap_or_else(|| json!({})));
-                if parameters.is_null() {
-                    *parameters = json!({});
-                }
-                invoke_definition()
-                    .validate_input(&input)
-                    .map_err(|error| error.to_string())?;
-            }
-            crate::programs::TILO => crate::programs::definition()
-                .validate_input(&call.input)
-                .map_err(|error| error.to_string())?,
-            PLAN if index + 1 == calls.len() => {}
-            PLAN => return Err("plan must be the last call in its turn".into()),
-            // Every other tool the loop offers is taken as its schema says:
-            // the offered set is the accepted set, so no offered tool is
-            // refused as unknown.
-            name => {
-                let definition = typed_loop_definitions()
-                    .into_iter()
-                    .find(|definition| definition.name == name)
-                    .ok_or_else(|| format!("There is no tool called {name}."))?;
-                definition
-                    .validate_input(&call.input)
-                    .map_err(|error| error.to_string())?;
-            }
+        if let Some(problem) = call_problem(call, index, calls.len()) {
+            return Err(problem);
         }
     }
     Ok(())
+}
+
+/// What is wrong with `call` once its id and name are usable, in the words
+/// [`validate_loop_calls`] refuses it with: `None` when the loop can run it.
+/// `index` and `count` place it in its turn, so a `plan` with a call after it
+/// is the problem, not the call before.
+fn call_problem(call: &ToolCall, index: usize, count: usize) -> Option<String> {
+    if let Err(error) = validate_discovery_input(&call.name, &call.input) {
+        return Some(error);
+    }
+    match call.name.as_str() {
+        LIST_APPLICATIONS | LIST_OPERATIONS | DESCRIBE_OPERATION => None,
+        INVOKE => {
+            // Preserve the documented legacy alias and nullary form.
+            let mut input = call.input.clone();
+            let Some(object) = input.as_object_mut() else {
+                return Some("invoke needs an object".into());
+            };
+            let arguments = object.remove("arguments");
+            let parameters = object
+                .entry(INVOKE_PARAMETERS)
+                .or_insert_with(|| arguments.unwrap_or_else(|| json!({})));
+            if parameters.is_null() {
+                *parameters = json!({});
+            }
+            invoke_definition()
+                .validate_input(&input)
+                .err()
+                .map(|error| error.to_string())
+        }
+        crate::programs::TILO => crate::programs::definition()
+            .validate_input(&call.input)
+            .err()
+            .map(|error| error.to_string()),
+        PLAN if index + 1 == count => None,
+        PLAN => Some("plan must be the last call in its turn".into()),
+        // Every other tool the loop offers is taken as its schema says: the
+        // offered set is the accepted set, so no offered tool is refused as
+        // unknown.
+        name => match typed_loop_definitions()
+            .into_iter()
+            .find(|definition| definition.name == name)
+        {
+            None => Some(format!("There is no tool called {name}.")),
+            Some(definition) => definition
+                .validate_input(&call.input)
+                .err()
+                .map(|error| error.to_string()),
+        },
+    }
+}
+
+/// One error result for every call of `calls`, in call order, when the loop
+/// refuses the batch: what is wrong with the calls it cannot run and what
+/// they need, and for the rest that the turn was refused because of it. A
+/// model that called a tool wrongly reads it and corrects itself instead of
+/// the run ending. Empty when every call would run.
+///
+/// `None` when a call has no usable id or name to answer
+/// ([`ToolCall::validate`] refuses it): that turn cannot be recorded as a
+/// call and its results, so nothing can be fed back and the run ends with the
+/// reason. A duplicate call id is the same: it cannot be answered per call.
+pub fn refused_results(calls: &[ToolCall]) -> Option<Vec<(String, String)>> {
+    if calls.iter().any(|call| call.validate().is_err()) {
+        return None;
+    }
+    let mut ids = BTreeSet::new();
+    if calls.iter().any(|call| !ids.insert(call.id.as_str())) {
+        return None;
+    }
+    let problems = calls
+        .iter()
+        .enumerate()
+        .map(|(index, call)| call_problem(call, index, calls.len()))
+        .collect::<Vec<_>>();
+    if problems.iter().all(Option::is_none) {
+        return Some(Vec::new());
+    }
+    Some(
+        calls
+            .iter()
+            .zip(problems)
+            .map(|(call, problem)| {
+                let answer = problem.map_or_else(
+                    || {
+                        "Not run: the turn was refused because another call in it was \
+                         malformed. Nothing of that turn was run."
+                            .to_owned()
+                    },
+                    |problem| call_refused(call, &problem),
+                );
+                (call.id.clone(), answer)
+            })
+            .collect(),
+    )
+}
+
+/// The tool result answering a call the loop refused for its own shape or
+/// arguments: what was wrong, the arguments its declaration requires, and
+/// that nothing ran — the model corrects it by calling again.
+fn call_refused(call: &ToolCall, problem: &str) -> String {
+    let mut answer = format!(
+        "The call to `{}` was refused and nothing was run: {problem}.",
+        call.name
+    );
+    let required = typed_loop_definitions()
+        .into_iter()
+        .find(|definition| definition.name == call.name)
+        .and_then(|definition| definition.input_schema.get("required").cloned());
+    if let Some(names) = required.as_ref().and_then(Value::as_array) {
+        let names = names.iter().filter_map(Value::as_str).collect::<Vec<_>>();
+        if !names.is_empty() {
+            answer.push_str(&format!(
+                " Its required arguments are: {}.",
+                names.join(", ")
+            ));
+        }
+    }
+    answer.push_str(" Call it again with every required argument present and correctly typed.");
+    answer
 }
 
 /// What is running, and what could be opened.
@@ -1804,6 +1891,44 @@ mod tests {
             )])
             .is_ok()
         );
+    }
+
+    #[test]
+    fn refused_results_name_what_is_wrong_and_answer_every_call() {
+        let call = |id: &str, name: &str, input: Value| ToolCall {
+            id: id.into(),
+            name: name.into(),
+            input,
+            extra_content: None,
+        };
+        // A batch the loop can run is not refused.
+        let good = call("a", INVOKE, json!({"operation": "shown", "parameters": {}}));
+        assert_eq!(
+            refused_results(std::slice::from_ref(&good)),
+            Some(Vec::new())
+        );
+        // A missing argument names the argument and what the call needs.
+        let missing = call("b", INVOKE, json!({"parameters": {}}));
+        let refused = refused_results(std::slice::from_ref(&missing)).unwrap();
+        assert_eq!(refused.len(), 1);
+        assert_eq!(refused[0].0, "b");
+        assert!(refused[0].1.contains("missing operation"), "{refused:?}");
+        assert!(
+            refused[0].1.contains("required arguments are: operation"),
+            "{refused:?}"
+        );
+        // One malformed call refuses the whole turn: every call is answered,
+        // the sound ones told the turn did not run them.
+        let turned_down = refused_results(&[good.clone(), missing]).unwrap();
+        assert_eq!(turned_down.len(), 2);
+        assert!(
+            turned_down[0]
+                .1
+                .contains("another call in it was malformed")
+        );
+        // Without an id to answer, nothing can be fed back.
+        let unnamed = call("", "plan", json!({}));
+        assert_eq!(refused_results(&[unnamed]), None);
     }
 
     pub(super) fn offer(
