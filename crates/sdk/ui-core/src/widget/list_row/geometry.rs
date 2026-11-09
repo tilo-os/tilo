@@ -9,8 +9,14 @@ use crate::theme::Theme;
 use crate::widget::BadgeFace;
 
 impl ListRowFace<'_> {
+    /// Whether the row says anything under its title: a secondary line, or facts standing where
+    /// one would.
+    pub(super) fn has_secondary_line(&self) -> bool {
+        self.secondary.is_some() || !self.facts.is_empty()
+    }
+
     pub(super) fn extra_lines(&self) -> u8 {
-        let secondary = if self.secondary.is_some() {
+        let secondary = if self.has_secondary_line() {
             self.secondary_lines
         } else {
             0
@@ -75,7 +81,7 @@ impl ListRowFace<'_> {
         } else {
             0.0
         };
-        let secondary = if self.secondary.is_some() {
+        let secondary = if self.has_secondary_line() {
             f64::from(self.secondary_lines) * RowMetrics::line(text, &m.secondary)
         } else {
             0.0

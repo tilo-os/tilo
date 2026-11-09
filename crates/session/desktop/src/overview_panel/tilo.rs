@@ -10,8 +10,7 @@
 
 use ui::TextRole;
 use ui::a11y::{AccessNode, AccessState, Role};
-use ui::num::f32_of_f64;
-use ui::widget::{Button, ButtonFace, Interaction, ListRowFace, RowLeading};
+use ui::widget::{Button, ButtonFace, Interaction, ListRowFace, RowLeading, TextLineFace};
 use vello::kurbo::{Point, Rect};
 
 use super::OverviewPanel;
@@ -42,17 +41,8 @@ impl OverviewPanel {
     fn tilo_height(&self, row: &TiloRow) -> f64 {
         match row {
             TiloRow::Caption(_) => self.metrics.section_gap + self.metrics.caption_h,
-            TiloRow::Item(item) if self.wraps(item) => {
-                self.metrics.tilo_row_h + self.metrics.detail_lh
-            }
             TiloRow::Item(_) => self.metrics.tilo_row_h,
         }
-    }
-
-    /// Whether `item`'s detail wraps under its title: on a page as narrow as a phone, a row with a
-    /// control leaves its detail too little width for one line.
-    fn wraps(&self, item: &TiloItem) -> bool {
-        self.uses_full_window() && item.action.is_some() && item.detail.is_some()
     }
 
     /// Whether row `index` stands whole above the foot of `band`: a row the foot would cut is not
@@ -216,19 +206,15 @@ impl OverviewPanel {
     fn paint_tilo_caption(&self, ctx: &mut ui::paint::PaintCtx<'_>, rect: Rect, caption: &str) {
         let tokens = &ctx.theme.tokens;
         let style = tokens.typography.style(TextRole::Caption);
-        let caption = ctx
-            .text
-            .elide_to_width_style(caption, f32_of_f64(rect.width()), &style);
-        let (_, h) = ctx.text.measure_style(&caption, None, &style);
-        ctx.text.draw_style(
-            ctx.scene,
-            &caption,
-            tokens.colors.text_tertiary,
-            ctx.transform
-                .pre_translate((rect.x0, rect.y1 - f64::from(h) - self.metrics.s1).into()),
-            None,
-            &style,
+        let line = TextLineFace::styled(caption, &style, TextRole::Caption).start();
+        let (_, h) = line.measure(ctx.text);
+        let band = Rect::new(
+            rect.x0,
+            rect.y1 - h - self.metrics.s1,
+            rect.x1,
+            rect.y1 - self.metrics.s1,
         );
+        line.paint(ctx, band, tokens.colors.text_tertiary);
     }
 
     fn paint_tilo_item(
@@ -240,11 +226,8 @@ impl OverviewPanel {
     ) {
         let action = self.tilo_action_rect(index);
         let mut face = ListRowFace::new(&item.title);
-        if let Some(detail) = &item.detail {
-            face = face.secondary(detail);
-            if self.wraps(item) {
-                face = face.secondary_lines(2);
-            }
+        if !item.facts.is_empty() {
+            face = face.facts(&item.facts);
         }
         if let Some(icon) = item.icon {
             face = face.leading(RowLeading::Icon(icon));
@@ -295,8 +278,14 @@ impl OverviewPanel {
                         .with_name(item.title.clone())
                         .with_bounds(rect)
                         .with_state(AccessState::new().focusable(item.press.is_some()));
-                    if let Some(detail) = &item.detail {
-                        node = node.with_description(detail.clone());
+                    if !item.facts.is_empty() {
+                        node = node.with_description(
+                            item.facts
+                                .iter()
+                                .map(|fact| fact.text.as_str())
+                                .collect::<Vec<_>>()
+                                .join(", "),
+                        );
                     }
                     if let (Some((label, _)), Some(bounds)) =
                         (&item.action, self.tilo_action_rect(index))

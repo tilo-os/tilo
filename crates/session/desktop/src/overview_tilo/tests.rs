@@ -19,6 +19,10 @@ fn items(rows: &[TiloRow]) -> Vec<&TiloItem> {
         .collect()
 }
 
+fn facts(item: &TiloItem) -> Vec<&str> {
+    item.facts.iter().map(|fact| fact.text.as_str()).collect()
+}
+
 fn captions(rows: &[TiloRow]) -> Vec<&str> {
     rows.iter()
         .filter_map(|row| match row {
@@ -112,7 +116,7 @@ fn a_self_hosted_host_shows_and_offers_no_plans_or_billing() {
     assert_eq!(captions(&rows), ["Hosts & compute", "Account"]);
     let host = items(&rows)[0];
     assert_eq!(host.title, "Ada's server");
-    assert_eq!(host.detail.as_deref(), Some("Your own host"));
+    assert_eq!(facts(host), ["Your own host"]);
     assert_eq!(host.action, None, "nothing to manage billing of");
     assert!(
         !items(&rows)
@@ -122,10 +126,10 @@ fn a_self_hosted_host_shows_and_offers_no_plans_or_billing() {
     );
 }
 
-/// Tilo Cloud is one row: the plan, the hours used of those it includes and the credit, with
-/// Manage billing. Invoices are Settings' Billing page's, not the overview's.
+/// Tilo Cloud is one row of facts: the plan, the hours used of those it includes and the
+/// credit, with Manage billing. Invoices are Settings' Billing page's, not the overview's.
 #[test]
-fn tilo_cloud_is_one_line_with_manage_billing_and_no_invoices() {
+fn tilo_cloud_states_its_plan_use_and_credit_with_manage_billing() {
     en();
     let desk = TiloDesk {
         hosts: vec![tilo_cloud()],
@@ -135,10 +139,7 @@ fn tilo_cloud_is_one_line_with_manage_billing_and_no_invoices() {
     let items = items(&rows);
     let host = items[0];
     assert_eq!(host.title, "Tilo Cloud");
-    assert_eq!(
-        host.detail.as_deref(),
-        Some("Pro · 1 of 100 hr · $12.40 credit")
-    );
+    assert_eq!(facts(host), ["Pro", "1 of 100 hr", "$12.40 credit"]);
     assert_eq!(
         host.action,
         Some((
@@ -171,8 +172,8 @@ fn an_account_without_a_card_is_told_when_one_is_asked_for() {
         ..TiloDesk::default()
     });
     assert_eq!(
-        items(&rows)[0].detail.as_deref(),
-        Some("No card yet: added the first time something needs a Linux machine")
+        facts(items(&rows)[0]),
+        ["No card yet: added the first time something needs a Linux machine"]
     );
 }
 
@@ -198,10 +199,7 @@ fn agents_let_in_can_each_be_revoked() {
     assert_eq!(captions(&rows), ["Agents", "Account"]);
     let agent = items(&rows)[0];
     assert_eq!(agent.title, "Claude Code");
-    assert_eq!(
-        agent.detail.as_deref(),
-        Some("All your workspaces · working now")
-    );
+    assert_eq!(facts(agent), ["All your workspaces", "working now"]);
     assert_eq!(
         agent.action,
         Some(("Revoke".to_owned(), OverviewPick::RevokeGrant("g1".into())))

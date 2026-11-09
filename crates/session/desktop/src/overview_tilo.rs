@@ -6,7 +6,7 @@
 //! runs; what a host offers the person's account, and what it used, is its
 //! answer to [`tilo_actions::remote::host_account::ACCOUNT`] ([`HostAccount`]); a plan, its card and
 //! its invoices are the person's account with a hosting provider, whose own
-//! pages manage them. The overview says the plan, what was used and the credit in one line;
+//! pages manage them. The overview says the plan, what was used and the credit as separate facts;
 //! invoices are Settings' Billing page's. The overview shows that answer only once it means
 //! something: a host that is not this device, a plan, or usage
 //! ([`hosting_relevant`]). Someone with one device that sells nothing sees no
@@ -21,6 +21,7 @@ use std::time::Duration;
 use tilo_actions::remote::agent_door::{self, Reach};
 use tilo_actions::remote::host_account::{HostAccount, HostKind};
 use ui::icons::Icon;
+use ui::widget::Fact;
 
 use crate::i18n::{t, t_args};
 use crate::overview_panel::OverviewPick;
@@ -66,7 +67,9 @@ pub struct TiloItem {
     pub key: String,
     pub icon: Option<Icon>,
     pub title: String,
-    pub detail: Option<String>,
+    /// What the row says under its title, as separate facts: a plan and what it used, a reach
+    /// and the runs working in it, a handle. Each is laid out on its own.
+    pub facts: Vec<Fact>,
     /// What a press on the row asks for.
     pub press: Option<OverviewPick>,
     /// A control at its trailing edge: its label and what it asks for.
@@ -131,56 +134,48 @@ fn host_row(index: usize, host: &HostAccount) -> TiloItem {
         HostKind::SelfHosted => Icon::HardDrive,
         HostKind::Provider => Icon::Cloud,
     };
-    let detail = match (&host.standing, host.plan()) {
+    let mut facts: Vec<Fact> = Vec::new();
+    match (&host.standing, host.plan()) {
         (Some(standing), Some(plan)) => {
             let used = standing.usage.vm_seconds();
             let included = standing
                 .limits
                 .as_ref()
                 .and_then(|limits| limits.included_vm_seconds);
-            Some(match included {
+            facts.push(Fact::text(plan.name.clone()));
+            facts.push(Fact::text(match included {
                 // One unit for both, the hour a plan includes: "37 of 100 hr".
                 Some(included) => t_args(
                     "overview-tilo-plan-used-of",
                     &[
-                        ("plan", plan.name.clone().into()),
                         ("used", ui::format::count(used / 3600).into()),
                         ("included", ui::format::count(included / 3600).into()),
                     ],
                 ),
                 None => t_args(
                     "overview-tilo-plan-used",
-                    &[
-                        ("plan", plan.name.clone().into()),
-                        ("used", vm_time(used).into()),
-                    ],
+                    &[("used", ui::format::count(used / 3600).into())],
                 ),
-            })
+            }));
         }
         (Some(standing), None) if standing.payment_method.is_none() => {
-            Some(t("overview-tilo-no-card"))
+            facts.push(Fact::text(t("overview-tilo-no-card")));
         }
-        (Some(_), None) => Some(t("overview-tilo-no-plan")),
-        (None, _) => Some(t(match host.kind {
+        (Some(_), None) => facts.push(Fact::text(t("overview-tilo-no-plan"))),
+        (None, _) => facts.push(Fact::text(t(match host.kind {
             HostKind::Device => "overview-tilo-host-device",
             HostKind::SelfHosted => "overview-tilo-host-self",
             HostKind::Provider => "overview-tilo-host-provider",
-        })),
-    };
-    let detail = match host.standing.as_ref().and_then(|s| s.credit.clone()) {
-        Some(credit) => detail.map(|detail| {
-            t_args(
-                "overview-tilo-with-credit",
-                &[("detail", detail.into()), ("credit", credit.into())],
-            )
-        }),
-        None => detail,
-    };
+        }))),
+    }
+    if let Some(credit) = host.standing.as_ref().and_then(|s| s.credit.clone()) {
+        facts.push(Fact::text(credit));
+    }
     TiloItem {
         key: format!("overview-host:{index}"),
         icon: Some(icon),
         title: host.host.clone(),
-        detail,
+        facts,
         press: None,
         action: host.manage_billing.clone().map(|url| {
             (
@@ -196,19 +191,18 @@ fn agent_row(grant: &agent_door::Grant) -> TiloItem {
         Reach::Account => t("overview-tilo-agent-everywhere"),
         Reach::Workspace { name, .. } => name.clone(),
     };
-    let detail = if grant.runs.is_empty() {
-        reach
-    } else {
-        t_args(
+    let mut facts = vec![Fact::text(reach)];
+    if !grant.runs.is_empty() {
+        facts.push(Fact::text(t_args(
             "overview-tilo-agent-running",
-            &[("reach", reach.into()), ("runs", grant.runs.len().into())],
-        )
-    };
+            &[("runs", grant.runs.len().into())],
+        )));
+    }
     TiloItem {
         key: format!("overview-agent:{}", grant.id),
         icon: Some(Icon::Bot),
         title: grant.agent.clone(),
-        detail: Some(detail),
+        facts,
         press: None,
         action: Some((
             t("overview-tilo-revoke"),
@@ -229,7 +223,7 @@ pub fn rows(desk: &TiloDesk) -> Vec<TiloRow> {
                 key: format!("overview-elsewhere:{id}"),
                 icon: None,
                 title: name.clone(),
-                detail: None,
+                facts: Vec::new(),
                 press: Some(OverviewPick::HostAction(id.clone())),
                 action: None,
             })
@@ -255,7 +249,7 @@ pub fn rows(desk: &TiloDesk) -> Vec<TiloRow> {
             key: "overview-account".into(),
             icon: Some(Icon::User),
             title: account.name.clone(),
-            detail: account.detail.clone(),
+            facts: account.detail.clone().map(Fact::text).into_iter().collect(),
             press: Some(OverviewPick::AccountSettings),
             action: None,
         }));
@@ -265,7 +259,7 @@ pub fn rows(desk: &TiloDesk) -> Vec<TiloRow> {
             key: format!("overview-action:{id}"),
             icon: None,
             title: label.clone(),
-            detail: None,
+            facts: Vec::new(),
             press: Some(OverviewPick::HostAction(id.clone())),
             action: None,
         })
@@ -274,7 +268,7 @@ pub fn rows(desk: &TiloDesk) -> Vec<TiloRow> {
         key: "overview-about".into(),
         icon: Some(Icon::Info),
         title: t("overview-tilo-about"),
-        detail: None,
+        facts: Vec::new(),
         press: Some(OverviewPick::AboutTilo),
         action: None,
     }));
@@ -283,7 +277,7 @@ pub fn rows(desk: &TiloDesk) -> Vec<TiloRow> {
             key: "overview-feedback".into(),
             icon: None,
             title: t("tilo-menu-feedback"),
-            detail: None,
+            facts: Vec::new(),
             press: Some(OverviewPick::Feedback),
             action: None,
         }));

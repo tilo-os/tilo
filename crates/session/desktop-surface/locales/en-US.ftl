@@ -1108,9 +1108,8 @@ overview-tilo-agents = Agents
 overview-tilo-account = Account
 overview-tilo-about = About Tilo
 overview-tilo-workspace-usage = { $host }, { $time } this month
-overview-tilo-plan-used-of = { $plan } · { $used } of { $included } hr
-overview-tilo-plan-used = { $plan } · { $used }
-overview-tilo-with-credit = { $detail } · { $credit } credit
+overview-tilo-plan-used-of = { $used } of { $included } hr
+overview-tilo-plan-used = { $used }
 overview-tilo-no-card = No card yet: added the first time something needs a Linux machine
 overview-tilo-no-plan = No plan chosen
 overview-tilo-host-device = This device
@@ -1118,7 +1117,7 @@ overview-tilo-host-self = Your own host
 overview-tilo-host-provider = Hosting provider
 overview-tilo-manage-billing = Manage billing
 overview-tilo-agent-everywhere = All your workspaces
-overview-tilo-agent-running = { $reach } · { $runs ->
+overview-tilo-agent-running = { $runs ->
         [one] working now
        *[other] { $runs } runs now
     }
