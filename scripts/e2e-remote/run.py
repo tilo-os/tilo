@@ -26,6 +26,7 @@ Every step is a result in report.json / report.md under --out; any failure fails
 from __future__ import annotations
 
 import argparse
+import os
 import base64
 import json
 import shlex
@@ -46,8 +47,20 @@ GUEST_DIR = ".cache/e2e-remote"
 MARK = "E2E-MCP "
 SLOT = "me"
 # Each box: guest memory and CPUs. Three fit beside each other in the micro-VM.
+# A and B run side by side; C runs beside B once A has stopped. A box takes 3 GiB: with less its
+# first login's onboarding does not come up (1.6 GiB boxes never showed it). A micro-VM t booked
+# too small for two runs out of memory, and t runs it again with twice the room.
 MEMORY_MB = 3072
 CPUS = 2
+
+
+def _host() -> tuple[int, int]:
+    total = next(int(l.split()[1]) // 1024 for l in Path("/proc/meminfo").read_text().splitlines()
+                 if l.startswith("MemTotal:"))
+    return total, os.cpu_count() or 2
+
+
+_TOTAL_MB, _NPROC = _host() if Path("/proc/meminfo").exists() else (0, 0)
 OUTPUT = "1280x800"
 # The boxes' own network, addressed by hand: nothing on it hands out addresses.
 LAN = "10.77.0.{}/24"
@@ -96,6 +109,7 @@ class Run:
         self.results: list[Result] = []
         self.log = self.out / "tilo-vm.log"
         taps = args.taps.split(",")
+        self.running: set[str] = set()
         self.boxes = {
             letter: Box(letter, TiloVm(args.tilo_vm, f"e2e-{letter}", SLOT, self.log), tap,
                         f"52:54:00:e2:e0:0{n}", LAN.format(n))
@@ -114,7 +128,7 @@ class Run:
             return False
         started = time.monotonic()
         # No step meets the idle dim or lock it is not about.
-        self.keep_awake(*(box for box in self.boxes.values() if box.identity))
+        self.keep_awake(*(box for box in self.boxes.values() if box.letter in self.running))
         try:
             fn(res)
             res.status = "pass"
@@ -126,6 +140,10 @@ class Run:
         self.results.append(res)
         print(f"{rid} {res.status.upper():4} {res.seconds:6.1f}s  {title}"
               + (f"\n      {res.detail[:1500]}" if res.detail else ""), flush=True)
+        # What the step saw, in short: the log is the record a failed run keeps.
+        for key, value in res.facts.items():
+            text = value if isinstance(value, str) else json.dumps(value, ensure_ascii=False)
+            print(f"      {key}: {text[:700]}", flush=True)
         return res.status == "pass"
 
     def passed(self, rid: str) -> bool:
@@ -196,11 +214,30 @@ ip -o addr show dev "$dev"
 
     def wait_session(self, box: Box, timeout: float = 300) -> None:
         try:
-            box.vm.wait_catalogue(timeout)
-        except VmError:
+            self.ready(box, timeout)
+        except (VmError, Failed):
             # A slot whose session did not come up with the box: start it as tilo-vm does.
             box.vm.run("slot", "restart", SLOT, timeout=300, slot=False)
-            box.vm.wait_catalogue(timeout)
+            self.ready(box, timeout)
+
+    def ready(self, box: Box, timeout: float = 120) -> None:
+        """Once `box`'s session answers its control socket with its desk drawn and unlocked,
+        and no first-use setup over it."""
+        def answering():
+            try:
+                dump = box.vm.state()
+                names = [t.get("name") for t in box.vm.targets()]
+            except (VmError, ValueError):
+                return False
+            state = dump.get("state") or dump
+            chrome = state.get("chrome") or {}
+            return ("workspace_tree" in state and not chrome.get("session_locked")
+                    and any(str(n).startswith("DesktopChrome") for n in names)
+                    and not any(str(n).startswith("OnboardingView") for n in names))
+
+        if not wait_until(answering, timeout, 1.0):
+            self.what_shows(box, "not ready")
+            raise Failed(f"{box.name}'s session did not show its desk within {timeout:.0f}s")
 
     def keep_awake(self, *boxes: Box) -> None:
         for box in boxes:
@@ -211,14 +248,39 @@ ip -o addr show dev "$dev"
 
     def keep_logs(self, box: Box) -> None:
         """What `box`'s session said, for a run that failed: its agent door, its endpoint and
-        its identity, without the per-frame statistics."""
+        its identity, without the per-frame statistics; what it shows and what it lists."""
+        for name, fetch in (("targets", lambda: box.vm.targets()), ("state", lambda: box.vm.state()),
+                            ("identity", lambda: box.vm.exec("tilo-identity --json status", timeout=60,
+                                                             check=False))):
+            try:
+                self.write(f"{name}-{box.letter}.json", fetch())
+            except (VmError, ValueError) as exc:
+                self.write(f"{name}-{box.letter}.json", {"error": str(exc)})
+        try:
+            self.write(f"session-log-{box.letter}.txt", box.vm.exec(
+                'tail -n 4000 "$HOME/.local/state/tilo/session-logs/latest.log" 2>&1', timeout=60,
+                check=False))
+        except VmError as exc:
+            self.write(f"session-log-{box.letter}.txt", str(exc))
+        try:
+            box.vm.shot(self.out / f"shot-{box.letter}.png")
+        except VmError:
+            pass
         try:
             text = box.vm.run("logs", SLOT, "-n", "20000", timeout=120, check=False, slot=False)
         except VmError as exc:
             text = f"tilo-vm logs failed: {exc}"
         noise = ("FRAME-LIFECYCLE", "paint-stats:", "HEAP-MILESTONE", "DEVICE-MEMORY", "frames=")
-        self.write(f"logs-{box.letter}.txt",
-                   "\n".join(l for l in text.splitlines() if not any(n in l for n in noise)))
+        kept = [l for l in text.splitlines() if not any(n in l for n in noise)]
+        self.write(f"logs-{box.letter}.txt", "\n".join(kept))
+        # A failed run keeps no outputs: what matters of it goes to the log.
+        telling = ("agent door", "agent_door", "remote_door", "lan:", "onboarding", "identity",
+                   "personal", "ERROR", "WARN", "panicked", "refused", "branch")
+        excerpt = ([l for l in kept if any(t in l for t in telling)][-80:]
+                   + ["  (its last lines)"] + kept[-40:])
+        print(f"--- {box.name}: {len(excerpt)} lines of its session's log ---", flush=True)
+        for line in excerpt:
+            print("  " + line[:400], flush=True)
         try:
             journal = box.vm.root_exec("journalctl -b --no-pager -o short-monotonic "
                                        "-u tilo-device-branch -u tilo-device-key-init -u NetworkManager "
@@ -226,6 +288,9 @@ ip -o addr show dev "$dev"
         except VmError as exc:
             journal = f"journalctl failed: {exc}"
         self.write(f"journal-{box.letter}.txt", journal)
+        print(f"--- {box.name}: its boot's identity and network units ---", flush=True)
+        for line in journal.splitlines()[-60:]:
+            print("  " + line[:400], flush=True)
 
     # -- the agent ---------------------------------------------------------------
 
@@ -316,6 +381,18 @@ ip -o addr show dev "$dev"
     def main(self) -> int:
         a, b, c = self.boxes["a"], self.boxes["b"], self.boxes["c"]
         facts: dict = {}
+        print(f"boxes of {MEMORY_MB} MiB and {CPUS} CPUs each, in {_TOTAL_MB} MiB and {_NPROC} CPUs",
+              flush=True)
+        # Nobody sits at the boxes: every minute each running one is nudged as a hand on its
+        # keyboard would, so none meets the idle lock a step is not about.
+        def nudge():
+            while True:
+                time.sleep(60)
+                for box in self.boxes.values():
+                    if box.letter in self.running:
+                        self.keep_awake(box)
+
+        threading.Thread(target=nudge, daemon=True).start()
         try:
             self.step("E01", "Box A boots this tree's dev disk and its person is made by onboarding",
                       lambda res: self.make_a(a, res))
@@ -356,13 +433,56 @@ ip -o addr show dev "$dev"
                     "--resolution", OUTPUT, "--memory-mb", str(MEMORY_MB), "--cpus", str(CPUS),
                     timeout=900)
         a.vm.vm_cmd("start", a.name, timeout=900)
-        a.vm.run("slot", "create", SLOT, "--headful", "--outputs", f"{OUTPUT}@1", "--identity", "device",
-                 timeout=900, slot=False)
-        a.vm.wait_catalogue(120)
+        self.running.add("a")
+        self.make_person(a, res)
+        self.ready(a, 300)
         status = self.identity(a)
         res.facts["identity"] = status
         if not (status.get("this_device") or {}).get("device"):
             raise Failed(f"A's person has no certified device after onboarding: {status}")
+
+    def make_person(self, box: Box, res: Result) -> None:
+        """The box's person, made by its first login's onboarding. On a slow box onboarding may
+        outlast tilo-vm's wait; the same create again carries on with it."""
+        for attempt in range(1, 4):
+            try:
+                box.vm.run("slot", "create", SLOT, "--headful", "--outputs", f"{OUTPUT}@1",
+                           "--identity", "device", timeout=900, slot=False)
+                res.facts[f"onboarding_{box.letter}_attempts"] = attempt
+                return
+            except VmError as exc:
+                self.what_shows(box, f"onboarding attempt {attempt}")
+                if "did not finish" not in str(exc) or attempt == 3:
+                    raise
+                print(f"{box.name}: onboarding still going after attempt {attempt}; again", flush=True)
+
+    def what_shows(self, box: Box, when: str) -> None:
+        """What `box`'s session shows and holds now, into the log: a failed run keeps no outputs."""
+        print(f"--- {box.name}, {when} ---", flush=True)
+        try:
+            names = [t.get("name") for t in box.vm.targets()]
+        except VmError as exc:
+            names = [f"unlisted: {exc.reason()}"]
+        print(f"  controls: {names}", flush=True)
+        try:
+            rows = box.vm.actions("Terminal")
+            print(f"  'Terminal' lists: {json.dumps(rows[:4])[:600]}", flush=True)
+        except VmError as exc:
+            print(f"  actions: {exc.reason()}", flush=True)
+        try:
+            dump = box.vm.state()
+            state = dump.get("state") or dump
+            print(f"  chrome: {json.dumps(state.get('chrome'))[:600]}", flush=True)
+        except (VmError, ValueError) as exc:
+            print(f"  state: {exc}", flush=True)
+        try:
+            said = box.vm.exec('grep -iE "setup|onboard|identity|first|lock|ceremony" '
+                               '"$HOME/.local/state/tilo/session-logs/latest.log" | tail -n 40',
+                               timeout=60, check=False)
+            for line in said.splitlines():
+                print("  " + line[:300], flush=True)
+        except VmError as exc:
+            print(f"  log: {exc.reason()}", flush=True)
 
     def branch(self, a: Box, b: Box, res: Result) -> None:
         out = a.vm.vm_cmd("branch", a.name, b.name, "--stop", timeout=900)
@@ -371,6 +491,7 @@ ip -o addr show dev "$dev"
             self.plug_lan(box)
         for box in (a, b):
             box.vm.vm_cmd("start", box.name, timeout=900)
+            self.running.add(box.letter)
         for box in (a, b):
             self.wait_session(box)
         for box in (a, b):
@@ -378,8 +499,8 @@ ip -o addr show dev "$dev"
         # The sessions start again on the network the boxes now share, as they would on a box
         # that came up on it.
         for box in (a, b):
-            box.vm.restart_session(300)
-            box.vm.wait_catalogue(120)
+            box.vm.run("slot", "restart", SLOT, timeout=300, slot=False)
+            self.ready(box, 300)
         ping = a.vm.root_exec(f"ping -c 3 -W 2 {b.ip.split('/')[0]}", timeout=60, check=False)
         res.facts["ping"] = ping[-600:]
         if "not found" in ping:
@@ -436,6 +557,7 @@ ip -o addr show dev "$dev"
         t = self.finish(thread, holder)
         text = text_of(t.get("devices"))
         res.facts["devices"] = text
+        res.facts["open_here"] = text_of(t.get("open_here")) or t.get("open_here")
         line = next((l for l in text.splitlines() if key in l), None)
         if line is None or not line.rstrip().endswith("  reachable"):
             raise Failed(f"A's tilo_devices does not list B ({key}) as reachable after {FIND_S}s: {text!r}")
@@ -529,16 +651,19 @@ ip -o addr show dev "$dev"
             raise Failed(f"the note the agent made is not found on B: {t.get('new_note')} / {t.get('found_note')}")
 
     def stranger(self, b: Box, c: Box, res: Result) -> None:
+        # C runs beside B in A's place.
+        self.running.discard("a")
+        self.boxes["a"].vm.vm_cmd("stop", self.boxes["a"].name, timeout=300, check=False)
         c.vm.vm_cmd("create", c.name, "--image", str(self.args.work / "box-c.qcow2"), "--heads", "1",
                     "--resolution", OUTPUT, "--memory-mb", str(MEMORY_MB), "--cpus", str(CPUS),
                     timeout=900)
         self.plug_lan(c)
         c.vm.vm_cmd("start", c.name, timeout=900)
-        c.vm.run("slot", "create", SLOT, "--headful", "--outputs", f"{OUTPUT}@1", "--identity", "device",
-                 timeout=900, slot=False)
+        self.running.add("c")
+        self.make_person(c, res)
         res.facts["lan"] = self.address_lan(c)
-        c.vm.restart_session(300)
-        c.vm.wait_catalogue(120)
+        c.vm.run("slot", "restart", SLOT, timeout=300, slot=False)
+        self.ready(c, 300)
         sc = self.identity(c)
         if (sc.get("identity") or {}).get("id") == (b.identity.get("identity") or {}).get("id"):
             raise Failed("C is the same person as B")
