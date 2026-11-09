@@ -86,6 +86,20 @@ pub(crate) enum Op {
         brush: Brush,
         bbox: Rect,
     },
+    /// A glyph run that carries its characters, listed as text when the
+    /// display list is decoded for a page's DOM ([`DisplayList::text_runs`]).
+    Text {
+        text: Arc<str>,
+        /// Where the first glyph's origin (on the baseline) lands.
+        origin: Point,
+        /// The pen position of every glyph after the first, relative to `origin`.
+        advances_to_last: f64,
+        font_size: f32,
+        font: vello_cpu::peniko::FontData,
+        coords: SmallVec<[i16; 8]>,
+        brush: Brush,
+        bbox: Rect,
+    },
     Blur {
         path: usize,
         transform: Affine,
@@ -118,6 +132,9 @@ pub(crate) struct DisplayList {
     paths_used: usize,
     pub glyphs: Vec<GlyphInstance>,
     open: Vec<usize>,
+    /// List glyph runs that carry their characters as [`Op::Text`] rather
+    /// than as outlines.
+    pub text_runs: bool,
 }
 
 impl DisplayList {
@@ -917,6 +934,41 @@ impl Walker<'_> {
             return;
         };
         let paint_transform = run.transform * run.brush_transform.unwrap_or(IDENTITY);
+        if self.list.text_runs
+            && self.bounds.is_none()
+            && let Some(text) = run.text.clone()
+            && let (Some(first), Some(last)) = (run_glyphs.first(), run_glyphs.last())
+        {
+            let Some((tag, offset)) = self.next_draw() else {
+                return;
+            };
+            let Some(brush) = self.brush(tag, offset, to_affine(&paint_transform)) else {
+                return;
+            };
+            let affine = to_affine(&run.transform);
+            let origin = affine * Point::new(f64::from(first.x), f64::from(first.y));
+            let end = affine * Point::new(f64::from(last.x), f64::from(last.y));
+            let scale = affine.determinant().abs().sqrt();
+            let font_size = run.font_size * scale as f32;
+            let size = f64::from(font_size);
+            let bbox = Rect::new(
+                origin.x,
+                origin.y - size,
+                end.x + size,
+                origin.y + size * 0.3,
+            );
+            self.list.ops.push(Op::Text {
+                text,
+                origin,
+                advances_to_last: end.x - origin.x,
+                font_size,
+                font: run.font.clone(),
+                coords: coords.iter().copied().collect(),
+                brush,
+                bbox,
+            });
+            return;
+        }
         let mut hint = run.hint;
         let mut font_size = run.font_size;
         let mut transform = run.transform;

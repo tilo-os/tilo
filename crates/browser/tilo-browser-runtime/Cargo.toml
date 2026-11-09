@@ -58,6 +58,8 @@ serde_json.workspace = true
 # Warnings and errors reach the console (src/console_log.rs).
 tracing.workspace = true
 vello.workspace = true
+# The DOM presentation: the scene as HTML elements instead of a canvas.
+tilo-cpu-raster = { version = "0.1.0", path = "../../sdk/tilo-cpu-raster" }
 wgpu.workspace = true
 winit.workspace = true
 web-time = "1"

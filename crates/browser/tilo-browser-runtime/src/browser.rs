@@ -1578,8 +1578,20 @@ fn begin(event_loop: &ActiveEventLoop, id: u64, request: Request) -> Result<(), 
         cursor: winit::window::CursorIcon::Default,
     };
     MOUNTS.with_borrow_mut(|m| m.insert(id, mount));
-    emit(&status, &serde_json::json!({"phase":"gpu-pending","id":id}));
-    initialize_gpu(id, 1, window, caps);
+    if dom_presenter().is_some() {
+        // Shown as HTML: no surface to wait for.
+        emit(&status, &serde_json::json!({"phase":"dom","id":id}));
+        let _ = with_mount(id, |m| {
+            m.viewport.surface_installed();
+            m.queue_resize();
+            m.pending = true;
+            m.window.request_redraw();
+            Ok(())
+        });
+    } else {
+        emit(&status, &serde_json::json!({"phase":"gpu-pending","id":id}));
+        initialize_gpu(id, 1, window, caps);
+    }
     wasm_bindgen_futures::spawn_local(watch_first_frame(id));
     Ok(())
 }
@@ -1906,6 +1918,28 @@ async fn await_runtime_admission() -> bool {
     !crate::crash::stopped()
 }
 
+thread_local! {
+    /// The page's DOM presenter, when it shows mounts as HTML
+    /// ([`present_as_dom`]).
+    static DOM_PRESENTER: RefCell<Option<Function>> = const { RefCell::new(None) };
+    static DOM_ENCODERS: RefCell<std::collections::HashMap<u64, tilo_cpu_raster::dom::DomEncoder>> =
+        RefCell::new(std::collections::HashMap::new());
+}
+
+fn dom_presenter() -> Option<Function> {
+    DOM_PRESENTER.with_borrow(Clone::clone)
+}
+
+/// Show every mount made after this call as HTML rather than on a WebGPU
+/// canvas: each frame calls `present(meta, ops, fonts)` with the frame's
+/// DOM operations (`tilo_cpu_raster::dom`), and text in the scene carries
+/// its characters.
+#[wasm_bindgen]
+pub fn present_as_dom(present: Function) {
+    ui::text_render::present_text(true);
+    DOM_PRESENTER.with_borrow_mut(|slot| *slot = Some(present));
+}
+
 async fn set_up_gpu(setup: GpuSetup) {
     let GpuSetup {
         id,
@@ -2048,6 +2082,9 @@ impl Mount {
         }
         // A window the last frame opened shows what its open named.
         self.reveal_opened();
+        if dom_presenter().is_some() {
+            return self.draw_dom();
+        }
         let Some(gpu) = self.gpu.as_mut() else {
             self.held = "no surface";
             return Ok(());
@@ -2572,6 +2609,123 @@ impl Mount {
         self.publish_frame(0, change, true);
         self.presentation.set(false);
         self.metric_end("publish", stage);
+        Ok(())
+    }
+
+    /// Lay out and present one frame as HTML: the scene goes to the page's
+    /// DOM presenter as operations ([`tilo_cpu_raster::dom`]) instead of to
+    /// the GPU. Input, semantics and records take the same paths as a
+    /// drawn frame.
+    fn draw_dom(&mut self) -> Result<(), String> {
+        let schedule = self.frame.frame_schedule();
+        let due = schedule
+            .next_wake_deadline
+            .is_some_and(|wake| wake <= ui::time::now());
+        let theme_changed = self.theme_seen != crate::page_theme::generation();
+        let replica = self.replica_changed.replace(false);
+        if let Some(peer) = self.peer {
+            crate::replication::follow_answers(peer);
+        }
+        self.pending |= self.viewport.needs_present()
+            || schedule.queued_work
+            || schedule.needs_animation_frame
+            || due
+            || theme_changed
+            || replica;
+        if !self.pending {
+            self.held = "nothing to draw";
+            return Ok(());
+        }
+        let started = web_time::Instant::now();
+        let frame = &mut self.frame;
+        let mut unsettled = None;
+        self.viewport
+            .apply_for_acquired_texture(Some(()), |viewport| {
+                frame.set_input_scale(viewport.dpr)?;
+                unsettled = frame.resize(viewport.logical_size()).err();
+                Ok::<_, String>(())
+            })?;
+        let mut host_changed = replica;
+        if theme_changed {
+            self.theme_seen = crate::page_theme::generation();
+            self.frame.set_theme(crate::page_theme::current());
+            host_changed = true;
+        }
+        self.place_here();
+        self.place_presence();
+        self.frame.set_pan_replay(false);
+        let polled = match self.frame.poll_frame() {
+            Ok(polled) => polled,
+            Err(error) => {
+                unsettled = Some(error);
+                false
+            }
+        };
+        if polled {
+            self.note_measured();
+        }
+        if host_changed && !polled && unsettled.is_none() {
+            unsettled = self
+                .frame
+                .relayout_at(self.viewport.requested().logical_size())
+                .err();
+        }
+        self.save_desktop();
+        if let Some(peer) = self.peer {
+            crate::replication::publish(peer);
+        }
+        if let Some(error) = unsettled {
+            if let Some(line) = self.frame.skip_frame(&error) {
+                web_sys::console::error_1(&JsValue::from_str(&line));
+            }
+            self.pending = false;
+            self.held = "a layout that did not settle";
+            return Ok(());
+        }
+        let laid_out = started.elapsed();
+        let input = self.frame.frame_render_input();
+        let background = input.background.to_rgba8();
+        let encoded = DOM_ENCODERS.with_borrow_mut(|encoders| {
+            encoders
+                .entry(self.id)
+                .or_default()
+                .encode(input.scene.encoding())
+        });
+        let encode = started.elapsed() - laid_out;
+        let fonts = js_sys::Array::new();
+        for font in &encoded.fonts {
+            let entry = js_sys::Array::new();
+            entry.push(&JsValue::from_str(&font.family));
+            entry.push(&js_sys::Uint8Array::from(font.bytes.data()).into());
+            entry.push(&JsValue::from(font.index));
+            entry.push(&JsValue::from(font.ascent));
+            entry.push(&JsValue::from(font.descent));
+            fonts.push(&entry);
+        }
+        let viewport = self.viewport.requested();
+        let meta = serde_json::json!({
+            "id": self.id,
+            "background": format!("rgba({},{},{},{})", background.r, background.g, background.b, f32::from(background.a) / 255.0),
+            "viewport": [viewport.logical_size().0, viewport.logical_size().1],
+            "layoutMs": laid_out.as_secs_f64() * 1000.0,
+            "encodeMs": encode.as_secs_f64() * 1000.0,
+            "texts": encoded.texts,
+            "draws": encoded.draws,
+            "bytes": encoded.ops.len(),
+        });
+        if let Some(present) = dom_presenter() {
+            let args = js_sys::Array::new();
+            args.push(&JsValue::from_str(&meta.to_string()));
+            args.push(&JsValue::from_str(&encoded.ops));
+            args.push(&fonts);
+            let _ = present.apply(&JsValue::NULL, &args);
+        }
+        self.viewport.did_present();
+        self.pending = false;
+        self.frames = self.frames.saturating_add(1);
+        self.presentation.set(true);
+        self.publish_frame(0, FrameChange::Other, true);
+        self.presentation.set(false);
         Ok(())
     }
 

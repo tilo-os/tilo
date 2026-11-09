@@ -17802,6 +17802,7 @@ dependencies = [
  "tilo-automerge",
  "tilo-browser-peer",
  "tilo-content",
+ "tilo-cpu-raster",
  "tilo-desktop",
  "tilo-desktop-model",
  "tilo-desktop-search",

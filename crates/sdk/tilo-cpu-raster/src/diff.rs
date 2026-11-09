@@ -197,6 +197,10 @@ fn op_hash(list: &DisplayList, op: &Op) -> u64 {
             rect(&mut h, bbox);
             glyphs.len().hash(&mut h);
         }
+        Op::Text { text, bbox, .. } => {
+            rect(&mut h, bbox);
+            text.hash(&mut h);
+        }
         Op::Begin { bbox, .. } => rect(&mut h, bbox),
         Op::End => {}
     }
@@ -444,7 +448,10 @@ fn brush_opaque(brush: &Brush) -> bool {
 /// Bounds of what an op paints itself; a layer's push paints nothing.
 fn drawn_bbox(op: &Op) -> Option<Rect> {
     match op {
-        Op::Draw { bbox, .. } | Op::Glyphs { bbox, .. } | Op::Blur { bbox, .. } => Some(*bbox),
+        Op::Draw { bbox, .. }
+        | Op::Glyphs { bbox, .. }
+        | Op::Text { bbox, .. }
+        | Op::Blur { bbox, .. } => Some(*bbox),
         Op::Begin { .. } | Op::End => None,
     }
 }
@@ -453,6 +460,7 @@ fn op_bbox(op: &Op) -> Option<Rect> {
     match op {
         Op::Draw { bbox, .. }
         | Op::Glyphs { bbox, .. }
+        | Op::Text { bbox, .. }
         | Op::Blur { bbox, .. }
         | Op::Begin { bbox, .. } => Some(*bbox),
         Op::End => None,
@@ -729,7 +737,10 @@ fn op_shift_eq(la: &DisplayList, a: &Op, lb: &DisplayList, b: &Op, d: (f64, f64)
 fn collect(list: &DisplayList, range: impl Iterator<Item = usize>, out: &mut Vec<Rect>) {
     for index in range {
         match &list.ops[index] {
-            Op::Draw { bbox, .. } | Op::Glyphs { bbox, .. } | Op::Blur { bbox, .. } => {
+            Op::Draw { bbox, .. }
+            | Op::Glyphs { bbox, .. }
+            | Op::Text { bbox, .. }
+            | Op::Blur { bbox, .. } => {
                 out.push(*bbox);
             }
             Op::Begin { bbox, .. } => out.push(*bbox),
