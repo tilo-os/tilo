@@ -37,7 +37,7 @@ impl Shared {
             match ask {
                 people::PeopleAsk::Message { key } => self.message_person(&key),
                 people::PeopleAsk::Agent { client, ask } => {
-                    self.invoke_app_action(LaunchpadAppAction::ask_agent(&client, ask))
+                    self.invoke_app_action(LaunchpadAppAction::ask_agent(&client, ask));
                 }
                 people::PeopleAsk::Rename(name) => self.name_self(&name),
                 people::PeopleAsk::Status(status) => self.set_own_status(&status),
