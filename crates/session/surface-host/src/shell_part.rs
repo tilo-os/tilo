@@ -2758,6 +2758,12 @@ impl crate::Published for ShellPart {
     }
 
     fn press(&mut self, name: &str) -> Result<(), String> {
+        // A press takes the part into its turn, as a press of the pointer does: a named press
+        // (an assistive technology's activation, `tilo-control click`) changes the shell's
+        // record, and the change is drawn by the turn that takes it in. The part wakes for
+        // input alone, so a press that did not say so waited for the next deadline — the
+        // clock — the desk drawing the style the person left until then.
+        self.input = true;
         crate::Published::press(&mut self.widgets, name)
     }
 
