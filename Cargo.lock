@@ -8695,6 +8695,7 @@ dependencies = [
  "tilo-clock",
  "tilo-desktop-entry",
  "tilo-lock",
+ "tilo-test-env",
  "workspace-hack",
 ]
 

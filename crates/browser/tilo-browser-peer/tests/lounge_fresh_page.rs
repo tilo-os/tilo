@@ -141,7 +141,7 @@ impl Lounge {
             .arg("-a")
             .arg(format!("{}/.", snapshot.display()))
             .arg(state.path())
-            .status()
+            .status_locked()
             .expect("cp runs");
         assert!(copied.success(), "the snapshot copies into the volume");
         assert!(

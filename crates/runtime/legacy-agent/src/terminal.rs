@@ -106,6 +106,8 @@ fn winsize(size: TerminalSize) -> libc::winsize {
 mod tests {
     use std::io::{Read as _, Write as _};
 
+    use tilo_test_env::SpawnUnderEnvLock as _;
+
     use super::*;
 
     #[test]
@@ -121,7 +123,7 @@ mod tests {
             "test -t 0 && stty size; read line; echo \"got $line\"",
         ]);
         pty.attach(&mut command).unwrap();
-        let mut child = command.spawn().unwrap();
+        let mut child = command.spawn_locked().unwrap();
         // Nothing here may hold the slave, or the master never ends.
         drop(command);
         let Pty { mut master, slave } = pty;
