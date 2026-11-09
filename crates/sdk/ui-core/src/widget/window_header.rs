@@ -241,16 +241,38 @@ pub(crate) fn offer_window_bar(root: &mut dyn Widget, bar: Option<WindowBar>) ->
         .any(|child| offer_window_bar(child, bar))
 }
 
-/// The height of the header row the first header row in `root`'s tree draws at the window's
-/// top, `0.0` while none draws one.
-pub(crate) fn header_row_height(root: &dyn Widget) -> f64 {
-    if let Some(header) = super::capability::capability::<dyn WindowHeader>(root) {
-        return header.header_row_height();
+/// Whether `widget` is a window's frame: a window standing in a shell, which offers the bar to
+/// its own content's header row as it draws.
+fn is_window_frame(widget: &dyn Widget) -> bool {
+    widget
+        .as_any()
+        .is_some_and(|any| any.is::<crate::widget::WindowFrame>())
+}
+
+/// The header row the window draws of its own: the first one down the root's tree, stopping at a
+/// window frame, whose content offers the bar to a row of its own. `None` for a root that draws
+/// none (a desk of windows, a page).
+pub(crate) fn root_header_row(root: &dyn Widget) -> Option<&dyn WindowHeader> {
+    if let Some(row) = super::capability::capability::<dyn WindowHeader>(root) {
+        return Some(row);
     }
-    root.children()
+    if is_window_frame(root) {
+        return None;
+    }
+    root.children().into_iter().find_map(root_header_row)
+}
+
+/// Offer the window's bar to the row [`root_header_row`] names. Returns whether a row took it.
+pub(crate) fn offer_root_header_bar(root: &mut dyn Widget, bar: Option<WindowBar>) -> bool {
+    if let Some(row) = super::capability::capability_mut::<dyn WindowHeader>(root) {
+        return row.set_window_bar(bar);
+    }
+    if is_window_frame(root) {
+        return false;
+    }
+    root.children_mut()
         .into_iter()
-        .map(header_row_height)
-        .fold(0.0, f64::max)
+        .any(|child| offer_root_header_bar(child, bar))
 }
 
 /// The slot of the first header row in `root`'s tree that holds the bar.

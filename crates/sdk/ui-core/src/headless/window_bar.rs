@@ -52,10 +52,11 @@ impl FrameHarness {
         // The bar the frame offers its content's header row, and whether the row holds it: a
         // row that does fills the window, one that does not leaves the bar its band above.
         let bar = self.window_bar_offer();
-        crate::widget::window_header::offer_window_bar(self.root.as_mut(), Some(bar));
+        crate::widget::window_header::offer_root_header_bar(self.root.as_mut(), Some(bar));
         self.lay_out_the_window();
-        let slot = crate::widget::window_header::window_bar_slot(self.root.as_ref());
-        self.row_holds = slot.is_some() && self.window_header_row_height() > 0.0;
+        let row = crate::widget::window_header::root_header_row(self.root.as_ref());
+        self.row_holds =
+            row.is_some_and(|row| row.window_bar_slot().is_some() && row.header_row_height() > 0.0);
         // A row holding the bar carries the search the app keeps in it; a bar over the frame
         // presents the window's own.
         crate::widget::window_header::offer_window_search(self.root.as_mut(), !self.row_holds);
@@ -100,19 +101,24 @@ impl FrameHarness {
     /// holds the bar.
     pub(super) fn row_bar_slot(&self) -> Option<crate::widget::WindowBarSlot> {
         self.row_holds
-            .then(|| crate::widget::window_header::window_bar_slot(self.root.as_ref()))
+            .then(|| {
+                crate::widget::window_header::root_header_row(self.root.as_ref())
+                    .and_then(crate::widget::WindowHeader::window_bar_slot)
+            })
             .flatten()
     }
 
-    /// The height of the header row the app's frame draws of its own under the window's bar: a
-    /// window shows one bar, so a row under it is a second one. `0.0` while the frame holds the
-    /// bar itself.
+    /// The height of the header row the window root draws of its own under the window's bar: a
+    /// window shows one bar, so a row under it is a second one. `0.0` while the root holds the
+    /// bar itself, and for a root that draws no row of its own (a desk of windows, whose windows
+    /// each offer their own bar).
     #[must_use]
     pub fn window_header_row_height(&self) -> f64 {
         if self.row_holds {
             return 0.0;
         }
-        crate::widget::window_header::header_row_height(self.root.as_ref())
+        crate::widget::window_header::root_header_row(self.root.as_ref())
+            .map_or(0.0, crate::widget::WindowHeader::header_row_height)
     }
 
     /// Whether the harness draws the desktop's window bar over the app.
