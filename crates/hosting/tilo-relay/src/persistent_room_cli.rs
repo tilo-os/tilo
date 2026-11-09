@@ -1390,15 +1390,13 @@ pub(crate) async fn run(
         .clone()
         .unwrap_or_else(|| workspace_name(&name));
     if let Some(gigabytes) = persistent.own_workspaces {
-        let host = args
-            .web
-            .public_origin
-            .as_deref()
-            .map(|origin| {
+        let host = args.web.public_origin.as_deref().map_or_else(
+            || shown.clone(),
+            |origin| {
                 let host = origin.split_once("://").map_or(origin, |(_, host)| host);
                 host.trim_end_matches('/').to_owned()
-            })
-            .unwrap_or_else(|| shown.clone());
+            },
+        );
         workspaces
             .offer_own_workspaces(tilo_relay::workspaces::OwnWorkspaceOffer {
                 host,
