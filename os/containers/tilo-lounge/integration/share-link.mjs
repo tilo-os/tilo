@@ -66,6 +66,10 @@ const person = async (name, {width, height, scale = 1, mobile = false}) => {
   const tab = await browser.tab();
   await tab.send('Emulation.setDeviceMetricsOverride', {width, height, deviceScaleFactor: scale, mobile});
   if (mobile) await tab.send('Emulation.setTouchEmulationEnabled', {enabled: true}).catch(() => {});
+  // Someone who has been here before: a browser new to the site opens on the
+  // first screen instead of the Lounge.
+  await tab.send('Page.addScriptToEvaluateOnNewDocument',
+    {source: "try { localStorage.setItem('tilo-first-run', '1'); } catch {}"});
   pages.push({name, tab});
   return tab;
 };

@@ -427,12 +427,18 @@ const callOn = async tab => JSON.parse(await tab.evaluate('JSON.stringify(global
 // leaves the others as they were, so each person gets one of their own: a
 // second tab in one browser is a desk that stops answering while the other
 // person is looked at.
+// People who come back to the site: a browser new to it opens on the first
+// screen (set up with an agent, or skip to one's own desktop), which these
+// people have been past already, so their page opens the Lounge itself.
+const returning = tab => tab.send('Page.addScriptToEvaluateOnNewDocument',
+  {source: "try { localStorage.setItem('tilo-first-run', '1'); } catch {}"});
 const anotherBrowser = async () => {
   const launched = await launch({args: browserArgs});
   browsers.push(launched);
   const tab = await launched.tab();
   await tab.send('Emulation.setDeviceMetricsOverride',
     {width: 1280, height: 800, deviceScaleFactor: 1, mobile: false}).catch(() => {});
+  await returning(tab);
   return tab;
 };
 // What a browser that reached the desktop leaves with the run: its arrival,
