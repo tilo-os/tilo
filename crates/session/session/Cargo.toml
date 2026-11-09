@@ -117,6 +117,9 @@ chrono = { workspace = true, default-features = true }
 ui = { package = "tilo-ui", path = "../../sdk/ui-core", default-features = false }
 serde.workspace = true
 serde_json.workspace = true
+# The sheets the desktop shows over everything: the offers an action
+# publishes and the effects a person answers with.
+tilo-sheets = { path = "../sheets" }
 tokio = { workspace = true, features = ["sync"] }
 pollster.workspace = true
 tracing.workspace = true
@@ -166,7 +169,6 @@ tilo-quick-settings = { path = "../quick-settings" }
 tilo-activities = { path = "../activities" }
 tilo-notification-banners = { path = "../notification-banners" }
 tilo-onboarding-host = { path = "../onboarding-host" }
-tilo-sheets = { path = "../sheets" }
 # The public workspaces sites list, their doors, and where a join stands.
 tilo-workspace-directory = { path = "../workspace-directory" }
 # What a door's invitation is verified as before a workspace is joined: only

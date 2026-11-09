@@ -25,24 +25,9 @@
 
 // The session's roles: the desk, the chrome, the records, the people and
 // the workspaces — what every host runs, the web page included.
-mod activity_provider;
-mod cards;
-mod collaboration;
-pub mod files_daemon;
 #[cfg(target_os = "linux")]
-mod fs_authority;
-mod here;
 mod host_actions;
-mod keyboard_shortcuts;
 pub mod overlays;
-mod owner_session;
-mod records;
-pub mod recovery;
-#[cfg(target_os = "linux")]
-mod seats;
-#[cfg(target_os = "linux")]
-mod system_sounds;
-mod workspace_delete;
 mod workspace_gate;
 
 // The Linux host's effects: the compositor, the services it starts, the
@@ -55,6 +40,8 @@ mod a11y_settings;
 mod activity;
 #[cfg(target_os = "linux")]
 mod activity_models;
+#[cfg(target_os = "linux")]
+mod activity_provider;
 #[cfg(target_os = "linux")]
 pub mod agent_door;
 #[cfg(target_os = "linux")]
@@ -96,6 +83,8 @@ mod capture_send;
 #[cfg(target_os = "linux")]
 mod capture_studio;
 #[cfg(target_os = "linux")]
+mod cards;
+#[cfg(target_os = "linux")]
 mod certification;
 #[cfg(target_os = "linux")]
 mod channels;
@@ -103,6 +92,8 @@ mod channels;
 mod chrome;
 #[cfg(target_os = "linux")]
 mod clock_wait;
+#[cfg(target_os = "linux")]
+mod collaboration;
 #[cfg(target_os = "linux")]
 mod community;
 #[cfg(target_os = "linux")]
@@ -174,7 +165,13 @@ mod feeds;
 #[cfg(target_os = "linux")]
 mod file_clipboard;
 #[cfg(target_os = "linux")]
+pub mod files_daemon;
+#[cfg(target_os = "linux")]
+mod fs_authority;
+#[cfg(target_os = "linux")]
 mod held;
+#[cfg(target_os = "linux")]
+mod here;
 #[cfg(target_os = "linux")]
 mod i18n;
 #[cfg(target_os = "linux")]
@@ -193,6 +190,8 @@ mod input_sources;
 mod invite;
 #[cfg(target_os = "linux")]
 pub mod keyboard;
+#[cfg(target_os = "linux")]
+mod keyboard_shortcuts;
 #[cfg(target_os = "linux")]
 mod keys;
 #[cfg(target_os = "linux")]
@@ -224,6 +223,8 @@ mod notifications;
 #[cfg(target_os = "linux")]
 mod options;
 #[cfg(target_os = "linux")]
+mod owner_session;
+#[cfg(target_os = "linux")]
 mod pairing;
 #[cfg(target_os = "linux")]
 mod panels;
@@ -250,6 +251,10 @@ pub mod quick_settings;
 #[cfg(target_os = "linux")]
 mod record_index;
 #[cfg(target_os = "linux")]
+mod records;
+#[cfg(target_os = "linux")]
+pub mod recovery;
+#[cfg(target_os = "linux")]
 mod remote_door;
 #[cfg(target_os = "linux")]
 mod rotation;
@@ -261,6 +266,8 @@ mod seams;
 mod search;
 #[cfg(target_os = "linux")]
 mod search_ask;
+#[cfg(target_os = "linux")]
+mod seats;
 #[cfg(target_os = "linux")]
 pub mod seeded_apps;
 #[cfg(target_os = "linux")]
@@ -302,6 +309,8 @@ mod switcher;
 #[cfg(target_os = "linux")]
 pub mod sync;
 #[cfg(target_os = "linux")]
+mod system_sounds;
+#[cfg(target_os = "linux")]
 mod task_programs;
 #[cfg(target_os = "linux")]
 mod task_undo;
@@ -329,6 +338,8 @@ mod window_share;
 mod window_transfer;
 #[cfg(target_os = "linux")]
 mod window_warmth;
+#[cfg(target_os = "linux")]
+mod workspace_delete;
 #[cfg(target_os = "linux")]
 mod workspace_settings;
 #[cfg(target_os = "linux")]
