@@ -110,6 +110,12 @@ pub struct InspectionNode {
     /// Effective policy and authoring origins, when supplied by the widget.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub layout: Option<crate::widget::LayoutInfo>,
+    /// The key the widget's draws carried in the last frame, while a host
+    /// keys them ([`crate::scene_parts::key_widgets`]): a page shown as HTML
+    /// finds the widget's element by it and makes it the semantic node's
+    /// home, so the drawn and the accessible tree are one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub paint_key: Option<String>,
     pub semantics: Option<AccessNode>,
     pub children: Vec<InspectionNode>,
 }
@@ -5159,6 +5165,7 @@ impl FrameHarness {
             child_clip: None,
             page_title: None,
             layout: None,
+            paint_key: None,
             semantics: Some(
                 crate::a11y::AccessNode::new(crate::a11y::Role::Tooltip).with_name(text.to_owned()),
             ),

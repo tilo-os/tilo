@@ -147,6 +147,13 @@ impl<M: ListModel> VirtualList<M> {
             }
             let row_rect = row_rect + vello::kurbo::Vec2::new(0.0, dy);
             let row_transform = transform * Affine::translate((0.0, dy));
+            // Each row is an element of its own on a page shown as HTML,
+            // kept by the row's key as rows scroll in and out.
+            let row_key = crate::scene_parts::begin_item(
+                scene,
+                crate::scene_parts::item_key("ui.list-row", &row.key),
+                transform * Affine::translate((row_rect.x0, row_rect.y0)),
+            );
             let faded = alpha < 1.0;
             if faded {
                 scene.push_layer(
@@ -255,6 +262,7 @@ impl<M: ListModel> VirtualList<M> {
             if faded {
                 scene.pop_layer();
             }
+            crate::scene_parts::end_widget(scene, row_key);
         }
         // The headings over the groups, over the rows they hold.
         self.draw_bands(scene, transform, text_renderer, theme);

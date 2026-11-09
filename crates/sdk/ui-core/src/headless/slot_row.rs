@@ -316,6 +316,7 @@ impl FrameHarness {
             child_clip: None,
             page_title: None,
             layout: None,
+            paint_key: None,
             semantics: Some(
                 crate::a11y::AccessNode::new(crate::a11y::Role::Toolbar)
                     .with_name(self.window_tab().title)

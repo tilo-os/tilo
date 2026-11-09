@@ -556,6 +556,7 @@ fn clipped_rich_text_preserves_pixels_and_culls_only_invisible_glyphs() {
                 !renderer.glyph_batch_outside(
                     &font,
                     &GlyphBatch {
+                        line_text: "",
                         face_id: first.font_id,
                         glyphs: run.glyphs,
                         size: first.font_size,
@@ -761,6 +762,7 @@ fn the_clipped_ink_cache_groups_by_font_instance_and_stays_bounded() {
             let outside = renderer.glyph_batch_outside(
                 &font,
                 &GlyphBatch {
+                    line_text: "",
                     face_id: glyph.font_id,
                     glyphs: std::slice::from_ref(&glyph),
                     size,
@@ -780,6 +782,7 @@ fn the_clipped_ink_cache_groups_by_font_instance_and_stays_bounded() {
             assert!(renderer.glyph_batch_outside(
                 &font,
                 &GlyphBatch {
+                    line_text: "",
                     face_id: glyph.font_id,
                     glyphs: std::slice::from_ref(&glyph),
                     size,

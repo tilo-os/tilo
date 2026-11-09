@@ -381,18 +381,49 @@ pub fn draw_child(
     theme: &Theme,
     presence: &PresenceCtx,
 ) {
-    if !presence.should_cull(child.paint_bounds()) {
-        #[cfg(debug_assertions)]
-        let open = scene.encoding().n_open_clips;
-        child.draw(scene, transform, text_renderer, theme, presence);
-        #[cfg(debug_assertions)]
-        debug_assert_eq!(
-            scene.encoding().n_open_clips,
-            open,
-            "{} left a layer open (or ended one it did not begin) in its draw",
-            child.concrete_type_name()
-        );
+    draw_child_at(
+        child,
+        None,
+        scene,
+        transform,
+        text_renderer,
+        theme,
+        presence,
+    );
+}
+
+/// [`draw_child`] for a container that knows `child`'s place among its
+/// children (`index`), so a host that keys widgets
+/// ([`crate::scene_parts::key_widgets`]) keys it by that place even when the
+/// container leaves siblings before it undrawn.
+pub fn draw_child_at(
+    child: &mut (impl Widget + ?Sized),
+    index: Option<usize>,
+    scene: &mut Scene,
+    transform: Affine,
+    text_renderer: &mut TextRenderer,
+    theme: &Theme,
+    presence: &PresenceCtx,
+) {
+    if presence.should_cull(child.paint_bounds()) {
+        // Counted all the same, so the siblings after it keep their keys.
+        if index.is_none() {
+            crate::scene_parts::skip_widget();
+        }
+        return;
     }
+    #[cfg(debug_assertions)]
+    let open = scene.encoding().n_open_clips;
+    let begun = crate::scene_parts::begin_widget(scene, child, index, transform);
+    child.draw(scene, transform, text_renderer, theme, presence);
+    crate::scene_parts::end_widget(scene, begun);
+    #[cfg(debug_assertions)]
+    debug_assert_eq!(
+        scene.encoding().n_open_clips,
+        open,
+        "{} left a layer open (or ended one it did not begin) in its draw",
+        child.concrete_type_name()
+    );
 }
 
 /// What a gated, presence-publishing widget draws over itself once drawn:

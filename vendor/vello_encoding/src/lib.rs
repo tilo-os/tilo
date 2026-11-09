@@ -57,7 +57,7 @@ pub use draw::{
     DRAW_INFO_FLAGS_FILL_RULE_BIT, DrawBbox, DrawBeginClip, DrawBlurRoundedRect, DrawColor,
     DrawImage, DrawLinearGradient, DrawMonoid, DrawRadialGradient, DrawSweepGradient, DrawTag,
 };
-pub use encoding::{Encoding, Resources, StreamOffsets};
+pub use encoding::{Encoding, Mark, MarkKind, Resources, StreamOffsets};
 pub use glyph::{FontEmbolden, Glyph, GlyphRun};
 pub use image_cache::ImageCacheStats;
 pub use image_delta::{ImageRect, image_delta, register_image_delta};

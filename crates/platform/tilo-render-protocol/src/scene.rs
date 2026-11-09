@@ -598,6 +598,8 @@ fn read_glyph_run(r: &mut Reader<'_>, resources: &dyn Resources) -> Result<Glyph
         style,
         glyphs,
         stream_offsets,
+        // The wire carries outlines' glyphs only.
+        text: None,
     })
 }
 

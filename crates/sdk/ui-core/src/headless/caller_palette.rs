@@ -243,6 +243,7 @@ impl FrameHarness {
             child_clip: None,
             page_title: None,
             layout: None,
+            paint_key: None,
             semantics: None,
             children: vec![
                 collect_inspection(field, "caller-palette", &mut counts),

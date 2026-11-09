@@ -101,4 +101,8 @@ pub struct GlyphRun {
     pub glyphs: Range<usize>,
     /// Stream offsets where this glyph run should be inserted.
     pub stream_offsets: StreamOffsets,
+    /// The characters these glyphs set, when the caller supplies them: a
+    /// renderer that presents text as text (a page's DOM) reads them instead
+    /// of the outlines. Never read by the GPU pipeline.
+    pub text: Option<std::sync::Arc<str>>,
 }

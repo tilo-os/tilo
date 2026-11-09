@@ -148,6 +148,22 @@ impl Encoding {
             self.resources
                 .color_stops
                 .extend_from_slice(&other.resources.color_stops);
+            self.resources
+                .marks
+                .extend(other.resources.marks.iter().map(|mark| {
+                    let kind = match (mark.kind, transform) {
+                        (MarkKind::Begin { key, origin }, Some(transform)) => MarkKind::Begin {
+                            key,
+                            origin: *transform * origin,
+                        },
+                        (kind, _) => kind,
+                    };
+                    Mark {
+                        draw_tags: mark.draw_tags + offsets.draw_tags,
+                        glyph_runs: mark.glyph_runs + glyph_runs_base,
+                        kind,
+                    }
+                }));
             glyph_runs_base
         };
         self.path_tags.extend_from_slice(&other.path_tags);
@@ -181,6 +197,15 @@ impl Encoding {
             self.transforms.extend_from_slice(&other.transforms);
         }
         self.styles.extend_from_slice(&other.styles);
+    }
+
+    /// Marks a keyed boundary here ([`Mark`]).
+    pub fn encode_mark(&mut self, kind: MarkKind) {
+        self.resources.marks.push(Mark {
+            draw_tags: self.draw_tags.len(),
+            glyph_runs: self.resources.glyph_runs.len(),
+            kind,
+        });
     }
 
     /// Returns a snapshot of the current stream offsets.
@@ -574,6 +599,39 @@ pub struct Resources {
     pub glyph_runs: Vec<GlyphRun>,
     /// Normalized coordinate buffer for variable fonts.
     pub normalized_coords: Vec<NormalizedCoord>,
+    /// Keyed boundaries in the draw stream ([`Mark`]). Never read by the GPU
+    /// pipeline.
+    pub marks: Vec<Mark>,
+}
+
+/// A keyed boundary in the draw stream, for a renderer that keeps what it
+/// shows from frame to frame by identity (a page's DOM): everything drawn
+/// between a [`MarkKind::Begin`] and its [`MarkKind::End`] belongs to the
+/// thing the key names, wherever the stream lands it.
+#[derive(Clone, Debug)]
+pub struct Mark {
+    /// How many draw tags precede the boundary.
+    pub draw_tags: usize,
+    /// How many glyph runs precede it: a run inserted at the same draw tag
+    /// offset lies before the boundary only when it was recorded first.
+    pub glyph_runs: usize,
+    /// Which boundary it is.
+    pub kind: MarkKind,
+}
+
+/// See [`Mark`].
+#[derive(Clone, Copy, Debug)]
+pub enum MarkKind {
+    /// What follows belongs to `key`, whose own coordinates `origin` maps
+    /// into the encoding's (an append's transform moves it with the draws).
+    Begin {
+        /// The identity, stable across frames.
+        key: u64,
+        /// Where the keyed thing stands.
+        origin: Transform,
+    },
+    /// The innermost open key ends.
+    End,
 }
 
 impl Resources {
@@ -586,6 +644,7 @@ impl Resources {
         self.glyphs.clear();
         self.glyph_runs.clear();
         self.normalized_coords.clear();
+        self.marks.clear();
     }
 }
 
