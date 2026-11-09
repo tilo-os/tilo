@@ -315,8 +315,7 @@ impl AppTabs {
         // and a search is the desk's own.
         self.deliver_sends(shared);
         self.deliver_searches(shared);
-        self.deliver_send_from(shared, desktop, compositor);
-        self.deliver_report_problem(shared, desktop, compositor);
+        self.deliver_box(shared, desktop, compositor);
         // Where each app's own card stands this pass: the floating layer's place, which the desk
         // lays the app's window out by.
         self.follow_cards(desktop, compositor);
@@ -357,60 +356,35 @@ impl AppTabs {
         }
     }
 
-    /// Ask the window in front to open its send-to box, as the shell's send key does
+    /// Ask the window in front to open its box, as the shell's send key does
     /// ([`FloatingSurfaceHostMessage::ShareSelection`]): the app draws the box alone, with no menu
-    /// around it. A window whose app cannot take it — it never said it opens a box, or it is gone —
-    /// leaves the chord to Chat, which a send has always opened.
-    fn deliver_send_from(
-        &self,
-        shared: &crate::Shared,
-        desktop: &DesktopHost,
-        compositor: &Compositor,
-    ) {
-        if !shared.take_send_from() {
+    /// around it. "Report a problem" asks for the same box with the one place this computer sends
+    /// reports on it, so nothing but the words is left to fill in and the person writes them over
+    /// the window the report is about. A window whose app cannot take a box — it never said it
+    /// opens one, or it is gone — leaves the gesture to Chat, which a send has always opened; a
+    /// report with nowhere to go asks nothing.
+    fn deliver_box(&self, shared: &crate::Shared, desktop: &DesktopHost, compositor: &Compositor) {
+        let reporting = shared.take_report_from();
+        if !shared.take_send_from() && !reporting {
             return;
         }
-        let asked = self.link_in_front(desktop, compositor).is_some_and(|link| {
-            tell(
-                &link.writer,
-                &FloatingSurfaceHostMessage::ShareSelection { to: Vec::new() },
-                &link.app,
-            )
-        });
-        if !asked {
-            tracing::debug!("no window in front opens a box: the send key opens Chat");
-            shared.launchpad(LaunchpadAction::Chat);
-        }
-    }
-
-    /// Ask the window in front to open its box to the one place this computer sends reports, as the
-    /// shell's "report a problem" does: the person writes what went wrong over the window it is
-    /// about, and what it picked goes with it (the box's box names the destination, so nothing but
-    /// the words is left to fill in). A window that cannot take a box leaves the report to Chat,
-    /// where the reports are read.
-    fn deliver_report_problem(
-        &self,
-        shared: &crate::Shared,
-        desktop: &DesktopHost,
-        compositor: &Compositor,
-    ) {
-        if !shared.take_report_from() {
-            return;
-        }
-        let Some(to) = shared.feedback_recipient() else {
-            return;
+        let to = if reporting {
+            let Some(to) = shared.feedback_recipient() else {
+                return;
+            };
+            vec![to]
+        } else {
+            Vec::new()
         };
         let asked = self.link_in_front(desktop, compositor).is_some_and(|link| {
             tell(
                 &link.writer,
-                &FloatingSurfaceHostMessage::ShareSelection {
-                    to: vec![to.clone()],
-                },
+                &FloatingSurfaceHostMessage::ShareSelection { to },
                 &link.app,
             )
         });
         if !asked {
-            tracing::debug!("no window in front opens a box: the report opens Chat");
+            tracing::debug!("no window in front opens a box: the gesture opens Chat");
             shared.launchpad(LaunchpadAction::Chat);
         }
     }
