@@ -777,3 +777,106 @@ fn a_failed_turn_offers_a_retry_that_asks_the_agent_again_on_the_same_message() 
         "a reply already asked again offers no Retry: {reply_row}"
     );
 }
+
+/// A served resource's own `open` is the system's `open`: it stands the resource beside the
+/// conversation of the turn that asked, attributed to the agent, and the record is not changed
+/// (`docs/designs/app-language/one-app-model.md` §3, "`open(r)` places r with its default view,
+/// beside where it was asked, for every app"; shell.md §8, "The canvas composes views; it opens
+/// nothing"). This is the `open` every tilolang resource publishes — the one an agent that read
+/// the catalogue kept invoking, and was refused — run as the turn's step.
+#[test]
+fn a_served_resources_open_stands_it_beside_the_conversation_that_asked() {
+    let _settled = ui::motion::testing::settled();
+    let root = private_home();
+    let mut session = session(root.path());
+    ask(&mut session, "what is on my task list?");
+    // The conversation the ask placed: the place a resource the turn opens stands beside.
+    let conversation = wait_for(&mut session, "the ask placed", |session| {
+        common::places(session)
+            .into_iter()
+            .find(|place| place.record.contains("/channels/"))
+    });
+    let workspace = workspace(&session);
+    let runs = session.conversation_runs();
+    let turns = wait_for(&mut session, "the agent's turn", |_session| {
+        let turns = runs.runs(&workspace).ok()?;
+        (!turns.is_empty()).then_some(turns)
+    });
+    let agent = format!("agent:{}", turns[0].agent);
+    // A served tilolang resource the session publishes, with its own `open`: the notes app's
+    // root, which the record service keeps.
+    let resource = session
+        .service_resources()
+        .into_iter()
+        .find(|spec| spec.id.as_str().starts_with("tl:so.tilo.lang.notes:root-"))
+        .map(|spec| spec.id.as_str().to_owned())
+        .expect("the notes app's root is published");
+    assert!(
+        !common::places(&session)
+            .iter()
+            .any(|place| place.record == resource),
+        "the resource is not shown before anyone opens it"
+    );
+    assert!(
+        session.service_resources().into_iter().any(|spec| {
+            spec.id.as_str() == resource && spec.actions.iter().any(|action| action.id == "open")
+        }),
+        "the resource publishes its own `open`"
+    );
+
+    // The agent invokes the resource's `open` as the turn's step, beside the conversation.
+    session
+        .invoke_service_step_beside_as(
+            &agent,
+            &resource,
+            "open",
+            &serde_json::Map::new(),
+            &conversation.record,
+        )
+        .unwrap_or_else(|error| panic!("the open runs: {error}"));
+
+    let placed = wait_for(&mut session, "the resource placed", |session| {
+        common::places(session)
+            .into_iter()
+            .find(|place| place.record == resource)
+    });
+    // It stands through its own primary view, as the system `open` does.
+    assert!(
+        !placed.shown_as.is_empty(),
+        "it stands through the app's own view: {placed:?}"
+    );
+    assert_eq!(
+        placed.shows, "so.tilo.lang.notes",
+        "it shows the app whose root it names: {placed:?}"
+    );
+    // Beside the conversation it was asked in, in the same workspace and at its own line, the
+    // place standing to the conversation's right — the free space nearest it — never off at the
+    // canvas' origin.
+    let strip_of = |place: &tilo_session::arrangement::PlaceReading, session: &Session| {
+        common::strip(session, common::number(&place.strip)).expect("the place has its strip")
+    };
+    let (placed_strip, asked_in) = (
+        strip_of(&placed, &session),
+        strip_of(&conversation, &session),
+    );
+    assert_eq!(
+        placed_strip.workspace, asked_in.workspace,
+        "it stands in the conversation's workspace"
+    );
+    assert_eq!(
+        placed_strip.canvas_y, asked_in.canvas_y,
+        "it stands at the conversation's line"
+    );
+    assert!(
+        placed_strip.canvas_x > asked_in.canvas_x,
+        "it stands beside the conversation, to its right: {placed_strip:?} against {asked_in:?}"
+    );
+    // And it is one arranging step of the agent's, not the record's change.
+    let (who, verb) = session
+        .arrangement()
+        .borrow_mut()
+        .last_step()
+        .expect("a step of the history");
+    assert_eq!(who, agent, "attributed to the agent that asked");
+    assert_eq!(verb, "place", "opening is one arranging step");
+}
