@@ -135,6 +135,50 @@ fn what_a_command_prints_is_shown_while_it_runs() {
 }
 
 #[test]
+fn a_cancelled_run_ends_its_command_promptly() {
+    let dir = tempfile::tempdir().unwrap();
+    let runs = member(dir.path());
+    let request = asking("echo started && sleep 120 && echo never");
+    let id = request.invocation;
+    answered(runs.invoke(&host(), request)).unwrap();
+
+    // Once the command is under way, the host cancels it, as a person's
+    // Ctrl+C in the session or an agent's cancel of its invocation does.
+    let deadline = Instant::now() + Duration::from_secs(30);
+    loop {
+        if let Some(state) = runs.observe(&host(), &id)
+            && let InvocationUpdate::Item { value, .. } = state.update
+        {
+            let printed: RunOutput = serde_json::from_value(value).unwrap();
+            if printed.tail.contains("started") {
+                break;
+            }
+        }
+        assert!(Instant::now() < deadline, "the command never printed");
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    let asked_at = Instant::now();
+    answered(runs.cancel(&host(), &id)).unwrap();
+    let (ran, _) = followed(&runs, &host(), id);
+    assert!(
+        asked_at.elapsed() < Duration::from_secs(20),
+        "the command ended promptly: {:?}",
+        asked_at.elapsed()
+    );
+    assert!(ran.cancelled, "the run says it was cancelled: {ran:?}");
+    assert_eq!(ran.exit, 130, "{}", ran.output);
+    assert!(ran.output.starts_with("started\n"), "{}", ran.output);
+    assert!(!ran.output.contains("never"), "{}", ran.output);
+
+    // A run that ended is no longer one a cancel ends.
+    let late = answered(runs.cancel(&host(), &id));
+    assert!(
+        matches!(late, Err(ActionHostError::NotCancellable { .. })),
+        "{late:?}"
+    );
+}
+
+#[test]
 fn only_the_hosts_own_devices_may_ask_and_only_for_runs() {
     let dir = tempfile::tempdir().unwrap();
     let runs = member(dir.path());

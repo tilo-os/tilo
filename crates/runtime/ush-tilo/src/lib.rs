@@ -422,7 +422,12 @@ impl Host for TiloHost {
         cwd: &Path,
         io: &Stdio,
     ) -> Program {
-        self.0.programs.run(argv, env, cwd, io, None)
+        // A program in the workspace's VM is stopped the way the shell's own
+        // loops are: the person's Ctrl+C, or the caller's cancel of the run.
+        let place = Arc::clone(&self.0.place);
+        self.0
+            .programs
+            .run(argv, env, cwd, io, Some(&|| place.interrupted()))
     }
 
     fn program_until(

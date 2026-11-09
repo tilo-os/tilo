@@ -6,9 +6,13 @@
 //! device of the operator this member's identity belongs to, the only one who
 //! knows which account pays), runs the command line in the session's shell
 //! over the member's own copy of the workspace's files ([`WorkspaceShells`]),
-//! shows what it prints as it prints it, and answers how it went. Anything
-//! else is not served here, so its caller learns at once.
+//! shows what it prints as it prints it, and answers how it went. The host
+//! can stop a run it started: the command ends in the shell as it does on a
+//! person's Ctrl+C, and the answer says so
+//! ([`CommandRan::cancelled`]). Anything else is not served here, so its
+//! caller learns at once.
 
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Condvar, Mutex, PoisonError};
 use std::time::Duration;
 
@@ -42,13 +46,18 @@ struct Inner {
     moves: Mutex<u64>,
 }
 
-/// One admitted run: what it is at now.
+/// One admitted run: what it is at now, and how it is stopped.
 #[derive(Clone)]
-struct Run(Arc<Mutex<InvocationState>>);
+struct Run {
+    state: Arc<Mutex<InvocationState>>,
+    /// Set when the host cancels the run: the command running in the
+    /// session's shell ends, as it does on a person's Ctrl+C.
+    stop: Arc<AtomicBool>,
+}
 
 impl Run {
     fn state(&self) -> InvocationState {
-        self.0
+        self.state
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
             .clone()
@@ -112,7 +121,7 @@ impl Inner {
 
     fn set(&self, run: &Run, update: InvocationUpdate) {
         let invocation = run.state().invocation();
-        *run.0.lock().unwrap_or_else(PoisonError::into_inner) =
+        *run.state.lock().unwrap_or_else(PoisonError::into_inner) =
             InvocationState::new(invocation, update);
         self.moved();
     }
@@ -122,8 +131,8 @@ impl Inner {
         let invocation = run.state().invocation();
         std::thread::spawn(move || {
             let sequence = std::sync::atomic::AtomicU64::new(0);
-            let seen = |printed: &[u8]| {
-                let value = serde_json::to_value(RunOutput::of(printed)).unwrap_or_default();
+            let seen = |printed: &RunOutput| {
+                let value = serde_json::to_value(printed).unwrap_or_default();
                 let sequence = sequence.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                 inner.set(
                     &run,
@@ -134,6 +143,8 @@ impl Inner {
                     },
                 );
             };
+            let stop = Arc::clone(&run.stop);
+            let stopping = || stop.load(Ordering::SeqCst);
             let payer = Payer {
                 account: asked.account.clone(),
                 size: legacy_vm::hosted::size::VmSize::parse(&asked.size).unwrap_or_default(),
@@ -144,6 +155,7 @@ impl Inner {
                 &asked.command,
                 asked.agent,
                 Some(&payer),
+                Some(&stopping),
                 Some(&seen),
             );
             let update = match ran {
@@ -176,6 +188,7 @@ fn ran_of(ran: ShellRun) -> CommandRan {
         exit: ran.exit,
         output: String::from_utf8_lossy(&ran.output).into_owned(),
         truncated: ran.truncated,
+        cancelled: ran.cancelled,
         started_ms: ran.started_ms,
         ended_ms: ran.ended_ms,
         refusal: ran.refusal,
@@ -216,14 +229,25 @@ impl ActionHost for EnvironmentRuns {
     }
 
     fn cancel(&self, caller: &Caller, id: &InvocationId) -> Pending<Result<(), ActionHostError>> {
-        let known = self.observe(caller, id).is_some();
-        Pending::ready(Err(if known {
-            ActionHostError::NotCancellable {
-                reason: "a command runs until it ends".into(),
-            }
-        } else {
-            ActionHostError::UnknownInvocation
-        }))
+        let run = self
+            .0
+            .ledger
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .get(caller, id)
+            .cloned();
+        let Some(run) = run else {
+            return Pending::ready(Err(ActionHostError::UnknownInvocation));
+        };
+        if run.state().update.is_terminal() {
+            return Pending::ready(Err(ActionHostError::NotCancellable {
+                reason: "the run has ended".into(),
+            }));
+        }
+        // The command ends in the session's shell, as it does on a person's
+        // Ctrl+C; the run answers with what it printed until then.
+        run.stop.store(true, Ordering::SeqCst);
+        Pending::ready(Ok(()))
     }
 }
 
@@ -257,10 +281,13 @@ impl EnvironmentRuns {
                 .map(|run| run.state().receipt())
                 .ok_or(ActionHostError::UnknownInvocation),
             Reservation::Reserved => {
-                let run = Run(Arc::new(Mutex::new(InvocationState::new(
-                    invocation,
-                    InvocationUpdate::Accepted { invocation },
-                ))));
+                let run = Run {
+                    state: Arc::new(Mutex::new(InvocationState::new(
+                        invocation,
+                        InvocationUpdate::Accepted { invocation },
+                    ))),
+                    stop: Arc::new(AtomicBool::new(false)),
+                };
                 ledger.complete(&invocation, run.clone());
                 drop(ledger);
                 let receipt = run.state().receipt();
