@@ -521,6 +521,7 @@ decorator_trait! {
     }
 
     mut {
+        fn window_choose(id: &str) -> bool;
         fn set_full_bleed(full_bleed: bool);
         fn place_disclosing(slot: vello::kurbo::Rect);
         fn note_placement(placement: crate::widget::Placement);

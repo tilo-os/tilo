@@ -1640,6 +1640,13 @@ pub trait Widget {
         false
     }
 
+    /// Choose the row `id` of a menu this control opens in the window's bar
+    /// ([`Self::window_slot`] named the rows): the bar shows the menu, and the row the person
+    /// chose comes back by the id it was given. `false` for a control that opens no menu.
+    fn window_choose(&mut self, _id: &str) -> bool {
+        false
+    }
+
     /// Downcast to the concrete widget, for hosts and tests that reach a
     /// known widget through `dyn Widget`. Default `None` (a widget may borrow
     /// and so not be `'static`); a widget opts in with `Some(self)`, and a

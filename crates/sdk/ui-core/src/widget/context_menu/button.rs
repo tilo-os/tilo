@@ -127,9 +127,71 @@ impl crate::widget::Decorator for MenuButton {
         &mut self.button
     }
 
-    /// Its menu opens where the button stands, and the window's bar has no place to hang it: a
-    /// header holding one keeps its row.
+    /// Its button, listing the rows its menu holds: the window's bar opens the menu where the
+    /// button stands, and the row chosen comes back by its id ([`Widget::window_choose`]). A
+    /// menu with a nested one or a row of emoji keeps the header's row.
+    fn window_slot(&self, id: String) -> Option<crate::window_toolbar::ToolbarAction> {
+        let mut action = Widget::window_slot(&self.button, id.clone())?;
+        // The bar lists the menu's rows itself: its button stands in the row, saying what it
+        // opens, rather than hiding behind the row's own door.
+        action.menu = false;
+        action.labelled = true;
+        for (row, item) in self.menu.items().iter().enumerate() {
+            let MenuItem::Action {
+                label,
+                icon,
+                checked,
+                destructive,
+                enabled,
+                ..
+            } = item
+            else {
+                continue;
+            };
+            let mut action_row = crate::window_toolbar::ToolbarAction::new(
+                format!("{id}~row-{row}"),
+                icon.map_or("", crate::icons::Icon::name),
+                label.clone(),
+            )
+            .enabled(*enabled)
+            .destructive_if(*destructive);
+            if let Some(checked) = checked {
+                action_row = action_row.on(*checked);
+            }
+            action.items.push(action_row);
+        }
+        Some(action)
+    }
+
+    /// A menu the bar has nothing to list — one with a nested menu, a row of emoji, or no rows
+    /// at all — keeps the header's row.
     fn window_slot_barrier(&self) -> bool {
+        let mut rows = 0;
+        for item in self.menu.items() {
+            match item {
+                MenuItem::Action { submenu: None, .. } => rows += 1,
+                MenuItem::Separator | MenuItem::Caption(_) => {}
+                MenuItem::Action {
+                    submenu: Some(_), ..
+                }
+                | MenuItem::Emoji(_) => return true,
+            }
+        }
+        rows == 0
+    }
+
+    /// Choose the menu's row the bar named.
+    fn window_choose(&mut self, id: &str) -> bool {
+        let Some(row) = id
+            .rsplit_once("~row-")
+            .and_then(|(_, row)| row.parse::<usize>().ok())
+        else {
+            return false;
+        };
+        if row >= self.menu.items().len() {
+            return false;
+        }
+        self.menu.click_item(row);
         true
     }
 

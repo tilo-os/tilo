@@ -641,7 +641,18 @@ impl NavShell {
             let ToolbarEvent::Action { id } = event else {
                 continue;
             };
-            let Some((_, column, path)) = slots.iter().find(|(action, ..)| action.id == id) else {
+            // A slot's press, or a row of the menu a slot opens: a menu button lists its rows in
+            // the bar, so the chosen one comes back by its own id.
+            let found = slots.iter().find_map(|(action, column, path)| {
+                if action.id == id {
+                    Some((*column, path.clone(), false))
+                } else if action.items.iter().any(|item| item.id == id) {
+                    Some((*column, path.clone(), true))
+                } else {
+                    None
+                }
+            });
+            let Some((column, path, row)) = found else {
                 continue;
             };
             let Some((&first, rest)) = path.split_first() else {
@@ -657,7 +668,11 @@ impl NavShell {
                 widget = widget.and_then(|widget| widget.children_mut().into_iter().nth(child));
             }
             if let Some(widget) = widget {
-                widget.perform_action(&crate::a11y::Action::Activate, &[], edits, path_root);
+                if row {
+                    widget.window_choose(&id);
+                } else {
+                    widget.perform_action(&crate::a11y::Action::Activate, &[], edits, path_root);
+                }
             }
         }
         self.invalidate();

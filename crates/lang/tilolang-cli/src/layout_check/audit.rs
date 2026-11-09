@@ -1286,8 +1286,8 @@ pub fn bar(layout: &ui::window_toolbar::BarLayout) -> Vec<Problem> {
     }
     for control in &layout.controls {
         // Drawn as its icon alone, narrower than the words it has, while the room stood empty
-        // beside it: a person cannot read what it does. A "…" is a glyph by design.
-        if control.menu || control.icon.is_none() || control.words <= 0.0 {
+        // beside it: a person cannot read what it does. The row's own "…" is a glyph by design.
+        if control.slot == "overflow" || control.icon.is_none() || control.words <= 0.0 {
             continue;
         }
         let missing = control.words - control.rect[2];
@@ -2580,7 +2580,11 @@ mod tests {
             vec![Kind::DuplicateBarControl],
             "the two check circles are one control to a person"
         );
-        // The app's own door beside the bar's own "…": one bar has one.
+    }
+
+    /// The app's own door beside the bar's own "…": one bar has one.
+    #[test]
+    fn an_apps_own_door_beside_the_bars_is_one_door_too() {
         let doors = bar(
             vec![
                 control(
@@ -2675,6 +2679,19 @@ mod tests {
         };
         assert_eq!(kinds(&icon(400.0)), vec![Kind::IconOnlyBarAction]);
         assert!(kinds(&icon(20.0)).is_empty(), "a narrow bar keeps the icon");
+        // A menu button says what it opens like any other action where the row has room.
+        let menu = bar(
+            vec![control(
+                "action",
+                "page~sort",
+                "Sort",
+                Some("arrow-up-down"),
+                48.0,
+                true,
+            )],
+            400.0,
+        );
+        assert_eq!(kinds(&menu), vec![Kind::IconOnlyBarAction]);
         // A labelled action stands as wide as its words: the row gave it the room.
         let labelled = bar(
             vec![
