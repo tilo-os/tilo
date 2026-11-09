@@ -275,28 +275,41 @@ impl View<'_> {
         )? {
             return Ok(answer);
         }
-        let chosen = narrow.map(|(at, access, _)| (at, access)).or(chosen);
+        // The runs a query may be read page by page from: the one the narrowest conjunct names
+        // first, then the one [`choose`] found. A run read page by page is one exact run, in the
+        // collection's order or the order of the column it runs over; the conjuncts it leaves
+        // are checked as its pages fill ([`Filtered`]), so a filter of several conjuncts costs
+        // the entries its first page reads, not the run's length. A narrowest run that cannot be
+        // read that way (a range, whose entries run by value when the collection's own order is
+        // asked) leaves the listing to the run that can: reading it whole reads every item it
+        // names, which is the workspace's size for a place that holds half of it. The narrowest
+        // still sizes the listing, before its pages are read.
+        let narrow = narrow.map(|(at, access, _)| (at, access));
         let order_column = order.and_then(|o| schema.column(&o.field));
-        // A run read page by page: one exact run, in the collection's order or the order of
-        // the column it runs over. The conjuncts it leaves are checked as its pages fill
-        // ([`Filtered`]), so a filter of several conjuncts costs the entries its first page
-        // reads, not the run's length.
-        let run = if let Some((at, access)) = &chosen
-            && let [a] = access.as_slice()
-            && let [run] = a.runs.as_slice()
-            && a.exact
-            && (!a.repeats || membership(conj.get(*at).copied().unwrap_or(&Pred::Const(false))))
-        {
-            self.paged_run(
+        let mut run = None;
+        for (at, access) in narrow.iter().chain(chosen.iter()) {
+            let [a] = access.as_slice() else {
+                continue;
+            };
+            let [one] = a.runs.as_slice() else {
+                continue;
+            };
+            if !a.exact
+                || (a.repeats && !membership(conj.get(*at).copied().unwrap_or(&Pred::Const(false))))
+            {
+                continue;
+            }
+            run = self.paged_run(
                 (resource, field),
                 schema,
-                (&conj, *at, a, run),
+                (&conj, *at, a, one),
                 (order, order_column),
                 (Some(bound).flatten(), &touched, carried, evaluated),
-            )?
-        } else {
-            None
-        };
+            )?;
+            if run.is_some() {
+                break;
+            }
+        }
         if let Some(listing) = run {
             return Ok(listing);
         }
@@ -318,10 +331,11 @@ impl View<'_> {
                 .map(Answer::shown)
                 .map_err(index_error);
         }
+        // Read whole: the narrowest conjunct's run, which names the fewest items to check.
         self.read_whole(
             (resource, field),
             schema,
-            (&conj, chosen.as_ref()),
+            (&conj, narrow.as_ref().or(chosen.as_ref())),
             order,
             (&touched, evaluated),
         )
