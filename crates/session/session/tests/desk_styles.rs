@@ -24,7 +24,7 @@ mod common;
 use std::time::Duration;
 
 use tilo_compositor::{KeyRepeat, OutputConfig};
-use tilo_session::{Options, Service as _, Session};
+use tilo_session::{Options, Session};
 use tilo_surface_host::DeskReading;
 use tilo_surface_host::shell_part::DESK_RESOURCE;
 
@@ -68,19 +68,11 @@ fn until(session: &mut Session, done: impl FnMut(&mut Session) -> bool) {
     common::until(session, "the shell's answer", done);
 }
 
-/// Choose `style` as the desk's style, as the switch does: one `show_style` on the person's
-/// viewing, naming it by its view reference.
-fn choose(session: &mut Session, style: &str) {
-    session
-        .invoke(
-            "so.tilo.shell",
-            "show_style",
-            &serde_json::Map::from_iter([(
-                "shown".to_owned(),
-                serde_json::Value::String(style.to_owned()),
-            )]),
-        )
-        .unwrap_or_else(|error| panic!("choosing {style}: {error:?}"));
+/// Choose the style the switch lists as `label` (its doc line, or its view's name when it names
+/// none) the way a person does: open the bar's style menu and press the style there.
+#[track_caller]
+fn choose(session: &mut Session, label: &str) {
+    common::show_preset(session, label);
 }
 
 /// Step 2 of shell.md §6, "Styles are views": the four styles `so.tilo.shell` ships are views of
@@ -120,7 +112,7 @@ fn the_four_shipped_styles_are_listed_and_drawn() {
         "the shell stands on its display: {:?}",
         session.shell_parts()
     );
-    choose(&mut session, "so.tilo.shell:frames");
+    choose(&mut session, "Frames");
     until(&mut session, |session| {
         session
             .accessible_labels()
@@ -159,7 +151,7 @@ fn a_style_from_another_installed_package_is_listed_and_draws_the_desk() {
     std::fs::write(source.join("app.ids"), "").expect("an empty ids lock");
     std::fs::write(
         source.join("app.tl"),
-        r#"app a-test.timeline "A timeline"
+        r#"app atest.timeline "A timeline"
 
 use so.tilo.shell as shell
 
@@ -171,7 +163,7 @@ view timeline(a: shell.Arrangement) {
     )
     .expect("the style package");
     let installed = common::dev_apps::install_package(&source, store);
-    assert_eq!(installed, "a-test.timeline", "the style package installs");
+    assert_eq!(installed, "atest.timeline", "the style package installs");
 
     let mut session = session();
     until(&mut session, |session| !session.shell_parts().is_empty());
@@ -181,12 +173,12 @@ view timeline(a: shell.Arrangement) {
         desk(session)
             .styles
             .iter()
-            .any(|style| style.style == "a-test.timeline:timeline")
+            .any(|style| style.style == "atest.timeline:timeline")
     });
     let styles = desk(&session).styles;
     let own = styles
         .iter()
-        .find(|style| style.style == "a-test.timeline:timeline")
+        .find(|style| style.style == "atest.timeline:timeline")
         .expect("the person's style is listed");
     assert!(own.loads, "the person's style loads: {own:?}");
     assert_eq!(
@@ -194,13 +186,34 @@ view timeline(a: shell.Arrangement) {
         "listed by its author's doc line"
     );
     // Choosing it is one action on the person's viewing, as the switch runs, and the desk draws
-    // the package's own view of the arrangement: its words stand on the screen.
-    choose(&mut session, "a-test.timeline:timeline");
-    until(&mut session, |session| {
-        session
+    // the package's own view of the arrangement: its words stand on the screen. The bar's style
+    // menu lists every style by the one name it has everywhere (`style_label`), and the person's
+    // own stands beside the shell's four.
+    //
+    // This style draws only its own words and no bar (`shell.md` §6 lets a style draw what it
+    // wills), so once it is chosen the bar's switch is gone: the desk's answer is its own drawn
+    // text, not a menu title. Open the bar's style menu, press the person's style, and read the
+    // desk's answer.
+    let mut since = usize::MAX;
+    common::wait_for(&mut session, "the timeline to draw the desk", |session| {
+        if session
             .accessible_labels()
             .iter()
             .any(|label| label.starts_with("Timeline of "))
+        {
+            return Some(());
+        }
+        if since < 4 {
+            since = since.saturating_add(1);
+            return None;
+        }
+        if common::on_screen(session, "Timeline of the desk").is_some() {
+            common::press(session, "Timeline of the desk");
+        } else if let Some(menu) = common::preset_menu(session) {
+            common::press(session, &menu);
+        }
+        since = 0;
+        None
     });
     std::fs::remove_dir_all(&scratch).ok();
 }

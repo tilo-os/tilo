@@ -59,29 +59,21 @@ view style_switch(v: Viewing, d: Desk) {
     }
 }
 
-/// A style's own words for the switch: its doc line, or its view's name when its author wrote
-/// none, so no style is listed by an empty chip.
+/// A style's one name everywhere — the bar's menu title, its menu items and the Settings page:
+/// its doc line, or its view's name when its author wrote none, so no style is listed by an
+/// empty chip.
 fn style_label(style: DeskStyle) -> Text {
     if style.line != "" { style.line } else { style.name }
 }
 
-/// The style the desk shows, named in the bar's menu: its view's name with its first letter
-/// capitalised (`Strips`, `Timeline`), which is short enough for the bar's seat. The styles it
-/// offers are listed under it by their own doc lines.
+/// The style the desk shows, named in the bar's menu by the same name it is listed under
+/// (`style_label`): one name for a style in the bar and in Settings, never a different one in the
+/// seat from the one in the list.
 fn style_title(v: Viewing, d: Desk) -> Text {
     if let chosen = d.styles.find(s -> s.style == style_of(v)) {
-        return capitalised(chosen.name)
+        return style_label(chosen)
     }
     "Strips"
-}
-
-/// `text` with its first letter in capitals: a view's name (`strips`) as a bar names it
-/// (`Strips`).
-fn capitalised(text: Text) -> Text {
-    if text == "" {
-        return ""
-    }
-    "{text.slice(0, 1).upper()}{text.slice(1, text.len())}"
 }
 
 /// The style the desk shows as a menu of the bar's own: the same switch the Settings page
