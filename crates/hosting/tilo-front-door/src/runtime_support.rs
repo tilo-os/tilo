@@ -1,10 +1,17 @@
-//! A person's runtime for the tests: the real `tilo-runtime` HTTP endpoint,
-//! serving every workspace behind one address and checking each grant
-//! under the person's root and revocations, over an in-memory action host
-//! that publishes one action, so what an agent run does shows up as History
-//! records it.
+//! A person's host and runtime on loopback, for the door's tests and the
+//! local door ([`crate::local`]): a real `WorkspaceHost`, and the real
+//! `tilo-runtime` HTTP endpoint serving every workspace behind one address
+//! and checking each grant under the person's root and revocations, over an
+//! in-memory action host that publishes one action, so what an agent run
+//! does shows up as History records it.
 
-use crate::tests::Runtime;
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    reason = "a fixture: what it cannot set up is the failure it reports"
+)]
+
+use crate::directory::Route;
 use serde_json::{Value, json};
 use std::sync::{Arc, Mutex};
 use tilo_actions::remote::{
@@ -13,11 +20,34 @@ use tilo_actions::remote::{
 use tilo_runtime::remote_door::{PersonsDevices, Refusal};
 use tilo_user_identity::{DeviceCert, RevocationList};
 
+/// A person's runtime: one `tilo-runtime` HTTP endpoint on loopback serving
+/// every workspace, behind the door's token, checking grants under the
+/// person's root and revocations.
+pub struct Runtime {
+    pub base: String,
+    pub token: String,
+    pub host: Arc<TestHost>,
+    pub revoked: Arc<Mutex<RevocationList>>,
+    /// The invitations the runtime was asked to join with.
+    pub joined: Arc<Mutex<Vec<(String, String)>>>,
+}
+
+impl Runtime {
+    /// Where the door reaches it.
+    #[must_use]
+    pub fn route(&self) -> Route {
+        Route {
+            base: self.base.clone(),
+            token: self.token.clone(),
+        }
+    }
+}
+
 /// The tool an agent acts with, and the arguments that apply the one
 /// action the host publishes in `workspace`.
-pub(crate) const ACTION_TOOL: &str = "tilo_invoke";
+pub const ACTION_TOOL: &str = "tilo_invoke";
 
-pub(crate) fn action_arguments(workspace: &str) -> Value {
+pub fn action_arguments(workspace: &str) -> Value {
     json!({
         "workspace": workspace,
         "peer_id": 71,
@@ -115,8 +145,19 @@ impl PersonsDevices for Devices {
     }
 }
 
-/// The runtime of the person whose root is `root`, on loopback.
+/// The runtime of the person whose root is `root`, on loopback, answering
+/// the classic tools.
+#[cfg(test)]
 pub(crate) async fn runtime(root: [u8; 32]) -> Runtime {
+    serve_runtime(root, false).await
+}
+
+/// The runtime of the person whose root is `root`, on loopback: answering the
+/// agent tools (`tilo_ls`, `tilo_do`, …) when `agent`, else the classic ones.
+///
+/// # Panics
+/// Loopback cannot be bound.
+pub async fn serve_runtime(root: [u8; 32], agent: bool) -> Runtime {
     let host = Arc::new(
         TestHost::new()
             .with_catalogue(|caller, query| {
@@ -169,6 +210,23 @@ pub(crate) async fn runtime(root: [u8; 32]) -> Runtime {
         })),
         Some(joiner),
     );
+    if agent {
+        let served = Arc::clone(&host);
+        let resolve: tilo_runtime::mcp_http::SessionResolver<Arc<TestHost>> =
+            Arc::new(move |workspace: &str| {
+                let (host, workspace) = (Arc::clone(&served), workspace.to_owned());
+                let factory: tilo_runtime::mcp::SessionFactory<Arc<TestHost>> =
+                    Arc::new(move || {
+                        Ok(tilo_runtime::mcp::McpServer::for_person(
+                            Arc::clone(&host),
+                            workspace.clone(),
+                            "owner",
+                        ))
+                    });
+                Ok(factory)
+            });
+        let _ = endpoint.serve_workspaces(resolve);
+    }
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let base = format!("http://{}", listener.local_addr().unwrap());
     tokio::spawn(async move {
@@ -196,5 +254,86 @@ pub(crate) async fn runtime(root: [u8; 32]) -> Runtime {
         host,
         revoked,
         joined: joins,
+    }
+}
+
+/// A device of the person: its key and the certificate their root gave it.
+pub struct Device {
+    pub key: ed25519_dalek::SigningKey,
+    pub cert: DeviceCert,
+}
+
+/// A member device of the person whose root is `root`, its key from `seed`.
+///
+/// # Panics
+/// The root cannot sign the certificate.
+#[must_use]
+pub fn enrol(root: &ed25519_dalek::SigningKey, seed: u8, label: &str) -> Device {
+    let key = ed25519_dalek::SigningKey::from_bytes(&[seed; 32]);
+    let mut cert = DeviceCert {
+        user_public_key: root.verifying_key().to_bytes(),
+        device_public_key: key.verifying_key().to_bytes(),
+        device_label: label.into(),
+        capabilities: tilo_user_identity::DeviceCapabilities::member(),
+        issued_at_ns: 200,
+        expires_at_ns: None,
+        signature: [0; 64],
+        issuer: None,
+    };
+    tilo_user_identity::sign_device_cert(&mut cert, root).expect("the root signs its device");
+    Device { key, cert }
+}
+
+/// The person's host, serving on a fresh endpoint until shut down.
+pub struct Served {
+    pub host: tilo_room_host::host::WorkspaceHost,
+    router: iroh::protocol::Router,
+    pub device: Device,
+    _state: tempfile::TempDir,
+}
+
+/// Serve a host of the person whose root is `root`.
+///
+/// # Panics
+/// The host cannot be opened or bound.
+pub async fn serve(root: &ed25519_dalek::SigningKey) -> Served {
+    use tilo_room_host::host::{HostConfig, HostIdentity, HostMode, WorkspaceHost};
+    let device = enrol(root, 11, "Home node");
+    let state = tempfile::tempdir().expect("a scratch directory");
+    let endpoint = iroh::Endpoint::builder(iroh::endpoint::presets::Minimal)
+        .secret_key(iroh::SecretKey::from_bytes(&device.key.to_bytes()))
+        .bind()
+        .await
+        .expect("loopback binds");
+    let host = WorkspaceHost::open(
+        HostConfig::new(state.path().join("host"), HostMode::Device),
+        HostIdentity {
+            user_public_key: root.verifying_key().to_bytes(),
+            device_signing_key: device.key.clone(),
+            device_cert: device.cert.clone(),
+            revocations: RevocationList::new(),
+        },
+        endpoint.clone(),
+        None,
+    )
+    .await
+    .expect("the host opens");
+    let mut router = iroh::protocol::Router::builder(endpoint);
+    for (alpn, handler) in host.protocols() {
+        router = router.accept(alpn, handler);
+    }
+    Served {
+        host,
+        router: router.spawn(),
+        device,
+        _state: state,
+    }
+}
+
+impl Served {
+    /// Stop serving.
+    pub async fn shutdown(self) {
+        let _ = self.router.shutdown().await;
+        self.host.shutdown().await;
     }
 }

@@ -1112,8 +1112,10 @@ pub async fn serve(door: Arc<Door>, listener: tokio::net::TcpListener) {
     }
 }
 
-#[cfg(test)]
-mod runtime_support;
+#[cfg(feature = "local")]
+pub mod local;
+#[cfg(any(test, feature = "local"))]
+pub mod runtime_support;
 #[cfg(test)]
 mod tests;
 

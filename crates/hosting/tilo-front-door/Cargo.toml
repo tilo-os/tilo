@@ -31,6 +31,30 @@ tracing-subscriber = { workspace = true, features = ["env-filter"] }
 url.workspace = true
 uuid.workspace = true
 
+# The door on loopback with a person's host and runtime (`local`), for
+# testing the door's clients.
+tempfile = { workspace = true, optional = true }
+tilo-automerge-isolate = { workspace = true, optional = true }
+tilo-resource = { path = "../../sdk/tilo-resource", optional = true }
+tilo-room-host = { path = "../tilo-room-host", optional = true }
+tilo-runtime = { path = "../../runtime/tilo-runtime", optional = true }
+tilo-workspace-join = { path = "../../collab/workspace-join", optional = true }
+
+[features]
+local = [
+  "dep:tempfile",
+  "dep:tilo-automerge-isolate",
+  "dep:tilo-resource",
+  "dep:tilo-room-host",
+  "dep:tilo-runtime",
+  "dep:tilo-workspace-join",
+  "tilo-actions/test-support",
+]
+
+[[bin]]
+name = "tilo-door-local"
+required-features = ["local"]
+
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 # The workspace-hack's native feature set does not build for wasm32.
 workspace-hack = { version = "0.1" }

@@ -610,48 +610,15 @@ impl Door {
             .take(crate::keys::MAX_NAME_CHARS)
             .collect();
         let now = now_ms();
-        let now_ns = now.saturating_mul(1_000_000);
-        let parent_expiry = key.cert().expires_at_ns.unwrap_or(now_ns);
-        let expires_ns =
-            args.get("expires_in")
-                .and_then(Value::as_u64)
-                .map_or(parent_expiry, |seconds| {
-                    now_ns
-                        .saturating_add(seconds.saturating_mul(1_000_000_000))
-                        .min(parent_expiry)
-                });
-        if expires_ns <= now_ns {
-            return failed(
-                "expired",
-                "this key has expired",
-                "ask the person for a new key",
-            );
-        }
-        let Ok(minted_key) = GrantKey::generate() else {
-            return failed(
-                "unavailable",
-                "no randomness is available",
-                "try again shortly",
-            );
-        };
-        let mut cert = tilo_user_identity::prepare_minted_grant(
-            key.cert(),
-            minted_key.verifying_key().to_bytes(),
+        let minted = match mint_key(
+            key,
             id,
             &name,
-            now_ns,
-            expires_ns,
-        );
-        if let Err(error) = tilo_user_identity::sign_device_cert(&mut cert, key.key()) {
-            return failed(
-                "forbidden",
-                format!("this key cannot mint: {error}"),
-                "ask the person for a new key",
-            );
-        }
-        let minted = match GrantKey::new(minted_key, cert, AgentScope::Workspace(id), now_ns) {
+            args.get("expires_in").and_then(Value::as_u64),
+            now,
+        ) {
             Ok(minted) => minted,
-            Err(error) => return failed("forbidden", error.0, "ask the person for a new key"),
+            Err(outcome) => return outcome,
         };
         let kind = GrantKind::Minted {
             parent: grant.id.clone(),
@@ -672,4 +639,54 @@ impl Door {
             ),
         }
     }
+}
+
+/// A key for the workspace `id` alone, named `name`, certified by `key`: a
+/// grant for one workspace that ends after `expires_in` seconds, or with
+/// `key`, whichever is sooner.
+fn mint_key(
+    key: &GrantKey,
+    id: [u8; 16],
+    name: &str,
+    expires_in: Option<u64>,
+    now: u64,
+) -> Result<GrantKey, Outcome> {
+    let now_ns = now.saturating_mul(1_000_000);
+    let parent_expiry = key.cert().expires_at_ns.unwrap_or(now_ns);
+    let expires_ns = expires_in.map_or(parent_expiry, |seconds| {
+        now_ns
+            .saturating_add(seconds.saturating_mul(1_000_000_000))
+            .min(parent_expiry)
+    });
+    if expires_ns <= now_ns {
+        return Err(failed(
+            "expired",
+            "this key has expired",
+            "ask the person for a new key",
+        ));
+    }
+    let minted_key = GrantKey::generate().map_err(|_| {
+        failed(
+            "unavailable",
+            "no randomness is available",
+            "try again shortly",
+        )
+    })?;
+    let mut cert = tilo_user_identity::prepare_minted_grant(
+        key.cert(),
+        minted_key.verifying_key().to_bytes(),
+        id,
+        name,
+        now_ns,
+        expires_ns,
+    );
+    tilo_user_identity::sign_device_cert(&mut cert, key.key()).map_err(|error| {
+        failed(
+            "forbidden",
+            format!("this key cannot mint: {error}"),
+            "ask the person for a new key",
+        )
+    })?;
+    GrantKey::new(minted_key, cert, AgentScope::Workspace(id), now_ns)
+        .map_err(|error| failed("forbidden", error.0, "ask the person for a new key"))
 }

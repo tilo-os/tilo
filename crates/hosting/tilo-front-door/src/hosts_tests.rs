@@ -7,6 +7,7 @@
 //! by the runtime as the agent's run, and revocation.
 
 use super::*;
+use crate::runtime_support::{Served, serve};
 use crate::tests::{
     ISSUER, Person, REDIRECT, VERIFIER, WEB_ENTRY, answer, authorize, json_body, location, redeem,
     register, returned, runtime,
@@ -14,84 +15,14 @@ use crate::tests::{
 use crate::{Config, Door, lock, oauth, session, store::Store};
 use hyper::{Method, StatusCode, header};
 use std::sync::Arc;
-use tilo_room_host::host::{HostConfig, HostIdentity, HostMode, WorkspaceHost};
-use tilo_user_identity::{AgentScope, DeviceCapabilities, DeviceCert, sign_device_cert};
-
-struct Device {
-    key: ed25519_dalek::SigningKey,
-    cert: DeviceCert,
-}
-
-fn enrol(root: &ed25519_dalek::SigningKey, seed: u8, label: &str) -> Device {
-    let key = ed25519_dalek::SigningKey::from_bytes(&[seed; 32]);
-    let mut cert = DeviceCert {
-        user_public_key: root.verifying_key().to_bytes(),
-        device_public_key: key.verifying_key().to_bytes(),
-        device_label: label.into(),
-        capabilities: DeviceCapabilities::member(),
-        issued_at_ns: 200,
-        expires_at_ns: None,
-        signature: [0; 64],
-        issuer: None,
-    };
-    sign_device_cert(&mut cert, root).unwrap();
-    Device { key, cert }
-}
-
-/// The person's host, serving on a fresh endpoint until shut down.
-struct Served {
-    host: WorkspaceHost,
-    router: iroh::protocol::Router,
-    device: Device,
-    _state: tempfile::TempDir,
-}
-
-async fn serve(person: &Person) -> Served {
-    let device = enrol(&person.root, 11, "Home node");
-    let state = tempfile::tempdir().unwrap();
-    let endpoint = iroh::Endpoint::builder(iroh::endpoint::presets::Minimal)
-        .secret_key(iroh::SecretKey::from_bytes(&device.key.to_bytes()))
-        .bind()
-        .await
-        .unwrap();
-    let host = WorkspaceHost::open(
-        HostConfig::new(state.path().join("host"), HostMode::Device),
-        HostIdentity {
-            user_public_key: person.root.verifying_key().to_bytes(),
-            device_signing_key: device.key.clone(),
-            device_cert: device.cert.clone(),
-            revocations: RevocationList::new(),
-        },
-        endpoint.clone(),
-        None,
-    )
-    .await
-    .unwrap();
-    let mut router = iroh::protocol::Router::builder(endpoint);
-    for (alpn, handler) in host.protocols() {
-        router = router.accept(alpn, handler);
-    }
-    Served {
-        host,
-        router: router.spawn(),
-        device,
-        _state: state,
-    }
-}
-
-impl Served {
-    async fn shutdown(self) {
-        self.router.shutdown().await.unwrap();
-        self.host.shutdown().await;
-    }
-}
+use tilo_user_identity::AgentScope;
 
 /// The registry naming `person`'s host and runtime, written under `dir`.
 fn registry(
     dir: &std::path::Path,
     person: &Person,
     node: &Served,
-    runtime: &crate::tests::Runtime,
+    runtime: &crate::runtime_support::Runtime,
 ) -> Hosts {
     std::fs::write(dir.join("agents.token"), format!("{}\n", runtime.token)).unwrap();
     let registry = json!({"people": {person.id(): {
@@ -182,7 +113,7 @@ async fn call(door: &Arc<Door>, token: &str, session: &str, name: &str, argument
 )]
 async fn an_agent_connects_signs_its_person_in_makes_a_workspace_acts_and_is_revoked() {
     let alice = Person::new(1);
-    let node = serve(&alice).await;
+    let node = serve(&alice.root).await;
     let runtime = runtime(alice.root.verifying_key().to_bytes()).await;
     let files = tempfile::tempdir().unwrap();
     let hosts = registry(files.path(), &alice, &node, &runtime);
@@ -412,7 +343,7 @@ async fn an_agent_connects_signs_its_person_in_makes_a_workspace_acts_and_is_rev
 )]
 async fn a_one_workspace_grant_sees_and_makes_nothing_else_on_the_host() {
     let alice = Person::new(1);
-    let node = serve(&alice).await;
+    let node = serve(&alice.root).await;
     let runtime = runtime(alice.root.verifying_key().to_bytes()).await;
     let files = tempfile::tempdir().unwrap();
     let hosts = registry(files.path(), &alice, &node, &runtime);

@@ -9,7 +9,7 @@
 use super::*;
 use directory::{BoxFuture, DirectoryError, Host, Route, Workspace};
 use std::sync::atomic::{AtomicUsize, Ordering};
-use tilo_actions::remote::{Caller, TestHost};
+use tilo_actions::remote::Caller;
 use tilo_user_identity::{AgentScope, DeviceCapabilities, DeviceCert, RevocationList, SignInProof};
 
 pub(crate) const ISSUER: &str = "https://door.test";
@@ -17,28 +17,7 @@ pub(crate) const WEB_ENTRY: &str = "https://tilo.test";
 pub(crate) const REDIRECT: &str = "http://127.0.0.1:33418/callback";
 pub(crate) const VERIFIER: &str = "a-verifier-of-at-least-forty-three-characters-0123456789";
 
-/// A person's runtime: one `tilo-runtime` HTTP endpoint on loopback serving
-/// every workspace, behind the door's token, checking grants under the
-/// person's root and revocations.
-pub(crate) struct Runtime {
-    pub base: String,
-    pub token: String,
-    pub host: Arc<TestHost>,
-    pub revoked: Arc<Mutex<RevocationList>>,
-    /// The invitations the runtime was asked to join with.
-    pub joined: Arc<Mutex<Vec<(String, String)>>>,
-}
-
-impl Runtime {
-    pub(crate) fn route(&self) -> Route {
-        Route {
-            base: self.base.clone(),
-            token: self.token.clone(),
-        }
-    }
-}
-
-pub(crate) use crate::runtime_support::runtime;
+pub(crate) use crate::runtime_support::{Runtime, runtime};
 
 /// One workspace as the tests set it up: (person, workspace).
 type HostedWorkspace = (String, Workspace);
@@ -1302,6 +1281,10 @@ fn the_run_is_named_for_the_person() {
 /// polling: then it mints a key for one workspace, which reaches that one
 /// alone and ends when the key that minted it is revoked.
 #[tokio::test(flavor = "multi_thread")]
+#[expect(
+    clippy::too_many_lines,
+    reason = "one key's story, from the terminal asking to its minted key ending"
+)]
 async fn a_key_mints_a_key_for_one_workspace_that_ends_with_it() {
     let hosted = Arc::new(Hosted::default());
     let alice = Person::new(1);
