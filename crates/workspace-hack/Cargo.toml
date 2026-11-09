@@ -98,7 +98,7 @@ ghash = { version = "0.6", default-features = false, features = ["zeroize"] }
 group = { version = "0.13", default-features = false, features = ["alloc"] }
 guillotiere = { version = "0.7", default-features = false, features = ["std"] }
 half = { version = "2", default-features = false, features = ["num-traits"] }
-hashbrown-3575ec1268b04181 = { package = "hashbrown", version = "0.15", default-features = false, features = ["default-hasher", "inline-more", "serde"] }
+hashbrown-3575ec1268b04181 = { package = "hashbrown", version = "0.15", default-features = false, features = ["default-hasher", "serde"] }
 hashbrown-9067fe90e8c1f593 = { package = "hashbrown", version = "0.17" }
 hashbrown-986da7b5efc2b80e = { package = "hashbrown", version = "0.16" }
 hayro = { version = "0.7" }
@@ -185,7 +185,7 @@ reqwest = { version = "0.13", default-features = false, features = ["blocking", 
 resvg = { version = "0.47" }
 ring = { version = "0.17" }
 rqrr = { version = "0.10" }
-rusqlite = { version = "0.37", default-features = false, features = ["bundled", "hooks"] }
+rusqlite = { version = "0.41", default-features = false, features = ["bundled", "hooks"] }
 russh = { version = "0.63", default-features = false, features = ["flate2", "ring"] }
 rustix-d585fab2519d2d1 = { package = "rustix", version = "0.38", features = ["fs", "mm"] }
 rustix-dff4ba8e3ae991db = { package = "rustix", version = "1", features = ["event", "fs", "mm", "mount", "net", "pipe", "process", "system", "termios", "thread", "time"] }
@@ -350,7 +350,7 @@ ghash = { version = "0.6", default-features = false, features = ["zeroize"] }
 group = { version = "0.13", default-features = false, features = ["alloc"] }
 guillotiere = { version = "0.7", default-features = false, features = ["std"] }
 half = { version = "2", default-features = false, features = ["num-traits"] }
-hashbrown-3575ec1268b04181 = { package = "hashbrown", version = "0.15", default-features = false, features = ["default-hasher", "inline-more", "serde"] }
+hashbrown-3575ec1268b04181 = { package = "hashbrown", version = "0.15", default-features = false, features = ["default-hasher", "serde"] }
 hashbrown-9067fe90e8c1f593 = { package = "hashbrown", version = "0.17" }
 hashbrown-986da7b5efc2b80e = { package = "hashbrown", version = "0.16" }
 hayro = { version = "0.7" }
@@ -437,7 +437,7 @@ reqwest = { version = "0.13", default-features = false, features = ["blocking", 
 resvg = { version = "0.47" }
 ring = { version = "0.17" }
 rqrr = { version = "0.10" }
-rusqlite = { version = "0.37", default-features = false, features = ["bundled", "hooks"] }
+rusqlite = { version = "0.41", default-features = false, features = ["bundled", "hooks"] }
 russh = { version = "0.63", default-features = false, features = ["flate2", "ring"] }
 rustix-d585fab2519d2d1 = { package = "rustix", version = "0.38", features = ["fs", "mm"] }
 rustix-dff4ba8e3ae991db = { package = "rustix", version = "1", features = ["event", "fs", "mm", "mount", "net", "pipe", "process", "system", "termios", "thread", "time"] }

@@ -437,10 +437,9 @@ doc = false
 "harfrust-0_12_0" = { package = "harfrust", version = "^0.12.0", default-features = false, features = ["default", "std"] }
 "hash32-0_2_1" = { package = "hash32", version = "^0.2.1", default-features = false, features = [] }
 "hashbrown-0_14_5" = { package = "hashbrown", version = "^0.14.5", default-features = false, features = ["raw"] }
-"hashbrown-0_15_5" = { package = "hashbrown", version = "^0.15.5", default-features = false, features = ["default-hasher", "inline-more", "serde"] }
+"hashbrown-0_15_5" = { package = "hashbrown", version = "^0.15.5", default-features = false, features = ["default-hasher", "serde"] }
 "hashbrown-0_16_1" = { package = "hashbrown", version = "^0.16.1", default-features = false, features = ["allocator-api2", "default", "default-hasher", "equivalent", "inline-more", "raw-entry"] }
 "hashbrown-0_17_1" = { package = "hashbrown", version = "^0.17.1", default-features = false, features = ["allocator-api2", "default", "default-hasher", "equivalent", "inline-more", "raw-entry", "serde"] }
-"hashlink-0_10_0" = { package = "hashlink", version = "^0.10.0", default-features = false, features = [] }
 "hax-lib-0_3_7" = { package = "hax-lib", version = "^0.3.7", default-features = false, features = ["default", "macros"] }
 "hayagriva-0_10_1" = { package = "hayagriva", version = "^0.10.1", default-features = false, features = ["archive", "biblatex", "ciborium", "default"] }
 "hayro-0_7_1" = { package = "hayro", version = "^0.7.1", default-features = false, features = ["default", "embed-cmaps", "embed-fonts"] }
@@ -606,7 +605,7 @@ doc = false
 "libseat-sys-0_2_0" = { package = "libseat-sys", version = "^0.2.0", default-features = false, features = [] }
 "libspa-0_10_1" = { package = "libspa", version = "^0.10.1", default-features = false, features = ["v0_3_21", "v0_3_33"] }
 "libspa-sys-0_10_1" = { package = "libspa-sys", path = "../../../vendor/libspa-sys", default-features = false, features = [] }
-"libsqlite3-sys-0_35_0" = { package = "libsqlite3-sys", version = "^0.35.0", default-features = false, features = ["bundled", "bundled_bindings", "cc", "default", "min_sqlite_version_3_14_0", "pkg-config", "vcpkg"] }
+"libsqlite3-sys-0_39_1" = { package = "libsqlite3-sys", version = "^0.39.1", default-features = false, features = ["bundled", "bundled_bindings", "cc", "default", "min_sqlite_version_3_45_3", "pkg-config", "vcpkg"] }
 "libudev-sys-0_1_4" = { package = "libudev-sys", version = "^0.1.4", default-features = false, features = [] }
 "libz-sys-1_1_23" = { package = "libz-sys", version = "^1.1.23", default-features = false, features = ["libc"] }
 "linebender_resource_handle-0_1_1" = { package = "linebender_resource_handle", version = "^0.1.1", default-features = false, features = ["std"] }
@@ -910,7 +909,7 @@ doc = false
 "runtime-identity" = { path = "../../../crates/runtime/runtime-identity", default-features = false, features = [] }
 "runtime-portal" = { path = "../../../crates/runtime/runtime-portal", default-features = false, features = [] }
 "runtime-update" = { path = "../../../crates/packaging/runtime-update", default-features = false, features = [] }
-"rusqlite-0_37_0" = { package = "rusqlite", version = "^0.37.0", default-features = false, features = ["bundled", "hooks", "modern_sqlite"] }
+"rusqlite-0_41_1" = { package = "rusqlite", version = "^0.41.1", default-features = false, features = ["bundled", "hooks", "modern_sqlite", "wal"] }
 "russh-0_63_3" = { package = "russh", version = "^0.63.3", default-features = false, features = ["flate2", "ring"] }
 "russh-cryptovec-0_62_0" = { package = "russh-cryptovec", version = "^0.62.0", default-features = false, features = ["ssh-encoding"] }
 "russh-util-0_52_0" = { package = "russh-util", version = "^0.52.0", default-features = false, features = [] }
@@ -1894,11 +1893,10 @@ doc = false
 "half-2_7_1" = { package = "half", version = "^2.7.1", default-features = false, features = ["alloc", "default", "num-traits", "std"] }
 "harfrust-0_12_0" = { package = "harfrust", version = "^0.12.0", default-features = false, features = ["default", "std"] }
 "hash32-0_2_1" = { package = "hash32", version = "^0.2.1", default-features = false, features = [] }
-"hashbrown-0_15_5" = { package = "hashbrown", version = "^0.15.5", default-features = false, features = ["default-hasher", "inline-more", "serde"] }
+"hashbrown-0_15_5" = { package = "hashbrown", version = "^0.15.5", default-features = false, features = ["default-hasher", "serde"] }
 "hashbrown-0_16_1" = { package = "hashbrown", version = "^0.16.1", default-features = false, features = ["allocator-api2", "default", "default-hasher", "equivalent", "inline-more", "raw-entry"] }
 "hashbrown-0_17_1" = { package = "hashbrown", version = "^0.17.1", default-features = false, features = ["allocator-api2", "default", "default-hasher", "equivalent", "inline-more", "raw-entry"] }
 "hashify-0_2_9" = { package = "hashify", version = "^0.2.9", default-features = false, features = [] }
-"hashlink-0_10_0" = { package = "hashlink", version = "^0.10.0", default-features = false, features = [] }
 "hax-lib-0_3_7" = { package = "hax-lib", version = "^0.3.7", default-features = false, features = ["default", "macros"] }
 "hax-lib-macros-0_3_7" = { package = "hax-lib-macros", version = "^0.3.7", default-features = false, features = [] }
 "hayro-0_7_1" = { package = "hayro", version = "^0.7.1", default-features = false, features = ["default", "embed-cmaps", "embed-fonts"] }
@@ -2008,7 +2006,7 @@ doc = false
 "libcrux-traits-0_0_8" = { package = "libcrux-traits", version = "^0.0.8", default-features = false, features = [] }
 "libloading-0_8_9" = { package = "libloading", version = "^0.8.9", default-features = false, features = [] }
 "libm-0_2_16" = { package = "libm", version = "^0.2.16", default-features = false, features = ["arch", "default"] }
-"libsqlite3-sys-0_35_0" = { package = "libsqlite3-sys", version = "^0.35.0", default-features = false, features = ["bundled", "bundled_bindings", "cc", "default", "min_sqlite_version_3_14_0", "pkg-config", "vcpkg"] }
+"libsqlite3-sys-0_39_1" = { package = "libsqlite3-sys", version = "^0.39.1", default-features = false, features = ["bundled", "bundled_bindings", "cc", "default", "min_sqlite_version_3_45_3", "pkg-config", "vcpkg"] }
 "linebender_resource_handle-0_1_1" = { package = "linebender_resource_handle", version = "^0.1.1", default-features = false, features = ["std"] }
 "linked-hash-map-0_5_6" = { package = "linked-hash-map", version = "^0.5.6", default-features = false, features = [] }
 "linux-raw-sys-0_12_1" = { package = "linux-raw-sys", version = "^0.12.1", default-features = false, features = ["auxvec", "elf", "errno", "general", "if_ether", "ioctl", "net", "netlink", "no_std", "prctl", "system", "xdp"] }
@@ -2215,7 +2213,7 @@ doc = false
 "runtime-collab" = { path = "../../../crates/runtime/runtime-collab", default-features = false, features = ["client", "default", "settings-host"] }
 "runtime-identity" = { path = "../../../crates/runtime/runtime-identity", default-features = false, features = [] }
 "runtime-portal" = { path = "../../../crates/runtime/runtime-portal", default-features = false, features = [] }
-"rusqlite-0_37_0" = { package = "rusqlite", version = "^0.37.0", default-features = false, features = ["bundled", "hooks", "modern_sqlite"] }
+"rusqlite-0_41_1" = { package = "rusqlite", version = "^0.41.1", default-features = false, features = ["bundled", "hooks", "modern_sqlite", "wal"] }
 "russh-0_63_3" = { package = "russh", version = "^0.63.3", default-features = false, features = ["flate2", "ring"] }
 "russh-cryptovec-0_62_0" = { package = "russh-cryptovec", version = "^0.62.0", default-features = false, features = ["ssh-encoding"] }
 "russh-util-0_52_0" = { package = "russh-util", version = "^0.52.0", default-features = false, features = [] }
@@ -3031,7 +3029,6 @@ doc = false
 "hashbrown-0_15_5" = { package = "hashbrown", version = "^0.15.5", default-features = false, features = ["default-hasher", "inline-more", "serde"] }
 "hashbrown-0_16_1" = { package = "hashbrown", version = "^0.16.1", default-features = false, features = ["allocator-api2", "default", "default-hasher", "equivalent", "inline-more", "raw-entry"] }
 "hashbrown-0_17_1" = { package = "hashbrown", version = "^0.17.1", default-features = false, features = ["allocator-api2", "default", "default-hasher", "equivalent", "inline-more", "raw-entry", "serde"] }
-"hashlink-0_10_0" = { package = "hashlink", version = "^0.10.0", default-features = false, features = [] }
 "hax-lib-0_3_7" = { package = "hax-lib", version = "^0.3.7", default-features = false, features = ["default", "macros"] }
 "hayagriva-0_10_1" = { package = "hayagriva", version = "^0.10.1", default-features = false, features = ["archive", "biblatex", "ciborium", "default"] }
 "hayro-0_7_1" = { package = "hayro", version = "^0.7.1", default-features = false, features = ["default", "embed-cmaps", "embed-fonts"] }
@@ -3197,7 +3194,6 @@ doc = false
 "libseat-sys-0_2_0" = { package = "libseat-sys", version = "^0.2.0", default-features = false, features = [] }
 "libspa-0_10_1" = { package = "libspa", version = "^0.10.1", default-features = false, features = ["v0_3_21", "v0_3_33"] }
 "libspa-sys-0_10_1" = { package = "libspa-sys", path = "../../../vendor/libspa-sys", default-features = false, features = [] }
-"libsqlite3-sys-0_35_0" = { package = "libsqlite3-sys", version = "^0.35.0", default-features = false, features = ["bundled", "bundled_bindings", "cc", "default", "min_sqlite_version_3_14_0", "pkg-config", "vcpkg"] }
 "libudev-sys-0_1_4" = { package = "libudev-sys", version = "^0.1.4", default-features = false, features = [] }
 "libz-sys-1_1_23" = { package = "libz-sys", version = "^1.1.23", default-features = false, features = ["libc"] }
 "linebender_resource_handle-0_1_1" = { package = "linebender_resource_handle", version = "^0.1.1", default-features = false, features = ["std"] }
@@ -3501,7 +3497,6 @@ doc = false
 "runtime-identity" = { path = "../../../crates/runtime/runtime-identity", default-features = false, features = [] }
 "runtime-portal" = { path = "../../../crates/runtime/runtime-portal" }
 "runtime-update" = { path = "../../../crates/packaging/runtime-update", default-features = false, features = [] }
-"rusqlite-0_37_0" = { package = "rusqlite", version = "^0.37.0", default-features = false, features = ["bundled", "hooks", "modern_sqlite"] }
 "russh-0_63_3" = { package = "russh", version = "^0.63.3", default-features = false, features = ["flate2", "ring"] }
 "russh-cryptovec-0_62_0" = { package = "russh-cryptovec", version = "^0.62.0", default-features = false, features = ["ssh-encoding"] }
 "russh-util-0_52_0" = { package = "russh-util", version = "^0.52.0", default-features = false, features = [] }
@@ -4478,7 +4473,6 @@ doc = false
 "hashbrown-0_16_1" = { package = "hashbrown", version = "^0.16.1", default-features = false, features = ["allocator-api2", "default", "default-hasher", "equivalent", "inline-more", "raw-entry"] }
 "hashbrown-0_17_1" = { package = "hashbrown", version = "^0.17.1", default-features = false, features = ["allocator-api2", "default", "default-hasher", "equivalent", "inline-more", "raw-entry"] }
 "hashify-0_2_9" = { package = "hashify", version = "^0.2.9", default-features = false, features = [] }
-"hashlink-0_10_0" = { package = "hashlink", version = "^0.10.0", default-features = false, features = [] }
 "hax-lib-0_3_7" = { package = "hax-lib", version = "^0.3.7", default-features = false, features = ["default", "macros"] }
 "hax-lib-macros-0_3_7" = { package = "hax-lib-macros", version = "^0.3.7", default-features = false, features = [] }
 "hayro-0_7_1" = { package = "hayro", version = "^0.7.1", default-features = false, features = ["default", "embed-cmaps", "embed-fonts"] }
@@ -4588,7 +4582,6 @@ doc = false
 "libcrux-traits-0_0_8" = { package = "libcrux-traits", version = "^0.0.8", default-features = false, features = [] }
 "libloading-0_8_9" = { package = "libloading", version = "^0.8.9", default-features = false, features = [] }
 "libm-0_2_16" = { package = "libm", version = "^0.2.16", default-features = false, features = ["arch", "default"] }
-"libsqlite3-sys-0_35_0" = { package = "libsqlite3-sys", version = "^0.35.0", default-features = false, features = ["bundled", "bundled_bindings", "cc", "default", "min_sqlite_version_3_14_0", "pkg-config", "vcpkg"] }
 "linebender_resource_handle-0_1_1" = { package = "linebender_resource_handle", version = "^0.1.1", default-features = false, features = ["std"] }
 "linked-hash-map-0_5_6" = { package = "linked-hash-map", version = "^0.5.6", default-features = false, features = [] }
 "linux-raw-sys-0_12_1" = { package = "linux-raw-sys", version = "^0.12.1", default-features = false, features = ["auxvec", "elf", "errno", "general", "if_ether", "ioctl", "net", "netlink", "no_std", "prctl", "system", "xdp"] }
@@ -4795,7 +4788,6 @@ doc = false
 "runtime-collab" = { path = "../../../crates/runtime/runtime-collab", default-features = false, features = ["client", "default", "settings-host"] }
 "runtime-identity" = { path = "../../../crates/runtime/runtime-identity", default-features = false, features = [] }
 "runtime-portal" = { path = "../../../crates/runtime/runtime-portal" }
-"rusqlite-0_37_0" = { package = "rusqlite", version = "^0.37.0", default-features = false, features = ["bundled", "hooks", "modern_sqlite"] }
 "russh-0_63_3" = { package = "russh", version = "^0.63.3", default-features = false, features = ["flate2", "ring"] }
 "russh-cryptovec-0_62_0" = { package = "russh-cryptovec", version = "^0.62.0", default-features = false, features = ["ssh-encoding"] }
 "russh-util-0_52_0" = { package = "russh-util", version = "^0.52.0", default-features = false, features = [] }
