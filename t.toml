@@ -1796,7 +1796,10 @@ id_token = ["registry.tilo.so"]
 [[check]]
 name = "web-desktop-wasm"
 run = "bash tools/ci/publish/web-desktop-bundle.sh wasm /target/publish/web-desktop/wasm"
-env = { CARGO_BUILD_JOBS = "8" }
+# The apps it builds embed image fixtures whose build script fetches them: a
+# node has no network, so the seeded cache is the only source (`test-assets`).
+needs = ["test-assets"]
+env = { CARGO_BUILD_JOBS = "8", TILO_TEST_ASSET_SEED = "/target/test-assets" }
 requires = ["arch=x86_64"]
 outputs = ["/target/publish/web-desktop/wasm/**"]
 default = false
