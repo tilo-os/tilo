@@ -15,9 +15,12 @@ mod envelopes;
 mod fetch;
 mod here;
 pub mod install;
+mod login_codes;
 mod page_errors;
 pub(crate) mod plane;
 mod shelf;
+mod sign_in;
+mod stand_in;
 #[cfg(test)]
 mod tests;
 mod tls;
@@ -185,6 +188,10 @@ struct Web {
     /// The sealed invitations this site keeps in place of their clerk: what a
     /// short link names, in bytes the site has no key for.
     shelf: shelf::Shelf,
+    /// The login codes tabs hand their agents.
+    login_codes: Arc<login_codes::LoginCodes>,
+    /// The stand-in approvers this host keeps for people.
+    stand_ins: Arc<stand_in::StandIns>,
 }
 
 /// Checks the published origins against the listeners they front.
@@ -342,7 +349,10 @@ impl Relay {
             presence: plane.authority(),
             page_errors: page_errors::PageErrors::default(),
             shelf: shelf::Shelf::default(),
+            login_codes: Arc::new(login_codes::LoginCodes::new(public_origin.clone())),
+            stand_ins: Arc::new(stand_in::StandIns::new(self.state_root().join("stand-ins"))),
         });
+        web.serve_stand_ins();
         // Sessions ask who is here over their own carrier; the relay answers
         // with the one account its HTTPS route keeps.
         let _ = context.relay.here.set(Arc::new(Board {
@@ -410,7 +420,7 @@ async fn accept_loop(
 ) {
     let mut connections = tokio::task::JoinSet::new();
     loop {
-        let Ok((stream, _)) = tcp.accept().await else {
+        let Ok((stream, peer)) = tcp.accept().await else {
             continue;
         };
         while connections.try_join_next().is_some() {}
@@ -422,7 +432,7 @@ async fn accept_loop(
             else {
                 return;
             };
-            serve_connection(tls, web).await;
+            serve_connection(tls, peer, web).await;
         });
     }
 }
@@ -431,20 +441,25 @@ async fn accept_loop(
 async fn plain_accept_loop(tcp: tokio::net::TcpListener, web: Arc<Web>) {
     let mut connections = tokio::task::JoinSet::new();
     loop {
-        let Ok((stream, _)) = tcp.accept().await else {
+        let Ok((stream, peer)) = tcp.accept().await else {
             continue;
         };
         while connections.try_join_next().is_some() {}
-        connections.spawn(serve_connection(stream, web.clone()));
+        connections.spawn(serve_connection(stream, peer, web.clone()));
     }
 }
 
-async fn serve_connection<Io>(io: Io, web: Arc<Web>)
+/// The address a request's connection came from.
+#[derive(Clone, Copy, Debug)]
+struct Peer(std::net::IpAddr);
+
+async fn serve_connection<Io>(io: Io, peer: SocketAddr, web: Arc<Web>)
 where
     Io: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static,
 {
-    let service = hyper::service::service_fn(move |request: Request<hyper::body::Incoming>| {
+    let service = hyper::service::service_fn(move |mut request: Request<hyper::body::Incoming>| {
         let web = web.clone();
+        request.extensions_mut().insert(Peer(peer.ip()));
         async move { Ok::<_, Infallible>(handle(&web, request).await) }
     });
     let _ = hyper_util::server::conn::auto::Builder::new(hyper_util::rt::TokioExecutor::new())
@@ -745,6 +760,122 @@ async fn admitted_anywhere(web: &Web, user: [u8; 32]) -> bool {
     web.context.relay.admits(user).await
 }
 
+/// The client a request came from: its connection's address, or, for a
+/// connection from a proxy in front of this host (a loopback or private
+/// address), the last address that proxy names in `X-Forwarded-For`.
+fn client_address(request: &Request<hyper::body::Incoming>) -> Option<std::net::IpAddr> {
+    let Peer(peer) = *request.extensions().get::<Peer>()?;
+    let proxied = match peer {
+        std::net::IpAddr::V4(v4) => v4.is_loopback() || v4.is_private(),
+        std::net::IpAddr::V6(v6) => v6.is_loopback() || v6.is_unique_local(),
+    };
+    let forwarded = proxied
+        .then(|| {
+            request
+                .headers()
+                .get_all("x-forwarded-for")
+                .iter()
+                .next_back()
+        })
+        .flatten()
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.rsplit(',').next())
+        .and_then(|last| last.trim().parse().ok());
+    Some(forwarded.unwrap_or(peer))
+}
+
+/// A JSON refusal the page reads: `{error}` with `code`.
+fn refused(code: StatusCode, message: &str) -> Response<Body> {
+    let mut response = json_status(code, &serde_json::json!({ "error": message }));
+    if code == StatusCode::TOO_MANY_REQUESTS || code == StatusCode::SERVICE_UNAVAILABLE {
+        response
+            .headers_mut()
+            .insert(header::RETRY_AFTER, header::HeaderValue::from_static("60"));
+    }
+    response
+}
+
+fn code_refused(refusal: &login_codes::Refusal) -> Response<Body> {
+    let code = match refusal {
+        login_codes::Refusal::Malformed(_) => StatusCode::BAD_REQUEST,
+        login_codes::Refusal::Unknown => StatusCode::NOT_FOUND,
+        login_codes::Refusal::TooMany => StatusCode::TOO_MANY_REQUESTS,
+        login_codes::Refusal::Full => StatusCode::SERVICE_UNAVAILABLE,
+        login_codes::Refusal::Conflict(_) => StatusCode::CONFLICT,
+    };
+    refused(code, refusal.message())
+}
+
+#[allow(
+    clippy::result_large_err,
+    reason = "the error is the response the handler sends as it is"
+)]
+fn json_body<T: serde::de::DeserializeOwned>(bytes: &[u8]) -> Result<T, Response<Body>> {
+    serde_json::from_slice(bytes)
+        .map_err(|_| refused(StatusCode::BAD_REQUEST, "not a request this route takes"))
+}
+
+/// The login code routes ([`tilo_relay_protocol::login_code`]), or `None`
+/// for any other route.
+fn login_route(
+    web: &Web,
+    route: &str,
+    bytes: &[u8],
+    client: Option<std::net::IpAddr>,
+) -> Option<Response<Body>> {
+    use tilo_relay_protocol::login_code as wire;
+    fn answered<T: serde::Serialize>(result: Result<T, login_codes::Refusal>) -> Response<Body> {
+        result.map_or_else(|refusal| code_refused(&refusal), |value| json(&value))
+    }
+    let now_ms = tilo_clock::unix_now_ms();
+    let codes = &web.login_codes;
+    Some(match route {
+        wire::CREATE_ROUTE => match json_body::<wire::CreateCode>(bytes) {
+            Ok(create) => answered(codes.create(create.link, client, now_ms)),
+            Err(refusal) => refusal,
+        },
+        wire::RESOLVE_ROUTE => match json_body::<wire::Resolve>(bytes) {
+            Ok(resolve) => answered(codes.resolve(&resolve.code, client, now_ms)),
+            Err(refusal) => refusal,
+        },
+        wire::STEP_ROUTE => match json_body::<wire::Report>(bytes) {
+            Ok(report) => codes.report(&report, now_ms).map_or_else(
+                |refusal| code_refused(&refusal),
+                |()| reply(StatusCode::NO_CONTENT, Vec::new()),
+            ),
+            Err(refusal) => refusal,
+        },
+        wire::CLAIM_ROUTE => match json_body::<wire::Claim>(bytes) {
+            Ok(claim) => web.claim(&claim).unwrap_or_else(|refusal| refusal),
+            Err(refusal) => refusal,
+        },
+        wire::FOLLOW_ROUTE => match json_body::<wire::Follow>(bytes) {
+            Ok(follow) => answered(codes.follow(&follow.follow, now_ms)),
+            Err(refusal) => refusal,
+        },
+        wire::STAND_IN_ROUTE => match json_body::<wire::StandInRequest>(bytes) {
+            Ok(request) => web
+                .stand_ins
+                .answer(request, tilo_clock::unix_now_ns())
+                .map_or_else(
+                    |refusal| {
+                        let code = match refusal {
+                            stand_in::Refusal::Malformed(_) => StatusCode::BAD_REQUEST,
+                            stand_in::Refusal::Forbidden(_) => StatusCode::FORBIDDEN,
+                            stand_in::Refusal::Unknown => StatusCode::NOT_FOUND,
+                            stand_in::Refusal::Full => StatusCode::SERVICE_UNAVAILABLE,
+                            stand_in::Refusal::Storage => StatusCode::INTERNAL_SERVER_ERROR,
+                        };
+                        refused(code, refusal.message())
+                    },
+                    |reply| json(&reply),
+                ),
+            Err(refusal) => refusal,
+        },
+        _ => return None,
+    })
+}
+
 #[allow(
     clippy::too_many_lines,
     reason = "one routing table: every browser route and its body type in one place"
@@ -764,7 +895,11 @@ async fn route(
     else {
         return Err(status(StatusCode::NOT_FOUND, "not found"));
     };
+    let client = client_address(&request);
     let (_, bytes) = body(request, MAX_REQUEST_BYTES).await?;
+    if let Some(answer) = login_route(web, route, &bytes, client) {
+        return Ok(answer);
+    }
     let certification = &web.context.certification;
     match route {
         "/host" => Ok(encoded(&web.host_info)),

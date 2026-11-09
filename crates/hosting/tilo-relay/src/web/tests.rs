@@ -104,6 +104,10 @@ fn web_of(relay: &Relay, host: &Host) -> Web {
         presence: Arc::new(plane::Authority::new(relay.web_context().relay.clone())),
         page_errors: page_errors::PageErrors::default(),
         shelf: shelf::Shelf::default(),
+        login_codes: Arc::new(login_codes::LoginCodes::new(None)),
+        stand_ins: Arc::new(stand_in::StandIns::new(
+            relay.state_root().join("stand-ins"),
+        )),
     }
 }
 
@@ -820,6 +824,461 @@ async fn the_fetch_proxy_answers_admitted_people_and_refuses_everyone_else() {
     // Another site's page gets no CORS answer to read.
     let (_, head, _) = fetch(None, "https://other.example").await;
     assert_eq!(header_value(&head, "access-control-allow-origin"), None);
+
+    stop(relay, serving).await;
+}
+
+/// POST `body` as JSON to `path`, as `forwarded_for` behind a proxy when
+/// named: the status, the header block and the body. HTTP/1.0, so the
+/// body arrives whole rather than chunked.
+async fn call_json(
+    addr: SocketAddr,
+    path: &str,
+    body: &serde_json::Value,
+    forwarded_for: Option<&str>,
+) -> (u16, String, serde_json::Value) {
+    let body = serde_json::to_vec(body).unwrap();
+    let forwarded = forwarded_for
+        .map(|client| format!("X-Forwarded-For: {client}\r\n"))
+        .unwrap_or_default();
+    let mut socket = tokio::net::TcpStream::connect(addr).await.unwrap();
+    let header = format!(
+        "POST {API_PREFIX}{path} HTTP/1.0\r\nHost: localhost\r\nConnection: close\r\n\
+         Content-Type: application/json\r\n{forwarded}Content-Length: {}\r\n\r\n",
+        body.len()
+    );
+    socket.write_all(header.as_bytes()).await.unwrap();
+    socket.write_all(&body).await.unwrap();
+    let mut reply = Vec::new();
+    tilo_test_env::within("HTTP reply", socket.read_to_end(&mut reply))
+        .await
+        .unwrap();
+    let split = reply
+        .windows(4)
+        .position(|bytes| bytes == b"\r\n\r\n")
+        .unwrap();
+    let header = String::from_utf8_lossy(&reply[..split]).to_ascii_lowercase();
+    let status = header.split_whitespace().nth(1).unwrap().parse().unwrap();
+    let body = &reply[split.checked_add(4).unwrap()..];
+    let json = serde_json::from_slice(body).unwrap_or(serde_json::Value::Null);
+    (status, header, json)
+}
+
+/// A login code over the host's routes: made, resolved once, followed with
+/// its steps, and guessing codes runs out of tries for the guesser.
+#[tokio::test]
+#[expect(
+    clippy::significant_drop_tightening,
+    reason = "the relay serves the routes until it shuts down at the end"
+)]
+async fn a_login_code_is_resolved_once_followed_and_not_guessed() {
+    use tilo_relay_protocol::login_code as wire;
+    let root = SigningKey::from_bytes(&[141; 32]);
+    let host = host(&root, 142, DeviceCapabilities::host());
+    let state = tempfile::tempdir().unwrap();
+    let relay = relay_at(&state, host.identity(), RelayConfig::default()).await;
+    let (addr, serving) = serve_web(Arc::new(web_of(&relay, &host))).await;
+
+    let link = format!(
+        "https://tilo.sh/#/w/6f1d3a52-1c7e-4b8e-9d2a-0f4a8c3e5b71?pair={}{}",
+        hex::encode([0xab; 32]),
+        hex::encode([0x7f; 16])
+    );
+    let (code, _, created) = call_json(
+        addr,
+        wire::CREATE_ROUTE,
+        &serde_json::json!({ "link": link }),
+        None,
+    )
+    .await;
+    assert_eq!(code, 200, "{created}");
+    let created: wire::Created = serde_json::from_value(created).unwrap();
+    let (code, _, refused) = call_json(
+        addr,
+        wire::CREATE_ROUTE,
+        &serde_json::json!({ "link": "https://tilo.sh/#/w/x" }),
+        None,
+    )
+    .await;
+    assert_eq!(code, 400, "{refused}");
+
+    let (code, _, resolved) = call_json(
+        addr,
+        wire::RESOLVE_ROUTE,
+        &serde_json::json!({ "code": created.code.to_ascii_lowercase() }),
+        None,
+    )
+    .await;
+    assert_eq!(code, 200, "{resolved}");
+    let resolved: wire::Resolved = serde_json::from_value(resolved).unwrap();
+    assert_eq!(resolved.link.as_deref(), Some(link.as_str()));
+    let (code, _, _) = call_json(
+        addr,
+        wire::RESOLVE_ROUTE,
+        &serde_json::json!({ "code": created.code }),
+        None,
+    )
+    .await;
+    assert_eq!(code, 404, "a code resolves once");
+
+    for step in ["logged-in", "tools-added", "logged-in"] {
+        let (code, _, body) = call_json(
+            addr,
+            wire::STEP_ROUTE,
+            &serde_json::json!({ "report": resolved.report, "step": step, "agent": "Claude Code" }),
+            None,
+        )
+        .await;
+        assert_eq!(code, 204, "{body}");
+    }
+    let (code, _, _) = call_json(
+        addr,
+        wire::STEP_ROUTE,
+        &serde_json::json!({ "report": created.follow, "step": "entered" }),
+        None,
+    )
+    .await;
+    assert_eq!(code, 404, "only the report secret reports");
+    let (code, _, polled) = call_json(
+        addr,
+        wire::FOLLOW_ROUTE,
+        &serde_json::json!({ "follow": created.follow }),
+        None,
+    )
+    .await;
+    assert_eq!(code, 200);
+    let polled: wire::Polled = serde_json::from_value(polled).unwrap();
+    assert!(polled.resolved && !polled.expired);
+    assert_eq!(polled.agent.as_deref(), Some("Claude Code"));
+    assert_eq!(
+        polled.steps,
+        [
+            wire::Step::Resolved,
+            wire::Step::LoggedIn,
+            wire::Step::ToolsAdded
+        ]
+    );
+
+    let (_, _, fresh) = call_json(addr, wire::CREATE_ROUTE, &serde_json::json!({}), None).await;
+    let fresh: wire::Created = serde_json::from_value(fresh).unwrap();
+    for _ in 0..login_codes::MISSES_PER_ADDRESS {
+        let (code, _, _) = call_json(
+            addr,
+            wire::RESOLVE_ROUTE,
+            &serde_json::json!({ "code": "222-2222" }),
+            Some("203.0.113.9"),
+        )
+        .await;
+        assert_eq!(code, 404);
+    }
+    let (code, header, _) = call_json(
+        addr,
+        wire::RESOLVE_ROUTE,
+        &serde_json::json!({ "code": fresh.code }),
+        Some("203.0.113.9"),
+    )
+    .await;
+    assert_eq!(code, 429, "the guesser is out of tries");
+    assert!(header.contains("retry-after: 60"), "{header}");
+    let (code, _, _) = call_json(
+        addr,
+        wire::RESOLVE_ROUTE,
+        &serde_json::json!({ "code": fresh.code }),
+        Some("198.51.100.4"),
+    )
+    .await;
+    assert_eq!(code, 200, "another client still resolves its code");
+
+    stop(relay, serving).await;
+}
+
+/// Signing a person in again through their agent: the person's root makes
+/// its stand-in on the host, a computer that is a device of the person
+/// claims the tab's sign-in code, and the tab's new device is certified by
+/// the stand-in over the ordinary certification path, once. Retired, the
+/// stand-in approves nothing more, and what it certified stays valid.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[expect(
+    clippy::significant_drop_tightening,
+    reason = "the relay serves the routes until it shuts down at the end"
+)]
+async fn a_persons_stand_in_certifies_the_tab_a_device_of_theirs_claimed() {
+    use ed25519_dalek::Signer as _;
+    use tilo_relay_protocol::login_code as wire;
+    use tilo_relay_protocol::login_code::StandInRequest;
+    use tilo_user_identity::{CertificationRequest, verify_device_cert_at};
+
+    let owner = SigningKey::from_bytes(&[151; 32]);
+    let host = host(&owner, 152, DeviceCapabilities::host());
+    let state = tempfile::tempdir().unwrap();
+    let relay = relay_at(&state, host.identity(), RelayConfig::default()).await;
+    let web = Arc::new(web_of(&relay, &host));
+    web.serve_stand_ins();
+    let (addr, serving) = serve_web(Arc::clone(&web)).await;
+
+    // The person signs in on this host without being a member of anything
+    // it serves: their stand-in here is what approves.
+    let person = SigningKey::from_bytes(&[153; 32]);
+    let user = person.verifying_key().to_bytes();
+    let (cli_key, mut cli_cert) = device(&person, 154, DeviceCapabilities::member());
+    cli_cert.device_label = "Claude Code on build-box".into();
+    tilo_user_identity::sign_device_cert(&mut cli_cert, &person).unwrap();
+    let cli_cert_hex = hex::encode(postcard::to_allocvec(&cli_cert).unwrap());
+
+    let sign_in_code = || async {
+        let (_, _, created) =
+            call_json(addr, wire::CREATE_ROUTE, &serde_json::json!({}), None).await;
+        let created: wire::Created = serde_json::from_value(created).unwrap();
+        let (_, _, resolved) = call_json(
+            addr,
+            wire::RESOLVE_ROUTE,
+            &serde_json::json!({ "code": created.code }),
+            None,
+        )
+        .await;
+        let resolved: wire::Resolved = serde_json::from_value(resolved).unwrap();
+        assert!(resolved.sign_in);
+        (created, resolved)
+    };
+    let claim = |report: &str, key: &SigningKey, cert: &str| {
+        let signed_at_ns = tilo_clock::unix_now_ns();
+        let signature = key.sign(&wire::claim_message(report, signed_at_ns));
+        serde_json::json!({
+            "report": report,
+            "cert": cert,
+            "signed_at_ns": signed_at_ns,
+            "signature": hex::encode(signature.to_bytes()),
+        })
+    };
+    let root_signed = |op: &str| {
+        let signed_at_ns = tilo_clock::unix_now_ns();
+        let signature = person.sign(&StandInRequest::signed_message(op, &user, signed_at_ns));
+        serde_json::json!({
+            "op": op,
+            "user": hex::encode(user),
+            "signed_at_ns": signed_at_ns,
+            "signature": hex::encode(signature.to_bytes()),
+        })
+    };
+
+    let (_, resolved) = sign_in_code().await;
+    let (code, _, refused) = call_json(
+        addr,
+        wire::CLAIM_ROUTE,
+        &claim(&resolved.report, &cli_key, &cli_cert_hex),
+        None,
+    )
+    .await;
+    assert_eq!(code, 403, "no stand-in here yet: {refused}");
+
+    // The root has the host make its stand-in, and certifies it.
+    let (code, _, key) = call_json(addr, wire::STAND_IN_ROUTE, &root_signed("key"), None).await;
+    assert_eq!(code, 200, "{key}");
+    let wire::StandInReply::Key { key } = serde_json::from_value(key).unwrap() else {
+        panic!("a key")
+    };
+    let (code, _, again) = call_json(addr, wire::STAND_IN_ROUTE, &root_signed("key"), None).await;
+    assert_eq!(code, 200);
+    assert_eq!(
+        serde_json::from_value::<wire::StandInReply>(again).unwrap(),
+        wire::StandInReply::Key { key: key.clone() },
+        "one stand-in per person"
+    );
+    let mut forged = root_signed("key");
+    forged["user"] = serde_json::json!(hex::encode([9u8; 32]));
+    let (code, _, _) = call_json(addr, wire::STAND_IN_ROUTE, &forged, None).await;
+    assert_eq!(code, 403, "only a person's root makes their stand-in");
+    let mut stand_in_key = [0; 32];
+    hex::decode_to_slice(&key, &mut stand_in_key).unwrap();
+    let now = tilo_clock::unix_now_ns();
+    let mut stand_in_cert = tilo_user_identity::prepare_stand_in_cert(
+        user,
+        stand_in_key,
+        "Stand-in on this host",
+        now,
+        now + 24 * 60 * 60 * 1_000_000_000,
+    );
+    tilo_user_identity::sign_device_cert(&mut stand_in_cert, &person).unwrap();
+    let (code, _, kept) = call_json(
+        addr,
+        wire::STAND_IN_ROUTE,
+        &serde_json::json!({
+            "op": "certify",
+            "cert": hex::encode(postcard::to_allocvec(&stand_in_cert).unwrap()),
+        }),
+        None,
+    )
+    .await;
+    assert_eq!(code, 200, "{kept}");
+
+    // A claim needs a live certificate of a device of the person, signed
+    // by that device.
+    let (stranger_key, stranger_cert) = device(
+        &SigningKey::from_bytes(&[155; 32]),
+        156,
+        DeviceCapabilities::member(),
+    );
+    let stranger_hex = hex::encode(postcard::to_allocvec(&stranger_cert).unwrap());
+    let (code, _, _) = call_json(
+        addr,
+        wire::CLAIM_ROUTE,
+        &claim(&resolved.report, &stranger_key, &stranger_hex),
+        None,
+    )
+    .await;
+    assert_eq!(code, 403, "a person with no stand-in here");
+    let mut forged_cert = cli_cert.clone();
+    forged_cert.device_label = "Someone else".into();
+    let (code, _, _) = call_json(
+        addr,
+        wire::CLAIM_ROUTE,
+        &claim(
+            &resolved.report,
+            &cli_key,
+            &hex::encode(postcard::to_allocvec(&forged_cert).unwrap()),
+        ),
+        None,
+    )
+    .await;
+    assert_eq!(code, 403, "a certificate the root did not sign");
+    let (code, _, _) = call_json(
+        addr,
+        wire::CLAIM_ROUTE,
+        &claim(&resolved.report, &stranger_key, &cli_cert_hex),
+        None,
+    )
+    .await;
+    assert_eq!(code, 403, "signed by another key than the device's");
+
+    let (created, resolved) = sign_in_code().await;
+    let (code, _, claimed) = call_json(
+        addr,
+        wire::CLAIM_ROUTE,
+        &claim(&resolved.report, &cli_key, &cli_cert_hex),
+        None,
+    )
+    .await;
+    assert_eq!(code, 200, "{claimed}");
+    let (code, _, _) = call_json(
+        addr,
+        wire::CLAIM_ROUTE,
+        &claim(&resolved.report, &cli_key, &cli_cert_hex),
+        None,
+    )
+    .await;
+    assert_eq!(code, 409, "claimed once");
+    let (_, _, polled) = call_json(
+        addr,
+        wire::FOLLOW_ROUTE,
+        &serde_json::json!({ "follow": created.follow }),
+        None,
+    )
+    .await;
+    let polled: wire::Polled = serde_json::from_value(polled).unwrap();
+    let claimed = polled.claimed.unwrap();
+    assert_eq!(claimed.user, hex::encode(user));
+    assert_eq!(claimed.by, "Claude Code on build-box");
+    let mut invite = [0; 16];
+    hex::decode_to_slice(&claimed.invite, &mut invite).unwrap();
+
+    // The tab asks to be certified with that invite, as any new device asks.
+    let request_for = |device: &SigningKey, invite: [u8; 16]| {
+        let now = tilo_clock::unix_now_ns();
+        CertificationRequest {
+            version: tilo_user_identity::CERTIFICATION_SCHEMA_VERSION,
+            user_public_key: user,
+            device_public_key: device.verifying_key().to_bytes(),
+            device_label: "Firefox on laptop".into(),
+            requested: DeviceCapabilities::member(),
+            nonce: rand::random(),
+            invite,
+            issued_at_ns: now,
+            expires_at_ns: now + 2_000_000_000,
+            signature: [0; 64],
+        }
+        .sign(device)
+        .unwrap()
+    };
+    let ask = |device: SigningKey, invite: [u8; 16]| {
+        let host_addr = relay.node_addr();
+        async move {
+            let endpoint = endpoint(&device).await;
+            let outcome = tilo_relay_client::certify::request_certification(
+                &endpoint,
+                host_addr,
+                request_for(&device, invite),
+                |_| {},
+            )
+            .await
+            .unwrap();
+            endpoint.close().await;
+            outcome
+        }
+    };
+    let tab = SigningKey::from_bytes(&[157; 32]);
+    let outcome = tilo_test_env::within("the stand-in's answer", ask(tab.clone(), invite)).await;
+    let tilo_relay_client::certify::CertificationOutcome::Issued { cert, .. } = outcome else {
+        panic!("the stand-in certifies the tab: {outcome:?}")
+    };
+    assert_eq!(cert.device_public_key, tab.verifying_key().to_bytes());
+    assert_eq!(cert.user_public_key, user);
+    assert!(
+        !cert.capabilities.can_admit_devices,
+        "a member, no approver"
+    );
+    assert_eq!(
+        cert.issuer.as_ref().map(|issuer| issuer.device_public_key),
+        Some(stand_in_key)
+    );
+    verify_device_cert_at(&cert, tilo_clock::unix_now_ns()).unwrap();
+    let (_, _, polled) = call_json(
+        addr,
+        wire::FOLLOW_ROUTE,
+        &serde_json::json!({ "follow": created.follow }),
+        None,
+    )
+    .await;
+    let polled: wire::Polled = serde_json::from_value(polled).unwrap();
+    assert!(polled.steps.contains(&wire::Step::Approved), "{polled:?}");
+
+    // The invite approves no second device, and a request nobody claimed
+    // is not the stand-in's to answer.
+    for (seed, invite) in [(158, invite), (159, [0x42; 16])] {
+        let outcome = tilo_test_env::within(
+            "a refusal",
+            ask(SigningKey::from_bytes(&[seed; 32]), invite),
+        )
+        .await;
+        assert!(
+            !matches!(
+                outcome,
+                tilo_relay_client::certify::CertificationOutcome::Issued { .. }
+            ),
+            "{outcome:?}"
+        );
+    }
+
+    // Retired, the stand-in approves nothing, and its certificate holds.
+    let (code, _, retired) =
+        call_json(addr, wire::STAND_IN_ROUTE, &root_signed("retire"), None).await;
+    assert_eq!(code, 200, "{retired}");
+    let (_, resolved) = sign_in_code().await;
+    let (code, _, _) = call_json(
+        addr,
+        wire::CLAIM_ROUTE,
+        &claim(&resolved.report, &cli_key, &cli_cert_hex),
+        None,
+    )
+    .await;
+    assert_eq!(code, 403, "no stand-in approves after it is retired");
+    verify_device_cert_at(&cert, tilo_clock::unix_now_ns()).unwrap();
+    assert!(
+        std::fs::read_dir(relay.state_root().join("stand-ins"))
+            .unwrap()
+            .next()
+            .is_none(),
+        "the key is forgotten"
+    );
 
     stop(relay, serving).await;
 }

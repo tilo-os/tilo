@@ -81,6 +81,25 @@ type Queued = ([u8; 32], String, watch::Receiver<Option<CertifyReply>>);
 /// The pairing invites answered, as (person, invite).
 type AnsweredInvites = std::collections::HashSet<([u8; 32], [u8; 16])>;
 
+/// What certifies a device for a person's stand-in on this host
+/// (`crate::web`'s login codes): only a request whose person and invite a
+/// claim of a sign-in code named, once.
+pub(crate) trait StandInApprover: Send + Sync {
+    /// Whether a claim on this host expects `request`, and that person's
+    /// stand-in may approve it now.
+    fn expects(&self, request: &CertificationRequest, now_ns: u64) -> bool;
+    /// The stand-in's certificate for `request`, spending the claim that
+    /// expected it; `None` when nothing expects it any more.
+    fn issue(
+        &self,
+        request: &CertificationRequest,
+        revocations: &RevocationList,
+        now_ns: u64,
+    ) -> Option<DeviceCert>;
+    /// `request` was answered with the stand-in's certificate.
+    fn approved(&self, request: &CertificationRequest);
+}
+
 /// The certification ALPN handler.
 #[derive(Clone)]
 pub struct CertificationProtocol {
@@ -94,6 +113,8 @@ pub struct CertificationProtocol {
     /// The workspaces this host serves, whose members may queue their own
     /// devices' requests; absent in a host that governs none.
     workspaces: Option<crate::peer::WorkspaceRegistry>,
+    /// Approves the requests a person's stand-in on this host expects.
+    stand_in: Arc<std::sync::OnceLock<Arc<dyn StandInApprover>>>,
 }
 
 impl std::fmt::Debug for CertificationProtocol {
@@ -122,10 +143,18 @@ impl CertificationProtocol {
             confirmations: Arc::new(Mutex::new(HashMap::new())),
             answered_invites: Arc::new(Mutex::new(std::collections::HashSet::new())),
             workspaces,
+            stand_in: Arc::default(),
         }
     }
 
-    fn revocations(&self) -> RevocationList {
+    /// Name what approves for people's stand-ins here. Named once; a later
+    /// call keeps the first.
+    pub(crate) fn set_stand_in(&self, approver: Arc<dyn StandInApprover>) {
+        let _ = self.stand_in.set(approver);
+    }
+
+    /// The devices this host knows are revoked.
+    pub(crate) fn revocations(&self) -> RevocationList {
         self.identity.revocations.read_recover().clone()
     }
 
@@ -352,7 +381,14 @@ impl CertificationProtocol {
             }
             None => request.user_public_key == self.identity.user_public_key,
         };
-        let queued = self.enqueue_member(request, now, member);
+        // A request a person's stand-in here expects is queued like theirs,
+        // whether or not they are a member of a workspace this host serves.
+        let stand_in = self
+            .stand_in
+            .get()
+            .filter(|approver| request.invite != [0; 16] && approver.expects(&request, now))
+            .cloned();
+        let queued = self.enqueue_member(request, now, member || stand_in.is_some());
         let (digest, pairing_code, answer) = match queued {
             Ok(queued) => queued,
             Err(reason) => {
@@ -365,6 +401,9 @@ impl CertificationProtocol {
         write_frame(&mut send, &encode(&CertifyReply::Pending { pairing_code })?)
             .await
             .map_err(|error| io(&error))?;
+        if let Some(approver) = stand_in {
+            self.stand_in_decide(approver.as_ref(), &digest, unix_now_ns());
+        }
         let wait = Duration::from_nanos(expires_at_ns.saturating_sub(now));
         let reply = tokio::select! {
             reply = answered(answer, wait) => reply,
@@ -411,6 +450,46 @@ impl CertificationProtocol {
                 .map_err(|error| io(&error))?;
         }
         finish(connection, send).await
+    }
+
+    /// Answer pending request `digest` with the stand-in's certificate, as
+    /// a root holder's `Issue` answers it, when the stand-in still expects
+    /// it. The requester sees no difference.
+    fn stand_in_decide(&self, approver: &dyn StandInApprover, digest: &[u8; 32], now_ns: u64) {
+        let revocations = self.revocations();
+        let mut pending = self.lock();
+        let Some(entry) = pending
+            .get_mut(digest)
+            .filter(|entry| !entry.decided() && entry.agent.is_none())
+        else {
+            return;
+        };
+        let Some(cert) = approver.issue(&entry.entry.request, &revocations, now_ns) else {
+            return;
+        };
+        if verify_issued_cert(
+            &entry.entry.request,
+            &cert,
+            &self.policy,
+            &revocations,
+            now_ns,
+        )
+        .is_err()
+        {
+            return;
+        }
+        let request = entry.entry.request.clone();
+        self.answered_invites
+            .lock_recover()
+            .insert((request.user_public_key, request.invite));
+        // Recorded before the requester can read its answer, so a tab that
+        // follows its code after being certified sees the approval.
+        approver.approved(&request);
+        entry.answer.send_replace(Some(CertifyReply::Issued {
+            cert,
+            host_cert: self.identity.cert.clone(),
+        }));
+        drop(pending);
     }
 
     /// Every question still waiting for its answer.
