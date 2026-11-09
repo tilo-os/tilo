@@ -332,11 +332,7 @@ impl SessionSearch {
 
     /// The sources a search asks over `workspace`, and what this device's action host publishes
     /// there: one list, so a tool's search finds what the palette finds.
-    fn sources(
-        &self,
-        workspace: &str,
-        scope: &Scope,
-    ) -> (Vec<Held>, Vec<PublishedActions>) {
+    fn sources(&self, workspace: &str, scope: &Scope) -> (Vec<Held>, Vec<PublishedActions>) {
         let now = ui::time::unix_now();
         let (settings, catalogue) = self.for_workspace(workspace);
         let kept = self.kept.borrow();
