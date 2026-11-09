@@ -20,7 +20,7 @@
 import {admit} from './admission.mjs';
 import {wireFetchProxy} from './fetch-proxy.mjs';
 import {takeLinkSecrets} from './link-secrets.mjs';
-import {openTarget} from './open-target.mjs';
+import {UNAVAILABLE, openTarget} from './open-target.mjs';
 import {startRouter} from './router.mjs';
 import {sealedHandle, sealedLink} from './sealed-link.mjs';
 import {listedAt, listedWorkspaces, workspaceAt} from './workspaces.mjs';
@@ -220,6 +220,25 @@ export function initialRoute({link, location, mode, home = null}) {
   return link.parse(location.href);
 }
 
+/** How long a link to an app's workspace document waits for it before the
+ * app opens without it: one nobody wrote yet never arrives. */
+export const WORKSPACE_DOCUMENT_WAIT_MS = 8_000;
+
+/** Wait for the record a one-app link names to reach the page. An app's
+ * workspace document (`''`) that does not come opens empty, as on the
+ * desktop, and is founded with its first write; any other record that does
+ * not come is not there, or not this person's, and the link says so in the
+ * words every link uses. */
+async function recordArrived(peer, {app, record}) {
+  const primary = record === '';
+  try {
+    await peer.whenRecord?.(app, record, primary ? {timeoutMs: WORKSPACE_DOCUMENT_WAIT_MS} : undefined);
+  } catch (error) {
+    if (error?.code !== 'no-record') throw error;
+    if (!primary) throw new Error(UNAVAILABLE);
+  }
+}
+
 /** Mount what `route` shows, then show its target. `directory` is what the
  * desktop's workspace directory browses (`deps.directory`), handed to
  * whichever mount draws the desk: the page's own, or a peer's. */
@@ -230,7 +249,7 @@ export async function present({route, peer, surface, mountDesktop, directory = n
   let navigation;
   if (mode === 'app') {
     if (!target.app) throw new Error('This link opens a whole workspace, so it opens on the desktop');
-    if (peer && target.record !== undefined) await peer.whenRecord?.(target.app, target.record);
+    if (peer && target.record !== undefined) await recordArrived(peer, target);
     const mounted = await mount(surface, {...shown, app: target.app, ...recordOption(target.record), onStatus});
     await openTarget({mount: mounted, target, mode});
     return {mount: mounted};

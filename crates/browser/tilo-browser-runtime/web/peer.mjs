@@ -1046,7 +1046,10 @@ async function connect({
           if (peer !== source || snapshot.phase === 'failed') { finish(new Error('Shared resource connection changed')); return; }
           if (hasRecord(app, record)) finish();
         };
-        const timer = setTimeout(() => finish(new Error(`the workspace sent no ${app} record ${record}`)), timeoutMs);
+        // `no-record`: nothing arrived in time, which for a record nobody
+        // wrote yet (an app's workspace document before its first write) is
+        // the answer, not a failure of the connection.
+        const timer = setTimeout(() => finish(Object.assign(new Error(`the workspace sent no ${app} record ${record}`), {code: 'no-record'})), timeoutMs);
         listeners.add(check); pendingRecordWaits.add(finish);
         signal?.addEventListener('abort', abort, {once: true});
       });

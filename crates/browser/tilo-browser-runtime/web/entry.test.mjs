@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import {boot, chosenRoute, configureFeedback, initialRoute, readEntry, scopeHost, shownLink} from './entry.mjs';
+import {WORKSPACE_DOCUMENT_WAIT_MS, boot, chosenRoute, configureFeedback, initialRoute, present, readEntry, scopeHost, shownLink} from './entry.mjs';
 import {UNAVAILABLE, openTarget, untilSnapshot, untilViewable, viewInvocation} from './open-target.mjs';
 
 const message = {kind: 'chat.message', id: 'chat.message:1'};
@@ -727,4 +727,25 @@ test('a link opened inside the desktop names its view in the address, and focus 
   for (const listener of [...listeners]) listener(snapshot);
   assert.deepEqual(written.at(-1), {scope, app: 'so.tilo.notes'});
   page_.router.stop();
+});
+
+test('a link to an app’s workspace document nobody wrote yet opens the app; any other missing record is not there', async () => {
+  const scope = {kind: 'room', host: 'https://h.example', room: 'r'};
+  const asked = [];
+  const peer = {
+    whenRecord: async (app, record, options) => {
+      asked.push([app, record, options?.timeoutMs]);
+      throw Object.assign(new Error(`the workspace sent no ${app} record ${record}`), {code: 'no-record'});
+    },
+    mountDesktop: async (_surface, options) => ({options}),
+  };
+  const shown = await present({route: {mode: 'app', target: {scope, app: 'so.tilo.scratchpad', record: ''}}, peer});
+  assert.equal(shown.mount.options.app, 'so.tilo.scratchpad');
+  assert.deepEqual(asked, [['so.tilo.scratchpad', '', WORKSPACE_DOCUMENT_WAIT_MS]]);
+  await assert.rejects(present({route: {mode: 'app', target: {scope, app: 'so.tilo.word-processor', record: 'uuid:1'}}, peer}),
+    {message: UNAVAILABLE});
+  // A connection that went away is not a record that is missing.
+  const gone = {...peer, whenRecord: async () => { throw new Error('Shared resource connection closed'); }};
+  await assert.rejects(present({route: {mode: 'app', target: {scope, app: 'so.tilo.scratchpad', record: ''}}, peer: gone}),
+    /connection closed/);
 });
