@@ -104,6 +104,48 @@ export function prefetchApplication(app,{fetch=globalThis.fetch,load=()=>import(
     if(typeof module==='string')(await load()).prefetch(module);
   })().catch(()=>{});
 }
+/** How many apps' modules `prefetchOfferedApplications` fetches and compiles
+ * at once. A desktop offers dozens; fetching them all at once saturates the
+ * link the person's own work shares, so a bounded few go at a time, each in
+ * an idle period, and the rest wait for one to finish. */
+const PREFETCH_AT_ONCE=2;
+/** Fetch and compile the modules of every app the desktop offers, in the
+ * background after the page has drawn its first frame.
+ *
+ * The desktop bundle names each app's module in `apps.json`, and an app
+ * whose module is not yet in has nothing to draw when the person opens it:
+ * its window appears at once but stays a placeholder until the module lands
+ * — on a cold page, the seconds before an app the person chose shows
+ * anything. The apps the desktop offers do not depend on what the person
+ * opens, so their modules are fetched ahead of time, starting after the
+ * first frame so nothing of it delays what the person sees. It never
+ * competes: [`PREFETCH_AT_ONCE`] modules at a time, each in the page's idle
+ * period (or a timeout when it is never idle), and the browser's HTTP cache
+ * and the splitter's own compiled-module cache keep what came, so an app
+ * opened later instantiates without fetching or compiling again.
+ *
+ * An app the listing does not name, or a module that fails, is left to the
+ * app's first open, as without this: a prefetch never breaks a page. It runs
+ * once; asking again is the same run. */
+let offeredPrefetch;
+export function prefetchOfferedApplications({fetch=globalThis.fetch,load=()=>import('./pkg/__wasm_split.js'),after=ready,idle=globalThis.requestIdleCallback??(run=>setTimeout(()=>run({timeRemaining:()=>4}),0))}={}){
+  offeredPrefetch??=(async()=>{
+    const [modules]=await Promise.all([applications(fetch),after()]);
+    const names=modules.map(entry=>entry.module).filter(name=>typeof name==='string');
+    if(!names.length)return;
+    const compiled=await load();
+    let next=0;
+    const worker=async()=>{
+      while(next<names.length){
+        const name=names[next++];
+        await new Promise(resolve=>idle(resolve));
+        try{await compiled.prefetch(name);}catch{}
+      }
+    };
+    await Promise.all(Array.from({length:Math.min(PREFETCH_AT_ONCE,names.length)},worker));
+  })().catch(()=>{});
+  return offeredPrefetch;
+}
 export async function openProfileStorage(profile,device,options={}){await ready();return durableHost.open(profile,device,options);}
 export async function mountDesktop(target,options={}) {
   const token=registry.begin(target);

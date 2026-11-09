@@ -21,7 +21,7 @@ import {doorCopy, failureMessage, inviteLinkTarget, localeMessages, localeMessag
 import {servedVersion, watchForUpdate} from './bundle-update.mjs';
 import {mountWaitList} from './door-wait-list.mjs';
 import {boot, grammar} from './entry.mjs';
-import {loadRuntime, mountDesktop, prefetchApplication, prepareGpu} from './host.mjs';
+import {loadRuntime, mountDesktop, prefetchApplication, prefetchOfferedApplications, prepareGpu} from './host.mjs';
 import {connectPeer, httpsPost, identityProfile, inspectInvitation, joinWorkspace, openInvitation, profileDevice, withCustody} from './peer.mjs';
 import {readBrowserAccounts} from './browser-accounts.mjs';
 import {CustodyError, idbStorage, openDeviceCustody} from './device-custody.mjs';
@@ -829,7 +829,14 @@ export async function startEntryPage({mode}) {
       // Whether that step stopped moving on: the page offers Try again
       // while it keeps waiting (arrival.mjs).
       if ('gpuStalled' in state || state.phase !== 'gpu-pending') document.documentElement.toggleAttribute('data-gpu-stalled', state.gpuStalled === true);
-      if (state.phase === 'presented') arrive('done');
+      if (state.phase === 'presented') {
+        arrive('done');
+        // The page has drawn: the apps it offers can now fetch their modules
+        // in its idle time, a bounded few at a time, so an app the person
+        // opens later instantiates from what is already in instead of
+        // fetching and compiling it while its window waits to fill in.
+        prefetchOfferedApplications();
+      }
       else if (state.phase === 'gpu-pending') arrive('draw');
       else if (['failed', 'crashed'].includes(state.phase)) arrive('stopped');
       root.frames = String(state.frames ?? 0);

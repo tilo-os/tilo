@@ -33,6 +33,7 @@
 import {mkdirSync, writeFileSync} from 'node:fs';
 import {request} from 'node:https';
 import {launch, sleep} from '../../../../tools/web/chrome.mjs';
+import * as waits from './waits.mjs';
 
 const [site, relay, origin, out, rolesFile, earlier] = process.argv.slice(2);
 if (!site || !relay || !origin || !out || !rolesFile) {
@@ -218,22 +219,19 @@ const paletteRows = async tab => {
 // so a frame count is progress only while the desk owes work. `owed` says
 // whether it still does: the wait ends when the frames came or the desk says
 // it has nothing left to draw, and never outlives the work it waits for.
-const settle = async (tab, by = 2, owed = () => true) => {
-  const from = await tab.evaluate('globalThis.tiloMount?.state()?.frames ?? 0');
-  const deadline = Date.now() + 120_000;
-  for (;;) {
-    if (await tab.evaluate(`(globalThis.tiloMount?.state()?.frames ?? 0) >= ${from + by}`)) return;
-    if (!await owed()) return;
-    if (Date.now() > deadline) {
-      await until(tab, `(globalThis.tiloMount?.state()?.frames ?? 0) >= ${from + by}`,
-        `the desk stepping ${by} more frame(s)`, 1);
-    }
-    await sleep(100);
-  }
-};
+const settle = (tab, by = 2, owed = () => true) => waits.settle({
+  evaluate: tab.evaluate.bind(tab),
+  by,
+  owed,
+  sleep,
+  timeoutMs: 120_000,
+  pollMs: 100,
+  onTimeout: ({from, by}) => until(tab, `(globalThis.tiloMount?.state()?.frames ?? 0) >= ${from + by}`,
+    `the desk stepping ${by} more frame(s)`, 1),
+});
 // Whether the open search still owes rows: the desk's own answer, which a
 // settled frame would not carry, as a settled desk presents none.
-const searching = tab => tab.evaluate('globalThis.tiloMount?.state()?.searchSearching === true');
+const searching = tab => waits.searching(tab);
 // A person's search: the chord, the query, and Enter on the row the palette
 // offers for it. The host answers a query a moment after the last key, and the
 // rows it shows before that answer are the previous query's: they are read
@@ -269,7 +267,7 @@ const search = async (tab, command, query, row, opens = null) => {
       // Enter is what opens the app: the watch is in the page before the press,
       // so the frame it closes search and the frame the app's window arrives on
       // are told apart on the page's own clock.
-      if (opens) await watchOpen(tab, opens);
+      if (opens) await armOpen(tab, opens);
       await key(tab, 'Enter');
       chosen = rows;
       break;
@@ -285,31 +283,47 @@ const search = async (tab, command, query, row, opens = null) => {
 // A page-side clock around the person's Enter. What a person waits for is the
 // desk showing the app's window, and this desk paints into one canvas: the
 // window is on screen when the frame that carries it is presented. So both
-// moments are frames the page presented — the first after Enter that closed
-// search, and the first that lists the window — kept on the page's own clock,
-// where a round trip from here never lands in the number. A desk that paints
-// at a display's pace shows the window on the frame right after the key.
-const watchOpen = (tab, app) => tab.evaluate(`(() => {
+// moments are frames the page presented — the press, stamped where the key
+// arrives, and the first presented frame after it that lists the window —
+// kept on the page's own clock, where a round trip from here never lands in
+// the number.
+//
+// The press is stamped by a `keydown` listener, not by reading the desk's
+// state: a MutationObserver runs only after the frame the key caused has
+// already published, so a watch that took its press from the first status
+// showing search closed dated the press at or after the frame it was meant to
+// precede, and every open read as 0 ms.
+//
+// The frame that counts is the first presented one after the press whose
+// navigation lists the app's window: this desk draws a window in the pass that
+// publishes it, so that frame carries the window's pixels, where the entry
+// alone can be published a frame before its pixels are shown.
+const armOpen = (tab, app) => tab.evaluate(`(() => {
   const mount = globalThis.tiloMount;
   const host = mount.canvas.parentElement;
-  const watch = globalThis.__tiloOpen = {app: ${JSON.stringify(app)}, pressedAt: null, shownAt: null};
+  const watch = globalThis.__tiloOpen = {app: ${JSON.stringify(app)}, pressedAt: null,
+    framesAtPress: null, shownAt: null, framesShown: null};
+  if (!globalThis.__tiloOpenKeys) {
+    globalThis.__tiloOpenKeys = true;
+    addEventListener('keydown', event => {
+      const w = globalThis.__tiloOpen;
+      if (!w || w.pressedAt !== null) return;
+      if (event.key !== 'Enter' && event.key !== '\\r') return;
+      w.pressedAt = performance.now();
+      w.framesAtPress = Number(mount.canvas.parentElement.dataset.frames ?? 0);
+    }, true);
+  }
   const read = () => {
-    // Enter is taken on the frame the search closes: that frame's own time is
-    // the press, however long the round trip to read this was.
-    if (watch.pressedAt === null && mount.state()?.searchOpen === false) {
-      const shown = Number(host.dataset.frames ?? 0);
-      watch.pressedAt = performance.now();
-      watch.framesAtPress = shown;
-    }
-    if (watch.pressedAt !== null && watch.shownAt === null && host.dataset.phase === 'presented'
-        && Number(host.dataset.frames ?? 0) > (watch.framesAtPress ?? 0)
-        && (mount.navigation?.getSnapshot?.().entries ?? []).some(entry => entry.app === watch.app)) {
-      watch.shownAt = performance.now();
-      watch.framesShown = Number(host.dataset.frames ?? 0);
+    const w = globalThis.__tiloOpen;
+    if (!w || w.pressedAt === null || w.shownAt !== null) return;
+    if (host.dataset.phase !== 'presented') return;
+    if (Number(host.dataset.frames ?? 0) <= w.framesAtPress) return;
+    if ((mount.navigation?.getSnapshot?.().entries ?? []).some(entry => entry.app === w.app)) {
+      w.shownAt = performance.now();
+      w.framesShown = Number(host.dataset.frames ?? 0);
     }
   };
   new MutationObserver(read).observe(host, {attributes: true, attributeFilter: ['data-frames', 'data-phase']});
-  read();
   return true;
 })()`);
 // What the open cost, in the desk's own unit: the window is drawn on the frame
@@ -318,14 +332,19 @@ const watchOpen = (tab, app) => tab.evaluate(`(() => {
 // took to put that frame on screen — a megapixel through software costs about
 // half a second here and near nothing on a display, and neither says anything
 // about whether the desk heard the person.
+//
+// What was not measured is `ok: false`, never a number: an open the watch
+// never saw begun or never saw end is no reading at all, and the caller fails
+// on it rather than counting `0` as fast.
 const openMarks = tab => tab.evaluate(`(() => {
   const watch = globalThis.__tiloOpen;
   globalThis.__tiloOpen = undefined;
-  if (!watch || watch.pressedAt === null) return JSON.stringify(null);
-  return JSON.stringify({
-    presentMs: watch.shownAt === null ? null : Math.round(watch.shownAt - watch.pressedAt),
-    frames: watch.shownAt === null ? 0 : watch.framesShown - watch.framesAtPress,
-  });
+  if (!watch || watch.pressedAt === null || watch.shownAt === null) {
+    return JSON.stringify({ok: false, pressed: watch?.pressedAt != null, shown: watch?.shownAt != null});
+  }
+  return JSON.stringify({ok: true,
+    presentMs: Math.round(watch.shownAt - watch.pressedAt),
+    frames: watch.framesShown - watch.framesAtPress});
 })()`).then(JSON.parse);
 
 // A canvas-drawn desktop takes the pointer; the search chord is Ctrl+K away
@@ -931,7 +950,12 @@ try {
     await until(a.tab, `(globalThis.tiloMount?.navigation?.getSnapshot?.().entries ?? []).some(entry => entry.app === ${JSON.stringify(application.id)})`,
       `the window of ${application.label}`, 180_000);
     const marks = await openMarks(a.tab);
-    if (!marks) failed(`the watch of ${application.label} never saw the search close`);
+    // An open the page's own clock never saw begun or never saw end is not a
+    // fast one: it is no reading, and the gate says so instead of counting a
+    // missing number as zero frames.
+    if (!marks.ok) {
+      failed(`${application.label} opened, but Enter to its window was not measured (${JSON.stringify(marks)}); an unmeasured open is not a fast one`);
+    }
     timings.push({app: application.id, ...marks});
     const shot = await a.tab.screenshot();
     if (shot) writeFileSync(`${out}/app-${application.id.replace(/[^a-z0-9]+/gi, '-')}.png`, shot);
