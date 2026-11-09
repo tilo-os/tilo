@@ -692,6 +692,9 @@ impl Session {
         let session_actions =
             std::sync::Arc::new(crate::session_actions::SessionActions::new(steps));
         session_doors.keep_actions(std::sync::Arc::clone(&session_actions));
+        // The runs the broker reads: each agent the person admits at the door works in a run of its
+        // own among them, beside the conversations' turns.
+        session_doors.keep_runs(conversations.runs());
         // The agents the person admits at its door, as the desk and the bar show them.
         let seats = crate::agent_door::Seats::new();
         let desk = crate::desk_resource::desk_from(crate::desk_resource::Shared {

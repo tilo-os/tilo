@@ -111,7 +111,13 @@ Claude Code on A --stdio--> tilo-runtime-mcp --connect --device B
 4. **What the agent is.** It works as `Caller::local_person(person)
    .delegated_to(agent)`, in one workspace (the one it asked for with
    `--workspace` when B holds it, else the one in front), through the same
-   gate as every caller. Its id names the device it came from
+   gate as every caller — and, as every admitted connection of B's door does
+   (a program of B's login or of one of its environments alike), in a run of
+   its own: B mints a task agent for the connection, B's device delegates it,
+   and everything the agent changes is a step of that run, decided by the
+   person's live grants capped at an agent's
+   (`crates/session/session/src/door_runs.rs`). The run ends with the
+   connection. Its id names the device it came from
    (`claude-code@studio-laptop-3f2a9c1b`), so what it does is told apart from
    the same client on B and from another device's, and its seat on B's bar
    carries that name; the person's Stop there ends the connection on A too.

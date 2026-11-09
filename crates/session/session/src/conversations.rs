@@ -102,6 +102,9 @@ pub(crate) struct Runs {
     /// Wakes the session's loop when a run reported what it spent, so the day it is charged to is
     /// the day the agent then works in.
     wake: Option<tilo_service::Wake>,
+    /// The runs the agent door's admitted connections work in, beside the turns: each held for as
+    /// long as its connection lasts ([`crate::door_runs`]).
+    doors: Arc<crate::door_runs::DoorRuns>,
 }
 
 impl Runs {
@@ -112,7 +115,13 @@ impl Runs {
             spent: Mutex::default(),
             reported: Mutex::default(),
             wake: Some(wake),
+            doors: Arc::default(),
         }
+    }
+
+    /// The runs the agent door's connections work in.
+    pub(crate) fn doors(&self) -> Arc<crate::door_runs::DoorRuns> {
+        Arc::clone(&self.doors)
     }
 
     /// What the runs' agents spent since the last pass, by workspace and agent, in millionths of
@@ -171,18 +180,30 @@ impl TrackerRuns for Runs {
         self.requires_workspace(workspace)
     }
 
+    /// The turns, and the runs the door's connections work in.
     fn runs(&self, workspace: &str) -> Result<Vec<TrackerRun>, String> {
-        Ok(self
+        let mut runs: Vec<TrackerRun> = self
             .workspace(workspace)?
             .turns
             .iter()
             .map(|entry| entry.run.clone())
-            .collect())
+            .collect();
+        runs.extend(self.doors.in_workspace(workspace));
+        Ok(runs)
     }
 
     /// Whether the agent still takes part in a conversation of this workspace: that is where it
-    /// works, and an agent a conversation no longer takes in has no turn to answer.
+    /// works, and an agent a conversation no longer takes in has no turn to answer. A door
+    /// connection's agent is admitted while its connection holds its run, under the delegation
+    /// that run carries.
     fn check_agent(&self, workspace: &str, run: &TrackerRun) -> Result<(), String> {
+        if let Some(door) = self.doors.find(workspace, &run.issue, &run.agent) {
+            return if door.delegation == run.delegation {
+                Ok(())
+            } else {
+                Err("the door connection's run is another agent's".into())
+            };
+        }
         let facts = self.workspace(workspace)?;
         if facts.agents.contains(&run.agent) {
             Ok(())
@@ -201,15 +222,20 @@ impl TrackerRuns for Runs {
         requirement: &NativeTaskActionRequirement,
     ) -> Result<(), String> {
         let facts = self.workspace(workspace)?;
+        let policy = facts
+            .policy
+            .as_ref()
+            .ok_or("this workspace's grants are not at hand")?;
+        // A door connection's run has no message for a cause: the person admitting it is, and it
+        // acts on their live grants capped at an agent's.
+        if let Some(door) = self.doors.find(workspace, &run.issue, &run.agent) {
+            return requirement.check_tracker_policy(policy, workspace, &door, None, wall());
+        }
         let entry = facts
             .turns
             .iter()
             .find(|entry| entry.run.issue == run.issue && entry.run.agent == run.agent)
             .ok_or("the turn this op answers is no longer going")?;
-        let policy = facts
-            .policy
-            .as_ref()
-            .ok_or("this workspace's grants are not at hand")?;
         requirement.check_tracker_policy(policy, workspace, &entry.run, Some(&entry.looked), wall())
     }
 
@@ -1768,5 +1794,54 @@ mod tests {
             facts(Vec::new()).differs_from(&waiting),
             "a turn that ended is a change too: its run stops"
         );
+    }
+
+    /// An agent the person admitted at the door works in a run of its own beside the turns: the
+    /// broker reads it with them, admits its agent under the delegation it carries and no other,
+    /// and it ends with its connection.
+    #[test]
+    fn a_door_connections_run_goes_beside_the_turns_while_it_is_held() {
+        let chat = workspace();
+        let head = part(vec![("m1", message(ME, "add the revenue curve", 10))]);
+        let (entries, agents) = turns(&chat, &head, ME);
+        let runs = Runs::new(std::sync::Arc::new(|| {}));
+        *runs.held.lock().unwrap() = Held {
+            workspaces: vec![Facts {
+                workspace: "w1".into(),
+                agents,
+                policy: None,
+                turns: entries,
+            }],
+        };
+        let door = TrackerRun {
+            issue: format!("{}/a1", crate::door_runs::DOOR_RUNS),
+            agent: "task-0123456789ab".into(),
+            turn: None,
+            delegation: Some(Ok(vec![1, 2, 3])),
+            ..runs.runs("w1").unwrap().remove(0)
+        };
+        let going = runs.doors().open("w1", door.clone());
+        let listed = runs.runs("w1").unwrap();
+        assert_eq!(listed.len(), 2, "the turn and the door's run: {listed:?}");
+        assert!(listed.contains(&door));
+        assert!(
+            runs.check_agent("w1", &door).is_ok(),
+            "its agent is admitted"
+        );
+        let forged = TrackerRun {
+            delegation: Some(Ok(vec![9])),
+            ..door.clone()
+        };
+        assert!(
+            runs.check_agent("w1", &forged).is_err(),
+            "under its own delegation alone"
+        );
+        drop(going);
+        assert_eq!(
+            runs.runs("w1").unwrap().len(),
+            1,
+            "it ends with its connection"
+        );
+        assert!(runs.check_agent("w1", &door).is_err());
     }
 }

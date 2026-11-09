@@ -522,6 +522,7 @@ agent-door-workspace-gone = Der Arbeitsbereich, in dem dieses Programm arbeiten 
 agent-door-not-administrator = Du verwaltest diesen Arbeitsbereich nicht, daher wurde { $agent } nicht hinzugefügt.
 agent-door-withdrawn = Die Anfrage wurde zurückgezogen, bevor jemand sie beantwortet hat.
 agent-door-declined = Du hast dieses Programm nicht als Agenten hier arbeiten lassen.
+agent-door-no-run = Die Arbeit dieses Agenten hier konnte nicht beginnen
 agent-door-person-from-device = Nur ein Programm auf diesem Gerät kann als du handeln; ein Agent von einem anderen deiner Geräte arbeitet hier als Agent.
 agent-door-admission-person = In „{ $workspace }“ als du handeln
 agent-door-admission-person-detail = Alles, was es tut, ist deins: es führt aus, was du tippst, als du, dir zugeschrieben, mit allem, was du hier darfst. Erlaube das nur einem Programm, das du selbst gestartet hast, etwa einem Terminal.
