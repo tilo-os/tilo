@@ -5,22 +5,123 @@ kind = "store.catalog"
 label = "App Store"
 version = 1
 fields = [
-  { path = "reports", type = "BTreeMap<String, Report>" },
+  { path = "reports", type = { map = { named = "Report" } } },
 ]
 
 [[resources.verbs]]
 id = "draft-report"
 kind = "undoable"
 params = [
-  { name = "app_id", required = true, schema = { type = "string" } },
+  { name = "app_id", type = "text", required = true, schema = { type = "string" } },
 ]
 
 [[resources.verbs]]
 id = "record-moderation-case"
 kind = "undoable"
 params = [
-  { name = "app_id", required = true, schema = { type = "string" } },
-  { name = "case_id", required = true, schema = { type = "string" } },
-  { name = "status", required = true, schema = { type = "string" } },
+  { name = "app_id", type = "text", required = true, schema = { type = "string" } },
+  { name = "case_id", type = "text", required = true, schema = { type = "string" } },
+  { name = "status", type = "text", required = true, schema = { type = "string" } },
+]
+
+[[resources.verbs]]
+id = "inspect-catalogue"
+kind = "read"
+params = [
+  { name = "app", type = { option = "text" }, required = false },
+]
+
+[[resources.verbs]]
+id = "set-search"
+kind = "read"
+params = [
+  { name = "query", type = "text", required = true },
+]
+
+[[resources.verbs]]
+id = "show-view"
+kind = "read"
+params = [
+  { name = "view", type = "text", required = true },
+]
+
+[[resources.verbs]]
+id = "show-more"
+kind = "read"
+
+[[resources.verbs]]
+id = "browse-remote"
+kind = "read"
+params = [
+  { name = "remote", type = "text", required = true },
+]
+
+[[resources.verbs]]
+id = "set-category"
+kind = "read"
+params = [
+  { name = "category", type = "text", required = true },
+]
+
+[[resources.verbs]]
+id = "clear-filters"
+kind = "read"
+
+[[resources.verbs]]
+id = "show-details"
+kind = "read"
+params = [
+  { name = "app", type = "text", required = true },
+]
+
+[[resources.verbs]]
+id = "show-runtime-details"
+kind = "read"
+params = [
+  { name = "runtime", type = "text", required = true },
+  { name = "registry", type = { option = "text" }, required = false },
+]
+
+[[resources.verbs]]
+id = "set-technical-details"
+kind = "read"
+params = [
+  { name = "expanded", type = "bool", required = true },
+]
+
+[[resources.verbs]]
+id = "open-reference"
+kind = "read"
+params = [
+  { name = "path", type = { option = "any" }, required = false },
+  { name = "contents", type = { option = "text" }, required = false },
+]
+
+[[resources.verbs]]
+id = "show-catalogue"
+kind = "read"
+
+[[resources.verbs]]
+id = "show-remotes"
+kind = "read"
+
+[[resources.verbs]]
+id = "show-trust"
+kind = "read"
+
+[[resources.verbs]]
+id = "prepare-moderation"
+kind = "read"
+params = [
+  { name = "app", type = "text", required = true },
+  { name = "appeal", type = "bool", required = true },
+]
+
+[[resources.types]]
+name = "Report"
+fields = [
+  { name = "status", type = "text" },
+  { name = "note", type = "text" },
+  { name = "case", type = { option = "text" } },
 ]
 

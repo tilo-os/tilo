@@ -5,37 +5,37 @@ kind = "weather.locations"
 label = "Weather"
 version = 1
 fields = [
-  { path = "places", type = "Collection<Place>", stored = "collection" },
-  { path = "places.*.name", type = "String", label = true },
-  { path = "places.*.region", type = "String" },
-  { path = "places.*.country", type = "String" },
-  { path = "places.*.country_code", type = "Atom" },
-  { path = "places.*.latitude", type = "f64" },
-  { path = "places.*.longitude", type = "f64" },
-  { path = "places.*.timezone", type = "Atom" },
-  { path = "default_place", type = "Atom" },
+  { path = "places", type = { collection = { named = "Place" } }, stored = "collection" },
+  { path = "places.*.name", type = "text", label = true },
+  { path = "places.*.region", type = "text" },
+  { path = "places.*.country", type = "text" },
+  { path = "places.*.country_code", type = "text" },
+  { path = "places.*.latitude", type = "float" },
+  { path = "places.*.longitude", type = "float" },
+  { path = "places.*.timezone", type = "text" },
+  { path = "default_place", type = "text" },
 ]
 
 [[resources.verbs]]
 id = "save-location"
 kind = "undoable"
 params = [
-  { name = "place", required = true, schema = { type = "object", additionalProperties = false, properties = { name = { type = "string" }, country = { type = "string" }, country_code = { type = ["string", "null"] }, latitude = { type = "number" }, longitude = { type = "number" }, region = { type = ["string", "null"] }, timezone = { type = ["string", "null"] } }, required = ["name", "country", "latitude", "longitude"] } },
-  { name = "make_default", required = false, schema = { type = ["boolean", "null"] } },
+  { name = "place", type = { named = "PlaceDetails" }, required = true, schema = { type = "object", additionalProperties = false, properties = { name = { type = "string" }, country = { type = "string" }, country_code = { type = ["string", "null"] }, latitude = { type = "number" }, longitude = { type = "number" }, region = { type = ["string", "null"] }, timezone = { type = ["string", "null"] } }, required = ["name", "country", "latitude", "longitude"] } },
+  { name = "make_default", type = { option = "bool" }, required = false, schema = { type = ["boolean", "null"] } },
 ]
 
 [[resources.verbs]]
 id = "use-as-default"
 kind = "undoable"
 params = [
-  { name = "place", required = true, schema = { type = "string" } },
+  { name = "place", type = "text", required = true, schema = { type = "string" } },
 ]
 
 [[resources.verbs]]
 id = "move-to-top"
 kind = "undoable"
 params = [
-  { name = "place", required = true, schema = { type = "string" } },
+  { name = "place", type = "text", required = true, schema = { type = "string" } },
 ]
 
 [[resources.verbs]]
@@ -43,6 +43,48 @@ id = "remove"
 destructive = true
 kind = "undoable"
 params = [
-  { name = "place", required = true, schema = { type = "string" } },
+  { name = "place", type = "text", required = true, schema = { type = "string" } },
+]
+
+[[resources.verbs]]
+id = "refresh"
+kind = "read"
+
+[[resources.verbs]]
+id = "refresh-location"
+kind = "read"
+params = [
+  { name = "location", type = "text", required = true },
+]
+
+[[resources.verbs]]
+id = "open-location"
+kind = "read"
+params = [
+  { name = "location", type = "text", required = true },
+]
+
+[[resources.types]]
+name = "Place"
+fields = [
+  { name = "name", type = "text" },
+  { name = "region", type = "text" },
+  { name = "country", type = "text" },
+  { name = "country_code", type = "text" },
+  { name = "latitude", type = "float" },
+  { name = "longitude", type = "float" },
+  { name = "timezone", type = "text" },
+]
+
+[[resources.types]]
+name = "PlaceDetails"
+fields = [
+  { name = "name", type = "text" },
+  { name = "country", type = "text" },
+  { name = "latitude", type = "float" },
+  { name = "longitude", type = "float" },
+  { name = "region", type = { option = "text" } },
+  { name = "country_code", type = { option = "text" } },
+  { name = "timezone", type = { option = "text" } },
 ]
 

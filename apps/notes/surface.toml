@@ -5,40 +5,42 @@ kind = "notes.notebook"
 label = "Notebook"
 version = 2
 fields = [
-  { path = "pages", type = "Collection<Page>", stored = "collection" },
-  { path = "pages.*.title", type = "String", label = true, readonly = true },
-  { path = "pages.*.parent", type = "Option<Id>", readonly = true },
-  { path = "pages.*.body", type = "RichText", ops = "sha256:b86bfc65e3faa1c9" },
-  { path = "pages.*.tags", type = "Set<Id>" },
-  { path = "pages.*.creator", type = "Option<Atom>", readonly = true },
-  { path = "pages.*.reactions", type = "Reactions" },
-  { path = "tags", type = "Collection<Tag>", stored = "collection" },
-  { path = "tags.*.name", type = "Atom", label = true },
-  { path = "images", type = "Map<Bytes>", readonly = true },
+  { path = "pages", type = { collection = { named = "Page" } }, stored = "collection" },
+  { path = "pages.*.title", type = "text", label = true, readonly = true },
+  { path = "pages.*.parent", type = { option = "text" }, readonly = true },
+  { path = "pages.*.body", type = "rich_text", ops = "sha256:10bf507639fdd4f3" },
+  { path = "pages.*.tags", type = { set = "text" } },
+  { path = "pages.*.creator", type = { option = "text" }, readonly = true },
+  { path = "pages.*.reactions", type = "reactions" },
+  { path = "tags", type = { collection = { named = "Tag" } }, stored = "collection" },
+  { path = "tags.*.name", type = "text", label = true },
+  { path = "images", type = { map = "any" }, readonly = true },
 ]
 
 [[resources.verbs]]
 id = "new-note"
 kind = "undoable"
+returns = { schema = { type = "object" } }
 params = [
-  { name = "title", required = true, schema = { type = "string" } },
-  { name = "parent", required = false, schema = { type = ["string", "null"] } },
+  { name = "title", type = "text", required = true, schema = { type = "string" } },
+  { name = "parent", type = { option = "text" }, required = false, schema = { type = ["string", "null"] } },
 ]
 
 [[resources.verbs]]
 id = "new-child"
 kind = "undoable"
+returns = { schema = { type = "object" } }
 params = [
-  { name = "page", required = true, schema = { type = "string" } },
-  { name = "title", required = true, schema = { type = "string" } },
+  { name = "page", type = "text", required = true, schema = { type = "string" } },
+  { name = "title", type = "text", required = true, schema = { type = "string" } },
 ]
 
 [[resources.verbs]]
 id = "rename"
 kind = "undoable"
 params = [
-  { name = "page", required = true, schema = { type = "string" } },
-  { name = "title", required = true, schema = { type = "string" } },
+  { name = "page", type = "text", required = true, schema = { type = "string" } },
+  { name = "title", type = "text", required = true, schema = { type = "string" } },
 ]
 
 [[resources.verbs]]
@@ -46,66 +48,66 @@ id = "delete"
 destructive = true
 kind = "undoable"
 params = [
-  { name = "page", required = true, schema = { type = "string" } },
+  { name = "page", type = "text", required = true, schema = { type = "string" } },
 ]
 
 [[resources.verbs]]
 id = "move-note"
 kind = "undoable"
 params = [
-  { name = "page", required = true, schema = { type = "string" } },
-  { name = "parent", required = false, schema = { type = ["string", "null"] } },
-  { name = "before", required = false, schema = { type = ["string", "null"] } },
+  { name = "page", type = "text", required = true, schema = { type = "string" } },
+  { name = "parent", type = { option = "text" }, required = false, schema = { type = ["string", "null"] } },
+  { name = "before", type = { option = "text" }, required = false, schema = { type = ["string", "null"] } },
 ]
 
 [[resources.verbs]]
 id = "move-up"
 kind = "undoable"
 params = [
-  { name = "page", required = true, schema = { type = "string" } },
+  { name = "page", type = "text", required = true, schema = { type = "string" } },
 ]
 
 [[resources.verbs]]
 id = "move-down"
 kind = "undoable"
 params = [
-  { name = "page", required = true, schema = { type = "string" } },
+  { name = "page", type = "text", required = true, schema = { type = "string" } },
 ]
 
 [[resources.verbs]]
 id = "indent"
 kind = "undoable"
 params = [
-  { name = "page", required = true, schema = { type = "string" } },
+  { name = "page", type = "text", required = true, schema = { type = "string" } },
 ]
 
 [[resources.verbs]]
 id = "outdent"
 kind = "undoable"
 params = [
-  { name = "page", required = true, schema = { type = "string" } },
+  { name = "page", type = "text", required = true, schema = { type = "string" } },
 ]
 
 [[resources.verbs]]
 id = "duplicate"
 kind = "undoable"
 params = [
-  { name = "page", required = true, schema = { type = "string" } },
+  { name = "page", type = "text", required = true, schema = { type = "string" } },
 ]
 
 [[resources.verbs]]
 id = "new-tag"
 kind = "undoable"
 params = [
-  { name = "name", required = true, schema = { type = "string" } },
+  { name = "name", type = "text", required = true, schema = { type = "string" } },
 ]
 
 [[resources.verbs]]
 id = "tag"
 kind = "undoable"
 params = [
-  { name = "page", required = true, schema = { type = "string" } },
-  { name = "name", required = true, schema = { type = "string" } },
+  { name = "page", type = "text", required = true, schema = { type = "string" } },
+  { name = "name", type = "text", required = true, schema = { type = "string" } },
 ]
 
 [[resources.verbs]]
@@ -113,7 +115,7 @@ id = "delete-tag"
 destructive = true
 kind = "undoable"
 params = [
-  { name = "tag", required = true, schema = { type = "string" } },
+  { name = "tag", type = "text", required = true, schema = { type = "string" } },
 ]
 
 [[resources.verbs]]
@@ -127,34 +129,61 @@ params = [
 id = "place-image"
 kind = "undoable"
 params = [
-  { name = "page", required = true, schema = { type = "string" } },
+  { name = "page", type = "text", required = true, schema = { type = "string" } },
   { name = "bytes", required = true, schema = { oneOf = [{ type = "array", items = { type = "integer", maximum = 255, minimum = 0 } }, { type = "string", content = true, pattern = "^tilo\\.content:[0-9a-f]{64}$" }] } },
-  { name = "alt", required = false, schema = { type = ["string", "null"] } },
+  { name = "alt", type = { option = "text" }, required = false, schema = { type = ["string", "null"] } },
 ]
 
 [[resources.verbs]]
 id = "create-page"
 kind = "undoable"
+returns = { schema = { type = "object" } }
 params = [
-  { name = "title", required = true, schema = { type = "string", minLength = 1, pattern = "\\S" } },
-  { name = "markdown", required = false, schema = { type = ["string", "null"] } },
+  { name = "title", type = "text", required = true, schema = { type = "string", minLength = 1, pattern = "\\S" } },
+  { name = "markdown", type = { option = "text" }, required = false, schema = { type = ["string", "null"] } },
 ]
 
 [[resources.verbs]]
 id = "import-markdown"
 kind = "undoable"
 params = [
-  { name = "title", required = true, schema = { type = "string" } },
-  { name = "markdown", required = true, schema = { type = "string" } },
+  { name = "title", type = "text", required = true, schema = { type = "string" } },
+  { name = "markdown", type = "text", required = true, schema = { type = "string" } },
   { name = "images", required = true, schema = { type = "array", items = { oneOf = [{ type = "array", items = { type = "integer", maximum = 255, minimum = 0 } }, { type = "string", content = true, pattern = "^tilo\\.content:[0-9a-f]{64}$" }] } } },
-  { name = "note", required = false, schema = { type = ["string", "null"] } },
+  { name = "note", type = { option = "text" }, required = false, schema = { type = ["string", "null"] } },
 ]
 
 [[resources.verbs]]
 id = "append-to-note"
 kind = "undoable"
+returns = { schema = { type = "object" } }
 params = [
-  { name = "title", required = false, schema = { type = ["string", "null"] } },
-  { name = "markdown", required = true, schema = { type = "string" } },
+  { name = "title", type = { option = "text" }, required = false, schema = { type = ["string", "null"] } },
+  { name = "markdown", type = "text", required = true, schema = { type = "string" } },
+]
+
+[[resources.verbs]]
+id = "export-markdown-content"
+kind = "read"
+params = [
+  { name = "page", type = { option = "text" }, required = false },
+  { name = "title", type = { option = "text" }, required = false },
+]
+
+[[resources.types]]
+name = "Page"
+fields = [
+  { name = "title", type = "text" },
+  { name = "parent", type = { option = "text" } },
+  { name = "body", type = "rich_text" },
+  { name = "tags", type = { set = "text" } },
+  { name = "creator", type = { option = "text" } },
+  { name = "reactions", type = "reactions" },
+]
+
+[[resources.types]]
+name = "Tag"
+fields = [
+  { name = "name", type = "text" },
 ]
 

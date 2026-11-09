@@ -5,28 +5,127 @@ kind = "tube.library"
 label = "Tube"
 version = 1
 fields = [
-  { path = "likes", type = "Set<String>" },
-  { path = "queue", type = "Set<String>" },
-  { path = "subscriptions", type = "Set<String>" },
-  { path = "comment_likes", type = "Set<String>" },
-  { path = "replies", type = "Collection<Reply>", stored = "collection" },
-  { path = "replies.*.comment", type = "String", readonly = true },
-  { path = "replies.*.text", type = "String", label = true, readonly = true },
+  { path = "likes", type = { set = "text" } },
+  { path = "queue", type = { set = "text" } },
+  { path = "subscriptions", type = { set = "text" } },
+  { path = "comment_likes", type = { set = "text" } },
+  { path = "replies", type = { collection = { named = "Reply" } }, stored = "collection" },
+  { path = "replies.*.comment", type = "text", readonly = true },
+  { path = "replies.*.text", type = "text", label = true, readonly = true },
 ]
 
 [[resources.verbs]]
 id = "reply-to-comment"
 kind = "undoable"
 params = [
-  { name = "comment", required = true, schema = { type = "string", minLength = 1, pattern = "\\S" } },
-  { name = "text", required = true, schema = { type = "string", minLength = 1, pattern = "\\S" } },
+  { name = "comment", type = "text", required = true, schema = { type = "string", minLength = 1, pattern = "\\S" } },
+  { name = "text", type = "text", required = true, schema = { type = "string", minLength = 1, pattern = "\\S" } },
 ]
 
 [[resources.verbs]]
 id = "retract"
 kind = "undoable"
 params = [
-  { name = "reply", required = true, schema = { type = "string" } },
+  { name = "reply", type = "text", required = true, schema = { type = "string" } },
+]
+
+[[resources.verbs]]
+id = "open-video"
+kind = "read"
+params = [
+  { name = "video", type = "text", required = true },
+]
+
+[[resources.verbs]]
+id = "open-creator"
+kind = "read"
+params = [
+  { name = "creator", type = "text", required = true },
+]
+
+[[resources.verbs]]
+id = "open-playlist"
+kind = "read"
+params = [
+  { name = "playlist", type = "text", required = true },
+]
+
+[[resources.verbs]]
+id = "search"
+kind = "read"
+params = [
+  { name = "query", type = "text", required = true },
+]
+
+[[resources.verbs]]
+id = "toggle-playback"
+kind = "read"
+
+[[resources.verbs]]
+id = "seek"
+kind = "read"
+params = [
+  { name = "seconds", type = "float", required = true },
+]
+
+[[resources.verbs]]
+id = "skip-segment"
+kind = "read"
+
+[[resources.verbs]]
+id = "share"
+kind = "read"
+params = [
+  { name = "video", type = "text", required = true },
+]
+
+[[resources.verbs]]
+id = "mark-watched"
+kind = "read"
+params = [
+  { name = "video", type = "text", required = true },
+]
+
+[[resources.verbs]]
+id = "forget-watched"
+kind = "read"
+params = [
+  { name = "video", type = "text", required = true },
+]
+
+[[resources.verbs]]
+id = "clear-history"
+destructive = true
+kind = "read"
+
+[[resources.verbs]]
+id = "set-preference"
+kind = "read"
+params = [
+  { name = "preference", type = "text", required = true },
+  { name = "enabled", type = "bool", required = true },
+]
+
+[[resources.verbs]]
+id = "set-preferred-quality"
+kind = "read"
+params = [
+  { name = "quality", type = "text", required = true },
+]
+
+[[resources.verbs]]
+id = "set-segment-handling"
+kind = "read"
+params = [
+  { name = "category", type = "text", required = true },
+  { name = "mode", type = "text", required = true },
+]
+
+[[resources.types]]
+name = "Reply"
+fields = [
+  { name = "comment", type = "text" },
+  { name = "text", type = "text" },
 ]
 
 [[resources]]
@@ -34,39 +133,39 @@ kind = "tube.watch-history"
 label = "Watch history"
 version = 1
 fields = [
-  { path = "watched", type = "BTreeMap<String, u64>" },
-  { path = "positions", type = "BTreeMap<String, u64>" },
+  { path = "watched", type = { map = "int" } },
+  { path = "positions", type = { map = "int" } },
 ]
 
 [[resources.verbs]]
 id = "record"
 kind = "undoable"
 params = [
-  { name = "video", required = true, schema = { type = "string" } },
-  { name = "at_ms", required = true, schema = { type = "integer", minimum = 0 } },
-]
-
-[[resources.verbs]]
-id = "import"
-kind = "undoable"
-params = [
-  { name = "watched", required = true, schema = { type = "array", items = { type = "array", maxItems = 2, minItems = 2 } } },
+  { name = "video", type = "text", required = true, schema = { type = "string" } },
+  { name = "at_ms", type = "int", required = true, schema = { type = "integer", minimum = 0 } },
 ]
 
 [[resources.verbs]]
 id = "progress"
 kind = "undoable"
 params = [
-  { name = "video", required = true, schema = { type = "string" } },
-  { name = "position_ms", required = true, schema = { type = "integer", minimum = 0 } },
-  { name = "duration_ms", required = true, schema = { type = "integer", minimum = 0 } },
+  { name = "video", type = "text", required = true, schema = { type = "string" } },
+  { name = "position_ms", type = "int", required = true, schema = { type = "integer", minimum = 0 } },
+  { name = "duration_ms", type = "int", required = true, schema = { type = "integer", minimum = 0 } },
+]
+
+[[resources.verbs]]
+id = "import"
+kind = "undoable"
+params = [
+  { name = "watched", type = { list = "any" }, required = true, schema = { type = "array", items = { type = "array", maxItems = 2, minItems = 2 } } },
 ]
 
 [[resources.verbs]]
 id = "forget"
 kind = "undoable"
 params = [
-  { name = "video", required = true, schema = { type = "string" } },
+  { name = "video", type = "text", required = true, schema = { type = "string" } },
 ]
 
 [[resources.verbs]]

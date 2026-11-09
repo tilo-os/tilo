@@ -5,76 +5,77 @@ kind = "themes.studio"
 label = "Themes"
 version = 1
 fields = [
-  { path = "themes", type = "Collection<Theme>", stored = "collection" },
-  { path = "themes.*.name", type = "String", label = true },
+  { path = "themes", type = { collection = { named = "Theme" } }, stored = "collection" },
+  { path = "themes.*.name", type = "text", label = true },
   { path = "themes.*.dark", type = "bool", readonly = true },
   { path = "themes.*.high_contrast", type = "bool" },
-  { path = "themes.*.hue", type = "Option<f64>" },
-  { path = "themes.*.chroma", type = "f64" },
-  { path = "themes.*.surfaces", type = "Surfaces", stored = "record" },
-  { path = "themes.*.surfaces.base", type = "f64" },
-  { path = "themes.*.surfaces.content", type = "f64" },
-  { path = "themes.*.surfaces.sidebar", type = "f64" },
-  { path = "themes.*.surfaces.inspector", type = "f64" },
-  { path = "themes.*.surfaces.raised", type = "f64" },
-  { path = "themes.*.surfaces.overlay", type = "f64" },
-  { path = "themes.*.ink", type = "Ink", stored = "record" },
-  { path = "themes.*.ink.primary", type = "f64" },
-  { path = "themes.*.ink.secondary", type = "f64" },
-  { path = "themes.*.ink.tertiary", type = "f64" },
-  { path = "themes.*.status", type = "Status", stored = "record" },
-  { path = "themes.*.status.danger", type = "StatusTone", stored = "record" },
-  { path = "themes.*.status.danger.lightness", type = "f64" },
-  { path = "themes.*.status.danger.chroma", type = "f64" },
-  { path = "themes.*.status.warning", type = "StatusTone", stored = "record" },
-  { path = "themes.*.status.warning.lightness", type = "f64" },
-  { path = "themes.*.status.warning.chroma", type = "f64" },
-  { path = "themes.*.status.success", type = "StatusTone", stored = "record" },
-  { path = "themes.*.status.success.lightness", type = "f64" },
-  { path = "themes.*.status.success.chroma", type = "f64" },
-  { path = "themes.*.status.info", type = "StatusTone", stored = "record" },
-  { path = "themes.*.status.info.lightness", type = "f64" },
-  { path = "themes.*.status.info.chroma", type = "f64" },
-  { path = "themes.*.tint", type = "Option<f64>" },
+  { path = "themes.*.hue", type = { option = "float" } },
+  { path = "themes.*.chroma", type = "float" },
+  { path = "themes.*.surfaces", type = { named = "Surfaces" }, stored = "record" },
+  { path = "themes.*.surfaces.base", type = "float" },
+  { path = "themes.*.surfaces.content", type = "float" },
+  { path = "themes.*.surfaces.sidebar", type = "float" },
+  { path = "themes.*.surfaces.inspector", type = "float" },
+  { path = "themes.*.surfaces.raised", type = "float" },
+  { path = "themes.*.surfaces.overlay", type = "float" },
+  { path = "themes.*.ink", type = { named = "Ink" }, stored = "record" },
+  { path = "themes.*.ink.primary", type = "float" },
+  { path = "themes.*.ink.secondary", type = "float" },
+  { path = "themes.*.ink.tertiary", type = "float" },
+  { path = "themes.*.status", type = { named = "Status" }, stored = "record" },
+  { path = "themes.*.status.danger", type = { named = "StatusTone" }, stored = "record" },
+  { path = "themes.*.status.danger.lightness", type = "float" },
+  { path = "themes.*.status.danger.chroma", type = "float" },
+  { path = "themes.*.status.warning", type = { named = "StatusTone" }, stored = "record" },
+  { path = "themes.*.status.warning.lightness", type = "float" },
+  { path = "themes.*.status.warning.chroma", type = "float" },
+  { path = "themes.*.status.success", type = { named = "StatusTone" }, stored = "record" },
+  { path = "themes.*.status.success.lightness", type = "float" },
+  { path = "themes.*.status.success.chroma", type = "float" },
+  { path = "themes.*.status.info", type = { named = "StatusTone" }, stored = "record" },
+  { path = "themes.*.status.info.lightness", type = "float" },
+  { path = "themes.*.status.info.chroma", type = "float" },
+  { path = "themes.*.tint", type = { option = "float" } },
   { path = "themes.*.monochrome", type = "bool" },
-  { path = "themes.*.presence", type = "Presence", stored = "record" },
-  { path = "themes.*.presence.lightness", type = "f64" },
-  { path = "themes.*.presence.chroma", type = "f64" },
-  { path = "themes.*.window_radius", type = "f64" },
-  { path = "themes.*.density", type = "f64" },
-  { path = "themes.*.face", type = "String" },
-  { path = "themes.*.base_size", type = "f64" },
-  { path = "themes.*.distinct_letters", type = "Option<bool>" },
-  { path = "themes.*.motion", type = "f64" },
-  { path = "themes.*.blur", type = "f64" },
-  { path = "themes.*.tint_opacity", type = "f64" },
+  { path = "themes.*.presence", type = { named = "Presence" }, stored = "record" },
+  { path = "themes.*.presence.lightness", type = "float" },
+  { path = "themes.*.presence.chroma", type = "float" },
+  { path = "themes.*.window_radius", type = "float" },
+  { path = "themes.*.density", type = "float" },
+  { path = "themes.*.face", type = "text" },
+  { path = "themes.*.base_size", type = "float" },
+  { path = "themes.*.distinct_letters", type = { option = "bool" } },
+  { path = "themes.*.motion", type = "float" },
+  { path = "themes.*.blur", type = "float" },
+  { path = "themes.*.tint_opacity", type = "float" },
   { path = "themes.*.frosted_strip", type = "bool" },
-  { path = "themes.*.rim_span", type = "f64" },
-  { path = "themes.*.rim_alpha", type = "f64" },
-  { path = "themes.*.hover_alpha", type = "f64" },
+  { path = "themes.*.rim_span", type = "float" },
+  { path = "themes.*.rim_alpha", type = "float" },
+  { path = "themes.*.hover_alpha", type = "float" },
+  { path = "themes.*.origin", type = { option = "text" }, readonly = true },
 ]
 
 [[resources.verbs]]
 id = "new-theme"
 kind = "undoable"
 params = [
-  { name = "id", required = true, schema = { type = "string" } },
-  { name = "base", required = true, schema = { type = "string" } },
+  { name = "id", type = "text", required = true, schema = { type = "string" } },
+  { name = "base", type = "text", required = true, schema = { type = "string" } },
 ]
 
 [[resources.verbs]]
 id = "import-theme"
 kind = "undoable"
 params = [
-  { name = "id", required = true, schema = { type = "string" } },
-  { name = "document", required = true, schema = { type = "string" } },
+  { name = "id", type = "text", required = true, schema = { type = "string" } },
+  { name = "document", type = "text", required = true, schema = { type = "string" } },
 ]
 
 [[resources.verbs]]
 id = "reset"
 kind = "undoable"
 params = [
-  { name = "theme", required = true, schema = { type = "string" } },
+  { name = "theme", type = "text", required = true, schema = { type = "string" } },
 ]
 
 [[resources.verbs]]
@@ -82,14 +83,92 @@ id = "delete"
 destructive = true
 kind = "undoable"
 params = [
-  { name = "theme", required = true, schema = { type = "string" } },
+  { name = "theme", type = "text", required = true, schema = { type = "string" } },
 ]
 
 [[resources.verbs]]
 id = "switch-polarity"
 kind = "undoable"
 params = [
-  { name = "theme", required = true, schema = { type = "string" } },
-  { name = "dark", required = true, schema = { type = "boolean" } },
+  { name = "theme", type = "text", required = true, schema = { type = "string" } },
+  { name = "dark", type = "bool", required = true, schema = { type = "boolean" } },
+]
+
+[[resources.verbs]]
+id = "export"
+kind = "read"
+params = [
+  { name = "theme", type = "text", required = true },
+]
+
+[[resources.types]]
+name = "Ink"
+fields = [
+  { name = "primary", type = "float" },
+  { name = "secondary", type = "float" },
+  { name = "tertiary", type = "float" },
+]
+
+[[resources.types]]
+name = "Presence"
+fields = [
+  { name = "lightness", type = "float" },
+  { name = "chroma", type = "float" },
+]
+
+[[resources.types]]
+name = "Status"
+fields = [
+  { name = "danger", type = { named = "StatusTone" } },
+  { name = "warning", type = { named = "StatusTone" } },
+  { name = "success", type = { named = "StatusTone" } },
+  { name = "info", type = { named = "StatusTone" } },
+]
+
+[[resources.types]]
+name = "StatusTone"
+fields = [
+  { name = "lightness", type = "float" },
+  { name = "chroma", type = "float" },
+]
+
+[[resources.types]]
+name = "Surfaces"
+fields = [
+  { name = "base", type = "float" },
+  { name = "content", type = "float" },
+  { name = "sidebar", type = "float" },
+  { name = "inspector", type = "float" },
+  { name = "raised", type = "float" },
+  { name = "overlay", type = "float" },
+]
+
+[[resources.types]]
+name = "Theme"
+fields = [
+  { name = "name", type = "text" },
+  { name = "dark", type = "bool" },
+  { name = "high_contrast", type = "bool" },
+  { name = "hue", type = { option = "float" } },
+  { name = "chroma", type = "float" },
+  { name = "surfaces", type = { named = "Surfaces" } },
+  { name = "ink", type = { named = "Ink" } },
+  { name = "status", type = { named = "Status" } },
+  { name = "tint", type = { option = "float" } },
+  { name = "monochrome", type = "bool" },
+  { name = "presence", type = { named = "Presence" } },
+  { name = "window_radius", type = "float" },
+  { name = "density", type = "float" },
+  { name = "face", type = "text" },
+  { name = "base_size", type = "float" },
+  { name = "distinct_letters", type = { option = "bool" } },
+  { name = "motion", type = "float" },
+  { name = "blur", type = "float" },
+  { name = "tint_opacity", type = "float" },
+  { name = "frosted_strip", type = "bool" },
+  { name = "rim_span", type = "float" },
+  { name = "rim_alpha", type = "float" },
+  { name = "hover_alpha", type = "float" },
+  { name = "origin", type = { option = "text" } },
 ]
 
