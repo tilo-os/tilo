@@ -106,14 +106,14 @@ impl AgentScope {
 
 /// `id` as a canonical UUID.
 fn uuid_text(id: &[u8; 16]) -> String {
-    let hex = hex::encode(id);
+    let group = |range: std::ops::Range<usize>| hex::encode(id.get(range).unwrap_or_default());
     format!(
         "{}-{}-{}-{}-{}",
-        &hex[..8],
-        &hex[8..12],
-        &hex[12..16],
-        &hex[16..20],
-        &hex[20..]
+        group(0..4),
+        group(4..6),
+        group(6..8),
+        group(8..10),
+        group(10..16)
     )
 }
 
@@ -277,7 +277,7 @@ impl Serialize for DeviceCapabilities {
         };
         let extended_form = self.can_administer_devices || self.agent.is_some();
         let len = if extended_form {
-            6 + scope.len()
+            scope.len().saturating_add(6)
         } else if self.foreign {
             5
         } else {
@@ -344,15 +344,20 @@ impl<'de> serde::de::Visitor<'de> for BinaryCapabilities {
 
     fn visit_seq<A: serde::de::SeqAccess<'de>>(self, mut seq: A) -> Result<Self::Value, A::Error> {
         use serde::de::Error;
-        let mut next = |index: usize| {
+        // Each element is one byte; `read` counts them for the error a short
+        // sequence names.
+        let mut read = 0usize;
+        let mut next = || {
+            let index = read;
+            read = read.saturating_add(1);
             seq.next_element::<u8>()?
                 .ok_or_else(|| A::Error::invalid_length(index, &"four capability flags"))
         };
-        let first = next(0)?;
+        let first = next()?;
         let (foreign, administer, agent, flags) = match first {
-            FOREIGN_BINARY_MARKER => (true, false, None, [next(1)?, next(2)?, next(3)?, next(4)?]),
+            FOREIGN_BINARY_MARKER => (true, false, None, [next()?, next()?, next()?, next()?]),
             EXTENDED_BINARY_MARKER => {
-                let extended = next(1)?;
+                let extended = next()?;
                 // Only administration and an agent's grant need the extended
                 // form; anything else has exactly one encoding already.
                 if extended & !(EXTENDED_FOREIGN | EXTENDED_ADMINISTER | EXTENDED_AGENT) != 0
@@ -363,19 +368,15 @@ impl<'de> serde::de::Visitor<'de> for BinaryCapabilities {
                         &"extended capabilities that grant administration or an agent's grant",
                     ));
                 }
-                let mut index = 2;
                 let agent = if extended & EXTENDED_AGENT == 0 {
                     None
                 } else {
-                    let tag = next(index)?;
-                    index += 1;
-                    match tag {
+                    match next()? {
                         SCOPE_ALL => Some(AgentScope::AllWorkspaces),
                         SCOPE_WORKSPACE => {
                             let mut id = [0u8; 16];
                             for byte in &mut id {
-                                *byte = next(index)?;
-                                index += 1;
+                                *byte = next()?;
                             }
                             if id == [0; 16] {
                                 return Err(A::Error::invalid_value(
@@ -397,15 +398,10 @@ impl<'de> serde::de::Visitor<'de> for BinaryCapabilities {
                     extended & EXTENDED_FOREIGN != 0,
                     extended & EXTENDED_ADMINISTER != 0,
                     agent,
-                    [
-                        next(index)?,
-                        next(index + 1)?,
-                        next(index + 2)?,
-                        next(index + 3)?,
-                    ],
+                    [next()?, next()?, next()?, next()?],
                 )
             }
-            _ => (false, false, None, [first, next(1)?, next(2)?, next(3)?]),
+            _ => (false, false, None, [first, next()?, next()?, next()?]),
         };
         let flag = |byte: u8| match byte {
             0 => Ok(false),
@@ -1309,7 +1305,7 @@ mod tests {
                 DeviceCapabilities::agent_grant(one),
                 Some(1_000 + MAX_AGENT_GRANT_LIFETIME_NS + 1),
             ),
-            (wide.clone(), Some(2_000)),
+            (wide, Some(2_000)),
         ] {
             let mut cert = unsigned(capabilities, expiry);
             assert_eq!(

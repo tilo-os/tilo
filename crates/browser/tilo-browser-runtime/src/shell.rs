@@ -24,6 +24,7 @@
 //! the windows as the people overlay, and following someone tracks their
 //! view ([`people`]).
 
+mod console;
 mod control_hints;
 pub(crate) mod people;
 
@@ -146,6 +147,22 @@ pub(crate) struct HostOffers {
     /// a page has no community site, identity on disk or desk of its own to
     /// read one from.
     pub directory: Option<crate::directory::PageDirectoryConfig>,
+    /// How the page lays the desktop out.
+    pub layout: Layout,
+}
+
+/// How the page lays the desktop out. Both are the same desktop, session and
+/// windows; they differ only in what is in front when the page opens.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub(crate) enum Layout {
+    /// The desktop: the bar over the strips.
+    #[default]
+    Desktop,
+    /// The console ([`console`]): the Console app over the whole page, for a
+    /// person who has agents work for them rather than working at the
+    /// desktop themselves, until they open something in it.
+    Console,
 }
 
 /// Who this desktop's person is when they make something in the workspace,
@@ -456,6 +473,9 @@ pub(crate) struct BrowserShell {
     /// What the hints painted in the frame before the last one drawn: a
     /// moving hint damages only there and where it is now.
     hints_painted_before: Option<Rect>,
+    /// The console the page holds in front, while it does
+    /// ([`Layout::Console`]).
+    console: Option<console::ConsoleHold>,
 }
 
 /// What the top bar's chrome reads from the page besides the desktop tree.
@@ -531,6 +551,7 @@ impl BrowserShell {
         requests: HostRequests,
         sources: ChromeSources,
     ) -> Self {
+        let offers_layout = offers.layout;
         let ChromeSources {
             here,
             shared,
@@ -631,6 +652,7 @@ impl BrowserShell {
             hints_settings: settings_store::stamp(),
             interaction: ui::InteractionEnvironment::default(),
             hints_painted_before: None,
+            console: (offers_layout == Layout::Console).then(console::ConsoleHold::default),
         }
     }
 
@@ -1613,6 +1635,7 @@ impl Widget for BrowserShell {
             changed = true;
         }
         changed |= self.follow_picker();
+        changed |= self.hold_console();
         changed |= self.top.update(state, path);
         changed |= self.desk.update(state, path);
         changed |= self.follow_asks();

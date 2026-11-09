@@ -16,6 +16,11 @@
 //!    owner's own devices are admitted, and enrolled where the plane enrols.
 //! 6. Anything else is not a member.
 //!
+//! An agent's grant (a key the person certified for a service that acts for
+//! an agent they approved) is admitted on none of these planes: it acts in
+//! workspaces through the person's runtime, which checks it, and asks this
+//! host only its own operations, which no workspace decides.
+//!
 //! A public workspace is no exception to the rule: whoever visits it is a
 //! member of it with the role its owner gave them, and every device certified
 //! by that member's root is that member's device, admitted to the channels its
@@ -427,6 +432,9 @@ pub(crate) fn decide_in(
 ) -> Decision {
     if let Err(reason) = trust.principal(peer, workspace.runtime.store.workspace_id(), now_ns) {
         return Decision::Deny(reason);
+    }
+    if peer.cert.capabilities.agent.is_some() {
+        return Decision::Deny(DenyReason::NotAMember);
     }
     let own_user = &peer.user_public_key == trust.own_user;
     #[cfg(any(test, feature = "agents"))]

@@ -126,13 +126,21 @@ impl Workspaces {
                 "room administration requires a person's device, not an agent's",
             ));
         }
+        // An agent's grant acts in workspaces through the person's runtime,
+        // never on their governance: it may do only what the host's own
+        // operations allow it.
+        if device.capabilities.agent.is_some() && !matches!(op, WorkspaceOp::Host(_)) {
+            return Err(CollaborationError::new(
+                "room administration requires a person's device, not an agent's grant",
+            ));
+        }
         if self.revocations().is_revoked(&device.device_public_key) {
             return Err(CollaborationError::new("device revoked"));
         }
         tilo_user_identity::verify_device_cert_at(device, now)
             .map_err(|error| CollaborationError::new(error.to_string()))?;
         if let WorkspaceOp::Host(operation) = op {
-            return if operation.permits(&host, &device.user_public_key) {
+            return if operation.permits(&host, device) {
                 Ok(hex::encode(host))
             } else {
                 Err(CollaborationError::new(HOST_PERSON_ONLY))

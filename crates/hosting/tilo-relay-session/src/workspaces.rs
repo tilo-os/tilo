@@ -82,6 +82,12 @@ pub const LIST_ROOMS: &str = "room.list";
 /// restricted to its person and redeemable `expires_in_seconds` (600 when
 /// omitted).
 pub const ENTER_ROOM: &str = "room.enter";
+/// The revocations of the host's person the host enforces, as the person's
+/// devices announced them: a JSON array of root-signed
+/// `tilo_user_identity::RevocationEntry`. What a service that signs the
+/// person in checks a device against, from the same list the host's own
+/// handshakes read.
+pub const LIST_REVOCATIONS: &str = "identity.revocations";
 
 /// Serve a workspace a device of the host's own person governs, as that governor
 /// asks: arguments `workspace`, `workspace_id`, `governor_hint` (the governor's

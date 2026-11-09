@@ -1,0 +1,14 @@
+# Written by `tilo-app surface`; review changes like an API change.
+
+[[resources]]
+kind = "console.view"
+label = "Agent runs shown"
+version = 1
+fields = [
+  { path = "agent", type = "String" },
+  { path = "workspace", type = "String" },
+]
+
+[[resources.verbs]]
+id = "show-everything"
+kind = "undoable"
