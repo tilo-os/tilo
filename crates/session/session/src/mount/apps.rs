@@ -905,7 +905,7 @@ impl Apps {
             return;
         }
         let launch = match self.agent_plan(kept) {
-            Ok(planned) => match self.spawn(&planned, None, &kept.workspace, None) {
+            Ok(planned) => match self.spawn(&planned, None, &kept.workspace, None, None) {
                 Ok(launch) => Some(launch),
                 Err(error) => {
                     tracing::warn!(
@@ -1049,11 +1049,15 @@ impl Apps {
             narrate_placed(app, &workspace.id, &placed);
             return placed.map(|_| true);
         }
+        // The open is timed from here to the app's first presented frame: everything this session
+        // does for it is in the launch's share, and the phases below say where that share went.
+        let app = launch.app();
+        let timed = tilo_startup_metrics::launch_requested(app);
         // A service running this app's model serves its record: the launch names the resource the
         // session publishes, so the app opens no record of its own (`docs/architecture/apps.md` §8
         // step 2).
         let hosted = matches!(launch, Launch::Record { .. } | Launch::Package { .. })
-            .then(|| self.hosted(launch.app()))
+            .then(|| self.hosted(app))
             .flatten();
         let planned = {
             let state = self.state.borrow();
@@ -1080,7 +1084,14 @@ impl Apps {
             };
             Planned::of(launch, &context)
         };
-        let mut planned = planned.map_err(|error| DoorError::Failed(error.to_string()))?;
+        let mut planned = match planned {
+            Ok(planned) => planned,
+            Err(error) => {
+                tilo_startup_metrics::launch_failed(timed);
+                return Err(DoorError::Failed(error.to_string()));
+            }
+        };
+        tilo_startup_metrics::launch_phase(app, "planned");
         // The window this launch starts is the one the shell asked for: a
         // process has no door open to it yet, so its launch says which item
         // it opens (`ui::window_door::REVEAL_ENV`).
@@ -1100,19 +1111,20 @@ impl Apps {
         let asked = launch.id();
         let Some(doors) = self.state.borrow().doors.clone() else {
             return self
-                .spawn(&planned, Some(&asked), &workspace.id, None)
+                .spawn(&planned, Some(&asked), &workspace.id, None, Some(timed))
                 .map(|_| true);
         };
         // The app's own window with nothing named to open is the one its running process opens
         // itself, as it opens any later one.
         let routable =
             planned.kind == Kind::Package && matches!(launch, Launch::Package { open: None, .. });
-        let alone = self.start_alone(&planned, &asked, &workspace.id);
+        let alone = self.start_alone(&planned, &asked, &workspace.id, timed);
         let reserved =
             doors.route_or_reserve(&planned.app, &workspace.id, routable, reveal, &alone);
         let reservation = match reserved {
             // The process running the app opens this window itself: nothing starts.
             Err(Routed::Opened) => {
+                tilo_startup_metrics::launch_failed(timed);
                 tracing::info!(app = %planned.app, "the app's running process opens the window");
                 return Ok(true);
             }
@@ -1120,8 +1132,9 @@ impl Apps {
             Err(Routed::NotRunning) | Ok(None) => None,
             Ok(reservation) => reservation,
         };
+        tilo_startup_metrics::launch_phase(app, "routed");
         let door = doors.hold(&planned.app, &workspace.id);
-        let started = self.spawn(&planned, Some(&asked), &workspace.id, door);
+        let started = self.spawn(&planned, Some(&asked), &workspace.id, door, Some(timed));
         if started.is_ok()
             && let Some(reservation) = reservation
         {
@@ -1138,6 +1151,7 @@ impl Apps {
         planned: &Planned,
         asked: &str,
         workspace: &str,
+        timed: u64,
     ) -> impl Fn() -> StartAlone {
         let me = self.state.borrow().me.clone();
         let (planned, asked, workspace) = (planned.clone(), asked.to_owned(), workspace.to_owned());
@@ -1152,7 +1166,9 @@ impl Apps {
                 let Some(apps) = me.upgrade() else {
                     return;
                 };
-                if let Err(error) = apps.spawn(&planned, Some(&asked), &workspace, None) {
+                if let Err(error) =
+                    apps.spawn(&planned, Some(&asked), &workspace, None, Some(timed))
+                {
                     tracing::warn!(%error, app = %planned.app, "an app did not start");
                 }
             })
@@ -1161,20 +1177,21 @@ impl Apps {
 
     /// Start `planned` with the door `door` , which the launch holds until it ends, and write it
     /// down as a launch of this session before the app can reach a service of it. A service asked
-    /// as nothing has no window to offer again.
+    /// as nothing has no window to offer again. `timed` is the launch timing of the request that
+    /// led here, which an agent start of no person's ask begins for itself.
     fn spawn(
         &self,
         planned: &Planned,
         asked: Option<&str>,
         workspace: &str,
         door: Option<HeldDoor>,
+        timed: Option<u64>,
     ) -> Result<u64, DoorError> {
         let launches = self.state.borrow().launches.clone();
         let mut state = self.state.borrow_mut();
-        // The open is timed from the session starting the process to its first presented frame: the
-        // launcher's and the app's share in the launch-latency log, the surface's in the
-        // compositor's.
-        let timed = tilo_startup_metrics::launch_requested(&planned.app);
+        // The launch's share in the launch-latency log runs from the request to the first presented
+        // frame: the launcher's and the app's in this log, the surface's in the compositor's.
+        let timed = timed.unwrap_or_else(|| tilo_startup_metrics::launch_requested(&planned.app));
         let started = state.spawner.start_with(planned, door, &|pid| {
             if let Some(launches) = &launches {
                 // The launcher binds the session's documents store into a package's sandbox and
