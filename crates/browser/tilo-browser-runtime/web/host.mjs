@@ -562,9 +562,12 @@ export async function mountDesktop(target,options={}) {
     // the desk's own chord, and a press it forwarded came back as a second
     // sighting of the same key.
     on(document,'keydown',event=>{
-      if(!active()||config.app||!isDesktopSearchShortcut(event,config.mac))return;
+      if(!active()||!isDesktopSearchShortcut(event,config.mac))return;
+      // A mount showing one app has no desk search: its toggle refuses, and the key stays the
+      // app's. Only a toggle the desk took is the page's to consume.
+      try{runtime.desktop_search_toggle(id);}catch{return;}
       event.preventDefault();event.stopImmediatePropagation();
-      runtime.desktop_search_toggle(id);canvas.focus({preventScroll:true});report({lastInput:'search'});
+      canvas.focus({preventScroll:true});report({lastInput:'search'});
     },{capture:true});
     // Search accepts results inside Rust. Only a local surface gesture may
     // authorize that activation. A later status may complete the gesture, but
