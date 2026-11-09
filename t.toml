@@ -4471,7 +4471,7 @@ needs = ["image-web-entry"]
 outputs = ["/target/publish/web-entry/release/image.oci.tar", "/target/publish/web-entry/release/digest", "/target/publish/web-entry/release/receipt-extra.json"]
 requires = ["arch=x86_64"]
 isolation = "vm"
-on = ["dispatch"]
+on = ["dispatch", "stable"]
 cache = false
 
 [[check]]
@@ -4483,7 +4483,7 @@ outputs = ["/target/publish/web-entry/release/payload.json", "/target/publish/we
 id_token = ["sts.amazonaws.com"]
 env = { COSIGN_KEY_REF = "awskms:///arn:aws:kms:us-east-1:125650147312:alias/tilo-release-signing", AWS_SIGNING_ROLE_ARN = "arn:aws:iam::125650147312:role/TiloTReleaseSigner", TILO_SIGNING_AUDIENCE = "sts.amazonaws.com" }
 requires = ["arch=any"]
-on = ["dispatch"]
+on = ["stable"]
 
 [[check]]
 name = "publish-web-entry"
