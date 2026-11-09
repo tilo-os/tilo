@@ -505,12 +505,23 @@ impl Compositor {
     /// # Errors
     /// The compositor's clients failed.
     pub fn await_frame(&mut self) -> Result<(), Error> {
+        self.await_frame_arrivals(|| {})
+    }
+
+    /// [`Self::await_frame`] that also runs `arrived` after each wait: what a host serves at once
+    /// rather than after the frame — an app someone is waiting on starts while the frame the desk
+    /// owes is still ahead, so its own start runs beside that frame.
+    ///
+    /// # Errors
+    /// The compositor's clients failed.
+    pub fn await_frame_arrivals(&mut self, mut arrived: impl FnMut()) -> Result<(), Error> {
         while let Some(due) = self.frame_deadline() {
             let wait = due.saturating_duration_since(std::time::Instant::now());
             if wait.is_zero() {
                 break;
             }
             self.dispatch(wait)?;
+            arrived();
         }
         Ok(())
     }

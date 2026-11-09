@@ -471,10 +471,30 @@ impl Apps {
     /// Start what the desktop queued since the last pass, show what stopped, and start what a
     /// service, an app or an agent asked for: called once per pass of the session's loop.
     pub fn follow(&self) {
-        self.start_asked();
-        self.start_asked_of_services();
+        self.start_asked_now();
         self.follow_ended();
         self.follow_policy();
+    }
+
+    /// Start what the desktop and anything waiting on a launch asked for: a launch's answer, and
+    /// the app's own start, then run beside the frame this pass waits for instead of after it.
+    pub(crate) fn start_asked_now(&self) {
+        self.start_asked();
+        self.start_asked_of_services();
+    }
+
+    /// Start the launches a service, an app or an agent waits on, when one waits: what a pass woken
+    /// while it waits for its frame does at once, so the asker hears back before the frame.
+    pub(crate) fn start_waiting(&self) {
+        let waiting = self
+            .state
+            .borrow()
+            .launches
+            .as_ref()
+            .is_some_and(|launches| launches.waiting());
+        if waiting {
+            self.start_asked_of_services();
+        }
     }
 
     /// Bring what the person's authority in a workspace is published as up to the policy the desk

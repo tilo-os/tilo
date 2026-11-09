@@ -460,6 +460,19 @@ impl Op {
 }
 
 impl Op {
+    /// Whether what `request` asks of this op starts work the broker answers, which needs no desk
+    /// the frame shows: an action a tool or an agent invokes starts now, in this pass, and the
+    /// answer it waits on comes back beside the frame instead of after it. An invocation the
+    /// session's own actions answer is the loop's to run later in the pass, so it waits for the
+    /// frame with everything else.
+    fn starts_an_action(self, request: &Json) -> bool {
+        self == Self::ActionsInvoke
+            && request
+                .get("provider")
+                .and_then(Json::as_str)
+                .is_some_and(|provider| provider != tilo_actions::remote::SESSION_ACTIONS_PROVIDER)
+    }
+
     /// Whether it hands the desk input, which the loop serves where a device's own input reaches
     /// it: in the pass it arrives in, before that pass draws its frame.
     const fn hands_input(self) -> bool {
@@ -620,7 +633,7 @@ impl Control {
             answer,
         } in waiting.drain(..)
         {
-            if op.hands_input() {
+            if op.hands_input() || op.starts_an_action(&request) {
                 let _ = answer.send(loop_answer(
                     op, &request, &ctx, compositor, desk, &self.held,
                 ));
@@ -663,7 +676,8 @@ impl Control {
     }
 
     /// Everything the connections sent the loop since the last look, oldest first. What asks for
-    /// the desk's input is served in the pass it arrives in; the rest waits for the frame.
+    /// the desk's input, or starts an action the broker answers, is served in the pass it arrives
+    /// in; the rest waits for the frame.
     fn take(&self) {
         while let Ok(asked) = self.asked.try_recv() {
             self.waiting.borrow_mut().push(asked);
