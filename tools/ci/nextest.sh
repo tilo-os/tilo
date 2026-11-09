@@ -71,7 +71,17 @@ for (( index = 0; index < ${#arguments[@]}; index++ )); do
         -E|--filterset|--filter-expr) explicit=1 ;;
     esac
 done
-tests() { local name; for name; do [[ $tested == *" $name "* ]] && return 0; done; return 1; }
+# Whether this run tests one of the named packages. A run that shards the whole family names
+# no `-p` and is handed its shard's packages instead (T_NEXTEST_PACKAGES, as t shards a family),
+# so a package the wrapper has to prepare before the tests run is found either way.
+tests() {
+    local name
+    for name; do
+        [[ $tested == *" $name "* ]] && return 0
+        [[ " ${T_NEXTEST_PACKAGES:-} " == *" $name "* ]] && return 0
+    done
+    return 1
+}
 
 # In CI, a build of named packages resolves every member's features as the whole workspace does,
 # its tests' features included (tools/ci/workspace_unify.py), so jobs testing different packages
