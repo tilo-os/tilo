@@ -861,8 +861,11 @@ fn keyboard_context_menu_reaches_selection_actions_and_executes_them() {
     );
 }
 
-/// Narrow, the places are a screen of their own: the whole window, reached
-/// with Back from the folder, nothing darkened (HIG §1a).
+/// Narrow, the places are a screen of their own: the whole window, brought
+/// over the files by the bar's sidebar button, nothing darkened (HIG §1a).
+/// The files are the list the window opened on, so they are a place of their
+/// own: Back drills past nothing and the bar's button is the way to the
+/// places behind them.
 fn narrow_places_are_a_screen_of_their_own() {
     let dir = tempfile::tempdir().unwrap();
     std::fs::write(dir.path().join("a.txt"), b"x").unwrap();
@@ -872,7 +875,17 @@ fn narrow_places_are_a_screen_of_their_own() {
         "a narrow window opens on the folder, so the files are what you see"
     );
     assert!(h.rect_of("FileView").is_some());
-    assert!(h.w.chrome().nav.back(), "Back goes to the places");
+    assert!(
+        !h.w.chrome().nav.back(),
+        "the files are the place the window opened on, so Back leads nowhere"
+    );
+    let toggle = h.w.chrome().nav.geometry().toggle;
+    assert!(
+        toggle.width() > 0.0 && toggle.height() > 0.0,
+        "the bar holds the sidebar's button at this width: {toggle:?}"
+    );
+    // The shell draws that button, and its press runs this toggle.
+    h.w.chrome().nav.toggle_sidebar();
     h.w.chrome().nav.snap();
     h.lay_out(480.0, 720.0);
     assert!(h.w.debug_places_open(), "the places screen is in front");
