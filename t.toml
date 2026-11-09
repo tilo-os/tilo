@@ -2482,14 +2482,17 @@ id_token = ["registry.tilo.so"]
 # What `curl -fsSL https://tilo.sh | sh` installs (dist/install/tilo.sh), by
 # tools/ci/publish/cli-release.sh: one statically linked archive per Linux architecture, both
 # built on the x86_64 node (aarch64 cross-compiles, so a node of that architecture is not needed),
-# and one per Mac architecture, built on a Mac; their SHA256SUMS; its
-# signature by the release key. It is released with the relay, on release tags: sign-cli alone
-# holds the release key, publish-cli alone the package token, and neither runs anywhere else.
+# and one per Mac architecture when a Mac node runs those builds; their SHA256SUMS; its signature
+# by the release key. It is released with the relay, on release tags: sign-cli alone holds the
+# release key, publish-cli alone the package token, and neither runs anywhere else.
 # cli-rehearsal signs the same release with a throwaway key the same way, publishes it into a
 # directory laid out as tilo.sh serves it, and installs it from there with the installer.
 #
-# A release carries both Linux archives or none; a Mac archive whose build did not pass (no Mac
-# connected) is left out, and the installer tells a Mac that this release has none.
+# A release carries both Linux archives or none. The Mac archives are built by the cli-macos
+# checks, which only a Mac node can run: no node of that platform is part of the fleet, so
+# cli-release does not wait for them, and the installer tells a Mac that the release has none.
+# With a Mac node, list cli-macos-aarch64 and cli-macos-x86_64 in cli-release's needs_any_outcome
+# again, and the archives built there join the release.
 
 [[check]]
 name = "cli-{arch}"
@@ -2516,7 +2519,6 @@ arch = ["aarch64", "x86_64"]
 name = "cli-release"
 run = "bash tools/ci/publish/cli-release.sh sums /target/publish/cli/release /target/publish/cli/linux-x86_64 /target/publish/cli/linux-aarch64 /target/publish/cli/macos-aarch64 /target/publish/cli/macos-x86_64"
 needs = ["cli-x86_64", "cli-aarch64"]
-needs_any_outcome = ["cli-macos-aarch64", "cli-macos-x86_64"]
 requires = ["arch=any"]
 outputs = ["/target/publish/cli/release/*"]
 default = false
