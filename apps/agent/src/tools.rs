@@ -1320,10 +1320,7 @@ fn call_refused(call: &ToolCall, problem: &str) -> String {
     if let Some(names) = required.as_ref().and_then(Value::as_array) {
         let names = names.iter().filter_map(Value::as_str).collect::<Vec<_>>();
         if !names.is_empty() {
-            answer.push_str(&format!(
-                " Its required arguments are: {}.",
-                names.join(", ")
-            ));
+            let _ = write!(answer, " Its required arguments are: {}.", names.join(", "));
         }
     }
     answer.push_str(" Call it again with every required argument present and correctly typed.");
@@ -1919,7 +1916,7 @@ mod tests {
         );
         // One malformed call refuses the whole turn: every call is answered,
         // the sound ones told the turn did not run them.
-        let turned_down = refused_results(&[good.clone(), missing]).unwrap();
+        let turned_down = refused_results(&[good, missing]).unwrap();
         assert_eq!(turned_down.len(), 2);
         assert!(
             turned_down[0]
