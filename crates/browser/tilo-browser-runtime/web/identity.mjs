@@ -304,6 +304,18 @@ export async function browserIdentity({storage, create = true, persist = globalT
 }
 
 /**
+ * The person this browser keeps, without opening them: their root key, hex,
+ * or `null` where none is kept. Opening one reads the runtime, and a page
+ * that only has to say whether there is anyone here (`sign-in.mjs`, before
+ * the person agrees to anything) asks this instead.
+ */
+export async function keptIdentity({storage} = {}) {
+  storage ??= (await import('./device-custody.mjs')).idbStorage();
+  const record = await storage.get(BROWSER_RECORD);
+  return record ? {rootPublicKey: record.rootPublicKey, held: record.held} : null;
+}
+
+/**
  * The person this browser joins workspaces as: the identity unlocked last,
  * else this browser's own (`browserIdentity`, created on the first visit).
  * Every caller that joins a workspace asks here.

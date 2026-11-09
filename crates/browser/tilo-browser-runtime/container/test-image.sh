@@ -180,7 +180,7 @@ grep -q "<link rel=\"preload\" href=\"../v/$version/pkg/tilo_browser_runtime_bg.
 # instead of one level per round trip. Each hint must name a file the image
 # serves, or the preload fails and the module is fetched anyway.
 hints_of() { grep -o 'rel="modulepreload" href="[^"]*"' <<<"$1" | sed -n 's|.*href="\([^"]*\)".*|\1|p'; }
-for entry in / /app/; do
+for entry in / /app/ /sign-in; do
   body=$(get "$entry")
   [[ $(grep -c 'rel="modulepreload"' <<<"$body") -gt 2 ]] \
     || fail "$entry names its entry modules but not the graph they import: $(hints_of "$body" | tr '\n' ' ')"
@@ -190,6 +190,18 @@ for entry in / /app/; do
       || fail "$entry preloads $hint, which the image does not serve"
   done < <(hints_of "$body")
 done
+# The sign-in page a service's sign-in link lands on: served at /sign-in
+# (Caddyfile), revalidated like the entry pages, starting its own module, and
+# posting the person's answer as a form to the service that asked — another
+# origin, which the route's own form-action names.
+sign_in_page=$(get /sign-in)
+grep -q "'./v/$version/sign-in.mjs'" <<<"$sign_in_page" \
+  || fail "the sign-in page does not import the versioned sign-in.mjs"
+grep -q '^content-type: text/html' <(head_of /sign-in) || fail "the sign-in page must be served as a page"
+grep -q '^cache-control: no-cache' <(head_of /sign-in) || fail "the sign-in page must revalidate"
+form_action=$(head_of /sign-in | grep '^content-security-policy:.*form-action' || true)
+[[ $form_action == *"form-action https: http://localhost:* http://127.0.0.1:*"* ]] \
+  || fail "the sign-in page must post only to the origins a sign-in link may name: ${form_action:-no form-action}"
 # A sealed invitation's link opens the page at the site that keeps the
 # invitation: https://<site>/i/<handle>#<key>. A browser navigating there
 # gets the entry page, which reads the site's own configuration and files
@@ -236,7 +248,7 @@ verify_version() {
   listed=$(get "/v/$1/build.json" | python3 -c '
 import json, sys
 for name, digest in json.load(sys.stdin)["files"].items():
-    if name not in ("index.html", "app/index.html", "apple-touch-icon.png"):
+    if name not in ("index.html", "app/index.html", "sign-in.html", "apple-touch-icon.png"):
         print(digest, name)')
   [[ $(wc -l <<<"$listed") -gt 1 ]] || fail "v/$1/build.json lists no files"
   # -g: font names carry [ ], which curl would otherwise read as a glob.
@@ -365,7 +377,7 @@ fi
 label=$(b inspect --type image --format '{{index .OCIv1.Config.Labels "so.tilo.web-entry.carried-version"}}' "$image")
 [[ $label == "$carried" ]] || fail "the image is labelled as carrying ${label:-nothing}, not $carried"
 # A new tab loads only the incoming version...
-for entry in / /app/; do
+for entry in / /app/ /sign-in; do
   grep -q "v/$carried/" <<<"$(get "$entry")" && fail "$entry refers to the outgoing version $carried"
 done
 # ...and a tab still on the outgoing one opens an app it has not loaded yet:

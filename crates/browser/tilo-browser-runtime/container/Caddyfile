@@ -82,6 +82,24 @@
 		}
 	}
 
+	# The sign-in page a service's sign-in link lands on. It answers with a
+	# form the browser posts to the service that asked, which is another
+	# origin by definition: `form-action` names the origins a sign-in link may
+	# name at all (`web/sign-in.mjs` accepts nothing else), so no other site
+	# can be handed a person's answer. The site-wide header above still
+	# applies beside this one.
+	handle /sign-in {
+		root * /srv/tilo-web
+		header {
+			Cache-Control "no-cache"
+			Content-Security-Policy "form-action https: http://localhost:* http://127.0.0.1:*"
+		}
+		rewrite * /sign-in.html
+		file_server {
+			precompressed br zstd
+		}
+	}
+
 	# The entry pages and what they name by relative path, revalidated on
 	# every visit by the ETag of the encoding served (test-image.sh).
 	handle {

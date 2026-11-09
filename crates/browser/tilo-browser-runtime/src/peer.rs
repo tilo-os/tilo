@@ -54,7 +54,7 @@ fn failure_subject(surface: Option<String>, asset: Option<String>) -> FailureSub
 }
 
 /// A device signer backed by page custody.
-enum PageSigner {
+pub(crate) enum PageSigner {
     /// `{publicKey: Uint8Array(32), sign(message): Promise<Uint8Array(64)>}`
     /// over a non-extractable `WebCrypto` key.
     WebCrypto {
@@ -68,7 +68,7 @@ enum PageSigner {
 }
 
 impl PageSigner {
-    fn from_js(custody: &JsValue) -> Result<Self, JsError> {
+    pub(crate) fn from_js(custody: &JsValue) -> Result<Self, JsError> {
         let seed = Reflect::get(custody, &"seed".into()).map_err(|_| js_error("custody"))?;
         if !seed.is_undefined() && !seed.is_null() {
             let seed: [u8; 32] = Uint8Array::new(&seed)

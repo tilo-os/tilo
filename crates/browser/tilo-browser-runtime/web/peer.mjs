@@ -32,6 +32,7 @@ import {memberText, objectText} from './json-text.mjs';
 import {WEBKIT_WEBGPU_REFUSAL} from './webgpu-safety.mjs';
 import {AdmissionError} from './admission.mjs';
 import {idbStorage, openDeviceCustody} from './device-custody.mjs';
+import {identityProfile} from './identity-profile.mjs';
 import {currentIdentity, fitDisplayName, IdentityError} from './identity.mjs';
 import {FETCH_PROXY_PATH} from './fetch-proxy.mjs';
 
@@ -79,8 +80,8 @@ export function profileStore(runtime, profile, device) {
 }
 const PEER_RECORD = 'peer-record';
 /** The profile an identity keeps for one host: its device key, certificate
- * and documents there. */
-export const identityProfile = (identity, origin) => `tilo-identity:${identity.userPublicKey}@${new URL(origin).host}`;
+ * and documents there (`identity-profile.mjs`). */
+export {identityProfile};
 
 /** The namespace of a profile's storage its peer keeps its certificate,
  * record (outbox, synced documents) and channel state in, until the host at

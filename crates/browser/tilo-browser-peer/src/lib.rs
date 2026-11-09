@@ -45,6 +45,7 @@ pub mod presence_anchors;
 mod previews;
 mod replica;
 pub mod session;
+pub mod sign_in;
 pub mod surfaces;
 pub mod voice;
 
@@ -52,7 +53,8 @@ pub use channel_crypto::ChannelContentKeys;
 pub use channels::{document_admission, document_history_admission};
 pub use custody::{
     CertifyError, IssuedRole, MemoryPeerStore, OutboxEntry, PeerRecord, PeerStore, answer_pairing,
-    certify, certify_with_root, decide_pairing, issue_device_cert, pending_pairings,
+    certify, certify_with_root, decide_pairing, issue_agent_grant, issue_device_cert,
+    pending_pairings,
 };
 pub use health::{PeerSnapshot, SessionHealth};
 pub use previews::{LiveChange, LiveState, RemoteMember};
@@ -61,6 +63,7 @@ pub use session::{
     PAGE_FAILURE_CODES, PeerConfig, PeerEvent, PeerEvents, PeerHandle, PeerStatus, RoomsCompletion,
     TransportPhase,
 };
+pub use sign_in::{encode, grant_label, sign_in_proof};
 pub use tilo_live::live::Track;
 pub use tilo_relay_client::LinkError;
 pub use tilo_relay_client::https::{HttpClient, HttpFuture, host_info};

@@ -280,6 +280,7 @@ bash "$repo/crates/browser/tilo-browser-compute/scripts/build.sh" "$out" --asset
 mkdir -p "$out/fonts"
 find "$crate/web" -maxdepth 1 -name '*.mjs' ! -name '*.test.mjs' -exec cp {} "$out/" \;
 cp "$crate/web/index.html" "$out/index.html"
+cp "$crate/web/sign-in.html" "$out/sign-in.html"
 cp "$crate/web/apple-touch-icon.png" "$out/apple-touch-icon.png"
 mkdir -p "$out/locales"
 cp "$crate"/web/locales/*.ftl "$out/locales/"

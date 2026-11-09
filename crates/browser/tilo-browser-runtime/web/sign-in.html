@@ -1,0 +1,73 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="referrer" content="no-referrer">
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+  <title>Sign in to Tilo</title>
+  <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Cpath d='M10.98 31.85 Q10.979892448752274 27.96648782251284 14.4 26.12 L20.26 22.97 Q24.843373493975903 20.50602409638554 24.84 25.71 L24.84 74.29 Q24.843373493975903 79.49397590361446 20.26 77.03 L14.4 73.88 Q10.979892448752274 72.03351217748715 10.98 68.15 Z' fill='%239fa6e0'/%3E%3Cpath d='M89.02 31.85 Q89.02010755124772 27.96648782251284 85.6 26.12 L79.74 22.97 Q75.1566265060241 20.50602409638554 75.16 25.71 L75.16 74.29 Q75.1566265060241 79.49397590361446 79.74 77.03 L85.6 73.88 Q89.02010755124772 72.03351217748715 89.02 68.15 Z' fill='%239fa6e0'/%3E%3Crect x='29' y='16' width='42' height='68' rx='6' fill='%232a3fd1'/%3E%3C/svg%3E">
+  <!-- The route's module, asked for beside the page rather than after it:
+       see the same line in the desktop entry page. -->
+  <link rel="modulepreload" href="./sign-in.mjs">
+  <style>
+    /* A service's sign-in link opens this page, and nothing else: one card
+       over the desktop's own ground, in its colours and type, holding what
+       the link asks and the two answers, Allow and Cancel. */
+    html { color-scheme: dark; }
+    html, body { margin: 0; min-height: 100%; background: #121214; color: #ddd; font: 14px/1.5 system-ui, sans-serif; }
+    body { display: grid; place-items: center; box-sizing: border-box; padding: 16px; }
+    .tilo-sign-in { display: grid; gap: 18px; box-sizing: border-box; width: min(380px, 100%); padding: 26px; border-radius: 14px; background: #1c1d21; border: 1px solid #2c2e34; box-shadow: 0 12px 40px rgb(0 0 0 / 45%); }
+    .tilo-sign-in svg { display: block; }
+    .tilo-sign-in h1 { margin: 0; font-size: 19px; font-weight: 600; line-height: 1.35; color: #f2f2f4; text-wrap: balance; overflow-wrap: anywhere; }
+    .tilo-sign-in p { margin: 0; color: #b9b9c0; }
+    .tilo-sign-in dl { display: grid; gap: 10px; margin: 14px 0 0; }
+    .tilo-sign-in dl > div { display: grid; grid-template-columns: 6em 1fr; gap: 12px; }
+    .tilo-sign-in dt { color: #8f8f99; font-size: 13px; }
+    .tilo-sign-in dd { margin: 0; color: #e6e6e9; overflow-wrap: anywhere; }
+    .tilo-sign-in-actions { display: flex; flex-direction: row-reverse; justify-content: flex-start; gap: 8px; }
+    .tilo-sign-in button { font: inherit; padding: 8px 14px; border-radius: 8px; border: 1px solid #34363d; background: transparent; color: #d4d4d8; cursor: pointer; }
+    .tilo-sign-in button:hover { background: #26282e; }
+    .tilo-sign-in button.primary { border-color: transparent; background: #f2f2f4; color: #121214; font-weight: 500; }
+    .tilo-sign-in button.primary:hover { background: #ffffff; }
+    .tilo-sign-in button:disabled { opacity: .6; cursor: default; }
+    .tilo-sign-in button:focus-visible { outline: 2px solid #9ab4ff; outline-offset: 2px; }
+    .tilo-sign-in-message { min-height: 1.5em; font-size: 13px; }
+    [hidden] { display: none !important; }
+  </style>
+<script>
+(()=>{
+// Nothing has been read and nothing is being signed a few seconds in: the
+// route's module did not load (a dropped connection, a deploy replacing the
+// files), and the card would wait forever. Say so.
+setTimeout(function(){
+ if(document.documentElement.dataset.signIn)return;
+ var heading=document.getElementById('sign-in-heading');
+ if(heading)heading.textContent='Tilo could not load this page. Check your connection, then try again.';
+},8000);
+})();
+</script>
+</head>
+<body>
+  <main class="tilo-sign-in" aria-labelledby="sign-in-heading">
+    <svg aria-hidden="true" viewBox="0 0 100 100" width="40" height="40"><path d="M10.98 31.85 Q10.979892448752274 27.96648782251284 14.4 26.12 L20.26 22.97 Q24.843373493975903 20.50602409638554 24.84 25.71 L24.84 74.29 Q24.843373493975903 79.49397590361446 20.26 77.03 L14.4 73.88 Q10.979892448752274 72.03351217748715 10.98 68.15 Z" fill="#3b4376"/><path d="M89.02 31.85 Q89.02010755124772 27.96648782251284 85.6 26.12 L79.74 22.97 Q75.1566265060241 20.50602409638554 75.16 25.71 L75.16 74.29 Q75.1566265060241 79.49397590361446 79.74 77.03 L85.6 73.88 Q89.02010755124772 72.03351217748715 89.02 68.15 Z" fill="#3b4376"/><rect x="29" y="16" width="42" height="68" rx="6" fill="#6f82ff"/></svg>
+    <h1 id="sign-in-heading">Checking this link…</h1>
+    <div id="sign-in-request" hidden>
+      <p id="sign-in-service"></p>
+      <dl>
+        <div id="sign-in-reaches-row" hidden><dt>May reach</dt><dd id="sign-in-reaches"></dd></div>
+        <div id="sign-in-until-row" hidden><dt>Until</dt><dd id="sign-in-until"></dd></div>
+      </dl>
+    </div>
+    <p id="sign-in-message" class="tilo-sign-in-message" role="status" hidden></p>
+    <div class="tilo-sign-in-actions" id="sign-in-actions" hidden>
+      <button id="sign-in-allow" class="primary" type="button">Allow</button>
+      <button id="sign-in-cancel" type="button">Cancel</button>
+    </div>
+  </main>
+  <noscript><p>Signing in to a service from Tilo needs JavaScript.</p></noscript>
+  <script type="module">
+    import {startSignInPage} from './sign-in.mjs';
+    await startSignInPage();
+  </script>
+</body>
+</html>
