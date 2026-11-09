@@ -135,9 +135,9 @@ fn open(
     // And see each action it takes in a record as it goes.
     let narrating = Arc::clone(&presence);
     let server = McpServer::new(actions, device.workspace.clone(), person(user))
-    .with_surface(Surface::Agent)
-    .with_agent_run(run, device.agent.clone())
-    .with_narration(Arc::new(move |acting| narrating.acting(&acting)));
+        .with_surface(Surface::Agent)
+        .with_agent_run(run, device.agent.clone())
+        .with_narration(Arc::new(move |acting| narrating.acting(&acting)));
     Ok(Session {
         server,
         peer,

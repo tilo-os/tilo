@@ -243,10 +243,7 @@ impl Presence {
             phase: acting.phase.clone(),
         };
         if let Some(event) = narration::frame(&narrated, seq, now_ms()) {
-            let frame = LiveFrame::Ops(OpsFrame::Semantic {
-                record,
-                event,
-            });
+            let frame = LiveFrame::Ops(OpsFrame::Semantic { record, event });
             if let Ok(bytes) = frame.encode() {
                 let _ = self.peer.publish_live(self.workspace_id, bytes);
             }
