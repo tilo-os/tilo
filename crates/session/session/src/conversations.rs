@@ -390,7 +390,7 @@ impl Conversations {
             let messages = chat::messages::Messages::new(vec![(*index, std::rc::Rc::new(held))]);
             let rows = chat.message_rows(&messages, channel);
             let me = opened.records.author().0.clone();
-            let names = self.channel_names(opened, &me);
+            let names = Self::channel_names(opened, &me);
             return Some(chat::views::Channel::read(
                 &chat, &rows, channel, &me, &names,
             ));
@@ -406,7 +406,7 @@ impl Conversations {
     /// conversation and posts, and Chat's `introduce` is another app's act), nor which agents the
     /// workspace keeps: those records are here, so the page is read with them and nobody is
     /// shown a routing id.
-    fn channel_names(&self, opened: &Opened, me: &str) -> chat::views::Names {
+    fn channel_names(opened: &Opened, me: &str) -> chat::views::Names {
         let mut names = chat::views::Names {
             me: crate::directory::desk_person_name(
                 ui::local_identity::load().map(|identity| identity.display_name),
@@ -414,7 +414,7 @@ impl Conversations {
             ),
             agents: BTreeMap::new(),
         };
-        let record = self.workspace_agents(opened);
+        let record = Self::workspace_agents(opened);
         if let Some(record) = record {
             let state = record.get();
             for agent in state.active() {
@@ -431,7 +431,6 @@ impl Conversations {
     /// conversation's agents go by. `None` where the workspace keeps none — reading an app's
     /// record creates none, as [`Self::opened_with`] reads Chat's.
     fn workspace_agents(
-        &self,
         opened: &Opened,
     ) -> Option<WorkspaceRecord<tilo_app::tilo_workspace_agent::WorkspaceAgents>> {
         use tilo_app::tilo_workspace_agent::{KIND as AGENTS_KIND, OWNER as AGENTS_OWNER};
