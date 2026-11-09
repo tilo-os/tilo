@@ -70,7 +70,16 @@ pub(super) fn commit_derived(inner: &mut Inner, state: &mut TxnState, by: &str) 
     if state.saved > 0 {
         return false;
     }
+    tell(inner, state, by);
+    true
+}
+
+/// Tell whoever reads what the transaction `state` wrote: each document it reached, with the
+/// fields it changed and how each collection's listing moved, `by` naming who made it. Returns
+/// the documents told.
+pub(super) fn tell(inner: &mut Inner, state: &mut TxnState, by: &str) -> Vec<DocId> {
     let mut collections = std::mem::take(&mut state.collections);
+    let mut told = Vec::new();
     for (doc, fields) in std::mem::take(&mut state.touched) {
         if fields.is_empty() {
             continue;
@@ -91,8 +100,9 @@ pub(super) fn commit_derived(inner: &mut Inner, state: &mut TxnState, by: &str) 
             listings: own,
             by: Some(by.to_owned()),
         });
+        told.push(doc);
     }
-    true
+    told
 }
 
 /// Keep what `write` took out of each collection it moved items of, with the version that
@@ -364,6 +374,7 @@ impl Inner {
         &mut self,
         app: &str,
         start: usize,
+        until: usize,
         note: &ChangeNote,
         made: &[Made],
     ) -> BTreeMap<DocId, Vec<FieldKey>> {
@@ -400,7 +411,7 @@ impl Inner {
             ends.insert(resource, end);
         }
         // Kept with the action's last write, so they go when its writes go.
-        let Some(write) = self.local.get_mut(start..).and_then(<[_]>::last_mut) else {
+        let Some(write) = self.local.get_mut(start..until).and_then(<[_]>::last_mut) else {
             return BTreeMap::new();
         };
         write.versions = Some(ends.clone());

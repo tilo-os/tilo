@@ -36,6 +36,14 @@
 //! One transaction may be open at a time: rolling one back puts the mirror and the overlay back
 //! as the store's earlier writes left them.
 //!
+//! **The change a person is making.** A bound control hands over the whole of what it holds on
+//! every keystroke, so a burst of typing into one field is one write per letter. The store holds
+//! that change open: each keystroke is in the mirror and the overlay and told to whoever reads, so the
+//! person — and every other view of it — sees it at once, while nothing is queued or committed.
+//! The change lands as one — one action, one history entry, one undo step — when the burst ends:
+//! another field or another action ([`TiloStore::commit`]), the field losing the keyboard, a
+//! pause ([`TiloStore::edit_wakes_in`]), or the window closing ([`TiloStore::close_edit`]).
+//!
 //! **Chunks.** The record may be split: resources it does not hold itself are in chunk documents
 //! above it ([`crate::chunk`]), each a document of its own the host sends when it is wanted. The
 //! store holds the chunks it was sent ([`TiloStore::sync`]) beside the record, and every
@@ -133,12 +141,18 @@ pub(crate) type ItemTouches = BTreeMap<FieldKey, BTreeSet<String>>;
 /// The runtime's name for a bound control's edit (`ViewInstance::edit`).
 const RUNTIME_EDIT: &str = "$edit";
 
+/// How long a pause in the typing lands the change a person is making ([`TiloStore::edit_wakes_in`]):
+/// long enough that a person typing a thought, or stopping to think mid-word, makes one change of
+/// it.
+pub const DEFAULT_EDIT_PAUSE: std::time::Duration = std::time::Duration::from_millis(1200);
+
 /// The action a committed change is published as: what the runtime named it, except a bound
 /// control's edit, which the runtime names `$edit` with the arguments `[field, value]`. Every
 /// receiver, and the identity service that signs the change, decides it against the package's
 /// surface, which publishes such an edit as `edit-flag` (a checkbox) or `edit-text` (anything
-/// else) with the arguments `{field, value}`, as the door plans an edit of a field. Under that
-/// name the keystrokes of one field also coalesce into one undo step.
+/// else) with the arguments `{field, value}`, as the door plans an edit of a field. A typing
+/// burst is held open and committed as one change of that action, so it also reads as one undo
+/// step.
 fn published_name(note: &ChangeNote) -> (String, Json) {
     if note.action != RUNTIME_EDIT {
         return (note.action.clone(), note.args.clone());
@@ -300,6 +314,7 @@ mod sync;
 use scoped::{Changing, Held};
 mod clock;
 use clock::ClockSource;
+mod open;
 
 mod index_build;
 mod loading;
@@ -388,6 +403,11 @@ struct Inner {
     /// What changed during the trial runs under way, told to nobody: a trial run is taken back.
     held: Vec<ChangeSummary>,
     committed: VecDeque<Committed>,
+    /// The change a person is making by typing, held open until its boundary lands it as one
+    /// change ([`open`]).
+    open: Option<open::Open>,
+    /// How long a pause in the typing lands the change it is making.
+    edit_pause: std::time::Duration,
     /// The runs that have not finished, as they began: where a run's first write stands in the
     /// record's local changes and in what it queued, so that a run that fails anywhere takes all
     /// it wrote back out ([`Store::abort_run`]).
@@ -694,6 +714,8 @@ impl TiloStore {
                 trials: 0,
                 held: Vec::new(),
                 committed: VecDeque::new(),
+                open: None,
+                edit_pause: DEFAULT_EDIT_PAUSE,
                 runs: HashMap::new(),
                 handed: BTreeMap::new(),
                 next_ticket: 1,
@@ -968,6 +990,39 @@ impl TiloStore {
     #[must_use]
     pub fn outbox_pending_count(&self) -> usize {
         Store::outbox_pending(self).len()
+    }
+
+    /// Whether the store holds the change a person is making by typing open: their keystrokes
+    /// so far are written and read, and their change lands at its next boundary
+    /// ([`Self::close_edit`], [`Self::edit_wakes_in`]).
+    #[must_use]
+    pub fn edit_open(&self) -> bool {
+        self.held().open.is_some()
+    }
+
+    /// Land the change a person is still making by typing, if one is open: what a window does
+    /// when the field lost the keyboard, they did something else, or the window closed. The
+    /// change is queued as any is, for the host to commit. Whether one landed.
+    pub fn close_edit(&self) -> bool {
+        let mut inner = self.mutate();
+        if inner.open.is_none() || inner.trials > 0 {
+            return false;
+        }
+        inner.land_open();
+        true
+    }
+
+    /// How long until a pause in the typing lands the change a person is making: what a window
+    /// waits for, so that the change lands when they stop rather than at their next action.
+    #[must_use]
+    pub fn edit_wakes_in(&self) -> Option<std::time::Duration> {
+        self.held().open_wakes_in()
+    }
+
+    /// How long a pause in the typing lands the change it is making
+    /// ([`Self::edit_wakes_in`]): [`DEFAULT_EDIT_PAUSE`] unless the host says otherwise.
+    pub fn set_edit_pause(&self, pause: std::time::Duration) {
+        self.mutate().edit_pause = pause;
     }
 
     /// Take every action committed under a ticket of `first` or later, oldest first.

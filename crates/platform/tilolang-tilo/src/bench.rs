@@ -947,6 +947,8 @@ struct Workspace {
     phases: Phases,
     published: Publications,
     planner: std::sync::Arc<dyn Planner>,
+    /// Changes the frames committed to the record so far.
+    commits: u64,
     /// The index the workspace reads, removed with it.
     _index: Option<IndexDir>,
 }
@@ -1202,6 +1204,7 @@ impl Workspace {
             phases,
             published,
             planner,
+            commits: 0,
             _index: index,
         })
     }
@@ -1218,6 +1221,7 @@ impl Workspace {
         let profiled = self.host.runtime().engine().profiled();
         let start = Instant::now();
         for committed in self.host.take_committed() {
+            self.commits = self.commits.saturating_add(1);
             execute(&mut self.doc, &committed.action, "bench")?;
         }
         let executed = Instant::now();
@@ -1265,6 +1269,9 @@ pub struct Work {
     pub published: u64,
     /// Patches the views sent the window: what a frame changed on screen.
     pub patches: u64,
+    /// Changes the frame committed to the record: what the work of a change is, and what a
+    /// keystroke of a change that is still open does not do.
+    pub commits: u64,
     /// Allocations on the thread that ran it, when the program counts them
     /// ([`CountingAlloc`]).
     pub allocations: u64,
@@ -1290,11 +1297,12 @@ impl Work {
             evaluated: reads.evaluated,
             published: workspace.published.visited(),
             patches: 0,
+            commits: workspace.commits,
             allocations: allocations(),
         }
     }
 
-    fn counts(self) -> [u64; 13] {
+    fn counts(self) -> [u64; 14] {
         [
             self.renders,
             self.items,
@@ -1308,11 +1316,12 @@ impl Work {
             self.evaluated,
             self.published,
             self.patches,
+            self.commits,
             self.allocations,
         ]
     }
 
-    fn from_counts(c: [u64; 13]) -> Self {
+    fn from_counts(c: [u64; 14]) -> Self {
         let [
             renders,
             items,
@@ -1326,6 +1335,7 @@ impl Work {
             evaluated,
             published,
             patches,
+            commits,
             allocations,
         ] = c;
         Self {
@@ -1341,11 +1351,12 @@ impl Work {
             evaluated,
             published,
             patches,
+            commits,
             allocations,
         }
     }
 
-    const NAMES: [&'static str; 13] = [
+    const NAMES: [&'static str; 14] = [
         "renders",
         "items",
         "located",
@@ -1358,12 +1369,13 @@ impl Work {
         "evaluated",
         "published",
         "patches",
+        "commits",
         "allocations",
     ];
 
     fn zip(self, other: Self, f: impl Fn(u64, u64) -> u64) -> Self {
         let (a, b) = (self.counts(), other.counts());
-        let mut out = [0u64; 13];
+        let mut out = [0u64; 14];
         for ((slot, x), y) in out.iter_mut().zip(a).zip(b) {
             *slot = f(x, y);
         }
@@ -1403,7 +1415,7 @@ impl Work {
 
     fn from_json(work: &Json) -> Option<Self> {
         work.get("renders")?;
-        let mut counts = [0u64; 13];
+        let mut counts = [0u64; 14];
         for (slot, name) in counts.iter_mut().zip(Self::NAMES) {
             // A record of before the index counts none of its reads.
             *slot = work.get(name).and_then(Json::as_u64).unwrap_or(0);
@@ -2127,6 +2139,9 @@ fn first_frame(sized: &Sized<'_>, saved: &[u8]) -> Result<Vec<Record>, String> {
             };
             let mut loading = loading.borrow_mut();
             let doc = loading.wait()?;
+            // Typing is one change, landed when the person stops: the first change of a window
+            // is what the keystroke made, once the burst it opened is over.
+            host.store().close_edit();
             for committed in host.take_committed() {
                 execute(doc, &committed.action, "bench")?;
             }
@@ -2355,6 +2370,18 @@ fn keystroke(sized: &Sized<'_>, workspace: &mut Workspace) -> Result<Option<Reco
         }
         done.patches = patches as u64;
         changes.push(took, done);
+    }
+    // The keystrokes are one change of the field, landed when the person stops typing: what each
+    // of them cost while it was open is what the samples measured, and the change lands after
+    // them.
+    workspace.host.store().close_edit();
+    match &mut typing {
+        Typing::Item(editor, _) => {
+            workspace.frame(&mut [editor.as_mut()])?;
+        }
+        Typing::Main(_) => {
+            workspace.frame(&mut [])?;
+        }
     }
     let (samples, mut extra) = changes.into_record(workspace.phases.take());
     if let Json::Object(m) = &mut extra {

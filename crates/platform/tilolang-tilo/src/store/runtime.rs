@@ -286,6 +286,25 @@ impl Store for TiloStore {
         if !marked && let Some((doc, edit)) = mark_of(migration.as_ref(), triggering.as_ref()) {
             inner.mark(&mut state, txn, &doc, edit)?;
         }
+        // A person typing into one bound field makes one change of it, not one per keystroke:
+        // the keystroke is written and told like any other, and it stays open with the ones
+        // before it ([`open`]). A trial run neither lands nor joins it: planning writes the
+        // mirror and is taken back, and as far as planning goes the change a person is making
+        // is already what every read answers.
+        if inner.trials == 0 {
+            if Inner::types_text(&state, note) {
+                let writes = inner.local.len();
+                if !inner.opens_typing(&state, note) {
+                    inner.land_open();
+                }
+                let told = unsaved::tell(&mut inner, &mut state, &note.invoker);
+                inner.hold(state, note, told, writes);
+                return Ok(());
+            }
+            // Anything else lands the change the person was making: it was written first, and
+            // this change follows it.
+            inner.land_open();
+        }
         let versioned = app.clone();
         let (action_id, args) = published_name(note);
         // A change is one app's, and the record stores each edit under the app its resource is
@@ -319,7 +338,9 @@ impl Store for TiloStore {
         let made = action.made();
         inner.enqueue(action);
         let mut touched = state.touched;
-        for (doc, keys) in inner.provisional_versions(&versioned, state.start, note, &made) {
+        let writes = inner.local.len();
+        for (doc, keys) in inner.provisional_versions(&versioned, state.start, writes, note, &made)
+        {
             touched.entry(doc).or_default().extend(keys);
         }
         // What changed is told to those who read the mirror once, when the record brings the

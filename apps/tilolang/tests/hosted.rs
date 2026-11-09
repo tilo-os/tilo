@@ -45,6 +45,9 @@ use ui::widget::Widget;
 #[path = "hosted/cost.rs"]
 mod cost;
 
+#[path = "hosted/typing.rs"]
+mod typing;
+
 const NOTES: &str = "so.tilo.lang.notes";
 /// The test's own notebook, whose notes' bodies are rich text.
 const RICHBODY: &str = "so.tilo.lang.richbody";
@@ -1177,6 +1180,8 @@ fn who_edited_a_page_reads_as_the_name_the_window_knows_them_by_never_their_key(
         .expect("the title field is laid out")
         .get_rect();
     session.window.click_at(rect.center().x, rect.center().y);
+    // The typing lands as the person stops: the page reads the change that named them the editor.
+    typing::after_a_pause(&session, std::time::Duration::ZERO);
     session.window.type_text("Plan");
     session.settle();
     // The person's name changes, as a roster renames them: the page follows.
@@ -1490,7 +1495,7 @@ fn what_the_instance_sends_wakes_the_component_that_took_the_window_over() {
 
 /// "+", a title typed, Ctrl+Z, Ctrl+Shift+Z: the window's undo takes back what was typed into the
 /// bound field, as one step of the person's, and redo brings it back. One undo, the record's: the
-/// field keeps no history of its own beside it.
+/// field keeps no history of its own beside it, and a burst of typing is one step of it.
 fn typing_in_a_title_is_undone_and_redone(mut session: Session) {
     let plus = session.new_note_button();
     session.window.click_at(plus.0, plus.1);
@@ -1526,17 +1531,19 @@ fn typing_in_a_title_is_undone_and_redone(mut session: Session) {
         ["Groceries"],
         "what was typed after the redo is a step of its own"
     );
-    // Typed key by key, frames between them: each word is a step, as in every other app.
+    // Typed key by key, frames between them and no pause: the burst is one step, as typing into
+    // one field is in every other app.
     for key in " for sunday".chars() {
         session.window.type_text(&key.to_string());
         session.settle();
     }
+    assert_eq!(session.titles(), ["Groceries for sunday"]);
     session.window.chord(&["ctrl"], "z");
     session.settle();
     assert_eq!(
         session.titles(),
-        ["Groceries for "],
-        "Ctrl+Z takes back the last word typed"
+        ["Groceries"],
+        "Ctrl+Z takes back the whole burst typed since the redo"
     );
 }
 

@@ -319,6 +319,10 @@ pub struct Instance {
     taken_build: Option<u64>,
     /// The window's keyboard focus: the bound control it is in.
     focus: Option<(Lane, String)>,
+    /// The control the window last sent an edit of: where the person is typing, which a focus
+    /// report of that same control leaves the change they are making open for (`ToApp::Focus`
+    /// arrives a frame late, after the keys typed since).
+    typing: Option<(Lane, String)>,
     composing: bool,
     /// How many presses the window sent (`ToApp::Fire`, `ToApp::Invoke`) the instance: the
     /// number each press goes by, in the order they came.
@@ -412,6 +416,7 @@ impl Instance {
             follows: false,
             taken_build: None,
             focus: None,
+            typing: None,
             composing: false,
             fired: 0,
             last_fire: 0,
@@ -586,10 +591,21 @@ impl Instance {
     /// the time ever wakes the instance.
     #[must_use]
     pub fn wakes_in(&self) -> Option<std::time::Duration> {
-        [self.views_wake_in(), self.held_in(), self.trigger_in()]
-            .into_iter()
-            .flatten()
-            .min()
+        [
+            self.views_wake_in(),
+            self.held_in(),
+            self.trigger_in(),
+            self.edit_pause_in(),
+        ]
+        .into_iter()
+        .flatten()
+        .min()
+    }
+
+    /// How long until a pause in the person's typing lands the change they are making
+    /// ([`crate::store::TiloStore::edit_wakes_in`]): the frame then lands it.
+    fn edit_pause_in(&self) -> Option<std::time::Duration> {
+        self.host()?.store().edit_wakes_in()
     }
 
     /// How long until a trigger of this app next has something to run: what a window that runs
@@ -1256,6 +1272,21 @@ impl Instance {
         tickets
     }
 
+    /// Land the change the person at the window is still making by typing, if they are making
+    /// one ([`crate::store::TiloStore::close_edit`]): the field left the keyboard, they did
+    /// something else, or the window is closing. What it lands is queued for the door as any
+    /// change is. Whether a change landed.
+    pub fn close_edit(&mut self) -> bool {
+        let Some(host) = self.host() else {
+            return false;
+        };
+        if !host.store().close_edit() {
+            return false;
+        }
+        self.commit_planned();
+        true
+    }
+
     /// The next invocation for the door, with the invocation of the door that made it.
     pub fn take_invocation(&mut self) -> Option<(ControlInvocation, Option<InvocationId>)> {
         self.take_door_work();
@@ -1407,6 +1438,17 @@ impl Instance {
     }
 
     fn event(&mut self, message: ToApp) {
+        // What the person did besides type into the field they were typing into ends the change
+        // their typing makes: it lands first, as one change of theirs, and what they did is the
+        // next. A focus report of the field they are typing in is no end to it: the window says
+        // where the keyboard went a frame after the keys typed since.
+        let ends = match &message {
+            ToApp::Focus { at } => at.as_ref() != self.typing.as_ref(),
+            other => ends_edit(other),
+        };
+        if ends {
+            self.close_edit();
+        }
         let first = self.host().map(|host| host.next_ticket());
         let mut ran: Option<(ActionRef, Value)> = None;
         let pressed = matches!(message, ToApp::Fire { .. });
@@ -1770,6 +1812,13 @@ impl Instance {
     /// What the person typed or toggled in a bound control, applied to the resource they did it
     /// in.
     fn edit_event(&mut self, message: ToApp) -> Result<(), Words> {
+        if let ToApp::Toggle { lane, key, .. }
+        | ToApp::Splice { lane, key, .. }
+        | ToApp::Edit { lane, key, .. }
+        | ToApp::EditRich { lane, key, .. } = &message
+        {
+            self.typing = Some((*lane, key.clone()));
+        }
         match message {
             ToApp::Toggle {
                 lane,
@@ -2125,6 +2174,8 @@ impl Instance {
     /// runtime, and what changed sent. Whether anything changed.
     pub fn update(&mut self) -> bool {
         let received = self.receive();
+        // The pause in the person's typing has ended: the change they were making lands.
+        let landed = self.edit_pause_ended();
         let door = self.take_door_work();
         let opened = self.take_open_requests();
         let pulled = self.poll_origins();
@@ -2144,6 +2195,7 @@ impl Instance {
         // The time a view read moved on: the frame its embedder woke for it.
         let timed = self.wakes_in().is_some_and(|wait| wait.is_zero());
         let changed = received
+            || landed
             || door
             || opened
             || pulled
@@ -2167,6 +2219,22 @@ impl Instance {
         self.tell_took();
         self.flush();
         changed
+    }
+
+    /// Land the change the person is making by typing when the pause since their last keystroke
+    /// has ended ([`Self::wakes_in`]). Whether a change landed.
+    fn edit_pause_ended(&mut self) -> bool {
+        let Some(host) = self.host() else {
+            return false;
+        };
+        if !host
+            .store()
+            .edit_wakes_in()
+            .is_some_and(|wait| wait.is_zero())
+        {
+            return false;
+        }
+        self.close_edit()
     }
 
     /// Give the runtime the workspace's members as the workspace's policy has them now, when it
@@ -2259,6 +2327,23 @@ impl Drop for Instance {
             host.persist_index();
         }
     }
+}
+
+/// Whether what the window sent ends the change a person is making by typing: everything but
+/// more typing into a bound control, and what the window tells of itself that is no step of
+/// theirs (its rows asked for, a composition, the names it knows, the space it has).
+fn ends_edit(message: &ToApp) -> bool {
+    !matches!(
+        message,
+        ToApp::Toggle { .. }
+            | ToApp::Splice { .. }
+            | ToApp::Edit { .. }
+            | ToApp::EditRich { .. }
+            | ToApp::Rows { .. }
+            | ToApp::Composing(_)
+            | ToApp::Names { .. }
+            | ToApp::Space { .. }
+    )
 }
 
 /// Why an action refused, as its form says it: what its `require` said, else the error.

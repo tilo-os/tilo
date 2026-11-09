@@ -312,3 +312,42 @@ fn chat_does_the_work_of_what_it_shows() {
 fn mail_does_the_work_of_what_it_shows() {
     the_runtime_does_the_work_of_what_it_shows("mail");
 }
+
+/// A keystroke while the change it is part of is still open — the person has not paused, moved to
+/// another field or closed the window — changes the field and nothing else: the store holds it
+/// with the keystrokes before it, so it commits no change, writes no history or index for it, and
+/// what it costs does not grow with the notebook. The change lands once, when the typing stops.
+///
+/// Measured on this keystroke scenario of a one-note notebook, committing each keystroke as its
+/// own change (what the store did before it held the change open) cost `21_458` allocations, six
+/// patches and seven view runs in the window; holding it open costs `6_416` and two.
+#[test]
+fn a_keystroke_while_the_change_is_open_records_nothing() {
+    let records = bench_at("notes", vec![1, LARGE], 3);
+    let work = |size: &str| {
+        let record = find(&records, "keystroke", size)
+            .unwrap_or_else(|| panic!("the keystroke at {size} counts work"));
+        Work::of_record(record).unwrap_or_else(|| panic!("the keystroke at {size} counts work"))
+    };
+    let (one, many) = (work("1"), work("10k"));
+    let mut misses = Vec::new();
+    for (size, at) in [("1", one), ("10k", many)] {
+        if at.commits != 0 {
+            misses.push(format!(
+                "{size}: keystrokes of a change still open committed {} changes, where the change lands once, at its end",
+                at.commits
+            ));
+        }
+    }
+    // The same on screen and in what it reads at 10k as at 1: the letter is written and shown,
+    // and no change of the workspace is read or made for it.
+    same_shown("notes", "keystroke", (one, many), &mut misses);
+    for ((name, at_large), (_, at_small)) in loaded(many).into_iter().zip(loaded(one)) {
+        if at_large != at_small {
+            misses.push(format!(
+                "notes keystroke: {name} {at_large} at 10k, {at_small} at 1: a keystroke of a change still open reads the workspace"
+            ));
+        }
+    }
+    assert!(misses.is_empty(), "{}", misses.join("\n"));
+}
