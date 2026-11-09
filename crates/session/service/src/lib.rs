@@ -127,6 +127,15 @@ pub trait Service {
         None
     }
 
+    /// Every app whose model this service runs, by the app, with the resource address it publishes
+    /// its record at: what [`Self::hosted`] answers, for a host that asks about them all at once —
+    /// the session tells its launches which apps it serves, so a plain `open` of one places that
+    /// resource instead of awaiting a window process that never publishes
+    /// (`docs/designs/app-language/one-app-model.md` §3).
+    fn served(&self) -> Vec<(String, String)> {
+        Vec::new()
+    }
+
     /// The record of the app `app` this service keeps, when the session runs the app's package
     /// itself (the shell) and its records are the person's as any app's: what a connection the
     /// session admits — a REPL, an agent's task — reads and changes by the app, as it does
@@ -357,6 +366,16 @@ impl Services {
     #[must_use]
     pub fn hosted(&self, app: &str) -> Option<String> {
         self.started.iter().find_map(|service| service.hosted(app))
+    }
+
+    /// Every app whose model one of the services runs, by the app, with the resource address it
+    /// publishes its record at; see [`Service::served`].
+    #[must_use]
+    pub fn served(&self) -> Vec<(String, String)> {
+        self.started
+            .iter()
+            .flat_map(|service| service.served())
+            .collect()
     }
 
     /// The record of the app `app`, from the service keeping it; see [`Service::record`].
@@ -618,6 +637,10 @@ impl Service for Services {
 
     fn hosted(&self, app: &str) -> Option<String> {
         Self::hosted(self, app)
+    }
+
+    fn served(&self) -> Vec<(String, String)> {
+        Self::served(self)
     }
 
     #[cfg(unix)]

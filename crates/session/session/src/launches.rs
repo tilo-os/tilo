@@ -107,6 +107,10 @@ pub struct Launches {
     waiting: Mutex<Vec<LaunchRequest>>,
     /// What wakes that loop when a launch is waiting for it.
     wake: Mutex<Option<tilo_service::Wake>>,
+    /// The apps whose models this session runs itself, by the app: the resource each is served at.
+    /// A plain `open` of one places that resource rather than awaiting a window process that never
+    /// publishes (`docs/designs/app-language/one-app-model.md` §3).
+    served: Mutex<BTreeMap<String, String>>,
 }
 
 impl Launches {
@@ -120,6 +124,18 @@ impl Launches {
     /// thread that starts a process.
     pub fn waking(&self, wake: tilo_service::Wake) {
         *self.wake.lock_recover() = Some(wake);
+    }
+
+    /// Record that this session runs `app`'s model itself, serving its record at `root`: its plain
+    /// `open` places that root instead of awaiting a window process
+    /// (`docs/designs/app-language/one-app-model.md` §3). Each pass that reads the services
+    /// publishes it again, so the record moving is followed.
+    pub fn serves(&self, app: &str, root: &str) {
+        let mut served = self.served.lock_recover();
+        if served.get(app).map(String::as_str) == Some(root) {
+            return;
+        }
+        served.insert(app.to_owned(), root.to_owned());
     }
 
     /// Ask the session's loop to make `launch` in `workspace` at `place`,
@@ -464,6 +480,12 @@ impl LauncherServices for Launches {
 
     fn attest_process(&self, pid: u32, app: &str, workspace: &str) -> bool {
         self.live(pid, app, workspace).is_some()
+    }
+
+    /// Whether this session runs `app`'s model itself, so it has no window process for a launch
+    /// to bring up: the resource the session serves the app at, when one does.
+    fn served(&self, app: &str) -> Option<String> {
+        self.served.lock_recover().get(app).cloned()
     }
 
     /// The connection proved the process the session started is the one holding it (the kernel's

@@ -32,6 +32,11 @@ use ui::record::{RecordId, RecordOwners};
 const CHAT_OWNER: &str = "so.tilo.chat";
 /// How the run source names Chat where a record is opened.
 const CHAT_APP: (&str, &str) = ("chat", "Chat");
+/// Chat's verb that records a turn's work on the reply to its message: the one Chat's window
+/// publishes on each message, run here on the same record from the same declaration.
+const RECORD_WORK: &str = "record-work";
+/// The chat action that asks an agent again for a turn it could not answer.
+const RETRY: &str = "retry";
 
 /// One workspace's conversations as the pass read them, and the runs they give.
 #[derive(Clone, Default)]
@@ -324,6 +329,42 @@ impl Conversations {
         Some(opened.chat.as_ref()?.get().as_ref().clone())
     }
 
+    /// The person seated here: whose changes what the service records are theirs, and the author
+    /// a message or a record of work is written by when the caller names nobody else.
+    #[must_use]
+    pub fn person(&self) -> String {
+        let open = self.open.borrow();
+        open.values()
+            .next()
+            .map(|opened| opened.records.author().0.clone())
+            .unwrap_or_default()
+    }
+
+    /// The messages people wrote in `channel`, as the session holds them: what a test reads to
+    /// prove a retry asked again rather than posting the question a second time.
+    #[must_use]
+    pub fn person_messages(&self, channel: &str) -> Vec<String> {
+        let open = self.open.borrow();
+        for opened in open.values() {
+            let Some((_, part)) = &opened.part else {
+                continue;
+            };
+            let part = part.get();
+            let held: Vec<String> = part
+                .messages
+                .iter()
+                .filter(|(_, message)| {
+                    message.channel.as_str() == channel && person_of(&message.author.0).is_some()
+                })
+                .map(|(id, _)| id.as_str().to_owned())
+                .collect();
+            if !held.is_empty() {
+                return held;
+            }
+        }
+        Vec::new()
+    }
+
     /// The page of the conversation `channel` (a channel id, after
     /// `chat.workspace/channels/`), as Chat's own `#[view(default)]` draws it, read from the
     /// workspace this session holds open that has it: the very channel Chat's window shows and
@@ -349,9 +390,72 @@ impl Conversations {
             let messages = chat::messages::Messages::new(vec![(*index, std::rc::Rc::new(held))]);
             let rows = chat.message_rows(&messages, channel);
             let me = opened.records.author().0.clone();
-            return Some(chat::views::Channel::read(&chat, &rows, channel, &me));
+            let names = self.channel_names(opened, &me);
+            return Some(chat::views::Channel::read(
+                &chat, &rows, channel, &me, &names,
+            ));
         }
         None
+    }
+
+    /// The names a conversation's page completes its people with, beyond what Chat's own record
+    /// says: the name this device shows the seated person by — the very name the top bar shows
+    /// them — and the workspace's agents, by their id.
+    ///
+    /// A session's Chat record may never have been told who reads it (an ask creates the
+    /// conversation and posts, and Chat's `introduce` is another app's act), nor which agents the
+    /// workspace keeps: those records are here, so the page is read with them and nobody is
+    /// shown a routing id.
+    fn channel_names(&self, opened: &Opened, me: &str) -> chat::views::Names {
+        let mut names = chat::views::Names {
+            me: crate::directory::desk_person_name(
+                ui::local_identity::load().map(|identity| identity.display_name),
+                me,
+            ),
+            agents: BTreeMap::new(),
+        };
+        let record = self.workspace_agents(opened);
+        if let Some(record) = record {
+            let state = record.get();
+            for agent in state.active() {
+                let name = agent.name.trim();
+                if !name.is_empty() {
+                    names.agents.insert(agent.id.0.clone(), name.to_owned());
+                }
+            }
+        }
+        names
+    }
+
+    /// The workspace's agents record `opened` holds, opened here where it is not: the names a
+    /// conversation's agents go by. `None` where the workspace keeps none — reading an app's
+    /// record creates none, as [`Self::opened_with`] reads Chat's.
+    fn workspace_agents(
+        &self,
+        opened: &Opened,
+    ) -> Option<WorkspaceRecord<tilo_app::tilo_workspace_agent::WorkspaceAgents>> {
+        use tilo_app::tilo_workspace_agent::{KIND as AGENTS_KIND, OWNER as AGENTS_OWNER};
+        let id = collab_types::workspace_record_id(AGENTS_KIND);
+        let held = opened
+            .records
+            .holds_record(AGENTS_OWNER, &id, AGENTS_KIND)
+            .unwrap_or(false);
+        if !held {
+            return None;
+        }
+        let standing = tilo_action_policy::Standing::person(
+            opened.policy.clone(),
+            opened.records.author().0.clone(),
+        );
+        let permissions = PermissionContext::from_standing(&opened.policy.workspace, standing)
+            .with_policy_time_sampler(Arc::new(|| Ok(tilo_clock::unix_now())));
+        WorkspaceRecord::<tilo_app::tilo_workspace_agent::WorkspaceAgents>::open(
+            &opened.records,
+            AGENTS_OWNER,
+            CHAT_APP,
+            Some(LivePermissions::fixed(permissions)),
+            None,
+        )
     }
 
     /// Post `text` in `channel`, as the person seated here, through Chat's own `post`: a message
@@ -392,6 +496,132 @@ impl Conversations {
                 .map_err(|error| error.to_string());
         }
         Err(format!("no open workspace holds the channel {channel}"))
+    }
+
+    /// Ask the agent again for a turn's answer, through Chat's own `retry` on the part that holds
+    /// the message: the message `arguments` names moves to its next attempt, whose reply no one
+    /// has written, so its turn is delivered again and the answer lands in a reply of its own
+    /// (shell.md §8.1). Nothing is posted: the person's words stay the one message they wrote.
+    ///
+    /// # Errors
+    /// No open workspace holds the message in `arguments`, or Chat refused the retry.
+    fn retry(
+        &self,
+        invoker: &tilo_actions::ActionInvoker,
+        arguments: &serde_json::Map<String, serde_json::Value>,
+    ) -> Result<(), tilo_actions::DoorError> {
+        let text = |name: &str| {
+            arguments
+                .get(name)
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or_default()
+        };
+        let channel = text("channel");
+        let reply = text("reply");
+        let summons = text("summons");
+        if reply.is_empty() || summons.is_empty() {
+            return Err(tilo_actions::DoorError::InvalidArguments(
+                "a retry names the reply and the message it answered".to_owned(),
+            ));
+        }
+        let open = self.open.borrow();
+        for opened in open.values() {
+            let Some((_, part)) = &opened.part else {
+                continue;
+            };
+            if opened.chat.is_none() || part.get().messages.get(&Id::from_raw(summons)).is_none() {
+                continue;
+            }
+            if !opened.chat.as_ref().is_some_and(|chat_record| {
+                chat_record
+                    .get()
+                    .channels
+                    .iter()
+                    .any(|(id, _)| id.as_str() == channel)
+            }) {
+                continue;
+            }
+            return part
+                .invoke_as(
+                    invoker,
+                    &chat::parts::ChatPart::RETRY.with(chat::messages::chat_part::Retry {
+                        message: Id::from_raw(summons),
+                        reply: Id::from_raw(reply),
+                    }),
+                )
+                .map_err(|error| tilo_actions::DoorError::Failed(error.to_string()));
+        }
+        Err(tilo_actions::DoorError::Failed(format!(
+            "no open workspace holds the message {summons} of channel {channel}"
+        )))
+    }
+
+    /// Record a turn's work through Chat's own `record-work` on the workspace's open Chat record,
+    /// as `invoker` (the agent that answered, or the person here): `arguments` are the verb's,
+    /// exactly as Chat's window's item takes them, including the `message` whose work it records —
+    /// the summons, named as the item Chat's window publishes it names it
+    /// (`chat.workspace.messages:message:<id>`) or by the bare id its item carries. Chat's own verb
+    /// derives the reply from the summons and the author, so what it records lands on the very
+    /// reply the turn's answer is — the address the agent works from, before the reply exists. The
+    /// record is the one Chat's window writes and the pass reads turns from: no second writer, and
+    /// no second verb.
+    ///
+    /// # Errors
+    /// No open workspace holds the message `arguments` names, or Chat refused the record.
+    fn record_work(
+        &self,
+        invoker: &tilo_actions::ActionInvoker,
+        resource: &str,
+        arguments: &serde_json::Map<String, serde_json::Value>,
+    ) -> Result<(), tilo_actions::DoorError> {
+        let unknown = || {
+            tilo_actions::DoorError::Unknown(tilo_actions::ActionAddress::new(
+                resource,
+                RECORD_WORK,
+            ))
+        };
+        // The message is the agent's argument, as Chat's window's item takes it; the item's own
+        // id names it too, for a caller that names nothing.
+        let named = arguments
+            .get("message")
+            .and_then(serde_json::Value::as_str)
+            .and_then(message_of)
+            .or_else(|| message_of(resource));
+        let Some(message) = named else {
+            return Err(unknown());
+        };
+        let work = arguments.get("work").cloned().ok_or_else(|| {
+            tilo_actions::DoorError::InvalidArguments(
+                "a record of work says how the work is going".to_owned(),
+            )
+        })?;
+        let work: chat::record::WorkUpdate = serde_json::from_value(work).map_err(|error| {
+            tilo_actions::DoorError::InvalidArguments(format!("the work does not read: {error}"))
+        })?;
+        let say = arguments
+            .get("say")
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_owned);
+        let summons = Id::from_raw(message);
+        let invoke =
+            chat::parts::ChatPart::RECORD_WORK.with(chat::messages::chat_part::RecordWork {
+                message: summons.clone(),
+                work,
+                say,
+            });
+        let open = self.open.borrow();
+        for opened in open.values() {
+            let Some((_, part)) = &opened.part else {
+                continue;
+            };
+            if opened.chat.is_none() || part.get().messages.get(&summons).is_none() {
+                continue;
+            }
+            return part
+                .invoke_as(invoker, &invoke)
+                .map_err(|error| tilo_actions::DoorError::Failed(error.to_string()));
+        }
+        Err(unknown())
     }
 
     /// What the canvas asks of the session, made as `person`'s in
@@ -669,17 +899,95 @@ impl Conversations {
 /// `chat.workspace/channels/<id>`, and the shell reads that reading here.
 pub(crate) struct ChatViewService {
     conversations: Rc<Conversations>,
+    /// The summonses it published last, keyed by each open chat's revision and messages' part:
+    /// rebuilt only when a part moved or a workspace opened, so a pass that changed nothing
+    /// writes no item again — and reads no part, which would cost the loop every frame.
+    summonses: std::cell::RefCell<Option<(SummonsKey, Vec<tilo_actions::ResourceSpec>)>>,
 }
+
+/// What the summonses a [session's Chat service](ChatViewService) publishes depend on: each open
+/// chat's revision, its messages' head part's revision, and the part's number.
+type SummonsKey = (u64, u64, u64);
 
 impl ChatViewService {
     /// The service over `conversations`, the session's one open of the workspaces' chats.
     #[must_use]
     pub(crate) fn new(conversations: Rc<Conversations>) -> Self {
-        Self { conversations }
+        Self {
+            conversations,
+            summonses: std::cell::RefCell::new(None),
+        }
     }
 }
 
-/// The channel's `post` action, as the service publishes it on a channel's item: a message from
+/// One conversation as a place's resource, the way Chat publishes a channel of its record: its
+/// item id (`chat.workspace/channels/<id>`), its `page` view (Chat's own `#[view(default)]` over
+/// the channel's type), its type, and the composer's `post`. A place made from it shows the
+/// channel through that view — never the app's window, which is what a resource naming no view
+/// falls back to.
+///
+/// A workspace channel is named with its `#`, as Chat writes a channel; a conversation kept with
+/// participants (the ask) is named plainly, as the window names a conversation, never with a
+/// `#` it does not wear.
+#[must_use]
+pub(crate) fn channel_resource(
+    id: &str,
+    name: &str,
+    is_channel: bool,
+) -> tilo_actions::ResourceSpec {
+    let label = if is_channel {
+        format!("#{name}")
+    } else {
+        name.to_owned()
+    };
+    let mut spec = tilo_actions::ResourceSpec::new(
+        format!("chat.workspace/channels/{id}"),
+        "chat.workspace.channels",
+        label,
+    )
+    .with_view(tilo_actions::ResourceViewSpec::new(
+        "page",
+        name.to_owned(),
+        "open",
+    ))
+    .with_type(tilo_actions::ResourceType {
+        noun: tilo_actions::Noun::new("channel", "channels"),
+        app: tilo_actions::Noun::new("Chat", "Chat"),
+        root: false,
+    });
+    spec.app_id = Some("chat".to_owned());
+    spec.with_action(retry_action()).with_action(post_action())
+}
+
+/// The channel's `retry` action, as the service publishes it on a channel's item: ask the agent
+/// again for the turn whose answer failed, on the same message — the very verb Chat's own
+/// `retry` runs, reached from the page's failure row and from the REPL alike (shell.md §8.1,
+/// "The REPL").
+///
+/// Like `post`, it is `ClientLocal` with an inert encoded action: `ChatViewService::invoke` runs
+/// the verb itself on the workspace's open Chat record (`Conversations::retry`), and the record's
+/// CRDT is what carries the retry to the person's other devices.
+#[must_use]
+pub(crate) fn retry_action() -> tilo_actions::ActionSpec {
+    use tilo_actions::{ActionArgs, EncodedAction, ExecutionLocus, ParamType};
+    tilo_actions::ActionSpec::typed(
+        "retry",
+        "Ask again for the answer",
+        "a reply to ask again",
+        ExecutionLocus::ClientLocal,
+        vec![
+            tilo_actions::ActionParam::required("channel", ParamType::Text, "The channel"),
+            tilo_actions::ActionParam::required("reply", ParamType::Text, "The reply to ask again"),
+            tilo_actions::ActionParam::required(
+                "summons",
+                ParamType::Text,
+                "The message it answered",
+            ),
+        ],
+        |_: &ActionArgs| EncodedAction::written("chat.retry".to_owned(), Vec::new()),
+    )
+}
+
 /// The channel's `post` action, as the service publishes it on a channel's item: a message from
 /// the person typing, in the channel it names — the very verb Chat's own composer runs. It is
 /// the one definition of the verb a place's composer reaches; a service publishing a channel
@@ -726,33 +1034,37 @@ impl tilo_service::Service for ChatViewService {
                 // the record keeps with its two participants, which `is_channel` calls no
                 // workspace channel but which the canvas places all the same).
                 //
-                // A workspace channel is named with its `#`, as Chat writes a channel; a
-                // conversation kept with participants (the ask) is named plainly, as the window
-                // names a conversation, never with a `#` it does not wear.
-                let label = if conversation.is_channel() {
-                    format!("#{}", conversation.name)
-                } else {
-                    conversation.name.clone()
-                };
-                let mut spec = tilo_actions::ResourceSpec::new(
-                    format!("chat.workspace/channels/{}", id.as_str()),
-                    "chat.workspace.channels",
-                    label,
-                )
-                .with_view(tilo_actions::ResourceViewSpec::new(
-                    "page",
-                    conversation.name.clone(),
-                    "open",
-                ))
-                .with_type(tilo_actions::ResourceType {
-                    noun: tilo_actions::Noun::new("channel", "channels"),
-                    app: tilo_actions::Noun::new("Chat", "Chat"),
-                    root: false,
-                });
-                spec.app_id = Some("chat".to_owned());
-                spec = spec.with_action(post_action());
+                let spec =
+                    channel_resource(id.as_str(), &conversation.name, conversation.is_channel());
                 specs.push(spec);
             }
+            // Each turn's summons, as Chat publishes a message's item: the message a person
+            // asked the agent in, which Chat's own `record-work` writes the answer to. The
+            // agent's address *is* that answer's — derived from the summons and the agent
+            // (`chat::record::reply_id`) before either exists — so the summons's item carries
+            // the verb from the moment the turn does, never only once Chat's window publishes
+            // the message. The item is Chat's own, published through `ChatPart`'s declaration,
+            // and the verb runs on Chat's record: a verb reimplemented here would be a second
+            // chat. It is unbound, as Chat's window's item is: the agent names the message whose
+            // work it records, exactly as it does on a message's own item the window publishes.
+            let Some((index, part)) = &opened.part else {
+                continue;
+            };
+            let revision = (chat_record.revision(), part.revision(), *index);
+            let kept = self
+                .summonses
+                .borrow()
+                .as_ref()
+                .and_then(|(at, items)| (*at == revision).then(|| items.clone()));
+            let items = kept.unwrap_or_else(|| {
+                let built: Vec<tilo_actions::ResourceSpec> = summonses(&chat, &part.get())
+                    .into_iter()
+                    .map(|summons| summons_item(&summons))
+                    .collect();
+                *self.summonses.borrow_mut() = Some((revision, built.clone()));
+                built
+            });
+            specs.extend(items);
         }
         specs
     }
@@ -797,13 +1109,181 @@ impl tilo_service::Service for ChatViewService {
                 tilo_actions::ActionOutput::default(),
             ));
         }
+        // A turn's reply records its work in Chat's own words: the item is Chat's own, and the
+        // verb is run by Chat on Chat's record, attributed as the person here.
+        if action == RECORD_WORK {
+            let invoker = tilo_actions::ActionInvoker::actor(self.conversations.person());
+            return self
+                .conversations
+                .record_work(&invoker, resource, arguments)
+                .map(|()| tilo_service::Started::Done(tilo_actions::ActionOutput::default()));
+        }
+        // A turn whose answer failed is asked again on the same message: Chat's own `retry`,
+        // run on Chat's record by this session, attributed to the person pressing it — or to
+        // the agent that sent it, from the REPL or a step.
+        if action == RETRY {
+            let invoker = tilo_actions::ActionInvoker::actor(self.conversations.person());
+            return self
+                .conversations
+                .retry(&invoker, arguments)
+                .map(|()| tilo_service::Started::Done(tilo_actions::ActionOutput::default()));
+        }
         // The page's other verbs (react, pin, edit) are Chat's own on the messages it shows;
-        // the service publishes the composer's `post` that a place reaches. A verb it does not
-        // publish is refused, as the door refuses any address no service offers.
+        // the service publishes the composer's `post` that a place reaches, and the failure
+        // row's `retry`. A verb it does not publish is refused, as the door refuses any address
+        // no service offers.
         Err(tilo_actions::DoorError::Unknown(
             tilo_actions::ActionAddress::new(resource, action),
         ))
     }
+
+    /// [`Self::invoke`] as `invoker` (the agent answering the turn, a script): a record of work
+    /// is Chat's own verb, not a message's, and is written as the agent that sent it, exactly as
+    /// Chat's window writes its reply as the agent (`chat`'s `author(cx)` names the invoker, and
+    /// the reply is derived from it). Every other verb is the person's, as before.
+    fn invoke_as(
+        &mut self,
+        invoker: &tilo_actions::ActionInvoker,
+        resource: &str,
+        action: &str,
+        arguments: &serde_json::Map<String, serde_json::Value>,
+    ) -> Result<tilo_service::Started, tilo_actions::DoorError> {
+        if action == RECORD_WORK {
+            return self
+                .conversations
+                .record_work(invoker, resource, arguments)
+                .map(|()| tilo_service::Started::Done(tilo_actions::ActionOutput::default()));
+        }
+        if action == RETRY {
+            return self
+                .conversations
+                .retry(invoker, arguments)
+                .map(|()| tilo_service::Started::Done(tilo_actions::ActionOutput::default()));
+        }
+        self.invoke(resource, action, arguments)
+    }
+}
+
+/// The message `resource` names when it is a message's item or its id: `chat.workspace/messages/
+/// <id>`, the item's bound form `chat.workspace.messages:message:<id>`, the kind-prefixed spelling
+/// Chat's window publishes (`chat.messages/messages/<id>`), or the bare `<id>` an agent names it
+/// by. Every spelling names the same message.
+fn message_of(resource: &str) -> Option<String> {
+    for prefix in [
+        "chat.workspace/messages/",
+        "chat.messages/messages/",
+        "chat.workspace.messages:messages:",
+        "chat.workspace.messages:message:",
+    ] {
+        if let Some(id) = resource.strip_prefix(prefix)
+            && !id.is_empty()
+            && !id.contains('/')
+        {
+            return Some(id.to_owned());
+        }
+    }
+    // A bare message id, as an agent names the summons in its `message` argument.
+    let bare = !resource.is_empty()
+        && resource.len() <= 256
+        && !resource.contains(['/', ':', '#'])
+        && !resource.chars().any(char::is_whitespace);
+    bare.then(|| resource.to_owned())
+}
+
+/// Every summons whose reply has no item Chat's window publishes yet: the person's messages an
+/// agent in the conversation has not answered, and that no held message of the part answers. The
+/// reply each names is the one its id and the agent's derive (`chat::record::reply_id`), so this
+/// returns the summonses — the item the agent's verb is offered on — never the reply.
+/// The summonses whose turn has no reply yet: the person's messages in a conversation an agent
+/// takes part in, which no held message answers. The item each is published as carries Chat's
+/// `record-work`, its message bound, so the agent's verb is offered on the address it answers from
+/// before the reply the verb makes exists — the reply's own item is Chat's window's once it does.
+/// The summons whose turn is going: the person's messages in a conversation an agent takes part
+/// in, whose reply the agent has not finished — absent yet, or still working (no state that ends
+/// it) — or whose reply the person asked again (`chat`'s `retry`, which gives the reply up). The
+/// same rule the pass reads turns by, so the item that records the work is offered exactly while
+/// the agent answers there: from the moment the turn exists, through every record it makes on the
+/// reply it is writing, and again when a failed reply was retried.
+fn summonses(chat: &chat::Chat, part: &chat::parts::ChatPart) -> Vec<Id> {
+    let mut out: Vec<Id> = Vec::new();
+    for (id, message) in part.messages.iter() {
+        if message.text.trim().is_empty() || person_of(&message.author.0).is_none() {
+            continue;
+        }
+        if chat
+            .channels
+            .get(&message.channel)
+            .is_some_and(|conversation| conversation.archived)
+        {
+            continue;
+        }
+        let agents: Vec<String> = chat
+            .conversation_participants(&message.channel)
+            .into_iter()
+            .filter_map(|participant| match &participant {
+                // The reply an agent's answer is derives from the participant key it writes as,
+                // which spells the agent `agent:<id>` (`chat::record::reply_id`).
+                chat::record::Participant::Agent(_) => Some(participant.key()),
+                chat::record::Participant::Person(_) => None,
+            })
+            .collect();
+        for agent in agents {
+            // The reply of the attempt the message is in: a retry moved it on, so the reply that
+            // failed stands as history and the item offers the next attempt's address.
+            let reply = chat::record::reply_id_at(id, &agent, message.attempts);
+            let going = part
+                .messages
+                .get(&reply)
+                // A reply without work is a plain answer; one that keeps work is going until
+                // its work ends. The same rule `turns` reads the turn by.
+                .is_none_or(|reply| {
+                    reply.work.as_ref().is_some_and(|work| {
+                        let streamed = work
+                            .stream
+                            .as_ref()
+                            .is_some_and(|stream| stream.finish.is_some());
+                        !streamed
+                            && work
+                                .state
+                                .as_ref()
+                                .is_none_or(|transition| !transition.state.finished())
+                    })
+                });
+            if going && !out.contains(id) {
+                out.push(id.clone());
+            }
+        }
+    }
+    out
+}
+
+/// The summons `id`, as Chat publishes a message's item: its id, its kind, its label, and Chat's
+/// own `record-work` — the declaration `ChatPart::RECORD_WORK` publishes, whose action type is
+/// Chat's, unbound so the agent names the message it records the work of as it does on Chat's
+/// window's item. Built by [`tilo_resource::declaration_spec`], so the action an agent invokes is
+/// Chat's verb, not a copy of it.
+fn summons_item(id: &Id) -> tilo_actions::ResourceSpec {
+    let kind = chat::parts::ChatPart::KIND;
+    let mut spec = tilo_actions::ResourceSpec::new(
+        format!("{kind}/messages/{id}"),
+        "chat.messages",
+        id.as_str(),
+    )
+    .with_type(tilo_actions::ResourceType {
+        noun: tilo_actions::Noun::new("message", "messages"),
+        app: tilo_actions::Noun::new("Chat", "Chat"),
+        root: false,
+    });
+    spec.app_id = Some("chat".to_owned());
+    let declaration = tilo_resource::vocabulary::<chat::parts::ChatPart>()
+        .declarations()
+        .iter()
+        .find(|declaration| declaration.id == RECORD_WORK)
+        .cloned();
+    if let Some(declaration) = declaration {
+        spec = spec.with_action(tilo_resource::declaration_spec(&declaration));
+    }
+    spec
 }
 
 /// The person a message's author names, when it names one: the participant key (`person:<root>`,
@@ -870,7 +1350,9 @@ fn turns(
             // The person's newest message the agent has not answered: the reply its id and the
             // agent's derive, which only the agent's answer to that message carries. An agent's
             // reply that is still working (its work is not finished) leaves the turn going, so a
-            // runner that records "taken" before it acts is not read as having answered.
+            // runner that records "taken" before it acts is not read as having answered. A
+            // message a person asked again (`chat`'s `retry`) is in a later attempt, whose reply
+            // is absent yet: its turn goes again, and the answer is a reply of its own.
             let summons = messages
                 .iter()
                 .copied()
@@ -879,9 +1361,13 @@ fn turns(
                         && person_of(&message.author.0).is_some()
                         && part
                             .messages
-                            .get(&chat::record::reply_id(message_id, &key))
-                            // A reply without work is a plain answer; one that keeps work is going
-                            // until its work ends.
+                            .get(&chat::record::reply_id_at(
+                                message_id,
+                                &key,
+                                message.attempts,
+                            ))
+                            // A reply without work is a plain answer; one that keeps work is
+                            // going until its work ends.
                             .is_none_or(|reply| {
                                 reply.work.as_ref().is_some_and(|work| {
                                     let streamed = work
@@ -930,6 +1416,48 @@ fn turns(
         }
     }
     (turns, agents)
+}
+
+/// The session's Chat service, as a test drives it: what it publishes, and one of its actions
+/// invoked as an agent. Kept beside the service it is about rather than in `lib.rs`, which holds
+/// the session's own API.
+impl crate::Session {
+    /// Every resource the session's services publish now, each with its actions: what a test
+    /// reads to prove a service offers a verb at an address before anything has made its resource
+    /// exist.
+    #[must_use]
+    pub fn service_resources(&self) -> Vec<tilo_actions::ResourceSpec> {
+        self.shared.services.borrow().resources()
+    }
+
+    /// The messages people wrote in `channel`, by their ids: what a test reads to prove a retry
+    /// asked the agent again on the same message rather than posting the question a second time.
+    #[must_use]
+    pub fn person_messages_in(&self, channel: &str) -> Vec<String> {
+        self.shared.conversations.person_messages(channel)
+    }
+
+    /// A step an address no surface door publishes, as the session's own `DoorAsk::Step` runs it:    /// a service's action, invoked through [`crate::agent_door::invoke_service_step`], on the
+    /// record the service keeps. This is the exact call an agent's `record-work` on a turn's
+    /// summons goes through at its broker step; a test drives it here rather than through the
+    /// broker so it proves the seam without the agent.
+    ///
+    /// # Errors
+    /// The service's refusal, or that no service publishes the address.
+    pub fn invoke_service_step_as(
+        &self,
+        actor: &str,
+        resource: &str,
+        action: &str,
+        arguments: &serde_json::Map<String, serde_json::Value>,
+    ) -> Result<Option<tilo_actions::ActionOutput>, String> {
+        crate::agent_door::invoke_service_step(
+            &self.shared.services,
+            actor,
+            &tilo_actions::ActionAddress::new(resource, action),
+            arguments,
+        )
+    }
 }
 
 #[cfg(test)]
@@ -1039,6 +1567,61 @@ mod tests {
         let mut head = part(vec![("m1", message(ME, "add the revenue curve", 10))]);
         head.messages.push(reply, message(AGENT_ACTOR, "done", 20));
         assert_eq!(read(&chat, &head), Vec::new());
+    }
+
+    /// A reply whose turn failed and that the person asked again no longer answers: the same
+    /// message is a turn again, in a later attempt whose reply is its own.
+    #[test]
+    fn a_retried_reply_gives_its_summons_a_turn_again() {
+        let chat = workspace();
+        let mut asked = message(ME, "add the revenue curve", 10);
+        let mut head = part(vec![("m1", asked.clone())]);
+        let mut failed = message(AGENT_ACTOR, "", 20);
+        failed.parent = Some(Id::from_raw("m1"));
+        failed.work = Some(chat::record::Work {
+            state: Some(chat::record::Transition {
+                state: chat::model::AgentWorkState::ProviderFinished {
+                    outcome: chat::agent_stream::AgentFinish::Failed,
+                },
+                since: 20,
+            }),
+            ..chat::record::Work::default()
+        });
+        head.messages.push(
+            chat::record::reply_id(&Id::from_raw("m1"), AGENT_ACTOR),
+            failed,
+        );
+        assert_eq!(
+            read(&chat, &head),
+            Vec::new(),
+            "a failed reply ends the turn until the person asks again"
+        );
+        // The retry moved the question to its next attempt: its reply is the one derived for
+        // that attempt, and nobody has written it.
+        asked.attempts = 1;
+        head.messages.push(Id::from_raw("m1"), asked.clone());
+        let entries = read(&chat, &head);
+        let [entry] = entries.as_slice() else {
+            panic!("the retried summons is a turn again: {entries:?}");
+        };
+        assert_eq!(entry.run.instruction, "add the revenue curve");
+        assert_eq!(
+            entry.run.turn,
+            Some(Turn::new("chat.workspace/channels/c_tide", "m1")),
+            "the turn is the same message, never a second question"
+        );
+        assert_eq!(
+            summonses(&chat, &head),
+            vec![Id::from_raw("m1")],
+            "the summons's item offers `record-work` again, so the agent's new answer lands"
+        );
+        // The answer lands in the attempt's own reply, never the one that failed.
+        let next = chat::record::reply_id_at(&Id::from_raw("m1"), AGENT_ACTOR, asked.attempts);
+        assert_ne!(
+            next,
+            chat::record::reply_id(&Id::from_raw("m1"), AGENT_ACTOR),
+            "a retried turn is answered in a reply of its own"
+        );
     }
 
     #[test]

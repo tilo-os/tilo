@@ -690,7 +690,7 @@ fn from_json_object(m: &Map<String, Json>) -> Result<Value, String> {
         }));
     }
     if let Some(Json::String(id)) = m.get("principal") {
-        return Ok(Value::Principal(Principal(id.clone())));
+        return Ok(Value::Principal(Principal::new(id.clone())));
     }
     if let Some(Json::String(msg)) = m.get("error") {
         return Ok(Value::Error(msg.clone()));

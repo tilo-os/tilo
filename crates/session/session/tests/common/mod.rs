@@ -534,8 +534,8 @@ pub fn app_store() -> &'static Path {
         let installed = dev_apps::install(&root, &root.join("build"));
         assert_eq!(
             installed.len(),
-            6,
-            "every app of the development session is installed: {installed:?}"
+            7,
+            "every app of the development session is installed, the shell among them: {installed:?}"
         );
         // The store the environment names is the one the session's launcher reads, and the one its
         // connector planning plans from. Pinned for the rest of the process, as the store is: every
@@ -575,8 +575,8 @@ pub fn install_apps_in(store: &Path, scratch: &Path) {
     let installed = dev_apps::install(store, scratch);
     assert_eq!(
         installed.len(),
-        6,
-        "every app of the development session is installed: {installed:?}"
+        7,
+        "every app of the development session is installed, the shell among them: {installed:?}"
     );
 }
 

@@ -440,6 +440,10 @@ pub use local_state::{
 pub use nav_stack::{EdgeSwipeBack, NavAction, NavStack};
 pub use paragraph::{ComposedLine, ParagraphBox, ParagraphOptions, compose_paragraph};
 pub use pictures::{BLOB_SCHEME, Pictures, Shown as ShownPicture};
+// What a session lends the windows it draws its content addresses with: a process that draws no
+// native window (`native` off) holds none.
+#[cfg(feature = "native")]
+pub use pictures::lend_content;
 pub use platform::{
     DialogActionOrder, HostShortcut, Platform, PlatformConventions, Shortcut, spell_shortcut,
 };

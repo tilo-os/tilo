@@ -242,6 +242,12 @@ pub const KINDS: &[OriginKind] = &[
                 "The running applications' tray items, in the order they registered.",
             ),
             field(
+                "styles",
+                "Collection<session.desk_style>",
+                "The desk styles every installed package offers, as the session finds them: \
+                 each a view of the arrangement, listed by its own words.",
+            ),
+            field(
                 "runs",
                 "Collection<session.run>",
                 "The runs of what the person asked the session's agents, oldest first.",
@@ -646,6 +652,50 @@ pub const KINDS: &[OriginKind] = &[
                 "menu",
                 "Bool",
                 "Whether choosing it opens its menu rather than its window.",
+            ),
+        ],
+    },
+    OriginKind {
+        name: "session.desk_style",
+        doc: "A desk style: a view of the arrangement that an installed package declares \
+              (shell.md §6). The session finds every installed package's, so the person's \
+              switch lists them and their choice names one by its view reference.",
+        derived: true,
+        fields: &[
+            field(
+                "key",
+                "Text",
+                "The style, by the view reference it names: what the session keeps it by.",
+            ),
+            field(
+                "style",
+                "Text",
+                "The view reference: a package and a view, as `Viewing.style` names it \
+                 (`so.tilo.shell:strips`, `me.styles:timeline`).",
+            ),
+            field("package", "Text", "The package that declares it."),
+            field(
+                "name",
+                "Text",
+                "The view's own name, as its declaration writes it.",
+            ),
+            field(
+                "line",
+                "Text",
+                "The view's doc line, in its author's words: what the switch lists it by.",
+            ),
+            field(
+                "loads",
+                "Bool",
+                "Whether the style loads: false for one whose package does not compile against \
+                 the shell and the session, or whose view failed when it ran, so the switch can \
+                 say so and the desk shows the built-in strips until it is fixed.",
+            ),
+            field(
+                "reason",
+                "Text",
+                "Why the style does not load, in the runtime's words, when it does not; empty \
+                 when it does.",
             ),
         ],
     },

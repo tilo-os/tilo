@@ -346,20 +346,19 @@ impl Session {
                 })?;
                 let agent = agents.keep_one(&workspace, &policy, &person)?;
                 let channel = conversations.ask(&person, &workspace, &policy, &agent, text)?;
-                // A channel the ask just made is a resource the arrangement may
-                // place the moment it is asked to: search has not read Chat's
-                // record yet, so the place's app and default view are put where
-                // the catalog is read from besides the door's own tree
-                // (`Catalog::remember`), and the next read of the door's
-                // resources carries it like any other.
-                catalog.borrow_mut().remember(
-                    &channel,
-                    crate::arrangement::Target {
-                        app: "so.tilo.chat".to_owned(),
-                        views: Vec::new(),
-                        title: crate::i18n::t("session-ask-conversation"),
-                    },
-                );
+                // A channel the ask just made is a resource the arrangement may place the moment
+                // it is asked to: search has not read Chat's record yet, so the resource as Chat
+                // publishes it — its default `page` view among them — is put where the catalog is
+                // read from besides the door's own tree (`Catalog::remember_resource`), and the
+                // next read of the door's resources carries it like any other. The place shows the
+                // channel's page, drawn by Chat's own view, never the app's window.
+                catalog
+                    .borrow_mut()
+                    .remember_resource(&crate::conversations::channel_resource(
+                        channel.rsplit('/').next().unwrap_or_default(),
+                        &crate::i18n::t("session-ask-conversation"),
+                        false,
+                    ));
                 Some(channel)
             })
         };
@@ -687,14 +686,15 @@ impl Session {
         ));
         // The session's own actions, offered to a turn's agent as the broker's steps: the
         // arrangement, its undo, the windows and the notices, which the REPL already calls.
-        // Each is answered on the loop's pass, where the arrangement is.
+        // Each is answered on the loop's pass, where the arrangement is. The desk's styles, read
+        // from the store, share the desk's reading (shell.md §6).
         let steps: std::sync::Arc<dyn crate::platform::steps::SessionSteps> = session_doors.clone();
         let session_actions =
             std::sync::Arc::new(crate::session_actions::SessionActions::new(steps));
         session_doors.keep_actions(std::sync::Arc::clone(&session_actions));
         // The agents the person admits at its door, as the desk and the bar show them.
         let seats = crate::agent_door::Seats::new();
-        let desk = || crate::desk_resource::Desk {
+        let desk = crate::desk_resource::desk_from(crate::desk_resource::Shared {
             seats: std::sync::Arc::clone(&seats),
             handle: handle.clone(),
             person: options.person.clone(),
@@ -708,7 +708,7 @@ impl Session {
             engine: engine.clone(),
             // The invite sheet is the session's own surface: the desk asks for it here.
             asks: Rc::clone(&asks),
-        };
+        });
         let desk_service = desk();
         let shell = if options.shell {
             Some(

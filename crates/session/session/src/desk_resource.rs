@@ -36,6 +36,8 @@ pub(crate) struct DeskKey {
     revealed: bool,
     /// The windows whose app stopped answering ([`DesktopHandle::unresponsive_revision`]).
     not_responding: u64,
+    /// The desk styles' revision: a package installed or taken away moves it (shell.md §6).
+    styles: u64,
 }
 
 /// The kind of the desk's resource: the origin kind a shell's type holds.
@@ -320,6 +322,17 @@ impl Surfaces {
     }
 }
 
+/// The desk styles every installed package offers, with the revision that moves when the
+/// session re-reads its store: a package installed or taken away moves the desk's reading.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub(crate) struct Styles {
+    pub(crate) revision: u64,
+    pub(crate) list: Vec<shell_part::DeskStyleReading>,
+    /// The store's fingerprint the list was read at: a store that reads the same is not read
+    /// again.
+    pub(crate) fingerprint: Option<String>,
+}
+
 /// The desk as the session reads it. See the module docs.
 pub(crate) struct Desk {
     pub(crate) handle: DesktopHandle,
@@ -349,6 +362,49 @@ pub(crate) struct Desk {
     /// What the desk asks the session for while it runs: opening the invite sheet, which is the
     /// session's own surface and not a layer the desk draws.
     pub(crate) asks: Rc<std::cell::RefCell<Vec<tilo_desktop::desktop_host::DesktopAsk>>>,
+    /// The desk styles every installed package offers, as `session.desk_styles` reads them
+    /// (shell.md §6): what the person's switch offers. The session fills it from its package
+    /// store, and moves it when a package is installed or taken away.
+    pub(crate) styles: std::rc::Rc<std::cell::RefCell<Styles>>,
+}
+
+/// The pieces a session's desk is made of, once: the same seats, surfaces and records reach the
+/// desk's reading and every part of the shell.
+pub(crate) struct Shared {
+    pub(crate) seats: std::sync::Arc<crate::agent_door::Seats>,
+    pub(crate) handle: DesktopHandle,
+    pub(crate) person: String,
+    pub(crate) signals: Rc<NoticeSignals>,
+    pub(crate) activities: Rc<crate::chrome::Activities>,
+    pub(crate) surfaces: Surfaces,
+    pub(crate) sync: Option<Rc<crate::sync::Client>>,
+    pub(crate) notes: std::sync::Arc<crate::continuations::Continuations>,
+    pub(crate) notices: tilo_desktop_surface::DesktopNotifications,
+    pub(crate) tray: Option<std::sync::Arc<tilo_tray_host::Tray>>,
+    pub(crate) engine: Option<std::sync::Arc<crate::engine::Engine>>,
+    pub(crate) asks: Rc<std::cell::RefCell<Vec<tilo_desktop::desktop_host::DesktopAsk>>>,
+}
+
+/// A factory making the session's desk, its styles read from the person's store as they move
+/// (shell.md §6): called once for the desk's own service and once for the shell, each a view of
+/// the same seats, surfaces and records.
+pub(crate) fn desk_from(shared: Shared) -> impl Fn() -> Desk {
+    let styles = Rc::new(std::cell::RefCell::new(Styles::default()));
+    move || Desk {
+        seats: std::sync::Arc::clone(&shared.seats),
+        handle: shared.handle.clone(),
+        person: shared.person.clone(),
+        signals: Rc::clone(&shared.signals),
+        activities: Rc::clone(&shared.activities),
+        surfaces: shared.surfaces.clone(),
+        sync: shared.sync.clone(),
+        notes: std::sync::Arc::clone(&shared.notes),
+        notices: shared.notices.clone(),
+        tray: shared.tray.clone(),
+        engine: shared.engine.clone(),
+        asks: Rc::clone(&shared.asks),
+        styles: Rc::clone(&styles),
+    }
 }
 
 /// What a window with no title is called.
@@ -678,6 +734,7 @@ impl Desk {
                 self.surfaces.overlays.revision(),
                 self.surfaces.overlays.here(),
             ),
+            styles: self.styles.borrow().revision,
             agents: self.seats.revision(),
             revealed: self.surfaces.overlays.revealed(std::time::Instant::now()),
             // Which apps stopped answering is the compositor's, published through the handle beside
@@ -797,6 +854,7 @@ impl Desk {
             badges: self.signals.badges(),
             people,
             tray: self.tray_items(),
+            styles: self.styles.borrow().list.clone(),
             // What the screen says of its edges moves without the desk; the link publishes it
             // beside this reading and carries it over (`SessionLink::publish_edges`).
             ..DeskReading::default()

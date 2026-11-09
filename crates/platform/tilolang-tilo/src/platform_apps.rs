@@ -138,5 +138,10 @@ fn read_packages() -> Result<Vec<PackageMeta>, String> {
         package_of(SETTINGS_APP, "Settings", &parse_surfaces(SETTINGS_SURFACE)?),
         SETTINGS_ROOTS,
     )?;
-    Ok(vec![device, settings])
+    // The session's own resources are described here, as the runtime loads them
+    // ([`session_package`]): its actions keep the ids its surface names them by, which is what
+    // the code calling them compiles to. An app's directory of the same name
+    // (`apps/tl/session`) names them by its app (`so.tilo.session#place`), which no call the
+    // runtime loads makes; the description here stands first, so a build reads it.
+    Ok(vec![device, settings, session_package()?])
 }

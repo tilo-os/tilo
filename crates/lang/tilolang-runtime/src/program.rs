@@ -257,6 +257,15 @@ impl Runtime {
         *self.core.invoker.borrow_mut() = Some(Box::new(invoker));
     }
 
+    /// Hand the runtime the verbs the host's resources publish that no loaded package declares
+    /// ([`crate::published`]): an app the host serves publishes its resources' verbs without a
+    /// package loading here (Chat's `post` on a channel), and a view names one on the resource
+    /// it shows as it names a declared action. The runtime sends such an invocation to the app
+    /// that publishes it, the same path another app's declared action takes to that app's door.
+    pub fn set_published_actions(&self, published: crate::published::Published) {
+        *self.core.published.borrow_mut() = published;
+    }
+
     /// Ask `reader` what programs read of each app (`grep`, `find`, `read`, `describe`) while
     /// they run, instead of answering it here: the runtime of a task's host, which holds no
     /// records.

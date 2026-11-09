@@ -27,6 +27,10 @@ name = "background"
 required = false
 type = "bool"
 
+[[resources.verbs.params]]
+name = "float"
+required = false
+
 [[resources.verbs]]
 id = "show-app"
 kind = "outside"

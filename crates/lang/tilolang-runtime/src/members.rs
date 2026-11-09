@@ -207,7 +207,7 @@ impl Core {
                 self.read_versions_of(&target.target);
                 self.ret_h(Value::List(
                     said.into_iter()
-                        .map(|who| Value::Principal(Principal(who)))
+                        .map(|who| Value::Principal(Principal::new(who)))
                         .collect(),
                 ))
             }

@@ -221,7 +221,7 @@ mod tests {
         let nobody = shown("none", Value::Unit);
         let ben = shown(
             "principal",
-            Value::Principal(crate::ids::Principal("ben".to_owned())),
+            Value::Principal(crate::ids::Principal::new("ben")),
         );
         assert_eq!(
             reads(&assignee, &nobody, &ben),

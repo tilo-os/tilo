@@ -52,7 +52,7 @@ impl Core {
                         r.references()
                             .into_iter()
                             .filter_map(|r| match r {
-                                Reference::Person(id) => Some(Value::Principal(Principal(id))),
+                                Reference::Person(id) => Some(Value::Principal(Principal::new(id))),
                                 Reference::Resource(_) => None,
                             })
                             .collect(),

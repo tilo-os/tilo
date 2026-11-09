@@ -44,6 +44,7 @@ pub mod place;
 pub mod platform;
 pub mod program;
 pub mod project;
+pub mod published;
 pub mod query;
 mod query_host;
 mod query_imports;

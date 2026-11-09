@@ -1553,15 +1553,32 @@ impl SessionDoors {
                     done,
                 } => {
                     let ran = match arguments_of(slot.as_deref()) {
-                        Ok(arguments) => doors
-                            .invoke_as(&actor, &address, &arguments, look)
-                            .map(|started| match started {
-                                ui::host_operation::ResourceOperationStart::Completed(output) => {
-                                    Some(output)
-                                }
-                                ui::host_operation::ResourceOperationStart::Accepted => None,
-                            })
-                            .map_err(|error| error.to_string()),
+                        Ok(arguments) => {
+                            // A step a service publishes runs there, on the record the service
+                            // keeps — Chat's `record-work` on a turn's summons is the session's
+                            // Chat service's, not the arrangement's. Every other step is the
+                            // session's own doors': the arrangement, the windows and the notices.
+                            let served = services
+                                .borrow()
+                                .resources()
+                                .iter()
+                                .any(|resource| resource.id.as_str() == address.resource);
+                            if served {
+                                invoke_service_step(services, &actor, &address, &arguments)
+                            } else {
+                                doors
+                                    .invoke_as(&actor, &address, &arguments, look)
+                                    .map(|started| match started {
+                                        ui::host_operation::ResourceOperationStart::Completed(
+                                            output,
+                                        ) => Some(output),
+                                        ui::host_operation::ResourceOperationStart::Accepted => {
+                                            None
+                                        }
+                                    })
+                                    .map_err(|error| error.to_string())
+                            }
+                        }
                         Err(why) => Err(why),
                     };
                     done.complete(ran);
@@ -1592,6 +1609,34 @@ fn arguments_of(slot: Option<&str>) -> Result<serde_json::Map<String, serde_json
         .strip_prefix(tilo_actions::ARGUMENTS_JSON_PREFIX)
         .ok_or("a session action takes its arguments by name")?;
     serde_json::from_str(json).map_err(|error| format!("the step's arguments do not read: {error}"))
+}
+
+/// Run `address` as `actor` through the session's services, which publish the actions its own
+/// doors do not: what a service keeps (Chat's `record-work` on a turn's summons, the arrangement's
+/// place read from a service) is invoked on the same pass, on the record the service writes. The
+/// `actor` an agent names is `agent:<id>`, attributed as it is at an app's record origin; a person
+/// acts as themselves.
+pub(crate) fn invoke_service_step(
+    services: &std::rc::Rc<std::cell::RefCell<tilo_service::Services>>,
+    actor: &str,
+    address: &tilo_actions::ActionAddress,
+    arguments: &serde_json::Map<String, serde_json::Value>,
+) -> Result<Option<tilo_actions::ActionOutput>, String> {
+    use tilo_service::Started;
+    let invoker = tilo_actions::ActionInvoker::actor(actor);
+    let invoker = if actor.starts_with("agent:") {
+        invoker.with_kind(tilo_actions::ActorKind::Agent)
+    } else {
+        invoker
+    };
+    match services
+        .borrow_mut()
+        .invoke_as(&invoker, &address.resource, &address.action, arguments)
+    {
+        Ok(Started::Done(output)) => Ok(Some(output)),
+        Ok(Started::Accepted) => Ok(None),
+        Err(error) => Err(error.to_string()),
+    }
 }
 
 /// Run the change `change` of a record `services` keep for a package the session runs itself (the

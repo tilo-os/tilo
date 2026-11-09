@@ -285,7 +285,7 @@ impl Core {
         };
         mark.props.insert(
             "by".to_owned(),
-            Value::Principal(Principal(newest.who.clone())),
+            Value::Principal(Principal::new(newest.who.clone())),
         );
         // Everyone who made one of the changes, oldest first: the label reads "Bo and Scout",
         // in the order they changed it.
@@ -295,7 +295,7 @@ impl Core {
                 .iter()
                 .any(|seen| matches!(seen, Value::Principal(seen) if &seen.0 == who))
             {
-                by_all.push(Value::Principal(Principal(who.clone())));
+                by_all.push(Value::Principal(Principal::new(who.clone())));
             }
         }
         mark.props.insert("by_all".to_owned(), Value::List(by_all));
@@ -378,7 +378,7 @@ impl Core {
         };
         node.props.insert(
             "changed_by".to_owned(),
-            Value::Principal(Principal(newest.who.clone())),
+            Value::Principal(Principal::new(newest.who.clone())),
         );
         let (_, info) = self
             .type_of_ref(&target.ty)
@@ -741,7 +741,7 @@ impl Core {
         let mut face = UiNode::empty("ui.Avatar", &format!("{key}~face"));
         face.props.insert(
             "who".to_owned(),
-            Value::Principal(Principal(version.who.clone())),
+            Value::Principal(Principal::new(version.who.clone())),
         );
         line.children.push(face);
         // The line leads with the name, as history writes a sentence: name, then what they did

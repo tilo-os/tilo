@@ -610,3 +610,108 @@ fn a_place_asked_to_float_stands_above_the_windows_at_its_corner() {
     session.undo_arrangement().expect("undo");
     settle(&mut session, |session| place_of(session, place).is_none());
 }
+
+// (7) The system's `open` places a resource with its default view beside where it was asked
+// (`docs/designs/app-language/one-app-model.md` §3, "`open(r)` places r with its default view,
+// beside where it was asked, for every app"). A resource standing already comes forward instead of
+// a second place being made.
+#[test]
+fn the_system_open_brings_what_is_placed_forward() {
+    let _settled = ui::motion::testing::settled();
+    let mut session = session();
+    step(&mut session);
+    let (app, asked) = with_mailbox(&mut session);
+    let row = front_row(&session);
+    let (workspace, strip, place) = {
+        let tree = session.handle().read(Clone::clone);
+        (
+            tree.active_workspace()
+                .expect("workspace")
+                .slot
+                .0
+                .to_string(),
+            session.handle().mint_id(),
+            session.handle().mint_id(),
+        )
+    };
+    session
+        .invoke(
+            "shell:arrangement",
+            "place",
+            serde_json::json!({
+                "workspace": workspace,
+                "row": row,
+                "strip": strip,
+                "place": place,
+                "resource": "tl:so.tilo.lang.mail:inbox",
+                "x": 300,
+                "y": 200,
+            })
+            .as_object()
+            .expect("arguments"),
+        )
+        .expect("the anchor is placed");
+    settle(&mut session, |session| place_of(session, place).is_some());
+
+    session
+        .invoke(
+            "shell:arrangement",
+            "open",
+            serde_json::json!({ "resource": "tl:so.tilo.lang.mail:inbox" })
+                .as_object()
+                .expect("arguments"),
+        )
+        .expect("the open runs");
+
+    let held: Vec<_> = arrangement(&session)
+        .places
+        .into_iter()
+        .filter(|held| held.record == "tl:so.tilo.lang.mail:inbox")
+        .collect();
+    assert_eq!(held.len(), 1, "one place of the resource: {held:?}");
+    assert_eq!(held[0].key, place.to_string(), "the place it already had");
+    assert_eq!(held[0].shows, app);
+    assert!(
+        asked.borrow().is_empty(),
+        "the app ran nothing to be shown: {:?}",
+        asked.borrow()
+    );
+}
+
+/// Opening what is not yet placed stands a place of it through its primary view, as the person's
+/// own arranging step (`docs/designs/app-language/one-app-model.md` §3).
+#[test]
+fn the_system_open_stands_a_new_place() {
+    let _settled = ui::motion::testing::settled();
+    let mut session = session();
+    step(&mut session);
+    let (app, _) = with_mailbox(&mut session);
+    let before = arrangement(&session).places.len();
+
+    session
+        .invoke(
+            "shell:arrangement",
+            "open",
+            serde_json::json!({ "resource": "tl:so.tilo.lang.mail:inbox" })
+                .as_object()
+                .expect("arguments"),
+        )
+        .expect("the open runs");
+    settle(&mut session, |session| {
+        arrangement(session).places.len() == before + 1
+    });
+    let entry = arrangement(&session)
+        .places
+        .into_iter()
+        .find(|held| held.record == "tl:so.tilo.lang.mail:inbox")
+        .expect("the place stands");
+    assert_eq!(entry.shows, app, "it shows the app the resource is of");
+    assert_eq!(entry.shown_as, "inbox", "its primary published view");
+    let (who, verb) = session
+        .arrangement()
+        .borrow_mut()
+        .last_step()
+        .expect("a step of the history");
+    assert_eq!(who, ADA);
+    assert_eq!(verb, "place", "opening is one arranging step");
+}

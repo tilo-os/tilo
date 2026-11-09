@@ -88,6 +88,9 @@ d-5kokd6gv = Windows
 d-pdaqdidq = Tray
     .doc = The running applications' tray items, in the order they registered.
 
+d-n2fzxj5u = Styles
+    .doc = The desk styles every installed package offers, as the session publishes them: each a view of the arrangement (`shell.md` §6), listed by its own words.
+
 d-4jk2lkpt-filter-switcher_revealed = Switcher revealed
 
 d-4jk2lkpt-filter-timer_paused = Timer paused
@@ -105,6 +108,36 @@ d-4jk2lkpt-filter-bar_covered = Bar covered
 d-4jk2lkpt-filter-dock_reached = Dock reached
 
 d-4jk2lkpt-filter-dock_covered = Dock covered
+
+d-zxwtaxaw = Desk style
+    .doc = A desk style: a view of the arrangement an installed package declares, as the session finds it (`shell.md` §6).
+    .noun = { $count ->
+        [one] desk style
+       *[other] desk styles
+    }
+
+d-ly2aksp3 = Key
+    .doc = The style, by the view reference it names: what the session keeps it by.
+
+d-t6ojc3kt = Style
+    .doc = The view reference: a package and a view, what `Viewing.style` names.
+
+d-yxdj6rhs = Package
+    .doc = The package that declares it.
+
+d-uew43mty = Name
+    .doc = The view's own name, as its declaration writes it.
+
+d-rhx3oobw = Line
+    .doc = The view's doc line, in its author's words: what the switch lists it by.
+
+d-ifgxec27 = Loads
+    .doc = Whether the style loads: false for one whose package does not compile against the shell and the session, or whose view failed when it ran, so the switch can say so and the desk shows the built-in strips until it is fixed (`shell.md` §6).
+
+d-eihyiyeb = Reason
+    .doc = Why the style does not load, in the runtime's words, when it does not; empty when it does.
+
+d-zxwtaxaw-filter-loads = Loads
 
 d-bynckgvt = Workspace
     .doc = A workspace on this device.
@@ -440,8 +473,11 @@ d-nkjtmr33 = Viewing
        *[other] viewings
     }
 
+d-kna5sco4 = Style
+    .doc = The desk style the person shows, as a view reference: a package and a view (`so.tilo.shell:strips`, `me.styles:timeline`).
+
 d-nl27ikjq = Showing
-    .doc = Which preset the person shows.
+    .doc = The preset the person showed before styles were views.
 
 d-6b2coqll = Focused
     .doc = The strip in front, by its key; empty for none.
@@ -608,7 +644,7 @@ d-nfufnx7j = The row's whole usable width
     .doc = The row's whole usable width.
 
 d-vvznzcd4 = Preset
-    .doc = A way of laying out the same resources and actions, which the person picks: a preset of shell.md §6, whose finer settings live underneath (§8).
+    .doc = A way of laying out the same resources and actions a person picked before styles were views (`shell.md` §6): `Viewing.showing` kept one.
 
 d-25lm42aq = Columns of places, scrolled horizontally, with strips stacked and scrolled vertically
     .doc = Columns of places, scrolled horizontally, with strips stacked and scrolled vertically.
@@ -739,8 +775,11 @@ d-qqg4smi5 = The menu by its window's name, but not the tasks and who is here
 d-7caakb5b = The least: the menu stands as the window's icon, and only what a phone keeps stays
     .doc = The least: the menu stands as the window's icon, and only what a phone keeps stays.
 
-d-jpu3iwft = Show as
-    .doc = Shows the desk through `shown` (§6): the scrolling strips, the framed canvas or the spaces canvas.
+d-p4bqyuzt = Name the style
+    .doc = A desk style picked before styles were views: the preset's name turned into this package's view of it (`strips` into `so.tilo.shell:strips`), so the person's choice is kept.
+
+d-7j7tzynq = Show as
+    .doc = Shows the desk through the style `shown` (§6): a view reference, a package and a view (`so.tilo.shell:strips`).
 
 d-dkylvhw4 = In front
     .doc = Makes the strip `strip` the one in front: what a press on a column's header does.
@@ -877,22 +916,16 @@ d-moh3hzne = Bell
 
 d-fniigjed = Viewing settings
     .w-desk = Desk
-    .w-the-same-places-shown-four-ways = The same places, shown four ways. Switching keeps every window where it is.
+    .w-the-same-places-shown-as-the = The same places, shown as the style you pick. Switching keeps every window where it is.
 
-d-j2fnnt4g = Show preset~present
+d-gapwwnqc = Show style~present
 
-d-m4owmri7 = Framed canvas
-    .w-canvas = Canvas
-
-d-nt2inbrl = Spaces canvas
-    .w-spaces = Spaces
+d-s7yqm7cb = Canvas
+    .w-find-something-or-ask = Find something, or ask
 
 d-t3cux3yd = Framed place
 
 d-s6b5stgz = Space content
-
-d-ymcmc5yv = Canvas entry
-    .w-find-something-or-ask = Find something, or ask
 
 d-ewgdlyyr = Show app menus~present
 
@@ -910,14 +943,18 @@ d-i4odzov3 = Pin~present
 
 d-gctjtdv7 = Desk
 
-d-6jkhhsvr = Desk around
+d-zzd3yipu = Strips
 
-d-w3f6bqf5 = Screen
+d-tj4z2obq = Frames
+    .w-canvas = Canvas
+
+d-tqbdxbtn = Spaces
+    .w-spaces = Spaces
+
+d-pbhumuny = Desktop
 
 d-gb3g4lte = Dock ground
     .w-dock = Dock
-
-d-bhxvwkho = Shown preset
 
 d-afjfzjl6 = Bar on edge
     .w-top-bar = Top bar
@@ -1105,18 +1142,10 @@ d-wdjxaekq = Workspaces
 
 d-wcb3o55u = Room card
 
-d-r34xb7ak = Preset switch
-    .w-strips = Strips
-    .w-frames = Frames
-    .w-spaces = Spaces
-    .w-desktop = Desktop
+d-xzb2gybw = Style switch
 
-d-i6kntbiy = Preset menu
-    .w-showing = Showing { $preset_title }
-    .w-strips = Strips
-    .w-frames = Frames
-    .w-spaces = Spaces
-    .w-desktop = Desktop
+d-kssxjs7v = Style menu
+    .w-showing = Showing { $style_title }
 
 d-qrahog47 = Strips view
     .w-no-window-here-yet = No window here yet

@@ -78,9 +78,12 @@ fn workspace() -> Replica {
     .iter()
     .map(|app| replica.host.package(app).unwrap().meta)
     .collect();
-    for meta in
-        std::iter::once(session).chain(tilolang_tilo::platform_apps::platform_packages().unwrap())
-    {
+    for meta in std::iter::once(session).chain(
+        tilolang_tilo::platform_apps::platform_packages()
+            .unwrap()
+            .into_iter()
+            .filter(|meta| meta.app != "so.tilo.session"),
+    ) {
         replica.host.runtime().load_foreign(meta.clone()).unwrap();
         imports.push(meta);
     }

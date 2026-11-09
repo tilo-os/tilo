@@ -9,6 +9,12 @@
 //! channel through Chat's own `post` action. Nothing here knows about windows, places or themes:
 //! the page is drawn by the same host, in the person's own theme, as Mail's inbox or a Notes
 //! notebook.
+//!
+//! An agent's reply carries its work, and the page draws what the reply carries: a turn still
+//! being written says so quietly beside the words it has so far, and a turn that ended without
+//! an answer leaves a row saying what happened with a Retry — the conversation's own `retry`,
+//! which asks the agent again on the same message rather than posting the question twice
+//! (shell.md §8.1).
 
 use tilo_view::node;
 use tilo_view::ui::{self, Gap};
@@ -67,6 +73,23 @@ pub struct Person {
     pub agent: bool,
 }
 
+/// What a channel's record does not itself say of the people in it, which the session reading
+/// it knows: the name its reader goes by on this device — the very name the top bar shows them
+/// — and the workspace's agents by their id. A record holds ids; a person is named where they
+/// are read.
+///
+/// Chat's record names the people it was told about (a workspace's roster), and a session's
+/// own record may never have been told of its reader or of the agent it asks: the reading is
+/// then completed here rather than showing anyone their routing id.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Names {
+    /// The reader's own name, as this device shows them; empty when it knows none.
+    pub me: String,
+    /// Each agent of the workspace, by its id (the part after `agent:`), as the workspace
+    /// keeps its name.
+    pub agents: std::collections::BTreeMap<String, String>,
+}
+
 /// One message of a channel, as its page shows it.
 #[derive(Clone, Debug, Default, PartialEq, serde::Deserialize, serde::Serialize)]
 pub struct Message {
@@ -98,6 +121,67 @@ pub struct Message {
     /// Whether it is pinned to its channel.
     #[serde(default)]
     pub pinned: bool,
+    /// An agent's work on this message, when it is an agent's reply: what it is doing, or how
+    /// it ended, drawn under the words it wrote. `None` on every ordinary message.
+    #[serde(default)]
+    pub work: Option<Work>,
+    /// Retrying this reply asks the agent again: it failed, it is the reply the agent would
+    /// write now (no newer reply has replaced it), and nobody has asked again yet.
+    #[serde(default)]
+    pub retry: bool,
+    /// The message it answers, when it asks the agent again: the retry names both, so nothing
+    /// re-posts the person's words. `None` on every other message.
+    #[serde(default)]
+    pub retry_summons: Option<String>,
+    /// How many times the person asked again for an answer to this message (`retry`): the
+    /// attempt the agent answers in now. A reply is of the attempt its question is in.
+    #[serde(default)]
+    pub attempts: u32,
+}
+
+/// What an agent recorded of its work on a reply, as the page shows it.
+#[derive(Clone, Debug, Default, PartialEq, serde::Deserialize, serde::Serialize)]
+pub struct Work {
+    /// Where the work is: `taken`, `waiting`, `doing`, `done`, `refused`, or a
+    /// `provider_*` end.
+    #[serde(default)]
+    pub state: String,
+    /// What is under way, in the agent's words (`doing`), or why it ended.
+    #[serde(default)]
+    pub detail: String,
+}
+
+impl Work {
+    /// The reply is still being written: the agent took the turn and has not ended it.
+    #[must_use]
+    pub fn writing(&self) -> bool {
+        matches!(self.state.as_str(), "taken" | "waiting" | "doing")
+    }
+
+    /// The turn ended without an answer the person can read: the model or transport failed, the
+    /// person stopped it, the answer was cut off, or the agent refused.
+    #[must_use]
+    pub fn failed(&self) -> bool {
+        matches!(
+            self.state.as_str(),
+            "refused"
+                | "provider_failed"
+                | "provider_truncated"
+                | "provider_cancelled"
+                | "provider_refused"
+        )
+    }
+
+    /// What happened, in one line, when the work failed.
+    #[must_use]
+    pub fn happened(&self) -> &'static str {
+        match self.state.as_str() {
+            "provider_cancelled" => "Stopped",
+            "provider_truncated" => "The answer was interrupted",
+            "refused" | "provider_refused" => "Could not do this",
+            _ => "Could not finish",
+        }
+    }
 }
 
 /// The message a reply answers, as the quote over it says it.
@@ -192,28 +276,44 @@ impl Channel {
     ///
     /// A conversation the record does not hold (a direct one nobody has written in yet) is
     /// named by the people it is with, as the window names it.
+    ///
+    /// [`Names`] completes what the record does not say: the reader's own name, and the
+    /// workspace's agents by their id. Nobody is ever shown their routing id.
     #[must_use]
     pub fn read(
         chat: &crate::record::Chat,
         rows: &[crate::model::Message],
         id: &str,
         me: &str,
+        names: &Names,
     ) -> Self {
         let channel_id = Id::from_raw(id);
         let channel = chat.conversation(&channel_id);
         let mut people: Vec<Person> = Vec::new();
         for row in rows {
-            Self::named(&mut people, chat, &row.author);
+            Self::named(&mut people, chat, names, me, &row.author);
         }
         let messages = rows
             .iter()
-            .map(|row| Message {
+            .enumerate()
+            .map(|(index, row)| Message {
                 id: row.id.clone(),
                 author: row.author.clone(),
                 ts: row.ts,
                 text: row.text.clone(),
                 edited: row.edited,
+                attempts: row.attempts,
                 reply_to: row.parent.as_deref().and_then(|parent| {
+                    // A reply that answers the message right above it needs no quote: the person
+                    // reads what is answered just over the answer. A reply to anything else
+                    // keeps its quote.
+                    if index
+                        .checked_sub(1)
+                        .and_then(|before| rows.get(before))
+                        .is_some_and(|before| before.id == parent)
+                    {
+                        return None;
+                    }
                     rows.iter()
                         .find(|held| held.id == parent)
                         .map(|quoted| Quote {
@@ -236,6 +336,11 @@ impl Channel {
                     .collect(),
                 attachments: row.attachments.iter().map(Attachment::of).collect(),
                 pinned: row.pinned,
+                work: row.work.as_ref().map(work_of),
+                // Retry is offered on the reply a person may ask again — the current attempt's,
+                // which failed — and it names the message that reply answered.
+                retry: retryable(rows, row),
+                retry_summons: retryable(rows, row).then(|| row.parent.clone()).flatten(),
             })
             .collect();
         Self {
@@ -259,21 +364,139 @@ impl Channel {
         }
     }
 
-    /// Add the person `author` to `people` when not already there, as the record names them.
-    fn named(people: &mut Vec<Person>, chat: &crate::record::Chat, author: &str) {
+    /// Add the person `author` to `people` when not already there, as they are named here: the
+    /// record's roster first, then what the reading's [`Names`] say — the reader's own name,
+    /// or the workspace's name for an agent — and otherwise Chat's honest placeholder for
+    /// someone it cannot name. Never their routing id.
+    fn named(
+        people: &mut Vec<Person>,
+        chat: &crate::record::Chat,
+        names: &Names,
+        me: &str,
+        author: &str,
+    ) {
         if people.iter().any(|held| held.id == author) {
             return;
         }
         let found = chat.people.iter().find(|person| person.id.0 == author);
+        let agent = found.map_or_else(|| is_agent(author), |person| person.agent);
+        let name = found
+            .map(|person| person.name.trim().to_owned())
+            .filter(|name| !name.is_empty())
+            .or_else(|| agent_name(chat, names, author))
+            .or_else(|| (author == me).then(|| names.me.trim().to_owned()))
+            .filter(|name| !name.is_empty())
+            .unwrap_or_else(|| crate::identity::unnamed_label(author));
         people.push(Person {
             id: author.to_owned(),
-            name: found
-                .map(|person| person.name.trim().to_owned())
-                .filter(|name| !name.is_empty())
-                .unwrap_or_else(|| author.to_owned()),
-            agent: found.is_some_and(|person| person.agent),
+            name,
+            agent,
         });
     }
+}
+
+/// An agent's record of its work on a reply, as the page shows it: where the work is, and what
+/// the agent said of it — what it is doing, or why it ended.
+///
+/// The words are the reply's own text while it streams and, once the turn ends, what the run
+/// said became of it; the work's own detail is the provider's account of an end that failed, so
+/// the page can say what happened without making the person open Chat's window.
+fn work_of(work: &crate::model::AgentWork) -> Work {
+    // A streamed end is the end: the record keeps the provider's own finish beside the state the
+    // run wrote, and both say the same thing where both exist.
+    let state = work
+        .stream
+        .as_ref()
+        .and_then(|stream| stream.finish)
+        .map_or_else(
+            || match &work.state {
+                crate::model::AgentWorkState::Taken => "taken",
+                crate::model::AgentWorkState::Waiting { .. } => "waiting",
+                crate::model::AgentWorkState::Doing { .. } => "doing",
+                crate::model::AgentWorkState::Done { .. } => "done",
+                crate::model::AgentWorkState::Refused => "refused",
+                crate::model::AgentWorkState::ProviderFinished { outcome } => {
+                    provider_state(*outcome)
+                }
+            },
+            provider_state,
+        )
+        .to_owned();
+    let detail = work
+        .stream
+        .as_ref()
+        .map_or_else(String::new, |stream| stream.detail.clone());
+    Work { state, detail }
+}
+
+/// The state a provider's finish is, spelled as [record-work](crate::messages) spells it.
+fn provider_state(finish: crate::agent_stream::AgentFinish) -> &'static str {
+    use crate::agent_stream::AgentFinish;
+    match finish {
+        AgentFinish::Complete => "provider_complete",
+        AgentFinish::Truncated => "provider_truncated",
+        AgentFinish::Refused => "provider_refused",
+        AgentFinish::Cancelled => "provider_cancelled",
+        AgentFinish::Failed => "provider_failed",
+    }
+}
+
+/// Whether `row` is the reply a Retry asks the agent again: it is the agent's reply to the
+/// message's current attempt (`chat`'s `record::reply_id_at`, derived from the summons, the agent
+/// and the message's `attempts`), and its turn failed.
+///
+/// A retry moves the message to its next attempt, so the answer the agent writes then is a reply
+/// of its own and this one stands as history — with no Retry to press a second time.
+fn retryable(rows: &[crate::model::Message], row: &crate::model::Message) -> bool {
+    let Some(work) = row.work.as_ref() else {
+        return false;
+    };
+    let Some(summons) = row.parent.as_deref() else {
+        return false;
+    };
+    let Some(asker) = rows.iter().find(|held| held.id == summons) else {
+        return false;
+    };
+    if !work_of(work).failed() {
+        return false;
+    }
+    row.id
+        == crate::record::reply_id_at(
+            &Id::from_raw(summons.to_owned()),
+            &row.author,
+            asker.attempts,
+        )
+        .to_string()
+}
+
+/// Whether `author` is an agent rather than a person: a participant spelled `agent:<id>`, or an
+/// agent task spelled `agent-task:<task>`.
+fn is_agent(author: &str) -> bool {
+    author.starts_with("agent:") || author.starts_with(tilo_actions::AGENT_TASK_PARTICIPANT_PREFIX)
+}
+
+/// The id an agent author is named by: the part after `agent:`.
+fn agent_id(author: &str) -> Option<&str> {
+    author.strip_prefix("agent:")
+}
+
+/// The name an agent author shows, as the record or the workspace names it: the name the
+/// workspace keeps for it (Chat's own `agent_names`, or the workspace agents record the reading
+/// carries), and otherwise what Chat calls an agent it has not been told the name of. An author
+/// that is not an agent has no agent's name.
+fn agent_name(chat: &crate::record::Chat, names: &Names, author: &str) -> Option<String> {
+    if !is_agent(author) {
+        return None;
+    }
+    chat.agent_names
+        .get(author)
+        .or_else(|| agent_id(author).and_then(|id| names.agents.get(id)))
+        .map(|name| name.trim().to_owned())
+        .filter(|name| !name.is_empty())
+        .or_else(|| {
+            crate::i18n::ensure();
+            Some(crate::i18n::t("chat-agent-kind"))
+        })
 }
 
 /// The start of `text` a quote under a reply shows: its first line, cut short.
@@ -355,7 +578,12 @@ const MESSAGES_KIND: &str = "chat.workspace";
 /// draws the same page: nothing here knows a width or a look.
 #[view(default)]
 fn page(c: &Channel, cx: &ViewCx) -> Node {
-    // The channel names itself and what it is about above the transcript.
+    // The column is a *filling stack*, not a nested page: a page inside another page (this one
+    // is drawn within the place's own layout, and within the desktop's page) is normalized to a
+    // plain stack whose props — `fill` and the `page` gutter among them — are dropped. A nested
+    // page would leave the column hugging its content, the transcript growing past its room
+    // under the header, and the topic line jammed on the transcript's first row. A filling
+    // stack keeps both the fill it asks for and the gap it spaces its children by.
     let head = ui::page(
         &cx.key("head"),
         vec![ui::stack(
@@ -364,17 +592,17 @@ fn page(c: &Channel, cx: &ViewCx) -> Node {
             header_facts(c, cx),
         )],
     );
-    let conversation = ui::column(
+    let column = ui::fill(ui::stack(
         &cx.key("column"),
-        Gap::None,
+        Gap::Section,
         vec![head, ui::fill(transcript(c, cx))],
-    );
+    ));
     // The composer stands docked at the foot, in the page's own gutter and measure, as every
     // conversation sets its reply box under the messages it answers (`ui.Docked`): the
     // transcript fills the column above it and scrolls, the composer keeps its own height.
     let docked: Node = ui::DockedBuilder::new(&cx.key("docked")).into();
     let docked = node::slot(docked, "foot", vec![composer(c, cx)]);
-    let docked = node::with(docked, vec![conversation]);
+    let docked = node::with(docked, vec![column]);
     // The page is the window's whole body: it fills the height the place gives it, its column
     // takes the width, and the transcript scrolls inside — never the page scrolling away with
     // the composer under it.
@@ -425,22 +653,39 @@ fn transcript(c: &Channel, cx: &ViewCx) -> Node {
             vec![ui::page(&cx.key("empty-page"), vec![empty(c, cx)])],
         ));
     }
-    // The rows, in order: a day's divider, then each message with what it answers and says.
+    // The rows, in order: a day's divider, then each message with what it answers and says. A
+    // run of one person's messages is one group, so the column's gap stands between runs — a
+    // section's — and the rows inside a run meet tightly, the way every conversation draws
+    // them: a person's name never sits jammed against what was said before it.
     let clock = ConversationClock::local();
     let grouped = grouped_messages(c, &clock);
     let mut rows: Vec<Node> = Vec::new();
+    let mut run: Vec<Node> = Vec::new();
+    let flush = |run: &mut Vec<Node>, rows: &mut Vec<Node>| {
+        if !run.is_empty() {
+            rows.push(ui::stack(
+                &cx.key(format!("run-{}", rows.len())),
+                Gap::None,
+                std::mem::take(run),
+            ));
+        }
+    };
     for (index, (day, message, continues)) in grouped.iter().enumerate() {
         if let Some(label) = day {
+            flush(&mut run, &mut rows);
             rows.push(
                 ui::DayDividerBuilder::new(&cx.key(format!("day-{index}")), label.clone()).into(),
             );
         }
-        rows.push(message_row(c, message, *continues, cx));
+        if !*continues {
+            flush(&mut run, &mut rows);
+        }
+        run.push(message_row(c, message, *continues, cx));
     }
-    // The rows are one page's column: the page sets their measure and gutter, and a run's next
-    // line stands a tight gap under the one before while a new run stands a section's gap under
-    // it.
-    let column = ui::stack(&cx.key("messages"), Gap::None, rows);
+    flush(&mut run, &mut rows);
+    // The rows are one page's column: the page sets their measure and gutter, and the column's
+    // sibling gap stands between one run and the next, and around a day's divider.
+    let column = ui::stack(&cx.key("messages"), Gap::Section, rows);
     node::with(
         ui::fill(node::with(
             scroll,
@@ -539,6 +784,9 @@ fn message_row(c: &Channel, message: &Message, continues: bool, cx: &ViewCx) -> 
                 .role(ui::TextRole::Caption)
                 .secondary(true)
                 .past(true)
+                // A message's line says when it was sent, by the clock the person reads
+                // ("5:16 AM"); the day it falls on is the divider over its run.
+                .clock(true)
                 .into(),
         );
         vec![ui::row(
@@ -564,6 +812,11 @@ fn message_row(c: &Channel, message: &Message, continues: bool, cx: &ViewCx) -> 
         Gap::Related,
         vec![leading, ui::fill(content)],
     );
+    // The avatar stands at the top of the row, level with the author line: left to centre it,
+    // the avatar of a message that carries a quote and a long answer would stand halfway down
+    // the message, beside the words instead of the name — the very defect a person's own
+    // avatar never shows because their message is one line.
+    let lined = ui::arg(lined, "align", ui::text("start"));
     let body = node::with(lined, vec![bar]);
     // Activating the message places it: its own resource, which is the system's open.
     match Channel::message_resource(&message.id) {
@@ -580,6 +833,13 @@ fn message_row(c: &Channel, message: &Message, continues: bool, cx: &ViewCx) -> 
 /// reactions on it — one column under the byline.
 fn message_said(c: &Channel, message: &Message, cx: &ViewCx) -> Node {
     let mut body: Vec<Node> = Vec::new();
+    if let Some(work) = &message.work
+        && work.writing()
+    {
+        // A reply still being written says so, quietly, in place: the words stream into the
+        // very message they are, so the row grows and the transcript stays where it is.
+        body.push(writing_row(message, work, cx));
+    }
     if let Some(quote) = &message.reply_to {
         body.push(reply_quote(
             c,
@@ -625,7 +885,75 @@ fn message_said(c: &Channel, message: &Message, cx: &ViewCx) -> Node {
             &cx.key(format!("reactions-{}", message.id)),
         ));
     }
+    if let Some(work) = &message.work
+        && work.failed()
+    {
+        // A turn that ended without an answer the person can read says what happened where it
+        // happened, with a Retry that asks the agent again on the same message.
+        body.push(failed_row(message, work, cx));
+    }
     ui::stack(&cx.key(format!("said-{}", message.id)), Gap::Tight, body)
+}
+
+/// The quiet line under a reply still being written (`ui.Spinner` beside a caption), naming what
+/// is under way in the agent's words when it said any.
+///
+/// It stands over the words rather than replacing them: the streamed text is the reply's own,
+/// so nobody's answer jumps — the line grows in place, at the page's measure, and leaves when
+/// the turn ends.
+fn writing_row(message: &Message, work: &Work, cx: &ViewCx) -> Node {
+    let label = if work.detail.trim().is_empty() {
+        "Writing…".to_owned()
+    } else {
+        work.detail.trim().to_owned()
+    };
+    let spinner: Node = ui::SpinnerBuilder::new(&cx.key(format!("writing-spinner-{}", message.id)))
+        .label(label.clone())
+        .beside(ui::TextRole::Caption)
+        .into();
+    let say: Node = ui::TextBuilder::new(&cx.key(format!("writing-{}", message.id)), &label)
+        .role(ui::TextRole::Caption)
+        .secondary(true)
+        .into();
+    ui::row(
+        &cx.key(format!("writing-row-{}", message.id)),
+        Gap::Tight,
+        vec![spinner, say],
+    )
+}
+
+/// The row a failed turn leaves in the conversation: what happened, why when the run said why,
+/// and a Retry that asks the agent again on the same message.
+///
+/// It is a banner (`ui.Banner`, kind `error`), so it reads and is announced as the failure it is,
+/// and its Retry is the conversation's own `retry` action — the same verb the REPL calls — with
+/// the reply it retries. The row stays where it happened: the turn's place in the transcript is
+/// the evidence that the person was not ignored.
+fn failed_row(message: &Message, work: &Work, cx: &ViewCx) -> Node {
+    let mut banner =
+        ui::BannerBuilder::new(&cx.key(format!("failed-{}", message.id)), work.happened())
+            .kind(ui::BannerKind::Error)
+            .icon("circle-alert");
+    let reason = work.detail.trim();
+    if !reason.is_empty() {
+        banner = banner.message(reason);
+    }
+    if message.retry {
+        banner = banner.action("Retry");
+    }
+    let banner: Node = banner.into();
+    let banner = if let Some(summons) = message.retry_summons.clone() {
+        let fired = cx.action_with(
+            &banner,
+            "act",
+            "retry",
+            vec![Arg::text(message.id.clone()), Arg::text(summons)],
+        );
+        node::on(banner, "act", fired)
+    } else {
+        banner
+    };
+    banner
 }
 
 /// What a message offers while the pointer is over it or it holds focus, over its trailing
@@ -784,11 +1112,11 @@ fn author_label(person: Option<&Person>, id: &str) -> String {
     person
         .map(|person| person.name.trim().to_owned())
         .filter(|name| !name.is_empty())
-        .unwrap_or_else(|| id.to_owned())
+        .unwrap_or_else(|| crate::identity::unnamed_label(id))
 }
 
-/// A person as a component draws them: their name, or their id when the channel does not name
-/// them.
+/// A person as a component draws them: their name, or Chat's honest placeholder for someone it
+/// cannot name, never their id.
 fn principal(person: Option<&Person>, id: &str) -> tilo_view::Principal {
     match person {
         Some(person) => tilo_view::Principal {
@@ -797,7 +1125,7 @@ fn principal(person: Option<&Person>, id: &str) -> tilo_view::Principal {
         },
         None => tilo_view::Principal {
             id: id.to_owned(),
-            name: String::new(),
+            name: crate::identity::unnamed_label(id),
         },
     }
 }
@@ -818,7 +1146,13 @@ mod tests {
     fn demo_channel() -> Channel {
         let workspace = crate::demo::Workspace::demo().expect("the demo workspace");
         let rows = workspace.message_rows("c_crit");
-        Channel::read(&workspace.read(), &rows, "c_crit", crate::model::ME)
+        Channel::read(
+            &workspace.read(),
+            &rows,
+            "c_crit",
+            crate::model::ME,
+            &Names::default(),
+        )
     }
 
     fn view_cx(channel: &Channel) -> ViewCx {
@@ -928,6 +1262,179 @@ mod tests {
             .into_iter()
             .filter(|node| node.kind == kind && node.key.contains(suffix))
             .collect()
+    }
+
+    /// A message of `channel` written by `author` at `ts`, as the record's projection reads one.
+    fn row(channel: &str, id: &str, author: &str, ts: i64, text: &str) -> crate::model::Message {
+        crate::model::Message {
+            id: id.to_owned(),
+            channel: channel.to_owned(),
+            author: author.to_owned(),
+            ts,
+            text: text.to_owned(),
+            body: Vec::new(),
+            edited: false,
+            history: Vec::new(),
+            parent: None,
+            reactions: Vec::new(),
+            mentions: Vec::new(),
+            attachments: Vec::new(),
+            pinned: false,
+            work: None,
+            appearance: None,
+            share: None,
+            attempts: 0,
+        }
+    }
+
+    /// A channel of a record that knows nobody: a real session's ask conversation, whose record
+    /// was created by the ask and never introduced to its reader or its agent, with one message
+    /// from the person seated here under their root key and one from the agent answering them.
+    fn unacquainted_channel(me: &str, agent: &str) -> Channel {
+        let mut chat = crate::record::Chat::default();
+        chat.open_channel(
+            Id::from_raw("c_ask"),
+            crate::record::Conversation {
+                name: "Assistant".to_owned(),
+                participants: vec![
+                    crate::record::Participant::person(me).atom(),
+                    crate::record::Participant::agent(agent).atom(),
+                ],
+                ..crate::record::Conversation::default()
+            },
+        );
+        let rows = vec![
+            row("c_ask", "m_ask", me, 1_782_470_400, "hello"),
+            row(
+                "c_ask",
+                "m_reply",
+                &format!("agent:{agent}"),
+                1_782_470_460,
+                "Hi",
+            ),
+        ];
+        let mut names = Names {
+            me: "Quinn Davis".to_owned(),
+            ..Names::default()
+        };
+        names
+            .agents
+            .insert(agent.to_owned(), "Assistant".to_owned());
+        Channel::read(&chat, &rows, "c_ask", me, &names)
+    }
+
+    #[test]
+    fn a_real_sessions_person_is_named_never_shown_their_id() {
+        // A session's Chat record is the ask's, and the ask never told it who reads it: the
+        // person's message is authored by their root key, a 64-hex routing id. The page draws
+        // the name this device shows them — "quinn davis" — never that key.
+        const ME: &str = "ba944082ab57230fec2b518bd058a677d056dc648ac5c766f392f5f69fc1ee8c";
+        let channel = unacquainted_channel(ME, "assistant");
+        // The reading itself names them: their avatar and byline carry the name, not the key.
+        let person = channel
+            .person(ME)
+            .expect("the author is in the channel's people");
+        assert_eq!(person.name, "Quinn Davis", "the person is named");
+        assert!(!person.name.contains(ME), "never their routing id");
+        let cx = view_cx(&channel);
+        let tree = page(&channel, &cx);
+        passes(&tree);
+        let authors = keyed(&tree, "ui.Text", "@author-");
+        let shown: Vec<String> = authors
+            .iter()
+            .flat_map(|node| texts(node))
+            .filter(|text| !text.trim().is_empty())
+            .collect();
+        assert!(
+            shown.iter().any(|name| name == "Quinn Davis"),
+            "the byline is the person's name: {shown:?}"
+        );
+        assert!(
+            !shown.iter().any(|name| name.contains(ME)),
+            "no byline shows the routing id: {shown:?}"
+        );
+        // Their avatar's letters are their initials, and it is called by their name, never by
+        // the id: the very face the top bar draws.
+        let avatar = keyed(&tree, "ui.Avatar", "@avatar-")
+            .into_iter()
+            .next()
+            .expect("the person's avatar");
+        assert_eq!(
+            avatar.props.get("who"),
+            Some(&Value::Principal(tilo_view::Principal {
+                id: ME.to_owned(),
+                name: "Quinn Davis".to_owned(),
+            })),
+            "the avatar is drawn for the person by name, not by id"
+        );
+    }
+
+    #[test]
+    fn an_agents_answer_is_signed_with_its_name() {
+        // An agent's reply is authored `agent:<id>`: the page draws the agent's name, the one
+        // the workspace keeps for it, never its id.
+        const ME: &str = "ba944082ab57230fec2b518bd058a677d056dc648ac5c766f392f5f69fc1ee8c";
+        let channel = unacquainted_channel(ME, "assistant");
+        let agent = channel
+            .person("agent:assistant")
+            .expect("the agent is in the channel's people");
+        assert!(agent.agent, "the author is an agent");
+        assert_eq!(agent.name, "Assistant", "the agent is named");
+        let cx = view_cx(&channel);
+        let tree = page(&channel, &cx);
+        passes(&tree);
+        let shown: Vec<String> = keyed(&tree, "ui.Text", "@author-")
+            .iter()
+            .flat_map(|node| texts(node))
+            .filter(|text| !text.trim().is_empty())
+            .collect();
+        assert!(
+            shown.iter().any(|name| name == "Assistant"),
+            "the agent's byline is its name: {shown:?}"
+        );
+        assert!(
+            !shown.iter().any(|name| name.contains("agent:")),
+            "no byline shows the agent's id: {shown:?}"
+        );
+    }
+
+    #[test]
+    fn a_person_the_record_cannot_name_is_never_shown_their_id() {
+        // Someone neither the record nor the reading's names know: the page says the honest
+        // placeholder Chat uses for an unnamed person, never the routing key it holds.
+        const STRANGER: &str = "f00dfeedf00dfeedf00dfeedf00dfeedf00dfeedf00dfeedf00dfeedf00dfeed";
+        let mut chat = crate::record::Chat::default();
+        chat.open_channel(
+            Id::from_raw("c_ask"),
+            crate::record::Conversation {
+                name: "Assistant".to_owned(),
+                ..crate::record::Conversation::default()
+            },
+        );
+        let rows = vec![row("c_ask", "m_ask", STRANGER, 1_782_470_400, "hello")];
+        let channel = Channel::read(&chat, &rows, "c_ask", crate::model::ME, &Names::default());
+        let person = channel.person(STRANGER).expect("the author is named");
+        assert!(
+            !person.name.contains(STRANGER),
+            "the placeholder never spells the key: {}",
+            person.name
+        );
+        assert!(
+            person.name.contains("eed"),
+            "the placeholder names them by the last of their key: {}",
+            person.name
+        );
+        let cx = view_cx(&channel);
+        let tree = page(&channel, &cx);
+        passes(&tree);
+        let shown: Vec<String> = keyed(&tree, "ui.Text", "@author-")
+            .iter()
+            .flat_map(|node| texts(node))
+            .collect();
+        assert!(
+            !shown.iter().any(|name| name.contains(STRANGER)),
+            "no byline shows the routing key: {shown:?}"
+        );
     }
 
     #[test]
@@ -1206,6 +1713,505 @@ mod tests {
         assert!(
             texts(&tree).iter().any(|text| text == "No messages yet"),
             "an empty channel says so"
+        );
+    }
+
+    #[test]
+    fn a_reply_to_the_message_above_it_carries_no_quote() {
+        // An agent answering the message right above it needs no quote: the person reads what is
+        // answered just over the answer. A reply to anything else keeps its quote.
+        const ME: &str = "ba944082ab57230fec2b518bd058a677d056dc648ac5c766f392f5f69fc1ee8c";
+        let mut chat = crate::record::Chat::default();
+        chat.open_channel(
+            Id::from_raw("c_ask"),
+            crate::record::Conversation {
+                name: "Assistant".to_owned(),
+                participants: vec![
+                    crate::record::Participant::person(ME).atom(),
+                    crate::record::Participant::agent("assistant").atom(),
+                ],
+                ..crate::record::Conversation::default()
+            },
+        );
+        let message = |id: &str, author: &str, ts: i64, text: &str, parent: Option<&str>| {
+            let mut message = row("c_ask", id, author, ts, text);
+            message.parent = parent.map(str::to_owned);
+            message
+        };
+        let rows = vec![
+            message("m_one", ME, 1_782_470_400, "first", None),
+            message("m_two", ME, 1_782_470_410, "second", None),
+            message(
+                "m_three",
+                "agent:assistant",
+                1_782_470_420,
+                "answers the second",
+                Some("m_two"),
+            ),
+            message(
+                "m_four",
+                "agent:assistant",
+                1_782_470_430,
+                "answers the first",
+                Some("m_one"),
+            ),
+        ];
+        let mut names = Names {
+            me: "Quinn Davis".to_owned(),
+            ..Names::default()
+        };
+        names
+            .agents
+            .insert("assistant".to_owned(), "Assistant".to_owned());
+        let channel = Channel::read(&chat, &rows, "c_ask", ME, &names);
+        let by_id = |id: &str| {
+            channel
+                .messages
+                .iter()
+                .find(|message| message.id == id)
+                .unwrap_or_else(|| panic!("the message {id}"))
+        };
+        assert!(
+            by_id("m_three").reply_to.is_none(),
+            "a reply to the message right above it needs no quote"
+        );
+        assert!(
+            by_id("m_four").reply_to.is_some(),
+            "a reply to a message further up keeps its quote"
+        );
+        // And the page draws no quote for the one, and one for the other.
+        let cx = view_cx(&channel);
+        let tree = page(&channel, &cx);
+        passes(&tree);
+        assert!(
+            keyed(&tree, "ui.Quote", "@quote-m_three").is_empty(),
+            "no quote stands over the reply to the message above it"
+        );
+        assert_eq!(
+            keyed(&tree, "ui.Quote", "@quote-m_four").len(),
+            1,
+            "the reply to a message further up carries its quote"
+        );
+    }
+
+    #[test]
+    fn a_messages_avatar_stands_on_its_author_line() {
+        // Every message's avatar leads the line its author's name and the time stand on: the
+        // row starts its own children at the top, so the avatar of a message that carries a
+        // quote and a long answer stays level with the byline and never drops to the middle of
+        // the words underneath it. The person's own message and the agent's reply draw alike.
+        const ME: &str = "ba944082ab57230fec2b518bd058a677d056dc648ac5c766f392f5f69fc1ee8c";
+        let mut chat = crate::record::Chat::default();
+        chat.open_channel(
+            Id::from_raw("c_ask"),
+            crate::record::Conversation {
+                name: "Assistant".to_owned(),
+                participants: vec![
+                    crate::record::Participant::person(ME).atom(),
+                    crate::record::Participant::agent("assistant").atom(),
+                ],
+                ..crate::record::Conversation::default()
+            },
+        );
+        let mut said = row("c_ask", "m_reply", "agent:assistant", 1_782_470_420, "Hi");
+        said.parent = Some("m_ask".to_owned());
+        let rows = vec![row("c_ask", "m_ask", ME, 1_782_470_400, "hello"), said];
+        let mut names = Names {
+            me: "Quinn Davis".to_owned(),
+            ..Names::default()
+        };
+        names
+            .agents
+            .insert("assistant".to_owned(), "Assistant".to_owned());
+        let channel = Channel::read(&chat, &rows, "c_ask", ME, &names);
+        let cx = view_cx(&channel);
+        let tree = page(&channel, &cx);
+        passes(&tree);
+        for id in ["m_ask", "m_reply"] {
+            let node = walk(&tree)
+                .into_iter()
+                .find(|node| node.kind == "row" && node.key.contains(&format!("@message-{id}")))
+                .unwrap_or_else(|| panic!("the message {id}'s row"));
+            assert_eq!(
+                node.props.get("align"),
+                Some(&Value::Text("start".to_owned())),
+                "the message {id}'s row starts its avatar on the author line"
+            );
+            // The avatar is the row's lead, outside the content that holds the byline and the
+            // body: a growing body never moves the face.
+            let avatar = node
+                .children
+                .iter()
+                .find(|child| child.kind == "ui.Avatar")
+                .unwrap_or_else(|| panic!("the message {id}'s row leads with its avatar"));
+            assert!(
+                avatar.key.contains("avatar-"),
+                "the row's lead is the author's avatar: {}",
+                avatar.key
+            );
+            let content = node
+                .children
+                .iter()
+                .find(|child| child.kind == "stack" && child.key.contains("content-"))
+                .unwrap_or_else(|| panic!("the message {id}'s content"));
+            let byline = walk(content)
+                .into_iter()
+                .find(|node| node.kind == "row" && node.key.contains(&format!("by-{id}")))
+                .unwrap_or_else(|| panic!("the message {id}'s byline stands in its content"));
+            assert!(
+                !has_kind(byline, "ui.Avatar"),
+                "the byline carries no avatar of its own: the row's lead does"
+            );
+        }
+    }
+
+    #[test]
+    fn a_messages_time_is_the_clock_the_person_reads() {
+        // A message's line says when it was sent by the clock ("5:16 AM"), never the day alone:
+        // the day it falls on is the divider over its run, so a time showing "Jun 26" repeats
+        // the divider and says nothing of when the message was written.
+        let mut channel = demo_channel();
+        // 2026-06-26 09:16 UTC, read in the zone the page reads clocks in.
+        channel.messages = vec![Message {
+            id: "m_when".to_owned(),
+            author: crate::model::ME.to_owned(),
+            ts: 1_782_465_360,
+            text: "Sent at a moment".to_owned(),
+            ..Message::default()
+        }];
+        let cx = view_cx(&channel);
+        let tree = page(&channel, &cx);
+        passes(&tree);
+        let when = keyed(&tree, "ui.Time", "@when-");
+        assert_eq!(when.len(), 1, "the run's first message carries its time");
+        assert_eq!(
+            when[0].props.get("clock"),
+            Some(&Value::Bool(true)),
+            "the time reads as the clock, not as how long ago it was"
+        );
+        // The component's own reading of that moment: the time of day in the person's zone,
+        // which says a clock and not a date.
+        let label = sdk::widget::clock_text(1_782_465_360);
+        assert!(
+            label.contains(':'),
+            "the time of day names the hour and minute: {label}"
+        );
+        assert!(
+            !label.contains("Jun"),
+            "a message's time is not its day: {label}"
+        );
+    }
+
+    #[test]
+    fn a_new_authors_row_stands_a_runs_gap_under_the_one_before() {
+        // Two people's messages, then a third: each new author's row stands as a run of its
+        // own, and the column's section gap separates runs, so a name never sits jammed
+        // against what was said before it. A run's second line stays inside its own group,
+        // where the rows meet tightly.
+        let mut channel = demo_channel();
+        channel.messages = vec![
+            Message {
+                id: "m_one".to_owned(),
+                author: "u_aria".to_owned(),
+                ts: 1_782_470_400,
+                text: "First".to_owned(),
+                ..Message::default()
+            },
+            Message {
+                id: "m_two".to_owned(),
+                author: "u_aria".to_owned(),
+                ts: 1_782_470_460,
+                text: "Still the same run".to_owned(),
+                ..Message::default()
+            },
+            Message {
+                id: "m_three".to_owned(),
+                author: "u_milo".to_owned(),
+                ts: 1_782_470_520,
+                text: "Another person".to_owned(),
+                ..Message::default()
+            },
+        ];
+        let cx = view_cx(&channel);
+        let tree = page(&channel, &cx);
+        passes(&tree);
+        // The column spaces its children (runs) by a section's gap.
+        let column = walk(&tree)
+            .into_iter()
+            .find(|node| node.key.contains("@messages"))
+            .expect("the messages' column");
+        assert_eq!(
+            column.props.get("gap"),
+            Some(&Value::Text("section".to_owned())),
+            "a run stands a section's gap under the one before it"
+        );
+        // The two runs: the first holds the first person's two messages, meeting tightly.
+        let runs: Vec<&Node> = column
+            .children
+            .iter()
+            .filter(|node| node.key.contains("@run-"))
+            .collect();
+        assert_eq!(runs.len(), 2, "two people's messages make two runs");
+        assert_eq!(
+            runs[0].props.get("gap"),
+            Some(&Value::Text("none".to_owned())),
+            "a run's own messages meet, as one person's next line does"
+        );
+        assert_eq!(
+            runs[0].children.len(),
+            2,
+            "the first run holds both of the first person's messages"
+        );
+        assert_eq!(
+            runs[1].children.len(),
+            1,
+            "the second is the other person's"
+        );
+    }
+
+    /// A page holding one agent reply being written: the person's message it answers, and the
+    /// reply with the words streamed so far and the work's `state`.
+    fn writing_channel(state: &str, partial: &str) -> Channel {
+        let mut channel = demo_channel();
+        channel.people.push(Person {
+            id: "agent:tide".to_owned(),
+            name: "Tide".to_owned(),
+            agent: true,
+        });
+        channel.messages.push(Message {
+            id: "m_asked".to_owned(),
+            author: crate::model::ME.to_owned(),
+            ts: 1_782_470_300,
+            text: "Add the revenue curve".to_owned(),
+            ..Message::default()
+        });
+        channel.messages.push(Message {
+            id: crate::record::reply_id(&Id::from_raw("m_asked"), "agent:tide").to_string(),
+            author: "agent:tide".to_owned(),
+            ts: 1_782_470_400,
+            text: partial.to_owned(),
+            reply_to: Some(Quote {
+                id: "m_asked".to_owned(),
+                author: crate::model::ME.to_owned(),
+                excerpt: "Add the revenue curve".to_owned(),
+            }),
+            work: Some(Work {
+                state: state.to_owned(),
+                detail: String::new(),
+            }),
+            ..Message::default()
+        });
+        channel
+    }
+
+    #[test]
+    fn a_reply_being_written_says_so_beside_the_words_it_has_so_far() {
+        // A turn the agent has taken and not ended draws a quiet "Writing…" row, in place, and
+        // the words streamed so far are the message's own text: nothing jumps when more arrive.
+        for state in ["taken", "doing"] {
+            let channel = writing_channel(state, "On it: the curve is");
+            let cx = view_cx(&channel);
+            let tree = page(&channel, &cx);
+            passes(&tree);
+            let shown = texts(&tree);
+            assert!(
+                shown.iter().any(|text| text == "Writing…"),
+                "a reply being written says so ({state}): {shown:?}"
+            );
+            assert!(
+                shown
+                    .iter()
+                    .any(|text| text.trim() == "On it: the curve is"),
+                "the words streamed so far stand in the message ({state}): {shown:?}"
+            );
+            // The spinner is one line of the caption it sits beside, never a standalone orb.
+            let spinners = keyed(&tree, "ui.Spinner", "@writing-spinner-");
+            assert_eq!(spinners.len(), 1, "one writing row ({state})");
+            assert_eq!(
+                spinners[0].props.get("beside"),
+                Some(&Value::Enum("caption".to_owned())),
+                "the spinner is sized to the line it sits beside"
+            );
+            assert!(
+                !has_kind(&tree, "ui.Banner"),
+                "a reply that is still being written is no failure ({state})"
+            );
+        }
+    }
+
+    #[test]
+    fn a_failed_turn_says_what_happened_and_offers_a_retry() {
+        // A turn that ended without an answer the person can read leaves a row saying what
+        // happened, and a Retry that asks the agent again on the very same message.
+        for (state, happened) in [
+            ("provider_failed", "Could not finish"),
+            ("provider_cancelled", "Stopped"),
+            ("refused", "Could not do this"),
+        ] {
+            let mut channel = writing_channel(state, "Half an answer");
+            if let Some(reply) = channel.messages.last_mut() {
+                reply.retry = true;
+                reply.retry_summons = Some("m_asked".to_owned());
+                reply.work = Some(Work {
+                    state: state.to_owned(),
+                    detail: "The provider connection closed".to_owned(),
+                });
+            }
+            let cx = view_cx(&channel);
+            let tree = page(&channel, &cx);
+            passes(&tree);
+            let rows = keyed(&tree, "ui.Banner", "@failed-");
+            assert_eq!(rows.len(), 1, "one row says what happened ({state})");
+            let props = &rows[0].props;
+            assert_eq!(
+                props.get("title"),
+                Some(&Value::Text(happened.to_owned())),
+                "the row says what happened ({state})"
+            );
+            assert_eq!(
+                props.get("kind"),
+                Some(&Value::Enum("error".to_owned())),
+                "it is an error, announced as one ({state})"
+            );
+            assert_eq!(
+                props.get("message"),
+                Some(&Value::Text("The provider connection closed".to_owned())),
+                "the run's own reason is under it ({state})"
+            );
+            assert_eq!(
+                props.get("action"),
+                Some(&Value::Text("Retry".to_owned())),
+                "the row offers a Retry ({state})"
+            );
+            assert_eq!(
+                cx.effect(&rows[0].key, "act"),
+                Some(tilo_view::Effect::Action {
+                    action: "retry".to_owned(),
+                    // The reply, and the message it answers: the verb asks the agent again on
+                    // that message, and posts nothing.
+                    args: vec![
+                        Arg::text(
+                            crate::record::reply_id(&Id::from_raw("m_asked"), "agent:tide")
+                                .to_string(),
+                        ),
+                        Arg::text("m_asked"),
+                    ],
+                }),
+                "Retry is the conversation's own verb, with the reply it retries ({state})"
+            );
+            assert!(
+                !has_kind(&tree, "ui.Spinner"),
+                "a turn that ended is not still being written ({state})"
+            );
+        }
+    }
+
+    #[test]
+    fn a_reply_of_an_earlier_attempt_offers_no_retry() {
+        // A retry moves the question to its next attempt, and the answer is a reply of its own:
+        // the reply that failed stands as history, and a Retry there would ask a third time.
+        let mut channel = writing_channel("provider_failed", "");
+        // The question moved on after that reply was written.
+        channel.messages[0].attempts = 1;
+        channel.messages.push(Message {
+            id: "m_reply_2".to_owned(),
+            author: "agent:tide".to_owned(),
+            ts: 1_782_470_500,
+            text: "The curve is drawn".to_owned(),
+            reply_to: Some(Quote {
+                id: "m_asked".to_owned(),
+                author: crate::model::ME.to_owned(),
+                excerpt: "Add the revenue curve".to_owned(),
+            }),
+            work: Some(Work {
+                state: "provider_complete".to_owned(),
+                detail: String::new(),
+            }),
+            ..Message::default()
+        });
+        let cx = view_cx(&channel);
+        let tree = page(&channel, &cx);
+        passes(&tree);
+        let rows: Vec<&Node> = keyed(&tree, "ui.Banner", "@failed-");
+        assert_eq!(rows.len(), 1, "the failed attempt still says what happened");
+        assert!(
+            rows[0].props.get("action").is_none(),
+            "an earlier attempt offers no Retry: the question is in a later one"
+        );
+        assert!(
+            cx.effect(&rows[0].key, "act").is_none(),
+            "the earlier attempt runs nothing when pressed"
+        );
+    }
+
+    #[test]
+    fn a_failed_reply_is_the_one_a_retry_asks_again() {
+        // The failed reply of the question's current attempt is the one a Retry asks again: the
+        // page reads the record's own work — a provider end from an earlier turn beside a state
+        // the run wrote — and derives the reply's id from the summons, the agent and the
+        // attempt, as Chat does.
+        let workspace = crate::demo::Workspace::demo().expect("the demo workspace");
+        let mut rows = workspace.message_rows("c_crit");
+        let summons = rows[0].id.clone();
+        let reply_id =
+            crate::record::reply_id(&Id::from_raw(summons.clone()), "agent:tide").to_string();
+        rows.push(crate::model::Message {
+            id: reply_id.clone(),
+            channel: "c_crit".to_owned(),
+            author: "agent:tide".to_owned(),
+            ts: 1_782_470_400,
+            text: String::new(),
+            body: Vec::new(),
+            edited: false,
+            history: Vec::new(),
+            parent: Some(summons),
+            work: Some(crate::model::AgentWork {
+                stream: Some(crate::agent_stream::AgentStream {
+                    run: "7:0".to_owned(),
+                    sequence: 3,
+                    reasoning: String::new(),
+                    progress: String::new(),
+                    finish: Some(crate::agent_stream::AgentFinish::Failed),
+                    detail: "The model connection closed".to_owned(),
+                }),
+                ..crate::model::AgentWork::new(
+                    crate::model::AgentWorkState::ProviderFinished {
+                        outcome: crate::agent_stream::AgentFinish::Failed,
+                    },
+                    1_782_470_400,
+                )
+            }),
+            reactions: Vec::new(),
+            mentions: Vec::new(),
+            attachments: Vec::new(),
+            pinned: false,
+            appearance: None,
+            share: None,
+            attempts: 0,
+        });
+        let chat = workspace.read();
+        let channel = Channel::read(&chat, &rows, "c_crit", crate::model::ME, &Names::default());
+        let reply = channel.messages.last().expect("the reply");
+        assert_eq!(reply.id, reply_id, "the reply is the attempt's own");
+        assert_eq!(
+            reply.work,
+            Some(Work {
+                state: "provider_failed".to_owned(),
+                detail: "The model connection closed".to_owned(),
+            }),
+            "the page projects the record's failed end and its reason"
+        );
+        assert!(
+            reply.retry,
+            "the newest failed reply is the one a Retry asks again"
+        );
+        let cx = view_cx(&channel);
+        let tree = page(&channel, &cx);
+        passes(&tree);
+        assert_eq!(
+            keyed(&tree, "ui.Banner", "@failed-").len(),
+            1,
+            "the page draws the row where the failure happened"
         );
     }
 }

@@ -15,9 +15,19 @@ use std::sync::OnceLock;
 use tilo_app_package::pack::SigningIdentity;
 use tilolang_cli::package::{self, BuildOptions};
 
-/// The tilolang apps a development session installs, by the directory under `apps/tl` : the package
-/// ids [`tilo_session::seeded_apps::APPS`] names are these, in this order.
-pub const APPS: [&str; 6] = ["discussion", "notes", "tasks", "chat", "mail", "tube"];
+/// The tilolang packages a development session installs, by the directory under `apps/tl` : the
+/// package ids [`tilo_session::seeded_apps::APPS`] names are these, and the shell is the first:
+/// the session loads `so.tilo.shell` from the store as it loads any app, and this build's copy
+/// stands in only where the store holds none (docs/designs/app-language/shell.md §6).
+pub const APPS: [&str; 7] = [
+    "shell",
+    "discussion",
+    "notes",
+    "tasks",
+    "chat",
+    "mail",
+    "tube",
+];
 
 /// The tree's `apps/tl` .
 fn packages() -> PathBuf {
@@ -67,7 +77,9 @@ pub fn install(store: &Path, scratch: &Path) -> Vec<String> {
         let built = package::build(
             &BuildOptions {
                 dir: source.join(app),
-                search: vec![source.clone()],
+                // The packages it uses are the copied tilolang ones, and the native apps whose
+                // surfaces they read (`use so.tilo.session`, `apps/tl/session`'s).
+                search: vec![source.clone(), packages()],
                 out: out.clone(),
                 tilo_runtime: runtime().to_owned(),
                 tilolang_runtime: package::DEFAULT_TILOLANG_RUNTIME.to_owned(),
@@ -100,6 +112,58 @@ pub fn install(store: &Path, scratch: &Path) -> Vec<String> {
                 .unwrap_or_else(|error| panic!("{}: {error}", app.app));
             installed.push(app.app);
         }
+    }
+    std::fs::remove_dir_all(&out).ok();
+    installed
+}
+
+/// Build the tilolang package written at `dir` (a directory of `.tl` files) and install it into
+/// the store `store`, signing it with the test process's publisher key. A desk-style package in
+/// a test is written into a scratch directory and installed here, exactly as a person installs
+/// one into their own store (`shell.md` §6); the session then lists its style like any other.
+///
+/// # Panics
+/// The package does not compile, or the store refuses it.
+pub fn install_package(dir: &Path, store: &Path) -> String {
+    let scratch = dir.with_file_name(format!(
+        "{}-built",
+        dir.file_name()
+            .expect("a directory is named")
+            .to_string_lossy()
+    ));
+    std::fs::create_dir_all(&scratch).expect("a scratch directory for the build");
+    let out = scratch.join("tapps");
+    let built = package::build(
+        &BuildOptions {
+            dir: dir.to_path_buf(),
+            search: vec![packages()],
+            out: out.clone(),
+            tilo_runtime: runtime().to_owned(),
+            tilolang_runtime: package::DEFAULT_TILOLANG_RUNTIME.to_owned(),
+            version: "0.1.0".to_owned(),
+        },
+        &publisher(&scratch),
+    )
+    .unwrap_or_else(|error| panic!("{} builds: {error}", dir.display()));
+    let mut installed = String::new();
+    for app in built {
+        let tapp = std::fs::File::open(&app.tapp).expect("the built .tapp reads");
+        let source = app.tapp.display().to_string();
+        package_store::PackageStore::at(store)
+            .install(
+                std::io::BufReader::new(tapp),
+                move |_meta| {
+                    Ok(package_store::Admission {
+                        pinned: false,
+                        attested_by: String::new(),
+                        source,
+                        held: false,
+                    })
+                },
+                None,
+            )
+            .unwrap_or_else(|error| panic!("{}: {error}", app.app));
+        installed = app.app;
     }
     std::fs::remove_dir_all(&out).ok();
     installed

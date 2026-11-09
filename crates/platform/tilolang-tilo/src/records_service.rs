@@ -703,6 +703,23 @@ impl Service for RecordService {
         Some(crate::publish::resource_id(app, &format!("root-{root}")))
     }
 
+    /// Every package this host runs, by its app, with the resource its record is published at:
+    /// what [`Self::hosted`] answers, for a host that asks about them all at once.
+    fn served(&self) -> Vec<(String, String)> {
+        self.host
+            .packages()
+            .into_iter()
+            .filter_map(|package| {
+                let root = package.meta.roots.first()?;
+                let app = package.meta.app;
+                Some((
+                    app.clone(),
+                    crate::publish::resource_id(&app, &format!("root-{root}")),
+                ))
+            })
+            .collect()
+    }
+
     fn read(&self, resource: &str) -> Option<Json> {
         let (app, path) = resource.strip_prefix("tl:")?.split_once(':')?;
         self.host.package(app)?;

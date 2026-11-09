@@ -750,6 +750,12 @@ pub struct Message {
     /// resource is the one its first resource attachment names.
     #[model(readonly)]
     pub share: Option<WindowShare>,
+    /// How many times a person asked the agent again for an answer to this
+    /// message (`retry`): the attempt the agent answers in now. The answer of
+    /// attempt `n` is the reply [`reply_id_at`] derives, so asking again never
+    /// overwrites the reply that failed — the tries stand beside one another.
+    #[model(readonly)]
+    pub attempts: u32,
 }
 
 /// A window shared live into a channel: everyone who reads the channel sees
@@ -874,6 +880,7 @@ impl Default for Message {
             work: None,
             appearance: None,
             share: None,
+            attempts: 0,
         }
     }
 }
@@ -1212,13 +1219,30 @@ pub(crate) fn provider_record(provider: &str) -> Option<(&str, &str)> {
 /// The id of `agent`'s reply to the message `summons`: the same on every
 /// replica and for every record of its work, so the agent never needs to be
 /// told the id of what it wrote.
+///
+/// It is the reply of the first attempt. A message a person asked again
+/// (`retry`) is answered in a reply of its own ([`reply_id_at`]), never in the
+/// one that failed.
 #[must_use]
 pub fn reply_id(summons: &Id, agent: &str) -> Id {
+    reply_id_at(summons, agent, 0)
+}
+
+/// The id of `agent`'s reply to `summons` on attempt `attempt` (`0` the first,
+/// [`Message::attempts`] the one being written now): derived the same way on
+/// every replica, so an agent never needs to be told the id of what it wrote,
+/// and a retried turn never overwrites the reply that failed.
+#[must_use]
+pub fn reply_id_at(summons: &Id, agent: &str, attempt: u32) -> Id {
     use std::hash::Hasher as _;
     let mut hash = fnv::FnvHasher::default();
     hash.write(summons.as_str().as_bytes());
     hash.write(&[0]);
     hash.write(agent.as_bytes());
+    if attempt > 0 {
+        hash.write(&[0]);
+        hash.write(&attempt.to_le_bytes());
+    }
     Id::from_raw(format!("m_reply_{:016x}", hash.finish()))
 }
 

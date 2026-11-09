@@ -14,10 +14,10 @@
 /// while the person looks around, and the places keep their canvas points.
 /// The map fills the desk under the entry: it cuts off what it holds at its edge, so a map only
 /// as tall as its content would show none of it.
-view framed_canvas(a: Arrangement) {
+view canvas(a: Arrangement, name: Text, framed: Bool) {
     stack(gap: .related, fill) {
-        canvas_entry(a)
-        ui.Map(name: "Canvas", fill) {
+        canvas_entry(here_x(a), here_y(a))
+        ui.Map(name: name, fill) {
             for s in a.strips {
                 if s.placed {
                     for p in places_of(a, s.key) {
@@ -28,32 +28,11 @@ view framed_canvas(a: Arrangement) {
                             width: pin_width(s),
                             height: pin_height(s),
                         ) {
-                            framed_place(a, p)
-                        }
-                    }
-                }
-            }
-        }
-    }
-}
-
-/// The frameless canvas: every place at its point, drawn as its own view with no frame around it,
-/// grouped into the strip's space by nearness.
-view spaces_canvas(a: Arrangement) {
-    stack(gap: .related, fill) {
-        canvas_entry(a)
-        ui.Map(name: "Spaces", fill) {
-            for s in a.strips {
-                if s.placed {
-                    for p in places_of(a, s.key) {
-                        ui.MapPin(
-                            name: p.key,
-                            x: pin_x(a, s, p),
-                            y: s.canvas_y,
-                            width: pin_width(s),
-                            height: pin_height(s),
-                        ) {
-                            space_content(a, p)
+                            if framed {
+                                framed_place(a, p)
+                            } else {
+                                space_content(a, p)
+                            }
                         }
                     }
                 }
@@ -123,17 +102,11 @@ fn pin_height(s: ArrangementStrip) -> Int {
 /// to them and undone as one step; what the text asks is posted into their
 /// conversation with the agent, and that conversation stands at the caret
 /// instead. `x` and `y` are where the caret was, in canvas pixels.
-view canvas_entry(a: Arrangement) {
+template view canvas_entry(x: Int, y: Int) {
     state typed: Text = ""
     ui.TextInput(bind: typed, placeholder: "Find something, or ask") {
         on submit: session
-            .place_found(
-                text: typed,
-                view: .none,
-                strip: .none,
-                x: here_x(a),
-                y: here_y(a),
-            )
+            .place_found(text: typed, view: .none, strip: .none, x: x, y: y)
             .then(set(typed, ""))
     }
 }

@@ -68,10 +68,12 @@ action open_titles(bag: Bag) -> List<Text> {
 
 view chosen(bag: Bag) {
     state place: Text = ""
+    // The item this window's list shows opened where it stands.
+    state opened: Option<Item> = .none
     let shown = bag.items.matching(place)
     section("Items") {
         std.places(place, of: filters(Item).filter(f -> f.toggle), everything: "All", icon: .none)
-        std.list(shown) { (item, at) ->
+        std.list(shown, opened) { (item, at) ->
             ui.ListItem(item: item, presence: at) {
                 item_line(item)
             }

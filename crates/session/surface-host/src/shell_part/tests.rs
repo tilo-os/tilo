@@ -26,6 +26,9 @@ fn reading() -> DeskReading {
                 current: false,
             },
         ],
+        // The desk styles every installed package offers: the four the shell ships, as the
+        // session publishes them (shell.md §6), so the switch lists them.
+        styles: crate::shell_part::tests_support::shipped_styles(),
         ..DeskReading::default()
     }
 }
@@ -1430,4 +1433,37 @@ fn the_desks_preset_reaches_the_screen() {
         stats.renders > stats.boundaries as u64,
         "the preset ran the boundaries that read the record: {stats:?}"
     );
+}
+
+/// The desk styles arrive on a reading the shell draws after its first frame, as the session
+/// publishes them once its store is read: the switch re-runs when the styles' collection moves,
+/// and offers them without a restart (shell.md §6).
+#[test]
+fn the_style_switch_lists_the_styles_a_later_reading_carries() {
+    let mut desk = reading();
+    desk.styles = Vec::new();
+    let (mut part, link) = super::tests_support::part_as(desk, None);
+    for _ in 0..4 {
+        part.prepare_frame();
+    }
+    // With no styles yet the bar's menu falls back to naming the strips, and offers nothing.
+    let labels = crate::Published::accessible_labels(&mut part);
+    assert!(
+        labels.iter().any(|l| l == "Showing Strips"),
+        "the bar shows before the styles come: {labels:?}"
+    );
+    let mut with_styles = reading();
+    with_styles.styles = crate::shell_part::tests_support::shipped_styles();
+    link.publish(with_styles);
+    for _ in 0..6 {
+        part.prepare_frame();
+    }
+    click(&mut part, "Showing Strips");
+    let labels = crate::Published::accessible_labels(&mut part);
+    for name in ["Strips", "Frames", "Spaces", "Desktop"] {
+        assert!(
+            labels.iter().any(|l| l == name),
+            "the switch lists the {name} style once the reading carries it: {labels:?}"
+        );
+    }
 }

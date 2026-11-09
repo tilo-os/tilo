@@ -579,6 +579,85 @@ impl Registry {
             .map(|(id, _)| id)
     }
 
+    /// The offered view `named` (its id or name, optionally written `package:view`) that draws
+    /// a resource of `ty`, when `ty` holds the session's arrangement (`origin:
+    /// session.arrangement`) and the view is declared by a package other than the one holding
+    /// the type: a *desk style* (`shell.md` §6). A style is a view of the arrangement, and the
+    /// arrangement's type belongs to `so.tilo.shell`, so a style in any installed package — the
+    /// shipped four, a person's own, an agent's — is found here by the type its view takes,
+    /// never by a list in code. `None` for a type that is not the arrangement's, or a name that
+    /// names no style: `show` then reports what it always did.
+    pub fn style_view(&self, ty: &str, named: &str) -> Option<ViewId> {
+        if !self.arrangement_type(ty) {
+            return None;
+        }
+        // The type as the view's parameter names it, when its type is one this runtime holds:
+        // a style of a package other than the arrangement's still writes `shell.Arrangement`,
+        // the type the shell's package declares.
+        let (own_app, name) = if let Some(key) = crate::foreign::foreign_type(ty) {
+            (key.app, key.name)
+        } else {
+            let (pkg, info) = self.type_info(ty)?;
+            (pkg.meta.app.clone(), info.name.clone())
+        };
+        let (app, view) = named
+            .split_once(':')
+            .map_or((None, named), |(a, v)| (Some(a), v));
+        // A named package is searched first, then the rest: a style of the shell's own package
+        // (`shell.md` §6: the shipped four) is a view `views_of_type` found, and one of another
+        // package is found here.
+        let searched = |pkg: &Rc<Package>| -> Option<ViewId> {
+            let shows_it = |param: &crate::meta::ParamMeta| {
+                matches!(
+                    crate::meta::parse_ty(&param.ty, &pkg.meta.app),
+                    Ok(Ty::Record(ref key)) if key.app == own_app && key.name == name
+                )
+            };
+            pkg.meta
+                .offered_views()
+                .filter(|v| matches!(&v.params[..], [only] if shows_it(only)))
+                .filter(|v| !pkg.meta.row_views.iter().any(|row| row.view == v.id))
+                .find(|v| v.id == view || v.name == view)
+                .map(|v| v.id.clone())
+        };
+        if let Some(app) = app
+            && let Some(pkg) = self
+                .order
+                .iter()
+                .rev()
+                .filter_map(|hash| self.packages.get(hash))
+                .find(|pkg| pkg.meta.app == app)
+            && let Some(found) = searched(pkg)
+        {
+            return Some(found);
+        }
+        let mine = self.types.get(ty).cloned();
+        self.order
+            .iter()
+            .rev()
+            .filter_map(|hash| self.packages.get(hash))
+            .filter(|pkg| Some(&pkg.hash) != mine.as_ref())
+            .find_map(searched)
+    }
+
+    /// Whether `ty` (a type id or an `app#Type`) holds the session's arrangement, the type a
+    /// desk style is a view of (`shell.md` §6).
+    fn arrangement_type(&self, ty: &str) -> bool {
+        let id = match crate::foreign::foreign_type(ty) {
+            Some(_) => return true,
+            None => self.type_id(ty),
+        };
+        let Some((pkg, info)) = id.and_then(|id| self.type_info(&id)) else {
+            return false;
+        };
+        pkg.meta
+            .types
+            .iter()
+            .find(|t| t.id == info.id)
+            .and_then(|t| t.origin.as_deref())
+            == Some("session.arrangement")
+    }
+
     /// What a new resource of this type starts out with.
     pub fn new_record(&self, ty: &str) -> Option<NewRecord> {
         let (pkg, info) = self.type_info(ty)?;

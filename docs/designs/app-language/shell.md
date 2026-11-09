@@ -183,6 +183,25 @@ the installed shell and session packages, or traps on its first frame:
 - it keeps the person's choice, so a fixed reinstall comes back by itself.
 A reinstall re-renders the style live; the session does not restart.
 
+**Three states of a shown view, and who decides.** A `show` boundary has three states: waiting
+(its package is not here yet, and the session is asked for it — the toolkit's skeleton), shown,
+and failed. A call fails when its package's load is refused (it does not compile against what
+the runtime holds, or is not a package) or when its view fails as it runs (a trap). A failed call
+draws a shared failed state where it stands — the toolkit's empty state, in its error colour,
+naming the view and why — and never a blank frame or a skeleton that never fills. It reports
+`(app, view, reason)` to its host once, and the report is what the session acts on:
+- a failure names a **desk style** when the call's view is one the switch lists: the session
+  marks that style `loads: false` with the reason, publishes it, and raises the notice. The desk
+  draws the built-in strips while the person's choice stays in `Viewing.style`.
+- the app's package loading again (a reinstall) clears the failure, the runtime tells its host,
+  the session marks the style `loads: true` again, and the desk returns to it without a restart.
+- a failure that is no desk style (a place's own view, another package's view drawn inline)
+  draws its failed state and is reported; nothing else on the desk changes.
+
+The decision is the runtime's, not each view's: there is no tilolang construct that catches a
+failing call, so a style author writes nothing for this, and a style that fails is treated the
+same as one whose package never loads.
+
 **Steps**
 1. The shell loads from the store. `so.tilo.shell` is installed in the image, dev shells install
    it as they install the tilolang apps, and the built-in copy becomes the fallback.

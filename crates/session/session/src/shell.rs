@@ -19,12 +19,31 @@ use crate::displays;
 use crate::panels::Held;
 
 /// The shell package and the packages it uses, compiled, the shell last: what the shell's
-/// instance runs.
+/// instance runs. The installed `so.tilo.shell` when the person's app store holds one, the
+/// build's fallback copy when it does not (shell.md §6).
 ///
 /// # Errors
-/// A package does not compile: its diagnostics.
+/// Neither the installed shell nor the fallback compiles: the fallback's diagnostics.
 pub fn compile() -> Result<Vec<tilolang_tilo::tilolang::Compiled>, String> {
-    tilo_surface_host::shell_part::compile_shell()
+    Ok(shell_packages()?.0)
+}
+
+/// [`compile`], and whether the packages are the store's installed shell rather than this
+/// build's fallback copy: what a test holds the loading path to.
+///
+/// # Errors
+/// As [`compile`].
+pub fn shell_packages() -> Result<(Vec<tilolang_tilo::tilolang::Compiled>, bool), String> {
+    match tilo_surface_host::shell_part::installed_shell() {
+        Ok(Some(packages)) => Ok((packages, true)),
+        Ok(None) => Ok((tilo_surface_host::shell_part::compile_shell()?, false)),
+        Err(error) => {
+            // A store row that does not read is the person's to see, and the desk still stands:
+            // the fallback is what a device with no shell of its own shows.
+            tracing::warn!(%error, "the installed shell does not load; the built-in one stands in");
+            Ok((tilo_surface_host::shell_part::compile_shell()?, false))
+        }
+    }
 }
 
 /// The device's resources the session publishes, as their surfaces: the sound, the network,
@@ -76,9 +95,16 @@ pub(crate) struct Shell {
     /// app id: published with the packages the places show, and kept for the rest of the session (a
     /// view keeps drawing what it read once the card is there).
     needed: std::collections::BTreeSet<String>,
+    /// Whether the store moved since the last pass and its packages must be published again: a
+    /// style that failed to load and was reinstalled fixed has the same package id and needs
+    /// its new module sent (`shell.md` §6).
+    republish: bool,
     /// How many of the session's turns read some of them: what the views composed in places waited
     /// on comes in one turn for everything one run of them read, not one per resource.
     rounds: u64,
+    /// Lent last to every part, by the workspace in front and the media it was opened over: a
+    /// part told the same one again keeps the store it has.
+    lent_content: Option<(String, Option<ui::content::ContentStore>)>,
     /// The shell's record, shared by every part: one display draws what another wrote, so a change
     /// any part commits is the whole shell's.
     record: Rc<RefCell<tilo_resource::Doc>>,
@@ -128,9 +154,11 @@ impl Shell {
             reading: std::collections::BTreeMap::new(),
             reads: std::collections::BTreeMap::new(),
             needed: std::collections::BTreeSet::new(),
+            republish: false,
             rounds: 0,
             record: Rc::new(RefCell::new(tilo_resource::Doc::new())),
             parts: Vec::new(),
+            lent_content: None,
             packages,
             app,
             person: String::new(),
@@ -141,6 +169,9 @@ impl Shell {
         };
         shell.person = shell.desk.person.clone();
         shell.follow_outputs(compositor, doors);
+        // The desk styles every installed package offers, before the first frame draws the
+        // switch: a shell that starts already knows what its person may pick (shell.md §6).
+        shell.refresh_styles();
         shell.publish();
         Ok(shell)
     }
@@ -348,6 +379,11 @@ impl Shell {
         for app in self.link.take_wanted_packages().into_keys() {
             asked |= self.needed.insert(app);
         }
+        // The store moved: every package it holds is sent again, so a reinstalled style's new
+        // module reaches the shell even though its package id did not change.
+        if std::mem::take(&mut self.republish) {
+            asked = true;
+        }
         let key = (services.revision(), arrangement.clone());
         let moved_on = asked || self.followed.as_ref() != Some(&key);
         if !moved_on && wanted.is_empty() {
@@ -357,17 +393,19 @@ impl Shell {
         if asked || self.followed.as_ref().map(|(_, was)| was) != Some(arrangement) {
             // Every app a place shows is published with this pass, however this pass was asked for:
             // a package a view asked for arrives beside them, and none of them goes with it.
-            let placed = tilo_surface_host::shell_part::readings::placed_records(
-                arrangement,
-                &services.resources(),
-            );
+            let resources = services.resources();
+            let placed =
+                tilo_surface_host::shell_part::readings::placed_records(arrangement, &resources);
             let mut packages = std::collections::BTreeMap::new();
             let app_of = tilo_surface_host::shell_part::readings::app_of;
             let mut apps: std::collections::BTreeSet<&str> =
                 self.needed.iter().map(String::as_str).collect();
             apps.extend(placed.values().filter_map(|ty| app_of(ty)));
             for app in apps {
-                if let Some(module) = services.module(app) {
+                if let Some(module) = services
+                    .module(app)
+                    .or_else(|| crate::desk_styles::module_from_store(app))
+                {
                     packages.insert(app.to_owned(), module);
                 }
             }
@@ -381,6 +419,15 @@ impl Shell {
                 })
             });
             self.link.publish_packages(packages);
+            // The verbs of the apps the shell's runtime does not load — Chat's channel and its
+            // `post`, which the session's own service answers — so a place's view sends its
+            // action to the app publishing it, as it sends any package's to that package's door.
+            self.link.publish_published_actions(
+                tilo_surface_host::shell_part::readings::published_actions(
+                    &resources,
+                    &self.link.packages_loaded(),
+                ),
+            );
             for (id, ty) in placed {
                 if !self.reading.contains_key(&id) {
                     fresh.push((id.clone(), ty.clone()));
@@ -450,10 +497,155 @@ impl Shell {
         self.link.publish_arrangement(reading);
     }
 
+    /// Read the desk styles every installed package offers, when the person's package store
+    /// moved: a style the person or their agent installed is offered by the switch without a
+    /// restart (`shell.md` §6). The shell's own package's styles — the four that ship — always
+    /// stand, from the package the shell runs, so the switch offers them even where the store
+    /// holds nothing (the built-in fallback shell). Cheap when nothing was installed, which is
+    /// what every frame runs.
+    pub(crate) fn refresh_styles(&mut self) {
+        // The shell's own styles, from the package it runs: the four that ship are its views.
+        let Ok(catalog) = package_store::Catalog::from_env() else {
+            let own = crate::desk_styles::of_shell(&self.packages);
+            let mut styles = self.desk.styles.borrow_mut();
+            styles.list = own;
+            styles.revision = styles.revision.saturating_add(1);
+            return;
+        };
+        let moved = crate::desk_styles::fingerprint(&catalog);
+        let moved = {
+            let mut styles = self.desk.styles.borrow_mut();
+            if styles.fingerprint == Some(moved.clone()) {
+                return;
+            }
+            styles.fingerprint = Some(moved);
+            true
+        };
+        // A package installed or taken away is published again, so a style that failed and was
+        // reinstalled fixed draws again with no restart (`shell.md` §6). The failure it had is
+        // cleared too: the desk must draw it again for its view to run and tell whether it is
+        // fixed, and a store that moved is the only news the session gets of a reinstall.
+        if moved {
+            self.republish = true;
+            for style in crate::desk_styles::installed(&catalog) {
+                // The shell's own package is the one the part already runs, never one loaded
+                // beside itself.
+                if style.package != tilo_surface_host::shell_part::SHELL_APP {
+                    self.needed.insert(style.package.clone());
+                }
+            }
+            for entry in &mut self.desk.styles.borrow_mut().list {
+                if !entry.loads {
+                    entry.loads = true;
+                    entry.reason.clear();
+                }
+            }
+        }
+        // The store's styles, the shell's own among them when the store holds the shell: each
+        // package's styles are offered once, the shell's own from the package the shell runs.
+        let own = crate::desk_styles::of_shell(&self.packages);
+        let mut list = crate::desk_styles::installed(&catalog);
+        for style in own {
+            if !list.iter().any(|s| s.style == style.style) {
+                list.push(style);
+            }
+        }
+        let mut styles = self.desk.styles.borrow_mut();
+        styles.list = list;
+        styles.revision = styles.revision.saturating_add(1);
+    }
+
     /// The link the session publishes the desk on and the shell asks through: what a test stages a
     /// reading on.
     pub(crate) fn link(&self) -> Rc<SessionLink> {
         Rc::clone(&self.link)
+    }
+
+    /// The views that could not be shown since the last call, each an app, a view and why: what
+    /// the parts reported (`shell.md` §6, "Nothing can lock a person out").
+    pub(crate) fn take_view_failures(&self) -> Vec<tilo_surface_host::ViewFailure> {
+        self.parts
+            .iter()
+            .flat_map(|(_, part)| part.borrow().take_view_failures())
+            .collect()
+    }
+
+    /// The apps whose view failure ended since the last call, and the view calls that ran again
+    /// and succeeded: a style that failed draws again (`shell.md` §6, "Nothing can lock a
+    /// person out").
+    pub(crate) fn take_view_recoveries(&self) -> (Vec<String>, Vec<(String, String)>) {
+        let mut apps = Vec::new();
+        let mut calls = Vec::new();
+        for (_, part) in &self.parts {
+            let (part_apps, part_calls) = part.borrow().take_view_recoveries();
+            apps.extend(part_apps);
+            calls.extend(part_calls);
+        }
+        (apps, calls)
+    }
+
+    /// A style whose view failure ended — its package loaded, or its call ran again and
+    /// succeeded — loads again: the desk returns to the person's choice with no restart
+    /// (`shell.md` §6). `app` is the app whose failure ended, and `style` the call's view when
+    /// one names it (`app:view`).
+    pub(crate) fn note_style_recovered(&self, app: &str, style: Option<&str>) {
+        let mut styles = self.desk.styles.borrow_mut();
+        let mut moved = false;
+        for entry in &mut styles.list {
+            let of_app = entry.package == app;
+            let named = style.is_some_and(|style| {
+                entry.style == format!("{app}:{style}") || entry.style == style
+            });
+            if (of_app || named) && !entry.loads {
+                entry.loads = true;
+                entry.reason.clear();
+                moved = true;
+            }
+        }
+        if moved {
+            styles.revision = styles.revision.saturating_add(1);
+        }
+    }
+
+    /// A style the person chose could not be shown: its entry says so with `failure`'s reason,
+    /// and the desk draws the built-in strips while the person's choice stays as it was
+    /// (`shell.md` §6, "Nothing can lock a person out"). The notice naming the style and why,
+    /// once per failure, for the session to raise.
+    ///
+    /// The entry is marked by the style's own view reference: a failure names the app and the
+    /// view it called (`me.styles:timeline`), and the style the switch lists is that pair.
+    /// Fixing the package flips it back: the desk asks the runtime again, the call succeeds, and
+    /// the next [`Self::take_view_failures`] has nothing to say of it.
+    pub(crate) fn note_style_failure(
+        &self,
+        failure: &tilo_surface_host::ViewFailure,
+    ) -> Option<crate::notices::Notice> {
+        let style = if failure.view.contains(':') {
+            failure.view.clone()
+        } else {
+            format!("{}:{}", failure.app, failure.view)
+        };
+        let mut styles = self.desk.styles.borrow_mut();
+        let Some(found) = styles.list.iter_mut().find(|s| s.style == style) else {
+            // A view that is no desk style failed some other way (a place's own view): the
+            // desk has nothing to say of it.
+            return None;
+        };
+        if !found.loads && found.reason == failure.reason {
+            return None;
+        }
+        found.loads = false;
+        found.reason.clone_from(&failure.reason);
+        let name = if found.line.is_empty() {
+            found.name.clone()
+        } else {
+            found.line.clone()
+        };
+        styles.revision = styles.revision.saturating_add(1);
+        Some(crate::notices::desk_style_failed_notice(
+            &name,
+            &failure.reason,
+        ))
     }
 
     /// The surface the desk shows over its windows, by the name the views read (`d.here`): `none`
@@ -640,6 +832,22 @@ impl Shell {
             .find_map(|(_, part)| part.borrow_mut().text_bounds(text))
     }
 
+    /// Where a shown part draws `text`: its box cut to the clip of the scroll view it stands in.
+    pub(crate) fn drawn_text_bounds(&self, text: &str) -> Option<(f64, f64, f64, f64)> {
+        self.parts
+            .iter()
+            .filter(|(_, part)| part.borrow().placement().is_some())
+            .find_map(|(_, part)| part.borrow_mut().drawn_text_bounds(text))
+    }
+
+    /// The clip a shown part's scroll view draws the content holding `text` through.
+    pub(crate) fn scroll_clip(&self, text: &str) -> Option<(f64, f64, f64, f64)> {
+        self.parts
+            .iter()
+            .filter(|(_, part)| part.borrow().placement().is_some())
+            .find_map(|(_, part)| part.borrow_mut().scroll_clip(text))
+    }
+
     /// Where every shown part lays out `text` for assistive technology: every node of every part
     /// whose label, description or value holds it.
     pub(crate) fn text_bounds_all(&self, text: &str) -> Vec<(f64, f64, f64, f64)> {
@@ -682,6 +890,51 @@ pub struct PartPlace {
     pub scale: f64,
     /// A fullscreen window owns the output, so the part draws nothing there.
     pub aside: bool,
+}
+
+/// Lend `shell`'s parts the content its places draw from: the document media this session serves
+/// its apps (`TILO_FS_BLOB_SOCKET`, `fs serve-media`), read as the session itself, with
+/// `workspaces` — the workspaces the desk holds — among the scopes it serves, the one in front
+/// first.
+///
+/// A place shows a record an app's connector kept stills for (`tilo-blob://<hash>`), and the
+/// parts run in this process, which the launcher handed no capability of its own: without this
+/// every still draws as its placeholder, though the bytes are here
+/// (`docs/architecture/apps.md` §1, §8).
+///
+/// The store is opened again only when the workspace in front changed: every other pass keeps
+/// the one the parts have, so a picture drawn every frame is not opened again every frame.
+fn lend_content(shell: &mut Shell, shared: &crate::Shared, workspaces: Vec<String>) {
+    if workspaces.is_empty() {
+        return;
+    }
+    let active = shared.active_workspace_id();
+    let active = if active.is_empty() {
+        workspaces.first().cloned().unwrap_or_default()
+    } else {
+        active
+    };
+    // One media store, the workspace in front first and every other beside it: a place of any
+    // workspace reads its stills through it, and a still is read through the workspace that
+    // references it.
+    let mut ordered = vec![active.clone()];
+    ordered.extend(
+        workspaces
+            .into_iter()
+            .filter(|workspace| *workspace != active),
+    );
+    ui::content::set_session_workspaces(ordered);
+    // The store is opened again only when the workspace in front changed; every part is told it
+    // every pass, so a display whose part was made since reads the same content as the others
+    // (and a part told the one it has keeps it).
+    let content = match shell.lent_content.take() {
+        Some((lent, content)) if lent == active => content,
+        _ => ui::content::session(&active),
+    };
+    for (_, part) in &shell.parts {
+        part.borrow_mut().lend_content(&active, content.clone());
+    }
+    shell.lent_content = Some((active, content));
 }
 
 /// The compositor's window for the reading's window `key` (its tab's id), when it may be pictured:
@@ -1087,6 +1340,31 @@ impl<T: SurfaceHost> SurfaceHost for Aside<T> {
 }
 
 impl crate::Session {
+    /// What the shell's views could not show, and what came back: a style that failed is marked
+    /// not loading, with the notice naming it, and one that came back loads again — the desk
+    /// keeps the person's choice either way (`shell.md` §6, "Nothing can lock a person out").
+    fn follow_view_failures(
+        notices: &Rc<RefCell<crate::notifications::SessionNotifications>>,
+        shell: &Shell,
+        failures: Vec<tilo_surface_host::ViewFailure>,
+        recoveries: (Vec<String>, Vec<(String, String)>),
+    ) {
+        for failure in failures {
+            if let Some(notice) = shell.note_style_failure(&failure) {
+                // Raised through the session's own notices, as every notice it tells: the
+                // notifications service when one runs, the desk's own otherwise.
+                notices.borrow().tell(notice);
+            }
+        }
+        let (apps, calls) = recoveries;
+        for app in apps {
+            shell.note_style_recovered(&app, None);
+        }
+        for (app, view) in calls {
+            shell.note_style_recovered(&app, Some(&view));
+        }
+    }
+
     /// Hand the shell the desk when it changed, and run what it asked through the door, as any
     /// caller of the action protocol does.
     pub(crate) fn follow_shell(&mut self) -> Result<(), tilo_compositor::Error> {
@@ -1114,11 +1392,36 @@ impl crate::Session {
                     title, body,
                 ));
         }
+        // The desk styles every installed package offers: read when the store moved, so a
+        // style a person or their agent installed is offered without a restart (shell.md §6).
+        // Read before the desk is published, so the reading carries the list.
+        shell.refresh_styles();
+        // What the shell's views could not show — a style package that did not load, a view
+        // that failed — so the desk says so and the person's choice is kept: a style that
+        // cannot load shows the built-in strips until it is fixed (shell.md §6, "Nothing can
+        // lock a person out").
+        let failures = shell.take_view_failures();
+        let recoveries = shell.take_view_recoveries();
+        let notices = Rc::clone(&self.shared.notifications);
+        Self::follow_view_failures(&notices, shell, failures, recoveries);
         shell.publish();
         let arrangement = self.shared.arrangement.borrow().reading();
         shell.publish_readings(&self.shared.services.borrow());
         shell.follow_places(&arrangement, &mut self.shared.services.borrow_mut());
         shell.publish_arrangement(arrangement);
+        // What the places draw reads its pictures from the document media of the workspaces
+        // those places stand in: the parts draw in the session's own process, which the launcher
+        // handed no store of its own, so the session lends them one (`docs/architecture/apps.md`
+        // §1, the connector's stills, `fs serve-media`).
+        {
+            let workspaces: Vec<String> = self.shared.handle.read(|tree| {
+                tree.workspaces
+                    .iter()
+                    .map(|held| held.id().to_string())
+                    .collect()
+            });
+            lend_content(shell, &self.shared, workspaces);
+        }
         // What the screen says of its edges is what a bar or dock that shows only sometimes
         // follows; it moves without the desk, so it goes every turn.
         shell.publish_edges(&self.compositor);
@@ -1256,6 +1559,22 @@ impl crate::Session {
     #[must_use]
     pub fn shell_text_bounds(&self, text: &str) -> Option<(f64, f64, f64, f64)> {
         self.shell.as_ref()?.text_bounds(text)
+    }
+
+    /// Where the shell *draws* `text`, logical `(x, y, w, h)` : the first node that says it, its
+    /// box cut to the clip of the scroll view it stands in. A row a transcript has scrolled out
+    /// of its room is drawn nowhere; this is what a person sees of it, never where the layout
+    /// put it.
+    #[must_use]
+    pub fn shell_drawn_text_bounds(&self, text: &str) -> Option<(f64, f64, f64, f64)> {
+        self.shell.as_ref()?.drawn_text_bounds(text)
+    }
+
+    /// The clip the shell's scroll view holding `text` draws its content through, logical
+    /// `(x, y, w, h)` : the room a transcript has under the header above it.
+    #[must_use]
+    pub fn shell_scroll_clip(&self, text: &str) -> Option<(f64, f64, f64, f64)> {
+        self.shell.as_ref()?.scroll_clip(text)
     }
 
     /// Where every node the shell lays out that says `text` stands, logical `(x, y, w, h)`: every

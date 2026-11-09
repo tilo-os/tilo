@@ -1844,3 +1844,80 @@ fn a_kept_conversation_is_a_channel_the_same_set_derives_on_every_device() {
         "naming the conversation again leaves it as it is"
     );
 }
+
+/// A retry asks the agent again on the same message by moving it to its next attempt: the reply
+/// the agent writes then is a reply of its own, and the reply the person gave up on is never
+/// reused. A stale press — one whose reply is no longer the message's attempt — asks nothing.
+#[test]
+fn a_retry_moves_the_question_to_its_next_attempt_and_a_stale_press_asks_nothing() {
+    let mut ada = Talk::new();
+    ada.apply(post("Add the revenue curve")).unwrap();
+    let summons = ada.said("Add the revenue curve");
+    // The agent's answer, as an agent writes it: `record-work` derives the reply the person then
+    // gives up on.
+    let agent = "agent:tide";
+    let mut answer = ada.part.fork().as_agent_for(agent, ADA);
+    answer
+        .apply(
+            ChatPart::RECORD_WORK.with(crate::messages::chat_part::RecordWork {
+                message: summons.clone(),
+                work: crate::record::WorkUpdate {
+                    state: "provider_failed".into(),
+                    app: None,
+                    did: None,
+                    about: None,
+                    route: None,
+                    why: None,
+                    trace: Vec::new(),
+                },
+                say: Some("The model connection closed".into()),
+            }),
+        )
+        .unwrap();
+    ada.part.sync_with(&mut answer).unwrap();
+    let first = reply_id_at(&summons, agent, 0);
+    assert!(
+        ada.part.state().unwrap().messages.get(&first).is_some(),
+        "the agent wrote the reply the person gives up on"
+    );
+    ada.apply(ChatPart::RETRY.with(crate::messages::chat_part::Retry {
+        message: summons.clone(),
+        reply: first.clone(),
+    }))
+    .unwrap();
+    assert_eq!(
+        ada.part
+            .state()
+            .unwrap()
+            .messages
+            .get(&summons)
+            .unwrap()
+            .attempts,
+        1,
+        "the question is in its second attempt"
+    );
+    // The answer the agent writes now is the second attempt's reply, never the first's.
+    let second = reply_id_at(&summons, agent, 1);
+    assert_ne!(
+        first, second,
+        "a retried turn is answered in a reply of its own"
+    );
+    // A stale press (the same reply again, a step run twice) asks nothing: the message is in a
+    // later attempt now.
+    ada.apply(ChatPart::RETRY.with(crate::messages::chat_part::Retry {
+        message: summons.clone(),
+        reply: first,
+    }))
+    .unwrap();
+    assert_eq!(
+        ada.part
+            .state()
+            .unwrap()
+            .messages
+            .get(&summons)
+            .unwrap()
+            .attempts,
+        1,
+        "a stale Retry asks nothing twice"
+    );
+}

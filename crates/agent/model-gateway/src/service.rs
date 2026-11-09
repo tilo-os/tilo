@@ -1423,33 +1423,33 @@ fn reuse_until(expires_unix: u64, now_unix: u64, now: Instant) -> Instant {
 
 /// A missing credential means unauthenticated only for a literal loopback
 /// endpoint explicitly classified as this device. All other Plan profiles
-/// retain the existing vault requirement.
+/// retain the existing vault requirement. The decision itself is
+/// [`agent_provider_config::is_unauthenticated_local`], the same rule the
+/// request headers read, so a plan the gateway lets through sends no
+/// credential on either protocol.
 fn unauthenticated_local_plan(profile: &ProviderProfile) -> Result<bool, ModelError> {
-    if profile.location != EndpointLocation::ThisDevice || profile.credential.is_some() {
+    if agent_provider_config::is_unauthenticated_local(profile) {
+        return Ok(true);
+    }
+    if profile.location != EndpointLocation::ThisDevice
+        || profile.credential.is_some()
+        || profile.sign_in.is_some()
+    {
         return Ok(false);
     }
-    let endpoint = url::Url::parse(&provider_url(profile)).map_err(|_| {
+    // Typed as this device with no key and no sign-in, but not at a literal
+    // loopback address: report that, rather than quietly asking the vault
+    // for a key the profile never named.
+    url::Url::parse(&provider_url(profile)).map_err(|_| {
         resolution_error(
             ErrorKind::InvalidRequest,
             "local provider endpoint is invalid",
         )
     })?;
-    let loopback = match endpoint.host() {
-        Some(url::Host::Ipv4(ip)) => ip.is_loopback(),
-        Some(url::Host::Ipv6(ip)) => ip.is_loopback(),
-        _ => false,
-    };
-    if !matches!(endpoint.scheme(), "http" | "https")
-        || !loopback
-        || !endpoint.username().is_empty()
-        || endpoint.password().is_some()
-    {
-        return Err(resolution_error(
-            ErrorKind::InvalidRequest,
-            "unauthenticated local Plan requires a literal loopback endpoint",
-        ));
-    }
-    Ok(true)
+    Err(resolution_error(
+        ErrorKind::InvalidRequest,
+        "unauthenticated local Plan requires a literal loopback endpoint",
+    ))
 }
 
 fn plan_secret(profile: &ProviderProfile) -> Result<Option<Zeroizing<String>>, ModelError> {

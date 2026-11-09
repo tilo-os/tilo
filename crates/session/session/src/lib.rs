@@ -135,6 +135,8 @@ mod desk_resource;
 #[cfg(target_os = "linux")]
 mod desk_restore;
 #[cfg(target_os = "linux")]
+pub mod desk_styles;
+#[cfg(target_os = "linux")]
 pub mod desktop_services;
 #[cfg(target_os = "linux")]
 /// A Rust app's sample resources and views, in a development session only.

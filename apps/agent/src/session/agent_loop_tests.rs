@@ -182,36 +182,6 @@ fn completed_stream_frames_cannot_dispatch_before_a_failed_final_response() {
         runtime_collab::TaskRunUpdate::Failed { message } if message.contains("provider stream reset")));
 }
 
-#[test]
-fn malformed_later_calls_prevent_the_entire_batch_from_dispatching() {
-    let mut f = fixture(
-        "write hello",
-        World::default(),
-        vec![turn(
-            &[
-                invoke("type-text", &serde_json::json!({"text": "Do not write"})),
-                (
-                    tools::LIST_OPERATIONS,
-                    serde_json::json!({"application": false}),
-                ),
-            ],
-            6,
-        )],
-    );
-    f.session.run_task(&f.run).unwrap();
-    assert!(f.world.borrow().steps.is_empty());
-    assert!(
-        !f.sent
-            .borrow()
-            .iter()
-            .any(|request| matches!(request, CollabRequest::InvokeTaskAction { .. }))
-    );
-    assert!(matches!(
-        terminal(&f.sent.borrow()),
-        runtime_collab::TaskRunUpdate::Failed { .. }
-    ));
-}
-
 /// Answers each turn with the next scripted event list and records the
 /// request bodies, like the gateway but without a network.
 #[derive(Default)]
@@ -1622,6 +1592,8 @@ mod anthropic_dialect;
 mod follow_up;
 #[path = "agent_loop/tests/long_run.rs"]
 mod long_run;
+#[path = "agent_loop/tests/malformed_calls.rs"]
+mod malformed_calls;
 #[path = "agent_loop/tests/native_pipeline.rs"]
 mod native_pipeline;
 #[path = "agent_loop/tests/pictures.rs"]
@@ -1881,6 +1853,45 @@ fn a_run_records_its_turn_in_the_conversation() {
     assert_eq!(steps[0]["label"], "Append paragraph");
     assert_eq!(steps[0]["resource"], "word-processor.document");
     assert_eq!(steps[0]["outcome"], "applied");
+}
+
+/// A model or transport error ends the turn with what went wrong, and the conversation is told
+/// so: the reply's work ends `refused` carrying the reason, which is the row the page draws
+/// with a Retry. Nothing is silent.
+///
+/// The model is scripted (`Scripted`, the test transport): the run's first turn fails in
+/// transport, exactly as a provider that drops the stream does.
+#[test]
+fn a_run_whose_model_fails_records_the_failure_on_its_reply() {
+    let mut f = fixture(
+        "write a paragraph",
+        World {
+            chat: Some("asked".into()),
+            ..World::default()
+        },
+        vec![vec![TurnEvent::Finished(Err(
+            "provider stream reset".into()
+        ))]],
+    );
+    f.session.run_task(&f.run).unwrap();
+    let sent = f.sent.borrow();
+    let records = recorded(&sent, "record-work");
+    let last = records.last().expect("the failed turn was recorded");
+    assert_eq!(
+        last["work"]["state"], "refused",
+        "the reply's work says the turn ended without an answer: {last:?}"
+    );
+    assert!(
+        last["say"].as_str().is_some_and(|say| !say.is_empty()),
+        "the reply says what happened, in the run's words: {last:?}"
+    );
+    assert!(
+        matches!(
+            terminal(&sent),
+            runtime_collab::TaskRunUpdate::Failed { .. }
+        ),
+        "the run tells the host it failed"
+    );
 }
 
 /// A run the person stops ends its turn: the reply says it was stopped, in

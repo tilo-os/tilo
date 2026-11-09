@@ -134,6 +134,11 @@ pub struct Core {
     /// Where a task's programs send what they change, in a host that runs no app's code
     /// ([`crate::delegate`]); `None` where the runtime runs actions itself.
     pub invoker: RefCell<Option<Box<dyn crate::delegate::Invoker>>>,
+    /// The verbs the host's resources publish that no loaded package declares, by resource and
+    /// verb ([`crate::published`]): what a view names on the resource it shows (`post` on a
+    /// channel) and the runtime sends to the app that publishes it, as it sends any other app's
+    /// action to that app's door. Empty until the host hands it in.
+    pub published: RefCell<crate::published::Published>,
     /// Where a task's programs ask each app what they read of it (`grep`, `find`, `read`,
     /// `describe`), while they run: a host that holds no records; `None` where the runtime
     /// answers what it holds itself.
@@ -149,6 +154,10 @@ pub struct Core {
     /// The apps a view read a resource of before their package was loaded here: what the host
     /// loads ([`crate::Runtime::take_wanted_packages`]).
     pub wanted_packages: RefCell<crate::foreign::WantedPackages>,
+    /// The view calls that could not be shown: their package did not load here, or their view
+    /// failed when it ran ([`crate::foreign::FailedViews`]). What each call draws as its failed
+    /// state, and what the host is told once so the session can say it (shell.md §6).
+    pub failed_views: RefCell<crate::foreign::FailedViews>,
     /// The seen marks the person set here, for the host to keep in their own record
     /// ([`crate::seen`]).
     pub seen_writes: RefCell<Vec<crate::seen::SeenWrite>>,
@@ -274,12 +283,14 @@ impl Core {
             program: RefCell::new(None),
             text_search: RefCell::new(None),
             invoker: RefCell::new(None),
+            published: RefCell::new(crate::published::Published::default()),
             reader: RefCell::new(None),
             trying: std::cell::Cell::new(false),
             running: std::cell::Cell::new(false),
             foreign: RefCell::new(crate::foreign::Foreign::default()),
             rust_views: crate::rust_views::Shared::default(),
             wanted_packages: RefCell::new(crate::foreign::WantedPackages::default()),
+            failed_views: RefCell::new(crate::foreign::FailedViews::default()),
             seen_writes: RefCell::new(Vec::new()),
             seen_undo: RefCell::new(None),
             costs,

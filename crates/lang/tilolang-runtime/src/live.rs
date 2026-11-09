@@ -889,9 +889,11 @@ impl Live {
             loops: Vec::new(),
         };
         let prefix = (id != ROOT).then_some(key.as_str());
-        // A call that fails for want of a reading that has not arrived draws its waiting state
-        // and the rest of the tree stands: one place waiting causes no other place to fail.
+        // A call that fails for want of a reading that has not arrived draws its waiting state,
+        // and one that cannot be shown at all draws a failed state naming it; either way the
+        // rest of the tree stands, so one place's failure causes no other place to fail.
         let rendered = core.render_boundary_waiting(
+            &key,
             &target,
             &args,
             offer,

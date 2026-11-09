@@ -2818,3 +2818,58 @@ fn a_press_on_a_quick_settings_tile_works_at_every_scale() {
         );
     }
 }
+
+/// Step 1 of shell.md §6, "The shell loads from the store": the shell the session runs is the
+/// installed `so.tilo.shell` — its package as `tilolang build` signed it, read from the app
+/// store — and not this build's copy. The test's store holds the shell (the common app store
+/// installs it as it installs every app), so the shell's instance runs the installed module:
+/// its per-app id is the one it declares, and the desk it draws is the same desk.
+#[test]
+fn the_shell_loads_from_the_package_store_and_not_the_builds_copy() {
+    let _settled = ui::motion::testing::settled();
+    // The store the session reads: the test's, where the shell is installed as an app is.
+    let store = common::app_store();
+    assert!(
+        app_catalogue::apps::read_one_from_env("so.tilo.shell")
+            .expect("the store reads")
+            .is_some(),
+        "the shell is installed in the session's app store at {}",
+        store.display()
+    );
+    // The installed package is the one the session compiles: the same app id, and the module
+    // the session runs is the store's, not this build's `include_str!` copy.
+    let (installed, from_store) =
+        tilo_session::shell::shell_packages().expect("the shell package loads");
+    assert!(
+        from_store,
+        "the session loads the shell from the store, not its fallback copy"
+    );
+    assert_eq!(
+        installed.last().map(|package| package.meta.app.as_str()),
+        Some("so.tilo.shell"),
+        "the installed shell is the last package, as a bundle holds it"
+    );
+    // The store's module is the one the signed `.tapp` carries; this build's copy is compiled
+    // from source and cannot be byte-identical to it, so the two differ where the path did its
+    // work: a module compiled from `include_str!` and one the build staged are not the same
+    // bytes.
+    let fallback = tilo_surface_host::shell_part::compile_shell().expect("the fallback compiles");
+    assert_ne!(
+        fallback.last().map(|package| package.wasm.as_slice()),
+        installed.last().map(|package| package.wasm.as_slice()),
+        "the installed shell runs its own signed module, not the build's compiled copy"
+    );
+    let mut session = session();
+    until(&mut session, |session| says(session, &desk(session).clock));
+    assert!(
+        session.shell_apps().is_empty(),
+        "a place shows no app yet: the shell alone runs"
+    );
+    // The desk the installed shell draws is the desk: its bar names the person the session
+    // publishes, so what runs is a shell and not a blank screen.
+    assert!(
+        says(&session, PERSON),
+        "the installed shell draws the bar: {:?}",
+        session.accessible_labels()
+    );
+}

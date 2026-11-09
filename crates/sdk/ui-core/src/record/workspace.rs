@@ -143,10 +143,19 @@ impl WorkspaceRecords {
     /// opening or creating it: a list asks this to show the records that
     /// exist, not to make one for everything it could name.
     ///
+    /// `id` may be the [package primary](RecordId::package_primary) sentinel
+    /// that [`Self::open_primary`] opens: it is a workspace record's identity
+    /// even though no route names it, so a caller checking an app's own record
+    /// asks here rather than parsing it away.
+    ///
     /// # Errors
     /// `id` names no record, or the record could not be read.
     pub fn holds_record(&self, owner: &str, id: &str, kind: &str) -> Result<bool, RecordOpenError> {
-        let id = RecordId::parse(id).ok_or(RecordOpenError::IdentityMismatch)?;
+        let id = if id == RecordId::package_primary().as_str() {
+            RecordId::package_primary()
+        } else {
+            RecordId::parse(id).ok_or(RecordOpenError::IdentityMismatch)?
+        };
         let store = (self.open)(owner)?;
         let checkout = RecordCheckout::new(id, RecordKind::new(kind));
         match store.try_open_record(&checkout) {
@@ -281,5 +290,39 @@ mod tests {
                 .map(|(value, _)| value.to_string())
         });
         assert_eq!(value.flatten().as_deref(), Some("\"from notes\""));
+    }
+
+    /// A package's own record (Chat's chat) is kept under the primary sentinel no route names,
+    /// so asking whether the workspace holds it must not parse the sentinel as a record id: a
+    /// session that asked did, got "no such record" for the identity it had just written, and
+    /// read its conversations as gone for one pass — which the broker took as the turn ending
+    /// while a step it had started was still launching ("task stopped while waiting for its
+    /// application").
+    #[test]
+    fn a_primary_record_the_workspace_holds_is_found_by_its_sentinel_id() {
+        let store = Rc::new(durable_store::MemoryStore::new());
+        let records = records(&store, "alice");
+        let primary = RecordId::package_primary();
+        assert!(
+            !records
+                .holds_record("so.tilo.chat", primary.as_str(), "chat.workspace")
+                .unwrap(),
+            "nothing holds it before it is opened"
+        );
+        records
+            .open_primary("so.tilo.chat", "chat.workspace", &|_| Ok(()))
+            .unwrap();
+        assert!(
+            records
+                .holds_record("so.tilo.chat", primary.as_str(), "chat.workspace")
+                .unwrap(),
+            "the record Chat keeps as itself is the one the sentinel names"
+        );
+        assert!(
+            !records
+                .holds_record("so.tilo.notes", primary.as_str(), "chat.workspace")
+                .unwrap(),
+            "only its owner keeps it"
+        );
     }
 }

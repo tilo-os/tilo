@@ -44,59 +44,53 @@ fn maximized_strips(a: Arrangement) -> List<ArrangementStrip> {
     a.strips.filter(s -> s.maximized)
 }
 
-/// The preset switch: the ways of showing the same arrangement, the one in use lit, so a person
-/// moves between the strips, the framed canvas, the spaces canvas and the traditional desktop as
-/// shell.md §6 picks. Switching keeps every place where it was, drawn the other way. The desk
-/// carries it in its own bar (`preset_menu`); this is the page Settings shows.
-view preset_switch(v: Viewing) {
+/// The style switch: every desk style every installed package offers, the one in use lit, so a
+/// person moves between the shipped four and any they or their agent wrote, as shell.md §6
+/// picks. Each is listed by its own doc line, in its author's words. Switching keeps every
+/// place where it was, drawn the other way. The desk carries it in its own bar (`style_menu`);
+/// this is the page Settings shows.
+view style_switch(v: Viewing, d: Desk) {
     row(gap: .tight, align: .center, wrap: true) {
-        ui.Chip("Strips", icon: .columns_2, selected: v.showing == .strips) {
-            on press: show_preset(v, .strips)
-        }
-        ui.Chip("Frames", icon: .app_window, selected: v.showing == .frames) {
-            on press: show_preset(v, .frames)
-        }
-        ui.Chip("Spaces", icon: .layout_grid, selected: v.showing == .spaces) {
-            on press: show_preset(v, .spaces)
-        }
-        ui.Chip("Desktop", icon: .monitor, selected: v.showing == .desktop) {
-            on press: show_preset(v, .desktop)
+        for style in d.styles {
+            ui.Chip(style_label(style), selected: v.style == style.style) {
+                on press: show_style(v, style.style)
+            }
         }
     }
 }
 
-/// The preset the desk shows, named the way the person picked it.
-fn preset_title(p: Preset) -> Text {
-    match p {
-        .strips => "Strips",
-        .frames => "Frames",
-        .spaces => "Spaces",
-        .desktop => "Desktop",
-    }
+/// A style's one name everywhere — the bar's menu title, its menu items and the Settings page:
+/// its doc line, or its view's name when its author wrote none, so no style is listed by an
+/// empty chip.
+fn style_label(style: DeskStyle) -> Text {
+    if style.line != "" { style.line } else { style.name }
 }
 
-/// The preset the desk shows as a menu of the bar's own: the same switch the Settings page
+/// The style the desk shows, named in the bar's menu by the same name it is listed under
+/// (`style_label`): one name for a style in the bar and in Settings, never a different one in the
+/// seat from the one in the list.
+fn style_title(v: Viewing, d: Desk) -> Text {
+    if let chosen = d.styles.find(s -> s.style == style_of(v)) {
+        return style_label(chosen)
+    }
+    "Strips"
+}
+
+/// The style the desk shows as a menu of the bar's own: the same switch the Settings page
 /// offers, where the person passes it on the desk, so the desk's windows start at the bar's edge
-/// and no second row stands between them and it. The menu names the preset the desk shows, so the
-/// bar says what a person is looking at, and neither reads as one of the presets it offers.
-view preset_menu(v: Viewing) {
+/// and no second row stands between them and it. The menu names the style the desk shows, so the
+/// bar says what a person is looking at; its items list every style by its own doc line.
+view style_menu(v: Viewing, d: Desk) {
     ui.MenuButton(
-        "Showing {preset_title(v.showing)}",
+        "Showing {style_title(v, d)}",
         icon: .layout_grid,
         role: .bar,
         icon_only: space.compact,
     ) {
-        ui.MenuItem("Strips", icon: .columns_2, checked: v.showing == .strips) {
-            on choose: show_preset(v, .strips)
-        }
-        ui.MenuItem("Frames", icon: .app_window, checked: v.showing == .frames) {
-            on choose: show_preset(v, .frames)
-        }
-        ui.MenuItem("Spaces", icon: .layout_grid, checked: v.showing == .spaces) {
-            on choose: show_preset(v, .spaces)
-        }
-        ui.MenuItem("Desktop", icon: .monitor, checked: v.showing == .desktop) {
-            on choose: show_preset(v, .desktop)
+        for style in d.styles {
+            ui.MenuItem(style_label(style), checked: v.style == style.style) {
+                on choose: show_style(v, style.style)
+            }
         }
     }
 }

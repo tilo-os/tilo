@@ -76,7 +76,7 @@ fn show(session: &mut Session, root: &std::path::Path, preset: &str) {
         let (answer, failed) = repl.run(
             session,
             &format!(
-                "shell.show_preset(shell.viewing, shown: shell.Preset.{})",
+                "shell.show_style(shell.viewing, shown: \"so.tilo.shell:{}\")",
                 preset.to_lowercase()
             ),
         );

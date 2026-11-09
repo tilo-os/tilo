@@ -194,11 +194,60 @@ pub fn screen_layer() -> RootView {
     }
 }
 
+/// The package id of the shell a device installs, and the one this build's fallback copy is.
+pub const SHELL_APP: &str = "so.tilo.shell";
+
+/// The shell package, as the session runs it: the installed `so.tilo.shell` when the person's
+/// app store holds one, and this build's copy (`compile_shell`) when it does not
+/// (shell.md §6, "Where styles come from").
+///
+/// An installed shell is read the way every tilolang app is ([`seeded_apps`]'s path): its
+/// payload from the store row, its module and the modules it uses, each of them compiled by
+/// `tilolang build`. The store is the session's own (`$TILO_APPS_DATA_DIR`, else the person's
+/// `$XDG_DATA_HOME/tilo-apps`), so a development session installs it as it installs the apps.
+///
+/// # Errors
+/// The installed shell's payload does not read. A store that holds no shell is not an error:
+/// the fallback answers.
+pub fn installed_shell() -> Result<Option<Vec<Compiled>>, String> {
+    let Ok(catalog) = package_store::Catalog::from_env() else {
+        return Ok(None);
+    };
+    let found =
+        app_catalogue::apps::read_one(&catalog, SHELL_APP).map_err(|error| error.to_string())?;
+    let Some(app) = found else {
+        return Ok(None);
+    };
+    let bundle = tilolang_tilo::bundle::Bundle::read(&app.payload_root)
+        .map_err(|error| format!("{SHELL_APP}: {error}"))?;
+    // The packages it uses come first, as a bundle holds them, the shell last: the runtime
+    // loads each before the one that uses it.
+    let mut out: Vec<Compiled> = Vec::new();
+    for import in &bundle.imports {
+        out.push(compiled_of(&import.wasm, &import.meta, ""));
+    }
+    out.push(compiled_of(&bundle.wasm, &bundle.meta, &bundle.ids));
+    Ok(Some(out))
+}
+
+/// A compiled package made of the module `wasm`, the metadata `meta` and the ids lock `ids`,
+/// as an installed payload holds them: the shape a shell's instance loads.
+fn compiled_of(wasm: &[u8], meta: &tilolang_tilo::tilolang::PackageMeta, ids: &str) -> Compiled {
+    Compiled {
+        wasm: wasm.to_vec(),
+        meta: meta.clone(),
+        ids: tilolang_tilo::tilolang::IdsLock::parse(ids).unwrap_or_default(),
+    }
+}
+
 /// The shell package, compiled: what a shell's instance loads, over the session's and the
 /// platform's descriptions. No other app's package is the shell's: the package of each app a
 /// place shows comes from the session when a place shows it ([`SessionLink::publish_packages`]).
 /// `Err` when it does not compile, which every build of the shell is checked against, so a
 /// test that fails to compile here fails loudly.
+///
+/// This is the fallback shell, for a device whose app store holds no `so.tilo.shell` (or one
+/// that does not load): [`installed_shell`] answers with the installed copy first.
 ///
 /// # Errors
 /// The package's diagnostics, rendered with their file names.
@@ -216,8 +265,11 @@ pub fn compile_shell() -> Result<Vec<Compiled>, String> {
         "en-US".to_owned(),
         include_str!("../../../../apps/tl/shell/locales/en-US.ftl").to_owned(),
     )]);
-    let mut imports: Vec<tilolang_tilo::tilolang::PackageMeta> = vec![session];
-    imports.extend(platform_packages()?);
+    let mut imports: Vec<tilolang_tilo::tilolang::PackageMeta> = platform_packages()?
+        .into_iter()
+        .filter(|meta| meta.app != SESSION_APP)
+        .collect();
+    imports.insert(0, session);
     let shell = tilolang_tilo::tilolang::compile_package_source(&source, &lock, &imports).map_err(
         |diagnostics| {
             diagnostics
@@ -448,6 +500,34 @@ pub struct DeskReading {
     /// The running applications' tray items, in the order they registered.
     #[serde(default)]
     pub tray: Vec<TrayReading>,
+    /// The desk styles every installed package offers, as the session finds them (shell.md
+    /// §6): each a view of the arrangement, listed by its own doc line, so the person's switch
+    /// offers every style wherever it was written.
+    #[serde(default)]
+    pub styles: Vec<DeskStyleReading>,
+}
+
+/// A desk style, as the desk's reading names it: a view of the arrangement an installed
+/// package declares (shell.md §6).
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DeskStyleReading {
+    /// The view reference: a package and a view (`so.tilo.shell:strips`), as `Viewing.style`
+    /// names it.
+    pub style: String,
+    /// The package that declares it.
+    pub package: String,
+    /// The view's own name, as its declaration writes it.
+    pub name: String,
+    /// The view's doc line, in its author's words: what the switch lists it by.
+    pub line: String,
+    /// Whether the style loads: false for one whose package does not compile against the shell
+    /// and the session, or whose view failed when it ran, so the switch can say so and the desk
+    /// shows the built-in strips until it is fixed (`shell.md` §6).
+    pub loads: bool,
+    /// Why the style does not load, in the runtime's words, when it does not; empty when it
+    /// does.
+    #[serde(default)]
+    pub reason: String,
 }
 
 /// The arrangement's readings are the session core's, which the page publishes through the same
@@ -621,6 +701,11 @@ pub struct SessionLink {
     /// own views, and unloads once no place shows that app.
     packages: RefCell<BTreeMap<String, std::sync::Arc<[u8]>>>,
     packages_fresh: Cell<bool>,
+    /// The verbs the session's resources publish that no loaded package declares, by resource
+    /// and verb ([`tilolang_tilo::runtime::published`]): what the shell's runtime sends to the app
+    /// publishing them. `None` until the session publishes one.
+    published: RefCell<Option<tilolang_tilo::runtime::published::Published>>,
+    published_fresh: Cell<bool>,
     /// The resources a view composed in a place read before their readings came in, by id,
     /// each with its type: what the session publishes next ([`SessionLink::take_wanted`]).
     wanted: RefCell<BTreeMap<String, String>>,
@@ -628,6 +713,16 @@ pub struct SessionLink {
     /// loaded, by app id, each with the type it read: what the session publishes next
     /// ([`SessionLink::take_wanted_packages`]).
     wanted_packages: RefCell<BTreeMap<String, String>>,
+    /// The views that could not be shown — a package that did not load, a view that failed —
+    /// each an app, a view and why: what the session hears so it can say so where the person's
+    /// own choice is the one that failed (`shell.md` §6, "Nothing can lock a person out").
+    view_failures: RefCell<Vec<tilolang_tilo::runtime::foreign::ViewFailure>>,
+    /// The apps whose view failure ended — its package now loads: what the session hears so a
+    /// style the person chose comes back (`shell.md` §6).
+    view_recoveries: RefCell<Vec<String>>,
+    /// The view calls whose failure ended — the call ran again and succeeded, each an app and a
+    /// view: what the session hears so a style the person chose comes back (`shell.md` §6).
+    recovered_calls: RefCell<Vec<(String, String)>>,
     asked: RefCell<VecDeque<Ask>>,
     /// How many effects the shell handed the session, and how many the session ran.
     handed: Cell<u64>,
@@ -760,6 +855,7 @@ pub struct SessionOrigin {
     rooms: BTreeMap<String, Kept<RoomReading>>,
     notices: BTreeMap<String, Kept<NoticeReading>>,
     notice_actions: BTreeMap<String, Kept<NoticeActionReading>>,
+    styles: BTreeMap<String, Kept<DeskStyleReading>>,
     arrangement_workspaces: BTreeMap<String, Kept<ArrangementWorkspaceReading>>,
     arrangement_rows: BTreeMap<String, Kept<ArrangementRowReading>>,
     arrangement_strips: BTreeMap<String, Kept<ArrangementStripReading>>,
@@ -784,6 +880,7 @@ impl SessionOrigin {
             rooms: BTreeMap::new(),
             notices: BTreeMap::new(),
             notice_actions: BTreeMap::new(),
+            styles: BTreeMap::new(),
             arrangement_workspaces: BTreeMap::new(),
             arrangement_rows: BTreeMap::new(),
             arrangement_strips: BTreeMap::new(),
@@ -1079,6 +1176,27 @@ impl SessionOrigin {
                         ("notice", text(&a.notice)),
                         ("key", text(&a.key)),
                         ("label", text(&a.label)),
+                    ]
+                },
+            ));
+        }
+        if let (Ok(ty), Some(collection)) = (kind("desk_style"), field(desk, "styles")) {
+            writes.extend(sync_items(
+                &mut self.styles,
+                &reading.styles,
+                root,
+                &collection,
+                ty,
+                |s| s.style.clone(),
+                |s| {
+                    vec![
+                        ("key", text(&s.style)),
+                        ("style", text(&s.style)),
+                        ("package", text(&s.package)),
+                        ("name", text(&s.name)),
+                        ("line", text(&s.line)),
+                        ("loads", Value::Bool(s.loads)),
+                        ("reason", text(&s.reason)),
                     ]
                 },
             ));
@@ -1485,6 +1603,16 @@ impl SessionOrigin {
                         was: was.clone(),
                     },
                 );
+            } else if is("desk_style")
+                && let Some(was) = reading.styles.iter().find(|s| s.style == key)
+            {
+                self.styles.insert(
+                    key,
+                    Kept {
+                        at,
+                        was: was.clone(),
+                    },
+                );
             }
         }
     }
@@ -1505,6 +1633,7 @@ impl Origin for SessionOrigin {
         self.link.fresh.get()
             || self.link.arrangement_fresh.get()
             || self.link.packages_fresh.get()
+            || self.link.published_fresh.get()
             || !self.link.readings_fresh.borrow().is_empty()
     }
 
@@ -1605,6 +1734,11 @@ impl Platform for ShellPlatform {
         match platform_packages() {
             Ok(packages) => {
                 for meta in packages {
+                    // The session's package is loaded below, from the copy the shell was built
+                    // against, which is the only description whose action ids its code calls.
+                    if meta.app == SESSION_APP {
+                        continue;
+                    }
                     let app = meta.app.clone();
                     if let Err(error) = host.runtime().load_foreign(meta) {
                         tracing::error!(app, %error, "a platform package did not load");
@@ -1621,7 +1755,18 @@ impl Platform for ShellPlatform {
             return 0;
         };
         // The session's own package is a description: its actions run at the session's door.
-        match session_package() {
+        // It is the one the shell was built against — the bundle's own import, whose action ids
+        // are the ids the shell's code calls (`so.tilo.session#tilo-menu`). A package read again
+        // from the source describes the same resources under the same names, but names its
+        // actions as the surface does (`tilo-menu`), which is not what a compiled call names:
+        // the runtime would find no action for it and the view would fail. The source's
+        // description stands in only for a shell compiled against it, which has no bundle.
+        let built_against = self
+            .packages
+            .iter()
+            .find(|package| package.meta.app == SESSION_APP)
+            .map(|package| package.meta.clone());
+        match built_against.map_or_else(session_package, Ok) {
             Ok(session) => {
                 if let Err(error) = host.runtime().load_foreign(session) {
                     tracing::error!(%error, "the session's package did not load");
@@ -1684,7 +1829,7 @@ impl NameHost for Person {
         if who.0.is_empty() {
             self.0.clone()
         } else {
-            who.0.clone()
+            who.shown()
         }
     }
 }
@@ -1783,6 +1928,15 @@ pub struct ShellPart {
     /// An instant the session has something of its own to draw at (the switcher's panel
     /// coming up while Alt is held): the part wakes then rather than sleeping over it.
     deadline: Option<std::time::Instant>,
+    /// The content its places' pictures are read from: the session's document media, as the
+    /// workspace in front's places stand in it. The part draws in the session's own process,
+    /// which the launcher handed no capability of its own, so what an app's connector kept for
+    /// the records a place shows is read from here (`ui::pictures::lend_content`).
+    content: Option<ui::content::ContentStore>,
+    /// The workspace the store was opened for, as the session names it: a place of another
+    /// workspace reads its pictures from that one's, and the session lends the store of the
+    /// workspace in front each pass.
+    content_workspace: String,
 }
 
 /// Which of the compositor's windows a view's window key names, if it may be pictured.
@@ -1887,6 +2041,8 @@ impl ShellPart {
             seen_heads: Vec::new(),
             previews: None,
             deadline: None,
+            content: None,
+            content_workspace: String::new(),
         };
         if seed {
             part.seed();
@@ -2078,6 +2234,48 @@ impl ShellPart {
         self.text_bounds_all(text).into_iter().next()
     }
 
+    /// Where the first node that says `text` is *drawn*: its own box, cut to the clip of the
+    /// scroll view it stands in, in the desktop's logical layout `(x, y, width, height)`.
+    ///
+    /// A transcript's rows are laid out whole and drawn through their scroll view's viewport: a
+    /// row scrolled above it has a box outside it and no pixels inside it. What this answers is
+    /// where the row's pixels can be — the intersection of its box with every clip between it
+    /// and the screen — so a test asks what the person sees, never where the layout put a row
+    /// that the view cuts off. `None` where the node says `text` but is drawn nowhere.
+    pub fn drawn_text_bounds(&mut self, text: &str) -> Option<(f64, f64, f64, f64)> {
+        let (ox, oy) = self.widgets.placement().origin;
+        let root = self.widgets.host_mut().root_widget_mut();
+        let found = drawn_text(root, text)?;
+        let rect = match found.clip {
+            Some(cut) => found.rect.intersect(cut),
+            None => found.rect,
+        };
+        (rect.width() > 0.0 && rect.height() > 0.0).then(|| {
+            (
+                f64::from(ox) + rect.x0,
+                f64::from(oy) + rect.y0,
+                rect.width(),
+                rect.height(),
+            )
+        })
+    }
+
+    /// The clip a scroll view draws its content through, as the room a transcript has under a
+    /// page's header: where the first scroll on screen whose content says `text` draws. `None`
+    /// where nothing says it or no scroll holds it.
+    pub fn scroll_clip(&mut self, text: &str) -> Option<(f64, f64, f64, f64)> {
+        let (ox, oy) = self.widgets.placement().origin;
+        let root = self.widgets.host_mut().root_widget_mut();
+        let found = drawn_text(root, text)?;
+        let clip = found.clip?;
+        Some((
+            f64::from(ox) + clip.x0,
+            f64::from(oy) + clip.y0,
+            clip.width(),
+            clip.height(),
+        ))
+    }
+
     /// Where every node that says `text` (its name, description or value holds it) stands, in the
     /// desktop's logical layout `(x, y, width, height)`. A name more than one thing on the desk
     /// carries — a strip's name, which the bar's pill and nothing on the desk says — is read by all
@@ -2112,6 +2310,21 @@ impl ShellPart {
         self.origin.borrow().loaded.keys().cloned().collect()
     }
 
+    /// The views that could not be shown since the last call, each an app, a view and why: what
+    /// the session hears so it can say so where the person's own choice is the one that failed
+    /// (`shell.md` §6, "Nothing can lock a person out").
+    #[must_use]
+    pub fn take_view_failures(&self) -> Vec<tilolang_tilo::runtime::foreign::ViewFailure> {
+        self.origin.borrow().link.take_view_failures()
+    }
+
+    /// The apps whose view failure ended since the last call, and the view calls that ran again
+    /// and succeeded: what a style the person chose comes back from (`shell.md` §6, "Nothing
+    /// can lock a person out").
+    #[must_use]
+    pub fn take_view_recoveries(&self) -> (Vec<String>, Vec<(String, String)>) {
+        self.origin.borrow().link.take_view_recoveries()
+    }
     /// Draw the shell with `theme`, the person's as their appearance settings make it: a
     /// change of mode (dark mode in the quick settings, a theme chosen in Settings) redraws
     /// the bar and every surface over the desk in it.
@@ -2128,6 +2341,24 @@ impl ShellPart {
     pub fn show_pictures(&mut self, previews: ui::widget::Previews, windows: WindowLookup) {
         self.widgets.install_previews(Some(previews.clone()));
         self.previews = Some((previews, windows));
+    }
+
+    /// Read its places' pictures from `content`, the session's document media as the workspace
+    /// `workspace` in front holds it: a place shows the records an app's connector kept stills
+    /// for, and the part draws in the session's own process, which the launcher handed no store
+    /// of its own.
+    ///
+    /// The store keeps every workspace the session draws, so one lending serves a place
+    /// whichever workspace it stands in; a part told the same store twice keeps the one it has.
+    pub fn lend_content(&mut self, workspace: &str, content: Option<ui::content::ContentStore>) {
+        if self.content_workspace == workspace && self.content.is_some() == content.is_some() {
+            return;
+        }
+        workspace.clone_into(&mut self.content_workspace);
+        self.content = content;
+        // The views asked for their pictures before one answered: the frames after this ask
+        // again, now that a store reads them.
+        self.again = true;
     }
 
     /// When the session has something of its own to draw, which the part does not know: it
@@ -2392,6 +2623,25 @@ impl ShellPart {
             if !packages.is_empty() {
                 self.origin.borrow().link.want_packages(packages);
             }
+            // What the views could not show — a package that did not load, a view that failed
+            // — so the session says so where it is the person's choice that failed
+            // (`shell.md` §6, "Nothing can lock a person out").
+            let failed = host.runtime().take_view_failures();
+            if !failed.is_empty() {
+                self.origin.borrow().link.view_failed(failed);
+            }
+            // An app whose package failed to load and now loaded: its style draws again.
+            let recovered = host.runtime().take_recovered_apps();
+            if !recovered.is_empty() {
+                self.origin.borrow().link.view_recovered(recovered);
+            }
+            // A call that failed and now runs: the style it draws is back.
+            for failure in host.runtime().take_recovered_views() {
+                self.origin
+                    .borrow()
+                    .link
+                    .view_recovered_call((failure.app, failure.view));
+            }
         }
         // What a composed view opened (a video row pressed on a channel's page): a place the
         // session arranges on the canvas, one step of the person's, never a detail lane of the
@@ -2642,6 +2892,52 @@ impl ShellPart {
 pub mod readings;
 use readings::PlaceInvoker;
 
+/// Where a node that says `text` stands in `widget`'s tree, and the clip every enclosing scroll
+/// draws it through: the node's own box, and the intersection of each scroll view's content
+/// viewport on the way down. What a test asks is what the person sees, so a row the transcript
+/// has scrolled out of its room is drawn nowhere, never over the header above it.
+struct DrawnText {
+    rect: vello::kurbo::Rect,
+    clip: Option<vello::kurbo::Rect>,
+}
+
+fn drawn_text(widget: &dyn ui::widget::Widget, text: &str) -> Option<DrawnText> {
+    fn says(widget: &dyn ui::widget::Widget, text: &str) -> Option<vello::kurbo::Rect> {
+        let access = widget.accessibility()?;
+        let held = [
+            access.name.as_deref(),
+            access.description.as_deref(),
+            access.value.as_deref(),
+        ]
+        .into_iter()
+        .flatten()
+        .any(|said| said.contains(text));
+        held.then(|| {
+            access
+                .bounds
+                .map_or_else(|| widget.get_rect(), ui::a11y::AccessBounds::to_rect)
+        })
+    }
+    fn walk(
+        widget: &dyn ui::widget::Widget,
+        text: &str,
+        clip: Option<vello::kurbo::Rect>,
+    ) -> Option<DrawnText> {
+        // This widget's own clip applies to its children; a node inside it is drawn through it.
+        let clip = match widget.child_clip_rect() {
+            Some(own) => Some(clip.map_or(own, |outer| outer.intersect(own))),
+            None => clip,
+        };
+        if let Some(rect) = says(widget, text) {
+            return Some(DrawnText { rect, clip });
+        }
+        widget
+            .children()
+            .into_iter()
+            .find_map(|child| walk(child, text, clip))
+    }
+    walk(widget, text, None)
+}
 #[cfg(test)]
 mod tests_support;
 
