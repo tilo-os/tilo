@@ -96,6 +96,21 @@ pub struct McpServer<H> {
     /// [`crate::remote_door::DEVICES_TOOL`] lists; `None` for a host that
     /// reaches none.
     devices: Option<std::sync::Arc<dyn crate::remote_door::DeviceDirectory>>,
+    /// The record this session's last agent call worked in
+    /// ([`ActedRecord`]): where its agent is, for the presence its door
+    /// shows the person.
+    acted: std::sync::Mutex<Option<ActedRecord>>,
+}
+
+/// The record an agent call worked in: the app's id and the workspace's
+/// record id, as the provider of the resource the call resolved names it.
+/// What a door that shows its agent present says the agent acts in.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ActedRecord {
+    /// The app's stable id (`so.tilo.notes`).
+    pub app: String,
+    /// The workspace's record id, which a provider's own token names.
+    pub record: String,
 }
 
 pub use agent::{PersonStep, literals_in};
@@ -655,7 +670,15 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
             task_hosts: None,
             devices: None,
             task: tokio::sync::Mutex::new(None),
+            acted: std::sync::Mutex::default(),
         }
+    }
+
+    /// The record this session's last agent call worked in, when the
+    /// workspace serves the resource it resolved as one of its records.
+    #[must_use]
+    pub fn acted(&self) -> Option<ActedRecord> {
+        self.acted.lock_recover().clone()
     }
 
     /// Run the `tilo` tool's programs in task hosts `hosts` starts.

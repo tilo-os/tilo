@@ -26,6 +26,7 @@ use std::collections::HashMap;
 use std::fmt::Write as _;
 use tilo_actions::remote::Found;
 use tilo_actions::{ActionDescriptor, OperationKind};
+use tilo_lock::MutexRecover as _;
 
 #[path = "mcp_agent_find.rs"]
 mod find;
@@ -2130,6 +2131,23 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
         text_result(result)
     }
 
+    /// Note the record a call resolved `in`: the one its provider names when
+    /// the workspace serves it as a record (`record:<app>:<record>`). A call
+    /// whose resource no record provider answers leaves the last one named:
+    /// the agent still acts there.
+    fn acted_in(&self, resolved: &Resolved) {
+        let Some((app, record)) = tilo_actions::remote::record_parts(&resolved.provider) else {
+            return;
+        };
+        if app != resolved.app_id {
+            return;
+        }
+        *self.acted.lock_recover() = Some(super::ActedRecord {
+            app: app.to_owned(),
+            record: record.to_owned(),
+        });
+    }
+
     async fn agent_ls(&self, args: LsArgs) -> Result<Reply, String> {
         let offset = match args.cursor.as_deref() {
             None | Some("") => 0,
@@ -2156,6 +2174,7 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
             Ok(resolved) => resolved,
             Err(note) => return Ok(Reply::ok(note)),
         };
+        self.acted_in(&resolved);
         let called = |action: &ActionDescriptor| forms.called(action, &resolved.app_id);
         if let Some(action) = &parsed.action {
             let (named_at, found) = self.pick_action_in(action, &resolved).await?;
@@ -2306,6 +2325,7 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
             (Ok(resolved), forms) => (resolved, forms),
             (Err(note), _) => return Ok(Reply::ok(note)),
         };
+        self.acted_in(&resolved);
         let provider = resolved.provider.clone();
         let mut levels = std::mem::take(&mut resolved.levels);
         let Some((owner, reader)) = self.reader(&resolved, &mut levels).await? else {
@@ -2548,6 +2568,7 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
                     .await?
             };
         }
+        self.acted_in(&resolved);
         let (named_at, descriptor) =
             if let Some(descriptor) = self.action_named(&resolved, &action).await? {
                 (resolved.path.clone(), descriptor)
