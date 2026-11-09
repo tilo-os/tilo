@@ -372,6 +372,18 @@ unsafe fn report(sock: RawFd, step: u32) -> ! {
     }
 }
 
+/// An ioctl request code as the C library's `ioctl` takes it: glibc's `unsigned long`, musl's
+/// `int`, which carries the same 32 bits.
+#[cfg(not(target_env = "musl"))]
+fn ioctl_request(code: libc::c_ulong) -> libc::Ioctl {
+    code
+}
+
+#[cfg(target_env = "musl")]
+fn ioctl_request(code: libc::c_ulong) -> libc::Ioctl {
+    libc::Ioctl::try_from(code).unwrap_or_default()
+}
+
 unsafe fn loopback_up(sock: RawFd) {
     // SAFETY: raw system calls on a zeroed local `ifreq`.
     unsafe {
@@ -382,11 +394,11 @@ unsafe fn loopback_up(sock: RawFd) {
         let mut ifr: libc::ifreq = std::mem::zeroed();
         ifr.ifr_name[0] = libc::c_char::try_from(b'l').unwrap_or_default();
         ifr.ifr_name[1] = libc::c_char::try_from(b'o').unwrap_or_default();
-        if libc::ioctl(s, libc::SIOCGIFFLAGS, &raw mut ifr) != 0 {
+        if libc::ioctl(s, ioctl_request(libc::SIOCGIFFLAGS), &raw mut ifr) != 0 {
             report(sock, 8);
         }
         ifr.ifr_ifru.ifru_flags |= libc::c_short::try_from(libc::IFF_UP).unwrap_or(1);
-        if libc::ioctl(s, libc::SIOCSIFFLAGS, &raw const ifr) != 0 {
+        if libc::ioctl(s, ioctl_request(libc::SIOCSIFFLAGS), &raw const ifr) != 0 {
             report(sock, 9);
         }
         libc::close(s);

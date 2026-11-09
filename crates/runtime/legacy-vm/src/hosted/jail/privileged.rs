@@ -643,6 +643,11 @@ fn ioctl_request(code: u32) -> libc::c_int {
     libc::c_int::from_ne_bytes(code.to_ne_bytes())
 }
 
+/// A request code libc declares as `unsigned long` as the 32 bits the kernel reads.
+fn request_code(code: libc::c_ulong) -> u32 {
+    u32::try_from(code).unwrap_or_default()
+}
+
 /// A persistent tap the VM's uid may attach to: Firecracker opens it by
 /// name.
 fn create_tap(name: &str, owner: u32) -> io::Result<()> {
@@ -744,12 +749,20 @@ impl Control {
         // SAFETY: the request lives across both calls.
         unsafe {
             check(
-                libc::ioctl(self.0.as_raw_fd(), libc::SIOCGIFFLAGS, &raw mut request),
+                libc::ioctl(
+                    self.0.as_raw_fd(),
+                    ioctl_request(request_code(libc::SIOCGIFFLAGS)),
+                    &raw mut request,
+                ),
                 "reading a link's flags",
             )?;
             request.ifr_ifru.ifru_flags |= libc::c_short::try_from(libc::IFF_UP).unwrap_or(1);
             check(
-                libc::ioctl(self.0.as_raw_fd(), libc::SIOCSIFFLAGS, &raw const request),
+                libc::ioctl(
+                    self.0.as_raw_fd(),
+                    ioctl_request(request_code(libc::SIOCSIFFLAGS)),
+                    &raw const request,
+                ),
                 "bringing a link up",
             )
         }

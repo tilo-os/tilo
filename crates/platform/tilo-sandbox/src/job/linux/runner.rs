@@ -273,6 +273,18 @@ struct Child<'a> {
     control: &'a Control,
 }
 
+/// An ioctl request code as the C library's `ioctl` takes it: glibc's `unsigned long`, musl's
+/// `int`, which carries the same 32 bits.
+#[cfg(not(target_env = "musl"))]
+fn ioctl_request(code: libc::c_ulong) -> libc::Ioctl {
+    code
+}
+
+#[cfg(target_env = "musl")]
+fn ioctl_request(code: libc::c_ulong) -> libc::Ioctl {
+    libc::Ioctl::try_from(code).unwrap_or_default()
+}
+
 impl Child<'_> {
     /// Report a failed step on the report pipe and end the init.
     fn fail(&self, step: Step, index: usize, errno: u32) -> ! {
@@ -463,7 +475,11 @@ impl Child<'_> {
                 pad: [0; 22],
             };
             self.check(
-                libc::c_long::from(libc::ioctl(s, libc::SIOCGIFFLAGS, &raw mut ifr)),
+                libc::c_long::from(libc::ioctl(
+                    s,
+                    ioctl_request(libc::SIOCGIFFLAGS),
+                    &raw mut ifr,
+                )),
                 Step::Loopback,
                 1,
             );
@@ -474,7 +490,11 @@ impl Child<'_> {
             let up = (libc::IFF_UP | libc::IFF_RUNNING) as libc::c_short;
             ifr.flags |= up;
             self.check(
-                libc::c_long::from(libc::ioctl(s, libc::SIOCSIFFLAGS, &raw const ifr)),
+                libc::c_long::from(libc::ioctl(
+                    s,
+                    ioctl_request(libc::SIOCSIFFLAGS),
+                    &raw const ifr,
+                )),
                 Step::Loopback,
                 2,
             );
