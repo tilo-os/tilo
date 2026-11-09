@@ -457,6 +457,80 @@ async fn view_read_policy_requires_current_certified_person_and_observes_revocat
     relay.shutdown().await;
 }
 
+/// What a workspace's records service answers an agent with follows from who
+/// the workspace admits: a member's agent, asking as the member on their
+/// device, reads the workspace; a stranger and a revoked device read nothing.
+#[cfg(feature = "agents")]
+#[tokio::test]
+async fn admits_a_members_agent_never_a_stranger_and_never_a_revoked_device() {
+    use tilo_actions::remote::Caller;
+    let dir = tempfile::tempdir().unwrap();
+    let (key, cert) = governor();
+    let relay = test_host(dir.path(), &key, &cert).await;
+    let workspaces = relay.workspaces().clone();
+    let created = workspaces.create("A workspace's people").await.unwrap();
+    let member_key = SigningKey::from_bytes(&[5; 32]);
+    let mut member = cert.clone();
+    member.device_public_key = member_key.verifying_key().to_bytes();
+    member.capabilities = DeviceCapabilities::member();
+    sign_device_cert(&mut member, &SigningKey::from_bytes(&[1; 32])).unwrap();
+    admit_view_reader(&workspaces, &created.workspace, &key, &member).await;
+    // The member's agent asks as the member, on the member's own device.
+    let agent = Caller::authenticated(member.user_public_key, member.device_public_key);
+    assert!(
+        workspaces.admits(created.workspace_id, &agent).await,
+        "a member's agent reads the workspace its person is in"
+    );
+    for stranger in [
+        Caller::authenticated([9; 32], member.device_public_key),
+        Caller::authenticated(member.user_public_key, [9; 32]),
+        Caller::local_agent("agent-with-no-delegation"),
+        Caller::local_app("so.tilo.chat"),
+    ] {
+        assert!(
+            !workspaces.admits(created.workspace_id, &stranger).await,
+            "{:?} is nobody this workspace admits",
+            stranger.principal()
+        );
+    }
+    assert!(
+        !workspaces.admits(0, &agent).await,
+        "a workspace this host does not govern admits nobody"
+    );
+    // Revoking the device ends it, though the workspace still lists its
+    // certificate: the authority a member holds here is checked, not the list.
+    let identity_key = SigningKey::from_bytes(&[1; 32]);
+    let mut revoked = tilo_user_identity::RevocationEntry {
+        user_public_key: member.user_public_key,
+        revoked_device_public_key: member.device_public_key,
+        revoked_at_ns: tilo_clock::unix_now_ns(),
+        reason: tilo_user_identity::RevocationReason::Compromised,
+        signature: [0; 64],
+    };
+    tilo_user_identity::sign_revocation_entry(&mut revoked, &identity_key).unwrap();
+    let state = workspaces.workspace(&created.workspace).await.unwrap();
+    {
+        let mut workspace = state.lock().await;
+        let now = SystemTime::now();
+        let mut candidate = workspace.peer().clone();
+        candidate
+            .governance_mut()
+            .publish_governed_revocations(&[revoked], &key, now)
+            .unwrap();
+        let collaboration = workspace.collaboration().clone();
+        workspace
+            .commit(candidate, &key, now, |_, _| Ok(collaboration))
+            .unwrap();
+    }
+    drop(state);
+    assert!(
+        !workspaces.admits(created.workspace_id, &agent).await,
+        "a revoked device reads nothing, its certificate in the list or not"
+    );
+    drop(workspaces);
+    relay.shutdown().await;
+}
+
 /// The workspace's default record a host seeds is the one every member's first
 /// window opens: it names the default id, or members refuse it.
 #[cfg(feature = "agents")]

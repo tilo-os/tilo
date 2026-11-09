@@ -149,10 +149,16 @@ pub struct ViewDocument {
 /// What the service needs of its host. Methods block; they are called from
 /// the service's own thread, never from the host's runtime.
 pub trait WorkspaceRecordsLink: Send + Sync {
-    /// The user root the host chains to: the only person served.
+    /// The user root the host chains to: the person whose device this service is.
     fn user_public_key(&self) -> [u8; 32];
     /// How the service joins the host's workspaces.
     fn member(&self) -> WorkspaceMember;
+    /// Whether `workspace` admits `caller`, on the device it speaks for: a
+    /// person the workspace lets in, as its governance records them, and the
+    /// person the host serves itself. Anyone else is a stranger to it.
+    fn admits(&self, _workspace: u64, _caller: &Caller) -> bool {
+        false
+    }
     /// Current certified-device admission and exact record Read capability.
     /// Absence denies; this never inherits document invocation authority.
     fn view_read_policy(
@@ -449,7 +455,13 @@ impl WorkspaceActions {
                     correlation,
                     result,
                 };
-                if query.view_resource.is_none() && !self.authorized(caller) {
+                // A person is answered by the service's own thread, which
+                // checks that the workspace admits them; nobody else is
+                // answered at all. The check runs there because asking the host
+                // blocks and this is the host's runtime.
+                if query.view_resource.is_none()
+                    && !matches!(caller.principal(), CallerPrincipal::Person(_))
+                {
                     let empty = CataloguePage::from_rows("0".into(), Vec::new(), &query);
                     return Some(Pending::ready(respond(Ok(empty))));
                 }
@@ -1428,12 +1440,33 @@ impl Worker {
         Ok(page)
     }
 
+    /// Whether `workspace` admits `caller`: the person whose device runs this
+    /// service, or a member the workspace's governance lets in. Answered here,
+    /// on the service's own thread, where asking the host blocks.
+    fn admits_member(&self, workspace: u64, caller: &Caller) -> bool {
+        let CallerPrincipal::Person(person) = caller.principal() else {
+            return false;
+        };
+        person == &self.participant
+            || self
+                .shared
+                .link
+                .get()
+                .is_some_and(|link| link.admits(workspace, caller))
+    }
+
     fn catalogue_page(
         &mut self,
         workspace_id: u64,
         caller: &Caller,
         query: &CatalogueQuery,
     ) -> Result<CataloguePage, ActionHostError> {
+        // A stranger is told nothing: the workspace's own records are for the
+        // people it admits, and for the person whose device runs this service.
+        // A view lookup is not a listing and carries its own governed check.
+        if query.view_resource.is_none() && !self.admits_member(workspace_id, caller) {
+            return Ok(CataloguePage::from_rows("0".into(), Vec::new(), query));
+        }
         if let Some(provider) = query.provider.as_deref()
             && let Some(page) =
                 self.registered_read_catalogue(workspace_id, caller, provider, query)

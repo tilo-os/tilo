@@ -2,13 +2,18 @@
 use super::{GovernedWorkspace, StatePeer, SystemTime, Workspaces};
 use tilo_actions::remote::{Caller, CallerPrincipal};
 use tilo_agent_participant::workspace_actions::{ViewDocument, ViewReadPolicy};
+use tilo_peer_state::MemberAuthority;
 use tilo_peer_state::document_frame::DocumentRoute;
 
 const MAX_VIEW_DOCUMENT_BYTES: usize = 16 * 1024 * 1024;
 
 impl GovernedWorkspace {
-    /// Called while holding this governed workspace's lock, including before keys.
-    fn view_read_policy(&self, caller: &Caller, app: &str, record: &str) -> Option<ViewReadPolicy> {
+    /// The authority `caller` holds here now: only a person on a device this
+    /// workspace certified, whose certificate is current and whose membership
+    /// it still records. A revoked device, a removed member and a stranger hold
+    /// none. What a member may do with what they find is decided per action, by
+    /// this authority.
+    fn admitted(&self, caller: &Caller) -> Option<MemberAuthority> {
         if !matches!(caller.principal(), CallerPrincipal::Person(_)) {
             return None;
         }
@@ -22,9 +27,21 @@ impl GovernedWorkspace {
         {
             return None;
         }
+        peer.permissions(device, SystemTime::now()).ok()
+    }
+
+    /// Whether `caller` is someone this workspace admits.
+    fn admits(&self, caller: &Caller) -> bool {
+        self.admitted(caller).is_some()
+    }
+
+    /// Called while holding this governed workspace's lock, including before keys.
+    fn view_read_policy(&self, caller: &Caller, app: &str, record: &str) -> Option<ViewReadPolicy> {
+        let standing = self.admitted(caller)?.standing();
+        let device = *caller.device_public_key()?;
         let now = SystemTime::now();
+        let peer = self.peer();
         peer.check_document_read(device, app, record, now).ok()?;
-        let standing = peer.permissions(device, now).ok()?.standing();
         let sandbox = peer.governance().governed_sandbox().ok()?;
         drop(peer);
         Some(ViewReadPolicy {
@@ -66,6 +83,27 @@ impl Workspaces {
             let runtime = governed.lock().await;
             if runtime.workspace_id() == workspace {
                 return bot_shows_personas(&runtime.peer(), installation, SystemTime::now());
+            }
+        }
+        false
+    }
+
+    /// Whether the workspace `workspace` governs here admits `caller`: false
+    /// for a workspace it does not govern, and for anyone its governance does
+    /// not certify a device for.
+    pub async fn admits(&self, workspace: u64, caller: &Caller) -> bool {
+        let workspaces = self
+            .inner
+            .workspaces
+            .lock()
+            .await
+            .values()
+            .cloned()
+            .collect::<Vec<_>>();
+        for governed in workspaces {
+            let runtime = governed.lock().await;
+            if runtime.workspace_id() == workspace {
+                return runtime.admits(caller);
             }
         }
         false
