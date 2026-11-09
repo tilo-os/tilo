@@ -657,6 +657,11 @@ fn noun_of(args: &[OsString]) -> Option<String> {
 }
 
 fn main() -> ExitCode {
+    // Started again as the worker that applies documents (`tilo login`'s
+    // and `tilo mcp`'s peer): that, before anything else runs.
+    if let Some(code) = tilo_automerge_isolate::dispatch_early() {
+        return ExitCode::from(code);
+    }
     let args: Vec<OsString> = std::env::args_os().collect();
     if let Some(name) = aliases::moved(&args) {
         return match aliases::exec(name, &args) {

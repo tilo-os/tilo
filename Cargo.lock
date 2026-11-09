@@ -17988,6 +17988,7 @@ dependencies = [
  "tempfile",
  "tilo-actions",
  "tilo-advisory-lock",
+ "tilo-automerge-isolate",
  "tilo-browser-peer",
  "tilo-clock",
  "tilo-control",
