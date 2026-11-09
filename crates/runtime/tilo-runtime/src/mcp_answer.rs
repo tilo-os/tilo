@@ -1,6 +1,6 @@
 //! What an agent tool answers typed: one answer for a call that ran, one
 //! for a call that did not, and the rows a listing and a refusal carry.
-use super::*;
+use super::{ActionDescriptor, Reply, Value, json};
 use crate::mcp::UNTRUSTED;
 
 /// The MCP result of an agent tool: its text alone, or the structured copy
@@ -89,12 +89,14 @@ pub(super) fn answer_of(value: &Value) -> Value {
                 .and_then(Value::as_str)
                 .unwrap_or_default();
             let mut error = json!({"code": code, "message": message});
-            if let Some(steps) = value
-                .get("hint")
-                .and_then(Value::as_str)
-                .filter(|hint| !hint.trim().is_empty())
-            {
-                error["next_steps"] = json!([steps]);
+            if let (Some(fields), Some(steps)) = (
+                error.as_object_mut(),
+                value
+                    .get("hint")
+                    .and_then(Value::as_str)
+                    .filter(|hint| !hint.trim().is_empty()),
+            ) {
+                fields.insert("next_steps".into(), json!([steps]));
             }
             answer.insert("error".into(), error);
         }
@@ -133,12 +135,14 @@ pub(super) fn action_row(action: &ActionDescriptor) -> Value {
         "params": action.params,
         "kind": action.contract.kind,
     });
-    if let Some(description) = action
-        .description
-        .as_deref()
-        .filter(|text| !text.trim().is_empty())
-    {
-        row["description"] = json!(description.trim());
+    if let (Some(fields), Some(description)) = (
+        row.as_object_mut(),
+        action
+            .description
+            .as_deref()
+            .filter(|text| !text.trim().is_empty()),
+    ) {
+        fields.insert("description".into(), json!(description.trim()));
     }
     row
 }

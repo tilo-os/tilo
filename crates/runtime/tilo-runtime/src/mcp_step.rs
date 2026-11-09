@@ -61,10 +61,11 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
                 step.as_str()
                     .filter(|step| !step.is_empty() && step.len() <= MAX_RUN_ID)
                     .ok_or_else(|| {
-                        format!(
-                            "_meta so.tilo.mcp {} must be a string of 1 to 96 bytes",
-                            &key[13..]
-                        )
+                        let named = match key {
+                            SURFACE_RUN_ID | SURFACE_RUN => "run id",
+                            _ => "step",
+                        };
+                        format!("_meta so.tilo.mcp {named} must be a string of 1 to 96 bytes")
                     })?,
             ),
             None => match invocation {

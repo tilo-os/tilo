@@ -1940,6 +1940,10 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
         });
     }
 
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one listing, its text lines and its typed rows in the order it writes them"
+    )]
     async fn agent_ls(&self, args: LsArgs, structured: bool) -> Result<Reply, String> {
         let offset = match args.cursor.as_deref() {
             None | Some("") => 0,
@@ -1977,8 +1981,9 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
                     "kind": resolved
                         .node
                         .as_ref()
-                        .map(|node| forms.kind(&node.kind).unwrap_or(&node.kind))
-                        .unwrap_or(&resolved.app_id),
+                        .map_or(resolved.app_id.as_str(), |node| {
+                            forms.kind(&node.kind).unwrap_or(&node.kind)
+                        }),
                     "actions": [action_row(&found)],
                     "rows": [],
                 }));
@@ -2056,8 +2061,9 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
             let kind = resolved
                 .node
                 .as_ref()
-                .map(|node| forms.kind(&node.kind).unwrap_or(&node.kind))
-                .unwrap_or(&resolved.app_id)
+                .map_or(resolved.app_id.as_str(), |node| {
+                    forms.kind(&node.kind).unwrap_or(&node.kind)
+                })
                 .to_owned();
             let mut answer = json!({
                 "path": resolved.path,
@@ -2065,8 +2071,8 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
                 "actions": action_rows(&resolved.actions),
                 "rows": rows,
             });
-            if let Some(next) = next {
-                answer["next_cursor"] = json!(next);
+            if let (Some(fields), Some(next)) = (answer.as_object_mut(), next) {
+                fields.insert("next_cursor".into(), json!(next));
             }
             reply.structured = Some(answer);
         }
@@ -2171,8 +2177,8 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
         let mut reply = Reply::ok(text);
         if structured {
             let mut answer = json!({"path":"apps","kind":"apps","actions":[],"rows":rows});
-            if let Some(next) = next {
-                answer["next_cursor"] = json!(next);
+            if let (Some(fields), Some(next)) = (answer.as_object_mut(), next) {
+                fields.insert("next_cursor".into(), json!(next));
             }
             reply.structured = Some(answer);
         }

@@ -7108,6 +7108,59 @@ impl AppBrokerState {
         }
     }
 
+    /// Who is in `workspace` now, as its membership names them: its people
+    /// and the agents delegated in it. Presentation only, as the roster is:
+    /// nothing is admitted by it, and a host that keeps no membership names
+    /// nobody.
+    pub fn here(
+        &self,
+        caller: &tilo_actions::remote::Caller,
+    ) -> Option<Vec<tilo_actions::remote::Here>> {
+        let workspace = caller.workspace()?;
+        let now = self.policy_now_ns().ok()? / 1_000_000_000;
+        let (agents, people) = self
+            .membership
+            .as_ref()?
+            .decide_in_workspace(workspace, |workspace| {
+                let workspace = workspace?;
+                let agents = workspace.agent_members_at(now);
+                let people: Vec<(String, String)> = workspace
+                    .roster()
+                    .into_iter()
+                    .map(|(person, _)| person)
+                    .filter(|person| !workspace.is_blocked(person))
+                    .map(|person| {
+                        let name = workspace
+                            .collaborators
+                            .iter()
+                            .find(|row| row.id == person)
+                            .map_or_else(|| person.clone(), |row| row.name.clone());
+                        (person, name)
+                    })
+                    .collect();
+                Some((agents, people))
+            })
+            .ok()??;
+        let mut here: Vec<tilo_actions::remote::Here> = people
+            .into_iter()
+            .map(|(who, name)| tilo_actions::remote::Here {
+                who,
+                name,
+                kind: "person".into(),
+            })
+            .collect();
+        here.extend(
+            agents
+                .into_iter()
+                .map(|(agent, _)| tilo_actions::remote::Here {
+                    who: format!("agent:{agent}"),
+                    name: agent,
+                    kind: "agent".into(),
+                }),
+        );
+        Some(here)
+    }
+
     /// Complete workspace membership for one retained native receiver. This is
     /// membership metadata, not online presence: it mints no pointer, caret,
     /// arrival frame, or transport permission.

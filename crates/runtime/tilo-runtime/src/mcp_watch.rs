@@ -18,7 +18,7 @@ pub(crate) struct Run {
     pub(crate) path: String,
     /// The run it is a step of, as people read it, and its id.
     pub(crate) name: String,
-    pub(crate) run_id: String,
+    pub(crate) group: String,
     pub(crate) started_ms: u64,
     /// Its phase as last told, and the sequence number it was told at: a
     /// cursor before `seq` is told `phase`.
@@ -34,7 +34,7 @@ const DEFAULT_WATCH_MS: u64 = 25_000;
 const MAX_WATCH_MS: u64 = 60_000;
 /// How often a held watch looks again: at the invocation the host may have
 /// moved on, the resource's history, and the roster.
-const LOOK_AGAIN: std::time::Duration = std::time::Duration::from_millis(200);
+const LOOK_AGAIN: std::time::Duration = std::time::Duration::from_millis(500);
 /// How many of a resource's changes one look reads.
 const HISTORY_PAGE: u64 = 50;
 
@@ -80,7 +80,7 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
             invocation: invocation.to_owned(),
             path: path.to_owned(),
             name,
-            run_id,
+            group: run_id,
             started_ms: tilo_clock::unix_now_ms(),
             phase: "started".to_owned(),
             seq,
@@ -96,7 +96,7 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
             .rev()
             .find(|run| run.invocation == invocation)
         {
-            run.phase = phase.to_owned();
+            phase.clone_into(&mut run.phase);
             run.seq = seq;
         }
     }
@@ -108,7 +108,7 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
         let id = run.as_ref().map(|run| run.id.clone()).unwrap_or_default();
         let label = match STEP_TITLE.try_with(Clone::clone).ok().flatten() {
             Some(title) if !title.is_empty() => title,
-            _ => run.map(|run| run.label).unwrap_or_default(),
+            _ => run.map_or_else(String::new, |run| run.label),
         };
         (label, id)
     }
@@ -117,7 +117,9 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
     /// with a cursor to ask again from.
     pub(super) async fn agent_watch(&self, args: WatchArgs) -> Result<Reply, String> {
         let wait = args.wait_ms.unwrap_or(DEFAULT_WATCH_MS).min(MAX_WATCH_MS);
-        let deadline = std::time::Instant::now() + std::time::Duration::from_millis(wait);
+        let deadline = std::time::Instant::now()
+            .checked_add(std::time::Duration::from_millis(wait))
+            .unwrap_or_else(std::time::Instant::now);
         let path = args.path.as_deref();
         let mut cursor = match args.cursor.as_deref() {
             None | Some("") => self.watch_now(path).await?,
@@ -198,7 +200,7 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
                 "invocation_id": run.invocation,
                 "path": run.path,
                 "run": run.name,
-                "run_id": run.run_id,
+                "run_id": run.group,
                 "time_ms": run.started_ms,
             }));
         }
@@ -252,9 +254,11 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
                 "sentence": entry.get("sentence").cloned().unwrap_or_default(),
                 "time_ms": entry.get("time_ms").cloned().unwrap_or_default(),
             });
-            for key in ["by", "run", "run_id", "undone"] {
-                if let Some(value) = entry.get(key) {
-                    event[key] = value.clone();
+            if let (Some(fields), Some(entry)) = (event.as_object_mut(), entry.as_object()) {
+                for key in ["by", "run", "run_id", "undone"] {
+                    if let Some(value) = entry.get(key) {
+                        fields.insert(key.to_owned(), value.clone());
+                    }
                 }
             }
             events.push(event);
@@ -336,7 +340,11 @@ fn last_change(page: Option<&[Value]>) -> Option<String> {
 
 /// The sequence number the next run event takes.
 fn next_seq(runs: &[Run]) -> u64 {
-    runs.iter().map(|run| run.seq).max().unwrap_or_default() + 1
+    runs.iter()
+        .map(|run| run.seq)
+        .max()
+        .unwrap_or_default()
+        .saturating_add(1)
 }
 
 /// Whether `phase` is one an invocation never leaves.

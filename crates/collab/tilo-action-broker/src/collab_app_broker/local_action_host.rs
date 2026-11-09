@@ -522,6 +522,14 @@ impl CertifiedLocalActionHost {
 }
 
 impl ActionHost for CertifiedLocalActionHost {
+    /// Who is in the workspace, as its membership names them: the same
+    /// roster the desktop's people panel draws, read for a caller this
+    /// door admits.
+    fn here(&self, caller: &Caller) -> Option<Vec<tilo_actions::remote::Here>> {
+        self.check(caller).ok()?;
+        self.state.here(&self.effective)
+    }
+
     fn query(
         &self,
         caller: &Caller,

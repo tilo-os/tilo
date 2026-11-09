@@ -72,10 +72,10 @@ while they decide, once its `wait_ms` is up:
  "ask": {"invocation_id": "…"}}
 ```
 
-The SDK raises `AskPending` carrying that `ask`. The invocation finishes on the person's
-confirmation, and `tilo_status` (or a `tilo_watch` run event) says how it went: the same
-`invocation_id` answers it, and asking again while they decide puts the ask to them again.
-A person who refuses it turns the invocation into `status: "failed"`.
+The SDK raises `AskPending` carrying that `ask`. Nothing ran yet: the call answered before
+the person decided. Call `tilo_do` again with the same `invocation_id` and arguments to put
+the ask to them again — the same id never runs the action twice, and once they allow it the
+call runs it and answers `ok`; a person who refuses turns it into `status: "failed"`.
 
 `ask.url` is not sent today: it is there for the web page that shows a person the asks put to
 them, and no such page exists yet.
@@ -103,9 +103,11 @@ narrow as they do for agents. `kind` on a row is the app's type, `kind` at the t
 type of the resource listed (or the app's id).
 
 An action row's `params` are the action's parameters as the app publishes them: `name`, `ty`
-(`Text`, `Integer`, `Bool`, `Object`, `Collection`…), `required`, `description`, `choices`,
-and the JSON `schema` where the app gives one. `kind` is `read`, `undoable` or `outside`: what
-running it may reach.
+(`text`, `integer`, `number`, `boolean`, `object`, `array`, `resource`, `datetime`, `secret`),
+`required`, `description`, `choices`, and the JSON `schema` where the app gives one. `kind` is
+`read`, `undoable` or `outside`: what running it may reach. A row with children is one whose
+path can be listed again (`has_children`); its own actions are listed at its own path, as
+`tilo_ls` names them.
 
 ### tilo_read
 
@@ -134,9 +136,11 @@ One action:
  "edited_by_person": {"text": "Buy milk, buttermilk"}}
 ```
 
-`result` is the action's output value as the app typed it (absent when it gave none);
-`resources` are the resources the answer says it touched; `edited_by_person` is there when
-the person changed the arguments before allowing the action, and holds what actually ran.
+`path` is the action at the resource it resolved to, as a caller writes it; `result` is the
+action's output value as the app typed it (absent when it gave none); `resources` are the
+resources the answer says it touched; `edited_by_person` is there when the person changed the
+arguments before allowing the action, and holds what actually ran. A failure also carries the
+`action` row, so a caller can see what it takes.
 
 Several actions (`calls`) answer one step each, in order:
 
@@ -161,7 +165,7 @@ Steps before the failed one stay applied, as the text says.
 ```
 
 `path` is a path the other tools take; `action` names the action the hit's row offers
-(`open` when the row opens the resource itself). One hit per resource, best first, as the
+(`open` when the row opens the resource itself). One hit per resource path, best first, as the
 desktop's search ranks them.
 
 ### tilo
@@ -212,10 +216,13 @@ to one resource and what is under it.
   `failed`, `cancelled`). `run` is the agent run's title and `run_id` its id: the same run a
   group of calls is attributed to.
 - **presence** — who is in the workspace, whenever that changes: its people and the agents its
-  roster names.
+  roster names, as the desktop's people panel lists them. A host that keeps no roster reports
+  no presence rather than an empty workspace.
 
 An answer with no events still carries the cursor to ask again from. A caller that got its
-cursor from an earlier answer only ever sees each event once. The stream is a long poll, not a
+cursor from an earlier answer only ever sees each event once. A held watch reads the watched
+resource's history about twice a second and the host's runs and roster on every look, so a
+change reaches a watching caller within a second of it landing. The stream is a long poll, not a
 push: one `tools/call` at a time, straight through the same POST path every other call takes.
 
 ## Runs

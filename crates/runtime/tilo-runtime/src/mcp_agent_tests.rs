@@ -2520,6 +2520,10 @@ async fn answer<H: ActionHost + Send + Sync + 'static>(
 /// Every agent tool answers typed when its call asks, and the text a model
 /// reads is the same as before.
 #[test]
+#[allow(
+    clippy::too_many_lines,
+    reason = "one test walks every tool's typed answer in one place, so a missing one is caught"
+)]
 fn every_agent_tool_answers_typed_when_its_call_asks() {
     let host = Notes::new(true);
     run(async {

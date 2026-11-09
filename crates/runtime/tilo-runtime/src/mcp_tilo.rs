@@ -881,11 +881,12 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
             "apps": answer.get("apps").cloned().unwrap_or_else(|| json!([])),
             "steps": steps,
         });
-        if let Some(detail) = answer.get("detail").filter(|detail| !detail.is_null()) {
-            typed["detail"] = detail.clone();
-        }
-        if let Some(error) = answer.get("error").filter(|error| !error.is_null()) {
-            typed["error"] = error.clone();
+        if let Some(fields) = typed.as_object_mut() {
+            for key in ["detail", "error"] {
+                if let Some(value) = answer.get(key).filter(|value| !value.is_null()) {
+                    fields.insert(key.to_owned(), value.clone());
+                }
+            }
         }
         typed
     }

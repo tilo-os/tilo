@@ -92,8 +92,10 @@ the caller's. Revoking a key ends every key minted from it.
 
 The SDK talks to the same endpoints as MCP: `https://mcp.tilo.sh/mcp` for the account and
 `https://mcp.tilo.sh/w/<workspace>/mcp` for one workspace. It makes the same calls, gets
-structured answers instead of agent text, and has a watch stream on top. File bytes go through
-content upload, then the Files app's actions.
+structured answers instead of agent text, and has a watch stream on top. Each tool's request
+and answer shapes, the `_meta` keys, run grouping and watch are in
+[`sdk-wire.md`](sdk-wire.md). File bytes go through content upload, then the Files app's
+actions.
 
 ## tilolang
 

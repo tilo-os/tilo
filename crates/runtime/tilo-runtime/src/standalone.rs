@@ -781,6 +781,20 @@ impl ActionHost for RuntimeActionHost {
             .action_observe(&on_this_device(caller), id)
     }
 
+    /// Who is in the workspace, as the desktop's roster names them: routed
+    /// and authorized exactly as [`Self::observe`], and empty for a host
+    /// that keeps no roster.
+    fn here(&self, caller: &Caller) -> Option<Vec<tilo_actions::remote::Here>> {
+        if let Some(session) = &self.session {
+            session.check(caller, &self.joined).ok()?;
+            return session.host.here(session.admission.caller());
+        }
+        if !self.admitted(caller) {
+            return None;
+        }
+        self.broker.state().here(&on_this_device(caller))
+    }
+
     /// Routed and authorized exactly as [`Self::observe`]: a caller that may
     /// not observe an invocation may not wait on it either.
     fn next_change(&self, caller: &Caller, id: &tilo_actions::InvocationId) -> Option<Pending<()>> {
