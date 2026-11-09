@@ -813,7 +813,9 @@ fn shipped_daemons_partition_restart_and_converge_through_real_fuse() {
         &["mount", "--ticket", &ticket],
         true,
     );
-    peer.wait_line("starting from persisted workspace");
+    // The restarted peer opens the workspace it kept and serves it with the
+    // host partitioned: what it answers below comes from its own cache, not
+    // from the host it cannot reach.
     peer.wait_line("Mounting QuickFS");
     assert_eq!(gate(&peer_gate, "status"), "partitioned\n");
     wait_for_process(&mut peer, || {
