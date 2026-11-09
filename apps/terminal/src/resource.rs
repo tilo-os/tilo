@@ -175,6 +175,11 @@ pub struct RunRequest {
 pub struct RunAnswer {
     pub run: Option<Id>,
     pub exit: Option<i32>,
+    /// Why the run's host refused it, typed, with the steps that would let
+    /// it through: an agent tells the person what to do, and runs it again
+    /// once they did.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub refusal: Option<ui::tilo_actions::remote::host_account::Refusal>,
 }
 
 /// What a finished run recorded, as the Terminal that ran it hands it in.

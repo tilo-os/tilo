@@ -42,6 +42,9 @@ pub(crate) struct WindowLife {
     reconnect: Option<Reconnect>,
     /// The reconnecting banner's Try again, as last drawn.
     banner_action: std::cell::Cell<Rect>,
+    /// The held run's Add a card and Cancel, as last drawn.
+    pub(crate) held_action: std::cell::Cell<Rect>,
+    pub(crate) held_secondary: std::cell::Cell<Rect>,
     /// The window was asked to close for the exited shell.
     close_asked: bool,
     /// The retry while the shell could not start, as last drawn.

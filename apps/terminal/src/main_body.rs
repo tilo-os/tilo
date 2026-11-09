@@ -687,6 +687,18 @@ struct RunState {
     /// The session as its record was last presented: the runs to show
     /// items of.
     session: Option<std::rc::Rc<crate::resource::Terminal>>,
+    /// The run its host holds, and why: the prompt over the grid.
+    held: Option<Held>,
+}
+
+/// A run the host holds until the account changes (docs/app-model/ush.md,
+/// "Command runs"): what the prompt over the grid offers.
+#[derive(Clone, Debug)]
+pub(crate) struct Held {
+    pub(crate) refusal: ui::tilo_actions::remote::host_account::Refusal,
+    /// An agent asked for the run: the shell does not wait, the agent has
+    /// the refusal, and the prompt is the person's to act on or dismiss.
+    pub(crate) agent: bool,
 }
 
 impl TerminalWidget {
@@ -2532,11 +2544,28 @@ impl TerminalWidget {
                 self.answer_history(ask);
                 return;
             }
+            Piece::Mark(Mark::Held { agent, refusal }) => {
+                runs.held = Some(Held {
+                    refusal: (**refusal).clone(),
+                    agent: *agent,
+                });
+                self.dirty = true;
+            }
+            Piece::Mark(Mark::Released) => {
+                // An agent's prompt stays for the person to act on.
+                if runs.held.as_ref().is_some_and(|held| !held.agent) {
+                    runs.held = None;
+                    self.dirty = true;
+                }
+            }
+            Piece::Mark(Mark::Ended { .. }) => {
+                if runs.held.as_ref().is_some_and(|held| !held.agent) {
+                    runs.held = None;
+                    self.dirty = true;
+                }
+            }
             Piece::Mark(
-                Mark::Ended { .. }
-                | Mark::JobStarted { .. }
-                | Mark::JobOutput { .. }
-                | Mark::JobEnded { .. },
+                Mark::JobStarted { .. } | Mark::JobOutput { .. } | Mark::JobEnded { .. },
             )
             | Piece::Output(_) => {}
         }
@@ -2768,6 +2797,7 @@ impl TerminalWidget {
                 let answer = crate::resource::RunAnswer {
                     run: recorded.is_ok().then_some(asked.request.clone()),
                     exit: Some(run.exit),
+                    refusal: run.refusal.as_deref().cloned(),
                 };
                 asked.reply.finish(Ok(ui::tilo_actions::ActionOutput {
                     value: serde_json::to_value(answer).ok(),
@@ -4244,13 +4274,11 @@ impl TerminalWidget {
         // The header with the session's target comes first.
         let mut y = self.rect.y0 + self.header_h();
         self.banner_rect = Rect::ZERO;
-        if let Some((kind, message, action)) = self.top_banner()
+        if let Some(banner) = self.top_banner()
             && self.rect.width() > gutter * 2.0
         {
             let width = self.rect.width() - gutter * 2.0;
-            let mut content = BannerContent::new(kind, &message);
-            content.action = action.as_deref();
-            let height = Banner::height(&content, width, tr, theme);
+            let height = Banner::height(&banner.content(), width, tr, theme);
             self.banner_rect = Rect::new(
                 self.rect.x0 + gutter,
                 y + gutter,
@@ -4265,9 +4293,9 @@ impl TerminalWidget {
     /// The banner over the grid: the reconnecting one (quiet, with Try
     /// again) while the tab reconnects to its remote shell, else the
     /// session's lifecycle line.
-    fn top_banner(&self) -> Option<(BannerKind, String, Option<String>)> {
+    fn top_banner(&self) -> Option<TopBanner> {
         if let Some(message) = self.reconnect_banner() {
-            return Some((
+            return Some(TopBanner::new(
                 BannerKind::Neutral,
                 message,
                 Some(t("terminal-start-retry")),
@@ -4275,8 +4303,59 @@ impl TerminalWidget {
         }
         let restart =
             (self.can_restart() && !self.shows_empty_state()).then(|| t("terminal-restart"));
-        self.status_banner_message()
-            .map(|message| (BannerKind::Warning, message, restart))
+        if let Some(message) = self.status_banner_message() {
+            return Some(TopBanner::new(BannerKind::Warning, message, restart));
+        }
+        self.runs.held.as_ref().map(TopBanner::held)
+    }
+
+    /// The run its host holds, and why — for tests.
+    #[cfg(test)]
+    pub(crate) fn held(&self) -> Option<&Held> {
+        self.runs.held.as_ref()
+    }
+
+    /// A press on the held run's prompt: Add a card opens the provider's
+    /// page; Cancel interrupts a person's waiting command as Ctrl+C does,
+    /// or puts away the prompt of an agent's run, which is not waiting.
+    /// Returns whether the event was taken.
+    fn route_held(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) -> bool {
+        let Some(held) = self.runs.held.clone() else {
+            return false;
+        };
+        let at = match event {
+            WindowEvent::MouseInput {
+                state: ElementState::Pressed,
+                button: MouseButton::Left,
+                ..
+            } => self.last_cursor_pos,
+            WindowEvent::Touch(touch) if touch.phase == winit::event::TouchPhase::Started => {
+                ctx.logical(touch.location)
+            }
+            _ => return false,
+        };
+        if self.life.held_action.get().contains(at) {
+            if let Some(url) = held.add_card_url() {
+                ui::widget::open_external_url(url);
+            }
+        } else if self.life.held_secondary.get().contains(at) {
+            self.dismiss_held(&held);
+        } else {
+            return false;
+        }
+        *ctx.handled = true;
+        self.dirty = true;
+        true
+    }
+
+    /// Cancel the held run: a person's command is interrupted (its end
+    /// takes the prompt away), an agent's prompt goes.
+    pub(crate) fn dismiss_held(&mut self, held: &Held) {
+        if held.agent {
+            self.runs.held = None;
+        } else if let Err(error) = self.try_write_input(&[0x03]) {
+            tracing::warn!(%error, "terminal could not cancel the held command");
+        }
     }
 
     /// Paint the session banner laid out by
@@ -4289,18 +4368,28 @@ impl TerminalWidget {
         theme: &Theme,
     ) {
         self.life.banner_action.set(Rect::ZERO);
+        self.life.held_action.set(Rect::ZERO);
+        self.life.held_secondary.set(Rect::ZERO);
         if self.banner_rect.width() > 0.0
-            && let Some((kind, message, action)) = self.top_banner()
+            && let Some(banner) = self.top_banner()
         {
             // Transport and unconfirmed edits remain visible beside the
             // transcript and through the same accessible live region.
             let mut ctx = PaintCtx::new(scene, transform, tr, theme);
-            let mut content = BannerContent::new(kind, &message);
-            content.action = action.as_deref();
-            let hit = Banner::paint(&mut ctx, self.banner_rect, &content, self.last_cursor_pos);
+            let hit = Banner::paint(
+                &mut ctx,
+                self.banner_rect,
+                &banner.content(),
+                self.last_cursor_pos,
+            );
             let action = hit.action.unwrap_or(Rect::ZERO);
             if self.life.reconnect.is_some() {
                 self.life.banner_action.set(action);
+            } else if banner.held {
+                self.life.held_action.set(action);
+                self.life
+                    .held_secondary
+                    .set(hit.secondary_action.unwrap_or(Rect::ZERO));
             } else if self.can_restart() {
                 self.life.restart_action.set(action);
             }
@@ -6308,6 +6397,70 @@ pub(crate) fn ush_backend_on(
         native_editor,
         service_lifetime: Some(lifetime),
     })
+}
+
+/// The banner over the grid, as laid out and painted.
+struct TopBanner {
+    kind: BannerKind,
+    title: String,
+    message: Option<String>,
+    action: Option<String>,
+    secondary: Option<String>,
+    /// The held run's prompt.
+    held: bool,
+}
+
+impl TopBanner {
+    fn new(kind: BannerKind, title: String, action: Option<String>) -> Self {
+        Self {
+            kind,
+            title,
+            message: None,
+            action,
+            secondary: None,
+            held: false,
+        }
+    }
+
+    /// The prompt of a run its host holds: the same for a person's run and
+    /// an agent's.
+    fn held(held: &Held) -> Self {
+        use ui::tilo_actions::remote::host_account::Reason;
+        let (title, message) = match held.refusal.reason {
+            Reason::NoPaymentMethod => (
+                t("terminal-held-title"),
+                t("terminal-held-add-card-message"),
+            ),
+            _ => (t("terminal-held-title"), held.refusal.message.clone()),
+        };
+        Self {
+            kind: BannerKind::Info,
+            title,
+            message: Some(message),
+            action: held.add_card_url().map(|_| t("terminal-held-add-card")),
+            secondary: Some(t("terminal-held-cancel")),
+            held: true,
+        }
+    }
+
+    fn content(&self) -> BannerContent<'_> {
+        let mut content =
+            BannerContent::new(self.kind, &self.title).with_message(self.message.as_deref());
+        content.action = self.action.as_deref();
+        content.secondary_action = self.secondary.as_deref();
+        content
+    }
+}
+
+impl Held {
+    /// The provider's page to add a card on: only a secure web page.
+    pub(crate) fn add_card_url(&self) -> Option<&str> {
+        use ui::tilo_actions::remote::host_account::NextStepKind;
+        self.refusal
+            .step(NextStepKind::AddPaymentMethod)
+            .and_then(|step| step.url.as_deref())
+            .filter(|url| url.starts_with("https://") && !url.chars().any(char::is_whitespace))
+    }
 }
 
 /// Settle a run asked for as failed for good: it did not run, and will not.

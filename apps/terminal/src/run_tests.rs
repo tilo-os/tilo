@@ -267,6 +267,7 @@ fn an_agent_reruns_the_failing_test_of_a_run() {
         Some(Settled::Done(RunAnswer {
             run: Some(request.clone()),
             exit: Some(0),
+            refusal: None,
         }))
     );
 }
@@ -940,4 +941,168 @@ fn an_agents_run_gets_the_agent_rendering() {
         "{}",
         output("agent")
     );
+}
+
+/// The refusal a host that sells Linux machines gives an account with no
+/// card on file.
+fn no_card() -> ui::tilo_actions::remote::host_account::Refusal {
+    use ui::tilo_actions::remote::host_account::{NextStep, NextStepKind, Reason, Refusal};
+    Refusal {
+        reason: Reason::NoPaymentMethod,
+        message: "This needs a Linux machine.".into(),
+        next: vec![NextStep {
+            kind: NextStepKind::AddPaymentMethod,
+            url: Some("https://tilo.sh/billing/card?account=acct-1".into()),
+        }],
+    }
+}
+
+/// The shell's mark that the run going on waits on its host.
+fn held_mark(agent: bool, refusal: &ui::tilo_actions::remote::host_account::Refusal) -> String {
+    format!(
+        "\x1b]133;W;k={KEY};a={};r={}\x07",
+        u8::from(agent),
+        b64(&serde_json::to_string(refusal).unwrap())
+    )
+}
+
+fn held(app: &mut App) -> Option<crate::inner::Held> {
+    app.with_surface(|terminal: &mut crate::TerminalView| terminal.held().cloned())
+        .unwrap()
+}
+
+fn settle_until_held(app: &mut App, shown: bool) {
+    let deadline = ui::time::now() + hang_bound();
+    while ui::time::now() < deadline {
+        app.settle();
+        if held(app).is_some() == shown {
+            return;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    panic!("the prompt never {}", if shown { "showed" } else { "went" });
+}
+
+/// The held marks are read only with the session's key, and decode to the
+/// host's typed refusal.
+#[test]
+fn held_marks_carry_the_hosts_typed_refusal() {
+    use crate::runs::{Mark, Marks, Piece};
+    let mut marks = Marks::new(KEY);
+    let pieces = marks.push(
+        format!(
+            "{}building\x1b]133;U;k={KEY}\x07",
+            held_mark(true, &no_card())
+        )
+        .as_bytes(),
+    );
+    assert_eq!(
+        pieces,
+        [
+            Piece::Mark(Mark::Held {
+                agent: true,
+                refusal: Box::new(no_card())
+            }),
+            Piece::Output(b"building".to_vec()),
+            Piece::Mark(Mark::Released),
+        ]
+    );
+    let forged = held_mark(false, &no_card()).replace(KEY, "fedcba9876543210fedcba9876543210");
+    assert_eq!(
+        marks.push(forged.as_bytes()),
+        [Piece::Output(forged.clone().into_bytes())],
+        "a program cannot show the prompt"
+    );
+    let garbled = format!("\x1b]133;W;k={KEY};a=0;r=bm90IGpzb24=\x07");
+    assert_eq!(
+        marks.push(garbled.as_bytes()),
+        [Piece::Output(garbled.clone().into_bytes())]
+    );
+}
+
+/// A person's command the host holds shows the prompt with the provider's
+/// page, until the host lets it through and it runs.
+#[test]
+fn a_held_command_shows_the_prompt_until_it_runs() {
+    let (mut app, print, _lines) = marked_session("");
+    settle_until(&mut app, |state| !state.pane_id().is_empty());
+    print
+        .send(
+            format!(
+                "cargo build\r\n\x1b]133;C;k={KEY};cmd={};cwd={};t=1\x07{}",
+                b64("cargo build"),
+                b64("/src/demo"),
+                held_mark(false, &no_card())
+            )
+            .into_bytes(),
+        )
+        .unwrap();
+    settle_until_held(&mut app, true);
+    let shown = held(&mut app).unwrap();
+    assert!(!shown.agent);
+    assert_eq!(
+        shown.add_card_url(),
+        Some("https://tilo.sh/billing/card?account=acct-1")
+    );
+    print
+        .send(
+            format!(
+                "\x1b]133;U;k={KEY}\x07Compiling demo\r\n\x1b]133;D;0;k={KEY};t=1\x07{}",
+                prompt()
+            )
+            .into_bytes(),
+        )
+        .unwrap();
+    settle_until_held(&mut app, false);
+    settle_until(&mut app, |state| state.runs.len() == 1);
+}
+
+/// An agent's command the host refuses answers the agent with the typed
+/// refusal, and the person sees the same prompt on that run.
+#[test]
+fn an_agents_refused_run_answers_with_the_refusal_and_shows_the_person_the_prompt() {
+    let output: &'static str = Box::leak(
+        format!(
+            "{}ush: cargo: This needs a Linux machine.\r\n\x1b]133;U;k={KEY}\x07",
+            held_mark(true, &no_card())
+        )
+        .into_boxed_str(),
+    );
+    let (mut app, _print, lines) = marked_session(output);
+    settle_until(&mut app, |state| !state.pane_id().is_empty());
+    let agent = ActionInvoker::actor("agent:helper")
+        .with_kind(ActorKind::Agent)
+        .acting_for("person:ada");
+    app.call_by(
+        agent,
+        <Terminal as ui::tilo_resource::Resource>::KIND,
+        "run",
+        serde_json::json!({ "command": "cargo build" }),
+    )
+    .expect("the agent's run is taken");
+    assert_eq!(typed_line(&mut app, &lines), "cargo build");
+    settle_until(&mut app, |state| {
+        state.runs.len() == 1 && state.requests.pending().next().is_none()
+    });
+    let state = app.state();
+    let (_, entry) = state
+        .requests
+        .entries()
+        .next()
+        .expect("the agent's request");
+    let Some(Settled::Done(answer)) = &entry.settled else {
+        panic!("the request settled: {:?}", entry.settled);
+    };
+    assert_eq!(
+        answer.refusal,
+        Some(no_card()),
+        "the agent gets the typed refusal"
+    );
+    // The person's prompt is the same one, and stays until they act on it.
+    let shown = held(&mut app).expect("the person sees the prompt");
+    assert!(shown.agent);
+    assert_eq!(shown.refusal, no_card());
+    app.with_surface(|terminal: &mut crate::TerminalView| terminal.dismiss_held(&shown))
+        .unwrap();
+    assert!(held(&mut app).is_none(), "Cancel puts it away");
 }
