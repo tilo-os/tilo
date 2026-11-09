@@ -111,3 +111,24 @@ source = "docs/registry.md"
 section = "Ship"
 nav = "The app registry"
 description = "How the Tilo app registry stores, verifies and serves packages, its REST API, and how to run your own."
+
+[[page]]
+slug = "one-workspace-per-customer"
+source = "docs/developers/one-workspace-per-customer.md"
+section = "Hosted workspaces"
+nav = "One workspace per customer"
+description = "Give each of your customers a workspace of their own, with a key per customer's agent that reaches only that workspace: API keys, the Python and TypeScript SDKs, and the CLI."
+
+[[page]]
+slug = "sdk"
+source = "docs/developers/sdk.md"
+section = "Hosted workspaces"
+nav = "The SDKs"
+description = "Scripting a workspace from Python, TypeScript, the CLI and tilolang: one model, typed answers, runs, watch and undo."
+
+[[page]]
+slug = "sdk-wire"
+source = "docs/developers/sdk-wire.md"
+section = "Hosted workspaces"
+nav = "The SDKs' wire"
+description = "The MCP calls the SDKs make and the typed answers they read."
