@@ -27,7 +27,7 @@ use serde::{Deserialize, Serialize};
 use threshold_identity::{SigningRound1Commitment, SigningRound2Partial, SigningSessionNonces};
 use tilo_user_identity::{DeviceCert, device_cert_signing_digest, verify_device_cert};
 
-use crate::enrollment::EnrollmentRole;
+use crate::roles::EnrollmentRole;
 
 /// How long an approved FROST share waits for the signing round, and how
 /// far a proposed certificate may start from the key holder's clock.
@@ -258,6 +258,7 @@ pub trait IdentityKey {
     ) -> Result<SigningRound2Partial, String>;
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 impl IdentityKey for runtime_identity::SigningIdentity {
     fn person(&self) -> [u8; 32] {
         self.group_public_key()

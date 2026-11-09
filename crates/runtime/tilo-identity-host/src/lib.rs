@@ -16,7 +16,6 @@
 #[cfg(unix)]
 pub mod broker;
 pub mod certificates;
-#[cfg(unix)]
 pub mod certification_ceremony;
 pub mod custody;
 #[cfg(unix)]
@@ -37,6 +36,7 @@ pub mod policy_change;
 pub mod provisioning;
 #[cfg(unix)]
 pub mod registry;
+pub mod roles;
 
 #[cfg(all(not(unix), not(target_arch = "wasm32")))]
 mod unsupported_host;
