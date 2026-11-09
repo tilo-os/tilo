@@ -989,7 +989,7 @@ mod tests {
         publish(content.index(), "so.tilo.chat", None, vec![kept]);
         let hits = other.query("ada");
         assert_eq!(hits.len(), 1);
-        assert_eq!(hits[0].subtitle.as_deref(), Some("Agent · kept by Sam"));
+        assert_eq!(hits[0].subtitle.as_deref(), Some("Kept by Sam"));
     }
 
     #[test]
@@ -1184,7 +1184,7 @@ mod tests {
             .expect("the message is found by what it says");
         assert_eq!(
             hit.subtitle.as_deref(),
-            Some(format!("Aria in Ada's design crit · {}", ui::format::relative(3600)).as_str())
+            Some(format!("Aria in Ada's design crit, {}", ui::format::relative(3600)).as_str())
         );
         assert!(
             hit.title.starts_with('\u{2026}'),
