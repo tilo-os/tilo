@@ -42,6 +42,22 @@ pub fn fingerprint(catalog: &package_store::Catalog) -> String {
     }
 }
 
+/// The styles the shell's own package offers — the four that ship — from the packages the shell
+/// runs, whether they came from the store or this build's fallback copy (`shell.md` §6). The
+/// switch always offers them, so a device with no store still shows a desk.
+pub fn of_shell(
+    packages: &[tilolang_tilo::tilolang::Compiled],
+) -> Vec<tilo_surface_host::shell_part::DeskStyleReading> {
+    let metas: Vec<(String, Meta)> = packages
+        .iter()
+        .map(|package| (package.meta.app.clone(), package.meta.clone()))
+        .collect();
+    match metas.last() {
+        Some((package, meta)) => styles_of(package, meta, &metas),
+        None => Vec::new(),
+    }
+}
+
 /// The desk styles every installed package offers, in the order the store lists its apps.
 ///
 /// `loads` says whether the style's package compiles enough to run: a module whose metadata

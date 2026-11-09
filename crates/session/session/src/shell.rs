@@ -486,10 +486,17 @@ impl Shell {
 
     /// Read the desk styles every installed package offers, when the person's package store
     /// moved: a style the person or their agent installed is offered by the switch without a
-    /// restart (`shell.md` §6). Cheap when nothing was installed, which is what every frame
-    /// runs.
+    /// restart (`shell.md` §6). The shell's own package's styles — the four that ship — always
+    /// stand, from the package the shell runs, so the switch offers them even where the store
+    /// holds nothing (the built-in fallback shell). Cheap when nothing was installed, which is
+    /// what every frame runs.
     pub(crate) fn refresh_styles(&mut self) {
+        // The shell's own styles, from the package it runs: the four that ship are its views.
+        let own = crate::desk_styles::of_shell(&self.packages);
         let Ok(catalog) = package_store::Catalog::from_env() else {
+            let mut styles = self.desk.styles.borrow_mut();
+            styles.list = own;
+            styles.revision = styles.revision.saturating_add(1);
             return;
         };
         let moved = crate::desk_styles::fingerprint(&catalog);
@@ -498,7 +505,15 @@ impl Shell {
             return;
         }
         styles.fingerprint = Some(moved);
-        styles.list = crate::desk_styles::installed(&catalog);
+        // The store's styles, the shell's own among them when the store holds the shell: each
+        // package's styles are offered once, the shell's own from the package the shell runs.
+        let mut list = crate::desk_styles::installed(&catalog);
+        for style in own {
+            if !list.iter().any(|s| s.style == style.style) {
+                list.push(style);
+            }
+        }
+        styles.list = list;
         styles.revision = styles.revision.saturating_add(1);
     }
 

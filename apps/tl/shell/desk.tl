@@ -138,7 +138,12 @@ view desktop(a: Arrangement) {
     if not space.compact {
         layers(fill) {
             traditional_desktop(a, lists, fill)
-            desk(root Desk, fill)
+            // The desk under the frames, its bar the traditional one, which lists the window in
+            // front's commands and offers no style switch of its own: the style the person
+            // switches by is the bar's of every other style, and the desktop's own bar is this
+            // style's.
+            desk_around(root Desk, .none, true) {
+            }
         }
     } else {
         desk_style(a, true) {
