@@ -61,9 +61,9 @@ pub struct ListItemProps {
     /// over the first message of each day.
     pub time: Option<Moment>,
     /// What the item offers on its context menu (a right-click, the Menu key or a long press
-    /// opens it, and selects the row): each of its allowed actions, after the menu the row's
-    /// view placed (`attached`) and without those that menu placed already, so every action
-    /// stays reachable.
+    /// opens it, and selects the row unless the row opens where it stands): each of its
+    /// allowed actions, after the menu the row's view placed (`attached`) and without those
+    /// that menu placed already, so every action stays reachable.
     #[component(slot)]
     pub menu: Vec<MenuPart>,
     /// What swiping the row from its trailing edge does, unless its view says
@@ -1180,7 +1180,8 @@ fn page_row(content: Element, gap: Rhythm, measure: Option<Length>) -> Element {
 }
 
 /// The menu of the row under `at` (its focused row when the keyboard opened it): what its
-/// item offers. Opening it selects the row.
+/// item offers. Opening it selects the row, unless the row opens where it stands: that row
+/// shows its item under itself, and a menu over it is not the window opening it elsewhere.
 fn row_menu(list: &dyn Widget, at: Option<Point>, select: &Event) -> Vec<MenuEntry> {
     let Some(list) = list
         .as_any()
@@ -1207,7 +1208,10 @@ fn row_menu(list: &dyn Widget, at: Option<Point>, select: &Event) -> Vec<MenuEnt
     if entries.is_empty() {
         return Vec::new();
     }
-    if let Some(id) = shown {
+    let opens_here = rows
+        .index_of(&key)
+        .is_some_and(|index| rows.opens_in_place(index));
+    if let (Some(id), false) = (shown, opens_here) {
         select.fire(Some(Value::Resource(id.0)));
     }
     entries
@@ -1576,6 +1580,15 @@ mod tests {
 
     /// Lay the list out in a column of `height`, as the window does.
     fn lay_out(list: &mut VirtualList<DescribedRows>, height: f32) {
+        lay_out_tree(list, height);
+    }
+
+    /// Lay the list out in a column of `height` and give back the tree it was laid out in, for
+    /// the events sent to it afterwards.
+    fn lay_out_tree(
+        list: &mut VirtualList<DescribedRows>,
+        height: f32,
+    ) -> (taffy::TaffyTree<()>, taffy::NodeId) {
         list.set_viewport_height(height);
         let doc = automerge::AutoCommit::new();
         Widget::sync(list, &doc, &automerge::ROOT);
@@ -1592,6 +1605,7 @@ mod tests {
             )
             .unwrap();
         Widget::apply_layout(list, &taffy, node, Point::ZERO);
+        (taffy, node)
     }
 
     /// The items of a list where each carries a document of its own: they open where they
@@ -1617,6 +1631,108 @@ mod tests {
             held: Held::Given(Rc::new(items)),
             ..DescribedRows::default()
         }
+    }
+
+    /// The rows of a list whose items offer on their menu the one command their type offers:
+    /// each opens where it stands when `opens_here`, and elsewhere when not.
+    fn rows_offering(count: usize, opens_here: bool) -> DescribedRows {
+        let items = (0..count)
+            .map(|at| ListItemProps {
+                key: format!("row-{at}"),
+                item: Some(ResourceId(format!("task-{at}"))),
+                row: ItemRow::Row(Box::new(ListRowProps {
+                    title: format!("row {at}"),
+                    ..ListRowProps::default()
+                })),
+                detail: if opens_here {
+                    ItemRow::Row(Box::new(ListRowProps {
+                        title: format!("what row {at} is about"),
+                        ..ListRowProps::default()
+                    }))
+                } else {
+                    ItemRow::None
+                },
+                menu: vec![MenuPart::Item(MenuItemProps {
+                    label: "Complete".to_owned(),
+                    ..MenuItemProps::default()
+                })],
+                ..ListItemProps::default()
+            })
+            .collect();
+        DescribedRows {
+            held: Held::Given(Rc::new(items)),
+            ..DescribedRows::default()
+        }
+    }
+
+    /// Press the right button over the row `index` of `list`, as a person does to see what its
+    /// item offers there.
+    fn right_press(list: &mut DescribedList, index: usize, height: f32) {
+        let (taffy, node) = {
+            let inner = list.list_mut().expect("the list stands");
+            lay_out_tree(inner, height)
+        };
+        let row = list
+            .list()
+            .and_then(|list| list.row_rect(&format!("row-{index}")))
+            .expect("the row is laid out");
+        let at = Point::new(20.0, row.center().y);
+        let events = [
+            crate::synthetic_input::cursor_moved(at.x, at.y),
+            crate::synthetic_input::mouse_input(
+                crate::winit::event::ElementState::Pressed,
+                crate::winit::event::MouseButton::Right,
+            ),
+        ];
+        for event in &events {
+            crate::testing::Dispatch::new()
+                .layout(&taffy, node)
+                .send(list, event);
+        }
+    }
+
+    /// A menu opened over a row that opens where it stands is about that row alone: choosing
+    /// the row shows its item under it, so opening the menu reports no choice of it for the
+    /// window to open the item elsewhere.
+    #[test]
+    fn a_menu_over_a_row_that_opens_in_place_reports_no_choice() {
+        let queue = crate::Intents::<Fired>::default();
+        let select = Event::View(Intent::new(&queue, "list", "select"));
+        let props = VirtualListProps {
+            select,
+            ..column_of(rows_offering(4, true))
+        };
+        let mut list = DescribedList::from_props("list", props);
+        right_press(&mut list, 1, 400.0);
+        assert!(
+            list.menu_area_mut()
+                .as_deref()
+                .is_some_and(ContextMenuArea::is_open),
+            "the row's menu opens where the press was"
+        );
+        assert!(
+            queue.take().is_empty(),
+            "the list reports no choice of a row it opens where it stands"
+        );
+
+        // A row of a list whose items carry no document opens elsewhere, and the menu over it
+        // chooses it, as a press on it would.
+        let props = VirtualListProps {
+            select: Event::View(Intent::new(&queue, "list", "select")),
+            ..column_of(rows_offering(4, false))
+        };
+        let mut plain = DescribedList::from_props("list", props);
+        right_press(&mut plain, 1, 400.0);
+        assert!(
+            plain
+                .menu_area_mut()
+                .as_deref()
+                .is_some_and(ContextMenuArea::is_open),
+            "the row's menu opens where the press was"
+        );
+        let fired = queue.take();
+        assert_eq!(fired.len(), 1, "the menu chooses the row: {fired:?}");
+        assert_eq!(fired[0].event, "select");
     }
 
     /// The item a host holds open stands open where it stands: the list it builds again shows
