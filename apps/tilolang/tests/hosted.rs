@@ -2014,6 +2014,36 @@ fn texts(node: &tilo_ui_host::UiNode, out: &mut Vec<String>) {
     }
 }
 
+/// Whether a box a row of the window shows is checked: the box the open task's row draws, bound
+/// to the field the app keeps it in.
+fn a_checked_row_box(session: &mut Session) -> bool {
+    fn boxes(node: &tilo_ui_host::UiNode, out: &mut Vec<String>) {
+        if node.kind == "ui.Checkbox" {
+            out.push(node.key.clone());
+        }
+        for child in &node.children {
+            boxes(child, out);
+        }
+    }
+    let mut keys = Vec::new();
+    {
+        let view = session.hosted().view().expect("the window is connected");
+        for list in view.lists() {
+            if list.starts_with(tilo_ui_host::shell::DETAIL) {
+                continue;
+            }
+            let rows = view.rows_of(&list).expect("the list's rows");
+            let rows = rows.borrow();
+            for key in rows.rendered() {
+                boxes(rows.row(&key).expect("a rendered row"), &mut keys);
+            }
+        }
+    }
+    let view = session.hosted().view().expect("the window is connected");
+    keys.iter()
+        .any(|key| matches!(view.bound_value(key), Some(tilo_ui_host::Value::Bool(true))))
+}
+
 /// The accessible nodes of the window, each with the widget that draws it.
 fn accessible(session: &mut Session) -> Vec<ui::a11y::AccessNode> {
     fn nodes<'a>(node: &'a ui::a11y::AccessNode, out: &mut Vec<&'a ui::a11y::AccessNode>) {
@@ -2178,33 +2208,6 @@ fn offered(session: &mut Session) -> Vec<(String, Option<String>)> {
         .collect()
 }
 
-/// Whether a control the window shows is bound to `true` now: the box of a task the palette
-/// checked off.
-fn a_checked_control(session: &mut Session) -> bool {
-    /// The keys of the bound controls under `node`, each carrying its tree's `prefix`.
-    fn bound(node: &tilo_ui_host::UiNode, prefix: &str, out: &mut Vec<String>) {
-        if node.binding.is_some() {
-            out.push(format!("{prefix}{}", node.key));
-        }
-        for child in &node.children {
-            bound(child, prefix, out);
-        }
-    }
-    let view = session.hosted().view().expect("the window is connected");
-    let mut keys = Vec::new();
-    for (tree, prefix) in [
-        (view.root_tree(), ""),
-        (view.detail_tree(), tilo_ui_host::shell::DETAIL),
-    ] {
-        if let Some(tree) = tree {
-            bound(&tree, prefix, &mut keys);
-        }
-    }
-    let view = session.hosted().view().expect("the window is connected");
-    keys.iter()
-        .any(|key| matches!(view.bound_value(key), Some(tilo_ui_host::Value::Bool(true))))
-}
-
 /// Opens the window's own command palette on `query` and runs the row it leads with.
 fn choose(session: &mut Session, query: &str) {
     session
@@ -2330,15 +2333,15 @@ fn a_chosen_action_runs_at_the_app_and_the_task_offers_its_own() {
         .expect("the opened task offers Complete");
     assert_eq!(complete.1.as_deref(), Some("Ctrl+enter"));
 
-    // Running it there checks the task off at the app: the box the window shows for it is
-    // checked, on the same record the palette wrote.
     assert!(
-        !a_checked_control(&mut session),
+        !a_checked_row_box(&mut session),
         "the task starts unchecked"
     );
+    // Running it there checks the task off at the app: the row the window holds for it, on the
+    // same record the palette wrote, shows its box checked.
     choose(&mut session, "Complete");
     assert!(
-        a_checked_control(&mut session),
+        a_checked_row_box(&mut session),
         "the task the palette ran Complete on shows checked"
     );
 }
@@ -2529,7 +2532,8 @@ fn an_open_tasks_palette_lists_what_the_task_lets_a_person_do(
         .window
         .press_key(ui::winit::keyboard::NamedKey::Escape);
     session.settle();
-    // A task made by the list's entry: it is a record the window holds.
+    // A task made by the list's entry: it is a record the window holds. The window opens on
+    // Today, so the day it names none of is today, and the day is there to clear.
     session.window.chord(&["ctrl"], "n");
     session.settle();
     session.window.type_text("Water the plants");
@@ -2553,6 +2557,7 @@ fn an_open_tasks_palette_lists_what_the_task_lets_a_person_do(
             "Tomorrow",
             "Next week",
             "Pick date…",
+            "No date",
             "Remind me…",
             "Remind",
         ],
