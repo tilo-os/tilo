@@ -49,6 +49,7 @@ use tilo_device_fabric::DeviceId;
 use tilo_device_fabric::runtime::FabricRuntime;
 #[cfg(target_os = "linux")]
 use tilo_endpoint_reachability::{Need, Reachability};
+#[cfg(target_os = "linux")]
 use tilo_identity_host::custody::HostIdentity;
 #[cfg(target_os = "linux")]
 use tilo_network_actor::{NetCmd, NetEvent, WorkspaceControlRoute, WorkspaceId, native_ingress};
