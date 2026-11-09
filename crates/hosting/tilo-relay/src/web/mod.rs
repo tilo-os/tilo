@@ -117,7 +117,10 @@ impl Drop for WebHandle {
 /// route keeps.
 struct Board {
     here: Arc<here::Here>,
-    presence: Arc<plane::Authority>,
+    /// Weak: the plane's authority holds the relay's handler, which holds
+    /// this board, so a strong reference would keep the handler — and the
+    /// endpoint and socket it holds — alive after the relay shuts down.
+    presence: std::sync::Weak<plane::Authority>,
     profiles: Arc<envelopes::Envelopes>,
 }
 
@@ -130,10 +133,15 @@ impl crate::peer::HereBoard for Board {
     {
         Box::pin(async move {
             request.validate().map_err(ToString::to_string)?;
-            if !self.presence.admits_page(peer, request.workspace_id).await {
+            let presence = self
+                .presence
+                .upgrade()
+                .ok_or_else(|| "this host is shutting down".to_string())?;
+            if !presence.admits_page(peer, request.workspace_id).await {
                 return Err("not admitted to this workspace".into());
             }
-            let workspace_id = request.workspace_id;
+            let members = presence.persons_in(request.workspace_id);
+            drop(presence);
             let (mut reply, job) = self.here.post(
                 request,
                 peer.device_public_key,
@@ -141,7 +149,7 @@ impl crate::peer::HereBoard for Board {
                 std::time::Instant::now(),
                 tilo_clock::unix_now_ms(),
             );
-            here::pair_members(&mut reply, &self.presence.persons_in(workspace_id));
+            here::pair_members(&mut reply, &members);
             for person in &mut reply.people {
                 person.profile_ms = self.profiles.issued_at(&person.user).unwrap_or(0);
             }
@@ -339,7 +347,7 @@ impl Relay {
         // with the one account its HTTPS route keeps.
         let _ = context.relay.here.set(Arc::new(Board {
             here: Arc::clone(&web.here),
-            presence: Arc::clone(&web.presence),
+            presence: Arc::downgrade(&web.presence),
             profiles: Arc::clone(&web.profiles),
         }));
         // A page's fetch proxy token is minted on the session it fetched from.
