@@ -1490,6 +1490,13 @@ impl Model for String {
 /// in the text, and it is a change the host's undo inverts exactly. (A
 /// character-level diff of two unrelated strings scatters one edit across
 /// many splices.)
+///
+/// So a whole-value `set` (or `replace`) racing another writer merges the
+/// way two people typing do: edits to different parts both stay, and where
+/// both rewrote the same span, the text either deleted stays deleted and
+/// each one's new text comes through whole, one after the other. Automerge
+/// orders concurrent insertions at one place by change and never mixes
+/// their characters.
 fn splice_changed_span(
     doc: &mut Doc,
     text: &ObjId,
