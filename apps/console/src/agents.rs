@@ -231,11 +231,17 @@ fn list(cx: &ViewCx<Console>, nav: &Nav, seen: &Seen) -> Element {
 }
 
 fn run_row(nav: &Nav, seen: &Seen, run: &wire::AgentRun, selected: bool) -> Element {
+    let working = seen.working(run);
     let mut row = faced(
         ListRow::new(format!("console-run-{}", run.id), run.instruction.clone()),
         &run.agent,
     )
-    .subtitle(who(&run.agent))
+    .subtitle(
+        run.now
+            .as_ref()
+            .filter(|_| working)
+            .map_or_else(|| who(&run.agent), now_line),
+    )
     .secondary(run.workspace.clone().unwrap_or_else(|| {
         trf(
             "console-run-actions",
@@ -244,11 +250,36 @@ fn run_row(nav: &Nav, seen: &Seen, run: &wire::AgentRun, selected: bool) -> Elem
     }))
     .meta(ago(run.last_ms))
     .selected(selected);
-    if seen.working(run) {
+    if working {
         row = row.active();
     }
     let (chosen, id) = (nav.clone(), run.id.clone());
     Box::new(row.on_view(move || chosen.open_run(&id)))
+}
+
+/// What a working run is doing now, as its row says it: "Running `cargo test`…", "Editing
+/// src/email.rs".
+fn now_line(now: &wire::Now) -> String {
+    match now {
+        wire::Now::Running { command, .. } => trf(
+            "console-now-running",
+            &[("command", command.clone().into())],
+        ),
+        wire::Now::Editing { path, .. } => {
+            trf("console-now-editing", &[("path", path.clone().into())])
+        }
+        wire::Now::Browsing { url, title, .. } => trf(
+            "console-now-browsing",
+            &[(
+                "page",
+                if title.is_empty() { url } else { title }.clone().into(),
+            )],
+        ),
+        wire::Now::Changing { summary, .. } => summary.clone(),
+        wire::Now::Ran { command, .. } => {
+            trf("console-now-ran", &[("command", command.clone().into())])
+        }
+    }
 }
 
 /// A dropdown of `options` (value, label) bound to `field` of the record,
@@ -391,7 +422,22 @@ fn inspect(cx: &ViewCx<Console>, nav: &Nav, seen: &Seen, run: &wire::AgentRun) -
     let nav = nav.clone();
     let shown = run.clone();
     parts.push(cx.switch(&nav.action.clone(), move |cx, open| {
-        actions(cx, &nav, &shown, *open)
+        // Showing a command's whole output rebuilds the timeline, so the
+        // rows under it move down with it.
+        let (nav, shown, open) = (nav.clone(), shown.clone(), *open);
+        cx.switch(&nav.full_output.clone(), move |cx, full| {
+            let Some((index, run)) = full.and_then(|index| Some((index, more_of(&shown, index)?)))
+            else {
+                return actions(cx, &nav, &shown, open, None);
+            };
+            // The whole output is read only once asked for; the timeline is
+            // built again when it arrives.
+            let read = Doors::of(cx).follow_history::<wire::RunOutput>(wire::RUN_OUTPUT, &run);
+            let (nav, shown) = (nav.clone(), shown.clone());
+            Box::new(cx.arriving(&read.answer(), move |cx, whole| {
+                actions(cx, &nav, &shown, open, Some((index, whole)))
+            }))
+        })
     }));
     page(parts)
 }
@@ -464,7 +510,13 @@ const fn kind_icon(view: &wire::ActionView) -> Icon {
 
 /// The run's actions, oldest first, the one `open` names with its view
 /// under it.
-fn actions(cx: &ViewCx<Console>, nav: &Nav, run: &wire::AgentRun, open: Option<usize>) -> Element {
+fn actions(
+    cx: &ViewCx<Console>,
+    nav: &Nav,
+    run: &wire::AgentRun,
+    open: Option<usize>,
+    full: Option<(usize, &wire::RunOutput)>,
+) -> Element {
     let doors = Doors::of(cx);
     let mut rows: Vec<Element> = Vec::new();
     for (index, action) in run.actions.iter().enumerate() {
@@ -502,7 +554,15 @@ fn actions(cx: &ViewCx<Console>, nav: &Nav, run: &wire::AgentRun, open: Option<u
         });
         rows.push(Box::new(row));
         if open == Some(index) {
-            rows.push(action_view(cx, &doors, index, action));
+            rows.push(action_view(
+                cx,
+                nav,
+                &doors,
+                index,
+                action,
+                full.filter(|(shown, _)| *shown == index)
+                    .map(|(_, whole)| whole),
+            ));
         }
     }
     Box::new(Section::titled(
@@ -517,9 +577,11 @@ fn actions(cx: &ViewCx<Console>, nav: &Nav, run: &wire::AgentRun, open: Option<u
 /// What one action shows when opened: never just its sentence.
 fn action_view(
     cx: &ViewCx<Console>,
+    nav: &Nav,
     doors: &Doors,
     index: usize,
     action: &wire::RunAction,
+    whole: Option<&wire::RunOutput>,
 ) -> Element {
     let id = format!("console-action-{index}-view");
     let target = action.view.target().clone();
@@ -541,26 +603,51 @@ fn action_view(
         }
         wire::ActionView::Command {
             command,
+            cwd,
             output,
+            more,
             exit,
+            started_ms,
+            ended_ms,
+            run,
             ..
         } => {
-            let mut lines = vec![code_line(&format!("$ {command}"), None)];
-            lines.extend(output.iter().map(|line| code_line(line, None)));
-            parts.push(well(lines));
-            if let Some(code) = exit {
-                let said = Text::new(&trf("console-command-exit", &[("code", (*code).into())]))
-                    .with_role(TextRole::Caption);
-                parts.push(Box::new(if *code == 0 {
-                    said.dimmed()
-                } else {
-                    said.tone(Tone::Danger)
-                }));
+            if !cwd.is_empty() {
+                parts.push(Box::new(
+                    Text::new(&trf("console-command-in", &[("cwd", cwd.clone().into())]))
+                        .with_role(TextRole::Caption)
+                        .dimmed()
+                        .with_wrap_mode(ui::text_render::TextWrapMode::WordOrGlyph),
+                ));
             }
+            // What it printed beyond the last lines is one read away, and only read when asked.
+            if run.is_some() && *more {
+                let output = Output {
+                    index,
+                    prompt: format!("$ {command}"),
+                    tail: output.clone(),
+                };
+                parts.push(output_part(&nav.full_output, whole, &output));
+            } else {
+                let mut lines = vec![code_line(&format!("$ {command}"), None)];
+                lines.extend(output.iter().map(|line| code_line(line, None)));
+                parts.push(well(lines));
+            }
+            parts.push(command_status(
+                action.view.is_running(),
+                *exit,
+                *started_ms,
+                *ended_ms,
+            ));
         }
-        wire::ActionView::Page { url, .. } => {
+        wire::ActionView::Page { url, title, .. } => {
+            let title = if title.is_empty() {
+                &target.label
+            } else {
+                title
+            };
             parts.push(Box::new(
-                Text::new(&target.label).with_role(TextRole::Label).strong(),
+                Text::new(title).with_role(TextRole::Label).strong(),
             ));
             parts.push(code_line(url, None));
         }
@@ -587,6 +674,114 @@ fn action_view(
             .with_id(&id)
             .with_child(Box::new(column)),
     )
+}
+
+/// How a command ended, as a caption: still running, or its exit status and how long it took,
+/// a failure in the danger ink.
+fn command_status(
+    running: bool,
+    exit: Option<i32>,
+    started_ms: Option<i64>,
+    ended_ms: Option<i64>,
+) -> Element {
+    if running {
+        return Box::new(
+            Text::new(&tr("console-command-running"))
+                .with_role(TextRole::Caption)
+                .tone(Tone::Info)
+                .with_id("console-command-running"),
+        );
+    }
+    let Some(code) = exit else {
+        return Box::new(Column::new().with_no_padding().with_intrinsic_height());
+    };
+    let took = started_ms
+        .zip(ended_ms)
+        .and_then(|(started, ended)| u64::try_from(ended.saturating_sub(started)).ok())
+        .map(|ms| ui::format::duration(std::time::Duration::from_millis(ms)));
+    let said = match took {
+        Some(took) => trf(
+            "console-command-exit-after",
+            &[("code", code.into()), ("took", took.into())],
+        ),
+        None => trf("console-command-exit", &[("code", code.into())]),
+    };
+    let said = Text::new(&said).with_role(TextRole::Caption);
+    Box::new(if code == 0 {
+        said.dimmed()
+    } else {
+        said.tone(Tone::Danger)
+    })
+}
+
+/// One command's output as its view shows it: the command's place in the run, its prompt line
+/// and the last lines it printed.
+struct Output {
+    index: usize,
+    prompt: String,
+    tail: Vec<String>,
+}
+
+/// A command's output: its last lines, or every line once the person asks, read from the run's
+/// record as the history serves it.
+fn output_part(
+    shown: &LocalState<Option<usize>>,
+    whole: Option<&wire::RunOutput>,
+    output: &Output,
+) -> Element {
+    let index = output.index;
+    let full = whole.is_some();
+    let toggle = {
+        let shown = shown.clone();
+        Button::new(
+            &format!("console-action-{index}-output"),
+            if full {
+                "console-command-less"
+            } else {
+                "console-command-full"
+            },
+        )
+        .role(ButtonRole::Plain)
+        .on_view(move || shown.update(|open| *open = (!full).then_some(index)))
+    };
+    let printed: Element = match whole {
+        Some(whole) if whole.unavailable => {
+            Box::new(Text::new(&tr("console-command-output-unavailable")).dimmed())
+        }
+        Some(whole) => well(
+            std::iter::once(&output.prompt)
+                .chain(&whole.lines)
+                .map(|line| code_line(line, None))
+                .collect(),
+        ),
+        None => well(
+            std::iter::once(&output.prompt)
+                .chain(&output.tail)
+                .map(|line| code_line(line, None))
+                .collect(),
+        ),
+    };
+    Box::new(
+        Column::new()
+            .with_no_padding()
+            .with_intrinsic_height()
+            .with_rhythm(Rhythm::Related)
+            .push(printed)
+            .push(Box::new(toggle)),
+    )
+}
+
+/// The run record of the command at `index` of `run`, when it printed more
+/// than its view shows.
+fn more_of(run: &wire::AgentRun, index: usize) -> Option<wire::CommandRun> {
+    match &run.actions.get(index)?.view {
+        wire::ActionView::Command {
+            run: Some(record),
+            more: true,
+            ..
+        } => Some(record.clone()),
+        _ => None,
+    }
 }
 
 /// What the action's changes did, as the history compares the workspace
@@ -631,6 +826,8 @@ fn compared(cx: &ViewCx<Console>, doors: &Doors, range: &wire::Range) -> Element
 
 /// A line of code or output, in the code role unless `role` says otherwise.
 fn code_line(text: &str, role: Option<TextRole>) -> Element {
+    // A blank line of output keeps a line's height, as it did where it was printed.
+    let text = if text.is_empty() { "\u{a0}" } else { text };
     Box::new(
         Text::new(text)
             .with_role(role.unwrap_or(TextRole::Code))

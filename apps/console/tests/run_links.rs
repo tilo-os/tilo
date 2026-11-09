@@ -108,6 +108,7 @@ fn run() -> wire::AgentRun {
         },
         actions: Vec::new(),
         undo_blocked: None,
+        now: None,
     }
 }
 

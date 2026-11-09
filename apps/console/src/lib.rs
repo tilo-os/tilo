@@ -118,6 +118,8 @@ pub(crate) struct Nav {
     pub(crate) run: LocalState<Option<String>>,
     /// The action of that run whose view is open, by its place in the run.
     pub(crate) action: LocalState<Option<usize>>,
+    /// The command of that run whose every line of output is shown, by its place in the run.
+    pub(crate) full_output: LocalState<Option<usize>>,
 }
 
 impl Nav {
@@ -135,6 +137,7 @@ impl Nav {
     /// Show the run `id`, no action of it open.
     pub(crate) fn open_run(&self, id: &str) {
         self.action.set(None);
+        self.full_output.set(None);
         self.run.set(Some(id.to_owned()));
     }
 
@@ -149,6 +152,7 @@ impl Nav {
     /// Show every run again.
     pub(crate) fn close_run(&self) {
         self.action.set(None);
+        self.full_output.set(None);
         self.run.set(None);
     }
 }
@@ -334,6 +338,7 @@ impl ResourceApp for App {
             pane: cx.local(ui::widget::NavPane::Content),
             run: cx.local(None),
             action: cx.local(None),
+            full_output: cx.local(None),
         };
         #[cfg(feature = "samples")]
         {

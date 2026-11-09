@@ -20,6 +20,17 @@ fn english() {
     ui::i18n::I18nManager::init("en-US");
 }
 
+/// Whether the window says `text`, as a name, value or description a screen
+/// reader reads.
+fn says(app: &mut TestApp<App>, text: &str) -> bool {
+    app.harness().a11y_nodes().iter().any(|(_, node)| {
+        [node.label(), node.value(), node.description()]
+            .into_iter()
+            .flatten()
+            .any(|said| said.contains(text))
+    })
+}
+
 fn shows(app: &mut TestApp<App>, target: &str) -> bool {
     app.harness().targets().contains_key(target)
 }
@@ -27,7 +38,7 @@ fn shows(app: &mut TestApp<App>, target: &str) -> bool {
 #[test]
 fn every_scenario_shows_its_place_built_from_components() {
     english();
-    let cases: [(&str, &[&str]); 6] = [
+    let cases: [(&str, &[&str]); 7] = [
         (
             "agents",
             &[
@@ -52,8 +63,15 @@ fn every_scenario_shows_its_place_built_from_components() {
         ),
         (
             "command",
-            &["console-action-0-view", "console-action-0-view-open"],
+            &[
+                "console-action-0-view",
+                "console-action-0-view-open",
+                "console-action-0-output",
+                "console-action-4",
+            ],
         ),
+        // The whole output of the failing run, read from its run record.
+        ("command-output", &["console-action-0-output"]),
         (
             "workspaces",
             &["console-workspace-0-open", "console-workspace-1-open"],
@@ -248,6 +266,10 @@ fn run() -> wire::AgentRun {
             }),
         }],
         undo_blocked: None,
+        now: Some(wire::Now::Running {
+            command: "cargo test -p signup".into(),
+            since_ms: 2,
+        }),
     }
 }
 
@@ -395,4 +417,19 @@ fn revoking_a_grant_names_it_to_the_door() {
     let requests = asked(&mut app);
     let revoke: door::GrantRef = argument(&find(&requests, &door::target(door::REVOKE)));
     assert_eq!(revoke.grant, "g1");
+}
+
+/// A run that is working says what it is doing now on its row, from the
+/// history's live read; once its session ended, the row names the agent
+/// again rather than a command that is no longer running.
+#[test]
+fn a_working_run_says_what_it_is_doing_now() {
+    english();
+    let mut app = opened(true);
+    assert!(
+        says(&mut app, "Running cargo test -p signup…"),
+        "the working run's row says the command it is running"
+    );
+    let mut app = opened(false);
+    assert!(!says(&mut app, "Running cargo test -p signup…"));
 }

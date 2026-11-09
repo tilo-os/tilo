@@ -43,6 +43,16 @@ console-run-timeline = { $count ->
 console-action-open = Open
 console-action-no-preview = This change shows no difference to preview.
 console-command-exit = Exited with { $code }
+console-command-exit-after = Exited with { $code } after { $took }
+console-command-running = Running…
+console-command-in = in { $cwd }
+console-command-full = Show all output
+console-command-less = Show less
+console-command-output-unavailable = Its output has not reached this device yet.
+console-now-running = Running { $command }…
+console-now-editing = Editing { $path }
+console-now-browsing = On { $page }
+console-now-ran = Ran { $command }
 
 console-workspaces-empty = No workspaces yet
 console-workspaces-empty-message = Make one in Tilo, or ask an agent to make one for its work.

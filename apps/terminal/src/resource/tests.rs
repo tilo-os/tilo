@@ -382,6 +382,7 @@ fn history_reads_a_requested_run_from_the_stored_record() {
             &Settled::Done(RunAnswer {
                 run: Some(request.clone()),
                 exit: Some(101),
+                refusal: None,
             }),
         ))
         .unwrap();

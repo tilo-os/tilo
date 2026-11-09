@@ -9,8 +9,15 @@ use ui::tilo_actions::remote::workspace_activity as wire;
 
 use crate::{Console, Nav, Place};
 
-pub(crate) const SCENARIOS: &[&str] =
-    &["agents", "run", "command", "workspaces", "connect", "usage"];
+pub(crate) const SCENARIOS: &[&str] = &[
+    "agents",
+    "run",
+    "command",
+    "command-output",
+    "workspaces",
+    "connect",
+    "usage",
+];
 
 const MINUTE_MS: i64 = 60_000;
 
@@ -85,6 +92,66 @@ fn action(n: u8, minutes_ago: i64, summary: &str, view: wire::ActionView) -> wir
     }
 }
 
+/// A command Claude Code ran in the Storefront shell, as the shell's run record serves it: its last
+/// lines, the rest one read away, and how it ended `minutes_ago`, after `took_ms` (`None`: still
+/// running).
+fn command(
+    run: &str,
+    command: &str,
+    printed: &[&str],
+    exit: Option<i32>,
+    (minutes_ago, took_ms): (i64, Option<i64>),
+) -> wire::ActionView {
+    let started_ms = minutes_ago_ms(minutes_ago);
+    let shown = printed.len().saturating_sub(wire::COMMAND_TAIL_LINES);
+    wire::ActionView::Command {
+        target: target("so.tilo.terminal", "Terminal", "tab:1", "storefront"),
+        command: command.to_owned(),
+        cwd: "~/storefront".to_owned(),
+        output: printed
+            .iter()
+            .skip(shown)
+            .map(|line| (*line).to_owned())
+            .collect(),
+        more: shown > 0,
+        exit,
+        started_ms: Some(started_ms),
+        ended_ms: took_ms.map(|took| started_ms.saturating_add(took)),
+        run: Some(wire::CommandRun {
+            workspace: Some("ws-storefront".to_owned()),
+            app_id: "so.tilo.terminal".to_owned(),
+            record: "tab:1".to_owned(),
+            run: run.to_owned(),
+        }),
+    }
+}
+
+/// Everything the failing test run printed.
+const FAILING_TEST_OUTPUT: [&str; 14] = [
+    "   Compiling signup v0.4.2 (~/storefront/signup)",
+    "    Finished `test` profile [unoptimized + debuginfo] target(s) in 3.81s",
+    "     Running unittests src/lib.rs (target/debug/deps/signup-5f0c2a)",
+    "",
+    "running 12 tests",
+    "test email::accepts_plus_addressing ... ok",
+    "test email::rejects_padded_address ... FAILED",
+    "",
+    "failures:",
+    "---- email::rejects_padded_address stdout ----",
+    "thread 'email::rejects_padded_address' panicked at src/email.rs:41:5:",
+    "assertion failed: valid(\" ada@example.com \")",
+    "",
+    "test result: FAILED. 11 passed; 1 failed; 0 ignored",
+];
+
+/// Everything the failing test run printed, as the full-output read answers it.
+fn whole_output() -> wire::RunOutput {
+    wire::RunOutput {
+        lines: FAILING_TEST_OUTPUT.map(str::to_owned).to_vec(),
+        ..wire::RunOutput::default()
+    }
+}
+
 fn line(side: wire::DiffSide, text: &str) -> wire::DiffLine {
     wire::DiffLine {
         side,
@@ -116,16 +183,13 @@ fn fix_run() -> wire::AgentRun {
                 1,
                 14,
                 "Ran the signup tests",
-                wire::ActionView::Command {
-                    target: target("so.tilo.terminal", "Terminal", "term:1", "storefront"),
-                    command: "cargo test -p signup".to_owned(),
-                    output: vec![
-                        "running 12 tests".to_owned(),
-                        "test email::rejects_padded_address ... FAILED".to_owned(),
-                        "test result: FAILED. 11 passed; 1 failed".to_owned(),
-                    ],
-                    exit: Some(101),
-                },
+                command(
+                    "run-1",
+                    "cargo test -p signup",
+                    &FAILING_TEST_OUTPUT,
+                    Some(101),
+                    (14, Some(4_200)),
+                ),
             ),
             action(
                 2,
@@ -147,15 +211,16 @@ fn fix_run() -> wire::AgentRun {
                 3,
                 5,
                 "Ran the signup tests again",
-                wire::ActionView::Command {
-                    target: target("so.tilo.terminal", "Terminal", "term:1", "storefront"),
-                    command: "cargo test -p signup".to_owned(),
-                    output: vec![
-                        "running 12 tests".to_owned(),
-                        "test result: ok. 12 passed; 0 failed".to_owned(),
+                command(
+                    "run-2",
+                    "cargo test -p signup",
+                    &[
+                        "running 12 tests",
+                        "test result: ok. 12 passed; 0 failed; 0 ignored",
                     ],
-                    exit: Some(0),
-                },
+                    Some(0),
+                    (5, Some(3_900)),
+                ),
             ),
             action(
                 4,
@@ -169,10 +234,21 @@ fn fix_run() -> wire::AgentRun {
                         "Trim addresses before checking them",
                     ),
                     url: "https://git.example.com/storefront/pulls/412".to_owned(),
+                    title: "Trim addresses before checking them · Pull request #412".to_owned(),
                 },
+            ),
+            action(
+                5,
+                0,
+                "cargo clippy -p signup",
+                command("run-3", "cargo clippy -p signup", &[], None, (0, None)),
             ),
         ],
         undo_blocked: None,
+        now: Some(wire::Now::Running {
+            command: "cargo clippy -p signup".to_owned(),
+            since_ms: minutes_ago_ms(0),
+        }),
     }
 }
 
@@ -208,6 +284,10 @@ fn runs() -> wire::Runs {
             ),
         ],
         undo_blocked: None,
+        now: Some(wire::Now::Changing {
+            summary: "Wrote 6 paragraphs".to_owned(),
+            at_ms: minutes_ago_ms(80),
+        }),
     };
     let budget = wire::AgentRun {
         id: "run:budget".to_owned(),
@@ -230,6 +310,7 @@ fn runs() -> wire::Runs {
             },
         )],
         undo_blocked: Some("Open Budget to undo this run".to_owned()),
+        now: None,
     };
     wire::Runs {
         total: 3,
@@ -304,6 +385,7 @@ fn detail() -> wire::Detail {
 pub(crate) fn fixture(fixture: &mut Fixture<Console>) {
     fixture.answer(&wire::target(wire::RUNS), &runs());
     fixture.answer(&wire::target(wire::DETAIL), &detail());
+    fixture.answer(&wire::target(wire::RUN_OUTPUT), &whole_output());
     fixture.answer(&door::target(door::DOOR), &the_door());
 }
 
@@ -319,6 +401,12 @@ pub(crate) fn stage(scenario: Option<&str>, nav: &Nav) {
             nav.show(Place::Agents);
             nav.open_run("run:fix-signup");
             nav.action.set(Some(0));
+        }
+        Some("command-output") => {
+            nav.show(Place::Agents);
+            nav.open_run("run:fix-signup");
+            nav.action.set(Some(0));
+            nav.full_output.set(Some(0));
         }
         Some("workspaces") => nav.show(Place::Workspaces),
         Some("connect") => nav.show(Place::Connect),
