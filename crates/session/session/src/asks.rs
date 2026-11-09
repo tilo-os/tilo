@@ -91,6 +91,15 @@ impl Shared {
                         .liveness_choice(tab, tilo_desktop_surface::LivenessChoice::ForceQuit);
                 }
                 DesktopAsk::ReportProblem => self.report_problem(),
+                // Billing is the person's account: Settings holds it, beside who they are.
+                DesktopAsk::AccountSettings => {
+                    crate::quick_settings::open_settings(self, "settings://billing");
+                }
+                // The agent door is the hosting provider's (its MCP front door): a session on the
+                // person's own computer serves none, so it holds no grant to take back.
+                DesktopAsk::RevokeAgentGrant(grant) => {
+                    tracing::warn!(%grant, "no agent door here to revoke the grant at");
+                }
             }
         }
         // What the press asked is carried out: what it closed may be raised again, though the press

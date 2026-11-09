@@ -1098,6 +1098,32 @@ overview-join-workspace = Join a workspace…
 overview-leave-workspace = Leave
 overview-a11y-leave = Leave { $name }
 overview-two-facts = { $first }, { $second }
+overview-tilo-more-workspaces = More workspaces
+overview-tilo-hours = { $hours } hr
+overview-tilo-hosts = Hosts & compute
+overview-tilo-agents = Agents
+overview-tilo-account = Account
+overview-tilo-about = About Tilo
+overview-tilo-workspace-usage = { $host }, { $time } this month
+overview-tilo-plan-used-of = { $plan } · { $used } of { $included } this month
+overview-tilo-plan-used = { $plan } · { $used } this month
+overview-tilo-no-card = No card yet: added the first time something needs a Linux machine
+overview-tilo-no-plan = No plan chosen
+overview-tilo-host-device = This device
+overview-tilo-host-self = Your own host
+overview-tilo-host-provider = Hosting provider
+overview-tilo-manage-billing = Manage billing
+overview-tilo-invoice = Invoice, { $amount }
+overview-tilo-invoice-paid = Paid
+overview-tilo-invoice-open = Due
+overview-tilo-invoice-past-due = Payment failed
+overview-tilo-invoice-void = Void
+overview-tilo-agent-everywhere = All your workspaces
+overview-tilo-agent-running = { $reach } · { $runs ->
+        [one] working now
+       *[other] { $runs } runs now
+    }
+overview-tilo-revoke = Revoke
 overview-windows-title = Windows in this workspace
 overview-windows-description = Each strip of this workspace, top to bottom, with its windows in order. The arrow keys move between them and Enter goes to one. F2 renames the strip a window is on, and Alt with Up or Down moves that strip. Click or tap a window to go there, middle-click one to close it, or drag it onto another workspace or strip to move it there.
 overview-strips-title = Strips in this workspace

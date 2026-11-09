@@ -1,8 +1,8 @@
 //! The one menu behind the top bar's workspace name, and the menu a secondary press on the desk
-//! opens where the pointer is: everything about where the person is, in one place. Which workspace
-//! (the others, to switch to), where it is hosted, joining or leaving one, renaming it, the
-//! overview and a new strip — and, opened on the desk, what the desk itself offers
-//! ([`WorkspaceMenuModel::desk`]).
+//! opens where the pointer is: everything about the workspace the person is in, in one place. Where
+//! it is hosted, joining or leaving one, renaming it, the overview and a new strip — and, opened on
+//! the desk, what the desk itself offers ([`WorkspaceMenuModel::desk`]). Going to another
+//! workspace is the overview's, which the Tilo mark zooms out to.
 //! [`WorkspaceMenuModel`] is what the host knows when the menu opens; the menu is a [`ContextMenu`]
 //! of it, and what the person chose comes back as a [`WorkspaceMenuChoice`] for the host to carry
 //! out. Joining and leaving are the host's own flows: it lists them as
@@ -18,15 +18,6 @@ use vello::kurbo::{Point, Rect};
 use winit::event::WindowEvent;
 
 use crate::i18n::{t, t_args};
-
-/// One workspace the menu offers, by the host's own key for it.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct WorkspaceChoice {
-    pub key: String,
-    pub name: String,
-    /// The workspace shown now: listed with a check, choosing it does nothing.
-    pub current: bool,
-}
 
 /// A command the host offers about workspaces (join one, leave this one, a new one), carried out by
 /// the host when chosen.
@@ -80,7 +71,6 @@ pub struct WorkspaceMenuModel {
     /// [`DESK_ROWS`] of them. Empty for the bar's menu, which stands on the workspace name rather
     /// than on the desk.
     pub desk: Vec<WorkspaceAction>,
-    pub workspaces: Vec<WorkspaceChoice>,
     /// The site the workspace is hosted by, as the person reached it ("tilo.sh"); `None` on the
     /// person's own computer.
     pub host: Option<String>,
@@ -96,8 +86,6 @@ pub struct WorkspaceMenuModel {
 /// What the person chose.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum WorkspaceMenuChoice {
-    /// Go to the workspace with this key.
-    Switch(String),
     Rename,
     Overview,
     NewStrip,
@@ -171,16 +159,10 @@ impl WorkspaceMenu {
         }
     }
 
-    /// What the bar's menu offers: the workspaces, where the person is hosted, the workspace's
+    /// What the bar's menu offers: where the person is hosted, the workspace's
     /// commands, and what changes them.
     fn bar_rows(model: &WorkspaceMenuModel) -> Vec<Row> {
         let mut rows: Vec<Row> = Vec::new();
-        for workspace in &model.workspaces {
-            rows.push(Row::new(
-                MenuItem::selection(&workspace.name).with_checked(workspace.current),
-                (!workspace.current).then(|| WorkspaceMenuChoice::Switch(workspace.key.clone())),
-            ));
-        }
         if let Some(host) = &model.host {
             rows.push(Self::hosted_by(host));
         }
@@ -227,16 +209,6 @@ impl WorkspaceMenu {
         }
         rows.push(Self::overview());
         let mut workspace: Vec<Row> = Vec::new();
-        for other in model
-            .workspaces
-            .iter()
-            .filter(|workspace| !workspace.current)
-        {
-            workspace.push(Row::new(
-                MenuItem::selection(&other.name),
-                Some(WorkspaceMenuChoice::Switch(other.key.clone())),
-            ));
-        }
         let host = model.host.as_ref().map(|host| Self::hosted_by(host));
         workspace.extend(host);
         // Losing the workspace goes last, apart from what joins or renames it: a row a slip of the
@@ -519,18 +491,6 @@ mod tests {
         WorkspaceMenuModel {
             place: MenuPlace::Bar,
             desk: Vec::new(),
-            workspaces: vec![
-                WorkspaceChoice {
-                    key: "1".into(),
-                    name: "Lounge".into(),
-                    current: true,
-                },
-                WorkspaceChoice {
-                    key: "2".into(),
-                    name: "Home".into(),
-                    current: false,
-                },
-            ],
             host: Some("tilo.sh".into()),
             actions: vec![
                 WorkspaceAction {
@@ -564,15 +524,13 @@ mod tests {
     }
 
     #[test]
-    fn the_menu_lists_workspaces_host_actions_overview_and_a_new_strip() {
+    fn the_menu_lists_the_host_its_actions_overview_and_a_new_strip() {
         let menu = opened(&model());
         assert!(menu.is_open());
         let labels: Vec<String> = menu.labels().into_iter().flatten().collect();
         assert_eq!(
             labels,
             [
-                "Lounge",
-                "Home",
                 "Hosted by tilo.sh",
                 "Join a workspace",
                 "Leave workspace",
@@ -583,6 +541,12 @@ mod tests {
         assert!(
             !labels.iter().any(|label| label == "Rename workspace"),
             "no Rename for someone who may not"
+        );
+        // Going to another workspace is the overview's: the Tilo mark zooms out to all of them.
+        assert!(
+            !labels
+                .iter()
+                .any(|label| label == "Lounge" || label == "Home")
         );
     }
 
@@ -598,14 +562,12 @@ mod tests {
     #[test]
     fn choosing_a_row_says_what_it_means_once_and_closes_the_menu() {
         for (label, choice) in [
-            ("Home", Some(WorkspaceMenuChoice::Switch("2".into()))),
             ("Overview", Some(WorkspaceMenuChoice::Overview)),
             ("New strip", Some(WorkspaceMenuChoice::NewStrip)),
             (
                 "Leave workspace",
                 Some(WorkspaceMenuChoice::Action("leave-workspace".into())),
             ),
-            ("Lounge", None),
         ] {
             let mut menu = opened(&model());
             assert!(menu.choose(label), "{label} is a row");
@@ -711,10 +673,10 @@ mod tests {
             can_rename: true,
             ..desk_model()
         });
-        assert!(menu.choose_in("Workspace", "Home"));
+        assert!(menu.choose_in("Workspace", "Join a workspace"));
         assert_eq!(
             menu.take_choice(),
-            Some(WorkspaceMenuChoice::Switch("2".into()))
+            Some(WorkspaceMenuChoice::Action("join-workspace".into()))
         );
 
         let menu = opened(&WorkspaceMenuModel {
@@ -736,7 +698,6 @@ mod tests {
                 .filter(|label| !label.is_empty())
                 .collect::<Vec<_>>(),
             [
-                "Home",
                 "Hosted by tilo.sh",
                 "Join a workspace",
                 "Rename workspace",

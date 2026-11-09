@@ -1133,6 +1133,15 @@ impl BrowserShell {
                     }
                 }
                 DesktopAsk::ReportProblem => self.report_problem(),
+                // The person's account, billing beside who they are, is in Settings.
+                DesktopAsk::AccountSettings => self.launch("so.tilo.settings"),
+                // The agent door is the hosting provider's MCP front door, which serves the
+                // revoke: a page has no door of its own to take a grant back at.
+                DesktopAsk::RevokeAgentGrant(grant) => {
+                    web_sys::console::warn_1(
+                        &format!("no agent door here to revoke the grant {grant} at").into(),
+                    );
+                }
                 DesktopAsk::Shortcut(ui::shortcut_table::ShortcutAction::QuickSettings) => {
                     let _ = self.page_intent(ChromeIntent::ToggleQuickSettings);
                 }

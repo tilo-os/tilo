@@ -163,29 +163,26 @@ fn the_press_that_takes_the_menu_down_does_not_raise_it_again() {
     );
 }
 
-/// The same for the mark behind the Tilo menu.
+/// The Tilo mark zooms out of the workspace to the overview of the person's Tilo, and a second
+/// press zooms back in: no menu hangs off it for a desk press to take down.
 #[test]
-fn the_press_that_takes_the_tilo_menu_down_does_not_raise_it_again() {
+fn the_tilo_mark_zooms_out_and_back_in() {
     let (mut frame, overlays) = chrome();
     with_chrome(&mut frame, |chrome| {
         chrome.apply_intent(tilo_desktop::chrome::ChromeIntent::ToggleTiloMenu);
     });
     frame.relayout();
-    assert!(with_chrome(&mut frame, |chrome| chrome.menu_open()));
-    assert_eq!(
+    assert!(with_chrome(&mut frame, |chrome| chrome.overview_open()));
+    assert!(!with_chrome(&mut frame, |chrome| chrome.menu_open()));
+    assert_ne!(
         overlays.press_outside(DESK_PRESS.0, DESK_PRESS.1),
         Some(Slot::TiloMenu)
     );
-    overlays.dismiss(Slot::TiloMenu);
-    frame.relayout();
     with_chrome(&mut frame, |chrome| {
         chrome.apply_intent(tilo_desktop::chrome::ChromeIntent::ToggleTiloMenu);
     });
     frame.relayout();
-    assert!(
-        !with_chrome(&mut frame, |chrome| chrome.menu_open()),
-        "the mark the same press lands on does not open it again"
-    );
+    assert!(!with_chrome(&mut frame, |chrome| chrome.overview_open()));
 }
 
 #[test]
@@ -203,20 +200,6 @@ fn a_press_on_the_menu_itself_is_the_menus() {
         "a press on the menu leaves it up"
     );
     assert!(with_chrome(&mut frame, |chrome| chrome.menu_open()));
-}
-
-#[test]
-fn a_press_on_the_desk_closes_the_tilo_menu() {
-    let (mut frame, overlays) = chrome();
-    with_chrome(&mut frame, |chrome| {
-        chrome.apply_intent(tilo_desktop::chrome::ChromeIntent::ToggleTiloMenu);
-    });
-    frame.relayout();
-    assert!(with_chrome(&mut frame, |chrome| chrome.menu_open()));
-    assert_eq!(
-        overlays.press_outside(DESK_PRESS.0, DESK_PRESS.1),
-        Some(Slot::TiloMenu)
-    );
 }
 
 #[test]

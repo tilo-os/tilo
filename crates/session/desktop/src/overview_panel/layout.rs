@@ -276,17 +276,10 @@ impl OverviewPanel {
         self.metrics.here_h + self.windows_row_height() + self.shares_height()
     }
 
-    /// Rows of the "go to" list: every workspace but the one you are in, then "New workspace" and
-    /// "Join a workspace…".
+    /// Rows of the list: every workspace but the one you are in, then "New workspace" and
+    /// "Join a workspace…", then the person's hosts, agents and account.
     pub(super) fn list_slots(&self) -> usize {
-        let workspaces = self
-            .desk
-            .cards
-            .len()
-            .saturating_sub(usize::from(self.here_index().is_some()));
-        workspaces
-            .saturating_add(usize::from(self.can_add()))
-            .saturating_add(usize::from(self.desk.can_join))
+        self.go_to_slots().saturating_add(self.tilo_slots())
     }
 
     /// Height of the list if nothing clipped it.

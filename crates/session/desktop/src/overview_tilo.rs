@@ -1,0 +1,331 @@
+//! The overview of the person's Tilo below their workspaces: where their
+//! workspaces run (Hosts & compute), the agents they let in, and their
+//! account.
+//!
+//! Hosting is not a dashboard of its own. A host is a place a workspace
+//! runs; what a host offers the person's account, and what it used, is its
+//! answer to [`tilo_actions::remote::host_account::ACCOUNT`] ([`HostAccount`]); a plan, its card and
+//! its invoices are the person's account with a hosting provider, whose own
+//! pages manage them. The overview shows that answer only once it means
+//! something: a host that is not this device, a plan, or usage
+//! ([`hosting_relevant`]). Someone with one device that sells nothing sees no
+//! hosting at all.
+//!
+//! [`rows`] turns what the host knows ([`TiloDesk`]) into the rows the
+//! overview shows; a press on one is an [`OverviewPick`] the host carries
+//! out, as every pick of the overview is.
+
+use std::time::Duration;
+
+use tilo_actions::remote::agent_door::{self, Reach};
+use tilo_actions::remote::host_account::{HostAccount, HostKind, InvoiceStatus};
+use ui::icons::Icon;
+
+use crate::i18n::{t, t_args};
+use crate::overview_panel::OverviewPick;
+
+/// The person, as their account line names them.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct AccountLine {
+    pub name: String,
+    /// What else says who they are: their handle, or where they signed in.
+    pub detail: Option<String>,
+}
+
+/// What the overview shows below the workspaces, as the host knows it.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct TiloDesk {
+    /// The person's workspaces the host knows that this desk does not hold, as `(id, name)`:
+    /// going to one is the host's action `id`.
+    pub elsewhere: Vec<(String, String)>,
+    /// Each host's answer for the person's account
+    /// ([`tilo_actions::remote::host_account::ACCOUNT`]).
+    pub hosts: Vec<HostAccount>,
+    /// The agent door's answer, when one answers ([`agent_door::DOOR`]).
+    pub door: Option<agent_door::Door>,
+    pub account: Option<AccountLine>,
+    /// The session's own actions the Tilo mark offered (lock, sign out, …), as `(id, label)`.
+    pub actions: Vec<(String, String)>,
+    /// The host has somewhere to send feedback.
+    pub feedback: bool,
+}
+
+/// One row below the workspaces.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum TiloRow {
+    /// A section's name.
+    Caption(String),
+    Item(TiloItem),
+}
+
+/// A row that says something and may be pressed.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TiloItem {
+    /// Stable among the rows: what assistive technology and scripts name it by.
+    pub key: String,
+    pub icon: Option<Icon>,
+    pub title: String,
+    pub detail: Option<String>,
+    /// What a press on the row asks for.
+    pub press: Option<OverviewPick>,
+    /// A control at its trailing edge: its label and what it asks for.
+    pub action: Option<(String, OverviewPick)>,
+}
+
+/// Whether hosting means anything to the person yet: a host that is not one
+/// of their devices, a host that sells something, or usage recorded.
+#[must_use]
+pub fn hosting_relevant(hosts: &[HostAccount]) -> bool {
+    hosts.iter().any(|host| {
+        host.kind != HostKind::Device
+            || host.sells()
+            || host
+                .standing
+                .as_ref()
+                .is_some_and(|standing| standing.usage.vm_seconds() > 0)
+    })
+}
+
+/// How long VMs ran: minutes in the shared duration style, and from an hour on whole hours, the
+/// unit a plan includes and bills ("100 hr", never "4 days 4 hr").
+fn vm_time(seconds: u64) -> String {
+    const HOUR: u64 = 3600;
+    if seconds < HOUR {
+        return ui::format::duration(Duration::from_secs(seconds));
+    }
+    t_args(
+        "overview-tilo-hours",
+        &[("hours", ui::format::count(seconds / HOUR).into())],
+    )
+}
+
+/// What a workspace's row says of where it runs: its host and, when the
+/// host meters it, its VM time this period. `None` when no host the person
+/// has hosting for runs it.
+#[must_use]
+pub fn usage_line(hosts: &[HostAccount], workspace: &str) -> Option<String> {
+    if !hosting_relevant(hosts) {
+        return None;
+    }
+    hosts.iter().find_map(|host| {
+        let usage = host.standing.as_ref()?.usage.of(workspace)?;
+        Some(if usage.vm_seconds > 0 {
+            t_args(
+                "overview-tilo-workspace-usage",
+                &[
+                    ("host", host.host.clone().into()),
+                    ("time", vm_time(usage.vm_seconds).into()),
+                ],
+            )
+        } else {
+            host.host.clone()
+        })
+    })
+}
+
+/// A host's row: what it is, its plan and what it used.
+fn host_row(index: usize, host: &HostAccount) -> TiloItem {
+    let icon = match host.kind {
+        HostKind::Device => Icon::Monitor,
+        HostKind::SelfHosted => Icon::HardDrive,
+        HostKind::Provider => Icon::Cloud,
+    };
+    let detail = match (&host.standing, host.plan()) {
+        (Some(standing), Some(plan)) => {
+            let used = standing.usage.vm_seconds();
+            let included = standing
+                .limits
+                .as_ref()
+                .and_then(|limits| limits.included_vm_seconds);
+            Some(match included {
+                Some(included) => t_args(
+                    "overview-tilo-plan-used-of",
+                    &[
+                        ("plan", plan.name.clone().into()),
+                        ("used", vm_time(used).into()),
+                        ("included", vm_time(included).into()),
+                    ],
+                ),
+                None => t_args(
+                    "overview-tilo-plan-used",
+                    &[
+                        ("plan", plan.name.clone().into()),
+                        ("used", vm_time(used).into()),
+                    ],
+                ),
+            })
+        }
+        (Some(standing), None) if !standing.payment_method => Some(t("overview-tilo-no-card")),
+        (Some(_), None) => Some(t("overview-tilo-no-plan")),
+        (None, _) => Some(t(match host.kind {
+            HostKind::Device => "overview-tilo-host-device",
+            HostKind::SelfHosted => "overview-tilo-host-self",
+            HostKind::Provider => "overview-tilo-host-provider",
+        })),
+    };
+    let detail = match host.standing.as_ref().and_then(|s| s.credit.clone()) {
+        Some(credit) => detail.map(|detail| {
+            t_args(
+                "overview-two-facts",
+                &[("first", detail.into()), ("second", credit.into())],
+            )
+        }),
+        None => detail,
+    };
+    TiloItem {
+        key: format!("overview-host:{index}"),
+        icon: Some(icon),
+        title: host.host.clone(),
+        detail,
+        press: None,
+        action: host.manage_billing.clone().map(|url| {
+            (
+                t("overview-tilo-manage-billing"),
+                OverviewPick::OpenPage(url),
+            )
+        }),
+    }
+}
+
+/// The invoices worth a row: the open and past-due ones, then the newest
+/// paid one.
+fn invoice_rows(host: usize, account: &HostAccount) -> Vec<TiloItem> {
+    let Some(standing) = &account.standing else {
+        return Vec::new();
+    };
+    let unpaid = standing
+        .invoices
+        .iter()
+        .filter(|invoice| matches!(invoice.status, InvoiceStatus::Open | InvoiceStatus::PastDue));
+    let last_paid = standing
+        .invoices
+        .iter()
+        .find(|invoice| invoice.status == InvoiceStatus::Paid);
+    unpaid
+        .chain(last_paid)
+        .take(3)
+        .map(|invoice| {
+            let status = t(match invoice.status {
+                InvoiceStatus::Paid => "overview-tilo-invoice-paid",
+                InvoiceStatus::Open => "overview-tilo-invoice-open",
+                InvoiceStatus::PastDue => "overview-tilo-invoice-past-due",
+                InvoiceStatus::Void => "overview-tilo-invoice-void",
+            });
+            TiloItem {
+                key: format!("overview-invoice:{host}:{}", invoice.id),
+                icon: Some(Icon::FileText),
+                title: t_args(
+                    "overview-tilo-invoice",
+                    &[("amount", invoice.amount.clone().into())],
+                ),
+                detail: Some(status),
+                press: Some(OverviewPick::OpenPage(invoice.url.clone())),
+                action: None,
+            }
+        })
+        .collect()
+}
+
+fn agent_row(grant: &agent_door::Grant) -> TiloItem {
+    let reach = match &grant.reach {
+        Reach::Account => t("overview-tilo-agent-everywhere"),
+        Reach::Workspace { name, .. } => name.clone(),
+    };
+    let detail = if grant.runs.is_empty() {
+        reach
+    } else {
+        t_args(
+            "overview-tilo-agent-running",
+            &[("reach", reach.into()), ("runs", grant.runs.len().into())],
+        )
+    };
+    TiloItem {
+        key: format!("overview-agent:{}", grant.id),
+        icon: Some(Icon::Bot),
+        title: grant.agent.clone(),
+        detail: Some(detail),
+        press: None,
+        action: Some((
+            t("overview-tilo-revoke"),
+            OverviewPick::RevokeGrant(grant.id.clone()),
+        )),
+    }
+}
+
+/// The rows below the workspaces: Hosts & compute once it is relevant, the
+/// agents let in when any are, and the account.
+#[must_use]
+pub fn rows(desk: &TiloDesk) -> Vec<TiloRow> {
+    let mut rows = Vec::new();
+    if !desk.elsewhere.is_empty() {
+        rows.push(TiloRow::Caption(t("overview-tilo-more-workspaces")));
+        rows.extend(desk.elsewhere.iter().map(|(id, name)| {
+            TiloRow::Item(TiloItem {
+                key: format!("overview-elsewhere:{id}"),
+                icon: None,
+                title: name.clone(),
+                detail: None,
+                press: Some(OverviewPick::HostAction(id.clone())),
+                action: None,
+            })
+        }));
+    }
+    if hosting_relevant(&desk.hosts) {
+        rows.push(TiloRow::Caption(t("overview-tilo-hosts")));
+        for (index, host) in desk.hosts.iter().enumerate() {
+            rows.push(TiloRow::Item(host_row(index, host)));
+            rows.extend(invoice_rows(index, host).into_iter().map(TiloRow::Item));
+        }
+    }
+    if let Some(door) = desk.door.as_ref().filter(|door| !door.grants.is_empty()) {
+        rows.push(TiloRow::Caption(t("overview-tilo-agents")));
+        rows.extend(
+            door.grants
+                .iter()
+                .map(|grant| TiloRow::Item(agent_row(grant))),
+        );
+    }
+    rows.push(TiloRow::Caption(t("overview-tilo-account")));
+    if let Some(account) = &desk.account {
+        rows.push(TiloRow::Item(TiloItem {
+            key: "overview-account".into(),
+            icon: Some(Icon::User),
+            title: account.name.clone(),
+            detail: account.detail.clone(),
+            press: Some(OverviewPick::AccountSettings),
+            action: None,
+        }));
+    }
+    rows.extend(desk.actions.iter().map(|(id, label)| {
+        TiloRow::Item(TiloItem {
+            key: format!("overview-action:{id}"),
+            icon: None,
+            title: label.clone(),
+            detail: None,
+            press: Some(OverviewPick::HostAction(id.clone())),
+            action: None,
+        })
+    }));
+    rows.push(TiloRow::Item(TiloItem {
+        key: "overview-about".into(),
+        icon: Some(Icon::Info),
+        title: t("overview-tilo-about"),
+        detail: None,
+        press: Some(OverviewPick::AboutTilo),
+        action: None,
+    }));
+    if desk.feedback {
+        rows.push(TiloRow::Item(TiloItem {
+            key: "overview-feedback".into(),
+            icon: None,
+            title: t("tilo-menu-feedback"),
+            detail: None,
+            press: Some(OverviewPick::Feedback),
+            action: None,
+        }));
+    }
+    rows
+}
+
+#[cfg(test)]
+mod tests;

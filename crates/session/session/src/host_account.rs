@@ -174,3 +174,65 @@ impl HostStepServices for HostAccountDoor {
 
 #[cfg(test)]
 mod tests;
+
+/// The person's account with this session's host, as the overview of their Tilo shows it: read on
+/// a worker of its own whenever the host's plans file changes, so the frame never waits on the
+/// hosted-VM service.
+struct Followed {
+    account: tilo_files::native::Watched<HostAccount>,
+    /// The answer the chrome was last handed.
+    shown: Mutex<Option<std::sync::Arc<HostAccount>>>,
+}
+
+fn followed() -> Option<&'static Followed> {
+    static FOLLOWED: std::sync::OnceLock<Option<Followed>> = std::sync::OnceLock::new();
+    FOLLOWED
+        .get_or_init(|| {
+            let watched = if let Some(hosted) = HostedAccount::from_env() {
+                let dir = hosted.plans.parent().map_or_else(
+                    || std::path::PathBuf::from("."),
+                    std::path::Path::to_path_buf,
+                );
+                let unread = HostAccount::sells_nothing(hosted.name.clone(), HostKind::Provider);
+                tilo_files::native::Watched::start_unread(
+                    "host-account",
+                    vec![dir],
+                    unread,
+                    move || hosted.read(tilo_clock::unix_now_ms()),
+                )
+            } else {
+                let device = HostAccount::sells_nothing(device_name(), HostKind::Device);
+                tilo_files::native::Watched::start_unread(
+                    "host-account",
+                    Vec::new(),
+                    device.clone(),
+                    move || device.clone(),
+                )
+            };
+            match watched {
+                Ok(account) => Some(Followed {
+                    account,
+                    shown: Mutex::new(None),
+                }),
+                Err(error) => {
+                    tracing::warn!(%error, "host account: not followed for the overview");
+                    None
+                }
+            }
+        })
+        .as_ref()
+}
+
+/// The account's answer when it changed since the chrome was last handed one.
+pub(crate) fn changed() -> Option<HostAccount> {
+    let followed = followed()?;
+    let now = followed.account.get();
+    let previous = followed
+        .shown
+        .lock_recover()
+        .replace(std::sync::Arc::clone(&now));
+    if previous.is_some_and(|shown| std::sync::Arc::ptr_eq(&shown, &now)) {
+        return None;
+    }
+    Some((*now).clone())
+}

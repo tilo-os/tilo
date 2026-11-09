@@ -2588,6 +2588,16 @@ impl Session {
         // answer, and moves while the session runs: the bar's invite button
         // and the roster's footer follow it.
         self.shared.follow_invitable();
+        // The person's account with this session's host, in the overview of their Tilo, as it
+        // changes.
+        if let Some(account) = crate::host_account::changed() {
+            self.with_chrome_mut(|chrome| {
+                chrome.set_tilo(tilo_desktop::overview_tilo::TiloDesk {
+                    hosts: vec![account],
+                    ..tilo_desktop::overview_tilo::TiloDesk::default()
+                });
+            });
+        }
         for _ in 0..4 {
             self.shared.follow_asks(&mut crate::look::look(
                 &mut self.compositor,

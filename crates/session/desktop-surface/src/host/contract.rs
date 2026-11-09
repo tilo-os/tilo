@@ -130,4 +130,9 @@ pub enum DesktopAsk {
     ForceQuitApp(TabId),
     /// The pointer on the switcher's panel: which card it stands over, and whether it pressed it.
     Switcher(SwitcherAsk),
+    /// The person took back the agent door's grant `id` in the overview of their Tilo
+    /// (`tilo_actions::remote::agent_door::REVOKE`).
+    RevokeAgentGrant(String),
+    /// The person asked for their account in Settings, where billing is too.
+    AccountSettings,
 }

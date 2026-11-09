@@ -175,6 +175,9 @@ pub struct WorkspaceCard {
     pub shares: Vec<WorkspaceShare>,
     /// Spatial contents, preserving tree order at every level.
     pub strips: Vec<OverviewStrip>,
+    /// Where it runs and what it used, once hosting means something to the person
+    /// ([`crate::overview_tilo::usage_line`]).
+    pub hosting: Option<String>,
 }
 
 impl WorkspaceCard {
@@ -350,6 +353,7 @@ pub fn workspace_cards(
             people: workspace_people(ws, tree, host, now),
             shares: workspace_shares(ws, tree, host, now),
             strips: overview_strips(ws, tree, host, now),
+            hosting: None,
         })
         .collect()
 }

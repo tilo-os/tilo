@@ -22,6 +22,7 @@
 mod input;
 mod layout;
 mod paint;
+mod tilo;
 
 use std::collections::{HashMap, HashSet, VecDeque};
 
@@ -71,6 +72,9 @@ pub struct OverviewDesk {
     /// The picture of the workspace you are in is left out (the host shows its windows elsewhere
     /// for now).
     pub hide_windows: bool,
+    /// What the overview of the person's Tilo shows below the workspaces: their hosts, agents and
+    /// account ([`crate::overview_tilo`]).
+    pub tilo: crate::overview_tilo::TiloDesk,
 }
 
 impl OverviewDesk {
@@ -119,6 +123,18 @@ pub enum OverviewPick {
     },
     /// Leave the overview where it was.
     Dismiss,
+    /// Open a hosting provider's own page (billing, an invoice) in the browser; the overview stays.
+    OpenPage(String),
+    /// Run one of the session's own actions (lock, sign out, …) by the id it published.
+    HostAction(String),
+    /// Send feedback, about the window in front.
+    Feedback,
+    /// Take back the agent door's grant by its id; the overview stays to show it go.
+    RevokeGrant(String),
+    /// Open the person's account in Settings, where billing is too.
+    AccountSettings,
+    /// Say what this Tilo is.
+    AboutTilo,
 }
 
 impl OverviewPick {
@@ -131,6 +147,10 @@ impl OverviewPick {
                 | Self::NewWorkspace
                 | Self::JoinWorkspace
                 | Self::Dismiss
+                | Self::AccountSettings
+                | Self::AboutTilo
+                | Self::HostAction(_)
+                | Self::Feedback
         )
     }
 }
@@ -172,6 +192,8 @@ pub struct OverviewPanel {
     naming: Option<Naming>,
     cursor: Option<Point>,
     picks: VecDeque<OverviewPick>,
+    /// The rows below the workspaces, as the desk's [`crate::overview_tilo::TiloDesk`] makes them.
+    tilo_rows: Vec<crate::overview_tilo::TiloRow>,
     /// The host may make workspaces at all.
     offer_add: bool,
     /// The panel as last recorded, and the revision it shows.
@@ -198,6 +220,7 @@ impl OverviewPanel {
             rect: Rect::ZERO,
             laid_out: Rect::ZERO,
             desk: OverviewDesk::default(),
+            tilo_rows: Vec::new(),
             flight: None,
             metrics: Metrics::default(),
             grid: GridMetrics::for_theme(&Theme::default()),
@@ -248,6 +271,7 @@ impl OverviewPanel {
     /// Open over `desk` , or close. Each opening starts the keyboard on the workspace you are in.
     pub fn open_on(&mut self, open: bool, desk: OverviewDesk) {
         if open {
+            self.tilo_rows = crate::overview_tilo::rows(&desk.tilo);
             self.desk = desk;
         }
         if open != self.open {
@@ -273,6 +297,7 @@ impl OverviewPanel {
 
     /// Show `desk` , keeping the keyboard where it is.
     pub fn set_desk(&mut self, desk: OverviewDesk) {
+        self.tilo_rows = crate::overview_tilo::rows(&desk.tilo);
         self.desk = desk;
         if self
             .selection
@@ -405,7 +430,8 @@ impl OverviewPanel {
                 (0..self.desk.cards.len())
                     .any(|idx| self.leave_rect(idx).is_some_and(|r| r.contains(p))),
             ) << 2)
-            | (control << 3);
+            | (control << 3)
+            | (u8::from(self.tilo_hit(p).is_some()) << 7);
         (self.hit_workspace(p), self.window_at(p), strip, rows)
     }
 
@@ -467,7 +493,9 @@ impl OverviewPanel {
                 .strip_prefix(prefix)
                 .and_then(|n| n.parse::<u64>().ok())
         };
-        if target == "overview-new-workspace" && self.can_add() {
+        if let Some(pick) = self.tilo_target(target) {
+            self.choose(pick);
+        } else if target == "overview-new-workspace" && self.can_add() {
             self.choose(OverviewPick::NewWorkspace);
         } else if target == "overview-join-workspace" && self.desk.can_join {
             self.choose(OverviewPick::JoinWorkspace);
@@ -765,6 +793,7 @@ impl Widget for OverviewPanel {
                 );
             }
         }
+        overview.children.extend(self.tilo_accessibility());
         if let Some(strips) = self.strips_accessibility(&picture) {
             overview.children.push(strips);
         }
@@ -809,6 +838,7 @@ impl Widget for OverviewPanel {
                 rects.push((format!("overview-leave:{}", card.id.raw()), leave));
             }
         }
+        rects.extend(self.tilo_test_rects());
         let picture = self.picture();
         for (si, wi, window) in picture.windows() {
             if let Some(tile) = picture.tile(si, wi) {
@@ -882,6 +912,7 @@ mod tests {
             is_current: current,
             people: Vec::new(),
             shares: Vec::new(),
+            hosting: None,
             strips: vec![OverviewStrip {
                 id: StripId(id * 10),
                 name: "Main".into(),
@@ -943,6 +974,50 @@ mod tests {
             None,
             "outside the panel"
         );
+    }
+
+    /// Below the workspaces, the person's Tilo Cloud account: its row says the plan and what it
+    /// used, its Manage billing opens the provider's page and leaves the overview up, and the
+    /// account's About zooms back in.
+    #[test]
+    fn hosts_stand_below_the_workspaces_and_manage_billing_opens_the_providers_page() {
+        use tilo_actions::remote::host_account::{HostAccount, HostKind, PlanOffer, Standing};
+        ui::i18n::I18nManager::init("en-US");
+        let mut with_host = desk();
+        with_host.tilo.hosts = vec![HostAccount {
+            host: "Tilo Cloud".into(),
+            kind: HostKind::Provider,
+            plans: vec![PlanOffer {
+                id: "pro".into(),
+                name: "Pro".into(),
+                ..PlanOffer::default()
+            }],
+            standing: Some(Standing {
+                plan: Some("pro".into()),
+                payment_method: true,
+                ..Standing::default()
+            }),
+            manage_billing: Some("https://tilo.sh/billing".into()),
+        }];
+        let mut panel = opened_in(WIDE, with_host);
+        let rects: HashMap<String, Rect> = panel.test_rects().into_iter().collect();
+        let join = panel.join_hit_rect().unwrap();
+        let host = rects["overview-host:0"];
+        assert!(join.y1 <= host.y0, "the hosts follow the workspaces");
+        panel.click_at(rects["overview-host:0:action"].center());
+        assert_eq!(
+            panel.take_pick(),
+            Some(OverviewPick::OpenPage("https://tilo.sh/billing".into()))
+        );
+        assert!(
+            panel.is_open(),
+            "the overview stays up behind the provider's page"
+        );
+        panel.scroll_y = panel.max_scroll_y();
+        let rects: HashMap<String, Rect> = panel.test_rects().into_iter().collect();
+        panel.click_at(rects["overview-about"].center());
+        assert_eq!(panel.take_pick(), Some(OverviewPick::AboutTilo));
+        assert!(OverviewPick::AboutTilo.closes());
     }
 
     #[test]

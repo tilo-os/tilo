@@ -436,38 +436,36 @@ fn action(id: &str, title: &str, source: HostActionSource) -> HostAction {
     }
 }
 
-/// The Tilo menu lists what only the session can do, above About; choosing one asks the session for
-/// it by the id it published it under.
+/// The Tilo mark zooms out to the overview of the person's Tilo, whose account section holds what
+/// the mark's menu offered: the session's own actions and About. A reader picks one there, and the
+/// session is asked for it by the id it published it under. The person's workspaces the host knows
+/// are there to go to as well.
 #[test]
-fn the_tilo_menu_lists_the_sessions_own_actions_above_about() {
+fn the_tilo_mark_zooms_out_to_the_sessions_own_actions_and_about() {
     let (mut frame, _desk, handle, _link) = chrome();
     handle.set_host_actions(vec![
         action("session-lock", "Lock", HostActionSource::Session),
         action("session-shut-down", "Shut down", HostActionSource::Session),
-        action(
-            "new-workspace",
-            "New workspace",
-            HostActionSource::Workspaces,
-        ),
+        action("host-ws-3", "Garden", HostActionSource::Workspaces),
     ]);
     with_chrome(&mut frame, |chrome| {
         chrome.apply_intent(ChromeIntent::ToggleTiloMenu);
     });
     frame.relayout();
+    assert!(with_chrome(&mut frame, |chrome| chrome.overview_open()));
 
     frame
         .a11y_node_named("Lock")
-        .expect("the session's Lock leads the menu");
+        .expect("the session's Lock is in the account section");
     frame
         .a11y_node_named("Shut down")
-        .expect("so does shutting the computer down");
+        .expect("so is shutting the computer down");
     frame
-        .a11y_node_named("About this computer")
+        .a11y_node_named("About Tilo")
         .expect("About follows the session's own rows");
-    assert!(
-        frame.a11y_node_named("New workspace").is_none(),
-        "what the workspace menu offers is not a row here"
-    );
+    frame
+        .a11y_node_named("Garden")
+        .expect("a workspace the host knows is there to go to");
 
     let lock = frame.a11y_node_named("Lock").expect("the row is reachable");
     frame
@@ -477,7 +475,11 @@ fn the_tilo_menu_lists_the_sessions_own_actions_above_about() {
     assert_eq!(
         with_chrome(&mut frame, DesktopChrome::take_asks),
         vec![DesktopAsk::HostAction("session-lock".into())],
-        "the menu asks the session for what it published, once"
+        "the overview asks the session for what it published, once"
+    );
+    assert!(
+        !with_chrome(&mut frame, |chrome| chrome.overview_open()),
+        "and zooms back in"
     );
 }
 

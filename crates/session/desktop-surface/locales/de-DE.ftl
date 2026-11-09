@@ -1117,6 +1117,32 @@ overview-join-workspace = Einem Arbeitsbereich beitreten…
 overview-leave-workspace = Verlassen
 overview-a11y-leave = { $name } verlassen
 overview-two-facts = { $first }, { $second }
+overview-tilo-more-workspaces = Weitere Workspaces
+overview-tilo-hours = { $hours } Std.
+overview-tilo-hosts = Hosts & Rechenleistung
+overview-tilo-agents = Agenten
+overview-tilo-account = Konto
+overview-tilo-about = Über Tilo
+overview-tilo-workspace-usage = { $host }, { $time } diesen Monat
+overview-tilo-plan-used-of = { $plan } · { $used } von { $included } diesen Monat
+overview-tilo-plan-used = { $plan } · { $used } diesen Monat
+overview-tilo-no-card = Noch keine Karte: wird erst gebraucht, wenn etwas eine Linux-Maschine braucht
+overview-tilo-no-plan = Kein Tarif gewählt
+overview-tilo-host-device = Dieses Gerät
+overview-tilo-host-self = Dein eigener Host
+overview-tilo-host-provider = Hosting-Anbieter
+overview-tilo-manage-billing = Abrechnung verwalten
+overview-tilo-invoice = Rechnung, { $amount }
+overview-tilo-invoice-paid = Bezahlt
+overview-tilo-invoice-open = Fällig
+overview-tilo-invoice-past-due = Zahlung fehlgeschlagen
+overview-tilo-invoice-void = Storniert
+overview-tilo-agent-everywhere = Alle deine Workspaces
+overview-tilo-agent-running = { $reach } · { $runs ->
+        [one] arbeitet gerade
+       *[other] { $runs } Läufe gerade
+    }
+overview-tilo-revoke = Widerrufen
 overview-windows-title = Fenster in diesem Arbeitsbereich
 overview-windows-description = Jede Leiste dieses Arbeitsbereichs von oben nach unten, mit ihren Fenstern der Reihe nach. Die Pfeiltasten wechseln zwischen ihnen, Enter öffnet eines. F2 benennt die Leiste eines Fensters um, Alt mit Oben oder Unten verschiebt diese Leiste. Klicke oder tippe auf ein Fenster, um dorthin zu wechseln, klicke eines mit der mittleren Taste an, um es zu schließen, oder ziehe es auf einen anderen Arbeitsbereich oder eine andere Leiste, um es dorthin zu verschieben.
 overview-strips-title = Leisten in diesem Arbeitsbereich

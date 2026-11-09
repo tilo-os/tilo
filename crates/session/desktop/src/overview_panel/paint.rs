@@ -174,6 +174,10 @@ impl OverviewPanel {
             self.desk.cards.len().saturating_add(1),
             (&t("overview-join-workspace"), ui::icons::Icon::Link),
         );
+        self.paint_tilo_rows(
+            &mut ui::paint::PaintCtx::new(scene, transform, text, theme),
+            band,
+        );
         if self.scroll_y + 0.5 < self.max_scroll_y() {
             ui::surface::content_edge_fade(
                 scene,
@@ -324,6 +328,19 @@ impl OverviewPanel {
             .get(&card.id)
             .cloned()
             .unwrap_or_else(|| crate::overview::workspace_access_label(card));
+        // Where it runs and what it used, once hosting means something to the person.
+        let access = match &card.hosting {
+            Some(hosting) => t_args(
+                "overview-two-facts",
+                &[("first", access.into()), ("second", hosting.clone().into())],
+            ),
+            None => access,
+        };
+        let access = text.elide_to_width_style(
+            &access,
+            f32_of_f64(content.width()),
+            &tokens.typography.style(TextRole::Body),
+        );
         text.draw_style(
             scene,
             &access,
@@ -528,6 +545,12 @@ impl OverviewPanel {
             sub = t_args(
                 "overview-two-facts",
                 &[("first", sub.into()), ("second", shares.into())],
+            );
+        }
+        if let Some(hosting) = &card.hosting {
+            sub = t_args(
+                "overview-two-facts",
+                &[("first", sub.into()), ("second", hosting.clone().into())],
             );
         }
         let sub = text.elide_to_width_style(&sub, f32_of_f64(text_w), &sub_style);

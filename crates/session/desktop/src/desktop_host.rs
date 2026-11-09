@@ -35,6 +35,7 @@ use vello::kurbo::{Affine, Point, Rect};
 use winit::event::{ElementState, Modifiers, MouseButton, WindowEvent};
 
 mod cards;
+mod overview_desk;
 mod shortcut_actions;
 mod start_cards;
 mod testing;
@@ -59,19 +60,13 @@ use crate::topbar::{BarSpace, Placement, Reveals, TOPBAR_HEIGHT_PX, TopBarChrome
 use crate::window_flight::WindowFlight;
 use crate::window_switcher::{Switcher, SwitcherAsk, WindowSource};
 use crate::workspace_menu::{
-    MenuPlace, WorkspaceAction, WorkspaceChoice, WorkspaceMenu, WorkspaceMenuChoice,
-    WorkspaceMenuModel,
+    MenuPlace, WorkspaceAction, WorkspaceMenu, WorkspaceMenuChoice, WorkspaceMenuModel,
 };
 
 /// The next deadline a child widget reports, for the earliest of them.
 fn wake_deadline(child: &dyn Widget) -> Option<ui::time::Instant> {
     child.next_wake_deadline()
 }
-
-/// Workspace menu keys: a workspace of this desktop, by id, and one of the person's others the host
-/// opens, by its host action.
-const WORKSPACE_KEY: &str = "workspace:";
-const HOST_KEY: &str = "host:";
 
 pub use crate::host_contract::{
     DELETE_WORKSPACE, DesktopAsk, DesktopRules, JOIN_WORKSPACE, LEAVE_WORKSPACE, NEW_WORKSPACE,
@@ -698,6 +693,9 @@ pub struct DesktopChrome {
     navigator_seen: Option<(u64, u64, bool, Rect)>,
     /// The tree revision the open overview shows.
     overview_revision: u64,
+    /// What the overview of the person's Tilo shows below their workspaces, as the embedding
+    /// hosts it ([`Self::set_tilo`]).
+    tilo: crate::overview_tilo::TiloDesk,
     /// Whether the overview is open, as the chrome last drew it, for the host whose clock flies its
     /// windows in and out. The panel speaks only when it moves: where the shell carries the
     /// overview, the panel stays shut and the shell's own surface is the one that has the flag.
@@ -832,6 +830,7 @@ impl DesktopChrome {
             navigator_frame: StripFrame::empty(Rect::ZERO),
             navigator_seen: None,
             overview_revision: 0,
+            tilo: crate::overview_tilo::TiloDesk::default(),
             overview_open: None,
             overview_said: false,
             menu_shown: Cell::new(false),
@@ -1291,15 +1290,11 @@ impl DesktopChrome {
                     self.handle.acknowledge(refusal);
                 }
             }
+            // The Tilo mark zooms out of the workspace to the overview of the person's Tilo, and
+            // back in: what its menu offered stands in the overview's account section.
             ChromeIntent::ToggleTiloMenu => {
-                // As the workspace's: the press that closed it does not open it again on its way
-                // out.
-                if self.overlays.dismissed_recently(Slot::TiloMenu) {
-                    return;
-                }
                 self.workspace_menu.close();
-                self.tilo_menu.set_actions(self.tilo_menu_actions());
-                self.tilo_menu.toggle(self.bar.tilo_mark_rect(), self.rect);
+                self.toggle_overview();
             }
             // The strip's name in the bar opens the strip switcher, as a menu on the shown strip.
             ChromeIntent::ShowStrips => self
@@ -1365,26 +1360,6 @@ impl DesktopChrome {
                 },
             ));
         }
-        let mut workspaces = self.handle.read(|tree| {
-            tree.workspaces
-                .iter()
-                .map(|workspace| WorkspaceChoice {
-                    key: format!("{WORKSPACE_KEY}{}", workspace.slot.0),
-                    name: workspace.name.clone(),
-                    current: workspace.slot == tree.active,
-                })
-                .collect::<Vec<WorkspaceChoice>>()
-        });
-        workspaces.extend(
-            actions
-                .iter()
-                .filter(|action| action.source == Some(HostActionSource::Workspaces))
-                .map(|action| WorkspaceChoice {
-                    key: format!("{HOST_KEY}{}", action.id),
-                    name: action.title.clone(),
-                    current: false,
-                }),
-        );
         WorkspaceMenuModel {
             place: if desk {
                 MenuPlace::Desk
@@ -1392,7 +1367,6 @@ impl DesktopChrome {
                 MenuPlace::Bar
             },
             desk: desk_actions,
-            workspaces,
             host: self.rules.workspace_host(),
             actions: actions
                 .iter()
@@ -1429,18 +1403,6 @@ impl DesktopChrome {
 
     fn apply_workspace_choice(&mut self, choice: WorkspaceMenuChoice) {
         match choice {
-            WorkspaceMenuChoice::Switch(key) => {
-                if let Some(workspace) = key.strip_prefix(WORKSPACE_KEY) {
-                    self.dispatch(ChromeEffect::SwitchWorkspace {
-                        workspace: Some(workspace.to_owned()),
-                        delta: None,
-                    });
-                } else if let Some(id) = key.strip_prefix(HOST_KEY) {
-                    self.asks
-                        .borrow_mut()
-                        .push(DesktopAsk::HostAction(id.to_owned()));
-                }
-            }
             WorkspaceMenuChoice::Action(id) => {
                 self.asks.borrow_mut().push(DesktopAsk::HostAction(id));
             }
@@ -1525,12 +1487,6 @@ impl DesktopChrome {
     /// The switcher's desk as this host offers it: the workspaces it shows and what can be done to
     /// them, including joining another workspace when the session published the action that opens
     /// the directory.
-    fn overview_desk(&self) -> OverviewDesk {
-        let mut desk = OverviewDesk::of(self.cards());
-        desk.can_join = self.may_join_workspace();
-        desk
-    }
-
     fn cards(&self) -> Vec<crate::overview::WorkspaceCard> {
         let host = PlainOverview {
             user: ui::collaboration::local_user_id().0,
@@ -1590,6 +1546,37 @@ impl DesktopChrome {
                 before: before.map(|strip| strip.0.to_string()),
             }),
             OverviewPick::Dismiss => None,
+            OverviewPick::OpenPage(url) => {
+                // A provider's own page, never a form of ours: only a secure web page opens.
+                if url.starts_with("https://") {
+                    ui::widget::open_external_url(url);
+                }
+                None
+            }
+            OverviewPick::RevokeGrant(grant) => {
+                self.asks
+                    .borrow_mut()
+                    .push(DesktopAsk::RevokeAgentGrant(grant.clone()));
+                None
+            }
+            OverviewPick::AccountSettings => {
+                self.asks.borrow_mut().push(DesktopAsk::AccountSettings);
+                None
+            }
+            OverviewPick::HostAction(id) => {
+                self.asks
+                    .borrow_mut()
+                    .push(DesktopAsk::HostAction(id.clone()));
+                None
+            }
+            OverviewPick::AboutTilo => {
+                self.tilo_menu.show_about();
+                None
+            }
+            OverviewPick::Feedback => {
+                self.tilo_menu.ask_feedback();
+                None
+            }
         };
         if let Some(verb) = verb {
             let _ = self.perform(&verb);
@@ -2291,9 +2278,10 @@ impl DesktopChrome {
                 }
                 return Ok(true);
             }
+            // The Tilo mark's verb: the overview of the person's Tilo, zoomed out to or back from.
             ChromeEffect::TiloMenu { open } => {
-                let open = open.unwrap_or(!self.tilo_menu.is_menu_open());
-                if self.tilo_menu.is_menu_open() == open {
+                let open = open.unwrap_or(!self.overview.is_open());
+                if self.overview.is_open() == open {
                     return Ok(true);
                 }
                 ChromeIntent::ToggleTiloMenu
@@ -2544,7 +2532,8 @@ impl Widget for DesktopChrome {
             self.apply_workspace_choice(choice);
             changed = true;
         }
-        let menu_open = self.tilo_menu.is_menu_open();
+        // The mark reads as pressed while the overview it zoomed out to is up.
+        let menu_open = self.tilo_menu.is_menu_open() || self.overview.is_open();
         if self.menu_shown.replace(menu_open) != menu_open {
             self.bar.set_tilo_menu_open(menu_open);
             changed = true;
