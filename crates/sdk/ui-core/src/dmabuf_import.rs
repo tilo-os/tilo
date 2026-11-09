@@ -810,8 +810,20 @@ const SAMPLED_USAGE: vk::ImageUsageFlags = vk::ImageUsageFlags::from_raw(
     vk::ImageUsageFlags::SAMPLED.as_raw() | vk::ImageUsageFlags::TRANSFER_SRC.as_raw(),
 );
 
+/// An ioctl request code as the C library types it: glibc's `unsigned long`, musl's `int`, which
+/// carries the same 32 bits.
+#[cfg(not(target_env = "musl"))]
+fn ioctl_request(code: u32) -> libc::c_ulong {
+    libc::c_ulong::from(code)
+}
+
+#[cfg(target_env = "musl")]
+fn ioctl_request(code: u32) -> libc::c_int {
+    libc::c_int::from_ne_bytes(code.to_ne_bytes())
+}
+
 /// `DMA_BUF_IOCTL_EXPORT_SYNC_FILE`: `_IOWR('b', 2, struct dma_buf_export_sync_file)`.
-const DMA_BUF_IOCTL_EXPORT_SYNC_FILE: libc::c_ulong = 0xC008_6202;
+const DMA_BUF_IOCTL_EXPORT_SYNC_FILE: u32 = 0xC008_6202;
 /// `DMA_BUF_SYNC_READ`: the fences a reader must wait for, the writers'.
 const DMA_BUF_SYNC_READ: u32 = 1;
 
@@ -871,7 +883,7 @@ fn export_write_fence(plane: BorrowedFd<'_>) -> Option<std::os::fd::OwnedFd> {
     let result = unsafe {
         libc::ioctl(
             plane.as_raw_fd(),
-            DMA_BUF_IOCTL_EXPORT_SYNC_FILE,
+            ioctl_request(DMA_BUF_IOCTL_EXPORT_SYNC_FILE),
             &raw mut request,
         )
     };

@@ -58,8 +58,19 @@ struct FsDiskQuota {
     padding4: [u8; 8],
 }
 
-const FS_IOC_FSGETXATTR: libc::c_ulong = 0x801c_581f;
-const FS_IOC_FSSETXATTR: libc::c_ulong = 0x401c_5820;
+const FS_IOC_FSGETXATTR: u32 = 0x801c_581f;
+const FS_IOC_FSSETXATTR: u32 = 0x401c_5820;
+/// An ioctl request code as the C library types it: glibc's `unsigned long`, musl's `int`, which
+/// carries the same 32 bits (both codes have the top bit of an `int` set).
+#[cfg(not(target_env = "musl"))]
+fn ioctl_request(code: u32) -> libc::c_ulong {
+    libc::c_ulong::from(code)
+}
+
+#[cfg(target_env = "musl")]
+fn ioctl_request(code: u32) -> libc::c_int {
+    libc::c_int::from_ne_bytes(code.to_ne_bytes())
+}
 const FS_XFLAG_PROJINHERIT: u32 = 0x200;
 
 const PRJQUOTA: u32 = 2;
@@ -132,7 +143,7 @@ pub fn enforced(dir: BorrowedFd<'_>) -> Result<(), String> {
 fn get_xattr(fd: libc::c_int) -> io::Result<FsXattr> {
     let mut x = FsXattr::default();
     // SAFETY: the ioctl fills a structure of the size it encodes.
-    if unsafe { libc::ioctl(fd, FS_IOC_FSGETXATTR, &raw mut x) } < 0 {
+    if unsafe { libc::ioctl(fd, ioctl_request(FS_IOC_FSGETXATTR), &raw mut x) } < 0 {
         return Err(io::Error::last_os_error());
     }
     Ok(x)
@@ -148,7 +159,7 @@ fn tag(fd: libc::c_int, project: u32, inherit: bool) -> io::Result<()> {
         x.xflags |= FS_XFLAG_PROJINHERIT;
     }
     // SAFETY: as above, the structure the ioctl reads.
-    if unsafe { libc::ioctl(fd, FS_IOC_FSSETXATTR, &raw const x) } < 0 {
+    if unsafe { libc::ioctl(fd, ioctl_request(FS_IOC_FSSETXATTR), &raw const x) } < 0 {
         return Err(io::Error::last_os_error());
     }
     Ok(())

@@ -631,12 +631,24 @@ fn pipe() -> io::Result<(OwnedFd, OwnedFd)> {
     Ok(unsafe { (OwnedFd::from_raw_fd(fds[0]), OwnedFd::from_raw_fd(fds[1])) })
 }
 
+/// An ioctl request code as the C library types it: glibc's `unsigned long`, musl's `int`, which
+/// carries the same 32 bits.
+#[cfg(not(target_env = "musl"))]
+fn ioctl_request(code: u32) -> libc::c_ulong {
+    libc::c_ulong::from(code)
+}
+
+#[cfg(target_env = "musl")]
+fn ioctl_request(code: u32) -> libc::c_int {
+    libc::c_int::from_ne_bytes(code.to_ne_bytes())
+}
+
 /// A persistent tap the VM's uid may attach to: Firecracker opens it by
 /// name.
 fn create_tap(name: &str, owner: u32) -> io::Result<()> {
-    const TUNSETIFF: libc::c_ulong = 0x4004_54ca;
-    const TUNSETPERSIST: libc::c_ulong = 0x4004_54cb;
-    const TUNSETOWNER: libc::c_ulong = 0x4004_54cc;
+    const TUNSETIFF: u32 = 0x4004_54ca;
+    const TUNSETPERSIST: u32 = 0x4004_54cb;
+    const TUNSETOWNER: u32 = 0x4004_54cc;
     const IFF_TAP: libc::c_short = 0x0002;
     const IFF_NO_PI: libc::c_short = 0x1000;
     const IFF_VNET_HDR: libc::c_short = 0x4000;
@@ -649,15 +661,23 @@ fn create_tap(name: &str, owner: u32) -> io::Result<()> {
     // SAFETY: the ioctls read the request, which lives across the calls.
     unsafe {
         check(
-            libc::ioctl(tun.as_raw_fd(), TUNSETIFF, &raw const request),
+            libc::ioctl(
+                tun.as_raw_fd(),
+                ioctl_request(TUNSETIFF),
+                &raw const request,
+            ),
             "creating the VM's tap",
         )?;
         check(
-            libc::ioctl(tun.as_raw_fd(), TUNSETOWNER, libc::c_ulong::from(owner)),
+            libc::ioctl(
+                tun.as_raw_fd(),
+                ioctl_request(TUNSETOWNER),
+                libc::c_ulong::from(owner),
+            ),
             "giving the VM its tap",
         )?;
         check(
-            libc::ioctl(tun.as_raw_fd(), TUNSETPERSIST, 1_u64),
+            libc::ioctl(tun.as_raw_fd(), ioctl_request(TUNSETPERSIST), 1_u64),
             "keeping the VM's tap",
         )?;
     }
@@ -686,23 +706,35 @@ impl Control {
     }
 
     fn add_bridge(&self, name: &str) -> io::Result<()> {
-        const SIOCBRADDBR: libc::c_ulong = 0x89a0;
+        const SIOCBRADDBR: u32 = 0x89a0;
         let name = CString::new(name)?;
         // SAFETY: the name lives across the call.
         check(
-            unsafe { libc::ioctl(self.0.as_raw_fd(), SIOCBRADDBR, name.as_ptr()) },
+            unsafe {
+                libc::ioctl(
+                    self.0.as_raw_fd(),
+                    ioctl_request(SIOCBRADDBR),
+                    name.as_ptr(),
+                )
+            },
             "creating the VM's bridge",
         )
     }
 
     fn enslave(&self, bridge: &str, port: &str) -> io::Result<()> {
-        const SIOCBRADDIF: libc::c_ulong = 0x89a2;
+        const SIOCBRADDIF: u32 = 0x89a2;
         let index = interface_index(port)?;
         let mut request = ifreq(bridge);
         request.ifr_ifru.ifru_ifindex = index;
         // SAFETY: the request lives across the call.
         check(
-            unsafe { libc::ioctl(self.0.as_raw_fd(), SIOCBRADDIF, &raw const request) },
+            unsafe {
+                libc::ioctl(
+                    self.0.as_raw_fd(),
+                    ioctl_request(SIOCBRADDIF),
+                    &raw const request,
+                )
+            },
             "bridging the VM's network",
         )
     }

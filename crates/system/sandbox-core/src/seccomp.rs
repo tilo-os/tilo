@@ -562,6 +562,17 @@ pub enum CiProfile {
     Nested,
 }
 
+/// `kexec_file_load`, which the kernel has on both architectures the program
+/// is built for. musl's aarch64 headers name no number for it, so that build
+/// is given asm-generic's (the call exists since Linux 4.17).
+#[cfg(all(
+    target_os = "linux",
+    not(all(target_arch = "aarch64", target_env = "musl"))
+))]
+const SYS_KEXEC_FILE_LOAD: libc::c_long = libc::SYS_kexec_file_load;
+#[cfg(all(target_os = "linux", target_arch = "aarch64", target_env = "musl"))]
+const SYS_KEXEC_FILE_LOAD: libc::c_long = 294;
+
 /// Syscalls every CI job is refused with `EPERM`.
 ///
 /// - `bpf`, `perf_event_open`, `userfaultfd`: the verifier, perf and fault
@@ -595,7 +606,7 @@ pub const CI_DENIES: &[libc::c_long] = &[
     libc::SYS_open_tree,
     libc::SYS_setns,
     libc::SYS_kexec_load,
-    libc::SYS_kexec_file_load,
+    SYS_KEXEC_FILE_LOAD,
     libc::SYS_init_module,
     libc::SYS_finit_module,
     libc::SYS_delete_module,
