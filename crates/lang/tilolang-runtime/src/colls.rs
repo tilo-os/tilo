@@ -535,10 +535,20 @@ impl Core {
 
     /// [`Core::coll_count`], when the store has read the whole workspace, and none before it
     /// has: a view shows a number only when it is the workspace's, never the part read so far.
+    ///
+    /// A run the store does not count answers the number only where it is no longer than the
+    /// page a window reads anyway: a filter checked item by item over a run the workspace holds
+    /// is never read to its end for one, so a place filtered on the day or the person reading
+    /// it says nothing there rather than read the workspace into the frame that opens it.
     pub(crate) fn coll_counted(&self, coll: &Rc<CollRef>) -> HResult<Option<usize>> {
         let listing = self.coll_listing(coll)?;
+        let len = listing.len();
+        if !listing.len_is_exact() && len > crate::reads::READ_PAGE {
+            self.saw(coll, Read::Len(len), len);
+            return Ok(None);
+        }
         let count = listing.count();
-        self.saw(coll, Read::Count(count), listing.len());
+        self.saw(coll, Read::Count(count), len);
         Ok(self.settled().then_some(count))
     }
 

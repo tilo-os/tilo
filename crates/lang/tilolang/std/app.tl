@@ -412,24 +412,31 @@ view page<R>(
 /// its words and what it holds (`items.matching(Task.today)`), and one whose place no filter
 /// asks, such as the conversations with anything left unread, writes a view of its own over
 /// this. A card is a summary, so a list longer than the rows it shows ends with the way into
-/// the rest: `Show all`, which opens `of`, as pressing the card does. The count is how many the
-/// place holds, so a card never says more than it shows.
+/// the rest: `Show all`, which opens `of`, as pressing the card does. The count is the one the
+/// store answers without reading the place: exact, and none where a filter of several tests is
+/// checked item by item, so a card of a place of the workspace's size never pays for its number.
 ///
 /// A place with nothing in it takes no room on the page: one quiet line says it is caught up,
 /// which is what a morning's page is for. Nothing else of it stands there — no count of none,
 /// no empty list.
 template view place<R, T>(of: R, name: Text, items: List<T>, row: (T) -> View) {
-    let n = items.count()
-    ui.Card(item: of, title: name, count: if n != 0 { n }) {
-        if n == 0 {
+    // Whether the place holds anything at all, and how many where the store answers it without
+    // reading the place: counting a filter checked item by item reads every item behind the
+    // rows it shows, each time the page opens.
+    let empty = items.is_empty()
+    let counted = items.counted()
+    ui.Card(item: of, title: name, count: if empty { .none } else { counted }) {
+        if empty {
             ui.Text(phrase("tilolang-all-caught-up"), secondary: true)
         } else {
             list(items) { x ->
                 row(x)
             }
-            if n > preview_rows() {
-                ui.Button("Show all {n}") {
-                    on press: open(of)
+            if let n = counted {
+                if n > preview_rows() {
+                    ui.Button("Show all {n}") {
+                        on press: open(of)
+                    }
                 }
             }
         }
