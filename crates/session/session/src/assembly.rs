@@ -291,7 +291,6 @@ pub(crate) struct Shared {
     /// What each window this session runs shows, read from the broker every
     /// pass: the desk's reading of it, and the record noted beside the window
     /// in its workspace's layout.
-    #[cfg(target_os = "linux")]
     pub(crate) notes: std::sync::Arc<crate::continuations::Continuations>,
     /// The engine revision the desk's copy of each workspace's people was
     /// last taken from: what nothing new of a workspace's governance has

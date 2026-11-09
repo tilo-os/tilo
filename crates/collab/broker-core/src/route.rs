@@ -76,16 +76,15 @@ impl CrdtRoute {
 
     /// The channel this route names, as one string — the wire
     /// joins by channel id. Encoding lives in
-    /// [`runtime_collab::route::channel_key`] (shared with the SDK) so both
-    /// ends can't drift.
+    /// [`collab_types::channel_key`] so both ends cannot drift.
     pub fn channel_key(&self) -> String {
-        runtime_collab::route::channel_key::format(&self.app_id, &self.cluster_id, &self.record_id)
+        collab_types::channel_key::format(&self.app_id, &self.cluster_id, &self.record_id)
     }
 
     /// Split a wire channel id back into its route — the inverse of
     /// [`Self::channel_key`].
     pub fn from_channel_key(key: &str) -> Self {
-        let (app_id, cluster_id, record_id) = runtime_collab::route::channel_key::parse(key);
+        let (app_id, cluster_id, record_id) = collab_types::channel_key::parse(key);
         Self {
             app_id,
             cluster_id,
@@ -98,7 +97,7 @@ impl CrdtRoute {
     /// identity has not been minted yet). The nil case must be checked
     /// separately from empty — otherwise every workspace still carrying
     /// the sentinel would share one enormous workspace on every machine.
-    pub(crate) fn is_addressable(cluster_id: &str) -> bool {
+    pub fn is_addressable(cluster_id: &str) -> bool {
         !cluster_id.is_empty() && cluster_id != UNMINTED_CLUSTER_ID
     }
 

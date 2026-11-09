@@ -39,6 +39,8 @@ pub use assembly::Session;
 )]
 pub(crate) use assembly::Shared;
 
+mod activity_provider;
+mod continuations;
 pub mod host_actions;
 pub mod overlays;
 pub mod records;
@@ -56,8 +58,6 @@ mod a11y_settings;
 mod activity;
 #[cfg(target_os = "linux")]
 mod activity_models;
-#[cfg(target_os = "linux")]
-mod activity_provider;
 #[cfg(target_os = "linux")]
 pub mod agent_door;
 #[cfg(target_os = "linux")]
@@ -115,8 +115,6 @@ mod community;
 mod config;
 #[cfg(target_os = "linux")]
 mod content;
-#[cfg(target_os = "linux")]
-mod continuations;
 #[cfg(target_os = "linux")]
 pub mod controller_nav;
 #[cfg(target_os = "linux")]

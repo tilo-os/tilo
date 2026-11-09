@@ -17013,6 +17013,7 @@ dependencies = [
  "tilo-automerge",
  "tilo-automerge-fork",
  "tilo-automerge-isolate",
+ "tilo-broker-core",
  "tilo-clock",
  "tilo-content",
  "tilo-desktop-model",
@@ -17705,6 +17706,18 @@ dependencies = [
  "tilo-action-policy",
  "tilo-automation",
  "workspace-hack",
+]
+
+[[package]]
+name = "tilo-broker-core"
+version = "0.1.0"
+dependencies = [
+ "collab-types",
+ "serde_json",
+ "tilo-action-policy",
+ "tilo-actions",
+ "tilo-desktop-model",
+ "tokio",
 ]
 
 [[package]]
@@ -21371,6 +21384,7 @@ dependencies = [
  "tilo-automerge-isolate",
  "tilo-bluetooth-agent",
  "tilo-bluez",
+ "tilo-broker-core",
  "tilo-browser-peer",
  "tilo-capture-studio",
  "tilo-cli-kit",

@@ -55,6 +55,10 @@ tilo-desktop = { path = "../desktop" }
 # The roles every host runs: the desk's document and the arrangement it holds.
 tilo-session-core = { path = "../core" }
 tilo-desktop-model = { path = "../desktop-model" }
+# The desk's window policy, whose tab calls an app's asks are answered with.
+tilo-desktop-policy = { path = "../desktop-policy" }
+# The action broker's half every host runs: what a step is taken by, the step seam, the route.
+tilo-broker-core = { path = "../../collab/broker-core" }
 tilo-desktop-surface = { path = "../desktop-surface" }
 tilo-desktop-search = { path = "../desktop-search" }
 settings-store = { path = "../../system/settings-store" }
@@ -144,8 +148,6 @@ tokio = { workspace = true, features = ["rt-multi-thread", "sync", "macros", "ti
 # A Rust app's views and resources, published in a development session only
 # (`dev-rust-views`): the sample catalogue, never the live worker.
 tube = { path = "../../../apps/tube", default-features = false, features = ["samples"], optional = true }
-# The desk's window policy, whose tab calls an app's asks are answered with.
-tilo-desktop-policy = { path = "../desktop-policy" }
 desktop-policy = { path = "../../system/desktop-policy", default-features = false }
 tilo-dictation = { path = "../dictation" }
 # What the session binary's search reads of the device: the installed apps,

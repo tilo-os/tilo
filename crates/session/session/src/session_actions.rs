@@ -20,6 +20,7 @@ use tilo_action_broker::services::{HostStepOutcome, HostStepRequest, HostStepSer
 use tilo_actions::remote::session_actions as wire;
 use tilo_actions::remote::{Pending, pending};
 use tilo_actions::{ActionDescriptor, ActionFailure};
+use tilo_lock::RwLockRecover as _;
 
 use crate::agent_door::SessionDoors;
 
@@ -45,27 +46,15 @@ impl SessionActions {
     /// broker's catalogue lists from here on. Whether they are new: a pass that read the same
     /// rows again changes nothing, and no catalogue is rebuilt for it.
     pub(crate) fn offer(&self, rows: Vec<tilo_actions::door::PlacedAction>) -> bool {
-        match self.rows.write() {
-            Ok(held) if *held == rows => false,
-            Ok(mut held) => {
-                *held = rows;
-                true
-            }
-            Err(poisoned) => {
-                let mut held = poisoned.into_inner();
-                let changed = *held != rows;
-                *held = rows;
-                changed
-            }
-        }
+        let mut held = self.rows.write_recover();
+        let changed = *held != rows;
+        *held = rows;
+        changed
     }
 
     /// The rows offered now, as the last pass read them.
     pub(crate) fn offered(&self) -> Vec<tilo_actions::door::PlacedAction> {
-        match self.rows.read() {
-            Ok(held) => held.clone(),
-            Err(poisoned) => poisoned.into_inner().clone(),
-        }
+        self.rows.read_recover().clone()
     }
 }
 

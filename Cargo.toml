@@ -70,6 +70,7 @@ members = [
     "crates/platform/tilo-handoff",
     "apps/canvas",
     "crates/collab/tilo-action-broker",
+    "crates/collab/broker-core",
     "crates/collab/feedback-transport",
     "crates/session/identity-authority",
     "crates/collab/tilo-identity-ceremony",

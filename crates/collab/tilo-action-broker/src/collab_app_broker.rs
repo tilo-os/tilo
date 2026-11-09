@@ -434,6 +434,17 @@ impl BrokerActor {
         &self.id
     }
 
+    /// The same actor as a host step names it: what the step's service answers to the person and
+    /// the agent, never how they were decided.
+    #[must_use]
+    pub fn step_actor(&self) -> tilo_broker_core::steps::StepActor {
+        tilo_broker_core::steps::StepActor::new(self.id.clone(), self.is_agent)
+            .for_person(self.for_person.clone())
+            .on_issue(self.issue.clone())
+            .on_turn(self.turn.clone())
+            .direct(self.direct())
+    }
+
     #[must_use]
     pub fn is_agent(&self) -> bool {
         self.is_agent

@@ -51,6 +51,8 @@ tilo-clock = { path = "../../platform/tilo-clock" }
 # The identity service hands apps their route keys from the channel service.
 tilo-identity-host = { path = "../../runtime/tilo-identity-host" }
 tilo-actions = { path = "../actions" }
+# The broker's half every host runs: the step seam, the route, the receipts.
+tilo-broker-core = { path = "../broker-core" }
 # Shortcuts: checking, running and describing them at the action door.
 tilo-automation = { path = "../automation" }
 # The device keymap a shortcut's keyboard trigger is checked against.

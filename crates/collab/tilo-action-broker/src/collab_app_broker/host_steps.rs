@@ -350,12 +350,13 @@ impl AppBrokerState {
             }
             Ok(policy)
         })?;
+        let actor = policy.step_actor();
         let step = HostStepRequest {
             workspace: workspace_id,
-            actor: &policy,
+            actor: &actor,
             address,
             argument: argument.as_deref(),
-            task_run: run,
+            task_run: run.map(|run| run as &dyn tilo_broker_core::steps::TaskRun),
         };
         if descriptor.contract.is_live() {
             let view = match steps.watch(&step) {

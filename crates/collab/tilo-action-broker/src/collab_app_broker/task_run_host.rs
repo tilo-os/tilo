@@ -24,8 +24,8 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
 use tilo_actions::remote::{
-    ActionHostError, Caller, CataloguePage, CatalogueQuery, InvocationReceipt, InvocationState,
-    InvokeRequest, Pending, pending,
+    ActionHost, ActionHostError, Caller, CataloguePage, CatalogueQuery, InvocationReceipt,
+    InvocationState, InvokeRequest, Pending, pending,
 };
 
 use super::durable_local_invocation::LocalCaller;
@@ -91,6 +91,12 @@ impl Drop for Inner {
 /// One admitted connection of the agent door, working in its task's run.
 #[derive(Clone)]
 pub struct TaskRunHost(Arc<Inner>);
+
+impl tilo_broker_core::steps::TaskRun for TaskRunHost {
+    fn door(&self) -> Arc<dyn ActionHost + Send + Sync> {
+        Arc::new(self.clone())
+    }
+}
 
 impl std::fmt::Debug for TaskRunHost {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
