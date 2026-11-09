@@ -11,8 +11,8 @@
 //! - the plans it offers ([`PlanOffer`]); a host that sells nothing offers
 //!   none and answers no [`Standing`];
 //! - the account's [`Standing`]: its plan, whether a payment method is on
-//!   file, what it is entitled to, its usage (Linux VM seconds per workspace)
-//!   and its limits, and its invoices;
+//!   file, what it is entitled to, its usage (Linux VM seconds and bytes
+//!   stored per workspace) and its limits, and its invoices;
 //! - where the person manages billing ([`HostAccount::manage_billing`]): the
 //!   provider's own page, never a form Tilo draws.
 //!
@@ -86,6 +86,12 @@ pub struct Limits {
     /// VM seconds included per billing period; `None` when the plan bills
     /// every second or sets no such bound.
     pub included_vm_seconds: Option<u64>,
+    /// Bytes the account's workspaces may keep on the host together; `None`
+    /// when the host sets no such bound.
+    pub storage_bytes: Option<u64>,
+    /// Workspaces of the account's own the host keeps; `None` when the host
+    /// sets no such bound.
+    pub max_workspaces: Option<u32>,
 }
 
 /// One plan a host offers.
@@ -123,6 +129,8 @@ pub struct WorkspaceUsage {
     pub snapshot_seconds: u64,
     /// Whether one of its VMs runs now.
     pub running: bool,
+    /// Bytes the host keeps of the workspace now: its history and state.
+    pub stored_bytes: u64,
 }
 
 /// What the account used in the current billing period.
@@ -145,7 +153,15 @@ impl Usage {
             .fold(0_u64, |sum, usage| sum.saturating_add(usage.vm_seconds))
     }
 
-    /// The usage of `workspace`, if its VMs ran.
+    /// Bytes every workspace keeps on the host now.
+    #[must_use]
+    pub fn stored_bytes(&self) -> u64 {
+        self.workspaces
+            .iter()
+            .fold(0_u64, |sum, usage| sum.saturating_add(usage.stored_bytes))
+    }
+
+    /// The usage of `workspace`, if its VMs ran or it keeps anything.
     #[must_use]
     pub fn of(&self, workspace: &str) -> Option<&WorkspaceUsage> {
         self.workspaces
@@ -264,6 +280,8 @@ pub enum NextStepKind {
     ChooseSize,
     /// Wait for one of the account's VMs to stop on its own, or stop one.
     WaitForIdle,
+    /// Use a workspace the account already has.
+    UseExisting,
 }
 
 /// One way through a refusal.
@@ -292,6 +310,16 @@ pub enum Reason {
     },
     /// The account already keeps as many VMs as its plan allows.
     TooManyVms { limit: u32, existing: u32 },
+    /// The account's workspaces keep as many bytes on the host as it allows:
+    /// the write was not kept.
+    StorageFull { limit_bytes: u64, used_bytes: u64 },
+    /// The account already has as many workspaces of its own on the host as
+    /// it allows.
+    TooManyWorkspaces {
+        limit: u32,
+        /// The ids of the workspaces it has.
+        existing: Vec<String>,
+    },
 }
 
 /// A host's refusal of an action, for whoever ran it.
@@ -319,6 +347,22 @@ impl Refusal {
     #[must_use]
     pub const fn awaits_the_account(&self) -> bool {
         matches!(self.reason, Reason::NoPaymentMethod)
+    }
+
+    /// The refusal as an action's refusal reason
+    /// ([`super::ActionHostError::Refused`]): its JSON, which
+    /// [`Self::from_reason`] reads back typed, and which a caller that does
+    /// not read it still shows as plain data.
+    #[must_use]
+    pub fn to_reason(&self) -> String {
+        serde_json::to_string(self).unwrap_or_else(|_| self.message.clone())
+    }
+
+    /// The refusal an action's refusal reason carries, when it carries one
+    /// ([`Self::to_reason`]).
+    #[must_use]
+    pub fn from_reason(reason: &str) -> Option<Self> {
+        serde_json::from_str(reason).ok()
     }
 }
 
@@ -392,6 +436,50 @@ mod tests {
             serde_json::to_value(&limit.reason).unwrap(),
             serde_json::json!({"too_many_running": {"limit": 1, "running": ["ws1"]}})
         );
+    }
+
+    #[test]
+    fn storage_refusals_cross_an_actions_reason_typed() {
+        let full = Refusal {
+            reason: Reason::StorageFull {
+                limit_bytes: 10,
+                used_bytes: 12,
+            },
+            message: "Your workspace is full.".into(),
+            next: vec![NextStep {
+                kind: NextStepKind::RaiseLimit,
+                url: None,
+            }],
+        };
+        assert_eq!(
+            serde_json::to_value(&full.reason).unwrap(),
+            serde_json::json!({"storage_full": {"limit_bytes": 10, "used_bytes": 12}})
+        );
+        assert_eq!(Refusal::from_reason(&full.to_reason()), Some(full.clone()));
+        assert!(!full.awaits_the_account());
+        assert_eq!(Refusal::from_reason("the host refused"), None);
+        let second = Reason::TooManyWorkspaces {
+            limit: 1,
+            existing: vec!["w".into()],
+        };
+        let bytes = postcard::to_allocvec(&second).unwrap();
+        assert_eq!(postcard::from_bytes::<Reason>(&bytes).unwrap(), second);
+        let usage = Usage {
+            workspaces: vec![
+                WorkspaceUsage {
+                    workspace: "a".into(),
+                    stored_bytes: 7,
+                    ..WorkspaceUsage::default()
+                },
+                WorkspaceUsage {
+                    workspace: "b".into(),
+                    stored_bytes: 5,
+                    ..WorkspaceUsage::default()
+                },
+            ],
+            ..Usage::default()
+        };
+        assert_eq!(usage.stored_bytes(), 12);
     }
 
     #[test]

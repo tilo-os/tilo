@@ -240,6 +240,7 @@ pub fn account_of(plans: &Plans, account: &str, name: &str, usage: Usage) -> Hos
                         .find(|offer| offer.id == id)
                         .and_then(|offer| offer.limits.included_vm_seconds)
                 }),
+                ..Limits::default()
             }),
             usage,
             credit: plan.credit.clone(),

@@ -52,6 +52,7 @@ pub fn selling() -> Plans {
                     max_vms: 5,
                     sizes: vec!["small".into(), "default".into()],
                     included_vm_seconds: Some(100 * 3600),
+                    ..Limits::default()
                 },
             }],
             add_payment_method: ADD_CARD.into(),
