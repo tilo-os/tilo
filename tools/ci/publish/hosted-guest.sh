@@ -51,7 +51,8 @@ inputs_digest() {
 # a fragment that drifted from what a VM needs fails the build here rather than
 # in somebody's workspace.
 assert_kernel_config() {
-  python3 os/kernel/check-config.py "$1" --fragment os/hosted-guest/kernel/fragment.config
+  python3 "$repo_root/os/kernel/check-config.py" "$1" \
+    --fragment "$repo_root/os/hosted-guest/kernel/fragment.config"
 }
 
 case ${1:-} in

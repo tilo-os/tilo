@@ -138,8 +138,12 @@ RUN set -eu; \
     fnm --version | sed 's/^/fnm: /'; \
     su -s /bin/bash tilo -c 'cargo --version; rustc --version' | sed 's/^/rust: /'; \
     python3 --version | sed 's/^/python: /'; \
-    /usr/libexec/tilo/tilo-legacy-agent --help 2>&1 | head -1 | sed 's/^/agent: /'; \
-    bash -n /usr/libexec/tilo/hosted-init
+    bash -n /usr/libexec/tilo/hosted-init; \
+    agent_says=$(/usr/libexec/tilo/tilo-legacy-agent --user no-such-user 2>&1 || true); \
+    case $agent_says in \
+      *"no ordinary user"*) echo 'agent: runs on this root filesystem' ;; \
+      *) echo "agent: $agent_says"; exit 1 ;; \
+    esac
 
 # A directory the tenant owns, at the paths their programs start in.
 WORKDIR /home/tilo
