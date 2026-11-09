@@ -588,3 +588,55 @@ fn the_tasks_app_says_a_task_with_no_day_has_none_to_clear() {
         "a task typed with no day has none to clear"
     );
 }
+
+/// A native app's read action is an action of its record in the catalogue,
+/// typed by the value the surface publishes it answers with.
+#[test]
+fn a_read_actions_answer_is_typed_by_the_surface() {
+    let text = r#"
+[[resources]]
+kind = "pdf.document"
+label = "PDF"
+version = 1
+fields = [
+  { path = "source", type = "text", readonly = true },
+]
+
+[[resources.verbs]]
+id = "read-form-fields"
+kind = "read"
+params = []
+returns = { type = { named = "FormFields" }, schema = { type = "object" } }
+
+[[resources.types]]
+name = "FormFields"
+fields = [
+  { name = "file", type = "text" },
+  { name = "fields", type = { list = { named = "FormField" } } },
+]
+
+[[resources.types]]
+name = "FormField"
+fields = [{ name = "name", type = "text" }]
+"#;
+    let meta = tilolang_tilo::catalogue::described("so.tilo.pdf-viewer", "PDF Viewer", text)
+        .expect("the surface reads as a package");
+    let read = meta
+        .actions
+        .iter()
+        .find(|action| action.name == "read_form_fields")
+        .expect("the read action is published");
+    assert_eq!(read.result.as_deref(), Some("FormFields"), "{read:?}");
+    assert_eq!(read.class, tilolang::types::EffectClass::Read);
+    let form = meta
+        .types
+        .iter()
+        .find(|ty| ty.name == "FormFields")
+        .expect("the answer's record is a type");
+    let fields: Vec<(&str, &str)> = form
+        .fields
+        .iter()
+        .map(|field| (field.name.as_str(), field.ty.as_str()))
+        .collect();
+    assert_eq!(fields, [("file", "Text"), ("fields", "List<FormField>")]);
+}

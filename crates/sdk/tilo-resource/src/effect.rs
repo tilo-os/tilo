@@ -854,6 +854,23 @@ impl EffectDecl {
         }
     }
 
+    /// What an invocation of this effect answers with: the value its type
+    /// describes, the content it made, or a job's result.
+    fn result_contract(&self) -> ResultSpec {
+        match self.answers {
+            Answers::Later { returns: false, .. } => ResultSpec::Job,
+            Answers::Value | Answers::Later { returns: true, .. } => ResultSpec::Json {
+                schema: self
+                    .result
+                    .map_or_else(|| serde_json::json!({}), |result| (result.schema)()),
+            },
+            Answers::Content => ResultSpec::Resource {
+                resource_kind: tilo_actions::CONTENT_RESOURCE_KIND.to_owned(),
+            },
+            Answers::Nothing => ResultSpec::None,
+        }
+    }
+
     /// The published action of this effect, taking `params` and encoding
     /// an invocation with `build`.
     /// What kind of action the effect is: a view reads, anything else
@@ -916,18 +933,7 @@ impl EffectDecl {
                 Answers::Later { cancellable, .. } => ExecutionMode::Background { cancellable },
                 Answers::Nothing | Answers::Value | Answers::Content => ExecutionMode::Immediate,
             },
-            result: match self.answers {
-                Answers::Later { returns: false, .. } => ResultSpec::Job,
-                Answers::Value | Answers::Later { returns: true, .. } => ResultSpec::Json {
-                    schema: self
-                        .result
-                        .map_or_else(|| serde_json::json!({}), |result| (result.schema)()),
-                },
-                Answers::Content => ResultSpec::Resource {
-                    resource_kind: tilo_actions::CONTENT_RESOURCE_KIND.to_owned(),
-                },
-                Answers::Nothing => ResultSpec::None,
-            },
+            result: self.result_contract(),
             retry: if view || self.idempotent {
                 RetryPolicy::Idempotent
             } else {

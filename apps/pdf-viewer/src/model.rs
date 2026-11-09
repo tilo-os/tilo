@@ -815,8 +815,9 @@ pub struct FormFieldRow {
     pub kind: FormFieldKind,
     /// Its value now, in the shape a field edit sets.
     pub value: FormEntry,
-    /// The edit that sets it (`form_values/<name>`).
-    pub path: Option<String>,
+    /// The edit that sets it, its path the steps an edit names
+    /// (`form_values`, then the field) in the shape a field edit takes.
+    pub path: Option<serde_json::Value>,
     /// The values a choice or radio group offers.
     pub options: Vec<String>,
     /// The value a checkbox exports when it is on.

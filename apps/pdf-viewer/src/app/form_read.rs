@@ -111,11 +111,9 @@ fn field_row(
         .form_values
         .key(&field.name)
         .set(value.clone());
-    let path = serde_json::to_value(&edit).ok().and_then(|edit| {
-        edit.get("path")
-            .and_then(serde_json::Value::as_str)
-            .map(str::to_owned)
-    });
+    let path = serde_json::to_value(&edit)
+        .ok()
+        .and_then(|edit| edit.get("path").cloned());
     let page = field
         .widgets
         .iter()

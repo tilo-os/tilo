@@ -526,14 +526,13 @@ pub(crate) fn derive(input: &DeriveInput) -> syn::Result<Tokens> {
         } else {
             quote!(#krate::effect::Answers::Nothing)
         };
-        let result = match &options.returns_type {
-            Some(ty) => quote!(::core::option::Option::Some(#krate::effect::EffectResult {
+        let result = if let Some(ty) = &options.returns_type {
+            quote!(::core::option::Option::Some(#krate::effect::EffectResult {
                 schema: <#ty as #krate::JsonSchema>::json_schema,
-                ty: ::core::option::Option::Some(
-                    <#ty as #krate::JsonSchema>::field_type,
-                ),
-            })),
-            None => quote!(::core::option::Option::None),
+                ty: ::core::option::Option::Some(<#ty as #krate::JsonSchema>::field_type),
+            }))
+        } else {
+            quote!(::core::option::Option::None)
         };
         let risk = match (options.destructive, options.privileged, options.sensitive) {
             (true, false, false) => quote!(Destructive),

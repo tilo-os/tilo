@@ -226,14 +226,16 @@ pub fn effect_verb(decl: &crate::EffectDecl, types: &mut TypeSet) -> VerbSurface
 }
 
 /// An app's effects as actions a caller of another language reads: every one
-/// that only reads (`kind = "read"`), answering with the value it declares.
-/// What its window shows (a view's zoom, its caret) is no action of the
-/// catalogue and stays out.
+/// that only reads (`kind = "read"`) and that acts on the app's record,
+/// answering with the value it declares. What its window shows (a view's
+/// zoom, its caret) is no action of the catalogue, and neither is one offered
+/// only bound to a row's item: that reads the row, not the record.
 #[must_use]
 pub fn effect_verbs(rows: &[crate::effect::EffectRow], types: &mut TypeSet) -> Vec<VerbSurface> {
     rows.iter()
         .filter(|row| row.kind != tilo_actions::OperationKind::View)
         .filter(|row| row.action_kind == crate::ActionKind::Read)
+        .filter(|row| !row.row && row.item.is_none())
         .map(|row| effect_verb(&crate::EffectDecl::of_row(row), types))
         .collect()
 }
