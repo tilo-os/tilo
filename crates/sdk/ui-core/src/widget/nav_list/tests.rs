@@ -49,6 +49,34 @@ fn sdk_boxing_preserves_navigation_identity_and_selection() {
     assert_eq!(widget.name(), "NavList");
 }
 
+/// The place of a resource stands chosen while a window shows that resource, whatever the app
+/// calls the place: a channel's place is named after its category and its name, and shows the
+/// channel all the same.
+#[test]
+fn the_place_of_the_resource_a_window_shows_stands_chosen() {
+    let list = NavList::new(vec![NavSection::untitled(
+        "channels",
+        vec![
+            NavItem::new("/general", "general").resource("doc/general"),
+            NavItem::new("Team/design", "design").resource("doc/design"),
+        ],
+    )]);
+    let mut widget = list.into_widget();
+    let list = widget
+        .as_any_mut()
+        .unwrap()
+        .downcast_mut::<NavList>()
+        .unwrap();
+    assert!(list.select_naming("doc/design"));
+    assert_eq!(list.selected_id().as_deref(), Some("Team/design"));
+    // A place names a resource by its key too, as every list did before.
+    assert!(list.select_naming("/general"));
+    assert_eq!(list.selected_id().as_deref(), Some("/general"));
+    // Nothing of the list shows a resource no place offers.
+    assert!(!list.select_naming("doc/weekend"));
+    assert_eq!(list.selected_id().as_deref(), Some("/general"));
+}
+
 fn harness(list: NavList, theme: Theme) -> FrameHarness {
     let mut h = FrameHarness::for_root(State::new(), list, (280, 360), theme);
     h.relayout_at((280, 360)).expect("layout");

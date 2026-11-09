@@ -268,6 +268,10 @@ pub struct NavItem {
     /// Stable across rebuilds; selection, expansion and focus follow it.
     pub id: String,
     pub label: String,
+    /// The resource the place shows, when it is one (a conversation, a project): what the
+    /// list chooses as the place shown while a window shows that resource, whatever its id is
+    /// ([`NavList::select_naming`]).
+    pub resource: Option<String>,
     pub icon: Option<Icon>,
     pub count: Option<NavCount>,
     /// Show the list's item actions ([`NavList::item_actions`]) on this row
@@ -358,6 +362,7 @@ impl NavItem {
         Self {
             id,
             label,
+            resource: None,
             icon: None,
             count: None,
             actions: true,
@@ -584,6 +589,13 @@ impl NavItem {
     #[must_use]
     pub fn semantic_key(mut self, key: impl Into<String>) -> Self {
         self.semantic_key = Some(key.into());
+        self
+    }
+
+    /// The resource the place shows, for a row bound to one.
+    #[must_use]
+    pub fn resource(mut self, id: impl Into<String>) -> Self {
+        self.resource = Some(id.into());
         self
     }
 }

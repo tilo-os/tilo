@@ -105,6 +105,8 @@ fn every_kind_of_broken_layout_is_caught_at_the_view_that_breaks_it() {
             | Kind::StackedHeaderRows
             // No window in this fixture lists items beside a pane that says nothing is chosen.
             | Kind::PlaceholderPane
+            // The fixture's windows compose no sidebar over a header naming a place.
+            | Kind::UnchosenPlace
             // The fixture's cards each hold what they are given, so none stands empty.
             | Kind::EmptySurface => "(no view)",
         };
