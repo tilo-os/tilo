@@ -478,7 +478,10 @@ fn a_fixed_style_package_brings_the_style_back_live() {
     // The same package, fixed and installed again: the store moved, the session read it again,
     // and the shell loads the fixed package. The desk returns to the style with no restart.
     let fixed = scratch.install("fixed-again", WORKING, store);
-    assert_eq!(fixed, "atest.trapping", "the fixed package installs as the same app");
+    assert_eq!(
+        fixed, "atest.trapping",
+        "the fixed package installs as the same app"
+    );
     until(&mut session, |session| {
         style_state(session, "atest.trapping:trapping") == Some((true, String::new()))
     });

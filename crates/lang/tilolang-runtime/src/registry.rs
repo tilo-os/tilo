@@ -587,12 +587,11 @@ impl Registry {
         // The type as the view's parameter names it, when its type is one this runtime holds:
         // a style of a package other than the arrangement's still writes `shell.Arrangement`,
         // the type the shell's package declares.
-        let (own_app, name) = match crate::foreign::foreign_type(ty) {
-            Some(key) => (key.app, key.name),
-            None => {
-                let (pkg, info) = self.type_info(ty)?;
-                (pkg.meta.app.clone(), info.name.clone())
-            }
+        let (own_app, name) = if let Some(key) = crate::foreign::foreign_type(ty) {
+            (key.app, key.name)
+        } else {
+            let (pkg, info) = self.type_info(ty)?;
+            (pkg.meta.app.clone(), info.name.clone())
         };
         let (app, view) = named
             .split_once(':')

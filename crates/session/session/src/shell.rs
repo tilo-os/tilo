@@ -528,9 +528,13 @@ impl Shell {
         if moved {
             self.republish = true;
             for style in crate::desk_styles::installed(&catalog) {
-                self.needed.insert(style.package.clone());
+                // The shell's own package is the one the part already runs, never one loaded
+                // beside itself.
+                if style.package != tilo_surface_host::shell_part::SHELL_APP {
+                    self.needed.insert(style.package.clone());
+                }
             }
-            for entry in self.desk.styles.borrow_mut().list.iter_mut() {
+            for entry in &mut self.desk.styles.borrow_mut().list {
                 if !entry.loads {
                     entry.loads = true;
                     entry.reason.clear();
@@ -559,9 +563,7 @@ impl Shell {
 
     /// The views that could not be shown since the last call, each an app, a view and why: what
     /// the parts reported (`shell.md` §6, "Nothing can lock a person out").
-    pub(crate) fn take_view_failures(
-        &self,
-    ) -> Vec<tilo_surface_host::ViewFailure> {
+    pub(crate) fn take_view_failures(&self) -> Vec<tilo_surface_host::ViewFailure> {
         self.parts
             .iter()
             .flat_map(|(_, part)| part.borrow().take_view_failures())
@@ -586,10 +588,10 @@ impl Shell {
     /// succeeded — loads again: the desk returns to the person's choice with no restart
     /// (`shell.md` §6). `app` is the app whose failure ended, and `style` the call's view when
     /// one names it (`app:view`).
-    pub(crate) fn note_style_recovered(&mut self, app: &str, style: Option<&str>) {
+    pub(crate) fn note_style_recovered(&self, app: &str, style: Option<&str>) {
         let mut styles = self.desk.styles.borrow_mut();
         let mut moved = false;
-        for entry in styles.list.iter_mut() {
+        for entry in &mut styles.list {
             let of_app = entry.package == app;
             let named = style.is_some_and(|style| {
                 entry.style == format!("{app}:{style}") || entry.style == style
@@ -615,7 +617,7 @@ impl Shell {
     /// Fixing the package flips it back: the desk asks the runtime again, the call succeeds, and
     /// the next [`Self::take_view_failures`] has nothing to say of it.
     pub(crate) fn note_style_failure(
-        &mut self,
+        &self,
         failure: &tilo_surface_host::ViewFailure,
     ) -> Option<crate::notices::Notice> {
         let style = if failure.view.contains(':') {
@@ -1338,6 +1340,31 @@ impl<T: SurfaceHost> SurfaceHost for Aside<T> {
 }
 
 impl crate::Session {
+    /// What the shell's views could not show, and what came back: a style that failed is marked
+    /// not loading, with the notice naming it, and one that came back loads again — the desk
+    /// keeps the person's choice either way (`shell.md` §6, "Nothing can lock a person out").
+    fn follow_view_failures(
+        notices: &Rc<RefCell<crate::notifications::SessionNotifications>>,
+        shell: &Shell,
+        failures: Vec<tilo_surface_host::ViewFailure>,
+        recoveries: (Vec<String>, Vec<(String, String)>),
+    ) {
+        for failure in failures {
+            if let Some(notice) = shell.note_style_failure(&failure) {
+                // Raised through the session's own notices, as every notice it tells: the
+                // notifications service when one runs, the desk's own otherwise.
+                notices.borrow().tell(notice);
+            }
+        }
+        let (apps, calls) = recoveries;
+        for app in apps {
+            shell.note_style_recovered(&app, None);
+        }
+        for (app, view) in calls {
+            shell.note_style_recovered(&app, Some(&view));
+        }
+    }
+
     /// Hand the shell the desk when it changed, and run what it asked through the door, as any
     /// caller of the action protocol does.
     pub(crate) fn follow_shell(&mut self) -> Result<(), crate::Error> {
@@ -1373,21 +1400,10 @@ impl crate::Session {
         // that failed — so the desk says so and the person's choice is kept: a style that
         // cannot load shows the built-in strips until it is fixed (shell.md §6, "Nothing can
         // lock a person out").
-        for failure in shell.take_view_failures() {
-            if let Some(notice) = shell.note_style_failure(&failure) {
-                // Raised through the session's own notices, as every notice it tells: the
-                // notifications service when one runs, the desk's own otherwise.
-                self.shared.notifications.borrow().tell(notice);
-            }
-        }
-        for (apps, calls) in [shell.take_view_recoveries()] {
-            for app in apps {
-                shell.note_style_recovered(&app, None);
-            }
-            for (app, view) in calls {
-                shell.note_style_recovered(&app, Some(&view));
-            }
-        }
+        let failures = shell.take_view_failures();
+        let recoveries = shell.take_view_recoveries();
+        let notices = Rc::clone(&self.shared.notifications);
+        Self::follow_view_failures(&notices, shell, failures, recoveries);
         shell.publish();
         let arrangement = self.shared.arrangement.borrow().reading();
         shell.publish_readings(&self.shared.services.borrow());

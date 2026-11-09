@@ -107,8 +107,15 @@ pub fn installed(
 /// style the person chose would wait for a package nothing would ever publish.
 #[must_use]
 pub fn module_from_store(app: &str) -> Option<std::sync::Arc<[u8]>> {
+    // The shell's own package is what the part runs, never one it loads beside itself: the
+    // store holds it, and sending it here would load a second copy.
+    if app == tilo_surface_host::shell_part::SHELL_APP {
+        return None;
+    }
     let catalog = package_store::Catalog::from_env().ok()?;
-    let installed = app_catalogue::apps::read_one(&catalog, app).ok().flatten()?;
+    let installed = app_catalogue::apps::read_one(&catalog, app)
+        .ok()
+        .flatten()?;
     let bundle = Bundle::read(&installed.payload_root).ok()?;
     Some(std::sync::Arc::from(bundle.wasm))
 }

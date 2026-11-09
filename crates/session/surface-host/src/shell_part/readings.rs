@@ -373,7 +373,7 @@ impl SessionOrigin {
     /// Hand the runtime the verbs the session's resources publish that no loaded package
     /// declares ([`tilolang_tilo::runtime::published`]): a view's action of one is sent to the app
     /// publishing it, the same path another app's declared action takes. Whether it changed.
-    fn poll_published(&mut self, cx: &OriginCx<'_>) -> bool {
+    fn poll_published(&self, cx: &OriginCx<'_>) -> bool {
         if !self.link.published_fresh.replace(false) {
             return false;
         }

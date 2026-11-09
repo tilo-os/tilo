@@ -460,9 +460,7 @@ impl Core {
                     view,
                     reason: error.to_string(),
                 };
-                self.failed_views
-                    .borrow_mut()
-                    .note(key, failure.clone());
+                self.failed_views.borrow_mut().note(key, failure.clone());
                 Ok(self.failed_rendered(key, &failure))
             }
         }
@@ -649,53 +647,12 @@ impl Core {
             return Ok(node);
         }
         // A call of another package's view: its boundary renders it where it stands, and this
-        // node is the fragment the boundary's tree goes in.
+        // node is the fragment the boundary's tree goes in. A call that cannot be shown draws
+        // its failed state here instead (`shell.md` §6).
         if let Some(boundaries) = hook.as_deref_mut()
             && let Some(call) = self.view_call(&n.kind, &n.props, cx.offer, acc)
         {
-            match call {
-                Ok(call) => {
-                    // The call runs after all: a failure that stood for it here is over, and
-                    // the host is told the view is back (`shell.md` §6).
-                    self.failed_views.borrow_mut().cleared(&key);
-                    return Self::foreign_view(cx, n, key, events, call, walk, boundaries);
-                }
-                // A view call of an app whose package this runtime does not hold: the session
-                // publishes it, and until it comes the call waits where it stands, so the
-                // rest of the view draws. A call that failed for anything else is the
-                // caller's to report.
-                Err(error) if self.read_waited(&error) => {
-                    let waiting = self.waiting_rendered();
-                    return Ok(Self::waiting_view(n, key, events, acc, waiting));
-                }
-                Err(RuntimeError::ViewFailed(failure)) => {
-                    self.failed_views.borrow_mut().note(&key, (*failure).clone());
-                    let failed = self.failed_rendered(&key, &failure);
-                    return Ok(Self::waiting_view(n, key, events, acc, failed));
-                }
-                // The call names a view the runtime cannot reach (its package is here but does
-                // not declare it, or the node is malformed): it draws a failed state where it
-                // stands, as one whose package failed to load does, and the host is told once.
-                Err(error) => {
-                    let named = n
-                        .kind
-                        .strip_prefix(FOREIGN_VIEW)
-                        .unwrap_or_default();
-                    let (app, view) = named
-                        .split_once(':')
-                        .map_or((String::new(), named.to_owned()), |(app, view)| {
-                            (app.to_owned(), view.to_owned())
-                        });
-                    let failure = crate::foreign::ViewFailure {
-                        app,
-                        view,
-                        reason: error.to_string(),
-                    };
-                    self.failed_views.borrow_mut().note(&key, failure.clone());
-                    let failed = self.failed_rendered(&key, &failure);
-                    return Ok(Self::waiting_view(n, key, events, acc, failed));
-                }
-            }
+            return self.view_call_node(cx, n, key, events, walk, acc, boundaries, call);
         }
         let below = Walk::below(walk, n, key.as_str());
         let (mut children, rows_total) = self.build_children(cx, (n, &key), below, acc, hook)?;
@@ -805,6 +762,68 @@ impl Core {
             events,
             anchor: n.anchor.clone(),
             children: vec![acc.absorb(waiting)],
+        }
+    }
+
+    /// The fragment a call of another package's view stands for, or the failed state it draws
+    /// where it stands when it cannot be shown (`shell.md` §6, "Nothing can lock a person
+    /// out"): a package the runtime does not hold yet waits for the session to publish it, a
+    /// package that failed to load or a view that failed draws the failed state and its host is
+    /// told once.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "a fragment the caller was building: the node, where it stands, and the builders it was passed"
+    )]
+    fn view_call_node(
+        &self,
+        cx: &Build<'_>,
+        n: &NodeBuild,
+        key: String,
+        events: std::collections::BTreeMap<String, Retained>,
+        walk: Walk<'_>,
+        acc: &mut Acc,
+        boundaries: &mut dyn Boundaries,
+        call: Result<(ViewTarget, Vec<Value>), RuntimeError>,
+    ) -> Result<UiNode, RuntimeError> {
+        match call {
+            Ok(call) => {
+                // The call runs after all: a failure that stood for it here is over, and the
+                // host is told the view is back (`shell.md` §6).
+                self.failed_views.borrow_mut().cleared(&key);
+                Self::foreign_view(cx, n, key, events, call, walk, boundaries)
+            }
+            // A call of an app whose package this runtime does not hold: the session publishes
+            // it, and until it comes the call waits where it stands, so the rest of the view
+            // draws. A call that failed for anything else is the caller's to report.
+            Err(error) if self.read_waited(&error) => {
+                let waiting = self.waiting_rendered();
+                Ok(Self::waiting_view(n, key, events, acc, waiting))
+            }
+            Err(RuntimeError::ViewFailed(failure)) => {
+                self.failed_views
+                    .borrow_mut()
+                    .note(&key, (*failure).clone());
+                let failed = self.failed_rendered(&key, &failure);
+                Ok(Self::waiting_view(n, key, events, acc, failed))
+            }
+            // The call names a view the runtime cannot reach (its package is here but does not
+            // declare it, or the node is malformed): it draws a failed state where it stands, as
+            // one whose package failed to load does, and the host is told once.
+            Err(error) => {
+                let named = n.kind.strip_prefix(FOREIGN_VIEW).unwrap_or_default();
+                let (app, view) = match named.split_once(':') {
+                    Some((app, view)) => (app.to_owned(), view.to_owned()),
+                    None => (String::new(), named.to_owned()),
+                };
+                let failure = crate::foreign::ViewFailure {
+                    app,
+                    view,
+                    reason: error.to_string(),
+                };
+                self.failed_views.borrow_mut().note(&key, failure.clone());
+                let failed = self.failed_rendered(&key, &failure);
+                Ok(Self::waiting_view(n, key, events, acc, failed))
+            }
         }
     }
 
@@ -1110,9 +1129,7 @@ impl Core {
                 // (`missing_view`). But a package that already failed to load here is not
                 // coming: the call draws a failed state naming it, never a skeleton for ever
                 // (`shell.md` §6, "Nothing can lock a person out").
-                let style = named
-                    .filter(|_| !row)
-                    .and_then(|view| view.split_once(':'));
+                let style = named.filter(|_| !row).and_then(|view| view.split_once(':'));
                 let failed = style.and_then(|(app, _)| {
                     self.failed_views
                         .borrow()
