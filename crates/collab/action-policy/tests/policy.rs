@@ -2284,6 +2284,39 @@ fn the_device_panel_reads_the_session_kind_and_no_other_app_does() {
     assert_eq!(reads(&gained.grants, roles::DEVICE_PANEL), Answer::Allow);
 }
 
+/// Every workspace has files, the Files app's record: the app authors there
+/// as part of the workspace's make-up, so a member the workspace lets change
+/// its content may start that record, and a viewer still may not.
+#[test]
+fn every_workspace_lets_its_files_app_author_its_files() {
+    let workspace = workspace_with_members(&[]);
+    let files = workspace
+        .grants
+        .iter()
+        .find(|grant| roles::is_files_app(grant))
+        .expect("a new workspace grants its files' app");
+    assert_eq!(files.subject, Subject::App(roles::FILES_APP.to_owned()));
+    assert_eq!(files.node, TreePath::workspace("r").app(roles::FILES_APP));
+    assert_eq!(files.kinds, KindSet::READ_UNDOABLE);
+    assert!(roles::is_code_defined(files) && roles::is_make_up(files));
+    assert!(workspace.app_authors(roles::FILES_APP, &cx()));
+    assert!(!workspace.app_authors("so.tilo.notes", &cx()));
+
+    // A workspace written before the files' app was part of its make-up
+    // gains its grant, given by its owner.
+    let mut older = workspace_with_members(&[]);
+    older.grants.retain(|grant| !roles::is_files_app(grant));
+    assert!(!older.app_authors(roles::FILES_APP, &cx()));
+    let gained = older.with_current_roles();
+    let files = gained
+        .grants
+        .iter()
+        .find(|grant| roles::is_files_app(grant))
+        .expect("an older workspace gains the files' app's grant");
+    assert_eq!(files.granted_by, Subject::Person(ALICE.to_owned()));
+    assert!(gained.app_authors(roles::FILES_APP, &cx()));
+}
+
 #[test]
 fn a_workspace_neither_revokes_nor_gives_a_built_in_role_grant() {
     let workspace = workspace_with_members(&[]);
