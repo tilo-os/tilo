@@ -39,7 +39,8 @@ fn main() -> Result<(), String> {
     };
     let store = Store::open(PathBuf::from(var("TILO_DOOR_STATE")?))
         .map_err(|error| format!("TILO_DOOR_STATE: {error}"))?;
-    let hosts = Hosts::new(PathBuf::from(var("TILO_DOOR_HOSTS")?));
+    let hosts = Hosts::new(PathBuf::from(var("TILO_DOOR_HOSTS")?))
+        .map_err(|error| format!("TILO_DOOR_HOSTS: {error}"))?;
     let door = Door::new(&config, store, Arc::new(hosts)).map_err(|error| error.to_string())?;
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()

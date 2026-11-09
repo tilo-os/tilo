@@ -2,11 +2,14 @@
 //!
 //! The door owns no workspace. A workspace record names the host that serves
 //! it, and making a workspace is the host's action, which the host may refuse
-//! (quota, payment, policy). The door asks; it decides nothing about
-//! membership itself, and it routes only to a workspace the directory says
-//! the person has.
+//! (quota, payment, policy). The door asks, always as the grant it acts for
+//! ([`GrantKey`]); it decides nothing about membership itself, and it routes
+//! only to a workspace the person's host lists to that grant.
 
+use crate::grant_key::GrantKey;
 use std::{future::Future, pin::Pin};
+
+pub use crate::endpoint::Route;
 
 pub type BoxFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
 
@@ -26,24 +29,6 @@ pub struct Host {
     pub name: String,
     /// Whether making a workspace there is the default.
     pub default: bool,
-}
-
-/// How the door reaches a workspace's agent endpoint: the `tilo-runtime`
-/// streamable HTTP MCP endpoint serving that workspace, and the bearer token
-/// that proves the caller is the door.
-#[derive(Clone, PartialEq, Eq)]
-pub struct Route {
-    pub url: String,
-    pub token: String,
-}
-
-impl std::fmt::Debug for Route {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("Route")
-            .field("url", &self.url)
-            .field("token", &"[redacted]")
-            .finish()
-    }
 }
 
 /// Why the directory answered nothing.
@@ -68,39 +53,42 @@ impl std::fmt::Display for DirectoryError {
     }
 }
 
-/// The person's workspaces and the hosts serving them.
+/// The person's workspaces and the hosts serving them, as a grant of theirs
+/// is answered.
 pub trait Directory: Send + Sync + 'static {
-    /// `person`'s workspaces (identity root key, hex).
+    /// The workspaces `grant` reaches.
     fn workspaces<'a>(
         &'a self,
-        person: &'a str,
+        grant: &'a GrantKey,
     ) -> BoxFuture<'a, Result<Vec<Workspace>, DirectoryError>>;
 
-    /// The hosts `person` may make a workspace on.
-    fn hosts<'a>(&'a self, person: &'a str) -> BoxFuture<'a, Result<Vec<Host>, DirectoryError>>;
+    /// The hosts the grant's person may make a workspace on.
+    fn hosts<'a>(&'a self, grant: &'a GrantKey)
+    -> BoxFuture<'a, Result<Vec<Host>, DirectoryError>>;
 
-    /// Make a workspace called `name` for `person` on `host` (the default
-    /// host when `None`): the host's create-workspace action, which it may
-    /// refuse.
+    /// Make a workspace called `name` on `host` (the default host when
+    /// `None`) as `grant`: the host's create-workspace action, which it may
+    /// refuse. The person's runtime has joined it when this answers, so the
+    /// next call can act in it.
     fn create<'a>(
         &'a self,
-        person: &'a str,
+        grant: &'a GrantKey,
         name: &'a str,
         host: Option<&'a str>,
     ) -> BoxFuture<'a, Result<Workspace, DirectoryError>>;
 
-    /// `person`'s own revocation list (identity root key, raw): the devices
-    /// they revoked, which may sign nobody in.
+    /// The grant's person's revocation list, as their host enforces it: the
+    /// devices they revoked, which may sign nobody in.
     fn revocations<'a>(
         &'a self,
-        person: &'a [u8; 32],
+        grant: &'a GrantKey,
     ) -> BoxFuture<'a, Result<tilo_user_identity::RevocationList, DirectoryError>>;
 
-    /// The agent endpoint of `person`'s workspace `workspace`.
-    /// [`DirectoryError::NotFound`] unless the person has it.
+    /// Where the runtime serving `workspace` answers.
+    /// [`DirectoryError::NotFound`] unless `grant` reaches it.
     fn route<'a>(
         &'a self,
-        person: &'a str,
+        grant: &'a GrantKey,
         workspace: &'a str,
     ) -> BoxFuture<'a, Result<Route, DirectoryError>>;
 }

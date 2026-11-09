@@ -36,8 +36,10 @@ workspace-hack = { version = "0.1" }
 tempfile.workspace = true
 tilo-actions = { path = "../../collab/actions", features = ["test-support"] }
 tilo-automerge-isolate.workspace = true
+tilo-resource = { path = "../../sdk/tilo-resource" }
 tilo-room-host = { path = "../tilo-room-host" }
 tilo-runtime = { path = "../../runtime/tilo-runtime" }
+tilo-workspace-join = { path = "../../collab/workspace-join" }
 
 [lints]
 workspace = true

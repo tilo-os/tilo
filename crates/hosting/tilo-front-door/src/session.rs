@@ -15,28 +15,32 @@
 //! The run's name is the person's: the client's name and a number of their
 //! own runs ("Claude Code #2"), which the door hands the endpoint as the
 //! client's declared name, the name `tilo-runtime` gives the run in History.
+//!
+//! Every session at a runtime is opened as the grant's key
+//! ([`crate::endpoint`]), which the runtime checks and binds the session to:
+//! once the grant's certificate no longer holds there (revoked by the
+//! person, or expired), the runtime drops the session and opening another
+//! is refused.
 
 use crate::directory::{Directory, DirectoryError, Route};
+use crate::endpoint;
+use crate::grant_key::GrantKey;
 use crate::store::Scope;
 use serde_json::{Map, Value, json};
 use std::{
     collections::HashMap,
     fmt::Write as _,
     sync::{Arc, Mutex},
-    time::{Duration, Instant},
+    time::Instant,
 };
 
-pub const SESSION_HEADER: &str = "mcp-session-id";
+pub use crate::endpoint::SESSION_HEADER;
 pub const LIST_WORKSPACES: &str = "list_workspaces";
 pub const CREATE_WORKSPACE: &str = "create_workspace";
 /// The argument naming the workspace an account session's call acts in.
 pub const WORKSPACE_ARGUMENT: &str = "workspace";
 const PROTOCOL_VERSIONS: [&str; 3] = ["2024-11-05", "2025-03-26", "2025-06-18"];
-const UPSTREAM_TIMEOUT: Duration = Duration::from_secs(10 * 60);
 const MAX_NAME_CHARS: usize = 80;
-/// The most a workspace endpoint's answer may be: its own requests are
-/// bounded at 1 MiB, its answers carry pages and content.
-const MAX_UPSTREAM_BYTES: usize = 32 * 1024 * 1024;
 
 /// What a request to a session answers: JSON-RPC messages, the last of them
 /// the reply. More than one only when the door tells the client something
@@ -67,12 +71,14 @@ impl Reply {
 #[derive(Clone)]
 struct Upstream {
     route: Route,
+    url: String,
     session: String,
 }
 
 pub struct Session {
     pub grant: String,
-    pub person: String,
+    /// What the session acts as.
+    key: GrantKey,
     pub scope: Scope,
     /// The run's name, as History shows it.
     pub label: String,
@@ -129,7 +135,7 @@ pub fn run_label(registered: &str, initialize: &Value, number: u64) -> String {
 impl Session {
     pub(crate) fn new(
         grant: String,
-        person: String,
+        key: GrantKey,
         scope: Scope,
         label: String,
         mut initialize: Value,
@@ -146,7 +152,7 @@ impl Session {
         }
         Self {
             grant,
-            person,
+            key,
             scope,
             label,
             initialize,
@@ -247,7 +253,7 @@ impl Session {
         }
         let first = self
             .directory
-            .workspaces(&self.person)
+            .workspaces(&self.key)
             .await
             .ok()?
             .into_iter()
@@ -319,8 +325,8 @@ impl Session {
 
     async fn list(&self) -> Value {
         let (workspaces, hosts) = match (
-            self.directory.workspaces(&self.person).await,
-            self.directory.hosts(&self.person).await,
+            self.directory.workspaces(&self.key).await,
+            self.directory.hosts(&self.key).await,
         ) {
             (Ok(workspaces), Ok(hosts)) => (workspaces, hosts),
             (Err(error), _) | (_, Err(error)) => {
@@ -360,7 +366,7 @@ impl Session {
             return Reply::one(error(id, -32602, "`name` is required"));
         };
         let host = arguments.get("host").and_then(Value::as_str);
-        let created = match self.directory.create(&self.person, name, host).await {
+        let created = match self.directory.create(&self.key, name, host).await {
             Ok(created) => created,
             Err(error) => {
                 return Reply::one(result(
@@ -411,7 +417,12 @@ impl Session {
                 Err(other) => return Reply::one(error(&id, -32000, &other.to_string())),
             };
             match self
-                .post(&upstream.route, Some(&upstream.session), request)
+                .post(
+                    &upstream.route,
+                    &upstream.url,
+                    Some(&upstream.session),
+                    request,
+                )
                 .await
             {
                 Ok((404, _, _)) if attempt == 0 => {}
@@ -446,33 +457,48 @@ impl Session {
         self.open(workspace).await.map(|(upstream, _)| upstream)
     }
 
-    /// Open a session at `workspace`'s endpoint, the person's access checked
-    /// by the directory. Answers the endpoint's `initialize` reply too.
+    /// Open a session at `workspace`'s endpoint as the grant's key, which the
+    /// runtime checks. Answers the endpoint's `initialize` reply too.
     async fn open(&self, workspace: &str) -> Result<(Upstream, Option<Value>), DirectoryError> {
         let mut upstreams = self.upstreams.lock().await;
-        let route = self.directory.route(&self.person, workspace).await?;
+        let route = self.directory.route(&self.key, workspace).await?;
+        let url = route.mcp(workspace);
         let initialize = json!({
             "jsonrpc":"2.0", "id":"tilo-door-initialize", "method":"initialize",
             "params": self.initialize,
         });
-        let (status, headers, body) = self
-            .post(&route, None, &initialize)
-            .await
-            .map_err(DirectoryError::Unavailable)?;
+        let (status, headers, body) = endpoint::post(
+            &self.http,
+            &route,
+            &url,
+            None,
+            Some((&self.key, workspace)),
+            &initialize,
+        )
+        .await
+        .map_err(DirectoryError::Unavailable)?;
         let session = headers
             .get(SESSION_HEADER)
             .and_then(|value| value.to_str().ok())
             .filter(|_| status == 200)
             .map(str::to_owned)
-            .ok_or_else(|| {
-                DirectoryError::Unavailable(format!(
+            .ok_or_else(|| match status {
+                401 | 403 => {
+                    DirectoryError::Refused("the workspace's runtime refused this grant".into())
+                }
+                _ => DirectoryError::Unavailable(format!(
                     "the workspace's endpoint answered HTTP {status}"
-                ))
+                )),
             })?;
-        let upstream = Upstream { route, session };
+        let upstream = Upstream {
+            route,
+            url,
+            session,
+        };
         let _ = self
             .post(
                 &upstream.route,
+                &upstream.url,
                 Some(&upstream.session),
                 &json!({"jsonrpc":"2.0","method":"notifications/initialized"}),
             )
@@ -488,32 +514,11 @@ impl Session {
     async fn post(
         &self,
         route: &Route,
+        url: &str,
         session: Option<&str>,
         body: &Value,
-    ) -> Result<(u16, tilo_net::HeaderMap, Option<Value>), String> {
-        let mut request = self
-            .http
-            .post(&route.url)
-            .bearer_auth(&route.token)
-            .header("accept", "application/json, text/event-stream")
-            .header("content-type", "application/json")
-            .timeout(UPSTREAM_TIMEOUT)
-            .body(body.to_string());
-        if let Some(session) = session {
-            request = request.header(SESSION_HEADER, session);
-        }
-        let response = request
-            .send()
-            .await
-            .map_err(|error| format!("the workspace's endpoint could not be reached: {error}"))?;
-        let status = response.status().as_u16();
-        let headers = response.headers().clone();
-        let bytes = response
-            .bytes_limited(MAX_UPSTREAM_BYTES)
-            .await
-            .map_err(|error| format!("the workspace's endpoint broke off: {error}"))?;
-        let body = serde_json::from_slice::<Value>(&bytes).ok();
-        Ok((status, headers, body))
+    ) -> Result<endpoint::Answer, String> {
+        endpoint::post(&self.http, route, url, session, None, body).await
     }
 
     /// End every upstream session: the run is over.
@@ -531,14 +536,13 @@ impl Session {
     }
 
     async fn close_one(&self, upstream: Upstream) {
-        let _ = self
-            .http
-            .delete(&upstream.route.url)
-            .bearer_auth(&upstream.route.token)
-            .header(SESSION_HEADER, upstream.session)
-            .timeout(Duration::from_secs(10))
-            .send()
-            .await;
+        endpoint::close(
+            &self.http,
+            &upstream.route,
+            &upstream.url,
+            &upstream.session,
+        )
+        .await;
     }
 }
 

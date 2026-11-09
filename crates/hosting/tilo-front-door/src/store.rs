@@ -7,9 +7,12 @@
 //! restart simply makes the client ask again.
 //!
 //! A grant is the person's decision, and revoking it is final: its tokens stop
-//! working at once, its refresh token cannot mint new ones, and the sessions
-//! opened under it are closed by the door ([`crate::Door::revoke_grant`]).
+//! working at once, its refresh token cannot mint new ones, the sessions
+//! opened under it are closed by the door ([`crate::Door::revoke_grant`]),
+//! and its key ([`GrantKey`]) is forgotten, so nothing can act with it
+//! again. The file holds each live grant's key, so it is private to the door.
 
+use crate::grant_key::GrantKey;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::{collections::HashMap, io, path::PathBuf, sync::Mutex, time::Duration};
@@ -61,12 +64,56 @@ pub struct Grant {
     pub created_ms: u64,
     #[serde(default)]
     pub revoked_ms: Option<u64>,
+    /// The grant's key and the person's certificate for it, until the grant
+    /// is revoked.
+    #[serde(default)]
+    key: Option<KeptKey>,
+}
+
+/// A grant's key as the file keeps it.
+#[derive(Clone, Serialize, Deserialize)]
+struct KeptKey {
+    /// The key's secret bytes, hex.
+    secret: String,
+    /// The certificate's canonical encoding, hex.
+    cert: String,
+}
+
+impl std::fmt::Debug for KeptKey {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("KeptKey([redacted])")
+    }
 }
 
 impl Grant {
     #[must_use]
     pub fn live(&self) -> bool {
-        self.revoked_ms.is_none()
+        self.revoked_ms.is_none() && self.key.is_some()
+    }
+
+    /// The key the door acts with for this grant, while it is live.
+    #[must_use]
+    pub fn key(&self) -> Option<GrantKey> {
+        let kept = self.key.as_ref().filter(|_| self.revoked_ms.is_none())?;
+        GrantKey::from_kept(
+            &hex::decode(&kept.secret).ok()?,
+            &hex::decode(&kept.cert).ok()?,
+        )
+        .ok()
+    }
+
+    /// Whether the grant is live and its certificate holds at `now_ms`: a
+    /// grant past its certificate's expiry issues no token, and the agent
+    /// asks the person again.
+    #[must_use]
+    pub fn usable(&self, now_ms: u64) -> bool {
+        self.key()
+            .is_some_and(|key| key.holds(now_ms.saturating_mul(1_000_000)))
+    }
+
+    fn revoke(&mut self, now_ms: u64) {
+        self.revoked_ms.get_or_insert(now_ms);
+        self.key = None;
     }
 }
 
@@ -227,27 +274,35 @@ impl Store {
         self.read(|state| state.clients.get(id).cloned())
     }
 
-    /// Record the person's consent and the code the client redeems for it.
+    /// Record the person's consent, with the key they certified for it, and
+    /// the code the client redeems for it.
     ///
     /// # Errors
     /// The store could not be written.
     pub fn consent(
         &self,
-        person: &str,
+        key: &GrantKey,
         client: &Client,
-        scope: Scope,
         redirect_uri: String,
         challenge: String,
         now_ms: u64,
     ) -> io::Result<String> {
+        let scope = match key.scope() {
+            tilo_user_identity::AgentScope::AllWorkspaces => Scope::Account,
+            one @ tilo_user_identity::AgentScope::Workspace(_) => Scope::Workspace(one.name()),
+        };
         let grant = Grant {
             id: format!("grant-{}", secret(12)?),
-            person: person.to_owned(),
+            person: key.person(),
             client_id: client.id.clone(),
             client_name: client.name.clone(),
             scope,
             created_ms: now_ms,
             revoked_ms: None,
+            key: Some(KeptKey {
+                secret: hex::encode(key.secret()),
+                cert: hex::encode(key.cert_bytes()),
+            }),
         };
         let code = secret(32)?;
         let mut codes = self
@@ -304,7 +359,7 @@ impl Store {
             let Some(grant) = state
                 .grants
                 .get(grant)
-                .filter(|grant| grant.live())
+                .filter(|grant| grant.usable(now_ms))
                 .cloned()
             else {
                 return Err(TokenError::InvalidGrant);
@@ -349,7 +404,7 @@ impl Store {
                 .as_ref()
                 .filter(|token| token.kind == TokenKind::Refresh && token.expires_ms > now_ms)
                 .and_then(|token| state.grants.get(&token.grant))
-                .filter(|grant| grant.live())
+                .filter(|grant| grant.usable(now_ms))
                 .cloned();
             match grant {
                 Some(grant) if grant.client_id == client_id => {
@@ -377,7 +432,7 @@ impl Store {
             state
                 .grants
                 .get(&token.grant)
-                .filter(|grant| grant.live())
+                .filter(|grant| grant.usable(now_ms))
                 .cloned()
         })
     }
@@ -403,7 +458,7 @@ impl Store {
             }
             state.tokens.remove(&key);
             if token.kind == TokenKind::Refresh {
-                grant.revoked_ms.get_or_insert(now_ms);
+                grant.revoke(now_ms);
                 let id = grant.id.clone();
                 state.tokens.retain(|_, token| token.grant != id);
                 return Some(id);
@@ -425,7 +480,7 @@ impl Store {
             else {
                 return false;
             };
-            found.revoked_ms = Some(now_ms);
+            found.revoke(now_ms);
             state.tokens.retain(|_, token| token.grant != grant);
             true
         })

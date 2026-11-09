@@ -2,28 +2,33 @@
 //! connects to with nothing configured but its URL, as in
 //!
 //! ```text
-//! claude mcp add --transport http tilo https://<door>
+//! claude mcp add --transport http tilo https://mcp.tilo.sh
 //! ```
 //!
 //! The agent finds out how to authorize from the door itself (the MCP
-//! authorization profile: OAuth 2.1, [`oauth`]); the person signs in with a
-//! device of theirs ([`sign_in`]) and chooses what the agent may reach:
+//! authorization profile: OAuth 2.1, [`oauth`]). The door sends the person
+//! to their own Tilo, which asks them once, naming the agent, what it may
+//! reach and until when, and then signs them in with a device of theirs
+//! ([`sign_in`]) and certifies a key the door made for this one grant
+//! ([`grant_key`]):
 //!
 //! - **All my workspaces**: the agent lists and creates workspaces, and
 //!   names the workspace each time it acts;
 //! - **One workspace**: the agent is pinned to it and cannot see or reach
-//!   another. Pointing the agent at `<door>/w/<workspace>` asks for exactly
+//!   another. Pointing the agent at `https://mcp.tilo.sh/w/<workspace>` asks for exactly
 //!   that.
 //!
-//! The door is the hosting provider's proxy that `tilo-runtime`'s HTTP
-//! endpoint expects in front of it: it owns the person's authentication,
-//! routes each session to the endpoint of the workspace's host
-//! ([`directory`]), and presents that endpoint's token. Every MCP session is
-//! one agent run, attributed separately in History and named for the person
-//! ("Claude Code #1", [`session`]). The person revokes a grant at
-//! `/grants`; its tokens and sessions end at once.
+//! The door holds no standing authority over anyone: it acts only with a
+//! grant's key, which the person's hosts and runtime check like any device
+//! of theirs, within the grant's scope and until it expires. It routes each
+//! session to the person's runtime ([`directory`], [`endpoint`]). Every MCP
+//! session is one agent run, attributed separately in History and named for
+//! the person ("Claude Code #1", [`session`]). The person revokes a grant at
+//! `/grants`; its tokens and sessions end at once and its key is forgotten.
 
 pub mod directory;
+pub mod endpoint;
+pub mod grant_key;
 pub mod hosts;
 pub mod oauth;
 pub mod pages;
@@ -32,6 +37,7 @@ pub mod sign_in;
 pub mod store;
 
 use directory::Directory;
+use grant_key::GrantKey;
 use http_body_util::{BodyExt, Full, Limited};
 use hyper::{
     Method, Request, Response, StatusCode,
@@ -47,7 +53,8 @@ use std::{
     sync::{Arc, Mutex},
     time::{Duration, Instant},
 };
-use store::{Scope, Store};
+use store::Store;
+use tilo_user_identity::AgentScope;
 
 const MAX_BODY_BYTES: usize = 1024 * 1024;
 const MAX_SESSIONS: usize = 4_096;
@@ -60,24 +67,22 @@ const PENDING_LIFETIME_MS: u64 = 15 * 60 * 1000;
 /// What the door is called and where people sign in.
 #[derive(Clone, Debug)]
 pub struct Config {
-    /// The door's own origin, as agents reach it (`https://mcp.example`): the
+    /// The door's own origin, as agents reach it (`https://mcp.tilo.sh`): the
     /// OAuth issuer and the protected resource. No trailing slash.
     pub issuer: String,
     /// The person's Tilo on the web, which signs them in to the door.
     pub web_entry: String,
 }
 
-/// An authorization in progress: the agent's request, waiting for the person.
-#[derive(Clone)]
+/// An authorization in progress: the agent's request, waiting for the
+/// person's Tilo to answer it.
 struct Pending {
     request: oauth::AuthorizeRequest,
-    client_name: String,
     challenge: [u8; 32],
-    /// Who signed in for it, once someone has.
-    person: Option<String>,
-    /// The token the consent form carries, so only the door's own page
-    /// can submit the decision.
-    csrf: String,
+    /// The key made for the grant, waiting for the person's certificate.
+    key: ed25519_dalek::SigningKey,
+    /// What the grant reaches: the workspace the agent was pointed at, or all.
+    scope: AgentScope,
     expires_ms: u64,
 }
 
@@ -181,14 +186,8 @@ impl Door {
                 }
             }
             (&Method::POST, oauth::REGISTER_PATH) => self.register(body),
-            (&Method::GET, oauth::AUTHORIZE_PATH) => self.authorize(query, headers),
+            (&Method::GET, oauth::AUTHORIZE_PATH) => self.authorize(query),
             (&Method::POST, "/sign-in") => self.signed_in(body).await,
-            (&Method::GET, path) if let Some(id) = path.strip_prefix("/consent/") => {
-                self.consent_page(id, headers).await
-            }
-            (&Method::POST, path) if let Some(id) = path.strip_prefix("/consent/") => {
-                self.decide(id, headers, body).await
-            }
             (&Method::POST, oauth::TOKEN_PATH) => self.token(body),
             (&Method::POST, oauth::REVOKE_PATH) => self.revoke(body).await,
             (&Method::GET, "/grants") => self.grants_page(headers).await,
@@ -236,7 +235,7 @@ impl Door {
         }
     }
 
-    fn authorize(&self, query: &str, headers: &hyper::HeaderMap) -> Reply {
+    fn authorize(&self, query: &str) -> Reply {
         let query = oauth::form(query.as_bytes()).unwrap_or_default();
         let client = query.get("client_id").and_then(|id| self.store.client(id));
         let request = match oauth::authorize_request(&query, client.as_ref(), &self.config.issuer) {
@@ -260,17 +259,35 @@ impl Door {
                 return redirect_back(&redirect_uri, &params);
             }
         };
+        let scope = match request.pinned.as_deref() {
+            Some(workspace) => match AgentScope::parse(workspace) {
+                Some(scope) => scope,
+                None => {
+                    return redirect_back(&request.redirect_uri, &[("error", "invalid_target")]);
+                }
+            },
+            None => AgentScope::AllWorkspaces,
+        };
         let now = now_ms();
         let mut challenge = [0u8; 32];
-        let (Ok(()), Ok(id), Ok(csrf)) = (
+        let (Ok(()), Ok(id), Ok(key)) = (
             getrandom::fill(&mut challenge),
             store::secret(24),
-            store::secret(24),
+            GrantKey::generate(),
         ) else {
             return no_randomness();
         };
-        let person = self.browsers.person(headers, now);
-        let signed_in = person.is_some();
+        let client_name = client.map(|client| client.name).unwrap_or_default();
+        let grant_expires_ms =
+            now.saturating_add(u64::try_from(grant_key::GRANT_LIFETIME.as_millis()).unwrap_or(0));
+        let location = self.sign_in_url(&SignInAsk {
+            pending: &id,
+            challenge: &challenge,
+            client: &client_name,
+            key: &key,
+            scope,
+            expires_ms: grant_expires_ms,
+        });
         {
             let mut pending = lock(&self.pending);
             pending.retain(|_, pending| pending.expires_ms > now);
@@ -281,206 +298,54 @@ impl Door {
                 );
             }
             pending.insert(
-                id.clone(),
+                id,
                 Pending {
                     request,
-                    client_name: client.map(|client| client.name).unwrap_or_default(),
                     challenge,
-                    person,
-                    csrf,
+                    key,
+                    scope,
                     expires_ms: now.saturating_add(PENDING_LIFETIME_MS),
                 },
             );
         }
-        if signed_in {
-            return redirect(&format!("/consent/{id}"));
-        }
-        let client_name = lock(&self.pending)
-            .get(&id)
-            .map(|pending| pending.client_name.clone())
-            .unwrap_or_default();
-        html(
-            StatusCode::OK,
-            &pages::sign_in(&client_name, &self.sign_in_url(&id, &challenge)),
-        )
+        redirect(&location)
     }
 
-    /// Where the person's Tilo signs them in to this door, for `pending`.
-    fn sign_in_url(&self, pending: &str, challenge: &[u8; 32]) -> String {
+    /// Where the person's Tilo answers the authorization `ask`.
+    fn sign_in_url(&self, ask: &SignInAsk<'_>) -> String {
         let mut url = self.sign_in_entry.clone();
         url.query_pairs_mut()
             .append_pair("audience", &self.config.issuer)
-            .append_pair("challenge", &hex::encode(challenge))
+            .append_pair("challenge", &hex::encode(ask.challenge))
             .append_pair("return", &format!("{}/sign-in", self.config.issuer))
-            .append_pair("pending", pending);
+            .append_pair("pending", ask.pending)
+            .append_pair("client", ask.client)
+            .append_pair(
+                "grant_key",
+                &hex::encode(ask.key.verifying_key().to_bytes()),
+            )
+            .append_pair("grant_scope", &ask.scope.name())
+            .append_pair("grant_expires", &ask.expires_ms.to_string());
         url.into()
     }
 
-    /// `POST /sign-in`: the person's Tilo answers a pending sign-in with a
-    /// proof.
+    /// `POST /sign-in`: the person's Tilo answers a pending authorization,
+    /// declined (`decision=deny`) or with a sign-in proof and the certificate
+    /// it gave the grant's key.
     async fn signed_in(&self, body: &[u8]) -> Reply {
         let form = oauth::form(body).unwrap_or_default();
-        let (Some(id), Some(proof)) = (
-            form.get("pending"),
-            form.get("proof")
-                .and_then(|proof| sign_in::decode_proof(proof)),
-        ) else {
+        let now = now_ms();
+        // Answered once, whatever the answer: its challenge and key are spent.
+        let Some(pending) = form.get("pending").and_then(|id| {
+            lock(&self.pending)
+                .remove(id)
+                .filter(|pending| pending.expires_ms > now)
+        }) else {
             return html(
                 StatusCode::BAD_REQUEST,
-                &pages::message("Sign-in failed", "The sign-in was incomplete."),
-            );
-        };
-        let now = now_ms();
-        let mut fresh = [0u8; 32];
-        if getrandom::fill(&mut fresh).is_err() {
-            return no_randomness();
-        }
-        // The challenge is spent by this attempt, whatever its outcome.
-        let challenge = {
-            let mut pending = lock(&self.pending);
-            match pending
-                .get_mut(id)
-                .filter(|pending| pending.expires_ms > now && pending.person.is_none())
-            {
-                Some(found) => std::mem::replace(&mut found.challenge, fresh),
-                None => {
-                    return html(
-                        StatusCode::BAD_REQUEST,
-                        &pages::message("Sign-in expired", "Start connecting the agent again."),
-                    );
-                }
-            }
-        };
-        let Ok(revocations) = self
-            .directory
-            .revocations(&proof.cert.user_public_key)
-            .await
-        else {
-            return html(
-                StatusCode::SERVICE_UNAVAILABLE,
-                &pages::message(
-                    "Sign-in unavailable",
-                    "Your devices could not be checked. Try again shortly.",
-                ),
-            );
-        };
-        let person = match sign_in::verify(
-            &proof,
-            &self.config.issuer,
-            &challenge,
-            &revocations,
-            now.saturating_mul(1_000_000),
-        ) {
-            Ok(person) => person,
-            Err(error) => {
-                tracing::info!(%error, "sign-in refused");
-                return html(
-                    StatusCode::FORBIDDEN,
-                    &pages::message("Sign-in refused", &error.to_string()),
-                );
-            }
-        };
-        if let Some(found) = lock(&self.pending).get_mut(id) {
-            found.person = Some(person.clone());
-        }
-        let Ok(cookie) = self.browsers.sign_in(person, now) else {
-            return no_randomness();
-        };
-        let mut response = redirect(&format!("/consent/{id}"));
-        if let Ok(value) = HeaderValue::from_str(&sign_in::set_cookie(&cookie)) {
-            response.headers_mut().insert(header::SET_COOKIE, value);
-        }
-        response
-    }
-
-    /// The pending authorization `id`, for the person signed in at this
-    /// browser, who must be the one who signed in for it.
-    fn pending_for(&self, id: &str, headers: &hyper::HeaderMap) -> Option<(Pending, String)> {
-        let now = now_ms();
-        let person = self.browsers.person(headers, now)?;
-        let pending = lock(&self.pending)
-            .get(id)
-            .filter(|pending| pending.expires_ms > now)
-            .cloned()?;
-        match &pending.person {
-            Some(signed) if *signed == person => Some((pending, person)),
-            // Signed in before the agent asked: this browser's person decides.
-            None => {
-                if let Some(found) = lock(&self.pending).get_mut(id) {
-                    found.person = Some(person.clone());
-                }
-                Some((pending, person))
-            }
-            Some(_) => None,
-        }
-    }
-
-    async fn consent_page(&self, id: &str, headers: &hyper::HeaderMap) -> Reply {
-        let Some((pending, person)) = self.pending_for(id, headers) else {
-            return html(
-                StatusCode::FORBIDDEN,
                 &pages::message("Sign-in expired", "Start connecting the agent again."),
             );
         };
-        let workspaces = match self.directory.workspaces(&person).await {
-            Ok(workspaces) => workspaces,
-            Err(error) => {
-                return html(
-                    StatusCode::SERVICE_UNAVAILABLE,
-                    &pages::message("Unavailable", &error.to_string()),
-                );
-            }
-        };
-        let pinned = match &pending.request.pinned {
-            Some(workspace) => match workspaces
-                .iter()
-                .find(|candidate| &candidate.id == workspace)
-            {
-                Some(found) => Some(found.clone()),
-                None => {
-                    return html(
-                        StatusCode::FORBIDDEN,
-                        &pages::message(
-                            "No such workspace",
-                            "You have no workspace at the address this agent was given.",
-                        ),
-                    );
-                }
-            },
-            None => None,
-        };
-        html(
-            StatusCode::OK,
-            &pages::consent(
-                &pending.client_name,
-                &format!("/consent/{id}"),
-                &pending.csrf,
-                &workspaces,
-                pinned.as_ref(),
-            ),
-        )
-    }
-
-    /// `POST /consent/<id>`: the person's decision.
-    async fn decide(&self, id: &str, headers: &hyper::HeaderMap, body: &[u8]) -> Reply {
-        let Some((pending, person)) = self.pending_for(id, headers) else {
-            return html(
-                StatusCode::FORBIDDEN,
-                &pages::message("Sign-in expired", "Start connecting the agent again."),
-            );
-        };
-        let form = oauth::form(body).unwrap_or_default();
-        if !form
-            .get("csrf")
-            .is_some_and(|csrf| constant_time_eq(csrf.as_bytes(), pending.csrf.as_bytes()))
-        {
-            return html(
-                StatusCode::FORBIDDEN,
-                &pages::message("Not allowed", "This decision did not come from this page."),
-            );
-        }
-        // Decided once: a second submission finds nothing.
-        lock(&self.pending).remove(id);
         let request = &pending.request;
         let back = |params: &[(&str, &str)]| {
             let mut params = params.to_vec();
@@ -489,32 +354,32 @@ impl Door {
             }
             redirect_back(&request.redirect_uri, &params)
         };
-        if form.get("decision").map(String::as_str) != Some("allow") {
+        if form.get("decision").map(String::as_str) == Some("deny") {
             return back(&[("error", "access_denied")]);
         }
-        let scope = match (form.get("scope").map(String::as_str), &request.pinned) {
-            (Some("workspace"), pinned) => {
-                let Some(workspace) = form.get("workspace") else {
-                    return back(&[("error", "invalid_request")]);
-                };
-                if pinned.as_ref().is_some_and(|pinned| pinned != workspace) {
-                    return back(&[("error", "invalid_target")]);
-                }
-                Scope::Workspace(workspace.clone())
-            }
-            (Some("account"), None) => Scope::Account,
-            _ => return back(&[("error", "invalid_request")]),
+        let (Some(proof), Some(cert)) = (
+            form.get("proof")
+                .and_then(|proof| sign_in::decode_proof(proof)),
+            form.get("grant")
+                .and_then(|cert| sign_in::decode_cert(cert)),
+        ) else {
+            return html(
+                StatusCode::BAD_REQUEST,
+                &pages::message("Sign-in failed", "The sign-in was incomplete."),
+            );
         };
-        if let Scope::Workspace(workspace) = &scope {
+        let key = match self.check_answer(&pending, &proof, cert, now).await {
+            Ok(key) => key,
+            Err(reply) => return reply,
+        };
+        if let AgentScope::Workspace(_) = pending.scope {
+            // The host shows the grant only that workspace, if it is theirs.
+            let workspace = pending.scope.name();
             let has = self
                 .directory
-                .workspaces(&person)
+                .workspaces(&key)
                 .await
-                .is_ok_and(|workspaces| {
-                    workspaces
-                        .iter()
-                        .any(|candidate| &candidate.id == workspace)
-                });
+                .is_ok_and(|listed| listed.iter().any(|candidate| candidate.id == workspace));
             if !has {
                 return back(&[("error", "invalid_target")]);
             }
@@ -522,17 +387,89 @@ impl Door {
         let Some(client) = self.store.client(&request.client_id) else {
             return back(&[("error", "unauthorized_client")]);
         };
-        match self.store.consent(
-            &person,
+        let Ok(code) = self.store.consent(
+            &key,
             &client,
-            scope,
             request.redirect_uri.clone(),
             request.challenge.clone(),
-            now_ms(),
-        ) {
-            Ok(code) => back(&[("code", &code)]),
-            Err(_) => back(&[("error", "temporarily_unavailable")]),
+            now,
+        ) else {
+            return back(&[("error", "temporarily_unavailable")]);
+        };
+        let mut response = back(&[("code", &code)]);
+        // The browser is signed in to the door too, for its grants page.
+        if let Ok(cookie) = self.browsers.sign_in(key.person(), now)
+            && let Ok(value) = HeaderValue::from_str(&sign_in::set_cookie(&cookie))
+        {
+            response.headers_mut().insert(header::SET_COOKIE, value);
         }
+        response
+    }
+
+    /// Check the person's Tilo's answer to `pending`: the sign-in proof, and
+    /// the certificate it gave the grant's key. The grant's key, or the page
+    /// that says why not.
+    async fn check_answer(
+        &self,
+        pending: &Pending,
+        proof: &tilo_user_identity::SignInProof,
+        cert: tilo_user_identity::DeviceCert,
+        now: u64,
+    ) -> Result<GrantKey, Reply> {
+        let now_ns = now.saturating_mul(1_000_000);
+        let refused = |why: &str| {
+            tracing::info!(reason = why, "sign-in refused");
+            html(
+                StatusCode::FORBIDDEN,
+                &pages::message("Sign-in refused", why),
+            )
+        };
+        // The proof first, as far as it holds without the person's
+        // revocations: whose it is, for this door and this challenge.
+        if let Err(error) = sign_in::verify(
+            proof,
+            &self.config.issuer,
+            &pending.challenge,
+            &tilo_user_identity::RevocationList::new(),
+            now_ns,
+        ) {
+            return Err(refused(&error.to_string()));
+        }
+        if cert.user_public_key != proof.cert.user_public_key {
+            return Err(refused(
+                "the grant was certified by someone else than who signed in",
+            ));
+        }
+        let key = match GrantKey::new(pending.key.clone(), cert, pending.scope, now_ns) {
+            Ok(key) => key,
+            Err(error) => return Err(refused(&error.to_string())),
+        };
+        // Then the device that signed in against the person's revocations, as
+        // their host enforces them; the grant's key itself is checked by the
+        // host at every handshake.
+        let revocations = match self.directory.revocations(&key).await {
+            Ok(revocations) => revocations,
+            Err(error) => {
+                tracing::warn!(%error, "the person's revocations could not be read");
+                return Err(html(
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    &pages::message(
+                        "Sign-in unavailable",
+                        "Your devices could not be checked. Try again shortly.",
+                    ),
+                ));
+            }
+        };
+        if let Err(error) = sign_in::verify(
+            proof,
+            &self.config.issuer,
+            &pending.challenge,
+            &revocations,
+            now_ns,
+        ) {
+            return Err(refused(&error.to_string()));
+        }
+        Ok(key)
     }
 
     fn token(&self, body: &[u8]) -> Reply {
@@ -628,14 +565,19 @@ impl Door {
                 ),
             );
         };
-        let workspaces = self.directory.workspaces(&person).await.unwrap_or_default();
+        let grants = self.store.grants_of(&person);
+        // Each one-workspace grant names its workspace, as the host shows it
+        // to that grant.
+        let mut workspaces = Vec::new();
+        for grant in &grants {
+            if let (store::Scope::Workspace(_), Some(key)) = (&grant.scope, grant.key()) {
+                workspaces.extend(self.directory.workspaces(&key).await.unwrap_or_default());
+            }
+        }
         let Ok(csrf) = self.page_token(headers) else {
             return no_randomness();
         };
-        html(
-            StatusCode::OK,
-            &pages::grants(&self.store.grants_of(&person), &workspaces, &csrf),
-        )
+        html(StatusCode::OK, &pages::grants(&grants, &workspaces, &csrf))
     }
 
     /// The token this browser's grants page forms carry.
@@ -862,9 +804,12 @@ impl Door {
             return text(StatusCode::SERVICE_UNAVAILABLE, "sessions are unavailable");
         };
         let label = session::run_label(&grant.client_name, &params, number);
+        let Some(key) = grant.key() else {
+            return self.challenge(None, true);
+        };
         let session = Arc::new(Session::new(
             grant.id.clone(),
-            grant.person.clone(),
+            key,
             grant.scope.clone(),
             label,
             params,
@@ -889,6 +834,16 @@ impl Door {
             Some(&id),
         )
     }
+}
+
+/// What the door asks the person's Tilo to answer.
+struct SignInAsk<'a> {
+    pending: &'a str,
+    challenge: &'a [u8; 32],
+    client: &'a str,
+    key: &'a ed25519_dalek::SigningKey,
+    scope: AgentScope,
+    expires_ms: u64,
 }
 
 /// What a path names on the door's MCP endpoint: `Some(None)` for the
@@ -1077,6 +1032,8 @@ pub async fn serve(door: Arc<Door>, listener: tokio::net::TcpListener) {
     }
 }
 
+#[cfg(test)]
+mod runtime_support;
 #[cfg(test)]
 mod tests;
 

@@ -1,18 +1,21 @@
 //! Who is at the browser: the person a device of theirs signed in.
 //!
 //! The door keeps no accounts. It asks the person's Tilo for a
-//! [`SignInProof`] of its challenge: the sign-in page sends the browser to
-//! the person's Tilo on the web (the `web_entry`), which holds a certified
-//! device key, with
+//! [`SignInProof`] of its challenge and a certificate for the grant's key:
+//! it sends the browser to the person's Tilo on the web (the `web_entry`),
+//! which holds a certified device key and the person's root, with
 //!
 //! ```text
 //! <web_entry>/sign-in?audience=<issuer>&challenge=<hex>&return=<issuer>/sign-in&pending=<id>
+//!     &client=<name>&grant_key=<hex>&grant_scope=<all|workspace>&grant_expires=<unix ms>
 //! ```
 //!
 //! and the page there, once the person agrees, posts a form back to
-//! `return` with `pending` and `proof`: the proof's canonical encoding,
-//! base64url. The door checks it ([`SignInProof::verify`]) against the
-//! person's own revocation list and gives the browser a session cookie.
+//! `return` with `pending`, `proof` and `grant` (each a canonical encoding,
+//! base64url), or `pending` and `decision=deny`. The door checks the proof
+//! ([`SignInProof::verify`]) against the person's own revocation list, and
+//! the certificate against the key and scope it asked for, and gives the
+//! browser a session cookie for its grants page.
 //!
 //! A challenge belongs to one authorization in progress and is spent by
 //! the first proof that answers it.
@@ -121,6 +124,24 @@ pub fn decode_proof(text: &str) -> Option<SignInProof> {
         .decode(text.trim().trim_end_matches('='))
         .ok()?;
     tilo_user_identity::canonical::from_canonical_bytes(&bytes).ok()
+}
+
+/// A posted grant certificate, decoded: base64url of its canonical encoding.
+#[must_use]
+pub fn decode_cert(text: &str) -> Option<tilo_user_identity::DeviceCert> {
+    use base64::Engine as _;
+    let bytes = base64::engine::general_purpose::URL_SAFE_NO_PAD
+        .decode(text.trim().trim_end_matches('='))
+        .ok()?;
+    tilo_user_identity::canonical::from_canonical_bytes(&bytes).ok()
+}
+
+/// `cert`, encoded as a sign-in page posts it.
+#[must_use]
+pub fn encode_cert(cert: &tilo_user_identity::DeviceCert) -> Option<String> {
+    use base64::Engine as _;
+    let bytes = tilo_user_identity::canonical::canonical_bytes(cert).ok()?;
+    Some(base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(bytes))
 }
 
 /// `proof`, encoded as a sign-in page posts it; `None` if it has no
