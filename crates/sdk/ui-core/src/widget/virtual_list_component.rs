@@ -1253,7 +1253,8 @@ fn row_menu(list: &dyn Widget, at: Option<Point>, select: &Event) -> Vec<MenuEnt
     if entries.is_empty() {
         return Vec::new();
     }
-    let opens_here = rows
+    let opens_here = list
+        .model()
         .index_of(&key)
         .is_some_and(|index| list.opens_here(index));
     if let (Some(id), false) = (shown, opens_here) {
@@ -1832,6 +1833,24 @@ mod tests {
         );
         let fired = queue.take();
         assert_eq!(fired.len(), 1, "the menu chooses the row: {fired:?}");
+        assert_eq!(fired[0].event, "select");
+
+        // A window too narrow to hold the item under its row opens it in front of the list, so
+        // the menu over the row chooses it, as a press on it would.
+        let select = Event::View(Intent::new(&queue, "list", "select"));
+        let props = VirtualListProps {
+            select,
+            narrow: true,
+            ..column_of(rows_offering(4, true))
+        };
+        let mut front = DescribedList::from_props("list", props);
+        right_press(&mut front, 1, 400.0);
+        let fired = queue.take();
+        assert_eq!(
+            fired.len(),
+            1,
+            "the menu chooses a row whose item opens in front: {fired:?}"
+        );
         assert_eq!(fired[0].event, "select");
     }
 
