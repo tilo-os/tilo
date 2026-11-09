@@ -1043,10 +1043,12 @@ try {
     // The tree publishes a window where it is drawn; a window it does not
     // name yet has no place for the fingers, and a point guessed at the
     // desk's middle would be another window's — so the tree is asked again.
+    // A window's bar publishes its close control and its title; either is
+    // the window's own place in the tree.
     let titleRow = null;
     for (let turn = 0; turn < 80; turn++) {
       await a.tab.evaluate('globalThis.tiloMount?.requestSemantics?.()').catch(() => {});
-      titleRow = JSON.parse(await find(a.tab, `Close ${name}`));
+      titleRow = JSON.parse(await find(a.tab, `Close ${name}`)) ?? JSON.parse(await find(a.tab, name));
       if (titleRow?.bounds) break;
       await sleep(250);
     }
