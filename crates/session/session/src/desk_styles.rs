@@ -33,11 +33,10 @@ pub fn fingerprint(catalog: &package_store::Catalog) -> String {
                 .map_or(0, |since| since.as_nanos());
             format!("{}:{modified}", meta.len())
         }
-        // A store with no registry file yet holds no packages: no fingerprint, so the next frame
-        // reads it again rather than caching an empty list.
-        // ignored-failure: a store with no registry yet is a person who has installed nothing
+        // A store with no registry file yet holds no packages: the empty fingerprint makes the
+        // next frame read it again rather than cache an empty list.
         Err(error) => {
-            tracing::debug!(%error, "the app store's registry does not read; its styles wait");
+            tracing::warn!(%error, "the app store's registry does not read; its styles wait");
             String::new()
         }
     }

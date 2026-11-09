@@ -1357,8 +1357,7 @@ impl Session {
         session_doors.keep_actions(std::sync::Arc::clone(&session_actions));
         // The agents the person admits at its door, as the desk and the bar show them.
         let seats = agent_door::Seats::new();
-        let styles = Rc::new(std::cell::RefCell::new(desk_resource::Styles::default()));
-        let desk = || desk_resource::Desk {
+        let desk = desk_resource::desk_from(desk_resource::Shared {
             seats: std::sync::Arc::clone(&seats),
             handle: handle.clone(),
             person: options.person.clone(),
@@ -1369,8 +1368,7 @@ impl Session {
             notices: notices.clone(),
             tray: tray.clone(),
             engine: engine.clone(),
-            styles: Rc::clone(&styles),
-        };
+        });
         let desk_service = desk();
         let shell = if options.shell {
             Some(

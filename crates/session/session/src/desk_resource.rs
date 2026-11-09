@@ -352,6 +352,41 @@ pub(crate) struct Desk {
     pub(crate) styles: std::rc::Rc<std::cell::RefCell<Styles>>,
 }
 
+/// The pieces a session's desk is made of, once: the same seats, surfaces and records reach the
+/// desk's reading and every part of the shell.
+pub(crate) struct Shared {
+    pub(crate) seats: std::sync::Arc<crate::agent_door::Seats>,
+    pub(crate) handle: DesktopHandle,
+    pub(crate) person: String,
+    pub(crate) signals: Rc<NoticeSignals>,
+    pub(crate) activities: Rc<crate::chrome::Activities>,
+    pub(crate) surfaces: Surfaces,
+    pub(crate) sync: Option<Rc<crate::sync::Client>>,
+    pub(crate) notices: tilo_desktop_surface::DesktopNotifications,
+    pub(crate) tray: Option<std::sync::Arc<tilo_tray_host::Tray>>,
+    pub(crate) engine: Option<std::sync::Arc<crate::engine::Engine>>,
+}
+
+/// A factory making the session's desk, its styles read from the person's store as they move
+/// (shell.md §6): called once for the desk's own service and once for the shell, each a view of
+/// the same seats, surfaces and records.
+pub(crate) fn desk_from(shared: Shared) -> impl Fn() -> Desk {
+    let styles = Rc::new(std::cell::RefCell::new(Styles::default()));
+    move || Desk {
+        seats: std::sync::Arc::clone(&shared.seats),
+        handle: shared.handle.clone(),
+        person: shared.person.clone(),
+        signals: Rc::clone(&shared.signals),
+        activities: Rc::clone(&shared.activities),
+        surfaces: shared.surfaces.clone(),
+        sync: shared.sync.clone(),
+        notices: shared.notices.clone(),
+        tray: shared.tray.clone(),
+        engine: shared.engine.clone(),
+        styles: Rc::clone(&styles),
+    }
+}
+
 /// What a window with no title is called.
 fn untitled() -> String {
     tilo_desktop_surface::i18n::t("window-switcher-untitled")
