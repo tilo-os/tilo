@@ -16,15 +16,7 @@ pub(crate) struct Client(String);
 /// number of the person's runs ("Claude Code #3"); a grant carries the
 /// client's own name.
 pub(crate) fn of(name: &str) -> Client {
-    let stem = name
-        .rsplit_once(' ')
-        .filter(|(_, number)| {
-            number.strip_prefix('#').is_some_and(|digits| {
-                !digits.is_empty() && digits.bytes().all(|b| b.is_ascii_digit())
-            })
-        })
-        .map_or(name, |(stem, _)| stem);
-    Client(stem.trim().to_owned())
+    Client(ui::presence::agent_client(name).to_owned())
 }
 
 impl Client {
@@ -33,18 +25,11 @@ impl Client {
         &self.0
     }
 
-    /// The hue its faces wear, so a run reads as its client's at a glance:
-    /// warm for Claude Code, cool for Codex, and none for a client this
-    /// build does not know, which keeps the plain agent square.
+    /// The hue its faces wear, the same everywhere the agent shows (its face in the workspace's
+    /// presence too): `None` for a client this build does not know, which keeps the plain agent
+    /// square.
     pub(crate) fn hue(&self) -> Option<PresenceHue> {
-        let name = self.0.to_ascii_lowercase();
-        if name.contains("claude") {
-            Some(PresenceHue::Orange)
-        } else if name.contains("codex") {
-            Some(PresenceHue::Sky)
-        } else {
-            None
-        }
+        PresenceHue::of_agent_client(&self.0)
     }
 }
 

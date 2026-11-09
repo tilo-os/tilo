@@ -81,3 +81,8 @@ console-grant-revoke = Revoke
 
 console-usage-empty = No Linux machine time yet
 console-usage-empty-message = An agent that needs Linux runs it on a machine of its own, and that time is counted.
+
+console-agent-runs = Runs
+console-agent-access = Access
+console-agent-no-runs = No runs yet
+console-agent-last-worked = Last worked { $when }

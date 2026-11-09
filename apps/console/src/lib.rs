@@ -31,6 +31,7 @@ pub const APP_ID: &str = "so.tilo.console";
 /// The window and launcher title.
 pub const APP_TITLE: &str = "Console";
 
+mod agent_card;
 mod agents;
 mod client;
 mod connect;
@@ -120,6 +121,11 @@ pub(crate) struct Nav {
     pub(crate) action: LocalState<Option<usize>>,
     /// The command of that run whose every line of output is shown, by its place in the run.
     pub(crate) full_output: LocalState<Option<usize>>,
+    /// The agent whose card Agents shows when no run is chosen, by its client's name.
+    pub(crate) agent: LocalState<Option<String>>,
+    /// What was asked of that agent from outside its card, carried out once its card has read
+    /// what it needs.
+    pub(crate) command: LocalState<Option<effects::AgentCommand>>,
 }
 
 impl Nav {
@@ -147,6 +153,25 @@ impl Nav {
         self.place.set(Some(Place::Agents.key().to_owned()));
         self.pane.set(ui::widget::NavPane::Content);
         self.open_run(id);
+    }
+
+    /// Show the card of the agent `client`, and carry out `command` there.
+    pub(crate) fn show_agent(&self, client: &str, command: Option<effects::AgentCommand>) {
+        self.place.set(Some(Place::Agents.key().to_owned()));
+        self.pane.set(ui::widget::NavPane::Content);
+        self.close_run();
+        self.command.set(command);
+        self.agent.set(Some(client.to_owned()));
+    }
+
+    /// Go back one step: from a run to the card it was opened from or every run, from a card to
+    /// every run.
+    pub(crate) fn back(&self) {
+        if self.run.get().is_some() {
+            self.close_run();
+        } else {
+            self.agent.set(None);
+        }
     }
 
     /// Show every run again.
@@ -339,6 +364,8 @@ impl ResourceApp for App {
             run: cx.local(None),
             action: cx.local(None),
             full_output: cx.local(None),
+            agent: cx.local(None),
+            command: cx.local(None),
         };
         #[cfg(feature = "samples")]
         {
@@ -353,12 +380,18 @@ impl ResourceApp for App {
         // Opening the run a link names shows its page here, in this window.
         let opened = nav.clone();
         cx.effects(move |effect: ConsoleEffect, _cx| {
-            match effect {
-                ConsoleEffect::ViewRun { run } => opened.show_run(&run),
+            match effect.agent() {
+                Some((client, command)) => opened.show_agent(client, command),
+                None => {
+                    if let ConsoleEffect::ViewRun { run } = &effect {
+                        opened.show_run(run);
+                    }
+                }
             }
             Ok(ui::framework::Effected::done())
         });
         let (listed, named) = (reads.clone(), reads.clone());
+        let door_read = reads.door.clone();
         // The window is built once for each record the person narrows with:
         // which runs show is the record's, and a place's switch keeps the
         // part it built, so the record keys the build itself.
@@ -368,7 +401,11 @@ impl ResourceApp for App {
             let (place, run) = (nav.place.clone(), nav.run.clone());
             cx.switch(&place, move |cx, _| {
                 let (nav, reads) = (nav.clone(), reads.clone());
-                cx.switch(&run, move |cx, _| window(cx, &nav, &reads))
+                let (nav, reads, agent) = (nav.clone(), reads.clone(), nav.agent.clone());
+                cx.switch(&run, move |cx, _| {
+                    let (nav, reads) = (nav.clone(), reads.clone());
+                    cx.switch(&agent, move |cx, _| window(cx, &nav, &reads))
+                })
             })
         });
         cx.publishing(
@@ -377,8 +414,31 @@ impl ResourceApp for App {
                 // and so is any run whose address is asked for before the
                 // history's read lands: a link opens straight into a fresh
                 // window, which shows the run once its read answers.
-                .live_rows(move || agents::live_runs(&listed.runs()))
-                .live_row(move |resource| agents::live_run_at(&named.runs(), resource)),
+                // Each agent the runs or the door name is published too, as
+                // `console.agent:<client>`: its card and its commands, which
+                // the agent's face in the workspace's presence asks for.
+                .live_rows(move || {
+                    let runs = listed.runs();
+                    let door = door_read.answer().with(|read| match read {
+                        Arrival::Ready(door) => door.clone(),
+                        Arrival::Pending { .. } | Arrival::Failed(_) => door::Door::default(),
+                    });
+                    let mut rows = agents::live_runs(&runs);
+                    let names = runs
+                        .iter()
+                        .map(|run| run.agent.name.as_str())
+                        .chain(door.grants.iter().map(|grant| grant.agent.as_str()));
+                    rows.extend(
+                        agent_card::clients(names)
+                            .iter()
+                            .map(|client| agent_card::live_agent(client)),
+                    );
+                    rows
+                })
+                .live_row(move |resource| {
+                    agents::live_run_at(&named.runs(), resource)
+                        .or_else(|| agent_card::agent_of(resource).map(agent_card::live_agent))
+                }),
             content,
         )
     }
@@ -414,8 +474,17 @@ fn window(cx: &ViewCx<Console>, nav: &Nav, reads: &Reads) -> Element {
         .with_pane_state(&nav.pane)
         .sidebar(Box::new(sidebar))
         .sidebar_header(tr("console-title"), Vec::new())
-        .on_back(move || open.run.get().is_some(), move || close.close_run());
+        .on_back(
+            move || open.run.get().is_some() || open.agent.get().is_some(),
+            move || close.back(),
+        );
     Box::new(match place {
+        Place::Agents if nav.run.get().is_none() && nav.agent.get().is_some() => {
+            let client = nav.agent.get().unwrap_or_default();
+            shell
+                .content(agent_card::view(cx, nav, reads, &client))
+                .content_header(client, Vec::new())
+        }
         Place::Agents => {
             let (content, actions) = agents::view(cx, nav, reads);
             shell

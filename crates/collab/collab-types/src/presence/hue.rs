@@ -197,6 +197,38 @@ pub fn user_color(user_id: &str) -> (u8, u8, u8) {
     identity_rgb(PresenceHue::of_identity(user_id))
 }
 
+/// The MCP client an agent is, by the name it goes by: a run is named for its client and a number
+/// of the person's runs ("Claude Code #3"), a grant or a live face for the client itself. A name
+/// that only ends in a number ("Cursor 2") keeps it: only a run's `#<digits>` names a number.
+#[must_use]
+pub fn agent_client(name: &str) -> &str {
+    name.rsplit_once(' ')
+        .filter(|(_, number)| {
+            number.strip_prefix('#').is_some_and(|digits| {
+                !digits.is_empty() && digits.bytes().all(|b| b.is_ascii_digit())
+            })
+        })
+        .map_or(name, |(stem, _)| stem)
+        .trim()
+}
+
+impl PresenceHue {
+    /// The hue every face of the agent `name` names wears ([`agent_client`]), so one client reads
+    /// as itself at a glance wherever it shows: warm for Claude Code, cool for Codex. `None` for a
+    /// client this build does not know, whose face keeps the identity's own hue.
+    #[must_use]
+    pub fn of_agent_client(name: &str) -> Option<Self> {
+        let client = agent_client(name).to_ascii_lowercase();
+        if client.contains("claude") {
+            Some(Self::Orange)
+        } else if client.contains("codex") {
+            Some(Self::Sky)
+        } else {
+            None
+        }
+    }
+}
+
 /// A presence hue as the identity colour it travels as.
 pub fn identity_rgb(hue: PresenceHue) -> (u8, u8, u8) {
     PEER_PALETTE.get(hue.slot()).copied().unwrap_or_default()
@@ -280,4 +312,26 @@ pub fn assign_peer_colors(
         );
     }
     out
+}
+
+#[cfg(test)]
+mod agent_client_tests {
+    use super::{PresenceHue, agent_client};
+
+    #[test]
+    fn a_run_is_its_clients_and_a_client_has_its_hue() {
+        assert_eq!(agent_client("Claude Code #3"), "Claude Code");
+        assert_eq!(agent_client("Codex #12"), "Codex");
+        assert_eq!(agent_client("Cursor 2"), "Cursor 2");
+        assert_eq!(agent_client("Cursor #2 beta"), "Cursor #2 beta");
+        assert_eq!(
+            PresenceHue::of_agent_client("Claude Code #1"),
+            Some(PresenceHue::Orange)
+        );
+        assert_eq!(
+            PresenceHue::of_agent_client("codex"),
+            Some(PresenceHue::Sky)
+        );
+        assert_eq!(PresenceHue::of_agent_client("Cursor"), None);
+    }
 }

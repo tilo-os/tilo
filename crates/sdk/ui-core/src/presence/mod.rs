@@ -88,7 +88,9 @@ const TYPING_DERIVE_MAX_RUN: usize = 512;
 /// real edit would license markers for every caret that moves afterward.
 const EDIT_PULSE_WINDOW: crate::time::Duration = crate::time::Duration::from_millis(1500);
 
-pub use collab_types::presence::{PEER_PALETTE, assign_peer_colors, identity_rgb, user_color};
+pub use collab_types::presence::{
+    PEER_PALETTE, agent_client, assign_peer_colors, identity_rgb, user_color,
+};
 
 /// A presence colour as the surfaces paint it: the `(r, g, b)` a person's
 /// colour travels as ([`user_color`], a colour they chose), in the colour a

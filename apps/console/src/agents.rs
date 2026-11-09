@@ -94,15 +94,15 @@ pub(crate) fn live_run_at(runs: &[wire::AgentRun], resource: &str) -> Option<Liv
 
 /// The runs, beside the door that says which agents are connected.
 #[derive(Clone, Default)]
-struct Seen {
-    runs: wire::Runs,
-    door: door::Door,
+pub(crate) struct Seen {
+    pub(crate) runs: wire::Runs,
+    pub(crate) door: door::Door,
 }
 
 impl Seen {
     /// The door's open run `run` is, with the grant it came in by: History
     /// names a run as the door does ("Claude Code #2").
-    fn open(&self, run: &wire::AgentRun) -> Option<door::RunRef> {
+    pub(crate) fn open(&self, run: &wire::AgentRun) -> Option<door::RunRef> {
         self.door
             .run(&run.agent.name)
             .map(|(grant, open)| door::RunRef {
@@ -113,7 +113,7 @@ impl Seen {
 
     /// Whether `run` is working now: its session through the door is open
     /// and it is that session's newest run.
-    fn working(&self, run: &wire::AgentRun) -> bool {
+    pub(crate) fn working(&self, run: &wire::AgentRun) -> bool {
         self.open(run).is_some()
             && self
                 .runs
@@ -125,7 +125,7 @@ impl Seen {
     }
 
     /// The workspace `run` worked in, as the door lists it.
-    fn workspace(&self, run: &wire::AgentRun) -> Option<&door::Workspace> {
+    pub(crate) fn workspace(&self, run: &wire::AgentRun) -> Option<&door::Workspace> {
         let name = run.workspace.as_deref()?;
         self.door
             .workspaces
@@ -163,7 +163,7 @@ pub(crate) fn view(cx: &ViewCx<Console>, nav: &Nav, reads: &Reads) -> (Element, 
 
 /// The door as far as it answered: nothing connected until it does, and
 /// nothing where no door is served.
-fn ready<E>(door: &Arrival<door::Door, E>) -> door::Door {
+pub(crate) fn ready<E>(door: &Arrival<door::Door, E>) -> door::Door {
     match door {
         Arrival::Ready(door) => door.clone(),
         Arrival::Pending { .. } | Arrival::Failed(_) => door::Door::default(),
@@ -173,7 +173,7 @@ fn ready<E>(door: &Arrival<door::Door, E>) -> door::Door {
 /// A run's page whose run the history has not listed: still being read, or
 /// not here at all (a workspace this person is not in, a run long gone).
 /// The header keeps the way back to every run.
-fn unknown(seen: &Seen) -> Element {
+pub(crate) fn unknown(seen: &Seen) -> Element {
     let state = if seen.runs.pending {
         EmptyState::new(tr("console-run-pending")).with_icon(Icon::Clock)
     } else {
@@ -230,7 +230,7 @@ fn list(cx: &ViewCx<Console>, nav: &Nav, seen: &Seen) -> Element {
     page(parts)
 }
 
-fn run_row(nav: &Nav, seen: &Seen, run: &wire::AgentRun, selected: bool) -> Element {
+pub(crate) fn run_row(nav: &Nav, seen: &Seen, run: &wire::AgentRun, selected: bool) -> Element {
     let working = seen.working(run);
     let mut row = faced(
         ListRow::new(format!("console-run-{}", run.id), run.instruction.clone()),
@@ -259,7 +259,7 @@ fn run_row(nav: &Nav, seen: &Seen, run: &wire::AgentRun, selected: bool) -> Elem
 
 /// What a working run is doing now, as its row says it: "Running `cargo test`…", "Editing
 /// src/email.rs".
-fn now_line(now: &wire::Now) -> String {
+pub(crate) fn now_line(now: &wire::Now) -> String {
     match now {
         wire::Now::Running { command, .. } => trf(
             "console-now-running",
@@ -391,7 +391,12 @@ fn filters(cx: &ViewCx<Console>, seen: &Seen, filter: &Console) -> Element {
 
 /// The chosen run: what it was asked, what can be done with it, and its
 /// actions.
-fn inspect(cx: &ViewCx<Console>, nav: &Nav, seen: &Seen, run: &wire::AgentRun) -> Element {
+pub(crate) fn inspect(
+    cx: &ViewCx<Console>,
+    nav: &Nav,
+    seen: &Seen,
+    run: &wire::AgentRun,
+) -> Element {
     let doors = Doors::of(cx);
     let mut facts = vec![Fact::with_icon(Icon::Bot, who(&run.agent))];
     facts.extend(
@@ -443,49 +448,35 @@ fn inspect(cx: &ViewCx<Console>, nav: &Nav, seen: &Seen, run: &wire::AgentRun) -
 }
 
 /// Stop, Take over and Undo, as the run allows them.
-fn commands(doors: &Doors, seen: &Seen, run: &wire::AgentRun) -> Element {
+pub(crate) fn commands(doors: &Doors, seen: &Seen, run: &wire::AgentRun) -> Element {
     let mut row = Row::new().with_rhythm(Rhythm::Related);
-    let open = seen.open(run).filter(|_| seen.working(run));
-    if let Some(open) = open.clone() {
-        let doors = doors.clone();
+    if seen.open(run).is_some() && seen.working(run) {
+        let (doors, seen, run) = (doors.clone(), seen.clone(), run.clone());
         row = row.push(Box::new(
             Button::new("console-run-stop", "console-run-stop")
                 .with_icon(Icon::Square)
                 .role(ButtonRole::Destructive)
-                .on_view(move || doors.door(door::STOP, &open)),
-        ));
-    }
-    // Taking over stops the agent and opens where it was working in the full
-    // desktop: the record of its last action, or else its workspace.
-    let last = run
-        .actions
-        .last()
-        .map(|action| action.view.target().clone());
-    let workspace = seen.workspace(run).map(|workspace| workspace.open.clone());
-    if last.is_some() || workspace.is_some() {
-        let doors = doors.clone();
-        row = row.push(Box::new(
-            Button::new("console-run-take-over", "console-run-take-over")
-                .with_icon(Icon::Hand)
                 .on_view(move || {
-                    if let Some(open) = &open {
-                        doors.door(door::STOP, open);
-                    }
-                    match (&last, &workspace) {
-                        (Some(target), _) => doors.history(wire::OPEN, target),
-                        (None, Some(href)) => doors.open_in_tilo(href),
-                        (None, None) => {}
-                    }
+                    stop(&doors, &seen, &run);
                 }),
         ));
     }
-    let range = run.range.clone();
-    let undo = doors.clone();
+    if take_over_target(seen, run).is_some() {
+        let (doors, seen, run) = (doors.clone(), seen.clone(), run.clone());
+        row = row.push(Box::new(
+            Button::new("console-run-take-over", "console-run-take-over")
+                .with_icon(Icon::Hand)
+                .on_view(move || take_over(&doors, &seen, &run)),
+        ));
+    }
+    let (undo, undone) = (doors.clone(), run.clone());
     row = row.push(Box::new(
         Button::new("console-run-undo", "console-run-undo")
             .with_icon(Icon::Undo2)
             .with_enabled(run.undo_blocked.is_none())
-            .on_view(move || undo.history(wire::UNDO_RUN, &range)),
+            .on_view(move || {
+                undo_run(&undo, &undone);
+            }),
     ));
     // The run's link is the framework's: it names the run's own resource and
     // opens this page.
@@ -497,6 +488,48 @@ fn commands(doors: &Doors, seen: &Seen, run: &wire::AgentRun) -> Element {
             .on_view(move || link.share_link(&resource)),
     ));
     Box::new(row)
+}
+
+/// Where taking `run` over opens: the record of its last action, else its
+/// workspace in the full desktop.
+fn take_over_target(seen: &Seen, run: &wire::AgentRun) -> Option<Result<wire::Target, String>> {
+    run.actions
+        .last()
+        .map(|action| Ok(action.view.target().clone()))
+        .or_else(|| {
+            seen.workspace(run)
+                .map(|workspace| Err(workspace.open.clone()))
+        })
+}
+
+/// End `run` now, keeping its grant, when it is working.
+pub(crate) fn stop(doors: &Doors, seen: &Seen, run: &wire::AgentRun) -> bool {
+    match seen.open(run).filter(|_| seen.working(run)) {
+        Some(open) => {
+            doors.door(door::STOP, &open);
+            true
+        }
+        None => false,
+    }
+}
+
+/// Take `run` over: stop the agent and open where it was working.
+pub(crate) fn take_over(doors: &Doors, seen: &Seen, run: &wire::AgentRun) {
+    stop(doors, seen, run);
+    match take_over_target(seen, run) {
+        Some(Ok(target)) => doors.history(wire::OPEN, &target),
+        Some(Err(href)) => doors.open_in_tilo(&href),
+        None => {}
+    }
+}
+
+/// Undo all of `run`, when the history lets it.
+pub(crate) fn undo_run(doors: &Doors, run: &wire::AgentRun) -> bool {
+    if run.undo_blocked.is_some() {
+        return false;
+    }
+    doors.history(wire::UNDO_RUN, &run.range);
+    true
 }
 
 const fn kind_icon(view: &wire::ActionView) -> Icon {

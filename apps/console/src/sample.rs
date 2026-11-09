@@ -17,6 +17,7 @@ pub(crate) const SCENARIOS: &[&str] = &[
     "workspaces",
     "connect",
     "usage",
+    "agent-card",
 ];
 
 const MINUTE_MS: i64 = 60_000;
@@ -411,6 +412,8 @@ pub(crate) fn stage(scenario: Option<&str>, nav: &Nav) {
         Some("workspaces") => nav.show(Place::Workspaces),
         Some("connect") => nav.show(Place::Connect),
         Some("usage") => nav.show(Place::Usage),
+        // The card of an agent at work, as its face in the workspace opens it.
+        Some("agent-card") => nav.show_agent("Claude Code", None),
         _ => nav.show(Place::Agents),
     }
 }
