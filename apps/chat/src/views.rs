@@ -98,6 +98,59 @@ pub struct Message {
     /// Whether it is pinned to its channel.
     #[serde(default)]
     pub pinned: bool,
+    /// An agent's work on this message, when it is an agent's reply: what it is doing, or how
+    /// it ended, drawn under the words it wrote. `None` on every ordinary message.
+    #[serde(default)]
+    pub work: Option<Work>,
+    /// Retrying this reply asks the agent again: it failed, and it is the reply the agent
+    /// would write now (no newer retry has replaced it).
+    #[serde(default)]
+    pub retry: bool,
+}
+
+/// What an agent recorded of its work on a reply, as the page shows it.
+#[derive(Clone, Debug, Default, PartialEq, serde::Deserialize, serde::Serialize)]
+pub struct Work {
+    /// Where the work is: `taken`, `waiting`, `doing`, `done`, `refused`, or a
+    /// `provider_*` end.
+    #[serde(default)]
+    pub state: String,
+    /// What is under way, in the agent's words (`doing`), or why it ended.
+    #[serde(default)]
+    pub detail: String,
+}
+
+impl Work {
+    /// The reply is still being written: the agent took the turn and has not ended it.
+    #[must_use]
+    pub fn writing(&self) -> bool {
+        matches!(self.state.as_str(), "taken" | "waiting" | "doing")
+    }
+
+    /// The turn ended without an answer the person can read: the model or transport failed, the
+    /// person stopped it, the answer was cut off, or the agent refused.
+    #[must_use]
+    pub fn failed(&self) -> bool {
+        matches!(
+            self.state.as_str(),
+            "refused"
+                | "provider_failed"
+                | "provider_truncated"
+                | "provider_cancelled"
+                | "provider_refused"
+        )
+    }
+
+    /// What happened, in one line, when the work failed.
+    #[must_use]
+    pub fn happened(&self) -> &'static str {
+        match self.state.as_str() {
+            "provider_cancelled" => "Stopped",
+            "provider_truncated" => "The answer was interrupted",
+            "refused" | "provider_refused" => "Could not do this",
+            _ => "Could not finish",
+        }
+    }
 }
 
 /// The message a reply answers, as the quote over it says it.
@@ -236,6 +289,8 @@ impl Channel {
                     .collect(),
                 attachments: row.attachments.iter().map(Attachment::of).collect(),
                 pinned: row.pinned,
+                work: row.work.as_ref().map(work_of),
+                retry: retryable(rows, row),
             })
             .collect();
         Self {
@@ -274,6 +329,77 @@ impl Channel {
             agent: found.is_some_and(|person| person.agent),
         });
     }
+}
+
+/// An agent's record of its work on a reply, as the page shows it: where the work is, and what
+/// the agent said of it — what it is doing, or why it ended.
+///
+/// The words are the reply's own text while it streams and, once the turn ends, what the run
+/// said became of it; the work's own detail is the provider's account of an end that failed, so
+/// the page can say what happened without making the person open Chat's window.
+fn work_of(work: &crate::model::AgentWork) -> Work {
+    // A streamed end is the end: the record keeps the provider's own finish beside the state the
+    // run wrote, and both say the same thing where both exist.
+    let state = work
+        .stream
+        .as_ref()
+        .and_then(|stream| stream.finish)
+        .map_or_else(
+            || match &work.state {
+                crate::model::AgentWorkState::Taken => "taken",
+                crate::model::AgentWorkState::Waiting { .. } => "waiting",
+                crate::model::AgentWorkState::Doing { .. } => "doing",
+                crate::model::AgentWorkState::Done { .. } => "done",
+                crate::model::AgentWorkState::Refused => "refused",
+                crate::model::AgentWorkState::ProviderFinished { outcome } => {
+                    provider_state(*outcome)
+                }
+            },
+            provider_state,
+        )
+        .to_owned();
+    let detail = work
+        .stream
+        .as_ref()
+        .map_or_else(String::new, |stream| stream.detail.clone());
+    Work { state, detail }
+}
+
+/// The state a provider's finish is, spelled as [record-work](crate::messages) spells it.
+fn provider_state(finish: crate::agent_stream::AgentFinish) -> &'static str {
+    use crate::agent_stream::AgentFinish;
+    match finish {
+        AgentFinish::Complete => "provider_complete",
+        AgentFinish::Truncated => "provider_truncated",
+        AgentFinish::Refused => "provider_refused",
+        AgentFinish::Cancelled => "provider_cancelled",
+        AgentFinish::Failed => "provider_failed",
+    }
+}
+
+/// Whether `row` is the reply a Retry asks the agent again: it is an agent's reply whose work
+/// failed, and no newer reply of that agent to the same message has replaced it.
+///
+/// A retry is a new reply on the same summons (chat's `record::reply_id` derives it from the
+/// summons and the agent and the attempt), so the newest reply carrying work for one summons is
+/// the attempt that stands; the ones it replaced are history and offer nothing.
+fn retryable(rows: &[crate::model::Message], row: &crate::model::Message) -> bool {
+    let Some(work) = row.work.as_ref() else {
+        return false;
+    };
+    let Some(summons) = row.parent.as_deref() else {
+        return false;
+    };
+    if !work_of(work).failed() {
+        return false;
+    }
+    !rows.iter().any(|other| {
+        other.id != row.id
+            && other.parent.as_deref() == Some(summons)
+            && other.author == row.author
+            && other.work.is_some()
+            && other.ts >= row.ts
+    })
 }
 
 /// The start of `text` a quote under a reply shows: its first line, cut short.
@@ -432,7 +558,7 @@ fn transcript(c: &Channel, cx: &ViewCx) -> Node {
     let grouped = grouped_messages(c, &clock);
     let mut rows: Vec<Node> = Vec::new();
     let mut run: Vec<Node> = Vec::new();
-    let mut flush = |run: &mut Vec<Node>, rows: &mut Vec<Node>| {
+    let flush = |run: &mut Vec<Node>, rows: &mut Vec<Node>| {
         if !run.is_empty() {
             rows.push(ui::stack(
                 &cx.key(format!("run-{}", rows.len())),
@@ -599,6 +725,13 @@ fn message_row(c: &Channel, message: &Message, continues: bool, cx: &ViewCx) -> 
 /// reactions on it — one column under the byline.
 fn message_said(c: &Channel, message: &Message, cx: &ViewCx) -> Node {
     let mut body: Vec<Node> = Vec::new();
+    if let Some(work) = &message.work
+        && work.writing()
+    {
+        // A reply still being written says so, quietly, in place: the words stream into the
+        // very message they are, so the row grows and the transcript stays where it is.
+        body.push(writing_row(message, work, cx));
+    }
     if let Some(quote) = &message.reply_to {
         body.push(reply_quote(
             c,
@@ -644,7 +777,70 @@ fn message_said(c: &Channel, message: &Message, cx: &ViewCx) -> Node {
             &cx.key(format!("reactions-{}", message.id)),
         ));
     }
+    if let Some(work) = &message.work
+        && work.failed()
+    {
+        // A turn that ended without an answer the person can read says what happened where it
+        // happened, with a Retry that asks the agent again on the same message.
+        body.push(failed_row(message, work, cx));
+    }
     ui::stack(&cx.key(format!("said-{}", message.id)), Gap::Tight, body)
+}
+
+/// The quiet line under a reply still being written (`ui.Spinner` beside a caption), naming what
+/// is under way in the agent's words when it said any.
+///
+/// It stands over the words rather than replacing them: the streamed text is the reply's own,
+/// so nobody's answer jumps — the line grows in place, at the page's measure, and leaves when
+/// the turn ends.
+fn writing_row(message: &Message, work: &Work, cx: &ViewCx) -> Node {
+    let label = if work.detail.trim().is_empty() {
+        "Writing…".to_owned()
+    } else {
+        work.detail.trim().to_owned()
+    };
+    let spinner: Node = ui::SpinnerBuilder::new(&cx.key(format!("writing-spinner-{}", message.id)))
+        .label(label.clone())
+        .beside(ui::TextRole::Caption)
+        .into();
+    let say: Node = ui::TextBuilder::new(&cx.key(format!("writing-{}", message.id)), &label)
+        .role(ui::TextRole::Caption)
+        .secondary(true)
+        .into();
+    ui::row(
+        &cx.key(format!("writing-row-{}", message.id)),
+        Gap::Tight,
+        vec![spinner, say],
+    )
+}
+
+/// The row a failed turn leaves in the conversation: what happened, why when the run said why,
+/// and a Retry that asks the agent again on the same message.
+///
+/// It is a banner (`ui.Banner`, kind `error`), so it reads and is announced as the failure it is,
+/// and its Retry is the conversation's own `retry` action — the same verb the REPL calls — with
+/// the reply it retries. The row stays where it happened: the turn's place in the transcript is
+/// the evidence that the person was not ignored.
+fn failed_row(message: &Message, work: &Work, cx: &ViewCx) -> Node {
+    let mut banner =
+        ui::BannerBuilder::new(&cx.key(format!("failed-{}", message.id)), work.happened())
+            .kind(ui::BannerKind::Error)
+            .icon("circle-alert");
+    let reason = work.detail.trim();
+    if !reason.is_empty() {
+        banner = banner.message(reason);
+    }
+    if message.retry {
+        banner = banner.action("Retry");
+    }
+    let banner: Node = banner.into();
+    let banner = if message.retry {
+        let fired = cx.action_with(&banner, "act", "retry", vec![Arg::text(message.id.clone())]);
+        node::on(banner, "act", fired)
+    } else {
+        banner
+    };
+    banner
 }
 
 /// What a message offers while the pointer is over it or it holds focus, over its trailing
@@ -1329,6 +1525,232 @@ mod tests {
             runs[1].children.len(),
             1,
             "the second is the other person's"
+        );
+    }
+
+    /// A page holding one agent reply being written: the person's message it answers, and the
+    /// reply with the words streamed so far and the work's `state`.
+    fn writing_channel(state: &str, partial: &str) -> Channel {
+        let mut channel = demo_channel();
+        channel.people.push(Person {
+            id: "agent:tide".to_owned(),
+            name: "Tide".to_owned(),
+            agent: true,
+        });
+        channel.messages.push(Message {
+            id: "m_asked".to_owned(),
+            author: crate::model::ME.to_owned(),
+            ts: 1_782_470_300,
+            text: "Add the revenue curve".to_owned(),
+            ..Message::default()
+        });
+        channel.messages.push(Message {
+            id: "m_reply".to_owned(),
+            author: "agent:tide".to_owned(),
+            ts: 1_782_470_400,
+            text: partial.to_owned(),
+            reply_to: Some(Quote {
+                id: "m_asked".to_owned(),
+                author: crate::model::ME.to_owned(),
+                excerpt: "Add the revenue curve".to_owned(),
+            }),
+            work: Some(Work {
+                state: state.to_owned(),
+                detail: String::new(),
+            }),
+            ..Message::default()
+        });
+        channel
+    }
+
+    #[test]
+    fn a_reply_being_written_says_so_beside_the_words_it_has_so_far() {
+        // A turn the agent has taken and not ended draws a quiet "Writing…" row, in place, and
+        // the words streamed so far are the message's own text: nothing jumps when more arrive.
+        for state in ["taken", "doing"] {
+            let channel = writing_channel(state, "On it: the curve is");
+            let cx = view_cx(&channel);
+            let tree = page(&channel, &cx);
+            passes(&tree);
+            let shown = texts(&tree);
+            assert!(
+                shown.iter().any(|text| text == "Writing…"),
+                "a reply being written says so ({state}): {shown:?}"
+            );
+            assert!(
+                shown
+                    .iter()
+                    .any(|text| text.trim() == "On it: the curve is"),
+                "the words streamed so far stand in the message ({state}): {shown:?}"
+            );
+            // The spinner is one line of the caption it sits beside, never a standalone orb.
+            let spinners = keyed(&tree, "ui.Spinner", "@writing-spinner-");
+            assert_eq!(spinners.len(), 1, "one writing row ({state})");
+            assert_eq!(
+                spinners[0].props.get("beside"),
+                Some(&Value::Enum("caption".to_owned())),
+                "the spinner is sized to the line it sits beside"
+            );
+            assert!(
+                !has_kind(&tree, "ui.Banner"),
+                "a reply that is still being written is no failure ({state})"
+            );
+        }
+    }
+
+    #[test]
+    fn a_failed_turn_says_what_happened_and_offers_a_retry() {
+        // A turn that ended without an answer the person can read leaves a row saying what
+        // happened, and a Retry that asks the agent again on the very same message.
+        for (state, happened) in [
+            ("provider_failed", "Could not finish"),
+            ("provider_cancelled", "Stopped"),
+            ("refused", "Could not do this"),
+        ] {
+            let mut channel = writing_channel(state, "Half an answer");
+            if let Some(reply) = channel.messages.last_mut() {
+                reply.retry = true;
+                reply.work = Some(Work {
+                    state: state.to_owned(),
+                    detail: "The provider connection closed".to_owned(),
+                });
+            }
+            let cx = view_cx(&channel);
+            let tree = page(&channel, &cx);
+            passes(&tree);
+            let rows = keyed(&tree, "ui.Banner", "@failed-");
+            assert_eq!(rows.len(), 1, "one row says what happened ({state})");
+            let props = &rows[0].props;
+            assert_eq!(
+                props.get("title"),
+                Some(&Value::Text(happened.to_owned())),
+                "the row says what happened ({state})"
+            );
+            assert_eq!(
+                props.get("kind"),
+                Some(&Value::Enum("error".to_owned())),
+                "it is an error, announced as one ({state})"
+            );
+            assert_eq!(
+                props.get("message"),
+                Some(&Value::Text("The provider connection closed".to_owned())),
+                "the run's own reason is under it ({state})"
+            );
+            assert_eq!(
+                props.get("action"),
+                Some(&Value::Text("Retry".to_owned())),
+                "the row offers a Retry ({state})"
+            );
+            assert_eq!(
+                cx.effect(&rows[0].key, "act"),
+                Some(tilo_view::Effect::Action {
+                    action: "retry".to_owned(),
+                    args: vec![Arg::text("m_reply")],
+                }),
+                "Retry is the conversation's own verb, with the reply it retries ({state})"
+            );
+            assert!(
+                !has_kind(&tree, "ui.Spinner"),
+                "a turn that ended is not still being written ({state})"
+            );
+        }
+    }
+
+    #[test]
+    fn a_failed_turn_a_newer_attempt_replaced_offers_no_retry() {
+        // Retry asks the agent again on the same message; a later attempt that answers it stands
+        // in the failed one's place, so the old row is history and offers no Retry.
+        let mut channel = writing_channel("provider_failed", "");
+        channel.messages.push(Message {
+            id: "m_reply_2".to_owned(),
+            author: "agent:tide".to_owned(),
+            ts: 1_782_470_500,
+            text: "The curve is drawn".to_owned(),
+            reply_to: Some(Quote {
+                id: "m_asked".to_owned(),
+                author: crate::model::ME.to_owned(),
+                excerpt: "Add the revenue curve".to_owned(),
+            }),
+            work: Some(Work {
+                state: "provider_complete".to_owned(),
+                detail: String::new(),
+            }),
+            ..Message::default()
+        });
+        let cx = view_cx(&channel);
+        let tree = page(&channel, &cx);
+        passes(&tree);
+        let rows: Vec<&Node> = keyed(&tree, "ui.Banner", "@failed-");
+        assert_eq!(rows.len(), 1, "the failed attempt still says what happened");
+        assert!(
+            rows[0].props.get("action").is_none(),
+            "the replaced attempt offers no Retry: a newer answer stands in its place"
+        );
+    }
+
+    #[test]
+    fn a_failed_reply_is_the_one_a_retry_asks_again() {
+        // The newest failed attempt on a summons is the reply the agent would write now: the
+        // page reads the record's own work — a provider end from an earlier turn beside a state
+        // the run wrote — into the reply a Retry re-asks.
+        let workspace = crate::demo::Workspace::demo().expect("the demo workspace");
+        let mut rows = workspace.message_rows("c_crit");
+        let summons = rows[0].id.clone();
+        rows.push(crate::model::Message {
+            id: "m_reply".to_owned(),
+            channel: "c_crit".to_owned(),
+            author: "agent:tide".to_owned(),
+            ts: 1_782_470_400,
+            text: String::new(),
+            body: Vec::new(),
+            edited: false,
+            history: Vec::new(),
+            parent: Some(summons),
+            work: Some(crate::model::AgentWork {
+                stream: Some(crate::agent_stream::AgentStream {
+                    run: "7:0".to_owned(),
+                    sequence: 3,
+                    reasoning: String::new(),
+                    progress: String::new(),
+                    finish: Some(crate::agent_stream::AgentFinish::Failed),
+                    detail: "The model connection closed".to_owned(),
+                }),
+                ..crate::model::AgentWork::new(
+                    crate::model::AgentWorkState::ProviderFinished {
+                        outcome: crate::agent_stream::AgentFinish::Failed,
+                    },
+                    1_782_470_400,
+                )
+            }),
+            reactions: Vec::new(),
+            mentions: Vec::new(),
+            attachments: Vec::new(),
+            pinned: false,
+            appearance: None,
+            share: None,
+        });
+        let chat = workspace.read();
+        let channel = Channel::read(&chat, &rows, "c_crit", crate::model::ME);
+        let reply = channel.messages.last().expect("the reply");
+        assert_eq!(
+            reply.work,
+            Some(Work {
+                state: "provider_failed".to_owned(),
+                detail: "The model connection closed".to_owned(),
+            }),
+            "the page projects the record's failed end and its reason"
+        );
+        assert!(
+            reply.retry,
+            "the newest failed reply is the one a Retry asks again"
+        );
+        let cx = view_cx(&channel);
+        let tree = page(&channel, &cx);
+        passes(&tree);
+        assert_eq!(
+            keyed(&tree, "ui.Banner", "@failed-").len(),
+            1,
+            "the page draws the row where the failure happened"
         );
     }
 }
