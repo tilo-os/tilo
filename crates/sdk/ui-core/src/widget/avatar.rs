@@ -875,6 +875,11 @@ impl Avatar {
 
     fn face(&self) -> AvatarFace<'_> {
         let mut face = AvatarFace::new(&self.name, &self.identity).image(self.image.as_ref());
+        // A glyph draws on the neutral square unless a colour is given: the colour comes after
+        // it, so an agent's mark wears its client's hue.
+        if let Some(glyph) = self.glyph {
+            face = face.glyph(glyph);
+        }
         if let Some(colour) = self.presence {
             face = face.presence(colour);
         }
@@ -883,9 +888,6 @@ impl Avatar {
         }
         if self.neutral {
             face = face.neutral();
-        }
-        if let Some(glyph) = self.glyph {
-            face = face.glyph(glyph);
         }
         if let Some(status) = self.status {
             face = face.status(status);
