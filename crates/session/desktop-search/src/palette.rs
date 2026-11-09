@@ -170,7 +170,7 @@ impl Sources {
         let host = self
             .host
             .iter()
-            .map(|source| source.poll())
+            .map(super::model::Source::poll)
             .fold(false, |any, one| any | one);
         self.content.poll() || window || host
     }

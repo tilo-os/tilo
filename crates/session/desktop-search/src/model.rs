@@ -2041,7 +2041,7 @@ mod held_tests {
     struct Kept;
 
     impl Source for Kept {
-        fn id(&self) -> &str {
+        fn id(&self) -> &'static str {
             "kept"
         }
         fn query(&self, _: &str) -> Vec<Hit> {
