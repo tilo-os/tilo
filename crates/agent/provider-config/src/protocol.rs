@@ -491,31 +491,20 @@ pub enum Recovery {
 }
 
 impl Recovery {
+    /// What may happen next, as an agent's own instruction. It names no
+    /// session, setting or vocabulary a person would not know: a person
+    /// reads the page's own sentence for the failure, never this.
     pub fn guidance(self) -> &'static str {
         match self {
-            Self::AddProvider => {
-                "Open Model Providers to add a provider with its API key and choose its model."
-            }
-            Self::RefreshSettings => {
-                "Refresh provider settings and review the current values before saving again."
-            }
-            Self::SignIn => "Check the provider credential in Settings, then try again.",
-            Self::AddCredits => "Add provider credits or select another funded provider.",
-            Self::WaitAndRetry => {
-                "Wait for the provider rate limit to reset, then retry inference."
-            }
-            Self::ReduceContext => {
-                "Shorten the conversation or select a model with a larger context window."
-            }
-            Self::RetryInference => {
-                "Retry inference from saved history; do not replay completed actions."
-            }
-            Self::ContinueText => {
-                "Continue the partial answer as text, or retry inference; no partial actions were run."
-            }
-            Self::ChangeRequest => {
-                "Review the request or select another model before trying again."
-            }
+            Self::AddProvider => "a provider with a model must be set up",
+            Self::RefreshSettings => "the provider settings must be read again",
+            Self::SignIn => "the provider credential must be checked",
+            Self::AddCredits => "the provider needs credit",
+            Self::WaitAndRetry => "the provider's rate limit has not reset yet",
+            Self::ReduceContext => "the conversation has more context than the model takes",
+            Self::RetryInference => "the turn starts again from committed history",
+            Self::ContinueText => "the partial answer may be continued as text",
+            Self::ChangeRequest => "the request or the model must change",
         }
     }
 }

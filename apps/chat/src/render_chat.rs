@@ -296,12 +296,6 @@ impl ChatApp {
             if !stream.detail.is_empty() {
                 lines.push(stream.detail.clone());
             }
-            if stream
-                .finish
-                .is_some_and(|finish| finish != crate::agent_stream::AgentFinish::Complete)
-            {
-                lines.push(crate::i18n::t("chat-agent-recovery"));
-            }
             if self.expanded_reasoning.contains(&m.id) && !stream.reasoning.is_empty() {
                 lines.push(crate::i18n::t("chat-agent-provider-reasoning"));
                 lines.push(stream.reasoning.clone());
