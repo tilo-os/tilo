@@ -104,6 +104,9 @@ pub struct WidgetHost {
     /// Set by the tree while keys should come to it rather than to the
     /// focused window (an open menu or field).
     keyboard: Option<Rc<dyn Fn() -> bool>>,
+    /// What the role does when the pointer is pressed elsewhere: what it has
+    /// open closes.
+    dismissed: Option<Rc<dyn Fn()>>,
     /// The modifiers the tree last heard of.
     modifiers: ModifiersState,
     /// The tree covers the outputs' bounding box, following them.
@@ -184,6 +187,7 @@ impl WidgetHost {
             scene: vello::Scene::new(),
             below,
             keyboard: None,
+            dismissed: None,
             pictures: None,
             backdrops: Vec::new(),
             provided: Vec::new(),
@@ -265,6 +269,14 @@ impl WidgetHost {
     #[must_use]
     pub fn with_keyboard(mut self, wants: Rc<dyn Fn() -> bool>) -> Self {
         self.keyboard = Some(wants);
+        self
+    }
+
+    /// Do `dismissed` when the pointer is pressed somewhere other than this
+    /// surface: what the role behind the tree has open closes.
+    #[must_use]
+    pub fn with_dismissed(mut self, dismissed: Rc<dyn Fn()>) -> Self {
+        self.dismissed = Some(dismissed);
         self
     }
 
@@ -715,6 +727,12 @@ impl SurfaceHost for WidgetHost {
 
     fn pointer_button(&mut self, button: u32, pressed: bool) {
         self.input(&mouse_input(button, pressed));
+    }
+
+    fn pressed_elsewhere(&mut self, _x: f64, _y: f64) {
+        if let Some(dismissed) = &self.dismissed {
+            dismissed();
+        }
     }
 
     fn pointer_axis(&mut self, horizontal: f64, vertical: f64) {

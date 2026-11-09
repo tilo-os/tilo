@@ -17,7 +17,7 @@ pub use tilo_session_core::surface::Placement;
 #[cfg(target_os = "linux")]
 mod linux;
 #[cfg(target_os = "linux")]
-pub use linux::Hosted;
+pub use linux::{Held, Hosted};
 
 /// What a role places over the windows: the host's layers.
 pub trait Surfaces {

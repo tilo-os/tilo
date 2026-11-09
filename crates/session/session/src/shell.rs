@@ -16,7 +16,7 @@ use tilo_surface_host::{Doors, SessionLink, ShellPart, ShellWork};
 
 use crate::desk_resource::Desk;
 use crate::displays;
-use crate::panels::Held;
+use crate::platform::surfaces::Held;
 
 /// The shell package and the packages it uses, compiled, the shell last: what the shell's
 /// instance runs. The installed `so.tilo.shell` when the person's app store holds one, the

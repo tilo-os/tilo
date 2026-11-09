@@ -51,7 +51,7 @@ use crate::Options;
 use crate::capture_io::{CaptureIo, NO_WORKER, Note, Sound, WriteFailed, Written};
 use crate::capture_send::Sends;
 use crate::nearby_transfer::NearbyTransfer;
-use crate::panels::Held;
+use crate::platform::surfaces::Held;
 use crate::sheets::Sheet;
 
 /// One frame every this long: the replay buffer's rate, so a recording and a clip of what just

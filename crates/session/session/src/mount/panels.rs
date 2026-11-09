@@ -11,7 +11,8 @@ use crate::controls::ControlsReading;
 use tilo_sheets::shortcut_guide::State as GuideState;
 
 use crate::keys::{ControllerKeys, DeskKeys, Invocations, PressedChords, Presses, SessionKeys};
-use crate::panels::{ActivityLayer, Held, Readout, ReadoutPlace, ReadoutPlaces, Reserved};
+use crate::panels::{ActivityLayer, Readout, ReadoutPlace, ReadoutPlaces, Reserved};
+use crate::platform::surfaces::Held;
 use crate::setup::Setup;
 use crate::{BeforeDesk, SessionCommand};
 use tilo_surface_host::Doors;

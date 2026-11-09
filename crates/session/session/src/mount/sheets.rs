@@ -24,7 +24,7 @@ use tilo_sheets::workspace_settings::WorkspaceSettingsSeat;
 use tilo_surface_host::Doors;
 
 use crate::Options;
-use crate::panels::Held;
+use crate::platform::surfaces::Held;
 use crate::sheets::Sheet;
 
 /// The sheets the session lends its seats to.

@@ -18,7 +18,7 @@ use tilo_desktop::overlays::{Overlays, Slot, Target};
 use tilo_desktop_surface::DesktopHandle;
 use tilo_surface_host::slot_view::{Asked, SlotView, Spec};
 
-use crate::panels::Held;
+use crate::platform::surfaces::Held;
 
 /// The tilolang views the session runs for the shell's slots.
 pub(crate) struct SlotViews {

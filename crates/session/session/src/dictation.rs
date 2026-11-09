@@ -30,7 +30,7 @@ use tilo_sheets::dictation::{Answer, DictationSeat, Failure, Prompt, RecoveryRea
 
 use crate::Options;
 use crate::mount::clipboard::Clipboard;
-use crate::panels::Held;
+use crate::platform::surfaces::Held;
 use crate::sheets::Sheet;
 
 /// How much of what is being heard the card shows: the last words, so the person sees the

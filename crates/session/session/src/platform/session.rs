@@ -51,8 +51,8 @@ use crate::mount::panels::mount_activities;
 use crate::mount::panels::{KeyContext, mount_controls, mount_setup};
 use crate::mount::services::{mount_services, start_action_plane};
 use crate::notifications::mount_banners;
-use crate::panels::Held;
 use crate::plane::Plane;
+use crate::platform::surfaces::Held;
 use crate::search::SessionSearch;
 use tilo_app_launch::Doors as WindowDoors;
 

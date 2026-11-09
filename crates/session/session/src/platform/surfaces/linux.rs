@@ -4,9 +4,7 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
-use tilo_compositor::{
-    BackdropImage, Compositor, HostKey, HostLayer, HostTextInput, HostedOutput, SurfaceHost,
-};
+use tilo_compositor::{Compositor, HostKey, HostLayer, KeyClaim, SurfaceHost};
 use tilo_session_core::door::{Doors, Published};
 use tilo_surface_host::WidgetHost;
 use ui::widget::Widget;
@@ -44,12 +42,10 @@ impl Surfaces for Hosted<'_> {
         host.set_theme(self.theme.clone());
         let host = Rc::new(RefCell::new(
             host.covering_outputs()
-                .with_keyboard(Rc::clone(&heard.wants_keyboard)),
+                .with_keyboard(Rc::clone(&heard.wants_keyboard))
+                .with_dismissed(Rc::clone(&heard.pressed_elsewhere)),
         ));
-        self.compositor.add_host(Box::new(Above {
-            host: Rc::clone(&host),
-            dismissed: Rc::clone(&heard.pressed_elsewhere),
-        }));
+        self.compositor.add_host(Box::new(Held(Rc::clone(&host))));
         host
     }
 
@@ -92,87 +88,120 @@ impl Layer for RefCell<WidgetHost> {
     }
 }
 
-/// A placed layer as the compositor drives it.
-struct Above {
-    host: Rc<RefCell<WidgetHost>>,
-    /// What the role does when the pointer is pressed elsewhere.
-    dismissed: Rc<dyn Fn()>,
-}
+/// A hosted surface the session keeps a hold of after handing it to the compositor: the chrome,
+/// which the session reads back.
+pub struct Held<T>(pub(crate) Rc<std::cell::RefCell<T>>);
 
-impl SurfaceHost for Above {
+impl<T: SurfaceHost> SurfaceHost for Held<T> {
     fn layers(&self) -> Vec<HostLayer> {
-        SurfaceHost::layers(&*self.host.borrow())
-    }
-
-    fn withholds_captures(&self) -> bool {
-        SurfaceHost::withholds_captures(&*self.host.borrow())
+        self.0.borrow().layers()
     }
 
     fn below_windows(&self) -> bool {
-        SurfaceHost::below_windows(&*self.host.borrow())
+        self.0.borrow().below_windows()
     }
 
-    fn window_pictures(&self) -> Vec<tilo_compositor::WindowPicture> {
-        SurfaceHost::window_pictures(&*self.host.borrow())
+    fn above_lock(&self) -> bool {
+        self.0.borrow().above_lock()
     }
 
-    fn backdrops(&self) -> Vec<tilo_compositor::BackdropRequest> {
-        SurfaceHost::backdrops(&*self.host.borrow())
+    fn drawn_over_lock(&self) -> bool {
+        self.0.borrow().drawn_over_lock()
     }
 
-    fn set_backdrops(&mut self, images: Vec<Option<BackdropImage>>) {
-        SurfaceHost::set_backdrops(&mut *self.host.borrow_mut(), images);
+    fn withholds_captures(&self) -> bool {
+        self.0.borrow().withholds_captures()
     }
 
     fn accepts_pointer(&self, x: f64, y: f64) -> bool {
-        SurfaceHost::accepts_pointer(&*self.host.borrow(), x, y)
+        self.0.borrow().accepts_pointer(x, y)
     }
 
     fn pointer_motion(&mut self, x: f64, y: f64) {
-        SurfaceHost::pointer_motion(&mut *self.host.borrow_mut(), x, y);
+        self.0.borrow_mut().pointer_motion(x, y);
     }
 
     fn pointer_leave(&mut self) {
-        SurfaceHost::pointer_leave(&mut *self.host.borrow_mut());
+        self.0.borrow_mut().pointer_leave();
     }
 
     fn pointer_button(&mut self, button: u32, pressed: bool) {
-        SurfaceHost::pointer_button(&mut *self.host.borrow_mut(), button, pressed);
+        self.0.borrow_mut().pointer_button(button, pressed);
     }
 
     fn pointer_axis(&mut self, horizontal: f64, vertical: f64) {
-        SurfaceHost::pointer_axis(&mut *self.host.borrow_mut(), horizontal, vertical);
+        self.0.borrow_mut().pointer_axis(horizontal, vertical);
     }
 
-    fn pressed_elsewhere(&mut self, _x: f64, _y: f64) {
-        (self.dismissed)();
+    fn pressed_elsewhere(&mut self, x: f64, y: f64) {
+        self.0.borrow_mut().pressed_elsewhere(x, y);
+    }
+
+    fn claim_key(&mut self, key: &HostKey, locked: bool, inhibited: bool) -> KeyClaim {
+        self.0.borrow_mut().claim_key(key, locked, inhibited)
     }
 
     fn wants_keyboard(&self) -> bool {
-        SurfaceHost::wants_keyboard(&*self.host.borrow())
+        SurfaceHost::wants_keyboard(&*self.0.borrow())
     }
 
     fn key(&mut self, key: &HostKey) {
-        SurfaceHost::key(&mut *self.host.borrow_mut(), key);
-    }
-
-    fn text_input(&self) -> Option<HostTextInput> {
-        SurfaceHost::text_input(&*self.host.borrow())
+        self.0.borrow_mut().key(key);
     }
 
     fn prepare_frame(&mut self) -> bool {
-        SurfaceHost::prepare_frame(&mut *self.host.borrow_mut())
+        self.0.borrow_mut().prepare_frame()
+    }
+
+    fn advance(&mut self) -> bool {
+        self.0.borrow_mut().advance()
     }
 
     fn next_deadline(&self) -> Option<std::time::Instant> {
-        SurfaceHost::next_deadline(&*self.host.borrow())
+        self.0.borrow().next_deadline()
     }
 
     fn set_frame_interval(&mut self, interval: std::time::Duration) {
-        SurfaceHost::set_frame_interval(&mut *self.host.borrow_mut(), interval);
+        self.0.borrow_mut().set_frame_interval(interval);
     }
 
-    fn outputs_changed(&mut self, outputs: &[HostedOutput]) {
-        SurfaceHost::outputs_changed(&mut *self.host.borrow_mut(), outputs);
+    fn outputs_changed(&mut self, outputs: &[tilo_compositor::HostedOutput]) {
+        self.0.borrow_mut().outputs_changed(outputs);
+    }
+
+    fn window_pictures(&self) -> Vec<tilo_compositor::WindowPicture> {
+        self.0.borrow().window_pictures()
+    }
+
+    fn backdrops(&self) -> Vec<tilo_compositor::BackdropRequest> {
+        self.0.borrow().backdrops()
+    }
+
+    fn set_backdrops(&mut self, images: Vec<Option<tilo_compositor::BackdropImage>>) {
+        self.0.borrow_mut().set_backdrops(images);
+    }
+
+    fn cursor(&self) -> tilo_compositor::CursorIcon {
+        self.0.borrow().cursor()
+    }
+
+    fn drop_offered(&mut self, mimes: &[String], x: f64, y: f64) -> Option<String> {
+        self.0.borrow_mut().drop_offered(mimes, x, y)
+    }
+
+    fn drop_left(&mut self) {
+        self.0.borrow_mut().drop_left();
+    }
+
+    fn drop_data(&mut self, mime: &str, data: Vec<u8>) {
+        self.0.borrow_mut().drop_data(mime, data);
+    }
+
+    fn take_drag(&mut self) -> Option<tilo_compositor::HostDrag> {
+        self.0.borrow_mut().take_drag()
+    }
+
+    fn drag_ended(&mut self, dropped: bool) {
+        self.0.borrow_mut().drag_ended(dropped);
     }
 }
