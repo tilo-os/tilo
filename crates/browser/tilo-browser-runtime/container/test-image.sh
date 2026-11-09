@@ -145,6 +145,48 @@ installer=$root/srv/tilo-install/install.sh
 get / -A 'Mozilla/5.0' | grep -q '<!doctype html>' || fail "a browser at / must get the entry page"
 head_of /install.sh | grep -q '^content-type: text/x-shellscript' || fail "the installer must be served as a shell script"
 
+# The releases the installer downloads, from the store they are kept in (here a stand-in on the
+# loopback that sets a cookie and its own caching, and records what it was asked with).
+for bad in http://releases.example/tilo-cli https://releases.example https://releases.example/tilo-cli/; do
+  entry "TILO_RELEASES_ORIGIN=$bad" && fail "a releases origin that is not an https:// URL with a path must refuse to start: $bad"
+done
+store=$scratch/release-store
+rm -rf "$store" && mkdir -p "$store/root/pkg/tilo-cli/v1.2.3" "$store/root/pkg/tilo-cli/latest"
+echo versioned > "$store/root/pkg/tilo-cli/v1.2.3/SHA256SUMS"
+echo latest > "$store/root/pkg/tilo-cli/latest/SHA256SUMS"
+python3 -I - "$store/root" "$store/requests" <<'PY' &
+import http.server, sys
+root, requests = sys.argv[1], sys.argv[2]
+class Store(http.server.SimpleHTTPRequestHandler):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, directory=root, **kwargs)
+    def end_headers(self):
+        self.send_header("Set-Cookie", "store=1")
+        self.send_header("Cache-Control", "private, max-age=300")
+        super().end_headers()
+    def log_message(self, *args):
+        with open(requests, "a") as out:
+            out.write(f"{self.path} cookie={self.headers.get('Cookie')} authorization={self.headers.get('Authorization')}\n")
+http.server.ThreadingHTTPServer(("127.0.0.1", 18081), Store).serve_forever()
+PY
+store_pid=$!
+start TILO_RELEASES_ORIGIN=http://127.0.0.1:18081/pkg/tilo-cli
+[[ $(get /releases/v1.2.3/SHA256SUMS) == versioned ]] || fail "/releases/v1.2.3/ must be the store's v1.2.3"
+[[ $(get /releases/latest/SHA256SUMS -H 'Cookie: a=1' -H 'Authorization: Bearer x') == latest ]] \
+  || fail "/releases/latest/ must be the store's latest"
+headers=$(head_of /releases/v1.2.3/SHA256SUMS)
+grep -q '^cache-control: public, max-age=31536000, immutable$' <<<"$headers" || fail "a version's files are immutable: $headers"
+grep -q '^set-cookie:' <<<"$headers" && fail "the store's cookies are not the site's: $headers"
+grep -q '^cache-control: public, max-age=60$' <(head_of /releases/latest/SHA256SUMS) || fail "latest must be kept for a minute only"
+grep -q 'cookie=None authorization=None' "$store/requests" || fail "the visitor's cookie or credentials reached the store: $(cat "$store/requests")"
+grep -qv 'cookie=None authorization=None' "$store/requests" && fail "the visitor's cookie or credentials reached the store: $(cat "$store/requests")"
+for path in /releases/v9.9.9/SHA256SUMS /releases/main/SHA256SUMS /releases/v1.2.3/ /releases/latest/.hidden; do
+  headers=$(head_of "$path")
+  grep -q '^HTTP/[0-9.]* 404' <<<"$headers" || fail "$path must be not found: $headers"
+  grep -q '^cache-control: no-store' <<<"$headers" || fail "$path's answer must not be kept: $headers"
+done
+kill "$store_pid" 2>/dev/null || true
+
 # The site's directory of public workspaces: named on its own, or the home host's.
 start TILO_WEB_DIRECTORY=https://rooms.example/peer/v1/directory
 [[ $(get /entry.json) == '{"directory":"https://rooms.example/peer/v1/directory"}' ]] \

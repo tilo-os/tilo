@@ -61,6 +61,43 @@
 		file_server
 	}
 
+	# The tilo command's releases the installer downloads, as
+	# /releases/<latest|vX.Y.Z>/<file>, from where they are kept
+	# (TILO_RELEASES_ORIGIN, entrypoint.sh): only what such a path names, with
+	# no cookie or credential of the visitor's. A version's files never change,
+	# so caches keep them; latest moves with each release, so it is kept for a
+	# minute. Anything else the store answers is an error here, kept by no cache
+	# (handle_errors): a version asked for before it is published must not stay
+	# missing at the edge once it is.
+	@release path_regexp release ^/releases/(latest|v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.]+)?)/([A-Za-z0-9][A-Za-z0-9._-]*)$
+	handle @release {
+		@latest path /releases/latest/*
+		vars release_cache "public, max-age=31536000, immutable"
+		vars @latest release_cache "public, max-age=60"
+		rewrite * {$TILO_RELEASES_PATH}/{re.release.1}/{re.release.3}
+		reverse_proxy {$TILO_RELEASES_UPSTREAM} {
+			header_up Host {upstream_hostport}
+			header_up -Cookie
+			header_up -Authorization
+			# The store's own caching, naming and cookies are not the site's.
+			header_down -Cache-Control
+			header_down -Content-Disposition
+			header_down -Set-Cookie
+			header_down Content-Type application/octet-stream
+			@found status 2xx 304
+			handle_response @found {
+				header Cache-Control {vars.release_cache}
+				copy_response
+			}
+			handle_response {
+				error "not a release file" {rp.status_code}
+			}
+		}
+	}
+	handle /releases/* {
+		error 404
+	}
+
 	# Written at start from the environment (entrypoint.sh).
 	handle /entry.json {
 		root * /tmp/tilo-web
