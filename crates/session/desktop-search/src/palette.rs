@@ -29,7 +29,8 @@ mod rows;
 mod ready_rows_tests;
 
 use rows::{
-    all_results_entry, always_shown, entries_for, everywhere, kind_facets, narrowed, stands_tall,
+    all_results_entry, always_shown, entries_for, everywhere, kind_facets, narrowed, pressed_hit,
+    stands_tall, take_the_press,
 };
 
 /// The row `id` names when it is a group's "more" row: an id this palette
@@ -91,16 +92,6 @@ pub struct SearchData {
 enum ChosenRow {
     /// A hit, by its `(provider, id)`.
     Hit(String, String),
-    ShowAll(ResourceKind),
-}
-
-/// What a row the palette handed out stands for, by the entry id it was handed out under.
-#[derive(Clone)]
-enum ShownRow {
-    /// A hit, by the thing it is about: one row per thing, so an answer that re-offers the same
-    /// thing under another source still names the row the person read.
-    Thing(crate::model::Thing),
-    /// A group asked whole, by its kind.
     ShowAll(ResourceKind),
 }
 
@@ -280,7 +271,7 @@ pub struct DesktopSearch {
     /// of the last frame: `hit:{i}` is the thing `rows[i]` is about, `more:{i}` is a group asked
     /// whole. A press names the row the person saw by one of these ids, and is taken as that row
     /// even when a source's answer rebuilt the list in the same frame and renumbered it.
-    shown_rows: std::collections::HashMap<String, ShownRow>,
+    shown_rows: std::collections::HashMap<String, rows::ShownRow>,
     /// Where this search stands: the workspace, every workspace, one app's
     /// own — so a row carried out by the host can be asked again where the
     /// person was when they chose it.
@@ -752,17 +743,7 @@ impl DesktopSearch {
                 .map(|index| format!("{MORE_PREFIX}{index}")),
         });
         self.palette.set_entries(entries);
-        self.shown_rows.clear();
-        for (index, hit) in rows.iter().enumerate() {
-            self.shown_rows
-                .insert(format!("hit:{index}"), ShownRow::Thing(hit.thing()));
-        }
-        for (index, kind) in self.more_rows.iter().enumerate() {
-            self.shown_rows.insert(
-                format!("{MORE_PREFIX}{index}"),
-                ShownRow::ShowAll(kind.clone()),
-            );
-        }
+        self.shown_rows = rows::shown_rows(&rows, &self.more_rows);
         let cursor = kept.and_then(|id| {
             self.palette
                 .visible_entries()
@@ -936,7 +917,7 @@ impl DesktopSearch {
                     id: crate::model::ALL_APPS_COMMAND.into(),
                 });
                 self.palette.close();
-            } else if let Some(hit) = self.pressed_hit(&outcome.id) {
+            } else if let Some(hit) = pressed_hit(self, &outcome.id) {
                 self.choose_hit(hit, outcome.argument);
             }
         }
@@ -1056,25 +1037,7 @@ impl DesktopSearch {
     /// Take the press `id` names, as [`Self::observe`] does for the palette's own outcome: a row
     /// the frame handed out, opened as the thing it stood for then.
     pub fn take_the_press(&mut self, id: &str) {
-        if let Some(more) = more_row(id) {
-            // The group's own row: taken as the rows now list it.
-            self.expand(more);
-        } else if let Some(hit) = self.pressed_hit(id) {
-            self.choose_hit(hit, None);
-        }
-    }
-
-    /// The row the press `id` names: the thing that stood under that id when the frame handed it
-    /// out, as the rows hold it now. An answer that rebuilt the list in the same frame renumbered
-    /// the rows; the press still opens the row the person saw. A row this search no longer lists
-    /// is no press.
-    fn pressed_hit(&self, id: &str) -> Option<Hit> {
-        match self.shown_rows.get(id) {
-            Some(ShownRow::Thing(thing)) => {
-                self.rows.iter().find(|hit| hit.thing() == *thing).cloned()
-            }
-            Some(ShownRow::ShowAll(_)) | None => self.hit(id),
-        }
+        take_the_press(self, id);
     }
 
     fn hit(&self, id: &str) -> Option<Hit> {

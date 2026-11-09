@@ -299,3 +299,73 @@ fn under_title(hit: &Hit) -> (Option<String>, Vec<String>) {
     }
     (subtitle, facts)
 }
+
+/// What each row a frame handed out stands for, by the entry id it was handed out under.
+pub(super) fn shown_rows(
+    rows: &[Hit],
+    more: &[ResourceKind],
+) -> std::collections::HashMap<String, ShownRow> {
+    let mut shown = std::collections::HashMap::new();
+    for (index, hit) in rows.iter().enumerate() {
+        shown.insert(format!("hit:{index}"), ShownRow::Thing(hit.thing()));
+    }
+    for (index, kind) in more.iter().enumerate() {
+        shown.insert(
+            format!("{MORE_PREFIX}{index}"),
+            ShownRow::ShowAll(kind.clone()),
+        );
+    }
+    shown
+}
+
+/// What a row the palette handed out stands for, by the entry id it was handed out under.
+#[derive(Clone)]
+pub(super) enum ShownRow {
+    /// A hit, by the thing it is about: one row per thing, so an answer that re-offers the same
+    /// thing under another source still names the row the person read.
+    Thing(crate::model::Thing),
+    /// A group asked whole, by its kind.
+    ShowAll(ResourceKind),
+}
+
+/// Take the press `id` names, as `DesktopSearch::observe` does for the palette's own outcome: a
+/// row the frame handed out, opened as the thing it stood for then, whatever place a rebuild of
+/// the list put it at.
+pub(super) fn take_the_press(search: &mut super::DesktopSearch, id: &str) {
+    match search.shown_rows.get(id) {
+        // A group asked whole, as the frame handed it out: its group, whatever place it stands
+        // at now.
+        Some(ShownRow::ShowAll(kind)) => {
+            if let Some(more) = search.more_rows.iter().position(|row| row == kind) {
+                search.expand(more);
+            }
+        }
+        Some(ShownRow::Thing(_)) => {
+            if let Some(hit) = pressed_hit(search, id) {
+                search.choose_hit(hit, None);
+            }
+        }
+        None => {
+            if let Some(more) = super::more_row(id) {
+                search.expand(more);
+            } else if let Some(hit) = search.hit(id) {
+                search.choose_hit(hit, None);
+            }
+        }
+    }
+}
+
+/// The row the press `id` names: the thing that stood under that id when the frame handed it
+/// out, as the rows hold it now. An answer that rebuilt the list in the same frame renumbered the
+/// rows; the press still opens the row the person saw. A row this search no longer lists is no
+/// press.
+pub(super) fn pressed_hit(search: &super::DesktopSearch, id: &str) -> Option<Hit> {
+    match search.shown_rows.get(id) {
+        Some(ShownRow::Thing(thing)) => search
+            .rows
+            .iter()
+            .find(|hit| hit.thing() == *thing)
+            .cloned(),
+        Some(ShownRow::ShowAll(_)) | None => search.hit(id),
+    }
+}
