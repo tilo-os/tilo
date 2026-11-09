@@ -80,10 +80,22 @@ phase 'VM host ready'
 
 hold=${T_INPUT_HOLD:-0}
 [[ ${T_TEST_FILTER:-} != *hold* ]] || hold=3600
+# `t test e2e-branch --test boot` stops after the boxes' first boot and its checks.
+extra=()
+[[ ${T_TEST_FILTER:-} != *boot* ]] || extra+=(--boot-only)
 status=0
 as_user env GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=safe.directory GIT_CONFIG_VALUE_0='*' \
   python3 scripts/vm-e2e/branch.py --disk "$base" --commit "$commit" --tilo-vm /usr/local/bin/tilo-vm \
-  --out "$reports" --taps "$(IFS=,; echo "${taps[*]}")" --hold "$hold" || status=$?
+  --out "$reports" --taps "$(IFS=,; echo "${taps[*]}")" --hold "$hold" "${extra[@]}" || status=$?
 [[ ! -f $reports/report.md ]] || cat "$reports/report.md"
+# A failed check keeps no outputs: its evidence (each box's boot journal of its device identity,
+# the person's session where a step could not reach it) is printed here.
+if (( status != 0 )); then
+  for f in "$reports"/data/*-boot.txt "$reports"/data/*-session.txt "$reports"/data/*-session.log "$reports"/data/S03-box-person.txt "$reports"/data/*-actions.txt; do
+    [[ -f $f ]] || continue
+    echo "== evidence: ${f##*/}"
+    { grep -av 'FRAME-LIFECYCLE\|paint-stats' "$f" | tail -n 300 | cut -c1-1500; } || true
+  done
+fi
 phase 'done'
 exit "$status"
