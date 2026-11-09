@@ -2506,6 +2506,8 @@ default = false
 [[check]]
 name = "cli-rehearsal"
 run = "bash tools/ci/publish/cli-release.sh rehearse /target/publish/cli/release"
+# The installer verifies with openssl, which the image lacks; so does this, the same way.
+setup = { run = "dnf install -y --setopt=install_weak_deps=False openssl && dnf clean all" }
 needs = ["cli-release", "signing-tools"]
 requires = ["arch=x86_64"]
 on = ["stable", "dispatch", "idle"]
@@ -2514,6 +2516,7 @@ heavy = true
 [[check]]
 name = "sign-cli"
 run = "bash tools/ci/publish/cli-release.sh sign /target/publish/cli/release"
+setup = { run = "dnf install -y --setopt=install_weak_deps=False openssl && dnf clean all" }
 needs = ["cli-release", "cli-rehearsal", "signing-tools"]
 env = { COSIGN_KEY_REF = "awskms:///arn:aws:kms:us-east-1:125650147312:alias/tilo-release-signing", AWS_SIGNING_ROLE_ARN = "arn:aws:iam::125650147312:role/TiloTReleaseSigner", TILO_SIGNING_AUDIENCE = "sts.amazonaws.com", TILO_SIGN_TLOG = "1" }
 requires = ["arch=x86_64"]
@@ -2525,6 +2528,7 @@ id_token = ["sts.amazonaws.com"]
 [[check]]
 name = "publish-cli"
 run = "bash tools/ci/publish/cli-release.sh publish /target/publish/cli/release"
+setup = { run = "dnf install -y --setopt=install_weak_deps=False openssl && dnf clean all" }
 needs = ["cli-release", "sign-cli"]
 requires = ["arch=x86_64"]
 cache = false

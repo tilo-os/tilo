@@ -76,7 +76,6 @@
 		vars @latest release_cache "public, max-age=60"
 		rewrite * {$TILO_RELEASES_PATH}/{re.release.1}/{re.release.3}
 		reverse_proxy {$TILO_RELEASES_UPSTREAM} {
-			header_up Host {upstream_hostport}
 			header_up -Cookie
 			header_up -Authorization
 			# The store's own caching, naming and cookies are not the site's.

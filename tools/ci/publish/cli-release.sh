@@ -153,6 +153,7 @@ cmd_sums() {
 
 # The installer's check, word for word (dist/install/tilo.sh): DIR's signature against KEY.
 installer_verifies() {
+  command -v openssl >/dev/null || die 'no openssl, which checks a signature as the installer does'
   openssl dgst -sha256 -verify "$2" -signature "$1/SHA256SUMS.sig" "$1/SHA256SUMS" >/dev/null
 }
 
