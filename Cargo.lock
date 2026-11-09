@@ -17718,6 +17718,7 @@ dependencies = [
  "tilo-actions",
  "tilo-desktop-model",
  "tokio",
+ "workspace-hack",
 ]
 
 [[package]]
