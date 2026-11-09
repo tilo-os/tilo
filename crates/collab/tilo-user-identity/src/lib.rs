@@ -88,6 +88,7 @@ pub mod projection;
 pub mod revocation;
 pub mod root_envelope;
 pub mod root_statement;
+pub mod sign_in;
 #[cfg(unix)]
 pub mod update_lock;
 
@@ -149,6 +150,7 @@ pub use revocation::{
     REVOCATION_PREIMAGE_TAG, RevocationEntry, RevocationError, RevocationList, RevocationReason,
     revocation_signing_digest, sign_revocation_entry, verify_revocation_entry,
 };
+pub use sign_in::{SIGN_IN_TAG, SignInError, SignInProof, sign_in_digest};
 
 use serde::{Deserialize, Serialize};
 
