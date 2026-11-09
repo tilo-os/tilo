@@ -1048,6 +1048,165 @@ impl Panel {
             tracing::warn!(%error, "activity could not open for that person");
         }
     }
+
+    /// Where everyone here points, drawn by the one rule both hosts draw pointers by: over the
+    /// tile of the tab it is on, in the colour and under the name the workspace knows them by,
+    /// with what they say beside it. What each tab is called names where they are.
+    fn draw_pointers(
+        &mut self,
+        scene: &mut ui::vello::Scene,
+        transform: Affine,
+        text: &mut TextRenderer,
+        theme: &Theme,
+        presence: &ui::presence::PresenceCtx,
+        shown: &mut Shown,
+    ) {
+        let open = self.open.get();
+        let tiles: Vec<tilo_live::presence::Tile> = self
+            .handle
+            .shown_tiles()
+            .into_iter()
+            .map(|(tab, area)| {
+                tilo_live::presence::Tile::new(tab, area.x0, area.y0, area.width(), area.height())
+            })
+            .collect();
+        let mut labels: HashMap<u64, String> = HashMap::new();
+        let mut pointers = tilo_session_core::presence::Pointers::default();
+        if let Some(sync) = &self.sync
+            && let Some((workspace_id, named)) = self.handle.read(|tree| {
+                let workspace = tree.active_workspace()?;
+                let named: HashMap<u64, String> = workspace
+                    .strips
+                    .iter()
+                    .flat_map(|strip| &strip.window_groups)
+                    .flat_map(|group| &group.tabs)
+                    .map(|tab| (tab.id, tab.title.clone()))
+                    .collect();
+                Some((workspace.id().to_string(), named))
+            })
+        {
+            labels = named;
+            let members = sync.members(&workspace_id);
+            if !members.is_empty() {
+                pointers = tilo_session_core::presence::pointers(
+                    &members,
+                    &tiles,
+                    &mut self.chats.borrow_mut(),
+                    presence,
+                    ui::time::now(),
+                    Self::presence_ms(),
+                    theme.motion(),
+                );
+            }
+        }
+        if let Some(until) = pointers.motion_until {
+            self.motion_until.set(self.motion_until.get().max(until));
+        }
+        // Who is here is read once, for the rows and the card opened on one of them.
+        if open || !pointers.drawn.is_empty() {
+            let (rows, workspace) = self.read_roster();
+            shown.rows = rows;
+            if open {
+                shown.workspace = workspace;
+            }
+        }
+        if open {
+            self.draw_open(scene, transform, text, theme, presence, shown);
+        }
+        shown.pointers = pointers
+            .drawn
+            .iter()
+            .zip(&pointers.tabs)
+            .filter_map(|(cursor, tab)| {
+                labels
+                    .get(tab)
+                    .map(|title| (cursor.label.clone(), title.clone()))
+            })
+            .collect();
+        shown.cursors = pointers
+            .drawn
+            .iter()
+            .map(|cursor| (cursor.label.clone(), cursor.pos))
+            .collect();
+        if !pointers.drawn.is_empty() {
+            let area = shown.area;
+            ui::presence::draw_peer_cursors(scene, transform, area, text, theme, &pointers.drawn);
+        }
+    }
+
+    /// While this person follows someone, the banner names whose view this is and offers Stop: the
+    /// same banner the page draws, from the same widget.
+    fn draw_follow(
+        &mut self,
+        scene: &mut ui::vello::Scene,
+        transform: Affine,
+        text: &mut TextRenderer,
+        theme: &Theme,
+        shown: &Shown,
+    ) {
+        let following = self.sync.as_ref().and_then(|sync| sync.own().following);
+        let names = if following.is_some() || self.followed.borrow().is_some() {
+            self.sync.as_ref().map_or_else(HashMap::new, |sync| {
+                let here = sync.here();
+                let here = here.borrow();
+                here.person_names()
+            })
+        } else {
+            HashMap::new()
+        };
+        let row = following.as_deref().and_then(|id| {
+            names.get(id).map(|(label, (r, g, b))| {
+                RosterRow::own(
+                    id.to_owned(),
+                    label.clone(),
+                    Color::from_rgb8(*r, *g, *b),
+                    None,
+                )
+            })
+        });
+        let was = self.followed.replace(following.clone());
+        if was != following {
+            let now = ui::time::now();
+            if let Some(row) = row.clone() {
+                self.banner.started(
+                    Some(row),
+                    theme.motion(),
+                    ui::tokens::MotionSource::Pointer,
+                    now,
+                );
+            } else {
+                // They left: following them ends with them. Still here, the person's own input
+                // took their view back, and the banner says so a moment.
+                let left = was.is_some_and(|id| !names.contains_key(&id));
+                self.banner.ended(
+                    !left,
+                    theme.motion(),
+                    ui::tokens::MotionSource::Pointer,
+                    now,
+                );
+            }
+        }
+        let area = shown.area;
+        let bar = f64::from(tilo_desktop::topbar::topbar_height(theme));
+        let below_bar = Rect::new(area.x0, area.y0 + bar, area.x1, area.y1);
+        let kept = self.banner.draw(
+            scene,
+            transform,
+            text,
+            theme,
+            tilo_desktop::follow_banner::BannerFrame {
+                work_area: below_bar,
+                viewport: below_bar,
+                window_bars: &[],
+                cursor: shown.cursor,
+                motion: theme.motion(),
+            },
+            following.map(|_| row),
+        );
+        if !kept {
+            self.stop_following();
+        }
+    }
 }
 
 impl Widget for Panel {
@@ -1171,149 +1330,12 @@ impl Widget for Panel {
         // the roster's state is borrowed.
         let roster = Rc::clone(&self.shown);
         let mut shown = roster.borrow_mut();
-        let open = self.open.get();
-        if !open {
+        if !self.open.get() {
             // The card stood in the panel: closed with it, never left for the next opening to find.
             self.profile.close();
         }
-        // Where everyone here points, drawn by the one rule both hosts draw pointers by: over the
-        // tile of the tab it is on, in the colour and under the name the workspace knows them by,
-        // with what they say beside it. What each tab is called names where they are.
-        let tiles: Vec<tilo_live::presence::Tile> = self
-            .handle
-            .shown_tiles()
-            .into_iter()
-            .map(|(tab, area)| {
-                tilo_live::presence::Tile::new(tab, area.x0, area.y0, area.width(), area.height())
-            })
-            .collect();
-        let mut titles: HashMap<u64, String> = HashMap::new();
-        let mut pointers = tilo_session_core::presence::Pointers::default();
-        if let Some(sync) = &self.sync
-            && let Some((workspace_id, named)) = self.handle.read(|tree| {
-                let workspace = tree.active_workspace()?;
-                let named: HashMap<u64, String> = workspace
-                    .strips
-                    .iter()
-                    .flat_map(|strip| &strip.window_groups)
-                    .flat_map(|group| &group.tabs)
-                    .map(|tab| (tab.id, tab.title.clone()))
-                    .collect();
-                Some((workspace.id().to_string(), named))
-            })
-        {
-            titles = named;
-            let members = sync.members(&workspace_id);
-            if !members.is_empty() {
-                pointers = tilo_session_core::presence::pointers(
-                    &members,
-                    &tiles,
-                    &mut self.chats.borrow_mut(),
-                    presence,
-                    ui::time::now(),
-                    Self::presence_ms(),
-                    theme.motion(),
-                );
-            }
-        }
-        if let Some(until) = pointers.motion_until {
-            self.motion_until.set(self.motion_until.get().max(until));
-        }
-        // Who is here is read once, for the rows and the card opened on one of them.
-        if open || !pointers.drawn.is_empty() {
-            let (rows, workspace) = self.read_roster();
-            shown.rows = rows;
-            if open {
-                shown.workspace = workspace;
-            }
-        }
-        if open {
-            self.draw_open(scene, transform, text, theme, presence, &mut shown);
-        }
-        shown.pointers = pointers
-            .drawn
-            .iter()
-            .zip(&pointers.tabs)
-            .filter_map(|(cursor, tab)| {
-                titles
-                    .get(tab)
-                    .map(|title| (cursor.label.clone(), title.clone()))
-            })
-            .collect();
-        shown.cursors = pointers
-            .drawn
-            .iter()
-            .map(|cursor| (cursor.label.clone(), cursor.pos))
-            .collect();
-        if !pointers.drawn.is_empty() {
-            let area = shown.area;
-            ui::presence::draw_peer_cursors(scene, transform, area, text, theme, &pointers.drawn);
-        }
-        // While this person follows someone, the banner names whose view this is and offers Stop:
-        // the same banner the page draws, from the same widget.
-        let following = self.sync.as_ref().and_then(|sync| sync.own().following);
-        let names = if following.is_some() || self.followed.borrow().is_some() {
-            self.sync.as_ref().map_or_else(HashMap::new, |sync| {
-                let here = sync.here();
-                let here = here.borrow();
-                here.person_names()
-            })
-        } else {
-            HashMap::new()
-        };
-        let row = following.as_deref().and_then(|id| {
-            names.get(id).map(|(label, (r, g, b))| {
-                RosterRow::own(
-                    id.to_owned(),
-                    label.clone(),
-                    Color::from_rgb8(*r, *g, *b),
-                    None,
-                )
-            })
-        });
-        let was = self.followed.replace(following.clone());
-        if was != following {
-            let now = ui::time::now();
-            match row.clone() {
-                Some(row) => self.banner.started(
-                    Some(row),
-                    theme.motion(),
-                    ui::tokens::MotionSource::Pointer,
-                    now,
-                ),
-                // They left: following them ends with them. Still here, the person's own input
-                // took their view back, and the banner says so a moment.
-                None => {
-                    let left = was.is_some_and(|id| !names.contains_key(&id));
-                    self.banner.ended(
-                        !left,
-                        theme.motion(),
-                        ui::tokens::MotionSource::Pointer,
-                        now,
-                    );
-                }
-            }
-        }
-        let area = shown.area;
-        let bar = f64::from(tilo_desktop::topbar::topbar_height(theme));
-        let below_bar = Rect::new(area.x0, area.y0 + bar, area.x1, area.y1);
-        let kept = self.banner.draw(
-            scene,
-            transform,
-            text,
-            theme,
-            tilo_desktop::follow_banner::BannerFrame {
-                work_area: below_bar,
-                viewport: below_bar,
-                window_bars: &[],
-                cursor: shown.cursor,
-                motion: theme.motion(),
-            },
-            following.map(|_| row),
-        );
-        if !kept {
-            self.stop_following();
-        }
+        self.draw_pointers(scene, transform, text, theme, presence, &mut shown);
+        self.draw_follow(scene, transform, text, theme, &shown);
         self.drawn.set(revision);
     }
 

@@ -200,6 +200,10 @@ fn pointer(sync: &Client, from: u8, x: f32, y: f32) {
 
 /// Everyone's pointer as a desk showing `tiles` draws it: the tab each is over, and where it stands
 /// on the surface.
+#[expect(
+    clippy::cast_precision_loss,
+    reason = "milliseconds since the epoch are exact in an f64 for the life of a session"
+)]
 fn done_by(sync: &Client, tiles: &[tilo_live::presence::Tile]) -> Vec<(u64, f64, f64)> {
     let mut chats = ui::presence::CursorChats::default();
     let pointers = tilo_session_core::presence::pointers(

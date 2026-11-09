@@ -181,9 +181,8 @@ pub(crate) fn live_record(
     record: &str,
 ) -> Option<LiveRecord> {
     let app = app_of(tree, tab)?;
-    let record = RecordId::parse(record)
-        .map(|id| wire_record(&id).to_owned())
-        .unwrap_or_else(|| record.to_owned());
+    let record =
+        RecordId::parse(record).map_or_else(|| record.to_owned(), |id| wire_record(&id).to_owned());
     Some(LiveRecord {
         app: app.to_owned(),
         record,
@@ -331,7 +330,7 @@ mod tests {
             let (from, presence) = said(0xf0, greeting);
             page.heard_presence(WORKSPACE, from, &presence);
         }
-        let (from, presence) = said(0xf0, PeerPresencePayload::Shell(shell.clone()));
+        let (from, presence) = said(0xf0, PeerPresencePayload::Shell(shell));
         page.heard_presence(WORKSPACE, from, &presence);
         let records = BTreeMap::from([(NOTES, RECORD.to_owned())]);
         let people = page.people(&desk(), &records, &|_: &str| Some("Notes".to_owned()));
