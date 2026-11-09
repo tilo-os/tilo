@@ -2035,6 +2035,11 @@
           "name": "inline",
           "doc": "Sit within the content, as a list without rows, rather than fill the window.",
           "type": "bool"
+        },
+        {
+          "name": "error",
+          "doc": "Something failed: the glyph takes the danger colour, and the message reads as an error (a view that could not be shown and why, `shell.md` §6).",
+          "type": "bool"
         }
       ],
       "events": [
