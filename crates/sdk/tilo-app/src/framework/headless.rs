@@ -2412,32 +2412,32 @@ fn add_effect_verbs(
             renames.insert(named.name.clone(), known.name.clone());
         }
     }
-    let rename = |ty: &FieldType| ty.renamed(&renames);
+    let renamed_type = |ty: &FieldType| ty.renamed(&renames);
     for verb in &mut verbs {
         for param in &mut verb.params {
-            param.ty = rename(&param.ty);
+            param.ty = renamed_type(&param.ty);
         }
         if let Some(returns) = &mut verb.returns {
-            returns.ty = rename(&returns.ty);
+            returns.ty = renamed_type(&returns.ty);
         }
     }
-    let renamed: Vec<NamedType> = declared
+    let kept: Vec<NamedType> = declared
         .into_iter()
         .filter(|named| !renames.contains_key(&named.name))
         .map(|mut named| {
             for field in &mut named.fields {
-                field.ty = rename(&field.ty);
+                field.ty = renamed_type(&field.ty);
             }
             for case in &mut named.cases {
                 for field in &mut case.fields {
-                    field.ty = rename(&field.ty);
+                    field.ty = renamed_type(&field.ty);
                 }
             }
             named
         })
         .filter(|named| !surface.types.iter().any(|known| known.name == named.name))
         .collect();
-    surface.types.extend(renamed);
+    surface.types.extend(kept);
     surface.verbs.extend(verbs);
 }
 
