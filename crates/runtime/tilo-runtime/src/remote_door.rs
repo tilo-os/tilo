@@ -200,8 +200,13 @@ impl PersonsDevices for PersonalDevices {
             return Err(Refusal::NotTheDialer);
         }
         let now = SystemTime::now();
+        let revoked = self.revocations().refuses(certificate);
         self.0.read(|store| {
             holds(store.root(), certificate, now)?;
+            // A grant a revoked grant minted ends with it.
+            if revoked {
+                return Err(Refusal::Revoked);
+            }
             store
                 .admits_device(&dialer, now)
                 .map_err(|why| match why.as_str() {

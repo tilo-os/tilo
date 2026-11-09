@@ -40,7 +40,7 @@
 //! - [`DEVCERT_V5_PREIMAGE_TAG`] — `tilo-devcert-v5\0` (a person's stand-in
 //!   approver)
 //! - [`DEVCERT_V6_PREIMAGE_TAG`] — `tilo-devcert-v6\0` (certificates a
-//!   stand-in issued, binding its certificate)
+//!   stand-in or a grant issued, binding its certificate)
 //! - [`REVOCATION_PREIMAGE_TAG`] — `tilo-revocation-v1\0`
 //! - [`ENROLLMENT_PREIMAGE_TAG`] — `tilo-enrollment-v2\0`
 //! - [`APPROVAL_REQUEST_TAG`] — `tilo-device-approval-request-v1\0`
@@ -107,9 +107,9 @@ pub use cert::{
     AgentScope, DEVCERT_PREIMAGE_TAG, DEVCERT_V2_PREIMAGE_TAG, DEVCERT_V4_PREIMAGE_TAG,
     DEVCERT_V5_PREIMAGE_TAG, DEVCERT_V6_PREIMAGE_TAG, DeviceCapabilities, DeviceCert,
     DeviceCertError, MAX_AGENT_GRANT_LIFETIME_NS, STAND_IN_LIFETIME_NS, UNNAMED_PRIMARY_DEVICE,
-    UNNAMED_SHARED_DEVICE, device_cert_signing_digest, device_name, prepare_stand_in_cert,
-    sign_device_cert, verify_device_cert, verify_device_cert_at, verify_stand_in_cert,
-    verify_stand_in_cert_at,
+    UNNAMED_SHARED_DEVICE, device_cert_signing_digest, device_name, prepare_minted_grant,
+    prepare_stand_in_cert, sign_device_cert, verify_device_cert, verify_device_cert_at,
+    verify_stand_in_cert, verify_stand_in_cert_at,
 };
 pub use certification::{
     CERTIFICATION_REQUEST_TAG, CERTIFICATION_SCHEMA_VERSION, CertificationError,

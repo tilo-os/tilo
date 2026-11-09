@@ -70,7 +70,7 @@ pub const DEVCERT_V4_PREIMAGE_TAG: &[u8] = b"tilo-devcert-v4\0";
 /// so no verifier that predates stand-ins can take one for a device.
 pub const DEVCERT_V5_PREIMAGE_TAG: &[u8] = b"tilo-devcert-v5\0";
 
-/// Signing-domain tag for a certificate a stand-in issued (see
+/// Signing-domain tag for a certificate a stand-in or a grant issued (see
 /// [`DeviceCert::issuer`]). Its preimage binds the stand-in's whole
 /// certificate, signature included, so the certificate cannot be moved to
 /// another issuer; no verifier that predates it takes it, as its binary
@@ -752,9 +752,10 @@ pub struct DeviceCert {
     /// struct via `blake3(DEVCERT_PREIMAGE_TAG || postcard(view))`.
     pub signature: [u8; 64],
 
-    /// The root-signed certificate of the person's stand-in approver that
-    /// signed this certificate, or `None` for one the root signed itself
-    /// (every certificate but those a stand-in issued). See the module.
+    /// The root-signed certificate that signed this one, or `None` for one
+    /// the root signed itself: a person's stand-in approver (see the module),
+    /// or an all-workspaces agent's grant that minted a grant for one
+    /// workspace ([`prepare_minted_grant`]).
     /// Encoded only when present, so every other certificate encodes and
     /// signs exactly as before; signed under [`DEVCERT_V6_PREIMAGE_TAG`].
     pub issuer: Option<Box<DeviceCert>>,
@@ -954,8 +955,8 @@ struct DeviceCertView<'a> {
     expires_at_ns: Option<u64>,
 }
 
-/// Signing view of a certificate a stand-in issued: the view, then the
-/// stand-in's whole certificate.
+/// Signing view of a certificate an issuer signed: the view, then the
+/// issuer's whole certificate.
 #[derive(Serialize)]
 struct IssuedCertView<'a> {
     cert: DeviceCertView<'a>,
@@ -982,7 +983,7 @@ impl DeviceCert {
     }
 
     /// The key whose signature this certificate carries: its stand-in's
-    /// when a stand-in issued it, else the person's root.
+    /// or grant's when one issued it, else the person's root.
     #[must_use]
     pub fn signer_public_key(&self) -> [u8; 32] {
         self.issuer
@@ -1050,10 +1051,11 @@ pub enum DeviceCertError {
     #[error("a stand-in approver is no device")]
     StandInIsNoDevice,
 
-    /// A certificate a stand-in issued exceeds what a stand-in may issue: a
-    /// member for a browser's lifetime, of the stand-in's own person, while
-    /// the stand-in's certificate was valid, by a root-signed stand-in.
-    #[error("a certificate a stand-in issued exceeds what a stand-in may issue")]
+    /// A certificate exceeds what its issuer may issue: a stand-in issues a
+    /// member for a browser's lifetime, an all-workspaces grant issues a grant
+    /// for one workspace that ends no later than it, each of its own person,
+    /// root-signed and valid when it issued.
+    #[error("a certificate exceeds what its issuer may issue")]
     InvalidIssuer,
 
     /// Canonical-encoding failure. Effectively unreachable but
@@ -1099,9 +1101,13 @@ fn check_stand_in(cert: &DeviceCert) -> Result<(), DeviceCertError> {
     }
 }
 
-/// Whether a certificate a stand-in issued stays within what one may issue.
-/// The signatures are checked by the caller.
+/// Whether a certificate an issuer signed stays within what that issuer may
+/// issue: a stand-in's members, or a grant's one-workspace grants. The
+/// signatures are checked by the caller.
 fn check_issued(cert: &DeviceCert, issuer: &DeviceCert) -> Result<(), DeviceCertError> {
+    if issuer.capabilities.agent.is_some() {
+        return check_minted(cert, issuer);
+    }
     let browser = crate::CertificationPolicy::browser();
     let issuer_valid_then = issuer.issued_at_ns <= cert.issued_at_ns
         && issuer
@@ -1121,6 +1127,42 @@ fn check_issued(cert: &DeviceCert, issuer: &DeviceCert) -> Result<(), DeviceCert
         && cert.device_public_key != cert.user_public_key
     {
         check_stand_in(issuer)
+    } else {
+        Err(DeviceCertError::InvalidIssuer)
+    }
+}
+
+/// Whether a grant `cert` that the grant `issuer` minted stays within it.
+/// The issuer reaches all of its person's workspaces, is root-signed and was
+/// valid when it minted. `cert` is an agent's grant for one workspace and
+/// nothing else, and ends no later than the issuer. Its key is neither the
+/// issuer's nor the root's. A grant can only narrow what it was given, and
+/// the chain is never longer than one step.
+fn check_minted(cert: &DeviceCert, issuer: &DeviceCert) -> Result<(), DeviceCertError> {
+    let issuer_valid_then = issuer.issued_at_ns <= cert.issued_at_ns
+        && issuer
+            .expires_at_ns
+            .is_some_and(|expiry| cert.issued_at_ns < expiry);
+    let ends_within = matches!(
+        (cert.expires_at_ns, issuer.expires_at_ns),
+        (Some(minted), Some(parent)) if minted > cert.issued_at_ns && minted <= parent
+    );
+    let one_workspace = match cert.capabilities.agent {
+        Some(scope @ AgentScope::Workspace(_)) => {
+            cert.capabilities == DeviceCapabilities::agent_grant(scope)
+        }
+        _ => false,
+    };
+    if issuer.capabilities == DeviceCapabilities::agent_grant(AgentScope::AllWorkspaces)
+        && issuer.issuer.is_none()
+        && issuer.user_public_key == cert.user_public_key
+        && issuer_valid_then
+        && ends_within
+        && one_workspace
+        && cert.device_public_key != issuer.device_public_key
+        && cert.device_public_key != cert.user_public_key
+    {
+        check_agent_grant(issuer)
     } else {
         Err(DeviceCertError::InvalidIssuer)
     }
@@ -1159,6 +1201,31 @@ pub fn prepare_stand_in_cert(
         expires_at_ns: Some(expires_at_ns),
         signature: [0; 64],
         issuer: None,
+    }
+}
+
+/// The unsigned certificate the all-workspaces grant `issuer` signs to make
+/// `key` a grant reaching only `workspace`, from `issued_at_ns` until
+/// `expires_at_ns`, which may be no later than the issuer's own expiry.
+/// Sign it with [`sign_device_cert`] and the issuer's key.
+#[must_use]
+pub fn prepare_minted_grant(
+    issuer: &DeviceCert,
+    key: [u8; 32],
+    workspace: [u8; 16],
+    label: &str,
+    issued_at_ns: u64,
+    expires_at_ns: u64,
+) -> DeviceCert {
+    DeviceCert {
+        user_public_key: issuer.user_public_key,
+        device_public_key: key,
+        device_label: label.to_owned(),
+        capabilities: DeviceCapabilities::agent_grant(AgentScope::Workspace(workspace)),
+        issued_at_ns,
+        expires_at_ns: Some(expires_at_ns),
+        signature: [0; 64],
+        issuer: Some(Box::new(issuer.clone())),
     }
 }
 
@@ -2152,6 +2219,133 @@ mod tests {
         assert!(postcard::from_bytes::<DeviceCert>(&wire).is_err());
         let json = serde_json::to_string(&chained).unwrap();
         assert!(serde_json::from_str::<DeviceCert>(&json).is_err());
+    }
+
+    /// Root `[1; 32]`'s all-workspaces grant (key `[4; 32]`) from 1 000 ns,
+    /// lasting `lifetime`.
+    fn make_grant(lifetime: u64) -> (ed25519_dalek::SigningKey, DeviceCert) {
+        let root = ed25519_dalek::SigningKey::from_bytes(&[1; 32]);
+        let key = ed25519_dalek::SigningKey::from_bytes(&[4; 32]);
+        let mut cert = DeviceCert {
+            user_public_key: root.verifying_key().to_bytes(),
+            device_public_key: key.verifying_key().to_bytes(),
+            device_label: "Visa backend".to_owned(),
+            capabilities: DeviceCapabilities::agent_grant(AgentScope::AllWorkspaces),
+            issued_at_ns: 1_000,
+            expires_at_ns: Some(lifetime.saturating_add(1_000)),
+            signature: [0; 64],
+            issuer: None,
+        };
+        sign_device_cert(&mut cert, &root).unwrap();
+        (key, cert)
+    }
+
+    /// An all-workspaces grant mints a grant for one workspace that verifies
+    /// as one, under its issuer, and round-trips both encodings.
+    #[test]
+    fn a_grant_mints_a_narrower_grant() {
+        let (key, grant) = make_grant(DAY_NS);
+        let mut minted = prepare_minted_grant(&grant, [12; 32], [7; 16], "Jane Doe", 2_000, 3_000);
+        sign_device_cert(&mut minted, &key).unwrap();
+        verify_device_cert_at(&minted, 2_500).unwrap();
+        assert_eq!(minted.signer_public_key(), grant.device_public_key);
+        assert_eq!(
+            minted.capabilities.agent,
+            Some(AgentScope::Workspace([7; 16]))
+        );
+        let wire = postcard::to_allocvec(&minted).unwrap();
+        assert_eq!(postcard::from_bytes::<DeviceCert>(&wire).unwrap(), minted);
+        let json = serde_json::to_string(&minted).unwrap();
+        assert_eq!(serde_json::from_str::<DeviceCert>(&json).unwrap(), minted);
+        // The root's own signature does not stand in for the grant's.
+        let root = ed25519_dalek::SigningKey::from_bytes(&[1; 32]);
+        assert_eq!(
+            verify_device_cert(&forced(minted.clone(), &root)),
+            Err(DeviceCertError::BadSignature)
+        );
+    }
+
+    /// A minted grant never reaches more, lasts longer, or chains further
+    /// than its issuer, and only an all-workspaces grant mints.
+    #[test]
+    fn a_minted_grant_stays_within_its_issuer() {
+        let (key, grant) = make_grant(DAY_NS);
+        let refused = |cert: DeviceCert| {
+            assert_eq!(
+                verify_device_cert(&forced(cert.clone(), &key)),
+                Err(DeviceCertError::InvalidIssuer)
+            );
+            let mut signed = cert;
+            assert_eq!(
+                sign_device_cert(&mut signed, &key),
+                Err(DeviceCertError::InvalidIssuer)
+            );
+        };
+        let minted = || prepare_minted_grant(&grant, [12; 32], [7; 16], "Jane", 2_000, 3_000);
+        // All workspaces again: wider than a mint may be.
+        let mut wide = minted();
+        wide.capabilities = DeviceCapabilities::agent_grant(AgentScope::AllWorkspaces);
+        refused(wide);
+        // Anything besides the scope.
+        let mut member = minted();
+        member.capabilities = DeviceCapabilities::member();
+        refused(member);
+        // Past its issuer's expiry.
+        let mut longer = minted();
+        longer.expires_at_ns = Some(1_000 + DAY_NS + 1);
+        refused(longer);
+        // Before its issuer was valid.
+        let mut early = minted();
+        early.issued_at_ns = 500;
+        refused(early);
+        // The issuer's own key.
+        let mut same = minted();
+        same.device_public_key = grant.device_public_key;
+        refused(same);
+        // Another person's grant.
+        let mut other = minted();
+        other.user_public_key = [3; 32];
+        refused(other);
+        // A one-workspace grant mints nothing.
+        let mut narrow = grant.clone();
+        narrow.capabilities = DeviceCapabilities::agent_grant(AgentScope::Workspace([7; 16]));
+        let root = ed25519_dalek::SigningKey::from_bytes(&[1; 32]);
+        sign_device_cert(&mut narrow, &root).unwrap();
+        let mut from_narrow =
+            prepare_minted_grant(&narrow, [12; 32], [7; 16], "Jane", 2_000, 3_000);
+        assert_eq!(
+            sign_device_cert(&mut from_narrow, &key),
+            Err(DeviceCertError::InvalidIssuer)
+        );
+        // A minted grant mints nothing: the chain does not decode.
+        let mut first = minted();
+        sign_device_cert(&mut first, &key).unwrap();
+        let chained = prepare_minted_grant(&first, [13; 32], [7; 16], "Jane", 2_500, 2_900);
+        let encoded = postcard::to_allocvec(&chained).unwrap();
+        assert!(postcard::from_bytes::<DeviceCert>(&encoded).is_err());
+    }
+
+    /// Revoking a grant refuses every grant it minted, whenever minted.
+    #[test]
+    fn revoking_a_grant_ends_what_it_minted() {
+        let root = ed25519_dalek::SigningKey::from_bytes(&[1; 32]);
+        let (key, grant) = make_grant(DAY_NS);
+        let mut minted = prepare_minted_grant(&grant, [12; 32], [7; 16], "Jane", 2_000, 9_000);
+        sign_device_cert(&mut minted, &key).unwrap();
+        let mut entry = crate::RevocationEntry {
+            user_public_key: grant.user_public_key,
+            revoked_device_public_key: grant.device_public_key,
+            revoked_at_ns: 5_000,
+            reason: crate::RevocationReason::Retired,
+            signature: [0; 64],
+        };
+        crate::sign_revocation_entry(&mut entry, &root).unwrap();
+        let mut revocations = crate::RevocationList::new();
+        assert!(!revocations.refuses(&minted));
+        revocations.insert(entry).unwrap();
+        assert!(revocations.refuses(&grant));
+        assert!(revocations.refuses(&minted));
+        assert!(revocations.refuses_at(&minted, 2_500));
     }
 
     /// Revoking a stand-in refuses what it issues from then on and keeps
