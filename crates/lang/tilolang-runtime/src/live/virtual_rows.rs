@@ -125,6 +125,15 @@ impl Rows {
         }
     }
 
+    /// Where the row of the item `id` stands among the rows, when one of them shows it.
+    fn place(&self, id: &str) -> Option<usize> {
+        match self {
+            Self::Coll { .. } => self.listing()?.position(id).flatten(),
+            Self::List { .. } => (0..self.len())
+                .find(|index| self.list_row(*index).and_then(item_ref_id) == Some(id)),
+        }
+    }
+
     /// The rows kept for the viewer settle: the view they stood in is left.
     fn settle(&mut self) {
         match self {
@@ -282,6 +291,17 @@ impl Virtual {
         self.rows.key(&self.template, index)
     }
 
+    /// Where the row of the item `id` stands among the rows, when one of them shows it: where
+    /// the divider of the person's unseen part goes.
+    pub(super) fn place(&self, id: &str) -> Option<usize> {
+        self.rows.place(id).filter(|index| *index < self.len)
+    }
+
+    /// Where the row at `place` among the rows built stands among the list's rows.
+    pub(super) fn row(&self, place: usize) -> Option<usize> {
+        self.built.get(place).map(|(index, _)| *index)
+    }
+
     /// The items of the rows built now (the visible rows and the overscan): what the window
     /// shows of this list.
     pub(super) fn shown_items(&self, core: &Core) -> Vec<Value> {
@@ -403,8 +423,6 @@ impl Live {
         }
         self.place_built(list, &at);
         self.render_row(core, id, among)?;
-        // After the row is rendered: its render sets the fragment's children.
-        self.divide_unseen(&item, &key, &at);
         Ok(Some(key))
     }
 
@@ -892,49 +910,6 @@ impl Live {
             list.rows = now;
         }
         fits
-    }
-
-    /// A row built as it shows takes the divider with it when it is the row of the item where
-    /// the person looking has seen nothing yet (`first_unseen(c)`): the app says which item the
-    /// list was told (`unseen_from`), and the divider is the toolkit's in every conversation.
-    fn divide_unseen(&mut self, item: &Value, row: &str, at: &[usize]) {
-        let Some(unseen) = self
-            .node_at(at)
-            .and_then(|node| node.props.get(crate::render::UNSEEN_FROM))
-            .and_then(|value| match value {
-                Value::Ref(unseen) => unseen.target.item.clone(),
-                _ => None,
-            })
-        else {
-            return;
-        };
-        if item_ref_id(item) != Some(unseen.as_str()) {
-            return;
-        }
-        // The row's fragment is the one the row was just built at; the divider is its first
-        // child, at a key of its own.
-        let Some(node) = self.node_at_mut(at) else {
-            return;
-        };
-        let Some(fragment) = node.children.iter_mut().find(|child| child.key == row) else {
-            return;
-        };
-        if fragment
-            .children
-            .iter()
-            .any(|c| c.kind == crate::render::UNREAD_DIVIDER)
-        {
-            return;
-        }
-        let mut divider = UiNode::empty(
-            crate::render::UNREAD_DIVIDER,
-            &format!("{}~unread", fragment.key),
-        );
-        divider.props.insert(
-            "name".to_owned(),
-            Value::Text(crate::render::UNREAD_DIVIDER.to_owned()),
-        );
-        fragment.children.insert(0, divider);
     }
 }
 

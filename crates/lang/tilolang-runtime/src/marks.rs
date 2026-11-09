@@ -7,8 +7,8 @@
 //!
 //! - a row gets a `ui.ChangeMark` in its `change` slot: who, in which run; a row a list
 //!   folds away as done with stands with the rows above while the change is unseen, so the mark
-//!   is read where it happened. A row that is itself new, in a list that stands a divider where
-//!   its unseen part starts (`unseen_from:`), takes no mark: the divider says it is new;
+//!   is read where it happened. A row in the unseen part of a list that stands a divider where
+//!   it starts (`unseen_from:`) takes no mark: the divider says it is new;
 //! - a bound text field takes the changer's colour (`changed_by`), and says what it held before
 //!   the change (`previous`);
 //! - a window's header holds a mark with how many changes of what it shows are unseen, and by
@@ -107,9 +107,10 @@ impl Core {
                 if places_mark(node, &r.target.id_string()) {
                     return Ok(());
                 }
-                // A row that is itself new, in a list that stands a divider where its unseen
-                // part starts: the divider says so, and a mark on the row says it again.
-                if walk.says_new && unseen.kind == VersionKind::Created {
+                // A row in the unseen part of a list that stands a divider where it starts:
+                // the divider says the rows from there on are new, so a mark on one of them
+                // says it again, whether it was put there or changed since it was.
+                if walk.says_new {
                     return Ok(());
                 }
                 let mut mark = UiNode::empty(CHANGE_MARK, &format!("{}~change", node.key));

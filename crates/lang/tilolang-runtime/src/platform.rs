@@ -1162,9 +1162,10 @@ impl Core {
     /// conversation's first unread message), as a transcript shows it.
     ///
     /// Read item by item from the collection's end, a page at most: an item is unseen when a
-    /// version of it is newer than what the person has seen of `at` (its mark, or the newest
-    /// item they made, which they wrote and so read). The first one found, oldest first, is the
-    /// answer, and a channel the person is caught up with costs the page it looks through.
+    /// version of it is newer than what the person has seen of `at` (its mark), and an item they
+    /// wrote is one they saw. The first one found, oldest first, is the answer, and a channel
+    /// the person is caught up with costs the page it looks through. Writing a message reads
+    /// nothing above it: a reply counts as neither a mark nor a reading of what came before it.
     pub(crate) fn first_unseen_of(
         &self,
         person: &str,
@@ -1201,32 +1202,31 @@ impl Core {
         let mark = self.seen_mark(person, &at.id_string());
         // Where the person read to, by the log rather than by a clock: the newest item whose
         // change their mark of the channel names (a store with no channel versions names the
-        // newest item it holds), and the newest item they made, since writing one means reading
-        // up to it. Both are looked for in the tail, a page deep.
+        // newest item it holds). It is looked for in the tail, a page deep.
         let mut read_to: Option<usize> = None;
         for index in (len.saturating_sub(TAIL)..len).rev() {
             let Some(id) = items.get(index) else {
                 continue;
             };
             let versions = store.versions(&at.item(&id, item.to_owned()))?;
-            let named = mark
+            if mark
                 .as_ref()
-                .is_some_and(|mark| versions.iter().any(|v| v.change == mark.change));
-            if named || versions.iter().any(|v| v.who == person) {
-                read_to = Some(read_to.map_or(index, |at| at.max(index)));
+                .is_some_and(|mark| versions.iter().any(|v| v.change == mark.change))
+            {
+                read_to = Some(index);
+                break;
             }
         }
-        let from = read_to.map_or(0, |index| index.saturating_add(1));
         // The first item after where they read that someone changed since, oldest first: a
-        // version of theirs is one they saw, so it never makes an item unread of its own. With
-        // nothing read (no mark, nothing of theirs), the first item is where they stopped: it
-        // alone is asked, so an unread conversation costs one message rather than all of them.
-        let upto = if read_to.is_none() {
-            from.saturating_add(1)
-        } else {
-            len
+        // version of theirs is one they saw, so it never makes an item unread of its own. A mark
+        // that named nothing in the tail is older than the page shown from it, so the page is
+        // all after it.
+        let from = match read_to {
+            Some(index) => index.saturating_add(1),
+            None if mark.is_some() => len.saturating_sub(TAIL),
+            None => 0,
         };
-        for index in from.min(len)..upto {
+        for index in from.min(len)..len {
             let Some(id) = items.get(index) else {
                 break;
             };
@@ -1240,7 +1240,8 @@ impl Core {
                 continue;
             }
             let seen = self.seen_mark(person, &candidate.id_string());
-            if !crate::seen::unseen(&versions, person, seen.as_ref(), &runs).is_empty() {
+            let un = crate::seen::unseen(&versions, person, seen.as_ref(), &runs);
+            if !un.is_empty() {
                 return Ok(Some(id.to_string()));
             }
         }

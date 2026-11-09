@@ -69,9 +69,10 @@ impl UnreadDividerFace {
 /// The divider as a widget, for a list built of widgets: a band across its column with its
 /// label at the trailing end, over the first line the reader had not read.
 ///
-/// A described component, so a host that validates what an app sends builds it: the tilolang
-/// runtime places one per transcript over the row of the item the app named, and the host
-/// knows it from the toolkit's catalogue as it knows every other component.
+/// A described component, so a host that validates what an app sends builds it: a list told
+/// where the person stopped reading (`VirtualListProps::unseen_from`) stands one over the row
+/// of that item, and the host knows it from the toolkit's catalogue as it knows every other
+/// component.
 #[derive(Component, Default)]
 #[component(name = "UnreadDivider", role = "Group", label = "name")]
 pub struct UnreadDividerProps {

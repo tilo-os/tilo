@@ -50,10 +50,16 @@ window shows a resource. The host draws marks from `unseen(r)` at those points:
 | a list or table row | new / changed, with who: the agent's face, "Agent · run 3" |
 | a removed item | a struck row in its old place, "removed by Agent", with Undo |
 | a bound field | the field tinted, the previous value on hover |
-| a window | its title carries the count of unseen changes and who made them |
+| a window | its title carries how many items of what it shows are unseen, and who changed them |
 
 Apps write nothing for this. A view may place the mark itself (`ui.ChangeMark(r)`) when the
 default spot is wrong; the host then skips its own.
+
+A list told where the person stopped reading (`unseen_from: first_unseen(c)`) stands a divider
+there, and the rows under it take no mark of their own: the divider already says they are new,
+and a mark on each of them would read as something else (who read it, in a conversation). A
+change to a row above the divider keeps its mark, since the divider says nothing of it. A reply
+counts as neither: writing an item reads nothing above it, so the divider stays where it was.
 
 A mark reads the index's newest version of what it marks, never the resource's log, so a row or
 a field of any workspace costs the same to mark. A window's count reads one page of its

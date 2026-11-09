@@ -1280,10 +1280,11 @@ fn a_task_that_changed_since_you_looked_says_so_on_its_page() {
 }
 
 #[test]
-fn a_message_someone_else_sent_is_marked_with_nothing_declared() {
-    // Marks are every resource's, for every type: a channel declares nothing about them,
-    // and a message Mia or Leo sent while the person looking was away is unseen, marked on
-    // its row where the conversation shows it.
+fn a_channels_messages_the_person_has_not_seen_take_no_mark_of_their_own() {
+    // Marks are every resource's, for every type: a channel declares nothing about them. What
+    // the person has not seen of a conversation stands under the divider where its unseen part
+    // starts, and the rows there say nothing further: a face on each of Mia's and Leo's lines
+    // would read as who read them, and the divider already says they are new.
     tilo_ui_host::i18n::ensure();
     ui::clock::freeze_for_capture();
     let packages = app_packages("chat");
@@ -1305,37 +1306,67 @@ fn a_message_someone_else_sent_is_marked_with_nothing_declared() {
             1.0,
         )
         .expect("the app lays out");
-    let marks = row_marks(&channels.rows());
-    assert!(
-        marks.len() >= 3,
-        "the messages Mia and Leo sent are marked: {marks:?}"
-    );
-    let said_by = |mark: &tilo_ui_host::UiNode| match mark.props.get("by") {
-        Some(tilo_render_protocol::patch::Value::Principal(who)) => who.id.clone(),
-        other => panic!("a marked row says who sent it: {other:?}"),
-    };
-    let theirs: Vec<String> = marks.iter().map(said_by).collect();
-    assert!(
-        theirs
-            .iter()
-            .all(|who| who.starts_with("scenario:") && who != "ada"),
-        "a message someone else sent is what is marked, never the person's own: {theirs:?}"
-    );
-    let kinds: Vec<String> = marks
+    let tree = channels.composed().expect("the window composes");
+    // The transcript is told where the part the person has not read starts.
+    let mut lists = Vec::new();
+    nodes(&tree, "ui.VirtualList", &mut lists);
+    let unseen = lists
         .iter()
-        .filter_map(|mark| match mark.props.get("kind") {
-            Some(tilo_render_protocol::patch::Value::Text(kind)) => Some(kind.clone()),
-            _ => None,
-        })
-        .collect();
+        .find(|list| list.props.contains_key("unseen_from"));
+    assert!(
+        unseen.is_some(),
+        "the conversation says where its unseen part starts: {lists:?}"
+    );
+    // The toolkit draws one divider there, over the row where that part begins.
+    let dividers = rects(&channels, "UnreadDivider");
     assert_eq!(
-        kinds.len(),
-        marks.len(),
-        "a mark says what happened: {marks:?}"
+        dividers.len(),
+        1,
+        "one divider, over the row where the unseen part starts: {dividers:?}"
     );
     assert!(
-        kinds.iter().any(|kind| kind == "created"),
-        "the messages they sent are marked as sent: {kinds:?}"
+        dividers[0].x0 > 300.0 && dividers[0].y1 > 100.0,
+        "the divider stands in the conversation's column, under its header: {:?}",
+        dividers[0]
+    );
+    // It says what stands under it, in the toolkit's words for every conversation.
+    let mut words = Vec::new();
+    {
+        fn labels(node: &ui::headless::InspectionNode, out: &mut Vec<String>) {
+            if node.widget == "UnreadDivider"
+                && let Some(name) = node.semantics.as_ref().and_then(|node| node.name.clone())
+            {
+                out.push(name);
+            }
+            for child in &node.children {
+                labels(child, out);
+            }
+        }
+        labels(&channels.harness().inspection().root, &mut words);
+    }
+    assert_eq!(
+        words,
+        vec!["New messages".to_owned()],
+        "the divider says what the rows under it are"
+    );
+    // Nothing marks a message of its own: a face over each line under the divider would read as
+    // who read it, and the divider already says those rows are new. The one mark left counts
+    // what is new in the window's header.
+    let marks = rects(&channels, "ChangeMark");
+    assert_eq!(
+        marks.len(),
+        1,
+        "the window's header counts what is new, and no message says it again: {marks:?}"
+    );
+    assert!(
+        marks[0].y1 < 100.0,
+        "the one mark stands in the window's header: {:?}",
+        marks[0]
+    );
+    let said = row_marks(&channels.rows());
+    assert!(
+        said.is_empty(),
+        "the rows carry no mark of their own: {said:?}"
     );
 }
 

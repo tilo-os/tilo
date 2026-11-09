@@ -651,6 +651,11 @@ pub struct DescribedList {
     /// The items the list's events read, as its model holds them now: a list given its items
     /// again answers with the items it has, not the ones it was built with.
     reading: Rc<RefCell<DescribedRows>>,
+    /// The item where the person looking has seen nothing yet, as the rows build: the props
+    /// say it after the list is built as well as with it, and the rows it moves between build
+    /// again, so a row reads it as it builds rather than as the list was made. `None` for a
+    /// list whose rows draw no divider.
+    unseen: Option<Rc<RefCell<Option<String>>>>,
 }
 
 /// The props of a described list that decide the widget, its items aside.
@@ -1285,11 +1290,13 @@ impl Described for DescribedList {
         if page_column {
             // The divider of the unseen part stands over the row that shows the item: a row says
             // which item it shows, so the list finds it as the rows arrive.
-            let marked = unseen_from.map(|item| item.0);
-            let divider = marked.clone();
+            let unseen = Rc::new(RefCell::new(unseen_from.map(|item| item.0)));
+            let marked = unseen.borrow().clone();
+            let divider = Rc::clone(&unseen);
             let measure = at_measure.then_some(Length::Rem(MEASURE_REM));
             let mut list = VirtualList::new(rows, MESSAGE_ESTIMATE, move |rows, _, key| {
-                message_of(rows, key, divider.as_deref(), feel, measure)
+                let unread = divider.borrow().clone();
+                message_of(rows, key, unread.as_deref(), feel, measure)
             })
             .flush()
             .with_edges(TranscriptEdges::new(RUN_GAP))
@@ -1311,6 +1318,7 @@ impl Described for DescribedList {
                 body: ListBody::Menus(Box::new(area)),
                 face,
                 reading,
+                unseen: Some(unseen),
             };
         }
         // What the rows of a tree are: the list fills it as it mounts them, and reads it as it
@@ -1343,7 +1351,10 @@ impl Described for DescribedList {
         if multi_select {
             list = list.multi_select(true);
         }
-        list = list.with_id(key).with_semantic_key(Clone::clone);
+        list = list
+            .with_id(key)
+            .with_semantic_key(Clone::clone)
+            .unread_from(unseen_from.map(|item| item.0));
         if let Some(name) = name {
             list = list.with_accessible_name(name);
         }
@@ -1418,6 +1429,7 @@ impl Described for DescribedList {
             body: ListBody::Menus(Box::new(area)),
             face,
             reading,
+            unseen: None,
         }
     }
 
@@ -1452,6 +1464,9 @@ impl Described for DescribedList {
         rows.ungrouped = ungrouped_title;
         let replaced = rendered(&rows).is_none();
         let unseen_from = unseen_from.as_ref().map(|item| item.0.clone());
+        if let Some(unseen) = &self.unseen {
+            (*unseen.borrow_mut()).clone_from(&unseen_from);
+        }
         // The items given again, as the list's events read them.
         let reading = rows.reader();
         let picked = picked_rows(chosen, &reading, self.chosen_rows());
