@@ -158,9 +158,14 @@ export async function admit({scope, secrets = {}, tickets, home = null, deps, on
     onProgress({phase: 'pairing'});
     return ready(await deps.pairDevice({origin, room, ...pairing, workspace: listed}));
   }
-  /** Steps 4 to 6: the host's door, else the root this page holds. */
+  /** Steps 4 to 6: the host's door, else the root this page holds. A
+   * workspace of the host's other than its door's that this browser entered
+   * before (the person's own, say) is reconnected to as the person, and the
+   * door is the way in only when that does not get them in. */
+  const viaDoor = () => viaHost({workspace: listed, room, deps, onProgress});
   const withoutAccount = async busy => {
-    if (listed?.admission) return viaHost({workspace: listed, room, deps, onProgress});
+    const enteredHere = Boolean(deps.entered?.({origin, room}));
+    if (listed?.admission && !enteredHere) return viaDoor();
     let peer = null;
     try {
       peer = await deps.reconnect?.({origin, room, onProgress});
@@ -171,6 +176,7 @@ export async function admit({scope, secrets = {}, tickets, home = null, deps, on
       // As below: the host's reason could tell a missing workspace from a private one.
       console.warn('admission: reconnecting failed', error?.code ?? error?.name ?? 'error');
     }
+    if (!peer && listed?.admission) return viaDoor();
     if (!peer) throw busy ?? new AdmissionError('no-access', NO_ACCESS);
     return ready(peer);
   };

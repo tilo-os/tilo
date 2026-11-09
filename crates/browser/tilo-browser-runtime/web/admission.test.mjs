@@ -257,3 +257,18 @@ test('a host this browser set up or joined as its person is reconnected to, and 
   const refused = doors({reconnect: async () => { throw new Error('not a member of this room'); }});
   await assert.rejects(admit({scope: room, deps: refused.deps}), {code: 'no-access', message: NO_ACCESS});
 });
+
+test('a workspace of a host with a door that this browser entered before is reconnected to, and the door is the way in only when that fails', async () => {
+  const entered = ({origin, room: wanted}) => origin === room.host && wanted === room.room;
+  const back = doors({workspaceAt: () => commons, entered,
+    reconnect: async ({origin, room: wanted}) => ({origin, room: wanted, admission: 'reconnect'})});
+  assert.deepEqual(await admit({scope: room, deps: back.deps}),
+    {peer: {origin: room.host, room: room.room, admission: 'reconnect'}});
+  assert.ok(!back.calls.some(([name]) => name === 'enterViaHost'), 'the door is not asked');
+  const gone = doors({workspaceAt: () => commons, entered, reconnect: async () => null});
+  assert.deepEqual(await admit({scope: room, deps: gone.deps}), {peer: {admission: true, room: room.room}});
+  assert.ok(gone.calls.some(([name]) => name === 'enterViaHost'));
+  const never = doors({workspaceAt: () => commons, entered: () => false,
+    reconnect: async () => { throw new Error('not asked'); }});
+  assert.deepEqual(await admit({scope: room, deps: never.deps}), {peer: {admission: true, room: room.room}});
+});

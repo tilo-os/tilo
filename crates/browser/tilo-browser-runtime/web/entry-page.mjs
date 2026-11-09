@@ -38,6 +38,7 @@ import {followRefusal, hostUnreachable, reachedHost, refusalText, rejoinedName, 
 import {rendererUnavailable} from './webgpu-safety.mjs';
 import {createWorkspaceActions, invitedLine} from './workspace-actions.mjs';
 import {ensureOwnWorkspace} from './own-workspace.mjs';
+import {sameEntry} from './entered-workspaces.mjs';
 import {
   chooseDisplayName, chooseWorkspace, chosenDisplayName, chosenWorkspace, enteredWorkspaces, forgetGoneWorkspaces,
   heldWorkspaces, hostDeviceOf, hostToReconnect, joinGranted, joinViaHost, keepJoinedHost, keepOwnedHost,
@@ -947,6 +948,9 @@ export async function startEntryPage({mode}) {
       };
     },
     ownDesktopOpen: home => ownDesktopOpen(home),
+    // A workspace of this host the browser entered before, such as the
+    // person's own: reconnected to, not asked for at the host's door.
+    entered: ({origin, room}) => enteredWorkspaces().some(kept => sameEntry(kept, {origin, room})),
     enterViaHost: async ({workspace, room}) => {
       workspaceName = workspace.name || workspaceName;
       visitedAt = workspace;
