@@ -198,9 +198,16 @@ pub struct SearchRow {
 pub(crate) struct ShownSearch {
     pub query: String,
     pub rows: Vec<SearchRow>,
-    /// A source has still to answer for the query, or the rows are not cut to the card yet, so the
-    /// rows will change.
+    /// The rows shown are not the search's answer yet: they are not cut to
+    /// the card, or nothing is ready to show. What the desk publishes as a
+    /// search still searching — and what holds Enter from a search that has
+    /// nothing to press.
     pub searching: bool,
+    /// Rows are still expected to join the ones shown (a window's content
+    /// index being built, an app's server still looking). What the desk
+    /// looks again for, so a late row is drawn when it arrives, without
+    /// calling the ready rows "still searching".
+    pub expecting: bool,
 }
 
 const CLOSE_WINDOW: &str = "desktop.close-window";
@@ -494,6 +501,14 @@ impl DesktopHandle {
     /// change. What the desk publishes as a search still searching.
     pub fn search_searching(&self) -> bool {
         self.shared.borrow().shown_search.searching
+    }
+
+    /// Whether the open search still expects rows to join the ones shown, as
+    /// of the last update pass: a source is still out, so the desk looks
+    /// again shortly and draws the row when it arrives. It is not "still
+    /// searching": the rows shown are the search's answer.
+    pub fn search_expecting(&self) -> bool {
+        self.shared.borrow().shown_search.expecting
     }
 
     /// The field the person types into in the desktop itself, as of the last
@@ -1113,6 +1128,7 @@ impl DesktopSurface {
             query,
             rows,
             searching: open && !search.settled(),
+            expecting: open && search.expecting(),
         };
         let mut shared = self.shared.borrow_mut();
         let changed = shared.shown_search != shown || shared.typed_field != typed;

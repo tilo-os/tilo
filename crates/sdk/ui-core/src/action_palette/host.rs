@@ -675,7 +675,12 @@ impl ActionPalette {
             .set_empty_hint(nothing_matched.then(|| crate::i18n!("palette-no-results-hint")));
     }
 
-    fn is_searching(&self) -> bool {
+    /// Whether the card says it is still searching: the host set
+    /// [`Self::set_searching`] and a query is typed, or the rows it ranks
+    /// itself still wait for the index's code. What a desk publishes as a
+    /// search still searching.
+    #[must_use]
+    pub fn is_searching(&self) -> bool {
         // Rows this palette ranks itself wait for the index's code too.
         (self.searching || (!self.bypass_fuzzy && !crate::search::engine_ready()))
             && !self.query().is_empty()

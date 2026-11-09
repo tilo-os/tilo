@@ -385,6 +385,62 @@ impl ResourceApp for ShelfApp {
     }
 }
 
+/// A page's rule — every index build moves off the frame — the content of a
+/// window searched for the first time.
+///
+/// The frame that opens search over a window nobody searched has to draw
+/// the rows it already has (the apps, the actions, the places) at once. On
+/// a page the index of that window's content is built on the same one
+/// thread, so a build in that frame held the palette's first paint until
+/// tantivy finished: the 14–57 s between typing and the first row measured
+/// on the page desk, per app. With the build moved off the frame the ready
+/// rows are there in the first search, the content's row joins when the
+/// build lands, and the search says it is still expecting that row until
+/// then — never that the ready rows are still searching.
+#[test]
+fn a_fresh_windows_content_indexes_off_the_frame_so_the_ready_rows_show() {
+    use crate::framework::root::FORCE_OFF_FRAME;
+
+    let pumped = ui_core::background::Pumped::new();
+    let _background = pumped.background().enter();
+    FORCE_OFF_FRAME.with(|forced| forced.set(Some(true)));
+    let mut app = TestApp::<MailApp>::new().unwrap();
+
+    // The first search: the index of the mailbox is not built yet, so the
+    // frame that asks builds nothing and answers from the last index (none).
+    let (first, building) = app
+        .harness()
+        .with_widget_mut(|root: &mut ResourceRoot| {
+            let mut providers = RootSearch::search_providers(root);
+            let search = providers.remove(0);
+            let first = search.search_page(&SearchQuery::new("invoice"), None, 10, 10);
+            (first.results.len(), root.search.borrow_mut().building())
+        })
+        .unwrap();
+    assert_eq!(
+        first, 0,
+        "nothing is indexed yet, and none was built on the frame"
+    );
+    assert!(
+        building,
+        "the index is being built off the frame, and the search waits on it"
+    );
+    FORCE_OFF_FRAME.with(|forced| forced.set(None));
+
+    // The build lands between frames; the search that showed the ready rows
+    // takes it in and answers with the content's rows.
+    pumped.run_pending();
+    let hits = app
+        .harness()
+        .with_widget_mut(|root: &mut ResourceRoot| {
+            RootSearch::search_providers(root)[0]
+                .search("invoice")
+                .len()
+        })
+        .unwrap();
+    assert_eq!(hits, 3, "the content's rows joined once its index landed");
+}
+
 #[test]
 fn edits_while_an_index_builds_cost_one_build_after_it() {
     let pumped = ui_core::background::Pumped::new();

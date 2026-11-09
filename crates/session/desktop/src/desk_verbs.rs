@@ -110,8 +110,10 @@ pub struct OpenSearch<'a> {
     pub query: &'a str,
     /// The rows it shows, in the order the person sees them.
     pub rows: &'a [tilo_desktop_surface::SearchRow],
-    /// Whether a source has still to answer for the query, or the rows the card shows are not cut
-    /// to its room yet: the search says it is still searching, and its rows will change.
+    /// Whether the search says it is still searching: the rows the card shows are not its answer
+    /// yet — nothing is ready to show, or they are not cut to the card's room. A source still out
+    /// does not make it searching: the rows that are ready are shown at once, and the late rows
+    /// join them when they come (`expecting`).
     pub searching: bool,
 }
 
