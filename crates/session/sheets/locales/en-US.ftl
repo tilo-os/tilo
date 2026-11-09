@@ -578,6 +578,7 @@ workspace-delete-lens = Delete workspace
 # Inviting people: the link into the workspace in front, and the links that
 # still work.
 invite-title = Invite people
+invite-title-workspace = Invite people to “{ $workspace }”
 invite-description = Make a link that brings someone into this workspace. Each link works for one hour, and you can take it back here.
 invite-close = Close
 invite-refusal = Only someone whose part in this workspace allows inviting can make a link.

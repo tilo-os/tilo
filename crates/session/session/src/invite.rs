@@ -218,6 +218,13 @@ impl sheet::Invitations for DeskInvites<'_> {
         self.0.may_invite_here()
     }
 
+    fn workspace(&self) -> Option<String> {
+        self.0.handle.read(|tree| {
+            tree.active_workspace()
+                .map(|workspace| workspace.name.clone())
+        })
+    }
+
     fn roles(&self) -> Vec<sheet::Role> {
         let Some(engine) = self.0.engine.as_deref() else {
             return Vec::new();

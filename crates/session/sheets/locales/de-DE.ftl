@@ -578,6 +578,7 @@ workspace-delete-lens = Arbeitsbereich löschen
 # Inviting people: the link into the workspace in front, and the links that
 # still work.
 invite-title = Personen einladen
+invite-title-workspace = Personen in „{ $workspace }“ einladen
 invite-description = Erstelle einen Link, der jemanden in diesen Arbeitsbereich bringt. Jeder Link gilt eine Stunde, und du kannst ihn hier zurücknehmen.
 invite-close = Schließen
 invite-refusal = Nur wer hier eine Rolle hat, die Einladen erlaubt, kann einen Link erstellen.
