@@ -241,6 +241,25 @@ pub(crate) fn offer_window_bar(root: &mut dyn Widget, bar: Option<WindowBar>) ->
         .any(|child| offer_window_bar(child, bar))
 }
 
+/// Whether a header row of `content` holds the window's bar as the window's own bar: the row the
+/// content draws at the window's top is the bar then — the window draws none of its own and its
+/// controls stand at the row's trailing end — where a row that stands as the bar's slots, or a
+/// content that draws no row at all, leaves the window its bar.
+///
+/// Every window asks this of its content, whatever draws it: a frame of the shell's preset
+/// ([`crate::widget::WindowFrame`]), a window of the desktop's strips
+/// ([`crate::widget::WindowGroup`]) and the frame the layout check stages
+/// ([`crate::headless::FrameHarness`]), so a window shows one bar, never two stacked, and no two
+/// of them can disagree about which.
+#[must_use]
+pub(crate) fn content_bar(content: &dyn Widget) -> Option<WindowBarSlot> {
+    let row = root_header_row(content)?;
+    (row.header_row_height() > 0.0)
+        .then(|| row.window_bar_slot())
+        .flatten()
+        .filter(|slot| slot.row.height() > 0.0)
+}
+
 /// Whether `widget` is a window's frame: a window standing in a shell, which offers the bar to
 /// its own content's header row as it draws.
 fn is_window_frame(widget: &dyn Widget) -> bool {

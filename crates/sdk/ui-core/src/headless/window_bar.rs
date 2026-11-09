@@ -54,9 +54,7 @@ impl FrameHarness {
         let bar = self.window_bar_offer();
         crate::widget::window_header::offer_root_header_bar(self.root.as_mut(), Some(bar));
         self.lay_out_the_window();
-        let row = crate::widget::window_header::root_header_row(self.root.as_ref());
-        self.row_holds =
-            row.is_some_and(|row| row.window_bar_slot().is_some() && row.header_row_height() > 0.0);
+        self.row_holds = crate::widget::window_header::content_bar(self.root.as_ref()).is_some();
         // A row holding the bar carries the search the app keeps in it; a bar over the frame
         // presents the window's own.
         crate::widget::window_header::offer_window_search(self.root.as_mut(), !self.row_holds);
@@ -101,10 +99,7 @@ impl FrameHarness {
     /// holds the bar.
     pub(super) fn row_bar_slot(&self) -> Option<crate::widget::WindowBarSlot> {
         self.row_holds
-            .then(|| {
-                crate::widget::window_header::root_header_row(self.root.as_ref())
-                    .and_then(crate::widget::WindowHeader::window_bar_slot)
-            })
+            .then(|| crate::widget::window_header::content_bar(self.root.as_ref()))
             .flatten()
     }
 
