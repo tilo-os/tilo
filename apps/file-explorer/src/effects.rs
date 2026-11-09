@@ -488,7 +488,7 @@ pub enum FilesEffect {
     /// link into it is made and the part it brings people in at is picked.
     #[effect(row, job)]
     #[effect(keywords = "share, invite, send link, share file")]
-    #[effect(icon = "share-2")]
+    #[effect(icon = "user-plus")]
     Share {
         #[param("The entry's row id")]
         entry: String,
