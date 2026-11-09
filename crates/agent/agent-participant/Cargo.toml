@@ -153,6 +153,9 @@ accounts = { path = "../../system/accounts", features = ["person"] }
 tempfile.workspace = true
 tilo-paths.workspace = true
 tilo-relay = { path = "../../hosting/tilo-relay", features = ["agents", "test-support"] }
+# The MCP front door, driven through its HTTP routes against the relay.
+tilo-front-door = { path = "../../hosting/tilo-front-door" }
+test-http = { path = "../../dev/test-http" }
 tilo-relay-client = { path = "../../hosting/tilo-relay-client" }
 # The MCP projection `tilo mcp` serves, driven over a device's session.
 tilo-runtime = { path = "../../runtime/tilo-runtime" }

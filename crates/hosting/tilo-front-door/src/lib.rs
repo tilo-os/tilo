@@ -19,27 +19,26 @@
 //!   that.
 //!
 //! The door holds no standing authority over anyone: it acts only with a
-//! grant's key, which the person's hosts and runtime check like any device
-//! of theirs, within the grant's scope and until it expires. It routes each
-//! session to the person's runtime ([`directory`], [`endpoint`]). Every MCP
+//! grant's key, which the relay the person's workspaces live on admits as
+//! its person's agent, within the grant's scope and until it expires
+//! ([`relay`]). It serves each MCP session itself, with the agent surface
+//! `tilo mcp` serves, over the grant's own session with the relay, where
+//! record actions run on the relay's app workers ([`session`]). Every
 //! session is one agent run, attributed separately in History and named for
-//! the person ("Claude Code #1", [`session`]). The person revokes a grant at
-//! `/grants`; its tokens and sessions end at once and its key is forgotten.
+//! the person ("Claude Code #1"). The person revokes a grant at `/grants`;
+//! its tokens and sessions end at once and its key is forgotten.
 
 pub mod account;
 pub mod content;
-pub mod directory;
-pub mod endpoint;
 pub mod grant_key;
-pub mod hosts;
 pub mod keys;
 pub mod oauth;
 pub mod pages;
+pub mod relay;
 pub mod session;
 pub mod sign_in;
 pub mod store;
 
-use directory::Directory;
 use grant_key::GrantKey;
 use http_body_util::{BodyExt, Full, Limited};
 use hyper::{
@@ -47,6 +46,7 @@ use hyper::{
     body::{Bytes, Incoming},
     header::{self, HeaderValue},
 };
+use relay::Relay;
 use serde_json::{Value, json};
 use session::{SESSION_HEADER, Session};
 use std::{
@@ -73,8 +73,12 @@ pub struct Config {
     /// The door's own origin, as agents reach it (`https://mcp.tilo.sh`): the
     /// OAuth issuer and the protected resource. No trailing slash.
     pub issuer: String,
-    /// The person's Tilo on the web, which signs them in to the door.
+    /// The person's Tilo on the web, which signs them in to the door; its
+    /// `entry.json` names the door to the site's home workspace on the relay.
     pub web_entry: String,
+    /// The public origin of the relay the person's workspaces live on
+    /// (`https://eu1.tilo.sh`).
+    pub relay: String,
 }
 
 /// What a sign-in in progress is for.
@@ -109,7 +113,7 @@ pub struct Door {
     /// `<web_entry>/sign-in`, where the person's Tilo signs them in.
     sign_in_entry: url::Url,
     store: Store,
-    directory: Arc<dyn Directory>,
+    relay: Arc<Relay>,
     browsers: sign_in::Browsers,
     pending: Mutex<HashMap<String, Pending>>,
     sessions: Mutex<HashMap<String, Arc<Session>>>,
@@ -117,20 +121,15 @@ pub struct Door {
     page_tokens: Mutex<HashMap<String, String>>,
     /// The keys approved for a poller, by the poll secret's digest.
     approved_keys: Mutex<HashMap<String, keys::Approval>>,
-    http: tilo_net::Client,
 }
 
 type Reply = Response<Full<Bytes>>;
 
 impl Door {
     /// # Errors
-    /// The web entry is not a URL, or the HTTP client for workspace
-    /// endpoints could not be built.
-    pub fn new(
-        config: &Config,
-        store: Store,
-        directory: Arc<dyn Directory>,
-    ) -> io::Result<Arc<Self>> {
+    /// The web entry is not a URL, or the HTTP client for the relay and the
+    /// site could not be built.
+    pub fn new(config: &Config, store: Store) -> io::Result<Arc<Self>> {
         let http = tilo_net::Client::builder()
             .connect_timeout(Duration::from_secs(10))
             .redirects(tilo_net::Redirects::None)
@@ -140,19 +139,19 @@ impl Door {
         let sign_in_entry = url::Url::parse(&format!("{web_entry}/sign-in"))
             .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error))?;
         Ok(Arc::new(Self {
+            relay: Arc::new(Relay::new(&http, &config.relay, &web_entry)),
             config: Config {
                 issuer: config.issuer.trim_end_matches('/').to_owned(),
+                relay: config.relay.trim_end_matches('/').to_owned(),
                 web_entry,
             },
             sign_in_entry,
             store,
-            directory,
             browsers: sign_in::Browsers::default(),
             pending: Mutex::default(),
             sessions: Mutex::default(),
             page_tokens: Mutex::default(),
             approved_keys: Mutex::default(),
-            http,
         }))
     }
 
@@ -214,7 +213,7 @@ impl Door {
             }
             (&Method::POST, oauth::REGISTER_PATH) => self.register(body),
             (&Method::GET, oauth::AUTHORIZE_PATH) => self.authorize(query),
-            (&Method::POST, "/sign-in") => self.signed_in(body).await,
+            (&Method::POST, "/sign-in") => self.signed_in(body),
             (&Method::POST, oauth::TOKEN_PATH) => self.token(body),
             (&Method::POST, oauth::REVOKE_PATH) => self.revoke(body).await,
             (method, path) if let Some(workspace) = content::upload_target(method, path) => {
@@ -226,7 +225,7 @@ impl Door {
                 self.approve_key(id)
             }
             (&Method::POST, "/grants/keys") => self.new_key_from_page(headers, body),
-            (&Method::GET, "/grants") => self.grants_page(headers).await,
+            (&Method::GET, "/grants") => self.grants_page(headers),
             (&Method::POST, path)
                 if let Some(grant) = path
                     .strip_prefix("/grants/")
@@ -388,7 +387,7 @@ impl Door {
     /// `POST /sign-in`: the person's Tilo answers a pending authorization,
     /// declined (`decision=deny`) or with a sign-in proof and the certificate
     /// it gave the grant's key.
-    async fn signed_in(&self, body: &[u8]) -> Reply {
+    fn signed_in(&self, body: &[u8]) -> Reply {
         let form = oauth::form(body).unwrap_or_default();
         let now = now_ms();
         // Answered once, whatever the answer: its challenge and key are spent.
@@ -405,9 +404,7 @@ impl Door {
         let request = match &pending.purpose {
             Purpose::Agent(request) => request,
             Purpose::Key { name, poll } => {
-                return self
-                    .key_signed_in(&pending, name, poll.as_deref(), &form, now)
-                    .await;
+                return self.key_signed_in(&pending, name, poll.as_deref(), &form, now);
             }
         };
         let back = |params: &[(&str, &str)]| {
@@ -431,13 +428,10 @@ impl Door {
                 &pages::message("Sign-in failed", "The sign-in was incomplete."),
             );
         };
-        let key = match self.check_answer(&pending, &proof, cert, now).await {
+        let key = match self.check_answer(&pending, &proof, cert, now) {
             Ok(key) => key,
-            Err(reply) => return reply,
+            Err(reply) => return *reply,
         };
-        if !self.names_own_workspace(&key).await {
-            return back(&[("error", "invalid_target")]);
-        }
         let Some(client) = self.store.client(&request.client_id) else {
             return back(&[("error", "unauthorized_client")]);
         };
@@ -460,41 +454,27 @@ impl Door {
         response
     }
 
-    /// Whether a one-workspace grant names a workspace its person holds: the
-    /// host shows the grant only that workspace, if it is theirs, so whoever
-    /// narrowed the grant, it names one this person holds. Always for a grant
-    /// reaching all of them.
-    async fn names_own_workspace(&self, key: &GrantKey) -> bool {
-        let AgentScope::Workspace(_) = key.scope() else {
-            return true;
-        };
-        let workspace = key.scope().name();
-        self.directory
-            .workspaces(key)
-            .await
-            .is_ok_and(|listed| listed.iter().any(|candidate| candidate.id == workspace))
-    }
-
     /// Check the person's Tilo's answer to `pending`: the sign-in proof, and
     /// the certificate it gave the grant's key. The grant's key, or the page
     /// that says why not.
-    async fn check_answer(
+    fn check_answer(
         &self,
         pending: &Pending,
         proof: &tilo_user_identity::SignInProof,
         cert: tilo_user_identity::DeviceCert,
         now: u64,
-    ) -> Result<GrantKey, Reply> {
+    ) -> Result<GrantKey, Box<Reply>> {
         let now_ns = now.saturating_mul(1_000_000);
         let refused = |why: &str| {
             tracing::info!(reason = why, "sign-in refused");
-            html(
+            Box::new(html(
                 StatusCode::FORBIDDEN,
                 &pages::message("Sign-in refused", why),
-            )
+            ))
         };
-        // The proof first, as far as it holds without the person's
-        // revocations: whose it is, for this door and this challenge.
+        // The proof: whose it is, for this door and this challenge. The
+        // grant's own certificate, which the person's root signed, is checked
+        // against their revocations by the relay at every handshake.
         if let Err(error) = sign_in::verify(
             proof,
             &self.config.issuer,
@@ -509,36 +489,8 @@ impl Door {
                 "the grant was certified by someone else than who signed in",
             ));
         }
-        let key = match GrantKey::new(pending.key.clone(), cert, pending.scope, now_ns) {
-            Ok(key) => key,
-            Err(error) => return Err(refused(&error.to_string())),
-        };
-        // Then the device that signed in against the person's revocations, as
-        // their host enforces them; the grant's key itself is checked by the
-        // host at every handshake.
-        let revocations = match self.directory.revocations(&key).await {
-            Ok(revocations) => revocations,
-            Err(error) => {
-                tracing::warn!(%error, "the person's revocations could not be read");
-                return Err(html(
-                    StatusCode::SERVICE_UNAVAILABLE,
-                    &pages::message(
-                        "Sign-in unavailable",
-                        "Your devices could not be checked. Try again shortly.",
-                    ),
-                ));
-            }
-        };
-        if let Err(error) = sign_in::verify(
-            proof,
-            &self.config.issuer,
-            &pending.challenge,
-            &revocations,
-            now_ns,
-        ) {
-            return Err(refused(&error.to_string()));
-        }
-        Ok(key)
+        GrantKey::new(pending.key.clone(), cert, pending.scope, now_ns)
+            .map_err(|error| refused(&error.to_string()))
     }
 
     fn token(&self, body: &[u8]) -> Reply {
@@ -626,7 +578,7 @@ impl Door {
         text(StatusCode::OK, "")
     }
 
-    async fn grants_page(&self, headers: &hyper::HeaderMap) -> Reply {
+    fn grants_page(&self, headers: &hyper::HeaderMap) -> Reply {
         let Some(person) = self.browsers.person(headers, now_ms()) else {
             return html(
                 StatusCode::UNAUTHORIZED,
@@ -637,18 +589,10 @@ impl Door {
             );
         };
         let grants = self.store.grants_of(&person);
-        // Each one-workspace grant names its workspace, as the host shows it
-        // to that grant.
-        let mut workspaces = Vec::new();
-        for grant in &grants {
-            if let (store::Scope::Workspace(_), Some(key)) = (&grant.scope, grant.key()) {
-                workspaces.extend(self.directory.workspaces(&key).await.unwrap_or_default());
-            }
-        }
         let Ok(csrf) = self.page_token(headers) else {
             return no_randomness();
         };
-        html(StatusCode::OK, &pages::grants(&grants, &workspaces, &csrf))
+        html(StatusCode::OK, &pages::grants(&grants, &csrf))
     }
 
     /// Whether `form` was posted from the grants page of the browser that
@@ -883,19 +827,13 @@ impl Door {
             return text(StatusCode::SERVICE_UNAVAILABLE, "sessions are unavailable");
         };
         let label = session::run_label(&grant.client_name, &params, number);
-        let Some(key) = grant.key() else {
-            return self.challenge(None, true);
+        let session = match self.new_session(&grant, grant.scope.clone(), label).await {
+            Ok(session) => Arc::new(session),
+            Err(message) => {
+                let id = request.get("id").cloned().unwrap_or(Value::Null);
+                return json_reply(StatusCode::OK, &session::error(&id, -32000, &message));
+            }
         };
-        let session = Arc::new(Session::new(
-            grant.id.clone(),
-            key,
-            grant.scope.clone(),
-            label,
-            params,
-            Arc::clone(&self.directory),
-            Arc::downgrade(self),
-            self.http.clone(),
-        ));
         let answer = match session.initialize(request).await {
             Ok(answer) => answer,
             Err(message) => {
@@ -913,6 +851,50 @@ impl Door {
             &hyper::HeaderMap::new(),
             Some(&id),
         )
+    }
+}
+
+impl Door {
+    /// A new run of `grant` acting in `scope`, named `label`: the grant's own
+    /// session with the relay, and for a minted grant the session of the
+    /// grant that minted it, which asks for its invitation.
+    pub(crate) async fn new_session(
+        self: &Arc<Self>,
+        grant: &store::Grant,
+        scope: store::Scope,
+        label: String,
+    ) -> Result<Session, String> {
+        let key = grant.key().ok_or("this key cannot act now")?;
+        let connection = self
+            .relay
+            .connect(&key)
+            .await
+            .map_err(|error| error.to_string())?;
+        let parent = match grant.parent() {
+            Some(parent) => {
+                let parent = self
+                    .store
+                    .grant(parent)
+                    .and_then(|parent| parent.key())
+                    .ok_or("the key that minted this key was revoked")?;
+                Some(
+                    self.relay
+                        .connect(&parent)
+                        .await
+                        .map_err(|error| error.to_string())?,
+                )
+            }
+            None => None,
+        };
+        Ok(Session::new(
+            grant.id.clone(),
+            scope,
+            label,
+            Arc::clone(&self.relay),
+            connection,
+            parent,
+            Arc::downgrade(self),
+        ))
     }
 }
 
@@ -1112,14 +1094,5 @@ pub async fn serve(door: Arc<Door>, listener: tokio::net::TcpListener) {
     }
 }
 
-#[cfg(feature = "local")]
-pub mod local;
-#[cfg(any(test, feature = "local"))]
-pub mod runtime_support;
 #[cfg(test)]
 mod tests;
-
-// The hosts the tests open keep workspaces in automerge documents, which run
-// in a worker process this test binary serves.
-#[cfg(test)]
-tilo_automerge_isolate::test_worker!();

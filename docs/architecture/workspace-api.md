@@ -5,7 +5,7 @@ Tilo: a credential its backend holds without a browser in the loop, a way to
 make one workspace per customer and act in it, and a credential narrowed to
 that one workspace to hand the customer's agent. This note says how each one
 is built from what already exists: grants, the person's certificates, the
-host's own operations and the runtime's MCP tools. It adds no second
+relay's own operations and the agent surface's MCP tools. It adds no second
 authority and no second action model.
 
 ## API keys are grants
@@ -24,7 +24,7 @@ back. Instead of a code for a client, the door issues one bearer token,
 `tilo_sk_…`, that lasts as long as the certificate does (89 days at most).
 That token resolves to the grant, so every existing rule applies unchanged:
 
-- the scope check at the door, the host and the runtime;
+- the scope check at the door and the relay;
 - the certificate's expiry;
 - the person's revocations, checked at every handshake;
 - the History attribution of each run;
@@ -56,11 +56,11 @@ the following hold:
 - it expires no later than its issuer;
 - its key is neither the issuer's nor the root's.
 
-Hosts and runtimes already verify every certificate they are shown with
-`verify_device_cert_at`, check the scope (`capabilities.agent`), and check the
-person's revocations. A minted grant passes those checks as one-workspace
-grants do. It cannot list or make workspaces, and the host shows it only its
-own workspace.
+The relay verifies every certificate it is shown with
+`verify_device_cert_at`, checks the scope (`capabilities.agent`), and checks
+the person's revocations, issuer included. A minted grant passes those checks
+as one-workspace grants do. It cannot list or make workspaces, and the relay
+admits it only to its own workspace.
 
 ### Revocation cascades
 
@@ -74,9 +74,9 @@ There are two places a grant ends, and both cascade:
   key refuses every certificate that key issued, at any time
   (`RevocationList::refuses`). A stand-in's revocation counts only from its
   time, because the devices it vouched for are the person's own. A grant's
-  children are the grant: they never outlive it. The runtime's admission
-  checks the certificate against the person's revocations, including its
-  issuer.
+  children are the grant: they never outlive it. The relay checks the
+  certificate against the person's revocations, including its issuer, at
+  every handshake and audit.
 
 ## The account is a resource
 
@@ -88,8 +88,8 @@ no `workspace` and whose path is under `account` is answered by the door:
 
 | Path | What it is |
 |---|---|
-| `account/workspaces#list` | the hosts' `room.list` as the grant |
-| `account/workspaces#create {name, host?}` | the host's `room.create` as the grant; the person's runtime joins |
+| `account/workspaces#list` | the relay's `room.list` as the grant: the person's own workspace there |
+| `account/workspaces#create {name, host?}` | the relay's `room.create-own` as the grant, which then joins it; the relay keeps one workspace of each person's own and refuses a second, typed |
 | `account/workspaces#delete {workspace}` | refused for now: hosts have no operation that deletes a workspace |
 | `account/keys#list` | this key and the keys it minted |
 | `account/keys#create {name, workspace?}` | asks the person; the run is `pending` until they approve, and `tilo_status` then answers the key |
@@ -99,10 +99,59 @@ no `workspace` and whose path is under `account` is answered by the door:
 Answers are the agent surface's text (`ok`, `failed: …`, `pending <id>`) and
 the same answer typed in `structuredContent`, so programs get JSON.
 
-Everything else goes to the workspace's own runtime, as the grant: `tilo_ls`,
-`tilo_read`, `tilo_find`, `tilo_do`, `tilo_status` and `tilo`. File bytes go
-into the workspace's content store with the runtime's `tilo_put_*` tools, and
-come back out of it with `tilo_get` (`{content, offset?, length?}`, answering
-the bytes base64 a piece at a time).
+Everything else is the agent surface `tilo mcp` serves
+(`tilo_runtime::mcp::McpServer`), which the door runs for each session over
+the grant's own session with the relay: `tilo_ls`, `tilo_read`, `tilo_find`,
+`tilo_do`, `tilo_status` and `tilo`. Its actions are asked of the relay's own
+device, whose app workers run them with no tab open. File bytes go into the
+workspace's content store with `tilo_put_*`, carried over the same session,
+and come back out of it with `tilo_get` (`{content, offset?, length?}`,
+answering the bytes base64 a piece at a time).
 After that, files go through the apps' own actions, which take the
 `tilo.content:<hash>` reference.
+
+## How a grant gets into a workspace
+
+The door holds no device of anyone. The grant's own key is the device: it
+dials the relay's iroh endpoint with the grant's certificate, as a `tilo
+login` computer dials with its own, and enters the way that computer does
+(`tilo_browser_peer::login`).
+
+The relay admits an agent's grant (`tilo_room_host::workspace_access`) as
+its person's agent, iff
+
+- its scope reaches the workspace;
+- it is an exact member device there: it redeemed an invitation for its
+  person, as every new device of theirs does, so the workspace's roster holds
+  it under its person;
+- in a governed workspace, its person is still a member;
+- and the plane is one an agent works on (subscribe, state, publish, replay,
+  channel access, remote actions, the live plane, content discovery), never
+  compute, environments or governed membership, and never by attachment or a
+  same-owner host's enrolment.
+
+What it does there is its person's agent's: the relay makes its caller the
+agent a device of the person handed its session to
+(`Caller::delegated_to`), so an agent's role cap holds it at Editor at most,
+and it governs, invites and administers nothing. The relay's own operations
+treat it as its person within its scope (`host_authority`): a grant reaching
+all workspaces makes and lists the person's own; nothing else.
+
+**A grant reaching all the person's workspaces** goes through the site's door
+to the site's home workspace, as the person's page does (the door the site's
+`entry.json` names for the relay), asks the relay there for the person's own
+workspace (`room.create-own`), which answers with an invitation for the
+person, redeems it and joins.
+
+**A minted grant** reaches one workspace and never the home workspace. Its
+parent, which reaches all of them, asks for the invitation into that
+workspace (`room.create-own` naming it, which answers only the person's own
+workspace and never makes another), and the minted grant redeems it itself.
+The parent asks rather than the relay admitting the minted grant on its
+person's membership alone because a workspace's roster admits devices one by
+one, each by an invitation: the minted grant enters exactly as every device
+of the person does, and its certificate's chain is checked at that join and
+at every handshake after.
+
+A grant the person certified for one workspace directly (an agent pointed at
+`/w/<workspace>`) has no parent to ask, and is not admitted yet.

@@ -134,7 +134,7 @@ impl Door {
                 "try again shortly",
             )
         };
-        let (Some(key), Ok(number)) = (grant.key(), self.store.next_run(&grant.person)) else {
+        let Ok(number) = self.store.next_run(&grant.person) else {
             return Err(unavailable("this key cannot act now"));
         };
         let params = json!({
@@ -142,16 +142,15 @@ impl Door {
             "capabilities": {},
             "clientInfo": {"name": "tilo-content", "version": env!("CARGO_PKG_VERSION")},
         });
-        let opened = Arc::new(Session::new(
-            grant.id.clone(),
-            key,
-            Scope::Workspace(workspace.to_owned()),
-            session::run_label(&grant.client_name, &params, number),
-            params.clone(),
-            Arc::clone(&self.directory),
-            Arc::downgrade(self),
-            self.http.clone(),
-        ));
+        let opened = Arc::new(
+            self.new_session(
+                grant,
+                Scope::Workspace(workspace.to_owned()),
+                session::run_label(&grant.client_name, &params, number),
+            )
+            .await
+            .map_err(|why| unavailable(&format!("the workspace could not be opened: {why}")))?,
+        );
         let initialize = json!({"jsonrpc":"2.0","id":0,"method":"initialize","params":params});
         opened
             .initialize(&initialize)

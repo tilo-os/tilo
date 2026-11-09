@@ -441,7 +441,7 @@ impl WorkspaceActions {
         let on_record = record_of(&request.target.provider, "").is_some();
         let link_request =
             request.target.address.action == ui::tilo_resource::share::SHARE_LINK && on_record;
-        let member_request = on_record && matches!(caller.principal(), CallerPrincipal::Person(_));
+        let member_request = on_record && speaks_for_a_member(caller);
         link_request || member_request || self.authorized(caller)
     }
 
@@ -493,9 +493,7 @@ impl WorkspaceActions {
                 // checks that the workspace admits them; nobody else is
                 // answered at all. The check runs there because asking the host
                 // blocks and this is the host's runtime.
-                if query.view_resource.is_none()
-                    && !matches!(caller.principal(), CallerPrincipal::Person(_))
-                {
+                if query.view_resource.is_none() && !speaks_for_a_member(caller) {
                     let empty = CataloguePage::from_rows("0".into(), Vec::new(), &query);
                     return Some(Pending::ready(respond(Ok(empty))));
                 }
@@ -1520,10 +1518,10 @@ impl Worker {
     /// service, or a member the workspace's governance lets in. Answered here,
     /// on the service's own thread, where asking the host blocks.
     fn admits_member(&self, workspace: u64, caller: &Caller) -> bool {
-        let CallerPrincipal::Person(person) = caller.principal() else {
+        if !speaks_for_a_member(caller) {
             return false;
-        };
-        person == &self.participant
+        }
+        matches!(caller.principal(), CallerPrincipal::Person(person) if *person == self.participant)
             || self
                 .shared
                 .link
@@ -2507,6 +2505,21 @@ fn exact_view_query(
         return Err(ActionHostError::UnknownAction);
     }
     Ok((wanted, provider))
+}
+
+/// Whether `caller` speaks for someone a workspace may admit as a member: a
+/// person themselves, or the agent a device of theirs handed its session to
+/// (an agent's grant), which every decision then holds to what an agent of
+/// theirs may do. The workspace's governance still decides whether it admits
+/// them.
+fn speaks_for_a_member(caller: &Caller) -> bool {
+    match caller.principal() {
+        CallerPrincipal::Person(_) => true,
+        CallerPrincipal::Agent(_) => {
+            caller.is_session_delegated() && caller.acting_for_person().is_some()
+        }
+        _ => false,
+    }
 }
 
 #[cfg(test)]

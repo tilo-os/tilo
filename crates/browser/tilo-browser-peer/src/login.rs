@@ -39,21 +39,58 @@ pub struct Door<'a> {
 
 impl Door<'_> {
     /// The workspace the door lets people into, as its path names it.
-    fn workspace(&self) -> Option<String> {
+    #[must_use]
+    pub fn workspace(&self) -> Option<String> {
         let mut segments = self.path.split('/').filter(|segment| !segment.is_empty());
         segments.find(|segment| *segment == "directory")?;
         segments.next().map(str::to_owned)
     }
 }
 
-/// The invitation to the person's own workspace on the host, which the host
-/// makes the first time any device of theirs asks and answers again after
-/// (`room.create-own`), asked over this device's session in `workspace_id`.
-async fn own_workspace_invitation(
+/// The door of the site whose `entry.json` is `entry` to the workspace it
+/// keeps on the host at `host_origin` (`home.admission`): the door's origin
+/// and its `join` path, when the site names one for that host. Only HTTPS,
+/// but for a door on loopback.
+#[must_use]
+pub fn site_door(entry: &serde_json::Value, host_origin: &str) -> Option<(String, String)> {
+    let home = entry.get("home")?;
+    let home_host = home.pointer("/host/origin")?.as_str()?;
+    if home_host.trim_end_matches('/') != host_origin.trim_end_matches('/') {
+        return None;
+    }
+    let admission = home.get("admission")?.as_str()?;
+    let (scheme, rest) = admission.split_once("://")?;
+    let (authority, path) = rest.split_at(rest.find('/')?);
+    let host = authority
+        .rsplit_once(':')
+        .map_or(authority, |(host, _)| host);
+    let loopback = matches!(host, "localhost" | "127.0.0.1" | "[::1]");
+    if authority.is_empty() || !(scheme == "https" || (scheme == "http" && loopback)) {
+        return None;
+    }
+    let path = if path.ends_with('/') {
+        format!("{path}join")
+    } else {
+        format!("{path}/join")
+    };
+    Some((format!("{scheme}://{authority}"), path))
+}
+
+/// The workspace of the person's own on the host and the invitation into it
+/// for the person, which the host makes the first time any device of theirs
+/// asks and answers again after (`room.create-own`, with `arguments`: its
+/// `name`, or the `room` it must be), asked over this device's session in
+/// `workspace_id`.
+///
+/// # Errors
+///
+/// The host did not answer, refused, or answered no invitation.
+pub async fn own_workspace(
     peer: &PeerHandle,
     workspace_id: u64,
     host_cert: &DeviceCert,
-) -> Result<Vec<u8>, CertifyError> {
+    arguments: serde_json::Map<String, serde_json::Value>,
+) -> Result<(tilo_relay_session::workspaces::WorkspaceListing, Vec<u8>), CertifyError> {
     use tilo_actions::remote::{
         ActionHost as _, Caller, InvokeArgument, InvokeRequest, ReceiptStatus, RemoteActionTarget,
     };
@@ -80,7 +117,7 @@ async fn own_workspace_invitation(
                     provider: HOST_ACTIONS_PROVIDER.to_owned(),
                     address: tilo_actions::ActionAddress::new(HOST_ROOMS_RESOURCE, CREATE_OWN_ROOM),
                 },
-                argument: InvokeArgument::default(),
+                argument: InvokeArgument::Json(arguments),
                 context: None,
                 confirmation: None,
                 revision: None,
@@ -104,7 +141,9 @@ async fn own_workspace_invitation(
     let invitation = made
         .invitation
         .ok_or_else(|| refused("it issued no invitation".to_owned()))?;
-    hex::decode(invitation.invitation).map_err(|error| refused(error.to_string()))
+    let invitation =
+        hex::decode(invitation.invitation).map_err(|error| refused(error.to_string()))?;
+    Ok((made.workspace, invitation))
 }
 
 /// A computer that is now one of the person's devices.
@@ -215,30 +254,15 @@ pub async fn enter(
     // page does it; without one, the host must already admit this device of
     // a member of the workspace.
     if let Some(door) = door {
-        let (invitation, token) = ask_door(door, &sign_in.cert, &sign_in.agent).await?;
-        let reply = ask_to_join_pre_admitted(
+        through_door(
             client,
-            &invitation,
+            door,
             &sign_in.cert,
             signer.as_ref(),
-            rand::random(),
+            &sign_in.agent,
             &sign_in.label,
-            token.as_bytes(),
         )
         .await?;
-        match reply {
-            tilo_relay_protocol::workspaces::JoinReply::Admitted { .. } => {}
-            tilo_relay_protocol::workspaces::JoinReply::Refused(reason) => {
-                return Err(CertifyError::Denied(format!(
-                    "This workspace did not let this computer in: {reason}"
-                )));
-            }
-            _ => {
-                return Err(CertifyError::Denied(
-                    "This workspace did not let this computer in.".to_owned(),
-                ));
-            }
-        }
     }
     // The door lets the person into the site's home workspace. The person's
     // own workspace (where the agent is set up) admits each of their devices
@@ -256,24 +280,16 @@ pub async fn enter(
                     .to_owned(),
             ));
         }
-        let invitation = own_workspace_invitation(&peer, lobby_id, &sign_in.host_cert).await?;
-        let reply = crate::invite::ask_to_join(
+        let (_, invitation) =
+            own_workspace(&peer, lobby_id, &sign_in.host_cert, serde_json::Map::new()).await?;
+        redeem(
             client,
             &invitation,
             &sign_in.cert,
             signer.as_ref(),
-            rand::random(),
             &sign_in.label,
         )
         .await?;
-        if !matches!(
-            reply,
-            tilo_relay_protocol::workspaces::JoinReply::Admitted { .. }
-        ) {
-            return Err(CertifyError::Denied(
-                "The person's workspace did not let this computer in.".to_owned(),
-            ));
-        }
     }
     peer.join(workspace_id).map_err(CertifyError::Request)?;
     if !admitted(&peer, workspace_id).await {
@@ -294,6 +310,69 @@ pub async fn enter(
     )
     .await;
     Ok(peer)
+}
+
+/// Go through `door` on the device `cert` certifies, as the page does: the
+/// door lets its person in (`name` is how it greets them) and the device,
+/// labeled `label`, redeems what it answers on the host `client` posts to.
+///
+/// # Errors
+///
+/// The door or the host was not reached, or either refused.
+pub async fn through_door(
+    client: &dyn HttpClient,
+    door: &Door<'_>,
+    cert: &DeviceCert,
+    signer: &dyn DeviceSigner,
+    name: &str,
+    label: &str,
+) -> Result<(), CertifyError> {
+    let (invitation, token) = ask_door(door, cert, name).await?;
+    let reply = ask_to_join_pre_admitted(
+        client,
+        &invitation,
+        cert,
+        signer,
+        rand::random(),
+        label,
+        token.as_bytes(),
+    )
+    .await?;
+    match reply {
+        tilo_relay_protocol::workspaces::JoinReply::Admitted { .. } => Ok(()),
+        tilo_relay_protocol::workspaces::JoinReply::Refused(reason) => Err(CertifyError::Denied(
+            format!("This workspace did not let this computer in: {reason}"),
+        )),
+        _ => Err(CertifyError::Denied(
+            "This workspace did not let this computer in.".to_owned(),
+        )),
+    }
+}
+
+/// Redeem `invitation` on the host `client` posts to, as the device `cert`
+/// certifies, labeled `label`.
+///
+/// # Errors
+///
+/// The host was not reached, or did not admit the device.
+pub async fn redeem(
+    client: &dyn HttpClient,
+    invitation: &[u8],
+    cert: &DeviceCert,
+    signer: &dyn DeviceSigner,
+    label: &str,
+) -> Result<(), CertifyError> {
+    let reply =
+        crate::invite::ask_to_join(client, invitation, cert, signer, rand::random(), label).await?;
+    match reply {
+        tilo_relay_protocol::workspaces::JoinReply::Admitted { .. } => Ok(()),
+        tilo_relay_protocol::workspaces::JoinReply::Refused(reason) => Err(CertifyError::Denied(
+            format!("The person's workspace did not let this computer in: {reason}"),
+        )),
+        _ => Err(CertifyError::Denied(
+            "The person's workspace did not let this computer in.".to_owned(),
+        )),
+    }
 }
 
 /// Ask `door` to let the person in on this device, as the page asks it: the
@@ -335,7 +414,7 @@ async fn ask_door(
 }
 
 /// Whether the session is in `workspace_id`, waiting for its host to say so.
-async fn admitted(peer: &PeerHandle, workspace_id: u64) -> bool {
+pub async fn admitted(peer: &PeerHandle, workspace_id: u64) -> bool {
     let started = Instant::now();
     loop {
         let status = peer.status();

@@ -39,6 +39,9 @@ mod encrypted_resource;
 #[path = "workspace_actions/feedback_journey.rs"]
 mod feedback_journey;
 #[cfg(test)]
+#[path = "workspace_actions/front_door.rs"]
+mod front_door;
+#[cfg(test)]
 #[path = "workspace_actions/governed_agent.rs"]
 mod governed_agent;
 #[cfg(test)]

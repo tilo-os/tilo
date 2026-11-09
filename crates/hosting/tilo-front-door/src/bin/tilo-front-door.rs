@@ -8,10 +8,12 @@
 //! - `TILO_DOOR_ISSUER`: the door's public origin, as agents reach it.
 //! - `TILO_DOOR_WEB_ENTRY`: the person's Tilo on the web, which signs them in.
 //! - `TILO_DOOR_STATE`: the file the door keeps clients and grants in.
-//! - `TILO_DOOR_HOSTS`: the hosts registry ([`tilo_front_door::hosts`]).
+//! - `TILO_DOOR_RELAY`: the public origin of the relay the person's
+//!   workspaces live on, which the door enters as each grant
+//!   ([`tilo_front_door::relay`]).
 
-use std::{path::PathBuf, sync::Arc};
-use tilo_front_door::{Config, Door, hosts::Hosts, store::Store};
+use std::path::PathBuf;
+use tilo_front_door::{Config, Door, store::Store};
 
 fn var(name: &str) -> Result<String, String> {
     std::env::var(name).map_err(|_| format!("{name} is required"))
@@ -36,12 +38,11 @@ fn main() -> Result<(), String> {
     let config = Config {
         issuer: origin("TILO_DOOR_ISSUER")?,
         web_entry: origin("TILO_DOOR_WEB_ENTRY")?,
+        relay: origin("TILO_DOOR_RELAY")?,
     };
     let store = Store::open(PathBuf::from(var("TILO_DOOR_STATE")?))
         .map_err(|error| format!("TILO_DOOR_STATE: {error}"))?;
-    let hosts = Hosts::new(PathBuf::from(var("TILO_DOOR_HOSTS")?))
-        .map_err(|error| format!("TILO_DOOR_HOSTS: {error}"))?;
-    let door = Door::new(&config, store, Arc::new(hosts)).map_err(|error| error.to_string())?;
+    let door = Door::new(&config, store).map_err(|error| error.to_string())?;
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()

@@ -283,7 +283,7 @@ impl Door {
     }
 
     /// The person's Tilo answered a key's sign-in.
-    pub(crate) async fn key_signed_in(
+    pub(crate) fn key_signed_in(
         &self,
         pending: &crate::Pending,
         name: &str,
@@ -311,16 +311,10 @@ impl Door {
                 &pages::message("Sign-in failed", "The sign-in was incomplete."),
             );
         };
-        let key = match self.check_answer(pending, &proof, cert, now).await {
+        let key = match self.check_answer(pending, &proof, cert, now) {
             Ok(key) => key,
-            Err(reply) => return reply,
+            Err(reply) => return *reply,
         };
-        if !self.names_own_workspace(&key).await {
-            return html(
-                StatusCode::FORBIDDEN,
-                &pages::message("Key not created", "That workspace is not one of yours."),
-            );
-        }
         let Ok((grant, token)) = self
             .store
             .record_key(&key, name, store::GrantKind::Key, now)

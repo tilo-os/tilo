@@ -53,6 +53,9 @@ pub struct Options {
     pub feedback_reviewer: Option<Arc<dyn FeedbackReviewer>>,
     /// Where the host runs its workspaces' Terminal sessions.
     pub shell: Option<Arc<tilo_relay::agents::HostShells>>,
+    /// Serve the web routes as plain HTTP on loopback too, as a client that
+    /// trusts no development certificate reaches them.
+    pub plain: bool,
 }
 
 impl Default for Options {
@@ -64,6 +67,7 @@ impl Default for Options {
             allowed_origins: Vec::new(),
             feedback_reviewer: None,
             shell: None,
+            plain: false,
         }
     }
 }
@@ -122,7 +126,7 @@ pub async fn start(root: &SigningKey, host: &Device, state: &Path, options: Opti
                 store: Some(state.join("web-dev-identity")),
             },
             allowed_origins: options.allowed_origins,
-            plain_listen: None,
+            plain_listen: options.plain.then(|| "127.0.0.1:0".parse().unwrap()),
             public_origin: None,
             fetch_proxy: None,
         })

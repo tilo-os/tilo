@@ -5,7 +5,6 @@
 //! Plain server-rendered HTML with no script, so a decision is the form the
 //! person submits and nothing else on the page can make it.
 
-use crate::directory::Workspace;
 use crate::store::{Grant, GrantKind, Scope};
 use std::fmt::Write as _;
 
@@ -52,13 +51,7 @@ fn page(title: &str, body: &str) -> String {
 
 /// The person's grants, each with a revoke button.
 #[must_use]
-pub fn grants(grants: &[Grant], workspaces: &[Workspace], csrf: &str) -> String {
-    let name_of = |id: &str| {
-        workspaces
-            .iter()
-            .find(|workspace| workspace.id == id)
-            .map_or_else(|| id.to_owned(), |workspace| workspace.name.clone())
-    };
+pub fn grants(grants: &[Grant], csrf: &str) -> String {
     let name_of_grant = |id: &str| {
         grants
             .iter()
@@ -70,7 +63,7 @@ pub fn grants(grants: &[Grant], workspaces: &[Workspace], csrf: &str) -> String 
         .fold(String::new(), |mut rows, grant| {
             let mut reach = match &grant.scope {
                 Scope::Account => "All your workspaces".to_owned(),
-                Scope::Workspace(id) => format!("Only {}", name_of(id)),
+                Scope::Workspace(id) => format!("Only workspace {id}"),
             };
             match &grant.kind {
                 GrantKind::Agent => {}

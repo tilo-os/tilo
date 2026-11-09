@@ -15,29 +15,39 @@ sign-in proof from a device of theirs and a certificate for a key the door
 generated for this one grant. The grant reaches **all my workspaces** (and
 making new ones), or **one workspace** when the agent was pointed at
 `https://mcp.tilo.sh/w/<workspace>`. Each MCP session is one agent run
-(`Claude Code #1`), carried to the person's runtime. Grants are listed and
-revoked at `https://mcp.tilo.sh/grants`.
+(`Claude Code #1`), which the door serves itself: the agent surface `tilo mcp`
+serves (`tilo_runtime::mcp::McpServer`), over the grant's own session with the
+relay the person's workspaces live on. Grants are listed and revoked at
+`https://mcp.tilo.sh/grants`.
 
 ## Authority
 
 The door holds no device of anyone and no standing authority over anyone.
 For each grant it generates a key, and the person's root certifies it as an
 agent's grant (`tilo_user_identity::DeviceCapabilities::agent`): scoped to
-all of the person's workspaces or one, expiring within 90 days (the door asks for 89), governing
-nothing. The door acts only with that key:
+all of the person's workspaces or one, expiring within 90 days (the door asks
+for 89), governing nothing. A key minted for one workspace is certified by its
+parent grant's key. The door acts only with these keys, each the device of
+its own session with the relay:
 
-- on the person's **hosts** (`room.list`, `room.create`,
-  `identity.revocations`), which treat an agent's grant as their person
-  within its scope: it makes workspaces only when it reaches all of them,
-  lists only what it reaches, and governs, enters or administers nothing;
-- at the person's **runtime**, which challenges every session it opens and
-  checks the grant's proof, its scope and the person's revocations itself.
+- The relay admits a grant as its person's agent in exactly the workspaces its
+  scope reaches where it redeemed its person's invitation, holds it to an
+  agent's role (Editor at most), and lets it govern, invite or administer
+  nothing (`tilo_room_host::workspace_access`). Its certificate's expiry and
+  its person's revocations, a minted grant's issuer included, are checked at
+  every handshake.
+- A grant reaching all workspaces enters through the site's door to its home
+  workspace, as the person's page does, and asks the relay there for the
+  person's own workspace (`room.create-own`); a minted grant's parent asks for
+  its invitation, and the minted grant never enters the home workspace
+  (`docs/architecture/workspace-api.md`).
 
-Revoking a grant at `/grants` (or the agent revoking its refresh token) ends
-its tokens and sessions at once and forgets its key. The person can also
-revoke the grant's key from their devices like any other device; hosts and
-the runtime then refuse it from their own revocation lists. Past its
-certificate's expiry a grant issues no token and the agent asks again.
+Revoking a grant at `/grants` (or the agent revoking its refresh token, or
+`account/keys#revoke`) ends its tokens and sessions at once, with every grant
+it minted, and forgets their keys. The person can also revoke the grant's key
+from their devices like any other device; the relay then refuses it from its
+own revocation list. Past its certificate's expiry a grant issues no token and
+the agent asks again.
 
 ## What a deployment provides
 
@@ -47,36 +57,24 @@ The binary reads its configuration from the environment:
 |---|---|
 | `TILO_DOOR_LISTEN` | `HOST:PORT` to listen on, plain HTTP behind a TLS-terminating proxy |
 | `TILO_DOOR_ISSUER` | The door's public origin as agents reach it (`https://mcp.tilo.sh`) |
-| `TILO_DOOR_WEB_ENTRY` | The origin of the person's Tilo on the web, which signs them in and certifies grants (`https://tilo.sh`) |
+| `TILO_DOOR_WEB_ENTRY` | The origin of the person's Tilo on the web, which signs them in and certifies grants (`https://tilo.sh`); its `entry.json` names the door to the site's home workspace on the relay (`home.admission`) |
+| `TILO_DOOR_RELAY` | The public origin of the relay the person's workspaces live on (`https://eu1.tilo.sh`) |
 | `TILO_DOOR_STATE` | A private file for registered clients, grants (with each live grant's key) and token digests; on persistent storage, one writer |
-| `TILO_DOOR_HOSTS` | The hosts registry below |
 
-The hosts registry is JSON the hosting side writes and updates; the door
-reads it again when it changes. It names places, not authority:
+What it reaches:
 
-```json
-{"people": {"<identity root key, hex>": {
-  "hosts": [{
-    "name": "<host name>",
-    "default": true,
-    "device": "<the host's device key, hex>",
-    "addr": <the host's iroh EndpointAddr, as serde writes it>,
-    "agents": "http://<internal address of the person's runtime>",
-    "agents_token_file": "…"
-  }]
-}}}
-```
+- **The site** over HTTPS: `GET <TILO_DOOR_WEB_ENTRY>/entry.json`.
+- **The relay** over HTTPS at `TILO_DOOR_RELAY`: `/peer/v1/host` (the relay's
+  certificate and iroh address), `/peer/v1/join` (redeeming invitations) and
+  the site's door (`/peer/v1/directory/<workspace>/join`, where `entry.json`
+  says).
+- **The relay's iroh endpoint** over UDP (QUIC), directly or through the
+  packet relay `/peer/v1/host` names: one session per MCP session, as the
+  grant's key.
 
-- **The person's runtime.** One `tilo-runtime` per person (beside their
-  host) serves every workspace it takes part in behind one HTTP endpoint at
-  `agents`: `/w/<workspace>/mcp` and `/w/<workspace>/join`, behind a bearer
-  token the door holds (`agents_token_file`), with grant proofs required
-  (`TILO_RUNTIME_MCP_HTTP_GRANTS=required`, so the token alone reaches
-  nothing). A workspace `create_workspace` makes is joined there before the
-  tool answers, so the next call acts in it.
-- **Revocations.** The door asks the person's hosts for the revocations they
-  enforce (`identity.revocations`), the same list their handshakes read,
-  which the person's devices keep current; nothing is mirrored to the door.
+The relay must offer workspaces of people's own (`TILO_ROOMS_OWN_WORKSPACES`)
+and run its workspaces' records (its agents, or `--room-records`).
+
 - **Sign-in.** `TILO_DOOR_WEB_ENTRY` must serve `/sign-in`: given
   `audience`, `challenge`, `return`, `pending`, `client`, `grant_key`,
   `grant_scope` (`all` or a workspace id) and `grant_expires` (Unix ms), it

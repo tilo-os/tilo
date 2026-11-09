@@ -10,7 +10,7 @@
 //!
 //! `tilo_ls account` lists them, `tilo_read` reads the lists, `tilo_do` runs
 //! an action, and `tilo_status` follows one that waits for the person. Making
-//! a workspace is the host's own operation ([`crate::directory`]). Minting a
+//! a workspace is the relay's own operation ([`crate::relay`]). Minting a
 //! key is a certificate the grant's own key signs for one workspace
 //! ([`tilo_user_identity::prepare_minted_grant`]): narrower than the grant,
 //! ending no later than it, and revoked with it. Creating a key asks the
@@ -21,8 +21,8 @@
 //! `pending <id>: …`), or, for a caller that asks for typed answers, the
 //! shapes `docs/developers/sdk-wire.md` gives every tool.
 
-use crate::directory::DirectoryError;
 use crate::grant_key::GrantKey;
+use crate::relay::{Connection, RelayError};
 use crate::store::{Grant, GrantKind, Scope};
 use crate::{Door, now_ms};
 use serde_json::{Value, json};
@@ -75,19 +75,19 @@ fn failed(code: &'static str, message: impl Into<String>, next: impl Into<String
     }
 }
 
-fn refused(error: &DirectoryError) -> Outcome {
+fn refused(error: &RelayError) -> Outcome {
     match error {
-        DirectoryError::NotFound => failed(
+        RelayError::NotFound => failed(
             "not_found",
             "no such workspace of yours",
             "tilo_do account/workspaces#list names your workspaces",
         ),
-        DirectoryError::Refused(reason) => failed(
+        RelayError::Refused(reason) => failed(
             "refused",
             format!("the host refused: {reason}"),
             "the reason says what the host needs (a free workspace, payment); try again once it holds",
         ),
-        DirectoryError::Unavailable(reason) => {
+        RelayError::Unavailable(reason) => {
             failed("unavailable", reason.clone(), "try again shortly")
         }
     }
@@ -253,11 +253,11 @@ fn grant_row(grant: &Grant) -> Value {
 
 impl Door {
     /// Answer `tool` with `arguments` on the account, as the grant `grant`
-    /// with its key `key`, typed when `structured`.
+    /// in its run `session`, typed when `structured`.
     pub(crate) async fn account_call(
         &self,
         grant: &str,
-        key: &GrantKey,
+        session: &crate::session::Session,
         tool: &str,
         arguments: &Value,
         structured: bool,
@@ -274,6 +274,7 @@ impl Door {
                 ),
             );
         };
+        let key = session.connection();
         match tool {
             "tilo_ls" => self.account_ls(key, path, structured).await,
             "tilo_read" => self.account_read(&grant, key, path, structured).await,
@@ -293,7 +294,7 @@ impl Door {
     }
 
     /// `tilo_ls` of the account, or of its workspaces.
-    async fn account_ls(&self, key: &GrantKey, path: &str, structured: bool) -> Value {
+    async fn account_ls(&self, key: &Connection, path: &str, structured: bool) -> Value {
         match path.trim_end_matches('/') {
             "" | ROOT => {
                 let mut text = String::from("account: your workspaces and keys");
@@ -378,7 +379,7 @@ impl Door {
     async fn account_read(
         &self,
         grant: &Grant,
-        key: &GrantKey,
+        key: &Connection,
         path: &str,
         structured: bool,
     ) -> Value {
@@ -438,7 +439,13 @@ impl Door {
         )
     }
 
-    async fn account_do(&self, grant: &Grant, key: &GrantKey, path: &str, args: &Value) -> Outcome {
+    async fn account_do(
+        &self,
+        grant: &Grant,
+        key: &Connection,
+        path: &str,
+        args: &Value,
+    ) -> Outcome {
         let field = |name: &str| {
             args.get(name)
                 .and_then(Value::as_str)
@@ -455,7 +462,7 @@ impl Door {
                         "pass args {name: \"Applicant: Jane Doe\"}",
                     );
                 };
-                match self.directory.create(key, name, field("host")).await {
+                match self.relay.create(key, name).await {
                     Ok(created) => Outcome::Ok(json!({"workspace": created})),
                     Err(error) => refused(&error),
                 }
@@ -508,15 +515,13 @@ impl Door {
         }
     }
 
-    async fn account_workspaces(&self, key: &GrantKey) -> Outcome {
-        match (
-            self.directory.workspaces(key).await,
-            self.directory.hosts(key).await,
-        ) {
-            (Ok(workspaces), Ok(hosts)) => {
-                Outcome::Ok(json!({"workspaces": workspaces, "hosts": hosts}))
-            }
-            (Err(error), _) | (_, Err(error)) => refused(&error),
+    async fn account_workspaces(&self, key: &Connection) -> Outcome {
+        match self.relay.workspaces(key).await {
+            Ok(workspaces) => Outcome::Ok(json!({
+                "workspaces": workspaces,
+                "hosts": [{"name": self.relay.name(), "default": true}],
+            })),
+            Err(error) => refused(&error),
         }
     }
 
@@ -566,7 +571,7 @@ impl Door {
     }
 
     /// Mint a key reaching one workspace, for an agent to act there.
-    async fn mint(&self, grant: &Grant, key: &GrantKey, args: &Value) -> Outcome {
+    async fn mint(&self, grant: &Grant, connection: &Connection, args: &Value) -> Outcome {
         if grant.scope != Scope::Account {
             return failed(
                 "forbidden",
@@ -588,13 +593,14 @@ impl Door {
                 "account/workspaces#list names them",
             );
         };
-        let found = match self.directory.workspaces(key).await {
+        let found = match self.relay.workspaces(connection).await {
             Ok(listed) => listed.into_iter().find(|listed| listed.id == workspace),
             Err(error) => return refused(&error),
         };
         let Some(found) = found else {
-            return refused(&DirectoryError::NotFound);
+            return refused(&RelayError::NotFound);
         };
+        let key = &connection.key;
         let name = args
             .get("name")
             .and_then(Value::as_str)

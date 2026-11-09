@@ -261,17 +261,7 @@ async fn door_of(site: &str, host_origin: &str) -> Option<(Web, String)> {
         return None;
     }
     let entry: Value = serde_json::from_slice(&body).ok()?;
-    let home = entry.get("home")?;
-    let home_host = home.pointer("/host/origin")?.as_str()?;
-    if home_host.trim_end_matches('/') != host_origin.trim_end_matches('/') {
-        return None;
-    }
-    let admission = tilo_net::Url::parse(home.get("admission")?.as_str()?).ok()?;
-    if admission.scheme() != "https" {
-        return None;
-    }
-    let origin = admission.origin().ascii_serialization();
-    let path = format!("{}join", admission.path());
+    let (origin, path) = peer_login::site_door(&entry, host_origin)?;
     Some((Web::new(&origin), path))
 }
 

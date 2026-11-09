@@ -3,7 +3,7 @@ name = "tilo-front-door"
 version = "0.1.0"
 edition = "2024"
 publish.workspace = true
-description = "The MCP front door of hosted Tilo: OAuth 2.1 for agents, sign-in with a device of the person, scope consent, revocable grants, and routing of each agent session to the tilo-runtime endpoint of its workspace's host."
+description = "The MCP front door of hosted Tilo: OAuth 2.1 for agents, sign-in with a device of the person, scope consent, revocable grants and API keys, and the agent surface served for each session over the grant's own session with the relay."
 license = "MIT OR Apache-2.0"
 
 [dependencies]
@@ -14,10 +14,13 @@ http-body-util = "0.1.3"
 hyper = { version = "1.8.1", features = ["http1", "server"] }
 hyper-util = { version = "0.1.20", features = ["tokio"] }
 ed25519-dalek.workspace = true
-iroh.workspace = true
 iroh-base.workspace = true
+collab-types = { path = "../../collab/collab-types" }
 tilo-actions = { path = "../../collab/actions" }
+tilo-browser-peer = { path = "../../browser/tilo-browser-peer" }
+tilo-relay-protocol = { path = "../tilo-relay-protocol" }
 tilo-relay-session = { path = "../tilo-relay-session" }
+tilo-runtime = { path = "../../runtime/tilo-runtime" }
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
 sha2.workspace = true
@@ -31,42 +34,9 @@ tracing-subscriber = { workspace = true, features = ["env-filter"] }
 url.workspace = true
 uuid.workspace = true
 
-# The door on loopback with a person's host and runtime (`local`), for
-# testing the door's clients.
-tempfile = { workspace = true, optional = true }
-tilo-automerge-isolate = { workspace = true, optional = true }
-tilo-resource = { path = "../../sdk/tilo-resource", optional = true }
-tilo-room-host = { path = "../tilo-room-host", optional = true }
-tilo-runtime = { path = "../../runtime/tilo-runtime", optional = true }
-tilo-workspace-join = { path = "../../collab/workspace-join", optional = true }
-
-[features]
-local = [
-  "dep:tempfile",
-  "dep:tilo-automerge-isolate",
-  "dep:tilo-resource",
-  "dep:tilo-room-host",
-  "dep:tilo-runtime",
-  "dep:tilo-workspace-join",
-  "tilo-actions/test-support",
-]
-
-[[bin]]
-name = "tilo-door-local"
-required-features = ["local"]
-
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 # The workspace-hack's native feature set does not build for wasm32.
 workspace-hack = { version = "0.1" }
-
-[dev-dependencies]
-tempfile.workspace = true
-tilo-actions = { path = "../../collab/actions", features = ["test-support"] }
-tilo-automerge-isolate.workspace = true
-tilo-resource = { path = "../../sdk/tilo-resource" }
-tilo-room-host = { path = "../tilo-room-host" }
-tilo-runtime = { path = "../../runtime/tilo-runtime" }
-tilo-workspace-join = { path = "../../collab/workspace-join" }
 
 [lints]
 workspace = true
