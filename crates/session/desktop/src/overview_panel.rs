@@ -194,6 +194,8 @@ pub struct OverviewPanel {
     picks: VecDeque<OverviewPick>,
     /// The rows below the workspaces, as the desk's [`crate::overview_tilo::TiloDesk`] makes them.
     tilo_rows: Vec<crate::overview_tilo::TiloRow>,
+    /// How wide the rows' trailing controls stand: their widest label, as last drawn.
+    tilo_action_width: f64,
     /// The host may make workspaces at all.
     offer_add: bool,
     /// The panel as last recorded, and the revision it shows.
@@ -221,6 +223,7 @@ impl OverviewPanel {
             laid_out: Rect::ZERO,
             desk: OverviewDesk::default(),
             tilo_rows: Vec::new(),
+            tilo_action_width: 0.0,
             flight: None,
             metrics: Metrics::default(),
             grid: GridMetrics::for_theme(&Theme::default()),
@@ -607,6 +610,7 @@ impl Widget for OverviewPanel {
             return;
         }
         self.resolve_layout(theme);
+        self.measure_tilo_actions(text, theme);
         self.reconcile_window_selection();
         let p = ui::num::f32_of_f64(progress);
         ui::overlay::scrim::whole_view(scene, transform, self.rect, p, theme);

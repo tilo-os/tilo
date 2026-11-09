@@ -73,6 +73,8 @@ pub(super) struct Metrics {
     pub workspace_row_h: f64,
     pub workspace_row_gap: f64,
     pub row_pad: f64,
+    /// A row below the workspaces: its title, `s1` , its detail, and `s2` above and below.
+    pub tilo_row_h: f64,
     pub chip_h: f64,
     /// Gutter above the picture inside the panel (`s3`).
     pub window_gap: f64,
@@ -119,6 +121,7 @@ impl Metrics {
             workspace_row_h: lh(TextRole::Heading) + s1 + lh(TextRole::Caption) + 2.0 * s3,
             workspace_row_gap: s2,
             row_pad: s4,
+            tilo_row_h: lh(TextRole::Body) + s1 + lh(TextRole::Caption) + 2.0 * s2,
             chip_h: lh(TextRole::Caption) + s2,
             window_gap: s3,
             here_air: s6,

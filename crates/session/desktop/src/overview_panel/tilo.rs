@@ -18,7 +18,8 @@ use super::OverviewPanel;
 use crate::overview_panel::OverviewPick;
 use crate::overview_tilo::{TiloItem, TiloRow};
 
-/// Wide enough for "Manage billing" in every language the desktop speaks.
+/// The controls' width before they were first measured: enough for "Manage billing" in every
+/// language the desktop speaks.
 const ACTION_WIDTH: f64 = 148.0;
 const ACTION_HEIGHT: f64 = 28.0;
 
@@ -36,20 +37,77 @@ impl OverviewPanel {
             .saturating_add(usize::from(self.desk.can_join))
     }
 
-    /// How many slots the rows take.
-    pub(super) fn tilo_slots(&self) -> usize {
-        self.tilo_rows.len()
+    /// A row's height: a section's name stands in the gap that opens the section, a row is as tall
+    /// as its two lines.
+    fn tilo_height(&self, row: &TiloRow) -> f64 {
+        match row {
+            TiloRow::Caption(_) => self.metrics.section_gap + self.metrics.caption_h,
+            TiloRow::Item(_) => self.metrics.tilo_row_h,
+        }
     }
 
-    /// Row `index`'s slot.
+    /// How many of the list's slots the rows fill, so the list scrolls to the last of them.
+    pub(super) fn tilo_slots(&self) -> usize {
+        let m = self.metrics;
+        let pitch = m.workspace_row_h + m.workspace_row_gap;
+        let height: f64 = self.tilo_rows.iter().map(|row| self.tilo_height(row)).sum();
+        // Whole slots, rounded up: a fraction left over is air under the last row.
+        if pitch <= 0.0 {
+            return 0;
+        }
+        ui::num::usize_of_f64((height / pitch).ceil())
+    }
+
+    /// Row `index`'s rect: below the "go to" list, after the rows before it.
     fn tilo_rect(&self, index: usize) -> Rect {
-        self.list_slot_rect(self.go_to_slots().saturating_add(index))
+        let first = self.list_slot_rect(self.go_to_slots());
+        let above: f64 = self
+            .tilo_rows
+            .iter()
+            .take(index)
+            .map(|row| self.tilo_height(row))
+            .sum();
+        let height = self
+            .tilo_rows
+            .get(index)
+            .map_or(0.0, |row| self.tilo_height(row));
+        Rect::new(
+            first.x0,
+            first.y0 + above,
+            first.x1,
+            first.y0 + above + height,
+        )
     }
 
     fn tilo_item(&self, index: usize) -> Option<&TiloItem> {
         match self.tilo_rows.get(index)? {
             TiloRow::Item(item) => Some(item),
             TiloRow::Caption(_) => None,
+        }
+    }
+
+    /// Fit the controls to their widest label, so each says it whole and they stand in one column.
+    pub(super) fn measure_tilo_actions(
+        &mut self,
+        text: &mut ui::text_render::TextRenderer,
+        theme: &ui::theme::Theme,
+    ) {
+        self.tilo_action_width = self
+            .tilo_rows
+            .iter()
+            .filter_map(|row| match row {
+                TiloRow::Item(item) => item.action.as_ref(),
+                TiloRow::Caption(_) => None,
+            })
+            .map(|(label, _)| ButtonFace::new(Rect::ZERO, label).intrinsic_width(text, theme))
+            .fold(0.0, f64::max);
+    }
+
+    fn action_width(&self) -> f64 {
+        if self.tilo_action_width > 0.0 {
+            self.tilo_action_width
+        } else {
+            ACTION_WIDTH
         }
     }
 
@@ -61,7 +119,7 @@ impl OverviewPanel {
         let h = ACTION_HEIGHT.min(row.height() - 8.0).max(0.0);
         let cy = row.center().y;
         Some(Rect::new(
-            row.x1 - pad - ACTION_WIDTH,
+            row.x1 - pad - self.action_width(),
             cy - h / 2.0,
             row.x1 - pad,
             cy + h / 2.0,
