@@ -47,9 +47,37 @@ fn a_member_is_configured_by_the_relay_it_serves() {
         "the relay's address alone does not say which device it is"
     );
     env.set(RELAY_DEVICE_ENV, &device);
+    env.remove(RELAY_ENDPOINT_ENV);
     let relay = Relay::from_env().unwrap().unwrap();
     assert_eq!(relay.device(), [0x22; 32]);
     assert_eq!(relay.address(), "relay.example:7703");
+    env.set(RELAY_ENV, "127.0.0.1:7704");
+    let endpoint = public(3);
+    env.set(RELAY_ENDPOINT_ENV, hex::encode(endpoint));
+    let relay = Relay::from_env().unwrap().unwrap();
+    assert_eq!(relay.device(), [0x22; 32], "requests are still the device's");
+    assert_eq!(relay.endpoint_addr().unwrap().id.as_bytes(), &endpoint);
+    env.set(RELAY_ENDPOINT_ENV, "not hex");
+    assert!(Relay::from_env().is_err(), "an endpoint id that is no key");
+}
+
+/// An endpoint id: the public half of a key seeded `seed`.
+fn public(seed: u8) -> [u8; 32] {
+    SigningKey::from_bytes(&[seed; 32]).verifying_key().to_bytes()
+}
+
+#[test]
+fn a_tilo_relay_is_dialed_at_its_endpoint_and_its_requests_are_its_devices() {
+    // A Tilo relay keys its endpoint apart from its device: the member dials
+    // the endpoint, and takes requests signed by the device.
+    let relay = Relay::new(&hex::encode([0x11; 32]), "127.0.0.1:7704")
+        .unwrap()
+        .with_endpoint(&hex::encode(public(4)))
+        .unwrap();
+    assert_eq!(relay.device(), [0x11; 32]);
+    let address = relay.endpoint_addr().unwrap();
+    assert_eq!(address.id.as_bytes(), &public(4));
+    assert!(address.ip_addrs().any(|socket| socket.port() == 7704));
 }
 
 #[test]

@@ -25,6 +25,7 @@ inside curl --version >/dev/null || die 'no curl for the placer'
 inside tilo-legacy hosted help | grep -q -- 'place --listen' || die 'tilo-legacy hosted lacks place'
 inside mkfs.xfs -V >/dev/null || die 'no mkfs.xfs'
 inside tar --version >/dev/null || die 'no tar, which unpacks the member identity'
+[[ -x $root/usr/local/bin/tilo-runtime ]] || die 'no tilo-runtime, the member that takes the relay'"'"'s runs'
 inside tilo-legacy hosted help | grep -q -- '--evict-notice' || die 'tilo-legacy hosted lacks --evict-notice'
 inside tilo-legacy hosted help | grep -q -- '--memory-mib' || die 'tilo-legacy hosted lacks --memory-mib'
 # The start's own mkfs.xfs line, on a scratch file: the state disk's filesystem is made only

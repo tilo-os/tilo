@@ -13,8 +13,10 @@ COPY . .
 RUN --mount=type=cache,target=/usr/local/cargo/registry,sharing=locked \
     --mount=type=cache,target=/workspace/target,sharing=locked \
     cargo build --locked --release -p legacy-vm --bin tilo-legacy --bin tilo-hosted-jail \
+        -p tilo-runtime --bin tilo-runtime \
     && install -D -m 0755 target/release/tilo-legacy /out/tilo-legacy \
-    && install -D -m 0755 target/release/tilo-hosted-jail /out/tilo-hosted-jail
+    && install -D -m 0755 target/release/tilo-hosted-jail /out/tilo-hosted-jail \
+    && install -D -m 0755 target/release/tilo-runtime /out/tilo-runtime
 
 # Firecracker and its jailer, from the release os/external-assets pins.
 FROM scratch AS external-assets
@@ -54,6 +56,8 @@ RUN --mount=type=bind,from=external-assets,source=/,target=/assets,ro \
 RUN groupadd --system --gid 10001 tilo-hosted \
     && useradd --system --uid 10001 --gid 10001 --home-dir /var/lib/tilo-hosted --shell /usr/sbin/nologin tilo-hosted
 COPY --from=builder /out/tilo-legacy /usr/local/bin/tilo-legacy
+# The member that takes the relay's runs for the workspaces on this host.
+COPY --from=builder /out/tilo-runtime /usr/local/bin/tilo-runtime
 COPY --from=builder /out/tilo-hosted-jail /usr/libexec/tilo/tilo-hosted-jail
 RUN chown root:tilo-hosted /usr/libexec/tilo/tilo-hosted-jail \
     && chmod 0750 /usr/libexec/tilo/tilo-hosted-jail

@@ -17,14 +17,19 @@
 #      operator that runs the relay, from TILO_VM_MEMBER_IDENTITIES (a
 #      directory holding <pod name>.tar, made with tilo-enroll device-key and
 #      install-cert), unpacked onto the state disk the first time only, so the
-#      device key stays with the host's disk as the host moves between nodes;
+#      device key stays with the host's disk as the host moves between nodes:
+#      the key and certificate under member/root (TILO_IDENTITY_ROOT), the
+#      person's record under member/config/tilo/identity;
 #   4. the guest: the image the release key signed, fetched once per digest
 #      (TILO_VM_GUEST_REF overrides the one this build pins);
 #   5. `tilo-legacy hosted serve`, jailed, which suspends every VM when the
 #      eviction notice (TILO_VM_EVICT_NOTICE) appears and on SIGTERM, and wakes
 #      no more VMs than its memory budget (TILO_VM_MEMORY_MIB, or auto from the
 #      node's memory) holds, and answers a placer's Status on
-#      TILO_VM_STATUS_LISTEN.
+#      TILO_VM_STATUS_LISTEN;
+#   6. with TILO_TAKE_WORK_RELAY, the member: `tilo-runtime --daemon`, as the
+#      service, under the member identity, which takes the relay's runs for
+#      the workspaces whose VMs are here (restarted if it stops).
 set -eu
 
 state_device=${TILO_VM_STATE_DEVICE:-/dev/tilo-vm-state}
@@ -84,6 +89,12 @@ if [ -n "${TILO_VM_MEMBER_IDENTITIES:-}" ] && [ ! -e "$member/root/device-privat
   rm -rf "$member"
   mv "$member.new" "$member"
 fi
+# The person's record where an identity reads it: $XDG_CONFIG_HOME/tilo/identity.
+if [ -d "$member/person" ] && [ ! -e "$member/config/tilo/identity" ]; then
+  mkdir -p -m 0700 "$member/config/tilo"
+  mv "$member/person" "$member/config/tilo/identity"
+  chown -R tilo-hosted:tilo-hosted "$member/config"
+fi
 
 # 4. the guest
 # The service's own home: skopeo reads its configuration under $HOME.
@@ -113,4 +124,22 @@ if [ "$memory_mib" = auto ]; then
 fi
 if [ -n "$memory_mib" ]; then set -- "$@" --memory-mib "$memory_mib"; fi
 if [ -n "${TILO_VM_STATUS_LISTEN:-}" ]; then set -- "$@" --status-listen "$TILO_VM_STATUS_LISTEN"; fi
+
+# 6. the member
+if [ -n "${TILO_TAKE_WORK_RELAY:-}" ]; then
+  [ -e "$member/root/device-private/keypair.bin" ] || { say 'TILO_TAKE_WORK_RELAY is set, but this host has no member identity'; exit 1; }
+  mkdir -p -m 0700 "$member/profile" "$member/home"
+  chown tilo-hosted:tilo-hosted "$member/profile" "$member/home"
+  chmod 0700 "$member/profile"
+  (
+    while :; do
+      HOME=$member/home XDG_CONFIG_HOME=$member/config TILO_IDENTITY_ROOT=$member/root \
+        TILO_RUNTIME_PROFILE=$member/profile TILO_HOSTED_VM_SOCKET=$run/hosted.sock \
+        TILO_HOSTED_PLANS=${TILO_VM_PLANS:-} \
+        setpriv --reuid=10001 --regid=10001 --init-groups --inh-caps=-all -- \
+        tilo-runtime --daemon --profile "$member/profile" || say "the member stopped ($?); starting it again"
+      sleep 5
+    done
+  ) &
+fi
 HOME=$data exec setpriv --reuid=10001 --regid=10001 --init-groups --inh-caps=-all -- tilo-legacy hosted serve "$@"

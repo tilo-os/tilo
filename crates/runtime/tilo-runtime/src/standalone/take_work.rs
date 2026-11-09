@@ -48,6 +48,10 @@ pub const PORT: u16 = 7703;
 pub const RELAY_ENV: &str = "TILO_TAKE_WORK_RELAY";
 /// The device key of the relay a member serves, hex.
 pub const RELAY_DEVICE_ENV: &str = "TILO_TAKE_WORK_DEVICE";
+/// The relay's endpoint id, hex, when its endpoint is keyed apart from its
+/// device: a Tilo relay's is (`tilo-enroll device-key` prints it as
+/// `relay_service_node_id`). Without it the endpoint is the device key.
+pub const RELAY_ENDPOINT_ENV: &str = "TILO_TAKE_WORK_ENDPOINT";
 
 /// What a member keeps of its shells, under the profile, and where each
 /// workspace's files are below it.
@@ -60,6 +64,7 @@ const FILES: &str = "state/take-work/files";
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Relay {
     device: [u8; 32],
+    endpoint: [u8; 32],
     address: String,
 }
 
@@ -71,17 +76,26 @@ impl Relay {
     ///
     /// Either is not usable as such.
     pub fn new(device: &str, address: &str) -> Result<Self, String> {
-        let key: [u8; 32] = hex::decode(device.trim())
-            .ok()
-            .and_then(|bytes| bytes.try_into().ok())
-            .ok_or_else(|| format!("{device} is not a device key"))?;
+        let key = key(device).ok_or_else(|| format!("{device} is not a device key"))?;
         if address.trim().is_empty() {
             return Err("the relay's address is empty".into());
         }
         Ok(Self {
             device: key,
+            endpoint: key,
             address: address.trim().to_owned(),
         })
+    }
+
+    /// This relay with its endpoint keyed `endpoint` (hex), apart from its
+    /// device key, as a Tilo relay's is.
+    ///
+    /// # Errors
+    ///
+    /// `endpoint` is not a key.
+    pub fn with_endpoint(mut self, endpoint: &str) -> Result<Self, String> {
+        self.endpoint = key(endpoint).ok_or_else(|| format!("{endpoint} is not an endpoint id"))?;
+        Ok(self)
     }
 
     /// The relay the environment names ([`RELAY_ENV`], [`RELAY_DEVICE_ENV`]),
@@ -97,7 +111,11 @@ impl Relay {
         let device = std::env::var(RELAY_DEVICE_ENV).map_err(|_| {
             format!("{RELAY_ENV} is set, so {RELAY_DEVICE_ENV} must name the relay's device key")
         })?;
-        Self::new(&device, &address).map(Some)
+        let relay = Self::new(&device, &address)?;
+        match std::env::var(RELAY_ENDPOINT_ENV) {
+            Ok(endpoint) => relay.with_endpoint(&endpoint).map(Some),
+            Err(_) => Ok(Some(relay)),
+        }
     }
 
     /// The relay's device key.
@@ -114,7 +132,7 @@ impl Relay {
 
     /// The relay's endpoint, as a session with it is dialed.
     pub(in crate::standalone) fn endpoint_addr(&self) -> Result<EndpointAddr, String> {
-        let id = EndpointId::from_bytes(&self.device).map_err(|error| error.to_string())?;
+        let id = EndpointId::from_bytes(&self.endpoint).map_err(|error| error.to_string())?;
         let sockets = self
             .address
             .to_socket_addrs()
@@ -124,6 +142,13 @@ impl Relay {
             sockets.map(iroh::TransportAddr::Ip),
         ))
     }
+}
+
+/// A 32-byte key written in hex.
+fn key(hex_key: &str) -> Option<[u8; 32]> {
+    hex::decode(hex_key.trim())
+        .ok()
+        .and_then(|bytes| bytes.try_into().ok())
 }
 
 /// Where `workspace`'s files are on a member that holds no synced replica of
