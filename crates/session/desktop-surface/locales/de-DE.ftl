@@ -516,30 +516,8 @@ desktop-view-explore-activity = Arbeitsbereich-Aktivität erkunden
 desktop-view-replay-activity = Arbeitsbereich-Aktivität wiedergeben
 
 ## Desktop window search
-search-provider-desktop-windows = Fenster auf dem Desktop
-search-window-move-tab = Tab „{ $tab }“ in den Arbeitsbereich „{ $workspace }“ verschieben
-search-window-move-tab-detail = Aus dem Arbeitsbereich „{ $workspace }“
-search-window-copy-tab = Tab „{ $tab }“ in den Arbeitsbereich „{ $workspace }“ kopieren
-search-window-move-tab-to = „{ $tab }“ in einen anderen Arbeitsbereich verschieben
-search-window-copy-tab-to = „{ $tab }“ in einen anderen Arbeitsbereich kopieren
-search-window-group-untitled = Unbenanntes Fenster
 search-window-nth = { $nth } von { $count }
 search-window-placeholder = { $searched } durchsuchen…
-search-window-close-group = Fenstergruppe „{ $group }“ schließen
-search-window-close-group-detail = Arbeitsbereich „{ $workspace }“ · Leiste „{ $strip }“ · { $count ->
-    [one] 1 Tab
-   *[other] { $count } Tabs
-}
-search-window-close-tab = Tab „{ $tab }“ schließen
-search-window-close-tab-detail = Arbeitsbereich „{ $workspace }“ · Leiste „{ $strip }“
-search-window-share-tab = „{ $tab }“ mit dem Arbeitsbereich teilen
-search-window-unshare-tab = „{ $tab }“ nicht mehr teilen
-search-window-focus-place-strip = Leiste „{ $strip }“
-# Wörter, die nach Schließen- bzw. Verschieben/Kopieren-Zeilen fragen;
-# Englisch bleibt als Rückfall erhalten. Leerzeichengetrennt, klein.
-search-window-verb-close = schließen beenden close quit
-search-window-verb-relocate = verschieben kopieren senden move copy send
-search-window-verb-share = teilen zeigen beenden share show unshare stop
 
 # Notifications: banner stack and notification centre
 drill-in-back = Zurück

@@ -498,30 +498,8 @@ desktop-view-explore-activity = Explore workspace activity
 desktop-view-replay-activity = Replay workspace activity
 
 ## Desktop window search
-search-provider-desktop-windows = Desktop windows
-search-window-move-tab = Move tab “{ $tab }” to workspace “{ $workspace }”
-search-window-move-tab-detail = From workspace “{ $workspace }”
-search-window-copy-tab = Copy tab “{ $tab }” to workspace “{ $workspace }”
-search-window-move-tab-to = Move “{ $tab }” to another workspace
-search-window-copy-tab-to = Copy “{ $tab }” to another workspace
-search-window-group-untitled = Untitled window
 search-window-nth = { $nth } of { $count }
 search-window-placeholder = Search { $searched }…
-search-window-close-group = Close window group “{ $group }”
-search-window-close-group-detail = Workspace “{ $workspace }” · strip “{ $strip }” · { $count ->
-    [one] 1 tab
-   *[other] { $count } tabs
-}
-search-window-close-tab = Close tab “{ $tab }”
-search-window-close-tab-detail = Workspace “{ $workspace }” · strip “{ $strip }”
-search-window-share-tab = Share “{ $tab }” with the workspace
-search-window-unshare-tab = Stop sharing “{ $tab }”
-search-window-focus-place-strip = Strip “{ $strip }”
-# Words that ask for a window's close or move/copy rows; a search for a
-# window by name only offers going to it. Space-separated, lowercase.
-search-window-verb-close = close quit
-search-window-verb-relocate = move copy send
-search-window-verb-share = share show unshare stop
 
 # Notifications: banner stack and notification centre
 drill-in-back = Back

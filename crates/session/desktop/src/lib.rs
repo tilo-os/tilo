@@ -36,7 +36,6 @@ pub mod people_overlay;
 pub mod profile_card;
 pub mod records;
 pub mod resolver;
-pub mod search;
 pub mod search_overlay;
 pub mod shortcuts;
 pub mod strip_indicators;
