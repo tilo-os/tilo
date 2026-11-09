@@ -11,6 +11,7 @@ use std::sync::Arc;
 
 use super::edit::RenameStamp;
 use super::groups::{Band, Group, HEADING_TARGET};
+use super::open::first_page_title;
 use super::{ListModel, MountedRow, MountedRowState, VirtualList};
 use crate::a11y::{AccessNode, AccessState, Role};
 use crate::widget::Widget;
@@ -508,11 +509,6 @@ impl<M: ListModel> VirtualList<M> {
 
 /// The title the item `widget` presents states, the first one it holds: a document titles
 /// itself in a heading, or in the field the person types its title in.
-fn first_page_title(widget: &dyn Widget) -> Option<String> {
-    Widget::own_page_title(widget)
-        .or_else(|| widget.children().into_iter().find_map(first_page_title))
-}
-
 fn first_descendant_accessible_name(widget: &dyn Widget) -> Option<String> {
     widget.children().into_iter().find_map(|child| {
         child
@@ -524,7 +520,7 @@ fn first_descendant_accessible_name(widget: &dyn Widget) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
-    use super::first_page_title;
+    use super::super::open::first_page_title;
     use crate::tokens::TextRole;
     use crate::widget::arrange::Row;
     use crate::widget::{Element, Text};

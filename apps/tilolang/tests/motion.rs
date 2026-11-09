@@ -268,12 +268,15 @@ fn reach_delete(app: &mut TestApp<TlApp>, title: &str) -> Delete {
     if let Some(rect) = shown_button(app, "Delete") {
         return Delete::Button(rect);
     }
-    let [x, y, w, h] = rows(app)
+    let [x, y, _, h] = rows(app)
         .into_iter()
         .find(|(name, _)| name == title)
         .unwrap_or_else(|| panic!("the list shows {title}: {:?}", rows(app)))
         .1;
-    let (x, y) = (x + w / 2.0, y + h / 2.0);
+    // The row's own edge, off the content it holds: a row opened into its item fills with the
+    // fields the person edits, and the ways into the row itself stand beside them, as the
+    // disclosure gutter of a tree's row does.
+    let (x, y) = (x + 2.0, y + h / 2.0);
     with_monotonic_time(at_now(), || {
         let harness = app.harness();
         harness.send(&ui::synthetic_input::cursor_moved(x, y));

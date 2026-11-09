@@ -1,7 +1,8 @@
-//! A row open into its item where it stands: which row the list holds open, and the height it
-//! grows through on the way to its document.
+//! A row open into its item where it stands: which row the list holds open, the height it
+//! grows through on the way to its document, and the name it keeps over it.
 
-use super::{ListModel, VirtualList};
+use super::{Element, ListModel, VirtualList, Widget};
+use crate::widget::Decorator;
 
 /// How far a row's height may be from where it is going before it is drawn on its way there
 /// ([`VirtualList::grown_height`]), in logical pixels.
@@ -151,4 +152,67 @@ impl<M: ListModel> VirtualList<M> {
             target
         }
     }
+}
+
+/// The row a list opened into its item where it stands: the item's document takes the row's
+/// place, so the words the document titles itself with stand once, and this carries them as the
+/// row's own name. A reader hears the item the row opened, and the list still shows one row
+/// where the person pressed, with the document under it.
+pub(crate) struct RowOpen {
+    inner: Element,
+    /// The row stands in a tree list, and is a tree item of it.
+    tree: bool,
+}
+
+impl RowOpen {
+    pub(crate) fn new(inner: Element, tree: bool) -> Self {
+        Self { inner, tree }
+    }
+}
+
+impl Decorator for RowOpen {
+    type Inner = dyn Widget;
+
+    fn inner(&self) -> &(dyn Widget + 'static) {
+        self.inner.as_ref()
+    }
+
+    fn inner_mut(&mut self) -> &mut (dyn Widget + 'static) {
+        self.inner.as_mut()
+    }
+
+    fn name(&self) -> &'static str {
+        "RowOpen"
+    }
+
+    /// The row the document stands in for, named by the title the document itself states. A
+    /// document that says no title of its own is the row's own name already.
+    fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
+        let document = self.inner.as_ref();
+        let name = first_page_title(document)
+            .or_else(|| document.accessibility().and_then(|node| node.name))?;
+        Some(
+            crate::a11y::AccessNode::new(if self.tree {
+                crate::a11y::Role::TreeItem
+            } else {
+                crate::a11y::Role::ListItem
+            })
+            .with_name(name)
+            .with_state(crate::a11y::AccessState::new().expanded(true)),
+        )
+    }
+}
+
+/// The title the document `widget` states: the words of the heading it writes, or of the field
+/// it opens with where the person types the title there, found through the whole it holds.
+pub(super) fn first_page_title(widget: &dyn Widget) -> Option<String> {
+    Widget::own_page_title(widget).or_else(|| {
+        let mut found = None;
+        widget.for_each_child(&mut |child| {
+            if found.is_none() {
+                found = first_page_title(child);
+            }
+        });
+        found
+    })
 }

@@ -1030,10 +1030,14 @@ fn bare_row(
                     page_mark.and_then(|change| change.face(&format!("{key}~change"))),
                     Align::Start,
                 );
-                match tree {
+                let document = match tree {
                     Some(marks) => indent_view(document, marks.depth(&key.to_owned()), nest, None),
                     None => document,
-                }
+                };
+                // The row stands open into its item: the document takes its place, and the
+                // row keeps the name the document titles itself with, so the list shows one
+                // row where the person pressed and a reader hears which item it opened.
+                Box::new(super::open::RowOpen::new(document, tree.is_some())) as Element
             }
             (true, ItemRow::Row(props)) => {
                 let mut document = ListRow::from_props(key, *props);

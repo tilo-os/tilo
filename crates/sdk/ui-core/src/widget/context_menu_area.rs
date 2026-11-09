@@ -706,10 +706,10 @@ impl super::Decorator for ContextMenuArea {
             *ctx.handled = true;
             return;
         }
-        // A row pressed with the pointer runs when the button comes up,
-        // and that release is the menu's: what the command started (a
-        // rename's field) never sees half a click.
-        if let Some(index) = self.pending {
+        // The press the menu took is the row the person chose, run as the row's own control
+        // runs: the release that follows belongs to that press, and is the menu's, so what the
+        // command started (a rename's field) never sees half a click.
+        if self.pending.is_some() {
             if matches!(
                 event,
                 WindowEvent::MouseInput {
@@ -718,7 +718,6 @@ impl super::Decorator for ContextMenuArea {
                 }
             ) {
                 self.pending = None;
-                self.run(index, ctx);
                 *ctx.handled = true;
                 return;
             }
@@ -738,6 +737,8 @@ impl super::Decorator for ContextMenuArea {
             self.menu.handle_event(event, ctx);
             if let Some(index) = self.menu.take_selection() {
                 self.menu.close();
+                // A press runs its row here and keeps the release that follows; a key's row
+                // runs at once, as the key itself does.
                 if matches!(
                     event,
                     WindowEvent::MouseInput {
@@ -746,9 +747,8 @@ impl super::Decorator for ContextMenuArea {
                     }
                 ) {
                     self.pending = Some(index);
-                } else {
-                    self.run(index, ctx);
                 }
+                self.run(index, ctx);
                 *ctx.handled = true;
             }
             if self.menu.is_open() || *ctx.handled {
