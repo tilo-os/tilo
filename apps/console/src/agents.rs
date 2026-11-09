@@ -2,8 +2,8 @@
 //! run chosen, as the timeline of its actions.
 //!
 //! The runs are the history's ([`wire::RUNS`], read across every workspace).
-//! A run is working now when its agent is connected through the door and it
-//! is that agent's newest run; those come first. Choosing a run shows it in
+//! A run is working now when its session through the agent door is open
+//! and it is that session's newest run; those come first. Choosing a run shows it in
 //! their place, as wide as the window lets a file's change read: what it was
 //! asked, Stop, Take over and Undo, then its actions oldest first. Choosing
 //! an action opens its view under it, and an action that can be undone on its
@@ -37,23 +37,26 @@ struct Seen {
 }
 
 impl Seen {
-    /// The grant `run`'s agent came in by.
-    fn grant(&self, run: &wire::AgentRun) -> Option<&door::Grant> {
+    /// The door's open run `run` is, with the grant it came in by: History
+    /// names a run as the door does ("Claude Code #2").
+    fn open(&self, run: &wire::AgentRun) -> Option<door::RunRef> {
         self.door
-            .grants
-            .iter()
-            .find(|grant| !grant.identity.is_empty() && grant.identity == run.agent.identity)
+            .run(&run.agent.name)
+            .map(|(grant, open)| door::RunRef {
+                grant: grant.id.clone(),
+                run: open.name.clone(),
+            })
     }
 
-    /// Whether `run` is working now: its agent is connected and it is that
-    /// agent's newest run.
+    /// Whether `run` is working now: its session through the door is open
+    /// and it is that session's newest run.
     fn working(&self, run: &wire::AgentRun) -> bool {
-        self.grant(run).is_some_and(|grant| grant.connected > 0)
+        self.open(run).is_some()
             && self
                 .runs
                 .runs
                 .iter()
-                .filter(|other| other.agent.identity == run.agent.identity)
+                .filter(|other| other.agent.name == run.agent.name)
                 .max_by_key(|other| other.last_ms)
                 .is_some_and(|newest| newest.id == run.id)
     }
@@ -288,22 +291,14 @@ fn inspect(cx: &ViewCx<Console>, nav: &Nav, seen: &Seen, run: &wire::AgentRun) -
 /// Stop, Take over and Undo, as the run allows them.
 fn commands(doors: &Doors, seen: &Seen, run: &wire::AgentRun) -> Element {
     let mut row = Row::new().with_rhythm(Rhythm::Related);
-    let grant = seen.grant(run).map(|grant| grant.id.clone());
-    let working = seen.working(run);
-    if working && let Some(grant) = grant.clone() {
+    let open = seen.open(run).filter(|_| seen.working(run));
+    if let Some(open) = open.clone() {
         let doors = doors.clone();
         row = row.push(Box::new(
             Button::new("console-run-stop", "console-run-stop")
                 .with_icon(Icon::Square)
                 .role(ButtonRole::Destructive)
-                .on_view(move || {
-                    doors.door(
-                        door::STOP,
-                        &door::GrantRef {
-                            grant: grant.clone(),
-                        },
-                    );
-                }),
+                .on_view(move || doors.door(door::STOP, &open)),
         ));
     }
     // Taking over stops the agent and opens where it was working in the full
@@ -315,18 +310,12 @@ fn commands(doors: &Doors, seen: &Seen, run: &wire::AgentRun) -> Element {
     let workspace = seen.workspace(run).map(|workspace| workspace.open.clone());
     if last.is_some() || workspace.is_some() {
         let doors = doors.clone();
-        let stop = grant.filter(|_| working);
         row = row.push(Box::new(
             Button::new("console-run-take-over", "console-run-take-over")
                 .with_icon(Icon::Hand)
                 .on_view(move || {
-                    if let Some(grant) = &stop {
-                        doors.door(
-                            door::STOP,
-                            &door::GrantRef {
-                                grant: grant.clone(),
-                            },
-                        );
+                    if let Some(open) = &open {
+                        doors.door(door::STOP, open);
                     }
                     match (&last, &workspace) {
                         (Some(target), _) => doors.history(wire::OPEN, target),

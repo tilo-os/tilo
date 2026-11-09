@@ -52,9 +52,12 @@ console-client-other = Any MCP client
 console-grants-heading = Connected agents
 console-grants-empty = No agent connected yet
 console-grants-empty-message = Run one of the lines above where your agent runs, then let it in.
-console-reach-every-workspace = Every workspace
-console-reach-and-create = { $workspaces }, and may make new ones
-console-grant-connected = Connected now
+console-reach-account = Every workspace, and may make new ones
+console-reach-workspace = Only { $workspace }
+console-grant-running = { $count ->
+    [one] Working now
+   *[other] { $count } runs working now
+}
 console-grant-last-active = Last active { $when }
 console-grant-granted = Let in { $when }
 console-grant-revoke = Revoke

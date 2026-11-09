@@ -32,11 +32,12 @@ pub(crate) fn view(cx: &ViewCx<Console>, reads: &Reads) -> Element {
 
 fn row(doors: &Doors, index: usize, workspace: &door::Workspace) -> Element {
     let by = match &workspace.made_by {
-        door::Maker::Person => tr("console-workspace-made-by-you"),
-        door::Maker::Agent { agent, .. } => trf(
+        Some(door::Maker::Person) => Some(tr("console-workspace-made-by-you")),
+        Some(door::Maker::Agent { agent, .. }) => Some(trf(
             "console-workspace-made-by",
             &[("agent", agent.clone().into())],
-        ),
+        )),
+        None => None,
     };
     let (doors, href) = (doors.clone(), workspace.open.clone());
     let open = Button::new(
@@ -46,11 +47,12 @@ fn row(doors: &Doors, index: usize, workspace: &door::Workspace) -> Element {
     .with_icon(Icon::ExternalLink)
     .on_view(move || doors.open_in_tilo(&href));
     // The row is the workspace: its maker is a fact about it, in words.
-    Box::new(
-        ListRow::new(format!("console-workspace-{index}"), workspace.name.clone())
-            .icon(Icon::LayoutGrid)
-            .subtitle(by)
-            .meta(ago(workspace.made_ms))
-            .trailing(Box::new(open)),
-    )
+    let mut row = ListRow::new(format!("console-workspace-{index}"), workspace.name.clone())
+        .icon(Icon::LayoutGrid)
+        .meta(ago(workspace.made_ms))
+        .trailing(Box::new(open));
+    if let Some(by) = by {
+        row = row.subtitle(by);
+    }
+    Box::new(row)
 }

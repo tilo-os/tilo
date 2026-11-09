@@ -25,6 +25,10 @@ fn minutes_ago_ms(minutes: i64) -> i64 {
 
 const CLAUDE: &str = "agent:claude-code";
 const CODEX: &str = "agent:codex";
+/// The runs' names, as the door names each session and History each run.
+const CLAUDE_RUN: &str = "Claude Code #3";
+const CLAUDE_EARLIER: &str = "Claude Code #1";
+const CODEX_RUN: &str = "Codex #1";
 
 fn agent(name: &str, identity: &str, rgb: [u8; 3]) -> wire::Author {
     wire::Author {
@@ -37,11 +41,11 @@ fn agent(name: &str, identity: &str, rgb: [u8; 3]) -> wire::Author {
 }
 
 fn claude() -> wire::Author {
-    agent("Claude Code", CLAUDE, [214, 130, 77])
+    agent(CLAUDE_RUN, CLAUDE, [214, 130, 77])
 }
 
 fn codex() -> wire::Author {
-    agent("Codex", CODEX, [90, 140, 220])
+    agent(CODEX_RUN, CODEX, [90, 140, 220])
 }
 
 /// The id of the `n`th change, as the history names it.
@@ -207,7 +211,7 @@ fn runs() -> wire::Runs {
     };
     let budget = wire::AgentRun {
         id: "run:budget".to_owned(),
-        agent: claude(),
+        agent: agent(CLAUDE_EARLIER, CLAUDE, [214, 130, 77]),
         workspace: Some("Launch".to_owned()),
         instruction: "Total the venue quotes in the budget sheet".to_owned(),
         decision: None,
@@ -242,47 +246,41 @@ fn the_door() -> door::Door {
             door::Grant {
                 id: "grant:claude".to_owned(),
                 agent: "Claude Code".to_owned(),
-                identity: CLAUDE.to_owned(),
-                from: Some("ada@studio".to_owned()),
-                rgb: [214, 130, 77],
-                reach: door::Reach {
-                    workspaces: Vec::new(),
-                    create: true,
-                },
+                reach: door::Reach::Account,
                 granted_ms: minutes_ago_ms(9 * 24 * 60),
                 last_ms: Some(minutes_ago_ms(1)),
-                connected: 1,
+                runs: vec![door::Run {
+                    name: CLAUDE_RUN.to_owned(),
+                    started_ms: minutes_ago_ms(14),
+                }],
             },
             door::Grant {
                 id: "grant:codex".to_owned(),
                 agent: "Codex".to_owned(),
-                identity: CODEX.to_owned(),
-                from: Some("ada@laptop".to_owned()),
-                rgb: [90, 140, 220],
-                reach: door::Reach {
-                    workspaces: vec!["Launch".to_owned()],
-                    create: false,
+                reach: door::Reach::Workspace {
+                    id: "ws-launch".to_owned(),
+                    name: "Launch".to_owned(),
                 },
                 granted_ms: minutes_ago_ms(3 * 24 * 60),
                 last_ms: Some(minutes_ago_ms(80)),
-                connected: 0,
+                runs: Vec::new(),
             },
         ],
         workspaces: vec![
             door::Workspace {
                 id: "ws-storefront".to_owned(),
                 name: "Storefront".to_owned(),
-                made_by: door::Maker::Agent {
+                made_by: Some(door::Maker::Agent {
                     grant: "grant:claude".to_owned(),
                     agent: "Claude Code".to_owned(),
-                },
+                }),
                 made_ms: minutes_ago_ms(2 * 24 * 60),
                 open: "tilo://open#/room/ws-storefront".to_owned(),
             },
             door::Workspace {
                 id: "ws-launch".to_owned(),
                 name: "Launch".to_owned(),
-                made_by: door::Maker::Person,
+                made_by: Some(door::Maker::Person),
                 made_ms: minutes_ago_ms(12 * 24 * 60),
                 open: "tilo://open#/room/ws-launch".to_owned(),
             },

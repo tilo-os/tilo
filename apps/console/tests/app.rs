@@ -85,7 +85,7 @@ fn a_program_or_a_page_offers_no_undo_and_a_stopped_agent_no_stop() {
         "a program that ran changed no record to take back"
     );
     assert!(!shows(&mut app, "console-action-3-undo"));
-    // Codex is not connected: its run is history, with nothing to stop.
+    // Codex has no run open: its run is history, with nothing to stop.
     let mut app = TestApp::<App>::capture(Some("agents")).expect("capture");
     app.harness()
         .click_named("console-run-run:release-notes")
@@ -149,7 +149,7 @@ fn answer(app: &mut TestApp<App>, invocation: InvocationId, value: serde_json::V
 
 fn agent() -> wire::Author {
     wire::Author {
-        name: "Claude Code".into(),
+        name: "Claude Code #2".into(),
         identity: "agent:claude".into(),
         relation: wire::Relation::Software,
         on_behalf_of: Some("Ada".into()),
@@ -192,14 +192,22 @@ fn run() -> wire::AgentRun {
     }
 }
 
-fn the_door(connected: u32) -> door::Door {
+/// The door, with the run History names "Claude Code #2" open through it
+/// or not.
+fn the_door(open: bool) -> door::Door {
     door::Door {
         endpoint: "https://mcp.example".into(),
         grants: vec![door::Grant {
             id: "g1".into(),
             agent: "Claude Code".into(),
-            identity: "agent:claude".into(),
-            connected,
+            runs: if open {
+                vec![door::Run {
+                    name: "Claude Code #2".into(),
+                    started_ms: 1,
+                }]
+            } else {
+                Vec::new()
+            },
             ..door::Grant::default()
         }],
         workspaces: Vec::new(),
@@ -207,8 +215,8 @@ fn the_door(connected: u32) -> door::Door {
 }
 
 /// Open the console on a session that answers with `run` and a door where
-/// its agent holds `connected` connections.
-fn opened(connected: u32) -> TestApp<App> {
+/// that run is `open` or not.
+fn opened(open: bool) -> TestApp<App> {
     let mut app = TestApp::<App>::for_person("ada").expect("open");
     let requests = asked(&mut app);
     let runs = find(&requests, &wire::target(wire::RUNS));
@@ -233,32 +241,38 @@ fn opened(connected: u32) -> TestApp<App> {
     answer(
         &mut app,
         door_read.invocation,
-        serde_json::to_value(the_door(connected)).unwrap(),
+        serde_json::to_value(the_door(open)).unwrap(),
     );
     app
 }
 
 #[test]
-fn stopping_a_working_agent_asks_the_door_to_end_its_connections() {
+fn stopping_a_working_run_asks_the_door_to_end_that_run_alone() {
     english();
-    let mut app = opened(1);
+    let mut app = opened(true);
     app.harness().click_named("console-run-r1").unwrap();
     asked(&mut app);
     app.harness().click_named("console-run-stop").unwrap();
     let requests = asked(&mut app);
-    let stop: door::GrantRef = argument(&find(&requests, &door::target(door::STOP)));
-    assert_eq!(stop.grant, "g1");
+    let stop: door::RunRef = argument(&find(&requests, &door::target(door::STOP)));
+    assert_eq!(
+        stop,
+        door::RunRef {
+            grant: "g1".into(),
+            run: "Claude Code #2".into(),
+        }
+    );
 }
 
 #[test]
 fn undoing_a_run_or_one_action_asks_the_history_by_what_it_changed() {
     english();
-    let mut app = opened(0);
+    let mut app = opened(false);
     app.harness().click_named("console-run-r1").unwrap();
     asked(&mut app);
     assert!(
         !shows(&mut app, "console-run-stop"),
-        "an agent that is not connected has nothing to stop"
+        "a run whose session ended has nothing to stop"
     );
 
     app.harness().click_named("console-run-undo").unwrap();
@@ -280,7 +294,7 @@ fn undoing_a_run_or_one_action_asks_the_history_by_what_it_changed() {
 #[test]
 fn opening_an_action_shows_what_it_changed_and_reads_the_comparison() {
     english();
-    let mut app = opened(0);
+    let mut app = opened(false);
     app.harness().click_named("console-run-r1").unwrap();
     asked(&mut app);
     assert!(!shows(&mut app, "console-action-0-view"));
@@ -298,7 +312,7 @@ fn opening_an_action_shows_what_it_changed_and_reads_the_comparison() {
 #[test]
 fn revoking_a_grant_names_it_to_the_door() {
     english();
-    let mut app = opened(1);
+    let mut app = opened(true);
     // Connect is the sidebar's third place.
     let targets: Vec<String> = app.harness().targets().into_keys().collect();
     let connect = targets
@@ -315,7 +329,7 @@ fn revoking_a_grant_names_it_to_the_door() {
         answer(
             &mut app,
             read.invocation,
-            serde_json::to_value(the_door(1)).unwrap(),
+            serde_json::to_value(the_door(true)).unwrap(),
         );
     }
     app.harness().click_named("console-grant-0-revoke").unwrap();

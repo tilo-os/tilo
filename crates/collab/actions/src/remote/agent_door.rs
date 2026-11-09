@@ -8,11 +8,14 @@
 //! it makes there is attributed to it in the workspace's history
 //! ([`super::workspace_activity`]), where its runs are read and undone.
 //!
-//! Whoever runs the door serves [`PROVIDER`]; a host without one leaves the
-//! reads unanswered, and a view that follows them says so. Revoking a grant
-//! ([`REVOKE`]) ends every connection it carries and lets none in again;
-//! stopping an agent ([`STOP`]) ends its connections now and keeps the grant,
-//! so it can come back.
+//! The model is the MCP front door's (`crates/hosting/tilo-front-door`): a
+//! grant reaches every workspace of the person or exactly one, and each MCP
+//! session through it is one run, named for the person ("Claude Code #2") as
+//! History names it. Whoever runs the door serves [`PROVIDER`]; a host
+//! without one leaves the reads unanswered, and a view that follows them
+//! says so. Revoking a grant ([`REVOKE`]) ends every run it carries and lets
+//! none in again; stopping a run ([`STOP`]) ends that one session and keeps
+//! the grant, so the agent can come back.
 
 use serde::{Deserialize, Serialize};
 
@@ -26,9 +29,10 @@ pub const RESOURCE: &str = "agent.door";
 
 /// Live: the door and what it let in; answers [`Door`].
 pub const DOOR: &str = "door";
-/// Take back a grant ([`Grant`] by [`Grant::id`], as [`GrantRef`]).
+/// Take back a grant ([`Grant`] by [`Grant::id`], as [`GrantRef`]): its
+/// runs end now and it lets none in again.
 pub const REVOKE: &str = "revoke";
-/// End an agent's connections now, keeping its grant ([`GrantRef`]).
+/// End one run now, keeping its grant ([`RunRef`]).
 pub const STOP: &str = "stop";
 
 /// The target of action `action` of [`RESOURCE`].
@@ -73,15 +77,31 @@ impl Client {
     }
 }
 
-/// Where the door's grant reaches.
+/// Where a grant reaches, as the person chose when they let the agent in.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "kebab-case")]
+pub enum Reach {
+    /// Every workspace the person has, and making new ones.
+    #[default]
+    Account,
+    /// One workspace, and nothing else: the agent cannot see or name others.
+    Workspace {
+        /// The workspace's id.
+        id: String,
+        name: String,
+    },
+}
+
+/// One run of an agent through the door: one MCP session, open now.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
-pub struct Reach {
-    /// The workspaces it may work in, by name; empty for every workspace
-    /// of the person, including the ones it makes.
-    pub workspaces: Vec<String>,
-    /// Whether it may make workspaces of its own.
-    pub create: bool,
+pub struct Run {
+    /// The run's name, the client's and a number of the person's own runs
+    /// ("Claude Code #2"): the name History gives the run, which is what
+    /// ties a run in [`super::workspace_activity::RUNS`] to its grant.
+    pub name: String,
+    /// When it connected, Unix milliseconds.
+    pub started_ms: i64,
 }
 
 /// One agent the door let in.
@@ -90,26 +110,25 @@ pub struct Reach {
 pub struct Grant {
     /// What [`GrantRef`] names it by.
     pub id: String,
-    /// The agent as its client named itself when it asked ("Claude Code").
+    /// The agent as its client named itself when the person agreed
+    /// ("Claude Code").
     pub agent: String,
-    /// The identity its changes are attributed to in the workspace's
-    /// history, as [`super::workspace_activity::Author::identity`] spells it:
-    /// what ties its runs to this grant.
-    pub identity: String,
-    /// The machine or account it connected from, as the person would
-    /// recognise it ("quinten@studio").
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub from: Option<String>,
-    /// Its colour, as presence and history paint it, `[r, g, b]`.
-    pub rgb: [u8; 3],
     pub reach: Reach,
     /// When the person granted it, Unix milliseconds.
     pub granted_ms: i64,
     /// When it last acted; `None` before it ever did.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub last_ms: Option<i64>,
-    /// How many connections it holds open now.
-    pub connected: u32,
+    /// Its runs open now, oldest first.
+    pub runs: Vec<Run>,
+}
+
+impl Grant {
+    /// Its open run History names `name`.
+    #[must_use]
+    pub fn run(&self, name: &str) -> Option<&Run> {
+        self.runs.iter().find(|run| run.name == name)
+    }
 }
 
 /// Who made a workspace the door reaches.
@@ -128,7 +147,10 @@ pub struct Workspace {
     /// The workspace's id, as a run's history names it.
     pub id: String,
     pub name: String,
-    pub made_by: Maker,
+    /// Who made it, when the door knows: it knows the workspaces an agent
+    /// made through it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub made_by: Option<Maker>,
     /// When it was made, Unix milliseconds.
     pub made_ms: i64,
     /// Where the full desktop opens on it: a `tilo://open#…` address.
@@ -147,11 +169,30 @@ pub struct Door {
     pub workspaces: Vec<Workspace>,
 }
 
-/// Which grant [`REVOKE`] or [`STOP`] acts on.
+impl Door {
+    /// The grant whose open run History names `name`, and that run.
+    #[must_use]
+    pub fn run(&self, name: &str) -> Option<(&Grant, &Run)> {
+        self.grants
+            .iter()
+            .find_map(|grant| grant.run(name).map(|run| (grant, run)))
+    }
+}
+
+/// Which grant [`REVOKE`] takes back.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct GrantRef {
     pub grant: String,
+}
+
+/// Which run [`STOP`] ends: the grant it came in by, and its name.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct RunRef {
+    pub grant: String,
+    /// The run's [`Run::name`].
+    pub run: String,
 }
 
 #[cfg(test)]
@@ -173,6 +214,30 @@ mod tests {
         let other: serde_json::Value =
             serde_json::from_str(&Client::Other.command(endpoint)).expect("the config is JSON");
         assert_eq!(other["mcpServers"]["tilo"]["url"], endpoint);
+    }
+
+    #[test]
+    fn a_run_in_history_finds_its_grant_by_the_name_history_gives_it() {
+        let door = Door {
+            grants: vec![Grant {
+                id: "g1".into(),
+                runs: vec![Run {
+                    name: "Claude Code #2".into(),
+                    started_ms: 1,
+                }],
+                ..Grant::default()
+            }],
+            ..Door::default()
+        };
+        assert_eq!(
+            door.run("Claude Code #2")
+                .map(|(grant, _)| grant.id.as_str()),
+            Some("g1")
+        );
+        assert!(
+            door.run("Claude Code #1").is_none(),
+            "a run that ended is no longer open"
+        );
     }
 
     #[test]

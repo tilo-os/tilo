@@ -60,35 +60,24 @@ pub(crate) fn view(cx: &ViewCx<Console>, reads: &Reads) -> Element {
     }))
 }
 
-/// Where `grant` reaches, in words.
+/// Where `reach` lets the agent work, in words.
 fn reach(reach: &door::Reach) -> String {
-    let workspaces = if reach.workspaces.is_empty() {
-        tr("console-reach-every-workspace")
-    } else {
-        reach.workspaces.join(", ")
-    };
-    if reach.create {
-        trf(
-            "console-reach-and-create",
-            &[("workspaces", workspaces.into())],
-        )
-    } else {
-        workspaces
+    match reach {
+        door::Reach::Account => tr("console-reach-account"),
+        door::Reach::Workspace { name, .. } => trf(
+            "console-reach-workspace",
+            &[("workspace", name.clone().into())],
+        ),
     }
 }
 
 fn grant_row(doors: &Doors, index: usize, grant: &door::Grant) -> Element {
     let agent = wire::Author {
         name: grant.agent.clone(),
-        rgb: grant.rgb,
-        identity: grant.identity.clone(),
         relation: wire::Relation::Software,
-        on_behalf_of: None,
+        ..wire::Author::default()
     };
-
-    let status = if grant.connected > 0 {
-        tr("console-grant-connected")
-    } else {
+    let status = if grant.runs.is_empty() {
         grant.last_ms.map_or_else(
             || {
                 trf(
@@ -97,6 +86,11 @@ fn grant_row(doors: &Doors, index: usize, grant: &door::Grant) -> Element {
                 )
             },
             |last| trf("console-grant-last-active", &[("when", ago(last).into())]),
+        )
+    } else {
+        trf(
+            "console-grant-running",
+            &[("count", grant.runs.len().into())],
         )
     };
     let revoke = {
@@ -117,10 +111,7 @@ fn grant_row(doors: &Doors, index: usize, grant: &door::Grant) -> Element {
     .subtitle(reach(&grant.reach))
     .meta(status)
     .trailing(Box::new(revoke));
-    if let Some(from) = &grant.from {
-        row = row.secondary(from.clone());
-    }
-    if grant.connected > 0 {
+    if !grant.runs.is_empty() {
         row = row.active();
     }
     Box::new(row)
