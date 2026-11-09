@@ -185,7 +185,6 @@ mod open_with_tests {
             content_hash: None,
             record_id: None,
             availability: None,
-            share: None,
             history: None,
             app: None,
             rich_metadata: None,
@@ -1265,7 +1264,6 @@ mod command_path_tests {
             content_hash: None,
             record_id: None,
             availability: None,
-            share: None,
             history: None,
             app: None,
             rich_metadata: None,
@@ -4041,23 +4039,151 @@ mod command_path_tests {
     }
 
     /// Sharing, version history and governed-identity surfaces, each phase with
-    /// its own fixture (the share round trip owns its socket and wake scope).
+    /// its own fixture.
     #[test]
     fn sharing_history_and_identity_surfaces_use_governed_identity() {
-        authority_sharing_and_history_open_real_detail_panels();
+        sharing_offers_the_workspaces_invitation();
+        governed_history_surfaces_open_real_detail_panels();
         history_activity_intent_preserves_selected_version_and_signed_identity();
-        #[cfg(unix)]
-        named_recipient_menu_uses_identity_label_but_commands_the_root_key();
         running_files_reloads_new_renamed_removed_and_expired_governed_devices();
-        #[cfg(unix)]
-        share_composer_authority_round_trip_never_blocks_the_ui_command();
-        named_share_status_distinguishes_pending_from_delivered();
         previous_immutable_version_is_an_explicit_restore_command();
-        #[cfg(unix)]
-        owner_context_menu_revokes_each_exact_active_grant();
     }
 
-    fn authority_sharing_and_history_open_real_detail_panels() {
+    /// A directory that knows Ada Lovelace and her one laptop, and her key.
+    fn adas_directory() -> (crate::identity_directory::TrustedHumanDirectory, [u8; 32]) {
+        let root_key = ed25519_dalek::SigningKey::from_bytes(&[91; 32]);
+        let person = root_key.verifying_key().to_bytes();
+        let mut certificate = tilo_user_identity::DeviceCert {
+            user_public_key: person,
+            device_public_key: ed25519_dalek::SigningKey::from_bytes(&[92; 32])
+                .verifying_key()
+                .to_bytes(),
+            device_label: "Ada's laptop".into(),
+            capabilities: tilo_user_identity::DeviceCapabilities::member(),
+            issued_at_ns: 1,
+            expires_at_ns: None,
+            signature: [0; 64],
+        };
+        tilo_user_identity::sign_device_cert(&mut certificate, &root_key).unwrap();
+        let directory = crate::identity_directory::TrustedHumanDirectory::from_projection_v2(
+            tilo_user_identity::TrustedIdentityProjectionV2 {
+                schema_version: tilo_user_identity::TRUSTED_IDENTITY_PROJECTION_VERSION,
+                humans: vec![tilo_user_identity::GovernedHumanIdentityV2 {
+                    root_public_key: person,
+                    display_name: "Ada Lovelace".to_string(),
+                    devices: vec![tilo_user_identity::GovernedDeviceIdentityV2 {
+                        certificate,
+                        agent: None,
+                    }],
+                }],
+            },
+        )
+        .unwrap();
+        (directory, person)
+    }
+
+    /// Sharing a folder offers the workspace's invitation: the link the invite
+    /// sheet makes, at the part picked, and as the person the directory knows,
+    /// and the desk's answer is the link Files copies.
+    fn sharing_offers_the_workspaces_invitation() {
+        let root = tempfile::tempdir().unwrap();
+        let folder = root.path().join("shared-assets");
+        std::fs::create_dir(&folder).unwrap();
+        let (directory, person) = adas_directory();
+        let mut w = FileExplorerWidget::new();
+        w.state().workspace_roots = vec![root.path().to_path_buf()];
+        w.state().trusted_humans = directory;
+        let mut entry = ent("shared-assets", true, "inode/directory");
+        entry.path = folder;
+        w.state().entries = vec![entry];
+        w.state().selection.select_only(0);
+
+        let spec = w.state().context_menu_spec(&[]);
+        assert!(spec.iter().any(|(label, command)| {
+            label == "Copy invite link (editor)"
+                && *command
+                    == Some(FileCommand::Share {
+                        role: "editor".into(),
+                        recipient: None,
+                    })
+        }));
+        assert!(spec.iter().any(|(label, command)| {
+            label == "Copy invite link (viewer)"
+                && *command
+                    == Some(FileCommand::Share {
+                        role: "viewer".into(),
+                        recipient: None,
+                    })
+        }));
+        assert!(spec.iter().any(|(label, command)| {
+            label == "Invite Ada Lovelace"
+                && *command
+                    == Some(FileCommand::Share {
+                        role: "editor".into(),
+                        recipient: Some(hex::encode(person)),
+                    })
+        }));
+
+        assert!(w.state().apply_command(FileCommand::Share {
+            role: "viewer".into(),
+            recipient: None,
+        }));
+        let request = w
+            .take_collab_requests()
+            .into_iter()
+            .find_map(|request| match request {
+                ui::collaboration::CollabRequest::RemoteAction {
+                    message: tilo_actions::remote::RemoteActionMessage::Invoke(request),
+                } => Some(request),
+                _ => None,
+            })
+            .expect("the invitation is asked of the desk");
+        assert_eq!(request.target.provider, "so.tilo.session");
+        assert_eq!(request.target.address.resource, "session:desk");
+        assert_eq!(request.target.address.action, "issue-invitation");
+        assert_eq!(
+            request.argument,
+            ui::tilo_actions::remote::InvokeArgument::Json(
+                serde_json::json!({"role": "viewer"})
+                    .as_object()
+                    .cloned()
+                    .expect("an object")
+            )
+        );
+        ui::widget::Collaborative::handle_collab_event(
+            &mut w,
+            &ui::collaboration::CollabEvent::RemoteAction {
+                message: tilo_actions::remote::RemoteActionMessage::Receipt(
+                    tilo_actions::remote::InvocationReceipt {
+                        invocation: request.invocation,
+                        status: tilo_actions::remote::ReceiptStatus::Completed {
+                            output: tilo_actions::ActionOutput {
+                                value: Some(serde_json::json!({
+                                    "invite": "ab".repeat(32),
+                                    "link": "https://tilo.so/join#ab",
+                                    "role": "viewer",
+                                    "expires_at_ns": 1,
+                                })),
+                                resources: Vec::new(),
+                            },
+                        },
+                    },
+                ),
+            },
+        );
+        assert_eq!(
+            w.state().status.as_deref(),
+            Some(
+                t_args(
+                    "files-share-invitation-copied",
+                    &[arg("role", t("files-share-role-viewer"))]
+                )
+                .as_str()
+            )
+        );
+    }
+
+    fn governed_history_surfaces_open_real_detail_panels() {
         let mut entry = ent("shared.txt", false, "text/plain");
         entry.record_id =
             Some(*uuid::Uuid::from_u128(0xb0d4_e23f_c7cb_4ded_a427_b32c_f9da_9341).as_bytes());
@@ -4068,28 +4194,6 @@ mod command_path_tests {
                 "properties": {"schema_version": 1, "image_width": 1920,
                     "image_height": 1080, "duration_ms": 65000,
                     "page_count": 4, "codec": "h264", "container": "mp4"}
-            }))
-            .unwrap(),
-        )
-        .ok();
-        entry.share = fs_protocol::ShareProjectionV1::parse_xattr(
-            &serde_json::to_vec(&serde_json::json!({
-                "schema_version": 1,
-                "record_id": "b0d4e23f-c7cb-4ded-a427-b32cf9da9341",
-                "observed_at_ms": 10,
-                "grants": [{
-                    "grant_id": "c0d4e23f-c7cb-4ded-a427-b32cf9da9343",
-                    "subject": {"kind": "bearer_link"},
-                    "permission": "View",
-                    "expires_at_ms": null,
-                    "revoked": false,
-                    "expired": false,
-                    "used": false,
-                    "exhausted": false,
-                    "status": "active",
-                    "redemptions": 0,
-                    "max_redemptions": 1
-                }]
             }))
             .unwrap(),
         )
@@ -4122,9 +4226,6 @@ mod command_path_tests {
         w.state().selection.select_only(0);
         let spec = w.state().context_menu_spec(&[]);
         assert!(spec.iter().any(|(label, command)| {
-            label == "Sharing and access…" && *command == Some(FileCommand::ShowSharing)
-        }));
-        assert!(spec.iter().any(|(label, command)| {
             label == "Version history…" && *command == Some(FileCommand::ShowHistory)
         }));
         assert!(spec.iter().any(|(label, command)| {
@@ -4135,20 +4236,10 @@ mod command_path_tests {
         assert!(panel.title.contains("Properties"));
         let internal = |line: &String| line.contains("Collaborative record");
         assert!(!panel.lines.iter().any(internal), "{:?}", panel.lines);
-        assert!(
-            panel
-                .lines
-                .iter()
-                .any(|line| line.contains("1 active grant"))
-        );
         assert!(panel.lines.iter().any(|line| line.contains("1 version")));
         assert!(panel.lines.iter().any(|line| line.contains("1920 × 1080")));
         assert!(panel.lines.iter().any(|line| line.contains("1:05")));
         assert!(panel.lines.iter().any(|line| line.contains("Pages: 4")));
-        w.state().apply_command(FileCommand::ShowSharing);
-        let panel = w.state().collab_panel.as_ref().unwrap().clone();
-        assert!(panel.title.starts_with("Share "));
-        assert!(panel.lines[0].contains("Anyone with the link"));
         w.state().apply_command(FileCommand::ShowHistory);
         assert!(w.state().collab_panel.is_none());
         w.state().apply_command(FileCommand::CloseCollabPanel);
@@ -4278,127 +4369,6 @@ mod command_path_tests {
         let entry = entry.expect("the handoff carries a factual app-native event");
         assert_eq!(entry.id.as_bytes(), selected.0.as_bytes());
         assert_eq!(entry.context.unwrap().resource.unwrap().id, record);
-    }
-
-    // This scenario proves that governed presentation labels remain separate
-    // from root-key command identity across the complete share-menu flow.
-    #[allow(
-        clippy::too_many_lines,
-        reason = "the end-to-end share flow must keep display identity and cryptographic command identity in one scenario"
-    )]
-    #[cfg(unix)]
-    fn named_recipient_menu_uses_identity_label_but_commands_the_root_key() {
-        let dir = tempfile::tempdir().unwrap();
-        let file = dir.path().join("report.txt");
-        std::fs::write(&file, b"report").unwrap();
-        xattr::set(
-            dir.path(),
-            fs_protocol::SHARE_CONTROL_XATTR,
-            b"/run/tilo/app/tilo-fs-share.sock",
-        )
-        .unwrap();
-        let root_key = ed25519_dalek::SigningKey::from_bytes(&[81; 32]);
-        let person_bytes = root_key.verifying_key().to_bytes();
-        let person = fs_protocol::Ed25519PublicKey::from_bytes(person_bytes);
-        let device_key = ed25519_dalek::SigningKey::from_bytes(&[82; 32]);
-        let device =
-            fs_protocol::Ed25519PublicKey::from_bytes(device_key.verifying_key().to_bytes());
-        let mut certificate = tilo_user_identity::DeviceCert {
-            user_public_key: person_bytes,
-            device_public_key: device_key.verifying_key().to_bytes(),
-            device_label: "Ada's laptop".into(),
-            capabilities: tilo_user_identity::DeviceCapabilities::member(),
-            issued_at_ns: 1,
-            expires_at_ns: None,
-            signature: [0; 64],
-        };
-        tilo_user_identity::sign_device_cert(&mut certificate, &root_key).unwrap();
-        let w = FileExplorerWidget::new();
-        w.state().workspace_roots = vec![dir.path().to_path_buf()];
-        w.state().trusted_humans =
-            crate::identity_directory::TrustedHumanDirectory::from_projection_v2(
-                tilo_user_identity::TrustedIdentityProjectionV2 {
-                    schema_version: tilo_user_identity::TRUSTED_IDENTITY_PROJECTION_VERSION,
-                    humans: vec![tilo_user_identity::GovernedHumanIdentityV2 {
-                        root_public_key: person_bytes,
-                        display_name: "Ada Lovelace".to_string(),
-                        devices: vec![tilo_user_identity::GovernedDeviceIdentityV2 {
-                            certificate,
-                            agent: None,
-                        }],
-                    }],
-                },
-            )
-            .unwrap();
-        let mut entry = ent("report.txt", false, "text/plain");
-        entry.path = file;
-        entry.record_id = Some(*uuid::Uuid::from_u128(82).as_bytes());
-        w.state().entries = vec![entry];
-        w.state().selection.select_only(0);
-
-        let spec = w.state().context_menu_spec(&[]);
-        assert!(spec.iter().any(|(label, command)| {
-            label == "Share with Ada Lovelace"
-                && *command == Some(FileCommand::ShareWithPerson { person })
-        }));
-        assert!(spec.iter().any(|(label, command)| {
-            label.contains("Ada Lovelace")
-                && label.contains("Edit")
-                && label.contains("no expiry")
-                && *command
-                    == Some(FileCommand::CreateShare(
-                        crate::sharing::ShareComposerRequest {
-                            subject: crate::sharing::ShareSubjectChoice::Named(person),
-                            permission: fs_protocol::FilePermission::Edit,
-                            expiry: crate::sharing::ShareExpiryChoice::Never,
-                            link_uses: None,
-                            recipient_devices: vec![device],
-                        },
-                    ))
-        }));
-        assert!(spec.iter().any(|(label, command)| {
-            label.contains("Copy link")
-                && label.contains("Edit")
-                && label.contains("30 days")
-                && label.contains("10 uses")
-                && *command
-                    == Some(FileCommand::CreateShare(
-                        crate::sharing::ShareComposerRequest {
-                            subject: crate::sharing::ShareSubjectChoice::Link,
-                            permission: fs_protocol::FilePermission::Edit,
-                            expiry: crate::sharing::ShareExpiryChoice::Month,
-                            link_uses: Some(crate::sharing::LinkUseChoice::Bounded(10)),
-                            recipient_devices: Vec::new(),
-                        },
-                    ))
-        }));
-
-        w.state().entries[0].share = Some(fs_protocol::ShareProjectionV1 {
-            schema_version: 1,
-            record_id: fs_protocol::FileRecordId(uuid::Uuid::from_u128(82)),
-            observed_at_ms: 1,
-            grants: vec![fs_protocol::ShareGrantProjectionV1 {
-                grant_id: uuid::Uuid::from_u128(83),
-                subject: fs_protocol::ShareSubjectProjection::Person { person },
-                permission: fs_protocol::FilePermission::Edit,
-                expires_at_ms: None,
-                revoked: false,
-                expired: false,
-                used: false,
-                exhausted: false,
-                status: fs_protocol::ShareGrantStatus::Active,
-                redemptions: 0,
-                max_redemptions: None,
-            }],
-        });
-        w.state().apply_command(FileCommand::ShowSharing);
-        let lines = w.state().collab_panel.as_ref().unwrap().lines.clone();
-        assert!(lines.iter().any(|line| line.contains("Ada's laptop")));
-        assert!(lines.iter().any(|line| line.contains("manages workspaces")));
-        assert!(
-            lines.iter().any(|line| line.contains("key ")),
-            "the on-demand Sharing panel exposes certificate identity, not labels alone"
-        );
     }
 
     fn running_files_reloads_new_renamed_removed_and_expired_governed_devices() {
@@ -4566,101 +4536,6 @@ mod command_path_tests {
         assert_eq!(widget.state().current_path, nested);
         assert_eq!(widget.state().selection.primary(), Some(0));
         assert_eq!(widget.state().entries[0].path, file);
-    }
-
-    #[cfg(unix)]
-    fn share_composer_authority_round_trip_never_blocks_the_ui_command() {
-        use std::io::{Read, Write};
-        use std::os::unix::net::UnixListener;
-
-        let dir = tempfile::tempdir().unwrap();
-        let file = dir.path().join("report.txt");
-        let socket = dir.path().join("share.sock");
-        std::fs::write(&file, b"report").unwrap();
-        xattr::set(
-            dir.path(),
-            fs_protocol::SHARE_CONTROL_XATTR,
-            socket.as_os_str().as_encoded_bytes(),
-        )
-        .unwrap();
-        let listener = UnixListener::bind(&socket).unwrap();
-        let (seen_tx, seen_rx) = std::sync::mpsc::channel();
-        let (release_tx, release_rx) = std::sync::mpsc::channel();
-        let server = std::thread::spawn(move || {
-            let (mut stream, _) = listener.accept().unwrap();
-            let mut length = [0_u8; 4];
-            stream.read_exact(&mut length).unwrap();
-            let mut request = vec![0; u32::from_be_bytes(length) as usize];
-            stream.read_exact(&mut request).unwrap();
-            seen_tx.send(()).unwrap();
-            release_rx.recv().unwrap();
-            let response = fs_protocol::ShareControlResponseV1 {
-                protocol_version: fs_protocol::SHARE_CONTROL_VERSION,
-                result: fs_protocol::ShareControlResultV1::BearerCreatedV2 {
-                    uri: "tilo-file://bounded".into(),
-                },
-            };
-            let response = fs_protocol::canonical::canonical_bytes(&response).unwrap();
-            stream
-                .write_all(&(response.len() as u32).to_be_bytes())
-                .unwrap();
-            stream.write_all(&response).unwrap();
-        });
-
-        // Built under a bound wake scope, as the app factory builds it, so
-        // the share outcome reaches the event loop.
-        let mut scope = ui::WakeScope::new();
-        let (woke, wakes) = std::sync::mpsc::channel();
-        scope
-            .bind(move |_| {
-                let _ = woke.send(());
-            })
-            .unwrap();
-        let _entry = scope.enter();
-        let mut widget = FileExplorerWidget::new();
-        widget.state().workspace_roots = vec![dir.path().to_path_buf()];
-        let mut entry = ent("report.txt", false, "text/plain");
-        entry.path = file;
-        entry.record_id = Some(*uuid::Uuid::from_u128(0xdef).as_bytes());
-        widget.state().entries = vec![entry];
-        widget.state().selection.select_only(0);
-        assert!(widget.state().apply_command(FileCommand::CreateShare(
-            crate::sharing::ShareComposerRequest {
-                subject: crate::sharing::ShareSubjectChoice::Link,
-                permission: fs_protocol::FilePermission::Edit,
-                expiry: crate::sharing::ShareExpiryChoice::Month,
-                link_uses: Some(crate::sharing::LinkUseChoice::Bounded(10)),
-                recipient_devices: Vec::new(),
-            },
-        )));
-        // The daemon has the request but deliberately cannot reply yet. Reaching
-        // this receive proves the UI command returned independently of I/O.
-        seen_rx.recv_timeout(tilo_test_env::hang_bound()).unwrap();
-        assert!(widget.state().share_pending_path.is_some());
-        release_tx.send(()).unwrap();
-        server.join().unwrap();
-        wakes.recv_timeout(tilo_test_env::hang_bound()).unwrap();
-        let doc = automerge::AutoCommit::new();
-        assert!(widget.update(&doc, &automerge::ROOT));
-        assert!(widget.state().share_pending_path.is_none());
-        assert_eq!(
-            widget.state().status.as_deref(),
-            Some(t("files-link-copied").as_str())
-        );
-    }
-
-    fn named_share_status_distinguishes_pending_from_delivered() {
-        let pending = t_args(
-            named_delivery_status_key(fs_protocol::NamedShareDeliveryStateV1::Pending),
-            &[arg("person", "Ada")],
-        );
-        let delivered = t_args(
-            named_delivery_status_key(fs_protocol::NamedShareDeliveryStateV1::Delivered),
-            &[arg("person", "Ada")],
-        );
-        assert!(pending.contains("pending"));
-        assert!(delivered.contains("completed"));
-        assert_ne!(pending, delivered);
     }
 
     fn previous_immutable_version_is_an_explicit_restore_command() {
@@ -4889,54 +4764,6 @@ mod command_path_tests {
         let panel = widget.state().collab_panel.as_ref().unwrap().clone();
         assert_eq!(panel.title, "Delete permanently?");
         assert!(matches!(panel.action, Some(CollabPanelAction::EmptyTrash)));
-    }
-
-    #[cfg(unix)]
-    fn owner_context_menu_revokes_each_exact_active_grant() {
-        let root = tempfile::tempdir().unwrap();
-        let file = root.path().join("shared.txt");
-        std::fs::write(&file, b"shared").unwrap();
-        let socket = root.path().join("share-control.sock");
-        xattr::set(
-            root.path(),
-            fs_protocol::SHARE_CONTROL_XATTR,
-            socket.as_os_str().as_encoded_bytes(),
-        )
-        .unwrap();
-        let grant = uuid::Uuid::parse_str("c0d4e23f-c7cb-4ded-a427-b32cf9da9343").unwrap();
-        let mut entry = ent("shared.txt", false, "text/plain");
-        entry.path = file;
-        entry.share = fs_protocol::ShareProjectionV1::parse_xattr(
-            &serde_json::to_vec(&serde_json::json!({
-                "schema_version": 1,
-                "record_id": "b0d4e23f-c7cb-4ded-a427-b32cf9da9341",
-                "observed_at_ms": 10,
-                "grants": [{
-                    "grant_id": grant.to_string(),
-                    "subject": {"kind": "bearer_link"},
-                    "permission": "View",
-                    "expires_at_ms": null,
-                    "revoked": false,
-                    "expired": false,
-                    "used": false,
-                    "exhausted": false,
-                    "status": "active",
-                    "redemptions": 0,
-                    "max_redemptions": 2
-                }]
-            }))
-            .unwrap(),
-        )
-        .ok();
-        let w = FileExplorerWidget::new();
-        w.state().workspace_roots = vec![root.path().to_path_buf()];
-        w.state().entries = vec![entry];
-        w.state().selection.select_only(0);
-        let spec = w.state().context_menu_spec(&[]);
-        assert!(spec.iter().any(|(label, command)| {
-            label == "Revoke shared link"
-                && *command == Some(FileCommand::RevokeShare { grant_id: grant })
-        }));
     }
 
     fn archives_browse_as_read_only_folders_and_extract_from_inside() {

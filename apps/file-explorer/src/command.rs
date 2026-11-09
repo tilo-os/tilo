@@ -255,22 +255,13 @@ pub enum FileCommand {
     ShowProperties,
     /// Open detailed residency, transfer, policy, replica and freshness state.
     ShowAvailability,
-    /// Open read-only authority-backed sharing details for the selected record.
-    ShowSharing,
-    /// Create a view-only, 24-hour, one-redemption link and copy it.
-    CreateOneTimeShareLink,
-    /// Grant view access to one identity-layer-resolved human root. Names are
-    /// intentionally not carried in the command or authority protocol.
-    ShareWithPerson {
-        person: fs_protocol::Ed25519PublicKey,
-    },
-    /// Submit one fully specified share-composer choice. The app dispatches
-    /// the authority request on its background worker.
-    CreateShare(crate::sharing::ShareComposerRequest),
-    /// Revoke one exact authority grant. Already-downloaded bytes cannot be
-    /// recalled; this stops future record and blob access.
-    RevokeShare {
-        grant_id: uuid::Uuid,
+    /// Ask the workspace's invitation for the selected entry and copy its link:
+    /// what Files shows is shared by inviting people into the workspace it is
+    /// in, at `role`, and for a person the directory knows, with a link only
+    /// their device can redeem.
+    Share {
+        role: String,
+        recipient: Option<String>,
     },
     /// Open recent immutable versions and conflict state for the selected record.
     ShowHistory,

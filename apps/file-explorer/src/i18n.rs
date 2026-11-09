@@ -76,10 +76,10 @@ mod tests {
             assert_eq!(
                 t_args_for(
                     "de-DE",
-                    "files-share-created",
+                    "files-share-invitation-for",
                     &[arg("person", "Zoë <Admin>")]
                 ),
-                "Für Zoë <Admin> freigegeben; heruntergeladene Kopien können nicht zurückgerufen werden"
+                "Einladung für Zoë <Admin> wird erstellt…"
             );
         }
     }
@@ -91,8 +91,8 @@ mod tests {
         {
             let rendered = t_args_for(
                 "qps-ploc",
-                "files-share-created",
-                &[arg("person", "Zoë 🔗")],
+                "files-share-invitation-copied",
+                &[arg("role", "Zoë 🔗")],
             );
             assert!(rendered.starts_with('⟦'));
             assert!(rendered.ends_with('⟧'));
@@ -100,27 +100,27 @@ mod tests {
                 rendered.contains('🔗'),
                 "non-letter data survives: {rendered}"
             );
-            assert!(!rendered.contains("Shared with"));
+            assert!(!rendered.contains("Making"));
         }
 
         // --- phase: plural_messages_are_grammatical_and_interpolation_is_not_executable ---
         {
             assert_eq!(
-                t_args_for("en-US", "files-sharing-summary", &[arg("count", 1)]),
-                "1 active grant; copied bytes cannot be recalled"
+                t_args_for("en-US", "files-item-count", &[arg("count", 1)]),
+                "1 item"
             );
             assert_eq!(
-                t_args_for("en-US", "files-sharing-summary", &[arg("count", 3)]),
-                "3 active grants; copied bytes cannot be recalled"
+                t_args_for("en-US", "files-item-count", &[arg("count", 3)]),
+                "3 items"
             );
             let hostile = "{ $count } <b>not markup</b>";
             assert_eq!(
                 t_args_for(
                     "en-US",
-                    "files-share-with-progress",
+                    "files-share-invitation-for",
                     &[arg("person", hostile)]
                 ),
-                format!("Sharing with {hostile}…")
+                format!("Making {hostile}’s invitation…")
             );
         }
 
@@ -157,8 +157,6 @@ mod tests {
                 include_str!("files_app.rs"),
                 include_str!("views/file_view.rs"),
                 include_str!("history_control.rs"),
-                include_str!("sharing.rs"),
-                include_str!("received_shares.rs"),
                 include_str!("main.rs"),
                 include_str!("model.rs"),
             ];

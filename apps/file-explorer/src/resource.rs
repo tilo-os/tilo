@@ -966,12 +966,8 @@ impl ResourceApp for FileExplorerShell {
     const READS_HOST: &'static [ui::launch::HostSource] = &[ui::launch::HostSource::Files];
     const TITLE: &'static str = "Files";
     const ICON: Option<&'static str> = Some("file-explorer");
-    /// A folder to open (`file-explorer ~/Documents`), or a received share
-    /// link (`file-explorer tilo-file://v2/…`) to admit and open.
+    /// A folder to open (`file-explorer ~/Documents`).
     const ARGUMENTS: usize = 1;
-    /// A received share link on standard input
-    /// (`--open-share-stdin`), so its secret stays out of the process list.
-    const FLAGS: &'static [&'static str] = &[crate::received_shares::STDIN_FLAG];
     const FILE_HISTORY: Option<FileHistory> = Some(FileHistory {
         title: "Selected file",
         preview: crate::framework_history::preview,
@@ -1274,12 +1270,6 @@ fn attach_files(cx: &ViewCx<FileExplorer>, files: &mut FilesState) {
     }
     if let Some(argument) = cx.launch_arguments().first() {
         files.open_launch_argument(argument);
-    }
-    if cx.mode().is_live() && cx.launch_flag(crate::received_shares::STDIN_FLAG) {
-        match crate::received_shares::read_link(std::io::stdin()) {
-            Ok(link) => files.admit_received_share(link),
-            Err(error) => files.set_external_status(error),
-        }
     }
     // Each device carries out the filesystem changes queued for it, and
     // records what it changed; a change asked for here runs under the

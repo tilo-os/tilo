@@ -1,7 +1,6 @@
 //! A failure that asks the person to try again waits in Needs you with the
-//! way on: a shared file that could not be received hands its link to the
-//! service again, and a change in a file's history that failed opens its
-//! Version history, where it can be made again.
+//! way on: a change in a file's history that failed opens its Version
+//! history, where it can be made again.
 
 use super::*;
 use crate::i18n::t;
@@ -60,34 +59,6 @@ fn wait_for_failure(harness: &mut ui::headless::FrameHarness) -> String {
         harness.recompose().unwrap();
         files(harness).state().notice_line()
     })
-}
-
-/// A shared file that could not be received carries Try again, which
-/// hands the received-file service the same link again.
-#[test]
-fn a_shared_file_that_was_not_received_tries_again() {
-    let _serial = crate::files_app::serial();
-    let dir = tempfile::tempdir().unwrap();
-    let mut harness = harness_in(dir.path());
-    let link = "tilo://share/example".to_owned();
-    for (width, semantic) in WAYS {
-        files(&mut harness)
-            .state()
-            .admit_received_share(link.clone());
-        let first = wait_for_failure(&mut harness);
-        assert_eq!(buttons(&mut harness, width), [t("files-notice-try-again")]);
-        press(&mut harness, width, semantic);
-        assert_eq!(
-            files(&mut harness).state().received_share_link.as_deref(),
-            Some(link.as_str()),
-            "the same link"
-        );
-        // The press took the failure down; only the service's answer to
-        // the link handed to it again brings it back.
-        let again = wait_for_failure(&mut harness);
-        assert_eq!(again, first, "asked again, and answered the same");
-        files(&mut harness).state().notice.dismiss();
-    }
 }
 
 /// A change in a file's history that failed carries Open Version history,

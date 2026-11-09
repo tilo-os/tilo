@@ -452,55 +452,6 @@ fn short_uuid(id: uuid::Uuid) -> String {
     simple.get(..8).unwrap_or(&simple).to_string()
 }
 
-fn format_timestamp(timestamp_ms: u64) -> String {
-    i64::try_from(timestamp_ms)
-        .ok()
-        .and_then(chrono::DateTime::<chrono::Utc>::from_timestamp_millis)
-        .map_or_else(
-            || t("files-time-unknown"),
-            |timestamp| crate::i18n::format_datetime(timestamp.with_timezone(&chrono::Local)),
-        )
-}
-
-fn certified_device_detail(device: &crate::identity_directory::TrustedDevice) -> String {
-    let caps = &device.capabilities;
-    let mut capabilities = Vec::new();
-    if caps.can_own_workspaces {
-        capabilities.push(t("files-device-cap-own"));
-    }
-    if caps.can_admit_devices {
-        capabilities.push(t("files-device-cap-admit"));
-    }
-    if caps.can_act_as_host {
-        capabilities.push(t("files-device-cap-host"));
-    }
-    if caps.can_read_all_workspaces {
-        capabilities.push(t("files-device-cap-read-all"));
-    }
-    if capabilities.is_empty() {
-        capabilities.push(t("files-device-cap-member"));
-    }
-    let expiry = device.expires_at_ns.map_or_else(
-        || t("files-no-expiry"),
-        |deadline| {
-            t_args(
-                "files-expires",
-                &[arg("time", format_timestamp(deadline / 1_000_000))],
-            )
-        },
-    );
-    t_args(
-        "files-certified-device-detail",
-        &[
-            arg("device", device.label.clone()),
-            arg("fingerprint", short_fingerprint(device.device.as_bytes())),
-            arg("capabilities", capabilities.join(", ")),
-            arg("issued", format_timestamp(device.issued_at_ns / 1_000_000)),
-            arg("expiry", expiry),
-        ],
-    )
-}
-
 fn transfer_phase_label(phase: fs_protocol::TransferPhase) -> String {
     t(match phase {
         fs_protocol::TransferPhase::Idle => "files-transfer-idle",
@@ -511,15 +462,6 @@ fn transfer_phase_label(phase: fs_protocol::TransferPhase) -> String {
     })
 }
 
-fn grant_status_label(status: fs_protocol::ShareGrantStatus) -> String {
-    t(match status {
-        fs_protocol::ShareGrantStatus::Active => "files-grant-active",
-        fs_protocol::ShareGrantStatus::Expired => "files-grant-expired",
-        fs_protocol::ShareGrantStatus::Revoked => "files-grant-revoked",
-        fs_protocol::ShareGrantStatus::Exhausted => "files-grant-exhausted",
-    })
-}
-
 fn conflict_strategy_label(strategy: fs_protocol::ConflictStrategy) -> String {
     t(match strategy {
         fs_protocol::ConflictStrategy::KeepCurrent => "files-strategy-keep-current",
@@ -527,29 +469,6 @@ fn conflict_strategy_label(strategy: fs_protocol::ConflictStrategy) -> String {
         fs_protocol::ConflictStrategy::KeepBoth => "files-strategy-keep-both",
         fs_protocol::ConflictStrategy::Merge => "files-strategy-merge",
     })
-}
-
-fn share_permission_label(permission: fs_protocol::FilePermission) -> String {
-    match permission {
-        fs_protocol::FilePermission::View => t("files-share-choice-view"),
-        fs_protocol::FilePermission::Edit => t("files-share-choice-edit"),
-    }
-}
-
-fn share_expiry_label(expiry: crate::sharing::ShareExpiryChoice) -> String {
-    t(match expiry {
-        crate::sharing::ShareExpiryChoice::Day => "files-share-choice-day",
-        crate::sharing::ShareExpiryChoice::Week => "files-share-choice-week",
-        crate::sharing::ShareExpiryChoice::Month => "files-share-choice-month",
-        crate::sharing::ShareExpiryChoice::Never => "files-share-choice-never",
-    })
-}
-
-fn named_delivery_status_key(delivery: fs_protocol::NamedShareDeliveryStateV1) -> &'static str {
-    match delivery {
-        fs_protocol::NamedShareDeliveryStateV1::Pending => "files-share-created-pending",
-        fs_protocol::NamedShareDeliveryStateV1::Delivered => "files-share-created-delivered",
-    }
 }
 
 /// Explicit initial presentation data for an embedded Files view.
@@ -855,15 +774,9 @@ pub struct FilesState {
     collab_panel_focused: bool,
     /// Where the sheet's parts landed at the last paint.
     collab_layout: Option<ui::widget::ModalLayout>,
-    /// Single background share request, run on the app runtime. It never
-    /// touches widget state; update/paint/event polling adopts its bounded
-    /// result on the UI thread.
-    share_result: ui::LatestRequest<Result<crate::sharing::ShareActionResult, String>>,
-    share_pending_path: Option<PathBuf>,
-    /// Admission of a received bearer link, run on the app runtime.
-    received_share: ui::LatestRequest<Result<fs_protocol::RecipientSubscriptionStatusV1, String>>,
-    /// The shared-file link last handed to the received-file service.
-    received_share_link: Option<String>,
+    /// The workspace's invitation Files asks for the entry it shares, and
+    /// the answer it copies the link from.
+    share_invite: crate::share_invite::ShareInvite,
     /// Host-projected names keyed by certified human roots. Labels affect
     /// presentation only; every command and request continues to carry the
     /// root key.
@@ -1306,10 +1219,7 @@ impl FileExplorerWidget {
             collab_panel: None,
             collab_panel_focused: false,
             collab_layout: None,
-            share_result: ui::LatestRequest::new(),
-            share_pending_path: None,
-            received_share: ui::LatestRequest::new(),
-            received_share_link: None,
+            share_invite: crate::share_invite::ShareInvite::default(),
             trusted_humans,
             framework_history: ui::history_mode::checked_files::FileHistorySource::default(),
             framework_history_binding: None,
@@ -1666,7 +1576,6 @@ impl FilesState {
                     self.open_app_chooser();
                 }
             }
-            NoticeAction::ReceiveAgain(uri) => self.admit_received_share(uri),
             NoticeAction::OpenHistory(path) => {
                 if let Some(i) = self.displayed_entries().iter().position(|e| e.path == path) {
                     self.selection.select_only(i);
@@ -2591,9 +2500,6 @@ impl FilesState {
             FilesEffect::Properties { entry } => {
                 self.entry_command(&entry, |_, _| Some(FileCommand::ShowProperties))?
             }
-            FilesEffect::Sharing { entry } => {
-                self.entry_command(&entry, |_, _| Some(FileCommand::ShowSharing))?
-            }
             FilesEffect::History { entry } => {
                 self.entry_command(&entry, |_, _| Some(FileCommand::ShowHistory))?
             }
@@ -2657,8 +2563,10 @@ impl FilesState {
                     .visible_entry_path(&entry)
                     .ok_or_else(|| "file entry is no longer visible".to_string())?;
                 self.select_entry(&target)?;
-                if !self.apply_command(FileCommand::CreateOneTimeShareLink)
-                    || self.share_pending_path.is_none()
+                if !self.apply_command(FileCommand::Share {
+                    role: crate::share_invite::DEFAULT_ROLE.to_owned(),
+                    recipient: None,
+                }) || self.share_invite.asking().is_none()
                 {
                     return Err(self
                         .status
@@ -2837,9 +2745,12 @@ impl FilesState {
     }
 
     /// Answer the job awaiting its result, if one is.
-    fn answer_effect(&mut self, result: Result<(), tilo_actions::ActionFailure>) {
+    fn answer_effect(
+        &mut self,
+        result: Result<tilo_actions::ActionOutput, tilo_actions::ActionFailure>,
+    ) {
         if let Some(reply) = self.effect_reply.take() {
-            reply.answer(result.map(|()| tilo_actions::ActionOutput::default()));
+            reply.answer(result);
         }
     }
 
@@ -4398,12 +4309,6 @@ impl FilesState {
                             &[arg("state", residency)],
                         ));
                     }
-                    if let Some(share) = &entry.share {
-                        lines.push(t_args(
-                            "files-property-sharing",
-                            &[arg("count", i64_of_usize(share.active_grants()))],
-                        ));
-                    }
                     if let Some(history) = &entry.history {
                         lines.push(t_args(
                             "files-property-history",
@@ -4497,11 +4402,7 @@ impl FilesState {
                 }
                 true
             }
-            FileCommand::CreateOneTimeShareLink => {
-                if self.share_pending_path.is_some() {
-                    self.status = Some(t("files-share-link-pending"));
-                    return true;
-                }
+            FileCommand::Share { role, recipient } => {
                 let entry = self
                     .selection
                     .primary()
@@ -4510,226 +4411,26 @@ impl FilesState {
                     self.status = Some(t("files-select-collaborative-file"));
                     return true;
                 };
-                let (Some(record_id), Some(socket)) = (
-                    entry.record_id,
-                    crate::model::share_control_socket(&entry.path, &self.workspace_roots),
-                ) else {
-                    self.status = Some(t("files-sharing-unavailable"));
-                    return true;
-                };
-                self.share_pending_path = Some(entry.path);
-                self.status = Some(t("files-creating-one-use-link"));
-                self.spawn_share(async move {
-                    crate::sharing::create_one_use_view_link(
-                        &socket,
-                        fs_protocol::FileRecordId(uuid::Uuid::from_bytes(record_id)),
-                    )
-                    .await
-                    .map(crate::sharing::ShareActionResult::LinkCreated)
-                });
-                true
-            }
-            FileCommand::ShareWithPerson { person } => {
-                if self.share_pending_path.is_some() {
-                    self.status = Some(t("files-share-change-pending"));
+                if crate::model::workspace_root_for(&entry.path, &self.workspace_roots).is_none() {
+                    self.status = Some(t("files-share-needs-workspace"));
                     return true;
                 }
-                let entry = self
-                    .selection
-                    .primary()
-                    .and_then(|index| self.displayed_entries().get(index).cloned());
-                let Some(entry) = entry else {
-                    self.status = Some(t("files-select-collaborative-file"));
-                    return true;
+                let ask = match &recipient {
+                    Some(person) => crate::share_invite::Ask::person(&role, person),
+                    None => crate::share_invite::Ask::anyone(&role),
                 };
-                let (Some(record_id), Some(socket)) = (
-                    entry.record_id,
-                    crate::model::share_control_socket(&entry.path, &self.workspace_roots),
-                ) else {
-                    self.status = Some(t("files-sharing-unavailable"));
-                    return true;
-                };
-                let display = self.trusted_humans.display_name_or_fingerprint(&person);
-                let recipient_devices: Vec<fs_protocol::Ed25519PublicKey> = self
-                    .trusted_humans
-                    .human(&person)
-                    .map(|human| human.devices.iter().map(|device| device.device).collect())
-                    .unwrap_or_default();
-                if recipient_devices.is_empty() {
-                    self.status = Some(t("files-share-recipient-unreachable"));
-                    return true;
-                }
-                self.share_pending_path = Some(entry.path);
-                self.status = Some(t_args(
-                    "files-share-with-progress",
-                    &[arg("person", display)],
-                ));
-                self.spawn_share(async move {
-                    crate::sharing::create_named_share(
-                        &socket,
-                        fs_protocol::FileRecordId(uuid::Uuid::from_bytes(record_id)),
-                        person,
-                        recipient_devices,
-                        fs_protocol::FilePermission::View,
-                        None,
-                    )
-                    .await
-                    .map(crate::sharing::ShareActionResult::NamedCreated)
-                });
-                true
-            }
-            FileCommand::CreateShare(request) => {
-                if self.share_pending_path.is_some() {
-                    self.status = Some(t("files-share-change-pending"));
-                    return true;
-                }
-                let entry = self
-                    .selection
-                    .primary()
-                    .and_then(|index| self.displayed_entries().get(index).cloned());
-                let Some(entry) = entry else {
-                    self.status = Some(t("files-select-collaborative-file"));
-                    return true;
-                };
-                let (Some(record_id), Some(socket)) = (
-                    entry.record_id,
-                    crate::model::share_control_socket(&entry.path, &self.workspace_roots),
-                ) else {
-                    self.status = Some(t("files-sharing-unavailable"));
-                    return true;
-                };
-                self.share_pending_path = Some(entry.path);
-                self.status = Some(t("files-share-creating"));
-                self.spawn_share(async move {
-                    crate::sharing::create_share(
-                        &socket,
-                        fs_protocol::FileRecordId(uuid::Uuid::from_bytes(record_id)),
-                        request,
-                    )
-                    .await
-                });
-                true
-            }
-            FileCommand::RevokeShare { grant_id } => {
-                if self.share_pending_path.is_some() {
-                    self.status = Some(t("files-share-change-pending"));
-                    return true;
-                }
-                let entry = self
-                    .selection
-                    .primary()
-                    .and_then(|index| self.displayed_entries().get(index).cloned());
-                let Some(entry) = entry else {
-                    self.status = Some(t("files-select-shared-file"));
-                    return true;
-                };
-                let Some(socket) =
-                    crate::model::share_control_socket(&entry.path, &self.workspace_roots)
-                else {
-                    self.status = Some(t("files-sharing-unavailable"));
-                    return true;
-                };
-                self.share_pending_path = Some(entry.path);
-                self.status = Some(t("files-revoking-access"));
-                self.spawn_share(
-                    async move { crate::sharing::revoke_grant(&socket, grant_id).await },
-                );
-                true
-            }
-            FileCommand::ShowSharing => {
-                let entry = self
-                    .selection
-                    .primary()
-                    .and_then(|index| self.displayed_entries().get(index).cloned());
-                if let Some(entry) = entry
-                    && let Some(share) = entry.share
-                {
-                    let active = share.active_grants();
-                    let lines = if share.grants.is_empty() {
-                        vec![t("files-not-shared")]
-                    } else {
-                        let mut lines = Vec::new();
-                        for grant in &share.grants {
-                            let (subject, devices) = match grant.subject {
-                                fs_protocol::ShareSubjectProjection::Person { person } => {
-                                    self.trusted_humans.human(&person).map_or_else(
-                                        || {
-                                            (
-                                                crate::identity_directory::fingerprint(
-                                                    person.as_bytes(),
-                                                ),
-                                                Vec::new(),
-                                            )
-                                        },
-                                        |human| {
-                                            let subject = if human.devices.is_empty() {
-                                                human.display_name.clone()
-                                            } else {
-                                                t_args(
-                                                    "files-certified-devices",
-                                                    &[
-                                                        arg("person", human.display_name.clone()),
-                                                        arg(
-                                                            "devices",
-                                                            human
-                                                                .devices
-                                                                .iter()
-                                                                .map(|device| device.label.as_str())
-                                                                .collect::<Vec<_>>()
-                                                                .join(", "),
-                                                        ),
-                                                    ],
-                                                )
-                                            };
-                                            let devices = human
-                                                .devices
-                                                .iter()
-                                                .map(certified_device_detail)
-                                                .collect();
-                                            (subject, devices)
-                                        },
-                                    )
-                                }
-                                fs_protocol::ShareSubjectProjection::BearerLink => {
-                                    (t("files-anyone-link"), Vec::new())
-                                }
-                            };
-                            let permission = match grant.permission {
-                                fs_protocol::FilePermission::View => t("files-can-view"),
-                                fs_protocol::FilePermission::Edit => t("files-can-edit"),
-                            };
-                            let status = grant_status_label(grant.status);
-                            let expiry = grant.expires_at_ms.map_or_else(
-                                || t("files-no-expiry"),
-                                |deadline| {
-                                    t_args(
-                                        "files-expires",
-                                        &[arg("time", format_timestamp(deadline))],
-                                    )
-                                },
-                            );
-                            lines.push(t_args(
-                                "files-share-grant-line",
-                                &[
-                                    arg("subject", subject),
-                                    arg("permission", permission),
-                                    arg("status", status),
-                                    arg("expiry", expiry),
-                                ],
-                            ));
-                            lines.extend(devices);
-                        }
-                        lines
-                    };
-                    self.show_collab_panel(CollabPanel {
-                        title: t_args("files-sharing-title", &[arg("name", entry.name)]),
-                        summary: t_args(
-                            "files-sharing-summary",
-                            &[arg("count", i64_of_usize(active))],
-                        ),
-                        lines,
-                        action: None,
-                    });
+                match self.share_invite.ask(ask) {
+                    Ok(()) => {
+                        self.status = Some(match &recipient {
+                            Some(person) => t_args(
+                                "files-share-invitation-for",
+                                &[arg("person", self.person_label(person))],
+                            ),
+                            None => t("files-share-invitation-making"),
+                        });
+                        self.structure_dirty = true;
+                    }
+                    Err(reason) => self.status = Some(reason),
                 }
                 true
             }
@@ -5799,16 +5500,11 @@ impl FilesState {
         self.refresh_framework_history_target();
     }
 
-    /// Open what a launch names: a received share link (`tilo-file://…`) is
-    /// admitted through the recipient service; a path, resolved against the
-    /// launcher's working directory, is a folder to show, or a file to show
-    /// selected in its folder ("Show in Files"). A folder that is missing or
-    /// unreadable shows the ordinary navigation error.
+    /// Open what a launch names: a path, resolved against the launcher's
+    /// working directory, is a folder to show, or a file to show selected in
+    /// its folder ("Show in Files"). A folder that is missing or unreadable
+    /// shows the ordinary navigation error.
     pub fn open_launch_argument(&mut self, argument: &str) {
-        if argument.starts_with(crate::received_shares::LINK_SCHEME) {
-            self.admit_received_share(argument.to_owned());
-            return;
-        }
         match std::path::absolute(argument) {
             Ok(path) if path.is_file() => {
                 self.apply_reveal_in_folder(&path);
@@ -7586,6 +7282,69 @@ impl FilesState {
         true
     }
 
+    /// Copy the link the desk made for the invitation Files asked for, and say
+    /// what it is: the workspace's invitation, handed over as the invite sheet
+    /// hands one. Returns whether the status line changed.
+    fn handle_share_event(&mut self, event: &ui::collaboration::CollabEvent) -> bool {
+        let Some(answer) = self.share_invite.handle_event(event) else {
+            return false;
+        };
+        let status = match &answer {
+            Ok(invitation) => {
+                let _ = ui::try_clipboard_copy_secret(
+                    &invitation.link,
+                    crate::share_invite::ON_CLIPBOARD_FOR,
+                );
+                self.answer_effect(Ok(tilo_actions::ActionOutput {
+                    value: Some(serde_json::json!({ "url": invitation.link })),
+                    resources: Vec::new(),
+                }));
+                Some(t_args(
+                    "files-share-invitation-copied",
+                    &[arg(
+                        "role",
+                        t(crate::share_invite::role_key(&invitation.role)),
+                    )],
+                ))
+            }
+            Err(reason) => {
+                self.answer_effect(Err(tilo_actions::ActionFailure {
+                    code: "files.share_failed".into(),
+                    message: reason.clone(),
+                    details: None,
+                    retryable: false,
+                }));
+                Some(t_args(
+                    "files-share-invitation-failed",
+                    &[arg("reason", reason.clone())],
+                ))
+            }
+        };
+        self.status = status;
+        true
+    }
+
+    /// Whether the entry is one Files can share: sharing is inviting people into
+    /// the workspace an entry is in, so anything inside one is shared the same way.
+    fn offers_sharing(&self, entry: &crate::model::Entry) -> bool {
+        crate::model::workspace_root_for(&entry.path, &self.workspace_roots).is_some()
+    }
+
+    /// What the directory calls the person `key`, by their user key.
+    fn person_label(&self, key: &str) -> String {
+        hex::decode(key)
+            .ok()
+            .and_then(|key| <[u8; 32]>::try_from(key).ok())
+            .map_or_else(
+                || key.chars().take(8).collect(),
+                |key| {
+                    self.trusted_humans.display_name_or_fingerprint(
+                        &fs_protocol::Ed25519PublicKey::from_bytes(key),
+                    )
+                },
+            )
+    }
+
     fn open_nearby_device_picker(&mut self, targets: &[ui::collaboration::NearbyTransferTarget]) {
         let online = targets
             .iter()
@@ -8058,124 +7817,6 @@ impl FilesState {
             dirty |= self.apply_command(cmd);
         }
         dirty
-    }
-
-    /// Admit a received bearer link through the recipient service. The call
-    /// runs on the app runtime; when it finishes, Files opens the received
-    /// mount or reports why it could not.
-    pub fn admit_received_share(&mut self, uri: String) {
-        self.received_share_link = Some(uri.clone());
-        if !self
-            .received_share
-            .spawn(crate::received_shares::admit_link(uri))
-        {
-            self.set_external_status(t("files-received-unavailable"));
-        }
-    }
-
-    fn poll_received_share(&mut self) -> bool {
-        let Some(result) = self.received_share.try_take() else {
-            return false;
-        };
-        match result {
-            Ok(status) => {
-                if let Some(mount) = status.mount {
-                    self.navigate(PathBuf::from(mount.path));
-                    self.set_external_status(if mount.running {
-                        t("files-received-file")
-                    } else {
-                        t("files-received-mount-starting")
-                    });
-                } else {
-                    self.set_external_status(t("files-received-admitted"));
-                }
-            }
-            Err(error) => {
-                // Said with Try again, which hands the service the link again.
-                let again = self
-                    .received_share_link
-                    .clone()
-                    .map(NoticeAction::ReceiveAgain);
-                self.status = None;
-                self.notice.show(error, "", again);
-                self.structure_dirty = true;
-            }
-        }
-        true
-    }
-
-    /// Run a share-service call on the app runtime; its outcome wakes the
-    /// event loop and is applied by [`Self::poll_share_result`].
-    fn spawn_share(
-        &mut self,
-        call: impl std::future::Future<Output = Result<crate::sharing::ShareActionResult, String>>
-        + Send
-        + 'static,
-    ) {
-        if !self.share_result.spawn(call) {
-            // The window is closing; no outcome could be delivered.
-            self.share_pending_path = None;
-            self.status = Some(t("files-sharing-unavailable"));
-        }
-    }
-
-    fn poll_share_result(&mut self) -> bool {
-        let Some(result) = self.share_result.try_take() else {
-            return false;
-        };
-        self.answer_effect(match &result {
-            Ok(_) => Ok(()),
-            Err(message) => Err(tilo_actions::ActionFailure {
-                code: "files.share_failed".into(),
-                message: message.clone(),
-                details: None,
-                retryable: false,
-            }),
-        });
-        let path = self.share_pending_path.take();
-        match result {
-            Ok(crate::sharing::ShareActionResult::LinkCreated(uri)) => {
-                ui::clipboard_copy(&uri);
-                self.status = Some(t("files-link-copied"));
-                if let Some(path) = path {
-                    let projection = crate::model::read_share(&path);
-                    if let Some(entry) = self.entries.iter_mut().find(|entry| entry.path == path) {
-                        entry.share = projection;
-                    }
-                }
-            }
-            Ok(crate::sharing::ShareActionResult::NamedCreated(metadata)) => {
-                let display = self
-                    .trusted_humans
-                    .display_name_or_fingerprint(&metadata.person);
-                self.status = Some(t_args(
-                    named_delivery_status_key(metadata.delivery),
-                    &[arg("person", display)],
-                ));
-                if let Some(path) = path {
-                    let projection = crate::model::read_share(&path);
-                    if let Some(entry) = self.entries.iter_mut().find(|entry| entry.path == path) {
-                        entry.share = projection;
-                    }
-                }
-            }
-            Ok(crate::sharing::ShareActionResult::Revoked { revoked, .. }) => {
-                self.status = Some(if revoked {
-                    t("files-access-revoked")
-                } else {
-                    t("files-share-inactive")
-                });
-                if let Some(path) = path {
-                    let projection = crate::model::read_share(&path);
-                    if let Some(entry) = self.entries.iter_mut().find(|entry| entry.path == path) {
-                        entry.share = projection;
-                    }
-                }
-            }
-            Err(error) => self.status = Some(error),
-        }
-        self.structure_dirty = true;
-        true
     }
 
     fn request_merge_preflight(
@@ -9116,6 +8757,7 @@ impl FilesState {
         self.shortcut_menu.poll_if_due(now);
         let mut requests = self.nearby_send.take_requests();
         requests.extend(self.shortcut_menu.take_requests());
+        requests.extend(self.share_invite.take_requests());
         requests.extend(self.local_clipboard.take_request());
         requests
     }
@@ -9127,7 +8769,7 @@ impl FilesState {
         }
         self.drives.event(event);
         self.applications.event(event);
-        let changed = self.handle_shortcut_event(event);
+        let changed = self.handle_shortcut_event(event) || self.handle_share_event(event);
         let nearby_changed = self.handle_nearby_event(event);
         if changed || nearby_changed {
             self.structure_dirty = true;
@@ -9217,14 +8859,16 @@ impl FilesState {
                         continue;
                     }
                     changed = true;
-                    self.answer_effect(result.map(|_| ()).map_err(|message| {
-                        tilo_actions::ActionFailure {
-                            code: "files.nearby_send_failed".into(),
-                            message,
-                            details: None,
-                            retryable: true,
-                        }
-                    }));
+                    self.answer_effect(
+                        result
+                            .map(|_| tilo_actions::ActionOutput::default())
+                            .map_err(|message| tilo_actions::ActionFailure {
+                                code: "files.nearby_send_failed".into(),
+                                message,
+                                details: None,
+                                retryable: true,
+                            }),
+                    );
                 }
             }
         }
@@ -9287,7 +8931,6 @@ impl FilesState {
             restored |= self.apply_command(FileCommand::ContextMenuAt { index, at });
         }
         // Service calls finishing on the app runtime wake the event loop.
-        let received = self.poll_received_share();
         let transfers = self.follow_transfers(ui::time::now());
         let previewed = self.preview.as_mut().is_some_and(Preview::poll);
         let sprang = self.spring_open_if_due(ui::time::now());
@@ -9298,10 +8941,8 @@ impl FilesState {
             | self.poll_extract_chooser()
             | self.open_read_members();
         self.structure_dirty |= counted;
-        self.poll_share_result()
-            | self.take_open_replies()
+        self.take_open_replies()
             | self.poll_history_result()
-            | received
             | restored
             | transfers
             | previewed
@@ -9453,7 +9094,6 @@ impl FilesState {
         ctx: &mut ui::widget::EventCtx<'_>,
     ) {
         use winit::event::{ElementState, MouseButton, WindowEvent};
-        self.poll_share_result();
         self.poll_history_result();
         let panel_was_open = self.collab_panel.is_some();
         if matches!(

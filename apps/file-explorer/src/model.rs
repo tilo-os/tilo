@@ -12,7 +12,7 @@ use fs_protocol::projection::{
 use fs_protocol::{
     AVAILABILITY_XATTR, AvailabilityProjectionV1, CONTENT_HASH_XATTR, HISTORY_XATTR,
     HistoryProjectionV1, METADATA_XATTR, MetadataProjectionV1, RECORD_ID_XATTR, Residency,
-    SHARE_CONTROL_XATTR, SHARE_XATTR, SYNC_XATTR, ShareProjectionV1, SyncState, THUMB_XATTR,
+    SYNC_XATTR, SyncState, THUMB_XATTR,
 };
 
 /// The Tilo collaborative FUSE mount. Per `fs.service` the daemon mounts
@@ -69,10 +69,6 @@ pub fn provenance_key(provenance: &fs_protocol::FileProvenance) -> &'static str 
         FileProvenance::ConflictResolution => "files-history-action-conflict-resolved",
         FileProvenance::Restore { .. } => "files-history-action-restored",
     }
-}
-
-pub fn read_share(path: &Path) -> Option<ShareProjectionV1> {
-    ShareProjectionV1::parse_xattr(&xattr::get(path, SHARE_XATTR).ok()??).ok()
 }
 
 pub fn read_history(path: &Path) -> Option<HistoryProjectionV1> {
@@ -826,19 +822,6 @@ pub fn workspace_root_for<'a>(path: &Path, roots: &'a [PathBuf]) -> Option<&'a P
         .map(std::path::PathBuf::as_path)
 }
 
-/// Discover the owner-only response-bearing share service from the workspace
-/// root. The xattr carries a socket locator, never a link secret.
-pub fn share_control_socket(path: &Path, roots: &[PathBuf]) -> Option<PathBuf> {
-    let root = workspace_root_for(path, roots)?;
-    let bytes = xattr::get(root, SHARE_CONTROL_XATTR).ok()??;
-    if bytes.is_empty() || bytes.len() > 4096 {
-        return None;
-    }
-    let value = std::str::from_utf8(&bytes).ok()?;
-    let socket = PathBuf::from(value);
-    socket.is_absolute().then_some(socket)
-}
-
 /// What to call a workspace root on screen.
 ///
 /// The mount path is an implementation detail of where the driver put it,
@@ -874,8 +857,6 @@ pub struct Entry {
     pub record_id: Option<[u8; 16]>,
     /// Rich, honest availability state. `None` falls back to legacy sync state.
     pub availability: Option<AvailabilityProjectionV1>,
-    /// Redacted authority-backed recipients and bearer-link state.
-    pub share: Option<ShareProjectionV1>,
     /// Recent immutable versions and first-class conflicts.
     pub history: Option<HistoryProjectionV1>,
     /// Useful media/document facts from signed metadata; no payload read.
@@ -1113,11 +1094,6 @@ fn read_dir_inner(path: &Path, in_workspace: bool) -> Result<Vec<Entry>, String>
         } else {
             None
         };
-        let share = if in_workspace {
-            read_share(&path)
-        } else {
-            None
-        };
         let history = if in_workspace {
             read_history(&path)
         } else {
@@ -1139,7 +1115,6 @@ fn read_dir_inner(path: &Path, in_workspace: bool) -> Result<Vec<Entry>, String>
             content_hash,
             record_id,
             availability,
-            share,
             history,
             app: None,
             rich_metadata,
@@ -1349,7 +1324,7 @@ pub(crate) mod sync_state_tests {
         .unwrap()
     }
 
-    /// Sync state appears only inside workspace roots, the share locator is read-only, and the record index projects stable identities and rejects escapes.
+    /// Sync state appears only inside workspace roots, and the record index projects stable identities and rejects escapes.
     #[allow(
         clippy::too_many_lines,
         reason = "merged scenario test: each labelled phase is one original case, kept verbatim"
@@ -1379,15 +1354,6 @@ pub(crate) mod sync_state_tests {
             let projected_availability =
                 availability_json(&serde_json::json!({"state": "unknown"}));
             xattr::set(&projected, AVAILABILITY_XATTR, &projected_availability).unwrap();
-            let projected_share = serde_json::to_vec(&serde_json::json!({
-                "schema_version": 1,
-                "record_id": "b0d4e23f-c7cb-4ded-a427-b32cf9da9341",
-                "observed_at_ms": 10,
-                "grants": []
-            }))
-            .unwrap();
-            xattr::set(&projected, SHARE_XATTR, &projected_share).unwrap();
-
             // Not a workspace: sync_state is never queried → all None.
             let outside = read_dir_inner(ws.path(), false).unwrap();
             assert!(
@@ -1429,39 +1395,10 @@ pub(crate) mod sync_state_tests {
                 Some(fs_protocol::ProjectedReplicaEvidence::Unknown)
             );
             assert_eq!(
-                entries
-                    .iter()
-                    .find(|e| e.name == "b-projected.bin")
-                    .unwrap()
-                    .share
-                    .as_ref()
-                    .map(ShareProjectionV1::active_grants),
-                Some(0)
-            );
-            assert_eq!(
                 by("c-plain.bin"),
                 None,
                 "an untagged workspace file has no state"
             );
-        }
-
-        // --- phase: share_control_locator_is_read_only_from_the_workspace_root ---
-        {
-            let root = tempfile::tempdir().unwrap();
-            let nested = root.path().join("folder");
-            std::fs::create_dir(&nested).unwrap();
-            let socket = root.path().join("share.sock");
-            xattr::set(
-                root.path(),
-                SHARE_CONTROL_XATTR,
-                socket.as_os_str().as_encoded_bytes(),
-            )
-            .unwrap();
-            assert_eq!(
-                share_control_socket(&nested, &[root.path().to_path_buf()]),
-                Some(socket)
-            );
-            assert_eq!(share_control_socket(&nested, &[]), None);
         }
 
         // --- phase: workspace_record_index_projects_nested_paths_by_stable_identity ---

@@ -389,7 +389,6 @@ impl Widget for FileExplorerWidget {
         // move: only current until the next input.
         ui::outside_paint::note();
         self.with_state(|state, chrome| {
-            state.poll_share_result();
             state.poll_history_result();
             state.paint_background(theme);
             chrome

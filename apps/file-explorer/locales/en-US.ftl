@@ -2,7 +2,6 @@
 # Collaboration, availability, history and received-share surfaces are the
 # first migrated tranche. Variables are data, never preformatted Fluent source.
 
-files-time-unknown = unknown time
 
 ## Keyboard shortcuts
 files-shortcuts-title = Keyboard shortcuts
@@ -100,10 +99,6 @@ files-residency-metadata-only = metadata only
 files-residency-partly-local = partly local ({ $bytes } bytes)
 files-residency-local = local ({ $bytes } bytes)
 files-property-on-device = On this device: { $state }
-files-property-sharing = Sharing: { $count } active { $count ->
-    [one] grant
-   *[other] grants
-}
 files-property-history = History: { $versions } { $versions ->
     [one] version
    *[other] versions
@@ -137,7 +132,17 @@ files-transfer-verifying = verifying
 ## Sharing
 files-search-collaborative-records = Collaborative files
 files-search-record-provenance = { $path }
-files-copy-one-time-link = Copy one-time share link
+files-share-copy-link = Copy invite link ({ $role })
+files-share-invite-person = Invite { $person }
+files-share-role-viewer = viewer
+files-share-role-commenter = commenter
+files-share-role-editor = editor
+files-share-role-moderator = moderator
+files-share-invitation-making = Making an invitation…
+files-share-invitation-for = Making { $person }’s invitation…
+files-share-invitation-copied = Invitation link copied; it brings people in as { $role }
+files-share-invitation-failed = The invitation was not made: { $reason }
+files-share-needs-workspace = Only something in a workspace can be shared
 files-import-once = Import once to local folder…
 files-cloud-title = Cloud files
 files-account-import-only = Import only
@@ -167,62 +172,6 @@ files-cloud-retry = Retry failed
 files-cloud-reveal = Show destination
 files-import-source-unavailable = Choose an entry in a mounted Dropbox or Google Drive account.
 files-import-local-destination = One-time import needs a local destination, not a synced cloud folder.
-files-share-composer-named = Share with { $person } ({ $permission }, { $expiry })
-files-share-composer-link = Copy link ({ $permission }, { $expiry }, { $uses })
-files-share-choice-view = View
-files-share-choice-edit = Edit
-files-share-choice-day = expires in 24 hours
-files-share-choice-week = expires in 7 days
-files-share-choice-month = expires in 30 days
-files-share-choice-never = no expiry
-files-share-choice-one-use = one use
-files-share-choice-bounded-uses = up to { $count } uses
-files-share-creating = Creating share…
-files-share-invalid-options = Those sharing options cannot be combined
-files-share-link-needs-expiry = Share links require an expiry
-files-share-invalid-uses = Share links require a use limit from 1 to 1,000
-files-share-recipient-unreachable = None of this person’s devices can receive files right now
-files-sharing-access = Sharing and access…
-files-share-with = Share with { $person }
-files-revoke-subject = Revoke { $subject }
-files-shared-link = shared link
-files-share-link-pending = A share link is already being created
-files-share-change-pending = A sharing change is already in progress
-files-select-collaborative-file = Select one collaborative file first
-files-select-shared-file = Select the shared file first
-files-sharing-unavailable = Sharing is unavailable for this workspace
-files-creating-one-use-link = Creating a one-use link…
-files-share-with-progress = Sharing with { $person }…
-files-revoking-access = Revoking access…
-files-not-shared = Not shared with anyone
-files-anyone-link = Anyone with the link
-files-can-view = can view
-files-can-edit = can edit
-files-grant-active = active
-files-grant-expired = expired
-files-grant-revoked = revoked
-files-grant-exhausted = exhausted
-files-no-expiry = no expiry
-files-expires = expires { $time }
-files-share-grant-line = { $subject }: { $permission }, { $status }, { $expiry }
-files-sharing-title = Share { $name }
-files-certified-devices = { $person }, devices: { $devices }
-files-certified-device-detail = { $device }, key { $fingerprint }, { $capabilities }, issued { $issued }, { $expiry }
-files-device-cap-own = manages workspaces
-files-device-cap-admit = admits devices
-files-device-cap-host = trusted host
-files-device-cap-read-all = reads all workspaces
-files-device-cap-member = workspace member
-files-sharing-summary = { $count } active { $count ->
-    [one] grant
-   *[other] grants
-}; copied bytes cannot be recalled
-files-link-copied = Share link copied to clipboard
-files-share-created = Shared with { $person }; downloaded copies cannot be recalled
-files-share-created-pending = Shared with { $person }; delivery is pending
-files-share-created-delivered = Shared with { $person }; delivery completed
-files-access-revoked = Access revoked; previously downloaded bytes cannot be recalled
-files-share-inactive = That share was already inactive
 
 ## History and conflict resolution
 files-version-history = Version history…
@@ -319,10 +268,6 @@ files-a11y-kept-offline = Kept offline
 files-a11y-replica-unknown = Copies on other devices unknown
 files-a11y-durably-replicated = Kept on other devices
 files-a11y-not-durably-replicated = Not kept on other devices yet
-files-a11y-shared-recipients = Shared with { $count } { $count ->
-    [one] recipient
-   *[other] recipients
-}
 files-a11y-version-conflict = Has a version conflict
 
 ## Service and received-share errors/status
@@ -331,36 +276,6 @@ files-conflict-strategy-unsupported = That conflict strategy is not supported by
 files-conflict-encode-failed = Could not encode the conflict request
 files-conflict-request-too-large = This conflict can’t be resolved here. Try again from Version history.
 files-conflict-resolve-failed = Could not resolve that conflict: { $error }
-files-share-wrong-response = Share service returned the wrong response
-files-share-unavailable-error = Share service unavailable: { $error }
-files-share-encode-failed = Could not encode share request: { $error }
-files-share-request-too-large = Too many people to share with at once. Share with fewer at a time.
-files-share-request-failed = Could not request link: { $error }
-files-share-flush-failed = Could not finish the share request: { $error }
-files-share-no-response = Share service did not respond: { $error }
-files-share-response-too-large = Share service returned an oversized response
-files-share-response-truncated = Share response was truncated: { $error }
-files-share-response-invalid = Invalid share-service response: { $error }
-files-share-refused = Share service refused the request ({ $code })
-files-received-refused = Received-file service refused the link ({ $code })
-files-received-wrong-response = Received-file service returned the wrong response
-files-received-encode-failed = Could not encode received-file request
-files-received-request-too-large = This shared file can’t be received.
-files-received-unavailable = Received-file service is unavailable
-files-received-no-response = Received-file service did not respond
-files-received-response-too-large = Received-file service returned an oversized response
-files-received-response-truncated = Received-file service response was truncated
-files-received-response-invalid = Received-file service returned an invalid response
-files-received-not-available = Received-file service is not available
-files-received-fd-clone-failed = The shared file couldn’t be received. Try again.
-files-received-fd-invalid = The shared file couldn’t be received. Try again.
-files-received-file = Received shared file
-files-received-mount-starting = Shared file admitted; mount is starting
-files-received-admitted = Shared file admitted
-files-received-link-read-failed = Could not read the shared-file link
-files-received-link-too-large = This link is too long to open.
-files-received-link-invalid-text = Shared-file link is not valid text
-files-received-link-empty = Shared-file link is empty
 
 ## Application chrome and navigation
 files-app-title = Files
@@ -664,7 +579,6 @@ file-explorer-import-mounted = Created independent editable copies in { $folder 
 ## Notices
 files-notice-undo = Undo
 files-notice-open-with = Open With…
-files-notice-try-again = Try again
 files-notice-open-history = Open Version history
 files-menu-undo = Undo
 files-open-failed = Couldn’t open “{ $name }”

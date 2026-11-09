@@ -1,7 +1,6 @@
 # Dateien — deutsche Übersetzung (de-DE).
 # Variablen und Auswahlzweige müssen strukturell mit en-US.ftl übereinstimmen.
 
-files-time-unknown = unbekannter Zeitpunkt
 
 ## Tastaturkurzbefehle
 files-shortcuts-title = Tastaturkurzbefehle
@@ -90,10 +89,6 @@ files-residency-metadata-only = nur Metadaten
 files-residency-partly-local = teilweise lokal ({ $bytes } Byte)
 files-residency-local = lokal ({ $bytes } Byte)
 files-property-on-device = Auf diesem Gerät: { $state }
-files-property-sharing = Freigabe: { $count } aktive { $count ->
-    [one] Berechtigung
-   *[other] Berechtigungen
-}
 files-property-history = Verlauf: { $versions } { $versions ->
     [one] Version
    *[other] Versionen
@@ -127,7 +122,17 @@ files-transfer-verifying = wird verifiziert
 ## Freigaben
 files-search-collaborative-records = Kollaborative Dateien
 files-search-record-provenance = { $path }
-files-copy-one-time-link = Einmaligen Freigabelink kopieren
+files-share-copy-link = Einladungslink kopieren ({ $role })
+files-share-invite-person = { $person } einladen
+files-share-role-viewer = Lesezugriff
+files-share-role-commenter = Kommentare
+files-share-role-editor = Bearbeiten
+files-share-role-moderator = Verwalten
+files-share-invitation-making = Einladung wird erstellt…
+files-share-invitation-for = Einladung für { $person } wird erstellt…
+files-share-invitation-copied = Einladungslink kopiert; er bringt Personen als { $role } hinein
+files-share-invitation-failed = Die Einladung wurde nicht erstellt: { $reason }
+files-share-needs-workspace = Nur Inhalte in einem Arbeitsbereich lassen sich teilen
 files-import-once = Einmalig in lokalen Ordner importieren…
 files-cloud-title = Cloud-Dateien
 files-account-import-only = Nur Import
@@ -157,62 +162,6 @@ files-cloud-retry = Fehlgeschlagene wiederholen
 files-cloud-reveal = Zielordner anzeigen
 files-import-source-unavailable = Wähle einen Eintrag in einem eingehängten Dropbox- oder Google-Drive-Konto.
 files-import-local-destination = Ein einmaliger Import benötigt einen lokalen Zielordner, keinen synchronisierten Cloud-Ordner.
-files-share-composer-named = Für { $person } freigeben ({ $permission }, { $expiry })
-files-share-composer-link = Link kopieren ({ $permission }, { $expiry }, { $uses })
-files-share-choice-view = Ansehen
-files-share-choice-edit = Bearbeiten
-files-share-choice-day = läuft in 24 Stunden ab
-files-share-choice-week = läuft in 7 Tagen ab
-files-share-choice-month = läuft in 30 Tagen ab
-files-share-choice-never = ohne Ablaufdatum
-files-share-choice-one-use = einmal verwendbar
-files-share-choice-bounded-uses = bis zu { $count } Verwendungen
-files-share-creating = Freigabe wird erstellt…
-files-share-invalid-options = Diese Freigabeoptionen können nicht kombiniert werden
-files-share-link-needs-expiry = Freigabelinks benötigen ein Ablaufdatum
-files-share-invalid-uses = Freigabelinks benötigen ein Verwendungslimit von 1 bis 1.000
-files-share-recipient-unreachable = Keins der Geräte dieser Person kann gerade Dateien empfangen
-files-sharing-access = Freigabe und Zugriff…
-files-share-with = Für { $person } freigeben
-files-revoke-subject = Zugriff für { $subject } widerrufen
-files-shared-link = freigegebener Link
-files-share-link-pending = Ein Freigabelink wird bereits erstellt
-files-share-change-pending = Eine Freigabeänderung wird bereits ausgeführt
-files-select-collaborative-file = Zuerst eine kollaborative Datei auswählen
-files-select-shared-file = Zuerst die freigegebene Datei auswählen
-files-sharing-unavailable = Freigaben sind für diesen Arbeitsbereich nicht verfügbar
-files-creating-one-use-link = Einmaliger Link wird erstellt…
-files-share-with-progress = Freigabe für { $person } wird erstellt…
-files-revoking-access = Zugriff wird widerrufen…
-files-not-shared = Für niemanden freigegeben
-files-anyone-link = Jeder mit dem Link
-files-can-view = kann ansehen
-files-can-edit = kann bearbeiten
-files-grant-active = aktiv
-files-grant-expired = abgelaufen
-files-grant-revoked = widerrufen
-files-grant-exhausted = aufgebraucht
-files-no-expiry = läuft nicht ab
-files-expires = läuft am { $time } ab
-files-share-grant-line = { $subject }: { $permission }, { $status }, { $expiry }
-files-sharing-title = { $name } freigeben
-files-certified-devices = { $person }, Geräte: { $devices }
-files-certified-device-detail = { $device }, Schlüssel { $fingerprint }, { $capabilities }, ausgestellt { $issued }, { $expiry }
-files-device-cap-own = verwaltet Arbeitsbereiche
-files-device-cap-admit = lässt Geräte zu
-files-device-cap-host = vertrauenswürdiger Host
-files-device-cap-read-all = liest alle Arbeitsbereiche
-files-device-cap-member = Arbeitsbereichsmitglied
-files-sharing-summary = { $count } aktive { $count ->
-    [one] Berechtigung
-   *[other] Berechtigungen
-}; kopierte Daten können nicht zurückgerufen werden
-files-link-copied = Freigabelink in die Zwischenablage kopiert
-files-share-created = Für { $person } freigegeben; heruntergeladene Kopien können nicht zurückgerufen werden
-files-share-created-pending = Für { $person } freigegeben; Zustellung steht aus
-files-share-created-delivered = Für { $person } freigegeben; Zustellung abgeschlossen
-files-access-revoked = Zugriff widerrufen; bereits heruntergeladene Daten können nicht zurückgerufen werden
-files-share-inactive = Diese Freigabe war bereits inaktiv
 
 ## Verlauf und Konfliktlösung
 files-version-history = Versionsverlauf…
@@ -309,10 +258,6 @@ files-a11y-kept-offline = Offline verfügbar gehalten
 files-a11y-replica-unknown = Kopien auf anderen Geräten unbekannt
 files-a11y-durably-replicated = Auf anderen Geräten gespeichert
 files-a11y-not-durably-replicated = Noch nicht auf anderen Geräten gespeichert
-files-a11y-shared-recipients = Für { $count } { $count ->
-    [one] Empfänger
-   *[other] Empfänger
-} freigegeben
 files-a11y-version-conflict = Hat einen Versionskonflikt
 
 ## Dienst- und Empfangsfehler/status
@@ -321,36 +266,6 @@ files-conflict-strategy-unsupported = Diese Konfliktstrategie wird von Dateien n
 files-conflict-encode-failed = Konfliktanfrage konnte nicht kodiert werden
 files-conflict-request-too-large = Dieser Konflikt lässt sich hier nicht lösen. Versuch es im Versionsverlauf.
 files-conflict-resolve-failed = Konflikt konnte nicht gelöst werden: { $error }
-files-share-wrong-response = Freigabedienst hat die falsche Antwort zurückgegeben
-files-share-unavailable-error = Freigabedienst nicht verfügbar: { $error }
-files-share-encode-failed = Freigabeanfrage konnte nicht kodiert werden: { $error }
-files-share-request-too-large = Zu viele Personen auf einmal. Teile mit weniger gleichzeitig.
-files-share-request-failed = Link konnte nicht angefordert werden: { $error }
-files-share-flush-failed = Freigabeanfrage konnte nicht abgeschlossen werden: { $error }
-files-share-no-response = Freigabedienst hat nicht geantwortet: { $error }
-files-share-response-too-large = Freigabedienst hat eine zu große Antwort zurückgegeben
-files-share-response-truncated = Antwort des Freigabedienstes wurde abgeschnitten: { $error }
-files-share-response-invalid = Ungültige Antwort des Freigabedienstes: { $error }
-files-share-refused = Freigabedienst hat die Anfrage abgelehnt ({ $code })
-files-received-refused = Empfangsdienst hat den Link abgelehnt ({ $code })
-files-received-wrong-response = Empfangsdienst hat die falsche Antwort zurückgegeben
-files-received-encode-failed = Empfangsanfrage konnte nicht kodiert werden
-files-received-request-too-large = Diese geteilte Datei kann nicht empfangen werden.
-files-received-unavailable = Empfangsdienst ist nicht verfügbar
-files-received-no-response = Empfangsdienst hat nicht geantwortet
-files-received-response-too-large = Empfangsdienst hat eine zu große Antwort zurückgegeben
-files-received-response-truncated = Antwort des Empfangsdienstes wurde abgeschnitten
-files-received-response-invalid = Empfangsdienst hat eine ungültige Antwort zurückgegeben
-files-received-not-available = Empfangsdienst ist nicht verfügbar
-files-received-fd-clone-failed = Die geteilte Datei konnte nicht empfangen werden. Versuch es erneut.
-files-received-fd-invalid = Die geteilte Datei konnte nicht empfangen werden. Versuch es erneut.
-files-received-file = Freigegebene Datei empfangen
-files-received-mount-starting = Freigegebene Datei angenommen; Einbindung wird gestartet
-files-received-admitted = Freigegebene Datei angenommen
-files-received-link-read-failed = Link zur freigegebenen Datei konnte nicht gelesen werden
-files-received-link-too-large = Dieser Link ist zu lang zum Öffnen.
-files-received-link-invalid-text = Link zur freigegebenen Datei ist kein gültiger Text
-files-received-link-empty = Link zur freigegebenen Datei ist leer
 
 ## Anwendungsrahmen und Navigation
 files-app-title = Dateien
@@ -663,7 +578,6 @@ file-explorer-import-mounted = Unabhängige bearbeitbare Kopien in { $folder } e
 ## Hinweise
 files-notice-undo = Rückgängig
 files-notice-open-with = Öffnen mit …
-files-notice-try-again = Erneut versuchen
 files-notice-open-history = Versionsverlauf öffnen
 files-menu-undo = Rückgängig
 files-open-failed = „{ $name }“ konnte nicht geöffnet werden

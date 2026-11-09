@@ -31,23 +31,4 @@ fn unavailable_projection_never_reports_a_successful_control_write() {
         history,
         Err(error) if error.kind() == std::io::ErrorKind::Unsupported
     ));
-    let runtime = ui::rt::app();
-    assert!(
-        runtime
-            .block_on(crate::received_shares::admit_link(
-                "unavailable-service".into()
-            ))
-            .unwrap()
-            .is_err()
-    );
-    assert!(
-        runtime
-            .block_on(crate::sharing::create_one_use_view_link(
-                &path,
-                fs_protocol::FileRecordId::new()
-            ))
-            .unwrap()
-            .is_err()
-    );
-    assert_eq!(std::fs::read(&path).unwrap(), b"local document");
 }
