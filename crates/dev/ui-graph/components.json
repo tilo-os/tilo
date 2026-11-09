@@ -3079,6 +3079,12 @@
       ],
       "slots": [
         {
+          "name": "sidebar_actions",
+          "doc": "The sidebar's own controls, in its header: the action that makes the thing the sidebar lists (a \"+\"), where the thing a person adds then stands.",
+          "accepts": "view",
+          "many": true
+        },
+        {
           "name": "sidebar",
           "doc": "The places of the app: a navigation list.",
           "accepts": "view"
@@ -7305,6 +7311,14 @@
           "doc": "The commands of its context menu: a right-click, the Menu key or a long press opens it, so every action a row has stays reachable without a drag.",
           "accepts": {
             "component": "MenuItem"
+          },
+          "many": true
+        },
+        {
+          "name": "toolbar",
+          "doc": "The controls the row shows over its trailing corner while it is hovered or holds focus: the quick action of the thing it stands for (a note's \"+\", a folder's), without opening a menu. A node that gives none shows no hover toolbar.",
+          "accepts": {
+            "component": "Button"
           },
           "many": true
         }

@@ -8,10 +8,9 @@ app tilo.std "Standard library"
 ///
 /// A window that lists resources composes it: `std.list` puts the items down a column of rows
 /// with what the platform does on a row, `std.places` the places the app names in the sidebar,
-/// `std.sorts` the fields it offers as orders, `std.add_entry` the entry at the list's end, and
-/// the app writes the shell around them and says where each stands. A window that is only that is
-/// `std.browse`, which takes the resource its window is of, the items, the places and the sorts,
-/// and writes that shell the standard way.
+/// `std.add_entry` the entry at the list's end, and the app writes the shell around them and
+/// says where each stands. A window that is only that is `std.browse`, which takes the resource
+/// its window is of, the items and the places, and writes that shell the standard way.
 ///
 /// The bar's actions are the ones the owner's type declares, which the host places there — the
 /// primary one as the Primary button, the rest behind the bar's one menu; the primary's key is
@@ -126,14 +125,12 @@ template view add_entry(placeholder: Text, create: Action) {
 }
 
 /// The window of `of` that lists `items`: the places the app names (`places`) in the sidebar,
-/// with all of them called `everything`; the sort menu when it gives `sorts`, the fields the app
-/// names as orders (`[Note.title]`), the list's own order first; the entry at the list's end when
-/// it gives `entry`; and nothing to list when the place chosen finds nothing, where it says
-/// `empty`. The window owns the query — the place a person chose, what the bar's search holds
-/// and the order they chose are its state, kept for them alone — and the list is that one query,
-/// the title over it and its count naming that place. The search's text narrows the list beside
-/// the place and the order, found by the same search the store answers every field from; closing
-/// the search widens it again.
+/// with all of them called `everything`; the entry at the list's end when it gives `entry`; and
+/// nothing to list when the place chosen finds nothing, where it says `empty`. The window owns
+/// the query — the place a person chose and what the bar's search holds are its state, kept for
+/// them alone — and the list is that one query, the title over it and its count naming that
+/// place. The search's text narrows the list beside the place, found by the same search the
+/// store answers every field from; closing the search widens it again.
 ///
 /// The rows open beside the list when their type has a window of its own (`opens`, the type's own
 /// fact): choosing one opens it in the column beside the list, and until one is chosen the list
@@ -143,13 +140,12 @@ template view add_entry(placeholder: Text, create: Action) {
 /// `row` draws one item's row and the window puts it down the list, with who else is at the item
 /// as every list shows it. The row the person opened is the list's own, unless the app keeps one
 /// (`opened`) to open a row from elsewhere. A window that needs more — grouped or nested rows, a
-/// sidebar of its own — composes `std.list`, `std.places` and `std.sorts` itself.
+/// sidebar of its own — composes `std.list`, `std.places` and `std.tree` itself.
 template view browse<R, T>(
     of: R,
     items: List<T>,
     opened: Option<State<Option<T>>> = .none,
     places: List<Filter<T>> = [],
-    sorts: List<Sort<T>> = [],
     everything: Text = phrase("tilolang-all", kind: meta(T).plural),
     empty: Text = phrase("tilolang-empty-kind", kind: meta(T).plural),
     entry: Option<Action> = .none,
@@ -159,11 +155,9 @@ template view browse<R, T>(
 ) {
     state query: Text = ""
     state found: Text = ""
-    state order: Option<Sort<T>> = .none
     let kind = meta(T)
-    // The place chosen, what the window's search holds, and the order chosen: one query.
+    // The place chosen and what the window's search holds: one query.
     let asked = if not found.is_empty() { query + " " + found } else { query }
-    let asked = if let o = order { asked + " " + o.query } else { asked }
     let shown = items.matching(asked)
     let title = places.find(p -> p.query == query)?.label ?? everything
     let sidebar_title = if not places.is_empty() { meta(of).title }
@@ -178,11 +172,6 @@ template view browse<R, T>(
             sidebar: {
                 if not places.is_empty() {
                     std.places(query, places, everything, icon: kind.icon)
-                }
-            }
-            overview_actions: {
-                if not sorts.is_empty() {
-                    std.sorts(order, sorts)
                 }
             }
             overview: {
@@ -202,11 +191,6 @@ template view browse<R, T>(
             sidebar: {
                 if not places.is_empty() {
                     std.places(query, places, everything, icon: kind.icon)
-                }
-            }
-            actions: {
-                if not sorts.is_empty() {
-                    std.sorts(order, sorts)
                 }
             }
             content: {
@@ -310,22 +294,137 @@ view outline<T>(
     }
 }
 
-/// The orders a window offers, in its bar: the list's own order first, called `everything`, then
-/// each field the app named, its entry saying the field's label. The one chosen is the window's
-/// `chosen` order; none of them is the list as the store keeps it. A window lists the orders its
-/// app declares, never every field its item type has.
-template view sorts<T>(
-    chosen: State<Option<Sort<T>>>,
-    of: List<Sort<T>>,
-    everything: Text = phrase("tilolang-order-default"),
+/// Items as the tree of a window's sidebar: `items`, each under the item it names as its
+/// parent (`parent`), its row the one `row` draws and its words `label`. The row chosen is the
+/// one the window has open (`opened`), and the tree keeps which branches a person opened. A move
+/// — a drag before, after or inside a row, `Tab` and `Shift-Tab`, `Alt-Up` and `Alt-Down` — is
+/// reported with the item it lands under and the item it lands before, and `place` puts it in
+/// the one place they name: `(moved, .none, .none)` is the end of the top level,
+/// `(moved, x, .none)` the end of `x`'s own, and `(moved, .none, x)` where `x` stands. `add`
+/// draws the button a row shows over its trailing corner while it is hovered or holds focus, so
+/// the tree makes what a person needs beside where it will stand. The tree is named `name` for a
+/// reader, and a tree taller than the room it is given scrolls itself (`fill`).
+template view tree_rows<T>(
+    name: Text,
+    items: List<T>,
+    opened: State<Option<T>>,
+    parent: (T) -> Option<T>,
+    label: (T) -> Text,
+    place: (T, Option<T>, Option<T>) -> Action,
+    add: (T) -> View,
+    fill: Bool = true,
+    row: (T) -> View,
 ) {
-    ui.MenuButton(phrase("tilolang-sort"), icon: .arrow_up_down, icon_only: true) {
-        ui.MenuItem(everything, checked: chosen == .none) {
-            on choose: set(chosen, .none)
+    ui.TreeView(
+        name: name,
+        fill: fill,
+        reorder: true,
+        tab_indents: true,
+        hide_root: true,
+        single_click: true,
+        selection_follows_focus: true,
+        selection: if let x = opened { [x] },
+    ) {
+        on select(x: T): set(opened, x)
+        on activate(x: T): set(opened, x)
+        on drop(moved: T): place(moved, .none, .none)
+        for x in items {
+            // The node just above this one under the same parent, as the tree shows them: the
+            // place the actions offered on it get. None for a first child.
+            let above = items
+                .take(items.index_of(x) ?? 0)
+                .filter(y -> parent(y) == parent(x))
+                .last()
+            ui.TreeViewNode(x, label(x), parent: parent(x), above: above) {
+                on drop(moved: T): place(moved, .none, x)
+                on into(moved: T): place(moved, x, .none)
+                toolbar: {
+                    add(x)
+                }
+                row: {
+                    row(x)
+                }
+            }
         }
-        for s in of {
-            ui.MenuItem(s.label, checked: chosen == s) {
-                on choose: set(chosen, s)
+    }
+}
+
+/// A window that is a tree of items: the tree down its sidebar and the item open beside it, as
+/// the page `doc` draws, with `head` the control that makes a new one standing in the sidebar's
+/// header — where what a person adds then stands, so the window's bar does not offer it again.
+/// The bar over the page names where the open item stands (`path`: "Plans / Meetings", nothing
+/// at the top level) and keeps the window's own actions.
+///
+/// `above` is a place the app keeps over the tree — a filter of its items, such as the ones
+/// pinned — with the filter's own words over them, standing only while it holds anything.
+/// Choosing one opens it beside as any row of the tree does. A window whose tree holds nothing
+/// says `empty` in its sidebar, and one with nothing open says so beside it.
+template view tree<R, T>(
+    of: R,
+    items: List<T>,
+    opened: State<Option<T>> = open_item,
+    parent: (T) -> Option<T>,
+    label: (T) -> Text,
+    place: (T, Option<T>, Option<T>) -> Action,
+    add: (T) -> View,
+    path: (T) -> Text,
+    above: List<Filter<T>> = [],
+    empty: Text = phrase("tilolang-empty-kind", kind: meta(T).plural),
+    head: View,
+    row: (T) -> View,
+    doc: (T) -> View,
+) {
+    // The item the window opens: the first of the tree until a person chooses another, kept for
+    // them alone, as every window keeps what it shows.
+    state open_item: Option<T> = items.first()
+    ui.NavShell(
+        content_kind: .document,
+        sidebar_title: meta(of).title,
+        title: if let x = opened { path(x) },
+    ) {
+        sidebar_actions: {
+            head
+        }
+        sidebar: {
+            stack {
+                for f in above {
+                    let held = items.matching(f)
+                    if not held.is_empty() {
+                        ui.Text(f.label, role: .label, secondary: true)
+                        std.tree_rows(
+                            f.label,
+                            held,
+                            opened,
+                            parent,
+                            label,
+                            place,
+                            add,
+                            fill: false,
+                        ) { x ->
+                            row(x)
+                        }
+                    }
+                }
+                if items.is_empty() {
+                    ui.EmptyState(empty, icon: meta(of).icon)
+                } else {
+                    std.tree_rows(meta(of).title, items, opened, parent, label, place, add) { x ->
+                        row(x)
+                    }
+                }
+            }
+        }
+        content: {
+            if let x = opened {
+                ui.Scroll {
+                    page {
+                        stack(gap: .section) {
+                            doc(x)
+                        }
+                    }
+                }
+            } else {
+                ui.EmptyState(phrase("tilolang-nothing-open"), icon: meta(of).icon, inline: true)
             }
         }
     }

@@ -1,15 +1,25 @@
 # tilolang ids: generated, commit it. Edit only through `tilolang ids --rename`.
 Note = mavvhka7
 Note.body = olsyp3aw
+Note.parent = ssu2tbnf
 Note.pinned = gfk6rqxp
 Note.tags = xcpasjg7
 Note.title = dpj7scfe
 Notebook = v7cub7aw
 Notebook.notes = tmqqtkeb
+add_child = ojfhuiuf
+copied = n3jo2bg5
 delete = nydyehwn
+duplicate = c34rzynx
 insert_image = 4s5iqnfo
+last_below = lrxq2rwt
+move_to = 7jhaq3a5
+move_to~present = cn43mwee
+new_child = 37dxigeq
 new_note = qymo5lg2
 note_editor = 6wqou47w
+note_node = 5y75taxm
+note_page = osyh3odz
 note_row = xqxkoqbj
 notebook = akcqjax3
 pin = qhmjwgei
@@ -17,8 +27,11 @@ pin~present = m6rqg3kf
 retitle = zvgl2tzt
 scenario "a first note" = wvqvgiy4
 scenario "a week of notes" = q4qei7fb
+sort_children = jo2tztsx
 tag = 7ow26bju
+trail = irwsfv3f
 untag = 3u3bevec
+within = 4bhonb4p
 
 # retired
 NoteFilter = g76reqvx

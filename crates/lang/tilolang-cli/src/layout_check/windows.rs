@@ -926,41 +926,6 @@ fn desktop_read_out(size: (u32, u32)) -> Vec<(bool, String)> {
     said
 }
 
-/// Whether `node` is a shell header's overflow door, whatever language the window it
-/// frames reads in: the door is known by its id, not by the words on it.
-fn is_shell_door(node: &ui::headless::InspectionNode) -> bool {
-    let [_, _, w, h] = node.rect;
-    w > 0.0
-        && h > 0.0
-        && node
-            .test_id
-            .as_deref()
-            .is_some_and(|id| id.starts_with("nav-shell-more-"))
-}
-
-/// Whether `node` is the "…" beside a page's title: the menu the page keeps its own
-/// actions behind when it is a window of one thing rather than a bar over columns.
-fn is_title_door(node: &ui::headless::InspectionNode) -> bool {
-    let [_, _, w, h] = node.rect;
-    w > 0.0
-        && h > 0.0
-        && node.widget.as_str() == "MenuButton"
-        && node
-            .test_id
-            .as_deref()
-            .is_some_and(|id| id.ends_with("~more"))
-}
-
-/// The window's menu on the page: the bar's door or the "…" beside a title, whichever
-/// the window draws. Its items are the host's, read where the view is built; here it must
-/// stand where the person reaches it.
-fn shown_menu(node: &ui::headless::InspectionNode) -> Option<&ui::headless::InspectionNode> {
-    if is_shell_door(node) || is_title_door(node) {
-        return Some(node);
-    }
-    node.children.iter().find_map(shown_menu)
-}
-
 #[test]
 fn a_windows_header_holds_the_rest_of_its_actions_in_one_menu() {
     // A window draws its main actions as buttons and keeps the rest behind one menu: never
@@ -1016,31 +981,17 @@ fn a_windows_header_holds_the_rest_of_its_actions_in_one_menu() {
     }
 }
 
-/// A control named `name` that stands on the window (a rect with room), by its test id.
-fn shown_named(node: &ui::headless::InspectionNode, name: &str) -> Option<String> {
-    let [_, _, w, h] = node.rect;
-    if w > 0.0
-        && h > 0.0
-        && node.semantics.as_ref().and_then(|s| s.name.as_deref()) == Some(name)
-        && let Some(id) = &node.test_id
-    {
-        return Some(id.clone());
-    }
-    node.children
-        .iter()
-        .find_map(|child| shown_named(child, name))
-}
-
 #[test]
-fn an_action_without_an_icon_is_reachable_from_its_window_where_nothing_lists_it() {
-    // In the strips preset a window is the app's own: nothing lists its actions, so its
-    // bar holds the notes app's icon-less Untag as a labelled button, or its menu does
-    // when the row has no room for it.
+fn an_action_without_an_icon_is_reachable_from_the_row_that_offers_it() {
+    // A window that is a tree of notes keeps a note's actions in the menu of the row it
+    // stands for, where a person right-clicks it: the notes app's icon-less Untag is there,
+    // at a desk's width and in a hand's.
     tilo_ui_host::i18n::ensure();
-    let (_, packages) = packages();
+    let packages = app_packages("notes");
+    let app = packages.0.last().expect("the app").meta.app.clone();
     for size in [(1280, 800), (390, 844)] {
         let mut staged = stage::Staged::over(
-            "so.tilo.lang.notes",
+            &app,
             &packages,
             "a week of notes",
             size,
@@ -1048,7 +999,7 @@ fn an_action_without_an_icon_is_reachable_from_its_window_where_nothing_lists_it
             None,
             &[],
         )
-        .expect("the notes stage");
+        .expect("the scenario stages");
         let input = if size.0 < 600 {
             ui::interaction::InteractionEnvironment::TOUCH
         } else {
@@ -1057,25 +1008,128 @@ fn an_action_without_an_icon_is_reachable_from_its_window_where_nothing_lists_it
         staged
             .lay_out(size, ui::Theme::light(), input, 1.0)
             .expect("the notes lay out");
-        let root = staged.harness().inspection().root;
-        if shown_named(&root, "Untag…").is_some() {
-            continue;
-        }
-        let door = shown_menu(&root)
-            .unwrap_or_else(|| panic!("Untag… is neither shown nor behind a menu at {size:?}"));
-        let [_, _, w, h] = door.rect;
+        let tree = staged.composed().expect("the window composes");
+        let mut items = Vec::new();
+        nodes(&tree, "ui.MenuItem", &mut items);
+        let labels: Vec<String> = items
+            .iter()
+            .filter_map(|item| match item.props.get("label") {
+                Some(tilo_render_protocol::patch::Value::Text(label)) => Some(label.clone()),
+                _ => None,
+            })
+            .collect();
         assert!(
-            w > 0.0 && h > 0.0,
-            "the window's menu stands where the person reaches it at {size:?}"
-        );
-        assert!(
-            door.semantics
-                .as_ref()
-                .and_then(|said| said.name.as_deref())
-                .is_some_and(|name| !name.is_empty()),
-            "the window's menu is named at {size:?}"
+            labels.iter().any(|label| label == "Untag…"),
+            "a note's row offers its actions, its icon-less ones too, at {size:?}: {labels:?}"
         );
     }
+}
+
+/// A notebook is a tree in its sidebar and the note it opens beside it: a note stands indented
+/// under the one it is of, to any depth, and the "+" that starts one stands in the sidebar's
+/// header — once, where what it makes will stand.
+/// The rows of a window's tree, each by what it says and how deep it stands.
+fn rows_with_depth(
+    node: &ui::headless::InspectionNode,
+    out: &mut Vec<(String, ui::widget::RowLayout)>,
+) {
+    if let Some(ui::widget::LayoutInfo::Row(row)) = &node.layout {
+        let name = node
+            .semantics
+            .as_ref()
+            .and_then(|said| said.name.clone())
+            .unwrap_or_default();
+        out.push((name, *row));
+    }
+    for child in &node.children {
+        rows_with_depth(child, out);
+    }
+}
+
+#[test]
+fn a_notebook_is_a_tree_beside_the_note_it_opens() {
+    tilo_ui_host::i18n::ensure();
+    let packages = app_packages("notes");
+    let app = packages.0.last().expect("the app").meta.app.clone();
+    let size = (1280, 800);
+    let mut staged = stage::Staged::over(
+        &app,
+        &packages,
+        "a week of notes",
+        size,
+        ui::Theme::light(),
+        None,
+        &[],
+    )
+    .expect("the scenario stages");
+    staged
+        .lay_out(
+            size,
+            ui::Theme::light(),
+            ui::interaction::InteractionEnvironment::POINTER,
+            1.0,
+        )
+        .expect("the window lays out");
+
+    let mut laid = Vec::new();
+    rows_with_depth(&staged.harness().inspection().root, &mut laid);
+    let of = |title: &str| {
+        laid.iter().find(|(name, _)| name == title).map_or_else(
+            || {
+                let names: Vec<&str> = laid.iter().map(|(name, _)| name.as_str()).collect();
+                panic!("the tree draws {title:?}: {names:?}")
+            },
+            |(_, row)| *row,
+        )
+    };
+    let plan = of("Q3 plan");
+    let standups = of("Standups");
+    let monday = of("Monday");
+    assert_eq!(
+        (plan.depth, standups.depth, monday.depth),
+        (0, 1, 2),
+        "a note stands under the one it is of: {laid:?}"
+    );
+    assert!(
+        plan.content_left < standups.content_left && standups.content_left < monday.content_left,
+        "each depth indents the row: {} {} {}",
+        plan.content_left,
+        standups.content_left,
+        monday.content_left
+    );
+
+    // The "+" stands in the sidebar's own header, and nothing of the content's holds it: the
+    // window says once where a note is started.
+    let tree = staged.composed().expect("the window composes");
+    let mut shells = Vec::new();
+    nodes(&tree, "ui.NavShell", &mut shells);
+    let shell = shells.first().expect("the window is a shell");
+    let mut head = Vec::new();
+    nodes(shell, "ui.Button", &mut head);
+    let starts: Vec<&tilo_ui_host::UiNode> = head
+        .iter()
+        .filter(|button| {
+            button.props.get("label") == Some(&tilo_render_protocol::patch::Value::text("New note"))
+        })
+        .copied()
+        .collect();
+    assert_eq!(starts.len(), 1, "one control starts a note: {starts:?}");
+    let slot = shell
+        .children
+        .iter()
+        .find(|child| {
+            child.kind == "slot"
+                && child.props.get("name")
+                    == Some(&tilo_render_protocol::patch::Value::text("sidebar_actions"))
+        })
+        .expect("the shell has its sidebar's own controls");
+    let mut in_sidebar = Vec::new();
+    nodes(slot, "ui.Button", &mut in_sidebar);
+    assert_eq!(
+        in_sidebar.len(),
+        1,
+        "the sidebar's header holds the control that starts a note"
+    );
 }
 
 #[test]

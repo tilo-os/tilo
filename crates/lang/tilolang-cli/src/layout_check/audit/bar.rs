@@ -56,7 +56,8 @@ pub fn bar(layout: &ui::window_toolbar::BarLayout) -> Vec<Problem> {
     }
     for control in &layout.controls {
         // Drawn as its icon alone, narrower than the words it has, while the room stood empty
-        // beside it: a person cannot read what it does. The row's own "…" is a glyph by design.
+        // beside it — the room the window's place leaves over, which a label may take: a person
+        // cannot read what it does. The row's own "…" is a glyph by design.
         if control.furniture
             || control.slot == "overflow"
             || control.icon.is_none()
@@ -74,7 +75,7 @@ pub fn bar(layout: &ui::window_toolbar::BarLayout) -> Vec<Problem> {
             widget: BAR.to_owned(),
             id: Some(control.id.clone()),
             detail: format!(
-                "the bar draws \"{}\" as its icon alone while {:.0}px of its location stand empty \
+                "the bar draws \"{}\" as its icon alone while its location has {:.0}px to give \
                  beside it, and the words need {:.0}px: a bar says what an action does where it \
                  has room for the words",
                 control.name, layout.spare, control.words,

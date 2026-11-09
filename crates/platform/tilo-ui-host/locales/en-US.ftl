@@ -70,6 +70,7 @@ tilolang-all = All { $kind }
 tilolang-you = You
 # The person looking, where a sentence names them after a verb ("assigned it to you").
 tilolang-you-lower = you
+tilolang-nothing-open = Nothing open
 tilolang-empty = Nothing here yet
 # What a list says when it lists none of its kind's items: "No notes yet".
 tilolang-empty-kind = No { $kind } yet

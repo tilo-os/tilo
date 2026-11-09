@@ -18,8 +18,8 @@ use crate::icons::Icon;
 use crate::reorder::{DropPlacement, DropTarget, ReorderDrop};
 use crate::selection::KeySelection;
 use crate::widget::{
-    Decorator, Element, ListModel, ListRow, MenuItem, MenuItemProps, Press, TreeMarks, TreeRow,
-    VirtualList, Widget,
+    Button, ButtonProps, Decorator, Element, HoverToolbar, ListModel, ListRow, MenuItem,
+    MenuItemProps, Press, TreeMarks, TreeRow, VirtualList, Widget,
 };
 
 use crate::widget::virtual_list::by_hand;
@@ -116,10 +116,16 @@ pub struct TreeViewNodeProps {
     /// so every action a row has stays reachable without a drag.
     #[component(slot)]
     pub menu: Vec<MenuItemProps>,
+    /// The controls the row shows over its trailing corner while it is hovered or holds focus:
+    /// the quick action of the thing it stands for (a note's "+", a folder's), without opening a
+    /// menu. A node that gives none shows no hover toolbar.
+    #[component(slot)]
+    pub toolbar: Vec<ButtonProps>,
 }
 
 crate::component::part_slot!(TreeViewNodeProps);
 crate::component::part_slot!(TreeViewRowProps);
+crate::component::part_slot!(ButtonProps);
 
 /// A tree of nodes: a file explorer, a project's files, the layers of a drawing, a book's
 /// pages. Each node is the resource it stands for; opening a branch shows the nodes under it,
@@ -203,6 +209,7 @@ struct Node {
     row: Option<TreeViewRowProps>,
     progress: Option<String>,
     menu: Vec<Command>,
+    toolbar: Vec<ButtonProps>,
     drop: Event,
     into: Event,
     check: Event,
@@ -254,6 +261,7 @@ struct Part {
     row: Option<TreeViewRowProps>,
     progress: Option<String>,
     menu: Vec<MenuItemProps>,
+    toolbar: Vec<ButtonProps>,
     drop: Event,
     into: Event,
     check: Event,
@@ -351,6 +359,7 @@ impl Nodes {
                 row: node.row,
                 progress: node.progress,
                 menu: node.menu,
+                toolbar: node.toolbar,
                 drop: node.drop,
                 into: node.into,
                 check: node.check,
@@ -376,6 +385,7 @@ impl Nodes {
                 row: None,
                 progress: None,
                 menu: Vec::new(),
+                toolbar: Vec::new(),
                 drop: Event::None,
                 into: Event::None,
                 check: Event::None,
@@ -427,6 +437,7 @@ impl Nodes {
                 row: part.row,
                 progress: part.progress,
                 menu: part.menu.into_iter().map(Command::of).collect(),
+                toolbar: part.toolbar,
                 drop: part.drop,
                 into: part.into,
                 check: part.check,
@@ -702,7 +713,23 @@ fn row_of(
             row = row.description(text.clone());
         }
     }
-    Box::new(row)
+    let row = Box::new(row) as Element;
+    // A row's quick actions ride over its trailing corner while the row is hovered or holds
+    // focus, as a list row's do: each is the toolkit's button, built again as the row is.
+    if node.toolbar.is_empty() {
+        row
+    } else {
+        let toolbar: Vec<Element> = node
+            .toolbar
+            .iter()
+            .enumerate()
+            .map(|(at, props)| {
+                let button = Button::from_props(&format!("{key}~action-{at}"), props.clone());
+                Box::new(button) as Element
+            })
+            .collect();
+        Box::new(HoverToolbar::new(row, toolbar))
+    }
 }
 
 impl DescribedTreeView {
@@ -1155,6 +1182,42 @@ mod tests {
                 event: "drop".into(),
                 value: moved("b"),
             }]
+        );
+    }
+
+    /// A row's quick actions ride over its trailing corner while the row is hovered, as a list
+    /// row's do: the toolkit's buttons, built again as the row shows.
+    #[test]
+    fn a_nodes_quick_actions_ride_over_its_row() {
+        use crate::headless::FrameHarness;
+        use crate::theme::Theme;
+
+        fn names(node: &crate::headless::InspectionNode, out: &mut Vec<String>) {
+            out.push(node.widget.clone());
+            for child in &node.children {
+                names(child, out);
+            }
+        }
+        let queue = crate::Intents::default();
+        let mut quick = node("a", None, true, &queue);
+        quick.toolbar = vec![ButtonProps {
+            label: "New sub-note".into(),
+            icon: Some(crate::icons::Icon::Plus),
+            icon_only: true,
+            press: Event::View(Intent::new(&queue, "a", "quick")),
+            ..ButtonProps::default()
+        }];
+        let tree = tree_of(vec![quick], true, Event::None);
+        let harness = FrameHarness::for_root(crate::State::new(), tree, (400, 240), Theme::dark());
+        let mut laid = Vec::new();
+        names(&harness.inspection().root, &mut laid);
+        assert!(
+            laid.iter().any(|widget| widget == "HoverToolbarFace"),
+            "the row carries a hover toolbar: {laid:?}"
+        );
+        assert!(
+            laid.iter().any(|widget| widget == "Button"),
+            "with its quick action in it: {laid:?}"
         );
     }
 

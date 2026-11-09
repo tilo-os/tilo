@@ -60,8 +60,8 @@ pub(crate) struct Slots {
     /// The widths the actions' words need, whether or not the row shows them
     /// (`0.0`: the action has no words).
     pub action_words: Vec<f64>,
-    /// The room the location leaves empty in the row, beside its label: room a
-    /// label of the row's actions could stand in.
+    /// The room the location leaves empty in the row, beside its label and above
+    /// the least it needs: room a label of the row's actions could stand in.
     pub spare: f64,
     /// The overflow button (`Rect::ZERO`: every action is in the row).
     pub overflow: Rect,
@@ -486,9 +486,12 @@ impl Slots {
         if let Some(notice) = notice {
             self.place_notice(notice, forms.width(form) + forms.chrome);
         }
-        // The room the location leaves empty beside its label, once the notice has its own: what
-        // a label of the actions could stand in.
-        self.spare = (self.location.width() - (forms.width(form) + forms.chrome)).max(0.0);
+        // The room the location leaves empty beside its label, once the notice has its own, and
+        // above the least it needs: what a label of the actions could stand in.
+        self.spare = (self.location.width()
+            - (forms.width(form) + forms.chrome)
+            - super::MIN_LOCATION_PX)
+            .max(0.0);
     }
 
     /// Put the notice's buttons in order right after its text, `text` wide

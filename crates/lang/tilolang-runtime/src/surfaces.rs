@@ -65,6 +65,7 @@ const MENU: &str = "menu";
 const SWIPE: &str = "swipe";
 const OVERVIEW: &str = "overview";
 const OVERVIEW_ACTIONS: &str = "overview_actions";
+const SIDEBAR_ACTIONS: &str = "sidebar_actions";
 const ACTIONS: &str = "actions";
 
 /// The word a "…" is named by: the one the shell gives its own More button.
@@ -149,12 +150,16 @@ impl Core {
             return Ok(());
         };
         // Only what the window's own place offers: an action that reads a row over it has
-        // none on a window's page.
+        // none on a window's page. What the view already put in the sidebar's header — the
+        // "+" that makes the thing the sidebar lists — stands there alone, not again in the
+        // window's bar.
+        let headed = self.header_actions(shell)?;
         let acted: Vec<Value> = self
             .actions_on(&subject, &Value::none())
             .map_err(trapped)?
             .into_iter()
             .filter(|action| flag(action, APPLIES))
+            .filter(|action| opt_text(action, ID).is_none_or(|id| !headed.contains(&id.to_owned())))
             .collect();
         self.costs
             .publish(u64::try_from(acted.len()).unwrap_or(u64::MAX));
@@ -379,6 +384,30 @@ impl Core {
         {
             *field = value;
         }
+    }
+
+    /// The actions the shell's sidebar header runs: the ids of the actions its controls apply.
+    /// The window's own bar leaves those where the view put them, so the thing a window makes
+    /// stands in the sidebar's "+" alone.
+    fn header_actions(&self, shell: usize) -> Result<Vec<String>, RuntimeError> {
+        let mut ids = Vec::new();
+        if let Some(head) = self.slot(shell, SIDEBAR_ACTIONS)? {
+            self.applied_ids(head, &mut ids)?;
+        }
+        Ok(ids)
+    }
+
+    /// The ids of the actions the controls under `at` apply, at any depth.
+    fn applied_ids(&self, at: usize, out: &mut Vec<String>) -> Result<(), RuntimeError> {
+        for value in self.events(at)?.into_values() {
+            if let Value::Action(run) = value {
+                out.push(run.action);
+            }
+        }
+        for child in self.children(at)? {
+            self.applied_ids(child, out)?;
+        }
+        Ok(())
     }
 
     /// The window's shell in the tree: the first one met, a view's own frame included.
@@ -1027,6 +1056,16 @@ impl Core {
                 .ok_or_else(|| "unknown ui node".to_owned())?;
             node.events.insert(name.to_owned(), action);
             Ok(())
+        })
+    }
+
+    /// What `at` does on each event it reports: the actions its controls apply.
+    fn events(&self, at: usize) -> Result<BTreeMap<String, Value>, RuntimeError> {
+        self.arena(|view| {
+            view.nodes
+                .get(at)
+                .map(|node| node.events.clone())
+                .ok_or_else(|| "unknown ui node".to_owned())
         })
     }
 

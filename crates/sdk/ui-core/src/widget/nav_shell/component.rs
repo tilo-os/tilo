@@ -23,6 +23,10 @@ pub struct NavShellProps {
     pub overview_count: Option<i64>,
     /// The sidebar's title: what the places are of, the app's root.
     pub sidebar_title: Option<String>,
+    /// The sidebar's own controls, in its header: the action that makes the thing the sidebar
+    /// lists (a "+"), where the thing a person adds then stands.
+    #[component(slot)]
+    pub sidebar_actions: Vec<Element>,
     /// Whether the content's Back goes back now (a drill-down the app keeps).
     pub can_go_back: bool,
     /// The places of the app: a navigation list.
@@ -121,6 +125,7 @@ impl Described for NavShell {
             overview_title,
             overview_count,
             sidebar_title,
+            sidebar_actions,
             can_go_back,
             sidebar,
             overview,
@@ -152,8 +157,8 @@ impl Described for NavShell {
         if let Some(inspector) = inspector {
             shell = shell.inspector(inspector);
         }
-        if let Some(title) = sidebar_title {
-            shell = shell.sidebar_header(title, Vec::new());
+        if sidebar_title.is_some() || !sidebar_actions.is_empty() {
+            shell = shell.sidebar_header(sidebar_title.unwrap_or_default(), sidebar_actions);
         }
         if overview_title.is_some() || !overview_actions.is_empty() {
             shell = shell.overview_header(overview_title.unwrap_or_default(), overview_actions);
@@ -217,6 +222,7 @@ impl Described for NavShell {
         let header = match slot {
             "actions" => Column::Content,
             "overview_actions" => Column::Overview,
+            "sidebar_actions" => Column::Sidebar,
             _ => return None,
         };
         let staged = matches!(self.pending.actions.get(header.index()), Some(Some(_)));
