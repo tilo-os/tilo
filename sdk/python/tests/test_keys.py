@@ -1,0 +1,107 @@
+"""Keys: the account's, the ones minted for a workspace, and asking for one."""
+
+from __future__ import annotations
+
+import pytest
+
+from tilo import AskPending, AsyncTilo, Key, MintedKey, Refused, SignIn
+
+from fake_door import WORKSPACE_ID, FakeDoor
+
+
+@pytest.fixture
+def door() -> FakeDoor:
+    return FakeDoor()
+
+
+@pytest.fixture
+async def tilo(door: FakeDoor):
+    client = AsyncTilo(key=door.key, door="https://door.test", http=door.client())
+    yield client
+    await client.aclose()
+
+
+async def test_the_account_lists_this_key_and_the_keys_it_minted(tilo, door):
+    keys = await tilo.keys.list()
+
+    assert [key.grant for key in keys] == ["g-root"]
+    assert keys[0].scope == "account"
+    assert door.asked("tilo_do")[-1]["arguments"]["path"] == "account/keys#list"
+
+
+async def test_a_key_is_minted_for_one_workspace(tilo, door):
+    minted = await tilo.keys.mint(WORKSPACE_ID, name="jane's agent")
+
+    assert isinstance(minted, MintedKey)
+    assert minted.token == "tilo_sk_minted"
+    assert minted.workspace == WORKSPACE_ID
+    assert minted.mcp_url.endswith(f"/w/{WORKSPACE_ID}/mcp")
+    assert door.asked("tilo_do")[-1]["arguments"]["args"] == {
+        "workspace": WORKSPACE_ID,
+        "name": "jane's agent",
+    }
+
+
+async def test_a_workspace_mints_its_own_key(tilo):
+    minted = await tilo.workspace("jane-doe").keys.mint()
+
+    assert minted.workspace == WORKSPACE_ID
+
+
+async def test_mint_mcp_is_the_same_key(tilo):
+    minted = await tilo.workspace("jane-doe").mint_mcp(expires_in=3600)
+
+    assert minted.grant == "g-minted"
+
+
+async def test_a_key_is_revoked_and_answers_which(tilo):
+    answer = await tilo.keys.revoke("g-root")
+
+    assert answer == {"revoked": "g-root"}
+
+
+async def test_a_deleted_workspace_is_refused_today(tilo):
+    with pytest.raises(Refused) as raised:
+        await tilo.workspaces.delete("jane-doe")
+
+    assert raised.value.code == "not_supported"
+    assert raised.value.next_steps == ["revoke the keys that reach it with account/keys#revoke"]
+
+
+async def test_asking_for_a_key_raises_with_the_link_and_waits(tilo, door):
+    with pytest.raises(AskPending) as raised:
+        await tilo.keys.create("visa-backend", workspace=WORKSPACE_ID)
+
+    ask = raised.value
+    assert ask.url == "https://mcp.tilo.sh/keys/approve/abc"
+    assert ask.invocation_id == "key-abc"
+
+    door.asks["key-abc"]["status"] = "approved"
+    key = await ask.wait()
+
+    assert isinstance(key, Key)
+    assert key.token == "tilo_sk_created"
+    assert key.grant == "g-created"
+    assert key.scope == "account"
+
+
+async def test_a_terminal_sign_in_shows_a_link_and_polls_for_the_key(tilo, door):
+    sign_in = await tilo.sign_in(name="cli")
+
+    assert isinstance(sign_in, SignIn)
+    assert sign_in.url == "https://mcp.tilo.sh/keys/approve/abc"
+    assert door.new_key_asked == {"name": "cli"}
+
+    door.answer_poll()
+    key = await sign_in.wait()
+
+    assert key.token == "tilo_sk_new"
+    assert door.polls >= 1
+
+
+async def test_a_minted_key_makes_a_client_of_its_own(tilo):
+    minted = await tilo.keys.mint(WORKSPACE_ID)
+
+    client = minted.client()
+    assert client.transport.key == "tilo_sk_minted"
+    await client.aclose()
