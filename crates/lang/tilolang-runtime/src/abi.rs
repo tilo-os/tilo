@@ -276,6 +276,14 @@ imports! {
     (SpaceI, "space_i", "i", "l"),
     (SpaceF, "space_f", "i", "f"),
 
+    // A file: its name, media type or address (by the part asked), its size, its content read
+    // as text, and the chooser a control runs.
+    (FilePart, "file_part", "ii", "i"),
+    (FileSize, "file_size", "i", "l"),
+    (FileText, "file_text", "i", "i"),
+    (ActChoose, "act_choose", "ii", "i"),
+    (ActSave, "act_save", "ii", "i"),
+
     (Abort, "abort", "i", ""),
     (MissingV, "missing", "", "i"),
 }

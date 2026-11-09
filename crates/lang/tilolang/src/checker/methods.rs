@@ -156,6 +156,7 @@ pub fn described(ty: &Ty) -> String {
     match ty {
         Ty::RichText => "is_empty (and the members excerpt, text, references, people)".to_owned(),
         Ty::Bytes => "text, len".to_owned(),
+        Ty::File => "text (and the members name, media, size, url)".to_owned(),
         Ty::Json => "a document whose shape code asks as it reads, `match` on `.object(fields)`, `.array(items)`, `.string(text)`, `.number(number)`, `.bool(flag)`, `.null`".to_owned(),
         Ty::Response => "text (and the fields ok, status, status_text, headers, body)".to_owned(),
         Ty::Record(_) => "id (and fields)".to_owned(),

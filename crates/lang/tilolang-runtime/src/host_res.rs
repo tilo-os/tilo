@@ -78,6 +78,7 @@ fn type_default(ty: &Ty) -> Result<Value, String> {
         | Ty::Bytes
         | Ty::Response
         | Ty::Json
+        | Ty::File
         | Ty::Error => {
             return Err("the field has no value yet and no default".to_owned());
         }

@@ -1295,3 +1295,25 @@ fn only_an_action_reads_the_day_it_is() {
     );
     assert!(imports(func(&m, "mark")).contains(&Imp::TimeDay));
 }
+
+/// A file is a value: a field holds one, an action takes one as its parameter, its parts read
+/// on it, and a view asks the person for one and runs an action with it.
+#[test]
+fn a_file_is_a_field_a_parameter_and_the_persons_choice() {
+    let (m, _) = lower(
+        "type N {\n    body: RichText\n    picture: Option<File>\n}\n
+         action put(n: N, f: File) (did: \"added a file\") {\n    n.picture = f\n    n.body = RichText(f.name, f.url, \"{f.size}\")\n}\n
+         action read(n: N, f: File) {\n    match f.text() {\n        .ok(words) => { n.body = RichText(words) },\n        .err(why) => { n.body = RichText(why) }\n    }\n}\n
+         action export(n: N) -> Text {\n    n.body.text\n}\n
+         view v(n: N) {\n    stack {\n        button(\"Put\", on: file.choose(put(n), accept: [\"image/png\"]))\n        button(\"Save\", on: file.save(export(n), name: \"n.md\"))\n    }\n}",
+    );
+    let put = imports(func(&m, "put"));
+    assert!(put.contains(&Imp::FilePart), "its parts: {put:?}");
+    assert!(put.contains(&Imp::FileSize), "its size: {put:?}");
+    assert!(imports(func(&m, "read")).contains(&Imp::FileText));
+    let view = imports(func(&m, "v"));
+    assert!(view.contains(&Imp::ActChoose), "the chooser: {view:?}");
+    assert!(view.contains(&Imp::ActSave), "the save: {view:?}");
+    // The parameter is the file itself: no form asks for it, the person's chooser fills it.
+    assert!(!Ty::File.asked_by_form());
+}

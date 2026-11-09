@@ -14,7 +14,8 @@ use crate::error::RuntimeError;
 use crate::exec::{ExecCtx, InvokeOutcome};
 use crate::host_res::to_scalar;
 use crate::host_ui::{
-    KEEP_ACTION, MARK_SEEN_ACTION, OPEN_ACTION, REVIEW_ACTION, SET_ACTION, THEN_ACTION, UNDO_ACTION,
+    CHOOSE_ACTION, KEEP_ACTION, MARK_SEEN_ACTION, OPEN_ACTION, REVIEW_ACTION, SAVE_ACTION,
+    SET_ACTION, THEN_ACTION, UNDO_ACTION,
 };
 use crate::ids::{DocId, ModuleHash, Principal};
 use crate::live::{Live, LiveStats};
@@ -638,8 +639,145 @@ impl ViewInstance {
                     other => Ok(other),
                 }
             }
+            CHOOSE_ACTION => self.platform_choose(aref),
+            SAVE_ACTION => self.platform_save(aref),
             _ => self.core.invoke_direct(&self.live.viewer, aref),
         }
+    }
+
+    /// `file.choose(a, accept)`: ask the person for a file and run `a` with it, as the argument
+    /// it still needs. What the person picks is a [`crate::blob::FileValue`], so the invocation
+    /// records its address and never its bytes.
+    fn platform_choose(&self, aref: &ActionRef) -> Result<InvokeOutcome, RuntimeError> {
+        let [Value::Action(next), Value::List(accept)] = aref.args.as_slice() else {
+            return Err(RuntimeError::BadArgs("a malformed `file.choose`".into()));
+        };
+        let accept: Vec<String> = accept
+            .iter()
+            .filter_map(|media| media.as_text().map(str::to_owned))
+            .collect();
+        let request = crate::blob::FileRequest {
+            title: {
+                let label = self
+                    .core
+                    .registry
+                    .borrow()
+                    .action_package(&next.action)
+                    .and_then(|package| {
+                        package.action(&next.action).map(crate::platform::label_of)
+                    });
+                label.unwrap_or_else(|| "Choose a file".to_owned())
+            },
+            name: String::new(),
+            accept: accept.clone(),
+        };
+        let chosen = {
+            let blobs = self.core.blobs.borrow();
+            let Some(blobs) = blobs.as_ref() else {
+                return Err(RuntimeError::Package(
+                    "this host chooses no files".to_owned(),
+                ));
+            };
+            blobs.choose(&request).map_err(RuntimeError::Package)?
+        };
+        let Some(file) = chosen else {
+            // The person dismissed the chooser: nothing runs.
+            return Ok(InvokeOutcome::Done(Value::Unit));
+        };
+        if file.size > crate::blob::MAX_CHOSEN_BYTES {
+            return Err(RuntimeError::Package(format!(
+                "`{}` is {} bytes: more than the {MAX_CHOSEN} a file may be",
+                file.name,
+                file.size,
+                MAX_CHOSEN = crate::blob::MAX_CHOSEN_BYTES
+            )));
+        }
+        if !crate::blob::accepts(&accept, &file.media) {
+            return Err(RuntimeError::Package(format!(
+                "`{}` is a {}, and what is chosen here is {}",
+                file.name,
+                file.media,
+                if accept.is_empty() {
+                    "any file".to_owned()
+                } else {
+                    accept.join(", ")
+                }
+            )));
+        }
+        let Some(package) = self.core.registry.borrow().action_package(&next.action) else {
+            return Err(RuntimeError::NotFound(format!("action {}", next.action)));
+        };
+        let Some(action) = package.action(&next.action) else {
+            return Err(RuntimeError::NotFound(format!("action {}", next.action)));
+        };
+        let next_param = action.params.get(next.args.len());
+        let fills_a_file = next_param.is_some_and(|param| {
+            crate::meta::parse_ty(&param.ty, &package.meta.app).is_ok_and(|ty| ty == Ty::File)
+        });
+        if !fills_a_file {
+            return Err(RuntimeError::BadArgs(format!(
+                "`{}` has no file parameter next: a file fills the parameter it stands for",
+                crate::platform::label_of(action)
+            )));
+        }
+        let filled = ActionRef {
+            args: next
+                .args
+                .iter()
+                .cloned()
+                .chain(std::iter::once(Value::file(file)))
+                .collect(),
+            ..next.clone()
+        };
+        self.run(&filled)
+    }
+
+    /// `file.save(a, name)`: run `a`, and put what it made — text, or a file — in a file the
+    /// person names. What is saved is the device's: nothing is recorded.
+    fn platform_save(&self, aref: &ActionRef) -> Result<InvokeOutcome, RuntimeError> {
+        let [Value::Action(next), Value::Text(name)] = aref.args.as_slice() else {
+            return Err(RuntimeError::BadArgs("a malformed `file.save`".into()));
+        };
+        let made = match self.run(next)? {
+            InvokeOutcome::Done(made) => made,
+            other => return Ok(other),
+        };
+        let (content, media) = match &made {
+            Value::Text(text) => (text.clone().into_bytes(), crate::blob::media_of(name)),
+            Value::File(file) => {
+                let bytes = self
+                    .core
+                    .blobs
+                    .borrow()
+                    .as_ref()
+                    .and_then(|blobs| blobs.read(&file.hash))
+                    .ok_or_else(|| {
+                        RuntimeError::Package(format!(
+                            "the content of `{}` is not on this device",
+                            file.name
+                        ))
+                    })?;
+                (bytes, file.media.clone())
+            }
+            other => {
+                return Err(RuntimeError::BadArgs(format!(
+                    "`file.save` saves text or a file, and the action made a {}",
+                    other.kind_name()
+                )));
+            }
+        };
+        let request = crate::blob::SaveRequest {
+            name: name.clone(),
+            media,
+        };
+        let blobs = self.core.blobs.borrow();
+        let Some(blobs) = blobs.as_ref() else {
+            return Err(RuntimeError::Package("this host saves no files".to_owned()));
+        };
+        blobs
+            .save(&request, &content)
+            .map_err(RuntimeError::Package)?;
+        Ok(InvokeOutcome::Done(Value::Unit))
     }
 
     /// `set(name, value)`: change the view state slot the reference names, in this view's

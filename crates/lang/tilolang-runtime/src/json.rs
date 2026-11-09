@@ -51,7 +51,7 @@ impl Core {
     }
 
     /// A `Result`: `.ok(value)`, or `.err(why)` saying what did not fit, and where.
-    fn result(&self, outcome: Result<Value, String>) -> HResult<Option<Wasm>> {
+    pub(crate) fn result(&self, outcome: Result<Value, String>) -> HResult<Option<Wasm>> {
         let mut fields = BTreeMap::new();
         let variant = match outcome {
             Ok(Value::Unit) => tilolang::RESULT_OK,

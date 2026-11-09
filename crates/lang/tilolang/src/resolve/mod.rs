@@ -1299,6 +1299,7 @@ impl Resolver<'_> {
                 "Duration" => return Ty::Duration,
                 "RichText" => return Ty::RichText,
                 "Bytes" => return Ty::Bytes,
+                "File" => return Ty::File,
                 "Response" => return Ty::Response,
                 "Action" => return Ty::Action,
                 "View" => return Ty::View,

@@ -82,6 +82,15 @@ pub fn project(core: &Core, v: &Value, opts: ProjectOptions) -> Json {
                 .collect(),
         ),
         Value::Offered(offered) => json!({ "action": offered.label }),
+        // A file an agent reads: what it is called and where its bytes are, never the bytes.
+        Value::File(file) => json!({
+            "file": {
+                "name": file.name,
+                "media": file.media,
+                "size": file.size,
+                "url": file.url(),
+            },
+        }),
         Value::Picture(src) => json!({ "picture": src }),
         Value::Bytes(bytes) => json!({ "bytes": bytes.len() }),
         Value::Response(response) => json!({

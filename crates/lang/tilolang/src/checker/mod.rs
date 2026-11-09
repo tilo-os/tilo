@@ -113,6 +113,10 @@ pub(crate) enum Invoked {
 }
 
 #[derive(Default)]
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "each says one independent thing about the code being checked"
+)]
 struct FnState {
     ctx: Ctx,
     /// The declaration's name, as a message says it.
@@ -194,6 +198,9 @@ struct FnState {
     /// runs when that action is invoked (`Self::at_event`): it may read the clock, as the
     /// invocation it belongs to does, and what it reads is recorded there.
     press: bool,
+    /// Whether the expression being checked is the action `file.choose` runs, whose file fills
+    /// the parameter the action leaves out.
+    choosing: bool,
 }
 
 /// Where the UI being lowered stands, saved and restored around each block.

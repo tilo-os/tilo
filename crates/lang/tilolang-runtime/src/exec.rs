@@ -199,6 +199,7 @@ impl Core {
             | (Ty::Enum(_) | Ty::Result(..), Value::Enum(_))
             | (Ty::Tuple(_) | Ty::Filter(_) | Ty::Sort(_), Value::Tuple(_))
             | (Ty::Action, Value::Action(_))
+            | (Ty::File, Value::File(_))
             | (Ty::Principal, Value::Principal(_))
             | (Ty::View, _) => true,
             _ => false,
@@ -2119,7 +2120,9 @@ impl Core {
                         .iter()
                         .rev()
                         .take_while(|p| {
-                            p.default.is_some() || crate::platform::form_asks(&pkg.meta, &p.ty)
+                            p.default.is_some()
+                                || crate::platform::form_asks(&pkg.meta, &p.ty)
+                                || crate::platform::chooser_fills(&pkg.meta, &p.ty)
                         })
                         .count();
                     (a.params.len(), defaulted)

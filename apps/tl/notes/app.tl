@@ -57,9 +57,15 @@ action tag(n: Note, t: Text) (icon: .tag, group: "Tags") {
     n.tags.add(t)
 }
 
-/// Takes a tag off a note.
+/// Untags a note.
 action untag(n: Note, t: Text) (label: "Untag", group: "Tags") {
     n.tags.remove(t)
+}
+
+/// Puts a picture in a note, where its words end: the person picks the file, and the note
+/// keeps the address of its content rather than the picture.
+action insert_image(n: Note, image: File) (icon: .image, did: "added an image") {
+    n.body = RichText(n.body, "\n![]({image.url})")
 }
 
 /// The notebook's window: its notes, each opening in a window of its own, in the order the
@@ -88,6 +94,12 @@ view note_editor(n: Note) {
                     }
                 }
             }
+        }
+        row(distribute: .end) {
+            button(
+                "Insert image",
+                on: file.choose(insert_image(n), accept: ["image/png", "image/jpeg", "image/webp"]),
+            )
         }
         ui.BlockEditor(bind: n.body, placeholder: "Write something")
         discussion.thread(n)

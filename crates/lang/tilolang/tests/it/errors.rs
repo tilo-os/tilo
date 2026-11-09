@@ -341,6 +341,24 @@ fn e067_open_takes_a_resource_from_a_view() {
     );
 }
 
+/// A file is the person's own, asked for at their window: no action, fn or agent asks them.
+#[test]
+fn e067_a_file_is_chosen_from_a_view() {
+    expect(
+        "E067",
+        &with_c("action a(c: C) {\n    file.save(f, name: \"c.md\")\n}"),
+    );
+    expect(
+        "E067",
+        &with_c("fn f(c: C) -> Action {\n    file.choose(a(c))\n}"),
+    );
+    // What `file` takes, and what it does not.
+    expect(
+        "E026",
+        &with_c("view e(c: C) {\n    button(\"x\", on: file.copy(\"a\"))\n}"),
+    );
+}
+
 #[test]
 fn e045_mutating_a_foreign_type() {
     expect_with(

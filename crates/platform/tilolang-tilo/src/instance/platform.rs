@@ -6,6 +6,7 @@
 
 use std::rc::Rc;
 
+use tilolang_runtime::blob::{BlobHost, FileRequest, FileValue, SaveRequest};
 use tilolang_runtime::run::WebRequest;
 use tilolang_runtime::web::WebReply;
 
@@ -106,6 +107,38 @@ pub trait Platform {
         WebReply::failed("this host reaches no services")
     }
 
+    /// The content at the content address `hash`, when this device's content store holds it: a
+    /// file an action reads (`.text()`), and the one `file.save` writes out. A platform that
+    /// holds no store answers none.
+    fn read_content(&self, hash: &str) -> Option<Vec<u8>> {
+        let _ = hash;
+        None
+    }
+
+    /// Ask the person for a file, taking what they pick into the content store. `None` when
+    /// they dismiss the chooser; the error says why a file could not be taken in (its size,
+    /// its media type, the store's failure). A platform without a chooser answers the error
+    /// saying so.
+    ///
+    /// # Errors
+    ///
+    /// Why there is no file: there is no chooser, or the one there is refused it.
+    fn choose_file(&self, request: &FileRequest) -> Result<Option<FileValue>, String> {
+        let _ = request;
+        Err("this host chooses no files".to_owned())
+    }
+
+    /// Put `content` where the person says, offering `request`'s name. A platform without a
+    /// chooser answers the error saying so.
+    ///
+    /// # Errors
+    ///
+    /// Why the content was not written.
+    fn save_file(&self, request: &SaveRequest, content: &[u8]) -> Result<(), String> {
+        let _ = (request, content);
+        Err("this host saves no files".to_owned())
+    }
+
     /// What wakes the instance when work it waits for is ready (an index read off the frame).
     fn waker(&self) -> Waker;
 
@@ -124,6 +157,24 @@ pub struct PlatformWeb(pub(super) Rc<dyn Platform>);
 impl tilolang_runtime::web::WebTransport for PlatformWeb {
     fn fetch(&self, request: &WebRequest) -> WebReply {
         self.0.web(request)
+    }
+}
+
+/// The device's files, as the platform running the instance answers them: the content store a
+/// chosen file's bytes go to, what it holds, and the chooser the person picks with.
+pub struct PlatformBlobs(pub(super) Rc<dyn Platform>);
+
+impl BlobHost for PlatformBlobs {
+    fn read(&self, hash: &str) -> Option<Vec<u8>> {
+        self.0.read_content(hash)
+    }
+
+    fn choose(&self, request: &FileRequest) -> Result<Option<FileValue>, String> {
+        self.0.choose_file(request)
+    }
+
+    fn save(&self, request: &SaveRequest, content: &[u8]) -> Result<(), String> {
+        self.0.save_file(request, content)
     }
 }
 

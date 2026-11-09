@@ -184,6 +184,13 @@ pub fn form_asks(meta: &Meta, ty: &str) -> bool {
         .is_ok_and(|parsed| parsed.asked_by_form() && plain(meta, &parsed))
 }
 
+/// Whether `ty`, as metadata writes it, is a `File`: the parameter a person's own chooser fills
+/// (`file.choose(a)`), which no form asks for and no call gets from anywhere else.
+#[must_use]
+pub fn chooser_fills(meta: &Meta, ty: &str) -> bool {
+    crate::meta::parse_ty(ty.trim(), &meta.app).is_ok_and(|ty| ty == crate::meta::Ty::File)
+}
+
 /// The state key `delivery(r)` reads for the resource `id`.
 #[must_use]
 pub fn delivery_key(id: &str) -> StateKey {
@@ -892,6 +899,9 @@ impl Core {
                     })
                     .collect::<HResult<_>>()?,
             ),
+            // A file a change put in a field or took out: what it is called, as a person reads
+            // it; where its content is, a picture beside the row tells.
+            (_, Value::File(file)) => one("text", Value::Text(file.name.clone()), None),
             // A rich text a change made: its paragraphs, the runs it inserted marked and the
             // runs it deleted struck, shown by the shared rich text component.
             (_, Value::Rich(rich)) => one("rich", Value::Rich(rich.clone()), None),

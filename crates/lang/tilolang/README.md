@@ -409,6 +409,48 @@ never a trap: a host the package did not declare, a host the workspace revoked, 
 seconds) and no network each answer `ok == false` with `status == 0` and a `status_text` that
 says why, and the invocation carries on. A reply's body may be up to 2 MiB; nothing streams.
 
+**Files.** A `File` is a file whose bytes are in the device's content store: what a person
+picked, or what a program was handed. It is a value, not a resource — its type is a field's
+and an action's parameter — and what it holds of the content is the address, never the bytes,
+so a record, an argument and a history entry carry the file by reference:
+
+```
+type Note {
+    body: RichText
+    picture: Option<File>
+}
+
+/// Puts a picture in a note.
+action insert_image(n: Note, image: File) (did: "added an image") {
+    n.body = RichText(n.body, "\n![]({image.url})")
+}
+
+view note_editor(n: Note) {
+    ...
+    button("Insert image", on: file.choose(insert_image(n), accept: ["image/png"]))
+}
+```
+
+`f.name`, `f.media`, `f.size` and `f.url` read on it, `url` being where its bytes are
+(`tilo-blob://<hash>`), which is what a picture takes (`ui.Image(f.url, alt: f.name)`). `f.text()`
+reads a
+text file's content as a `Result<Text, Text>` — `.ok` the text, `.err` why it is not read (not
+text, more than 1 MiB, or the content is not on this device) — which is how an importer reads a
+document. Reading it is a read and not an effect: the bytes are what the address names and never
+change, so a replay reads the same ones, and a device that does not hold them says so.
+
+A person chooses a file in their own chooser, on the platform's terms: a control applies
+`file.choose(a, accept: [...])`, which asks them for a file of those media types and runs the
+action `a` with it as the parameter it still needs. `file.save(a, name: "Notes.md")` runs `a`
+and puts what it made — text, or a file — in a file the person names. Both stand on a control,
+as `open` does, and neither is offered to an `fn`, an action or an agent: a file is the person's
+own. A program that holds bytes invokes the same action with a file it has, so an app's import
+path is one action whichever way the file arrived.
+
+A chosen file may be at most 1 MiB; a larger one is refused with its size, before anything is
+written. An action never carries the bytes: its invocation carries the address, so undo, a
+replay and a sync move the reference and the store moves the content.
+
 **JSON.** Text a service sent reads into the type the code names, and a value writes back as
 text, with no effect to declare: the work is in the text and the value, nothing outside them.
 
@@ -585,7 +627,7 @@ type Message {
     from: std.Identifier
     received: Time
     unread: Bool = true
-    attachments: Collection<File>
+    attachments: List<File>
 
     search {
         filter unread "Unread"                          // a field; its label

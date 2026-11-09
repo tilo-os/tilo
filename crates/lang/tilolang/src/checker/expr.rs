@@ -932,6 +932,9 @@ impl Checker<'_> {
                 Ex::host(imp, vec![b], ty)
             }
             Ty::Identifier => self.identifier_part(b, name),
+            // A file's parts: what it is called, what it holds, how large it is, where its
+            // bytes are (`.text()` is the method that reads them).
+            Ty::File => self.file_part(b, name),
             Ty::RichText => self.rich_part(b, name),
             // A filter's fields: what a query names it by, what a control shows, what it asks.
             Ty::Filter(_) => {

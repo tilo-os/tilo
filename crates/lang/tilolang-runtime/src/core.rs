@@ -92,6 +92,9 @@ pub struct Core {
     /// whose code makes the request. Until the host sets one, every request answers with a
     /// failure saying the host reaches no services.
     pub web: RefCell<Option<Box<dyn crate::web::WebTransport>>>,
+    /// The device's files (`Runtime::set_blobs`): the content store a file's bytes are kept in,
+    /// and the chooser the person picks with. Until the host sets one, it holds no files.
+    pub blobs: RefCell<Option<Box<dyn crate::blob::BlobHost>>>,
     /// What names principals; the id itself until the host says.
     pub names: RefCell<Option<Box<dyn NameHost>>>,
     /// How a day or a time of day reads in a sentence; its stored text until the host says
@@ -266,6 +269,7 @@ impl Core {
             authority,
             models: RefCell::new(None),
             web: RefCell::new(None),
+            blobs: RefCell::new(None),
             names: RefCell::new(None),
             shown: RefCell::new(None),
             members: RefCell::new(crate::members::Members::default()),
@@ -367,36 +371,37 @@ impl Core {
 impl Core {
     fn dispatch(&self, imp: Imp, mem: &[u8], a: &Args<'_>) -> HResult<Option<Wasm>> {
         use Imp::{
-            Abort, ActMadeFrom, ActMany, ActOpen, ActRef, ActSet, ActThen, ActUndo, Actions,
-            AgentNamed, ArgAt, BytesLength, CallFn, ChangeView, CollCount, CollCounted, CollEmpty,
-            CollInsert, CollMove, CollMoveAmong, CollMoveTo, CollOrdered, CollRelatives,
-            CollRemove, CollWhere, CollWhereWith, CountBy, DayParse, DayPart, DayShift,
-            DayStartOfWeek, DayWeekday, Delivery, Describe, DescribeRef, DurationText, EditField,
-            EntryParts, EnumGetF, EnumGetH, EnumGetI, EnumIs, EnumNew, EnumSetF, EnumSetH,
-            EnumSetI, EventPart, EventValue, FieldChanged, FilterLit, Filters, Find, FirstUnseen,
-            FloatAbs, FloatCeil, FloatCeilTo, FloatClamp, FloatFloor, FloatFloorTo, FloatMax,
-            FloatMin, FloatRound, FloatRoundTo, FloatToStr, ForeignRef, Grep, GroupBy, IdentPart,
-            IntAbs, IntClamp, IntMax, IntMin, IntToStr, InvocationPop, InvocationPush, Invoke,
-            Invoker, IsError, IsSome, JsonDecode, JsonEncode, JsonParse, Keep, Lenses, Links,
-            ListAvg, ListEnd, ListGetF, ListGetH, ListGetI, ListIndexOf, ListLen, ListNew,
-            ListPrevious, ListPushF, ListPushH, ListPushI, ListReverse, ListSortByKey, ListSumF,
-            ListSumI, MapGetH, MapGetValue, MapKeys, MapKeysValue, MapPut, MapRemove, MapSetAdd,
-            MapSetRemove, MatchGroup, Me, Members, Mentions, MetaOf, MissingV, ModelCall, NoneV,
-            Notify, Now, OfType, Outside, OutsideAt, Phrase, PrincipalEq, PrincipalKind,
-            PrincipalName, PrincipalNamed, PrincipalRole, Print, PrintRows, ProposalNote, Query,
-            QueueBlock, RandomChoice, RandomFloat, RandomId, RandomInt, RandomShuffle, ReadText,
-            ReadWith, RecNew, RecSetF, RecSetH, RecSetI, RefEq, RefId, RefIs, RefLit, ResAddF,
-            ResAddI, ResGetF, ResGetH, ResGetI, ResSetF, ResSetH, ResSetI, ResTextSet, ResourceRef,
-            RichEmpty, RichNew, RichPart, RichTime, RunChanges, SeenBy, SetAdd, SetRemove, Single,
-            SomeF, SomeH, SomeI, SortLit, SpaceF, SpaceI, Speakers, StateAt, StateGet, Steps,
-            StrCmp, StrConcat, StrContains, StrEndsWith, StrEq, StrFind, StrJoin, StrLen, StrLit,
-            StrLower, StrMatches, StrReplace, StrSlice, StrSplit, StrStartsWith, StrToInt, StrTrim,
-            StrUpper, Suggest, Take, TimeDay, TimeOfDay, TimeParse, TimeShift, TimeSpan, Today,
-            TryInvoke, TupleGetF, TupleGetH, TupleGetI, TupleNew, TupleSetF, TupleSetH, TupleSetI,
-            UiAction, UiActions, UiAnchor, UiBind, UiBindState, UiChild, UiNode, UiOn, UiPropF,
-            UiPropH, UiPropI, UiPropPic, Unseen, UnwrapF, UnwrapH, UnwrapI, ValueEq, VersionEnd,
-            Versions, Viewer, WallClock, WebBody, WebGet, WebHeaders, WebOk, WebPost, WebStatus,
-            WebStatusText, WebText, Withdraw, Word, WorkspaceMembers,
+            Abort, ActChoose, ActMadeFrom, ActMany, ActOpen, ActRef, ActSave, ActSet, ActThen,
+            ActUndo, Actions, AgentNamed, ArgAt, BytesLength, CallFn, ChangeView, CollCount,
+            CollCounted, CollEmpty, CollInsert, CollMove, CollMoveAmong, CollMoveTo, CollOrdered,
+            CollRelatives, CollRemove, CollWhere, CollWhereWith, CountBy, DayParse, DayPart,
+            DayShift, DayStartOfWeek, DayWeekday, Delivery, Describe, DescribeRef, DurationText,
+            EditField, EntryParts, EnumGetF, EnumGetH, EnumGetI, EnumIs, EnumNew, EnumSetF,
+            EnumSetH, EnumSetI, EventPart, EventValue, FieldChanged, FilePart, FileSize, FileText,
+            FilterLit, Filters, Find, FirstUnseen, FloatAbs, FloatCeil, FloatCeilTo, FloatClamp,
+            FloatFloor, FloatFloorTo, FloatMax, FloatMin, FloatRound, FloatRoundTo, FloatToStr,
+            ForeignRef, Grep, GroupBy, IdentPart, IntAbs, IntClamp, IntMax, IntMin, IntToStr,
+            InvocationPop, InvocationPush, Invoke, Invoker, IsError, IsSome, JsonDecode,
+            JsonEncode, JsonParse, Keep, Lenses, Links, ListAvg, ListEnd, ListGetF, ListGetH,
+            ListGetI, ListIndexOf, ListLen, ListNew, ListPrevious, ListPushF, ListPushH, ListPushI,
+            ListReverse, ListSortByKey, ListSumF, ListSumI, MapGetH, MapGetValue, MapKeys,
+            MapKeysValue, MapPut, MapRemove, MapSetAdd, MapSetRemove, MatchGroup, Me, Members,
+            Mentions, MetaOf, MissingV, ModelCall, NoneV, Notify, Now, OfType, Outside, OutsideAt,
+            Phrase, PrincipalEq, PrincipalKind, PrincipalName, PrincipalNamed, PrincipalRole,
+            Print, PrintRows, ProposalNote, Query, QueueBlock, RandomChoice, RandomFloat, RandomId,
+            RandomInt, RandomShuffle, ReadText, ReadWith, RecNew, RecSetF, RecSetH, RecSetI, RefEq,
+            RefId, RefIs, RefLit, ResAddF, ResAddI, ResGetF, ResGetH, ResGetI, ResSetF, ResSetH,
+            ResSetI, ResTextSet, ResourceRef, RichEmpty, RichNew, RichPart, RichTime, RunChanges,
+            SeenBy, SetAdd, SetRemove, Single, SomeF, SomeH, SomeI, SortLit, SpaceF, SpaceI,
+            Speakers, StateAt, StateGet, Steps, StrCmp, StrConcat, StrContains, StrEndsWith, StrEq,
+            StrFind, StrJoin, StrLen, StrLit, StrLower, StrMatches, StrReplace, StrSlice, StrSplit,
+            StrStartsWith, StrToInt, StrTrim, StrUpper, Suggest, Take, TimeDay, TimeOfDay,
+            TimeParse, TimeShift, TimeSpan, Today, TryInvoke, TupleGetF, TupleGetH, TupleGetI,
+            TupleNew, TupleSetF, TupleSetH, TupleSetI, UiAction, UiActions, UiAnchor, UiBind,
+            UiBindState, UiChild, UiNode, UiOn, UiPropF, UiPropH, UiPropI, UiPropPic, Unseen,
+            UnwrapF, UnwrapH, UnwrapI, ValueEq, VersionEnd, Versions, Viewer, WallClock, WebBody,
+            WebGet, WebHeaders, WebOk, WebPost, WebStatus, WebStatusText, WebText, Withdraw, Word,
+            WorkspaceMembers,
         };
         match imp {
             StrLit | StrConcat | StrEq | StrLen | IntToStr | StrToInt | FloatToStr | StrCmp
@@ -443,11 +448,12 @@ impl Core {
             | InvocationPop => self.effect_import(imp, a),
             WebGet | WebPost | WebOk | WebStatus | WebStatusText | WebHeaders | WebBody
             | WebText | BytesLength => self.web_import(imp, a),
+            FilePart | FileSize | FileText => self.file_import(imp, a),
             JsonParse | JsonDecode | JsonEncode => self.json_import(imp, a),
             UiNode | UiPropH | UiPropI | UiPropF | UiPropPic | UiChild | UiBind | UiOn
             | UiAnchor | SpaceI | SpaceF | UiBindState | StateGet | StateAt | ArgAt | ActSet
             | ActThen | ActMadeFrom | ActMany | ActOpen | ActUndo | ChangeView | UiActions
-            | UiAction => self.ui_import(imp, a),
+            | UiAction | ActChoose | ActSave => self.ui_import(imp, a),
             EventValue | EventPart | Actions | Lenses | Delivery | MetaOf | Versions | Links
             | RunChanges | Unseen | FirstUnseen | SeenBy | Mentions | Steps | VersionEnd
             | FieldChanged | Phrase | Word | EntryParts | Viewer => self.platform_import(imp, a),

@@ -294,6 +294,14 @@ imports! {
     UiActions = "ui_actions" ([H, H, H] -> []);
     UiAction = "ui_action" ([H, H, H] -> []);
 
+    // A file: its name, media type or `tilo-blob://` address (by the part asked), its size in
+    // bytes, its content read as text (a `Result`), and the chooser a control runs.
+    FilePart = "file_part" ([H, I32] -> [H]);
+    FileSize = "file_size" ([H] -> [I64]);
+    FileText = "file_text" ([H] -> [H]);
+    ActChoose = "act_choose" ([H, H] -> [H]);
+    ActSave = "act_save" ([H, H] -> [H]);
+
     SpaceI = "space_i" ([H] -> [I64]);
     SpaceF = "space_f" ([H] -> [F64]);
 

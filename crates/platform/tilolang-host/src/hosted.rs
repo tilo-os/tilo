@@ -348,6 +348,25 @@ impl Platform for HostPlatform {
         crate::web::fetch(request)
     }
 
+    fn read_content(&self, hash: &str) -> Option<Vec<u8>> {
+        crate::files::read(hash)
+    }
+
+    fn choose_file(
+        &self,
+        request: &tilolang_tilo::runtime::blob::FileRequest,
+    ) -> Result<Option<tilolang_tilo::runtime::blob::FileValue>, String> {
+        crate::files::choose(request)
+    }
+
+    fn save_file(
+        &self,
+        request: &tilolang_tilo::runtime::blob::SaveRequest,
+        content: &[u8],
+    ) -> Result<(), String> {
+        crate::files::save(request, content)
+    }
+
     fn waker(&self) -> Waker {
         Arc::clone(&self.wake)
     }

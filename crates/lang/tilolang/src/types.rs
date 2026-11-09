@@ -99,6 +99,11 @@ pub enum Ty {
     /// `.number`, `.bool`, `.null`). A value code holds while an invocation runs, not a
     /// stored field's type.
     Json,
+    /// `File`: a file the device's content store holds, named by the address of its bytes:
+    /// what a person picked (`file.choose`), or what a program was handed. Its name, media
+    /// type and size read on it, and `.text()` reads a text file's content
+    /// ([`crate::value::FileValue`]).
+    File,
     /// No value.
     #[default]
     Unit,
@@ -152,6 +157,8 @@ impl Ty {
     /// Whether an action's form can ask the person for a value of this type when nobody gave
     /// it: text, a number, a flag, a day, a moment, a length of time, an account of a service,
     /// a person, a resource, a case of an enum, or none of one of those. Each has its control.
+    /// A `File` is no form's: it comes from the person's own chooser (`file.choose(a)`), which
+    /// fills the parameter it stands for.
     #[must_use]
     pub fn asked_by_form(&self) -> bool {
         match self {
@@ -292,6 +299,7 @@ impl Ty {
             Self::Bytes => "Bytes".into(),
             Self::Response => "Response".into(),
             Self::Json => "json.Value".into(),
+            Self::File => "File".into(),
             Self::Unit => "()".into(),
             Self::Action => "Action".into(),
             Self::View => "View".into(),
@@ -608,6 +616,7 @@ impl MetaTy<'_> {
             "Bytes" => Some(Ty::Bytes),
             "Response" => Some(Ty::Response),
             "json.Value" => Some(Ty::Json),
+            "File" => Some(Ty::File),
             "Action" => Some(Ty::Action),
             "View" => Some(Ty::View),
             "Result" => {
@@ -686,6 +695,7 @@ mod tests {
             "Bytes",
             "Response",
             "json.Value",
+            "File",
             "Action",
             "View",
             "List<Text>",

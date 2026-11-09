@@ -768,6 +768,7 @@ impl Decoder<'_> {
             | Ty::Bytes
             | Ty::Response
             | Ty::Json
+            | Ty::File
             | Ty::Error => Err(format!(
                 "a value of type `{}` is not read from another app's reading",
                 ty.meta_text("")

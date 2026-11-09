@@ -49,7 +49,11 @@ d-7ow26bju = Tag
     .doc = Gives a note a tag.
 
 d-3u3bevec = Untag
-    .doc = Takes a tag off a note.
+    .doc = Untags a note.
+
+d-4s5iqnfo = Insert image
+    .doc = Puts a picture in a note, where its words end: the person picks the file, and the note keeps the address of its content rather than the picture.
+    .did = added an image
 
 d-m6rqg3kf = Pin~present
 

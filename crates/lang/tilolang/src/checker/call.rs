@@ -15,6 +15,9 @@ use crate::types::{Ty, TypeKey};
 /// The module a draw is asked of: `random.int(lo, hi)`.
 const RANDOM: &str = "random";
 
+/// The module a file is asked of a person with: `file.choose(a)`, `file.save(a, name:)`.
+const FILE: &str = "file";
+
 impl Checker<'_> {
     pub(super) fn call(
         &mut self,
@@ -71,6 +74,15 @@ impl Checker<'_> {
                     && self.env.find_import("json").is_none()
                 {
                     return self.builtin_json(name, types, args, span);
+                }
+                // `file.choose` and `file.save`: the person's own chooser, which hands an
+                // action a file it picked, or takes what an action made and puts it where they
+                // choose (effects.md).
+                if matches!(&base.kind, ExprKind::Ident(ns) if ns == FILE)
+                    && self.lookup(FILE).is_none()
+                    && self.env.find_import(FILE).is_none()
+                {
+                    return self.builtin_file(name, args, span);
                 }
                 if let Some(key) = self.enum_path(base) {
                     let ty = Ty::Enum(key);
@@ -367,15 +379,23 @@ impl Checker<'_> {
             }
         }
         // An action a view applies may leave out its last parameters: running it opens its
-        // form, which asks the person for them.
+        // form, which asks the person for them. A parameter of type `File` is no form's, and a
+        // chooser fills it: the action `file.choose(a)` runs, whose person's file it is.
+        let choosing = self.st.choosing;
+        let trailing_none = |rest: &[Option<Ex>]| rest.iter().all(Option::is_none);
+        let filled_by_a_chooser = |at: usize| {
+            choosing
+                && params.get(at).is_some_and(|p| p.ty == Ty::File)
+                && slots.get(at..).is_some_and(trailing_none)
+        };
         let asked = |at: usize| {
-            at_press
+            (at_press || filled_by_a_chooser(at))
                 && slots
                     .get(at..)
                     .is_some_and(|rest| rest.iter().all(Option::is_none))
                 && params.get(at..).is_some_and(|rest| {
                     rest.iter()
-                        .all(|p| p.default.is_some() || p.ty.asked_by_form())
+                        .all(|p| p.default.is_some() || p.ty.asked_by_form() || p.ty == Ty::File)
                 })
         };
         let missing: Vec<&str> = params
@@ -400,19 +420,24 @@ impl Checker<'_> {
                         .get(*at..)
                         .is_some_and(|rest| rest.iter().all(Option::is_none))
                     && !p.ty.asked_by_form()
+                    && !filled_by_a_chooser(*at)
             })
             .map(|(_, (p, _))| p)
             .collect();
         if let Some(param) = unaskable.first() {
-            self.err(
-                "E022",
-                span,
+            let said = if param.ty == Ty::File {
+                format!(
+                    "`{name}` cannot be asked for `{}`: a file is the person's to choose, so the action run from a control with `file.choose({name}(…))` gets it, and a call written as it is must give it one",
+                    param.name
+                )
+            } else {
                 format!(
                     "`{name}` cannot be asked for `{}` of type `{}`: a form asks for text,                      numbers, flags, days, moments, lengths of time, accounts, people, resources                      and enum cases, so give it here or give the parameter a default",
                     param.name,
                     param.ty.display(&self.env.app)
-                ),
-            );
+                )
+            };
+            self.err("E022", span, said);
         } else if !missing.is_empty() {
             self.err(
                 "E022",
@@ -1252,6 +1277,123 @@ impl Checker<'_> {
         let fits = c.kind == CKind::View
             && matches!(c.params.as_slice(), [p] if p.ty == Ty::Record(key.clone()));
         fits.then(|| c.id.clone())
+    }
+
+    /// `file.choose(a, accept: [...])`: the action `a`, run with the file the person picks in
+    /// their own chooser as the argument it still needs. `file.save(a, name: "...")`: the
+    /// action `a` run, and what it made — text, or a file — put in a file the person picks.
+    /// Both stand on a control, as `open` does: they are a request to the person, and what the
+    /// person does in their chooser is what runs the action.
+    fn builtin_file(&mut self, name: &ast::Ident, args: &[ast::Arg], span: Span) -> Ex {
+        if self.st.ctx != Ctx::View {
+            let who = self.st.ctx.word();
+            self.err(
+                "E067",
+                span,
+                format!(
+                    "`file.{}` is applied from a view, on a control: it asks the person at the window; {who} cannot",
+                    name.name
+                ),
+            );
+            return Ex::error();
+        }
+        let choosing = match name.name.as_str() {
+            "choose" => true,
+            "save" => false,
+            other => {
+                self.err(
+                    "E026",
+                    name.span,
+                    format!("`file` has `choose` and `save`, not `{other}`"),
+                );
+                return Ex::error();
+            }
+        };
+        let mut action = None;
+        let mut accept = None;
+        let mut called = None;
+        for a in args {
+            match a.name.as_ref().map(|n| n.name.as_str()) {
+                None if action.is_none() => {
+                    // The action the chooser runs is applied with the file it fills: its first
+                    // parameter left out that is one.
+                    self.st.choosing |= choosing;
+                    let applied = self.expr_as(&a.value, &Ty::Action);
+                    self.st.choosing = false;
+                    action = Some(applied);
+                }
+                None => {
+                    self.err(
+                        "E022",
+                        a.value.span,
+                        format!(
+                            "`file.{}` takes one action, the one it runs: `file.{}({})`",
+                            name.name,
+                            name.name,
+                            if choosing {
+                                "insert_image(n)"
+                            } else {
+                                "export(n)"
+                            }
+                        ),
+                    );
+                }
+                Some(kind @ ("accept" | "name")) if (kind == "accept") == choosing => {
+                    if choosing {
+                        accept = Some(self.expr_as(&a.value, &Ty::List(Box::new(Ty::Text))));
+                    } else {
+                        called = Some(self.expr_as(&a.value, &Ty::Text));
+                    }
+                }
+                Some(other) => {
+                    self.err(
+                        "E022",
+                        a.value.span,
+                        format!(
+                            "`file.{}` takes {}; not `{other}:`",
+                            name.name,
+                            if choosing { "`accept:`" } else { "`name:`" }
+                        ),
+                    );
+                }
+            }
+        }
+        let Some(action) = action else {
+            self.err(
+                "E022",
+                span,
+                format!(
+                    "`file.{}` takes the action it runs: `file.{}({})`",
+                    name.name,
+                    name.name,
+                    if choosing {
+                        "insert_image(n)"
+                    } else {
+                        "export(n)"
+                    }
+                ),
+            );
+            return Ex::error();
+        };
+        if choosing {
+            let accept = accept.unwrap_or_else(|| {
+                Ex::host(Imp::ListNew, Vec::new(), Ty::List(Box::new(Ty::Text)))
+            });
+            Ex::host(Imp::ActChoose, vec![action, accept], Ty::Action)
+        } else {
+            let called = match called {
+                Some(called) => called,
+                None => {
+                    self.err(
+                        "E022",
+                        span,
+                        "`file.save` says what the file is called: `file.save(export(n), name: \"Notes.md\")`",
+                    );
+                    Ex::str("")
+                }
+            };
+            Ex::host(Imp::ActSave, vec![action, called], Ty::Action)
+        }
     }
 
     /// `notify(to: who, title: text, body: text, opens: r)`: tell the person `to` something on
@@ -2235,6 +2377,24 @@ impl Checker<'_> {
                 Ex::host(Imp::WebText, vec![r], Ty::Text)
             }
             (Ty::Bytes, "len") if args.is_empty() => Ex::host(Imp::BytesLength, vec![r], Ty::Int),
+            // A file: what it is called, the media type it holds, how many bytes it is, where
+            // its bytes are (a `tilo-blob://` address a picture takes), and its content read as
+            // text, which answers what went wrong when it is not text or too large.
+            (Ty::File, "name" | "media" | "url") if args.is_empty() => {
+                let part = match m {
+                    "name" => 0,
+                    "media" => 1,
+                    _ => 2,
+                };
+                let part = Ex::new(Ek::I32(part), Ty::Bool);
+                Ex::host(Imp::FilePart, vec![r, part], Ty::Text)
+            }
+            (Ty::File, "size") if args.is_empty() => Ex::host(Imp::FileSize, vec![r], Ty::Int),
+            (Ty::File, "text") if args.is_empty() => Ex::host(
+                Imp::FileText,
+                vec![r],
+                Ty::Result(Box::new(Ty::Text), Box::new(Ty::Text)),
+            ),
             // A map read as a value (a `json.Value`'s object, or one `json.decode` read): its
             // keys, and the value one key holds.
             (Ty::Map(t), "get" | "keys") => {

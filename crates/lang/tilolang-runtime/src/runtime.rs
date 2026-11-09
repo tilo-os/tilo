@@ -991,6 +991,13 @@ impl Runtime {
         *self.core.web.borrow_mut() = Some(Box::new(transport));
     }
 
+    /// The device's files ([`crate::blob`]): the content store a chosen file's bytes are kept
+    /// in, what it holds, and the chooser a person picks with. Until it is set, the runtime
+    /// holds no files: a chooser offers nothing and `.text()` says the content is not here.
+    pub fn set_blobs(&self, host: impl crate::blob::BlobHost + 'static) {
+        *self.core.blobs.borrow_mut() = Some(Box::new(host));
+    }
+
     /// Where `model_call` goes.
     pub fn set_model_host(&self, host: impl ModelHost + 'static) {
         *self.core.models.borrow_mut() = Some(Box::new(host));

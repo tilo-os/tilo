@@ -414,9 +414,11 @@ pub enum Value {
     /// parameter it stands for gets its default when the action is invoked
     /// ([`crate::Core::complete_args`]), which happens before anything else reads the action.
     /// It holds no value: nothing makes one but the code of a call that left the parameter out.
-    /// It stays last: a value's compact encoding names a variant by its place
-    /// (`tools/policy/check_wire_enums.py`).
     Missing,
+    /// A file (`File`): the address of its content in the device's content store, with what it
+    /// is called and how large it is ([`crate::blob::FileValue`]). The bytes are never in the
+    /// value, so a record, an argument and a history entry carry the file by reference.
+    File(Rc<crate::blob::FileValue>),
 }
 
 impl Value {
@@ -484,6 +486,7 @@ impl Value {
             Self::Response(_) => "web response",
             Self::Json(_) => "json value",
             Self::AtEvent { .. } => "argument computed at the event",
+            Self::File(_) => "file",
             Self::Missing => "argument left out",
         }
     }
@@ -558,6 +561,11 @@ pub fn to_json(v: &Value) -> Result<Json, String> {
         Value::Principal(p) => tagged("principal", Json::String(p.0.clone())),
         Value::Error(msg) => tagged("error", Json::String(msg.clone())),
         Value::Picture(src) => tagged("picture", Json::String(src.clone())),
+        // A file: its address and what it is, never its bytes.
+        Value::File(file) => tagged(
+            "file",
+            serde_json::to_value(file.as_ref()).map_err(|e| e.to_string())?,
+        ),
         // Text read as a document, which is what it is.
         Value::Json(json) => (**json).clone(),
         Value::Node(_)
@@ -671,6 +679,10 @@ fn from_json_object(m: &Map<String, Json>) -> Result<Value, String> {
     }
     if let Some(inner) = m.get("some") {
         return Ok(Value::some(from_json(inner)?));
+    }
+    if let Some(file) = m.get("file") {
+        let file = serde_json::from_value(file.clone()).map_err(|e| e.to_string())?;
+        return Ok(Value::File(Rc::new(file)));
     }
     if m.contains_key("none") {
         return Ok(Value::none());

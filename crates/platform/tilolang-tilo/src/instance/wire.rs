@@ -145,7 +145,10 @@ impl Convert<'_> {
             ),
             Value::Offered(offered) => wire::Value::Action((**offered).clone()),
             Value::Picture(src) => wire::Value::Picture(wire::Picture { src: src.clone() }),
+            // A file is no window value of its own: a view shows what it says (`name`, `url`
+            // as a picture) rather than the value.
             Value::Unit
+            | Value::File(_)
             | Value::Coll(_)
             | Value::Action(_)
             | Value::Node(_)

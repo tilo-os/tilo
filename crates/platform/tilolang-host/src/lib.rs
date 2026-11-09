@@ -19,6 +19,7 @@
 //! package inside: `<storage>/<package>/documents` holds the workspace record's on-disk copy, and
 //! `<storage>/<package>/indexes` the workspace's indexes.
 
+pub mod files;
 pub mod hosted;
 pub mod phrases;
 pub mod task;
