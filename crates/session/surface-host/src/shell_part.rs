@@ -37,7 +37,6 @@ use tilolang_tilo::publish::{COMMIT, HOST_RESOURCE};
 use tilolang_tilo::runtime::origin::OriginWrite;
 use tilolang_tilo::runtime::{Delivery, NameHost, Principal, ResourceRef, Value};
 use tilolang_tilo::tilolang::Compiled;
-use ui::tilo_actions::Action as _;
 
 use crate::{Placement, WidgetHost};
 
@@ -2504,7 +2503,7 @@ impl ShellPart {
                 .ok_or_else(|| format!("no committed action {ticket}"))
                 .and_then(|action| {
                     action
-                        .apply(&mut self.record.borrow_mut())
+                        .apply_as_step(&mut self.record.borrow_mut())
                         .map_err(|error| error.to_string())
                 });
             if let Err(why) = &applied {

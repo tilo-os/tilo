@@ -217,6 +217,43 @@ impl Shared {
             .follow(&self.desktop, self.launch.as_deref());
     }
 
+    /// Stand each place a service's `open` asked for since the last pass: a resource's own `open`
+    /// and the arrangement's `open(resource)` are one act — the system's — so the requests go
+    /// through the arrangement door's `open`, that same code, beside the place the asking turn is
+    /// in and attributed to the actor that asked (`docs/designs/app-language/one-app-model.md`
+    /// §3; shell.md §8, "The canvas composes views; it opens nothing"). A resource already shown
+    /// is brought forward instead of stood a second time.
+    pub(crate) fn open_asked_by_services(&self) {
+        let opens = self.services.borrow_mut().take_open();
+        for (invoker, open) in opens {
+            let arguments = {
+                let mut arguments = serde_json::Map::new();
+                arguments.insert("resource".into(), open.resource.clone().into());
+                if !open.view.is_empty() {
+                    arguments.insert("view".into(), open.view.clone().into());
+                }
+                if !open.beside.is_empty() {
+                    arguments.insert("beside".into(), open.beside.clone().into());
+                }
+                arguments
+            };
+            let address = tilo_actions::ActionAddress::new(crate::arrangement::RESOURCE, "open");
+            let run = self.doors.invoke_as(
+                &invoker.actor,
+                &address,
+                &arguments,
+                &mut tilo_surface_host::Look::none(),
+            );
+            if let Err(error) = run {
+                tracing::warn!(
+                    %error,
+                    resource = %open.resource,
+                    "a service's open was not placed"
+                );
+            }
+        }
+    }
+
     /// Carry out what the person chose in the sheets.
     pub(crate) fn follow_sheets(&self, look: &mut tilo_surface_host::Look<'_>) {
         // What a place can show, as the arrangement published it: an agent's `find` leads with the
@@ -230,6 +267,12 @@ impl Shared {
             &|resource| catalog.borrow().get(resource).is_some(),
             look,
         );
+        // A service's `open` changes nothing of its record: opening is the session's arranging
+        // step, and the places the services were asked for are stood through the arrangement's
+        // own `open`, as an agent and a view asking the shell are one act
+        // (`docs/designs/app-language/one-app-model.md` §3; shell.md §8, "The canvas composes
+        // views; it opens nothing").
+        self.open_asked_by_services();
         if let Some(power) = &self.power {
             for effect in power.take_asked() {
                 power.presentation().close();

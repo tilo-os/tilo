@@ -1437,7 +1437,8 @@ impl crate::Session {
         self.shared.conversations.person_messages(channel)
     }
 
-    /// A step an address no surface door publishes, as the session's own `DoorAsk::Step` runs it:    /// a service's action, invoked through [`crate::agent_door::invoke_service_step`], on the
+    /// A step an address no surface door publishes, as the session's own `DoorAsk::Step` runs it:
+    /// a service's action, invoked through [`crate::agent_door::invoke_service_step`], on the
     /// record the service keeps. This is the exact call an agent's `record-work` on a turn's
     /// summons goes through at its broker step; a test drives it here rather than through the
     /// broker so it proves the seam without the agent.
@@ -1451,11 +1452,30 @@ impl crate::Session {
         action: &str,
         arguments: &serde_json::Map<String, serde_json::Value>,
     ) -> Result<Option<tilo_actions::ActionOutput>, String> {
+        self.invoke_service_step_beside_as(actor, resource, action, arguments, "")
+    }
+
+    /// [`Self::invoke_service_step_as`] with the place the ask is in named: the resource the
+    /// place shows — the conversation of the turn an agent asks in — or empty for the place in
+    /// front. A resource the step opens stands beside it
+    /// (`docs/designs/app-language/one-app-model.md` §3).
+    ///
+    /// # Errors
+    /// The service's refusal, or that no service publishes the address.
+    pub fn invoke_service_step_beside_as(
+        &self,
+        actor: &str,
+        resource: &str,
+        action: &str,
+        arguments: &serde_json::Map<String, serde_json::Value>,
+        beside: &str,
+    ) -> Result<Option<tilo_actions::ActionOutput>, String> {
         crate::agent_door::invoke_service_step(
             &self.shared.services,
             actor,
             &tilo_actions::ActionAddress::new(resource, action),
             arguments,
+            beside,
         )
     }
 }
