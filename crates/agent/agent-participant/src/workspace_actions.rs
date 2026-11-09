@@ -48,6 +48,8 @@
 
 mod feedback;
 mod reads;
+mod terminal;
+pub use terminal::{ShellRan, TERMINAL_APP, WorkspaceShell};
 
 use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::sync::mpsc;
@@ -201,6 +203,12 @@ pub trait WorkspaceRecordsLink: Send + Sync {
     fn bot_personas(&self, _workspace: u64, _installation: &str) -> bool {
         false
     }
+    /// Where the workspaces' Terminal sessions run their shells on this
+    /// host ([`WorkspaceShell`]). Absence leaves a session's `run` to the
+    /// device running the session.
+    fn shell(&self) -> Option<Arc<dyn WorkspaceShell>> {
+        None
+    }
     /// The bytes `workspace`'s content store holds under `hash`, for an
     /// avatar an appearance names. Absence refuses the appearance.
     fn content_blob(&self, _workspace: u64, _hash: &str) -> Option<Vec<u8>> {
@@ -295,6 +303,8 @@ enum Job {
         invocation: InvocationId,
         done: Completer<InvocationReceipt>,
     },
+    /// A Terminal session's run that ended in the host's shell, to record.
+    Ran(Box<terminal::Ended>),
 }
 
 impl Job {
@@ -303,6 +313,7 @@ impl Job {
             Self::Feedback { .. } => "feedback",
             Self::Catalogue { .. } => "catalogue",
             Self::Invoke { .. } => "invoke",
+            Self::Ran(_) => "ran",
         }
     }
 }
@@ -1116,6 +1127,7 @@ impl Worker {
                     invocation,
                     done,
                 } => done.complete(self.invoke(workspace_id, invocation)),
+                Job::Ran(ended) => self.ran(&ended),
             }
         }
     }
@@ -1567,6 +1579,15 @@ impl Worker {
             drop(ledger);
             (caller, request)
         };
+        if let Some(receipt) = self.start_terminal_run(workspace_id, &caller, &request) {
+            let mut ledger = self.ledger();
+            ledger.running = None;
+            if matches!(receipt.status, ReceiptStatus::Rejected { .. }) {
+                ledger.forget(&invocation);
+            }
+            drop(ledger);
+            return receipt;
+        }
         let outcome = self.perform(workspace_id, &caller, &request);
         let target = &request.target;
         match &outcome {

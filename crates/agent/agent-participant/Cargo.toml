@@ -141,6 +141,8 @@ seccompiler.workspace = true
 libc.workspace = true
 # A connector app, mounted only where a workspace's host runs its worker.
 discord = { path = "../../../apps/discord" }
+# Terminal's session records, whose commands a workspace's host runs.
+terminal = { path = "../../../apps/terminal" }
 
 
 [dev-dependencies]

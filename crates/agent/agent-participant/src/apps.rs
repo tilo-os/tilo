@@ -52,6 +52,10 @@ pub fn component_apps() -> Vec<&'static ApplicationDefinition> {
     // work on their records.
     #[cfg(target_os = "linux")]
     apps.push(discord::definition());
+    // A hosted workspace's Terminal sessions run on its host, beside its
+    // VMs: the host holds their records and runs their commands.
+    #[cfg(target_os = "linux")]
+    apps.push(terminal::definition());
     apps
 }
 
