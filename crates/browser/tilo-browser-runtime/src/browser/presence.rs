@@ -19,14 +19,6 @@ use crate::peer_presence::BoardView;
 
 use super::{Mount, error, with_mount_quietly};
 
-/// Keep drawing this long after the newest pointer was heard, so it eases to
-/// rest instead of stopping mid-move.
-const SETTLE_MS: f64 = 250.0;
-/// A pointer whose publisher said nothing for this long is no longer shown: a
-/// member here restates itself every keepalive, so a longer silence is a page
-/// that left before the workspace noticed.
-const POINTER_STALE_MS: f64 = tilo_live::presence::KEEPALIVE_MS + 1000.0;
-
 /// What this mount keeps of who is here between frames: how far it read the board, the names and
 /// carets it drew, what people say beside their pointer, and the frames it still owes.
 #[derive(Default)]
@@ -116,7 +108,7 @@ impl Mount {
         let workspace = self.workspace.clone();
         let tiles = self.tiles();
         let now = Self::now_ms();
-        let Some(view) = crate::peer_presence::view(peer, &workspace, &tiles, now) else {
+        let Some(view) = crate::peer_presence::view(peer, &workspace, now) else {
             return;
         };
         let changed = view.revision != self.presence.revision;
@@ -126,68 +118,35 @@ impl Mount {
             self.names_from(&view);
         }
         // The toolkit's clock times what arrived here, so a sender's skewed clock cannot keep a
-        // bubble up.
+        // bubble up. The members' pointers are placed by the rule the session core holds for both
+        // hosts: each over the tile it is on, with what they say beside it.
         let at = ui::time::now();
         let motion: EffectiveMotion = crate::page_theme::current().motion();
-        let mut leaving = f64::INFINITY;
-        let mut cursors = Vec::new();
-        let presence = self.frame.presence();
-        for (publisher, _tab, x, y, heard) in &view.placed {
-            let age = now - heard;
-            let publisher = hex::encode(publisher);
-            if age > POINTER_STALE_MS {
-                continue;
-            }
-            leaving = leaving.min(heard + POINTER_STALE_MS);
-            self.presence.motion_until = self.presence.motion_until.max(heard + SETTLE_MS);
-            let Some(member) = view
-                .members
-                .iter()
-                .find(|member| member.publisher == publisher)
-            else {
-                continue;
-            };
-            let user = UserId(publisher);
-            self.presence.chats.say(
-                &user,
-                member
-                    .chat
-                    .as_ref()
-                    .map(|chat| (chat.text.as_str(), chat.sent)),
-                at,
-            );
-            if let Some(reaction) = &member.reaction {
-                self.presence
-                    .chats
-                    .react(&user, reaction.seq, &reaction.emoji, at);
-            }
-            let chat = self.presence.chats.bubble(&user, at, motion);
-            let reaction = self.presence.chats.reaction(&user, at, motion);
-            cursors.push(presence.placed_cursor(ui::presence::PlacedPointer {
-                user,
-                at: (*x, *y),
-                name: Some(member.label.clone()),
-                agent: member.agent,
-                activity: member.activity.clone(),
-                chat,
-                reaction,
-            }));
+        let pointers = tilo_session_core::presence::pointers(
+            &view.members,
+            &tiles,
+            &mut self.presence.chats,
+            self.frame.presence(),
+            at,
+            now,
+            motion,
+        );
+        if let Some(until) = pointers.motion_until {
+            self.presence.motion_until = self.presence.motion_until.max(until);
         }
-        self.presence.chats.prune(at);
-        let settling = self.presence.chats.animating(at);
-        if self.frame.set_placed_pointers(cursors) {
+        if self.frame.set_placed_pointers(pointers.drawn) {
             self.pending = true;
             self.window.request_redraw();
         }
         // A pointer still easing or an animation running: the next frame
         // draws a change, so ask for it.
-        if settling || self.presence.settling(now) {
+        if pointers.animating || self.presence.settling(now) {
             self.pending = true;
             self.window.request_redraw();
         }
         // A pointer whose member went silent leaves the screen at the end of
         // its keepalive window, and no arrival will come to notice it.
-        if leaving.is_finite() {
+        if let Some(leaving) = pointers.leaving {
             self.wake_at(self.id, leaving, now);
         }
     }

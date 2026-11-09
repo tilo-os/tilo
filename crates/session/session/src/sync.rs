@@ -31,7 +31,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use crate::fabric::{Continuity, SessionFabric};
-use collab_types::presence::{Availability, Presence};
+use collab_types::presence::{Availability, Presence, ShellPresence, Shown};
 use iroh::{EndpointAddr, EndpointId};
 use neighbour_wire::NeighbourMsg;
 use tilo_action_broker::record_content::ContentSources;
@@ -47,7 +47,7 @@ use tilo_endpoint_reachability::{Need, Reachability};
 use tilo_live::live::Track;
 use tilo_live::plane::Heard;
 use tilo_live::presence;
-use tilo_live::presence::{Board, Device, Placed, Tile};
+use tilo_live::presence::{Board, Device};
 use tilo_network_actor::{
     HostIdentity, NetCmd, NetEvent, PersonalFabricPayload, RecordContentDelivery, RosterDevice,
     WorkspaceControlRoute, WorkspaceId, native_ingress, workspace_topic_id,
@@ -325,11 +325,39 @@ pub struct Enrolled {
     pub held: bool,
 }
 
+/// Where this person is on this desk, as presence says it: their pointer over a tile here, and
+/// their shell — its face, its screen and the window they work in.
+#[derive(Clone, Debug, Default)]
+struct Where {
+    pointer: Option<presence::Point>,
+    shell: Option<Box<ShellPresence>>,
+}
+
+impl Where {
+    /// Whether `other` says where this person is as `self` does: a shell is the same one while what
+    /// it says is the same, never because it was restamped.
+    fn same(&self, other: &Self) -> bool {
+        self.pointer == other.pointer
+            && self
+                .shell
+                .as_deref()
+                .map(tilo_live::presence::without_clock)
+                == other
+                    .shell
+                    .as_deref()
+                    .map(tilo_live::presence::without_clock)
+    }
+}
+
 /// The session's client of the collaboration plane: the workspaces it shows,
 /// this person's presence in them, and everyone else's.
 pub struct Client {
     plane: RefCell<Plane>,
     own: RefCell<OwnPresence>,
+    /// Where this person is on this desk, as the surfaces here read it: the pointer over the tile
+    /// it is on, and their screen as a shell. Said with the rest of their word, and said again only
+    /// when it moves.
+    says: RefCell<Where>,
     here: Here,
     /// The count this person's last wave carried here.
     wave_seq: Cell<u32>,
@@ -471,11 +499,6 @@ fn now_ms() -> f64 {
     ui::time::unix_now_ms() as f64
 }
 
-/// A publisher as the hex endpoint id the desktop names a device by.
-fn endpoint(publisher: Device) -> String {
-    EndpointId::from_bytes(&publisher).map_or_else(|_| hex::encode(publisher), |id| id.to_string())
-}
-
 /// One workspace this session takes part in: its topic, the devices its records' content reaches
 /// this one from, and the board of who is here.
 #[derive(Debug)]
@@ -514,10 +537,12 @@ impl Workspace {
         self.board.calls()
     }
 
-    /// Everyone whose pointer is over one of `tiles` now, each where that tile stands on the desk,
-    /// smoothed at `now_ms` .
-    pub(super) fn placed(&self, tiles: &[Tile], now_ms: f64) -> Vec<Placed> {
-        self.board.placed(tiles, now_ms)
+    /// Everyone here, as a surface that draws them reads them, smoothed at `now_ms` .
+    pub(super) fn shown(&self, now_ms: f64) -> Vec<Shown> {
+        self.board
+            .here()
+            .map(|member| presence::shown(member, now_ms))
+            .collect()
     }
 
     /// Their device's certificate arrived: it names the device and the person it belongs to. Only
@@ -611,13 +636,13 @@ impl Plane {
             .map_or(0, |workspace| workspace.board.revision())
     }
 
-    /// Everyone whose pointer is over one of `tiles` of `workspace` now, each where that tile
-    /// stands, if this session takes part in that workspace.
-    pub(super) fn placed(&self, workspace: &str, tiles: &[Tile], now_ms: f64) -> Vec<Placed> {
+    /// Everyone here in `workspace`, as a surface that draws them reads them, if this session
+    /// takes part in that workspace.
+    pub(super) fn shown(&self, workspace: &str, now_ms: f64) -> Vec<Shown> {
         self.workspaces
             .iter()
             .find(|held| held.id == workspace)
-            .map_or_else(Vec::new, |held| held.placed(tiles, now_ms))
+            .map_or_else(Vec::new, |held| held.shown(now_ms))
     }
 
     /// When what this device says is next due, on the clock presence is heard on, if anything is.
@@ -751,6 +776,7 @@ impl Client {
                 active: None,
             }),
             own: RefCell::new(entry.own),
+            says: RefCell::default(),
             here: Here::default(),
             wave_seq: Cell::new(0),
             #[cfg(test)]
@@ -898,6 +924,23 @@ impl Client {
             return false;
         }
         *self.own.borrow_mut() = own;
+        self.say_own();
+        true
+    }
+
+    /// Where this person is on this desk now: their `pointer` over the tile it is on, and their
+    /// `shell` as the others' surfaces draw it. Said with the rest of their word, and said again
+    /// only when one of them moved. Whether that changed anything.
+    pub fn set_where(
+        &self,
+        pointer: Option<presence::Point>,
+        shell: Option<Box<ShellPresence>>,
+    ) -> bool {
+        let where_ = Where { pointer, shell };
+        if self.says.borrow().same(&where_) {
+            return false;
+        }
+        *self.says.borrow_mut() = where_;
         self.say_own();
         true
     }
@@ -1767,7 +1810,11 @@ impl Client {
             seq: wave.seq,
             target: wave.target.clone(),
         });
-        self.own.borrow().word(&self.device, wave)
+        let mut word = self.own.borrow().word(&self.device, wave);
+        let says = self.says.borrow();
+        word.pointer = says.pointer;
+        word.shell.clone_from(&says.shell);
+        word
     }
 
     /// Say `frames` on `ws` 's presence track, each as the object the board numbered: one object
@@ -1791,7 +1838,7 @@ impl Client {
     /// What this device said since the last call, as a session with no plane of its own would have
     /// published it.
     #[cfg(test)]
-    fn take_said(&self) -> Vec<Presence> {
+    pub(crate) fn take_said(&self) -> Vec<Presence> {
         std::mem::take(&mut *self.said.borrow_mut())
     }
 
@@ -1856,25 +1903,11 @@ impl Client {
             })
     }
 
-    /// Everyone whose pointer is over one of `tiles` of `workspace` now, by publisher, each placed
-    /// where that tile stands on the desk: `tiles` is every tab the desk shows, with the rect it
-    /// stands in. The desktop draws each there, above the windows.
+    /// Everyone here in `workspace`, as a surface that draws them reads them: where each of them
+    /// points, on the tiles the surface shows, and what they say beside their pointer.
     #[must_use]
-    pub fn placed(
-        &self,
-        workspace: &str,
-        tiles: &[(u64, ui::kurbo::Rect)],
-    ) -> Vec<(String, u64, f64, f64)> {
-        let tiles: Vec<Tile> = tiles
-            .iter()
-            .map(|(tab, rect)| Tile::new(*tab, rect.x0, rect.y0, rect.width(), rect.height()))
-            .collect();
-        self.plane
-            .borrow()
-            .placed(workspace, &tiles, now_ms())
-            .into_iter()
-            .map(|placed| (endpoint(placed.publisher), placed.tab, placed.x, placed.y))
-            .collect()
+    pub fn members(&self, workspace: &str) -> Vec<Shown> {
+        self.plane.borrow().shown(workspace, now_ms())
     }
 
     /// The calls in progress in every workspace this session takes part in, as those in them say:
@@ -1896,16 +1929,18 @@ impl Client {
     }
 
     /// Who is here, as the desktop lists them: `tree` places them where their focused record is
-    /// shown, and `app_name` names an app.
+    /// shown — `records` (what each window shows, by tab) names the window each person works in —
+    /// and `app_name` names an app.
     #[must_use]
     pub fn people(
         &self,
         tree: &DesktopTree,
+        records: &std::collections::BTreeMap<TabId, String>,
         app_name: &dyn Fn(&str) -> Option<String>,
     ) -> Vec<tilo_desktop::here::Person> {
         self.here.borrow().people(
             tree,
-            &[] as &[(TabId, String)],
+            &crate::collaboration::bindings(tree, records),
             app_name,
             ui::time::unix_now_ms(),
         )
@@ -1916,9 +1951,10 @@ impl Client {
     pub fn show(
         &self,
         tree: &mut DesktopTree,
+        records: &std::collections::BTreeMap<TabId, String>,
         app_name: &dyn Fn(&str) -> Option<String>,
     ) -> Vec<tilo_desktop::here::Person> {
-        let people = self.people(tree, app_name);
+        let people = self.people(tree, records, app_name);
         tilo_desktop::here::overlay_collaborators(tree, &people);
         people
     }
@@ -1934,7 +1970,7 @@ impl Client {
     /// A session taking part in a plane with no transport, for tests that hand it what it would
     /// have heard and read what it would have said.
     #[cfg(test)]
-    fn offline(
+    pub(crate) fn offline(
         publisher: EndpointId,
         own: OwnPresence,
     ) -> (Self, tokio::sync::mpsc::UnboundedReceiver<Outgoing>) {
@@ -1984,6 +2020,7 @@ impl Client {
                     active: None,
                 }),
                 own: RefCell::new(own),
+                says: RefCell::default(),
                 here: Here::default(),
                 wave_seq: Cell::new(0),
                 #[cfg(test)]

@@ -16,6 +16,11 @@ tilo-desktop-model = { path = "../desktop-model" }
 # and the search text typed on the canvas places through.
 tilo-desktop-search = { path = "../desktop-search" }
 tilo-desktop-surface = { path = "../desktop-surface", default-features = false }
+# The plane's members, as every surface reads them, and the tiles pointers land on.
+collab-types = { version = "0.1.0", path = "../../collab/collab-types" }
+# The presence plane's schedule and the tiles its pointers land on, as the page's own plane
+# already runs them.
+tilo-live = { path = "../../collab/tilo-live", features = ["plane"] }
 # The undo log and the clock are the toolkit's shared, portable parts.
 ui = { package = "tilo-ui", path = "../../sdk/ui-core", default-features = false }
 

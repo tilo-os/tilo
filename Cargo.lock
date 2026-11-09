@@ -21484,6 +21484,7 @@ dependencies = [
 name = "tilo-session-core"
 version = "0.1.0"
 dependencies = [
+ "collab-types",
  "serde",
  "serde_json",
  "tilo-actions",
@@ -21491,6 +21492,7 @@ dependencies = [
  "tilo-desktop-model",
  "tilo-desktop-search",
  "tilo-desktop-surface",
+ "tilo-live",
  "tilo-ui",
  "workspace-hack",
 ]

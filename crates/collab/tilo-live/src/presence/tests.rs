@@ -92,15 +92,15 @@ fn a_pointer_is_placed_on_the_tile_it_is_over_and_a_rest_draws_nothing() {
     let member = board.member([1; 32]).expect("a pointer says they are here");
     assert!(member.here);
     assert_eq!(member.pointer(1_000.0), Some((3, 12.0, 34.0)));
-    let placed = board.placed(&[Tile::new(3, 100.0, 50.0, 400.0, 300.0)], 1_000.0);
+    let over = Tile::new(3, 100.0, 50.0, 400.0, 300.0);
     assert_eq!(
-        placed,
-        vec![Placed {
-            publisher: [1; 32],
-            tab: 3,
-            x: 112.0,
-            y: 84.0,
-        }]
+        board.pointers(3, 1_000.0),
+        vec![(
+            [1; 32],
+            over.point((12.0, 34.0)).0,
+            over.point((12.0, 34.0)).1
+        )],
+        "the pointer is drawn where the tile it is over stands"
     );
     assert!(board.pointers(4, 1_000.0).is_empty());
     let drawn = board.revision();

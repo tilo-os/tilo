@@ -329,6 +329,9 @@ pub(crate) struct Desk {
     pub(crate) surfaces: Surfaces,
     /// Who is here, when this session takes part in the collaboration plane.
     pub(crate) sync: Option<Rc<crate::sync::Client>>,
+    /// What each window of the desk shows, as its app reports it: where a person's record stands,
+    /// so the reading places them in the window they work in.
+    pub(crate) notes: std::sync::Arc<crate::continuations::Continuations>,
     /// The apps' live activities: Clocks' timer is the bar's clock beside the time, and the person
     /// putting the floating one away hides it until Clocks shows something new.
     pub(crate) activities: Rc<crate::chrome::Activities>,
@@ -725,7 +728,7 @@ impl Desk {
         let instant = std::time::Instant::now();
         let people = self.handle.read(|tree| {
             self.sync.as_ref().map_or_else(Vec::new, |sync| {
-                sync.people(tree, &|_: &str| None)
+                sync.people(tree, &self.notes.records(), &|_: &str| None)
                     .into_iter()
                     .map(|person| shell_part::PersonReading {
                         key: person.id,

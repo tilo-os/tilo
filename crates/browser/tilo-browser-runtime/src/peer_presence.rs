@@ -17,7 +17,7 @@ use collab_types::presence::{
 };
 use serde::{Deserialize, Serialize};
 use tilo_browser_peer::PeerHandle;
-use tilo_live::presence::{Board, Own, Point, Tile, shown};
+use tilo_live::presence::{Board, Own, Point, shown};
 use tilo_user_identity::DeviceCert;
 use wasm_bindgen::prelude::*;
 
@@ -216,11 +216,9 @@ pub(crate) struct BoardView {
     pub(crate) device: [u8; 32],
     /// This page's own word.
     pub(crate) own: Own,
-    /// Everyone here, as the board merged their words.
+    /// Everyone here, as the board merged their words: where each of them
+    /// points, on the tiles the surface passed.
     pub(crate) members: Vec<Shown>,
-    /// Every member whose pointer is over a tile the surface shows, where
-    /// that tile stands: `(publisher, tab, x, y, heard_at)`.
-    pub(crate) placed: Vec<([u8; 32], u64, f64, f64, f64)>,
     /// Why this page has no live plane at all, in the words shown in the
     /// members' place.
     pub(crate) note: Option<String>,
@@ -415,10 +413,9 @@ pub(crate) fn hear(peer: u32, workspace_id: u64, from: [u8; 32], body: &[u8]) {
     }
 }
 
-/// What `peer`'s board for `workspace` holds, with the members' pointers
-/// placed over `tiles`: what the mount draws and lists. `None` while this
-/// page has no board there.
-pub(crate) fn view(peer: u32, workspace: &str, tiles: &[Tile], now_ms: f64) -> Option<BoardView> {
+/// What `peer`'s board for `workspace` holds: what the mount draws and lists.
+/// `None` while this page has no board there.
+pub(crate) fn view(peer: u32, workspace: &str, now_ms: f64) -> Option<BoardView> {
     PAGES.with_borrow(|pages| {
         let page = pages.get(&peer)?;
         let held = page.workspaces.get(workspace)?;
@@ -428,17 +425,6 @@ pub(crate) fn view(peer: u32, workspace: &str, tiles: &[Tile], now_ms: f64) -> O
             device: page.device,
             own: board.own().clone(),
             members: board.here().map(|member| shown(member, now_ms)).collect(),
-            placed: {
-                let placed = board.placed(tiles, now_ms);
-                board
-                    .here()
-                    .filter_map(|member| {
-                        let heard = member.pointer_heard_at()?;
-                        let at = placed.iter().find(|at| at.publisher == member.publisher)?;
-                        Some((member.publisher, at.tab, at.x, at.y, heard))
-                    })
-                    .collect()
-            },
             note: page.handle.live_note(),
         })
     })

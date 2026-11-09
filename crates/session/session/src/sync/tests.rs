@@ -291,7 +291,7 @@ fn a_peer_here_is_a_collaborator_of_the_active_workspace() {
     here(&sync, 1);
 
     let mut tree = desk(WORKSPACE);
-    let people = sync.show(&mut tree, &|_| None);
+    let people = sync.show(&mut tree, &no_records(), &|_| None);
     assert_eq!(people.len(), 1);
     assert_eq!(people[0].label, "Framework 16");
     assert_eq!(people[0].user, Some(person(0xaa)));
@@ -348,7 +348,7 @@ fn what_a_peer_says_they_are_doing_is_the_roster_line() {
     );
 
     let mut tree = desk(WORKSPACE);
-    let people = sync.show(&mut tree, &|_| None);
+    let people = sync.show(&mut tree, &no_records(), &|_| None);
     assert_eq!(
         people[0].status.as_ref().map(|line| line.text.as_str()),
         Some("Shipping the roster")
@@ -417,7 +417,7 @@ fn a_peer_away_is_away_on_the_roster() {
     heard(&sync, 1, WORKSPACE, away("away"));
 
     let mut tree = desk(WORKSPACE);
-    let people = sync.show(&mut tree, &|_| None);
+    let people = sync.show(&mut tree, &no_records(), &|_| None);
     assert_eq!(people[0].availability, ui::Availability::Away);
     assert!(people[0].availability.dims());
     let rows = tilo_desktop::collaborators::collaborator_roster_rows(&tree, "me");
@@ -427,7 +427,7 @@ fn a_peer_away_is_away_on_the_roster() {
     // Back at their machine, and heads down: the face lightens, and says what they chose.
     heard(&sync, 1, WORKSPACE, away("focusing"));
     let mut tree = desk(WORKSPACE);
-    sync.show(&mut tree, &|_| None);
+    sync.show(&mut tree, &no_records(), &|_| None);
     let rows = tilo_desktop::collaborators::collaborator_roster_rows(&tree, "me");
     assert_eq!(rows[0].availability, ui::Availability::Focusing);
     assert!(!rows[0].availability.dims());
@@ -474,7 +474,7 @@ fn a_call_this_device_joins_reaches_a_peer_s_roster() {
     assert!(said_the_call, "this device said which channel it is in");
 
     let mut tree = desk(WORKSPACE);
-    let people = theirs.show(&mut tree, &|_| None);
+    let people = theirs.show(&mut tree, &no_records(), &|_| None);
     assert_eq!(people.len(), 1);
     assert_eq!(
         people[0].call.as_ref().map(|call| call.name.as_str()),
@@ -502,7 +502,7 @@ fn a_call_this_device_joins_reaches_a_peer_s_roster() {
         theirs.heard_presence(WORKSPACE, mine.publisher(), &frame);
     }
     let mut tree = desk(WORKSPACE);
-    let people = theirs.show(&mut tree, &|_| None);
+    let people = theirs.show(&mut tree, &no_records(), &|_| None);
     assert!(people[0].call.is_none());
 }
 
@@ -511,23 +511,37 @@ fn a_peer_who_leaves_leaves_the_roster() {
     let (sync, _said) = session("Quinten", Some(0x04));
     sync.hear(hello(1, 0xaa, "Framework 16"));
     here(&sync, 1);
-    assert_eq!(sync.show(&mut desk(WORKSPACE), &|_| None).len(), 1);
+    assert_eq!(
+        sync.show(&mut desk(WORKSPACE), &no_records(), &|_| None)
+            .len(),
+        1
+    );
 
     heard(&sync, 1, WORKSPACE, PeerPresencePayload::Left);
-    assert!(sync.show(&mut desk(WORKSPACE), &|_| None).is_empty());
+    assert!(
+        sync.show(&mut desk(WORKSPACE), &no_records(), &|_| None)
+            .is_empty()
+    );
 
     here(&sync, 1);
-    assert_eq!(sync.show(&mut desk(WORKSPACE), &|_| None).len(), 1);
+    assert_eq!(
+        sync.show(&mut desk(WORKSPACE), &no_records(), &|_| None)
+            .len(),
+        1
+    );
     sync.hear(NetEvent::PeerLeft {
         ws: topic(WORKSPACE),
         peer: device(1),
         cause: tilo_network_actor::PeerDepartureCause::HostSessionClosed,
         membership_epoch: None,
     });
-    assert!(sync.show(&mut desk(WORKSPACE), &|_| None).is_empty());
+    assert!(
+        sync.show(&mut desk(WORKSPACE), &no_records(), &|_| None)
+            .is_empty()
+    );
 
     let mut tree = desk(WORKSPACE);
-    sync.show(&mut tree, &|_| None);
+    sync.show(&mut tree, &no_records(), &|_| None);
     assert!(tree.workspaces[0].collaborators.is_empty());
 }
 
@@ -607,7 +621,11 @@ fn only_the_workspace_in_front_lists_people() {
 
     let elsewhere = "0b6a8f2c-3d4e-4f5a-8b9c-0d1e2f3a4b5c";
     heard(&sync, 2, elsewhere, PeerPresencePayload::Arrived);
-    assert_eq!(sync.show(&mut desk(WORKSPACE), &|_| None).len(), 1);
+    assert_eq!(
+        sync.show(&mut desk(WORKSPACE), &no_records(), &|_| None)
+            .len(),
+        1
+    );
 
     // A frame that names another workspace is that other workspace's, whatever plane it was heard
     // on.
@@ -620,7 +638,11 @@ fn only_the_workspace_in_front_lists_people() {
         payload: Payload::Arrived,
     };
     sync.heard_presence(WORKSPACE, device(3), &foreign);
-    assert_eq!(sync.show(&mut desk(WORKSPACE), &|_| None).len(), 1);
+    assert_eq!(
+        sync.show(&mut desk(WORKSPACE), &no_records(), &|_| None)
+            .len(),
+        1
+    );
 }
 
 #[test]
@@ -635,7 +657,10 @@ fn another_apps_presence_is_not_the_desktops() {
         payload: Payload::Arrived,
     };
     sync.heard_presence(WORKSPACE, device(1), &notes);
-    assert!(sync.show(&mut desk(WORKSPACE), &|_| None).is_empty());
+    assert!(
+        sync.show(&mut desk(WORKSPACE), &no_records(), &|_| None)
+            .is_empty()
+    );
 }
 
 #[test]
@@ -646,7 +671,7 @@ fn two_devices_of_one_peer_are_one_face() {
     sync.hear(hello(2, 0xaa, "Phone"));
     here(&sync, 2);
 
-    let people = sync.show(&mut desk(WORKSPACE), &|_| None);
+    let people = sync.show(&mut desk(WORKSPACE), &no_records(), &|_| None);
     assert_eq!(people.len(), 1);
     assert_eq!(people[0].label, "Framework 16");
 }
@@ -656,16 +681,49 @@ fn another_device_of_this_person_is_this_person() {
     let (sync, _said) = session("Quinten", Some(0x04));
     sync.hear(hello(1, 0x04, "Studio"));
     here(&sync, 1);
-    assert!(sync.show(&mut desk(WORKSPACE), &|_| None).is_empty());
+    assert!(
+        sync.show(&mut desk(WORKSPACE), &no_records(), &|_| None)
+            .is_empty()
+    );
 
     sync.hear(hello(2, 0xbb, "Framework 16"));
     here(&sync, 2);
-    assert_eq!(sync.show(&mut desk(WORKSPACE), &|_| None).len(), 1);
+    assert_eq!(
+        sync.show(&mut desk(WORKSPACE), &no_records(), &|_| None)
+            .len(),
+        1
+    );
+}
+
+/// No window of the desk shows a record.
+fn no_records() -> std::collections::BTreeMap<u64, String> {
+    std::collections::BTreeMap::new()
 }
 
 /// The tile `tab` stands at on the desk of these tests.
-fn tile(tab: u64) -> (u64, ui::kurbo::Rect) {
-    (tab, ui::kurbo::Rect::new(100.0, 50.0, 500.0, 350.0))
+fn tile(tab: u64) -> tilo_live::presence::Tile {
+    tilo_live::presence::Tile::new(tab, 100.0, 50.0, 400.0, 300.0)
+}
+
+/// Everyone's pointer as the desk draws it, over `tiles`: who, the tab they are over, and where it
+/// stands on the surface.
+fn drawn_on(sync: &Client, tiles: &[tilo_live::presence::Tile]) -> Vec<(u64, f64, f64)> {
+    let mut chats = ui::presence::CursorChats::default();
+    let pointers = tilo_session_core::presence::pointers(
+        &sync.members(WORKSPACE),
+        tiles,
+        &mut chats,
+        &ui::presence::PresenceCtx::empty(),
+        ui::time::Instant::now(),
+        now_ms(),
+        ui::tokens::EffectiveMotion::default(),
+    );
+    pointers
+        .drawn
+        .iter()
+        .zip(pointers.tabs)
+        .map(|(cursor, tab)| (tab, cursor.pos.0, cursor.pos.1))
+        .collect()
 }
 
 #[test]
@@ -673,19 +731,15 @@ fn pointers_are_followed_on_the_room_tile() {
     let (sync, _said) = session("Quinten", Some(0x04));
     sync.hear(hello(1, 0xaa, "Framework 16"));
     here(&sync, 1);
-    assert!(sync.placed(WORKSPACE, &[tile(3)]).is_empty());
+    assert!(drawn_on(&sync, &[tile(3)]).is_empty());
 
     pointer_moved(&sync, 1, WORKSPACE, 3, (12.5, 34.5));
     assert_eq!(
-        sync.placed(WORKSPACE, &[tile(3)]),
-        vec![(device(1).to_string(), 3, 112.5, 84.5)],
+        drawn_on(&sync, &[tile(3)]),
+        vec![(3, 112.5, 84.5)],
         "the pointer is placed where the tile stands"
     );
-    assert!(sync.placed(WORKSPACE, &[tile(4)]).is_empty(), "another tab");
-    assert!(
-        sync.placed("0b6a8f2c-3d4e-4f5a-8b9c-0d1e2f3a4b5c", &[tile(3)])
-            .is_empty()
-    );
+    assert!(drawn_on(&sync, &[tile(4)]).is_empty(), "another tab");
 
     // A pointer resting where it is, and the peer saying it is here again,
     // are no change: the desk draws no frame.
@@ -735,7 +789,7 @@ fn an_agents_shell_frame_puts_its_face_on_the_desk() {
     sync.heard_presence(WORKSPACE, device(1), &frame);
 
     let mut tree = desk(WORKSPACE);
-    let people = sync.show(&mut tree, &|_| None);
+    let people = sync.show(&mut tree, &no_records(), &|_| None);
     assert_eq!(people.len(), 1, "the agent is a member here");
     assert_eq!(people[0].label, "Writer helper");
     assert!(people[0].agent, "an agent draws as one, not as a person");
@@ -966,4 +1020,60 @@ fn another_persons_host_hints_are_not_where_this_persons_workspaces_are() {
         sync.host_hint(WORKSPACE).is_none(),
         "another person's workspaces are theirs to enter, never this person's"
     );
+}
+
+/// Where this person is on their desk — the tile they point at and their shell — is said with the
+/// rest of their word, and only what moved is said again: a desk at rest publishes nothing.
+#[test]
+fn where_i_am_is_said_with_the_rest_of_the_word_and_only_when_it_moves() {
+    let (sync, _said) = session("Quinten", Some(0x04));
+    let shell = |sent_at_ms| {
+        Box::new(collab_types::presence::ShellPresence {
+            seq: 0,
+            sent_at_ms,
+            label: "Quinten".to_owned(),
+            agent: false,
+            colour: "#3b82f6".to_owned(),
+            activity: None,
+            place: Some("1".to_owned()),
+            size: [1280, 764],
+            windows: vec![collab_types::presence::ShellWindow {
+                app: "so.tilo.notes".to_owned(),
+                record: [1; 8],
+                rect: [0, 0, 10_000, 10_000],
+                focused: true,
+            }],
+            selection: None,
+            chat: None,
+            reaction: None,
+        })
+    };
+    let at = presence::Point {
+        tab: 3,
+        x: 12.5,
+        y: 34.5,
+    };
+    assert!(sync.set_where(Some(at), Some(shell(1))));
+    let said = sync.take_said();
+    assert!(
+        said.iter().any(
+            |presence| matches!(&presence.payload, Payload::Shell(shell) if shell.windows
+                .first()
+                .is_some_and(|window| window.app == "so.tilo.notes"))
+        ),
+        "their shell is said with their word: {said:?}"
+    );
+    assert!(
+        said.iter()
+            .any(|presence| matches!(presence.payload, Payload::Pointer { .. })),
+        "and the tile they point at: {said:?}"
+    );
+
+    // The same place, restamped: no word is owed.
+    assert!(!sync.set_where(Some(at), Some(shell(2))));
+    assert!(sync.take_said().is_empty(), "nothing moved");
+
+    // Their pointer leaves the tile: that is said.
+    assert!(sync.set_where(None, Some(shell(3))));
+    assert!(!sync.take_said().is_empty());
 }

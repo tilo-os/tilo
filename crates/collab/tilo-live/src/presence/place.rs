@@ -46,20 +46,6 @@ impl Tile {
     }
 }
 
-/// Where one member's pointer is drawn on a surface: its publisher, the tab
-/// it is over, and the point on the surface.
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub struct Placed {
-    /// The member's device.
-    pub publisher: [u8; 32],
-    /// The tab it is over.
-    pub tab: u64,
-    /// The point on the surface.
-    pub x: f64,
-    /// The point on the surface.
-    pub y: f64,
-}
-
 /// The tile `(x, y)` of a surface is over: the tab it shows and the point in
 /// that tile's own logical pixels, as this device says its pointer. `None`
 /// over no tile, which says nothing of this device's pointer.

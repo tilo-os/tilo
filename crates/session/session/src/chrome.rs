@@ -411,6 +411,9 @@ pub(crate) struct SessionChrome {
     /// Who is here, when this session takes part in the collaboration plane: the bar's trees carry
     /// them as the active workspace's collaborators.
     sync: Option<Rc<crate::sync::Client>>,
+    /// What each window of the desk shows, as its app reports it: where a person's record stands,
+    /// so the roster places them in the window they work in.
+    notes: std::sync::Arc<crate::continuations::Continuations>,
     /// The machine as the services last published it: the status cluster's battery, network and
     /// volume glyphs, and the streams being captured.
     readings: crate::status::Shared,
@@ -444,6 +447,7 @@ impl SessionChrome {
         feeds: BarFeeds,
         notifications_only: bool,
         sync: Option<Rc<crate::sync::Client>>,
+        notes: std::sync::Arc<crate::continuations::Continuations>,
         engine: Option<Arc<crate::engine::Engine>>,
     ) -> Self {
         let BarFeeds {
@@ -465,6 +469,7 @@ impl SessionChrome {
             signals,
             notifications_only,
             sync,
+            notes,
             readings,
             activities,
             notices,
@@ -497,7 +502,7 @@ impl ChromeSource for SessionChrome {
 
     fn place_people(&self, tree: &mut DesktopTree) {
         if let Some(sync) = &self.sync {
-            sync.show(tree, &|_: &str| None);
+            sync.show(tree, &self.notes.records(), &|_: &str| None);
         }
     }
 
@@ -756,6 +761,7 @@ pub(crate) fn host(
         feeds,
         !crate::quick_settings::installed(&options.surfaces),
         sync,
+        options.launches.notes(),
         engine,
     ))));
     let bar = TopBarChrome::from_tree(&tree)

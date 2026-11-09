@@ -84,7 +84,11 @@ impl Shared {
             return;
         }
         follow.follow(followed);
-        let people = sync.people(&self.handle.read(Clone::clone), &|_: &str| None);
+        let people = sync.people(
+            &self.handle.read(Clone::clone),
+            &self.notes.records(),
+            &|_: &str| None,
+        );
         let places: Vec<Place<'_>> = people
             .iter()
             .map(|person| Place {

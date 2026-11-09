@@ -699,6 +699,7 @@ impl Session {
             activities: Rc::clone(&activities),
             surfaces: surfaces.clone(),
             sync: sync.clone(),
+            notes: std::sync::Arc::clone(&notes),
             notices: notices.clone(),
             tray: tray.clone(),
             engine: engine.clone(),

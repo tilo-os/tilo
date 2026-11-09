@@ -198,6 +198,27 @@ fn pointer(sync: &Client, from: u8, x: f32, y: f32) {
     sync.heard_presence(WORKSPACE, device(from), &frame);
 }
 
+/// Everyone's pointer as a desk showing `tiles` draws it: the tab each is over, and where it stands
+/// on the surface.
+fn done_by(sync: &Client, tiles: &[tilo_live::presence::Tile]) -> Vec<(u64, f64, f64)> {
+    let mut chats = ui::presence::CursorChats::default();
+    let pointers = tilo_session_core::presence::pointers(
+        &sync.members(WORKSPACE),
+        tiles,
+        &mut chats,
+        &ui::presence::PresenceCtx::empty(),
+        ui::time::Instant::now(),
+        ui::time::unix_now_ms() as f64,
+        ui::tokens::EffectiveMotion::default(),
+    );
+    pointers
+        .drawn
+        .iter()
+        .zip(pointers.tabs)
+        .map(|(cursor, tab)| (tab, cursor.pos.0, cursor.pos.1))
+        .collect()
+}
+
 /// A session taking part in the workspace through `sync` , showing `desk` .
 fn session(sync: &Rc<Client>) -> Session {
     session_over(sync, None)
@@ -485,14 +506,16 @@ fn the_people_button_lists_who_is_here_and_where_their_pointers_are() {
         "where their pointer is: {labels:?}"
     );
     assert!(listed("Away"), "how they said they are: {labels:?}");
-    assert_eq!(
-        sync.placed(
-            WORKSPACE,
-            &[(NOTES, ui::kurbo::Rect::new(0.0, 0.0, 1000.0, 1000.0))]
-        ),
-        [(device(0xaa).to_string(), NOTES, 12.0, 34.0)],
-        "their pointer is over Notes, where the desk draws it"
+    let pointers = done_by(
+        &sync,
+        &[tilo_live::presence::Tile::new(
+            NOTES, 0.0, 0.0, 1000.0, 1000.0,
+        )],
     );
+    let [(tab, x, y)] = pointers.as_slice() else {
+        panic!("their pointer is over Notes, where the desk draws it: {pointers:?}");
+    };
+    assert_eq!((*tab, *x, *y), (NOTES, 12.0, 34.0));
 
     // The faces again: the roster goes back to them.
     press_faces(&mut session);
