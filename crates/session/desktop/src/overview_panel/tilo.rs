@@ -42,7 +42,28 @@ impl OverviewPanel {
     fn tilo_height(&self, row: &TiloRow) -> f64 {
         match row {
             TiloRow::Caption(_) => self.metrics.section_gap + self.metrics.caption_h,
+            TiloRow::Item(item) if self.wraps(item) => {
+                self.metrics.tilo_row_h + self.metrics.detail_lh
+            }
             TiloRow::Item(_) => self.metrics.tilo_row_h,
+        }
+    }
+
+    /// Whether `item`'s detail wraps under its title: on a page as narrow as a phone, a row with a
+    /// control leaves its detail too little width for one line.
+    fn wraps(&self, item: &TiloItem) -> bool {
+        self.uses_full_window() && item.action.is_some() && item.detail.is_some()
+    }
+
+    /// Whether row `index` stands whole above the foot of `band`: a row the foot would cut is not
+    /// shown, and a section's name only with its first row, so the list ends on a whole row above
+    /// the scroll thumb that says there is more.
+    fn tilo_shown(&self, index: usize, band: Rect) -> bool {
+        let whole = |index: usize| self.tilo_rect(index).y1 <= band.y1 + 0.5;
+        match self.tilo_rows.get(index) {
+            Some(TiloRow::Caption(_)) => whole(index) && whole(index.saturating_add(1)),
+            Some(TiloRow::Item(_)) => whole(index),
+            None => false,
         }
     }
 
@@ -135,6 +156,9 @@ impl OverviewPanel {
         }
         (0..self.tilo_rows.len()).find_map(|index| {
             self.tilo_item(index)?;
+            if !self.tilo_shown(index, band) {
+                return None;
+            }
             if self
                 .tilo_action_rect(index)
                 .is_some_and(|rect| rect.contains(p))
@@ -178,7 +202,7 @@ impl OverviewPanel {
     pub(super) fn paint_tilo_rows(&self, ctx: &mut ui::paint::PaintCtx<'_>, band: Rect) {
         for (index, row) in self.tilo_rows.iter().enumerate() {
             let rect = self.tilo_rect(index);
-            if rect.y1 < band.y0 || rect.y0 > band.y1 {
+            if rect.y1 < band.y0 || !self.tilo_shown(index, band) {
                 continue;
             }
             match row {
@@ -218,6 +242,9 @@ impl OverviewPanel {
         let mut face = ListRowFace::new(&item.title);
         if let Some(detail) = &item.detail {
             face = face.secondary(detail);
+            if self.wraps(item) {
+                face = face.secondary_lines(2);
+            }
         }
         if let Some(icon) = item.icon {
             face = face.leading(RowLeading::Icon(icon));

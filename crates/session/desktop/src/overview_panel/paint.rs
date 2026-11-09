@@ -129,12 +129,13 @@ impl OverviewPanel {
                 BlendMode::default(),
                 1.0,
                 transform,
-                &Rect::new(panel.x0, content.y0, panel.x1, content.y1),
+                // The current workspace's card stands `s2` above its text: room for it at the top.
+                &Rect::new(panel.x0, content.y0 - m.s2, panel.x1, content.y1),
             );
         }
         self.paint_here_section(
             &mut ui::paint::PaintCtx::new(scene, transform, text, theme),
-            content,
+            self.here_content(),
             here_rect,
         );
         self.paint_shares_section(
@@ -313,7 +314,7 @@ impl OverviewPanel {
         let ground = ui::chrome::shell::panel_ground(theme);
         let m = self.metrics;
 
-        self.paint_here_selection(scene, transform, theme, content, here_rect, hi);
+        self.paint_here_selection(scene, transform, theme, here_rect, hi);
 
         // Faces claim the right edge, centred on the name line; the name elides against what they
         // leave.
@@ -393,7 +394,6 @@ impl OverviewPanel {
         scene: &mut Scene,
         transform: Affine,
         theme: &Theme,
-        content: Rect,
         here_rect: Rect,
         hi: usize,
     ) {
@@ -401,14 +401,11 @@ impl OverviewPanel {
             return;
         }
         let s2 = self.metrics.s2;
-        // It stands `s2` off the block's text and stops short of the block's bottom air, so it does
-        // not run into the caption beneath.
-        let sel = Rect::new(
-            content.x0 - s2,
-            here_rect.y0 - s2,
-            content.x1 + s2,
-            here_rect.y1 - s2,
-        );
+        // It spans the panel's content, as a "go to" row's card does, holding the block's text
+        // a row's padding in; it stands `s2` above the text and stops short of the block's bottom
+        // air, so it does not run into the caption beneath.
+        let outer = self.content_rect();
+        let sel = Rect::new(outer.x0, here_rect.y0 - s2, outer.x1, here_rect.y1 - s2);
         let fill = theme
             .tokens
             .colors
@@ -416,7 +413,8 @@ impl OverviewPanel {
         ui::surface::card(scene, transform, sel, self.metrics.row_radius, fill);
         if self.window_selection.is_none() {
             let focus = if self.scrolls_whole_panel() {
-                sel.intersect(content)
+                // The page clips `s2` above the content, where the card's top stands.
+                sel.intersect(Rect::new(outer.x0, outer.y0 - s2, outer.x1, outer.y1))
             } else {
                 sel
             };
