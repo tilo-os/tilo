@@ -2467,7 +2467,9 @@ impl Widget for DesktopSurface {
         }
         let reveal = self.reveal.take();
         let shown = self.shown;
-        let mut pending = None;
+        // A strip that is not drawn yet keeps its reveal: the window it opens is framed when the
+        // strip showing it is drawn, and until then the strip has not landed its widths.
+        let mut pending = reveal;
         for (i, strip) in strips.iter().enumerate() {
             let Some(&child) = nodes.get(i) else {
                 continue;
@@ -2480,12 +2482,12 @@ impl Widget for DesktopSurface {
                 continue;
             };
             if !row.group_is_laid_out(group) {
-                pending = reveal;
                 continue;
             }
             // The strip has laid its windows out where the window opens, in this pass: from here on
             // they follow the hand again.
             row.set_motion_source(ui::tokens::MotionSource::Pointer);
+            pending = None;
             // The launch frame itself shows the new window: move the strip to it, then place the
             // groups again where the move has them.
             if Some(*strip) == shown && row.scroll_group_into_view(group) {
