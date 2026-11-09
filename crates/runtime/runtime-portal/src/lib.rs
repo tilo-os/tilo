@@ -45,7 +45,6 @@ pub mod process_binding;
 pub mod registration_gate;
 #[cfg(unix)]
 pub mod request_rendezvous;
-pub mod retained_replacement;
 pub mod retained_role;
 pub mod runtime_request;
 pub mod service_socket;

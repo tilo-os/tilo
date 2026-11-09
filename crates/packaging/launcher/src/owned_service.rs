@@ -120,11 +120,9 @@ enum RetainedService {
     Source(Box<RetainedIoAdmission>),
     Target(Box<TargetProjectionAdmission>, ConnectedTargetProjection),
 }
-pub use retained_io::NATIVE_HISTORY_VERIFIER_FD as RETAINED_NATIVE_HISTORY_VERIFIER_FD;
 pub use retained_io::NATIVE_OWNER_FD as RETAINED_NATIVE_OWNER_FD;
 pub use retained_io::REMOVAL_DIRECTORY_FD as RETAINED_REMOVAL_DIRECTORY_FD;
 pub use retained_io::REMOVAL_JOURNAL_FD as RETAINED_REMOVAL_JOURNAL_FD;
-pub use retained_io::SELECTED_REPLACEMENT_PERMIT_FD as RETAINED_SELECTED_REPLACEMENT_PERMIT_FD;
 pub use retained_io::SOURCE_DATA_FD as RETAINED_SOURCE_DATA_FD;
 pub use retained_io::SOURCE_PATH as RETAINED_IO_SOURCE_PATH;
 pub use retained_io::{

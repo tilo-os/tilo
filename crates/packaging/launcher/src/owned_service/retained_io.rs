@@ -1,17 +1,14 @@
 //! Root-native retained-source I/O projection for one fixed offline service.
 //! This is distinct from immutable migration capture. No launch option or wire
 //! credential claim can mint an admission; the root actor retains actual custody.
-pub use runtime_portal::retained_replacement::SELECTED_REPLACEMENT_PERMIT_FD;
-use runtime_portal::retained_replacement::{MAX_PERMIT_BYTES, SelectedReplacementPermitRecord};
 use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256};
 
 use std::{
     fs::File,
     io::{self, Read, Seek, Write},
     os::{
         fd::{AsRawFd, FromRawFd, RawFd},
-        unix::fs::{FileExt, MetadataExt, OpenOptionsExt},
+        unix::fs::{MetadataExt, OpenOptionsExt},
     },
     sync::{Arc, Mutex},
 };
@@ -25,7 +22,6 @@ pub const REMOVAL_DIRECTORY_FD: i32 = removal::FD;
 pub const REMOVAL_JOURNAL_FD: i32 = removal::JOURNAL_FD;
 pub const SOURCE_DATA_FD: i32 = removal::SOURCE_DATA_FD;
 pub const NATIVE_OWNER_FD: i32 = 59;
-pub const NATIVE_HISTORY_VERIFIER_FD: i32 = 60;
 
 const SOURCE_FD: RawFd = 44;
 pub(crate) const TOKEN_FD: RawFd = 49;
@@ -53,17 +49,6 @@ fn namespaces() -> io::Result<Vec<(u64, u64)>> {
 /// source lease and live certified target session must remain retained here.
 /// Implementations are native root adapters, never deserialized caller records.
 pub trait RetainedIoAuthority: super::ServiceAuthority {
-    /// Only the concrete current certified daemon/source adapter provides this
-    /// held sealed root descriptor. Browsing has no verifier or raw fallback.
-    fn native_history_verifier(&self) -> io::Result<Option<File>> {
-        Ok(None)
-    }
-
-    /// Held root-sealed selected edit derivative, never caller supplied bytes.
-    fn selected_replacement_permit(&self) -> io::Result<Option<File>> {
-        Ok(None)
-    }
-
     /// Obtain the independently admitted original source credentials.
     fn source_credentials(&self) -> io::Result<RetainedIoCredentials>;
     /// Obtain the canonical retained native owner's identity.
@@ -135,8 +120,6 @@ struct Token {
     namespaces: Vec<(u64, u64)>,
     removal: Option<removal::Facts>,
     native_owner_sha256: Option<[u8; 32]>,
-    selected_replacement_sha256: Option<[u8; 32]>,
-    native_history_verifier_sha256: Option<[u8; 32]>,
 }
 impl Token {
     fn validate(&self) -> io::Result<()> {
@@ -149,12 +132,6 @@ impl Token {
             || self.directory != self.removal.is_some()
             || self.directory != self.native_owner_sha256.is_some()
             || self.native_owner_sha256 == Some([0; 32])
-            || self.selected_replacement_sha256 == Some([0; 32])
-            || self.native_history_verifier_sha256 == Some([0; 32])
-            || (self.native_history_verifier_sha256.is_some() && !self.directory)
-            || (self.selected_replacement_sha256.is_some()
-                && self.native_history_verifier_sha256.is_none())
-            || (self.selected_replacement_sha256.is_some() && !self.directory)
             || self.namespaces.len() != NAMESPACES.len()
         {
             return Err(refused("Retained source token differs"));
@@ -175,8 +152,6 @@ pub struct RetainedIoAdmission {
     pub(super) worker_program: Option<Arc<super::retained_worker::RetainedWorkerProgram>>,
     token: File,
     native_owner: Option<File>,
-    selected_replacement: Option<File>,
-    native_history_verifier: Option<File>,
     facts: Token,
     pub(super) authority: Arc<dyn RetainedIoAuthority>,
     workspace: Mutex<Option<workspace::Workspace>>,
@@ -187,8 +162,8 @@ impl RetainedIoAdmission {
     /// Admit an editable source while retaining its authenticated root authority.
     ///
     /// # Errors
-    /// Refuses non-root callers, invalid or read-only sources, inconsistent
-    /// permits or verifier custody, and revoked authority; propagates I/O errors.
+    /// Refuses non-root callers, invalid or read-only sources, and revoked
+    /// authority; propagates I/O errors.
     pub fn admit(source: File, authority: Arc<dyn RetainedIoAuthority>) -> io::Result<Self> {
         root()?;
         authority.check()?;
@@ -204,14 +179,6 @@ impl RetainedIoAdmission {
         if v.f_flag & libc::ST_RDONLY != 0 {
             return Err(refused("Retained editable source is read-only"));
         }
-        let selected_replacement = authority.selected_replacement_permit()?;
-        let selected_replacement_sha256 = selected_replacement
-            .as_ref()
-            .map(|permit| {
-                replacement_digest(permit, (m.dev(), m.ino()), authority.native_owner_sha256()?)
-            })
-            .transpose()?;
-        authority.check()?;
         let mut facts = Token {
             schema: 2,
             purpose: "retained-source-io".into(),
@@ -224,8 +191,6 @@ impl RetainedIoAdmission {
             directory: m.is_dir(),
             namespaces: namespaces()?,
             removal: None,
-            selected_replacement_sha256,
-            native_history_verifier_sha256: None,
             native_owner_sha256: if m.is_dir() {
                 Some(authority.native_owner_sha256()?)
             } else {
@@ -242,14 +207,6 @@ impl RetainedIoAdmission {
             None
         };
         facts.removal = removal.as_ref().map(removal::Removal::facts).transpose()?;
-        let native_history_verifier = authority.native_history_verifier()?;
-        if let Some(file) = &native_history_verifier {
-            let claims = read_history_verifier(file)?;
-            if !facts.directory || Some(claims.source_owner) != facts.native_owner_sha256 {
-                return Err(refused("History verifier differs from retained source"));
-            }
-            facts.native_history_verifier_sha256 = Some(claims.sha256()?);
-        }
         authority.check()?;
         facts.validate()?;
         let token = seal(&facts)?;
@@ -267,8 +224,6 @@ impl RetainedIoAdmission {
             worker_program: None,
             token,
             native_owner,
-            selected_replacement,
-            native_history_verifier,
             facts,
             authority,
             workspace: Mutex::new(None),
@@ -400,26 +355,6 @@ impl RetainedIoAdmission {
         if let Some(removal) = &self.removal {
             removal.check()?;
         }
-        match (
-            &self.selected_replacement,
-            self.facts.selected_replacement_sha256,
-        ) {
-            (Some(permit), Some(expected))
-                if replacement_digest(
-                    permit,
-                    self.facts.source,
-                    self.facts
-                        .native_owner_sha256
-                        .ok_or_else(|| refused("Native source owner absent"))?,
-                )? == expected => {}
-            (None, None) => {}
-            _ => return Err(refused("Selected replacement permit differs")),
-        }
-        check_history_verifier(
-            self.native_history_verifier.as_ref(),
-            self.facts.native_history_verifier_sha256,
-            self.facts.native_owner_sha256,
-        )?;
         check_token(&self.token)
     }
     pub(crate) fn confirm_removal_retirement(&self) -> io::Result<()> {
@@ -496,12 +431,6 @@ impl RetainedIoAdmission {
         }
         if let Some(owner) = &self.native_owner {
             pairs.push((owner.as_raw_fd(), NATIVE_OWNER_FD));
-        }
-        if let Some(verifier) = &self.native_history_verifier {
-            pairs.push((verifier.as_raw_fd(), NATIVE_HISTORY_VERIFIER_FD));
-        }
-        if let Some(permit) = &self.selected_replacement {
-            pairs.push((permit.as_raw_fd(), SELECTED_REPLACEMENT_PERMIT_FD));
         }
         if let Some(source) = &self.source_metadata {
             pairs.push((source.as_raw_fd(), SOURCE_DATA_FD));
@@ -643,8 +572,6 @@ pub(crate) fn prepare(keep: &[i32], command: &[String]) -> io::Result<RetainedIo
             REMOVAL_JOURNAL_FD,
             SOURCE_DATA_FD,
             NATIVE_OWNER_FD,
-            SELECTED_REPLACEMENT_PERMIT_FD,
-            NATIVE_HISTORY_VERIFIER_FD,
         ]
         .contains(fd)
     }) {
@@ -685,61 +612,12 @@ pub(crate) fn prepare(keep: &[i32], command: &[String]) -> io::Result<RetainedIo
     if (m.dev(), m.ino()) != facts.source || m.is_dir() != facts.directory {
         return Err(refused("Retained projection differs"));
     }
-    let verifier = if facts.native_history_verifier_sha256.is_some() {
-        let raw = unsafe { libc::fcntl(NATIVE_HISTORY_VERIFIER_FD, libc::F_DUPFD_CLOEXEC, 128) };
-        if raw < 0 {
-            return Err(io::Error::last_os_error());
-        }
-        Some(unsafe { File::from_raw_fd(raw) })
-    } else {
-        if unsafe { libc::fcntl(NATIVE_HISTORY_VERIFIER_FD, libc::F_GETFD) } >= 0
-            || io::Error::last_os_error().raw_os_error() != Some(libc::EBADF)
-        {
-            return Err(refused("Unexpected native history descriptor"));
-        }
-        None
-    };
-    check_history_verifier(
-        verifier.as_ref(),
-        facts.native_history_verifier_sha256,
-        facts.native_owner_sha256,
-    )?;
-    check_selected_replacement(&facts)?;
     prepare_removal(&facts, source, keep)?;
     Ok(RetainedIoCredentials {
         uid: facts.uid,
         gid: facts.gid,
         groups: facts.groups,
     })
-}
-
-fn check_selected_replacement(facts: &Token) -> io::Result<()> {
-    match facts.selected_replacement_sha256 {
-        Some(expected) => {
-            let raw =
-                unsafe { libc::fcntl(SELECTED_REPLACEMENT_PERMIT_FD, libc::F_DUPFD_CLOEXEC, 128) };
-            if raw < 0 {
-                return Err(io::Error::last_os_error());
-            }
-            let permit = unsafe { File::from_raw_fd(raw) };
-            let owner = facts
-                .native_owner_sha256
-                .ok_or_else(|| refused("Native source owner absent"))?;
-            if replacement_digest(&permit, facts.source, owner)? != expected {
-                return Err(refused(
-                    "Selected replacement permit differs from source token",
-                ));
-            }
-        }
-        None => {
-            if unsafe { libc::fcntl(SELECTED_REPLACEMENT_PERMIT_FD, libc::F_GETFD) } >= 0
-                || io::Error::last_os_error().raw_os_error() != Some(libc::EBADF)
-            {
-                return Err(refused("Unexpected selected replacement descriptor"));
-            }
-        }
-    }
-    Ok(())
 }
 
 fn prepare_removal(facts: &Token, source: File, keep: &[i32]) -> io::Result<()> {
@@ -778,19 +656,12 @@ fn prepare_removal(facts: &Token, source: File, keep: &[i32]) -> io::Result<()> 
         }
         drop(original);
         drop(source);
-        let mut retained = vec![
+        let retained = [
             REMOVAL_DIRECTORY_FD,
             REMOVAL_JOURNAL_FD,
             SOURCE_DATA_FD,
             NATIVE_OWNER_FD,
         ];
-        if facts.selected_replacement_sha256.is_some() {
-            retained.push(SELECTED_REPLACEMENT_PERMIT_FD);
-        }
-        if facts.native_history_verifier_sha256.is_some() {
-            retained.push(NATIVE_HISTORY_VERIFIER_FD);
-        }
-
         crate::landlock_shim::close_ambient_fds(&retained)?;
     } else {
         drop(source);
@@ -803,170 +674,4 @@ fn prepare_removal(facts: &Token, source: File, keep: &[i32]) -> io::Result<()> 
 pub(crate) fn drop_after_confinement(facts: RetainedIoCredentials) -> io::Result<()> {
     let RetainedIoCredentials { uid, gid, groups } = facts;
     super::capture::original::credentials::drop_authenticated(uid, gid, &groups)
-}
-
-/// Authenticate immutable anonymous root custody and exact source locus before
-/// transferring this descriptor across credential drop. Parsing alone grants nothing.
-fn replacement_digest(permit: &File, source: (u64, u64), owner: [u8; 32]) -> io::Result<[u8; 32]> {
-    check_token(permit)?;
-    let metadata = permit.metadata()?;
-    if metadata.len() == 0 || metadata.len() > MAX_PERMIT_BYTES as u64 {
-        return Err(refused("Selected replacement permit exceeds limit"));
-    }
-    // Positional reads leave the retained descriptor's offset untouched.
-    let length = usize::try_from(metadata.len()).map_err(io::Error::other)?;
-    let mut bytes = vec![0; length];
-    permit.read_exact_at(&mut bytes, 0)?;
-    let record = SelectedReplacementPermitRecord::decode(&bytes)?;
-    if record.source_root != [source.0, source.1] || record.source_owner != owner {
-        return Err(refused("Selected replacement source locus differs"));
-    }
-    Ok(Sha256::digest(bytes).into())
-}
-
-#[cfg(all(test, target_os = "linux"))]
-mod selected_permit_tests {
-    use super::*;
-    #[test]
-    fn source_bootstrap_fences_old_and_future_token_semantics() {
-        let mut token = Token {
-            schema: 2,
-            purpose: "retained-source-io".into(),
-            context_sha256: [1; 32],
-            uid: 1000,
-            gid: 1000,
-            groups: vec![1000],
-            target_uid: 1001,
-            source: (2, 3),
-            directory: false,
-            namespaces: vec![(4, 5); NAMESPACES.len()],
-            removal: None,
-            native_owner_sha256: None,
-            selected_replacement_sha256: None,
-            native_history_verifier_sha256: None,
-        };
-        token.validate().unwrap();
-        for schema in [0, 1, 3] {
-            token.schema = schema;
-            assert!(token.validate().is_err());
-        }
-        token.schema = 2;
-        token.selected_replacement_sha256 = Some([3; 32]);
-        assert!(
-            token.validate().is_err(),
-            "selected permit cannot accompany a plain leaf"
-        );
-    }
-
-    #[test]
-    fn actual_sealed_permit_digest_refuses_wrong_source_owner_and_nonsealed_file() {
-        tilo_test_env::require_capability!(
-            Chown,
-            tilo_test_env::switch_identity(65534),
-            "the sealed descriptor fixture is owned by root and another user"
-        );
-        let record = SelectedReplacementPermitRecord {
-            schema: 2,
-            purpose: runtime_portal::retained_replacement::SelectedReplacementPurpose::AtomicSave,
-            source_owner: [7; 32],
-            source_operation: "c62f9a00-cbf3-40d9-9f2a-1ead27b2a43f".into(),
-            person: [8; 32],
-            personal_room: "a7956913-f8dd-4e83-9b02-dd637c7cd522".into(),
-            editor_request_id: "b5b95a69-7dbd-4c9c-b0e1-b5e79f3c0bc8".into(),
-            editor_operation: "3fa5d30e-79b8-4bb4-839b-cfc18dfc2c24".into(),
-            editor_context_sha256: [9; 32],
-            package_sha256: "ab".repeat(32),
-            source_root: [12, 34],
-            parent: [12, 35],
-            selected: [12, 36],
-            components: vec![vec![0xff, b'x']],
-        };
-        let bytes = record.encode().unwrap();
-        let sealed = seal_bytes(&bytes).unwrap();
-        assert_eq!(
-            replacement_digest(&sealed, (12, 34), [7; 32]).unwrap(),
-            <[u8; 32]>::from(Sha256::digest(&bytes))
-        );
-        assert!(replacement_digest(&sealed, (12, 99), [7; 32]).is_err());
-        assert!(replacement_digest(&sealed, (12, 34), [6; 32]).is_err());
-        let mut unsealed = tempfile::tempfile().unwrap();
-        unsealed.write_all(&bytes).unwrap();
-        assert!(replacement_digest(&unsealed, (12, 34), [7; 32]).is_err());
-        let bad = seal_bytes(b"{}").unwrap();
-        assert!(replacement_digest(&bad, (12, 34), [7; 32]).is_err());
-    }
-}
-
-fn read_history_verifier(
-    file: &File,
-) -> io::Result<runtime_portal::retained_role::NativeHistoryVerifierRecord> {
-    check_token(file)?;
-    if file.metadata()?.len() == 0 || file.metadata()?.len() > 4096 {
-        return Err(refused("History verifier exceeds its closed bound"));
-    }
-    // Positioned reads leave the shared sealed descriptor offset untouched.
-    let length = usize::try_from(file.metadata()?.len()).map_err(io::Error::other)?;
-    let mut bytes = vec![0; length];
-    file.read_exact_at(&mut bytes, 0)?;
-    runtime_portal::retained_role::NativeHistoryVerifierRecord::decode(&bytes)
-}
-fn check_history_verifier(
-    file: Option<&File>,
-    expected: Option<[u8; 32]>,
-    owner: Option<[u8; 32]>,
-) -> io::Result<()> {
-    match (file, expected) {
-        (None, None) => Ok(()),
-        (Some(file), Some(expected)) => {
-            let claims = read_history_verifier(file)?;
-            if Some(claims.source_owner) != owner || claims.sha256()? != expected {
-                return Err(refused("History verifier differs from sealed admission"));
-            }
-            Ok(())
-        }
-        _ => Err(refused("History verifier presence changed")),
-    }
-}
-
-#[cfg(test)]
-mod history_verifier_tests {
-    use super::*;
-
-    #[test]
-    fn history_verifier_rejects_mutable_named_storage() {
-        let mut file = tempfile::tempfile().unwrap();
-        file.write_all(b"{}").unwrap();
-        assert!(read_history_verifier(&file).is_err());
-        assert!(check_history_verifier(Some(&file), None, None).is_err());
-        assert!(check_history_verifier(None, Some([1; 32]), Some([2; 32])).is_err());
-        assert!(check_history_verifier(None, None, None).is_ok());
-    }
-
-    #[cfg(all(target_os = "linux", feature = "managed-tree-test"))]
-    #[test]
-    fn root_sealed_verifier_binds_exact_source_and_certified_context() {
-        root().expect("owned root-native qualification is required");
-        let claims = runtime_portal::retained_role::NativeHistoryVerifierRecord {
-            schema: 1,
-            source_owner: [1; 32],
-            source_operation: "ae76c85a-a998-482d-b108-9235f9bfd69c".into(),
-            person: [2; 32],
-            personal_room: "a18ad342-9994-47dc-ac96-6b93f28e2b99".into(),
-            device: [3; 32],
-        };
-        let file = seal_bytes(&claims.encode().unwrap()).unwrap();
-        let digest = claims.sha256().unwrap();
-        assert!(check_history_verifier(Some(&file), Some(digest), Some([1; 32])).is_ok());
-        assert!(check_history_verifier(Some(&file), Some(digest), Some([4; 32])).is_err());
-        let mut other_workspace = claims.clone();
-        other_workspace.personal_room = "a18ad342-9994-47dc-ac96-6b93f28e2b98".into();
-        let other = seal_bytes(&other_workspace.encode().unwrap()).unwrap();
-        assert!(check_history_verifier(Some(&other), Some(digest), Some([1; 32])).is_err());
-        let mut other_device = claims.clone();
-        other_device.device = [5; 32];
-        let other = seal_bytes(&other_device.encode().unwrap()).unwrap();
-        assert!(check_history_verifier(Some(&other), Some(digest), Some([1; 32])).is_err());
-        let oversized = seal_bytes(&vec![b'x'; 4097]).unwrap();
-        assert!(read_history_verifier(&oversized).is_err());
-    }
 }
