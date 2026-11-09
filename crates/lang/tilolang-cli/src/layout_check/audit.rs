@@ -51,6 +51,9 @@ const LINE: &str = "Row";
 /// A heading's widget: the band a section goes by, over what the section holds.
 const HEADING: &str = "SectionHeader";
 
+/// A page's widget: the readable column a screen's content stands on.
+const PAGE: &str = "Page";
+
 /// The shell's way back, and its sidebar toggle: the two controls a bar navigates with.
 const BACK: &str = "nav-shell-back";
 const SIDEBAR_TOGGLE: &str = "nav-shell-sidebar";
@@ -220,6 +223,20 @@ fn held(node: &InspectionNode) -> Option<Rect> {
         .map(|child| rect(child.rect))
         .filter(|r| has_area(*r))
         .reduce(|a, b| a.union(b))
+}
+
+/// The first page a node holds, at any depth through what it lays out: a page given a column of
+/// its own inside another page.
+fn held_page(node: &InspectionNode) -> Option<&InspectionNode> {
+    node.children
+        .iter()
+        .filter(|child| !floats(&child.widget) && !floats_in_window(&child.widget))
+        .find_map(|child| {
+            if child.widget == PAGE {
+                return Some(child);
+            }
+            held_page(child)
+        })
 }
 
 /// Whether a node is text itself.
@@ -510,6 +527,7 @@ impl Walk<'_> {
         if geometric {
             self.pixels(node, keys, own);
             self.bare_row(node, keys, own);
+            self.page_in_page(node, keys);
             self.lone_door(node, keys, above);
             self.empty_heading(node, keys, own);
             self.empty_surface(node, keys, own);
@@ -664,6 +682,28 @@ impl Walk<'_> {
                 node.widget,
                 size(own),
                 own.height() / window * 100.0
+            ),
+        );
+    }
+
+    /// A page standing inside a page: the readable column is one thing, its gutter counted
+    /// once, so a page given a column of its own inside one counts the gutter twice — what it
+    /// holds stands inset from the rows beside it and narrower than them, as if the column had
+    /// moved for that one row.
+    fn page_in_page(&mut self, node: &InspectionNode, keys: &[String]) {
+        if node.widget != PAGE {
+            return;
+        }
+        let Some(inner) = held_page(node) else {
+            return;
+        };
+        self.push(
+            Kind::PageInPage,
+            inner,
+            keys,
+            format!(
+                "it is a page inside the page it stands in: its content is {:.0} narrower than the column's, inset by the page's gutter a second time",
+                rect(node.rect).width() - rect(inner.rect).width()
             ),
         );
     }

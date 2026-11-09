@@ -14,7 +14,6 @@
 use chrono::Datelike as _;
 use vello::kurbo::Rect;
 
-use crate::chrome::nav_row_height;
 use crate::component::Component;
 use crate::format;
 use crate::paint::PaintCtx;
@@ -214,7 +213,8 @@ pub fn day_break_indices(days: impl IntoIterator<Item = ConversationDay>) -> Vec
         .collect()
 }
 
-/// The day divider: a caption centred in a band, ruled out to both sides.
+/// The day divider: a caption centred in a band, ruled out to both sides
+/// ([`super::band`], the band every conversation's divider stands in).
 ///
 /// The band is a list row tall, so a divider sits in the same rhythm as the
 /// lines it separates, and the rules stop short of the text at an `s3` gap so
@@ -232,58 +232,23 @@ impl<'a> DayDividerFace<'a> {
     /// The height a divider takes: one list row, at every text scale.
     #[must_use]
     pub fn height(theme: &Theme) -> f64 {
-        nav_row_height(theme)
+        super::band::height(theme)
     }
 
     /// Paint the divider across `band`, its rules running from `leading` to
     /// `trailing` (the message column's edges, not the window's).
     pub fn paint(&self, paint: &mut PaintCtx<'_>, band: Rect, leading: f64, trailing: f64) {
         let theme = paint.theme;
-        let style = theme.text(TextRole::Caption);
-        let gap = f64::from(theme.tokens.spacing.s3);
-        let ground = theme.tokens.colors.surfaces.content;
-        let width = f64::from(paint.text.measure_style(self.label, None, &style).0);
-        let centre = band.center().x;
-        let left_edge = centre - width / 2.0 - gap;
-        let right_edge = centre + width / 2.0 + gap;
-        let rule_y = band.center().y;
-        if left_edge > leading {
-            crate::surface::separator(
-                paint.scene,
-                paint.transform,
-                leading,
-                left_edge,
-                rule_y,
-                0.0,
-                ground,
-            );
-        }
-        if trailing > right_edge {
-            crate::surface::separator(
-                paint.scene,
-                paint.transform,
-                right_edge,
-                trailing,
-                rule_y,
-                0.0,
-                ground,
-            );
-        }
-        if self.label.is_empty() {
-            return;
-        }
-        // A label wider than the band (a long date at 1.5× in a narrow window)
-        // is elided rather than drawn over the column's edges.
-        let room = crate::num::f32_of_f64((trailing - leading).max(0.0));
-        let shown = paint.text.elide_to_width_style(self.label, room, &style);
-        let shown_w = f64::from(paint.text.measure_style(&shown, None, &style).0);
-        paint.text_role_in_band(
-            &shown,
-            TextRole::Caption,
-            theme.text_dim,
-            centre - shown_w / 2.0,
+        super::band::paint(
+            paint,
             band,
-            None,
+            leading,
+            trailing,
+            self.label,
+            super::band::Ink {
+                label: theme.text_dim,
+                rule: theme.tokens.colors.surfaces.content,
+            },
         );
     }
 }
