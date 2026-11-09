@@ -4716,3 +4716,48 @@ pointers = { vm-host = "/target/publish/vm-host/receipt.json" }
 id_token = ["registry.tilo.so"]
 requires = ["arch=any"]
 on = ["dispatch", "stable"]
+
+# The front door of hosted Tilo (os/containers/tilo-front-door): the MCP endpoint behind
+# https://mcp.tilo.sh, with OAuth for agents and routing to the workspace's host. It is
+# configured entirely by its environment, so the deployment's values never enter the image;
+# it is built here, tested in a micro-VM against a real start, and published on dispatch as
+# dev-<commit> for the infra repository's deployment to pin, signed on stable.
+[[check]]
+name = "image-front-door"
+build = { containerfile = "os/containers/tilo-front-door/Containerfile", context = "." }
+requires = ["arch=x86_64"]
+timeout_secs = 7200
+default = false
+
+[[check]]
+name = "test-image-front-door"
+image = "registry.tilo.so/tilo/buildah@sha256:07e637ad7a1df37f44afea8287935b350224ac193d63e5cc96debb50a366853c"
+run = "bash os/containers/tilo-front-door/test-image.sh /target/images/image-front-door/image.oci.tar"
+needs = ["image-front-door"]
+requires = ["arch=x86_64"]
+isolation = "vm"
+timeout_secs = 1800
+default = false
+
+[[check]]
+name = "sign-front-door"
+image = "registry.tilo.so/tilo/skopeo@sha256:7e735527d9d64c7456fc82d7f954c380b4a5dd1a8173115ce2ed7b3442ef36e0"
+run = "install -d /target/publish/front-door\ncp /target/images/image-front-door/image.oci.tar /target/images/image-front-door/digest /target/publish/front-door/\nbash tools/ci/publish/oci-sign.sh registry.tilo.so/tilo/front-door /target/publish/front-door"
+needs = ["image-front-door", "test-image-front-door", "signing-tools"]
+outputs = ["/target/publish/front-door/payload.json", "/target/publish/front-door/signature", "/target/publish/front-door/dry-run.pub"]
+id_token = ["sts.amazonaws.com"]
+env = { COSIGN_KEY_REF = "awskms:///arn:aws:kms:us-east-1:125650147312:alias/tilo-release-signing", AWS_SIGNING_ROLE_ARN = "arn:aws:iam::125650147312:role/TiloTReleaseSigner", TILO_SIGNING_AUDIENCE = "sts.amazonaws.com" }
+requires = ["arch=any"]
+on = ["stable"]
+
+[[check]]
+name = "publish-front-door"
+image = "registry.tilo.so/tilo/skopeo@sha256:7e735527d9d64c7456fc82d7f954c380b4a5dd1a8173115ce2ed7b3442ef36e0"
+run = "install -d /target/publish/front-door\ncp /target/images/image-front-door/image.oci.tar /target/images/image-front-door/digest /target/publish/front-door/\nbash tools/ci/publish/oci-publish.sh any registry.tilo.so/tilo/front-door /target/publish/front-door 'dev:dev-{commit}' 'release:sha-{commit}'"
+needs = ["image-front-door", "test-image-front-door", "signing-tools"]
+optional_needs = ["sign-front-door"]
+outputs = ["/target/publish/front-door/receipt.json"]
+pointers = { front-door = "/target/publish/front-door/receipt.json" }
+id_token = ["registry.tilo.so"]
+requires = ["arch=any"]
+on = ["dispatch", "stable"]

@@ -84,3 +84,12 @@ for anyone who asks, and run its workspaces' records (its agents, or
   `grant` (the root's agent-grant certificate for `grant_key`), each
   canonical encoding, base64url, as a form to `return`; or `pending` and
   `decision=deny`.
+
+## Image
+
+`os/containers/tilo-front-door` builds the binary into the image the
+deployment runs, `registry.tilo.so/tilo/front-door` (`dev-<commit>` from main's
+dispatch, signed releases from stable): uid/gid 65532, plain HTTP on 8080/tcp,
+its state on the `/state` volume, and nothing else written, so the root
+filesystem can be read-only. Every variable above is the deployment's; the
+image carries none of them. `GET /health` answers `{"ok":true}`.

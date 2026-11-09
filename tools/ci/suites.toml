@@ -1610,6 +1610,10 @@ suite = "os/containers/tilo-vm-host/test-image.sh"
 reason = "inspects the built VM host image with buildah as root, so it needs the archive image-vm-host writes and a micro-VM step"
 
 [[unrequired]]
+suite = "os/containers/tilo-front-door/test-image.sh"
+reason = "starts the built front door image with buildah as root in a loopback network, so it needs the archive image-front-door writes and a micro-VM step"
+
+[[unrequired]]
 suite = "crates/session/tilo-ntfs-helper/tests/test_stage_install.py"
 reason = "needs a built staging binary (TILO_NTFS_STAGING_BINARY)"
 

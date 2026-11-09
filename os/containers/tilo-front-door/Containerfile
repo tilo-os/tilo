@@ -1,0 +1,48 @@
+# syntax=docker/dockerfile:1.7
+# The front door of hosted Tilo (crates/hosting/tilo-front-door): the MCP
+# endpoint an agent adds with `claude mcp add --transport http tilo
+# https://mcp.tilo.sh`. It runs beside the relay, behind the relay's Caddy,
+# which terminates TLS; the door itself serves plain HTTP.
+#
+# Everything it is configured with comes from the environment (README.md), so
+# a deployment changes how the door runs without a new image. It keeps its
+# clients and grants in one file on a volume and writes nothing else, so the
+# container runs as a non-root user on a read-only root filesystem.
+
+FROM docker.io/library/rust:1.97.1-bookworm@sha256:0e2bcaef56d041a486784e54104a81aebe0da44bd03019bd70bc0401e42e4a97 AS builder
+
+WORKDIR /workspace
+COPY . .
+
+RUN --mount=type=cache,target=/usr/local/cargo/registry,sharing=locked \
+    --mount=type=cache,target=/workspace/target,sharing=locked \
+    cargo build --locked --release -p tilo-front-door --bin tilo-front-door \
+    && install -D -m 0755 target/release/tilo-front-door /out/tilo-front-door \
+    && install -d -m 0700 -o 65532 -g 65532 /out/state
+
+# Distroless: a C library and the certificates, nothing to run in place of the
+# door, and the nonroot user (65532) as the image's own user.
+FROM gcr.io/distroless/cc-debian12:nonroot@sha256:9dac0a79194e45a7da0158a9c6da57b217585af0786db3845d1f0ec1a0dd182f AS runtime
+
+ARG SOURCE_REVISION
+LABEL org.opencontainers.image.title="Tilo front door" \
+      org.opencontainers.image.description="The MCP front door of hosted Tilo: OAuth for agents and routing to their workspaces" \
+      org.opencontainers.image.source="https://code.tilo.so/tilo/tilo" \
+      org.opencontainers.image.revision="${SOURCE_REVISION}"
+
+COPY --from=builder --chown=65532:65532 /out/tilo-front-door /usr/local/bin/tilo-front-door
+# Tilo's binaries read the trust bundle from one fixed path
+# (crates/system/tilo-native-certs), which distroless does not carry; the door
+# verifies the hosts it dials against it.
+COPY --from=builder --chown=65532:65532 /etc/ssl/certs/ca-certificates.crt /etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem
+# The volume the deployment mounts; the owner admits a run without one.
+COPY --from=builder --chown=65532:65532 /out/state/ /state/
+
+USER 65532:65532
+# The clients and grants, and nothing else: a read-only root filesystem needs
+# no writable path beside it.
+VOLUME ["/state"]
+# Plain HTTP. TLS ends at Cloudflare and at the Caddy in front of the door.
+EXPOSE 8080
+
+ENTRYPOINT ["/usr/local/bin/tilo-front-door"]
