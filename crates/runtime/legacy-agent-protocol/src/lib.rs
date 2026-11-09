@@ -34,6 +34,7 @@ use thiserror::Error;
 use wire_frame::{FrameError, Framing};
 
 pub mod client;
+pub mod files;
 pub mod link;
 #[cfg(target_os = "linux")]
 pub mod vsock;
@@ -123,6 +124,12 @@ pub enum HostMessage {
     Stdin(Vec<u8>),
     CloseStdin,
     Signal(Signal),
+    /// The complete set of directories the guest should have mounted over
+    /// vsock ([`files`]), for a VM without virtio-fs. Missing ones are
+    /// unmounted.
+    MountFiles {
+        shares: Vec<files::FileShare>,
+    },
 }
 
 /// Guest → host.
@@ -131,13 +138,23 @@ pub enum GuestMessage {
     Hello(AgentHello),
     Health(Health),
     Running(Vec<RunningApp>),
-    Mounted { shares: Vec<GuestShare> },
+    Mounted {
+        shares: Vec<GuestShare>,
+    },
     InstalledApps(Vec<InstalledApp>),
-    Started { pid: u32 },
+    Started {
+        pid: u32,
+    },
     Stdout(Vec<u8>),
     Stderr(Vec<u8>),
     Exited(ExitStatus),
-    Error { message: String },
+    Error {
+        message: String,
+    },
+    /// The paths mounted over vsock after a [`HostMessage::MountFiles`].
+    FilesMounted {
+        paths: Vec<String>,
+    },
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -361,6 +378,28 @@ impl GuestShare {
                 .iter()
                 .skip(index.saturating_add(1))
                 .any(|other| other.tag == share.tag || other.path == share.path)
+            {
+                return Err(ProtocolError::Invalid("duplicate share"));
+            }
+        }
+        Ok(())
+    }
+}
+
+impl files::FileShare {
+    /// Validates a whole desired set: each path allowed, none twice.
+    pub fn validate_set(shares: &[Self]) -> Result<(), ProtocolError> {
+        if shares.len() > MAX_SHARES {
+            return Err(ProtocolError::Invalid("share count"));
+        }
+        for (index, share) in shares.iter().enumerate() {
+            if !share_path_allowed(Path::new(&share.path)) {
+                return Err(ProtocolError::Invalid("share path"));
+            }
+            if shares
+                .iter()
+                .skip(index.saturating_add(1))
+                .any(|other| other.path == share.path || other.port == share.port)
             {
                 return Err(ProtocolError::Invalid("duplicate share"));
             }

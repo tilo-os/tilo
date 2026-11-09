@@ -29,6 +29,8 @@ pub struct Agent {
     boot_id: String,
     running: Mutex<BTreeMap<u32, RunningApp>>,
     shares: Mutex<Vec<GuestShare>>,
+    #[cfg(target_os = "linux")]
+    files: Mutex<crate::remote_fs::Mounts>,
     xwayland: Mutex<Option<Child>>,
 }
 
@@ -42,6 +44,8 @@ impl Agent {
             boot_id,
             running: Mutex::new(BTreeMap::new()),
             shares: Mutex::new(Vec::new()),
+            #[cfg(target_os = "linux")]
+            files: Mutex::new(crate::remote_fs::Mounts::default()),
             xwayland: Mutex::new(None),
         }
     }
@@ -81,6 +85,7 @@ impl Agent {
                 GuestMessage::Running(self.running.lock_recover().values().cloned().collect())
             }
             HostMessage::Mount { shares } => self.mount(&shares),
+            HostMessage::MountFiles { shares } => self.mount_files(&shares),
             HostMessage::InstalledApps => GuestMessage::InstalledApps(crate::apps::installed(
                 &crate::apps::export_dirs(&self.user.home),
             )),
@@ -128,6 +133,39 @@ impl Agent {
             GuestMessage::Error {
                 message: failures.join("; "),
             }
+        }
+    }
+
+    /// Mount the host's directories over vsock, as the guest user's files.
+    fn mount_files(&self, desired: &[legacy_agent_protocol::files::FileShare]) -> GuestMessage {
+        if let Err(error) = legacy_agent_protocol::files::FileShare::validate_set(desired) {
+            return GuestMessage::Error {
+                message: error.to_string(),
+            };
+        }
+        #[cfg(target_os = "linux")]
+        {
+            let connect = |port| {
+                legacy_agent_protocol::vsock::VsockStream::connect(
+                    legacy_agent_protocol::HOST_CID,
+                    port,
+                )
+            };
+            let (paths, failures) =
+                self.files
+                    .lock_recover()
+                    .apply(desired, connect, self.user.uid, self.user.gid);
+            if failures.is_empty() {
+                GuestMessage::FilesMounted { paths }
+            } else {
+                GuestMessage::Error {
+                    message: failures.join("; "),
+                }
+            }
+        }
+        #[cfg(not(target_os = "linux"))]
+        GuestMessage::Error {
+            message: "shares over vsock need a Linux guest".to_string(),
         }
     }
 
