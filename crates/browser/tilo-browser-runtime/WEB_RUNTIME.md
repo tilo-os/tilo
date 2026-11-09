@@ -170,9 +170,9 @@ agent's actions. Everything lands under `--out` (`shots/`, `video/`, and the
 run's log), and it exits non-zero naming the step that broke.
 
 ```sh
-rcargo --fetch look/agent-shell exec bash -lc \
-  'CHROME=/usr/lib64/chromium-browser/chromium-browser \
-   node crates/browser/tilo-web-desktop/scripts/agent-shell.mjs --build'
+# on a build machine; fetch the run's `--out` directory back after
+CHROME=/usr/lib64/chromium-browser/chromium-browser \
+  node crates/browser/tilo-web-desktop/scripts/agent-shell.mjs --build
 ```
 
 `--build` builds the relay (features `web,agents`), the CLI and the bundle;

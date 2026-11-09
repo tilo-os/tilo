@@ -41,7 +41,8 @@
 //             target/release, below $CARGO_TARGET_DIR)
 //   --tilo    the tilo CLI (the same directories)
 //   --out     the shots, recordings and the run's logs (default:
-//             $CARGO_TARGET_DIR/look/agent-shell, which `rcargo --fetch` mirrors)
+//             $CARGO_TARGET_DIR/look/agent-shell, which a build machine copies
+//             back)
 //   --work    what the run keeps for itself: certificates, the host's state,
 //             the agent's device key, the throwaway HOMEs (default:
 //             $CARGO_TARGET_DIR/agent-shell-work, which is not fetched)
@@ -51,11 +52,10 @@
 // Exits non-zero when the flow breaks, saying where; what the product does not
 // do yet is listed, and does not fail the run.
 //
-// On the rcargo builder, one command; only the shots are fetched back:
+// On a build machine, one command; only the shots are fetched back:
 //
-//   rcargo --fetch look/agent-shell exec bash -lc \
-//     'CHROME=/usr/lib64/chromium-browser/chromium-browser \
-//      node crates/browser/tilo-web-desktop/scripts/agent-shell.mjs --build'
+//   CHROME=/usr/lib64/chromium-browser/chromium-browser \
+//     node crates/browser/tilo-web-desktop/scripts/agent-shell.mjs --build
 //
 // then target/look/agent-shell/shots and .../video hold them. Locally, with a
 // bundle and the two binaries built, run the same script with --bundle.
@@ -615,7 +615,7 @@ async function pinOverlay(tab) {
 // ---------------------------------------------------------------------------
 // The recording: CDP's screencast frames, held at the output rate for the time
 // each was on screen, muxed with ffmpeg (or gst-launch, where a builder has no
-// ffmpeg: the rcargo build container has vp8enc and webmmux).
+// ffmpeg: the build container has vp8enc and webmmux).
 
 const FPS = 8;
 async function record(browser, tab, name, body) {

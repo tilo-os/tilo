@@ -194,10 +194,9 @@ Against the targets:
 ## Reproducing
 
 ```sh
-# on the builder, from a worktree of main
-rcargo --fetch htmlrenderer/measure exec tools/web/html-renderer/all.sh
-# the desktop bundle's start module, with `dom` off
-rcargo --fetch htmlrenderer/size exec tools/web/html-renderer/size.sh
+# on a build machine, from a worktree of main; fetch the results back after
+tools/web/html-renderer/all.sh   # the desktop bundle's start module, with `dom` off
+tools/web/html-renderer/size.sh
 ```
 
 The bundle lands in `$CARGO_TARGET_DIR/htmlrenderer/bundle`; open
@@ -572,9 +571,10 @@ layouts.
 ## Reproducing
 
 ```sh
-# on the builder, from a worktree of branch spike/html-renderer
-rcargo --fetch htmlrenderer/measure exec tools/web/html-renderer/all.sh   # build + measure
-rcargo --fetch htmlrenderer/attribution exec tools/web/html-renderer/attribute.sh
+# on a build machine, from a worktree of branch spike/html-renderer; fetch the
+# results back after
+tools/web/html-renderer/all.sh     # build + measure
+tools/web/html-renderer/attribute.sh
 ```
 
 The bundle lands in `$CARGO_TARGET_DIR/htmlrenderer/bundle`. Open
