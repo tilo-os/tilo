@@ -51,6 +51,10 @@ impl Layout for PageLayout {
         "Page"
     }
 
+    fn readable_column(&self) -> Option<Length> {
+        self.measure
+    }
+
     fn container(&self, resolved: &Resolved, lead: f32) -> Style {
         let gutter = length(self.gutter(resolved));
         // A page that fills its pane is a surface that lays out its own parts (a board's lanes,
@@ -182,10 +186,11 @@ impl Arranged<PageLayout> {
         self
     }
 
-    /// The width this page keeps its content at: none for a page across the column (`full`).
-    #[must_use]
-    pub const fn readable_measure(&self) -> Option<Length> {
-        self.layout.measure
+    /// Keep what this page holds at `measure`: none to stand across its column, as a page that
+    /// fills does. A column whose content says the column it is read in takes it on again as
+    /// that content changes.
+    pub const fn set_readable_measure(&mut self, measure: Option<Length>) {
+        self.layout.measure = measure;
     }
 }
 

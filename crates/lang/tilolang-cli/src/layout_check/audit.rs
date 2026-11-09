@@ -494,6 +494,28 @@ impl Walk<'_> {
         }
     }
 
+    /// What is wrong with `node`'s own box, before what it holds is read: `above` the widget it
+    /// stands in, `under_page` the page it scrolls in, when one is open over it.
+    fn own_box(
+        &mut self,
+        node: &InspectionNode,
+        keys: &[String],
+        own: Rect,
+        above: &str,
+        under_page: Option<Rect>,
+    ) {
+        self.pixels(node, keys, own);
+        self.bare_row(node, keys, own);
+        self.page_in_page(node, keys);
+        self.docked_column(node, keys);
+        self.lone_door(node, keys, above);
+        self.empty_heading(node, keys, own);
+        self.empty_surface(node, keys, own);
+        if under_page.is_some() {
+            self.nested_scroller(node, keys, own);
+        }
+    }
+
     fn visit(
         &mut self,
         node: &InspectionNode,
@@ -527,15 +549,7 @@ impl Walk<'_> {
         let was_across = self.across;
         let was_off_pixel = self.off_pixel;
         if geometric {
-            self.pixels(node, keys, own);
-            self.bare_row(node, keys, own);
-            self.page_in_page(node, keys);
-            self.lone_door(node, keys, above);
-            self.empty_heading(node, keys, own);
-            self.empty_surface(node, keys, own);
-            if under_page.is_some() {
-                self.nested_scroller(node, keys, own);
-            }
+            self.own_box(node, keys, own, above, under_page);
         }
         if geometric && !hangs(&node.widget) {
             self.reach(node, keys, own, parent, scroller);
@@ -684,6 +698,51 @@ impl Walk<'_> {
                 node.widget,
                 size(own),
                 own.height() / window * 100.0
+            ),
+        );
+    }
+
+    /// A bar docked at the foot of a column stands in the column the content over it is read
+    /// at, as wide as that column and its leading edge where the column's is: what adds to a
+    /// list is an entry of the list, not a band across the window beside it.
+    fn docked_column(&mut self, node: &InspectionNode, keys: &[String]) {
+        if node.widget != "Docked" {
+            return;
+        }
+        let Some(foot) = node.children.last().filter(|child| child.widget == PAGE) else {
+            return;
+        };
+        let Some(content) = node.children.first() else {
+            return;
+        };
+        // The column the content is read at is the one its page keeps, where it holds a page:
+        // content that fills its column fills the bar's too.
+        let (Some(column_page), Some(bar)) = (held_page(content), held(foot)) else {
+            return;
+        };
+        let Some(column) = held(column_page) else {
+            return;
+        };
+        // The content stands in the room a scroller keeps for its bar, which the bar at the
+        // foot does not: a column the measure bounds centres in it, half that room to the other
+        // side, and a column as wide as the viewport keeps its whole width of it at the
+        // trailing edge.
+        let lane = (rect(content.rect).width() - rect(column_page.rect).width()).max(0.0);
+        if (bar.width() - column.width()).abs() <= lane + 1.0
+            && (bar.x0 - column.x0).abs() <= lane / 2.0 + 1.0
+        {
+            return;
+        }
+        self.push(
+            Kind::DockedColumn,
+            node,
+            keys,
+            format!(
+                "the bar at the column's foot stands {:.0} wide from x {:.0}, where the content over it is read {:.0} wide from x {:.0}: an entry that adds to the column stands in the column, not across the window beside it",
+                bar.width(),
+                bar.x0,
+                column.width(),
+                column.x0
             ),
         );
     }

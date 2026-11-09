@@ -1634,6 +1634,17 @@ impl Decorator for DescribedList {
         "DescribedList"
     }
 
+    /// The column its rows are read in: a list whose rows keep the readable measure says so, so
+    /// a bar at the foot of the column stands in it.
+    fn readable_column(&self) -> Option<Length> {
+        let Face {
+            page_column,
+            at_measure,
+            ..
+        } = self.face;
+        (page_column && at_measure).then_some(Length::Rem(MEASURE_REM))
+    }
+
     /// The list's change is the described list's: it adds no structure of its own, so rows
     /// the list builds anew stay mounted in place and the window keeps its tree.
     fn take_structure_change(&mut self) -> crate::widget::StructureChange {

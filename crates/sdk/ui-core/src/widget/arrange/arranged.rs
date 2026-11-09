@@ -14,7 +14,7 @@ use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, Vec2};
 
 use super::Side;
-use super::units::{At, Fit};
+use super::units::{At, Fit, Length};
 use crate::interaction::InteractionEnvironment;
 use crate::presence::PresenceCtx;
 use crate::text_render::TextRenderer;
@@ -172,6 +172,12 @@ pub(super) fn lead_container(mut style: Style, lead: f32, leading: Side) -> Styl
 /// How a primitive arranges its slots. See the module docs.
 pub trait Layout {
     fn name(&self) -> &'static str;
+
+    /// The readable column this arrangement keeps what it holds in, when it is one: a page's
+    /// measure, which a bar at the foot of the column stands in too.
+    fn readable_column(&self) -> Option<Length> {
+        None
+    }
 
     /// The container's style for the current arrangement, `lead` pixels of gutter reserved
     /// before what it holds.
@@ -810,6 +816,10 @@ impl<L: Layout + 'static> Widget for Arranged<L> {
 
     fn name(&self) -> &str {
         self.layout.name()
+    }
+
+    fn readable_column(&self) -> Option<Length> {
+        self.layout.readable_column()
     }
 
     fn test_id(&self) -> Option<&str> {

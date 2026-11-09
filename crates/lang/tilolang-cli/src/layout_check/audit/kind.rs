@@ -119,10 +119,13 @@ pub enum Kind {
     /// surface of its own. Whatever draws them — a widget or the bar itself — a person reads one
     /// string of letters, not two.
     TextOnText,
+    /// A bar docked at the foot of a column standing wider than the column the content above it
+    /// is read at: an entry that adds to a list spans the window beside the list it adds to.
+    DockedColumn,
 }
 
 impl Kind {
-    pub const ALL: [Self; 38] = [
+    pub const ALL: [Self; 39] = [
         Self::Overflow,
         Self::ClippedText,
         Self::Overlap,
@@ -161,6 +164,7 @@ impl Kind {
         Self::PageInPage,
         Self::UnmarkedBarPrimary,
         Self::TextOnText,
+        Self::DockedColumn,
     ];
 
     pub fn name(self) -> &'static str {
@@ -203,6 +207,7 @@ impl Kind {
             Self::PageInPage => "page-in-page",
             Self::UnmarkedBarPrimary => "unmarked-bar-primary",
             Self::TextOnText => "text-on-text",
+            Self::DockedColumn => "docked-column",
         }
     }
 }

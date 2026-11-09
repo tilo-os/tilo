@@ -479,6 +479,9 @@ decorator_trait! {
         fn for_each_child_in_clip(visitor: &mut dyn FnMut(&dyn Widget));
         fn for_each_hosted_child(visitor: &mut dyn FnMut(&dyn Widget));
         fn name() -> &str;
+        /// A decorator stands where its inner widget does, so the column its content is read in
+        /// is the inner widget's: a bar docked under a pane around a page still finds the page.
+        fn readable_column() -> Option<crate::widget::arrange::Length>;
         fn test_id() -> Option<&str>;
         fn window_slot(id: String) -> Option<crate::window_toolbar::ToolbarAction>;
         fn window_slot_barrier() -> bool;

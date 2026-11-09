@@ -121,7 +121,9 @@ fn every_kind_of_broken_layout_is_caught_at_the_view_that_breaks_it() {
             | Kind::NestedScroller
             | Kind::RepeatedRowTitle
             // The fixture's cards each hold what they are given, so none stands empty.
-            | Kind::EmptySurface => "(no view)",
+            | Kind::EmptySurface
+            // No window in this fixture docks a bar at the foot of a page column.
+            | Kind::DockedColumn => "(no view)",
         };
         assert_eq!(
             finding.view,

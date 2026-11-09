@@ -806,7 +806,7 @@ view conversation(t: Thread) {
     state draft: Text
     ui.NavShell(content_kind: .page, title: t.subject) {
         content: {
-            ui.Docked(page_column: true) {
+            ui.Docked {
                 foot: {
                     row {
                         ui.TextInput(bind: draft, placeholder: "Reply to {t.subject}", fill) {

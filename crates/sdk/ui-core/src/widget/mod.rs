@@ -1650,6 +1650,14 @@ pub trait Widget {
         vec![]
     }
 
+    /// The readable column this widget keeps what it shows in, when it is one: a page's measure,
+    /// a list that reads its rows at it. A bar docked at the foot of a column stands in that
+    /// column, found wherever the column is in what stands above it, so it says the column it is
+    /// read in rather than one its wrapper is asked about.
+    fn readable_column(&self) -> Option<crate::widget::arrange::Length> {
+        None
+    }
+
     fn name(&self) -> &str;
     /// Stable id for the e2e test harness; `None` falls back to a path-based
     /// key. Must be unique across the live tree — the registry resolves on

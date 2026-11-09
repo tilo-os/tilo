@@ -4,6 +4,10 @@
 use super::*;
 use ui::a11y::{AccessNode, Role};
 
+fn node_of(widget: &str, id: &str, rect: [f64; 4]) -> InspectionNode {
+    node(widget, id, rect, None)
+}
+
 fn node(widget: &str, id: &str, rect: [f64; 4], role: Option<Role>) -> InspectionNode {
     InspectionNode {
         path: id.to_owned(),
@@ -290,6 +294,66 @@ fn a_page_inside_a_page_is_caught() {
             "window".to_owned()
         ]],
         "a page inside the column's row is the gutter counted twice"
+    );
+}
+
+/// A bar docked at the foot of a column stands in the column the content over it is read at:
+/// an entry that adds to a list is as wide as the list, its leading edge where the list's is.
+/// A bar across the window beside the list it adds to is the defect, and one standing on the
+/// column is not, the room the content's scroller keeps for its bar aside.
+#[test]
+fn a_docked_bar_wider_than_the_column_over_it_is_caught() {
+    // The Docked's content as a scroller `scroll` wide holding a page `page` wide, its list
+    // `list` wide, and the bar of `bar` at its foot.
+    let docked = |scroll: [f64; 4], page: [f64; 4], list: [f64; 4], bar: [f64; 4]| {
+        let mut page = node_of("Page", "page", page);
+        page.children.push(node_of("DescribedList", "list", list));
+        let mut scroll = node_of("Scrollable", "scroll", scroll);
+        scroll.children.push(page);
+        let mut foot = node_of("Page", "foot", [280.0, 660.0, 1000.0, 96.0]);
+        foot.children.push(node_of("Stack", "bar", bar));
+        let mut column = node_of("Docked", "docked", [280.0, 0.0, 1000.0, 756.0]);
+        column.children.push(scroll);
+        column.children.push(foot);
+        stack_node("window", [0.0, 0.0, 1280.0, 756.0], vec![column])
+    };
+    let found = |root: &InspectionNode| {
+        inspect(root, (1280, 756), None, 1.0)
+            .into_iter()
+            .filter(|problem| problem.kind == Kind::DockedColumn)
+            .map(|problem| problem.keys)
+            .collect::<Vec<_>>()
+    };
+    let read_at_the_measure = |bar: [f64; 4]| {
+        docked(
+            [280.0, 0.0, 1000.0, 648.0],
+            [280.0, 0.0, 984.0, 835.0],
+            [492.0, 48.0, 560.0, 739.0],
+            bar,
+        )
+    };
+    assert_eq!(
+        found(&read_at_the_measure([328.0, 676.0, 904.0, 32.0])),
+        vec![vec!["docked".to_owned(), "window".to_owned()]],
+        "a bar across the window beside the column is the defect"
+    );
+    assert!(
+        found(&read_at_the_measure([500.0, 676.0, 560.0, 32.0])).is_empty(),
+        "a bar standing on the column adds to it in its own column"
+    );
+    assert!(
+        found(&read_at_the_measure([492.0, 676.0, 560.0, 32.0])).is_empty(),
+        "and one the scroller's bar puts a few pixels in still stands on it"
+    );
+    assert!(
+        found(&docked(
+            [0.0, 0.0, 272.0, 648.0],
+            [0.0, 0.0, 256.0, 835.0],
+            [0.0, 48.0, 256.0, 739.0],
+            [8.0, 676.0, 272.0, 32.0],
+        ))
+        .is_empty(),
+        "the room a scroller keeps for its bar is no misalignment: the column keeps it at its trailing edge"
     );
 }
 
