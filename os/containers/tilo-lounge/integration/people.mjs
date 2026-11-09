@@ -925,25 +925,20 @@ try {
   // the gesture that followed. A window on a strip that fits is at home, the
   // offset in both reads.
   //
-  // Two reads that agree are not enough by themselves: a glide drawing a few
-  // frames a second moves its pan between any two reads close together, and
-  // the reads can land in the gaps between frames. A pan that stayed the same
-  // across a frame the desk actually presented is at rest; a pan that stayed
-  // the same because nothing was drawn yet is not.
+  // A strip in motion draws a frame every pass: a reveal glides it into view,
+  // a throw coasts, an overpull springs back. The desk draws none at rest, so
+  // a pan that stayed the same while no frame was presented for a while is at
+  // rest — and on this machine a frame takes the better part of a second, so
+  // a read pair a moment apart can land in the gap between two frames of a
+  // glide. A pair a whole quiet period apart cannot.
   const restPanOf = async tab => {
     const frames = () => tab.evaluate('Number(globalThis.tiloMount?.canvas?.parentElement?.dataset?.frames ?? 0)');
-    let before = await panOf(tab);
-    let drawn = await frames();
-    const deadline = Date.now() + 30_000;
-    for (;;) {
-      await sleep(1000);
-      const after = await panOf(tab);
-      const now = await frames();
-      if (JSON.stringify(after) === JSON.stringify(before) && now > drawn) return after;
-      if (Date.now() > deadline) return after;
-      before = after;
-      drawn = now;
+    for (let turn = 0; turn < 40; turn++) {
+      const drawn = await frames();
+      await sleep(2500);
+      if (await frames() === drawn) return panOf(tab);
     }
+    return panOf(tab);
   };
   const namesOf = async tab => {
     await tab.evaluate('globalThis.tiloMount?.requestSemantics?.()').catch(() => {});
