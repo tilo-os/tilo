@@ -4,17 +4,17 @@ import {sealedHandle, sealedLink} from './sealed-link.mjs';
 
 const HANDLE = 'abcdefghijklmnop';
 const KEY = 'A'.repeat(43);
-const at = (pathname, hash = '') => ({pathname, href: `https://tilo.coffee${pathname}${hash}`});
+const at = (pathname, hash = '') => ({pathname, href: `https://tilo.sh${pathname}${hash}`});
 
 test('a sealed link is the site, the handle in its path and the key in its fragment', () => {
   assert.equal(sealedHandle(`/i/${HANDLE}`), HANDLE);
   assert.deepEqual(sealedLink({location: at(`/i/${HANDLE}`, `#${KEY}`), secrets: {invite: KEY}}),
-    {site: 'https://tilo.coffee', handle: HANDLE, key: KEY});
+    {site: 'https://tilo.sh', handle: HANDLE, key: KEY});
   // The link names the site, whatever else its address carries.
-  assert.equal(sealedLink({location: {pathname: `/i/${HANDLE}`, href: `https://tilo.coffee/i/${HANDLE}?from=chat#${KEY}`},
-    secrets: {invite: KEY}}).site, 'https://tilo.coffee');
-  assert.equal(sealedLink({location: {pathname: `/i/${HANDLE}`, href: `https://tilo.coffee:8443/i/${HANDLE}#${KEY}`},
-    secrets: {invite: KEY}}).site, 'https://tilo.coffee:8443');
+  assert.equal(sealedLink({location: {pathname: `/i/${HANDLE}`, href: `https://tilo.sh/i/${HANDLE}?from=chat#${KEY}`},
+    secrets: {invite: KEY}}).site, 'https://tilo.sh');
+  assert.equal(sealedLink({location: {pathname: `/i/${HANDLE}`, href: `https://tilo.sh:8443/i/${HANDLE}#${KEY}`},
+    secrets: {invite: KEY}}).site, 'https://tilo.sh:8443');
 });
 
 test('a handle that is not one, or a page that is not sealed, is no sealed link', () => {

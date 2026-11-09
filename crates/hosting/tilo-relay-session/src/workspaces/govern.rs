@@ -282,7 +282,7 @@ mod tests {
         };
         assert_eq!(found.to_string().parse::<WorkspaceLink>().unwrap(), found);
         for wrong in [
-            "https://tilo.coffee/lounge".to_owned(),
+            "https://tilo.sh/lounge".to_owned(),
             "tilo-room:nope/1/room".to_owned(),
             format!("tilo-room:{relay}/not-a-number/room"),
             format!("tilo-room:{relay}/42"),

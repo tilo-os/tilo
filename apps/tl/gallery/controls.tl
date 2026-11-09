@@ -154,7 +154,7 @@ view controls(c: Controls) {
                 ui.Suggestion("ada@example.com")
                 ui.Suggestion("bo@example.com", label: .some("Bo"))
             }
-            ui.Link("https://tilo.coffee", label: .some("The site"))
+            ui.Link("https://tilo.sh", label: .some("The site"))
         }
         ui.Section("Pictures") {
             ui.PictureChoice(selected: .some(c.text_size)) {

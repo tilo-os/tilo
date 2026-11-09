@@ -258,14 +258,14 @@ test('the page hears the peer the host let in before its desktop mounts, so a fa
 
 test('a workspace on the site the page came from, or on its machines, is hosted by that site', () => {
   const room = host => ({kind: 'room', host, room: 'R'});
-  assert.equal(scopeHost(room('https://eu1.tilo.coffee'), 'tilo.coffee'), 'tilo.coffee');
-  assert.equal(scopeHost(room('https://tilo.coffee'), 'tilo.coffee'), 'tilo.coffee');
-  assert.equal(scopeHost(room('https://rooms.example'), 'tilo.coffee'), 'rooms.example');
-  assert.equal(scopeHost(room('https://notilo.coffee'), 'tilo.coffee'), 'notilo.coffee');
-  assert.equal(scopeHost({kind: 'own'}, 'tilo.coffee'), null);
+  assert.equal(scopeHost(room('https://eu1.tilo.sh'), 'tilo.sh'), 'tilo.sh');
+  assert.equal(scopeHost(room('https://tilo.sh'), 'tilo.sh'), 'tilo.sh');
+  assert.equal(scopeHost(room('https://rooms.example'), 'tilo.sh'), 'rooms.example');
+  assert.equal(scopeHost(room('https://notilo.sh'), 'tilo.sh'), 'notilo.sh');
+  assert.equal(scopeHost({kind: 'own'}, 'tilo.sh'), null);
   // A workspace on another port of the page's machine is the site, by its name.
   assert.equal(scopeHost(room('http://localhost:9764'), 'localhost:8411'), 'localhost');
-  assert.equal(scopeHost(room('https://rooms.example:8443'), 'tilo.coffee'), 'rooms.example:8443');
+  assert.equal(scopeHost(room('https://rooms.example:8443'), 'tilo.sh'), 'rooms.example:8443');
 });
 
 test('the entry offers only the web About links the host set', async () => {
@@ -314,13 +314,13 @@ test('a sealed link’s page is the site’s own, wherever the link reached it',
   const asked = [];
   const fetch = async url => { asked.push(String(url)); return {ok: false}; };
   assert.deepEqual(await readEntry({mode: 'desktop',
-    location: {pathname: '/i/abcdefghijklmnop', href: 'https://tilo.coffee/i/abcdefghijklmnop'}, fetch}),
-    {base: 'https://tilo.coffee/'});
-  assert.deepEqual(asked, ['https://tilo.coffee/entry.json']);
+    location: {pathname: '/i/abcdefghijklmnop', href: 'https://tilo.sh/i/abcdefghijklmnop'}, fetch}),
+    {base: 'https://tilo.sh/'});
+  assert.deepEqual(asked, ['https://tilo.sh/entry.json']);
 });
 
 test('a sealed link admits through the site’s shelf and opens the workspace it names, as that workspace’s own link', async () => {
-  const site = 'https://tilo.coffee';
+  const site = 'https://tilo.sh';
   const handle = 'abcdefghijklmnop';
   const key = 'A'.repeat(43);
   const opened = [];
@@ -341,7 +341,7 @@ test('a sealed link admits through the site’s shelf and opens the workspace it
     whenReady: async () => {}, mountDesktop: async () => ({navigation})};
   const window = {
     __tiloLinkSecrets: Object.freeze({invite: key}),
-    location: {pathname: `/i/${handle}`, href: `${site}/i/${handle}#${key}`, hash: `#${key}`, host: 'tilo.coffee'},
+    location: {pathname: `/i/${handle}`, href: `${site}/i/${handle}#${key}`, hash: `#${key}`, host: 'tilo.sh'},
     history: {state: null, replaceState: (state, title, url) => replaced.push(url), pushState() {}},
     addEventListener() {}, removeEventListener() {},
   };

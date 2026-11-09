@@ -1256,7 +1256,7 @@ mod tests {
         );
         let (_b_sk, b_pk, _) =
             enrol_device(&f.user_sk, f.user_pk, "board", DeviceCapabilities::member());
-        let site = "https://tilo.coffee/";
+        let site = "https://tilo.sh/";
         let mut laptop = WorkspaceDirectory::new(f.user_pk, a_pk);
         assert!(
             laptop.community(site).is_none(),

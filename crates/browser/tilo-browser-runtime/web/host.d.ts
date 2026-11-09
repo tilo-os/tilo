@@ -94,7 +94,7 @@ export interface MountOptions {
    * invitation, as an embed has nothing to invite into.
    */
   invite?: {
-    /** The page's entry, as a link names it (`https://tilo.coffee/`). */
+    /** The page's entry, as a link names it (`https://tilo.sh/`). */
     base: string;
     /** The workspace's host: where an invitation waits, and where the link points. */
     origin: string;

@@ -38,7 +38,7 @@ const LINK_SECONDS: u64 = 3_600;
 /// transport of its own to make a link through.
 #[derive(Clone, Debug, Default, Deserialize)]
 pub(crate) struct PageInviteConfig {
-    /// The page's entry, as a link names it (`https://tilo.coffee/`): the link
+    /// The page's entry, as a link names it (`https://tilo.sh/`): the link
     /// the sheet hands over opens this page.
     #[serde(default)]
     pub base: String,

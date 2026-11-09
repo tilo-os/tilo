@@ -7,7 +7,7 @@
 //! the handle is and, after its `#`, the key that opens it. A fragment is
 //! never sent to a server, so the site holds bytes it cannot read.
 //!
-//! `https://tilo.coffee/i/<handle>#<key>` is what a person hands over, and
+//! `https://tilo.sh/i/<handle>#<key>` is what a person hands over, and
 //! what a code to scan carries. The long form — the invitation's own text —
 //! is what every build has handed over, and a redeemer still takes it.
 
@@ -286,9 +286,9 @@ mod tests {
     #[test]
     fn the_link_names_only_where_it_is_and_the_key() {
         let sealed = seal(INVITATION).unwrap();
-        let link = sealed.link("https://tilo.coffee/").unwrap();
+        let link = sealed.link("https://tilo.sh/").unwrap();
         let (before, fragment) = link.split_once('#').unwrap();
-        assert_eq!(before, format!("https://tilo.coffee/i/{}", sealed.handle));
+        assert_eq!(before, format!("https://tilo.sh/i/{}", sealed.handle));
         assert!(!before.contains(&ENGINE.encode(sealed.delete)));
         assert_eq!(
             ENGINE.decode(fragment).unwrap().as_slice(),
@@ -296,7 +296,7 @@ mod tests {
         );
 
         let read = parse_link(&link).unwrap();
-        assert_eq!(read.site, "https://tilo.coffee");
+        assert_eq!(read.site, "https://tilo.sh");
         assert_eq!(read.handle, sealed.handle);
         assert_eq!(read.to_text(), link);
 
@@ -315,12 +315,12 @@ mod tests {
     #[test]
     fn an_invitations_own_text_is_not_a_sealed_link() {
         assert!(parse_link(&encode_text(INVITATION)).is_none());
-        assert!(parse_link("https://tilo.coffee/i/").is_none());
-        assert!(parse_link("https://tilo.coffee/i/abcdefghijklmnop").is_none());
-        assert!(parse_link("https://tilo.coffee/i/abcdefghijklmnop#short").is_none());
+        assert!(parse_link("https://tilo.sh/i/").is_none());
+        assert!(parse_link("https://tilo.sh/i/abcdefghijklmnop").is_none());
+        assert!(parse_link("https://tilo.sh/i/abcdefghijklmnop#short").is_none());
         assert!(
             parse_link(&format!(
-                "ftp://tilo.coffee/i/abcdefghijklmnop#{}",
+                "ftp://tilo.sh/i/abcdefghijklmnop#{}",
                 "a".repeat(KEY_CHARS)
             ))
             .is_none(),
@@ -334,7 +334,7 @@ mod tests {
         let sealed = seal(INVITATION).unwrap();
         let key = ENGINE.encode(sealed.key.expose_secret());
         let text = SealedLink {
-            site: "https://tilo.coffee".to_owned(),
+            site: "https://tilo.sh".to_owned(),
             handle: sealed.handle.clone(),
             key: key.clone(),
         }

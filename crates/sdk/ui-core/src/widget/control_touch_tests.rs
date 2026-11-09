@@ -65,7 +65,7 @@ fn on_touch_a_step_done_is_a_fingers_target_and_a_pointers_by_mouse() {
 
 #[test]
 fn on_touch_a_link_is_a_fingers_target_about_its_line() {
-    let mut link = Link::new("https://tilo.coffee").with_label("The site");
+    let mut link = Link::new("https://tilo.sh").with_label("The site");
     Widget::set_interaction_environment(&mut link, InteractionEnvironment::TOUCH);
     let rect = vello::kurbo::Rect::new(10.0, 20.0, 210.0, 41.0);
     link.apply_layout_external(rect);

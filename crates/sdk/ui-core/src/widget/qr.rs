@@ -432,8 +432,8 @@ mod tests {
         // 159 bytes is version 9 at level M (version 8 holds 150): 53 modules
         // a side, and the quiet zone around them.
         let link = format!(
-            "https://tilo.coffee/#/@eu1.tilo.coffee/w/0123456789abcdef?pair={}",
-            "ab".repeat(48)
+            "https://tilo.sh/#/@eu1.tilo.sh/w/0123456789abcdef?pair={}",
+            "ab".repeat(52)
         );
         let code = QrWidget::new(link.as_bytes().to_vec());
         assert!(code.error().is_none(), "{:?}", code.error());

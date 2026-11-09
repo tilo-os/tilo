@@ -182,7 +182,7 @@ fn a_skeleton_never_shows_for_less_than_its_minimum() {
     let t0 = crate::time::now();
     let mut frame = ShotFrame::new((400, 300), Theme::dark());
     let (arriving, mut view) = with_monotonic_time(t0, || {
-        let arriving: Arriving<f32> = Arriving::pending(Source::host("eu1.tilo.coffee"));
+        let arriving: Arriving<f32> = Arriving::pending(Source::host("eu1.tilo.sh"));
         let view = arriving.view(|height| Box::new(Spacer::fixed(*height)));
         (arriving, view)
     });
@@ -337,10 +337,10 @@ fn a_refreshed_answer_replaces_the_shown_one_without_a_placeholder() {
 #[test]
 fn an_arrival_paints_its_placeholder_steps_inside_its_rect() {
     let t0 = crate::time::now();
-    let mut clock = ArrivalClock::with_budget(t0, Source::host("eu1.tilo.coffee"), frame_budget());
+    let mut clock = ArrivalClock::with_budget(t0, Source::host("eu1.tilo.sh"), frame_budget());
     assert_eq!(ArrivalFace::new(SHAPE, &clock, t0).step(), Step::Ground);
     let named = ArrivalFace::new(SHAPE, &clock, t0 + NAME_SOURCE_AFTER);
-    assert_eq!(named.caption().as_deref(), Some("From eu1.tilo.coffee"));
+    assert_eq!(named.caption().as_deref(), Some("From eu1.tilo.sh"));
     clock.arrive(ms(t0, 3_000));
     assert_eq!(
         ArrivalFace::new(SHAPE, &clock, ms(t0, 3_000)).step(),
@@ -356,7 +356,7 @@ fn a_placeholder_keeps_its_timing_however_often_its_view_is_built() {
     // The view around it is built again after its read began: the
     // placeholder still steps on from when the read began.
     let mut view = with_monotonic_time(ms(t0, 120), || {
-        ArrivingView::placeholder_since(Source::host("eu1.tilo.coffee"), t0, SHAPE)
+        ArrivingView::placeholder_since(Source::host("eu1.tilo.sh"), t0, SHAPE)
     });
     frame_at(&mut frame, view.as_mut(), ms(t0, 120));
     with_monotonic_time(ms(t0, 120), || {
@@ -376,7 +376,7 @@ fn a_placeholder_keeps_its_timing_however_often_its_view_is_built() {
     with_monotonic_time(t0 + NAME_SOURCE_AFTER, || {
         assert_eq!(
             view.accessibility().and_then(|node| node.name).as_deref(),
-            Some("From eu1.tilo.coffee")
+            Some("From eu1.tilo.sh")
         );
     });
 }

@@ -48,8 +48,8 @@ function aboutLinks(about) {
 
 /** Where a workspace scope is hosted (`workspaces.example`), as the desktop says it
  * ("Hosted by …"); `null` on the person's own desktop. A workspace on the site the
- * page was opened from, or on one of its machines (`eu1.tilo.coffee` behind
- * `tilo.coffee`), is hosted by that site: the name people reached it by, not
+ * page was opened from, or on one of its machines (`eu1.tilo.sh` behind
+ * `tilo.sh`), is hosted by that site: the name people reached it by, not
  * the machine's. Ports are how a machine splits its services, not a name
  * anyone knows a host by, so a workspace on another port of the page's machine
  * (a local copy's workspace service beside its web entry) is that site too. */

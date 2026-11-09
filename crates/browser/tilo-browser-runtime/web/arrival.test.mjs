@@ -4,7 +4,7 @@ import test from 'node:test';
 import vm from 'node:vm';
 import {existsSync} from 'node:fs';
 import {arrivalLines, arrivalLocale, createArrival, createRotation, describeSpent, doorCopy, failureMessage, FAILURES, fill,
-  FIRST_VISIT_SECONDS, inviteLinkTarget, measuredPlan, isCoffeeHost, lineParts, measuredSeconds, plannedSegments, refusedByHost,
+  FIRST_VISIT_SECONDS, inviteLinkTarget, measuredPlan, isHostedSite, lineParts, measuredSeconds, plannedSegments, refusedByHost,
   rememberArrival, rememberedArrival, waitListFailure, MEASURED_KEY, parseMessages, progressIn, SEGMENTS, segmentOf,
   STEP_NOTES, stoppedInside} from './arrival.mjs';
 
@@ -210,17 +210,16 @@ test('with reduced motion the bar steps at each phase instead of creeping', () =
   assert.equal(progressIn('join', 900, {reducedMotion: true}), SEGMENTS.join.start);
 });
 
-test('tilo.coffee lines show only on tilo.coffee and its subdomains', () => {
-  for (const host of ['tilo.coffee', 'eu1.tilo.coffee', 'TILO.COFFEE.']) assert.ok(isCoffeeHost(host), host);
-  for (const host of ['', 'localhost', 'tilo.so', 'notilo.coffee', 'tilo.coffee.example', 'tilo-coffee.example']) {
-    assert.ok(!isCoffeeHost(host), host);
+test('tilo.sh lines show only on tilo.sh and its subdomains', () => {
+  for (const host of ['tilo.sh', 'eu1.tilo.sh', 'TILO.SH.']) assert.ok(isHostedSite(host), host);
+  for (const host of ['', 'localhost', 'tilo.so', 'notilo.sh', 'tilo.sh.example', 'tilo-sh.example']) {
+    assert.ok(!isHostedSite(host), host);
   }
   const messages = locale('en-US');
   const elsewhere = arrivalLines(messages, {hostname: 'tilo.example'}).jokes;
-  const there = arrivalLines(messages, {hostname: 'eu1.tilo.coffee'}).jokes;
-  assert.ok(!elsewhere.includes('Brewing tilo.coffee…'));
+  const there = arrivalLines(messages, {hostname: 'eu1.tilo.sh'}).jokes;
   assert.ok(!elsewhere.includes('Fluffing the Lounge cushions…'));
-  assert.deepEqual(there.filter(line => !elsewhere.includes(line)), ['Brewing tilo.coffee…', 'Fluffing the Lounge cushions…']);
+  assert.deepEqual(there.filter(line => !elsewhere.includes(line)), ['Fluffing the Lounge cushions…']);
 });
 
 test('desktop tips stay off a full-tab app, and a Mac reads ⌘K', () => {
@@ -243,7 +242,7 @@ test('both locales have jokes and the same tips, in lines short enough to read a
   assert.deepEqual(tipIds('de-DE'), tipIds('en-US'));
   for (const name of ['en-US', 'de-DE']) {
     const messages = locale(name);
-    const {jokes: shipped, tips: told} = arrivalLines(messages, {hostname: 'tilo.coffee'});
+    const {jokes: shipped, tips: told} = arrivalLines(messages, {hostname: 'tilo.sh'});
     assert.ok(shipped.length >= 20, `${name} jokes`);
     assert.ok(told.length >= 3, `${name} tips`);
     for (const line of [...shipped, ...told]) {
@@ -386,11 +385,11 @@ test('a workspace taking people by invitation tells a visitor without one that t
 });
 
 test('a pasted invite link opens as itself; anything else is not one', () => {
-  const base = 'https://tilo.coffee/';
-  const link = 'https://tilo.coffee/#/desktop/room/abc?invite=XYZ';
+  const base = 'https://tilo.sh/';
+  const link = 'https://tilo.sh/#/desktop/room/abc?invite=XYZ';
   assert.equal(inviteLinkTarget(`  ${link}\n`, base), link);
-  assert.equal(inviteLinkTarget('https://tilo.coffee/?invite=XYZ', base), 'https://tilo.coffee/?invite=XYZ');
-  for (const text of ['', 'hello', 'https://tilo.coffee/', 'https://tilo.coffee/#/desktop/room/abc', 'javascript:alert(1)?invite=1', null]) {
+  assert.equal(inviteLinkTarget('https://tilo.sh/?invite=XYZ', base), 'https://tilo.sh/?invite=XYZ');
+  for (const text of ['', 'hello', 'https://tilo.sh/', 'https://tilo.sh/#/desktop/room/abc', 'javascript:alert(1)?invite=1', null]) {
     assert.equal(inviteLinkTarget(text, base), null, String(text));
   }
 });

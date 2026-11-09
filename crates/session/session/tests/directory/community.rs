@@ -70,7 +70,7 @@ fn community_lounge(
             ("GET", "/entry.json") => serde_json::json!({
                 "home": {
                     "name": name,
-                    "host": { "origin": "https://rooms.tilo.coffee/" },
+                    "host": { "origin": "https://rooms.tilo.sh/" },
                     "admission": "/directory/",
                 },
             })
@@ -184,7 +184,7 @@ fn a_computer_set_up_for_a_community_joins_it_as_its_session_starts() {
     let (_identity, person) = this_computer(&mut env);
     let asked = Arc::new(AtomicU32::new(0));
     let responder = community_lounge(
-        "tilo.coffee",
+        "tilo.sh",
         person,
         Arc::new(AtomicBool::new(true)),
         Arc::clone(&asked),
@@ -199,7 +199,7 @@ fn a_computer_set_up_for_a_community_joins_it_as_its_session_starts() {
     );
     assert_eq!(
         community_here(&session).as_deref(),
-        Some("tilo.coffee"),
+        Some("tilo.sh"),
         "the site's home workspace, under the name the site calls it"
     );
     assert_eq!(
@@ -238,7 +238,7 @@ fn a_community_that_was_left_is_not_joined_again() {
     let (_identity, person) = this_computer(&mut env);
     let asked = Arc::new(AtomicU32::new(0));
     let responder = community_lounge(
-        "tilo.coffee",
+        "tilo.sh",
         person,
         Arc::new(AtomicBool::new(true)),
         Arc::clone(&asked),
@@ -256,7 +256,7 @@ fn a_community_that_was_left_is_not_joined_again() {
         .into_iter()
         .find(|(_, _, workspace)| workspace == COMMUNITY_WORKSPACE)
         .expect("the community's workspace is on the desk");
-    assert_eq!(name, "tilo.coffee");
+    assert_eq!(name, "tilo.sh");
     let arguments = serde_json::json!({ "workspace": slot })
         .as_object()
         .expect("an object")
@@ -294,7 +294,7 @@ fn a_persons_other_computer_does_not_join_their_community_again() {
     let (_identity, person) = this_computer(&mut env);
     let asked = Arc::new(AtomicU32::new(0));
     let responder = community_lounge(
-        "tilo.coffee",
+        "tilo.sh",
         person,
         Arc::new(AtomicBool::new(true)),
         Arc::clone(&asked),
@@ -366,12 +366,7 @@ fn a_community_that_could_not_be_reached_is_asked_again_when_a_network_comes_bac
     let (_identity, person) = this_computer(&mut env);
     let asked = Arc::new(AtomicU32::new(0));
     let admits = Arc::new(AtomicBool::new(false));
-    let responder = community_lounge(
-        "tilo.coffee",
-        person,
-        Arc::clone(&admits),
-        Arc::clone(&asked),
-    );
+    let responder = community_lounge("tilo.sh", person, Arc::clone(&admits), Arc::clone(&asked));
     let _config = community_site(&mut env, &responder.url());
     let state = tempfile::tempdir().expect("a directory for this computer's state");
     let cable = Cable::offline();
@@ -411,7 +406,7 @@ fn a_community_that_could_not_be_reached_is_asked_again_when_a_network_comes_bac
     );
     assert_eq!(
         community_here(&session).as_deref(),
-        Some("tilo.coffee"),
+        Some("tilo.sh"),
         "and the join that waited landed"
     );
 }

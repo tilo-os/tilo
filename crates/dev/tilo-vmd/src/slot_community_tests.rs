@@ -1,7 +1,7 @@
 //! A dev slot joins no public site: its session takes its community from the
 //! slot's own file, which names none, whatever the image's vendor file or the
 //! host's /etc/tilo/community.toml say. Slots run throwaway test identities,
-//! and they joined tilo.coffee's Lounge every ten minutes before this.
+//! and they joined tilo.sh's Lounge every ten minutes before this.
 
 const UNIT: &str = include_str!("../data/tilo-vm-session@.service");
 const COMMUNITY: &str = include_str!("../data/tilo-vm-community.toml");
@@ -27,8 +27,8 @@ fn a_slot_names_no_public_site() {
     assert_eq!(community.site.trim(), "", "a slot's community is none");
     for text in [UNIT, COMMUNITY] {
         assert!(
-            !text.contains("tilo.coffee"),
-            "slot configuration names no public site (tilo.coffee or any of its hosts)"
+            !text.contains("tilo.sh"),
+            "slot configuration names no public site (tilo.sh or any of its hosts)"
         );
     }
 }

@@ -363,7 +363,7 @@ fn sample_directory() -> Directory {
         key: key.to_owned(),
         name: name.to_owned(),
         about: about.to_owned(),
-        host: "tilo.coffee".to_owned(),
+        host: "tilo.sh".to_owned(),
         tag: None,
         activity: format!("{here} here now"),
         members: (here > 0).then(|| format!("{} members", here.saturating_mul(4))),
@@ -379,8 +379,8 @@ fn sample_directory() -> Directory {
         status: Status::Listed,
         listings: vec![
             Listing {
-                tag: Some("tilo.coffee's own".to_owned()),
-                ..listing("coffee", "Tilo Coffee", "The community of tilo.coffee", 6)
+                tag: Some("tilo.sh's own".to_owned()),
+                ..listing("coffee", "Tilo Coffee", "The community of tilo.sh", 6)
             },
             listing("garden", "Gardeners", "Seeds, soil and swaps", 2),
             Listing {

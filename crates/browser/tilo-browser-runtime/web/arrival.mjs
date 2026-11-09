@@ -119,16 +119,16 @@ export function parseMessages(text) {
   return messages;
 }
 
-/** Whether a page at `hostname` is on tilo.coffee, the hosted Lounge,
- * whose own lines (`arrival-coffee-*`) are shown only there. */
-export function isCoffeeHost(hostname) {
+/** Whether a page at `hostname` is on tilo.sh, the hosted Lounge,
+ * whose own lines (`arrival-site-*`) are shown only there. */
+export function isHostedSite(hostname) {
   const host = String(hostname ?? '').toLowerCase().replace(/\.$/, '');
-  return host === 'tilo.coffee' || host.endsWith('.tilo.coffee');
+  return host === 'tilo.sh' || host.endsWith('.tilo.sh');
 }
 
 /**
  * The jokes and tips from `messages` for this page: `arrival-joke-*` for
- * everyone, `arrival-coffee-*` only on tilo.coffee, `arrival-tip-*` in both
+ * everyone, `arrival-site-*` only on tilo.sh, `arrival-tip-*` in both
  * modes, `arrival-desktop-tip-*` only on the desktop. A tip's `-mac`
  * message replaces it on a Mac.
  */
@@ -139,7 +139,7 @@ export function arrivalLines(messages, {mode = 'desktop', mac = false, hostname 
     if (id.endsWith('-mac')) continue;
     const mine = mac && messages.has(`${id}-mac`) ? messages.get(`${id}-mac`) : value;
     if (id.startsWith('arrival-joke-')) jokes.push(mine);
-    else if (id.startsWith('arrival-coffee-') && isCoffeeHost(hostname)) jokes.push(mine);
+    else if (id.startsWith('arrival-site-') && isHostedSite(hostname)) jokes.push(mine);
     else if (id.startsWith('arrival-tip-')) tips.push(mine);
     else if (id.startsWith('arrival-desktop-tip-') && mode === 'desktop') tips.push(mine);
   }

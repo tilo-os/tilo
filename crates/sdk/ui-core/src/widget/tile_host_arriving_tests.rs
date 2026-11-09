@@ -12,7 +12,7 @@ fn an_app_whose_code_arrives_goes_on_with_the_arrival_its_window_showed() {
     let t0 = crate::time::now();
     let at = |ms: u64| t0 + Duration::from_millis(ms);
     let mut waiting = with_monotonic_time(t0, || {
-        TileHost::new(TileContent::Arriving).arriving_from(Source::host("tilo.coffee"))
+        TileHost::new(TileContent::Arriving).arriving_from(Source::host("tilo.sh"))
     });
     waiting.rect = rect;
     assert!(
@@ -93,7 +93,7 @@ fn a_window_that_declares_no_shape_paints_no_skeleton_bars() {
         let at = |ms: u64| t0 + Duration::from_millis(ms);
         let mut host = with_monotonic_time(t0, || {
             TileHost::new(TileContent::App(Box::new(Declaring(shape))))
-                .arriving_from(Source::host("tilo.coffee"))
+                .arriving_from(Source::host("tilo.sh"))
         });
         host.rect = Rect::new(50.0, 50.0, 1250.0, 850.0);
         let painted = |host: &mut TileHost, ms: u64| {
@@ -128,8 +128,7 @@ fn a_window_whose_app_declared_its_shape_shows_it_before_the_code_is_in() {
     // The same window, told what the app declared (and told nothing).
     let painted = |shows: Option<SkeletonShape>| {
         let mut host = with_monotonic_time(t0, || {
-            let host =
-                TileHost::new(TileContent::Arriving).arriving_from(Source::host("tilo.coffee"));
+            let host = TileHost::new(TileContent::Arriving).arriving_from(Source::host("tilo.sh"));
             match shows {
                 Some(shape) => host.with_arrival_shape(shape),
                 None => host,
@@ -170,7 +169,7 @@ fn a_window_whose_app_has_not_drawn_yet_shows_what_its_manifest_declared() {
     let painted = |shows: Option<SkeletonShape>| {
         let mut host = with_monotonic_time(t0, || {
             let host = TileHost::new(TileContent::App(Box::new(Declaring(None))))
-                .arriving_from(Source::host("tilo.coffee"));
+                .arriving_from(Source::host("tilo.sh"));
             match shows {
                 Some(shape) => host.with_arrival_shape(shape),
                 None => host,
@@ -198,7 +197,7 @@ fn a_window_whose_app_has_not_drawn_yet_shows_what_its_manifest_declared() {
         TileHost::new(TileContent::App(Box::new(Declaring(Some(
             SkeletonShape::Text { lines: 3 },
         )))))
-        .arriving_from(Source::host("tilo.coffee"))
+        .arriving_from(Source::host("tilo.sh"))
         .with_arrival_shape(SkeletonShape::Page)
     });
     own.rect = Rect::new(50.0, 50.0, 1250.0, 850.0);

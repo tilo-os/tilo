@@ -27,8 +27,8 @@ image; earlier images and branches are not patched.
 
 ## Scope
 
-Everything in this repository and the services we run on tilo.so, tilo.sh and
-tilo.coffee is in scope. Vulnerabilities in third-party software we ship or
+Everything in this repository and the services we run on tilo.so and
+tilo.sh are in scope. Vulnerabilities in third-party software we ship or
 run belong with that project; tell us too if Tilo is affected. Denial of
 service by volume, social engineering and physical attacks on our
 infrastructure are out of scope.

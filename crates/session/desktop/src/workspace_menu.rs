@@ -81,7 +81,7 @@ pub struct WorkspaceMenuModel {
     /// than on the desk.
     pub desk: Vec<WorkspaceAction>,
     pub workspaces: Vec<WorkspaceChoice>,
-    /// The site the workspace is hosted by, as the person reached it ("tilo.coffee"); `None` on the
+    /// The site the workspace is hosted by, as the person reached it ("tilo.sh"); `None` on the
     /// person's own computer.
     pub host: Option<String>,
     /// Join a workspace, leave this one, start a new one.
@@ -531,7 +531,7 @@ mod tests {
                     current: false,
                 },
             ],
-            host: Some("tilo.coffee".into()),
+            host: Some("tilo.sh".into()),
             actions: vec![
                 WorkspaceAction {
                     id: "join-workspace".into(),
@@ -573,7 +573,7 @@ mod tests {
             [
                 "Lounge",
                 "Home",
-                "Hosted by tilo.coffee",
+                "Hosted by tilo.sh",
                 "Join a workspace",
                 "Leave workspace",
                 "Overview",
@@ -617,7 +617,7 @@ mod tests {
     #[test]
     fn the_host_caption_is_not_a_command() {
         let mut menu = opened(&model());
-        menu.choose("Hosted by tilo.coffee");
+        menu.choose("Hosted by tilo.sh");
         assert_eq!(menu.take_choice(), None);
     }
 
@@ -737,7 +737,7 @@ mod tests {
                 .collect::<Vec<_>>(),
             [
                 "Home",
-                "Hosted by tilo.coffee",
+                "Hosted by tilo.sh",
                 "Join a workspace",
                 "Rename workspace",
                 "Leave workspace",

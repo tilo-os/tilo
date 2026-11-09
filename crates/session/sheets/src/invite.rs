@@ -879,7 +879,7 @@ impl ResourceApp for InviteApp {
             },
             Some("made") => {
                 let mut invite = sample_invite();
-                let link = "https://tilo.coffee/i/abcdefghijklmnop#AAABBBCCCDDDEEEFFFGGG\
+                let link = "https://tilo.sh/i/abcdefghijklmnop#AAABBBCCCDDDEEEFFFGGG\
                             HHHIIIJJJKKKLLLMMMNNNO";
                 invite.created = Some(Created {
                     invite: "8f2c".to_owned(),
@@ -981,7 +981,7 @@ mod tests {
 
     const INVITE: &str = "49a289c86314e68b618e01abca086915354cdb16fd11fdd45746a95161ee71f8";
     const LONG: &str = "tilo-invitation-v1:the invitation's own text";
-    const SHORT: &str = "https://tilo.coffee/#/@https:rooms.example/w/1?invite=abcdefghijklmnop";
+    const SHORT: &str = "https://tilo.sh/#/@https:rooms.example/w/1?invite=abcdefghijklmnop";
 
     fn made_link() -> Created {
         made(

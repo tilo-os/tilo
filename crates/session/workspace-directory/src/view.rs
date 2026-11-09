@@ -156,7 +156,7 @@ mod tests {
             entry,
             door: None,
             site: None,
-            host: "eu1.tilo.coffee".into(),
+            host: "eu1.tilo.sh".into(),
         }
     }
 
