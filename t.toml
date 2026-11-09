@@ -4567,6 +4567,22 @@ outputs = ["/target/lounge-gate/**"]
 timeout_secs = 3600
 default = false
 
+# The gate's agent step on its own, in minutes: a person sets Tilo up through their agent, comes
+# back to their workspace on a reload, and signs in again on a fresh browser through the agent.
+# The Lounge's entrypoint runs a development build of tilo-relay directly, beside the web entry
+# and the tilo command, with no image or micro-VM around them, so a change to the page, the relay
+# or the command is tried without building the image. The Lounge gate runs the same step against
+# the built image.
+[[check]]
+name = "agent-setup"
+run = "cargo build --locked -p tilo-relay --features tilo-relay/agents --bin tilo-relay -p tilo-crypto --bin tilo-crypto -p tilo-cli --bin tilo\nTILO_RELAY_BIN=\"$CARGO_TARGET_DIR/debug/tilo-relay\" TILO_CRYPTO_BIN=\"$CARGO_TARGET_DIR/debug/tilo-crypto\" TILO_CLI_BIN=\"$CARGO_TARGET_DIR/debug/tilo\" bash os/containers/tilo-lounge/test-agent-setup.sh /target/publish/web-desktop/bundle /target/agent-setup"
+needs = ["web-desktop-bundle"]
+env = { CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS = "", CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_RUSTFLAGS = "" }
+requires = ["arch=x86_64"]
+outputs = ["/target/agent-setup/**"]
+timeout_secs = 1800
+default = false
+
 # Releasing the image the gate passed: this chain does not build a second one. carry-lounge
 # pulls the published `dev-<commit>` anonymously and pins it by digest, sign-lounge signs that
 # digest, and publish-lounge tags it `sha-<commit>` for cloud-deploy. A commit whose Lounge

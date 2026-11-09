@@ -187,6 +187,7 @@ const person = tab => tab.evaluate(`JSON.stringify({
     return all[${JSON.stringify(new URL(relay).origin)}]?.userPublicKey ?? null;
   } catch { return null; } })(),
   title: document.title,
+  room: (() => { try { return JSON.parse(globalThis.localStorage.getItem('tilo-chosen-workspace') ?? 'null')?.room ?? null; } catch { return null; } })(),
   people: (() => { try { return globalThis.tiloMount?.people?.() ?? null; } catch { return null; } })(),
 })`).then(JSON.parse).catch(() => ({}));
 
@@ -221,9 +222,13 @@ if (steps.length < 2) await fail(`the tab showed no steps as the agent went: ${J
 await until(first, `document.documentElement.dataset.firstRun === undefined`, 'the first screen leaving', 60_000);
 await until(first, `(() => { const people = JSON.stringify(globalThis.tiloMount?.people?.() ?? null); return people.includes('Claude Code'); })()`,
   'Claude Code present in the workspace');
-const own = await first.evaluate(`JSON.stringify({title: document.title, own: globalThis.tiloMount?.state?.()?.entry ?? null})`);
-report.workspace = own;
-if (/lounge/i.test(own)) await fail(`the tab opened the Lounge, not the person's own workspace: ${own}`);
+// Titled after the person's own workspace once it says its name, never the Lounge's.
+const ownTitle = `/^Tilo · /.test(document.title) && !/lounge/i.test(document.title)`;
+for (const deadline = Date.now() + 30_000; !await first.evaluate(ownTitle).catch(() => false);) {
+  if (Date.now() > deadline) await fail(`the tab is titled "${await first.evaluate('document.title')}", not after the person's own workspace`);
+  await sleep(250);
+}
+report.workspace = await first.evaluate('document.title');
 
 // What the agent does shows beside its name: one tool call through its MCP
 // server, as Claude Code would make it once restarted, said as the workspace
@@ -246,6 +251,23 @@ report.mcp = answers.slice(0, 2000);
 server.stdin.end();
 const signedUp = await person(first);
 report.person = signedUp;
+
+// Loaded again, the tab is the same person in the same workspace, titled
+// after it, with the agent still there.
+await first.reload();
+await until(first, `!!globalThis.tiloMount && JSON.stringify(globalThis.tiloMount.people?.() ?? null).includes('Claude Code')`,
+  'Claude Code present in the workspace after a reload', 60_000);
+const reloaded = await person(first);
+report.reloaded = reloaded;
+if (!signedUp.user || reloaded.user !== signedUp.user) {
+  await fail(`after a reload the tab is ${reloaded.user ?? 'nobody'}, not the person who set up (${signedUp.user ?? 'unknown'})`);
+}
+if (!signedUp.room || reloaded.room !== signedUp.room) {
+  await fail(`after a reload the tab is in ${reloaded.room ?? 'no workspace'}, not the person's own (${signedUp.room ?? 'unknown'})`);
+}
+if (/lounge/i.test(reloaded.title) || reloaded.title !== signedUp.title) {
+  await fail(`after a reload the tab is titled "${reloaded.title}", not "${signedUp.title}"`);
+}
 
 // 2. Back on a browser that keeps nothing: signed in through the agent.
 const second = await visit('returning');
