@@ -20,8 +20,11 @@ environment's Linux programs in a jailed Firecracker VM
   VM is then suspended onto the volume, and the next host the volume follows
   restores each on its next command.
 - **A memory budget** (optional): `TILO_VM_MEMORY_MIB`, the most the VMs
-  awake at once may take together by their sizes; a wake past it is refused
-  in plain words.
+  awake at once may take together by their sizes, or `auto`: the node's
+  memory less `TILO_VM_MEMORY_RESERVE_MIB` (3.5 GiB), in whole GiB. A wake
+  past it waits for room.
+- **A placer's view** (optional): `TILO_VM_STATUS_LISTEN`, a TCP address
+  that answers the service's Status alone, for `tilo-legacy hosted place`.
 - **Plans** (optional): `TILO_VM_PLANS`, the account plans file the service
   admits wakes against.
 - **The guest**: the digest this build pins (`os/hosted-guest-snapshot.env`),

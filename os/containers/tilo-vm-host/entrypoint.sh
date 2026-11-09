@@ -17,7 +17,9 @@
 #      (TILO_VM_GUEST_REF overrides the one this build pins);
 #   5. `tilo-legacy hosted serve`, jailed, which suspends every VM when the
 #      eviction notice (TILO_VM_EVICT_NOTICE) appears and on SIGTERM, and wakes
-#      no more VMs than its memory budget (TILO_VM_MEMORY_MIB) holds.
+#      no more VMs than its memory budget (TILO_VM_MEMORY_MIB, or auto from the
+#      node's memory) holds, and answers a placer's Status on
+#      TILO_VM_STATUS_LISTEN.
 set -eu
 
 state_device=${TILO_VM_STATE_DEVICE:-/dev/tilo-vm-state}
@@ -80,5 +82,15 @@ set -- --state "$data/state" --run "$run" --kernel "$kernel" --disk-image "$root
   --jail-helper /usr/libexec/tilo/tilo-hosted-jail --jail-config /etc/tilo/hosted-jail.json
 if [ -n "${TILO_VM_PLANS:-}" ]; then set -- "$@" --plans "$TILO_VM_PLANS"; fi
 if [ -n "${TILO_VM_EVICT_NOTICE:-}" ]; then set -- "$@" --evict-notice "$TILO_VM_EVICT_NOTICE"; fi
-if [ -n "${TILO_VM_MEMORY_MIB:-}" ]; then set -- "$@" --memory-mib "$TILO_VM_MEMORY_MIB"; fi
+# auto: the node's memory less what the node and this service keep
+# (TILO_VM_MEMORY_RESERVE_MIB, 3.5 GiB by default), in whole GiB: 12 GiB on a
+# 16 GB machine, 59 GiB on a 64 GB one.
+memory_mib=${TILO_VM_MEMORY_MIB:-}
+if [ "$memory_mib" = auto ]; then
+  total_mib=$(( $(sed -n 's/^MemTotal: *\([0-9]*\) kB/\1/p' /proc/meminfo) / 1024 ))
+  memory_mib=$(( (total_mib - ${TILO_VM_MEMORY_RESERVE_MIB:-3584}) / 1024 * 1024 ))
+  say "memory budget for VMs: $memory_mib MiB of the node's $total_mib"
+fi
+if [ -n "$memory_mib" ]; then set -- "$@" --memory-mib "$memory_mib"; fi
+if [ -n "${TILO_VM_STATUS_LISTEN:-}" ]; then set -- "$@" --status-listen "$TILO_VM_STATUS_LISTEN"; fi
 exec setpriv --reuid=10001 --regid=10001 --init-groups --inh-caps=-all -- tilo-legacy hosted serve "$@"
