@@ -2480,8 +2480,9 @@ id_token = ["registry.tilo.so"]
 # ---- The tilo command ----------------------------------------------------------------------
 #
 # What `curl -fsSL https://tilo.sh | sh` installs (dist/install/tilo.sh), by
-# tools/ci/publish/cli-release.sh: one statically linked archive per Linux architecture, built on a
-# node of that architecture, and one per Mac architecture, built on a Mac; their SHA256SUMS; its
+# tools/ci/publish/cli-release.sh: one statically linked archive per Linux architecture, both
+# built on the x86_64 node (aarch64 cross-compiles, so a node of that architecture is not needed),
+# and one per Mac architecture, built on a Mac; their SHA256SUMS; its
 # signature by the release key. It is released with the relay, on release tags: sign-cli alone
 # holds the release key, publish-cli alone the package token, and neither runs anywhere else.
 # cli-rehearsal signs the same release with a throwaway key the same way, publishes it into a
@@ -2493,9 +2494,10 @@ id_token = ["registry.tilo.so"]
 [[check]]
 name = "cli-{arch}"
 run = "bash tools/ci/publish/cli-release.sh build {arch}-unknown-linux-musl /target/publish/cli/linux-{arch}"
-# The C the program links (ring, SQLite) compiles against musl's headers, which the image lacks.
-setup = { run = "dnf install -y --setopt=install_weak_deps=False musl-gcc && dnf clean all" }
-requires = ["arch={arch}"]
+# The musl C compiler the program's C (ring, SQLite) needs, and for aarch64 the Zig toolchain
+# that cross-compiles it and qemu to run it: see tools/ci/install-cli-toolchain.sh.
+setup = { run = "bash tools/ci/install-cli-toolchain.sh {arch}" }
+requires = ["arch=x86_64"]
 outputs = ["/target/publish/cli/linux-{arch}/*"]
 default = false
 [check.matrix]

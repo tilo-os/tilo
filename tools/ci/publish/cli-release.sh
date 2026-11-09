@@ -7,9 +7,10 @@
 # talks to the relay of its own release; `latest` follows the newest final version.
 #
 #   cli-release.sh build TARGET OUT    the program for TARGET, x86_64-unknown-linux-musl or
-#                                      aarch64-unknown-linux-musl (statically linked, on a Linux
-#                                      node of that architecture), aarch64-apple-darwin or
-#                                      x86_64-apple-darwin (on a Mac), packed as OUT/tilo-<os>-
+#                                      aarch64-unknown-linux-musl (statically linked, both on the
+#                                      x86_64 Linux node: aarch64 cross-builds with the Zig
+#                                      toolchain the check's setup installs), aarch64-apple-darwin
+#                                      or x86_64-apple-darwin (on a Mac), packed as OUT/tilo-<os>-
 #                                      <arch>.tar.gz; holds no credentials
 #   cli-release.sh pack PROGRAM ARCHIVE  PROGRAM packed as the archive ARCHIVE, as build packs it
 #   cli-release.sh sums OUT DIR...     the archives of each DIR together in OUT, with SHA256SUMS;
@@ -73,7 +74,7 @@ PY
 }
 
 cmd_build() {
-  local target=${1:?$usage} out=${2:?$usage} os arch flags
+  local target=${1:?$usage} out=${2:?$usage} os arch flags cross
   case $target in
     x86_64-unknown-linux-musl) os=linux arch=x86_64 ;;
     aarch64-unknown-linux-musl) os=linux arch=aarch64 ;;
@@ -86,12 +87,30 @@ cmd_build() {
   # computer's. Paths of this checkout and of Cargo's sources are not the program's business.
   flags="-C force-frame-pointers=yes --remap-path-prefix=$repo_root=. --remap-path-prefix=${CARGO_HOME:-$HOME/.cargo}=cargo"
   if [[ $os == linux ]]; then
-    [[ $(uname -s) == Linux && $(uname -m) == "$arch" ]] \
-      || die "$target is built on a Linux node of its architecture, not on $(uname -s) $(uname -m)"
-    # musl's C compiler for the C the program links (ring, SQLite), which the check's setup
-    # installs: the C must be compiled against musl's headers, not the system's.
-    command -v musl-gcc >/dev/null || die 'no musl-gcc: install it (the cli-ARCH check sets it up)'
-    export "CC_${target//-/_}=musl-gcc"
+    [[ $(uname -s) == Linux ]] || die "$target is built on a Linux node, not on $(uname -s)"
+    # Both builds link a musl newer than 1.2.3 -- the distribution's, and Zig's for the other
+    # architecture -- and libc's build script takes that from this variable: without it libc
+    # declares no `statx` for musl, and the code that reads a file's mount id does not compile.
+    export CARGO_CFG_LIBC_UNSTABLE_MUSL_V1_2_3=1
+    if [[ $(uname -m) == "$arch" ]]; then
+      # musl's C compiler for the C the program links (ring, SQLite), which the check's setup
+      # installs: the C must be compiled against musl's headers, not the system's.
+      command -v musl-gcc >/dev/null || die 'no musl-gcc: install it (the cli-ARCH check sets it up)'
+      export "CC_${target//-/_}=musl-gcc"
+    else
+      # The other architecture, from this node: Zig's compiler carries musl's headers and libc
+      # for it, and the check's setup installs it. It compiles the same C against that musl and
+      # links the program with it, rustc's own bundled musl left out, so the program is one musl
+      # and nothing of this node's glibc reaches the archive.
+      command -v zig >/dev/null \
+        || die "no zig, which cross-builds $arch: install it (the cli-$arch check sets it up)"
+      cross=$repo_root/tools/ci/zig-cc.sh
+      export TILO_ZIG_TARGET=$arch-linux-musl
+      export "CC_${target//-/_}=$cross"
+      # Zig's caches belong to this build, not to the node: a later one starts from none of it.
+      export ZIG_GLOBAL_CACHE_DIR=$scratch/zig-cache ZIG_LOCAL_CACHE_DIR=$scratch/zig-cache
+      flags="$flags -C linker=$cross -C link-self-contained=no"
+    fi
     flags="$flags -C target-feature=+crt-static -C relro-level=full -C link-arg=-Wl,-z,noexecstack"
   else
     [[ $(uname -s) == Darwin ]] || die "$target is built on a Mac, not on $(uname -s)"
@@ -117,9 +136,15 @@ cmd_build() {
     foreign=$(otool -L "$program" | tail -n +2 | awk '{print $1}' | grep -Ev '^(/usr/lib/|/System/Library/)' || true)
     [[ -z $foreign ]] || die "$program links libraries a Mac does not carry: $foreign"
   fi
-  # The architecture it runs on is this one (a Mac runs x86_64 under Rosetta, when installed).
+  # The architecture it runs on is this one (a Mac runs x86_64 under Rosetta, when installed), or
+  # an emulated one: qemu's user-mode emulator, which the cli-aarch64 check's setup installs, runs
+  # a cross-built program here too. Without it a cross-built archive is checked only by its ELF,
+  # above.
   if [[ $arch == $(uname -m) || ( $os == macos && $arch == aarch64 && $(uname -m) == arm64 ) ]]; then
     "$program" --help >/dev/null || die "$program --help failed"
+  elif command -v "qemu-$arch-static" >/dev/null; then
+    "qemu-$arch-static" "$program" --help >/dev/null \
+      || die "$program --help failed under qemu-$arch-static"
   fi
   rm -rf "$out"
   mkdir -p "$out"
