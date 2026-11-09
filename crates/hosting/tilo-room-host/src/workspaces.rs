@@ -21,6 +21,7 @@
 
 mod actions;
 mod admissions;
+mod agent_door;
 #[cfg(feature = "agents")]
 mod agent_members;
 pub mod app_files;
@@ -899,6 +900,9 @@ struct WorkspacesInner {
     /// The workspaces of people's own, once the host's operator offers them
     /// ([`Workspaces::offer_own_workspaces`]).
     own: std::sync::OnceLock<own::OwnWorkspaces>,
+    /// The devices the host's own person runs an agent on, and their open
+    /// sessions ([`agent_door`]).
+    agent_door: agent_door::AgentDoor,
 }
 
 /// Notices one workspace hands its channel service at once; a device asks
@@ -1104,6 +1108,7 @@ impl Workspaces {
                 host,
                 wait_list_mail: std::sync::OnceLock::new(),
                 own: std::sync::OnceLock::new(),
+                agent_door: agent_door::AgentDoor::default(),
             }),
         };
         let device = this.device_keys();

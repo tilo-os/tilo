@@ -98,6 +98,9 @@ impl Workspaces {
                 .write_recover()
                 .insert(entry.clone())
                 .map_err(|error| error.to_string())?;
+            self.inner
+                .agent_door
+                .forget(&entry.revoked_device_public_key);
         }
         if changed {
             crate::authority_epoch::bump();

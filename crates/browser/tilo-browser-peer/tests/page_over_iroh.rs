@@ -44,6 +44,7 @@ async fn assert_here(page: &PeerHandle, page_cert: &DeviceCert, device_cert: &De
             label: "Ada on the page".into(),
             window: Some(7),
             actions: Vec::new(),
+            agent: false,
         },
         Box::new(move |result| {
             let _ = reply.send(result);

@@ -185,6 +185,7 @@ pub async fn enter(
         workspace_id,
         &sign_in.agent,
         vec![action("Signed in", &sign_in.label, "Tilo CLI")],
+        true,
     )
     .await;
     Ok(peer)
@@ -250,7 +251,9 @@ async fn admitted(peer: &PeerHandle, workspace_id: u64) -> bool {
     }
 }
 
-/// Post what this device is doing in the workspace and ask who is here.
+/// Post what this device is doing in the workspace, and ask who is here:
+/// `agent` when it is an agent the person runs on it ([`HereRequest::agent`]),
+/// `label` the agent's name.
 ///
 /// # Errors
 ///
@@ -261,12 +264,14 @@ pub async fn say_here(
     workspace_id: u64,
     label: &str,
     actions: Vec<HereAction>,
+    agent: bool,
 ) -> Result<HereReply, String> {
     let request = HereRequest {
         workspace_id,
         label: text(label, MAX_HERE_LABEL_CHARS),
         window: None,
         actions,
+        agent,
     };
     request.validate().map_err(str::to_owned)?;
     let (send, receive) = tokio::sync::oneshot::channel();

@@ -2261,6 +2261,7 @@ impl WasmPeer {
                     })
                 })
                 .collect::<Result<_, JsError>>()?,
+            agent: false,
         };
         request.validate().map_err(js_error)?;
         let (reply, receipt) = tokio::sync::oneshot::channel();

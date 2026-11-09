@@ -139,6 +139,7 @@ async fn here(peer: &PeerHandle, workspace_id: u64, label: &str) -> Vec<([u8; 32
             label: label.into(),
             window: None,
             actions: Vec::new(),
+            agent: false,
         },
         Box::new(move |reply| {
             let _ = send.send(reply);

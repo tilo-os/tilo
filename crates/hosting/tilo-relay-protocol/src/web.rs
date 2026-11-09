@@ -169,6 +169,11 @@ pub struct HereRequest {
     pub window: Option<u64>,
     /// Their recent actions, at most [`MAX_HERE_ACTIONS`].
     pub actions: Vec<HereAction>,
+    /// The poster is an agent the person runs on this device (`tilo mcp`),
+    /// [`Self::label`] its name: its session is one run of that agent, which
+    /// the person's agent door lists and can stop. Said by the device itself,
+    /// as the agent run History groups its changes under is.
+    pub agent: bool,
 }
 
 impl HereRequest {
@@ -273,6 +278,7 @@ mod tests {
             label: "Ada".into(),
             window: None,
             actions,
+            agent: false,
         };
         assert!(request(Vec::new()).validate().is_ok());
         let full: Vec<_> = (0..16u8).map(|id| action(id, "Edited")).collect();

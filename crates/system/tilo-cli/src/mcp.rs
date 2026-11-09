@@ -280,7 +280,14 @@ fn show(session: &Arc<Session>, request: &Value, answer: &Value) {
     };
     let session = Arc::clone(session);
     tokio::spawn(async move {
-        let _ = say_here(&session.peer, session.workspace_id, &session.agent, actions).await;
+        let _ = say_here(
+            &session.peer,
+            session.workspace_id,
+            &session.agent,
+            actions,
+            true,
+        )
+        .await;
     });
 }
 

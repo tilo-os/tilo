@@ -82,6 +82,7 @@ async fn a_fanned_delivery_skips_the_rooms_lock_until_authority_moves() {
         metrics: &metrics,
         trust_policy: &policy,
         disconnect: &disconnect,
+        stop: None,
         presence: None,
         revocations: &revocations,
         carried_calls: None,

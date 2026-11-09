@@ -40,6 +40,11 @@
 //! caller's own `confirm` is never taken for the person's. Ending a call
 //! waits for everyone.
 //!
+//! The host also serves its own person's agent door
+//! ([`agent_door::PROVIDER`]): the devices they run an agent on, read live,
+//! and stopping one's run. Only a device of that person's own asks it, never
+//! an agent's.
+//!
 //! What the host does for its embedder is unchanged: [`GovernedPlane`]
 //! answers this provider and hands every other request to the app-serving
 //! plane the embedder supplied, if any.
@@ -53,7 +58,7 @@ use tilo_actions::remote::{
     ActionHost, ActionHostError, Caller, CallerPrincipal, CataloguePage, CatalogueProvider,
     CatalogueQuery, CatalogueResource, CatalogueRow, InvocationLedger, InvocationReceipt,
     InvocationState, InvokeArgument, InvokeRequest, Pending, RemoteActionMessage,
-    WORKSPACE_GOVERNANCE_KIND, WORKSPACE_GOVERNANCE_PROVIDER, host_account,
+    WORKSPACE_GOVERNANCE_KIND, WORKSPACE_GOVERNANCE_PROVIDER, agent_door, host_account,
     workspace_governance_resource,
 };
 use tilo_actions::{
@@ -942,6 +947,25 @@ impl Workspaces {
                     .ok_or(ActionHostError::UnknownAction)?;
                 self.host_invoke(certificate, request).await
             }
+            (agent_door::PROVIDER, _) => {
+                self.door_keeper(caller, certificate)?;
+                if request.target != agent_door::target(agent_door::STOP) {
+                    return Err(ActionHostError::UnknownAction);
+                }
+                let InvokeArgument::Json(argument) = &request.argument else {
+                    return Err(invalid("a stop names its grant and run"));
+                };
+                let run: agent_door::RunRef =
+                    serde_json::from_value(Value::Object(argument.clone()))
+                        .map_err(|error| invalid(error.to_string()))?;
+                if self.inner.agent_door.stop(&run.grant, &run.run) {
+                    Ok(Value::Null)
+                } else {
+                    Err(ActionHostError::Refused {
+                        reason: "That run has ended already".into(),
+                    })
+                }
+            }
             (host_account::PROVIDER, _)
                 if request.target == host_account::target(host_account::ACCOUNT) =>
             {
@@ -959,6 +983,30 @@ impl Workspaces {
             }
             _ => Err(ActionHostError::UnknownAction),
         }
+    }
+
+    /// Whether `caller`, on the device `certificate` certifies, keeps this
+    /// host's agent door: a device of the host's own person speaking for
+    /// themselves, and no agent's. Unknown and forbidden are the same answer.
+    fn door_keeper(
+        &self,
+        caller: &Caller,
+        certificate: Option<&DeviceCert>,
+    ) -> Result<(), ActionHostError> {
+        let host = &self.inner.host.cert;
+        certificate
+            .filter(|certificate| {
+                speaks_for_themselves(caller)
+                    && caller.device_public_key() == Some(&certificate.device_public_key)
+                    && caller.user_public_key() == Some(&certificate.user_public_key)
+                    && certificate.user_public_key == host.user_public_key
+                    && !self
+                        .inner
+                        .agent_door
+                        .is_agent(&certificate.device_public_key)
+            })
+            .map(|_| ())
+            .ok_or(ActionHostError::UnknownAction)
     }
 
     /// Run `request` from `caller` against the workspace `workspace_id` carries,
@@ -1319,6 +1367,9 @@ struct Shared {
     runtime: tokio::runtime::Handle,
     /// What each admitted invocation came to.
     ledger: Mutex<InvocationLedger<InvocationState>>,
+    /// The admitted invocations that follow the agent door: live reads,
+    /// moved on whenever the door does.
+    door_follows: Mutex<std::collections::HashSet<InvocationId>>,
 }
 
 impl HostWorkspaceActions {
@@ -1331,6 +1382,7 @@ impl HostWorkspaceActions {
                 workspaces: OnceLock::new(),
                 runtime: tokio::runtime::Handle::current(),
                 ledger: Mutex::new(InvocationLedger::default()),
+                door_follows: Mutex::default(),
             }),
         }
     }
@@ -1399,6 +1451,71 @@ impl HostWorkspaceActions {
                 .is_some_and(|workspaces| workspaces.own().is_some())
     }
 
+    /// Follow the agent door for `caller` as invocation `request` asks: the
+    /// door now, as its first item; [`Self::door_moved`] moves it on.
+    fn follow_door(
+        &self,
+        workspaces: &Workspaces,
+        caller: &Caller,
+        certificate: Option<&DeviceCert>,
+        request: &InvokeRequest,
+    ) -> Result<InvocationReceipt, ActionHostError> {
+        workspaces.door_keeper(caller, certificate)?;
+        let invocation = request.invocation;
+        let mut ledger = self.ledger();
+        if ledger.reserve(caller, request)? == tilo_actions::remote::Reservation::Admitted {
+            return ledger
+                .get(caller, &invocation)
+                .map(InvocationState::receipt)
+                .ok_or(ActionHostError::UnknownInvocation);
+        }
+        let state = InvocationState::new(
+            invocation,
+            InvocationUpdate::Item {
+                invocation,
+                sequence: 1,
+                value: door_value(workspaces),
+            },
+        );
+        let receipt = state.receipt();
+        ledger.complete(&invocation, state);
+        drop(ledger);
+        self.shared.door_follows.lock_recover().insert(invocation);
+        Ok(receipt)
+    }
+
+    /// Whether `id` is a live read of the agent door `caller` follows.
+    fn follows_door(&self, caller: &Caller, id: &InvocationId) -> bool {
+        self.shared.door_follows.lock_recover().contains(id) && self.admitted(caller, id)
+    }
+
+    /// Read the door again for the follow `id`; whether it moved.
+    fn door_moved(&self, workspaces: &Workspaces, caller: &Caller, id: &InvocationId) -> bool {
+        let value = door_value(workspaces);
+        let mut ledger = self.ledger();
+        let Some(entry) = ledger.get_mut(caller, id) else {
+            return false;
+        };
+        let sequence = match &entry.update {
+            InvocationUpdate::Item {
+                sequence,
+                value: read,
+                ..
+            } if *read != value => *sequence,
+            _ => return false,
+        };
+        *entry = InvocationState::new(
+            *id,
+            InvocationUpdate::Item {
+                invocation: *id,
+                sequence: sequence.saturating_add(1),
+                value,
+            },
+        );
+        drop(ledger);
+        true
+    }
+
     /// Whether `caller` started invocation `id` here.
     fn admitted(&self, caller: &Caller, id: &InvocationId) -> bool {
         self.ledger().get(caller, id).is_some()
@@ -1457,6 +1574,14 @@ impl ActionHost for InWorkspace {
         let Some(workspaces) = self.host.shared.workspaces.get().cloned() else {
             return Pending::ready(Err(ActionHostError::UnknownAction));
         };
+        if request.target == agent_door::target(agent_door::DOOR) {
+            return Pending::ready(self.host.follow_door(
+                &workspaces,
+                caller,
+                self.certificate.as_ref(),
+                &request,
+            ));
+        }
         let invocation = request.invocation;
         // The ledger's guard must not outlive the reservation: a retry reads
         // it again below.
@@ -1511,7 +1636,30 @@ impl ActionHost for InWorkspace {
     }
 
     fn observe(&self, caller: &Caller, id: &InvocationId) -> Option<InvocationState> {
+        // A follow of the door reads it as it is now.
+        if self.host.follows_door(caller, id)
+            && let Some(workspaces) = self.host.shared.workspaces.get()
+        {
+            self.host.door_moved(workspaces, caller, id);
+        }
         self.host.ledger().get(caller, id).cloned()
+    }
+
+    fn next_change(&self, caller: &Caller, id: &InvocationId) -> Option<Pending<()>> {
+        if !self.host.follows_door(caller, id) {
+            return None;
+        }
+        let workspaces = self.host.shared.workspaces.get()?.clone();
+        let mut changes = workspaces.inner.agent_door.changes();
+        if self.host.door_moved(&workspaces, caller, id) {
+            return Some(Pending::ready(()));
+        }
+        let (host, caller, id) = (self.host.clone(), caller.clone(), *id);
+        Some(self.host.spawn(async move {
+            // Bounded, as a waiter's deadline is only checked when woken.
+            let _ = tokio::time::timeout(DOOR_WAKE, changes.changed()).await;
+            host.door_moved(&workspaces, &caller, &id);
+        }))
     }
 
     fn cancel(
@@ -1519,6 +1667,20 @@ impl ActionHost for InWorkspace {
         caller: &Caller,
         id: &InvocationId,
     ) -> tilo_actions::remote::Pending<Result<(), ActionHostError>> {
+        if self.host.follows_door(caller, id) {
+            self.host.shared.door_follows.lock_recover().remove(id);
+            self.host.ledger().complete(
+                id,
+                InvocationState::new(
+                    *id,
+                    InvocationUpdate::Cancelled {
+                        invocation: *id,
+                        message: None,
+                    },
+                ),
+            );
+            return Pending::ready(Ok(()));
+        }
         tilo_actions::remote::Pending::ready(if self.host.admitted(caller, id) {
             Err(ActionHostError::NotCancellable {
                 reason: "room governance completes at once".into(),
@@ -1529,8 +1691,20 @@ impl ActionHost for InWorkspace {
     }
 }
 
+/// The longest a follower of the agent door waits before it reads again.
+const DOOR_WAKE: std::time::Duration = std::time::Duration::from_secs(1);
+
+/// The agent door as its read answers it.
+fn door_value(workspaces: &Workspaces) -> Value {
+    serde_json::to_value(workspaces.inner.agent_door.door()).unwrap_or(Value::Null)
+}
+
 /// The providers a relay that governs workspaces answers itself.
-const PROVIDERS: [&str; 2] = [WORKSPACE_GOVERNANCE_PROVIDER, HOST_ACTIONS_PROVIDER];
+const PROVIDERS: [&str; 3] = [
+    WORKSPACE_GOVERNANCE_PROVIDER,
+    HOST_ACTIONS_PROVIDER,
+    agent_door::PROVIDER,
+];
 
 /// What a relay that governs workspaces answers remote actions addressed to it
 /// with: the workspaces' governance (provider [`WORKSPACE_GOVERNANCE_PROVIDER`]), the

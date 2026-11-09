@@ -180,7 +180,7 @@ async fn an_agent_logs_in_with_the_tabs_code_and_shows_in_the_workspace_as_the_p
         .await
         .unwrap();
     let seen = wait_for("the tab to see the agent", || async {
-        let reply = say_here(&tab, lounge.workspace_id, "Bob", Vec::new())
+        let reply = say_here(&tab, lounge.workspace_id, "Bob", Vec::new(), false)
             .await
             .ok()?;
         reply
@@ -199,11 +199,12 @@ async fn an_agent_logs_in_with_the_tabs_code_and_shows_in_the_workspace_as_the_p
         lounge.workspace_id,
         "Claude Code",
         vec![action("Listed", "Workspaces", "Tilo CLI")],
+        true,
     )
     .await
     .unwrap();
     wait_for("the tab to see the agent's next action", || async {
-        let reply = say_here(&tab, lounge.workspace_id, "Bob", Vec::new())
+        let reply = say_here(&tab, lounge.workspace_id, "Bob", Vec::new(), false)
             .await
             .ok()?;
         reply.people.into_iter().find(|person| {

@@ -81,6 +81,7 @@ impl Doors {
             metrics: &self.metrics,
             trust_policy: &self.trust,
             disconnect,
+            stop: None,
             presence: None,
             revocations: &self.revocations,
             carried_calls: None,

@@ -550,6 +550,7 @@ impl Here {
             label,
             window,
             mut actions,
+            ..
         } = request;
         let mut job = None;
         let people = state.workspaces.entry(workspace_id).or_default();
@@ -977,6 +978,7 @@ mod tests {
             label: "Ada".into(),
             window: Some(4),
             actions,
+            agent: false,
         }
     }
 
