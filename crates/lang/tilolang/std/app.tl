@@ -330,9 +330,12 @@ template view header(extra: View) {
 
 /// A window that is a document of `of`: its content at the readable measure. A document edits
 /// its title as its large title, and the host puts what can be done with it behind the "…"
-/// beside that title.
-view document<R>(of: R, content: View) {
-    ui.NavShell(content_kind: .document, title: meta(of).title) {
+/// beside that title. The title is `meta(of).title` unless the document says what it is called
+/// itself: a type whose first text field is an address or another fact its body shows again
+/// names the draft, the note or the card by what a reader knows it as, so the heading never
+/// repeats a line of the body.
+view document<R>(of: R, title: Text = meta(of).title, content: View) {
+    ui.NavShell(content_kind: .document, title: title) {
         content: {
             ui.Scroll {
                 page {

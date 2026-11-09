@@ -890,7 +890,7 @@ view message(m: Message) {
 
 /// A message being written: its window.
 view editor(d: Draft) {
-    std.document(d) {
+    std.document(d, title: if d.subject == "" { "New message" } else { d.subject }) {
         if d.sent or d.recalled {
             field("Status") {
                 text(delivery_says(d))
