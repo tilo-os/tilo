@@ -2045,6 +2045,81 @@ fn has_child(h: &FrameHarness, id: &str) -> bool {
         .any(|child| child.test_id() == Some(id))
 }
 
+/// A bar no wider than a phone's is the app's row: the window keeps its own controls at the
+/// trailing end and gives up the places its search and its new-tab door hold in a wide bar, so
+/// the app's own controls stand there instead of folding into the row's menu.
+#[test]
+fn a_phone_wide_bar_keeps_the_windows_controls_and_gives_the_rest_to_the_app() {
+    let theme = Theme::dark();
+    let m = theme.tokens.metrics;
+    let phone = 390.0_f64;
+    assert!(phone < f64::from(m.compact_breakpoint));
+    let wide = crate::widget::merged_row_width();
+    let kept = crate::widget::merged_row_width_in(phone);
+    assert!(
+        kept > 0.0 && kept < wide,
+        "a phone's bar keeps the window's controls and less than a wide bar keeps: {kept} of \
+         {wide}"
+    );
+    assert!(!crate::widget::merged_row_holds_search(phone));
+    assert!(crate::widget::merged_row_holds_search(f64::from(
+        m.compact_breakpoint
+    )));
+    assert_eq!(
+        crate::widget::merged_row_width_in(f64::from(m.compact_breakpoint)),
+        wide,
+        "a bar of a regular window's width keeps all of the window's furniture"
+    );
+    // What stands in the room a phone's bar keeps: the window's own controls, and neither the
+    // window's search nor its new-tab door, which such a row draws for itself.
+    let slot = crate::widget::WindowBarSlot {
+        row: Rect::new(0.0, 0.0, phone, f64::from(m.header_height)),
+        controls: Rect::new(phone - kept, 0.0, phone, f64::from(m.header_height)),
+        hides_with_bar: false,
+    };
+    let furniture = crate::widget::window_header::RowFurniture::of(slot);
+    assert!(
+        furniture.controls.pill.area() > 0.0,
+        "the window's own controls stand in the room it keeps: {furniture:?}"
+    );
+    assert_eq!(
+        furniture.search,
+        Rect::ZERO,
+        "the app's row draws the search"
+    );
+    assert_eq!(furniture.new_tab, Rect::ZERO, "and its own tabs");
+
+    // The row is the bar then: the app's actions stand in it, where a wide bar's reserve would
+    // have folded them into the row's menu.
+    let actions: Vec<Element> = vec![
+        Box::new(Button::new("new-note", "New note")),
+        Box::new(Button::icon_only(
+            "note-menu",
+            crate::icons::Icon::MoreHorizontal,
+            "Note actions",
+        )),
+    ];
+    let shell = NavShell::new()
+        .content(Probe::boxed("content").0)
+        .content_header("Groceries", actions);
+    let mut h = harness(shell, 390, 800, theme);
+    assert!(
+        h.root_mut::<NavShell>()
+            .set_window_bar(Some(crate::widget::WindowBar {
+                controls_width: kept,
+                revealed: true,
+                top_inset: 0.0,
+                lists_actions: false,
+            }))
+    );
+    settle(&mut h, 390, 800);
+    let shown = child_rect(&h, "new-note").expect("the app's own control stands in the row");
+    assert!(
+        shown.width() > 0.0 && shown.x1 <= phone - kept,
+        "the app's control stands before the window's furniture: {shown:?} of {phone}"
+    );
+}
+
 fn notes_shell_with_search() -> NavShell {
     let actions: Vec<Element> = vec![
         Box::new(Button::icon_only(

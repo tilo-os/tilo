@@ -51,10 +51,11 @@ impl FrameHarness {
         // the bar its band above ([`Self::row_holds_bar`]). Every frame offers it, as a window's
         // frame does, so the row a screen the app opened brought with it is offered too.
         let bar = self.window_bar_offer();
+        let presents = self.presents_search();
         crate::widget::window_header::offer_root_header_bar(self.root.as_mut(), Some(bar));
         // A row holding the bar carries the search the app keeps in it; a bar over the frame
         // presents the window's own.
-        crate::widget::window_header::offer_window_search(self.root.as_mut(), !self.row_holds);
+        crate::widget::window_header::offer_window_search(self.root.as_mut(), presents);
         let frame = self.content_viewport(self.viewport);
         if let Err(error) = self.resize(frame) {
             tracing::warn!(%error, "window bar: the frame under it did not lay out");
@@ -74,7 +75,8 @@ impl FrameHarness {
         self.row_holds = holds;
         // The search follows the bar it stands in: the row's own while the row is the bar, the
         // window's while the bar stands over the frame.
-        crate::widget::window_header::offer_window_search(self.root.as_mut(), !self.row_holds);
+        let presents = self.presents_search();
+        crate::widget::window_header::offer_window_search(self.root.as_mut(), presents);
         let frame = self.content_viewport(self.viewport);
         if let Err(error) = self.resize(frame) {
             tracing::warn!(%error, "window bar: the frame under it did not lay out");
@@ -86,11 +88,19 @@ impl FrameHarness {
     /// now, listing nothing else.
     fn window_bar_offer(&self) -> WindowBar {
         WindowBar {
-            controls_width: crate::widget::merged_row_width(),
+            controls_width: crate::widget::merged_row_width_in(f64::from(self.viewport.0)),
             revealed: true,
             top_inset: 0.0,
             lists_actions: false,
         }
+    }
+
+    /// Whether the window presents the app's search in its own bar: always while its bar stands
+    /// over the frame, and while a row holds the bar only where the room it keeps for its
+    /// furniture holds one ([`crate::widget::merged_row_holds_search`]) — otherwise the row draws
+    /// its own search control.
+    fn presents_search(&self) -> bool {
+        !self.row_holds || crate::widget::merged_row_holds_search(f64::from(self.viewport.0))
     }
 
     /// Whether the app's frame holds the window's bar in a header row of its own, rather than

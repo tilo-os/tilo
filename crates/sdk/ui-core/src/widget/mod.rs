@@ -3223,7 +3223,7 @@ pub use nav_shell::{
 pub use window_header::{
     HISTORY_CONTROL_ID, HeaderStatus, HistoryControl, HistoryOpener, STATUS_ACTION_ID,
     StatusAction, WindowBar, WindowBarSlot, WindowHeader, WindowHistory, WindowStatus,
-    merged_row_width,
+    merged_row_holds_search, merged_row_width, merged_row_width_in,
 };
 mod nav_list;
 pub use nav_list::{

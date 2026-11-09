@@ -378,13 +378,37 @@ pub(crate) struct RowFurnitureState {
 /// in it are one arrangement, never two that can drift apart.
 #[must_use]
 pub fn merged_row_width() -> f64 {
+    merged_row_width_in(WIDE_ENOUGH)
+}
+
+/// What a row `width` wide keeps at its trailing end for the window's furniture: everything
+/// [`merged_row_width`] names while the bar is wider than a phone's, and the window's own controls
+/// alone where it is not. A bar that narrow is the app's row, and the room its own controls need
+/// there is worth more than the window's search and new-tab door, which such a row draws for
+/// itself (its own search control, its own tabs `+`).
+#[must_use]
+pub fn merged_row_width_in(width: f64) -> f64 {
     let wide = Rect::new(0.0, 0.0, WIDE_ENOUGH, WIDE_ENOUGH);
     let slot = WindowBarSlot {
         row: wide,
         controls: wide,
         hides_with_bar: false,
     };
-    (wide.x1 - RowFurniture::of(slot).new_tab.x0).max(0.0)
+    let furniture = RowFurniture::of(slot);
+    let leading = if merged_row_holds_search(width) {
+        furniture.new_tab.x0
+    } else {
+        furniture.controls.pill.x0
+    };
+    (wide.x1 - leading).max(0.0)
+}
+
+/// Whether a bar `width` wide keeps room for the window's search beside the window's own controls
+/// ([`RowFurniture::place_search`]): not where the bar is no wider than a phone's, so a row there
+/// keeps its own search control instead ([`WindowHeader::set_window_presents_search`]).
+#[must_use]
+pub fn merged_row_holds_search(width: f64) -> bool {
+    width >= f64::from(crate::tokens::Metrics::BASE.compact_breakpoint)
 }
 
 /// A side wider than any window: the furniture is measured in one, so nothing it holds is cut.
