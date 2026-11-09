@@ -3871,6 +3871,13 @@ impl FrameHarness {
             } else {
                 kept
             };
+            // An app that gave one control the keyboard as this frame rebuilt it (a note it
+            // opened, a field it just showed) keeps it: the control reports focus in the tree
+            // just built, so the keyboard belongs there rather than on whichever control the last
+            // press left it with.
+            let given = (found.is_none() && stats.rebuilt)
+                .then(|| self.given_focus(&eligible))
+                .flatten();
             // A part its owner rebuilt (a page, a list showing other rows)
             // holds the answer the keyboard was on when the control itself
             // survives: it answers to the same name, alone in the new tree,
@@ -3878,15 +3885,20 @@ impl FrameHarness {
             // A composition the owner service replaced is a new act of the
             // app, not a part rebuilt in place: nothing goes back to what the
             // old tree held.
-            let named = (found.is_none() && stats.rebuilt && !self.owner_service_layout_retired)
+            let named = (found.is_none()
+                && given.is_none()
+                && stats.rebuilt
+                && !self.owner_service_layout_retired)
                 .then(|| self.answering_alone())
                 .flatten();
             drop(admission);
             self.focused = found;
             self.focus_by_name = false;
-            if let Some(node) = named {
+            if let Some(node) = given.or(named) {
+                // Through the one focus path, so a control that kept its focus through a part's
+                // rebuild loses it: one tree holds the keyboard in one place.
                 self.set_focused(Some(node));
-                self.focus_by_name = true;
+                self.focus_by_name = given.is_none();
             }
         }
 
@@ -4831,6 +4843,50 @@ impl FrameHarness {
         });
         let single = answering.next()?;
         answering.next().is_none().then_some(single)
+    }
+
+    /// The control the tree this frame built reports as holding the keyboard, when the app's own
+    /// focus pass named one: exactly one control, or — where several report it — the one that does
+    /// not answer to the name the keyboard was on before the rebuild, since that one only kept its
+    /// flag while its part was rebuilt.
+    fn given_focus(&self, eligible: &dyn Fn(NodeId) -> bool) -> Option<NodeId> {
+        let focused = |node: NodeId| {
+            self.inspect_node(node, |widget| {
+                widget.is_focusable() && widget.is_enabled() && widget.is_focused()
+            })
+            .unwrap_or(false)
+        };
+        // The outermost of a focused control and the controls inside it: an editor's lines report
+        // the keyboard too, and the editor is what a press or an action names.
+        let outermost = |node: NodeId| {
+            let mut parent = self.taffy.parent(node);
+            while let Some(up) = parent {
+                if focused(up) {
+                    return false;
+                }
+                parent = self.taffy.parent(up);
+            }
+            true
+        };
+        let mut controls: Vec<NodeId> = self
+            .node_map
+            .keys()
+            .copied()
+            .filter(|&node| eligible(node) && outermost(node) && focused(node))
+            .collect();
+        if controls.len() > 1
+            && let Some(name) = self.focus_name.as_deref()
+        {
+            controls.retain(|&node| {
+                !self
+                    .inspect_node(node, |widget| widget.test_id() == Some(name))
+                    .unwrap_or(false)
+            });
+        }
+        let [single] = controls.as_slice() else {
+            return None;
+        };
+        Some(*single)
     }
 
     /// Advance keyboard focus like Tab (or Shift+Tab when `back`), cycling the
