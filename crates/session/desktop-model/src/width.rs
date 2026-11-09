@@ -116,6 +116,30 @@ pub fn share_beside(
     (screen_half >= SIDE_BY_SIDE_MIN_PX).then(|| (fitting(half), fitting(half)))
 }
 
+/// The widths a window opened over the desk takes beside the window it
+/// opened next to: the card it draws at — the window, the band of its own
+/// ground round it and the focus ring outside that — is `card_px` wide, and
+/// the window beside it gives up exactly that much of the strip, the two
+/// `gap_px` apart, so the whole card stands beside what the person was reading
+/// instead of over it. `None` when the strip has no room for a window beside
+/// the card.
+///
+/// Returns `(beside, card)`.
+pub fn share_for_float(
+    card_px: f64,
+    strip_usable_px: f64,
+    gap_px: f64,
+) -> Option<(WindowWidth, WindowWidth)> {
+    let usable = strip_usable_px.max(1.0);
+    let beside = usable - gap_px - card_px;
+    (beside >= min_group_px(usable)).then(|| {
+        (
+            WindowWidth::Fraction(floor_permille(beside, usable)),
+            WindowWidth::Fraction(floor_permille(card_px, usable)),
+        )
+    })
+}
+
 /// The largest per-mille of `usable` that [`WindowWidth::resolve`]s to no
 /// more than `px`.
 ///
@@ -262,6 +286,31 @@ mod tests {
     /// Pixels the pair takes, gap included, on `usable`.
     fn pair_px(pair: (WindowWidth, WindowWidth), usable: f64, gap: f64) -> f64 {
         pair.0.resolve(usable) + gap + pair.1.resolve(usable)
+    }
+
+    #[test]
+    fn a_window_opened_over_the_desk_takes_the_width_of_the_card_it_draws_at() {
+        let (usable, gap, card) = (1216.0, 10.0, 640.0);
+        let (beside, floating) =
+            share_for_float(card, usable, gap).expect("a strip holds a window beside a card");
+        assert!(
+            (floating.resolve(usable) - card).abs() <= 1.0,
+            "the card's place is the width it draws at: {:?}",
+            floating.resolve(usable)
+        );
+        assert!(
+            beside.resolve(usable) + gap + floating.resolve(usable) <= usable,
+            "the two tile the strip: {beside:?} and {floating:?}"
+        );
+        assert!(
+            beside.resolve(usable) >= min_group_px(usable),
+            "the window beside the card keeps a window's least width: {beside:?}"
+        );
+        assert_eq!(
+            share_for_float(card, 700.0, gap),
+            None,
+            "a strip too narrow for a window beside the card leaves none"
+        );
     }
 
     #[test]

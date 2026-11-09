@@ -931,6 +931,18 @@ impl ContextMenu {
         } else {
             0.0
         };
+        // The field that asks what is typed shows its hint whole or not at
+        // all: a menu narrower than the hint cuts it mid-word, so the hint is
+        // measured with the rows.
+        if self.query.is_some() {
+            let hint = crate::i18n::I18nManager::lookup_plain(if self.can_ask() {
+                "menu-query-placeholder-ask"
+            } else {
+                "menu-query-placeholder"
+            });
+            let (w, _) = text.measure_style(&hint, None, &style);
+            width = width.max(f64::from(w));
+        }
         // The content's inset on both sides; the row is the menu row height,
         // grown with `s2` of air round the line at large text.
         // However short its labels, a menu stays a menu's width.

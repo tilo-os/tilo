@@ -6,6 +6,7 @@
 //! |---|---|
 //! | [`Surface`] / [`paint_surface`] | one of the five surface levels with its edge and shadow |
 //! | [`paint_window_card`] | a window's card and its frame over the parts that reach its edge |
+//! | [`paint_floating_window_card`] | a window lifted off the desk, in the floating card's material |
 //! | [`paint_document_sheet`] | a document that brings its own colours, on a sheet with an edge |
 //! | [`paint_see_through`] | the see-through material for chrome over pixels being chosen |
 //! | [`FloatingPanel`] / [`FloatingPanelFace`] | a floating surface with header, body and footer slots |
@@ -74,8 +75,8 @@ pub use status_cluster::{
     badge_label, badge_size, paint_unread_badge,
 };
 pub use surface::{
-    DensityRegion, Surface, SurfaceLevel, paint_document_sheet, paint_see_through, paint_surface,
-    paint_window_card,
+    DensityRegion, Surface, SurfaceLevel, paint_document_sheet, paint_floating_window_card,
+    paint_see_through, paint_surface, paint_window_card,
 };
 pub use text_stack::{
     StackSize, TextBlockFace, TextLineAlign, TextLineFace, TextStack, TextStackFace, TextStackProps,

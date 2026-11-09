@@ -121,6 +121,33 @@ fn letting_a_window_go_over_its_strip_still_lands_in_the_gap_it_was_dropped_in()
 }
 
 #[test]
+fn a_float_keeps_its_card_room_inside_the_desk() {
+    let (row, _taffy, _root) = make_row_with_groups_with_taffy(&[&[1], &[2]]);
+    let area = row.get_rect();
+    let room = FLOAT_CARD_ROOM;
+    let corner = Rect::from_origin_size(Point::new(area.x0, area.y0), FLOAT_SIZE);
+    let placed = row.keep_float_inside(corner);
+    assert_eq!(
+        placed.origin(),
+        Point::new(area.x0 + room, area.y0 + room),
+        "a float at the desk's corner stands clear of it, so its band and ring show"
+    );
+    let past = Rect::from_origin_size(Point::new(area.x1, area.y1), FLOAT_SIZE);
+    let past = row.keep_float_inside(past);
+    assert_eq!(
+        (past.x1, past.y1),
+        (area.x1 - room, area.y1 - room),
+        "a float pushed past the desk comes back with its card on it"
+    );
+    let inside = Rect::from_origin_size(Point::new(area.x0 + 120.0, area.y0 + 60.0), FLOAT_SIZE);
+    assert_eq!(
+        row.keep_float_inside(inside),
+        inside,
+        "a float with room round it stands where it was put"
+    );
+}
+
+#[test]
 fn a_floating_window_follows_the_hand_and_snaps_back_into_the_gap_over_the_strip() {
     let (row, _taffy, _root) = make_row_with_groups_with_taffy(&[&[1], &[2], &[3]]);
     let at = Rect::new(120.0, 500.0, 760.0, 900.0);

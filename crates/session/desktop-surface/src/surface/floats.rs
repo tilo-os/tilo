@@ -10,9 +10,9 @@
 use std::collections::HashMap;
 
 use tilo_desktop_model::{CanvasPlace, DesktopTree, FloatPlace, StripId, Workspace, WorkspaceSlot};
-use ui::kurbo::Rect;
+use ui::kurbo::{Point, Rect};
 use ui::num::{f64_of_i64, i32_of_f64, u32_of_f64};
-use ui::widget::{FLOAT_SIZE, FloatAsk, GroupRow, Widget};
+use ui::widget::{FLOAT_CARD_ROOM, FLOAT_SIZE, FloatAsk, GroupRow, Widget};
 
 use super::Shared;
 
@@ -112,27 +112,46 @@ pub(super) fn set(
     workspace.arrangement.set_float(group, float)
 }
 
-/// Where a window an app asks for floats: the rect it stands at, in the
-/// desk's own pixels, and the work area it stands on. Only the rect's origin
-/// places it: a floating window takes [`FLOAT_SIZE`].
-#[derive(Clone, Copy, Debug)]
-pub(super) struct Standing {
-    pub area: CanvasPlace,
-    pub at: Rect,
-}
-
-/// Stand the window `group` of the strip `strip` over the desk at
-/// `standing`: the place the app that asked for it gave, kept in the
-/// workspace's record so every member sees it there, at the size a floating
-/// window takes, since that is the window the desk draws. Returns whether the
-/// tree changed.
-pub(super) fn stand(shared: &mut Shared, strip: StripId, group: u64, standing: Standing) -> bool {
-    let at = Rect::from_origin_size(standing.at.origin(), FLOAT_SIZE);
+/// Stand the window `group` of the strip `strip` over the desk beside the
+/// window it opened next to: the place the strip's share gives it, hung from
+/// the top of the windows standing beside it, so the card it draws at stands
+/// beside what the person was reading instead of over it. The share makes room
+/// for the card — the window's band and focus ring round it — so the window
+/// itself stands the room inside the place, leaving the neighbour the strip's
+/// own gap clear of the card. Returns whether the tree changed.
+pub(super) fn stand_beside(
+    shared: &mut Shared,
+    strip: StripId,
+    row: &GroupRow,
+    group: u64,
+    area: CanvasPlace,
+) -> bool {
+    let Some((_, x0, _)) = row
+        .group_canvas_spans()
+        .into_iter()
+        .find(|(id, ..)| *id == group)
+    else {
+        return false;
+    };
+    // The windows the strip stands in give the height a float hangs from: one
+    // that has not been laid out yet gives none, and the strip's own top stands.
+    let top = row
+        .groups
+        .iter()
+        .filter(|held| held.id != group && !row.is_floating(held.id))
+        .map(Widget::get_rect)
+        .find(|rect| rect.height() > 0.0)
+        .map(|rect| rect.y0);
+    let top = top.unwrap_or_else(|| row.get_rect().y0);
+    let at = Rect::from_origin_size(Point::new(x0 + FLOAT_CARD_ROOM, top), FLOAT_SIZE);
+    // The card the window draws — its band and its focus ring — stands on the
+    // desk whole, which at the desk's own top is not the window's own top.
+    let at = row.keep_float_inside(at);
     set(
         shared,
         strip,
         group,
-        Some(FloatPlace::of_rect(standing.area, place_of(at))),
+        Some(FloatPlace::of_rect(area, place_of(at))),
     )
 }
 

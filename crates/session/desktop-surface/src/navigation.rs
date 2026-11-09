@@ -11,7 +11,6 @@ use tilo_desktop_model::{
     DesktopTree, GroupId, StripId, TabId, WindowGroup, Workspace, WorkspaceSlot,
 };
 use tilo_resource::Effect;
-use ui::kurbo::Rect;
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
@@ -127,30 +126,6 @@ pub struct Destination {
     /// instead of a window of its own.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub group: Option<String>,
-}
-
-/// Where a window an app asks for stands over the desk instead of in its
-/// strip: its rect in the desk's own pixels, as the window that asked for it
-/// saw the place — the box a send was written in, for one.
-#[derive(Clone, Copy, Debug, Default, Deserialize, Serialize, PartialEq)]
-#[serde(deny_unknown_fields)]
-pub struct Standing {
-    /// The rect's left edge.
-    pub x: f64,
-    /// Its top edge.
-    pub y: f64,
-    /// Its width.
-    pub width: f64,
-    /// Its height.
-    pub height: f64,
-}
-
-impl Standing {
-    /// The rect this place names.
-    #[must_use]
-    pub fn rect(self) -> Rect {
-        Rect::new(self.x, self.y, self.x + self.width, self.y + self.height)
-    }
 }
 
 /// A share of its strip a window takes in one step.
@@ -299,11 +274,10 @@ pub enum ChromeEffect {
         /// Open it without taking focus.
         #[param("Open it without taking focus")]
         background: Option<bool>,
-        /// Where it stands over the desk instead of in its strip: the corner
-        /// of the rect is where its window's corner goes, and the window
-        /// takes the floating size.
-        #[param("Where the window stands over the desk, in its own pixels")]
-        float: Option<Standing>,
+        /// Stand it over the desk beside the place it opens into — what a
+        /// conversation a send landed in does — instead of in its strip.
+        #[param("Stand it over the desk beside the place it opens into")]
+        float: Option<bool>,
     },
 
     /// Show an app
@@ -804,10 +778,10 @@ pub enum Admitted {
     Rename(RouteIds, String),
     Strip(WorkspaceSlot, StripId),
     Workspace(WorkspaceSlot),
-    /// An application id; the host checked that it can open it, and where it
-    /// floats: over the desk at that rect when the app that opened it said,
-    /// else in the shown strip.
-    Launch(String, Option<Rect>),
+    /// An application id; the host checked that it can open it, and whether
+    /// it stands over the desk beside the place it opens into when the app
+    /// that opened it asked, else in the shown strip.
+    Launch(String, bool),
     /// Show application `app`: the shown strip's window of it when there is
     /// one by the time the command applies, else a new one. Decided then,
     /// not at dispatch, since a workspace's desktop can arrive in between: a
@@ -1071,13 +1045,12 @@ fn admit_chrome(
             background,
             float,
         } => match (beside, float) {
-            (Some(_), Some(_)) => {
+            (Some(_), Some(true)) => {
                 Err("A window opens beside another or over the desk, not both".into())
             }
             (Some(beside), _) => tab_route(tree, beside)
                 .and_then(|ids| admit_beside(ids, app, background.unwrap_or(false))),
-            (None, Some(float)) => admit_launch(tree, app, Some(float.rect())),
-            (None, None) => admit_launch(tree, app, None),
+            (None, float) => admit_launch(tree, app, float.unwrap_or(false)),
         },
         ChromeEffect::ShowApp { app } => admit_open(tree, app),
         ChromeEffect::MoveTab { tab, to } => {
@@ -1224,8 +1197,8 @@ fn admit_chrome(
 }
 
 /// A launch of `app`, checked against the desktop it opens on: in the shown
-/// strip, or floating at `float` where the app that asked for it said.
-fn admit_launch(tree: &DesktopTree, app: &str, float: Option<Rect>) -> Result<Admitted, String> {
+/// strip, or over the desk beside the place it opens into when `float` .
+fn admit_launch(tree: &DesktopTree, app: &str, float: bool) -> Result<Admitted, String> {
     // A workspace may hold no strip yet: the first window opened in it makes
     // the strip it goes in.
     tree.active_workspace().ok_or("Workspace unavailable")?;
@@ -1333,7 +1306,7 @@ fn admit_open(tree: &DesktopTree, app: &str) -> Result<Admitted, String> {
 pub(crate) fn resolve_open(tree: &DesktopTree, app: &str) -> Admitted {
     match admit_open(tree, app) {
         Ok(Admitted::Select(ids)) => Admitted::Select(ids),
-        _ => Admitted::Launch(app.to_owned(), None),
+        _ => Admitted::Launch(app.to_owned(), false),
     }
 }
 
@@ -2075,7 +2048,7 @@ mod tests {
         let launch = chrome("open-app", serde_json::json!({"app":"so.tilo.notes"}));
         assert_eq!(
             admit(&launch, &tree),
-            Ok(Admitted::Launch("so.tilo.notes".into(), None))
+            Ok(Admitted::Launch("so.tilo.notes".into(), false))
         );
         let empty = chrome("open-app", serde_json::json!({"app":""}));
         assert!(admit(&empty, &tree).is_err());

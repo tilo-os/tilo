@@ -21,9 +21,7 @@ use tilo_desktop_model::commands::move_tab_to_workspace;
 use tilo_desktop_model::{
     DesktopTree, Display, GroupId, IdMinter, Tab, TabId, TileContent, Workspace, WorkspaceSlot,
 };
-use tilo_desktop_surface::navigation::{
-    ChromeEffect, DeskEffect, RouteIds, Standing, active_route,
-};
+use tilo_desktop_surface::navigation::{ChromeEffect, DeskEffect, RouteIds, active_route};
 use tilo_desktop_surface::outcome::{Closed, Outcome};
 use tilo_desktop_surface::{DesktopHandle, DesktopSurface, TileSource, seed_tree};
 use ui::kurbo::Rect;
@@ -39,6 +37,19 @@ const CRASHED_PREFIX: &str = "crashed:";
 /// front and behind.
 const HELD_PREFIX: &str = "held:";
 const HELD_BEHIND_PREFIX: &str = "held-behind:";
+
+/// The name of a launch whose place the desk holds for a window the session
+/// starts itself.
+fn held_name(app: &str, background: bool) -> String {
+    format!(
+        "{}{app}",
+        if background {
+            HELD_BEHIND_PREFIX
+        } else {
+            HELD_PREFIX
+        }
+    )
+}
 
 /// What the policy learns about a window.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -861,25 +872,37 @@ impl DesktopPolicy {
         let Some(beside) = self.handle.read(|tree| route_of(tree, tab)) else {
             return false;
         };
-        let launch = format!(
-            "{}{app}",
-            if background {
-                HELD_BEHIND_PREFIX
-            } else {
-                HELD_PREFIX
-            }
-        );
         let command = ChromeEffect::OpenApp {
-            app: launch,
+            app: held_name(app, background),
             beside: Some(beside.tab.to_string()),
             background: Some(background),
             float: None,
         };
+        self.hold_launch(app, command, background)
+    }
+
+    /// Hold a tab for the next window of `app` in a window of its own, right
+    /// after the one in front and standing over the desk beside it: the window
+    /// a send landed in, which the desk gives the strip's room to so the card
+    /// it draws at stands beside the window that sent rather than over it.
+    /// Taking focus there unless `background`.
+    pub fn hold_window(&mut self, app: &str, background: bool) -> bool {
+        let command = ChromeEffect::OpenApp {
+            app: held_name(app, background),
+            beside: None,
+            background: Some(background),
+            float: Some(true),
+        };
+        self.hold_launch(app, command, background)
+    }
+
+    /// Ask the desk for `command`'s window and keep the place it makes for
+    /// `app`. The desktop makes the tab on its next pass: the place is asked
+    /// for here, so one that never comes can be given up before then.
+    fn hold_launch(&self, app: &str, command: ChromeEffect, background: bool) -> bool {
         if self.handle.dispatch(command).is_err() {
             return false;
         }
-        // The desktop makes the tab on its next pass: the place is asked for
-        // here, so one that never comes can be given up before then.
         self.held
             .borrow_mut()
             .entry(app.to_owned())
@@ -887,38 +910,6 @@ impl DesktopPolicy {
             .push(HeldTab {
                 tab: None,
                 background,
-            });
-        true
-    }
-
-    /// Open a window of `app` standing over the desk at `at` — the corner of
-    /// its rect is where the window's corner goes, in the desk's own pixels
-    /// — as the tab held for the launch that follows: a conversation a send
-    /// landed in stands where the box that sent it stood. Whether the desk
-    /// took it.
-    pub fn open_floated(&mut self, app: &str, at: [f64; 4]) -> bool {
-        let standing = Standing {
-            x: at[0],
-            y: at[1],
-            width: at[2] - at[0],
-            height: at[3] - at[1],
-        };
-        let command = ChromeEffect::OpenApp {
-            app: format!("{HELD_PREFIX}{app}"),
-            beside: None,
-            background: None,
-            float: Some(standing),
-        };
-        if self.handle.dispatch(command).is_err() {
-            return false;
-        }
-        self.held
-            .borrow_mut()
-            .entry(app.to_owned())
-            .or_default()
-            .push(HeldTab {
-                tab: None,
-                background: false,
             });
         true
     }

@@ -29,7 +29,8 @@ use ui::taffy::{NodeId, Style, TaffyTree};
 use ui::time::{Duration, Instant};
 use ui::vello::Scene;
 use ui::widget::{
-    GroupRow, OutputSpan, STRIP_EDGE_GUTTER_PX, TaffyTreeExt as _, TileHost, Widget, WindowGroup,
+    FLOAT_CARD_ROOM, FLOAT_SIZE, GroupRow, OutputSpan, STRIP_EDGE_GUTTER_PX, TaffyTreeExt as _,
+    TileHost, Widget, WindowGroup,
 };
 use ui::winit::event::{ElementState, MouseButton, MouseScrollDelta, WindowEvent};
 use ui::{TextRenderer, Theme};
@@ -1065,7 +1066,7 @@ impl DesktopSurface {
             self.shared
                 .borrow_mut()
                 .queue
-                .push(Admitted::Launch(app, None));
+                .push(Admitted::Launch(app, false));
         }
         let mut shared = self.shared.borrow_mut();
         let mut next = shared.presentation.clone();
@@ -1176,6 +1177,9 @@ impl DesktopSurface {
                     *strip,
                     floats::area_of(row.get_rect()),
                 )
+                .into_iter()
+                .map(|(group, at)| (group, row.keep_float_inside(at)))
+                .collect()
             } else {
                 HashMap::new()
             };
@@ -1694,12 +1698,6 @@ impl DesktopSurface {
                     }
                     Admitted::Workspace(workspace) => shared.tree.active = workspace,
                     Admitted::Launch(app, float) => {
-                        let float = float.and_then(|at| {
-                            Some(floats::Standing {
-                                area: self.shown_area(&shared)?,
-                                at,
-                            })
-                        });
                         match launch::open(self.tiles.as_mut(), &mut shared, &app, float) {
                             Some(op) => ops.push(op),
                             None => continue,
@@ -1818,7 +1816,8 @@ impl DesktopSurface {
                     group,
                     index,
                     tab,
-                } => self.open_group(strip, group, index, &tab),
+                    float,
+                } => self.open_group(strip, group, index, &tab, float),
                 RowOp::TabInGroup {
                     strip,
                     group,
@@ -1959,7 +1958,7 @@ impl DesktopSurface {
 
     /// Present a launched window. A row first built after the launch already holds it, with its
     /// content, from the tree.
-    fn open_group(&mut self, strip: StripId, group: GroupId, index: usize, tab: &Tab) {
+    fn open_group(&mut self, strip: StripId, group: GroupId, index: usize, tab: &Tab, float: bool) {
         let Some(row) = self.rows.get_mut(&strip) else {
             return;
         };
@@ -1994,10 +1993,25 @@ impl DesktopSurface {
             // off the display, and no frame would show it until it arrived there.
             row.set_motion_source(ui::tokens::MotionSource::Action);
             // A window the workspace holds floating takes no run of the strip, so
-            // it shares nothing with what stands there.
-            if !floats::holds(&shared.tree, strip, group) {
+            // it shares nothing with what stands there — unless it opens over the
+            // desk beside it, where the strip gives up the width its card draws at,
+            // band and ring included, so the card stands beside the window it
+            // opened next to, clear of it, not over it.
+            if float {
+                row.share_with_floating_neighbour(group, FLOAT_SIZE.0 + 2.0 * FLOAT_CARD_ROOM);
+            } else if !floats::holds(&shared.tree, strip, group) {
                 row.share_with_neighbour(group);
             }
+        }
+        if float
+            && let Some(area) = {
+                let shared = self.shared.borrow();
+                self.shown_area(&shared)
+            }
+            && let Some(row) = self.rows.get(&strip)
+        {
+            let mut shared = self.shared.borrow_mut();
+            floats::stand_beside(&mut shared, strip, row, group, area);
         }
         self.reveal = Some((strip, group));
         self.structure_dirty = true;

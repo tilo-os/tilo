@@ -202,6 +202,42 @@ pub fn paint_window_card(
     on
 }
 
+/// A window card a person lifted off the desk, drawn in the shell's floating
+/// material: the panel ground and hairline a menu stands on and the two-layer
+/// lift under it, so the window reads as standing over the desk rather than as
+/// another window on it. `content` is clipped to the card's shape; the window's
+/// own edge is stroked around it by the caller, outside that clip, where a
+/// focused window's ring belongs. Returns the theme a child on the card paints
+/// with, as [`paint_window_card`] does.
+pub fn paint_floating_window_card(
+    scene: &mut Scene,
+    transform: Affine,
+    rect: Rect,
+    theme: &Theme,
+    content: impl FnOnce(&mut Scene, &Theme),
+) -> Theme {
+    let fill = crate::widget::floating_surface::card_ground(theme);
+    let on = theme.on_ground(fill);
+    if rect.width() <= 0.0 || rect.height() <= 0.0 {
+        return on;
+    }
+    let radius = crate::widget::floating_surface::card_radius(rect, theme);
+    crate::widget::floating_surface::paint_card_shadow(scene, transform, rect, 1.0, theme);
+    crate::widget::floating_surface::paint_card_body(scene, transform, rect, theme);
+    let shape = RoundedRect::from_rect(rect, radius);
+    scene.push_layer(
+        Fill::NonZero,
+        vello::peniko::BlendMode::default(),
+        1.0,
+        transform,
+        &shape,
+    );
+    content(scene, &on);
+    scene.pop_layer();
+    crate::widget::floating_surface::paint_card_edge(scene, transform, rect, theme);
+    on
+}
+
 /// A document set on a reader: a page that brings its own colours (an HTML
 /// mail on its light sheet, a web page), drawn by `content` and clipped to
 /// the raised level's radius, with the hairline derived from the window

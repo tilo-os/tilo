@@ -898,3 +898,31 @@ fn a_menu_button_lists_its_rows_in_the_window_bar() {
         "a menu with nothing to list is not a button the bar offers"
     );
 }
+
+/// A menu that takes typing shows its hint whole: the field is drawn as wide
+/// as the hint plus its own inset on both sides, so a hint longer than every
+/// row widens the panel rather than running out of the field mid-word.
+#[test]
+fn the_field_that_takes_typing_shows_its_hint_whole() {
+    // Motion reads at its end: this test checks the resting frame.
+    let _settled = crate::motion::testing::settled();
+    let theme = Theme::dark();
+    let mut text = TextRenderer::new();
+    let mut menu = ContextMenu::new();
+    menu.push(MenuItem::action("Kopieren", || {}));
+    menu.set_owner_asks(true);
+    menu.open_at([100.0, 100.0]);
+    assert!(menu.can_ask(), "fixture: the menu can send what is typed");
+    assert!(menu.query.is_some(), "fixture: the menu takes typing");
+    menu.layout_within(&mut text, &theme);
+    let hint = crate::i18n::I18nManager::lookup_plain("menu-query-placeholder-ask");
+    let (hint_width, _) = text.measure_style(&hint, None, &theme.text(TextRole::Body));
+    let field = menu
+        .query_rect()
+        .expect("fixture: the field stands on the menu");
+    let shown = field.width() - 2.0 * (label_inset(&theme) - PADDING);
+    assert!(
+        shown + 0.5 >= f64::from(hint_width),
+        "the field shows {shown} px of the {hint_width} px hint {hint:?}"
+    );
+}

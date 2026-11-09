@@ -1381,6 +1381,30 @@ impl WindowGroup {
             .map(|(_, h)| &mut **h)
     }
 
+    /// The window is drawn as a card whose outline the card paints: its tile
+    /// keeps its own edge off, so no arc of it is cut by the card's clip.
+    pub(crate) fn set_edge_by_card(&mut self, by_card: bool) {
+        if let Some(host) = self.active_host_mut() {
+            host.set_edge_by_card(by_card);
+        }
+    }
+
+    /// Stroke the window's edge, and its focus ring, along the card `rect` it
+    /// is drawn at: the outline a window keeps when it stands as one card off
+    /// the desk, in the colour and weight its tile's own edge has.
+    pub fn draw_card_edge(
+        &self,
+        scene: &mut Scene,
+        transform: Affine,
+        theme: &Theme,
+        radius: f64,
+        rect: Rect,
+    ) {
+        if let Some(host) = self.active_host() {
+            host.draw_card_edge(scene, transform, theme, radius, rect);
+        }
+    }
+
     /// Read-only twin of [`Self::active_host_mut`] — avoids a `&mut`
     /// borrow that would conflict with the frame builder's own borrows.
     pub fn active_host(&self) -> Option<&TileHost> {

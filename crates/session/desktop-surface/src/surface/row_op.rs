@@ -16,12 +16,14 @@ pub(super) enum RowOp {
     },
     Width(StripId, GroupId, WindowWidth),
     ToggleMaximized(StripId, GroupId),
-    /// A launched window, already in the tree at `index` of `strip` .
+    /// A launched window, already in the tree at `index` of `strip` , standing over the desk
+    /// beside it when `float` .
     Open {
         strip: StripId,
         group: GroupId,
         index: usize,
         tab: Tab,
+        float: bool,
     },
     /// A tab opened into a group that is already there, at `index` of its tabs, with the tab that
     /// ends up in front.

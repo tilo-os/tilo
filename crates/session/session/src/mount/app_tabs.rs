@@ -160,10 +160,6 @@ pub struct AppTabs {
     /// answered: they reach the session's records and its search, which the answers themselves do
     /// not.
     sent: Vec<Sent>,
-    /// Where each window's send-to box last stood, in the window's own
-    /// coordinates, by connection: the place the window an app floats after
-    /// a send ([`FloatingSurfaceClientMessage::OpenFloated`]) stands at.
-    boxes: BTreeMap<u64, [f64; 4]>,
     asked: Vec<Asked>,
     /// The windows apps asked the desk for, by app and in ask order: each is
     /// started once the desk has made the tab it takes.
@@ -272,7 +268,6 @@ impl AppTabs {
             host_shell: HostShellAsks::default(),
             socket,
             sent: Vec::new(),
-            boxes: BTreeMap::new(),
             asked: Vec::new(),
             held: BTreeMap::new(),
         })
@@ -313,7 +308,6 @@ impl AppTabs {
                 cards: &self.cards,
                 launches: &self.launches,
                 sent: &mut self.sent,
-                boxes: &mut self.boxes,
                 asked: &mut self.asked,
                 held: &mut self.held,
             };
@@ -669,8 +663,6 @@ struct Answers<'a> {
     /// out after the pass has every ask: they reach the session's records, which the answers
     /// themselves do not touch.
     sent: &'a mut Vec<Sent>,
-    /// Where each window's send-to box last stood, by connection.
-    boxes: &'a mut BTreeMap<u64, [f64; 4]>,
     asked: &'a mut Vec<Asked>,
     /// The windows the apps asked the desk for, by app and in ask order.
     held: &'a mut BTreeMap<String, VecDeque<HeldStart>>,
@@ -757,7 +749,6 @@ impl Answers<'_> {
                     false,
                 );
                 self.links.remove(&connection);
-                self.boxes.remove(&connection);
                 // The cards it presented, and the windows the desk stood
                 // them in, go with it.
                 let mut gone = false;
@@ -952,13 +943,10 @@ impl Answers<'_> {
                 to,
                 attached,
                 text,
-                bounds,
+                // Where the box stood places nothing: the window a send lands in opens beside
+                // the window that sent it, which the desk makes room for.
+                bounds: _,
             } => {
-                // Where the box stood is where the window the send floats
-                // stands, if the app asks for one.
-                if let Some(bounds) = bounds {
-                    self.boxes.insert(connection, bounds);
-                }
                 self.sent.push(Sent {
                     app,
                     workspace,
@@ -968,10 +956,10 @@ impl Answers<'_> {
                     text,
                 });
             }
-            // The app's send landed on `anchor`: a window of the desk,
-            // floating where its box stood, showing it.
+            // The app's send landed on `anchor`: a window of the desk showing it, beside the
+            // window that sent.
             FloatingSurfaceClientMessage::OpenFloated { anchor, .. } => {
-                self.answer_open_floated(&app, &anchor, connection, &reply, own);
+                self.answer_open_after_send(&app, &anchor);
             }
             FloatingSurfaceClientMessage::SearchRecipients { request, query } => {
                 self.asked.push(Asked {
@@ -1051,32 +1039,20 @@ impl Answers<'_> {
         );
     }
 
-    /// Float a window of `app` over the desk where the box of `connection`
-    /// stood, showing the item `anchor` names: the conversation a message
-    /// from that box landed in. A window of the desk, not a card of the
-    /// app's: the workspace's record keeps it where it stands, for every
-    /// member. The window that sent it goes on showing what it showed.
-    fn answer_open_floated(
-        &mut self,
-        app: &str,
-        anchor: &str,
-        connection: u64,
-        reply: &Arc<Mutex<UnixStream>>,
-        tab: Option<u64>,
-    ) {
-        let at = self
-            .boxes
-            .remove(&connection)
-            .and_then(|bounds| self.box_place(tab, bounds));
-        let Some(at) = at else {
-            refuse(reply, app, "open_floated", NO_BOX);
-            return;
-        };
+    /// Open a window of `app` beside the one that sent from its box, showing
+    /// the item `anchor` names: the conversation a message from that box
+    /// landed in. It opens in a window of its own, standing over the desk as
+    /// the chord floats a window — over the place its strip gave it, the strip
+    /// sharing out the card it draws at, so it stands beside what the person
+    /// was reading instead of over it. The workspace's record keeps it there
+    /// beside its sender, for every member, and the window that sent it goes on
+    /// showing what it showed.
+    fn answer_open_after_send(&mut self, app: &str, anchor: &str) {
         // The place it opens into is there from this frame; the window starts once the desk has
         // made its tab, so the tab is the window's instance.
         if !self
             .desktop
-            .with_policy(|policy| policy.open_floated(app, at))
+            .with_policy(|policy| policy.hold_window(app, false))
         {
             return;
         }
@@ -1099,21 +1075,6 @@ impl Answers<'_> {
             .entry(app.to_owned())
             .or_default()
             .push_back(start);
-    }
-
-    /// Where the box `bounds` of the window in `tab` stands on the desk, in the
-    /// desk's own pixels: where the content of that window is, as of this
-    /// pass's layout. `None` when the desk shows no such window.
-    fn box_place(&self, tab: Option<u64>, bounds: [f64; 4]) -> Option<[f64; 4]> {
-        let content = self
-            .desktop
-            .with_policy(|policy| policy.content_rect(tab?))?;
-        Some([
-            content.x0 + bounds[0],
-            content.y0 + bounds[1],
-            content.x0 + bounds[2],
-            content.y0 + bounds[3],
-        ])
     }
 
     /// Withhold `app`'s windows from captures, as its own ask narrows what
@@ -1197,10 +1158,6 @@ const NO_WINDOW: &str = "this session shows no window of that app";
 
 /// An app asked for the capture studio where the session has none.
 const NO_CAPTURE: &str = "this session has no capture studio";
-
-/// An app asked for a window where its own box never sent from: there is no
-/// place the send stood.
-const NO_BOX: &str = "this window's box sent nothing to stand beside";
 
 /// An app asked to float a surface over the desktop, which this session has
 /// no layer for.

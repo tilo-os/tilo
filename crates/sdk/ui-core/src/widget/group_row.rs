@@ -37,7 +37,7 @@ pub use hint_places::HintPlaces;
 mod canvas;
 #[path = "group_row_floats.rs"]
 mod floats;
-pub use floats::{FLOAT_SIZE, FloatAsk};
+pub use floats::{FLOAT_CARD_ROOM, FLOAT_SIZE, FloatAsk};
 #[path = "group_row_scroll.rs"]
 mod scroll;
 pub use canvas::{CANVAS_ZOOM_MAX, CANVAS_ZOOM_MIN, CanvasView};
@@ -2006,6 +2006,62 @@ impl GroupRow {
     /// one running past its edge while its widths catch up.
     pub fn share_with_neighbour_at_once(&mut self, group_id: u64) -> bool {
         self.share_with_neighbour_placing(group_id, true)
+    }
+
+    /// Make room for the window `group_id` that opened over the desk beside its neighbour: the
+    /// card a floating window draws at — the window and the band and ring it draws round it — is
+    /// `card_px` wide, and the window it opened next to gives up exactly that much of the strip,
+    /// so the card stands beside what the person was reading rather than over it. Both widths
+    /// stand there from this frame, since the card lands over the place they make. False when the
+    /// strip has no room beside the card.
+    pub fn share_with_floating_neighbour(&mut self, group_id: u64, card_px: f64) -> bool {
+        let Some(idx) = self.groups.iter().position(|g| g.id == group_id) else {
+            return false;
+        };
+        let lane = self.lane_of_group(group_id);
+        let usable_per_group = self.usable_per_group();
+        let usable = usable_per_group
+            .get(idx)
+            .copied()
+            .unwrap_or(DEFAULT_STRIP_USABLE_PX);
+        let beside = |i: usize| {
+            self.groups.get(i).is_some_and(|g| {
+                !g.is_closing()
+                    && !g.maximized
+                    && !self.is_floating(g.id)
+                    && self.lane_of_group(g.id) == lane
+            })
+        };
+        let neighbour = match idx.checked_sub(1) {
+            Some(left) if beside(left) => left,
+            _ if beside(idx.saturating_add(1)) => idx.saturating_add(1),
+            _ => return false,
+        };
+        if usable_per_group.get(neighbour) != Some(&usable) {
+            return false;
+        }
+        let gap = if self.external_navigation {
+            0.0
+        } else {
+            HANDLE_SLOT_PX
+        };
+        let Some((neighbour_width, card_width)) =
+            tilo_desktop_model::width::share_for_float(card_px, usable, gap)
+        else {
+            return false;
+        };
+        for (i, width) in [(neighbour, neighbour_width), (idx, card_width)] {
+            let Some(g) = self.groups.get_mut(i) else {
+                continue;
+            };
+            if g.width() != width {
+                g.share_width(width);
+                g.stamp_pending_width_change();
+                g.snap_width_spring();
+            }
+        }
+        self.structure_dirty = true;
+        true
     }
 
     fn share_with_neighbour_placing(&mut self, group_id: u64, at_once: bool) -> bool {
