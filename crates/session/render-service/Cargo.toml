@@ -22,7 +22,7 @@ skrifa = { version = "0.44.0", default-features = false, features = ["std"] }
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 # The workspace-hack's native feature set does not build for wasm32.
 workspace-hack = { version = "0.1" }
-ui = { package = "tilo-ui", path = "../../sdk/ui-core", features = ["dmabuf-import"], }
+ui = { package = "tilo-ui", path = "../../sdk/ui-core", features = ["dmabuf-import"] }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 gbm = { version = "0.18", default-features = false, features = ["drm-support"] }

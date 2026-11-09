@@ -94,7 +94,7 @@ registry-types = { path = "../../packaging/registry-types" }
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 # The workspace-hack's native feature set does not build for wasm32.
 workspace-hack = { version = "0.1" }
-ui = { package = "tilo-ui", path = "../../sdk/ui-core", features = ["portal", "webview-adblock", "dmabuf-import", "gpu-video", "mpris"], }
+ui = { package = "tilo-ui", path = "../../sdk/ui-core", features = ["portal", "webview-adblock", "dmabuf-import", "gpu-video", "mpris"] }
 
 [lints]
 workspace = true

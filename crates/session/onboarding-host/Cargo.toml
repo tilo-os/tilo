@@ -73,4 +73,4 @@ workspace = true
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 workspace-hack = { version = "0.1" }
-ui = { package = "tilo-ui", path = "../../sdk/ui-core", }
+ui = { package = "tilo-ui", path = "../../sdk/ui-core" }
