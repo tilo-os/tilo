@@ -1271,16 +1271,14 @@ fn present_component(
         definition.record_kind.clone(),
     );
     let (checkout, named_new) = match &config.record {
+        // The workspace's own document of an app that keeps one: opened as a
+        // launch naming nothing opens it, so a link to it works before anyone
+        // wrote it (the first write founds it), as it does natively.
         Some(existing)
             if definition.keeps_workspace_record()
                 && existing == RecordId::package_primary().as_str() =>
         {
-            (
-                Some(RecordCheckout::package_primary(
-                    definition.record_kind.clone(),
-                )),
-                None,
-            )
+            (None, None)
         }
         Some(existing) => (
             Some(RecordCheckout::new(
