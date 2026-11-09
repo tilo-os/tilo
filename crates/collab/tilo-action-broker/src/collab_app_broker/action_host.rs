@@ -688,8 +688,10 @@ impl AppBrokerState {
             // nothing is answered.
             | RemoteActionMessage::RetiredResourceWatch { .. }
             // An application puts content through its own store, not into
-            // another device's over this door.
-            | RemoteActionMessage::ContentPutRequest { .. } => None,
+            // another device's over this door; nor does it read another
+            // device's workspace content through it.
+            | RemoteActionMessage::ContentPutRequest { .. }
+            | RemoteActionMessage::ContentGetRequest { .. } => None,
             RemoteActionMessage::CatalogueResponse { .. }
             | RemoteActionMessage::Receipt(_)
             | RemoteActionMessage::Update { .. }
@@ -699,6 +701,7 @@ impl AppBrokerState {
             | RemoteActionMessage::ConfirmationResponse { .. }
             | RemoteActionMessage::RetiredResourceReading { .. }
             | RemoteActionMessage::ContentPutResponse { .. }
+            | RemoteActionMessage::ContentGetResponse { .. }
             | RemoteActionMessage::CatalogueChanged { .. } => Some(person.clone()),
         };
         permitted.ok_or_else(|| {

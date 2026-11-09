@@ -9,10 +9,15 @@
 //! `export-content`) exactly as it does on a device. The host answers the
 //! workspace's members from it too, so a page that opens the record later
 //! reads the same bytes.
+//!
+//! The same caller reads those bytes back out, a piece at a time
+//! ([`super::RemoteActionMessage::ContentGetRequest`]): only this
+//! workspace's store answers, so a reference another workspace holds reads
+//! as content this one does not have.
 
 use tilo_actions::remote::{
-    ActionHostError, Caller, ContentPut, ContentPutStep, ContentPuts, Pending, RemoteActionMessage,
-    pending,
+    ActionHostError, CONTENT_GETS_UNAVAILABLE, Caller, ContentGetAnswer, ContentPiece, ContentPut,
+    ContentPutStep, ContentPuts, MAX_CONTENT_FRAME_BYTES, Pending, RemoteActionMessage, pending,
 };
 use tilo_content::ContentStore;
 use tilo_lock::MutexRecover as _;
@@ -23,6 +28,53 @@ use crate::worker::ConfinedReplica;
 /// The most bytes one upload into a workspace's store takes: as much as the
 /// host answers a member's request for content with.
 pub const MAX_PUT_BYTES: u64 = 64 * 1024 * 1024;
+
+/// One piece of `content` read out of `store`: `length` bytes from `offset`,
+/// or one piece's worth when `length` is zero.
+///
+/// # Errors
+///
+/// A reference that is not one, content this store does not hold, an offset
+/// past its end, or a piece longer than a frame carries.
+fn piece(
+    store: &ContentStore,
+    content: &str,
+    offset: u64,
+    length: u64,
+) -> Result<ContentPiece, ActionHostError> {
+    let length = if length == 0 {
+        MAX_CONTENT_FRAME_BYTES as u64
+    } else {
+        length
+    };
+    if length > MAX_CONTENT_FRAME_BYTES as u64 {
+        return Err(ActionHostError::InvalidRequest {
+            reason: format!("a piece carries at most {MAX_CONTENT_FRAME_BYTES} bytes"),
+        });
+    }
+    let hash =
+        tilo_actions::content_hash(content).ok_or_else(|| ActionHostError::InvalidRequest {
+            reason: format!("{content} is not a tilo.content:<hash> reference"),
+        })?;
+    let bytes = store
+        .read(hash)
+        .ok_or_else(|| ActionHostError::InvalidRequest {
+            reason: format!("this workspace's store holds no {content}"),
+        })?;
+    let size = u64::try_from(bytes.len()).unwrap_or(u64::MAX);
+    if offset > size {
+        return Err(ActionHostError::InvalidRequest {
+            reason: format!("the content is {size} bytes: an offset of {offset} is past its end"),
+        });
+    }
+    let from = usize::try_from(offset).unwrap_or(usize::MAX);
+    let to = usize::try_from(offset.saturating_add(length).min(size)).unwrap_or(usize::MAX);
+    Ok(ContentPiece {
+        size,
+        offset,
+        bytes: bytes.get(from..to).unwrap_or_default().to_vec(),
+    })
+}
 
 /// Puts into one workspace's store.
 struct StorePuts(ContentStore);
@@ -143,6 +195,52 @@ impl WorkspaceActions {
         }
         answer.map(respond)
     }
+
+    /// Answer `caller`'s request for a piece of `content` from the content
+    /// store of the host's workspace `workspace_id`. The same caller puts
+    /// files as reads them back: only the host's own person, as only they
+    /// run document actions through it.
+    pub(super) fn content_get(
+        &self,
+        workspace_id: u64,
+        caller: &Caller,
+        correlation: u64,
+        (content, offset, length): (String, u64, u64),
+    ) -> Pending<RemoteActionMessage> {
+        let respond = move |result| RemoteActionMessage::ContentGetResponse {
+            correlation,
+            result,
+        };
+        if !self.authorized(caller) {
+            return Pending::ready(respond(Err(ActionHostError::NotPermitted)));
+        }
+        // The store is found once on the service's thread, then kept.
+        let known = self
+            .shared
+            .stores
+            .lock_recover()
+            .get(&workspace_id)
+            .cloned();
+        if let Some(store) = known {
+            return Pending::ready(respond(
+                piece(&store, &content, offset, length).and_then(ContentGetAnswer::new),
+            ));
+        }
+        let (done, answer) = pending();
+        let job = Job::ContentGet {
+            workspace_id,
+            content,
+            offset,
+            length,
+            done,
+        };
+        if let Err(Job::ContentGet { done, .. }) = self.submit(job) {
+            done.complete(Err(ActionHostError::Unavailable {
+                reason: "the host's workspace actions are not running".into(),
+            }));
+        }
+        answer.map(respond)
+    }
 }
 
 impl Worker {
@@ -172,6 +270,22 @@ impl Worker {
                     reason: tilo_actions::remote::CONTENT_PUTS_UNAVAILABLE.into(),
                 })?;
         self.shared.puts.step(&StorePuts(store), caller, step)
+    }
+
+    /// The piece of `content` asked of `workspace_id`'s store.
+    pub(super) fn content_get(
+        &self,
+        workspace_id: u64,
+        content: &str,
+        offset: u64,
+        length: u64,
+    ) -> Result<ContentGetAnswer, ActionHostError> {
+        let store =
+            self.workspace_content(workspace_id)
+                .ok_or_else(|| ActionHostError::Unavailable {
+                    reason: CONTENT_GETS_UNAVAILABLE.into(),
+                })?;
+        ContentGetAnswer::new(piece(&store, content, offset, length)?)
     }
 
     /// `replica`, a record of the workspace `workspace` names, lent the

@@ -709,6 +709,8 @@ fn apply(inner: &mut Inner, answer: RemoteActionMessage) -> Option<RemoteActionM
         | RemoteActionMessage::RetiredResourceReading { .. }
         | RemoteActionMessage::ContentPutRequest { .. }
         | RemoteActionMessage::ContentPutResponse { .. }
+        | RemoteActionMessage::ContentGetRequest { .. }
+        | RemoteActionMessage::ContentGetResponse { .. }
         | RemoteActionMessage::CatalogueChanged { .. } => None,
     }
 }

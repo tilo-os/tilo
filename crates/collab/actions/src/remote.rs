@@ -40,6 +40,7 @@ pub mod agent_runs;
 mod application;
 mod catalogue;
 mod confirmation;
+mod content_get;
 mod content_put;
 pub mod crash_records;
 pub mod downloaded_apps;
@@ -82,10 +83,10 @@ pub use catalogue::{
     CatalogueResource, CatalogueRow, MAX_CATALOGUE_PAGE, ResourceViewLocator, RowVisibility,
     ViewResourceQuery,
 };
+pub use content_get::{CONTENT_GETS_UNAVAILABLE, ContentGetAnswer, ContentGets, ContentPiece};
 pub use content_put::{
     CONTENT_PUTS_UNAVAILABLE, ContentPut, ContentPutAnswer, ContentPutStep, ContentPuts,
-    HostedContentPuts, MAX_CONTENT_PUT_CHUNK, MAX_CONTENT_PUT_FRAME_BYTES, MAX_HOSTED_CONTENT_PUTS,
-    MAX_OPEN_CONTENT_PUTS,
+    HostedContentPuts, MAX_CONTENT_PUT_CHUNK, MAX_HOSTED_CONTENT_PUTS, MAX_OPEN_CONTENT_PUTS,
 };
 pub use nodes::{
     NODE_PERMITS_ACTION, NODE_RESOURCE_PREFIX, SHARE_NODE_ACTION, UNSHARE_NODE_ACTION, node_target,
@@ -115,6 +116,12 @@ pub const REMOTE_ACTIONS_VERSION: u16 = 1;
 /// Upper bound on one encoded frame. Catalogues are the largest messages;
 /// a host that needs more pages them rather than raising this.
 pub const MAX_REMOTE_ACTION_FRAME_BYTES: usize = 1024 * 1024;
+
+/// The most raw bytes one piece of content carries, into a workspace's store
+/// ([`ContentPutStep::Append`]) or out of it ([`ContentGetAnswer`]): hex
+/// doubles them, and the frame stays within
+/// [`MAX_REMOTE_ACTION_FRAME_BYTES`]. A caller splits anything larger.
+pub const MAX_CONTENT_FRAME_BYTES: usize = 384 * 1024;
 
 /// Default number of invocations an [`InvocationLedger`] remembers.
 pub const DEFAULT_LEDGER_CAPACITY: usize = 1024;
@@ -1199,6 +1206,12 @@ pub trait ActionHost {
         None
     }
 
+    /// Where this host's callers read content back out of their workspace's
+    /// content store ([`ContentGets`]); `None` for a host without one.
+    fn content_gets(&self) -> Option<std::sync::Arc<dyn ContentGets>> {
+        None
+    }
+
     /// Who is in the workspace now, as this host's collaboration knows it:
     /// its people and the agents its roster names. `None` for a host that
     /// keeps no roster, which reports no presence rather than an empty one.
@@ -1340,6 +1353,25 @@ pub enum RemoteActionMessage {
         correlation: u64,
         result: Result<ContentPutAnswer, ActionHostError>,
     },
+    /// Ask the device for a piece of content in its workspace's store: what a
+    /// client of another device's actions (an agent's MCP session through its
+    /// own device) downloads a file by, having the file's
+    /// `tilo.content:<hash>` reference.
+    ContentGetRequest {
+        correlation: u64,
+        /// The content's reference, `tilo.content:<hash>`.
+        content: String,
+        /// Where in the content the piece starts.
+        offset: u64,
+        /// How many bytes the piece may carry; zero asks for one piece's
+        /// worth ([`MAX_CONTENT_FRAME_BYTES`]).
+        length: u64,
+    },
+    /// Answer to [`Self::ContentGetRequest`] with the same correlation.
+    ContentGetResponse {
+        correlation: u64,
+        result: Result<ContentGetAnswer, ActionHostError>,
+    },
 }
 
 /// Largest piece of a record one answer carries, before encoding.
@@ -1440,6 +1472,7 @@ impl RemoteActionMessage {
                 | Self::FeedbackRequest { .. }
                 | Self::ConfirmationRequest { .. }
                 | Self::ContentPutRequest { .. }
+                | Self::ContentGetRequest { .. }
         )
     }
 }
@@ -1605,6 +1638,16 @@ pub fn serve<H: ActionHost + Clone + Send + 'static>(
                 }),
             })
         }
+        // Content is read from a store a device keeps; a host that keeps
+        // none says so.
+        RemoteActionMessage::ContentGetRequest { correlation, .. } => {
+            Pending::ready(RemoteActionMessage::ContentGetResponse {
+                correlation,
+                result: Err(ActionHostError::Unavailable {
+                    reason: CONTENT_GETS_UNAVAILABLE.into(),
+                }),
+            })
+        }
         RemoteActionMessage::CatalogueResponse { .. }
         | RemoteActionMessage::Receipt(_)
         | RemoteActionMessage::Update { .. }
@@ -1615,6 +1658,7 @@ pub fn serve<H: ActionHost + Clone + Send + 'static>(
         | RemoteActionMessage::RetiredResourceWatch { .. }
         | RemoteActionMessage::RetiredResourceReading { .. }
         | RemoteActionMessage::ContentPutResponse { .. }
+        | RemoteActionMessage::ContentGetResponse { .. }
         | RemoteActionMessage::CatalogueChanged { .. } => return None,
     };
     // An abandoned answer still answers: the caller hears a refusal.
@@ -1671,6 +1715,12 @@ pub fn refuse(
                 result: Err(error),
             }
         }
+        RemoteActionMessage::ContentGetRequest { correlation, .. } => {
+            RemoteActionMessage::ContentGetResponse {
+                correlation: *correlation,
+                result: Err(error),
+            }
+        }
         RemoteActionMessage::CatalogueResponse { .. }
         | RemoteActionMessage::Receipt(_)
         | RemoteActionMessage::Update { .. }
@@ -1681,6 +1731,7 @@ pub fn refuse(
         | RemoteActionMessage::RetiredResourceWatch { .. }
         | RemoteActionMessage::RetiredResourceReading { .. }
         | RemoteActionMessage::ContentPutResponse { .. }
+        | RemoteActionMessage::ContentGetResponse { .. }
         | RemoteActionMessage::CatalogueChanged { .. } => return None,
     })
 }

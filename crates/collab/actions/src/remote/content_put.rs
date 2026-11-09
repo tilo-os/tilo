@@ -48,11 +48,6 @@ pub trait ContentPut: Send {
     fn finish(self: Box<Self>) -> Result<String, ActionHostError>;
 }
 
-/// The most raw bytes one [`ContentPutStep::Append`] frame carries: hex
-/// doubles them, and a frame stays within
-/// [`super::MAX_REMOTE_ACTION_FRAME_BYTES`]. A client splits a larger chunk.
-pub const MAX_CONTENT_PUT_FRAME_BYTES: usize = 384 * 1024;
-
 /// Open uploads one host keeps for all its callers at once; past it, the
 /// upload left untouched longest is dropped and stores nothing.
 pub const MAX_HOSTED_CONTENT_PUTS: usize = 64;
@@ -172,10 +167,11 @@ impl HostedContentPuts {
                 offset,
                 bytes,
             } => {
-                if bytes.len() > MAX_CONTENT_PUT_FRAME_BYTES.saturating_mul(2) {
+                if bytes.len() > super::MAX_CONTENT_FRAME_BYTES.saturating_mul(2) {
                     return Err(ActionHostError::InvalidRequest {
                         reason: format!(
-                            "a piece carries at most {MAX_CONTENT_PUT_FRAME_BYTES} bytes"
+                            "a piece carries at most {} bytes",
+                            super::MAX_CONTENT_FRAME_BYTES
                         ),
                     });
                 }

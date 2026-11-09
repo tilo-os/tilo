@@ -5,7 +5,7 @@
 
 use tilo_actions::remote::{
     ActionHostError, Caller, ContentPut, ContentPutAnswer, ContentPutStep, ContentPuts,
-    MAX_CONTENT_PUT_FRAME_BYTES,
+    MAX_CONTENT_FRAME_BYTES,
 };
 
 use super::SessionActions;
@@ -60,7 +60,7 @@ impl ContentPut for SessionPut {
                 ),
             });
         }
-        for piece in chunk.chunks(MAX_CONTENT_PUT_FRAME_BYTES) {
+        for piece in chunk.chunks(MAX_CONTENT_FRAME_BYTES) {
             let step = ContentPutStep::append(self.upload, self.written, piece);
             match self.actions.put_step(step)? {
                 ContentPutAnswer::Appended { written } => self.written = written,

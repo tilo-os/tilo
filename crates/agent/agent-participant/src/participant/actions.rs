@@ -138,8 +138,18 @@ impl AgentParticipant {
                     }),
                 }
             }
+            // Nor any for another device to read out of.
+            RemoteActionMessage::ContentGetRequest { correlation, .. } => {
+                RemoteActionMessage::ContentGetResponse {
+                    correlation,
+                    result: Err(ActionHostError::Unavailable {
+                        reason: tilo_actions::remote::CONTENT_GETS_UNAVAILABLE.into(),
+                    }),
+                }
+            }
             RemoteActionMessage::FeedbackResponse { .. }
             | RemoteActionMessage::ContentPutResponse { .. }
+            | RemoteActionMessage::ContentGetResponse { .. }
             | RemoteActionMessage::CatalogueResponse { .. }
             | RemoteActionMessage::RecordResponse { .. }
             | RemoteActionMessage::Receipt(_)

@@ -5,6 +5,8 @@ mod agent;
 mod confirm;
 #[path = "mcp_content.rs"]
 mod content;
+#[path = "mcp_get.rs"]
+mod get;
 #[path = "mcp_narration.rs"]
 mod narration;
 #[path = "mcp_page.rs"]
@@ -1307,6 +1309,9 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
         if self.host.content_puts().is_some() {
             tools.extend(put::tool_definitions());
         }
+        if self.host.content_gets().is_some() {
+            tools.extend(get::tool_definitions());
+        }
         if self.devices.is_some() {
             tools.push(crate::remote_door::tool_definition());
         }
@@ -1441,6 +1446,9 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
         match call {
             Ok(call) if put::is_put_tool(&call.name) => {
                 Ok(self.put_call(&call.name, call.arguments).await)
+            }
+            Ok(call) if get::is_get_tool(&call.name) => {
+                Ok(self.get_call(&call.name, call.arguments, structured).await)
             }
             Ok(call) if call.name == crate::remote_door::DEVICES_TOOL => match &self.devices {
                 Some(devices) => {

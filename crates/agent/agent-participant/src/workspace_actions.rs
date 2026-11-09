@@ -338,6 +338,15 @@ enum Job {
         step: tilo_actions::remote::ContentPutStep,
         done: Completer<Result<tilo_actions::remote::ContentPutAnswer, ActionHostError>>,
     },
+    /// A piece of content asked of a workspace whose store the service has
+    /// not found yet.
+    ContentGet {
+        workspace_id: u64,
+        content: String,
+        offset: u64,
+        length: u64,
+        done: Completer<Result<tilo_actions::remote::ContentGetAnswer, ActionHostError>>,
+    },
 }
 
 impl Job {
@@ -348,6 +357,7 @@ impl Job {
             Self::Invoke { .. } => "invoke",
             Self::Ran(_) => "ran",
             Self::Content { .. } => "content",
+            Self::ContentGet { .. } => "content-get",
         }
     }
 }
@@ -520,6 +530,12 @@ impl WorkspaceActions {
             RemoteActionMessage::ContentPutRequest { correlation, step } => {
                 self.content_put(workspace_id, caller, correlation, step)
             }
+            RemoteActionMessage::ContentGetRequest {
+                correlation,
+                content,
+                offset,
+                length,
+            } => self.content_get(workspace_id, caller, correlation, (content, offset, length)),
             RemoteActionMessage::FeedbackResponse { .. }
             | RemoteActionMessage::CatalogueResponse { .. }
             | RemoteActionMessage::Receipt(_)
@@ -532,6 +548,7 @@ impl WorkspaceActions {
             | RemoteActionMessage::RetiredResourceWatch { .. }
             | RemoteActionMessage::RetiredResourceReading { .. }
             | RemoteActionMessage::ContentPutResponse { .. }
+            | RemoteActionMessage::ContentGetResponse { .. }
             | RemoteActionMessage::CatalogueChanged { .. } => return None,
         })
     }
@@ -671,7 +688,8 @@ impl HostActions {
         use tilo_relay_protocol::agents::AGENTS_PROVIDER;
         let supervisor = match &message {
             RemoteActionMessage::FeedbackRequest { .. }
-            | RemoteActionMessage::ContentPutRequest { .. } => false,
+            | RemoteActionMessage::ContentPutRequest { .. }
+            | RemoteActionMessage::ContentGetRequest { .. } => false,
             RemoteActionMessage::CatalogueRequest { query, .. } => {
                 query.provider.as_deref() == Some(AGENTS_PROVIDER)
             }
@@ -690,6 +708,7 @@ impl HostActions {
             | RemoteActionMessage::RetiredResourceWatch { .. }
             | RemoteActionMessage::RetiredResourceReading { .. }
             | RemoteActionMessage::ContentPutResponse { .. }
+            | RemoteActionMessage::ContentGetResponse { .. }
             | RemoteActionMessage::CatalogueChanged { .. } => return None,
         };
         if supervisor {
@@ -1205,6 +1224,13 @@ impl Worker {
                     step,
                     done,
                 } => done.complete(self.content_put(workspace_id, &caller, step)),
+                Job::ContentGet {
+                    workspace_id,
+                    content,
+                    offset,
+                    length,
+                    done,
+                } => done.complete(self.content_get(workspace_id, &content, offset, length)),
             }
         }
     }

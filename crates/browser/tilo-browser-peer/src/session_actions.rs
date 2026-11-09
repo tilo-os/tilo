@@ -31,8 +31,9 @@ use std::time::Duration;
 
 use tilo_actions::remote::{
     ActionHost, ActionHostError, Caller, CataloguePage, CatalogueQuery, Completer,
-    ContentPutAnswer, InvocationReceipt, InvocationState, InvokeRequest, MAX_REMOTE_WAIT, Pending,
-    ReceiptStatus, RemoteActionFrame, RemoteActionMessage, UpdateMark, pending, serve,
+    ContentGetAnswer, ContentPutAnswer, InvocationReceipt, InvocationState, InvokeRequest,
+    MAX_REMOTE_WAIT, Pending, ReceiptStatus, RemoteActionFrame, RemoteActionMessage, UpdateMark,
+    pending, serve,
 };
 use tilo_actions::{InvocationId, InvocationUpdate};
 use tilo_lock::MutexRecover as _;
@@ -40,6 +41,8 @@ use web_time::Instant;
 
 use crate::session::{PeerEvent, PeerEvents, PeerHandle};
 
+#[cfg(not(target_arch = "wasm32"))]
+mod gets;
 #[cfg(not(target_arch = "wasm32"))]
 mod puts;
 
@@ -94,6 +97,7 @@ struct Waiting {
     cancels: HashMap<InvocationId, Vec<Asked<Answered<()>>>>,
     follows: HashMap<InvocationId, Followed>,
     puts: HashMap<u64, Asked<Answered<ContentPutAnswer>>>,
+    gets: HashMap<u64, Asked<Answered<ContentGetAnswer>>>,
 }
 
 /// An invocation the device accepted, as it last answered for it.
@@ -122,6 +126,10 @@ enum Give {
         Completer<Answered<ContentPutAnswer>>,
         Answered<ContentPutAnswer>,
     ),
+    Get(
+        Completer<Answered<ContentGetAnswer>>,
+        Answered<ContentGetAnswer>,
+    ),
 }
 
 impl Give {
@@ -132,6 +140,7 @@ impl Give {
             Self::Update(answer, value) => answer.complete(value),
             Self::Cancel(answer, value) => answer.complete(value),
             Self::Put(answer, value) => answer.complete(value),
+            Self::Get(answer, value) => answer.complete(value),
         }
     }
 }
@@ -159,6 +168,9 @@ impl Waiting {
         }
         for (_, asked) in self.puts.drain() {
             give.push(Give::Put(asked.answer, Err(error.clone())));
+        }
+        for (_, asked) in self.gets.drain() {
+            give.push(Give::Get(asked.answer, Err(error.clone())));
         }
     }
 
@@ -196,6 +208,17 @@ impl Waiting {
                 give.push(Give::Put(asked.answer, Err(late())));
             }
         }
+        let expired: Vec<u64> = self
+            .gets
+            .iter()
+            .filter(|(_, asked)| asked.until <= now)
+            .map(|(correlation, _)| *correlation)
+            .collect();
+        for correlation in expired {
+            if let Some(asked) = self.gets.remove(&correlation) {
+                give.push(Give::Get(asked.answer, Err(late())));
+            }
+        }
     }
 
     fn is_empty(&self) -> bool {
@@ -204,6 +227,7 @@ impl Waiting {
             && self.updates.is_empty()
             && self.cancels.is_empty()
             && self.puts.is_empty()
+            && self.gets.is_empty()
     }
 
     /// The requests `message` answers.
@@ -251,6 +275,14 @@ impl Waiting {
             } => {
                 if let Some(asked) = self.puts.remove(&correlation) {
                     give.push(Give::Put(asked.answer, result));
+                }
+            }
+            RemoteActionMessage::ContentGetResponse {
+                correlation,
+                result,
+            } => {
+                if let Some(asked) = self.gets.remove(&correlation) {
+                    give.push(Give::Get(asked.answer, result));
                 }
             }
             _ => {}
@@ -307,6 +339,33 @@ impl SessionActions {
             .send(RemoteActionMessage::ContentPutRequest { correlation, step })
         {
             self.0.waiting.lock_recover().puts.remove(&correlation);
+            return Err(error);
+        }
+        answered
+            .wait_timeout(REPLY_DEADLINE)
+            .ok()
+            .flatten()
+            .unwrap_or_else(|| Err(unavailable("the device did not answer in time")))
+    }
+
+    /// Ask the device for a piece of `content`, waiting for its answer.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn get_piece(&self, content: &str, offset: u64, length: u64) -> Answered<ContentGetAnswer> {
+        let correlation = self.0.next_correlation.fetch_add(1, Ordering::Relaxed);
+        let (answer, answered) = pending();
+        self.0
+            .waiting
+            .lock_recover()
+            .gets
+            .insert(correlation, Asked::new(answer));
+        let request = RemoteActionMessage::ContentGetRequest {
+            correlation,
+            content: content.to_owned(),
+            offset,
+            length,
+        };
+        if let Err(error) = self.0.send(request) {
+            self.0.waiting.lock_recover().gets.remove(&correlation);
             return Err(error);
         }
         answered
@@ -502,6 +561,13 @@ impl ActionHost for SessionActions {
     #[cfg(not(target_arch = "wasm32"))]
     fn content_puts(&self) -> Option<Arc<dyn tilo_actions::remote::ContentPuts>> {
         Some(Arc::new(puts::SessionPuts(self.clone())))
+    }
+
+    /// Content read out of the device's workspace's store, piece by piece
+    /// over the session: a caller off a page waits for each answer.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn content_gets(&self) -> Option<Arc<dyn tilo_actions::remote::ContentGets>> {
+        Some(Arc::new(gets::SessionGets(self.clone())))
     }
 
     fn query(&self, _caller: &Caller, query: CatalogueQuery) -> Pending<Answered<CataloguePage>> {

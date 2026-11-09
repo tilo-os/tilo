@@ -101,6 +101,8 @@ the same answer typed in `structuredContent`, so programs get JSON.
 
 Everything else goes to the workspace's own runtime, as the grant: `tilo_ls`,
 `tilo_read`, `tilo_find`, `tilo_do`, `tilo_status` and `tilo`. File bytes go
-into the workspace's content store with the runtime's `tilo_put_*` tools.
+into the workspace's content store with the runtime's `tilo_put_*` tools, and
+come back out of it with `tilo_get` (`{content, offset?, length?}`, answering
+the bytes base64 a piece at a time).
 After that, files go through the apps' own actions, which take the
 `tilo.content:<hash>` reference.

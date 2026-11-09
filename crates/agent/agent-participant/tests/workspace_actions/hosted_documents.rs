@@ -292,6 +292,7 @@ async fn undo_run(page: &mut Browser, route: &DocumentRoute, run: &str) {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn an_agent_fills_a_form_and_writes_a_letter_on_a_hosted_workspace_with_no_page_open() {
+    use base64::Engine as _;
     let (root, _) = tilo_user_identity::UserIdentity::generate("Ada", 1);
     let host = enrol(&root, "tilo.sh", DeviceCapabilities::host());
     let reviewer = enrol(&root, "reviewer's phone", DeviceCapabilities::member());
@@ -450,6 +451,24 @@ async fn an_agent_fills_a_form_and_writes_a_letter_on_a_hosted_workspace_with_no
         .content(WORKSPACE, &letter_pdf)
         .expect("the letter's PDF is kept in the workspace");
     assert!(kept.starts_with(b"%PDF"), "a PDF");
+
+    // The letter downloads back: what the agent put and the app made is
+    // readable by the agent that made it, as a file it can keep.
+    let letter_docx = hosted
+        .agents
+        .content(WORKSPACE, &docx)
+        .expect("the letter's Word file is kept in the workspace");
+    let fetched = json_in(&tool(&server, "tilo_get", json!({"content": docx})).await);
+    assert_eq!(fetched["offset"], 0);
+    assert_eq!(fetched["size"], letter_docx.len());
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(fetched["bytes"].as_str().expect("the piece's bytes"))
+        .expect("base64");
+    assert!(bytes.starts_with(b"PK"), "a Word file");
+    assert_eq!(
+        bytes, letter_docx,
+        "the download is the file the workspace keeps"
+    );
 
     // 4. The reviewer opens the workspace on their phone.
     let mut page = Browser::open(&hosted, &reviewer, &host).await;
