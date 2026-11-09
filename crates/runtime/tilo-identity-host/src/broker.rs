@@ -753,9 +753,10 @@ fn require_trusted_current_device(
         ));
     }
     // Served from memory only while the fleet files are unchanged, so a
-    // revocation is seen by the very next call.
+    // revocation — of the device or of the stand-in that issued it — is seen by
+    // the very next call.
     let fleet = crate::device_fleet::DeviceFleetStore::from_env()?.load_cached(&profile.id)?;
-    if fleet.is_revoked(&device_key) {
+    if !crate::certificates::admitted(&profile.user_public_key, &fleet, &cert) {
         return Err(io::Error::new(
             io::ErrorKind::PermissionDenied,
             "this device has been revoked for the selected identity",
