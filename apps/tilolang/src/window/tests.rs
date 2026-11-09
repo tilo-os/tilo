@@ -476,6 +476,41 @@ impl Workspace {
         self.settle();
     }
 
+    /// The window's search, as the bar runs it: what the window offers the bar and the driver
+    /// that types into it.
+    fn window_search(&mut self) -> (ui::widget::SearchDriver, ui::widget::InPlace) {
+        let in_place = ui::widget::InPlace::of(&mut self.window);
+        let mut driver = ui::widget::SearchDriver::default();
+        driver.open(in_place);
+        (driver, in_place)
+    }
+
+    /// Land what the person typed in the field they left: the change their typing made lands as
+    /// one, as the window lands it when the field leaves the keyboard (the bar's search taking
+    /// it, a pause, the window closing).
+    fn land_typed(&mut self) {
+        if let Some(host) = self.window.current_host() {
+            host.store().close_edit();
+        }
+        self.window.commit_planned();
+        self.settle();
+    }
+
+    /// Type `text` into the window's search, as the bar does, and take what the app answers:
+    /// the bar reads the count again on the frame after, as the app's answer arrives.
+    fn type_in_search(&mut self, driver: &mut ui::widget::SearchDriver, text: &str) {
+        for _ in 0..2 {
+            driver.drive(
+                &mut self.window,
+                text,
+                ui::widget::FindOptions::default(),
+                None,
+                false,
+            );
+            self.settle();
+        }
+    }
+
     /// Press the header's button labelled `label`.
     fn header_action(&mut self, label: &str) {
         // The bar's own button for the action, not a control of the page that happens to be
@@ -2733,4 +2768,162 @@ fn the_composed_tree_passes_the_window_s_validator() {
             .is_err(),
         "an undescribed component is refused"
     );
+}
+
+// ----- the window's search ----------------------------------------------------------------
+
+#[test]
+fn typing_in_the_window_s_search_narrows_the_tasks_list_to_what_matches() {
+    let mut workspace = Workspace::staged("tasks", "a busy week");
+    let flat = workspace.key_of("ui.NavItem", "label", "Move flat");
+    workspace.fire(&flat, "select", None);
+    let before = workspace.rows();
+    assert!(
+        before.len() > 1,
+        "the project's place lists its tasks: {before:?}"
+    );
+    let (mut driver, in_place) = workspace.window_search();
+    assert_eq!(
+        in_place,
+        ui::widget::InPlace::Query,
+        "the frame says where the search goes, so typing narrows the list in place"
+    );
+    workspace.type_in_search(&mut driver, "boxes");
+    let after = workspace.rows();
+    assert_eq!(
+        after.len(),
+        1,
+        "only the task that says boxes is left: {after:?} of {before:?}"
+    );
+    assert!(
+        after[0].1.contains("boxes"),
+        "the row left is the one the search found: {after:?}"
+    );
+    assert_eq!(
+        driver.count(),
+        Some(ui::widget::FilterCount::new(1, before.len())),
+        "the search says how many it left of how many the list held"
+    );
+    // Closing the search widens the list again.
+    driver.drive(
+        &mut workspace.window,
+        "",
+        ui::widget::FindOptions::default(),
+        None,
+        true,
+    );
+    workspace.settle();
+    assert_eq!(
+        workspace.rows().len(),
+        before.len(),
+        "the list widens back to the place's tasks"
+    );
+}
+
+#[test]
+fn find_in_an_open_note_counts_its_matches_and_replaces_them_all_in_one_change() {
+    let mut workspace = Workspace::seeded("notes");
+    let note = workspace
+        .window
+        .detail_target()
+        .expect("the scenario's note")
+        .clone();
+    let body = node_with(&workspace.composed(), "ui.BlockEditor", "", "")
+        .expect("the note's body")
+        .key
+        .clone();
+    // The note's body, as the person writing it leaves it: three occurrences of a word.
+    workspace.window.act(UiEvent::EditRich(
+        body,
+        typed("Ship the boat. Ship the crew. Ship the cargo."),
+    ));
+    workspace.land_typed();
+    let body_of = |host: &tilolang_tilo::host::Host| match host.runtime().read(&note, "body") {
+        Ok(RtValue::Rich(rich)) => rich.written_text(),
+        other => panic!("a note's body is rich text: {other:?}"),
+    };
+    assert_eq!(
+        body_of(&workspace.window.current_host().expect("the host started")),
+        "Ship the boat. Ship the crew. Ship the cargo."
+    );
+    let (mut driver, in_place) = workspace.window_search();
+    assert_eq!(
+        in_place,
+        ui::widget::InPlace::Document,
+        "a note stands in the window: the search finds in it, not in the list beside it"
+    );
+    let find = |workspace: &mut Workspace, driver: &mut ui::widget::SearchDriver, step| {
+        driver.drive(
+            &mut workspace.window,
+            "Ship",
+            ui::widget::FindOptions::default(),
+            step,
+            false,
+        );
+        workspace.settle();
+    };
+    find(&mut workspace, &mut driver, None);
+    assert_eq!(
+        driver.position(),
+        Some((1, 3)),
+        "the note holds three, the first is current"
+    );
+    find(&mut workspace, &mut driver, Some(true));
+    assert_eq!(driver.position(), Some((2, 3)), "next");
+    find(&mut workspace, &mut driver, Some(false));
+    assert_eq!(driver.position(), Some((1, 3)), "previous");
+    // Replacing them all is one change of the field: one step to undo, as the person's own
+    // typing is.
+    let heads = workspace.doc.get_heads();
+    let touched = driver.replace(
+        &mut workspace.window,
+        "Ship",
+        ui::widget::FindOptions::default(),
+        "Launch",
+        true,
+    );
+    assert!(touched, "the replacement was taken");
+    workspace.land_typed();
+    assert_eq!(
+        body_of(&workspace.window.current_host().expect("the host started")),
+        "Launch the boat. Launch the crew. Launch the cargo.",
+        "every match replaced"
+    );
+    assert_eq!(
+        workspace.doc.get_changes(&heads).len(),
+        1,
+        "one change: one step to undo"
+    );
+}
+
+// `std.browse` narrows its list to the window's search, beside the place and the order it holds.
+#[test]
+fn typing_in_the_window_s_search_narrows_a_standard_list_window() {
+    let mut workspace = Workspace::seeded("notes");
+    workspace.window.close_detail();
+    workspace.settle();
+    let before = workspace.rows();
+    assert!(before.len() > 3, "the notebook lists its notes: {before:?}");
+    let (mut driver, in_place) = workspace.window_search();
+    assert_eq!(
+        in_place,
+        ui::widget::InPlace::Query,
+        "with no note open the window narrows its list"
+    );
+    workspace.type_in_search(&mut driver, "groceries");
+    let after = workspace.rows();
+    assert_eq!(after.len(), 1, "one note says it: {after:?}");
+    assert!(
+        after[0].1.contains("Groceries"),
+        "the note the search found: {after:?}"
+    );
+    // A note's body is rich text: its words find it too.
+    workspace.type_in_search(&mut driver, "oat milk");
+    let body = workspace.rows();
+    assert_eq!(
+        body.len(),
+        1,
+        "the note whose body says it: {body:?} of {before:?}"
+    );
+    assert!(body[0].1.contains("Groceries"), "{body:?}");
 }

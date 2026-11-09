@@ -49,6 +49,12 @@ pub struct NavShellProps {
     /// The content's Back was pressed.
     #[component(event)]
     pub back: Event,
+    /// The window's search holds this text now: the frame narrows what it lists to
+    /// it, the way a place chosen in its sidebar narrows it. Empty when the search
+    /// closed. A view that declares it says what the window's search writes; one
+    /// that does not is searched in place by its document, or not at all.
+    #[component(event(value = String))]
+    pub search: Event,
 }
 
 impl PropType for ContentKind {
@@ -124,6 +130,10 @@ impl Described for NavShell {
             overview_actions,
             pane,
             back,
+            // The host fires the search's event itself, at the frame the view declared it on
+            // ([`crate::widget::Queryable`] over the window's model): the shell paints
+            // nothing of its own for it.
+            search: _,
         } = props;
         let mut shell = Self::new().with_id(key).content_kind(content_kind);
         if let Some(sidebar) = sidebar {

@@ -71,6 +71,20 @@ impl FieldRead {
     }
 }
 
+/// What `value` is, as the read `read` compares it: a rich text field as the text it is written
+/// as, which is what search finds it by (search.md §2), and every other field as [`FieldRead::lit`]
+/// reads it.
+///
+/// # Errors
+///
+/// As [`lit_of`].
+pub fn field_lit_of(read: &FieldRead, value: FieldValue) -> Result<Lit, StoreError> {
+    if let FieldValue::Rich(rich) = &value {
+        return Ok(Lit::Text(rich.written_text()));
+    }
+    read.lit(value)
+}
+
 /// What the field `id` holds, `value` being what the store holds of it and `absent` what an
 /// unwritten one reads as, as a predicate compares it: a set as its members, a collection as
 /// how many items it has.
@@ -1432,6 +1446,17 @@ pub trait Store {
     /// `NotFound` for a missing target; `Invalid` when the stored shape does not fit the kind.
     fn read(&self, at: &ResourceRef, field: &FieldSpec) -> Result<FieldValue, StoreError>;
 
+    /// The field `read` names of `at`, as a predicate compares it: a rich text field as the
+    /// text it is written as, which is what search finds it by (search.md §2), and every other
+    /// field as [`lit_of`] reads it.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::read`] and [`lit_of`].
+    fn field_lit(&self, at: &ResourceRef, read: &FieldRead) -> Result<Lit, StoreError> {
+        field_lit_of(read, self.read(at, &read.spec)?)
+    }
+
     /// The types every loaded package declares, as the runtime loads and reloads them: the
     /// fields a record has, which a store that reads a record's links by its type finds in
     /// them. A store that keeps an index is told them when its schema is registered.
@@ -1493,8 +1518,7 @@ pub trait Store {
         let mut items = Vec::new();
         for id in all.iter() {
             let target = at.item(&id, item.clone());
-            let holds =
-                pred.eval(&mut |read: &FieldRead| read.lit(self.read(&target, &read.spec)?))?;
+            let holds = pred.eval(&mut |read: &FieldRead| self.field_lit(&target, read))?;
             if holds {
                 items.push(id);
             }

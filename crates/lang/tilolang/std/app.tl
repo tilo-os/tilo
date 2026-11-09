@@ -129,9 +129,11 @@ template view add_entry(placeholder: Text, create: Action) {
 /// with all of them called `everything`; the sort menu when it gives `sorts`, the fields the app
 /// names as orders (`[Note.title]`), the list's own order first; the entry at the list's end when
 /// it gives `entry`; and nothing to list when the place chosen finds nothing, where it says
-/// `empty`. The window owns the query — the place a person chose and the order they chose are its
-/// state, kept for them alone — and the list is that one query, the title over it and its count
-/// naming that place.
+/// `empty`. The window owns the query — the place a person chose, what the bar's search holds
+/// and the order they chose are its state, kept for them alone — and the list is that one query,
+/// the title over it and its count naming that place. The search's text narrows the list beside
+/// the place and the order, found by the same search the store answers every field from; closing
+/// the search widens it again.
 ///
 /// The rows open beside the list when their type has a window of its own (`opens`, the type's own
 /// fact): choosing one opens it in the column beside the list, and until one is chosen the list
@@ -156,9 +158,12 @@ template view browse<R, T>(
     row: (T) -> View,
 ) {
     state query: Text = ""
+    state found: Text = ""
     state order: Option<Sort<T>> = .none
     let kind = meta(T)
-    let asked = if let o = order { query + " " + o.query } else { query }
+    // The place chosen, what the window's search holds, and the order chosen: one query.
+    let asked = if not found.is_empty() { query + " " + found } else { query }
+    let asked = if let o = order { asked + " " + o.query } else { asked }
     let shown = items.matching(asked)
     let title = places.find(p -> p.query == query)?.label ?? everything
     let sidebar_title = if not places.is_empty() { meta(of).title }
@@ -169,6 +174,7 @@ template view browse<R, T>(
             overview_title: title,
             overview_count: shown.len(),
         ) {
+            on search(t: Text): set(found, t)
             sidebar: {
                 if not places.is_empty() {
                     std.places(query, places, everything, icon: kind.icon)
@@ -192,6 +198,7 @@ template view browse<R, T>(
             count: shown.len(),
             sidebar_title: sidebar_title,
         ) {
+            on search(t: Text): set(found, t)
             sidebar: {
                 if not places.is_empty() {
                     std.places(query, places, everything, icon: kind.icon)

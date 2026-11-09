@@ -286,6 +286,9 @@ pub struct AppWindow {
     /// The actions the app offers the person at this window, as their command palette lists
     /// them ([`ToUi::Actions`]).
     actions: Vec<tilo_actions::ActionDescriptor>,
+    /// How many rows the frame's list showed before the search typed anything: what the
+    /// search's counter counts them of.
+    search_total: Option<usize>,
 }
 
 impl AppWindow {
@@ -384,6 +387,7 @@ impl AppWindow {
             shape: Shape::Window,
             notices: Vec::new(),
             actions: Vec::new(),
+            search_total: None,
         }
     }
 
@@ -2508,16 +2512,135 @@ impl AppWindow {
     }
 }
 
+/// The event a view's window frame declares where its search writes: what is typed in the
+/// window's bar narrows what the frame lists, as a place chosen in its sidebar does.
+const SEARCH: &str = "search";
+
+impl AppWindow {
+    /// Whether the frame the views drew says where the window's search goes.
+    fn searches(&self) -> bool {
+        self.composed()
+            .is_some_and(|shell| shell.events.contains_key(SEARCH))
+    }
+
+    /// Whether a view bound a document in this window: a window that lists and shows one is
+    /// read in the document, as an app's own widgets are searched
+    /// ([`ui::widget::InPlace::of`]).
+    fn shows_document(&self) -> bool {
+        fn bound_editor(node: &UiNode) -> bool {
+            let document = node.kind == crate::adapter::kind("BlockEditor");
+            (document && node.binding.is_some()) || node.children.iter().any(bound_editor)
+        }
+        self.composed().is_some_and(bound_editor)
+    }
+
+    /// How many rows the window's list shows now: the rows of the first list its views show.
+    fn shown_rows(&self) -> Option<usize> {
+        fn first_list(node: &UiNode) -> Option<&str> {
+            if node.kind == crate::adapter::kind("VirtualList") {
+                return Some(&node.key);
+            }
+            node.children.iter().find_map(first_list)
+        }
+        let key = first_list(self.composed()?)?;
+        let rows = self.rows.borrow().get(key).map(Rc::clone)?;
+        let len = ui::component::RowSource::len(&*rows.borrow());
+        Some(len)
+    }
+
+    /// Whether the window's search narrows what the frame lists: the frame says where it
+    /// goes, and no document stands in the window for it to find in instead.
+    fn offers_search(&self) -> bool {
+        self.searches() && !self.shows_document()
+    }
+
+    /// Type `text` into the window's search: the frame narrows what it lists, as a place
+    /// chosen in the sidebar narrows it. Closing the search widens it again.
+    fn narrow_to(&mut self, text: &str) {
+        let Some(shell) = self.composed() else {
+            return;
+        };
+        if !shell.events.contains_key(SEARCH) {
+            return;
+        }
+        let (lane, key) = lane_of(&shell.key);
+        if text.is_empty() {
+            self.search_total = None;
+        } else if self.search_total.is_none() {
+            // The rows the list had before anything was typed: what the search counts of.
+            self.search_total = self.shown_rows();
+        }
+        self.out.push(ToApp::Fire {
+            lane,
+            key,
+            event: SEARCH.to_owned(),
+            value: Some(Value::text(text)),
+        });
+    }
+}
+
+/// The window's search narrows what the views list where their frame declares it: the app
+/// hears the text as the frame's `search` event and narrows its own query, so the list
+/// beside the person narrows in place, found by the same search the store answers every
+/// text field from.
+impl ui::widget::Queryable for AppWindow {
+    fn set_query_text(&mut self, text: &str) {
+        self.narrow_to(text);
+    }
+
+    fn query_closed(&mut self) {
+        self.narrow_to("");
+    }
+
+    /// The rows the list shows now, of the rows it held before anything was typed. The app
+    /// answers a search a frame after it hears it, so the window reads the count off the
+    /// frame the app sent, again each time the search asks.
+    fn query_count(&self) -> Option<ui::widget::FilterCount> {
+        let shown = self.shown_rows()?;
+        Some(ui::widget::FilterCount::new(
+            shown,
+            self.search_total.unwrap_or(shown).max(shown),
+        ))
+    }
+}
+
 impl ui::widget::Decorator for AppWindow {
     type Inner = dyn Widget;
 
     // The window is the publisher of the app's actions and the one that answers choosing one
-    // ([`crate::catalogue`]); everything else is the body's and forwarded to it.
-    ui::provides!(
-        dyn ui::resources::PublishesResources,
-        dyn ui::host_operation::ResourceOperations;
-        inner = body
-    );
+    // ([`crate::catalogue`]), and it answers for the views' search where their frame says
+    // where it goes; everything else is the body's and forwarded to it.
+    fn provide<'a>(&'a self, request: &mut ui::widget::capability::Request<'a, '_>) {
+        if request.wants::<dyn ui::widget::Queryable>() && self.offers_search() {
+            request.provide::<dyn ui::widget::Queryable>(self);
+            return;
+        }
+        if request.wants::<dyn ui::resources::PublishesResources>() {
+            request.provide::<dyn ui::resources::PublishesResources>(self);
+            return;
+        }
+        if request.wants::<dyn ui::host_operation::ResourceOperations>() {
+            request.provide::<dyn ui::host_operation::ResourceOperations>(self);
+            return;
+        }
+        self.body.provide(request);
+    }
+
+    fn provide_mut<'a>(&'a mut self, request: &mut ui::widget::capability::RequestMut<'a, '_>) {
+        if request.wants::<dyn ui::widget::Queryable>() && self.offers_search() {
+            request.provide::<dyn ui::widget::Queryable>(self);
+            return;
+        }
+        if request.wants::<dyn ui::resources::PublishesResources>() {
+            request.provide::<dyn ui::resources::PublishesResources>(self);
+            return;
+        }
+        if request.wants::<dyn ui::host_operation::ResourceOperations>() {
+            request.provide::<dyn ui::host_operation::ResourceOperations>(self);
+            return;
+        }
+        self.body.provide_mut(request);
+    }
 
     fn build_layout(
         &mut self,

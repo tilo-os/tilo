@@ -332,7 +332,7 @@ impl View<'_> {
             } else {
                 self.item_value(path, spec).map_err(index_error)?
             };
-            read.lit(value)
+            tilolang_runtime::store::field_lit_of(read, value)
         })
     }
 

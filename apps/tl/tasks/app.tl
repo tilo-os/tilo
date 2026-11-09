@@ -532,11 +532,14 @@ fn place_of(side: List<Filter<Task>>, x: Task) -> Filter<Task> {
 view home(t: Tasks) {
     state place: Filter<Task> = Task.today
     state opened: Option<Task> = .none
+    // What the bar's search holds: it narrows the place's tasks beside the place chosen.
+    state searched: Text = ""
     on show(x: Task): set(place, place_of(places(workspace.members.len() > 1), x))
         .then(set(opened, x))
     let side = places(workspace.members.len() > 1)
     let chosen = side.find(f -> f == place)
-    let found = holding(t.items.matching(place), opened)
+    let held = holding(t.items.matching(place), opened)
+    let found = if searched.is_empty() { held } else { held.matching(searched) }
     let project = t.projects.find(p -> place == Task.project(p))
     // A place of days groups by day and a project's list folds finished work under its foot.
     let by_day = place == Task.today or place == Task.upcoming or project != .none
@@ -571,6 +574,7 @@ view home(t: Tasks) {
         count: header_count,
         actions: [new_task, clear_done],
     ) {
+        on search(q: Text): set(searched, q)
         sidebar: {
             ui.NavList(selected: place) {
                 for f in side {

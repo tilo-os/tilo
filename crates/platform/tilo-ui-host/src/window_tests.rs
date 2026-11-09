@@ -1746,3 +1746,116 @@ fn answer_rows(app: &mut local::End, items: &[(&str, &str)]) -> bool {
     }
     asked
 }
+
+/// A list window: a shell whose overview lists rows, declaring where the window's search goes.
+fn searching_list_page(rows: i64) -> Vec<ToUi> {
+    let mut list = UiNode::empty("ui.VirtualList", "list");
+    list.props.insert("in_column".to_owned(), Value::Bool(true));
+    let mut overview = UiNode::empty(SLOT, "shell#overview");
+    overview
+        .props
+        .insert("name".to_owned(), Value::text("overview"));
+    overview.children.push(list);
+    let mut shell = shell_node(
+        "shell",
+        &[
+            ("content_kind", Value::text("document")),
+            ("overview_title", Value::text("All notes")),
+            ("overview_count", Value::Int(rows)),
+        ],
+        vec![("overview", vec![overview])],
+    );
+    shell
+        .events
+        .insert("search".to_owned(), crate::Event::default());
+    vec![
+        ToUi::Open {
+            lane: Lane::Root,
+            target: doc(),
+            tree: shell,
+            front: None,
+        },
+        ToUi::Rows {
+            lane: Lane::Root,
+            list: "list".to_owned(),
+            len: u32::try_from(rows).expect("a list's length"),
+            start: 0,
+            keys: vec!["notes/a".to_owned()],
+            rows: vec![UiNode::empty("ui.ListItem", "notes/a")],
+        },
+    ]
+}
+
+#[test]
+fn the_window_s_search_narrows_the_list_its_frame_declares() {
+    use ui::widget::{InPlace, Queryable, SearchDriver};
+    let (mut app, mut window) = window();
+    send(&mut app, &searching_list_page(40));
+    window.receive();
+    assert_eq!(
+        InPlace::of(&mut window),
+        InPlace::Query,
+        "the frame says where the search goes, so the bar narrows the list"
+    );
+    let mut driver = SearchDriver::default();
+    driver.open(InPlace::Query);
+    let touched = driver.drive(
+        &mut window,
+        "pla",
+        ui::widget::FindOptions::default(),
+        None,
+        false,
+    );
+    assert!(touched, "the search reached the app");
+    window.flush();
+    let Some(ToApp::Fire {
+        event,
+        key,
+        value: Some(value),
+        ..
+    }) = told(&mut app).pop()
+    else {
+        panic!("the window told the app what the search holds");
+    };
+    assert_eq!((event.as_str(), key.as_str()), ("search", "shell"));
+    assert_eq!(value, Value::text("pla"));
+    // The app answers with the rows the search left, and the window counts them of the rows
+    // the list had before anything was typed.
+    send(
+        &mut app,
+        &[ToUi::RowsChanged {
+            lane: Lane::Root,
+            list: "list".to_owned(),
+            len: 3,
+            changes: Vec::new(),
+        }],
+    );
+    window.receive();
+    assert_eq!(
+        Queryable::query_count(&window),
+        Some(ui::widget::FilterCount::new(3, 40)),
+        "3 of 40"
+    );
+    // Closing the search widens the list again.
+    driver.drive(
+        &mut window,
+        "",
+        ui::widget::FindOptions::default(),
+        None,
+        true,
+    );
+    window.flush();
+    assert!(
+        told(&mut app).iter().any(|message| matches!(
+            message,
+            ToApp::Fire { event, value: Some(value), .. }
+                if event == "search" && *value == Value::text("")
+        )),
+        "closing the search widens the list again"
+    );
+    assert_eq!(
+        InPlace::of(&mut window),
+        InPlace::Query,
+        "the search closes, the frame stays"
+    );
+}

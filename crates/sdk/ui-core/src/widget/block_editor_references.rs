@@ -292,11 +292,14 @@ impl Described for BlockEditor {
         } = props;
         let editing = BodyBinding::bound(&rich, &markdown);
         let mut editor = if editing {
-            // As native Notes edits a note: lines wrap at the column, paragraphs sit close.
-            Self::new()
+            // As native Notes edits a note: lines wrap at the column, paragraphs sit close, and
+            // the window's search finds in it and replaces what it finds.
+            let mut editor = Self::new()
                 .with_id(key)
                 .with_wrap_lines(true)
-                .with_compact_paragraph_spacing(true)
+                .with_compact_paragraph_spacing(true);
+            editor.set_find_replace_enabled(true);
+            editor
         } else {
             // Rich text shown, not edited: painted as it reads, taking no input.
             Self::new()
@@ -346,6 +349,7 @@ impl Described for BlockEditor {
         }
         let showing = self.body.is_none();
         self.offer(links, &commands, command, headings, open_reference, showing);
+        self.set_find_replace_enabled(!showing);
         let rebound = if showing {
             self.show_rich_text(&value.unwrap_or_default());
             true

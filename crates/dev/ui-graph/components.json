@@ -3116,6 +3116,11 @@
         {
           "name": "back",
           "doc": "The content's Back was pressed."
+        },
+        {
+          "name": "search",
+          "doc": "The window's search holds this text now: the frame narrows what it lists to it, the way a place chosen in its sidebar narrows it. Empty when the search closed. A view that declares it says what the window's search writes; one that does not is searched in place by its document, or not at all.",
+          "value": "text"
         }
       ],
       "state": [
