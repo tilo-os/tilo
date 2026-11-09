@@ -5426,12 +5426,12 @@
         },
         {
           "name": "follow_end",
-          "doc": "The list is read to its end: it opens at its last row and stays there as rows arrive and settle, unless the person scrolled away ([`VirtualList::following_end`]). Its rows stand in the page column, filling it, a section's gap under each, and each run one author wrote under that author's name and the time ([`ListItemProps::author`], [`ListItemProps::time`]).",
+          "doc": "The list is read to its end: it opens at its last row and stays there as rows arrive and settle, unless the person scrolled away ([`VirtualList::following_end`]). Its rows stand in the page column, filling it, a section's gap under each, and each run one author wrote under that author's name and the time ([`ListItemProps::author`], [`ListItemProps::time`]). They are read, not chosen: a press gives a row the keyboard and chooses nothing.",
           "type": "bool"
         },
         {
           "name": "page_column",
-          "doc": "Each row stands in the page column, at the readable measure every page sets its blocks on, a section's gap under the row before it. A list read from its first row to its last (a conversation's messages, a document's replies) keeps the measure without following its end (`follow_end`).",
+          "doc": "Each row stands in the page column, at the readable measure every page sets its blocks on, a section's gap under the row before it. A list read from its first row to its last (a conversation's messages, a document's replies) keeps the measure without following its end (`follow_end`). Its rows are read, not chosen, as a transcript's are.",
           "type": "bool"
         },
         {
@@ -7386,7 +7386,7 @@
       "slots": [
         {
           "name": "menu",
-          "doc": "What the item offers on its context menu (a right-click, the Menu key or a long press opens it, and selects the row): each of its allowed actions, after the menu the row's view placed (`attached`) and without those that menu placed already, so every action stays reachable.",
+          "doc": "What the item offers on its context menu (a right-click, the Menu key or a long press opens it, and selects the row unless the row opens where it stands): each of its allowed actions, after the menu the row's view placed (`attached`) and without those that menu placed already, so every action stays reachable.",
           "accepts": {
             "one_of": [
               "MenuItem",

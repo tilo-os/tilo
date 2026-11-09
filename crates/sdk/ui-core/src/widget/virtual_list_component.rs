@@ -183,11 +183,12 @@ pub struct VirtualListProps {
     /// settle, unless the person scrolled away ([`VirtualList::following_end`]). Its rows stand
     /// in the page column, filling it, a section's gap under each, and each run one author wrote
     /// under that author's name and the time ([`ListItemProps::author`], [`ListItemProps::time`]).
+    /// They are read, not chosen: a press gives a row the keyboard and chooses nothing.
     pub follow_end: bool,
     /// Each row stands in the page column, at the readable measure every page sets its blocks
     /// on, a section's gap under the row before it. A list read from its first row to its last
     /// (a conversation's messages, a document's replies) keeps the measure without following
-    /// its end (`follow_end`).
+    /// its end (`follow_end`). Its rows are read, not chosen, as a transcript's are.
     pub page_column: bool,
     /// The title over the list's tail group: the rows whose item says it is one of those done
     /// with ([`ListItemProps::tail`]) stand after every group, under it, closed until the
@@ -1280,7 +1281,10 @@ impl Described for DescribedList {
             .with_edges(TranscriptEdges::new(RUN_GAP))
             .filling()
             .with_id(key)
-            .with_feel(feel);
+            .with_feel(feel)
+            // A message is read, not chosen: a tap on one gives it the keyboard and leaves
+            // nothing tinted behind it.
+            .reading();
             if follow_end {
                 list = list.following_end();
             }
@@ -1665,9 +1669,15 @@ mod tests {
         }
     }
 
-    /// Press the right button over the row `index` of `list`, as a person does to see what its
-    /// item offers there.
-    fn right_press(list: &mut DescribedList, index: usize, height: f32) {
+    /// Lay `list` out in a column of `height` and press `button` over the row `index`, as a
+    /// person does: the left button to tap the row, the right one to see what its item offers
+    /// there.
+    fn press_row(
+        list: &mut DescribedList,
+        index: usize,
+        button: crate::winit::event::MouseButton,
+        height: f32,
+    ) {
         let (taffy, node) = {
             let inner = list.list_mut().expect("the list stands");
             lay_out_tree(inner, height)
@@ -1677,18 +1687,74 @@ mod tests {
             .and_then(|list| list.row_rect(&format!("row-{index}")))
             .expect("the row is laid out");
         let at = Point::new(20.0, row.center().y);
-        let events = [
+        let pressed = crate::winit::event::ElementState::Pressed;
+        let mut events = vec![
             crate::synthetic_input::cursor_moved(at.x, at.y),
-            crate::synthetic_input::mouse_input(
-                crate::winit::event::ElementState::Pressed,
-                crate::winit::event::MouseButton::Right,
-            ),
+            crate::synthetic_input::mouse_input(pressed, button),
         ];
+        if button == crate::winit::event::MouseButton::Left {
+            events.push(crate::synthetic_input::mouse_input(
+                crate::winit::event::ElementState::Released,
+                button,
+            ));
+        }
         for event in &events {
             crate::testing::Dispatch::new()
                 .layout(&taffy, node)
                 .send(list, event);
         }
+    }
+
+    /// A page column's rows are read, not chosen: a press on a message gives it the keyboard
+    /// and leaves nothing tinted behind, and the keyboard's way through the rows moves (and
+    /// rings) the row it is on without choosing that one either. A column's rows stand for
+    /// what a window opens, and are chosen as they always were.
+    #[test]
+    fn a_press_on_a_transcript_row_chooses_nothing() {
+        let left = crate::winit::event::MouseButton::Left;
+        let mut transcript = DescribedList::from_props(
+            "transcript",
+            VirtualListProps {
+                follow_end: true,
+                rows: given_rows(6),
+                ..VirtualListProps::default()
+            },
+        );
+        press_row(&mut transcript, 1, left, 400.0);
+        let list = transcript.list_mut().expect("the list stands");
+        assert_eq!(
+            list.selection_len(),
+            0,
+            "a message is read, not chosen: nothing stays selected"
+        );
+        assert_eq!(
+            list.focused_key().map(String::as_str),
+            Some("row-1"),
+            "the row the person pressed takes the keyboard"
+        );
+        // The keyboard's way through the rows rings the row it is on, and chooses none.
+        let (taffy, node) = lay_out_tree(list, 400.0);
+        Widget::set_focus(list, true);
+        let up = crate::synthetic_input::named_key(winit::keyboard::NamedKey::ArrowUp);
+        assert!(
+            crate::testing::Dispatch::new()
+                .layout(&taffy, node)
+                .send(list, &up)
+                .handled,
+            "the list follows the keyboard"
+        );
+        assert_eq!(
+            list.focused_key().map(String::as_str),
+            Some("row-0"),
+            "the keyboard moved up a row"
+        );
+        assert_eq!(list.selection_len(), 0, "no row was chosen on the way");
+
+        // A column's rows are chosen, as a list of things to open always was.
+        let mut column = DescribedList::from_props("column", column_of(given_rows(6)));
+        press_row(&mut column, 1, left, 400.0);
+        let list = column.list().expect("the list stands");
+        assert_eq!(list.selection_len(), 1, "a column's rows are chosen");
     }
 
     /// A menu opened over a row that opens where it stands is about that row alone: choosing
@@ -1703,7 +1769,7 @@ mod tests {
             ..column_of(rows_offering(4, true))
         };
         let mut list = DescribedList::from_props("list", props);
-        right_press(&mut list, 1, 400.0);
+        press_row(&mut list, 1, crate::winit::event::MouseButton::Right, 400.0);
         assert!(
             list.menu_area_mut()
                 .as_deref()
@@ -1722,7 +1788,12 @@ mod tests {
             ..column_of(rows_offering(4, false))
         };
         let mut plain = DescribedList::from_props("list", props);
-        right_press(&mut plain, 1, 400.0);
+        press_row(
+            &mut plain,
+            1,
+            crate::winit::event::MouseButton::Right,
+            400.0,
+        );
         assert!(
             plain
                 .menu_area_mut()

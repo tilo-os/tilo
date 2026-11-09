@@ -394,6 +394,8 @@ pub struct VirtualList<M: ListModel> {
     letting_go: Vec<(usize, LaidOutRow)>,
     selection: KeySelection<M::Key>,
     multi_select: bool,
+    /// The rows are read, not chosen ([`Self::reading`]): no gesture makes one the selection.
+    reading: bool,
     /// Moving the focused row by keyboard (or assistive technology) also
     /// selects it.
     follow_focus: bool,
@@ -647,6 +649,7 @@ impl<M: ListModel> VirtualList<M> {
             letting_go: Vec::new(),
             selection: KeySelection::new(),
             multi_select: false,
+            reading: false,
             follow_focus: false,
             focused_key: None,
             focused_group: None,
@@ -928,6 +931,18 @@ impl<M: ListModel> VirtualList<M> {
     #[must_use]
     pub fn selection_follows_focus(mut self) -> Self {
         self.follow_focus = true;
+        self
+    }
+
+    /// The rows are read, not chosen: a press or a tap on one gives it the keyboard and
+    /// chooses nothing, so no row is left tinted behind the finger, and the keyboard's way
+    /// through the rows rings the row it is on without choosing that one either. A list that
+    /// shows what people said — a conversation's messages, a document's replies, the rows of a
+    /// page column ([`Self::following_end`]) — is read this way; a list that stands for the
+    /// things a window opens is chosen.
+    #[must_use]
+    pub const fn reading(mut self) -> Self {
+        self.reading = true;
         self
     }
 
