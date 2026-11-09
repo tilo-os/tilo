@@ -340,6 +340,14 @@ git = true
 when = { test = "ci_select" }
 git = true
 
+# The installer test stages the session layer's fonts, whose artifacts are reviewed pins
+# fetched from the release store rather than files of the tree. The node's build directory
+# keeps them, as it does for the checks that build with fonts, so a run reads them there
+# instead of fetching 55 MB into a cache this job's home does not outlive.
+[[check.matrix.set]]
+when = { test = "component_manifest" }
+env = { TILO_FONT_ASSET_CACHE = "/target/font-artifacts" }
+
 [[check.matrix.set]]
 when = { test = "image_builder_inputs" }
 git = true
