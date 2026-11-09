@@ -78,8 +78,11 @@ while IFS=$'\t' read -r expected name url; do
 
   part="$target.part"
   printf '[tilo] fetching %s\n' "$name"
+  # GitHub's release downloads answer 504 for minutes at a time: back off
+  # (curl doubles its wait from 1 s, up to 10 min) for up to 15 minutes
+  # rather than giving up after a fixed 36 s of retries.
   curl --location --fail --show-error \
-    --retry 12 --retry-all-errors --retry-delay 3 --connect-timeout 30 \
+    --retry 12 --retry-all-errors --retry-max-time 900 --connect-timeout 30 \
     --speed-limit 1024 --speed-time 120 --continue-at - \
     --output "$part" "$url"
   if ! verify "$expected" "$part"; then

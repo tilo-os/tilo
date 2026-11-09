@@ -214,6 +214,9 @@ struct Config {
     /// records and desktop replicate through.
     #[serde(default)]
     peer: Option<u32>,
+    /// Where the person's agents connect over MCP, as the page tells them.
+    #[serde(default)]
+    mcp: Option<String>,
     /// Milliseconds between semantics deliveries while the tree keeps
     /// changing without a focus or structure change.
     #[serde(default)]
@@ -287,6 +290,16 @@ impl Config {
         self.author
             .clone()
             .unwrap_or_else(|| ui::collaboration::local_user_id().0)
+    }
+
+    /// Carry the agent-door asks of `session` to the person's host, through
+    /// this mount's peer; the grants they take back there, for the page.
+    fn agent_door(
+        &self,
+        session: &tilo_desktop_surface::session::DesktopSession,
+        woken: &Arc<std::sync::atomic::AtomicBool>,
+    ) -> crate::agent_door::Revoked {
+        crate::agent_door::serve(session, self.peer, &self.workspace, self.mcp.clone(), woken)
     }
 }
 
@@ -546,6 +559,9 @@ struct Desktop {
     session: std::sync::Arc<tilo_desktop_surface::session::DesktopSession>,
     /// The desktop's end of that session.
     openings: tilo_desktop_surface::session::Openings,
+    /// The agent grants the person took back at their door since the last
+    /// frame, for the page to sign.
+    revoked: crate::agent_door::Revoked,
     /// What the session asked of the page for its windows, still open.
     asks: session_asks::Asks,
     /// Mentions of this person in the workspace's records, and what was told.
@@ -582,12 +598,22 @@ impl Desktop {
     /// Open the apps the windows asked for since the last frame. Whether
     /// any were asked.
     fn open_requested_apps(&self) -> bool {
+        self.revoke_agent_grants();
         self.ask_host_of_nodes();
         self.ask_app_actions();
         let permissions = self.permissions.borrow();
         self.openings.open(&self.handle, |app, existing| {
             crate::desktop::may_open(&permissions, app, existing)
         })
+    }
+
+    /// Hand the page the agent grants the person took back at their door:
+    /// their root signs each, as it revokes any of their devices.
+    fn revoke_agent_grants(&self) {
+        let revoked = std::mem::take(&mut *tilo_lock::MutexRecover::lock_recover(&*self.revoked));
+        self.requests
+            .borrow_mut()
+            .extend(revoked.into_iter().map(crate::shell::HostRequest::Revoke));
     }
 
     /// Ask the session, as this person, for the app actions they chose in
@@ -1205,6 +1231,7 @@ fn present_desktop(
     let (session, openings) =
         tilo_desktop_surface::session::serve(config.workspace.clone(), Arc::clone(&shared.woken));
     surface.serve_activity(openings.activity());
+    let revoked = config.agent_door(&session, &shared.woken);
     surface.set_notifications(persistence.notifications.clone());
     if let Some(inbox) = crate::host_services::notification_inbox() {
         surface.set_app_notifications(inbox);
@@ -1256,6 +1283,7 @@ fn present_desktop(
             people,
             session,
             openings,
+            revoked,
             asks: session_asks::Asks::new(config.peer),
             mentions: RefCell::new(mention_notices::Mentions::new(
                 &config.workspace,

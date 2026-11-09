@@ -179,6 +179,8 @@ const MAX_HELD_INTERACTIONS: usize = 32;
 /// per workspace it takes part in.
 struct Page {
     device: [u8; 32],
+    /// The device of the host this page's session is with.
+    host: [u8; 32],
     handle: PeerHandle,
     /// The person this page belongs to, their root key as hex.
     user: String,
@@ -231,19 +233,21 @@ pub(crate) struct BoardView {
     pub(crate) note: Option<String>,
 }
 
-/// Register `id`'s peer: the identity and handle its presence says on.
+/// Register `id`'s peer: the identity and handle its presence says on, and
+/// the host (`host`, its certificate) its session is with.
 pub(crate) fn register(
     id: u32,
-    device: [u8; 32],
     handle: &PeerHandle,
     cert: &DeviceCert,
+    host: &DeviceCert,
     label: &str,
 ) {
     PAGES.with_borrow_mut(|pages| {
         pages.insert(
             id,
             Page {
-                device,
+                device: cert.device_public_key,
+                host: host.device_public_key,
                 handle: handle.clone(),
                 user: hex::encode(cert.user_public_key),
                 device_label: cert.device_label.clone(),
@@ -265,6 +269,12 @@ pub(crate) fn handles_of(user: &str) -> Vec<PeerHandle> {
             .map(|page| page.handle.clone())
             .collect()
     })
+}
+
+/// `id`'s session, and the device of the host it is with: where the
+/// person's agent door is asked.
+pub(crate) fn host_of(id: u32) -> Option<(PeerHandle, [u8; 32])> {
+    PAGES.with_borrow(|pages| pages.get(&id).map(|page| (page.handle.clone(), page.host)))
 }
 
 /// Forget `id`'s peer and what it said.

@@ -52,7 +52,6 @@ pub mod presence_anchors;
 mod previews;
 mod replica;
 pub mod session;
-#[cfg(not(target_arch = "wasm32"))]
 pub mod session_actions;
 pub mod sign_in;
 pub mod surfaces;

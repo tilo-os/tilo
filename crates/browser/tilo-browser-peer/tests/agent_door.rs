@@ -1,6 +1,7 @@
 //! The person's agent door on their host, as their page reads and uses it: a
 //! computer they logged in with `tilo login` that runs an agent is listed
-//! with its open run; stopping the run ends that session and the agent can
+//! with its open run, followed as a page's window follows it (a held observe,
+//! answered when the door moves, never a blocking ask); stopping the run ends that session and the agent can
 //! come back; the root revoking the computer ends its session at once and
 //! refuses it after. Nobody else stops or revokes it, and a tab posting as
 //! a person is no agent.
@@ -22,7 +23,9 @@ use std::time::Duration;
 use tilo_actions::InvocationId;
 use tilo_actions::InvocationUpdate;
 use tilo_actions::remote::agent_door::{self, Door};
-use tilo_actions::remote::{ActionHost as _, Caller, InvokeArgument, InvokeRequest, ReceiptStatus};
+use tilo_actions::remote::{
+    ActionHost as _, Caller, InvokeArgument, InvokeRequest, ReceiptStatus, UpdateMark, settle_with,
+};
 use tilo_browser_peer::PeerHandle;
 use tilo_browser_peer::login::say_here;
 use tilo_browser_peer::revoke_device;
@@ -67,27 +70,42 @@ fn ask(door: &SessionActions, action: &str, argument: InvokeArgument) -> (Invoca
     (invocation, taken)
 }
 
-/// The door as the follow `read` reads it now.
+/// The door as the follow `read` last read it: what is kept, never asked
+/// again, as a page observes it.
 fn door_now(door: &SessionActions, read: &InvocationId) -> Option<Door> {
-    let state = tokio::task::block_in_place(|| door.observe(&caller(), read))?;
-    match state.update {
+    match door.observe(&caller(), read)?.update {
         InvocationUpdate::Item { value, .. } => serde_json::from_value(value).ok(),
         _ => None,
     }
 }
 
-/// Wait until the door `read` follows reads as `wanted` says.
+/// Wait until the door `read` follows reads as `wanted` says, as a page's
+/// window waits: a held observe, answered once the door moves.
 async fn door_until(
     what: &str,
     door: &SessionActions,
     read: &InvocationId,
-    wanted: impl Fn(&Door) -> bool + Sync,
+    wanted: impl Fn(&Door) -> bool,
 ) -> Door {
-    wait_for(what, || {
-        let now = door_now(door, read).filter(|now| wanted(now));
-        async move { now }
-    })
-    .await
+    let started = std::time::Instant::now();
+    let mut seen = UpdateMark::Accepted;
+    loop {
+        let now = tilo_clock::now();
+        let until = now.checked_add(Duration::from_secs(10)).unwrap_or(now);
+        let state = settle_with(door, &caller(), *read, Some(seen), until)
+            .await
+            .flatten()
+            .expect("the host answers the door's read");
+        seen = UpdateMark::of(&state.update);
+        if let Some(now) = door_now(door, read).filter(|now| wanted(now)) {
+            return now;
+        }
+        assert!(
+            started.elapsed() < Duration::from_secs(30),
+            "timed out waiting for {what}: {:?}",
+            door_now(door, read)
+        );
+    }
 }
 
 fn stop(grant: &str) -> InvokeArgument {

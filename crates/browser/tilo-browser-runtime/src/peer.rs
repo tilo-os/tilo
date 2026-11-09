@@ -1435,6 +1435,22 @@ pub fn verify_agent_delegation(
     .map_err(js_error)
 }
 
+/// The revocations of `entries` the person `cert` certifies signed: a
+/// session announces only its own person's, since a host reads a hello's
+/// entries as its sender's root's and refuses one signed by another.
+fn own_revocations(
+    entries: Vec<RevocationEntry>,
+    cert: &DeviceCert,
+) -> Result<RevocationList, JsError> {
+    let mut revocations = RevocationList::new();
+    for entry in entries {
+        if entry.user_public_key == cert.user_public_key {
+            revocations.insert(entry).map_err(js_error)?;
+        }
+    }
+    Ok(revocations)
+}
+
 /// A running certified peer.
 #[wasm_bindgen]
 pub struct WasmPeer {
@@ -1558,15 +1574,7 @@ impl WasmPeer {
         let reporter_cert = config.cert.clone();
         let owner_cert = config.host_cert.clone();
         let display_name = config.display_name;
-        let mut revocations = RevocationList::new();
-        for entry in config.revocations {
-            // A session announces only its own person's revocations: a host
-            // reads a hello's entries as its sender's root's, and refuses one
-            // signed by another.
-            if entry.user_public_key == config.cert.user_public_key {
-                revocations.insert(entry).map_err(js_error)?;
-            }
-        }
+        let revocations = own_revocations(config.revocations, &config.cert)?;
         let handle = PeerHandle::start(
             PeerConfig {
                 host: config.address.host(),
@@ -1582,7 +1590,7 @@ impl WasmPeer {
             next.set(id.wrapping_add(1).max(1));
             id
         });
-        crate::peer_presence::register(id, device_key, &handle, &reporter_cert, &display_name);
+        crate::peer_presence::register(id, &handle, &reporter_cert, &owner_cert, &display_name);
         // A lobby started beside the workspace's peer does not rename the
         // page's person.
         if crate::page_person::claim(id) {

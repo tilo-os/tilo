@@ -1,7 +1,7 @@
 //! Where a row puts what it holds: the height it asks for and the rect of every column — leading,
 //! text, meta and trailing — so a retained row and the immediate [`ListRowFace`] agree.
 
-use vello::kurbo::Rect;
+use vello::kurbo::{Point, Rect};
 
 use super::{ListRowFace, RowGeometry, RowLeading, RowMetrics, RowValue};
 use crate::text_render::{TextRenderer, TextStyle};
@@ -720,15 +720,28 @@ impl ListRowFace<'_> {
     }
 
     /// `hit` grown about `boxed` to the smallest target a pointer needs, kept inside `row` by
-    /// moving it, never by shrinking it: a press at the row's edge still reaches all of it.
+    /// moving it, never by shrinking it: a press at the row's edge still reaches all of it. A row
+    /// smaller than the target (a band measured for another pointer, a dense row) gives the
+    /// target all the same, centred on the row: a press is not painted, so it reaches past the
+    /// row's band rather than under the least the person's pointer presses.
     fn reach_target(&self, hit: Rect, boxed: Rect, row: Rect) -> Rect {
         let side = self.check_target;
         let grown = hit.union(Rect::from_center_size(boxed.center(), (side, side)));
-        let width = grown.width().min(row.width());
-        let height = grown.height().min(row.height());
-        let x0 = grown.x0.clamp(row.x0, row.x1 - width);
-        let y0 = grown.y0.clamp(row.y0, row.y1 - height);
-        Rect::new(x0, y0, x0 + width, y0 + height)
+        let along = |centre: f64, size: f64, from: f64, to: f64| {
+            if to - from >= size {
+                (from + size / 2.0).max((to - size / 2.0).min(centre))
+            } else {
+                (from + to) / 2.0
+            }
+        };
+        let centre = grown.center();
+        Rect::from_center_size(
+            Point::new(
+                along(centre.x, grown.width(), row.x0, row.x1),
+                along(centre.y, grown.height(), row.y0, row.y1),
+            ),
+            (grown.width(), grown.height()),
+        )
     }
 
     /// Where the title starts: the inset separator starts here too.

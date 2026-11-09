@@ -1105,12 +1105,8 @@ fn message_of(
     });
     let said = rows.with_item(key, |item| (item.author, item.time));
     let Some((Some(author), at)) = said else {
-        let row = page_row(
-            row_of(rows, key, feel, None, RowBuild::default()),
-            RUN_GAP,
-            measure,
-        );
-        return if first_unread { with_unread(row) } else { row };
+        let row = row_of(rows, key, feel, None, RowBuild::default());
+        return page_row(under_unread(row, first_unread), RUN_GAP, measure);
     };
     let before = rows
         .index_of(&key.to_owned())
@@ -1136,11 +1132,8 @@ fn message_of(
                 }
         });
     let Some((said, swipe, attached)) = bare_row(rows, key, feel, None, RowBuild::default()) else {
-        return page_row(
-            row_of(rows, key, feel, None, RowBuild::default()),
-            RUN_GAP,
-            measure,
-        );
+        let row = row_of(rows, key, feel, None, RowBuild::default());
+        return page_row(under_unread(row, first_unread), RUN_GAP, measure);
     };
     let avatar = Avatar::person(author.name.clone(), author.identity.clone());
     let message = Row::row().fill_width().align(Align::Start);
@@ -1179,34 +1172,33 @@ fn message_of(
         attached,
     );
     let gap = if continues { Rhythm::Tight } else { RUN_GAP };
-    let row = match day.filter(|_| new_day) {
-        Some(day) => page_row(
-            Box::new(
-                Stack::stack()
-                    .gap(RUN_GAP)
-                    .push(Box::new(DayDivider::new(clock.day_label(day))))
-                    .push(message),
-            ),
-            gap,
-            measure,
-        ),
-        None => page_row(message, gap, measure),
+    let shown = match day.filter(|_| new_day) {
+        Some(day) => Box::new(
+            Stack::stack()
+                .gap(RUN_GAP)
+                .push(Box::new(DayDivider::new(clock.day_label(day))))
+                .push(message),
+        ) as Element,
+        None => message,
     };
-    if first_unread { with_unread(row) } else { row }
+    page_row(under_unread(shown, first_unread), gap, measure)
 }
 
-/// A transcript's row for the first message the reader had not read, with the "New messages"
-/// divider over it: the divider is the toolkit's
-/// ([`crate::widget::conversation::UnreadDivider`]), placed from what the app says is unread, so
-/// every conversation draws the same one.
-fn with_unread(row: Element) -> Element {
+/// `content` under the "New messages" divider, for the row of the first message the reader had
+/// not read: the divider is the toolkit's ([`crate::widget::conversation::UnreadDivider`]),
+/// placed from what the app says is unread, so every conversation draws the same one.
+///
+/// It stands in the row's own column, one gap above what the row shows, so the row keeps the
+/// column it has without it: the divider adds its band and nothing else.
+fn under_unread(content: Element, first_unread: bool) -> Element {
+    if !first_unread {
+        return content;
+    }
     Box::new(
-        Page::full()
-            .row_after(RUN_GAP)
-            .push_slot(Slot::new(Box::new(
-                crate::widget::conversation::UnreadDivider::new(),
-            )))
-            .push_slot(Slot::new(row)),
+        Stack::stack()
+            .gap(RUN_GAP)
+            .push(Box::new(crate::widget::conversation::UnreadDivider::new()))
+            .push(content),
     )
 }
 
@@ -1732,6 +1724,137 @@ mod tests {
                 .layout(&taffy, node)
                 .send(list, event);
         }
+    }
+
+    /// The messages of a transcript, two of one day and two of the next: each shows a line of
+    /// its own, under its author and the time it was said.
+    fn transcript_messages() -> DescribedRows {
+        let at = [
+            1_790_000_000_i64,
+            1_790_000_060,
+            1_790_090_000,
+            1_790_090_060,
+        ];
+        let items = at
+            .iter()
+            .enumerate()
+            .map(|(index, said)| ListItemProps {
+                key: format!("row-{index}"),
+                item: Some(ResourceId(format!("message-{index}"))),
+                author: Some(Person {
+                    identity: format!("person-{index}"),
+                    name: format!("Writer {index}"),
+                }),
+                time: Some(Moment(*said)),
+                row: ItemRow::Row(Box::new(ListRowProps {
+                    title: format!("message {index}"),
+                    ..ListRowProps::default()
+                })),
+                ..ListItemProps::default()
+            })
+            .collect();
+        DescribedRows {
+            held: Held::Given(Rc::new(items)),
+            ..DescribedRows::default()
+        }
+    }
+
+    /// What `list` lays out, as the inspection sees it: where each widget stands.
+    fn laid_out(list: DescribedList) -> crate::headless::InspectionNode {
+        let mut harness = crate::headless::FrameHarness::for_root(
+            crate::State::new(),
+            list,
+            (900, 600),
+            crate::theme::Theme::dark(),
+        );
+        harness.relayout();
+        harness.inspection().root
+    }
+
+    /// Where the first widget `widget` stands, in `node`.
+    fn rect_of_widget(node: &crate::headless::InspectionNode, widget: &str) -> Option<[f64; 4]> {
+        if node.widget == widget {
+            return Some(node.rect);
+        }
+        node.children
+            .iter()
+            .find_map(|child| rect_of_widget(child, widget))
+    }
+
+    /// Where the first widget `widget` whose words are `words` stands, in `node`.
+    fn rect_of(
+        node: &crate::headless::InspectionNode,
+        widget: &str,
+        words: &str,
+    ) -> Option<[f64; 4]> {
+        let speaks_it = node
+            .semantics
+            .as_ref()
+            .and_then(|semantics| semantics.name.as_deref())
+            == Some(words);
+        if node.widget == widget && speaks_it {
+            return Some(node.rect);
+        }
+        node.children
+            .iter()
+            .find_map(|child| rect_of(child, widget, words))
+    }
+
+    /// A message the reader has not read yet keeps the column every message stands in: the
+    /// "New messages" divider over it adds its band above the row and nothing else, and the two
+    /// dividers of a conversation rule the same column.
+    #[test]
+    fn a_row_under_the_unread_divider_keeps_its_column() {
+        let list = |unseen: Option<&str>| {
+            DescribedList::from_props(
+                "transcript",
+                VirtualListProps {
+                    page_column: true,
+                    unseen_from: unseen.map(|item| ResourceId(item.to_owned())),
+                    rows: transcript_messages(),
+                    ..VirtualListProps::default()
+                },
+            )
+        };
+        let plain = laid_out(list(None));
+        let marked = laid_out(list(Some("message-2")));
+        let message = |node: &crate::headless::InspectionNode, at: usize| {
+            rect_of(node, "ListRow", &format!("message {at}"))
+                .unwrap_or_else(|| panic!("the message {at} shows"))
+        };
+        // The row the divider stands over keeps the column and the size it has without it: the
+        // divider adds its band over the row and moves nothing else.
+        let unread = message(&marked, 2);
+        let alone = message(&plain, 2);
+        assert_eq!(
+            [unread[0], unread[2], unread[3]],
+            [alone[0], alone[2], alone[3]],
+            "the message under the divider has the box it has without it: {unread:?} against \
+             {alone:?}"
+        );
+        assert!(
+            unread[1] > alone[1],
+            "the divider stands over the row, taking room of its own: {unread:?} against {alone:?}"
+        );
+        // Every message of one run starts on one line: the one under the divider stands on the
+        // column of the messages around it, the one over it and the one under it alike.
+        for at in [0, 1, 3] {
+            let other = message(&marked, at);
+            assert_eq!(
+                unread[0], other[0],
+                "the unread message starts at x {:.0} where message {at} does, at x {:.0}",
+                unread[0], other[0]
+            );
+        }
+        // The two dividers of one conversation rule the same column: the day's over the third
+        // message, and the "New messages" one over it.
+        let day = rect_of_widget(&marked, "DayDivider").expect("the day's divider shows");
+        let new = rect_of_widget(&marked, "UnreadDivider").expect("the unread divider shows");
+        assert_eq!(
+            [new[0], new[2]],
+            [day[0], day[2]],
+            "the two dividers end at the same edges: the day's {day:?}, the new messages' {new:?}"
+        );
     }
 
     /// A page column's rows are read, not chosen: a press on a message gives it the keyboard

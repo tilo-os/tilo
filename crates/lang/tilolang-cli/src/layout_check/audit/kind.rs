@@ -108,10 +108,13 @@ pub enum Kind {
     /// A row's title written a second time in the item the row opened into: the row became the
     /// item, its title standing once, in the field that edits it.
     RepeatedRowTitle,
+    /// A page given a column of its own inside another page: the gutter is counted twice, so
+    /// what it holds stands inset from the rows beside it and narrower than them.
+    PageInPage,
 }
 
 impl Kind {
-    pub const ALL: [Self; 35] = [
+    pub const ALL: [Self; 36] = [
         Self::Overflow,
         Self::ClippedText,
         Self::Overlap,
@@ -147,6 +150,7 @@ impl Kind {
         Self::UnchosenPlace,
         Self::NestedScroller,
         Self::RepeatedRowTitle,
+        Self::PageInPage,
     ];
 
     pub fn name(self) -> &'static str {
@@ -186,6 +190,7 @@ impl Kind {
             Self::UnchosenPlace => "unchosen-place",
             Self::NestedScroller => "nested-scroller",
             Self::RepeatedRowTitle => "repeated-row-title",
+            Self::PageInPage => "page-in-page",
         }
     }
 }

@@ -69,6 +69,8 @@ fn every_kind_of_broken_layout_is_caught_at_the_view_that_breaks_it() {
             // hold nothing to find in them.
             Kind::OffPixel
             | Kind::BareRow
+            // No page in this fixture stands inside another.
+            | Kind::PageInPage
             | Kind::RaggedColumns
             | Kind::DoubleSelection
             // The fixture's lists paint no selection of their own.

@@ -26,7 +26,7 @@ import {connectPeer, httpsPost, identityProfile, inspectInvitation, joinWorkspac
 import {readBrowserAccounts} from './browser-accounts.mjs';
 import {CustodyError, idbStorage, openDeviceCustody} from './device-custody.mjs';
 import {createIdentityActions, SIGN_IN, syncProfile} from './identity-actions.mjs';
-import {firstRun, SEEN} from './first-run.mjs';
+import {firstRun, MCP_URL, SEEN} from './first-run.mjs';
 import {loginCodes} from './login-code.mjs';
 import {pickImageFile, squarePhoto} from './profile-photos.mjs';
 import {deviceLabel, pairingFailure, pairSecret, whenRequested} from './pairing.mjs';
@@ -812,6 +812,8 @@ export async function startEntryPage({mode}) {
       else if (workspaceActions?.handles(id)) void workspaceActions.perform(id);
       else void identityActions?.perform(id, value);
     },
+    // Where the person's agents connect over MCP, which their agent door shows.
+    mcp: MCP_URL,
     ...(query.get('room') ? {room: query.get('room')} : {}),
     ...(query.get('workspace') ? {workspaceName: query.get('workspace')} : {}),
     // The directory sheet's Join, which its door granted: the page joins with

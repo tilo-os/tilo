@@ -251,6 +251,47 @@ fn a_tall_row_is_caught_only_when_its_line_floats_in_it() {
     );
 }
 
+/// A page is the readable column, its gutter counted once: a page given a column of its own
+/// inside one counts it twice, so its content stands inset from the rows beside it and narrower
+/// than them. A page holding rows, and no page, is the column itself.
+#[test]
+fn a_page_inside_a_page_is_caught() {
+    let page_rows = |inner: Vec<InspectionNode>| {
+        let mut list = node("DescribedList", "list", [0.0, 0.0, 400.0, 300.0], None);
+        list.children = inner;
+        stack_node("window", [0.0, 0.0, 400.0, 300.0], vec![list])
+    };
+    let found = |root: &InspectionNode| {
+        inspect(root, (400, 300), None, 1.0)
+            .into_iter()
+            .filter(|problem| problem.kind == Kind::PageInPage)
+            .map(|problem| problem.keys)
+            .collect::<Vec<_>>()
+    };
+    let mut row = node("Page", "row", [0.0, 0.0, 400.0, 40.0], None);
+    row.children
+        .push(node("Row", "message", [24.0, 16.0, 352.0, 24.0], None));
+    assert!(
+        found(&page_rows(vec![row])).is_empty(),
+        "a row of the column is the column, not a page of its own"
+    );
+    let mut nested = node("Page", "row", [0.0, 0.0, 400.0, 40.0], None);
+    let mut inner = node("Page", "inner", [24.0, 0.0, 352.0, 40.0], None);
+    inner
+        .children
+        .push(node("Row", "message", [48.0, 16.0, 304.0, 24.0], None));
+    nested.children.push(inner);
+    assert_eq!(
+        found(&page_rows(vec![nested])),
+        vec![vec![
+            "row".to_owned(),
+            "list".to_owned(),
+            "window".to_owned()
+        ]],
+        "a page inside the column's row is the gutter counted twice"
+    );
+}
+
 /// A scroll view's content stands in a box the view holds it in, which is the view's own
 /// content and no container of its own: what the view scrolls through may go on past the
 /// view. A box inside that content still holds what it holds, and is caught.

@@ -122,9 +122,11 @@ impl Mount {
         let narrated = crate::peer_presence::take_narrated(peer, &workspace);
         if !narrated.is_empty() {
             self.frame.update_presence(|presence| {
-                narrated.into_iter().fold(false, |shown, interaction| {
-                    presence.apply_interaction(interaction).unwrap_or(false) || shown
-                })
+                let mut shown = false;
+                for interaction in narrated {
+                    shown |= presence.apply_interaction(interaction).unwrap_or(false);
+                }
+                shown
             });
             self.pending = true;
             self.window.request_redraw();

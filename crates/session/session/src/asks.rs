@@ -98,11 +98,10 @@ impl Shared {
                 DesktopAsk::AccountSettings => {
                     crate::quick_settings::open_settings(self, "settings://billing");
                 }
-                // The agent door is the hosting provider's (its MCP front door): a session on the
-                // person's own computer serves none, so it holds no grant to take back.
-                DesktopAsk::RevokeAgentGrant(grant) => {
-                    tracing::warn!(%grant, "no agent door here to revoke the grant at");
-                }
+                // The grant is taken back at the person's agent door, as Console takes it back:
+                // whatever this session offers it on answers, and without one the person hears
+                // that it did not happen.
+                DesktopAsk::RevokeAgentGrant(grant) => self.revoke_agent_grant(grant),
             }
         }
         // What the press asked is carried out: what it closed may be raised again, though the press
@@ -288,6 +287,21 @@ impl Shared {
         });
         if let Err(error) = carried {
             self.answer_failed(&action.display_name, &error);
+        }
+    }
+
+    /// Take the agent grant `grant` back at the person's agent door.
+    fn revoke_agent_grant(&self, grant: String) {
+        use tilo_actions::remote::agent_door;
+        let mut arguments = serde_json::Map::new();
+        arguments.insert("grant".into(), grant.into());
+        let revoked = self.doors.invoke(
+            &ActionAddress::new(agent_door::RESOURCE, agent_door::REVOKE),
+            &arguments,
+            &mut tilo_surface_host::Look::none(),
+        );
+        if let Err(error) = revoked {
+            self.answer_failed(&t("action-failed-that-agent"), &error);
         }
     }
 
