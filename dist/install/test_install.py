@@ -11,6 +11,7 @@ import hashlib
 import io
 import os
 import pathlib
+import shutil
 import subprocess
 import tarfile
 import tempfile
@@ -30,6 +31,7 @@ def machine():
     return f"tilo-{system}-{arch}.tar.gz"
 
 
+@unittest.skipUnless(shutil.which("openssl"), "the install script verifies with openssl, which this image lacks")
 class Install(unittest.TestCase):
     def setUp(self):
         self.scratch = tempfile.TemporaryDirectory()
@@ -125,6 +127,7 @@ class Install(unittest.TestCase):
         self.assertIn("has no", done.stderr)
         self.assertFalse(self.installed.exists())
 
+class Trust(unittest.TestCase):
     def test_the_script_trusts_the_key_releases_are_signed_with(self):
         script = SCRIPT.read_text()
         key = (REPO / "keys/cosign.pub").read_text().strip()
