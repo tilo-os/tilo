@@ -88,7 +88,7 @@
 "crates/sdk/ui-core/src/widget/group_row.rs" = 11500
 "crates/sdk/ui-core/src/widget/list_row.rs" = 3500
 "crates/sdk/ui-core/src/widget/mod.rs" = 4000
-"crates/sdk/ui-core/src/widget/nav_shell.rs" = 5000
+"crates/sdk/ui-core/src/widget/nav_shell.rs" = 4500
 "crates/sdk/ui-core/src/widget/tabs.rs" = 10500
 "crates/sdk/ui-core/src/widget/text_input.rs" = 7500
 "crates/sdk/ui-core/src/widget/tile_host.rs" = 3500

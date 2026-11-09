@@ -669,19 +669,19 @@ fn a_notebook_is_the_native_list_and_detail_shell_with_the_header_the_platform_f
         ["Sort", "search", "New note"],
         "the sort menu, search, and the primary action last"
     );
-    // The scenario showed its note; with that closed, the content says so in one sentence.
+    // The scenario showed its note; with that closed the list lists for the whole window, and
+    // the note's column stands there again once a note is shown.
     assert!(workspace.window.detail_target().is_some());
     workspace.window.close_detail();
     workspace.settle();
     assert!(workspace.window.detail_target().is_none());
-    let placeholder = slot_of(&workspace.composed(), "content")
-        .into_iter()
-        .find(|node| node.kind == "ui.EmptyState")
-        .cloned()
-        .expect("the content says nothing is selected");
-    assert_eq!(
-        placeholder.props.get("title"),
-        Some(&Value::text("No note selected"))
+    assert!(
+        slot_of(&workspace.composed(), "content").is_empty(),
+        "no content column stands beside the list"
+    );
+    assert!(
+        !workspace.shell().has_content(),
+        "the list lists for the whole window"
     );
 }
 

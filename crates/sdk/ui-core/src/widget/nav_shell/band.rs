@@ -7,9 +7,9 @@ use std::cell::Cell;
 
 use vello::kurbo::Rect;
 
+use super::layout::plan_columns;
 use super::{
     Frame, Inputs, ManualContext, NavGeometry, NavShell, Part, WidgetLayoutError, measure,
-    plan_columns,
 };
 use crate::widget::Element;
 

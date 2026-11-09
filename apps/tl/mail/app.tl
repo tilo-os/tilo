@@ -659,9 +659,6 @@ view unified(m: Mail) {
             overview: {
                 thread_list(shown, fill)
             }
-            content: {
-                ui.EmptyState("No conversation selected", icon: .mail)
-            }
         }
     }
 }
@@ -717,9 +714,6 @@ view mailboxes(a: Account) {
         }
         overview: {
             thread_list(shown, fill)
-        }
-        content: {
-            ui.EmptyState("No conversation selected", icon: .mail)
         }
     }
 }

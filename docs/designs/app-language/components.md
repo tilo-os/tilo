@@ -114,7 +114,8 @@ A window that is only a list is `std.browse`: it takes the resource its window i
 the places and the sorts — the fields the app names as orders, `sorts: [Note.title]` — and writes
 that window the standard way: the place and order chosen as its state, the list that one query
 finds, the title and count naming the place, the empty state, the entry that adds an item, and the
-pane beside the list when the rows open there. The app names a field, never the order's spelling:
+pane beside the list when the rows open there — the list alone listing for the whole window until
+one is opened. The app names a field, never the order's spelling:
 the compiler checks the reference, and the order it asks (`sort:title`, `sort:-received`) is
 built from the field where the sort is declared, so the menu and the query cannot disagree. It
 draws what the caller named and never reads a shell off the type; `opens` is the one fact it takes
@@ -165,7 +166,8 @@ view keeps it as its own state — `std.list` does that for its person.
 A list that opens its rows elsewhere instead — in a pane beside it, a window of its own — leaves
 `detail:` out and answers its `on activate`. Which rows carry one is the list's: `std.list` sets
 it where the view gives one, and `std.browse` puts the pane beside the list when the caller says
-its rows have a window of their own.
+its rows have a window of their own: the pane stands there once a row is opened, and until then
+the list lists for the whole window.
 
 A window asked to show an item — a reference pressed, an agent's suggestion taken up, a capture
 staging what a scenario made — puts the question to its own view: `on show(x: Task): <action>`

@@ -354,12 +354,10 @@ d-4fjgzcq6 = Unified
     .w-all-inboxes = All inboxes
     .w-all-mail = All mail
     .w-labels = Labels
-    .w-no-conversation-selected = No conversation selected
 
 d-gka45our = Mailboxes
     .w-all-mail = All mail
     .w-labels = Labels
-    .w-no-conversation-selected = No conversation selected
 
 d-zp2cy2sc = Inbox
     .w-nothing-here = Nothing here

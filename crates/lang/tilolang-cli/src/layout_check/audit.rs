@@ -92,10 +92,14 @@ pub enum Kind {
     /// An action that asks for its words standing as its icon alone in a bar with room for those
     /// words: a glyph nobody can name, where the bar could have said what it does.
     IconOnlyBarAction,
+    /// A pane that only says nothing is chosen, taking the window beside the list it is chosen
+    /// from: with nothing chosen the list lists for the whole window, and the pane appears when
+    /// something opens in it.
+    PlaceholderPane,
 }
 
 impl Kind {
-    pub const ALL: [Self; 29] = [
+    pub const ALL: [Self; 30] = [
         Self::Overflow,
         Self::ClippedText,
         Self::Overlap,
@@ -125,6 +129,7 @@ impl Kind {
         Self::FirstLevelIndent,
         Self::DuplicateBarControl,
         Self::IconOnlyBarAction,
+        Self::PlaceholderPane,
     ];
 
     pub fn name(self) -> &'static str {
@@ -158,6 +163,7 @@ impl Kind {
             Self::FirstLevelIndent => "first-level-indent",
             Self::DuplicateBarControl => "duplicate-bar-control",
             Self::IconOnlyBarAction => "icon-only-bar-action",
+            Self::PlaceholderPane => "placeholder-pane",
         }
     }
 }
@@ -197,6 +203,17 @@ const HEADING: &str = "SectionHeader";
 const BACK: &str = "nav-shell-back";
 const SIDEBAR_TOGGLE: &str = "nav-shell-sidebar";
 
+/// The window shell, whose columns stand as its own children.
+const SHELL: &str = "NavShell";
+
+/// The pane a window keeps for what is not chosen yet.
+const CHOICE_PANE: &str = "EmptyState";
+
+/// The share of the window a pane takes to stand for a column rather than to say one notice: the
+/// width and the height its content column keeps while something is open in it.
+const PANE_WIDTH: f64 = 0.25;
+const PANE_HEIGHT: f64 = 0.5;
+
 fn rect(r: [f64; 4]) -> Rect {
     Rect::new(r[0], r[1], r[0] + r[2], r[1] + r[3])
 }
@@ -221,6 +238,22 @@ fn size(r: Rect) -> String {
 /// `text` as one line of words: whitespace collapsed, ends trimmed.
 fn words(text: &str) -> String {
     text.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+/// The words a box gives a screen reader: its own, or the first of what it holds.
+fn words_of(node: &InspectionNode) -> String {
+    node.semantics
+        .as_ref()
+        .and_then(|access| access.name.as_deref())
+        .map(words)
+        .filter(|said| !said.is_empty())
+        .or_else(|| {
+            node.children
+                .iter()
+                .map(words_of)
+                .find(|said| !said.is_empty())
+        })
+        .unwrap_or_default()
 }
 
 /// Which ways a box lets its content go on past it.
@@ -276,6 +309,35 @@ fn is_row(node: &InspectionNode) -> bool {
         .semantics
         .as_ref()
         .is_some_and(|access| access.role == ui::a11y::Role::ListItem)
+}
+
+/// Whether a node is one row of a list of items: what a list draws per item. The rows of a tree
+/// are the branches it opens, not items a window lists beside its content.
+fn is_item_row(node: &InspectionNode) -> bool {
+    is_row(node) && node.widget != "TreeViewRow"
+}
+
+/// Whether `node` shows one of the rows `pane` stands beside, in the window `window`: beside is
+/// side by side, both of them on screen, one over the other's height.
+fn beside_rows(pane: Rect, node: &InspectionNode, window: Rect) -> bool {
+    if is_item_row(node) {
+        let row = rect(node.rect).intersect(window);
+        return has_area(row)
+            && (row.x1 <= pane.x0 + EPSILON || row.x0 >= pane.x1 - EPSILON)
+            && row.y0 < pane.y1 - EPSILON
+            && row.y1 > pane.y0 + EPSILON;
+    }
+    node.children
+        .iter()
+        .any(|child| beside_rows(pane, child, window))
+}
+
+/// Whether a pane takes the room of a column: more of the window than a notice standing in what
+/// it says.
+fn pane_sized(pane: Rect, window: Rect) -> bool {
+    has_area(pane)
+        && pane.width() >= window.width() * PANE_WIDTH
+        && pane.height() >= window.height() * PANE_HEIGHT
 }
 
 /// Whether a widget hangs part of itself outside the column it is in by design: a document's
@@ -532,6 +594,7 @@ pub fn inspect(
     walk.repeated_counts();
     walk.repeated_titles();
     walk.double_navigation();
+    walk.placeholder_panes(root, &mut Vec::new());
     out
 }
 
@@ -1167,6 +1230,55 @@ impl Walk<'_> {
                          that went somewhere deeper has one way back, at the leading edge"
                     .to_owned(),
             });
+        }
+    }
+
+    /// A pane that only says nothing is chosen, standing beside the list the window chooses
+    /// from: the pane takes the room the list would list in, and there is nothing in it to read.
+    /// With nothing chosen the list lists for the whole window, and the pane appears when a row
+    /// is chosen. A window whose list is its sidebar (a chat's channels over the conversation's
+    /// place) keeps its pane: the rows of a sidebar's tree are no items to list beside it.
+    fn placeholder_panes(&mut self, node: &InspectionNode, keys: &mut Vec<String>) {
+        if node.widget == SHELL {
+            let mut chosen = None;
+            for (index, child) in node.children.iter().enumerate() {
+                if child.widget != CHOICE_PANE
+                    || words_of(child).is_empty()
+                    || !pane_sized(rect(child.rect), self.viewport)
+                {
+                    continue;
+                }
+                if node.children.iter().enumerate().any(|(other, beside)| {
+                    other != index && beside_rows(rect(child.rect), beside, self.viewport)
+                }) {
+                    chosen = Some(child);
+                    break;
+                }
+            }
+            if let Some(pane) = chosen {
+                let pushed = pane.test_id.clone().map(|id| keys.push(id)).is_some();
+                self.push(
+                    Kind::PlaceholderPane,
+                    pane,
+                    keys,
+                    format!(
+                        "it says \"{}\" over {}, while the list of items beside it could list \
+                         there until one is chosen",
+                        words_of(pane),
+                        size(rect(pane.rect))
+                    ),
+                );
+                if pushed {
+                    keys.pop();
+                }
+            }
+        }
+        for child in &node.children {
+            let pushed = child.test_id.clone().map(|id| keys.push(id)).is_some();
+            self.placeholder_panes(child, keys);
+            if pushed {
+                keys.pop();
+            }
         }
     }
 
@@ -2150,6 +2262,88 @@ mod tests {
             ))
             .is_empty(),
             "a column is no surface of its own"
+        );
+    }
+
+    fn named(widget: &str, id: &str, rect: [f64; 4], said: &str) -> InspectionNode {
+        let mut boxed = node(widget, id, rect, Some(Role::Group));
+        if let Some(access) = boxed.semantics.as_mut() {
+            access.name = Some(said.to_owned());
+        }
+        boxed
+    }
+
+    fn placeholder_panes(root: &InspectionNode) -> Vec<Problem> {
+        inspect(root, (1280, 800), None, 1.0)
+            .into_iter()
+            .filter(|p| p.kind == Kind::PlaceholderPane)
+            .collect()
+    }
+
+    /// A pane that only says nothing is chosen, standing beside the list the window chooses
+    /// from, takes the room the rows would list in: with nothing chosen the list lists for the
+    /// whole window, and the pane appears when a row is chosen. A window that lists no items
+    /// beside it keeps its pane, and so does a phone, where the pane stands over the list it
+    /// pushed aside rather than beside it.
+    #[test]
+    fn a_pane_saying_nothing_is_chosen_beside_the_list_is_caught() {
+        let window = [0.0, 0.0, 1280.0, 800.0];
+        let list = |rect: [f64; 4]| {
+            holding(
+                node("DescribedList", "notes", rect, None),
+                vec![node(
+                    "SwipeRow",
+                    "note",
+                    [rect[0] + 24.0, rect[1], 296.0, 52.0],
+                    None,
+                )],
+            )
+        };
+        let chosen = |rect: [f64; 4]| named("EmptyState", "chosen", rect, "No note selected");
+        let shell = |children: Vec<InspectionNode>| {
+            holding(node("NavShell", "shell", window, None), children)
+        };
+        let found = placeholder_panes(&shell(vec![
+            list([280.0, 56.0, 344.0, 744.0]),
+            chosen([624.0, 56.0, 656.0, 744.0]),
+        ]));
+        assert_eq!(found.len(), 1, "{found:?}");
+        assert_eq!(found[0].keys.first().map(String::as_str), Some("chosen"));
+        assert!(
+            found[0].detail.contains("\"No note selected\""),
+            "it names what the pane says: {}",
+            found[0].detail
+        );
+        assert!(
+            placeholder_panes(&shell(vec![chosen([624.0, 56.0, 656.0, 744.0])])).is_empty(),
+            "a window listing nothing keeps its pane"
+        );
+        let mut places = node("NavList", "places", [280.0, 56.0, 344.0, 744.0], None);
+        places.children = vec![node(
+            "NavItem",
+            "place",
+            [280.0, 56.0, 344.0, 32.0],
+            Some(Role::TreeItem),
+        )];
+        assert!(
+            placeholder_panes(&shell(vec![places, chosen([624.0, 56.0, 656.0, 744.0])])).is_empty(),
+            "the places of a sidebar are no list of items to choose from"
+        );
+        assert!(
+            placeholder_panes(&shell(vec![
+                list([-1000.0, 56.0, 344.0, 744.0]),
+                chosen([0.0, 56.0, 1280.0, 744.0]),
+            ]))
+            .is_empty(),
+            "a phone's pane stands over the list it pushed aside, not beside it"
+        );
+        assert!(
+            placeholder_panes(&shell(vec![
+                list([280.0, 56.0, 344.0, 744.0]),
+                chosen([624.0, 300.0, 100.0, 60.0]),
+            ]))
+            .is_empty(),
+            "a notice inside a column is no pane of its own"
         );
     }
 

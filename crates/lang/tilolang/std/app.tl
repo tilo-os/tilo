@@ -129,9 +129,9 @@ template view add_entry(placeholder: Text, create: Action) {
 /// naming that place.
 ///
 /// The rows open beside the list when their type has a window of its own (`opens`, the type's own
-/// fact): choosing one opens it in the column beside the list, and the window says beside them
-/// that nothing is chosen. A window whose rows open in front of it gives `opens: false` instead:
-/// the list is then its content, under its own title, with no column to open beside it.
+/// fact): choosing one opens it in the column beside the list, and until one is chosen the list
+/// lists for the whole window. A window whose rows open in front of it gives `opens: false`
+/// instead: the list is then its content, under its own title, with no column to open beside it.
 ///
 /// `row` draws one item's row and the window puts it down the list, with who else is at the item
 /// as every list shows it. The row the person opened is the list's own, unless the app keeps one
@@ -178,9 +178,6 @@ template view browse<R, T>(
                 browse_rows(shown, opened, empty, kind.icon, entry, entry_placeholder) { x ->
                     row(x)
                 }
-            }
-            content: {
-                ui.EmptyState(phrase("tilolang-none-selected", kind: kind.noun), icon: kind.icon)
             }
         }
     } else {
