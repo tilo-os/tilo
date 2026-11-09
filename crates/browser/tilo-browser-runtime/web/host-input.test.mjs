@@ -260,9 +260,9 @@ test('the search chord opens the search once, from inside the surface and before
  assert.equal(early.defaultPrevented,true);
  // A press with the keyboard in the surface's own field is the page's too: the desk never sees
  // it, so one press is one toggle, never open-then-close.
- const f=await fixture();const ctrl=new DomEvent('keydown',{key:'k',code:'KeyK',ctrlKey:true});
- const seen=[];f.host.canvas.addEventListener('keydown',event=>seen.push({key:event.key,ctrl:event.ctrlKey}));
- f.host.editor.focus();f.host.editor.dispatchEvent(ctrl);
+ const f=await fixture();const chord=new DomEvent('keydown',{key:'k',code:'KeyK',metaKey:true});
+ const seen=[];f.host.canvas.addEventListener('keydown',event=>seen.push({key:event.key,meta:event.metaKey}));
+ f.host.editor.focus();f.host.editor.dispatchEvent(chord);
  assert.equal(f.runtime.searchToggles,1,'one press toggled the search once');
  assert.deepEqual(seen,[],'the desk never saw the chord, so it cannot toggle it a second time');
 });
@@ -271,9 +271,9 @@ test('a key forwarded into the surface does not bubble back to the page',async()
  // The desk asks the surface to act on a key the page's capture listener would answer too (the
  // search chord): a forwarded copy must stay the surface's, or the page sees one press twice.
  let pageSightings=0;
- f.document.addEventListener('keydown',event=>{if(event.ctrlKey&&String(event.key).toLowerCase()==='k')pageSightings++;},true);
+ f.document.addEventListener('keydown',event=>{if(event.metaKey&&String(event.key).toLowerCase()==='k')pageSightings++;},true);
  f.host.editor.focus();
- f.host.editor.dispatchEvent(new DomEvent('keydown',{key:'k',code:'KeyK',ctrlKey:true}));
+ f.host.editor.dispatchEvent(new DomEvent('keydown',{key:'k',code:'KeyK',metaKey:true}));
  await tick();
  assert.equal(pageSightings,0,'a forwarded key reached the page as a second press of the same key');
 });
