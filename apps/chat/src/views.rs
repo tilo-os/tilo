@@ -67,6 +67,23 @@ pub struct Person {
     pub agent: bool,
 }
 
+/// What a channel's record does not itself say of the people in it, which the session reading
+/// it knows: the name its reader goes by on this device — the very name the top bar shows them
+/// — and the workspace's agents by their id. A record holds ids; a person is named where they
+/// are read.
+///
+/// Chat's record names the people it was told about (a workspace's roster), and a session's
+/// own record may never have been told of its reader or of the agent it asks: the reading is
+/// then completed here rather than showing anyone their routing id.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Names {
+    /// The reader's own name, as this device shows them; empty when it knows none.
+    pub me: String,
+    /// Each agent of the workspace, by its id (the part after `agent:`), as the workspace
+    /// keeps its name.
+    pub agents: std::collections::BTreeMap<String, String>,
+}
+
 /// One message of a channel, as its page shows it.
 #[derive(Clone, Debug, Default, PartialEq, serde::Deserialize, serde::Serialize)]
 pub struct Message {
@@ -192,18 +209,22 @@ impl Channel {
     ///
     /// A conversation the record does not hold (a direct one nobody has written in yet) is
     /// named by the people it is with, as the window names it.
+    ///
+    /// [`Names`] completes what the record does not say: the reader's own name, and the
+    /// workspace's agents by their id. Nobody is ever shown their routing id.
     #[must_use]
     pub fn read(
         chat: &crate::record::Chat,
         rows: &[crate::model::Message],
         id: &str,
         me: &str,
+        names: &Names,
     ) -> Self {
         let channel_id = Id::from_raw(id);
         let channel = chat.conversation(&channel_id);
         let mut people: Vec<Person> = Vec::new();
         for row in rows {
-            Self::named(&mut people, chat, &row.author);
+            Self::named(&mut people, chat, names, me, &row.author);
         }
         let messages = rows
             .iter()
@@ -259,21 +280,65 @@ impl Channel {
         }
     }
 
-    /// Add the person `author` to `people` when not already there, as the record names them.
-    fn named(people: &mut Vec<Person>, chat: &crate::record::Chat, author: &str) {
+    /// Add the person `author` to `people` when not already there, as they are named here: the
+    /// record's roster first, then what the reading's [`Names`] say — the reader's own name,
+    /// or the workspace's name for an agent — and otherwise Chat's honest placeholder for
+    /// someone it cannot name. Never their routing id.
+    fn named(
+        people: &mut Vec<Person>,
+        chat: &crate::record::Chat,
+        names: &Names,
+        me: &str,
+        author: &str,
+    ) {
         if people.iter().any(|held| held.id == author) {
             return;
         }
         let found = chat.people.iter().find(|person| person.id.0 == author);
+        let agent = found.map_or_else(|| is_agent(author), |person| person.agent);
+        let name = found
+            .map(|person| person.name.trim().to_owned())
+            .filter(|name| !name.is_empty())
+            .or_else(|| agent_name(chat, names, author))
+            .or_else(|| (author == me).then(|| names.me.trim().to_owned()))
+            .filter(|name| !name.is_empty())
+            .unwrap_or_else(|| crate::identity::unnamed_label(author));
         people.push(Person {
             id: author.to_owned(),
-            name: found
-                .map(|person| person.name.trim().to_owned())
-                .filter(|name| !name.is_empty())
-                .unwrap_or_else(|| author.to_owned()),
-            agent: found.is_some_and(|person| person.agent),
+            name,
+            agent,
         });
     }
+}
+
+/// Whether `author` is an agent rather than a person: a participant spelled `agent:<id>`, or an
+/// agent task spelled `agent-task:<task>`.
+fn is_agent(author: &str) -> bool {
+    author.starts_with("agent:") || author.starts_with(tilo_actions::AGENT_TASK_PARTICIPANT_PREFIX)
+}
+
+/// The id an agent author is named by: the part after `agent:`.
+fn agent_id(author: &str) -> Option<&str> {
+    author.strip_prefix("agent:")
+}
+
+/// The name an agent author shows, as the record or the workspace names it: the name the
+/// workspace keeps for it (Chat's own `agent_names`, or the workspace agents record the reading
+/// carries), and otherwise what Chat calls an agent it has not been told the name of. An author
+/// that is not an agent has no agent's name.
+fn agent_name(chat: &crate::record::Chat, names: &Names, author: &str) -> Option<String> {
+    if !is_agent(author) {
+        return None;
+    }
+    chat.agent_names
+        .get(author)
+        .or_else(|| agent_id(author).and_then(|id| names.agents.get(id)))
+        .map(|name| name.trim().to_owned())
+        .filter(|name| !name.is_empty())
+        .or_else(|| {
+            crate::i18n::ensure();
+            Some(crate::i18n::t("chat-agent-kind"))
+        })
 }
 
 /// The start of `text` a quote under a reply shows: its first line, cut short.
@@ -355,9 +420,12 @@ const MESSAGES_KIND: &str = "chat.workspace";
 /// draws the same page: nothing here knows a width or a look.
 #[view(default)]
 fn page(c: &Channel, cx: &ViewCx) -> Node {
-    // The channel names itself and what it is about above the transcript, and the transcript
-    // fills what the column leaves under it: two rows of one column, so a long transcript
-    // scrolls inside its own room and never draws under the header over it.
+    // The column is a *filling stack*, not a nested page: a page inside another page (this one
+    // is drawn within the place's own layout, and within the desktop's page) is normalized to a
+    // plain stack whose props — `fill` and the `page` gutter among them — are dropped. A nested
+    // page would leave the column hugging its content, the transcript growing past its room
+    // under the header, and the topic line jammed on the transcript's first row. A filling
+    // stack keeps both the fill it asks for and the gap it spaces its children by.
     let head = ui::page(
         &cx.key("head"),
         vec![ui::stack(
@@ -366,14 +434,17 @@ fn page(c: &Channel, cx: &ViewCx) -> Node {
             header_facts(c, cx),
         )],
     );
-    let conversation = ui::page(&cx.key("column"), vec![head, ui::fill(transcript(c, cx))]);
-    let conversation = ui::arg(conversation, "fill", Value::Float(1.0));
+    let column = ui::fill(ui::stack(
+        &cx.key("column"),
+        Gap::Section,
+        vec![head, ui::fill(transcript(c, cx))],
+    ));
     // The composer stands docked at the foot, in the page's own gutter and measure, as every
     // conversation sets its reply box under the messages it answers (`ui.Docked`): the
     // transcript fills the column above it and scrolls, the composer keeps its own height.
     let docked: Node = ui::DockedBuilder::new(&cx.key("docked")).into();
     let docked = node::slot(docked, "foot", vec![composer(c, cx)]);
-    let docked = node::with(docked, vec![conversation]);
+    let docked = node::with(docked, vec![column]);
     // The page is the window's whole body: it fills the height the place gives it, its column
     // takes the width, and the transcript scrolls inside — never the page scrolling away with
     // the composer under it.
@@ -803,11 +874,11 @@ fn author_label(person: Option<&Person>, id: &str) -> String {
     person
         .map(|person| person.name.trim().to_owned())
         .filter(|name| !name.is_empty())
-        .unwrap_or_else(|| id.to_owned())
+        .unwrap_or_else(|| crate::identity::unnamed_label(id))
 }
 
-/// A person as a component draws them: their name, or their id when the channel does not name
-/// them.
+/// A person as a component draws them: their name, or Chat's honest placeholder for someone it
+/// cannot name, never their id.
 fn principal(person: Option<&Person>, id: &str) -> tilo_view::Principal {
     match person {
         Some(person) => tilo_view::Principal {
@@ -816,7 +887,7 @@ fn principal(person: Option<&Person>, id: &str) -> tilo_view::Principal {
         },
         None => tilo_view::Principal {
             id: id.to_owned(),
-            name: String::new(),
+            name: crate::identity::unnamed_label(id),
         },
     }
 }
@@ -837,7 +908,13 @@ mod tests {
     fn demo_channel() -> Channel {
         let workspace = crate::demo::Workspace::demo().expect("the demo workspace");
         let rows = workspace.message_rows("c_crit");
-        Channel::read(&workspace.read(), &rows, "c_crit", crate::model::ME)
+        Channel::read(
+            &workspace.read(),
+            &rows,
+            "c_crit",
+            crate::model::ME,
+            &Names::default(),
+        )
     }
 
     fn view_cx(channel: &Channel) -> ViewCx {
@@ -947,6 +1024,178 @@ mod tests {
             .into_iter()
             .filter(|node| node.kind == kind && node.key.contains(suffix))
             .collect()
+    }
+
+    /// A message of `channel` written by `author` at `ts`, as the record's projection reads one.
+    fn row(channel: &str, id: &str, author: &str, ts: i64, text: &str) -> crate::model::Message {
+        crate::model::Message {
+            id: id.to_owned(),
+            channel: channel.to_owned(),
+            author: author.to_owned(),
+            ts,
+            text: text.to_owned(),
+            body: Vec::new(),
+            edited: false,
+            history: Vec::new(),
+            parent: None,
+            reactions: Vec::new(),
+            mentions: Vec::new(),
+            attachments: Vec::new(),
+            pinned: false,
+            work: None,
+            appearance: None,
+            share: None,
+        }
+    }
+
+    /// A channel of a record that knows nobody: a real session's ask conversation, whose record
+    /// was created by the ask and never introduced to its reader or its agent, with one message
+    /// from the person seated here under their root key and one from the agent answering them.
+    fn unacquainted_channel(me: &str, agent: &str) -> Channel {
+        let mut chat = crate::record::Chat::default();
+        chat.open_channel(
+            Id::from_raw("c_ask"),
+            crate::record::Conversation {
+                name: "Assistant".to_owned(),
+                participants: vec![
+                    crate::record::Participant::person(me).atom(),
+                    crate::record::Participant::agent(agent).atom(),
+                ],
+                ..crate::record::Conversation::default()
+            },
+        );
+        let rows = vec![
+            row("c_ask", "m_ask", me, 1_782_470_400, "hello"),
+            row(
+                "c_ask",
+                "m_reply",
+                &format!("agent:{agent}"),
+                1_782_470_460,
+                "Hi",
+            ),
+        ];
+        let mut names = Names {
+            me: "Quinn Davis".to_owned(),
+            ..Names::default()
+        };
+        names
+            .agents
+            .insert(agent.to_owned(), "Assistant".to_owned());
+        Channel::read(&chat, &rows, "c_ask", me, &names)
+    }
+
+    #[test]
+    fn a_real_sessions_person_is_named_never_shown_their_id() {
+        // A session's Chat record is the ask's, and the ask never told it who reads it: the
+        // person's message is authored by their root key, a 64-hex routing id. The page draws
+        // the name this device shows them — "quinn davis" — never that key.
+        const ME: &str = "ba944082ab57230fec2b518bd058a677d056dc648ac5c766f392f5f69fc1ee8c";
+        let channel = unacquainted_channel(ME, "assistant");
+        // The reading itself names them: their avatar and byline carry the name, not the key.
+        let person = channel
+            .person(ME)
+            .expect("the author is in the channel's people");
+        assert_eq!(person.name, "Quinn Davis", "the person is named");
+        assert!(!person.name.contains(ME), "never their routing id");
+        let cx = view_cx(&channel);
+        let tree = page(&channel, &cx);
+        passes(&tree);
+        let authors = keyed(&tree, "ui.Text", "@author-");
+        let shown: Vec<String> = authors
+            .iter()
+            .flat_map(|node| texts(node))
+            .filter(|text| !text.trim().is_empty())
+            .collect();
+        assert!(
+            shown.iter().any(|name| name == "Quinn Davis"),
+            "the byline is the person's name: {shown:?}"
+        );
+        assert!(
+            !shown.iter().any(|name| name.contains(ME)),
+            "no byline shows the routing id: {shown:?}"
+        );
+        // Their avatar's letters are their initials, and it is called by their name, never by
+        // the id: the very face the top bar draws.
+        let avatar = keyed(&tree, "ui.Avatar", "@avatar-")
+            .into_iter()
+            .next()
+            .expect("the person's avatar");
+        assert_eq!(
+            avatar.props.get("who"),
+            Some(&Value::Principal(tilo_view::Principal {
+                id: ME.to_owned(),
+                name: "Quinn Davis".to_owned(),
+            })),
+            "the avatar is drawn for the person by name, not by id"
+        );
+    }
+
+    #[test]
+    fn an_agents_answer_is_signed_with_its_name() {
+        // An agent's reply is authored `agent:<id>`: the page draws the agent's name, the one
+        // the workspace keeps for it, never its id.
+        const ME: &str = "ba944082ab57230fec2b518bd058a677d056dc648ac5c766f392f5f69fc1ee8c";
+        let channel = unacquainted_channel(ME, "assistant");
+        let agent = channel
+            .person("agent:assistant")
+            .expect("the agent is in the channel's people");
+        assert!(agent.agent, "the author is an agent");
+        assert_eq!(agent.name, "Assistant", "the agent is named");
+        let cx = view_cx(&channel);
+        let tree = page(&channel, &cx);
+        passes(&tree);
+        let shown: Vec<String> = keyed(&tree, "ui.Text", "@author-")
+            .iter()
+            .flat_map(|node| texts(node))
+            .filter(|text| !text.trim().is_empty())
+            .collect();
+        assert!(
+            shown.iter().any(|name| name == "Assistant"),
+            "the agent's byline is its name: {shown:?}"
+        );
+        assert!(
+            !shown.iter().any(|name| name.contains("agent:")),
+            "no byline shows the agent's id: {shown:?}"
+        );
+    }
+
+    #[test]
+    fn a_person_the_record_cannot_name_is_never_shown_their_id() {
+        // Someone neither the record nor the reading's names know: the page says the honest
+        // placeholder Chat uses for an unnamed person, never the routing key it holds.
+        const STRANGER: &str = "f00dfeedf00dfeedf00dfeedf00dfeedf00dfeedf00dfeedf00dfeedf00dfeed";
+        let mut chat = crate::record::Chat::default();
+        chat.open_channel(
+            Id::from_raw("c_ask"),
+            crate::record::Conversation {
+                name: "Assistant".to_owned(),
+                ..crate::record::Conversation::default()
+            },
+        );
+        let rows = vec![row("c_ask", "m_ask", STRANGER, 1_782_470_400, "hello")];
+        let channel = Channel::read(&chat, &rows, "c_ask", crate::model::ME, &Names::default());
+        let person = channel.person(STRANGER).expect("the author is named");
+        assert!(
+            !person.name.contains(STRANGER),
+            "the placeholder never spells the key: {}",
+            person.name
+        );
+        assert!(
+            person.name.contains("eed"),
+            "the placeholder names them by the last of their key: {}",
+            person.name
+        );
+        let cx = view_cx(&channel);
+        let tree = page(&channel, &cx);
+        passes(&tree);
+        let shown: Vec<String> = keyed(&tree, "ui.Text", "@author-")
+            .iter()
+            .flat_map(|node| texts(node))
+            .collect();
+        assert!(
+            !shown.iter().any(|name| name.contains(STRANGER)),
+            "no byline shows the routing key: {shown:?}"
+        );
     }
 
     #[test]

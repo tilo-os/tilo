@@ -363,9 +363,72 @@ impl Conversations {
             let messages = chat::messages::Messages::new(vec![(*index, std::rc::Rc::new(held))]);
             let rows = chat.message_rows(&messages, channel);
             let me = opened.records.author().0.clone();
-            return Some(chat::views::Channel::read(&chat, &rows, channel, &me));
+            let names = self.channel_names(opened, &me);
+            return Some(chat::views::Channel::read(
+                &chat, &rows, channel, &me, &names,
+            ));
         }
         None
+    }
+
+    /// The names a conversation's page completes its people with, beyond what Chat's own record
+    /// says: the name this device shows the seated person by — the very name the top bar shows
+    /// them — and the workspace's agents, by their id.
+    ///
+    /// A session's Chat record may never have been told who reads it (an ask creates the
+    /// conversation and posts, and Chat's `introduce` is another app's act), nor which agents the
+    /// workspace keeps: those records are here, so the page is read with them and nobody is
+    /// shown a routing id.
+    fn channel_names(&self, opened: &Opened, me: &str) -> chat::views::Names {
+        let mut names = chat::views::Names {
+            me: crate::directory::desk_person_name(
+                ui::local_identity::load().map(|identity| identity.display_name),
+                me,
+            ),
+            agents: BTreeMap::new(),
+        };
+        let record = self.workspace_agents(opened);
+        if let Some(record) = record {
+            let state = record.get();
+            for agent in state.active() {
+                let name = agent.name.trim();
+                if !name.is_empty() {
+                    names.agents.insert(agent.id.0.clone(), name.to_owned());
+                }
+            }
+        }
+        names
+    }
+
+    /// The workspace's agents record `opened` holds, opened here where it is not: the names a
+    /// conversation's agents go by. `None` where the workspace keeps none — reading an app's
+    /// record creates none, as [`Self::opened_with`] reads Chat's.
+    fn workspace_agents(
+        &self,
+        opened: &Opened,
+    ) -> Option<WorkspaceRecord<tilo_app::tilo_workspace_agent::WorkspaceAgents>> {
+        use tilo_app::tilo_workspace_agent::{KIND as AGENTS_KIND, OWNER as AGENTS_OWNER};
+        let id = collab_types::workspace_record_id(AGENTS_KIND);
+        let held = opened
+            .records
+            .holds_record(AGENTS_OWNER, &id, AGENTS_KIND)
+            .unwrap_or(false);
+        if !held {
+            return None;
+        }
+        let standing = tilo_action_policy::Standing::person(
+            opened.policy.clone(),
+            opened.records.author().0.clone(),
+        );
+        let permissions = PermissionContext::from_standing(&opened.policy.workspace, standing)
+            .with_policy_time_sampler(Arc::new(|| Ok(tilo_clock::unix_now())));
+        WorkspaceRecord::<tilo_app::tilo_workspace_agent::WorkspaceAgents>::open(
+            &opened.records,
+            AGENTS_OWNER,
+            CHAT_APP,
+            Some(LivePermissions::fixed(permissions)),
+            None,
+        )
     }
 
     /// Post `text` in `channel`, as the person seated here, through Chat's own `post`: a message
