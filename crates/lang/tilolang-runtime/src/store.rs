@@ -821,6 +821,14 @@ pub trait PagedItems: std::fmt::Debug {
         let _ = id;
         None
     }
+
+    /// Whether the listing holds the item `id`: `None` when it cannot say. A listing that
+    /// checks its items one by one as it reads them answers from the item's own entries, never
+    /// by reading the entries before it, so what it holds costs the item, not the listing
+    /// ([`Self::position`], which counts the items before it).
+    fn holds(&self, id: &str) -> Option<bool> {
+        self.position(id).map(|at| at.is_some())
+    }
 }
 
 impl PartialEq for Listing {
@@ -901,6 +909,16 @@ impl Listing {
         match &self.paged {
             Some(paged) => paged.position(id),
             None => Some(self.held.iter().position(|held| &**held == id)),
+        }
+    }
+
+    /// Whether the listing holds the item `id`, `None` when it cannot say: [`Self::position`]
+    /// where the listing answers that without reading the items before it, as a listing that
+    /// checks its items one by one as it reads them does.
+    pub fn holds(&self, id: &str) -> Option<bool> {
+        match &self.paged {
+            Some(paged) => paged.holds(id),
+            None => Some(self.held.iter().any(|held| &**held == id)),
         }
     }
 

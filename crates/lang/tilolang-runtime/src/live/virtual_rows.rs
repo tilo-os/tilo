@@ -69,6 +69,17 @@ impl Rows {
         }
     }
 
+    /// Whether [`Self::len`] is the rows' length and not the most they can hold: a listing that
+    /// checks its items one by one as it reads them says how many it holds only once it has read
+    /// them all, and before then the most its run can name, a number that moves with the run's
+    /// bounds.
+    fn len_is_exact(&self) -> bool {
+        match self {
+            Self::Coll { listing, .. } => listing.len_is_exact(),
+            Self::List { .. } => true,
+        }
+    }
+
     /// The collection's item of row `index`, kept rows counted.
     fn coll_row(&self, index: usize) -> Option<Rc<str>> {
         let Self::Coll { listing, kept, .. } = self else {
@@ -266,6 +277,15 @@ impl crate::store::PagedItems for KeptRows {
         }
         let index = self.base.position(id)?;
         Some(index.map(|index| self.place_of(index)))
+    }
+
+    /// Whether the rows hold the item: a kept row does, and the base answers for the others
+    /// from the item's own entries.
+    fn holds(&self, id: &str) -> Option<bool> {
+        if self.kept.iter().any(|(_, item)| &**item == id) {
+            return Some(true);
+        }
+        self.base.holds(id)
     }
 }
 
@@ -771,8 +791,7 @@ impl Live {
         // A row the change takes out of the query stands where it stood, whether the host has
         // built it yet or not: the host takes no step for it.
         for id in ids {
-            if kept.iter().any(|(_, held)| &**held == id.as_str()) || now.position(id) != Some(None)
-            {
+            if kept.iter().any(|(_, held)| &**held == id.as_str()) || now.holds(id) != Some(false) {
                 continue;
             }
             let Some(Some(place)) = before.position(id) else {
@@ -900,7 +919,9 @@ impl Live {
             kept: still_kept(core, &rows.coll, &listing, list.rows.kept()),
             listing,
         };
-        let fits = list.len == now.len()
+        // A count that is only the most the listing can hold moves with its run's bounds
+        // without a row coming or going: the rows fit as their items stand.
+        let fits = (list.len == now.len() || !now.len_is_exact())
             && list.built.iter().all(|(index, id)| {
                 let key = now.key(&list.template, *index);
                 self.bound(*id)
@@ -935,8 +956,8 @@ fn still_kept(
         return Vec::new();
     };
     kept.iter()
-        .filter(|(_, item)| matches!(listing.position(item), Some(None)))
-        .filter(|(_, item)| matches!(all.position(item), Some(Some(_))))
+        .filter(|(_, item)| listing.holds(item) == Some(false))
+        .filter(|(_, item)| all.holds(item) == Some(true))
         .map(|(place, item)| (*place, Rc::clone(item)))
         .collect()
 }
@@ -951,7 +972,7 @@ fn keeps(core: &Core, coll: &CollRef, id: &str) -> Option<bool> {
         ..coll.clone()
     });
     let all = core.coll_listing(&plain).ok()?;
-    all.position(id).map(|place| place.is_some())
+    all.holds(id)
 }
 
 /// The rows of a list of values the person looking took out of it that still stand: those kept
@@ -1091,8 +1112,13 @@ impl Builder<'_> {
             );
             return Ok(Vec::new());
         };
+        // The rows stand as they are when the rows built before hold the same items, and the
+        // count is the rows' own: a listing that checks its items as it reads them answers the
+        // most it can hold rather than how many, so its count moves with the bounds of its run
+        // without a row coming or going. A count that moved is the host's to hear, not a reason
+        // to find every row's key again, which reads the listing to its end.
         let same = before.rows.same(&rows, &before.built)
-            && before.len == rows.len()
+            && (before.len == rows.len() || !rows.len_is_exact())
             && before.template.makes_as(&template);
         let (steps, (built, children)): (Vec<RowStep>, BuiltRows) = if same {
             // Nothing the list shows changed and none of its rows moved.
