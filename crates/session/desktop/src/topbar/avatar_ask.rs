@@ -294,8 +294,13 @@ impl TopBarChrome {
             return false;
         };
         match event {
+            // Escape folds the ask only once the person has moved to it: the bar holds their
+            // focus. A card that arrived unasked stands beside the avatar while they work and
+            // never answers the keys they are typing where they are — their window's Escape,
+            // their search's Escape — so it shows without taking the keyboard from them.
             WindowEvent::KeyboardInput { event: key, .. }
-                if key.state == winit::event::ElementState::Pressed
+                if self.focused
+                    && key.state == winit::event::ElementState::Pressed
                     && key.logical_key
                         == winit::keyboard::Key::Named(winit::keyboard::NamedKey::Escape) =>
             {
