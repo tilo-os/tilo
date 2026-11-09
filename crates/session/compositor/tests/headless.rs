@@ -23,6 +23,8 @@ mod ime;
 mod liveness;
 #[path = "headless/pacing.rs"]
 mod pacing;
+#[path = "headless/redraw.rs"]
+mod redraw;
 #[path = "headless/seats.rs"]
 mod seats;
 #[path = "headless/session_follow.rs"]

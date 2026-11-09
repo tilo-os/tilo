@@ -1437,6 +1437,7 @@ impl State {
             self.apply_policy_focus_and_closes();
             return;
         };
+        let mut moved = false;
         let stack: Vec<Window> = self.space.elements().cloned().collect();
         for window in stack {
             let Some(id) = describe(self, &window).map(|info| info.id) else {
@@ -1446,6 +1447,10 @@ impl State {
             else {
                 continue;
             };
+            let was = self.space.element_location(&window);
+            if was != Some(arrangement.location) {
+                moved = true;
+            }
             if let Some(x11) = window.x11_surface() {
                 let size = arrangement
                     .size
@@ -1470,6 +1475,12 @@ impl State {
             // Re-mapping in stacking order keeps the order.
             self.space
                 .map_element(window.clone(), arrangement.location, activated);
+        }
+        if moved {
+            // A window the policy placed elsewhere may stand on other outputs now: they are the
+            // ones that show it, and what they show changed, so they owe a frame.
+            self.space.refresh();
+            self.mark_redraw_all();
         }
         // A card an app draws stays in front of the windows it floats over.
         let cards: Vec<_> = self
