@@ -180,16 +180,16 @@ pub struct VirtualListProps {
     /// starts its title.
     pub in_column: bool,
     /// The list is read to its end: it opens at its last row and stays there as rows arrive and
-    /// settle, unless the person scrolled away ([`VirtualList::following_end`]). Its rows stand
-    /// in the page column, filling it, a section's gap under each, and each run one author wrote
-    /// under that author's name and the time ([`ListItemProps::author`], [`ListItemProps::time`]).
-    /// They are read, not chosen: a press gives a row the keyboard and chooses nothing.
+    /// settle, unless the person scrolled away ([`VirtualList::following_end`]).
     pub follow_end: bool,
-    /// Each row stands in the page column, at the readable measure every page sets its blocks
-    /// on, a section's gap under the row before it. A list read from its first row to its last
-    /// (a conversation's messages, a document's replies) keeps the measure without following
-    /// its end (`follow_end`). Its rows are read, not chosen, as a transcript's are.
+    /// Each row stands in the page column: a section's gap under the row before it, each run one
+    /// author wrote under that author's name and the time ([`ListItemProps::author`],
+    /// [`ListItemProps::time`]), and a press that gives a row the keyboard, choosing none.
     pub page_column: bool,
+    /// The page column's rows keep the readable measure every page sets its blocks on
+    /// ([`MEASURE_REM`]), centred in the width the list is given. Without it they fill that
+    /// width, as a conversation's messages do.
+    pub at_measure: bool,
     /// The title over the list's tail group: the rows whose item says it is one of those done
     /// with ([`ListItemProps::tail`]) stand after every group, under it, closed until the
     /// person opens them. `None` leaves those rows among the others.
@@ -209,10 +209,9 @@ pub struct VirtualListProps {
     pub multi_select: bool,
     /// The item where the person looking has seen nothing yet (`first_unseen(c)`): the toolkit's
     /// [`UnreadDivider`](crate::widget::conversation::UnreadDivider) stands over the row that
-    /// shows it, and while that is above the view a pill at the foot offers the way back to it.
-    /// `None` draws neither, and a list that does not follow its end marks none. The list works
-    /// out the row as it builds, so a list keeps its rows and only the two the divider moved
-    /// between build again.
+    /// shows it, and while that is above the view a pill at the foot offers the way back to it
+    /// ([`VirtualList::following_end`]). `None` draws neither. The list works out the row as it
+    /// builds, so a list keeps its rows and only the two the divider moved between build again.
     pub unseen_from: Option<ResourceId>,
     /// The items, in order.
     #[component(slot(default))]
@@ -651,6 +650,7 @@ struct Face {
     in_column: bool,
     follow_end: bool,
     page_column: bool,
+    at_measure: bool,
     /// The rows stand in a tree: each under the row of the item it names.
     tree: bool,
     /// The rows the host renders as they are shown, by identity: they then change through
@@ -660,6 +660,24 @@ struct Face {
     removed: Vec<String>,
     /// The heading over the rows whose item names no group.
     ungrouped: Option<String>,
+}
+
+impl Face {
+    /// What the props say of the list, its items aside.
+    fn of(props: &VirtualListProps) -> Self {
+        Self {
+            name: props.name.clone(),
+            selection_follows_focus: props.selection_follows_focus,
+            in_column: props.in_column,
+            follow_end: props.follow_end,
+            page_column: props.page_column,
+            at_measure: props.at_measure,
+            tree: props.tree,
+            rendered: rendered(&props.rows),
+            removed: props.removed.keys(),
+            ungrouped: props.ungrouped_title.clone(),
+        }
+    }
 }
 
 /// The identity of the rows a host renders, when it renders them.
@@ -1222,12 +1240,14 @@ impl Described for DescribedList {
     type Props = VirtualListProps;
 
     fn from_props(key: &str, props: VirtualListProps) -> Self {
+        let face = Face::of(&props);
         let VirtualListProps {
             name,
             selection_follows_focus,
             in_column,
             follow_end,
             page_column,
+            at_measure,
             tail_title,
             tree,
             ungrouped_title,
@@ -1246,34 +1266,17 @@ impl Described for DescribedList {
             opened: opened_changed,
             closed: closed_changed,
         } = props;
-        let face = Face {
-            name: name.clone(),
-            selection_follows_focus,
-            in_column,
-            follow_end,
-            page_column,
-            tree,
-            rendered: rendered(&rows),
-            removed: removed.keys(),
-            ungrouped: ungrouped_title.clone(),
-        };
         rows.removed = removed.0;
         rows.ungrouped = ungrouped_title;
         let feel = motion.unwrap_or(crate::motion::Feel::Standard);
         // The items the list's events read, kept as the list holds them.
         let reading = Rc::new(RefCell::new(rows.reader()));
-        if follow_end || page_column {
+        if page_column {
             // The divider of the unseen part stands over the row that shows the item: a row says
             // which item it shows, so the list finds it as the rows arrive.
-            let marked = if follow_end {
-                unseen_from.as_ref().map(|item| item.0.clone())
-            } else {
-                None
-            };
+            let marked = unseen_from.map(|item| item.0);
             let divider = marked.clone();
-            // A page column's rows keep the width a page's blocks are read at; a list that
-            // follows its end fills the column its rows are in.
-            let measure = page_column.then_some(Length::Rem(MEASURE_REM));
+            let measure = at_measure.then_some(Length::Rem(MEASURE_REM));
             let mut list = VirtualList::new(rows, MESSAGE_ESTIMATE, move |rows, _, key| {
                 message_of(rows, key, divider.as_deref(), feel, measure)
             })
@@ -1319,6 +1322,10 @@ impl Described for DescribedList {
         } else {
             list.fitting_rows()
         };
+        // Whatever its rows, a list read to its end opens at the last one and stays there.
+        if follow_end {
+            list = list.following_end();
+        }
         if selection_follows_focus {
             list = list.selection_follows_focus();
         }
@@ -1408,22 +1415,18 @@ impl Described for DescribedList {
     /// scroll, the row their keyboard holds and what they opened stay. Rows a host renders
     /// change through the host; anything that makes the list another list builds it again.
     fn set_props(&mut self, props: VirtualListProps) -> bool {
+        if Face::of(&props) != self.face {
+            return false;
+        }
         let VirtualListProps {
-            name,
             selection_follows_focus,
-            in_column,
-            follow_end,
-            page_column,
             tail_title,
-            tree,
             ungrouped_title,
             multi_select,
             unseen_from,
             mut rows,
             removed,
-            selection: _,
             chosen,
-            scroll: _,
             open,
             motion,
             select,
@@ -1431,21 +1434,8 @@ impl Described for DescribedList {
             selected: selected_changed,
             opened: opened_changed,
             closed: closed_changed,
+            ..
         } = props;
-        let face = Face {
-            name,
-            selection_follows_focus,
-            in_column,
-            follow_end,
-            page_column,
-            tree,
-            rendered: rendered(&rows),
-            removed: removed.keys(),
-            ungrouped: ungrouped_title.clone(),
-        };
-        if face != self.face {
-            return false;
-        }
         let feel = motion.unwrap_or(crate::motion::Feel::Standard);
         rows.removed = removed.0;
         rows.ungrouped = ungrouped_title;
@@ -1716,6 +1706,7 @@ mod tests {
             "transcript",
             VirtualListProps {
                 follow_end: true,
+                page_column: true,
                 rows: given_rows(6),
                 ..VirtualListProps::default()
             },

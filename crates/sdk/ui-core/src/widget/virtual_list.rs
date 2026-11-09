@@ -938,8 +938,8 @@ impl<M: ListModel> VirtualList<M> {
     /// chooses nothing, so no row is left tinted behind the finger, and the keyboard's way
     /// through the rows rings the row it is on without choosing that one either. A list that
     /// shows what people said — a conversation's messages, a document's replies, the rows of a
-    /// page column ([`Self::following_end`]) — is read this way; a list that stands for the
-    /// things a window opens is chosen.
+    /// page column — is read this way; a list that stands for the things a window opens is
+    /// chosen.
     #[must_use]
     pub const fn reading(mut self) -> Self {
         self.reading = true;

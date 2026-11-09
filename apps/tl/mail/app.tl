@@ -817,7 +817,7 @@ view conversation(t: Thread) {
                         }
                     }
                 }
-                ui.VirtualList(page_column: true) {
+                ui.VirtualList(page_column: true, at_measure: true) {
                     for m in t.messages {
                         ui.ListItem(item: m) {
                             message(m)

@@ -5426,12 +5426,17 @@
         },
         {
           "name": "follow_end",
-          "doc": "The list is read to its end: it opens at its last row and stays there as rows arrive and settle, unless the person scrolled away ([`VirtualList::following_end`]). Its rows stand in the page column, filling it, a section's gap under each, and each run one author wrote under that author's name and the time ([`ListItemProps::author`], [`ListItemProps::time`]). They are read, not chosen: a press gives a row the keyboard and chooses nothing.",
+          "doc": "The list is read to its end: it opens at its last row and stays there as rows arrive and settle, unless the person scrolled away ([`VirtualList::following_end`]).",
           "type": "bool"
         },
         {
           "name": "page_column",
-          "doc": "Each row stands in the page column, at the readable measure every page sets its blocks on, a section's gap under the row before it. A list read from its first row to its last (a conversation's messages, a document's replies) keeps the measure without following its end (`follow_end`). Its rows are read, not chosen, as a transcript's are.",
+          "doc": "Each row stands in the page column: a section's gap under the row before it, each run one author wrote under that author's name and the time ([`ListItemProps::author`], [`ListItemProps::time`]), and a press that gives a row the keyboard, choosing none.",
+          "type": "bool"
+        },
+        {
+          "name": "at_measure",
+          "doc": "The page column's rows keep the readable measure every page sets its blocks on ([`MEASURE_REM`]), centred in the width the list is given. Without it they fill that width, as a conversation's messages do.",
           "type": "bool"
         },
         {
@@ -5460,7 +5465,7 @@
         },
         {
           "name": "unseen_from",
-          "doc": "The item where the person looking has seen nothing yet (`first_unseen(c)`): the toolkit's [`UnreadDivider`](crate::widget::conversation::UnreadDivider) stands over the row that shows it, and while that is above the view a pill at the foot offers the way back to it. `None` draws neither, and a list that does not follow its end marks none. The list works out the row as it builds, so a list keeps its rows and only the two the divider moved between build again.",
+          "doc": "The item where the person looking has seen nothing yet (`first_unseen(c)`): the toolkit's [`UnreadDivider`](crate::widget::conversation::UnreadDivider) stands over the row that shows it, and while that is above the view a pill at the foot offers the way back to it ([`VirtualList::following_end`]). `None` draws neither. The list works out the row as it builds, so a list keeps its rows and only the two the divider moved between build again.",
           "type": {
             "option": "resource"
           }

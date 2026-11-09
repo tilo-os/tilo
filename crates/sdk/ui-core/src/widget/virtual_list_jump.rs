@@ -19,11 +19,11 @@ impl<M: ListModel> VirtualList<M> {
 
     /// Where the row the person has not seen begins (`VirtualListProps::unseen_from`): the
     /// divider stands over it, and while it is out of view a pill at the foot offers the way
-    /// back to it ([`crate::widget::conversation::Jump`]). `None` draws neither, and a list that
-    /// does not follow its end marks none.
+    /// back to it ([`crate::widget::conversation::Jump`]), for a list that follows its end.
+    /// `None` draws neither.
     #[must_use]
     pub fn unread_from(mut self, item: Option<String>) -> Self {
-        self.unread = item.filter(|_| self.follow_end);
+        self.unread = item;
         self
     }
 
@@ -52,7 +52,6 @@ impl<M: ListModel> VirtualList<M> {
     /// Move the divider to the row `key`: the rows the old and the new one are on build again,
     /// so each shows the divider over it (or not) at once, without the list's items changing.
     pub fn set_unread(&mut self, item: Option<String>) {
-        let item = item.filter(|_| self.follow_end);
         if self.unread == item {
             return;
         }
