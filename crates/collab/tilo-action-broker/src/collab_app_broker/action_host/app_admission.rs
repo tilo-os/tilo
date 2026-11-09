@@ -38,15 +38,18 @@ pub(super) fn reference_request(request: &tilo_actions::remote::InvokeRequest) -
             && application_provider(&request.target.provider).is_some())
 }
 
-/// Whether `request` asks the session's desk for the invitation into the workspace: the link
-/// the invite sheet makes, so an app sharing what it shows offers the same invitation, decided
-/// by the person's part there. It reaches nothing else of the desk — the surface up, the
-/// workspace in front, the agents — and grants nothing: the invitation admits whoever redeems
-/// it, as the person's own would.
+/// Whether `request` asks the session's desk for its invitation into the workspace — the sheet
+/// where a link is made (`show-invite`) and the link itself (`issue-invitation`) — so an app
+/// sharing what it shows offers the same sheet and the same invitation, decided by the person's
+/// part there. It reaches nothing else of the desk — the surface up, the workspace in front, the
+/// agents — and grants nothing: the invitation admits whoever redeems it, as the person's own
+/// would.
 pub(super) fn invitation_request(request: &tilo_actions::remote::InvokeRequest) -> bool {
+    use tilo_actions::remote::session_actions;
+    let action = request.target.address.action.as_str();
     request.target.provider == tilo_actions::remote::SESSION_ACTIONS_PROVIDER
-        && request.target.address.resource == tilo_actions::remote::session_actions::DESK_RESOURCE
-        && request.target.address.action == tilo_actions::remote::session_actions::ISSUE_INVITATION
+        && request.target.address.resource == session_actions::DESK_RESOURCE
+        && (action == session_actions::ISSUE_INVITATION || action == session_actions::SHOW_INVITE)
 }
 
 #[cfg(test)]
@@ -224,6 +227,10 @@ mod invitation_request_tests {
         assert!(super::invitation_request(&desk(
             session_actions::ISSUE_INVITATION
         )));
+        assert!(
+            super::invitation_request(&desk(session_actions::SHOW_INVITE)),
+            "the sheet an app shares through is the person's own invite sheet"
+        );
         for other in [
             "invitations",
             "cancel-invitation",

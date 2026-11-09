@@ -1198,6 +1198,8 @@ impl Session {
             notices: notices.clone(),
             tray: tray.clone(),
             engine: engine.clone(),
+            // The invite sheet is the session's own surface: the desk asks for it here.
+            asks: Rc::clone(&asks),
         };
         let desk_service = desk();
         let shell = if options.shell {

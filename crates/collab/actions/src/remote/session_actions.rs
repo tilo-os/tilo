@@ -13,8 +13,9 @@
 //! back like any other.
 //!
 //! An app reaches the desk's invitation the same way, as the person using it: what it shows
-//! is shared by inviting people into the workspace it is in, which is the invitation the
-//! invite sheet makes ([`ISSUE_INVITATION`]) and nothing else of the desk.
+//! is shared by inviting people into the workspace it is in — the desk's own invite sheet
+//! ([`SHOW_INVITE`]), and the invitation it makes ([`ISSUE_INVITATION`]) — and nothing else of
+//! the desk.
 
 /// The provider the session answers its own actions under: the same name its own door
 /// publishes them as, so a catalogue that names a session action names it here too.
@@ -29,3 +30,9 @@ pub const DESK_RESOURCE: &str = "session:desk";
 /// being invited, which their device joins with. An app offers inviting what it shows by asking
 /// this, and gets the invitation the invite sheet makes.
 pub const ISSUE_INVITATION: &str = "issue-invitation";
+
+/// The desk's action opening its invite sheet on a workspace: where a link into it is made, the
+/// part it brings someone in at picked and the people the directory knows offered. An app offers
+/// sharing what it shows by asking this, so a folder's share and the bar's invite button are one
+/// sheet.
+pub const SHOW_INVITE: &str = "show-invite";

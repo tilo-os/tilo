@@ -8,6 +8,8 @@ use std::rc::Rc;
 
 use serde_json::{Map, Value};
 use tilo_actions::{ActionAddress, DoorError, ResourceSpec};
+use tilo_desktop::chrome::ChromeIntent;
+use tilo_desktop::desktop_host::DesktopAsk;
 use tilo_desktop_model::{DesktopTree, Strip, Tab, WindowGroup, Workspace, WorkspaceId};
 use tilo_desktop_surface::DesktopHandle;
 use tilo_desktop_surface::navigation::ChromeEffect;
@@ -108,6 +110,14 @@ pub(crate) enum DeskEffect {
         /// How long the link works for, in seconds
         #[param("How long the link works for, in seconds")]
         expires_in_seconds: Option<u64>,
+        /// The workspace, by its key; the one in front when absent
+        #[param("The workspace, by its key; the one in front when absent")]
+        workspace: Option<String>,
+    },
+    /// Open the invite sheet on a workspace: where a link into it is made, the part it brings
+    /// someone in at picked and the links that still work taken back. An app shares what it shows
+    /// by asking this, so it offers the one sheet the bar's invite button opens.
+    ShowInvite {
         /// The workspace, by its key; the one in front when absent
         #[param("The workspace, by its key; the one in front when absent")]
         workspace: Option<String>,
@@ -333,6 +343,9 @@ pub(crate) struct Desk {
     /// This device's workspaces' record, when the session holds one: the invitations a workspace's
     /// people made are kept there, by the device that made them.
     pub(crate) engine: Option<std::sync::Arc<crate::engine::Engine>>,
+    /// What the desk asks the session for while it runs: opening the invite sheet, which is the
+    /// session's own surface and not a layer the desk draws.
+    pub(crate) asks: Rc<std::cell::RefCell<Vec<tilo_desktop::desktop_host::DesktopAsk>>>,
 }
 
 /// What a window with no title is called.
@@ -1117,6 +1130,49 @@ impl Desk {
     }
 }
 
+impl Desk {
+    /// Open the invite sheet on a workspace: the workspace comes to the front, and the sheet the
+    /// bar's button opens is shown on it, through the session, which holds the surface.
+    fn show_invite(&self, workspace: Option<&str>) -> Result<Started, DoorError> {
+        let workspace = match workspace {
+            Some(key) => key.to_owned(),
+            None => self
+                .handle
+                .read(|tree| {
+                    tree.active_workspace()
+                        .map(|active| active.slot.0.to_string())
+                })
+                .ok_or_else(|| DoorError::Failed("no workspace is in front".to_owned()))?,
+        };
+        let known = self.handle.read(|tree| {
+            tree.workspaces
+                .iter()
+                .any(|candidate| candidate.slot.0.to_string() == workspace)
+        });
+        if !known {
+            return Err(DoorError::InvalidArguments(format!(
+                "there is no workspace {workspace} on this device"
+            )));
+        }
+        let active = self.handle.read(|tree| {
+            tree.active_workspace()
+                .map(|active| active.slot.0.to_string())
+        });
+        if active.as_deref() != Some(workspace.as_str()) {
+            self.handle
+                .dispatch(ChromeEffect::SwitchWorkspace {
+                    workspace: Some(workspace),
+                    delta: None,
+                })
+                .map_err(DoorError::Failed)?;
+        }
+        self.asks
+            .borrow_mut()
+            .push(DesktopAsk::Intent(ChromeIntent::Invite));
+        Ok(Started::Done(tilo_actions::ActionOutput::default()))
+    }
+}
+
 /// A pending invitation as listing invitations reports it, in the workspace host's own words: a
 /// client that lists them from a host reads the same fields.
 fn invitation_json(invitation: &PendingInvitation) -> Value {
@@ -1231,6 +1287,9 @@ impl Service for Desk {
         }
         if let Some(answer) = self.invitation(&effect) {
             return answer;
+        }
+        if let DeskEffect::ShowInvite { workspace } = &effect {
+            return self.show_invite(workspace.as_deref());
         }
         if let DeskEffect::ShowSurface { surface } = &effect {
             self.surfaces.toggle(surface);
