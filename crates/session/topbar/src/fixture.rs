@@ -6,7 +6,7 @@ use tilo_desktop::chrome::{
     VolumeState,
 };
 use tilo_desktop::profile_card::ProfileModel;
-use tilo_desktop::workspace_menu::{WorkspaceAction, WorkspaceChoice, WorkspaceMenuModel};
+use tilo_desktop::workspace_menu::{WorkspaceAction, WorkspaceMenuModel};
 use tilo_desktop_model::{Collaborator, DesktopTree, Strip, StripId, Workspace, WorkspaceSlot};
 use ui::vello::kurbo::Rect;
 
@@ -74,19 +74,10 @@ fn status() -> SystemStatus {
     }
 }
 
-fn workspace_menu(tree: &DesktopTree) -> WorkspaceMenuModel {
+fn workspace_menu() -> WorkspaceMenuModel {
     WorkspaceMenuModel {
         place: tilo_desktop::workspace_menu::MenuPlace::Bar,
         desk: Vec::new(),
-        workspaces: tree
-            .workspaces
-            .iter()
-            .map(|workspace| WorkspaceChoice {
-                key: workspace.slot.0.to_string(),
-                name: workspace.name.clone(),
-                current: workspace.slot == tree.active,
-            })
-            .collect(),
         host: None,
         actions: vec![
             WorkspaceAction {
@@ -150,7 +141,7 @@ pub fn feed(scenario: Option<&str>) -> BarFeed {
         ..DesktopChromeSnapshot::default()
     };
     BarFeed {
-        workspace_menu: workspace_menu(&tree),
+        workspace_menu: workspace_menu(),
         profile: profile(),
         local_user: LOCAL.into(),
         tree,
