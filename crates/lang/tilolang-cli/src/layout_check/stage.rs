@@ -1867,6 +1867,10 @@ mod tests {
         let answered = "Call the landlord about the boiler";
         let label = "Book a haircut";
         for (width, height) in [(1280_u32, 800_u32), (390, 844)] {
+            // A window too narrow for the list and the item at once shows one thing at a
+            // time: pressing a row opens the task's page in front of the list, where the
+            // shell's back returns to the rows.
+            let narrow = width <= 390;
             let mut staged = Staged::over(
                 &app,
                 &packages,
@@ -1887,34 +1891,67 @@ mod tests {
                     !shows_open(root, label),
                     "the row stands closed before anyone presses it"
                 );
-                assert!(
-                    shows_open(root, answered),
-                    "the task the scenario answers with is the one open"
-                );
+                if narrow {
+                    assert!(
+                        !shows_open(root, answered),
+                        "a narrow window opens no row into its item at {width}×{height}"
+                    );
+                    assert!(
+                        row_named(root, answered).is_some(),
+                        "the task the scenario answers with is a row of the place's list at \
+                         {width}×{height}"
+                    );
+                } else {
+                    assert!(
+                        shows_open(root, answered),
+                        "the task the scenario answers with is the one open"
+                    );
+                }
             }
 
             staged.press(&id, false).expect("the row presses");
 
             let root = &staged.harness().inspection().root;
             assert!(
-                shows_open(root, label),
-                "the row opened where it stands at {width}×{height}"
-            );
-            assert!(
                 !shows_open(root, answered),
                 "one row is open at a time: the other closed at {width}×{height}"
+            );
+            if narrow {
+                assert!(
+                    !shows_open(root, label),
+                    "the list behind the page keeps no row open at {width}×{height}"
+                );
+                assert!(
+                    shown_named(root, "Subtasks"),
+                    "pressing the row opens the task in front of the list at {width}×{height}"
+                );
+                assert!(
+                    crate::layout_check::back_chip(&mut staged, (width, height)),
+                    "the page carries the shell's way back at {width}×{height}"
+                );
+                staged
+                    .press_bar_slot(ui::widget::WINDOW_BACK)
+                    .expect("the shell's back presses");
+                staged.freshen().expect("the list comes back to rest");
+                let root = &staged.harness().inspection().root;
+                assert!(
+                    !shown_named(root, "Subtasks"),
+                    "the shell's back puts the page away again at {width}×{height}"
+                );
+                assert!(
+                    row_named(root, label).is_some(),
+                    "the list comes back with its rows at {width}×{height}"
+                );
+                continue;
+            }
+            assert!(
+                shows_open(root, label),
+                "the row opened where it stands at {width}×{height}"
             );
             assert!(
                 shown_named(root, "Subtasks"),
                 "the row holds the task's document where it stands at {width}×{height}"
             );
-            if width <= 390 {
-                assert!(
-                    crate::layout_check::back_chip(&mut staged, (width, height)),
-                    "a window too narrow for the list beside the document fills with it, and \
-                     carries the shell's way back at {width}×{height}"
-                );
-            }
 
             staged.key("Escape");
             let root = &staged.harness().inspection().root;
@@ -1935,7 +1972,7 @@ mod tests {
         let app = packages.0.last().expect("the app").meta.app.clone();
         let label = "Call the landlord about the boiler";
         for (width, height) in [(1280_u32, 800_u32), (390, 844)] {
-            let staged = Staged::over(
+            let mut staged = Staged::over(
                 &app,
                 &packages,
                 "a busy week",
@@ -1945,16 +1982,35 @@ mod tests {
                 &[],
             )
             .expect("the scenario stages");
+            // The window is laid out before the person reads it: a list too narrow for an item
+            // beside its row settles as it draws.
+            staged.harness.relayout();
 
             let root = &staged.harness().inspection().root;
-            assert!(
-                shows_open(root, label),
-                "the task stands open where it stands at {width}×{height}"
-            );
-            assert!(
-                shown_named(root, "Subtasks"),
-                "the row holds the task's document at {width}×{height}"
-            );
+            if width <= 390 {
+                // One thing at a time in a window too narrow for the list beside the item: the
+                // task is a row of the place's list, and pressing it opens its page in front.
+                // The document under the row is what tells it open: a branch's row says it is
+                // expanded while its subtasks show, open or not.
+                assert!(
+                    !shown_named(root, "Subtasks"),
+                    "a narrow window opens no row into its item at {width}×{height}"
+                );
+                assert!(
+                    row_named(root, label).is_some(),
+                    "the task the scenario answers with is a row of the place's list at \
+                     {width}×{height}"
+                );
+            } else {
+                assert!(
+                    shows_open(root, label),
+                    "the task stands open where it stands at {width}×{height}"
+                );
+                assert!(
+                    shown_named(root, "Subtasks"),
+                    "the row holds the task's document at {width}×{height}"
+                );
+            }
             // The window states the place the task belongs to, not the place it stood on: what
             // waits in the inbox does not stand in the list, and what is due today does.
             assert!(
@@ -2064,10 +2120,18 @@ mod tests {
                 "Back returns to the list at {width}×{height}"
             );
             let root = &staged.harness().inspection().root;
-            assert!(
-                shows_open(root, label),
-                "the task stands open where it stood at {width}×{height}"
-            );
+            // A phone keeps one thing on screen: the list comes back at rest, its rows closed.
+            if width <= 390 {
+                assert!(
+                    row_named(root, label).is_some() && !shows_open(root, label),
+                    "the place's rows come back at rest at {width}×{height}"
+                );
+            } else {
+                assert!(
+                    shows_open(root, label),
+                    "the task stands open where it stood at {width}×{height}"
+                );
+            }
         }
     }
 
