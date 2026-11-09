@@ -76,9 +76,53 @@ if(navigator.gpu&&!/[?&]unsafeWebKitGPU=0(&|$)/.test(location.search))globalThis
 </script>
   <style>
     html, body { margin: 0; height: 100%; overscroll-behavior: none; background: #121214; color: #ddd; font: 14px system-ui, sans-serif; }
-    #surface { height: calc(100% - 28px); }
-    #bar { height: 28px; line-height: 28px; padding: 0 8px; display: flex; gap: 12px; }
-    #bar a { color: #9ab4ff; margin-left: auto; }
+    /* The bar over the one app (app-bar.mjs): where it is, who is here,
+       Share and the way to the whole desktop, thin and in the page's own
+       colours, on top as a shared document's bar is. On a phone it keeps
+       the same four things, the names cut short first. */
+    :root { --bar-h: 44px; --bar-bg: #17181c; --bar-line: #26282e; --bar-text: #e6e6e9; --bar-quiet: #9b9ba3; --bar-button: #26282e; --bar-button-hover: #30333a; --bar-primary: #f2f2f4; --bar-primary-text: #121214; --bar-sheet: #1c1d21; --bar-focus: #9ab4ff; }
+    @media (prefers-color-scheme: light) {
+      :root { --bar-bg: #f7f7f8; --bar-line: #e2e2e6; --bar-text: #1d1d21; --bar-quiet: #6b6b74; --bar-button: #ebebee; --bar-button-hover: #e0e0e5; --bar-primary: #1d1d21; --bar-primary-text: #ffffff; --bar-sheet: #ffffff; --bar-focus: #2a3fd1; }
+    }
+    #surface { position: fixed; top: calc(var(--bar-h) + env(safe-area-inset-top)); left: 0; right: 0; bottom: 0; }
+    #bar { position: fixed; top: 0; left: 0; right: 0; z-index: 2; box-sizing: border-box; height: calc(var(--bar-h) + env(safe-area-inset-top)); padding: env(safe-area-inset-top) max(12px, env(safe-area-inset-right)) 0 max(12px, env(safe-area-inset-left)); display: flex; align-items: center; gap: 10px; overflow: hidden; background: var(--bar-bg); border-bottom: 1px solid var(--bar-line); color: var(--bar-text); }
+    #bar-where { display: flex; align-items: baseline; gap: 6px; min-width: 0; flex: 1 1 auto; overflow: hidden; white-space: nowrap; }
+    #bar-workspace { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; font-weight: 600; }
+    #bar-workspace:empty, #bar-workspace:empty + #bar-sep { display: none; }
+    #bar-sep { color: var(--bar-quiet); }
+    #bar-app { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; color: var(--bar-quiet); }
+    #bar-people { display: flex; flex: none; padding-left: 6px; }
+    .bar-face { display: grid; place-items: center; box-sizing: border-box; width: 28px; height: 28px; margin-left: -6px; border-radius: 50%; border: 2px solid var(--bar-bg); background: #5b5f6b; color: #fff; font: 600 12px/1 system-ui, sans-serif; }
+    .bar-face.bar-agent { border-radius: 7px; }
+    .bar-face.bar-elsewhere { opacity: .55; }
+    .bar-face.bar-more { background: var(--bar-button); color: var(--bar-text); font-weight: 500; }
+    #bar button, #bar a#other-mode { flex: none; display: inline-flex; align-items: center; height: 30px; padding: 0 12px; border: 0; border-radius: 8px; font: 500 13px/1 system-ui, sans-serif; text-decoration: none; cursor: pointer; white-space: nowrap; }
+    #bar-share { background: var(--bar-primary); color: var(--bar-primary-text); }
+    #bar a#other-mode { background: var(--bar-button); color: var(--bar-text); }
+    #bar a#other-mode:hover { background: var(--bar-button-hover); }
+    #bar :is(button, a):focus-visible { outline: 2px solid var(--bar-focus); outline-offset: 2px; }
+    #bar [hidden] { display: none !important; }
+    .bar-sheet { position: fixed; z-index: 4; top: calc(var(--bar-h) + env(safe-area-inset-top) + 6px); right: max(12px, env(safe-area-inset-right)); box-sizing: border-box; width: min(380px, calc(100vw - 24px)); display: grid; gap: 14px; padding: 18px; border-radius: 12px; background: var(--bar-sheet); color: var(--bar-text); border: 1px solid var(--bar-line); box-shadow: 0 12px 40px rgb(0 0 0 / 28%); }
+    .bar-sheet p { margin: 0; line-height: 1.45; }
+    .bar-sheet-title { font-size: 16px; font-weight: 600; }
+    .bar-sheet-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+    .bar-sheet-text { color: var(--bar-text); }
+    .bar-sheet-note { min-height: 1.45em; font-size: 13px; color: var(--bar-quiet); }
+    .bar-sheet-note:empty { display: none; }
+    .bar-sheet button { flex: none; font: 500 13px/1 system-ui, sans-serif; height: 30px; padding: 0 12px; border-radius: 8px; border: 0; background: var(--bar-button); color: var(--bar-text); cursor: pointer; }
+    .bar-sheet button.bar-primary { background: var(--bar-primary); color: var(--bar-primary-text); }
+    .bar-sheet button:disabled { opacity: .6; cursor: default; }
+    .bar-sheet :is(select, input) { font: inherit; color: inherit; background: transparent; border: 1px solid var(--bar-line); border-radius: 6px; padding: 2px 4px; }
+    .bar-sheet input { width: 100%; box-sizing: border-box; padding: 6px 8px; }
+    .bar-sheet :is(button, select, input):focus-visible { outline: 2px solid var(--bar-focus); outline-offset: 2px; }
+    @media (max-width: 480px) {
+      :root { --bar-h: 48px; }
+      #bar { gap: 8px; }
+      #bar-sep, #bar-app { display: none; }
+      #bar button, #bar a#other-mode { padding: 0 10px; height: 32px; }
+      .bar-face { width: 26px; height: 26px; }
+      .bar-face:nth-child(n+3):not(.bar-more) { display: none; }
+    }
     .tilo-entry-card { position: fixed; z-index: 3; left: 50%; top: 50%; transform: translate(-50%, -50%); box-sizing: border-box; width: min(360px, calc(100vw - 32px)); display: grid; gap: 20px; padding: 24px; border-radius: 14px; background: #1c1d21; border: 1px solid #2c2e34; box-shadow: 0 12px 40px rgb(0 0 0 / 45%); }
     .tilo-entry-card p { margin: 0; line-height: 1.5; color: #e6e6e9; }
     .tilo-entry-card button { font: inherit; padding: 8px 14px; border-radius: 8px; border: 1px solid #34363d; background: transparent; color: #d4d4d8; cursor: pointer; }
@@ -210,7 +254,7 @@ if(navigator.gpu&&!/[?&]unsafeWebKitGPU=0(&|$)/.test(location.search))globalThis
   <p id="arrival-note" role="status" hidden></p>
   <button id="arrival-retry" type="button">Try again</button>
   <section id="arrival-reconnect" aria-labelledby="arrival-reconnect-heading"><div class="reconnect-main"><svg aria-hidden="true" viewBox="0 0 100 100" width="44" height="44"><path d="M10.98 31.85 Q10.979892448752274 27.96648782251284 14.4 26.12 L20.26 22.97 Q24.843373493975903 20.50602409638554 24.84 25.71 L24.84 74.29 Q24.843373493975903 79.49397590361446 20.26 77.03 L14.4 73.88 Q10.979892448752274 72.03351217748715 10.98 68.15 Z" fill="#3b4376"/><path d="M89.02 31.85 Q89.02010755124772 27.96648782251284 85.6 26.12 L79.74 22.97 Q75.1566265060241 20.50602409638554 75.16 25.71 L75.16 74.29 Q75.1566265060241 79.49397590361446 79.74 77.03 L85.6 73.88 Q89.02010755124772 72.03351217748715 89.02 68.15 Z" fill="#3b4376"/><rect x="29" y="16" width="42" height="68" rx="6" fill="#6f82ff"/></svg><h1 id="arrival-reconnect-heading"></h1><p id="arrival-reconnect-body"></p><p id="arrival-reconnect-next" aria-hidden="true"></p><p id="arrival-reconnect-said" class="reconnect-said" role="status" aria-live="polite"></p><button id="arrival-reconnect-now" type="button" aria-busy="false"><span class="reconnect-spinner" aria-hidden="true"></span><span id="arrival-reconnect-now-label">Try now</span></button><details id="arrival-reconnect-details"><summary id="arrival-reconnect-summary">Technical details</summary><pre id="arrival-reconnect-text"></pre><button id="arrival-reconnect-copy" class="reconnect-copy" type="button">Copy details</button></details></div></section>
-  <div id="bar"><span id="status" role="status">Loading Tilo…</span><a id="other-mode" hidden>Open in desktop</a></div>
+  <header id="bar"><span id="bar-where"><span id="bar-workspace"></span><span id="bar-sep" aria-hidden="true">/</span><span id="bar-app"></span><span id="status" role="status">Loading Tilo…</span></span><span id="bar-people" role="list" aria-label="People here" hidden></span><button id="bar-share" type="button" aria-haspopup="dialog" aria-expanded="false" hidden>Share</button><a id="other-mode" hidden>Open in Tilo</a></header>
   <script type="module">
     // A Tilo link under this entry: app mode. The route is in the
     // fragment and never reaches the server.

@@ -167,6 +167,8 @@ export function grammar(runtime, entry) {
   return {
     parse: url => JSON.parse(runtime.parseLink(url, json)),
     format: route => runtime.formatLink(JSON.stringify(route), json),
+    /** The link to `route` that lets anyone who has it in with `invitation`. */
+    invite: (route, invitation) => runtime.formatInviteLink(JSON.stringify(route), json, invitation),
     native: route => runtime.nativeLink(JSON.stringify(route)),
   };
 }

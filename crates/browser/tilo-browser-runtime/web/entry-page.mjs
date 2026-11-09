@@ -21,7 +21,8 @@ import {doorCopy, failureMessage, inviteLinkTarget, localeMessages, localeMessag
 import {servedVersion, watchForUpdate} from './bundle-update.mjs';
 import {mountWaitList} from './door-wait-list.mjs';
 import {boot, grammar} from './entry.mjs';
-import {loadRuntime, mountDesktop, prefetchApplication, prepareGpu} from './host.mjs';
+import {applicationName, loadRuntime, mountDesktop, prefetchApplication, prepareGpu} from './host.mjs';
+import {desktopRoute, startAppBar} from './app-bar.mjs';
 import {connectPeer, httpsPost, identityProfile, inspectInvitation, joinWorkspace, openInvitation, profileDevice, withCustody} from './peer.mjs';
 import {readBrowserAccounts} from './browser-accounts.mjs';
 import {CustodyError, idbStorage, openDeviceCustody} from './device-custody.mjs';
@@ -1112,6 +1113,18 @@ export async function startEntryPage({mode}) {
       return;
     }
     opened = page;
+    if (mode === 'app' && !embed) {
+      // One app full tab: the bar says where it is, who is here, and
+      // offers Share and the whole desktop (app-bar.mjs).
+      const names = new Map();
+      startAppBar({page, workspaceName: () => workspaceName ?? '', appName: app => {
+        if (!names.has(app)) {
+          names.set(app, app);
+          void applicationName(app).then(name => { if (name) names.set(app, name); });
+        }
+        return names.get(app);
+      }});
+    }
     // An embed that joined says so: its site takes its fallback away.
     if (enteredViaDoor) tell('joined');
     // Only the desktop lists host actions: a single app's mount refuses them.
@@ -1312,7 +1325,7 @@ export async function startEntryPage({mode}) {
     if (other) {
       // Written when followed, so it carries whatever is in front by then.
       const refresh = () => {
-        other.href = page.router.url(mode === 'app' ? 'desktop' : 'app');
+        other.href = mode === 'app' ? page.link.format(desktopRoute(page.router.route.target)) : page.router.url('app');
         return Boolean(page.router.route.target.app);
       };
       other.hidden = !refresh();

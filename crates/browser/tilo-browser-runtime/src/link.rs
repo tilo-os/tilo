@@ -68,6 +68,27 @@ pub fn format_link(route_json: &str, entry_json: &str) -> Result<String, JsValue
         .map_err(|e| link_error(&e))
 }
 
+/// The link `route_json` names, carrying `invitation` (an invitation's
+/// text) as its `invite` secret: a link that lets anyone who has it in, to
+/// exactly the place it names. The page hands it to the clipboard and keeps
+/// no copy; the scrubber takes the secret out of the address bar of the
+/// page it opens.
+///
+/// # Errors
+///
+/// As [`format_link`], or an invitation that is not a link secret.
+#[wasm_bindgen(js_name = formatInviteLink)]
+pub fn format_invite_link(
+    route_json: &str,
+    entry_json: &str,
+    invitation: &str,
+) -> Result<String, JsValue> {
+    let mut link = route(route_json)?;
+    link.secrets.invite =
+        Some(tilo_reference::link::Secret::new(invitation).map_err(|e| link_error(&e))?);
+    link.to_url(&entry(entry_json)?).map_err(|e| link_error(&e))
+}
+
 /// `tilo://open#<route>` for an installed Tilo, with the scope explicit.
 ///
 /// # Errors

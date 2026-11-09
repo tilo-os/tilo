@@ -104,6 +104,11 @@ export function prefetchApplication(app,{fetch=globalThis.fetch,load=()=>import(
     if(typeof module==='string')(await load()).prefetch(module);
   })().catch(()=>{});
 }
+/** The name `apps.json` gives `app`, or `null`: what the bar over one app calls it. */
+export async function applicationName(app,{fetch=globalThis.fetch}={}){
+  const listed=(await applications(fetch)).find(entry=>entry.id===app);
+  return typeof listed?.name==='string'?listed.name:null;
+}
 export async function openProfileStorage(profile,device,options={}){await ready();return durableHost.open(profile,device,options);}
 export async function mountDesktop(target,options={}) {
   const token=registry.begin(target);
