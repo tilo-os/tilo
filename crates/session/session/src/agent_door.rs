@@ -1499,6 +1499,9 @@ pub(crate) struct SessionDoors {
     /// The session's own actions, which it hands to a connection's door as they are read on
     /// its pass: `None` on a session that serves no broker and lists them itself.
     actions: std::sync::OnceLock<Arc<crate::session_actions::SessionActions>>,
+    /// The workspace each of the desk's windows stands in, by its tab, as of the loop's last
+    /// pass: an agent works in one workspace, and the desk's windows of another are not its.
+    tabs: std::sync::Mutex<HashMap<u64, String>>,
 }
 
 /// How long a connection's thread waits on the session's pass for an answer (its record, a change,
@@ -1550,7 +1553,39 @@ impl SessionDoors {
             wake,
             person: person.to_owned(),
             actions: std::sync::OnceLock::new(),
+            tabs: std::sync::Mutex::new(HashMap::new()),
         }
+    }
+
+    /// Keep where the desk's windows stand now, read from `handle` on the loop's pass.
+    pub(crate) fn keep_tabs(&self, handle: &DesktopHandle) {
+        let tabs = handle.read(|tree| {
+            let mut tabs = HashMap::new();
+            for workspace in &tree.workspaces {
+                let id = workspace.id().to_string();
+                for tab in workspace
+                    .strips
+                    .iter()
+                    .flat_map(|strip| &strip.window_groups)
+                    .flat_map(|group| &group.tabs)
+                {
+                    tabs.insert(tab.id, id.clone());
+                }
+            }
+            tabs
+        });
+        *self.tabs.lock_recover() = tabs;
+    }
+
+    /// Whether the desk's window `resource` (`desktop:tab:<tab>`) stands in a workspace other than
+    /// `workspace`: a window the desk no longer knows is no one's.
+    fn window_elsewhere(&self, resource: &str, workspace: &str) -> bool {
+        tilo_desktop_surface::window::resource_tab(resource).is_some_and(|tab| {
+            self.tabs
+                .lock_recover()
+                .get(&tab)
+                .is_none_or(|stands| stands != workspace)
+        })
     }
 
     /// The session's own actions this door hands a connection, once the session has them.
@@ -1832,6 +1867,16 @@ impl Host {
             caller.principal(),
             tilo_actions::remote::CallerPrincipal::Person(_)
         );
+        // An agent works in one workspace: a desk window of another is not its to read or act on,
+        // whatever it names it by.
+        if !person
+            && let Some(workspace) = caller.workspace()
+            && self
+                .session
+                .window_elsewhere(request.target.address.resource.as_str(), workspace)
+        {
+            return Pending::ready(Err(ActionHostError::NotPermitted));
+        }
         if person && (own || self.state.is_none()) {
             return self.invoke_person_step(caller, request);
         }
@@ -1950,6 +1995,32 @@ impl ActionHost for Host {
         caller: &Caller,
         query: CatalogueQuery,
     ) -> Pending<Result<CataloguePage, ActionHostError>> {
+        // An agent works in one workspace: the desk's windows of another (each listed by the title
+        // of what it shows) are not its to read or act on. The person's own catalogue is theirs.
+        let confined = match caller.principal() {
+            tilo_actions::remote::CallerPrincipal::Person(_) => None,
+            _ => caller.workspace().map(str::to_owned),
+        };
+        if let Some(workspace) = confined {
+            let session = Arc::clone(&self.session);
+            let page = match &self.state {
+                Some(state) => state.action_query(caller, &query),
+                None => Pending::ready(Ok(CataloguePage::from_rows(
+                    String::new(),
+                    self.session_rows(),
+                    &query,
+                ))),
+            };
+            return page.map(move |page| {
+                page.map(|mut page| {
+                    page.rows.retain(|row| {
+                        !session.window_elsewhere(&row.resource.id, &workspace)
+                            && !session.window_elsewhere(&row.parent_resource, &workspace)
+                    });
+                    page
+                })
+            });
+        }
         match &self.state {
             Some(state) => state.action_query(caller, &query),
             // A desktop that runs no broker (a session in a window of another, a test with no
@@ -2638,6 +2709,33 @@ mod tests {
         assert!(
             !shell_runtime_at(&runtime, exe, "", 1001),
             "no cgroup to read"
+        );
+    }
+
+    /// An agent works in one workspace: the desk's windows of another, and windows the desk no
+    /// longer knows, are not its; the windows of its own are, and so is anything not a window.
+    #[test]
+    fn a_window_of_another_workspace_is_not_an_agents() {
+        let doors = SessionDoors::new(Arc::new(|| {}), "person");
+        doors
+            .tabs
+            .lock_recover()
+            .extend([(7, "studio".to_owned()), (9, "garden".to_owned())]);
+        assert!(
+            !doors.window_elsewhere("desktop:tab:7", "studio"),
+            "its own"
+        );
+        assert!(
+            doors.window_elsewhere("desktop:tab:9", "studio"),
+            "another's"
+        );
+        assert!(
+            doors.window_elsewhere("desktop:tab:11", "studio"),
+            "one no longer on the desk"
+        );
+        assert!(
+            !doors.window_elsewhere("notes.notebook", "studio"),
+            "a resource that is no window"
         );
     }
 
