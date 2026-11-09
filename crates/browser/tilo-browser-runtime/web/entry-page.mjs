@@ -22,7 +22,6 @@ import {servedVersion, watchForUpdate} from './bundle-update.mjs';
 import {mountWaitList} from './door-wait-list.mjs';
 import {boot, grammar} from './entry.mjs';
 import {applicationName, loadRuntime, mountDesktop, prefetchApplication, prepareGpu} from './host.mjs';
-import {desktopRoute, startAppBar} from './app-bar.mjs';
 import {connectPeer, httpsPost, identityProfile, inspectInvitation, joinWorkspace, openInvitation, profileDevice, withCustody} from './peer.mjs';
 import {readBrowserAccounts} from './browser-accounts.mjs';
 import {CustodyError, idbStorage, openDeviceCustody} from './device-custody.mjs';
@@ -708,6 +707,9 @@ export async function startEntryPage({mode}) {
   const status = document.getElementById('status');
   const query = new URLSearchParams(location.search);
   const embed = query.get('embed') === '1';
+  // The bar over one app full tab (app-bar.mjs), fetched beside the runtime
+  // and only by that page: the desktop has its own.
+  const appBarModule = mode === 'app' && !embed ? import('./app-bar.mjs') : null;
   const debug = query.has('debug');
   const loading = status.textContent;
   // The step of getting in the page shows (`data-arrival` on the root, see
@@ -1113,11 +1115,12 @@ export async function startEntryPage({mode}) {
       return;
     }
     opened = page;
-    if (mode === 'app' && !embed) {
+    const appBar = await appBarModule;
+    if (appBar) {
       // One app full tab: the bar says where it is, who is here, and
-      // offers Share and the whole desktop (app-bar.mjs).
+      // offers Share and the whole desktop.
       const names = new Map();
-      startAppBar({page, workspaceName: () => workspaceName ?? '', appName: app => {
+      appBar.startAppBar({page, workspaceName: () => workspaceName ?? '', appName: app => {
         if (!names.has(app)) {
           names.set(app, app);
           void applicationName(app).then(name => { if (name) names.set(app, name); });
@@ -1325,7 +1328,9 @@ export async function startEntryPage({mode}) {
     if (other) {
       // Written when followed, so it carries whatever is in front by then.
       const refresh = () => {
-        other.href = mode === 'app' ? page.link.format(desktopRoute(page.router.route.target)) : page.router.url('app');
+        other.href = mode === 'app'
+          ? (appBar ? page.link.format(appBar.desktopRoute(page.router.route.target)) : page.router.url('desktop'))
+          : page.router.url('app');
         return Boolean(page.router.route.target.app);
       };
       other.hidden = !refresh();
