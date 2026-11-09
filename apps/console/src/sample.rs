@@ -235,7 +235,7 @@ fn fix_run() -> wire::AgentRun {
                         "Trim addresses before checking them",
                     ),
                     url: "https://git.example.com/storefront/pulls/412".to_owned(),
-                    title: "Trim addresses before checking them · Pull request #412".to_owned(),
+                    title: "Trim addresses before checking them: Pull request #412".to_owned(),
                 },
             ),
             action(
