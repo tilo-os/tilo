@@ -1913,6 +1913,7 @@ fn heard(viewer: &Member, seed: u8, label: &str) {
             can_read_all_workspaces: false,
             foreign: false,
             can_administer_devices: false,
+            agent: None,
         },
         issued_at_ns: 0,
         expires_at_ns: None,

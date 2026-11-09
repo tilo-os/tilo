@@ -11,5 +11,6 @@ pub fn host_capabilities() -> DeviceCapabilities {
         can_read_all_workspaces: true,
         foreign: false,
         can_administer_devices: false,
+        agent: None,
     }
 }

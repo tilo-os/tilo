@@ -31,6 +31,7 @@ const fn no_capabilities() -> DeviceCapabilities {
         can_read_all_workspaces: false,
         foreign: false,
         can_administer_devices: false,
+        agent: None,
     }
 }
 

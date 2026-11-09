@@ -28,18 +28,130 @@ pub const DEVCERT_V2_PREIMAGE_TAG: &[u8] = b"tilo-devcert-v2\0";
 /// certificate that grants less.
 pub const DEVCERT_V3_PREIMAGE_TAG: &[u8] = b"tilo-devcert-v3\0";
 
+/// Signing-domain tag for a certificate a person gave an agent's grant (see
+/// [`DeviceCapabilities::agent`]). It never verifies under an older tag, so
+/// no verifier that predates grants can take one for a device of the person.
+pub const DEVCERT_V4_PREIMAGE_TAG: &[u8] = b"tilo-devcert-v4\0";
+
+/// The longest an agent's grant certificate may last. A grant is renewed by
+/// the person approving the agent again, so a key that leaks from the
+/// service holding it is bounded by this, not by the service.
+pub const MAX_AGENT_GRANT_LIFETIME_NS: u64 = 90 * 24 * 60 * 60 * 1_000_000_000;
+
 /// First byte of a foreign device's capabilities in binary encodings. A
 /// verifier that predates the marker decodes that position as a `bool` and
 /// refuses any byte other than 0 or 1.
 const FOREIGN_BINARY_MARKER: u8 = 2;
 
-/// First byte of capabilities that grant administration in binary encodings,
-/// followed by one byte of [`EXTENDED_FOREIGN`] | [`EXTENDED_ADMINISTER`] and
-/// then the four flags. Verifiers that predate it refuse the byte, as they
-/// refuse [`FOREIGN_BINARY_MARKER`].
+/// First byte of capabilities that grant administration or an agent's grant
+/// in binary encodings, followed by one byte of [`EXTENDED_FOREIGN`] |
+/// [`EXTENDED_ADMINISTER`] | [`EXTENDED_AGENT`], the agent's scope when
+/// [`EXTENDED_AGENT`] is set (a tag byte, then a workspace's 16 bytes for
+/// one workspace), and then the four flags. Verifiers that predate it refuse
+/// the byte, as they refuse [`FOREIGN_BINARY_MARKER`].
 const EXTENDED_BINARY_MARKER: u8 = 3;
 const EXTENDED_FOREIGN: u8 = 1;
 const EXTENDED_ADMINISTER: u8 = 2;
+const EXTENDED_AGENT: u8 = 4;
+const SCOPE_ALL: u8 = 0;
+const SCOPE_WORKSPACE: u8 = 1;
+
+/// What the key of an agent's grant reaches: the person approved an agent
+/// (through a service that holds the key for it) to act in these of their
+/// workspaces, and nowhere else.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum AgentScope {
+    /// Every workspace of the person, and making new ones.
+    AllWorkspaces,
+    /// One workspace, by its id: a UUID's 16 bytes.
+    Workspace([u8; 16]),
+}
+
+impl AgentScope {
+    /// The scope as text: `all`, or the workspace's canonical UUID.
+    #[must_use]
+    pub fn name(&self) -> String {
+        match self {
+            Self::AllWorkspaces => "all".to_owned(),
+            Self::Workspace(id) => uuid_text(id),
+        }
+    }
+
+    /// The scope [`Self::name`] wrote: `all`, or a canonical (lower-case,
+    /// hyphenated) UUID other than the nil one.
+    #[must_use]
+    pub fn parse(text: &str) -> Option<Self> {
+        if text == "all" {
+            return Some(Self::AllWorkspaces);
+        }
+        uuid_bytes(text).map(Self::Workspace)
+    }
+
+    /// Whether the grant reaches the workspace `workspace` names (its UUID).
+    #[must_use]
+    pub fn reaches(&self, workspace: &str) -> bool {
+        match self {
+            Self::AllWorkspaces => true,
+            Self::Workspace(id) => uuid_bytes(workspace).is_some_and(|asked| asked == *id),
+        }
+    }
+
+    /// Whether the grant may make workspaces: only one that reaches all of
+    /// them, so a workspace it makes is one it reaches.
+    #[must_use]
+    pub const fn makes_workspaces(&self) -> bool {
+        matches!(self, Self::AllWorkspaces)
+    }
+}
+
+/// `id` as a canonical UUID.
+fn uuid_text(id: &[u8; 16]) -> String {
+    let hex = hex::encode(id);
+    format!(
+        "{}-{}-{}-{}-{}",
+        &hex[..8],
+        &hex[8..12],
+        &hex[12..16],
+        &hex[16..20],
+        &hex[20..]
+    )
+}
+
+/// The 16 bytes of a canonical, non-nil UUID.
+fn uuid_bytes(text: &str) -> Option<[u8; 16]> {
+    let groups: Vec<&str> = text.split('-').collect();
+    let lengths = [8, 4, 4, 4, 12];
+    if groups.len() != lengths.len()
+        || groups.iter().zip(lengths).any(|(group, length)| {
+            group.len() != length
+                || !group
+                    .bytes()
+                    .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+        })
+    {
+        return None;
+    }
+    let bytes: [u8; 16] = hex::decode(groups.concat()).ok()?.try_into().ok()?;
+    (bytes != [0; 16]).then_some(bytes)
+}
+
+impl Serialize for AgentScope {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(&self.name())
+    }
+}
+
+impl<'de> Deserialize<'de> for AgentScope {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let text = String::deserialize(deserializer)?;
+        Self::parse(&text).ok_or_else(|| {
+            serde::de::Error::invalid_value(
+                serde::de::Unexpected::Str(&text),
+                &"`all` or a canonical workspace UUID",
+            )
+        })
+    }
+}
 
 /// What a device may do on behalf of its user.
 ///
@@ -101,6 +213,16 @@ pub struct DeviceCapabilities {
     /// [`DEVCERT_V3_PREIMAGE_TAG`] and encoded so that verifiers which predate
     /// this field reject it; every other certificate keeps its encoding.
     pub can_administer_devices: bool,
+
+    /// The key belongs to an agent's grant, not to a machine of the person:
+    /// a service (the person's hosting provider's agent door, say) holds it
+    /// so an agent the person approved acts for them, in the workspaces the
+    /// scope names and nowhere else. Such a certificate grants none of the
+    /// flags above, always expires (within [`MAX_AGENT_GRANT_LIFETIME_NS`]),
+    /// governs no workspace, and is revoked like any device. It is signed
+    /// under [`DEVCERT_V4_PREIMAGE_TAG`] and encoded so that verifiers which
+    /// predate this field reject it.
+    pub agent: Option<AgentScope>,
 }
 
 /// The v1 JSON shape plus the optional foreign marker, omitted when false so
@@ -120,6 +242,8 @@ struct CapabilitiesJson {
     foreign: bool,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     can_administer_devices: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    agent: Option<AgentScope>,
 }
 
 impl Serialize for DeviceCapabilities {
@@ -133,6 +257,7 @@ impl Serialize for DeviceCapabilities {
                 can_read_all_workspaces: self.can_read_all_workspaces,
                 foreign: self.foreign,
                 can_administer_devices: self.can_administer_devices,
+                agent: self.agent,
             }
             .serialize(serializer);
         }
@@ -145,16 +270,36 @@ impl Serialize for DeviceCapabilities {
             self.can_act_as_host,
             self.can_read_all_workspaces,
         ];
-        let len = match (self.can_administer_devices, self.foreign) {
-            (true, _) => 6,
-            (false, true) => 5,
-            (false, false) => 4,
+        let scope: Vec<u8> = match self.agent {
+            None => Vec::new(),
+            Some(AgentScope::AllWorkspaces) => vec![SCOPE_ALL],
+            Some(AgentScope::Workspace(id)) => [&[SCOPE_WORKSPACE][..], &id].concat(),
+        };
+        let extended_form = self.can_administer_devices || self.agent.is_some();
+        let len = if extended_form {
+            6 + scope.len()
+        } else if self.foreign {
+            5
+        } else {
+            4
         };
         let mut tuple = serializer.serialize_tuple(len)?;
-        if self.can_administer_devices {
-            let extended = EXTENDED_ADMINISTER | if self.foreign { EXTENDED_FOREIGN } else { 0 };
+        if extended_form {
+            let extended = if self.can_administer_devices {
+                EXTENDED_ADMINISTER
+            } else {
+                0
+            } | if self.foreign { EXTENDED_FOREIGN } else { 0 }
+                | if self.agent.is_some() {
+                    EXTENDED_AGENT
+                } else {
+                    0
+                };
             tuple.serialize_element(&EXTENDED_BINARY_MARKER)?;
             tuple.serialize_element(&extended)?;
+            for byte in &scope {
+                tuple.serialize_element(byte)?;
+            }
         } else if self.foreign {
             tuple.serialize_element(&FOREIGN_BINARY_MARKER)?;
         }
@@ -176,12 +321,14 @@ impl<'de> Deserialize<'de> for DeviceCapabilities {
                 can_read_all_workspaces: json.can_read_all_workspaces,
                 foreign: json.foreign,
                 can_administer_devices: json.can_administer_devices,
+                agent: json.agent,
             });
         }
         // Postcard reads only the elements the visitor asks for, so the upper
         // bound admits the four native flags, marker + four flags, and the
-        // extended marker + its byte + four flags.
-        deserializer.deserialize_tuple(6, BinaryCapabilities)
+        // extended marker + its byte + an agent's scope (up to 17 bytes) +
+        // four flags.
+        deserializer.deserialize_tuple(23, BinaryCapabilities)
     }
 }
 
@@ -202,27 +349,63 @@ impl<'de> serde::de::Visitor<'de> for BinaryCapabilities {
                 .ok_or_else(|| A::Error::invalid_length(index, &"four capability flags"))
         };
         let first = next(0)?;
-        let (foreign, administer, flags) = match first {
-            FOREIGN_BINARY_MARKER => (true, false, [next(1)?, next(2)?, next(3)?, next(4)?]),
+        let (foreign, administer, agent, flags) = match first {
+            FOREIGN_BINARY_MARKER => (true, false, None, [next(1)?, next(2)?, next(3)?, next(4)?]),
             EXTENDED_BINARY_MARKER => {
                 let extended = next(1)?;
-                // Only administration needs the extended form; anything else
-                // has exactly one encoding already.
-                if extended & !(EXTENDED_FOREIGN | EXTENDED_ADMINISTER) != 0
-                    || extended & EXTENDED_ADMINISTER == 0
+                // Only administration and an agent's grant need the extended
+                // form; anything else has exactly one encoding already.
+                if extended & !(EXTENDED_FOREIGN | EXTENDED_ADMINISTER | EXTENDED_AGENT) != 0
+                    || extended & (EXTENDED_ADMINISTER | EXTENDED_AGENT) == 0
                 {
                     return Err(A::Error::invalid_value(
                         serde::de::Unexpected::Unsigned(extended.into()),
-                        &"extended capabilities that grant administration",
+                        &"extended capabilities that grant administration or an agent's grant",
                     ));
                 }
+                let mut index = 2;
+                let agent = if extended & EXTENDED_AGENT == 0 {
+                    None
+                } else {
+                    let tag = next(index)?;
+                    index += 1;
+                    match tag {
+                        SCOPE_ALL => Some(AgentScope::AllWorkspaces),
+                        SCOPE_WORKSPACE => {
+                            let mut id = [0u8; 16];
+                            for byte in &mut id {
+                                *byte = next(index)?;
+                                index += 1;
+                            }
+                            if id == [0; 16] {
+                                return Err(A::Error::invalid_value(
+                                    serde::de::Unexpected::Bytes(&id),
+                                    &"a workspace id other than the nil UUID",
+                                ));
+                            }
+                            Some(AgentScope::Workspace(id))
+                        }
+                        other => {
+                            return Err(A::Error::invalid_value(
+                                serde::de::Unexpected::Unsigned(other.into()),
+                                &"an agent scope of all workspaces or one",
+                            ));
+                        }
+                    }
+                };
                 (
                     extended & EXTENDED_FOREIGN != 0,
-                    true,
-                    [next(2)?, next(3)?, next(4)?, next(5)?],
+                    extended & EXTENDED_ADMINISTER != 0,
+                    agent,
+                    [
+                        next(index)?,
+                        next(index + 1)?,
+                        next(index + 2)?,
+                        next(index + 3)?,
+                    ],
                 )
             }
-            _ => (false, false, [first, next(1)?, next(2)?, next(3)?]),
+            _ => (false, false, None, [first, next(1)?, next(2)?, next(3)?]),
         };
         let flag = |byte: u8| match byte {
             0 => Ok(false),
@@ -239,6 +422,7 @@ impl<'de> serde::de::Visitor<'de> for BinaryCapabilities {
             can_read_all_workspaces: flag(flags[3])?,
             foreign,
             can_administer_devices: administer,
+            agent,
         })
     }
 }
@@ -256,6 +440,36 @@ impl DeviceCapabilities {
             && within(self.can_read_all_workspaces, held.can_read_all_workspaces)
             && within(self.can_administer_devices, held.can_administer_devices)
             && (self.foreign || !held.foreign)
+            && self.agent == held.agent
+    }
+
+    /// The capabilities of an agent's grant reaching `scope`: nothing but
+    /// the scope (see [`Self::agent`]).
+    #[must_use]
+    pub const fn agent_grant(scope: AgentScope) -> Self {
+        Self {
+            can_own_workspaces: false,
+            can_admit_devices: false,
+            can_act_as_host: false,
+            can_read_all_workspaces: false,
+            foreign: false,
+            can_administer_devices: false,
+            agent: Some(scope),
+        }
+    }
+
+    /// Whether these are an agent's grant's capabilities that hold: the
+    /// scope, and no other flag. `true` for every certificate that is not a
+    /// grant's.
+    #[must_use]
+    pub const fn agent_grant_holds(&self) -> bool {
+        self.agent.is_none()
+            || !(self.can_own_workspaces
+                || self.can_admit_devices
+                || self.can_act_as_host
+                || self.can_read_all_workspaces
+                || self.foreign
+                || self.can_administer_devices)
     }
 
     /// A device the person uses themselves on a Tilo-controlled system: it
@@ -294,6 +508,7 @@ impl DeviceCapabilities {
             can_read_all_workspaces: true,
             foreign: false,
             can_administer_devices: false,
+            agent: None,
         }
     }
 
@@ -308,6 +523,7 @@ impl DeviceCapabilities {
             can_read_all_workspaces: false,
             foreign: false,
             can_administer_devices: false,
+            agent: None,
         }
     }
 
@@ -323,6 +539,7 @@ impl DeviceCapabilities {
             can_read_all_workspaces: true,
             foreign: false,
             can_administer_devices: false,
+            agent: None,
         }
     }
 
@@ -337,6 +554,7 @@ impl DeviceCapabilities {
             can_read_all_workspaces: false,
             foreign: false,
             can_administer_devices: true,
+            agent: None,
         }
     }
 }
@@ -485,10 +703,31 @@ pub enum DeviceCertError {
     #[error("device cert has an invalid validity interval")]
     InvalidValidity,
 
+    /// An agent's grant certificate grants more than its scope, or does
+    /// not expire within [`MAX_AGENT_GRANT_LIFETIME_NS`].
+    #[error("an agent's grant certificate must grant only its scope and expire within 90 days")]
+    InvalidAgentGrant,
+
     /// Canonical-encoding failure. Effectively unreachable but
     /// propagated for hygiene.
     #[error("canonicalisation failed: {0}")]
     Canonical(#[from] CanonicalError),
+}
+
+/// Whether `cert`'s shape holds: an agent's grant grants only its scope and
+/// expires within [`MAX_AGENT_GRANT_LIFETIME_NS`] of its issue.
+fn check_agent_grant(cert: &DeviceCert) -> Result<(), DeviceCertError> {
+    if cert.capabilities.agent.is_none() {
+        return Ok(());
+    }
+    let bounded = cert.expires_at_ns.is_some_and(|expiry| {
+        expiry.saturating_sub(cert.issued_at_ns) <= MAX_AGENT_GRANT_LIFETIME_NS
+    });
+    if bounded && cert.capabilities.agent_grant_holds() {
+        Ok(())
+    } else {
+        Err(DeviceCertError::InvalidAgentGrant)
+    }
 }
 
 /// Sign a device cert with the user's root signing key.
@@ -520,6 +759,7 @@ pub fn sign_device_cert(
     {
         return Err(DeviceCertError::InvalidValidity);
     }
+    check_agent_grant(cert)?;
 
     let digest = device_cert_signing_digest(cert)?;
     let sig = root_signing_key.sign(&digest);
@@ -541,7 +781,9 @@ pub fn sign_device_cert(
 /// Returns [`DeviceCertError::Canonical`] if the cert cannot be
 /// canonically encoded (effectively unreachable).
 pub fn device_cert_signing_digest(cert: &DeviceCert) -> Result<[u8; 32], DeviceCertError> {
-    let tag = if cert.capabilities.can_administer_devices {
+    let tag = if cert.capabilities.agent.is_some() {
+        DEVCERT_V4_PREIMAGE_TAG
+    } else if cert.capabilities.can_administer_devices {
         DEVCERT_V3_PREIMAGE_TAG
     } else if cert.capabilities.foreign {
         DEVCERT_V2_PREIMAGE_TAG
@@ -572,6 +814,7 @@ pub fn device_cert_signing_digest(cert: &DeviceCert) -> Result<[u8; 32], DeviceC
 /// [`DeviceCertError::BadSignature`] if the signature does not verify
 /// under it.
 pub fn verify_device_cert(cert: &DeviceCert) -> Result<(), DeviceCertError> {
+    check_agent_grant(cert)?;
     let digest = device_cert_signing_digest(cert)?;
     // Hosts re-check the same certificates on every request and pump turn.
     // A signature check is a pure function of (key, signed digest, signature):
@@ -757,6 +1000,7 @@ mod tests {
                     can_read_all_workspaces: false,
                     foreign: false,
                     can_administer_devices: false,
+                    agent: None,
                 },
                 issued_at_ns: 1_000_000,
                 expires_at_ns: None,
@@ -986,6 +1230,111 @@ mod tests {
             #[serde(with = "serde_bytes")]
             pub signature: [u8; 64],
         }
+    }
+
+    /// An agent's grant signs under its own tag, round-trips with its scope
+    /// in both encodings, must expire and grant nothing else, survives no
+    /// change of scope, and is refused by verifiers that predate it.
+    #[test]
+    fn agent_grants_carry_their_scope_expire_and_old_verifiers_refuse_them() {
+        let workspace = "0f1e2d3c-4b5a-6978-8796-a5b4c3d2e1f0";
+        let one = AgentScope::parse(workspace).unwrap();
+        assert_eq!(one.name(), workspace);
+        assert!(one.reaches(workspace));
+        assert!(!one.reaches("0f1e2d3c-4b5a-6978-8796-a5b4c3d2e1f1"));
+        assert!(!one.makes_workspaces());
+        assert!(AgentScope::AllWorkspaces.reaches(workspace));
+        assert!(AgentScope::AllWorkspaces.makes_workspaces());
+        for malformed in [
+            "",
+            "ALL",
+            "0F1E2D3C-4B5A-6978-8796-A5B4C3D2E1F0",
+            "00000000-0000-0000-0000-000000000000",
+            "0f1e2d3c4b5a69788796a5b4c3d2e1f0",
+        ] {
+            assert_eq!(AgentScope::parse(malformed), None, "{malformed}");
+        }
+
+        for scope in [AgentScope::AllWorkspaces, one] {
+            let grant = golden_cert_with(DeviceCapabilities::agent_grant(scope));
+            verify_device_cert(&grant).unwrap();
+            assert_eq!(
+                device_cert_signing_digest(&grant).unwrap(),
+                signing_digest(DEVCERT_V4_PREIMAGE_TAG, &grant.view()).unwrap()
+            );
+            let json = serde_json::to_string(&grant).unwrap();
+            assert_eq!(serde_json::from_str::<DeviceCert>(&json).unwrap(), grant);
+            let bytes = postcard::to_allocvec(&(&grant, [9u8; 32])).unwrap();
+            let (back, nonce): (DeviceCert, [u8; 32]) = postcard::from_bytes(&bytes).unwrap();
+            assert_eq!((back, nonce), (grant.clone(), [9u8; 32]));
+            // Verifiers that predate grants stop at the marker.
+            assert!(postcard::from_bytes::<(v1::DeviceCert, [u8; 32])>(&bytes).is_err());
+            assert!(serde_json::from_str::<v1::DeviceCert>(&json).is_err());
+            // Another scope under the same signature does not verify.
+            let mut moved = grant.clone();
+            moved.capabilities.agent = Some(match scope {
+                AgentScope::AllWorkspaces => one,
+                AgentScope::Workspace(_) => AgentScope::AllWorkspaces,
+            });
+            assert_eq!(
+                verify_device_cert(&moved),
+                Err(DeviceCertError::BadSignature)
+            );
+            // A grant is not renewed into another scope or a person's device.
+            let mut wider = grant.clone();
+            wider.capabilities = DeviceCapabilities::member();
+            wider.issued_at_ns += 1;
+            assert!(!wider.renews(&grant));
+        }
+
+        let root = ed25519_dalek::SigningKey::from_bytes(&[1u8; 32]);
+        let unsigned = |capabilities: DeviceCapabilities, expires_at_ns: Option<u64>| DeviceCert {
+            user_public_key: root.verifying_key().to_bytes(),
+            device_public_key: [2u8; 32],
+            device_label: "Claude Code via mcp.example".to_owned(),
+            capabilities,
+            issued_at_ns: 1_000,
+            expires_at_ns,
+            signature: [0u8; 64],
+        };
+        // A grant that never expires, outlives the bound, or grants a flag
+        // besides its scope is neither signed nor taken.
+        let wide = DeviceCapabilities {
+            can_read_all_workspaces: true,
+            ..DeviceCapabilities::agent_grant(AgentScope::AllWorkspaces)
+        };
+        for (capabilities, expiry) in [
+            (DeviceCapabilities::agent_grant(one), None),
+            (
+                DeviceCapabilities::agent_grant(one),
+                Some(1_000 + MAX_AGENT_GRANT_LIFETIME_NS + 1),
+            ),
+            (wide.clone(), Some(2_000)),
+        ] {
+            let mut cert = unsigned(capabilities, expiry);
+            assert_eq!(
+                sign_device_cert(&mut cert, &root),
+                Err(DeviceCertError::InvalidAgentGrant)
+            );
+            // Signed anyway by a root that skips the check: still refused.
+            cert.signature = root
+                .sign(&signing_digest(DEVCERT_V4_PREIMAGE_TAG, &cert.view()).unwrap())
+                .to_bytes();
+            assert_eq!(
+                verify_device_cert(&cert),
+                Err(DeviceCertError::InvalidAgentGrant)
+            );
+        }
+        let mut bounded = unsigned(
+            DeviceCapabilities::agent_grant(one),
+            Some(1_000 + MAX_AGENT_GRANT_LIFETIME_NS),
+        );
+        sign_device_cert(&mut bounded, &root).unwrap();
+        verify_device_cert_at(&bounded, 2_000).unwrap();
+        assert_eq!(
+            verify_device_cert_at(&bounded, 1_000 + MAX_AGENT_GRANT_LIFETIME_NS),
+            Err(DeviceCertError::Expired)
+        );
     }
 
     #[test]

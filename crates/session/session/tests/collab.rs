@@ -128,6 +128,7 @@ fn hello_of(person: u8, at: u8, label: &str) -> NetEvent {
             can_read_all_workspaces: false,
             foreign: false,
             can_administer_devices: false,
+            agent: None,
         },
         issued_at_ns: 0,
         expires_at_ns: None,

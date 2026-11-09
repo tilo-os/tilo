@@ -437,6 +437,7 @@ async fn a_device_serves_the_workspace_its_engine_holds() {
             can_read_all_workspaces: true,
             foreign: false,
             can_administer_devices: false,
+            agent: None,
         },
     );
     let (b_key, b_cert) = device(&root, 3);

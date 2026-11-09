@@ -2797,6 +2797,7 @@ fn certify(options: &CertifyOptions<'_>) -> anyhow::Result<()> {
         can_read_all_workspaces: false,
         foreign: false,
         can_administer_devices: false,
+        agent: None,
     };
     for capability in capabilities {
         match capability.as_str() {

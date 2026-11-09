@@ -98,7 +98,8 @@ pub use approval::{
 };
 pub use canonical::CanonicalError;
 pub use cert::{
-    DEVCERT_PREIMAGE_TAG, DEVCERT_V2_PREIMAGE_TAG, DeviceCapabilities, DeviceCert, DeviceCertError,
+    AgentScope, DEVCERT_PREIMAGE_TAG, DEVCERT_V2_PREIMAGE_TAG, DEVCERT_V4_PREIMAGE_TAG,
+    DeviceCapabilities, DeviceCert, DeviceCertError, MAX_AGENT_GRANT_LIFETIME_NS,
     UNNAMED_PRIMARY_DEVICE, UNNAMED_SHARED_DEVICE, device_cert_signing_digest, device_name,
     sign_device_cert, verify_device_cert, verify_device_cert_at,
 };
@@ -150,7 +151,7 @@ pub use revocation::{
     REVOCATION_PREIMAGE_TAG, RevocationEntry, RevocationError, RevocationList, RevocationReason,
     revocation_signing_digest, sign_revocation_entry, verify_revocation_entry,
 };
-pub use sign_in::{SIGN_IN_TAG, SignInError, SignInProof, sign_in_digest};
+pub use sign_in::{SIGN_IN_TAG, SignInError, SignInProof, agent_endpoint_audience, sign_in_digest};
 
 use serde::{Deserialize, Serialize};
 

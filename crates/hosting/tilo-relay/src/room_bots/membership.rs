@@ -94,6 +94,7 @@ impl HostRootCertifier {
                 can_read_all_workspaces: false,
                 foreign: false,
                 can_administer_devices: false,
+                agent: None,
             },
             issued_at_ns: u64::try_from(bot.installed_at_ms)
                 .unwrap_or(0)

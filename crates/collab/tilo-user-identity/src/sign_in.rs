@@ -26,6 +26,16 @@ pub const SIGN_IN_TAG: &[u8] = b"tilo-sign-in-v1\0";
 /// The longest an audience (a service's origin) may be.
 pub const MAX_AUDIENCE_BYTES: usize = 256;
 
+/// The audience a device signs for when it opens a session at a workspace's
+/// agent endpoint (a host's `tilo-runtime`), which challenges every caller
+/// the same way a web service does. It names the workspace, so a proof for
+/// one workspace's endpoint, or for any web service (whose audience is an
+/// origin), is no proof for another.
+#[must_use]
+pub fn agent_endpoint_audience(workspace: &str) -> String {
+    format!("tilo-agent-endpoint:{workspace}")
+}
+
 /// A device's signature over a service's sign-in challenge.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]

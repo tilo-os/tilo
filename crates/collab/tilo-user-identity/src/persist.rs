@@ -1171,6 +1171,7 @@ pub fn provision_joined_device(
             can_read_all_workspaces: true,
             foreign: false,
             can_administer_devices: false,
+            agent: None,
         },
         issued_at_ns: now_ns,
         expires_at_ns: None,

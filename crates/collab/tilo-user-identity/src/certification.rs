@@ -213,6 +213,7 @@ impl CertificationPolicy {
                 can_read_all_workspaces: false,
                 foreign: false,
                 can_administer_devices: false,
+                agent: None,
             },
             lifetime_ns: 7 * 24 * 60 * 60 * 1_000_000_000,
         }
@@ -230,6 +231,9 @@ impl CertificationPolicy {
             foreign: requested.foreign || self.ceiling.foreign,
             can_administer_devices: requested.can_administer_devices
                 && self.ceiling.can_administer_devices,
+            // An agent's grant is issued by the person approving the agent,
+            // never asked for by a device being enrolled.
+            agent: None,
         }
     }
 

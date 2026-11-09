@@ -1839,6 +1839,7 @@ mod tests {
                 can_read_all_workspaces: true,
                 foreign: false,
                 can_administer_devices: false,
+                agent: None,
             },
             issued_at_ns: 1_000,
             expires_at_ns: None,

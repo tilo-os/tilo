@@ -61,6 +61,7 @@ fn bot_device(
             can_read_all_workspaces: false,
             foreign: false,
             can_administer_devices: false,
+            agent: None,
         },
         issued_at_ns: 1,
         expires_at_ns: None,
