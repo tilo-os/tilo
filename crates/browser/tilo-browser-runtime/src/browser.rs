@@ -244,6 +244,11 @@ struct Config {
     /// (`#?link=`); the profile card asks the person to confirm it.
     #[serde(default)]
     link_offer: Option<String>,
+    /// How the page lays the desktop out (`mountDesktop({layout})`, from the
+    /// web host's `entry.json`): the full desktop, or the console a person
+    /// who has agents work for them starts in.
+    #[serde(default)]
+    layout: crate::shell::Layout,
     /// The workspace directory this page browses (`mountDesktop({directory})`):
     /// the site whose directory it lists, the person a join is made as, and
     /// the workspaces the page holds.
@@ -1192,6 +1197,7 @@ fn present_desktop(
             build: config.build.clone(),
             link_offer: config.link_offer.clone(),
             directory: config.directory.clone(),
+            layout: config.layout,
         },
         Rc::clone(&requests),
         crate::shell::ChromeSources {

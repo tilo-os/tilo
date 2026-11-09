@@ -141,6 +141,15 @@ test('the entry names the embedding site only when it is exactly an https origin
   }
 });
 
+test('the entry lays the desktop out as the console only when it says so', async () => {
+  const served = layout => async () => ({ok: true, json: async () => ({layout})});
+  const read = layout => readEntry({mode: 'desktop', location: {href: 'https://app.example/'}, fetch: served(layout)});
+  assert.deepEqual(await read('console'), {base: 'https://app.example/', layout: 'console'});
+  for (const other of ['desktop', 'Console', '', null, 1]) {
+    assert.deepEqual(await read(other), {base: 'https://app.example/'}, String(other));
+  }
+});
+
 test('the catalogue is never read before admission', async () => {
   const order = [];
   const target = {scope: {kind: 'room', host: 'https://h.example', room: 'r'}, app: 'so.tilo.chat', record: '', resource: message};

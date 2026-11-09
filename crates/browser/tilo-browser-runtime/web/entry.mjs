@@ -88,8 +88,11 @@ function titled(window, forward) {
 }
 
 /** The entry this page is served under: `{base, home?, tickets?, about?,
- * embedder?}`; `about` holds the web host's links for the desktop's About
- * sheet, `embedder` the origin of the site that embeds the page, if any. */
+ * embedder?, layout?}`; `about` holds the web host's links for the desktop's
+ * About sheet, `embedder` the origin of the site that embeds the page, if
+ * any, and `layout` how the desktop is laid out when it is not the full
+ * desktop: `console`, the console a person who has agents work for them
+ * starts in. */
 export async function readEntry({mode, location, fetch = globalThis.fetch}) {
   // A sealed invitation's link opens the page at `/i/<handle>`, whose files
   // and configuration are the site's own: the page names the site, not the
@@ -107,9 +110,10 @@ export async function readEntry({mode, location, fetch = globalThis.fetch}) {
   const home = typeof config.home?.host?.origin === 'string' ? config.home : null;
   const about = aboutLinks(config.about);
   const embedder = embedderOrigin(config.embedder);
+  const layout = config.layout === 'console' ? config.layout : null;
   return {base: base.href, ...(home ? {home} : {}),
     ...(typeof config.tickets === 'string' ? {tickets: config.tickets} : {}),
-    ...(about ? {about} : {}), ...(embedder ? {embedder} : {})};
+    ...(about ? {about} : {}), ...(embedder ? {embedder} : {}), ...(layout ? {layout} : {})};
 }
 
 /** Send problem reports to the channel the entry's home workspace names,
@@ -358,6 +362,7 @@ export async function boot({mode, window = globalThis, surface, status, deps, di
   const shown = await present({route, peer, surface, mountDesktop: deps.mountDesktop, directory: deps.directory?.() ?? null,
     diagnostics: {...(listed?.name ? {workspaceName: listed.name} : {}), ...(host ? {host} : {}),
       ...(entry.about ? {about: entry.about} : {}),
+      ...(entry.layout ? {layout: entry.layout} : {}),
       ...(linkOffer ? {linkOffer} : {}),
       // The workspace service's watching count, for the desktop's people panel.
       ...(listed?.admission ? {presenceUrl: new URL('presence', listed.admission).href} : {}),
