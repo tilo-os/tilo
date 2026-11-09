@@ -942,7 +942,7 @@ fn failed_row(message: &Message, work: &Work, cx: &ViewCx) -> Node {
         banner = banner.action("Retry");
     }
     let banner: Node = banner.into();
-    let banner = if let Some(summons) = message.retry_summons.clone() {
+    if let Some(summons) = message.retry_summons.clone() {
         let fired = cx.action_with(
             &banner,
             "act",
@@ -952,8 +952,7 @@ fn failed_row(message: &Message, work: &Work, cx: &ViewCx) -> Node {
         node::on(banner, "act", fired)
     } else {
         banner
-    };
-    banner
+    }
 }
 
 /// What a message offers while the pointer is over it or it holds focus, over its trailing
