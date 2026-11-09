@@ -2005,6 +2005,20 @@ fn wait_deadline(wait_ms: Option<u64>) -> Instant {
 
 /// The target a tool's `(provider, id)` names, in the action model's own addressing.
 fn legacy_target(provider: &str, id: &str, workspace: &str) -> Result<RemoteActionTarget, Json> {
+    // The workspace verbs by the names tools spell them (`workspace.create`, `workspace.branch`):
+    // the desk's own actions, as the workspace menu invokes them.
+    if provider == "actions"
+        && let Some(action) = match id {
+            "workspace.create" => Some("new-workspace"),
+            "workspace.branch" => Some("branch-workspace"),
+            _ => None,
+        }
+    {
+        return Ok(RemoteActionTarget {
+            provider: tilo_actions::remote::SESSION_ACTIONS_PROVIDER.to_owned(),
+            address: ActionAddress::new(tilo_desktop::desk_verbs::CHROME_RESOURCE, action),
+        });
+    }
     if provider == "applications" {
         if id.is_empty() {
             return Err(refusal("unknown_action", "`id` is the app's id"));
@@ -2668,6 +2682,18 @@ mod tests {
         assert_eq!(session.provider, "so.tilo.session");
         assert_eq!(session.address.resource, "desktop:tab:5");
         assert_eq!(session.address.action, "close-tab");
+
+        // The workspace verbs by the names tools spell them are the desk's own.
+        for (spelled, action) in [
+            ("workspace.create", "new-workspace"),
+            ("workspace.branch", "branch-workspace"),
+        ] {
+            let verb = legacy_target("actions", spelled, "room-1").expect("the desk's verb");
+            assert_eq!(verb.provider, "so.tilo.session");
+            assert_eq!(verb.address.resource, "desktop:chrome");
+            assert_eq!(verb.address.action, action);
+        }
+        assert!(legacy_target("actions", "workspace.nothing", "room-1").is_err());
 
         assert!(legacy_target("app-actions", "half-an-id", "room-1").is_err());
         assert!(legacy_target("applications", "", "room-1").is_err());

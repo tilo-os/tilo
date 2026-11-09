@@ -225,6 +225,9 @@ tilo-automation = { path = "../../collab/automation" }
 # The sealed channel state the channel encryption service keeps on this
 # device, and the key it is sealed with.
 channel-crypto = { path = "../../collab/channel-crypto" }
+# A branch of a workspace takes an app's own copy of a record into the
+# workspace's, as every incoming change is taken in.
+tilo-automerge = { path = "../../doc/tilo-automerge" }
 # The person's other devices: what was copied here is shared through
 # the same fabric as everything else that follows them.
 tilo-device-fabric = { path = "../device-fabric" }

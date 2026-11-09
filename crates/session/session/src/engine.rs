@@ -356,6 +356,119 @@ impl Engine {
             .with_current(workspace, |view| Ok(view.peer().records()))
     }
 
+    /// Whether this device's person reads everything `workspace` holds here, so that it may be
+    /// branched: this device holds it, and its governance names the person as its owner or as a
+    /// member it has not removed.
+    #[must_use]
+    pub(crate) fn reads_whole(&self, workspace: WorkspaceId) -> bool {
+        let person = hex::encode(self.identity.device_cert.user_public_key);
+        let id = workspace.to_string();
+        self.holds(workspace)
+            && (self.owner_of(&id).is_ok_and(|owner| owner == person)
+                || self.people(&id).is_ok_and(|people| {
+                    people
+                        .iter()
+                        .any(|member| member.person == person && !member.removed)
+                }))
+    }
+
+    /// Found `record` of `app` in `workspace` , which holds none of it yet, as `changes` : the
+    /// whole of a document, its history with it, written as this device's founding write of the
+    /// record — sealed under `sealed` , the keys of the record's channel, where the workspace's
+    /// records are its members' sealed channels, and in the clear where they are documents this
+    /// device commits. What a branch of a workspace writes for each record it brings.
+    /// # Errors
+    /// The workspace is not held here, it holds the record already, or it refused the write.
+    pub(crate) fn found_record(
+        &self,
+        workspace: WorkspaceId,
+        (app, record): (&str, &str),
+        changes: &[u8],
+        sealed: Option<&channel_crypto::ChannelContentKeys>,
+    ) -> Result<(), String> {
+        use tilo_action_broker::owner_commits::OwnerCustody as _;
+        let key = self.identity.device_signing_key.clone();
+        let now = SystemTime::now();
+        let artifact = collab_types::document_artifact_id(app, &workspace.to_string(), record);
+        self.owner.commit_document_with_current(
+            workspace,
+            |view| {
+                if view.peer().document(app, record).is_some() {
+                    return Err(format!("{record} of {app} is in the workspace already"));
+                }
+                let mut peer = view.peer().clone();
+                let publication = peer.publication_mut();
+                let message = match sealed {
+                    None => {
+                        publication.publish_incremental(app, record, changes.to_vec(), &key, now)?
+                    }
+                    Some(keys) => publication.publish_sealed_checkpoint(
+                        app,
+                        record,
+                        changes.to_vec(),
+                        &mut |plaintext: &[u8]| {
+                            keys.seal_content(
+                                artifact,
+                                collab_types::ContentRetention::Checkpoint,
+                                plaintext,
+                            )
+                            .map_err(|error| error.to_string())
+                        },
+                        &key,
+                        now,
+                    )?,
+                };
+                let neighbour_wire::NeighbourMsg::AppDocument { envelope, .. } = message else {
+                    return Err("a record's founding write is not a document write".to_owned());
+                };
+                Ok(tilo_peer_state::owner_commit::OwnerCommitRequest {
+                    workspace: workspace.to_string(),
+                    operation: tilo_peer_state::owner_commit::CommitOperation::Document {
+                        app: app.to_owned(),
+                        record: record.to_owned(),
+                        envelope,
+                    },
+                })
+            },
+            now,
+        )?;
+        self.schedule_publication(workspace);
+        Ok(())
+    }
+
+    /// [`Self::record`] of a sealed record, opened with `keys` rather than this device's channel
+    /// service: what a test that holds a channel's keys itself reads back.
+    #[cfg(test)]
+    pub(crate) fn record_opened_with(
+        &self,
+        workspace: WorkspaceId,
+        (app, record): (&str, &str),
+        keys: &channel_crypto::ChannelContentKeys,
+    ) -> Result<Option<Vec<u8>>, String> {
+        let reader = self.identity.device_cert.device_public_key;
+        self.owner.with_current(workspace, |view| {
+            let read = view.read_document_with_history(
+                reader,
+                (app, record),
+                None,
+                MAX_DOCUMENT_BYTES,
+                SystemTime::now(),
+                &mut |write| {
+                    let metadata = write.encryption.ok_or("the write is not sealed")?;
+                    let ciphertext = collab_types::sealed_ciphertext(write)
+                        .map_err(|error| error.to_string())?;
+                    keys.open_content(write.artifact, &metadata, &ciphertext)
+                        .map(|plaintext| plaintext.to_vec())
+                        .map_err(|error| error.to_string())
+                },
+            )?;
+            Ok(match read {
+                DocumentRead::Captured(document) => Some(document.bytes),
+                DocumentRead::Unchanged(_) | DocumentRead::CheckpointPending => None,
+            })
+        })
+    }
+
     /// Take part in the channel of `record` of `workspace` : the channel service asks the
     /// workspace's devices for access the first time, and its governance answers with the group.
     /// Says whether the keys are here; while they are not, the record reads as nothing.

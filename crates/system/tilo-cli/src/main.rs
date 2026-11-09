@@ -151,6 +151,11 @@ enum Cmd {
         #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
         args: Vec<String>,
     },
+    /// Your workspaces on this desktop.
+    Workspace {
+        #[command(subcommand)]
+        cmd: desktop::WorkspaceCmd,
+    },
     /// List what this desktop can do.
     #[command(hide = true)]
     Actions {
@@ -368,7 +373,7 @@ fn command_here(here: Here) -> clap::Command {
         })
         .mut_subcommands(|sub| {
             let absent = match sub.get_name() {
-                "open" | "action" | "do" => !here.desktop,
+                "open" | "action" | "do" | "workspace" => !here.desktop,
                 "app" => !here.apps,
                 "device" => !(here.system || nouns::any_present(nouns::DEVICE, here.has)),
                 "status" | "rollback" => !here.system,
@@ -681,6 +686,7 @@ fn run(cli: Cli) -> Result<ExitCode> {
             desktop::ActionCmd::List { filter },
             &spelling,
         )),
+        Cmd::Workspace { cmd } => Ok(desktop::run_workspace(cmd, &spelling)),
         Cmd::Complete { what, prefix } => Ok(desktop::complete(
             what,
             prefix.as_deref().unwrap_or_default(),
@@ -1748,7 +1754,7 @@ mod tests {
     fn help_on_a_tilo_desktop_lists_what_works_there_verbatim() {
         assert_eq!(
             listed(EVERYWHERE),
-            ["app", "action", "device", "agent", "package"]
+            ["app", "action", "workspace", "device", "agent", "package"]
         );
         let help = command_here(EVERYWHERE).render_help().to_string();
         assert_eq!(
@@ -1759,12 +1765,13 @@ mod tests {
                 "Usage: tilo <COMMAND>\n",
                 "\n",
                 "Commands:\n",
-                "  app      Find, get, update and remove apps\n",
-                "  action   See what this desktop can do, and do it\n",
-                "  device   Your devices: update them, go back, repair them, develop on them\n",
-                "  agent    Connect agents to this desktop, and choose their models\n",
-                "  package  Make and sign packages\n",
-                "  help     Print this message or the help of the given subcommand(s)\n",
+                "  app        Find, get, update and remove apps\n",
+                "  action     See what this desktop can do, and do it\n",
+                "  workspace  Your workspaces on this desktop\n",
+                "  device     Your devices: update them, go back, repair them, develop on them\n",
+                "  agent      Connect agents to this desktop, and choose their models\n",
+                "  package    Make and sign packages\n",
+                "  help       Print this message or the help of the given subcommand(s)\n",
                 "\n",
                 "Options:\n",
                 "  -h, --help  Print help\n",
@@ -1863,6 +1870,18 @@ mod tests {
             run.cmd,
             Cmd::Do { ref action, ref args } if action == "rename-note" && args == &["title=Groceries", "--force"]
         ));
+        let branch = Cli::try_parse_from(["tilo", "workspace", "branch", "Research", "Question 2"])
+            .expect("workspace branch parses");
+        assert!(matches!(
+            branch.cmd,
+            Cmd::Workspace {
+                cmd: desktop::WorkspaceCmd::Branch { ref source, ref name }
+            } if source == "Research" && name == "Question 2"
+        ));
+        assert!(
+            Cli::try_parse_from(["tilo", "workspace", "branch", "Research"]).is_err(),
+            "a branch is named"
+        );
         let list = Cli::try_parse_from(["tilo", "actions", "volume"]).expect("actions parses");
         assert!(matches!(list.cmd, Cmd::Actions { ref filter } if filter == &["volume"]));
         let show = Cli::try_parse_from(["tilo", "action", "show", "mute"]).expect("show parses");

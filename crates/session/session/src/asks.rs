@@ -7,8 +7,9 @@ use tilo_actions::ActionAddress;
 use tilo_desktop::chrome::ChromeIntent;
 use tilo_desktop::desk_verbs::{CHROME_RESOURCE, DESK_RESOURCE};
 use tilo_desktop::desktop_host::{
-    DELETE_WORKSPACE, DesktopAsk, JOIN_WORKSPACE, LEAVE_WORKSPACE, NEW_WORKSPACE, REPORT_PROBLEM,
-    SESSION_LOCK, SESSION_LOG_OUT, SESSION_RESTART, SESSION_SHUT_DOWN, WORKSPACE_SETTINGS,
+    BRANCH_WORKSPACE, DELETE_WORKSPACE, DesktopAsk, JOIN_WORKSPACE, LEAVE_WORKSPACE, NEW_WORKSPACE,
+    REPORT_PROBLEM, SESSION_LOCK, SESSION_LOG_OUT, SESSION_RESTART, SESSION_SHUT_DOWN,
+    WORKSPACE_SETTINGS,
 };
 use tilo_desktop::launchpad::{LaunchpadAction, LaunchpadAppAction};
 use tilo_desktop::overlays::{Anchor, Slot};
@@ -82,6 +83,14 @@ impl Shared {
                 DesktopAsk::DeletedWorkspace { workspace, name } => {
                     self.deleted_workspace(workspace, &name);
                 }
+                // The desk named a branch of a workspace: the session makes it, off the loop,
+                // and puts it on the desk once what it holds is there.
+                DesktopAsk::BranchWorkspace {
+                    source,
+                    slot,
+                    workspace,
+                    name,
+                } => self.branch_workspace(source, slot, workspace, name),
                 // A window that stopped answering offers to keep waiting for its app or to quit it:
                 // the same two choices the desk's own cards make, carried out where the compositor
                 // is.
@@ -386,6 +395,7 @@ impl Shared {
         }
         match id {
             NEW_WORKSPACE => self.new_workspace(),
+            BRANCH_WORKSPACE => self.branch_shown_workspace(),
             WORKSPACE_SETTINGS => self.open_workspace_settings(),
             JOIN_WORKSPACE => workspaces::open_directory(
                 self.directory.as_ref(),
@@ -590,6 +600,22 @@ impl Shared {
     /// are the desk's.
     fn new_workspace(&self) {
         self.ask_and_report("new-workspace", &serde_json::Map::new());
+    }
+
+    /// Branch the workspace the person is in through the desk's own published action, so the rules
+    /// and the naming are the desk's.
+    fn branch_shown_workspace(&self) {
+        let Some(shown) = self
+            .handle
+            .read(|tree| tree.active_workspace().map(|workspace| workspace.slot))
+        else {
+            return;
+        };
+        let args = serde_json::Map::from_iter([(
+            "source".to_owned(),
+            serde_json::Value::from(shown.0.to_string()),
+        )]);
+        self.ask_and_report("branch-workspace", &args);
     }
 
     /// Leave the workspace the person is in through the desk's own published action, which takes it

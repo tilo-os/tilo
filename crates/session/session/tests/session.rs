@@ -2580,8 +2580,8 @@ fn the_desk_starts_on_the_picture_the_person_chose() {
         .expect("the choice is cleared");
 }
 
-/// The workspace menu offers joining, leaving and settings, and choosing join lists the workspaces
-/// this computer holds.
+/// The workspace menu offers making, branching, joining, leaving and settings, and choosing join
+/// lists the workspaces this computer holds.
 #[test]
 fn the_workspace_menu_offers_joining_leaving_and_settings() {
     let _settled = ui::motion::testing::settled();
@@ -2591,6 +2591,7 @@ fn the_workspace_menu_offers_joining_leaving_and_settings() {
     let menu = session.accessible_labels().join("\n");
     for row in [
         "New workspace",
+        "Branch workspace",
         "Join a workspace",
         "Leave workspace",
         "Workspace settings",
@@ -2605,6 +2606,7 @@ fn the_workspace_menu_offers_joining_leaving_and_settings() {
         .collect();
     for id in [
         "new-workspace",
+        "branch-workspace",
         "join-workspace",
         "leave-workspace",
         "workspace-settings",

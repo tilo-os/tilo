@@ -1264,6 +1264,7 @@ impl Session {
             display_confirm,
             notices: notices.clone(),
             moves: crate::window_move::Moves::new(notices.clone(), std::sync::Arc::clone(&notes)),
+            branches: crate::workspace_branch::Branches::default(),
             activities,
             tray,
             wallpapers,
@@ -2185,6 +2186,7 @@ impl Session {
             self.shared.follow_gestures();
             self.shared.follow_tab_menus();
             self.follow_window_moves();
+            self.shared.follow_branches();
             let locked = self.compositor.locked();
             let ran = {
                 let mut look = crate::look::look(&mut self.compositor, Some(&self.content));

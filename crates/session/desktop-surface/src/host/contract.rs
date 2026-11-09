@@ -35,6 +35,8 @@ pub const LEAVE_WORKSPACE: &str = "leave-workspace";
 pub const DELETE_WORKSPACE: &str = "delete-workspace";
 /// The host action that makes a new workspace.
 pub const NEW_WORKSPACE: &str = "new-workspace";
+/// The host action that branches the workspace the person is in.
+pub const BRANCH_WORKSPACE: &str = "branch-workspace";
 /// The host action that opens the workspace's settings.
 pub const WORKSPACE_SETTINGS: &str = "workspace-settings";
 /// The host action that locks the screen.
@@ -83,6 +85,15 @@ pub trait DesktopRules {
         Err(crate::i18n::t("desktop-cannot-delete-workspace"))
     }
 
+    /// Whether the person may branch the workspace `workspace` : they read everything it holds,
+    /// and may make a workspace of their own.
+    ///
+    /// # Errors
+    /// The refusal, in words for the person.
+    fn may_branch_workspace(&self, _workspace: WorkspaceSlot) -> Result<(), String> {
+        self.may_create_workspace()
+    }
+
     /// The person made `strip` : it is theirs from now on.
     fn made_strip(&self, _strip: StripId) {}
 
@@ -110,6 +121,14 @@ pub enum DesktopAsk {
     /// The desk deleted the workspace `workspace` , which was called `name` : what is left of it in
     /// the host's record goes with it.
     DeletedWorkspace {
+        workspace: WorkspaceId,
+        name: String,
+    },
+    /// The person branched the workspace `source` into `workspace` , called `name` , made in the
+    /// slot `slot` : the host makes it, with what `source` holds, and puts it on the desk.
+    BranchWorkspace {
+        source: WorkspaceSlot,
+        slot: WorkspaceSlot,
         workspace: WorkspaceId,
         name: String,
     },

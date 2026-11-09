@@ -143,6 +143,9 @@ pub struct DesktopChrome {
     /// What the hints painted in the frame before the last one drawn: a moving hint damages only
     /// there and where it is now.
     hints_painted_before: Option<Rect>,
+    /// What the verb just carried out answers its caller, when it answers anything: a branch's new
+    /// workspace.
+    output: Option<serde_json::Value>,
 }
 
 /// The overlays the chrome paints itself, as opposed to the retained widgets it hands to layout:
@@ -251,6 +254,7 @@ impl DesktopChrome {
             identify: DisplayIdentify::default(),
             identify_displays: Vec::new(),
             answered: None,
+            output: None,
             search,
             switcher: Switcher::default(),
             hints: ControlHints::new(ui::control_hints::Learned::default()),
@@ -1093,6 +1097,14 @@ impl DesktopChrome {
                                 .find(|workspace| workspace.slot.0 == id)
                         })
                     })
+                    .or_else(|| {
+                        // The id it is shared under, the same on every device.
+                        WorkspaceId::parse(key).and_then(|id| {
+                            tree.workspaces
+                                .iter()
+                                .find(|workspace| workspace.id() == id)
+                        })
+                    })
                     .map(|workspace| workspace.slot)
             })
             .ok_or_else(|| crate::i18n::t_args("desktop-no-workspace", &[("name", key.into())]))
@@ -1269,6 +1281,42 @@ impl DesktopChrome {
             Workspace::new(WorkspaceSlot(self.handle.mint_id()), name)
         };
         self.open_workspace(tree, workspace, !joining);
+    }
+
+    /// Branch the workspace `source` names into a new one called `name` (the source's name with
+    /// "branch" when none is given): the new workspace's id and slot are made here, and the host
+    /// makes the workspace with what the source holds and puts it on the desk once it does
+    /// ([`DesktopAsk::BranchWorkspace`]), so nothing opens in it before its records are there.
+    /// Answers the new workspace's id.
+    fn branch_workspace(&self, source: &str, name: Option<&str>) -> Result<WorkspaceId, String> {
+        let source = self.workspace_named(source)?;
+        self.rules.may_branch_workspace(source)?;
+        let tree = self.handle.read(Clone::clone);
+        let held = tree
+            .workspaces
+            .iter()
+            .find(|held| held.slot == source)
+            .ok_or_else(|| crate::i18n::t("desktop-workspace-gone"))?;
+        let asked = name.map(str::trim).filter(|name| !name.is_empty());
+        let name = asked.map_or_else(
+            || {
+                crate::i18n::t_args(
+                    "desktop-branch-workspace-name",
+                    &[("name", held.name.clone().into())],
+                )
+            },
+            str::to_owned,
+        );
+        let name = crate::workspace_names::made(Some(&name), &tree.workspaces);
+        let workspace = WorkspaceId::new();
+        let slot = WorkspaceSlot(self.handle.mint_id());
+        self.asks.borrow_mut().push(DesktopAsk::BranchWorkspace {
+            source,
+            slot,
+            workspace,
+            name,
+        });
+        Ok(workspace)
     }
 
     /// The window `step` places from the focused one in the shown strip, or the strip's `nth`
@@ -1816,6 +1864,11 @@ impl DesktopChrome {
                 self.new_workspace(workspace.as_deref(), name.as_deref());
                 return Ok(true);
             }
+            ChromeEffect::BranchWorkspace { source, name } => {
+                let branch = self.branch_workspace(source, name.as_deref())?;
+                self.output = Some(serde_json::Value::String(branch.to_string()));
+                return Ok(true);
+            }
             ChromeEffect::Shortcut { action } => {
                 let Ok(action) = serde_json::from_value::<ShortcutAction>(
                     serde_json::Value::String(action.clone()),
@@ -1984,11 +2037,16 @@ impl ui::host_operation::ResourceOperations for DesktopChrome {
         if let Some(request) = op.unscoped()
             && request.type_id == ChromeEffect::OPERATION
             && let Ok(verb) = ChromeEffect::from_payload(request.payload)
-            && self.perform(&verb)?
         {
-            return Ok(Some(ui::host_operation::ResourceOperationStart::Completed(
-                tilo_actions::ActionOutput::default(),
-            )));
+            self.output = None;
+            if self.perform(&verb)? {
+                return Ok(Some(ui::host_operation::ResourceOperationStart::Completed(
+                    tilo_actions::ActionOutput {
+                        value: self.output.take(),
+                        ..tilo_actions::ActionOutput::default()
+                    },
+                )));
+            }
         }
         ui::host_operation::start_in_children(self, op, doc, path)
     }

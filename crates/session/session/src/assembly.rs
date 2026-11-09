@@ -241,6 +241,9 @@ pub(crate) struct Shared {
     /// The windows carried to another workspace, asked about first.
     #[cfg(target_os = "linux")]
     pub(crate) moves: crate::window_move::Moves,
+    /// The workspaces being branched, put on the desk once what they hold is copied.
+    #[cfg(target_os = "linux")]
+    pub(crate) branches: crate::workspace_branch::Branches,
     /// The apps' live activities on the bar, which the pill names and the
     /// controls pressed on it go back to the app through.
     #[cfg(target_os = "linux")]

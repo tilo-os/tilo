@@ -435,6 +435,42 @@ pub fn rehome(
     Ok(doc)
 }
 
+/// A branch's copy of `source`, a document of a workspace branched into `to_workspace`: its whole
+/// history, under a writer of its own, with one more change naming `to_workspace` as the workspace
+/// it is in when it names one at all. Its id stays: a record id names a document only inside its
+/// workspace ([`super::workspace_scope`]), and a branch is a whole workspace forked, so every
+/// reference one of its records makes to another still names the same one. Where it was minted
+/// (`home`) stays too, as its provenance. `source` is not changed.
+///
+/// # Errors
+/// `to_workspace` is empty, or the document's metadata cannot name it.
+pub fn branch(source: &AutoCommit, to_workspace: &str) -> Result<AutoCommit, TransferError> {
+    if to_workspace.is_empty() {
+        return Err(TransferError::NotTransferable(
+            "a branch is made into a workspace",
+        ));
+    }
+    // A fork continues the same change graph under a writer of its own, so a change made in the
+    // branch never takes a number a change in the source already has.
+    let mut doc = source.clone().fork();
+    let Some(scoped) = super::workspace_scope(&doc) else {
+        return Ok(doc);
+    };
+    if scoped == to_workspace {
+        return Ok(doc);
+    }
+    let automerge = |error: automerge::AutomergeError| TransferError::Automerge(error.to_string());
+    let meta = meta_obj(&mut doc).ok_or(RecordOpenError::IdentityMismatch)?;
+    doc.put(&meta, super::WORKSPACE, to_workspace)
+        .map_err(automerge)?;
+    let _ = doc.delete(&meta, super::WORKSPACE_ALIAS);
+    doc.commit_with(
+        CommitOptions::default()
+            .with_message(tilo_actions::FrameworkChange::Transfer.change_message()),
+    );
+    Ok(doc)
+}
+
 /// The changes `source` holds beyond the `known` heads of an earlier read:
 /// what its writer committed after that read.
 pub fn changes_since(source: &AutoCommit, known: &[ChangeHash]) -> usize {
@@ -1181,5 +1217,52 @@ mod tests {
             read(&store, PACKAGE, FROM, &origin),
             Err(TransferError::Open(RecordOpenError::Retired))
         ));
+    }
+    /// A branch's copy keeps the record's id, where it was minted and its whole history, names the
+    /// branch as its workspace, and writes as a writer of its own: the source and the copy go on
+    /// apart.
+    #[test]
+    fn a_branch_keeps_the_record_and_its_history_and_names_the_branch() {
+        let id = RecordId::minted();
+        let mut source = AutoCommit::new();
+        assert!(crate::record::init_scoped(
+            &mut source,
+            &id,
+            &RecordKind::new("transfer.test"),
+            FROM,
+            Some(FROM),
+        ));
+        source.put(ROOT, "body", "plan").unwrap();
+        source.commit();
+        let before = source.get_heads();
+        let mut copy = branch(&source, TO).unwrap();
+        assert_eq!(workspace_scope(&copy).as_deref(), Some(TO));
+        assert_eq!(
+            workspace_scope(&source).as_deref(),
+            Some(FROM),
+            "the source stays"
+        );
+        assert_eq!(identity(&copy).map(|checkout| checkout.id), Some(id));
+        assert_eq!(crate::record::home(&copy).as_deref(), Some(FROM));
+        assert_eq!(body(&copy).as_deref(), Some("plan"));
+        assert!(
+            copy.get_changes(&[]).len() > source.get_changes(&[]).len(),
+            "the copy holds the source's history and the change that names the branch"
+        );
+        assert!(copy.get_change_by_hash(&before[0]).is_some());
+        assert_ne!(copy.get_actor(), source.get_actor(), "a writer of its own");
+        copy.put(ROOT, "body", "branch").unwrap();
+        copy.commit();
+        source.put(ROOT, "body", "source").unwrap();
+        source.commit();
+        assert_eq!(body(&copy).as_deref(), Some("branch"));
+        assert_eq!(body(&source).as_deref(), Some("source"));
+        // A document no workspace scopes is forked as it is.
+        let mut plain = AutoCommit::new();
+        plain.put(ROOT, "body", "loose").unwrap();
+        plain.commit();
+        let mut forked = branch(&plain, TO).unwrap();
+        assert_eq!(forked.get_heads(), plain.get_heads());
+        assert!(branch(&plain, "").is_err());
     }
 }

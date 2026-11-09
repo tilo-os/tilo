@@ -556,6 +556,20 @@ pub enum ChromeEffect {
         name: Option<String>,
     },
 
+    /// Branch a workspace
+    /// A new workspace of the person's own that starts with everything the one named holds — its
+    /// records, desk, files and Terminal environments — and goes on apart from it, with the person
+    /// as its only member. Answers the new workspace's id; what it holds arrives as it is copied.
+    #[effect(own_device, returns)]
+    BranchWorkspace {
+        /// The workspace to branch.
+        #[param("The workspace to branch: its name, its decimal id or the id it is shared under")]
+        source: String,
+        /// What to call the branch.
+        #[param("What to call the new workspace")]
+        name: Option<String>,
+    },
+
     /// Show the workspaces this computer may join
     #[effect(view, own_device)]
     JoinWorkspace,
@@ -1176,6 +1190,7 @@ fn admit_chrome(
         | ChromeEffect::MoveStrip { .. }
         | ChromeEffect::StepStrip { .. }
         | ChromeEffect::NewWorkspace { .. }
+        | ChromeEffect::BranchWorkspace { .. }
         | ChromeEffect::JoinWorkspace
         | ChromeEffect::LeaveWorkspace { .. }
         | ChromeEffect::DeleteWorkspace { .. }

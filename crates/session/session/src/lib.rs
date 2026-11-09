@@ -356,6 +356,8 @@ mod window_transfer;
 #[cfg(target_os = "linux")]
 mod window_warmth;
 #[cfg(target_os = "linux")]
+mod workspace_branch;
+#[cfg(target_os = "linux")]
 mod workspace_delete;
 #[cfg(target_os = "linux")]
 mod workspace_settings;

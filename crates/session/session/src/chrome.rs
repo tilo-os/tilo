@@ -614,6 +614,35 @@ impl ChromeSource for SessionChrome {
             .read(|tree| Placement::of(tree, fullscreen.as_slice()))
     }
 
+    /// A workspace may be branched by whoever reads all of it: the person is in it here and not
+    /// removed. One this device holds no governance of is the desk's own, and the person's unless
+    /// it names someone else as its owner.
+    fn may_branch_workspace(
+        &self,
+        workspace: tilo_desktop_model::WorkspaceSlot,
+    ) -> Result<(), String> {
+        let (id, owner) = self
+            .handle
+            .read(|tree| {
+                tree.workspaces
+                    .iter()
+                    .find(|held| held.slot == workspace)
+                    .map(|held| (held.id(), held.owner().cloned()))
+            })
+            .ok_or_else(|| tilo_desktop_surface::i18n::t("desktop-workspace-gone"))?;
+        let reads = match &self.engine {
+            Some(engine) if engine.holds(id) => engine.reads_whole(id),
+            _ => owner.is_none_or(|owner| owner == self.person),
+        };
+        if reads {
+            Ok(())
+        } else {
+            Err(tilo_desktop_surface::i18n::t(
+                "desktop-cannot-branch-workspace",
+            ))
+        }
+    }
+
     fn may_delete_workspace(
         &self,
         workspace: tilo_desktop_model::WorkspaceSlot,

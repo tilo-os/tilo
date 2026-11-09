@@ -100,6 +100,23 @@ impl Restore {
         }
     }
 
+    /// Ask, after what is waiting already, for the windows of the workspace `slot` of `tree` that
+    /// wait for their apps: a workspace put on the desk with windows to open, as a branch is.
+    pub(crate) fn add(&mut self, tree: &DesktopTree, slot: WorkspaceSlot) {
+        let only: Vec<_> = tree
+            .workspaces
+            .iter()
+            .filter(|workspace| workspace.slot == slot)
+            .cloned()
+            .collect();
+        let tree = DesktopTree {
+            workspaces: only,
+            active: slot,
+            ..DesktopTree::default()
+        };
+        self.waiting.extend(Self::of(&tree).waiting);
+    }
+
     /// When the app asked for a saved window gives up and its tab says so.
     pub(crate) fn next_deadline(&self) -> Option<Instant> {
         self.opening

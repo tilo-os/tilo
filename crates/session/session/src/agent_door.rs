@@ -1514,6 +1514,9 @@ pub(crate) struct SessionDoors {
     /// The workspace each of the desk's windows stands in, by its tab, as of the loop's last
     /// pass: an agent works in one workspace, and the desk's windows of another are not its.
     tabs: std::sync::Mutex<HashMap<u64, String>>,
+    /// The desk's workspaces, as of the loop's last pass: each one's decimal id, name and the id it
+    /// is shared under, by which an action names a workspace.
+    workspaces: std::sync::Mutex<Vec<[String; 3]>>,
     /// The runs the broker reads, which an admitted agent's connection starts its own run among
     /// ([`DoorRun`]): `None` on a session that hands the broker none.
     runs: std::sync::OnceLock<Arc<crate::conversations::Runs>>,
@@ -1569,6 +1572,7 @@ impl SessionDoors {
             person: person.to_owned(),
             actions: std::sync::OnceLock::new(),
             tabs: std::sync::Mutex::new(HashMap::new()),
+            workspaces: std::sync::Mutex::new(Vec::new()),
             runs: std::sync::OnceLock::new(),
         }
     }
@@ -1596,6 +1600,26 @@ impl SessionDoors {
             tabs
         });
         *self.tabs.lock_recover() = tabs;
+        let workspaces = handle.read(|tree| {
+            tree.workspaces
+                .iter()
+                .map(|workspace| {
+                    [
+                        workspace.slot.0.to_string(),
+                        workspace.name.clone(),
+                        workspace.id().to_string(),
+                    ]
+                })
+                .collect()
+        });
+        *self.workspaces.lock_recover() = workspaces;
+    }
+
+    /// Whether `request` branches a workspace other than `workspace` , or one the desk does not
+    /// know ([`crate::workspace_branch::branches_elsewhere`]).
+    fn branches_elsewhere(&self, request: &InvokeRequest, workspace: &str) -> bool {
+        let workspaces = self.workspaces.lock_recover().clone();
+        crate::workspace_branch::branches_elsewhere(request, &workspaces, workspace)
     }
 
     /// Whether the desk's window `resource` (`desktop:tab:<tab>`) stands in a workspace other than
@@ -1960,6 +1984,13 @@ impl Host {
             && self
                 .session
                 .window_elsewhere(request.target.address.resource.as_str(), workspace)
+        {
+            return Pending::ready(Err(ActionHostError::NotPermitted));
+        }
+        // Nor may it branch another workspace: what it would copy is not its to read.
+        if !person
+            && let Some(workspace) = caller.workspace()
+            && self.session.branches_elsewhere(&request, workspace)
         {
             return Pending::ready(Err(ActionHostError::NotPermitted));
         }
