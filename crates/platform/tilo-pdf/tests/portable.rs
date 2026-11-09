@@ -9,7 +9,9 @@
 
 use std::path::Path;
 
-use tilo_pdf::{Destination, Engine, Error, PixelRect, RenderOptions, Rotation, SearchOptions};
+use tilo_pdf::{
+    Destination, Engine, Error, FieldKind, PixelRect, RenderOptions, Rotation, SearchOptions,
+};
 
 fn fixture(name: &str) -> Vec<u8> {
     std::fs::read(Path::new(env!("OUT_DIR")).join(name)).expect("fixture")
@@ -68,6 +70,82 @@ fn search_finds_hits_across_pages_with_rects() {
             "{r:?}"
         );
     }
+}
+
+#[test]
+fn form_fields_are_read() {
+    let doc = open("form.pdf");
+    assert!(doc.info().has_form);
+    let fields = doc.form_fields().unwrap();
+    let get = |name: &str| {
+        fields
+            .iter()
+            .find(|f| f.name == name)
+            .unwrap_or_else(|| panic!("{name}"))
+    };
+    let text = get("name");
+    assert_eq!(text.kind, FieldKind::Text);
+    assert_eq!(text.value, "Ada");
+    assert!(!text.read_only && !text.required && !text.multiline);
+    assert_eq!(text.widgets.len(), 1);
+    assert_eq!(text.widgets[0].page, 0);
+    // `/Rect [100 140 280 164]` on a 300×200 page, y down from the top.
+    let r = text.widgets[0].rect;
+    assert!(
+        (r.x0 - 100.0).abs() < 0.01 && (r.x1 - 280.0).abs() < 0.01,
+        "{r:?}"
+    );
+    assert!(
+        (r.y0 - 36.0).abs() < 0.01 && (r.y1 - 60.0).abs() < 0.01,
+        "{r:?}"
+    );
+    let agree = get("agree");
+    assert_eq!(agree.kind, FieldKind::CheckBox);
+    assert_eq!(agree.value, "Off");
+    assert!(!agree.widgets[0].checked);
+    assert_eq!(agree.widgets[0].export_value, "Yes");
+    let colour = get("colour");
+    assert_eq!(colour.kind, FieldKind::ComboBox);
+    assert_eq!(colour.value, "Red");
+    assert_eq!(colour.options, vec!["Red", "Green", "Blue"]);
+}
+
+#[test]
+fn a_pdf_without_a_form_has_no_fields() {
+    let doc = open("latin.pdf");
+    assert!(!doc.info().has_form);
+    assert!(doc.form_fields().unwrap().is_empty());
+}
+
+#[test]
+fn nested_fields_inherit_their_name_kind_and_flags() {
+    let doc = Engine::portable().open_bytes(&nested_form_pdf()).unwrap();
+    let fields = doc.form_fields().unwrap();
+    let names: Vec<&str> = fields.iter().map(|f| f.name.as_str()).collect();
+    assert_eq!(names, vec!["person.first", "person.last", "size"]);
+    let first = &fields[0];
+    assert_eq!(first.kind, FieldKind::Text);
+    assert_eq!(first.value, "Ada");
+    assert!(first.read_only, "the parent's /Ff applies to its kids");
+    assert!(!first.required && !first.multiline);
+    assert_eq!(first.widgets.len(), 1);
+    assert_eq!(first.widgets[0].page, 0);
+    let r = first.widgets[0].rect;
+    assert!(
+        (r.y0 - 60.0).abs() < 0.01 && (r.y1 - 80.0).abs() < 0.01,
+        "{r:?}"
+    );
+    assert_eq!(fields[1].name, "person.last");
+    assert_eq!(fields[1].value, "Lovelace");
+    let size = &fields[2];
+    assert_eq!(size.kind, FieldKind::RadioButton);
+    assert_eq!(size.value, "medium");
+    let states: Vec<(&str, bool)> = size
+        .widgets
+        .iter()
+        .map(|widget| (widget.export_value.as_str(), widget.checked))
+        .collect();
+    assert_eq!(states, vec![("small", false), ("medium", true)]);
 }
 
 #[test]
@@ -193,9 +271,14 @@ fn helvetica_pdf(lines: &[&str]) -> Vec<u8> {
             stream.len()
         ),
     ];
+    assemble(&objects)
+}
+
+/// A PDF whose `objects` become objects 1 and up, behind a plain xref table.
+fn assemble(objects: &[String]) -> Vec<u8> {
     let mut pdf = b"%PDF-1.4\n".to_vec();
     let mut offsets = Vec::new();
-    for (number, body) in (1..).zip(&objects) {
+    for (number, body) in (1..).zip(objects) {
         offsets.push(pdf.len());
         pdf.extend_from_slice(format!("{number} 0 obj\n{body}\nendobj\n").as_bytes());
     }
@@ -209,6 +292,40 @@ fn helvetica_pdf(lines: &[&str]) -> Vec<u8> {
         format!("trailer\n<< /Size {size} /Root 1 0 R >>\nstartxref\n{xref}\n%%EOF\n").as_bytes(),
     );
     pdf
+}
+
+/// A form whose text fields are named by a parent that carries their `/FT`
+/// and `/Ff`, and whose radio group is one field of two widget kids: the
+/// shape a form builder writes for grouped fields.
+fn nested_form_pdf() -> Vec<u8> {
+    let appearance =
+        "<< /Type /XObject /Subtype /Form /BBox [0 0 16 16] /Length 0 >>\nstream\n\nendstream";
+    let objects = [
+        "<< /Type /Catalog /Pages 2 0 R /AcroForm << /Fields [4 0 R 7 0 R] \
+         /DA (/Helv 0 Tf 0 g) >> >>"
+            .to_owned(),
+        "<< /Type /Pages /Kids [3 0 R] /Count 1 >>".to_owned(),
+        "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 300 200] \
+         /Annots [5 0 R 6 0 R 8 0 R 9 0 R] >>"
+            .to_owned(),
+        // Read only, and the kind both kids take: neither sets `/FT` itself.
+        "<< /T (person) /FT /Tx /Ff 1 /Kids [5 0 R 6 0 R] >>".to_owned(),
+        "<< /Type /Annot /Subtype /Widget /Parent 4 0 R /T (first) /V (Ada) \
+         /Rect [40 120 160 140] /P 3 0 R >>"
+            .to_owned(),
+        "<< /Type /Annot /Subtype /Widget /Parent 4 0 R /T (last) /V (Lovelace) \
+         /Rect [40 80 160 100] /P 3 0 R >>"
+            .to_owned(),
+        "<< /T (size) /FT /Btn /Ff 32768 /V /medium /Kids [8 0 R 9 0 R] >>".to_owned(),
+        "<< /Type /Annot /Subtype /Widget /Parent 7 0 R /Rect [40 40 56 56] /AS /Off \
+         /P 3 0 R /AP << /N << /Off 10 0 R /small 10 0 R >> >> >>"
+            .to_owned(),
+        "<< /Type /Annot /Subtype /Widget /Parent 7 0 R /Rect [70 40 86 56] /AS /medium \
+         /P 3 0 R /AP << /N << /Off 10 0 R /medium 10 0 R >> >> >>"
+            .to_owned(),
+        appearance.to_owned(),
+    ];
+    assemble(&objects)
 }
 
 /// A narrow digit like `1` inks under half its advance; word gaps are

@@ -19,8 +19,9 @@ impl PdfApp {
     /// `markup` holds for them: the fields this window's PDF owner read
     /// when it opened the document, the ones its pages draw; else what the
     /// in-process engine reads of the record's PDF
-    /// ([`Self::reading_document`]). A PDF with a form neither reads is
-    /// refused, never answered as having no fields.
+    /// ([`Self::reading_document`]), so a caller with no screen gets the
+    /// form too. A PDF whose form lists no field is refused, never answered
+    /// as having none.
     pub(crate) fn read_form_fields(&self, markup: &PdfMarkup) -> Result<serde_json::Value, String> {
         let shown = self.raster_document.is_some() && !self.form_fields.is_empty();
         let (file, fields) = if shown {
@@ -41,13 +42,7 @@ impl PdfApp {
                 .form_fields()
                 .map_err(|error| format!("the form cannot be read: {error}"))?;
             if fields.is_empty() && document.info().has_form {
-                return Err(if self.raster_document.is_some() {
-                    format!("the fields of the form in {file} cannot be read on this device")
-                } else {
-                    format!(
-                        "the fields of the form in {file} are read where the PDF is shown: open it first"
-                    )
-                });
+                return Err(format!("the form in {file} names no field to read"));
             }
             (file, fields)
         };
@@ -179,6 +174,33 @@ mod tests {
             .unwrap_or_else(|| panic!("no field {name} in {fields:?}"))
     }
 
+    /// A one-page PDF whose form dictionary lists no field.
+    fn empty_form_pdf() -> Vec<u8> {
+        use std::fmt::Write as _;
+        let objects = [
+            "<< /Type /Catalog /Pages 2 0 R /AcroForm << /Fields [] >> >>",
+            "<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+            "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] >>",
+        ];
+        let mut pdf = String::from("%PDF-1.4\n");
+        let mut offsets = Vec::new();
+        for (number, object) in (1..).zip(objects) {
+            offsets.push(pdf.len());
+            let _ = write!(pdf, "{number} 0 obj\n{object}\nendobj\n");
+        }
+        let xref = pdf.len();
+        let size = offsets.len() + 1;
+        let _ = write!(pdf, "xref\n0 {size}\n0000000000 65535 f \n");
+        for offset in offsets {
+            let _ = writeln!(pdf, "{offset:010} 00000 n ");
+        }
+        let _ = write!(
+            pdf,
+            "trailer\n<< /Size {size} /Root 1 0 R >>\nstartxref\n{xref}\n%%EOF\n"
+        );
+        pdf.into_bytes()
+    }
+
     /// A caller with no screen learns every field of a PDF's form, fills
     /// them with the field edit each one names, and reads them back filled.
     #[serial(pdfium)]
@@ -262,12 +284,11 @@ mod tests {
         );
     }
 
-    /// A window with no PDF owner (an agent's, on a PDF pinned from
-    /// content) reads a PDF without a form as having no fields, and says
-    /// where a PDF with one is read rather than answer it has none.
-    #[serial(pdfium)]
+    /// A window with no PDF owner (an agent's, on a PDF pinned from content)
+    /// reads a form in process: the same three fields a window showing the
+    /// PDF reads, with no screen involved.
     #[test]
-    fn a_form_is_never_answered_as_empty_where_it_cannot_be_read() {
+    fn a_window_with_no_pdf_owner_reads_the_form() {
         let content = tilo_content::ContentStore::memory();
         let mut app = crate::app::PdfApp::empty_with_content(content.clone());
         let pin = |app: &mut crate::app::PdfApp, fixture: &str| {
@@ -286,10 +307,57 @@ mod tests {
             .expect("a PDF without a form reads");
         assert_eq!(read["fields"], serde_json::json!([]));
         pin(&mut app, "form.pdf");
-        let refused = app
+        let read = app
             .read_form_fields(&markup)
-            .expect_err("the form is not answered as empty");
-        assert!(refused.contains("open it first"), "{refused}");
+            .expect("a form reads where no window shows it");
+        assert_eq!(read["file"], "form.pdf");
+        let fields = read["fields"].as_array().expect("a list of fields");
+        let names: Vec<&str> = fields
+            .iter()
+            .filter_map(|field| field["name"].as_str())
+            .collect();
+        assert_eq!(names, vec!["name", "agree", "colour"], "{read}");
+        let name = field(fields, "name");
+        assert_eq!(name["kind"], "text");
+        assert_eq!(
+            name["value"],
+            serde_json::json!({ "kind": "text", "value": "Ada" })
+        );
+        assert_eq!(name["page"], 1);
+        let agree = field(fields, "agree");
+        assert_eq!(agree["kind"], "checkbox");
+        assert_eq!(
+            agree["value"],
+            serde_json::json!({ "kind": "checked", "value": { "on": false, "export": null } })
+        );
+        let colour = field(fields, "colour");
+        assert_eq!(colour["kind"], "choice");
+        assert_eq!(
+            colour["options"],
+            serde_json::json!(["Red", "Green", "Blue"])
+        );
+        assert_eq!(
+            colour["value"],
+            serde_json::json!({ "kind": "choice", "value": "Red" })
+        );
+    }
+
+    /// A form dictionary that lists no field is refused, not answered as a
+    /// PDF without fields: a caller is told the form holds nothing to fill.
+    #[test]
+    fn a_form_listing_no_field_is_refused() {
+        let content = tilo_content::ContentStore::memory();
+        let mut app = crate::app::PdfApp::empty_with_content(content.clone());
+        let bytes = empty_form_pdf();
+        app.record_source = Some(crate::markup::PinnedSource {
+            hash: content.put(&bytes).expect("stored"),
+            len: u64::try_from(bytes.len()).expect("small"),
+            name: "empty-form.pdf".into(),
+        });
+        let refused = app
+            .read_form_fields(&crate::markup::PdfMarkup::default())
+            .expect_err("a form is not answered as empty");
+        assert!(refused.contains("names no field"), "{refused}");
     }
 
     /// A field's page follows its page through the plan: moved later, it is

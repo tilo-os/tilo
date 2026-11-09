@@ -299,6 +299,21 @@ fn outlines_links_and_form_fields_are_read() {
         assert!(!get("agree").widgets[0].checked);
         assert_eq!(get("colour").kind, FieldKind::ComboBox);
         assert_eq!(get("colour").options, vec!["Red", "Green", "Blue"]);
+        // The portable engine reads the same fields of the same file, so a
+        // caller gets the form with or without a pdfium library.
+        let portable = Engine::portable()
+            .open_bytes(&fixture("form.pdf"))
+            .unwrap()
+            .form_fields()
+            .unwrap();
+        assert_eq!(portable.len(), fields.len(), "{portable:?}");
+        for field in &fields {
+            let other = portable
+                .iter()
+                .find(|other| other.name == field.name)
+                .unwrap_or_else(|| panic!("{}", field.name));
+            assert_eq!(other, field, "{}", field.name);
+        }
     }
     // Phase `outline_and_links_resolve` (defined above).
     outline_and_links_resolve();

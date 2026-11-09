@@ -10,8 +10,8 @@
 //! | | pdfium (Linux, macOS) | hayro (every target) |
 //! |---|---|---|
 //! | where | the sandboxed helper | in process |
-//! | render, text, search, links, outline, annotations | ✅ | ✅ |
-//! | annotation appearances, form fields | ✅ | not drawn / none |
+//! | render, text, search, links, outline, annotations, form fields | ✅ | ✅ |
+//! | annotation appearances and form widgets | ✅ | not drawn |
 //! | export, images as pages, encrypted files | ✅ | `Unavailable` |
 //!
 //! On Linux and macOS the engine is pdfium in the sandboxed helper when a
