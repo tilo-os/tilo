@@ -707,7 +707,8 @@ view project_list(p: Project) {
     ui.NavShell(content_kind: .list, title: p.name) {
         content: {
             // The project's tasks on the page's own scroller, the entry that adds to it docked
-            // at the window's foot: a task opens where it stands, under its own row.
+            // at the window's foot: a task opens where it stands under its row, in front of
+            // the list where the window has not the room.
             ui.Docked {
                 foot: {
                     stack {
