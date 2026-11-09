@@ -324,6 +324,27 @@ pub(super) struct SingleLineAttributes {
     pub links: Vec<(usize, usize)>,
 }
 
+/// What a field's prompt said the last time it drew while the field held nothing: the text it
+/// painted and how wide that text wants in the field's own style, against the room one line of
+/// the field gives it. An audit holds [`width`](Self::width) to [`room`](Self::room) to find a
+/// prompt painted past the line it prompts for ([`PlaceholderFit`]).
+#[derive(Clone, Debug, PartialEq)]
+pub struct PromptFit {
+    /// The prompt as it was painted: elided where it was longer than the room.
+    pub shown: String,
+    /// How wide the painted prompt wants in the field's own style.
+    pub width: f32,
+    /// The room one line of the field gives the prompt.
+    pub room: f32,
+}
+
+/// A field that prompts while it holds nothing, reporting what it painted and whether that fit
+/// ([`PromptFit`]): the prompt a field cannot elide — wrapped in a field that cannot wrap, or
+/// run past a field narrower than it — is text a person reads cut off mid-word.
+pub trait PlaceholderFit {
+    fn placeholder_fit(&self) -> Option<PromptFit>;
+}
+
 #[derive(PartialEq)]
 struct PersonalSpelling {
     owner: Option<[u8; 32]>,
@@ -607,6 +628,10 @@ pub struct TextInput {
     /// run that hugs its items): the theme's `field_min_width`, grown with
     /// the text. Layout measures a field at this, so none is laid out 0 wide.
     own_width: f32,
+    /// The prompt the last frame showed while the field held nothing, so an audit sees a prompt
+    /// the field painted past its own edge ([`PlaceholderFit`]); cleared by a wrapping draw,
+    /// whose prompt wraps instead of fitting one line.
+    prompt_fit: Option<PromptFit>,
     /// A plain field inside a toolkit document view keeps the document's own
     /// text inset instead of the zero inset of a plain app field.
     document_inset: bool,
@@ -934,6 +959,7 @@ impl TextInput {
             field_pad_x: f64::from(crate::tokens::Spacing::BASE.s3),
             band_height: f64::from(crate::tokens::Metrics::BASE.min_pointer_target),
             own_width: crate::tokens::Metrics::BASE.field_min_width,
+            prompt_fit: None,
             document_inset: false,
             on_submit: None,
             submit_action: None,
@@ -2940,6 +2966,8 @@ impl TextInput {
         shape: &RoundedRect,
         visible: Rect,
     ) {
+        // A wrapping prompt wraps rather than fitting one line.
+        self.prompt_fit = None;
         let size = self.effective_font_size();
         let style = self.multiline_style(self.scale_for(theme.text_scale));
         self.update_gutter_metrics(tr, &style, self.scale_for(theme.text_scale));
@@ -3273,6 +3301,8 @@ impl TextInput {
         theme: &Theme,
         shape: &RoundedRect,
     ) {
+        // A wrapping prompt wraps rather than fitting one line.
+        self.prompt_fit = None;
         let size = self.effective_font_size();
         let lh = self.line_height();
         let left = self.ml_left();
@@ -3312,12 +3342,13 @@ impl TextInput {
                     self.rect.x0 + left,
                     self.rect.y0 + self.multiline_padding_y() - self.scroll_y,
                 ));
+            // A prompt wraps within the body it prompts for, as the text typed there does.
             tr.draw_style(
                 scene,
                 &placeholder,
                 theme.tokens.colors.text_tertiary,
                 origin,
-                None,
+                Some(avail_w as f32),
                 &self.placeholder_style(size),
             );
         }
@@ -5922,6 +5953,12 @@ impl crate::widget::ResourceOperations for TextInput {
     }
 }
 
+impl PlaceholderFit for TextInput {
+    fn placeholder_fit(&self) -> Option<PromptFit> {
+        self.prompt_fit.clone()
+    }
+}
+
 impl Widget for TextInput {
     fn as_any(&self) -> Option<&dyn std::any::Any> {
         Some(self)
@@ -5945,7 +5982,8 @@ impl Widget for TextInput {
         dyn crate::presence::capability::PublishesPresence,
         dyn crate::undo::UndoPoints,
         dyn crate::resources::PublishesResources,
-        dyn crate::widget::ResourceOperations
+        dyn crate::widget::ResourceOperations,
+        dyn crate::widget::PlaceholderFit
     );
 
     fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
@@ -6356,6 +6394,7 @@ impl Widget for TextInput {
         self.draw_single_line_text(
             &mut PaintCtx::new(scene, transform, text_renderer, theme),
             &display,
+            padding_x,
         );
         #[cfg(test)]
         drop(glyph_probe);

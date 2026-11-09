@@ -1513,6 +1513,7 @@ fn measure_walk(
         .is_some();
     measure_one(widget, keys, clip, text, out);
     selection_lifts(widget, keys, out);
+    prompt_fits(widget, keys, out);
     let inner = widget
         .child_clip_rect()
         .map_or(clip, |child| clip.intersect(child));
@@ -1622,6 +1623,29 @@ fn selection_lifts(widget: &dyn Widget, keys: &[String], out: &mut Vec<Problem>)
             ),
         });
     }
+}
+
+/// A prompt a field painted wider than the line it prompts for: the text a person reads cut off
+/// mid-word at whatever the field's clip falls on ([`ui::widget::PlaceholderFit`]).
+fn prompt_fits(widget: &dyn Widget, keys: &[String], out: &mut Vec<Problem>) {
+    let Some(fit) = ui::widget::capability::capability::<dyn ui::widget::PlaceholderFit>(widget)
+        .and_then(ui::widget::PlaceholderFit::placeholder_fit)
+    else {
+        return;
+    };
+    if f64::from(fit.width) <= f64::from(fit.room) + EPSILON {
+        return;
+    }
+    out.push(Problem {
+        kind: Kind::ClippedText,
+        keys: keys.iter().rev().cloned().collect(),
+        widget: widget.name().to_owned(),
+        id: widget.test_id().map(str::to_owned),
+        detail: format!(
+            "prompts {:?} {:.0} wide, has {:.0}",
+            fit.shown, fit.width, fit.room
+        ),
+    });
 }
 
 /// How far a lift reaches past the row it selects, more than the bleed a row's face grows by.

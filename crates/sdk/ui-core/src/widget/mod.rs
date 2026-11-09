@@ -3220,8 +3220,9 @@ pub use slider::{
 };
 mod text_input;
 pub use text_input::{
-    AccessoryAction, FieldFace, SpanHighlighter, TextActionRequest, TextActionResult, TextInput,
-    TextInputKind, TextInputProps, paint_invalid_edge, paint_preedit_underline,
+    AccessoryAction, FieldFace, PlaceholderFit, PromptFit, SpanHighlighter, TextActionRequest,
+    TextActionResult, TextInput, TextInputKind, TextInputProps, paint_invalid_edge,
+    paint_preedit_underline,
 };
 pub mod code_editor;
 pub use code_editor::{
