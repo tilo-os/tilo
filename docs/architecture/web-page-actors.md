@@ -15,13 +15,13 @@ A page lives in one engine process on one device: its script heap, cookies
 and storage never leave it. Everything else is a way of reaching that one
 page.
 
-- **Seeing it.** Other devices receive what the page looks like as a display
-  list and patches (`tilo-paint-stream`), drawn by each device's own
-  renderer. Nobody receives a second copy of the page to run.
+- **Seeing it.** Other devices receive what the page looks like: the live
+  picture of its window. Nobody receives a second copy of the page to run.
 - **Acting on it.** Every actor acts through the page's published actions on
   `browser.page` (read, click, fill, select, press, submit and the rest). An
-  agent, a script and another device's session all come through that one
-  door, decided by the person's policy like any other action.
+  agent on this device, an agent on another of the person's devices and a
+  script all come through that one door, decided by the person's policy like
+  any other action.
 
 So "two machines in one tab" is not two pages kept in step. It is one page,
 seen from two places and acted on through one door. There is no state to
@@ -104,13 +104,16 @@ window its own input lands in, so direct input in the moment after an action
 is read as that action's. Tracking starts when the document is first read or
 operated, so earlier typing carries no attribution.
 
-What the reviewer sees is the paint stream: a redrawing of the page's layout,
-not its pixels. It carries what each field holds: an input's text, a
-textarea's lines, the option a select shows, and whether a checkbox or a radio
-button is chosen, which the engine's own theme paints and a layout snapshot
-does not carry. A password travels as dots. Where the stream and the engine
-could still differ, the engine's own picture of the page (the capture action)
-is the reference.
+A reviewer on another device sees the tab as the live picture of its window:
+the engine's own pixels, with a password shown as the page shows it and a
+window that protects itself from capture blanked. The review read and the
+record are what say who set what; the picture is what the page shows.
+
+The page as a display list (the paint stream) carries what each field holds
+too: an input's text, a textarea's lines, the option a select shows, and
+whether a checkbox or a radio button is chosen, which the engine's own theme
+paints and a layout snapshot does not carry. A password travels as dots. The
+session does not take that stream yet (see "Not built yet").
 
 ## A form as typed actions
 
@@ -141,13 +144,32 @@ has a signature of what it asks and where it sends it. A caller that learned
 a form once names it by signature, and a form that has changed is refused
 rather than half filled, which sends the caller back to reading it.
 
+## Other devices
+
+Two things carry a tab to other devices, and both are the session's, not the
+Browser's.
+
+- **Seeing and typing.** The person shares the tab's window with the
+  workspace. Each member who shows it receives the window's live picture,
+  the engine's own pixels, and their pointer and keys reach the page
+  through a seat of their own while the person allows it. What they type
+  is direct input to the page.
+- **Acting.** An agent on another of the person's devices connects to the
+  desktop's agent door and works there under a name of its own, as an agent
+  on the desktop itself does. Its page actions take their turn in the tab,
+  are recorded under that name, and the person is asked before one that
+  acts on the page unless they let that agent go on.
+
+So two agents on two machines in one tab are two connections to one
+desktop's door, and a third machine is a third. Nothing is merged.
+
 ## The cases
 
 | Case | How it holds |
 | --- | --- |
 | Two agents, one tab | Turns, own reads, told of the other, one record |
 | Two agents, two tabs | Two pages with two records; one profile, so the site's own session (a basket, a sign-in) is shared between them |
-| Two devices, one tab | One page on the device that runs it; the other is to see the paint stream and act through `browser.page` over its session (not wired yet, see below) |
+| Two devices, one tab | One page on the device that runs it; the other sees the shared window and types into it, and its agent acts through the desktop's agent door |
 | Two agents and a person | The person's typing is direct input; the review read tells the three apart |
 | Three devices, one tab | As two; each device's actor has its own read and is told of the others |
 
@@ -169,16 +191,16 @@ rather than half filled, which sends the caller back to reading it.
   for everyone watching, as agents are shown in other apps.
 - **Who types.** Direct input is one source. Input that arrives through a
   shared window should carry the person it came from.
-- **A second device.** Two parts are missing before another device can see
-  or work in a tab, so the cases with two or three devices cannot be run yet.
-  The native session takes no paint stream: an app that offers its page as
-  one is refused, and nothing asks a window for a keyframe, so no viewer
-  receives the stream. And an action reaches only the workspace's host: an
-  agent's connection and a page ask the host's device, and nothing answers
-  for a page shown in another member's window. On one device everything
-  above runs: the engine's own tests, and the real Browser's page actions
-  driven as two named agents and a reviewer
-  (`apps/browser/examples/native_page_actors.rs`).
+- **The page as a display list for other devices.** Another device sees a tab
+  today as the live picture of its window (see "Other devices"). The
+  Browser can also describe its page as a display list, which costs the
+  sharing device no video encoding and is drawn sharply at any size, but
+  the session does not take that stream yet: an app that offers it is
+  refused, and nothing asks a window for it.
+- **Another member's agent.** An agent reaches a desktop through its agent
+  door, which admits the devices of the desktop's own person. A device of
+  another member of the workspace sees a shared tab and may type into it,
+  but its agent has no door to the tab's actions.
 - **Dialogs in another site's frame.** A consent dialog a site shows in a
   frame of another site reads as empty, so an agent cannot answer it. Real
   shops and news sites put their cookie question there.
