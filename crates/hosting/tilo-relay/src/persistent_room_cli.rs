@@ -1372,7 +1372,7 @@ pub(crate) async fn run(
         member_limits: persistent.member_limits.then(Default::default),
         iroh_listen: persistent
             .iroh_listen
-            .unwrap_or(tilo_relay::RelayConfig::default().iroh_listen),
+            .unwrap_or_else(|| tilo_relay::RelayConfig::default().iroh_listen),
         ..Default::default()
     };
     let hosted = start_relay_lending(
