@@ -538,31 +538,17 @@ impl GovernedWorkspace {
             &StatePeer,
         ) -> Result<collaboration::CollaborationState, String>,
     ) -> Result<u64, String> {
-        self.commit_as(candidate, (key, now), Change::Other, state)
+        let shared = self.peer.shared();
+        let mut replica = shared.lock();
+        self.commit_held(&mut replica, candidate, (key, now), Change::Other, state)
     }
 
-    /// [`Self::commit`] of a change that only admits people: members added
-    /// through their invitations, each perhaps named as they chose, and
-    /// nothing else changed. While every change since the workspace's document
-    /// last started over was such an admission, the newcomers' change is
-    /// appended to the publication rather than starting the workspace over: a
-    /// crowd arriving together cost the workspace its whole state, rebuilt,
-    /// written and sent to every member, once per arrival.
-    pub(crate) fn commit_admission(
+    /// Commit `candidate`, a change built from `replica`, which the caller
+    /// holds: a member's write taken into the replica meanwhile waits, so it is
+    /// neither lost to the change nor leaves the change uncommittable.
+    pub(super) fn commit_held(
         &mut self,
-        candidate: StatePeer,
-        key: &SigningKey,
-        now: SystemTime,
-        state: impl FnOnce(
-            &WorkspaceRecord,
-            &StatePeer,
-        ) -> Result<collaboration::CollaborationState, String>,
-    ) -> Result<u64, String> {
-        self.commit_as(candidate, (key, now), Change::Admission, state)
-    }
-
-    fn commit_as(
-        &mut self,
+        replica: &mut StatePeer,
         mut candidate: StatePeer,
         (key, now): (&SigningKey, SystemTime),
         change: Change,
@@ -572,14 +558,14 @@ impl GovernedWorkspace {
         ) -> Result<collaboration::CollaborationState, String>,
     ) -> Result<u64, String> {
         let committing = crate::timing::start();
-        if candidate.workspace_id() != self.peer().workspace_id()
-            || candidate.owner() != self.peer().owner()
+        if candidate.workspace_id() != replica.workspace_id()
+            || candidate.owner() != replica.owner()
         {
             return Err("a room change cannot replace the room".into());
         }
         // A member admitted from now on is given the workspace as it stands, not
         // what was withdrawn before they joined.
-        let joined = !member_roots(&candidate, now).is_subset(&member_roots(&self.peer(), now));
+        let joined = !member_roots(&candidate, now).is_subset(&member_roots(replica, now));
         let preparing = crate::timing::start();
         prepare_governance(&mut candidate, key, now)?;
         crate::timing::window("room.commit.prepare", preparing);
@@ -608,14 +594,14 @@ impl GovernedWorkspace {
             && self
                 .admissions_since_base
                 .as_ref()
-                .is_some_and(|clean| self.peer().workspace_heads().as_ref() == Some(clean));
+                .is_some_and(|clean| replica.workspace_heads().as_ref() == Some(clean));
         let started_over = (tail >= MAX_PUBLICATION_TAIL || joined) && !appended_admission;
         if started_over {
             // Keep unchanged record checkpoints on their own channels; replacing
             // those baselines could discard member writes. A record changed by
             // this commit must still publish at the governance rollover.
             let changed_records =
-                durable_messages(&mut candidate.clone(), &self.peer(), (key, now), generation)?
+                durable_messages(&mut candidate.clone(), replica, (key, now), generation)?
                     .into_iter()
                     .filter_map(|message| match message {
                         neighbour_wire::NeighbourMsg::AppDocument {
@@ -641,7 +627,7 @@ impl GovernedWorkspace {
             record.published = 0;
         } else {
             let diffing = crate::timing::start();
-            let messages = durable_messages(&mut candidate, &self.peer(), (key, now), generation)?;
+            let messages = durable_messages(&mut candidate, replica, (key, now), generation)?;
             for message in messages.iter().filter(|message| for_members(message)) {
                 record.outgoing.push(publication(message, false)?);
             }
@@ -662,7 +648,7 @@ impl GovernedWorkspace {
             self.record = prior;
             return Err(error);
         }
-        *self.peer.lock() = candidate;
+        *replica = candidate;
         self.rebased |= rebased;
         // Clean from a start made at an admission; kept clean only by
         // admissions appended to it; anything else spoils it until the next.
@@ -671,7 +657,7 @@ impl GovernedWorkspace {
         } else {
             appended_admission
         };
-        self.admissions_since_base = clean.then(|| self.peer().workspace_heads()).flatten();
+        self.admissions_since_base = clean.then(|| replica.workspace_heads()).flatten();
         crate::timing::event(
             "room.governance_commit",
             committing,

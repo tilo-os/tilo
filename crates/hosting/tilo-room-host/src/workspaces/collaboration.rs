@@ -59,6 +59,15 @@ impl GovernedWorkspace {
         governed(&self.record, self.peer().into())
     }
 
+    /// The workspace as its join ledger reads it, from the state the caller
+    /// holds: what a decision reads is what its commit is measured against.
+    pub(super) fn governed_from<'a>(
+        &'a self,
+        peer: &'a tilo_peer_state::StatePeer,
+    ) -> Governed<'a> {
+        governed(&self.record, peer.into())
+    }
+
     /// Keep the people `removed` out of the workspace's public door for the
     /// day: moderation took their membership away. `by` is the person who
     /// asked, when a person asks: someone who leaves is not kept out of a
@@ -1145,6 +1154,10 @@ impl Workspaces {
     ///
     /// Answers each join in order. Fails as a whole when the change cannot
     /// be committed or published.
+    #[expect(
+        clippy::significant_drop_tightening,
+        reason = "the replica stays held until the admission is committed over it"
+    )]
     pub(super) async fn admit_redemptions(
         &self,
         workspace: &mut GovernedWorkspace,
@@ -1152,9 +1165,14 @@ impl Workspaces {
         now: u64,
     ) -> Result<Vec<Result<JoinBootstrap, CollaborationError>>, CollaborationError> {
         let key = &self.inner.host.key;
-        let mut held = HeldWorkspace::new(key, workspace);
-        let admitted = tilo_peer_state::join_answer::admit(&mut held, joins, key, now);
-        if held.committed {
+        let (admitted, committed) = {
+            let shared = workspace.peer.shared();
+            let mut replica = shared.lock();
+            let mut held = HeldWorkspace::new(key, workspace, &mut replica);
+            let admitted = tilo_peer_state::join_answer::admit(&mut held, joins, key, now);
+            (admitted, held.committed)
+        };
+        if committed {
             self.settle(workspace).await?;
             // Someone invited from the wait list is in now: their entry
             // leaves it.
@@ -1231,15 +1249,23 @@ impl Workspaces {
 struct HeldWorkspace<'a> {
     key: &'a SigningKey,
     workspace: &'a mut GovernedWorkspace,
+    /// The workspace's state, held for the decision: a member's write reaches
+    /// the replica over the link it syncs on, without this workspace's lock.
+    replica: &'a mut tilo_peer_state::StatePeer,
     staged: bool,
     committed: bool,
 }
 
 impl<'a> HeldWorkspace<'a> {
-    const fn new(key: &'a SigningKey, workspace: &'a mut GovernedWorkspace) -> Self {
+    const fn new(
+        key: &'a SigningKey,
+        workspace: &'a mut GovernedWorkspace,
+        replica: &'a mut tilo_peer_state::StatePeer,
+    ) -> Self {
         Self {
             key,
             workspace,
+            replica,
             staged: false,
             committed: false,
         }
@@ -1252,7 +1278,7 @@ impl WorkspaceTxn for HeldWorkspace<'_> {
     }
 
     fn governed(&self) -> Governed<'_> {
-        self.workspace.governed()
+        self.workspace.governed_from(self.replica)
     }
 
     fn ledger(&self) -> &CollaborationState {
@@ -1272,10 +1298,15 @@ impl WorkspaceTxn for HeldWorkspace<'_> {
         now: u64,
         ledger: &mut dyn FnMut(&Governed<'_>) -> Result<CollaborationState, CollaborationError>,
     ) -> Result<(), CollaborationError> {
-        self.workspace
-            .commit(peer, self.key, system_time(now), |record, peer| {
+        self.workspace.commit_held(
+            self.replica,
+            peer,
+            (self.key, system_time(now)),
+            super::Change::Other,
+            |record, peer| {
                 ledger(&governed(record, peer.into())).map_err(|error| error.to_string())
-            })?;
+            },
+        )?;
         // The commit wrote the whole record, the ledger staged before
         // included.
         self.staged = false;
@@ -1289,10 +1320,15 @@ impl WorkspaceTxn for HeldWorkspace<'_> {
         now: u64,
         ledger: &mut dyn FnMut(&Governed<'_>) -> Result<CollaborationState, CollaborationError>,
     ) -> Result<(), CollaborationError> {
-        self.workspace
-            .commit_admission(peer, self.key, system_time(now), |record, peer| {
+        self.workspace.commit_held(
+            self.replica,
+            peer,
+            (self.key, system_time(now)),
+            super::Change::Admission,
+            |record, peer| {
                 ledger(&governed(record, peer.into())).map_err(|error| error.to_string())
-            })?;
+            },
+        )?;
         self.staged = false;
         self.committed = true;
         Ok(())
@@ -1321,7 +1357,13 @@ impl JoinWorkspaces for Workspaces {
         let held = self.workspace(workspace).await?;
         let mut locked = held.lock().await;
         let (answer, staged, committed) = {
-            let mut held = HeldWorkspace::new(&self.inner.host.key, &mut locked);
+            // A member's write reaches this workspace's replica over the link it
+            // syncs on, without this workspace's lock: holding the replica for
+            // the decision is what keeps the state a change is built from the
+            // one it is committed over.
+            let shared = locked.peer.shared();
+            let mut replica = shared.lock();
+            let mut held = HeldWorkspace::new(&self.inner.host.key, &mut locked, &mut replica);
             let answer = decide(&mut held);
             (answer, held.staged, held.committed)
         };
