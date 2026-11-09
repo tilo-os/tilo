@@ -1696,6 +1696,39 @@ fn setup_runs_over_the_desktop_through_its_actions_and_gives_it_back_when_done()
     assert!(publisher(&session, skip).is_none());
 }
 
+/// The device's tooling walks setup by its controls' names, as a screen reader
+/// reaches them (`tilo-vm slot create --identity device`, onboarding-walk): the
+/// steps of the setup app the ceremony shows are listed by their ids, and a
+/// press by that name is the person's press.
+#[test]
+fn setup_lists_its_steps_by_name_and_a_press_by_name_takes_the_step() {
+    let _settled = ui::motion::testing::settled();
+    let mut session = crate::common::headless(Options {
+        setup: Some(tilo_session::BeforeDesk::Ceremony(Box::new(
+            tilo_session::OnboardingView::new_tour(),
+        ))),
+        collab: false,
+        ..Options::default()
+    });
+    session.step(Duration::from_millis(1)).unwrap();
+    assert!(session.setup_up());
+    let names: Vec<String> = session
+        .controls()
+        .into_iter()
+        .map(|(name, _)| name)
+        .collect();
+    let skip = "onboarding.tour.skip.button";
+    assert!(
+        names.iter().any(|name| name == skip),
+        "setup's tour step is listed by its name: {names:?}"
+    );
+    session
+        .press_action(skip, ui::window_targets::TargetAction::Activate)
+        .expect("a press by name");
+    session.step(Duration::from_millis(1)).unwrap();
+    assert!(!session.setup_up(), "skipping the tour finishes setup");
+}
+
 #[test]
 fn workspace_settings_renames_the_workspace_through_its_action() {
     use tilo_sheets::Seat as _;
