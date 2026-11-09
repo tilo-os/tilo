@@ -2518,6 +2518,11 @@ outputs = ["/target/publish/hosted-guest/image/image.oci.tar", "/target/publish/
 timeout_secs = 5400
 default = false
 
+# Signed with the release key, which signs only a release run: stable's, or a tag's. Until
+# stable publishes the guest, a release is a dispatch of publish-hosted-guest on a tag
+# (vhosted-guest-<date>; the release signer accepts tags beginning with v, and no check is
+# triggered by one that does not continue with a version number), and its pins.env is pinned
+# by hand with `hosted-guest.sh pin`'s checks.
 [[check]]
 name = "sign-hosted-guest"
 run = "bash tools/ci/publish/oci-sign.sh registry.tilo.so/tilo/hosted-guest /target/publish/hosted-guest/image"
@@ -2525,7 +2530,7 @@ needs = ["image-hosted-guest", "signing-tools"]
 image = "registry.tilo.so/tilo/skopeo@sha256:7e735527d9d64c7456fc82d7f954c380b4a5dd1a8173115ce2ed7b3442ef36e0"
 env = { COSIGN_KEY_REF = "awskms:///arn:aws:kms:us-east-1:125650147312:alias/tilo-release-signing", AWS_SIGNING_ROLE_ARN = "arn:aws:iam::125650147312:role/TiloTReleaseSigner", TILO_SIGNING_AUDIENCE = "sts.amazonaws.com", TILO_SIGN_TLOG = "1" }
 outputs = ["/target/publish/hosted-guest/image/payload.json", "/target/publish/hosted-guest/image/signature", "/target/publish/hosted-guest/image/dry-run.pub", "/target/publish/hosted-guest/image/bundle.json", "/target/publish/hosted-guest/image/certified/**"]
-on = ["stable"]
+on = ["stable", "dispatch"]
 id_token = ["sts.amazonaws.com"]
 
 [[check]]
@@ -2534,7 +2539,7 @@ run = "bash tools/ci/publish/oci-publish.sh release registry.tilo.so/tilo/hosted
 needs = ["image-hosted-guest", "sign-hosted-guest", "signing-tools"]
 image = "registry.tilo.so/tilo/skopeo@sha256:7e735527d9d64c7456fc82d7f954c380b4a5dd1a8173115ce2ed7b3442ef36e0"
 outputs = ["/target/publish/hosted-guest/image/receipt.json", "/target/publish/hosted-guest/image/pins.env"]
-on = ["stable"]
+on = ["stable", "dispatch"]
 id_token = ["registry.tilo.so"]
 pointers = { hosted-guest = "/target/publish/hosted-guest/image/pins.env" }
 
