@@ -165,8 +165,8 @@ tl_packages=$(GIT_INDEX_FILE="$full_index" git diff --cached --name-only \
     --diff-filter=ACM -- '*.tl' \
   | while IFS= read -r f; do
       case "$f" in
-        crates/lang/tilolang/std/*.tl) printf '%s\n' crates/lang/tilolang/std ;;
-        apps/tl/*/*.tl) printf '%s\n' "${f%/*}" ;;
+        (crates/lang/tilolang/std/*.tl) printf '%s\n' crates/lang/tilolang/std ;;
+        (apps/tl/*/*.tl) printf '%s\n' "${f%/*}" ;;
       esac
     done | sort -u)
 if [ -n "$tl_packages" ]; then
