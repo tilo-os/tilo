@@ -44,7 +44,7 @@ pub(crate) struct PendingConsent {
 
 impl AppBrokerState {
     /// Ask whoever answers for the person using an application from now on.
-    pub(crate) fn set_app_action_consent(&self, prompter: Arc<dyn AppActionConsentPrompter>) {
+    pub fn set_app_action_consent(&self, prompter: Arc<dyn AppActionConsentPrompter>) {
         if let Ok(mut current) = self.app_action_consent.write() {
             *current = Some(prompter);
         }

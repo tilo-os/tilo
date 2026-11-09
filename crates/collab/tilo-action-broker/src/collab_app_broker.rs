@@ -5133,6 +5133,16 @@ impl AppBrokerState {
         {
             return Err(format!("the application action is unavailable: {reason}"));
         }
+        // What the run's person answered it "always" for, where its tracker
+        // keeps those answers itself (an agent door connection's run): decided
+        // with the workspace's grants, as an answer granted there is.
+        let answers = match durable {
+            Some(DurableContext::Task { binding, .. }) => self
+                .tracker_runs(&offered.0.route.cluster_id)
+                .map(|tracker| tracker.kept_answers(&offered.0.route.cluster_id, &binding.task_id))
+                .unwrap_or_default(),
+            _ => Vec::new(),
+        };
         // Every check of this admission is decided on one committed sample,
         // so a policy change cannot land between the action check and the
         // record check.
@@ -5142,6 +5152,15 @@ impl AppBrokerState {
             .ok_or("workspace authority unavailable")?
             .decide_in_workspace(&offered.0.route.cluster_id, |workspace| {
                 let workspace = workspace.ok_or("workspace no longer hosted")?;
+                let answered;
+                let workspace = if answers.is_empty() {
+                    workspace
+                } else {
+                    let mut copy = workspace.clone();
+                    copy.policy.grants.extend(answers.iter().cloned());
+                    answered = copy;
+                    &answered
+                };
                 let run = match durable {
                     Some(DurableContext::Task { binding, .. }) => Some(binding),
                     _ => None,

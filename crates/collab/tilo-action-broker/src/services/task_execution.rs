@@ -578,4 +578,49 @@ pub trait TrackerRuns: Send + Sync {
         _update: &runtime_collab::TaskRunUpdate,
     ) {
     }
+
+    /// Whether `run` asks its person on this host's own sheet
+    /// ([`crate::app_actions::AppActionConsentPrompter`]) and keeps its
+    /// question itself ([`Self::keep_question`]), rather than on its Tasks
+    /// issue: a run with no issue to ask on, as an agent door connection's.
+    /// Its caller is asked through [`tilo_actions::remote::ActionHost::confirm`].
+    fn asks_on_host(&self, _workspace: &str, _run: &TrackerRun) -> bool {
+        false
+    }
+
+    /// Keep `question` as the question of the run of `issue` in `workspace`
+    /// (one [`Self::asks_on_host`]): waiting while its person is asked, then
+    /// as they answered, and none once it was settled or withdrawn.
+    ///
+    /// # Errors
+    /// This tracker keeps no questions, or holds no such run.
+    fn keep_question(
+        &self,
+        _workspace: &str,
+        _issue: &str,
+        _question: Option<TrackerQuestion>,
+    ) -> Result<(), String> {
+        Err("this tracker keeps no question of its own".into())
+    }
+
+    /// Keep `grant`, the answer the person gave the run of `issue` in
+    /// `workspace` for every later step like the one it asked about: decided
+    /// with the workspace's grants for as long as the run goes.
+    ///
+    /// # Errors
+    /// This tracker keeps no answers, or holds no such run.
+    fn keep_answer(
+        &self,
+        _workspace: &str,
+        _issue: &str,
+        _grant: tilo_action_policy::Grant,
+    ) -> Result<(), String> {
+        Err("this tracker keeps no answer of its own".into())
+    }
+
+    /// The answers [`Self::keep_answer`] kept for the run of `issue` in
+    /// `workspace`, while it goes.
+    fn kept_answers(&self, _workspace: &str, _issue: &str) -> Vec<tilo_action_policy::Grant> {
+        Vec::new()
+    }
 }

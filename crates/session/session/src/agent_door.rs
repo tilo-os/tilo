@@ -398,6 +398,16 @@ impl Seats {
         inner.revision = inner.revision.wrapping_add(1);
     }
 
+    /// How the desk shows connection `seat` 's agent ("Claude Code in dev #1"), once admitted.
+    fn shown(&self, seat: u64) -> Option<String> {
+        self.inner
+            .lock_recover()
+            .connections
+            .get(&seat)
+            .map(|connection| connection.client.clone())
+            .filter(|shown| !shown.is_empty())
+    }
+
     /// The connection `seat` names, which ending its seat closes.
     fn attached(&self, seat: u64, stream: &UnixStream) {
         let copy = match stream.try_clone() {
@@ -2179,6 +2189,16 @@ impl ActionHost for Host {
         caller: &Caller,
         request: &InvokeRequest,
     ) -> Pending<Result<ConfirmedInvocation, ActionHostError>> {
+        // An admitted agent's step is its run's to ask about: its person answers on this desk's
+        // sheet ([`crate::run_questions`]).
+        if let Some(run) = &self.run
+            && !matches!(
+                caller.principal(),
+                tilo_actions::remote::CallerPrincipal::Person(_)
+            )
+        {
+            return run.host.confirm(caller, request);
+        }
         match &self.state {
             Some(state) => state.request_witness(caller, None, request),
             None => Pending::ready(Err(ActionHostError::ConfirmationRequired)),
@@ -2621,6 +2641,9 @@ fn serve_admitted(
             let Some((workspace, person, seated)) = starting.lock_recover().take() else {
                 return Ok(host);
             };
+            // The run is named as the desk shows its agent: what its history is listed under and
+            // what its questions to the person call it.
+            let seated = seats.shown(seat).unwrap_or(seated);
             let admitted = crate::door_runs::Admitted {
                 workspace: &workspace,
                 person: &person,

@@ -752,6 +752,7 @@ fn compose(question: &Question) -> Option<Composed> {
         tilo_bluetooth_agent::KIND => pairing(&question.handle, details)?,
         crate::agent_door::KIND => admitted(&question.handle, &who, details)?,
         crate::network::AGENT_QUESTION => agent_question(&question.handle, &who, details)?,
+        crate::run_questions::KIND => run_question(&question.handle, details)?,
         crate::network::DEVICE_UNLOCK => device_unlock(&question.handle, details)?,
         _ => return None,
     };
@@ -904,6 +905,47 @@ fn agent_question(handle: &str, who: &str, details: Value) -> Option<(Dialog, Pl
     let mut dialog = review(handle, title, who.to_owned(), detail);
     dialog.confirm_label = word("network-agent-question-allow");
     Some((dialog, Plan::Confirm))
+}
+
+/// What an agent's run asks before a step its grants leave to the person: the step, what it
+/// would do, and whether to allow it once, allow the agent every such step while it works here, or
+/// deny it ([`crate::run_questions`]).
+fn run_question(handle: &str, details: Value) -> Option<(Dialog, Plan)> {
+    use crate::run_questions::{ALLOW_AGENT, ALLOW_ONCE, DENY, RunQuestion};
+    let asked: RunQuestion = serde_json::from_value(details).ok()?;
+    let title = words(
+        "run-question-title",
+        &[("agent", &asked.agent), ("action", &asked.action)],
+    );
+    let mut detail = words("run-question-detail", &[("resource", &asked.resource)]);
+    for (label, value) in &asked.fields {
+        detail.push('\n');
+        detail.push_str(&words(
+            "run-question-field",
+            &[("label", label), ("value", value)],
+        ));
+    }
+    if !matches!(asked.risk.as_str(), "" | "none" | "low") {
+        detail.push('\n');
+        detail.push_str(&words(
+            "network-agent-question-risk",
+            &[("risk", &risk(&asked.risk))],
+        ));
+    }
+    let mut dialog = review(handle, title, asked.agent.clone(), detail);
+    let mut choices = vec![ALLOW_ONCE];
+    let mut labels = vec![word("portal-allow-once")];
+    if asked.may_allow_agent {
+        choices.push(ALLOW_AGENT);
+        labels.push(words(
+            "run-question-allow-agent",
+            &[("agent", &asked.agent)],
+        ));
+    }
+    choices.push(DENY);
+    labels.push(word("portal-deny"));
+    dialog.body = Body::Choices(labels);
+    Some((dialog, Plan::Choose(choices)))
 }
 
 /// What the host says an action risks, in the person's words.

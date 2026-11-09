@@ -11,6 +11,10 @@
 //! the run's, decided by the person's live grants capped at what an agent may do, and its
 //! history is the run's.
 //!
+//! A step the person's grants ask first about is asked on this desk's sheet rather than on an
+//! issue ([`crate::run_questions`]): the run keeps the question while it is up, and the person's
+//! "always" for as long as it goes.
+//!
 //! Nothing is written anywhere: the run is this device's, it ends when the connection does (the
 //! person's Stop on its seat ends both), and the broker stops what it still runs.
 
@@ -24,10 +28,18 @@ use tilo_peer_state::join::task_delegation::{MAX_TASK_DELEGATION_NS, TaskDelegat
 /// The address every door connection's run is named under: no record holds it.
 pub(crate) const DOOR_RUNS: &str = tilo_action_broker::services::DOOR_RUN_PREFIX;
 
+/// One door connection's run as it goes: its workspace, the run, and the answers its person gave
+/// it for every later step like the one it asked about.
+struct Going {
+    workspace: String,
+    run: TrackerRun,
+    answers: Vec<tilo_action_policy::Grant>,
+}
+
 /// The door's runs going now, each with its workspace.
 #[derive(Default)]
 pub(crate) struct DoorRuns {
-    held: Mutex<Vec<(String, TrackerRun)>>,
+    held: Mutex<Vec<Going>>,
 }
 
 impl DoorRuns {
@@ -36,24 +48,91 @@ impl DoorRuns {
         self.held
             .lock_recover()
             .iter()
-            .filter(|(held, _)| held == workspace)
-            .map(|(_, run)| run.clone())
+            .filter(|going| going.workspace == workspace)
+            .map(|going| going.run.clone())
             .collect()
     }
 
-    /// The run of issue `issue` for `agent` in `workspace`, while it goes.
-    pub(crate) fn find(&self, workspace: &str, issue: &str, agent: &str) -> Option<TrackerRun> {
+    /// The run of issue `issue` for `agent` in `workspace`, while it goes, with the answers its
+    /// person gave it.
+    pub(crate) fn find(
+        &self,
+        workspace: &str,
+        issue: &str,
+        agent: &str,
+    ) -> Option<(TrackerRun, Vec<tilo_action_policy::Grant>)> {
         self.held
             .lock_recover()
             .iter()
-            .find(|(held, run)| held == workspace && run.issue == issue && run.agent == agent)
-            .map(|(_, run)| run.clone())
+            .find(|going| {
+                going.workspace == workspace && going.run.issue == issue && going.run.agent == agent
+            })
+            .map(|going| (going.run.clone(), going.answers.clone()))
+    }
+
+    /// Keep `question` as the question of the run of `issue` in `workspace`, or none.
+    ///
+    /// # Errors
+    /// No such run goes.
+    pub(crate) fn keep_question(
+        &self,
+        workspace: &str,
+        issue: &str,
+        question: Option<tilo_action_broker::services::TrackerQuestion>,
+    ) -> Result<(), String> {
+        self.with_run(workspace, issue, |going| going.run.question = question)
+    }
+
+    /// Keep `grant`, the answer the person gave the run of `issue` in `workspace` for its later
+    /// steps like the one it asked about, for as long as the run goes.
+    ///
+    /// # Errors
+    /// No such run goes.
+    pub(crate) fn keep_answer(
+        &self,
+        workspace: &str,
+        issue: &str,
+        grant: tilo_action_policy::Grant,
+    ) -> Result<(), String> {
+        self.with_run(workspace, issue, |going| {
+            going.answers.retain(|kept| kept.id != grant.id);
+            going.answers.push(grant);
+        })
+    }
+
+    /// `change` the run of `issue` in `workspace`.
+    fn with_run(
+        &self,
+        workspace: &str,
+        issue: &str,
+        change: impl FnOnce(&mut Going),
+    ) -> Result<(), String> {
+        self.held
+            .lock_recover()
+            .iter_mut()
+            .find(|going| going.workspace == workspace && going.run.issue == issue)
+            .map(change)
+            .ok_or_else(|| "the agent's run has ended".to_owned())
+    }
+
+    /// The answers the person kept for the run of `issue` in `workspace`, while it goes.
+    pub(crate) fn answers(&self, workspace: &str, issue: &str) -> Vec<tilo_action_policy::Grant> {
+        self.held
+            .lock_recover()
+            .iter()
+            .find(|going| going.workspace == workspace && going.run.issue == issue)
+            .map(|going| going.answers.clone())
+            .unwrap_or_default()
     }
 
     /// Hold `run` in `workspace` until the returned guard drops.
     pub(crate) fn open(self: &Arc<Self>, workspace: &str, run: TrackerRun) -> Held {
         let issue = run.issue.clone();
-        self.held.lock_recover().push((workspace.to_owned(), run));
+        self.held.lock_recover().push(Going {
+            workspace: workspace.to_owned(),
+            run,
+            answers: Vec::new(),
+        });
         Held {
             runs: Arc::clone(self),
             workspace: workspace.to_owned(),
@@ -74,7 +153,7 @@ impl Drop for Held {
         self.runs
             .held
             .lock_recover()
-            .retain(|(workspace, run)| !(*workspace == self.workspace && run.issue == self.issue));
+            .retain(|going| !(going.workspace == self.workspace && going.run.issue == self.issue));
         // The broker re-reads its runs when a decision it reads changes: the run it delivered is
         // gone, so what it still runs of it is stopped.
         tilo_identity_host::policy_change::announce();
@@ -194,6 +273,19 @@ mod tests {
         (key, cert)
     }
 
+    fn question() -> tilo_action_broker::services::TrackerQuestion {
+        tilo_action_broker::services::TrackerQuestion {
+            id: "q1".into(),
+            app: "so.tilo.terminal".into(),
+            resource: "terminal".into(),
+            action: "run".into(),
+            arguments_digest: "00".into(),
+            draft: serde_json::Value::Null,
+            before: None,
+            answer: tilo_action_broker::services::TrackerAnswer::Waiting,
+        }
+    }
+
     fn person(cert: &tilo_user_identity::DeviceCert) -> String {
         tilo_action_broker::collab_app_broker::principal_id_for_root(cert.user_public_key)
     }
@@ -275,6 +367,15 @@ mod tests {
         assert!(
             runs.find(WORKSPACE, &minted.run.issue, &minted.run.agent)
                 .is_some()
+        );
+        let mut asked = minted.run.clone();
+        asked.question = Some(question());
+        runs.keep_question(WORKSPACE, &minted.run.issue, asked.question.clone())
+            .unwrap();
+        assert_eq!(
+            runs.in_workspace(WORKSPACE),
+            vec![asked],
+            "its question is the run's while it asks"
         );
         drop(held);
         assert!(

@@ -36,6 +36,8 @@ use super::{
     TaskSubscription, mpsc,
 };
 
+mod asking;
+
 /// The route a task agent's connection is admitted on: the workspace agent
 /// service's, as a launched task agent joins.
 pub const TASK_AGENT_APP: &str = "so.tilo.agent";
@@ -572,6 +574,38 @@ impl tilo_actions::remote::ActionHost for TaskRunHost {
         }
     }
 
+    /// Ask the run's person to confirm `request` on this host's sheet, where the run keeps its
+    /// own questions ([`crate::services::TrackerRuns::asks_on_host`]): the answer is the run's,
+    /// and the same request invoked again goes on with it ([`asking`]).
+    fn confirm(
+        &self,
+        caller: &Caller,
+        request: &InvokeRequest,
+    ) -> Pending<Result<tilo_actions::remote::ConfirmedInvocation, ActionHostError>> {
+        if let Err(error) = self.check(caller) {
+            return Pending::ready(Err(error));
+        }
+        let runtime = match super::launchable::delivery_runtime() {
+            Ok(runtime) => runtime,
+            Err(reason) => return Pending::ready(Err(ActionHostError::Unavailable { reason })),
+        };
+        let host = self.clone();
+        let request = request.clone();
+        let (complete, answer) = pending();
+        runtime.spawn(async move {
+            // A caller that stops waiting withdraws the question: the asking is dropped, and
+            // with it the sheet.
+            let asked = tokio::select! {
+                asked = host.ask_person(&request) => Some(asked),
+                () = complete.abandoned() => None,
+            };
+            if let Some(asked) = asked {
+                complete.complete(asked);
+            }
+        });
+        answer
+    }
+
     /// Records outside their apps, read as steps of the run.
     fn record_reads(&self) -> Option<Arc<dyn tilo_actions::remote::RecordReads>> {
         Some(Arc::new(super::record_read::RunRecords(self.clone())))
@@ -624,10 +658,17 @@ impl TaskRunHost {
             Err(error) => {
                 let error = error.to_string();
                 self.remember(request.invocation, Started::Refused(error.clone()));
+                let asks =
+                    crate::services::NativeTaskActionRequirement::awaits_confirmation(&error);
+                // A run with no issue to ask on asks its person on this host's sheet: its caller
+                // is told the step needs confirming, and asks through `confirm`.
+                if asks && self.asks_on_host() {
+                    return Err(ActionHostError::ConfirmationRequired);
+                }
                 // The run pauses for its person: the question goes on its
                 // issue, as a launched agent puts it there, and the agent
                 // asks again with the same arguments once they answered.
-                if crate::services::NativeTaskActionRequirement::awaits_confirmation(&error)
+                if asks
                     && let Err(why) = self
                         .ask_on_issue(peer_id, request, argument.as_deref())
                         .await
@@ -770,6 +811,12 @@ impl TaskRunHost {
     ) -> Result<(), String> {
         let (run, _) = self.pending_run()?;
         let current = self.0.state.tracker_run_of(&run)?;
+        let on_host = self
+            .0
+            .state
+            .tracker_runs(self.workspace())
+            .filter(|tracker| tracker.asks_on_host(self.workspace(), &current))
+            .cloned();
         let arguments = arguments_of(argument)?;
         let digest = hex::encode(tilo_actions::draft::arguments_digest(&arguments));
         let Some(question) = current.question.filter(|question| {
@@ -779,6 +826,10 @@ impl TaskRunHost {
         }) else {
             return Ok(());
         };
+        // A question the host asked is spent where it is kept.
+        if let Some(tracker) = on_host {
+            return tracker.keep_question(self.workspace(), self.issue(), None);
+        }
         self.tracker_step(
             "settle-confirmation",
             &serde_json::json!({ "issue": issue_id(self.issue()), "id": question.id }),

@@ -522,3 +522,267 @@ async fn a_run_changes_a_record_as_its_task_agent_while_it_goes() {
         })
         .await;
 }
+
+/// The desk's sheet, as a test answers it: what it was asked, and what it took back.
+#[derive(Default)]
+struct Desk {
+    asked: Mutex<Vec<crate::app_actions::AppActionConsentRequest>>,
+    answers: Mutex<Vec<tokio::sync::oneshot::Sender<crate::app_actions::AppActionAnswer>>>,
+    withdrawn: Mutex<Vec<String>>,
+}
+
+impl crate::app_actions::AppActionConsentPrompter for Desk {
+    fn ask(
+        &self,
+        request: crate::app_actions::AppActionConsentRequest,
+    ) -> Option<tokio::sync::oneshot::Receiver<crate::app_actions::AppActionAnswer>> {
+        let (answer, answered) = tokio::sync::oneshot::channel();
+        self.asked.lock().unwrap().push(request);
+        self.answers.lock().unwrap().push(answer);
+        Some(answered)
+    }
+
+    fn withdraw(&self, handle: &str) {
+        self.withdrawn.lock().unwrap().push(handle.to_owned());
+    }
+}
+
+impl Desk {
+    /// The question the sheet shows next, once it is up.
+    async fn shown(&self, count: usize) -> crate::app_actions::AppActionConsentRequest {
+        for _ in 0..500 {
+            if let Some(asked) = self.asked.lock().unwrap().get(count.saturating_sub(1)) {
+                return asked.clone();
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        panic!("the sheet never asked");
+    }
+
+    /// The person answers the question up last with `consent`.
+    fn answer(&self, consent: crate::app_actions::AppActionConsent) {
+        let answer = self
+            .answers
+            .lock()
+            .unwrap()
+            .pop()
+            .expect("a question is up");
+        let _ = answer.send(crate::app_actions::AppActionAnswer::unedited(consent));
+    }
+}
+
+/// A door's run whose person asks first about Notes: the question goes to the desk's sheet.
+fn asking_on_the_desk(f: &Fixture, agent: &DoorAgent) -> Arc<Desk> {
+    use tilo_action_policy::agent_answers::{self, AnswerScope};
+    f.native
+        .asks_on_host
+        .store(true, std::sync::atomic::Ordering::SeqCst);
+    let desk = Arc::new(Desk::default());
+    f.state.set_app_action_consent(desk.clone());
+    put_grant(
+        f,
+        agent_answers::grant(
+            &workspace_id().to_string(),
+            &agent.delegation.agent_id,
+            (
+                &AnswerScope::app("so.tilo.notes"),
+                tilo_action_policy::ActionKind::Undoable,
+            ),
+            tilo_action_policy::Answer::Ask,
+            tilo_action_policy::Subject::person(hex::encode(f.native.certificate.user_public_key)),
+        ),
+    );
+    desk
+}
+
+/// The question the run holds now.
+fn question_on_run(f: &Fixture) -> Option<crate::services::TrackerQuestion> {
+    f.native
+        .runs
+        .lock()
+        .unwrap()
+        .iter()
+        .find(|run| run.issue == DOOR_ISSUE)
+        .and_then(|run| run.question.clone())
+}
+
+fn went_on(receipt: &tilo_actions::remote::InvocationReceipt) -> bool {
+    matches!(
+        receipt.status,
+        tilo_actions::remote::ReceiptStatus::Accepted
+            | tilo_actions::remote::ReceiptStatus::Completed { .. }
+    )
+}
+
+/// A step the door's run asks first about is put to its person on the desk's sheet, not on a
+/// Tasks issue: the connection is told it needs confirming, asks, waits while the sheet is up,
+/// and the person allowing it once lets exactly that step go on, as the run's.
+#[tokio::test(flavor = "current_thread")]
+async fn a_door_runs_question_is_asked_on_the_desk_and_allowed_once() {
+    tokio::task::LocalSet::new()
+        .run_until(async {
+            let f = Fixture::new();
+            let agent = admit(&f);
+            let desk = asking_on_the_desk(&f, &agent);
+            let (_target, stream) = notes_target(&f).await;
+            let host = f.state.task_run_host(&agent.presentation()).unwrap();
+            let caller = connection(&host);
+            let first = host
+                .invoke(&caller, append_request(71))
+                .await
+                .expect("answered")
+                .unwrap_err();
+            assert_eq!(
+                first,
+                tilo_actions::remote::ActionHostError::ConfirmationRequired
+            );
+            let asking = host.confirm(&caller, &append_request(71));
+            let shown = desk.shown(1).await;
+            assert!(
+                shown.handle.starts_with("run-question:"),
+                "{}",
+                shown.handle
+            );
+            assert!(shown.confirming && shown.scope.is_some(), "{shown:?}");
+            assert!(
+                matches!(
+                    question_on_run(&f).map(|question| question.answer),
+                    Some(crate::services::TrackerAnswer::Waiting)
+                ),
+                "the run holds its question while the person is asked"
+            );
+            desk.answer(crate::app_actions::AppActionConsent::Once);
+            let confirmed = asking.await.expect("answered").unwrap();
+            let mut again = append_request(71);
+            confirmed.apply(&mut again);
+            let receipt = host
+                .invoke(&caller, again)
+                .await
+                .expect("answered")
+                .unwrap();
+            assert!(went_on(&receipt), "{receipt:?}");
+            let wire = stream.next().await.unwrap();
+            assert_eq!(wire.actor, format!("agent:{}", agent.delegation.agent_id));
+            assert!(question_on_run(&f).is_none(), "the answer is spent");
+            let next = host
+                .invoke(&caller, append_request(72))
+                .await
+                .expect("answered")
+                .unwrap_err();
+            assert_eq!(
+                next,
+                tilo_actions::remote::ActionHostError::ConfirmationRequired,
+                "once is once"
+            );
+            drop(f);
+        })
+        .await;
+}
+
+/// The person denying it refuses the step, in the words a declined step is refused in, and
+/// nothing reaches the app.
+#[tokio::test(flavor = "current_thread")]
+async fn a_door_runs_question_the_person_denies_refuses_the_step() {
+    tokio::task::LocalSet::new()
+        .run_until(async {
+            let f = Fixture::new();
+            let agent = admit(&f);
+            let desk = asking_on_the_desk(&f, &agent);
+            let (_target, _stream) = notes_target(&f).await;
+            let host = f.state.task_run_host(&agent.presentation()).unwrap();
+            let caller = connection(&host);
+            let asking = host.confirm(&caller, &append_request(81));
+            desk.shown(1).await;
+            desk.answer(crate::app_actions::AppActionConsent::Deny);
+            let refused = asking.await.expect("answered").unwrap_err();
+            assert!(
+                matches!(&refused, tilo_actions::remote::ActionHostError::Refused { reason }
+                    if reason.contains(tilo_actions::draft::DECLINED)),
+                "{refused:?}"
+            );
+            assert!(question_on_run(&f).is_none(), "nothing is left asked");
+            assert_eq!(unread_invocations(200), 0, "nothing reached the app");
+            drop(f);
+        })
+        .await;
+}
+
+/// "Always" for the agent covers its next such step: it goes on without asking again, for as
+/// long as the run goes.
+#[tokio::test(flavor = "current_thread")]
+async fn always_allowing_a_door_runs_question_covers_its_next_step() {
+    tokio::task::LocalSet::new()
+        .run_until(async {
+            let f = Fixture::new();
+            let agent = admit(&f);
+            let desk = asking_on_the_desk(&f, &agent);
+            let (_target, stream) = notes_target(&f).await;
+            let host = f.state.task_run_host(&agent.presentation()).unwrap();
+            let caller = connection(&host);
+            let asking = host.confirm(&caller, &append_request(91));
+            desk.shown(1).await;
+            desk.answer(crate::app_actions::AppActionConsent::Always);
+            let confirmed = asking.await.expect("answered").unwrap();
+            let mut again = append_request(91);
+            confirmed.apply(&mut again);
+            let receipt = host
+                .invoke(&caller, again)
+                .await
+                .expect("answered")
+                .unwrap();
+            assert!(went_on(&receipt), "{receipt:?}");
+            stream.next().await.unwrap();
+            let next = host
+                .invoke(&caller, append_request(92))
+                .await
+                .expect("answered")
+                .unwrap();
+            assert!(went_on(&next), "the next step is not asked about: {next:?}");
+            stream.next().await.unwrap();
+            assert_eq!(desk.asked.lock().unwrap().len(), 1, "asked once");
+            drop(f);
+        })
+        .await;
+}
+
+/// A question nobody answers does not hold the agent forever: the connection leaving takes the
+/// sheet down and the question off the run, and so does the run ending, which the agent hears.
+#[tokio::test(flavor = "current_thread")]
+async fn a_door_runs_question_is_withdrawn_when_its_agent_leaves_or_its_run_ends() {
+    tokio::task::LocalSet::new()
+        .run_until(async {
+            let f = Fixture::new();
+            let agent = admit(&f);
+            let desk = asking_on_the_desk(&f, &agent);
+            let (_target, _stream) = notes_target(&f).await;
+            let host = f.state.task_run_host(&agent.presentation()).unwrap();
+            let caller = connection(&host);
+            let asking = host.confirm(&caller, &append_request(101));
+            let shown = desk.shown(1).await;
+            drop(asking);
+            for _ in 0..500 {
+                if !desk.withdrawn.lock().unwrap().is_empty() {
+                    break;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+            assert_eq!(*desk.withdrawn.lock().unwrap(), [shown.handle]);
+            assert!(question_on_run(&f).is_none(), "the question left the run");
+
+            let asking = host.confirm(&caller, &append_request(102));
+            desk.shown(2).await;
+            for run in f.native.runs.lock().unwrap().iter_mut() {
+                run.active = false;
+            }
+            f.state.refresh_native_task_delivery();
+            let refused = asking.await.expect("answered").unwrap_err();
+            assert!(
+                matches!(&refused, tilo_actions::remote::ActionHostError::Refused { reason }
+                    if reason.contains("withdrawn")),
+                "{refused:?}"
+            );
+            assert_eq!(desk.withdrawn.lock().unwrap().len(), 2);
+            drop(f);
+        })
+        .await;
+}

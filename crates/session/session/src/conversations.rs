@@ -197,7 +197,7 @@ impl TrackerRuns for Runs {
     /// connection's agent is admitted while its connection holds its run, under the delegation
     /// that run carries.
     fn check_agent(&self, workspace: &str, run: &TrackerRun) -> Result<(), String> {
-        if let Some(door) = self.doors.find(workspace, &run.issue, &run.agent) {
+        if let Some((door, _)) = self.doors.find(workspace, &run.issue, &run.agent) {
             return if door.delegation == run.delegation {
                 Ok(())
             } else {
@@ -227,9 +227,15 @@ impl TrackerRuns for Runs {
             .as_ref()
             .ok_or("this workspace's grants are not at hand")?;
         // A door connection's run has no message for a cause: the person admitting it is, and it
-        // acts on their live grants capped at an agent's.
-        if let Some(door) = self.doors.find(workspace, &run.issue, &run.agent) {
-            return requirement.check_tracker_policy(policy, workspace, &door, None, wall());
+        // acts on their live grants capped at an agent's, and on what they answered it "always"
+        // for while it goes.
+        if let Some((door, answers)) = self.doors.find(workspace, &run.issue, &run.agent) {
+            if answers.is_empty() {
+                return requirement.check_tracker_policy(policy, workspace, &door, None, wall());
+            }
+            let mut answered = policy.clone();
+            answered.grants.extend(answers);
+            return requirement.check_tracker_policy(&answered, workspace, &door, None, wall());
         }
         let entry = facts
             .turns
@@ -237,6 +243,34 @@ impl TrackerRuns for Runs {
             .find(|entry| entry.run.issue == run.issue && entry.run.agent == run.agent)
             .ok_or("the turn this op answers is no longer going")?;
         requirement.check_tracker_policy(policy, workspace, &entry.run, Some(&entry.looked), wall())
+    }
+
+    /// A door connection's run asks its person on this desk's sheet: no issue holds it. A turn's
+    /// questions are its conversation's.
+    fn asks_on_host(&self, workspace: &str, run: &TrackerRun) -> bool {
+        self.doors.find(workspace, &run.issue, &run.agent).is_some()
+    }
+
+    fn keep_question(
+        &self,
+        workspace: &str,
+        issue: &str,
+        question: Option<tilo_action_broker::services::TrackerQuestion>,
+    ) -> Result<(), String> {
+        self.doors.keep_question(workspace, issue, question)
+    }
+
+    fn keep_answer(
+        &self,
+        workspace: &str,
+        issue: &str,
+        grant: tilo_action_policy::Grant,
+    ) -> Result<(), String> {
+        self.doors.keep_answer(workspace, issue, grant)
+    }
+
+    fn kept_answers(&self, workspace: &str, issue: &str) -> Vec<tilo_action_policy::Grant> {
+        self.doors.answers(workspace, issue)
     }
 
     /// What a run spent, as its agent reported it: charged to the agent's day by the pass, and only

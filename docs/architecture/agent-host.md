@@ -117,7 +117,12 @@ Claude Code on A --stdio--> tilo-runtime-mcp --connect --device B
    and everything the agent changes is a step of that run, decided by the
    person's live grants capped at an agent's
    (`crates/session/session/src/door_runs.rs`). The run ends with the
-   connection. Its id names the device it came from
+   connection. A step the person's grants ask first about is put to them on
+   B's sheet, naming the agent as B's desk seats it: Allow once, Always allow
+   the agent (for as long as its run goes), or Deny
+   (`crates/session/session/src/run_questions.rs`). The agent waits while the
+   sheet is up; it leaving, its run ending or the person dismissing the sheet
+   withdraws the question, and the agent is told why. Its id names the device it came from
    (`claude-code@studio-laptop-3f2a9c1b`), so what it does is told apart from
    the same client on B and from another device's, and its seat on B's bar
    carries that name; the person's Stop there ends the connection on A too.

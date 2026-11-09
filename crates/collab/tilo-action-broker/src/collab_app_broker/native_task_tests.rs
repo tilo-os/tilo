@@ -51,6 +51,11 @@ struct Native {
     /// The owner is still opening, as a session's is at its start: health
     /// says so until it is open.
     opening: std::sync::atomic::AtomicBool,
+    /// The runs ask their person on the host, and keep their questions
+    /// here, as an agent door connection's do.
+    asks_on_host: std::sync::atomic::AtomicBool,
+    /// What the person answered a run "always" for, kept beside it.
+    host_answers: Mutex<Vec<tilo_action_policy::Grant>>,
 }
 
 /// The issue the fixture's agent runs.
@@ -278,19 +283,47 @@ impl TrackerRuns for Native {
                 .turn
                 .as_ref()
                 .and_then(|turn| self.looked.lock().unwrap().get(&turn.message).cloned());
-            requirement.check_tracker_policy(
-                &tilo_desktop_model::projection::workspace_policy_of(
-                    view.peer()
-                        .admitted_workspace()
-                        .ok_or("native document unavailable")?,
-                    requested,
-                ),
+            let mut policy = tilo_desktop_model::projection::workspace_policy_of(
+                view.peer()
+                    .admitted_workspace()
+                    .ok_or("native document unavailable")?,
                 requested,
-                run,
-                looked.as_ref(),
-                now,
-            )
+            );
+            policy
+                .grants
+                .extend(self.host_answers.lock().unwrap().iter().cloned());
+            requirement.check_tracker_policy(&policy, requested, run, looked.as_ref(), now)
         })
+    }
+    fn asks_on_host(&self, _requested: &str, _run: &TrackerRun) -> bool {
+        self.asks_on_host.load(std::sync::atomic::Ordering::SeqCst)
+    }
+    fn keep_question(
+        &self,
+        _requested: &str,
+        issue: &str,
+        question: Option<crate::services::TrackerQuestion>,
+    ) -> Result<(), String> {
+        self.runs
+            .lock()
+            .unwrap()
+            .iter_mut()
+            .find(|run| run.issue == issue)
+            .ok_or("no such run")?
+            .question = question;
+        Ok(())
+    }
+    fn keep_answer(
+        &self,
+        _requested: &str,
+        _issue: &str,
+        grant: tilo_action_policy::Grant,
+    ) -> Result<(), String> {
+        self.host_answers.lock().unwrap().push(grant);
+        Ok(())
+    }
+    fn kept_answers(&self, _requested: &str, _issue: &str) -> Vec<tilo_action_policy::Grant> {
+        self.host_answers.lock().unwrap().clone()
     }
 }
 struct Fixture {
@@ -371,6 +404,8 @@ impl Fixture {
             granted: Mutex::new(None),
             receipts_refused: std::sync::atomic::AtomicBool::new(false),
             opening: std::sync::atomic::AtomicBool::new(false),
+            asks_on_host: std::sync::atomic::AtomicBool::new(false),
+            host_answers: Mutex::new(Vec::new()),
         });
         let membership = OwnerCommitRequest {
             workspace: workspace_id().to_string(),
