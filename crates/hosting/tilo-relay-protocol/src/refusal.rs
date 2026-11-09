@@ -13,6 +13,11 @@ pub const TOO_MUCH_CONTENT: &str = "too much content this hour";
 pub const PLAIN_TOO_FAST: &str = "You're sending too fast; slow down a moment.";
 /// The hourly content budget refused it.
 pub const PLAIN_TOO_MUCH: &str = "You've shared too much this hour; try again later.";
+/// A person's own workspace keeps as much as the host keeps for them.
+pub const PLAIN_FULL: &str = "Your workspace is full, so this change wasn't kept.";
+/// What a full workspace's refusal (the host account's typed refusal, as
+/// JSON) carries.
+const FULL: &str = "\"storage_full\"";
 /// The workspace's grants or its app's surface do not allow the change.
 pub const PLAIN_NOT_ALLOWED: &str = "This workspace doesn't allow that.";
 /// The person is no longer a member, or this device no longer counts as one.
@@ -65,6 +70,9 @@ pub fn plain_reason(raw: &str) -> &'static str {
     if raw == TOO_MUCH_CONTENT {
         return PLAIN_TOO_MUCH;
     }
+    if raw.contains(FULL) {
+        return PLAIN_FULL;
+    }
     let has = |needles: &[&str]| needles.iter().any(|needle| raw.contains(needle));
     if has(NOT_A_MEMBER) {
         PLAIN_NOT_A_MEMBER
@@ -86,6 +94,12 @@ mod tests {
     fn budgets_read_as_what_to_do() {
         assert_eq!(plain_reason(TOO_MANY_CHANGES), PLAIN_TOO_FAST);
         assert_eq!(plain_reason(TOO_MUCH_CONTENT), PLAIN_TOO_MUCH);
+        assert_eq!(
+            plain_reason(
+                r#"{"reason":{"storage_full":{"limit_bytes":1,"used_bytes":2}},"message":"m","next":[]}"#
+            ),
+            PLAIN_FULL
+        );
     }
 
     #[test]

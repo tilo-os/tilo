@@ -421,6 +421,11 @@ pub(super) async fn handle_delta(
         tracing::warn!(%limited, device = %hex::encode(peer.device_public_key), "refused a change over the member limit");
         return Ok(None);
     }
+    if let Some(full) = super::over_storage(peer, session, &ws).await {
+        // Neither kept nor forwarded, as above.
+        tracing::warn!(%full, device = %hex::encode(peer.device_public_key), "refused a change to a full workspace");
+        return Ok(None);
+    }
     // A page asks a record's channel for access on a plane of its own, and is
     // refused there by name.
     let op = crate::peer::admission::plane_of(&env);

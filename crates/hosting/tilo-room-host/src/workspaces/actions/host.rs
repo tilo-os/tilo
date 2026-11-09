@@ -3,7 +3,9 @@
 //! (provider [`HOST_ACTIONS_PROVIDER`]).
 //!
 //! No workspace decides them: they are the relay's person's alone
-//! ([`HostOperation`]), and [`Workspaces::authorize`] says so for every door.
+//! ([`HostOperation`]), and [`Workspaces::authorize`] says so for every door,
+//! but for making a person's own workspace, which a host that keeps them
+//! offers anyone ([`CREATE_OWN_ROOM`]).
 //! The catalogue asks the same decision, so a device of anyone else is
 //! offered nothing, and invoking one is the same `UnknownAction` as invoking
 //! one that does not exist. The device is the one whose certificate the
@@ -20,9 +22,9 @@ use tilo_actions::remote::{ActionHostError, CatalogueRow, InvokeRequest};
 use tilo_actions::{ActionKind, ActionParam, ParamType};
 use tilo_peer_state::join::MemberRole;
 use tilo_relay_session::workspaces::{
-    ATTACH_HOST, ActionInvitation, CREATE_ROOM, CreatedWorkspace, DETACH_HOST, ENTER_ROOM,
-    EnteredWorkspace, HOST_ACTIONS_PROVIDER, HOST_ROOM, HOST_ROOMS_RESOURCE, HostedWorkspace,
-    LIST_REVOCATIONS, LIST_ROOMS, UNHOST_ROOM, WorkspaceListing,
+    ATTACH_HOST, ActionInvitation, CREATE_OWN_ROOM, CREATE_ROOM, CreatedWorkspace, DETACH_HOST,
+    ENTER_ROOM, EnteredWorkspace, HOST_ACTIONS_PROVIDER, HOST_ROOM, HOST_ROOMS_RESOURCE,
+    HostedWorkspace, LIST_REVOCATIONS, LIST_ROOMS, UNHOST_ROOM, WorkspaceListing,
 };
 use tilo_user_identity::DeviceCert;
 
@@ -43,13 +45,15 @@ pub(super) const HOST: Publisher = Publisher {
 /// What the host's workspaces resource is called.
 const LABEL: &str = "Workspaces";
 
-/// How long the invitation a device entering a workspace redeems stays
-/// redeemable when it does not say.
+/// How long the invitation a device entering a workspace, or its person's
+/// own, redeems stays redeemable when it does not say.
 const OWN_INVITATION_SECONDS: u64 = 600;
+/// What a person's own workspace is called when they do not say.
+const OWN_WORKSPACE_NAME: &str = "My workspace";
 
 /// The host's operations in catalogue order, each with the
 /// [`HostOperation`] it is.
-const HOST_VERBS: [(Verb, HostOperation); 8] = [
+const HOST_VERBS: [(Verb, HostOperation); 9] = [
     (
         Verb {
             id: CREATE_ROOM,
@@ -59,6 +63,16 @@ const HOST_VERBS: [(Verb, HostOperation); 8] = [
             params: create_params,
         },
         HostOperation::CreateWorkspace,
+    ),
+    (
+        Verb {
+            id: CREATE_OWN_ROOM,
+            label: "Create your own workspace",
+            gate: CREATE_OWN_ROOM,
+            kind: roles::GOVERNANCE_KIND,
+            params: create_own_params,
+        },
+        HostOperation::CreateOwnWorkspace,
     ),
     (
         Verb {
@@ -241,6 +255,26 @@ fn create_params() -> Vec<ActionParam> {
     ]
 }
 
+fn create_own_params() -> Vec<ActionParam> {
+    vec![
+        ActionParam::optional(
+            "name",
+            ParamType::Text,
+            "The workspace's name, 1 to 80 printable characters: \"My workspace\" when omitted. Unused once you have one.",
+        ),
+        ActionParam::optional(
+            "room",
+            ParamType::Text,
+            "The workspace it is, when one of yours moves here (a UUID). A new workspace when omitted.",
+        ),
+        ActionParam::optional(
+            "expires_in_seconds",
+            ParamType::Integer,
+            "How long the invitation your devices redeem to hold the workspace stays redeemable: 600 seconds when omitted.",
+        ),
+    ]
+}
+
 fn enter_params() -> Vec<ActionParam> {
     vec![
         ActionParam::required(
@@ -336,6 +370,11 @@ impl Workspaces {
                 self.authorize(device, None, WorkspaceOp::Host(operation), now)
                     .map_err(|error| refused(&error))?;
                 self.create_invoke(device, &args, request_id, now).await
+            }
+            HostOperation::CreateOwnWorkspace => {
+                self.authorize(device, None, WorkspaceOp::Host(operation), now)
+                    .map_err(|error| refused(&error))?;
+                self.create_own_invoke(device, &args, request_id, now).await
             }
             HostOperation::ListWorkspaces => {
                 self.authorize(device, None, WorkspaceOp::Host(operation), now)
@@ -443,6 +482,69 @@ impl Workspaces {
         })
     }
 
+    /// Make or find the workspace of `device`'s person's own, already
+    /// permitted to, and invite the person into it.
+    async fn create_own_invoke(
+        &self,
+        device: &DeviceCert,
+        args: &Args,
+        request_id: [u8; 32],
+        now: u64,
+    ) -> Result<Value, ActionHostError> {
+        let own = self.own().ok_or(ActionHostError::UnknownAction)?;
+        let person = device.user_public_key;
+        let moving = args.text("room")?;
+        let seconds = args
+            .integer("expires_in_seconds")?
+            .unwrap_or(OWN_INVITATION_SECONDS);
+        let making = own.making.lock().await;
+        let summary = if let Some(existing) = own.of(&person) {
+            if moving.is_some_and(|moving| moving != existing) {
+                return Err(ActionHostError::Refused {
+                    reason: Self::second_own_refusal(&existing).to_reason(),
+                });
+            }
+            self.list()
+                .await
+                .into_iter()
+                .find(|summary| summary.workspace == existing)
+                .ok_or_else(|| refused(&"your workspace here is gone"))?
+        } else {
+            let name = args.text("name")?.unwrap_or(OWN_WORKSPACE_NAME);
+            let summary = self
+                .create_workspace(name, moving)
+                .await
+                .map_err(|error| refused(&error))?;
+            own.record(&person, &summary.workspace)
+                .map_err(|error| refused(&error))?;
+            summary
+        };
+        drop(making);
+        // A person admitted before (another of their devices joined) is
+        // made its administrator now; one joining with the invitation is
+        // as they are admitted.
+        self.administer_own(&summary.workspace, person, now)
+            .await
+            .map_err(|error| refused(&error))?;
+        let terms = IssueInvitationRequest {
+            request_id,
+            role: MemberRole::Editor,
+            recipient_user_public_key: Some(person),
+            invitee_name: None,
+            expires_at_ns: expiry(now, seconds),
+            inviter_name: None,
+        };
+        // The workspace's governor, the host, invites its person.
+        let issued = self
+            .issue(&summary.workspace, &self.inner.host.cert, terms)
+            .await
+            .map_err(|error| refused(&error))?;
+        answer(&CreatedWorkspace {
+            workspace: listing(&summary),
+            invitation: Some(ActionInvitation::of(&issued)),
+        })
+    }
+
     /// The host operations that have one host of the person serve a workspace
     /// another governs ([`crate::hosted`]), already permitted to `device`.
     async fn serving_invoke(
@@ -521,5 +623,7 @@ impl Workspaces {
     }
 }
 
+#[cfg(test)]
+mod own_tests;
 #[cfg(test)]
 mod tests;

@@ -9,7 +9,8 @@
 //!    it joins workspaces through its delegation).
 //! 2. A device of the relay's own person administers every workspace here. That
 //!    person is the host's, so what no workspace decides ([`HostOperation`]) is
-//!    theirs alone.
+//!    theirs alone, but for making a person's own workspace, which a host
+//!    that keeps them does for anyone.
 //! 3. Any other device administers a workspace as far as the workspace's governance
 //!    lets its person: the governance action, invitation or change is
 //!    checked against the workspace's policy, read under the workspace's lock so a
@@ -140,6 +141,11 @@ impl Workspaces {
         tilo_user_identity::verify_device_cert_at(device, now)
             .map_err(|error| CollaborationError::new(error.to_string()))?;
         if let WorkspaceOp::Host(operation) = op {
+            if operation == HostOperation::CreateOwnWorkspace && self.own().is_none() {
+                return Err(CollaborationError::new(
+                    "this host keeps no workspaces of people's own",
+                ));
+            }
             return if operation.permits(&host, device) {
                 Ok(hex::encode(host))
             } else {

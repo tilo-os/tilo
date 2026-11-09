@@ -53,7 +53,8 @@ use tilo_actions::remote::{
     ActionHost, ActionHostError, Caller, CallerPrincipal, CataloguePage, CatalogueProvider,
     CatalogueQuery, CatalogueResource, CatalogueRow, InvocationLedger, InvocationReceipt,
     InvocationState, InvokeArgument, InvokeRequest, Pending, RemoteActionMessage,
-    WORKSPACE_GOVERNANCE_KIND, WORKSPACE_GOVERNANCE_PROVIDER, workspace_governance_resource,
+    WORKSPACE_GOVERNANCE_KIND, WORKSPACE_GOVERNANCE_PROVIDER, host_account,
+    workspace_governance_resource,
 };
 use tilo_actions::{
     ActionAddress, ActionContract, ActionDescriptor, ActionKind, ActionOutput, ActionParam,
@@ -941,6 +942,21 @@ impl Workspaces {
                     .ok_or(ActionHostError::UnknownAction)?;
                 self.host_invoke(certificate, request).await
             }
+            (host_account::PROVIDER, _)
+                if request.target == host_account::target(host_account::ACCOUNT) =>
+            {
+                // The person's own account, read by their own device.
+                let person = caller
+                    .user_public_key()
+                    .filter(|_| speaks_for_themselves(caller))
+                    .ok_or(ActionHostError::UnknownAction)?;
+                let account = self
+                    .own_account(person)
+                    .ok_or(ActionHostError::UnknownAction)?;
+                serde_json::to_value(account).map_err(|error| ActionHostError::Refused {
+                    reason: error.to_string(),
+                })
+            }
             _ => Err(ActionHostError::UnknownAction),
         }
     }
@@ -1372,6 +1388,17 @@ impl HostWorkspaceActions {
         self.shared.ledger.lock_recover()
     }
 
+    /// Whether `target` is the account read of a host that keeps workspaces
+    /// of people's own, which it answers itself.
+    fn answers_own_account(&self, target: &tilo_actions::remote::RemoteActionTarget) -> bool {
+        *target == host_account::target(host_account::ACCOUNT)
+            && self
+                .shared
+                .workspaces
+                .get()
+                .is_some_and(|workspaces| workspaces.own().is_some())
+    }
+
     /// Whether `caller` started invocation `id` here.
     fn admitted(&self, caller: &Caller, id: &InvocationId) -> bool {
         self.ledger().get(caller, id).is_some()
@@ -1532,6 +1559,7 @@ impl GovernedPlane {
             }
             RemoteActionMessage::Invoke(request) => {
                 PROVIDERS.contains(&request.target.provider.as_str())
+                    || self.governance.answers_own_account(&request.target)
             }
             RemoteActionMessage::Observe { invocation, .. }
             | RemoteActionMessage::Cancel { invocation } => {

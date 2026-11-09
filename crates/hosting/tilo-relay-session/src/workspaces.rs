@@ -75,6 +75,16 @@ pub const HOST_ROOMS_RESOURCE: &str = "host.rooms";
 /// invitation when one is wanted (`invite_role`, `invite_recipient`,
 /// `invitee_name`, `invite_expires_in_seconds`). Answers a [`CreatedWorkspace`].
 pub const CREATE_ROOM: &str = "room.create";
+/// Make the one workspace of the caller's own person on a host that keeps
+/// workspaces of people's own, or answer theirs again: any person's device
+/// may ask. Arguments: `name` (the new workspace's; "My workspace" when
+/// omitted, unused once they have one), `room` (the identity of a workspace
+/// that moves here as theirs; a different one than theirs is refused with a
+/// `tilo_actions::remote::host_account::Refusal`), and `expires_in_seconds`
+/// (how long the invitation stays redeemable; 600 when omitted). Answers a
+/// [`CreatedWorkspace`] with the invitation the person's devices redeem to
+/// hold it, as its administrator.
+pub const CREATE_OWN_ROOM: &str = "room.create-own";
 /// Every workspace the host governs, each as a [`WorkspaceListing`].
 pub const LIST_ROOMS: &str = "room.list";
 /// Admit the calling device to `workspace` as one of its owner's. Answers

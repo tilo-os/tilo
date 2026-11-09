@@ -50,11 +50,13 @@ mod hard_stop_tests;
 pub(crate) use desktop_writes::writes_desktop;
 mod hosts;
 mod listing;
+mod own;
 mod pages;
 mod peer_parts;
 mod publisher;
 mod record_format;
 mod revocations;
+pub use own::OwnWorkspaceOffer;
 #[cfg(any(feature = "agents", feature = "web"))]
 pub(crate) mod sealed_records;
 pub use device_keys::{
@@ -894,6 +896,9 @@ struct WorkspacesInner {
     /// Where invitations to mail to wait-list addresses go, once whoever
     /// runs the relay sends mail ([`Workspaces::mail_wait_list`]).
     wait_list_mail: std::sync::OnceLock<(String, tokio::sync::mpsc::UnboundedSender<WaitListMail>)>,
+    /// The workspaces of people's own, once the host's operator offers them
+    /// ([`Workspaces::offer_own_workspaces`]).
+    own: std::sync::OnceLock<own::OwnWorkspaces>,
 }
 
 /// Notices one workspace hands its channel service at once; a device asks
@@ -1098,6 +1103,7 @@ impl Workspaces {
                 hosting: crate::hosted::Hosting::new(host.clone()),
                 host,
                 wait_list_mail: std::sync::OnceLock::new(),
+                own: std::sync::OnceLock::new(),
             }),
         };
         let device = this.device_keys();

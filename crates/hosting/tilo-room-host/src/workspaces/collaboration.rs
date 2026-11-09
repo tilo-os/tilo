@@ -1145,8 +1145,69 @@ impl Workspaces {
             // Someone invited from the wait list is in now: their entry
             // leaves it.
             workspace.forget_joined_wait_list();
+            // The person whose own workspace this is administers it from
+            // their first device on.
+            let owner = self
+                .own()
+                .and_then(|own| own.owner_of(workspace.workspace()))
+                .filter(|owner| {
+                    joins
+                        .iter()
+                        .any(|join| join.redemption.certificate().user_public_key == *owner)
+                });
+            if let Some(owner) = owner {
+                self.make_administrator(workspace, owner, now).await?;
+            }
         }
         admitted
+    }
+
+    /// Make `person`, admitted to the workspace of their own `workspace`, its
+    /// administrator; nothing while they have no device there.
+    pub(super) async fn administer_own(
+        &self,
+        workspace: &str,
+        person: [u8; 32],
+        now: u64,
+    ) -> Result<(), CollaborationError> {
+        let held = self.workspace(workspace).await?;
+        let mut held = held.lock().await;
+        let members = held
+            .peer()
+            .governance()
+            .governed_members(system_time(now))
+            .map_err(CollaborationError::new)?;
+        if members
+            .iter()
+            .any(|member| member.user_public_key == person)
+        {
+            self.make_administrator(&mut held, person, now).await?;
+        }
+        drop(held);
+        Ok(())
+    }
+
+    /// Make the admitted `person` an administrator of `workspace`, held: an
+    /// Editor with every governance and moderation action. Writes nothing
+    /// when they are one.
+    async fn make_administrator(
+        &self,
+        workspace: &mut GovernedWorkspace,
+        person: [u8; 32],
+        now: u64,
+    ) -> Result<(), CollaborationError> {
+        let key = &self.inner.host.key;
+        let mut candidate = workspace.peer().clone();
+        if !candidate
+            .governance_mut()
+            .set_member_administrator(person, key, system_time(now))?
+        {
+            return Ok(());
+        }
+        let state = workspace.collaboration().clone();
+        workspace.commit(candidate, key, system_time(now), |_, _| Ok(state))?;
+        self.settle(workspace).await?;
+        Ok(())
     }
 }
 
