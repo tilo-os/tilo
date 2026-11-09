@@ -556,8 +556,23 @@ const listingLines = text => text.split('\n').map(line => line.trim())
 const listingRows = text => listingLines(text).filter(line => /\S {2,}\S/.test(line));
 /** Every `path#action` an answer names. */
 const actionPaths = text => [...new Set(text.match(/[\w.-][\w .\/-]*#[\w-]+/g) ?? [])];
+/** The actions an answer lists under a path, as `#name(params)  What it does`:
+ * the form an app's own listing uses for what the path publishes. */
+const actionRows = text => [...text.matchAll(/^#([\w-]+)(?:\(([^)]*)\))?[ \t]*(.*)$/gm)].map(([, name, params = '', label = '']) =>
+  ({name, label, params: params.split(',').map(param => param.trim().split(':')[0]).filter(Boolean)}));
+/** The resources an answer lists, by the name a path takes: a row is
+ * `Notebook  notes.notebook  [26 actions]`, and the app's own head row
+ * (`notes  (so.tilo.notes)`) names no resource. */
+const resourceNames = text => text.split('\n').map(line => line.trim())
+  .filter(line => line && !line.startsWith('#'))
+  .map(line => line.split(/\s{2,}/))
+  .filter(columns => columns.length >= 2 && !columns[1].startsWith('('))
+  .map(columns => columns[0].replace(/\/$/, ''));
 const firstAction = (text, wanted, unwanted = /delete|remove|clear|reset/i) =>
   actionPaths(text).find(path => wanted.test(path) && !unwanted.test(path));
+/** How a tool's answer reads: an action still running (past the tool's wait,
+ * or waiting for the person to confirm it) is `pending`, not `ok`. */
+const verdict = answer => answer.failed ? 'failed' : /^pending\b/i.test(answer.text) ? 'pending' : 'ok';
 
 /**
  * What the agent does next, discovered from the workspace as an agent would:
@@ -568,50 +583,99 @@ const firstAction = (text, wanted, unwanted = /delete|remove|clear|reset/i) =>
 async function planActions(agent, apps) {
   const ask = async (tool, args) => {
     const answer = await agent.call(tool, args);
-    log(`agent ${tool} ${JSON.stringify(args)} -> ${answer.failed ? 'failed' : 'ok'} ${answer.text.slice(0, 600)}`);
+    log(`agent ${tool} ${JSON.stringify(args)} -> ${verdict(answer)} ${answer.text.slice(0, 600)}`);
     return answer;
   };
   const steps = [];
   const app = pattern => apps.find(name => pattern.test(name));
-  const ACTION = /#([\w-]+)\s*$/;
+  /** The action to write with, as the note publishes it: the app's own name
+   * for it, so the call takes the path and action the listing gave. */
+  const writing = rows => rows.find(row => /^(append|write|insert|add-text|set-text|insert-text|edit)/.test(row.name));
+  /** The actions `path` publishes, asked where they are published: an app's
+   * actions live on the resource it names, and a listing above mixes both. */
+  const actionsOf = async path => actionRows((await ask('tilo_ls', {path, kind: 'actions'})).text);
   // The desktop's own service answers without an app: asking the person's
   // page what it shows is an action like any other, and the first one an
-  // agent does here.
+  // agent does here (a host that draws no desk has none to list).
   const desktop = await ask('tilo_ls', {path: 'desktop'});
-  const windows = firstAction(desktop.text, /#(list-windows|windows)/i) ?? 'desktop#list-windows';
-  steps.push({label: 'listing the windows on the person\'s screen', tool: 'tilo_do', args: {path: windows}});
+  if (!desktop.failed) {
+    const windows = firstAction(desktop.text, /#(list-windows|windows)/i) ?? 'desktop#list-windows';
+    steps.push({label: 'listing the windows on the person\'s screen', tool: 'tilo_do', args: {path: windows}});
+  }
   const notes = app(/^notes/i);
+  let note = null;
   if (notes) {
-    // The note the person has open: the app's own listing names it, and the
-    // agent picks the first, as a person reading the list would.
-    const listed = await ask('tilo_ls', {path: notes});
-    let note = (listingRows(listed.text)[0] ?? '').split(/\s{2,}|\s#/)[0].trim();
-    if (note && !note.includes('/')) note = `${notes}/${note}`;
+    // The note to write in: the app's listing names its notebooks, a
+    // notebook's names its pages — the agent reads down them as a person
+    // reading the app's sidebar would, and writes where the deepest one is.
+    let listed = await ask('tilo_ls', {path: notes});
+    let notebooks = resourceNames(listed.text);
+    if (notebooks.length === 0) {
+      // A Notes app with nothing in it yet: the agent makes the notebook
+      // with the app's own action, as a person pressing "New note" would.
+      const make = (await actionsOf(notes)).find(row => /^(new-note|new|create)/.test(row.name));
+      if (make) {
+        const made = await ask('tilo_do', {path: `${notes}#${make.name}`, args: {title: 'Launch notes'}});
+        log('agent: made a notebook', verdict(made), made.text.slice(0, 300));
+        listed = await ask('tilo_ls', {path: notes});
+        notebooks = resourceNames(listed.text);
+      }
+    }
+    const notebook = notebooks[0];
+    if (notebook) {
+      const path = `${notes}/${notebook}`;
+      // The note it writes in: the one it made, else the notebook's first,
+      // else one it makes now — the notebook's own "new-note".
+      let pages = resourceNames((await ask('tilo_ls', {path})).text);
+      if (pages.length === 0) {
+        const make = (await actionsOf(path)).find(row => /^(new-note|new-child|create-page|new)/.test(row.name));
+        if (make) {
+          const made = await ask('tilo_do', {path: `${path}#${make.name}`, args: {title: 'Launch notes'}});
+          log('agent: made a note', verdict(made), made.text.slice(0, 300));
+          pages = resourceNames((await ask('tilo_ls', {path})).text);
+        }
+      }
+      note = pages.length ? `${path}/${pages[0]}` : path;
+    }
     if (note) {
-      const noteActions = await ask('tilo_ls', {path: note, kind: 'actions'});
-      const write = (firstAction(noteActions.text, /#(append|write|insert|add-text|set-text|insert-text|type|edit)/i)
-        ?? `${note}#append-paragraph`).match(ACTION)?.[1] ?? 'append-paragraph';
-      // One invocation writing three paragraphs: the person following sees
-      // the text land line by line, which is what `following-mid-edit` catches.
-      steps.push({label: 'writing in the note', tool: 'tilo_do', args: {calls: [
-        {path: `${note}#${write}`, args: {text: 'Launch notes, from Claude Code.'}},
-        {path: `${note}#${write}`, args: {text: 'Each line lands in the workspace as I write it.'}},
-        {path: `${note}#${write}`, args: {text: 'Following me puts this window in front of you.'}},
-      ]}});
-      steps.push({label: 'writing the next paragraph', tool: 'tilo_do',
-        args: {path: `${note}#${write}`, args: {text: 'A second invocation, a moment later.'}}});
-      steps.push({label: 'reading the note back', tool: 'tilo_read', args: {path: note}});
+      const noteActions = await actionsOf(note);
+      // The action's path as the app publishes it: the write goes where the
+      // app says it lives, not where a guess would.
+      const write = writing(noteActions);
+      if (write) {
+        // One invocation writing three paragraphs: the person following sees
+        // the text land line by line, which is what `following-mid-edit` catches.
+        steps.push({label: 'writing in the note', tool: 'tilo_do', args: {calls: [
+          {path: `${note}#${write.name}`, args: {text: 'Launch notes, from Claude Code.'}},
+          {path: `${note}#${write.name}`, args: {text: 'Each line lands in the workspace as I write it.'}},
+          {path: `${note}#${write.name}`, args: {text: 'Following me puts this window in front of you.'}},
+        ]}});
+        steps.push({label: 'writing the next paragraph', tool: 'tilo_do',
+          args: {path: `${note}#${write.name}`, args: {text: 'A second invocation, a moment later.'}}});
+        steps.push({label: 'reading the note back', tool: 'tilo_read', args: {path: note}});
+      } else {
+        log('agent: the note publishes no action to write with', noteActions.map(row => row.name).join(' '));
+      }
     } else {
-      log('agent: the Notes app lists no note to write in');
+      log('agent: the Notes app offers no note to write in', listed.text.slice(0, 300));
     }
   }
   const terminal = app(/^terminal/i) ?? app(/^ush/i);
   if (terminal) {
-    const listed = await ask('tilo_ls', {path: terminal});
-    const run = firstAction(listed.text, /#(run|exec|command|type|send)/i);
+    // Where the Terminal publishes `run`: on the session it names, or on the
+    // app when the session is the app's own record.
+    const sessions = resourceNames((await ask('tilo_ls', {path: terminal})).text);
+    const places = [sessions[0] ? `${terminal}/${sessions[0]}` : null, terminal].filter(Boolean);
+    let run = null;
+    for (const place of places) {
+      const row = (await actionsOf(place)).find(candidate => /^(run|exec|command|send)$/.test(candidate.name));
+      if (row) { run = `${place}#${row.name}`; break; }
+    }
     if (run) {
       steps.push({label: 'running a command in the Terminal', tool: 'tilo_do',
         args: {path: run, args: {command: 'echo hello from claude code'}}});
+    } else {
+      log('agent: the Terminal publishes no action to run a command with', places.join(' '));
     }
   }
   // The shot of the follow mid-edit comes while the first write is in flight.
@@ -910,39 +974,54 @@ try {
         for (const type of ['mousePressed', 'mouseReleased']) {
           await tab.send('Input.dispatchMouseEvent', {type, x: button.x, y: button.y, button: 'left', clickCount: 1});
         }
+        const SCREEN = `(() => ({
+          run: document.documentElement.dataset.firstRun ?? null,
+          prompt: document.getElementById('first-run-prompt')?.textContent ?? '',
+          problem: document.getElementById('first-run-problem')?.textContent ?? '',
+          steps: document.getElementById('first-run-steps')?.textContent ?? '',
+        }))()`;
         const asked = await until(async () => {
-          const state = await tab.evaluate(`(() => ({
-            run: document.documentElement.dataset.firstRun ?? null,
-            prompt: document.getElementById('first-run-prompt')?.textContent ?? '',
-            problem: document.getElementById('first-run-problem')?.textContent ?? '',
-            steps: document.getElementById('first-run-steps')?.textContent ?? '',
-          }))()`);
+          const state = await tab.evaluate(SCREEN);
           if (/tilo login [A-Za-z0-9-]{4,}/.test(state.prompt)) return state;
-          if (state.run === 'failed' || state.problem) throw new Error(`the first screen failed: ${state.problem} (steps: ${state.steps})`);
+          if (state.run === 'failed' || state.problem) return {failed: state};
         }, 90000, 300);
-        if (!asked) {
-          // Why the screen made no code: the state it shows, and what the
-          // host answers a pairing link this page makes.
-          log(`${combo}: the first screen made no code`, JSON.stringify(await tab.evaluate(`(() => ({
-            run: document.documentElement.dataset.firstRun ?? null,
-            problem: document.getElementById('first-run-problem')?.textContent ?? '',
-            steps: document.getElementById('first-run-steps')?.textContent ?? '',
-          }))()`)));
-          const link = await tab.evaluate(`globalThis.tiloIdentity?.connectAgent?.().then(made => made.link, error => 'connectAgent failed: ' + error)`);
-          log(`${combo}: the page's pairing link`, typeof link === 'string' ? `${link.slice(0, 60)}…${link.slice(-40)}` : JSON.stringify(link));
-          const refusal = typeof link === 'string' && link.startsWith('https://') ? await postJson(`${hostOrigin}/peer/v1/login-code`, {link}) : null;
-          log(`${combo}: the host answered the link with`, JSON.stringify(refusal));
-          throw new Error(`the first screen made no code: ${refusal ? JSON.stringify(refusal) : 'no pairing link'}`);
+        let prompt = asked?.prompt ?? '';
+        let offered = Boolean(prompt);
+        if (!offered) {
+          // The screen could not make the code. Say what it said, then make
+          // one as the screen would (its pairing link, the host's code): the
+          // run goes on, and the report carries the screen's own words.
+          const state = asked?.failed ?? await tab.evaluate(SCREEN);
+          log(`${combo}: the first screen made no code`, JSON.stringify(state));
+          log(`${combo}: the page console`, tab.log.slice(-8).join(' | '));
+          const made = await tab.evaluate(`(async () => {
+            try { await globalThis.tiloIdentity?.keepStandIn?.(); } catch (error) { /* the link below says why */ }
+            const made = await globalThis.tiloIdentity.connectAgent();
+            return {link: made.link, expiresAt: made.expiresAt};
+          })().then(made => made, error => ({error: String(error?.message ?? error), code: error?.code ?? null}))`);
+          log(`${combo}: the page's pairing link`, typeof made.link === 'string'
+            ? `${made.link.slice(0, 60)}…${made.link.slice(-40)}` : JSON.stringify(made));
+          const answered = typeof made.link === 'string' && made.link.startsWith('https://')
+            ? await postJson(`${hostOrigin}/peer/v1/login-code`, {link: made.link}) : null;
+          log(`${combo}: the host answered the link with`, JSON.stringify(answered));
+          let created = null;
+          try { created = answered?.status === 200 ? JSON.parse(answered.body) : null; } catch { created = null; }
+          note(`${combo}: the first screen offers the agent's setup command`, false,
+            `${state.problem || state.run} (${JSON.stringify(state.steps)}); its pairing link ${created?.code ? `made code ${created.code}` : 'made none'}`);
+          if (!created?.code) throw new Error(`the first screen made no code, and neither did its pairing link: ${JSON.stringify({state, made, answered})}`);
+          // The screen's own prompt, as it would have copied it.
+          prompt = `Sign me in to Tilo: run tilo login ${created.code}, then do what it tells you.`;
         }
-        const prompt = asked.prompt;
         log(`${combo}: the tab copied “${prompt}”`);
         const code = (prompt.match(/tilo login ([A-Za-z0-9-]{4,})/) ?? [])[1];
         if (!code) throw new Error(`the prompt carried no code: ${prompt}`);
-        const copied = await tab.evaluate(`Promise.race([navigator.clipboard.readText().catch(() => null),
-          new Promise(resolve => setTimeout(() => resolve(null), 3000))])`);
-        check(`${combo}: the click copied the prompt with the code`,
-          copied === null || copied.includes(`tilo login ${code}`),
-          copied === null ? 'the clipboard was not readable here' : copied.slice(0, 300));
+        if (offered) {
+          const copied = await tab.evaluate(`Promise.race([navigator.clipboard.readText().catch(() => null),
+            new Promise(resolve => setTimeout(() => resolve(null), 3000))])`);
+          check(`${combo}: the click copied the prompt with the code`,
+            copied === null || copied.includes(`tilo login ${code}`),
+            copied === null ? 'the clipboard was not readable here' : copied.slice(0, 300));
+        }
         await shot(tab, combo, 'waiting-for-agent');
 
         // 2. The real agent, as the prompt tells it.
@@ -951,9 +1030,23 @@ try {
           loggedIn.stdout.split('\n')[0] ?? '');
         const followed = await until(async () => {
           const state = await tab.evaluate(`document.documentElement.dataset.firstRun ?? null`);
-          return state === 'connected' || state === null ? state ?? 'left' : undefined;
+          return state === 'connected' || state === null || state === 'failed' ? state ?? 'left' : undefined;
         }, 90000, 200);
-        check(`${combo}: the tab followed the agent into the workspace`, followed === 'connected' || followed === 'left', String(followed));
+        if (offered) {
+          check(`${combo}: the tab followed the agent into the workspace`,
+            followed === 'connected' || followed === 'left', String(followed));
+        } else {
+          // The screen that could not make a code stays as it was: what it
+          // shows is the product's, and the run says so rather than passing.
+          note(`${combo}: the tab followed the agent into the workspace`, false,
+            `the first screen stayed ${followed}, having made no code`);
+        }
+        if (!offered) {
+          // The screen made no code, so it never leaves by itself: its own
+          // "Skip for now" takes the person into the workspace.
+          await tab.evaluate(`document.getElementById('first-run-skip')?.click()`);
+          await sleep(1500);
+        }
         const PAGE = `(() => ({
           entry: document.documentElement.dataset.entry ?? null,
           firstRun: document.documentElement.dataset.firstRun ?? null,
@@ -1037,14 +1130,17 @@ try {
             }
             const answer = await sending;
             step.answer = answer;
-            log(`${combo}: agent ${step.label} -> ${answer.failed ? 'failed' : 'ok'} ${answer.text.slice(0, 300)}`);
+            log(`${combo}: agent ${step.label} -> ${verdict(answer)} ${answer.text.slice(0, 300)}`);
             await sleep(1400);
           }
         };
         const video = await record(browser, tab, combo, {width, height}, pacing);
-        const ran = steps.filter(step => step.answer && !step.answer.failed);
-        note(`${combo}: the agent's actions ran in the workspace`, ran.length >= 2,
-          steps.map(step => `${step.label}: ${step.answer ? (step.answer.failed ? 'failed' : 'ok') : 'not run'}`).join('; '));
+        // The shots are of the agent working: an action it could not do is
+        // the run's failure, not a note about the product.
+        for (const step of steps) {
+          check(`${combo}: the agent ${step.label}`, Boolean(step.answer) && verdict(step.answer) === 'ok',
+            step.answer ? `${verdict(step.answer)}: ${step.answer.text.slice(0, 400)}` : 'it never ran');
+        }
         if (video) log(`${combo}: recording`, JSON.stringify(video));
 
         // 6. Who is here, pinned on screen, with the agent in it.
