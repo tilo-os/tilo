@@ -266,6 +266,9 @@ pub struct Message {
     pub appearance: Option<tilo_actions::Appearance>,
     /// The window it shares live, and whether it still does.
     pub share: Option<crate::record::WindowShare>,
+    /// How many times a person asked the agent again for an answer to this
+    /// message (`retry`): the attempt the agent answers in now.
+    pub attempts: u32,
 }
 
 impl Message {
@@ -758,6 +761,7 @@ mod tests {
             work: None,
             appearance: None,
             share: None,
+            attempts: 0,
         }
     }
 

@@ -881,6 +881,7 @@ mod tests {
             work: None,
             appearance: None,
             share: None,
+            attempts: 0,
         };
         // Two hours apart across midnight, and one three days later.
         let start = 1_782_828_300_i64;

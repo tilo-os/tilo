@@ -35,6 +35,8 @@ const CHAT_APP: (&str, &str) = ("chat", "Chat");
 /// Chat's verb that records a turn's work on the reply to its message: the one Chat's window
 /// publishes on each message, run here on the same record from the same declaration.
 const RECORD_WORK: &str = "record-work";
+/// The chat action that asks an agent again for a turn it could not answer.
+const RETRY: &str = "retry";
 
 /// One workspace's conversations as the pass read them, and the runs they give.
 #[derive(Clone, Default)]
@@ -338,6 +340,31 @@ impl Conversations {
             .unwrap_or_default()
     }
 
+    /// The messages people wrote in `channel`, as the session holds them: what a test reads to
+    /// prove a retry asked again rather than posting the question a second time.
+    #[must_use]
+    pub fn person_messages(&self, channel: &str) -> Vec<String> {
+        let open = self.open.borrow();
+        for opened in open.values() {
+            let Some((_, part)) = &opened.part else {
+                continue;
+            };
+            let part = part.get();
+            let held: Vec<String> = part
+                .messages
+                .iter()
+                .filter(|(_, message)| {
+                    message.channel.as_str() == channel && person_of(&message.author.0).is_some()
+                })
+                .map(|(id, _)| id.as_str().to_owned())
+                .collect();
+            if !held.is_empty() {
+                return held;
+            }
+        }
+        Vec::new()
+    }
+
     /// The page of the conversation `channel` (a channel id, after
     /// `chat.workspace/channels/`), as Chat's own `#[view(default)]` draws it, read from the
     /// workspace this session holds open that has it: the very channel Chat's window shows and
@@ -406,6 +433,64 @@ impl Conversations {
                 .map_err(|error| error.to_string());
         }
         Err(format!("no open workspace holds the channel {channel}"))
+    }
+
+    /// Ask the agent again for a turn's answer, through Chat's own `retry` on the part that holds
+    /// the message: the message `arguments` names moves to its next attempt, whose reply no one
+    /// has written, so its turn is delivered again and the answer lands in a reply of its own
+    /// (shell.md §8.1). Nothing is posted: the person's words stay the one message they wrote.
+    ///
+    /// # Errors
+    /// No open workspace holds the message in `arguments`, or Chat refused the retry.
+    fn retry(
+        &self,
+        invoker: &tilo_actions::ActionInvoker,
+        arguments: &serde_json::Map<String, serde_json::Value>,
+    ) -> Result<(), tilo_actions::DoorError> {
+        let text = |name: &str| {
+            arguments
+                .get(name)
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or_default()
+        };
+        let channel = text("channel");
+        let reply = text("reply");
+        let summons = text("summons");
+        if reply.is_empty() || summons.is_empty() {
+            return Err(tilo_actions::DoorError::InvalidArguments(
+                "a retry names the reply and the message it answered".to_owned(),
+            ));
+        }
+        let open = self.open.borrow();
+        for opened in open.values() {
+            let Some((_, part)) = &opened.part else {
+                continue;
+            };
+            if opened.chat.is_none() || part.get().messages.get(&Id::from_raw(summons)).is_none() {
+                continue;
+            }
+            if !opened.chat.as_ref().is_some_and(|chat_record| {
+                chat_record
+                    .get()
+                    .channels
+                    .iter()
+                    .any(|(id, _)| id.as_str() == channel)
+            }) {
+                continue;
+            }
+            return part
+                .invoke_as(
+                    invoker,
+                    &chat::parts::ChatPart::RETRY.with(chat::messages::chat_part::Retry {
+                        message: Id::from_raw(summons),
+                        reply: Id::from_raw(reply),
+                    }),
+                )
+                .map_err(|error| tilo_actions::DoorError::Failed(error.to_string()));
+        }
+        Err(tilo_actions::DoorError::Failed(format!(
+            "no open workspace holds the message {summons} of channel {channel}"
+        )))
     }
 
     /// Record a turn's work through Chat's own `record-work` on the workspace's open Chat record,
@@ -808,7 +893,36 @@ pub(crate) fn channel_resource(
         root: false,
     });
     spec.app_id = Some("chat".to_owned());
-    spec.with_action(post_action())
+    spec.with_action(retry_action()).with_action(post_action())
+}
+
+/// The channel's `retry` action, as the service publishes it on a channel's item: ask the agent
+/// again for the turn whose answer failed, on the same message — the very verb Chat's own
+/// `retry` runs, reached from the page's failure row and from the REPL alike (shell.md §8.1,
+/// "The REPL").
+///
+/// Like `post`, it is `ClientLocal` with an inert encoded action: `ChatViewService::invoke` runs
+/// the verb itself on the workspace's open Chat record (`Conversations::retry`), and the record's
+/// CRDT is what carries the retry to the person's other devices.
+#[must_use]
+pub(crate) fn retry_action() -> tilo_actions::ActionSpec {
+    use tilo_actions::{ActionArgs, EncodedAction, ExecutionLocus, ParamType};
+    tilo_actions::ActionSpec::typed(
+        "retry",
+        "Ask again for the answer",
+        "a reply to ask again",
+        ExecutionLocus::ClientLocal,
+        vec![
+            tilo_actions::ActionParam::required("channel", ParamType::Text, "The channel"),
+            tilo_actions::ActionParam::required("reply", ParamType::Text, "The reply to ask again"),
+            tilo_actions::ActionParam::required(
+                "summons",
+                ParamType::Text,
+                "The message it answered",
+            ),
+        ],
+        |_: &ActionArgs| EncodedAction::written("chat.retry".to_owned(), Vec::new()),
+    )
 }
 
 /// The channel's `post` action, as the service publishes it on a channel's item: a message from
@@ -941,9 +1055,20 @@ impl tilo_service::Service for ChatViewService {
                 .record_work(&invoker, resource, arguments)
                 .map(|()| tilo_service::Started::Done(tilo_actions::ActionOutput::default()));
         }
+        // A turn whose answer failed is asked again on the same message: Chat's own `retry`,
+        // run on Chat's record by this session, attributed to the person pressing it — or to
+        // the agent that sent it, from the REPL or a step.
+        if action == RETRY {
+            let invoker = tilo_actions::ActionInvoker::actor(self.conversations.person());
+            return self
+                .conversations
+                .retry(&invoker, arguments)
+                .map(|()| tilo_service::Started::Done(tilo_actions::ActionOutput::default()));
+        }
         // The page's other verbs (react, pin, edit) are Chat's own on the messages it shows;
-        // the service publishes the composer's `post` that a place reaches. A verb it does not
-        // publish is refused, as the door refuses any address no service offers.
+        // the service publishes the composer's `post` that a place reaches, and the failure
+        // row's `retry`. A verb it does not publish is refused, as the door refuses any address
+        // no service offers.
         Err(tilo_actions::DoorError::Unknown(
             tilo_actions::ActionAddress::new(resource, action),
         ))
@@ -964,6 +1089,12 @@ impl tilo_service::Service for ChatViewService {
             return self
                 .conversations
                 .record_work(invoker, resource, arguments)
+                .map(|()| tilo_service::Started::Done(tilo_actions::ActionOutput::default()));
+        }
+        if action == RETRY {
+            return self
+                .conversations
+                .retry(invoker, arguments)
                 .map(|()| tilo_service::Started::Done(tilo_actions::ActionOutput::default()));
         }
         self.invoke(resource, action, arguments)
@@ -1006,9 +1137,10 @@ fn message_of(resource: &str) -> Option<String> {
 /// before the reply the verb makes exists — the reply's own item is Chat's window's once it does.
 /// The summons whose turn is going: the person's messages in a conversation an agent takes part
 /// in, whose reply the agent has not finished — absent yet, or still working (no state that ends
-/// it). The same rule the pass reads turns by, so the item that records the work is offered
-/// exactly while the agent answers there: from the moment the turn exists, through every record it
-/// makes on the reply it is writing, and not after the answer ended it.
+/// it) — or whose reply the person asked again (`chat`'s `retry`, which gives the reply up). The
+/// same rule the pass reads turns by, so the item that records the work is offered exactly while
+/// the agent answers there: from the moment the turn exists, through every record it makes on the
+/// reply it is writing, and again when a failed reply was retried.
 fn summonses(chat: &chat::Chat, part: &chat::parts::ChatPart) -> Vec<Id> {
     let mut out: Vec<Id> = Vec::new();
     for (id, message) in part.messages.iter() {
@@ -1033,11 +1165,14 @@ fn summonses(chat: &chat::Chat, part: &chat::parts::ChatPart) -> Vec<Id> {
             })
             .collect();
         for agent in agents {
+            // The reply of the attempt the message is in: a retry moved it on, so the reply that
+            // failed stands as history and the item offers the next attempt's address.
+            let reply = chat::record::reply_id_at(id, &agent, message.attempts);
             let going = part
                 .messages
-                .get(&chat::record::reply_id(id, &agent))
-                // A reply without work is a plain answer; one that keeps work is going until its
-                // work ends. The same rule `turns` reads the turn by.
+                .get(&reply)
+                // A reply without work is a plain answer; one that keeps work is going until
+                // its work ends. The same rule `turns` reads the turn by.
                 .is_none_or(|reply| {
                     reply.work.as_ref().is_some_and(|work| {
                         let streamed = work
@@ -1152,7 +1287,9 @@ fn turns(
             // The person's newest message the agent has not answered: the reply its id and the
             // agent's derive, which only the agent's answer to that message carries. An agent's
             // reply that is still working (its work is not finished) leaves the turn going, so a
-            // runner that records "taken" before it acts is not read as having answered.
+            // runner that records "taken" before it acts is not read as having answered. A
+            // message a person asked again (`chat`'s `retry`) is in a later attempt, whose reply
+            // is absent yet: its turn goes again, and the answer is a reply of its own.
             let summons = messages
                 .iter()
                 .copied()
@@ -1161,9 +1298,13 @@ fn turns(
                         && person_of(&message.author.0).is_some()
                         && part
                             .messages
-                            .get(&chat::record::reply_id(message_id, &key))
-                            // A reply without work is a plain answer; one that keeps work is going
-                            // until its work ends.
+                            .get(&chat::record::reply_id_at(
+                                message_id,
+                                &key,
+                                message.attempts,
+                            ))
+                            // A reply without work is a plain answer; one that keeps work is
+                            // going until its work ends.
                             .is_none_or(|reply| {
                                 reply.work.as_ref().is_some_and(|work| {
                                     let streamed = work
@@ -1226,8 +1367,14 @@ impl crate::Session {
         self.shared.services.borrow().resources()
     }
 
-    /// A step an address no surface door publishes, as the session's own `DoorAsk::Step` runs it:
-    /// a service's action, invoked through [`crate::agent_door::invoke_service_step`], on the
+    /// The messages people wrote in `channel`, by their ids: what a test reads to prove a retry
+    /// asked the agent again on the same message rather than posting the question a second time.
+    #[must_use]
+    pub fn person_messages_in(&self, channel: &str) -> Vec<String> {
+        self.shared.conversations.person_messages(channel)
+    }
+
+    /// A step an address no surface door publishes, as the session's own `DoorAsk::Step` runs it:    /// a service's action, invoked through [`crate::agent_door::invoke_service_step`], on the
     /// record the service keeps. This is the exact call an agent's `record-work` on a turn's
     /// summons goes through at its broker step; a test drives it here rather than through the
     /// broker so it proves the seam without the agent.
@@ -1357,6 +1504,61 @@ mod tests {
         let mut head = part(vec![("m1", message(ME, "add the revenue curve", 10))]);
         head.messages.push(reply, message(AGENT_ACTOR, "done", 20));
         assert_eq!(read(&chat, &head), Vec::new());
+    }
+
+    /// A reply whose turn failed and that the person asked again no longer answers: the same
+    /// message is a turn again, in a later attempt whose reply is its own.
+    #[test]
+    fn a_retried_reply_gives_its_summons_a_turn_again() {
+        let chat = workspace();
+        let mut asked = message(ME, "add the revenue curve", 10);
+        let mut head = part(vec![("m1", asked.clone())]);
+        let mut failed = message(AGENT_ACTOR, "", 20);
+        failed.parent = Some(Id::from_raw("m1"));
+        failed.work = Some(chat::record::Work {
+            state: Some(chat::record::Transition {
+                state: chat::model::AgentWorkState::ProviderFinished {
+                    outcome: chat::agent_stream::AgentFinish::Failed,
+                },
+                since: 20,
+            }),
+            ..chat::record::Work::default()
+        });
+        head.messages.push(
+            chat::record::reply_id(&Id::from_raw("m1"), AGENT_ACTOR),
+            failed,
+        );
+        assert_eq!(
+            read(&chat, &head),
+            Vec::new(),
+            "a failed reply ends the turn until the person asks again"
+        );
+        // The retry moved the question to its next attempt: its reply is the one derived for
+        // that attempt, and nobody has written it.
+        asked.attempts = 1;
+        head.messages.push(Id::from_raw("m1"), asked.clone());
+        let entries = read(&chat, &head);
+        let [entry] = entries.as_slice() else {
+            panic!("the retried summons is a turn again: {entries:?}");
+        };
+        assert_eq!(entry.run.instruction, "add the revenue curve");
+        assert_eq!(
+            entry.run.turn,
+            Some(Turn::new("chat.workspace/channels/c_tide", "m1")),
+            "the turn is the same message, never a second question"
+        );
+        assert_eq!(
+            summonses(&chat, &head),
+            vec![Id::from_raw("m1")],
+            "the summons's item offers `record-work` again, so the agent's new answer lands"
+        );
+        // The answer lands in the attempt's own reply, never the one that failed.
+        let next = chat::record::reply_id_at(&Id::from_raw("m1"), AGENT_ACTOR, asked.attempts);
+        assert_ne!(
+            next,
+            chat::record::reply_id(&Id::from_raw("m1"), AGENT_ACTOR),
+            "a retried turn is answered in a reply of its own"
+        );
     }
 
     #[test]

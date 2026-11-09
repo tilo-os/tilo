@@ -9,6 +9,12 @@
 //! channel through Chat's own `post` action. Nothing here knows about windows, places or themes:
 //! the page is drawn by the same host, in the person's own theme, as Mail's inbox or a Notes
 //! notebook.
+//!
+//! An agent's reply carries its work, and the page draws what the reply carries: a turn still
+//! being written says so quietly beside the words it has so far, and a turn that ended without
+//! an answer leaves a row saying what happened with a Retry — the conversation's own `retry`,
+//! which asks the agent again on the same message rather than posting the question twice
+//! (shell.md §8.1).
 
 use tilo_view::node;
 use tilo_view::ui::{self, Gap};
@@ -102,10 +108,18 @@ pub struct Message {
     /// it ended, drawn under the words it wrote. `None` on every ordinary message.
     #[serde(default)]
     pub work: Option<Work>,
-    /// Retrying this reply asks the agent again: it failed, and it is the reply the agent
-    /// would write now (no newer retry has replaced it).
+    /// Retrying this reply asks the agent again: it failed, it is the reply the agent would
+    /// write now (no newer reply has replaced it), and nobody has asked again yet.
     #[serde(default)]
     pub retry: bool,
+    /// The message it answers, when it asks the agent again: the retry names both, so nothing
+    /// re-posts the person's words. `None` on every other message.
+    #[serde(default)]
+    pub retry_summons: Option<String>,
+    /// How many times the person asked again for an answer to this message (`retry`): the
+    /// attempt the agent answers in now. A reply is of the attempt its question is in.
+    #[serde(default)]
+    pub attempts: u32,
 }
 
 /// What an agent recorded of its work on a reply, as the page shows it.
@@ -266,6 +280,7 @@ impl Channel {
                 ts: row.ts,
                 text: row.text.clone(),
                 edited: row.edited,
+                attempts: row.attempts,
                 reply_to: row.parent.as_deref().and_then(|parent| {
                     rows.iter()
                         .find(|held| held.id == parent)
@@ -290,7 +305,10 @@ impl Channel {
                 attachments: row.attachments.iter().map(Attachment::of).collect(),
                 pinned: row.pinned,
                 work: row.work.as_ref().map(work_of),
+                // Retry is offered on the reply a person may ask again — the current attempt's,
+                // which failed — and it names the message that reply answered.
                 retry: retryable(rows, row),
+                retry_summons: retryable(rows, row).then(|| row.parent.clone()).flatten(),
             })
             .collect();
         Self {
@@ -377,12 +395,12 @@ fn provider_state(finish: crate::agent_stream::AgentFinish) -> &'static str {
     }
 }
 
-/// Whether `row` is the reply a Retry asks the agent again: it is an agent's reply whose work
-/// failed, and no newer reply of that agent to the same message has replaced it.
+/// Whether `row` is the reply a Retry asks the agent again: it is the agent's reply to the
+/// message's current attempt (`chat`'s `record::reply_id_at`, derived from the summons, the agent
+/// and the message's `attempts`), and its turn failed.
 ///
-/// A retry is a new reply on the same summons (chat's `record::reply_id` derives it from the
-/// summons and the agent and the attempt), so the newest reply carrying work for one summons is
-/// the attempt that stands; the ones it replaced are history and offer nothing.
+/// A retry moves the message to its next attempt, so the answer the agent writes then is a reply
+/// of its own and this one stands as history — with no Retry to press a second time.
 fn retryable(rows: &[crate::model::Message], row: &crate::model::Message) -> bool {
     let Some(work) = row.work.as_ref() else {
         return false;
@@ -390,16 +408,19 @@ fn retryable(rows: &[crate::model::Message], row: &crate::model::Message) -> boo
     let Some(summons) = row.parent.as_deref() else {
         return false;
     };
+    let Some(asker) = rows.iter().find(|held| held.id == summons) else {
+        return false;
+    };
     if !work_of(work).failed() {
         return false;
     }
-    !rows.iter().any(|other| {
-        other.id != row.id
-            && other.parent.as_deref() == Some(summons)
-            && other.author == row.author
-            && other.work.is_some()
-            && other.ts >= row.ts
-    })
+    row.id
+        == crate::record::reply_id_at(
+            &Id::from_raw(summons.to_owned()),
+            &row.author,
+            asker.attempts,
+        )
+        .to_string()
 }
 
 /// The start of `text` a quote under a reply shows: its first line, cut short.
@@ -834,8 +855,13 @@ fn failed_row(message: &Message, work: &Work, cx: &ViewCx) -> Node {
         banner = banner.action("Retry");
     }
     let banner: Node = banner.into();
-    let banner = if message.retry {
-        let fired = cx.action_with(&banner, "act", "retry", vec![Arg::text(message.id.clone())]);
+    let banner = if let Some(summons) = message.retry_summons.clone() {
+        let fired = cx.action_with(
+            &banner,
+            "act",
+            "retry",
+            vec![Arg::text(message.id.clone()), Arg::text(summons)],
+        );
         node::on(banner, "act", fired)
     } else {
         banner
@@ -1545,7 +1571,7 @@ mod tests {
             ..Message::default()
         });
         channel.messages.push(Message {
-            id: "m_reply".to_owned(),
+            id: crate::record::reply_id(&Id::from_raw("m_asked"), "agent:tide").to_string(),
             author: "agent:tide".to_owned(),
             ts: 1_782_470_400,
             text: partial.to_owned(),
@@ -1610,6 +1636,7 @@ mod tests {
             let mut channel = writing_channel(state, "Half an answer");
             if let Some(reply) = channel.messages.last_mut() {
                 reply.retry = true;
+                reply.retry_summons = Some("m_asked".to_owned());
                 reply.work = Some(Work {
                     state: state.to_owned(),
                     detail: "The provider connection closed".to_owned(),
@@ -1645,7 +1672,15 @@ mod tests {
                 cx.effect(&rows[0].key, "act"),
                 Some(tilo_view::Effect::Action {
                     action: "retry".to_owned(),
-                    args: vec![Arg::text("m_reply")],
+                    // The reply, and the message it answers: the verb asks the agent again on
+                    // that message, and posts nothing.
+                    args: vec![
+                        Arg::text(
+                            crate::record::reply_id(&Id::from_raw("m_asked"), "agent:tide")
+                                .to_string(),
+                        ),
+                        Arg::text("m_asked"),
+                    ],
                 }),
                 "Retry is the conversation's own verb, with the reply it retries ({state})"
             );
@@ -1657,10 +1692,12 @@ mod tests {
     }
 
     #[test]
-    fn a_failed_turn_a_newer_attempt_replaced_offers_no_retry() {
-        // Retry asks the agent again on the same message; a later attempt that answers it stands
-        // in the failed one's place, so the old row is history and offers no Retry.
+    fn a_reply_of_an_earlier_attempt_offers_no_retry() {
+        // A retry moves the question to its next attempt, and the answer is a reply of its own:
+        // the reply that failed stands as history, and a Retry there would ask a third time.
         let mut channel = writing_channel("provider_failed", "");
+        // The question moved on after that reply was written.
+        channel.messages[0].attempts = 1;
         channel.messages.push(Message {
             id: "m_reply_2".to_owned(),
             author: "agent:tide".to_owned(),
@@ -1684,20 +1721,27 @@ mod tests {
         assert_eq!(rows.len(), 1, "the failed attempt still says what happened");
         assert!(
             rows[0].props.get("action").is_none(),
-            "the replaced attempt offers no Retry: a newer answer stands in its place"
+            "an earlier attempt offers no Retry: the question is in a later one"
+        );
+        assert!(
+            cx.effect(&rows[0].key, "act").is_none(),
+            "the earlier attempt runs nothing when pressed"
         );
     }
 
     #[test]
     fn a_failed_reply_is_the_one_a_retry_asks_again() {
-        // The newest failed attempt on a summons is the reply the agent would write now: the
+        // The failed reply of the question's current attempt is the one a Retry asks again: the
         // page reads the record's own work — a provider end from an earlier turn beside a state
-        // the run wrote — into the reply a Retry re-asks.
+        // the run wrote — and derives the reply's id from the summons, the agent and the
+        // attempt, as Chat does.
         let workspace = crate::demo::Workspace::demo().expect("the demo workspace");
         let mut rows = workspace.message_rows("c_crit");
         let summons = rows[0].id.clone();
+        let reply_id =
+            crate::record::reply_id(&Id::from_raw(summons.clone()), "agent:tide").to_string();
         rows.push(crate::model::Message {
-            id: "m_reply".to_owned(),
+            id: reply_id.clone(),
             channel: "c_crit".to_owned(),
             author: "agent:tide".to_owned(),
             ts: 1_782_470_400,
@@ -1728,10 +1772,12 @@ mod tests {
             pinned: false,
             appearance: None,
             share: None,
+            attempts: 0,
         });
         let chat = workspace.read();
         let channel = Channel::read(&chat, &rows, "c_crit", crate::model::ME);
         let reply = channel.messages.last().expect("the reply");
+        assert_eq!(reply.id, reply_id, "the reply is the attempt's own");
         assert_eq!(
             reply.work,
             Some(Work {

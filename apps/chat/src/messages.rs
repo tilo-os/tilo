@@ -28,7 +28,7 @@ use ui::tilo_resource::{
 use crate::parts::{self, ChatPart};
 use crate::record::{
     Chat, MAX_AGENT_NAME_BYTES, MAX_MESSAGE_TEXT_BYTES, Message, Posting, ProviderStream, Revision,
-    ShareAccess, Step, Transition, WindowShare, Work, WorkUpdate, reply_id,
+    ShareAccess, Step, Transition, WindowShare, Work, WorkUpdate, reply_id_at,
 };
 
 fn author(cx: &ActionCx) -> Result<String, Refusal> {
@@ -598,6 +598,48 @@ impl ChatPart {
         Ok(())
     }
 
+    /// Ask again for an answer.
+    ///
+    /// The message an agent answered with a turn that failed: asks its agent again on that same
+    /// message, rather than posting the question a second time. The message moves to the next
+    /// attempt, so the reply the agent writes now is a reply of its own — beside the one that
+    /// failed, which stays in the transcript as what happened — and the turn for the message is
+    /// delivered again.
+    ///
+    /// It names the reply the person gave up on: only the attempt the message is in may be asked
+    /// again, so a stale Retry (one already pressed, one a newer attempt replaced) changes nothing.
+    #[action(item = messages)]
+    pub fn retry(
+        &mut self,
+        cx: &mut ActionCx,
+        message: &Id,
+        #[param("The reply the person gave up on")] reply: &Id,
+    ) -> Result<(), Refusal> {
+        // Everyone who asks again is a person, never the agent whose words failed.
+        author(cx)?;
+        let by = self
+            .messages
+            .get(reply)
+            .map(|answered| answered.author.0.clone())
+            .ok_or_else(|| Refusal::new("there is no such reply"))?;
+        let summons = self
+            .messages
+            .get_mut(message)
+            .ok_or_else(|| Refusal::new("there is no such message"))?;
+        if summons.parent.is_some() {
+            return Err(Refusal::new("only a question is asked again"));
+        }
+        // The reply has to be the one its own author's current attempt derives: the answer
+        // written for this question, and not one a later attempt replaced.
+        if *reply != reply_id_at(message, &by, summons.attempts) {
+            // Asked already, or replaced: the person's Retry is spent, and asking again would
+            // start a turn nobody pressed for.
+            return Ok(());
+        }
+        summons.attempts = summons.attempts.saturating_add(1);
+        Ok(())
+    }
+
     /// Record agent work.
     ///
     /// An agent's account of what it is doing with the message that
@@ -622,7 +664,9 @@ impl ChatPart {
             .ok_or_else(|| Refusal::new("there is no such message"))?;
         let channel = summons.channel.clone();
         let thread = summons.parent.clone().unwrap_or_else(|| message.clone());
-        let reply = reply_id(message, &me);
+        // The attempt the answer belongs to: the first unless a person asked again, so what a
+        // retried turn writes never overwrites the reply that failed.
+        let reply = reply_id_at(message, &me, summons.attempts);
         if !self.messages.contains(&reply) {
             self.append(
                 reply.clone(),
