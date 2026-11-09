@@ -687,6 +687,7 @@ pub(crate) fn agent_work(summons: &Id) -> Invoke<ChatPart> {
                 outcome: "asked".into(),
                 why: None,
             }],
+            detail: None,
         },
         say: None,
     })

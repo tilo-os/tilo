@@ -53,9 +53,11 @@ fn neutral_truncation_retains_output_without_dispatching_calls() {
     );
     f.session.run_task(&f.run).unwrap();
     assert!(f.world.borrow().steps.is_empty());
+    // What the host hears is the sentence a person reads, and nothing of the
+    // turn's record: no partial answer, no provider-exposed reasoning.
     assert!(matches!(terminal(&f.sent.borrow()),
         runtime_collab::TaskRunUpdate::Failed { message }
-            if message.contains("Partial answer") && message.contains("Provider summary")));
+            if !message.contains("Partial answer") && !message.contains("Provider summary")));
     let sent = f.sent.borrow();
     let snapshots = sent
         .iter()
@@ -113,7 +115,7 @@ fn presentation_reports_coalesce_bound_output_and_fall_back_for_old_hosts() {
     assert!(f.sent.borrow().is_empty());
     let active = f.session.turn.as_mut().unwrap();
     active.presentation.text = "é".repeat(40 * 1024);
-    active.finished = Some(Err("stream lost".into()));
+    active.finished = Some(Err(Failure::said("stream lost")));
     f.session.publish_turn_presentation(&f.run).unwrap();
     f.session.publish_turn_presentation(&f.run).unwrap();
     let sent = f.sent.borrow();
@@ -178,8 +180,11 @@ fn completed_stream_frames_cannot_dispatch_before_a_failed_final_response() {
             .iter()
             .any(|request| matches!(request, CollabRequest::InvokeTaskAction { .. }))
     );
+    // The transport's own words are the record, kept for debugging; the
+    // sentence a person reads is what happened, in their terms.
     assert!(matches!(terminal(&f.sent.borrow()),
-        runtime_collab::TaskRunUpdate::Failed { message } if message.contains("provider stream reset")));
+        runtime_collab::TaskRunUpdate::Failed { message }
+            if !message.contains("provider stream reset") && message.contains("The model")));
 }
 
 /// Answers each turn with the next scripted event list and records the
@@ -1546,6 +1551,7 @@ fn execution_fixture(
         catalogue_cache: None,
         turn: None,
         outstanding: crate::session::outstanding::Outstanding::default(),
+        failure_detail: None,
         spending: None,
     };
     Fixture {
@@ -1884,6 +1890,20 @@ fn a_run_whose_model_fails_records_the_failure_on_its_reply() {
     assert!(
         last["say"].as_str().is_some_and(|say| !say.is_empty()),
         "the reply says what happened, in the run's words: {last:?}"
+    );
+    assert!(
+        last["say"]
+            .as_str()
+            .is_some_and(|say| !say.contains("provider stream reset")),
+        "the reply never carries the transport's own error: {last:?}"
+    );
+    // The transport's error is the run's record, kept beside the reply's
+    // words for whoever debugs the failure, never the reply itself.
+    assert!(
+        last["work"]["detail"]
+            .as_str()
+            .is_some_and(|detail| detail.contains("provider stream reset")),
+        "the transport's error is the record: {last:?}"
     );
     assert!(
         matches!(
@@ -2586,9 +2606,11 @@ fn explicit_total_task_deadline_stops_silent_transport_before_any_step() {
     assert!(f.world.borrow().steps.is_empty());
     assert!(f.session.turn.is_none());
     assert!(f.session.task_deadline.is_none());
+    // The person reads that the task ran out of time; the deadline's own
+    // wording is the run's record.
     assert!(
         matches!(terminal(&f.sent.borrow()), runtime_collab::TaskRunUpdate::Failed { message }
-        if message.contains("task time budget"))
+        if message.contains("ran out of time") && !message.contains("explicit task time budget"))
     );
 }
 

@@ -797,7 +797,7 @@ id = "record-work"
 kind = "undoable"
 params = [
   { name = "message", type = "text", required = true, schema = { type = "string" } },
-  { name = "work", type = { named = "WorkUpdate" }, required = true, schema = { type = "object", additionalProperties = false, properties = { about = { type = ["string", "null"] }, app = { type = ["string", "null"] }, did = { type = ["string", "null"] }, route = { type = ["string", "null"] }, state = { type = "string" }, trace = { type = "array", items = { type = "object", additionalProperties = false, properties = { id = { type = "string" }, label = { type = "string" }, outcome = { type = "string" }, resource = { type = "string" }, sequence = { type = "integer", minimum = 0 }, why = { type = ["string", "null"] } }, required = ["id", "resource", "label", "outcome"] } }, why = { type = ["string", "null"] } }, required = ["state"] } },
+  { name = "work", type = { named = "WorkUpdate" }, required = true, schema = { type = "object", additionalProperties = false, properties = { about = { type = ["string", "null"] }, app = { type = ["string", "null"] }, detail = { type = ["string", "null"] }, did = { type = ["string", "null"] }, route = { type = ["string", "null"] }, state = { type = "string" }, trace = { type = "array", items = { type = "object", additionalProperties = false, properties = { id = { type = "string" }, label = { type = "string" }, outcome = { type = "string" }, resource = { type = "string" }, sequence = { type = "integer", minimum = 0 }, why = { type = ["string", "null"] } }, required = ["id", "resource", "label", "outcome"] } }, why = { type = ["string", "null"] } }, required = ["state"] } },
   { name = "say", type = { option = "text" }, required = false, schema = { type = ["string", "null"] } },
 ]
 
@@ -944,6 +944,7 @@ fields = [
   { name = "work", type = { option = { named = "Work" } } },
   { name = "appearance", type = { option = { named = "ShownAs" } } },
   { name = "share", type = { option = { named = "WindowShare" } } },
+  { name = "attempts", type = "int" },
 ]
 
 [[resources.types]]
@@ -1062,6 +1063,7 @@ fields = [
   { name = "state", type = { option = { named = "Transition" } } },
   { name = "reasoning", type = { option = { named = "AgentReasoning" } } },
   { name = "trace", type = { collection = { named = "Step" } } },
+  { name = "failure_detail", type = { option = "text" } },
 ]
 
 [[resources.types]]
@@ -1074,6 +1076,7 @@ fields = [
   { name = "route", type = { option = "text" } },
   { name = "why", type = { option = "text" } },
   { name = "trace", type = { list = { named = "StepUpdate" } } },
+  { name = "detail", type = { option = "text" } },
 ]
 
 [[resources]]
