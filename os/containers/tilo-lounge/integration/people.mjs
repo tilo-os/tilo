@@ -336,16 +336,29 @@ const armOpen = (tab, app) => tab.evaluate(`(() => {
 // What was not measured is `ok: false`, never a number: an open the watch
 // never saw begun or never saw end is no reading at all, and the caller fails
 // on it rather than counting `0` as fast.
-const openMarks = tab => tab.evaluate(`(() => {
-  const watch = globalThis.__tiloOpen;
-  globalThis.__tiloOpen = undefined;
-  if (!watch || watch.pressedAt === null || watch.shownAt === null) {
-    return JSON.stringify({ok: false, pressed: watch?.pressedAt != null, shown: watch?.shownAt != null});
-  }
-  return JSON.stringify({ok: true,
-    presentMs: Math.round(watch.shownAt - watch.pressedAt),
-    frames: watch.framesShown - watch.framesAtPress});
-})()`).then(JSON.parse);
+//
+// The watch ends on the frame that presents the window, and that frame is the
+// frame after the one the desk publishes the window in: read the moment the
+// window is listed, the watch has nothing yet, and the gate says the open was
+// never measured rather than reading the number it does have. So this waits on
+// the desk's own state until the watch ends — the frame came, or the page
+// says its watch never saw it.
+const openMarks = async tab => {
+  const ended = `(() => { const w = globalThis.__tiloOpen;
+    return !w || w.pressedAt === null || w.shownAt !== null; })()`;
+  const deadline = Date.now() + 30_000;
+  while (!await tab.evaluate(ended) && Date.now() < deadline) await sleep(50);
+  return tab.evaluate(`(() => {
+    const watch = globalThis.__tiloOpen;
+    globalThis.__tiloOpen = undefined;
+    if (!watch || watch.pressedAt === null || watch.shownAt === null) {
+      return JSON.stringify({ok: false, pressed: watch?.pressedAt != null, shown: watch?.shownAt != null});
+    }
+    return JSON.stringify({ok: true,
+      presentMs: Math.round(watch.shownAt - watch.pressedAt),
+      frames: watch.framesShown - watch.framesAtPress});
+  })()`).then(JSON.parse);
+};
 
 // A canvas-drawn desktop takes the pointer; the search chord is Ctrl+K away
 // from the keyboard (Meta on a Mac, as the desktop reads it).
@@ -913,17 +926,30 @@ try {
   // One gesture: a trackpad's fingers send their travel many events per
   // frame, and the desk gives a gesture to its first event's answer, so the
   // events go in together and only the gesture's effect is waited for.
-  const sidewaysSwipe = async (tab, x, y, forward = true, during = null) => {
+  //
+  // "Together" is what matters: the desk ends a wheel gesture after a pause of
+  // its own (200 ms, `WHEEL_GESTURE_GAP`) and judges what comes after the
+  // pause as a new gesture, whose first event the content may take instead.
+  // Each event sent and awaited in turn is a round trip, and on this machine
+  // one outlasts that gap — the swipe split after three events, the strip
+  // panning 36 px and the app scrolling the rest. So every event is sent
+  // before any is waited for, as a trackpad's report arrives together.
+  const sidewaysSwipe = async (tab, x, y, forward = true) => {
     const steps = [6, 12, 18, 24, 18, 12, 6];
-    for (const [index, step] of steps.entries()) {
-      await wheel(tab, x, y, {deltaX: forward ? step : -step});
-      // What the desk shows while the fingers are still on it, not only where
-      // the gesture left it: a pause mid-gesture, one frame drawn, the rest.
-      if (during && index === 2) {
-        await settle(tab, 1);
-        await during();
-      }
-    }
+    await Promise.all(steps.map(step => wheel(tab, x, y, {deltaX: forward ? step : -step})));
+    await settle(tab, 2);
+  };
+  // [`sidewaysSwipe`] with a look in the middle, for the run's pictures: the
+  // person looking at the run sees the strip part-way through a swipe. The
+  // pause it takes is longer than the desk's gesture gap, so the swipe is two
+  // gestures as far as the desk is concerned; nothing measured here is a
+  // gesture the gate judges.
+  const sidewaysSwipeForAPicture = async (tab, x, y, forward, look) => {
+    const send = steps => Promise.all(steps.map(step => wheel(tab, x, y, {deltaX: forward ? step : -step})));
+    await send([6, 12, 18]);
+    await settle(tab, 1);
+    await look();
+    await send([24, 18, 12, 6]);
     await settle(tab, 2);
   };
   const rightClick = async (tab, x, y) => {
@@ -987,15 +1013,25 @@ try {
   await search(a.tab, a.command, 'notes', 'Notes');
   await settle(a.tab, 2);
   const windowsBefore = (await snapshot(a.tab)).windows;
-  const panBefore = await panOf(a.tab);
-  if (!panBefore) failed('the strip does not overflow, so nothing can pan');
+  const startPan = await panOf(a.tab);
+  if (!startPan) failed('the strip does not overflow, so nothing can pan');
   // The way the strip still has room: a gesture at its end pans nothing.
-  const forward = panBefore.offset < panBefore.max / 2;
-  const frameBefore = await picture(a.tab);
-  await sidewaysSwipe(a.tab, centre.x, centre.y, forward, async () => {
+  const forward = startPan.offset < startPan.max / 2;
+  // A gesture for the run's pictures alone, then the one the gate judges. The
+  // first leaves the strip where it found it, so the judged gesture starts and
+  // ends in the same room: the picture the person looking at the run sees is
+  // the strip mid-swipe, taken inside that gesture.
+  const pictureFrom = await panOf(a.tab);
+  await sidewaysSwipeForAPicture(a.tab, centre.x, centre.y, forward, async () => {
     const midScroll = await a.tab.screenshot();
     if (midScroll) writeFileSync(`${out}/strip-mid-scroll.png`, midScroll);
   });
+  if ((await panOf(a.tab)).offset !== pictureFrom.offset) {
+    await sidewaysSwipe(a.tab, centre.x, centre.y, !forward);
+  }
+  const panBefore = await panOf(a.tab);
+  const frameBefore = await picture(a.tab);
+  await sidewaysSwipe(a.tab, centre.x, centre.y, forward);
   const panAfter = await panOf(a.tab);
   const moved = panAfter.offset - panBefore.offset;
   report.sideways = {forward, before: panBefore, after: panAfter};
