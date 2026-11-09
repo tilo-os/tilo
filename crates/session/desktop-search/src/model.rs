@@ -485,6 +485,7 @@ pub trait Source {
 /// `Arc<dyn Source + Send + Sync>` itself keeps the handle to hand the worker,
 /// and the bound is the type's, so a source that cannot move is one a host
 /// cannot add.
+#[derive(Clone)]
 pub struct Held(Arc<dyn Source + Send + Sync>);
 
 impl Held {

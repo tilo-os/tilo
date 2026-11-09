@@ -70,7 +70,7 @@ fn drive() {
             // What the binary reads of this device for search: the installed apps, the machine's
             // own and the catalogue, followed by a worker.
             search: SearchOptions {
-                lists: Lists::of_device(),
+                apps: Some(std::sync::Arc::new(Lists::of_device())),
                 ..SearchOptions::default()
             },
             wake,

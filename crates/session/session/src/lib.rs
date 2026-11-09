@@ -30,12 +30,20 @@ mod assembly;
 pub use assembly::Session;
 // Nothing compiled for the web reads this state yet: the roles that do land
 // with the batches that ungate them.
-#[cfg_attr(target_arch = "wasm32", allow(unused_imports))]
+#[cfg_attr(
+    target_arch = "wasm32",
+    allow(
+        unused_imports,
+        reason = "the roles that read this state land with their batches"
+    )
+)]
 pub(crate) use assembly::Shared;
 
 pub mod host_actions;
 pub mod overlays;
 pub mod records;
+pub mod search;
+mod search_ask;
 pub mod workspace_gate;
 
 // The Linux host's effects: the compositor, the services it starts, the
@@ -268,10 +276,6 @@ mod rotation;
 pub mod run;
 #[cfg(target_os = "linux")]
 mod seams;
-#[cfg(target_os = "linux")]
-mod search;
-#[cfg(target_os = "linux")]
-mod search_ask;
 #[cfg(target_os = "linux")]
 mod seats;
 #[cfg(target_os = "linux")]

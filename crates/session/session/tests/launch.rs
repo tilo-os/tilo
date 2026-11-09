@@ -85,14 +85,14 @@ fn host_app(home: &tilo_test_env::TestHome, desktop_id: &str, body: &str) -> Pat
 /// the entry the session's scan reads.
 fn host_search() -> SearchOptions {
     SearchOptions {
-        lists: Lists::fixed(AppLists {
+        apps: Some(std::sync::Arc::new(Lists::fixed(AppLists {
             host_apps: vec![HostAppEntry {
                 desktop_id: "org.example.Probe".into(),
                 name: "Probe".into(),
                 ..HostAppEntry::default()
             }],
             ..AppLists::default()
-        }),
+        }))),
         ..SearchOptions::default()
     }
 }

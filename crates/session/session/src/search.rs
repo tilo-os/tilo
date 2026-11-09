@@ -9,13 +9,21 @@
 //! action through its own published surface, an app's through the action host by address (the app
 //! started first when it is closed), an app's start, an address.
 
+#![cfg_attr(
+    target_arch = "wasm32",
+    allow(
+        dead_code,
+        reason = "the page hosts this search over the desk it runs next"
+    )
+)]
+
 use std::cell::{Cell, RefCell};
-use std::path::PathBuf;
 use std::rc::Rc;
 use std::sync::Arc;
 
-use crate::app_names::app_name;
-use crate::lists::{AppLists, Lists};
+use crate::platform::apps::Settings;
+use crate::platform::apps::{Apps, Reading};
+use crate::platform::indexes::Indexes;
 use crate::records::Records;
 
 use tilo_actions::DoorError;
@@ -24,21 +32,14 @@ use tilo_actions::remote::{
     ActionHostError, Caller, Found, RemoteActionTarget, ResourceSearch, application_action_target,
     application_open_target,
 };
-use tilo_app_launch::downloaded as registry;
-use tilo_desktop_search::content_index::AppContentIndex;
-use tilo_desktop_search::files_index::FilesIndex;
-use tilo_desktop_search::indexed::IndexedContent;
 use tilo_desktop_search::preferences;
 use tilo_desktop_search::providers::PublishedActions;
-use tilo_desktop_search::providers::catalogue::StoreCatalogue;
 use tilo_desktop_search::providers::downloaded::Downloaded;
-use tilo_desktop_search::providers::files::{FileNames, Files, file_uri};
 use tilo_desktop_search::providers::happening::{Happening, WorkspaceHere};
-use tilo_desktop_search::providers::host_apps::{self, HostApps};
+use tilo_desktop_search::providers::host_apps;
 use tilo_desktop_search::providers::jobs::{JobEntry, Jobs};
 use tilo_desktop_search::providers::places::{Continue, Place, RecentPlaces};
 use tilo_desktop_search::providers::records as record_rows;
-use tilo_desktop_search::providers::settings::Settings;
 use tilo_desktop_search::providers::waiting::Waiting;
 use tilo_desktop_search::{
     DESKTOP_APP, Held, InvokeTarget, LaunchPlace, SearchPreferences, Source, Target, Usage,
@@ -107,13 +108,14 @@ pub trait AppActions {
 /// What the session's search reaches beyond the desktop.
 #[derive(Default)]
 pub struct SearchOptions {
-    /// The Tilo apps installed here, the machine's own and the apps a person can get, as they are
-    /// now.
-    pub lists: Lists,
-    /// What apps hold, as they published it.
-    pub content: Option<Arc<AppContentIndex>>,
-    /// The person's home folder, its names as walked, and the index of what the files hold.
-    pub files: Option<(PathBuf, FileNames, Option<Arc<FilesIndex>>)>,
+    /// The apps this host lists — the ones installed here, the machine's own and the ones a person
+    /// can get — as they are now; `None` where the host lists none.
+    pub apps: Option<Arc<dyn Apps>>,
+    /// What apps hold and what the person's files say, as this host indexes them; `None` where the
+    /// host keeps no index.
+    pub indexes: Option<Arc<dyn Indexes>>,
+    /// The settings this host offers search, where it has any.
+    pub settings: Option<Arc<dyn Settings>>,
     /// The sources the person switched off.
     pub preferences: SearchPreferences,
     /// Where the person's windows were.
@@ -123,16 +125,16 @@ pub struct SearchOptions {
     pub records: Option<Records>,
 }
 
-/// The sources the session keeps between searches, each indexed once per reading of the lists they
+/// The sources the session keeps between searches, each indexed once per reading of the apps they
 /// are built from.
 struct Kept {
-    /// The lists the sources below were built from.
-    lists: Arc<AppLists>,
-    host_apps: Arc<HostApps>,
-    content: Option<Arc<IndexedContent>>,
-    files: Option<Arc<Files>>,
+    /// The reading of the host's apps the sources below were built from.
+    reading: Option<Arc<dyn Reading>>,
+    host_apps: Option<Held>,
+    content: Option<Held>,
+    files: Option<Held>,
     /// Settings' pages and the store's catalogue, for the workspace they were built for.
-    workspace: Option<(String, Arc<Settings>, Arc<StoreCatalogue>)>,
+    workspace: Option<(String, Held, Held)>,
 }
 
 /// The programs the person downloaded, as the registry last read them, and the session's published
@@ -145,7 +147,14 @@ struct DownloadedRows {
 
 /// The session's part in the desk's search.
 pub(crate) struct SessionSearch {
-    lists: Lists,
+    /// The apps this host lists, where it lists any.
+    apps_lists: Option<Arc<dyn Apps>>,
+    /// The model gateway this session's own questions run on, where it runs one.
+    models: Option<Arc<dyn crate::platform::Models>>,
+    /// What apps hold and what the person's files say, as this session reads them.
+    indexes: Option<Arc<dyn crate::platform::indexes::Index>>,
+    /// The settings this host offers search.
+    settings: Option<Arc<dyn Settings>>,
     /// The sources the person switched off, as kept: what the next search leaves out, and what a
     /// switch from search changes.
     preferences: RefCell<SearchPreferences>,
@@ -183,6 +192,14 @@ pub(crate) struct SessionSearch {
     wake: Option<tilo_service::Wake>,
 }
 
+/// What an app is called here, as the host's own lists name it: the answer a row says an app by.
+fn names(apps: Option<Arc<dyn Apps>>) -> impl Fn(&str) -> String + Send + Sync + 'static {
+    move |app: &str| match &apps {
+        Some(apps) => apps.name(app),
+        None => tilo_desktop_search::names::app_name(app),
+    }
+}
+
 /// The resource of the section keeping search's history.
 pub(crate) const HISTORY: &str = "settings:settings.search_history";
 
@@ -199,33 +216,38 @@ fn set_field(field: &str, value: &serde_json::Value) -> serde_json::Map<String, 
 impl SessionSearch {
     pub(crate) fn new(
         options: SearchOptions,
-        person: String,
+        person: &str,
         apps: Option<Rc<dyn AppActions>>,
         wake: Option<tilo_service::Wake>,
+        models: Option<Arc<dyn crate::platform::Models>>,
     ) -> Self {
         let SearchOptions {
-            lists,
-            content,
-            files,
+            apps: lists,
+            indexes,
+            settings,
             preferences,
             places,
             records,
         } = options;
-        let read = lists.latest();
+        let reading = lists.as_ref().map(|lists| lists.reading());
+        let indexed = indexes.as_ref().map(|indexes| indexes.of(person));
         let kept = Kept {
-            host_apps: Arc::new(HostApps::new(read.host_apps.clone(), &preferences)),
-            lists: read,
-            content: content.map(|index| Arc::new(IndexedContent::new(index, app_name, person))),
-            files: files.map(|(home, names, content)| Arc::new(Files::new(home, names, content))),
+            host_apps: reading.as_ref().map(|read| read.host_apps(&preferences)),
+            reading,
+            content: indexed.as_ref().map(|index| index.content()),
+            files: indexed.as_ref().and_then(|index| index.files()),
             workspace: None,
         };
         Self {
-            lists,
+            apps_lists: lists,
             preferences: RefCell::new(preferences),
             places: RefCell::new(places),
             usage: RefCell::new(None),
             unkept: Cell::new((false, false)),
             kept: RefCell::new(kept),
+            models,
+            indexes: indexed,
+            settings,
             apps,
             records,
             own: RefCell::default(),
@@ -247,14 +269,9 @@ impl SessionSearch {
         own: &[tilo_actions::ResourceSpec],
         open_tabs: Vec<u64>,
         downloaded: Option<downloaded_wire::DownloadedApps>,
+        notifications: Vec<tilo_actions::ResourceSpec>,
     ) {
-        *self.notifications.borrow_mut() = own
-            .iter()
-            .find(|resource| {
-                resource.id.as_str() == tilo_notifications_service::NOTIFICATIONS_RESOURCE
-            })
-            .map(|notifications| notifications.children.clone())
-            .unwrap_or_default();
+        *self.notifications.borrow_mut() = notifications;
         let mut published = tilo_actions::door::survey(own);
         // Search does not list itself, nor opening itself.
         published.retain(|action| {
@@ -272,7 +289,8 @@ impl SessionSearch {
         for action in &mut published {
             if matches!(
                 action.address.resource.as_str(),
-                tilo_surface_host::shell_part::DESK_RESOURCE | tilo_desktop_search::CHROME_RESOURCE
+                tilo_actions::remote::session_actions::DESK_RESOURCE
+                    | tilo_desktop_search::CHROME_RESOURCE
             ) {
                 action.resource_label.clear();
             }
@@ -287,7 +305,7 @@ impl SessionSearch {
                 .iter()
                 .filter(|action| {
                     let resource = action.address.resource.as_str();
-                    resource == registry::RESOURCE
+                    resource == downloaded_wire::RESOURCE
                         || resource.starts_with(downloaded_wire::APP_PREFIX)
                 })
                 .cloned()
@@ -323,8 +341,14 @@ impl SessionSearch {
         drop(preferences);
         // The machine's apps leave out what is switched off as they are built, so the search after
         // this one reads that list again.
-        let read = self.lists.latest();
-        self.kept.borrow_mut().host_apps = Arc::new(HostApps::new(read.host_apps.clone(), &next));
+        let reading = self.apps_lists.as_ref().map(|lists| lists.reading());
+        let host_apps = reading.as_ref().map(|read| read.host_apps(&next));
+        {
+            let mut kept = self.kept.borrow_mut();
+            kept.host_apps = host_apps;
+            kept.reading = reading;
+            kept.workspace = None;
+        }
         if let Err(error) = settings_store::update_section(preferences::SECTION, next.to_values()) {
             tracing::warn!(%error, "the search sources switched off are not kept");
         }
@@ -336,6 +360,7 @@ impl SessionSearch {
         let now = ui::time::unix_now();
         let (settings, catalogue) = self.for_workspace(workspace);
         let kept = self.kept.borrow();
+        let names = names(self.apps_lists.clone());
         // Every workspace's places name their workspace when the search is widened; the one in
         // front needs no name.
         let continue_places = match scope {
@@ -345,14 +370,14 @@ impl SessionSearch {
                 self.open_tabs.borrow().clone(),
                 self.workspaces.borrow().clone(),
                 now,
-                app_name,
+                names,
             ),
             _ => Continue::new(
                 &self.places.borrow(),
                 workspace,
                 self.open_tabs.borrow().clone(),
                 now,
-                app_name,
+                names,
             ),
         };
         let mut sources: Vec<Held> = vec![
@@ -360,12 +385,12 @@ impl SessionSearch {
                 scope.everywhere(),
                 self.here.borrow().clone(),
             )),
-            Held::new(settings),
-            Held::new(catalogue),
-            Held::from(Arc::clone(&kept.host_apps)),
             Held::new(Waiting::new(workspace, self.notifications.borrow().clone())),
             Held::new(continue_places),
         ];
+        sources.extend(settings);
+        sources.extend(catalogue);
+        sources.extend(kept.host_apps.clone());
         {
             let downloaded = self.downloaded.borrow();
             sources.push(Held::new(Downloaded::new(
@@ -374,12 +399,8 @@ impl SessionSearch {
                 &downloaded.published,
             )));
         }
-        if let Some(content) = &kept.content {
-            sources.push(Held::from(Arc::clone(content)));
-        }
-        if let Some(files) = &kept.files {
-            sources.push(Held::from(Arc::clone(files)));
-        }
+        sources.extend(kept.content.clone());
+        sources.extend(kept.files.clone());
         if let Some(records) = &self.records {
             sources.push(Held::new(record_rows::Records::new(
                 workspace,
@@ -486,20 +507,12 @@ impl SessionSearch {
         edits
     }
 
-    /// This device's app lists as last read: what a surface names an application by, without
-    /// reading the disk again.
-    pub(crate) fn app_lists(&self) -> Arc<AppLists> {
-        self.lists.latest()
-    }
-
     /// The agents, people and conversations `query` names, as a window's box lists whom a message
     /// could go to.
     pub(crate) fn recipients(&self, query: &str) -> Vec<ui::floating_surface::Recipient> {
-        self.kept
-            .borrow()
-            .content
+        self.indexes
             .as_ref()
-            .map_or_else(Vec::new, |content| content.recipients(query))
+            .map_or_else(Vec::new, |indexes| indexes.recipients(query))
     }
 
     /// The apps this session opens, for what it asks to be opened outside a search: a link a page
@@ -508,51 +521,45 @@ impl SessionSearch {
         self.apps.clone()
     }
 
-    /// The lists as last read, with the sources built from them rebuilt when they were read again
-    /// since: the machine's apps here, Settings and the catalogue at their workspace's next search.
-    fn current_lists(&self) -> Arc<AppLists> {
-        let latest = self.lists.latest();
+    /// The host's apps as last read, with the sources built from them rebuilt when they were read
+    /// again since: the machine's apps here, Settings and the catalogue at their workspace's next
+    /// search.
+    fn current_reading(&self) -> Option<Arc<dyn Reading>> {
+        let latest = self.apps_lists.as_ref().map(|lists| lists.reading());
         let mut kept = self.kept.borrow_mut();
-        if !Arc::ptr_eq(&latest, &kept.lists) {
-            kept.host_apps = Arc::new(HostApps::new(
-                latest.host_apps.clone(),
-                &self.preferences.borrow(),
-            ));
+        let same = match (&latest, &kept.reading) {
+            (Some(latest), Some(kept)) => latest.generation() == kept.generation(),
+            (None, None) => true,
+            _ => false,
+        };
+        if !same {
+            kept.host_apps = latest
+                .as_ref()
+                .map(|read| read.host_apps(&self.preferences.borrow()));
             kept.workspace = None;
-            kept.lists = Arc::clone(&latest);
+            kept.reading.clone_from(&latest);
         }
         latest
     }
 
     /// Settings and the catalogue for `workspace` , built once per workspace and reading of the
-    /// lists.
-    fn for_workspace(&self, workspace: &str) -> (Arc<Settings>, Arc<StoreCatalogue>) {
-        let lists = self.current_lists();
+    /// host's apps.
+    fn for_workspace(&self, workspace: &str) -> (Option<Held>, Option<Held>) {
+        let reading = self.current_reading();
         let mut kept = self.kept.borrow_mut();
         if let Some((built, settings, catalogue)) = &kept.workspace
             && built == workspace
         {
-            return (Arc::clone(settings), Arc::clone(catalogue));
+            return (Some(settings.clone()), Some(catalogue.clone()));
         }
-        // Settings the settings service changes in place are found as its actions.
-        let in_place: std::collections::HashSet<String> = self
-            .own
-            .borrow()
-            .iter()
-            .filter_map(|action| {
-                tilo_settings_service::setting_of(action.address.resource.as_str())
-                    .map(str::to_owned)
-            })
-            .collect();
-        let settings = Arc::new(Settings::changing_in_place(workspace, &|id| {
-            in_place.contains(id)
-        }));
-        let catalogue = Arc::new(StoreCatalogue::new(lists.catalogue.clone(), workspace));
-        kept.workspace = Some((
-            workspace.to_owned(),
-            Arc::clone(&settings),
-            Arc::clone(&catalogue),
-        ));
+        let settings = self
+            .settings
+            .as_ref()
+            .map(|settings| settings.source(workspace, &self.own.borrow()));
+        let catalogue = reading.as_ref().map(|read| read.catalogue(workspace));
+        if let (Some(settings), Some(catalogue)) = (&settings, &catalogue) {
+            kept.workspace = Some((workspace.to_owned(), settings.clone(), catalogue.clone()));
+        }
         (settings, catalogue)
     }
 
@@ -678,7 +685,7 @@ impl SessionSearch {
         if !path.exists() {
             return Err(DoorError::Failed(format!("{} is gone", path.display())));
         }
-        let uri = file_uri(&path);
+        let uri = tilo_desktop_search::file_uri(&path);
         self.with_apps(|apps| apps.open_uri(workspace, &uri))
     }
 
@@ -696,34 +703,33 @@ impl SessionSearch {
     }
 }
 
-impl SearchHost for SessionSearch {
-    /// The apps this session opens: every app of this device's lists, Tilo's own and the machine's,
-    /// each by the launch its own row starts. A window group's new tab and the empty desk's
-    /// launchpad search the applications alone, and the session's tile source lists none — the
-    /// session is what starts them — so this is what those searches offer.
+impl SessionSearch {
+    /// The apps this session offers: the host's installed and machine apps, each by the launch its
+    /// own row starts. A window group's new tab and the empty desk's launchpad search the
+    /// applications alone, and the session's tile source lists none — the session is what starts
+    /// them — so this is what those searches offer.
     fn applications(&self) -> Vec<tilo_desktop_search::providers::AppEntry> {
-        let lists = self.current_lists();
+        let Some(lists) = &self.apps_lists else {
+            return Vec::new();
+        };
         lists
-            .applications
-            .iter()
-            .map(|app| tilo_desktop_search::providers::AppEntry {
-                id: app.id.clone(),
-                title: app.title.clone(),
-                category: app.category.clone(),
-                description: app.description.clone(),
-            })
-            .chain(
-                lists
-                    .host_apps
-                    .iter()
-                    .map(|app| tilo_desktop_search::providers::AppEntry {
-                        id: format!("{}{}", host_apps::HOST_APP_PREFIX, app.desktop_id),
-                        title: app.name.clone(),
-                        category: app.generic_name.clone(),
-                        description: app.comment.clone(),
-                    }),
-            )
+            .applications()
+            .into_iter()
+            .chain(lists.host_apps().into_iter().map(|app| {
+                tilo_desktop_search::providers::AppEntry {
+                    id: format!("{}{}", host_apps::HOST_APP_PREFIX, app.desktop_id),
+                    title: app.name.clone(),
+                    category: app.generic_name.clone(),
+                    description: app.comment,
+                }
+            }))
             .collect()
+    }
+}
+
+impl SearchHost for SessionSearch {
+    fn applications(&self) -> Vec<tilo_desktop_search::providers::AppEntry> {
+        Self::applications(self)
     }
 
     fn feed(&self, workspace: &str, scope: &Scope) -> SearchHostFeed {
@@ -734,9 +740,16 @@ impl SearchHost for SessionSearch {
             Arc::clone(&self.ask),
             workspace,
             self.wake.clone(),
+            self.models.clone(),
         )));
         SearchHostFeed {
-            applications: self.kept.borrow().lists.applications.clone(),
+            // The apps installed here, which the palette offers as an app's row of its own: the
+            // machine's own apps are one of the sources below instead.
+            applications: self
+                .apps_lists
+                .as_ref()
+                .map(|lists| lists.applications())
+                .unwrap_or_default(),
             published,
             sources,
             preferences: self.preferences.borrow().clone(),
@@ -817,7 +830,7 @@ pub(crate) fn found_all(
     // same resource ranks above it (an action on it), which is what typing the text stands. A row
     // that names a resource a place cannot show (`session`'s own places, a record no app publishes
     // as placeable) stands in the way of nothing, exactly as it does on the canvas.
-    let lead = crate::arrangement::placed(&hits, text, shows);
+    let lead = tilo_session_core::arrangement::placed(&hits, text, shows);
     let mut out: Vec<Found> = Vec::new();
     for (at, hit) in hits.into_iter().enumerate() {
         let Some(found) = found_of(&hit) else {
@@ -910,6 +923,7 @@ fn found_of(hit: &tilo_desktop_search::Hit) -> Option<Found> {
 
 #[cfg(test)]
 mod tests {
+    use std::path::PathBuf;
     use std::time::{Duration, Instant};
 
     use tilo_desktop_search::providers::AppEntry;
@@ -962,10 +976,10 @@ mod tests {
     }
 
     /// The lists a test device has: an installed app and a host app for each line of `file` .
-    fn lists_in(file: PathBuf) -> impl Fn() -> AppLists + Send + Sync + 'static {
+    fn lists_in(file: PathBuf) -> impl Fn() -> crate::lists::AppLists + Send + Sync + 'static {
         move || {
             let text = std::fs::read_to_string(&file).unwrap_or_default();
-            AppLists {
+            crate::lists::AppLists {
                 applications: text
                     .lines()
                     .map(|name| AppEntry {
@@ -1014,7 +1028,7 @@ mod tests {
         let dir = tempfile::tempdir().expect("a directory");
         let file = dir.path().join("apps");
         std::fs::write(&file, "Sheets\n").expect("the first list");
-        let lists = Lists::follow(
+        let lists = crate::lists::Lists::follow(
             "search-lists-test",
             vec![dir.path().to_path_buf()],
             lists_in(file.clone()),
@@ -1022,10 +1036,11 @@ mod tests {
         .expect("lists followed");
         let search = SessionSearch::new(
             SearchOptions {
-                lists,
+                apps: Some(Arc::new(lists)),
                 ..SearchOptions::default()
             },
-            String::new(),
+            "",
+            None,
             None,
             None,
         );
@@ -1082,7 +1097,8 @@ mod tests {
                 records: Some(crate::records::Records::of(home.data().to_path_buf())),
                 ..SearchOptions::default()
             },
-            String::new(),
+            "",
+            None,
             None,
             None,
         );
@@ -1135,8 +1151,9 @@ mod tests {
                 records: Some(crate::records::Records::of(home.data().to_path_buf())),
                 ..SearchOptions::default()
             },
-            String::new(),
+            "",
             Some(Rc::new(Opening(Rc::clone(&opened)))),
+            None,
             None,
         );
         let row = Target::Invoke(Box::new(
@@ -1155,7 +1172,7 @@ mod tests {
             .expect("the record is brought here and opened");
         assert_eq!(
             opened.borrow().as_slice(),
-            [("here".to_owned(), file_uri(&file))],
+            [("here".to_owned(), tilo_desktop_search::file_uri(&file))],
             "the document is opened by its path, not by the record id's `file:/…`"
         );
 
@@ -1224,7 +1241,8 @@ mod tests {
                 places: recent,
                 ..SearchOptions::default()
             },
-            String::new(),
+            "",
+            None,
             None,
             None,
         );
@@ -1261,9 +1279,33 @@ mod tests {
 
     #[test]
     fn fixed_lists_keep_what_search_built_from_them() {
-        let search = SessionSearch::new(SearchOptions::default(), String::new(), None, None);
-        let before = Arc::clone(&search.kept.borrow().host_apps);
+        let lists = crate::lists::Lists::fixed(crate::lists::AppLists::default());
+        let search = SessionSearch::new(
+            SearchOptions {
+                apps: Some(Arc::new(lists)),
+                ..SearchOptions::default()
+            },
+            "",
+            None,
+            None,
+            None,
+        );
+        let before = search
+            .kept
+            .borrow()
+            .reading
+            .clone()
+            .expect("the reading the sources were built from")
+            .generation();
         let _ = search.feed("workspace", &Scope::Workspace);
-        assert!(Arc::ptr_eq(&before, &search.kept.borrow().host_apps));
+        let kept = search.kept.borrow();
+        assert_eq!(
+            before,
+            kept.reading
+                .clone()
+                .expect("still the same reading")
+                .generation(),
+            "a list that did not change is not read again"
+        );
     }
 }

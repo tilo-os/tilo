@@ -43,6 +43,26 @@ pub mod usage;
 pub mod window;
 pub mod workers;
 
+use std::path::Path;
+
+/// The `file://` address of `path`, as a row names a file it opens.
+#[must_use]
+pub fn file_uri(path: &Path) -> String {
+    use std::fmt::Write as _;
+    let mut uri = String::from("file://");
+    for byte in path.to_string_lossy().bytes() {
+        match byte {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'/' | b'-' | b'_' | b'.' | b'~' => {
+                uri.push(char::from(byte));
+            }
+            other => {
+                let _ = write!(uri, "%{other:02X}");
+            }
+        }
+    }
+    uri
+}
+
 pub use lazy::{
     DESKTOP_SEARCH, DesktopSearchApi, LazyDesktopSearch, MakeDesktopSearch, builtin_desktop_search,
 };

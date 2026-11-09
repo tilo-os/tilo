@@ -258,7 +258,7 @@ fn session_with_lists(lists: tilo_session::AppLists) -> Session {
     crate::common::headless(Options {
         collab: false,
         search: tilo_session::SearchOptions {
-            lists: tilo_session::Lists::fixed(lists),
+            apps: Some(std::sync::Arc::new(tilo_session::Lists::fixed(lists))),
             ..tilo_session::SearchOptions::default()
         },
         ..Options::default()

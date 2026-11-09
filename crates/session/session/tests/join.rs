@@ -190,7 +190,7 @@ fn serving(
         launches,
         state: state.map(Path::to_path_buf),
         search: SearchOptions {
-            lists,
+            apps: Some(std::sync::Arc::new(lists)),
             ..SearchOptions::default()
         },
         ..Options::default()

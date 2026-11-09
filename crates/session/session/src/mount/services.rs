@@ -329,7 +329,7 @@ pub(crate) fn start_action_plane(
             native_media: calls_service.clone(),
             // The index search reads is the one apps publish into: a closed app's content is found
             // from here on.
-            content: options.search.content.clone(),
+            content: Some(std::sync::Arc::clone(&options.content)),
             records,
             desk: std::sync::Arc::clone(&desk),
             shortcuts,
@@ -348,7 +348,7 @@ pub(crate) fn start_action_plane(
             journal_root: options.state.as_deref().map(plane::journal_root),
             // What each installed app declares it may do on the action door,
             // read by search's own worker off the session's thread.
-            lists: options.search.lists.clone(),
+            lists: options.lists.clone(),
             // Files' waits for the drive and app lists to change, which the tools service answers.
             tools,
             task_programs,

@@ -61,7 +61,9 @@ fn session() -> Session {
         search: tilo_session::SearchOptions {
             // The apps installed on this device, as a real session reads them: the launcher
             // opens them, and the desk names their windows by their own names.
-            lists: tilo_session::Lists::fixed(tilo_session::AppLists::read()),
+            apps: Some(std::sync::Arc::new(tilo_session::Lists::fixed(
+                tilo_session::AppLists::read(),
+            ))),
             ..tilo_session::SearchOptions::default()
         },
         services: vec![

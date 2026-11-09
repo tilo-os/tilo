@@ -27,6 +27,7 @@ use std::time::Duration;
 
 use tilo_actions::{ActionAddress, OperationKind, ResourceSpec, ResourceViewSpec};
 use tilo_compositor::OutputConfig;
+use tilo_session::mount::indexes::SessionIndexes;
 use tilo_session::{Options, Session};
 use tilo_surface_host::Published;
 
@@ -325,7 +326,7 @@ fn session_searching(
             state: None,
             collab: false,
             search: tilo_session::SearchOptions {
-                content: Some(index),
+                indexes: Some(std::sync::Arc::new(SessionIndexes::new(index, None))),
                 ..tilo_session::SearchOptions::default()
             },
             ..Options::default()

@@ -123,6 +123,10 @@ serde_json.workspace = true
 # search reads them from, as the apps that write them keep them.
 tilo-app-state = { path = "../../system/app-state" }
 tilo-sheets = { path = "../sheets" }
+# The models a session's own questions run on, and the person's provider settings: the same
+# gateway an app asks, reached on every host.
+agent-provider-config = { path = "../../agent/provider-config" }
+tilo-rt = { workspace = true }
 tokio = { workspace = true, features = ["sync"] }
 pollster.workspace = true
 tracing.workspace = true
@@ -178,12 +182,9 @@ tilo-workspace-join = { path = "../../collab/workspace-join" }
 tilo-delivery-protocol = { path = "../../hosting/tilo-delivery-protocol" }
 # The person's account with the host the session runs on, read live.
 tilo-host-account = { path = "../../hosting/tilo-host-account" }
-# The models an agent may plan with: the person's own provider settings.
-agent-provider-config = { path = "../../agent/provider-config" }
 # The session asks the model gateway as Activity, the way an app it starts
 # does, for the history's descriptions and group names.
 tilo-model-client = { path = "../../agent/model-client", features = ["runtime-client"] }
-tilo-rt = { workspace = true }
 # Who is here: the session's own membership of each workspace, on the
 # collaboration plane's peer actor.
 tilo-network-actor = { path = "../network-actor" }

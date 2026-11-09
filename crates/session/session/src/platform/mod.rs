@@ -17,6 +17,19 @@
 #[cfg(target_os = "linux")]
 pub mod session;
 
+/// What a host lists as apps.
+pub mod apps;
+
+/// What apps hold and what the person's files say, as this host indexes them.
+pub mod indexes;
+
+/// Where a session's own question is answered: the model gateway its host runs.
+pub trait Models: Send + Sync {
+    /// The capability a question asked in this session runs on; `None` while the person set no
+    /// provider up, or no gateway runs here.
+    fn models(&self) -> Option<ui::models::Models>;
+}
+
 /// A value the host keeps current: a directory of files it watches on a
 /// Linux desktop, the page's own store on the web.
 pub mod watched;

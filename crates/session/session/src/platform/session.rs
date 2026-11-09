@@ -183,7 +183,7 @@ impl Session {
         // ready, so the frame that painted the letter repaints with it; the
         // apps installed here are the lists' to resolve, on their worker.
         crate::app_icons::set_wake(options.wake.handle());
-        crate::app_icons::set_lists(options.search.lists.clone());
+        crate::app_icons::set_lists(options.lists.clone());
         let settings_watch = settings_store::watch::watch_settings(move || {
             let document = settings_store::load();
             *watched.lock_recover() =
@@ -228,7 +228,7 @@ impl Session {
                 .records
                 .as_ref()
                 .map(crate::records::Records::root),
-            options.search.lists.clone(),
+            options.lists.clone(),
             Some(options.wake.handle()),
         );
         tilo_startup_metrics::mark("session-activity-done");
@@ -492,7 +492,7 @@ impl Session {
                 std::sync::Arc::clone(engine)
                     as std::sync::Arc<dyn crate::record_index::RecordSource>,
                 std::sync::Arc::new(crate::record_index::AppReader::of_device()),
-                options.search.content.clone(),
+                Some(std::sync::Arc::clone(&options.content)),
             )
         });
         let record_changes = record_index.clone().map(|index| {
@@ -1141,11 +1141,17 @@ impl Session {
             notices.clone(),
         );
 
+        // The settings pages are this desktop's own: every session it runs offers them to search.
+        let mut search_options = options.search;
+        if search_options.settings.is_none() {
+            search_options.settings = Some(Arc::new(crate::lists::DesktopSettings));
+        }
         let search = Rc::new(SessionSearch::new(
-            options.search,
-            options.person.clone(),
+            search_options,
+            &options.person,
             options.apps,
             Some(options.wake.handle()),
+            Some(Arc::new(crate::activity_models::Gateway)),
         ));
         session_search.get_or_init(|| Rc::clone(&search));
         let asker = crate::questions::Asker::new(

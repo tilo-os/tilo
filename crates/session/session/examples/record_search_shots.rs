@@ -24,6 +24,7 @@ use tilo_compositor::OutputConfig;
 use tilo_desktop::desk_verbs::{DESK_RESOURCE, SEARCH_RESOURCE, SEARCH_ROW_KIND};
 use tilo_desktop_search::content_index::AppContentIndex;
 use tilo_desktop_search::providers::AppEntry;
+use tilo_session::mount::indexes::SessionIndexes;
 use tilo_session::{AppLists, Lists, Options, SearchOptions, Session};
 use ui::search::index_publication::{IndexDelta, IndexEntry, IndexKind, IndexPerson};
 
@@ -134,6 +135,23 @@ fn hold(content: &AppContentIndex, workspace: &str) {
     );
 }
 
+/// The session's search over the one app this example opens, and the index Chat publishes into.
+fn chat_search(content: &Arc<AppContentIndex>) -> SearchOptions {
+    SearchOptions {
+        apps: Some(Arc::new(Lists::fixed(AppLists {
+            applications: vec![AppEntry {
+                id: CHAT.to_owned(),
+                title: "Chat".to_owned(),
+                category: None,
+                description: None,
+            }],
+            ..AppLists::default()
+        }))),
+        indexes: Some(Arc::new(SessionIndexes::new(Arc::clone(content), None))),
+        ..SearchOptions::default()
+    }
+}
+
 fn main() -> std::process::ExitCode {
     // A session's workers are this same binary in their own modes, so it serves them first: a
     // worker that fell through to the capture would be a session starting inside a session's
@@ -157,19 +175,7 @@ fn main() -> std::process::ExitCode {
     let mut session = Session::headless(
         Options {
             presentation: ui::headless::fixture_runner_inputs,
-            search: SearchOptions {
-                lists: Lists::fixed(AppLists {
-                    applications: vec![AppEntry {
-                        id: CHAT.to_owned(),
-                        title: "Chat".to_owned(),
-                        category: None,
-                        description: None,
-                    }],
-                    ..AppLists::default()
-                }),
-                content: Some(Arc::clone(&content)),
-                ..SearchOptions::default()
-            },
+            search: chat_search(&content),
             person: "Ada".to_owned(),
             collab: false,
             ..Options::default()

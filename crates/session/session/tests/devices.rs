@@ -477,7 +477,7 @@ fn session_with(
                 moved: Rc::clone(&moved),
             })],
             search: tilo_session::SearchOptions {
-                lists: Lists::fixed(AppLists {
+                apps: Some(std::sync::Arc::new(Lists::fixed(AppLists {
                     applications: vec![AppEntry {
                         id: "so.tilo.settings".into(),
                         title: "Settings".into(),
@@ -485,7 +485,7 @@ fn session_with(
                         description: None,
                     }],
                     ..AppLists::default()
-                }),
+                }))),
                 ..tilo_session::SearchOptions::default()
             },
             apps: Some(host),

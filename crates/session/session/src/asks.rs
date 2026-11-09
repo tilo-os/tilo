@@ -18,8 +18,8 @@ use ui::shortcut_table::{FixedAction, ShortcutAction};
 use crate::i18n::{t, t_args};
 use crate::keys::Invocation;
 use crate::{
-    AppLists, Magnify, SessionAction, SessionCommand, Shared, identity, mount, people,
-    workspace_settings, workspaces,
+    Magnify, SessionAction, SessionCommand, Shared, identity, mount, people, workspace_settings,
+    workspaces,
 };
 
 /// How far a popover stands clear of the caret it was opened from, logical pixels.
@@ -534,7 +534,7 @@ impl Shared {
         tools: &mount::tools::Handle,
         media: Vec<mount::drives::Medium>,
     ) {
-        tools.saw_apps(&self.app_lists().tools);
+        tools.saw_apps(&crate::app_icons::app_lists().unwrap_or_default().tools);
         tools.saw_media(media);
         for ask in tools.take_asks() {
             let answered = match &ask {
@@ -570,11 +570,6 @@ impl Shared {
             self.personal.as_ref(),
             self.engine.as_deref(),
         )
-    }
-
-    /// This machine's applications, as the session's own lists read them.
-    fn app_lists(&self) -> std::sync::Arc<AppLists> {
-        self.search.app_lists()
     }
 
     /// Make a new workspace through the desk's own published action, so the rules and the naming

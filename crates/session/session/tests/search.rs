@@ -103,7 +103,7 @@ fn session_over(
 ) -> Session {
     crate::common::headless(Options {
         search: SearchOptions {
-            lists: Lists::fixed(AppLists {
+            apps: Some(std::sync::Arc::new(Lists::fixed(AppLists {
                 applications: vec![AppEntry {
                     id: "so.tilo.sheets".into(),
                     title: "Sheets".into(),
@@ -111,8 +111,12 @@ fn session_over(
                     description: None,
                 }],
                 ..AppLists::default()
+            }))),
+            indexes: content.map(|content| {
+                std::sync::Arc::new(tilo_session::mount::indexes::SessionIndexes::new(
+                    content, None,
+                )) as std::sync::Arc<dyn tilo_session::platform::indexes::Indexes>
             }),
-            content,
             records,
             ..SearchOptions::default()
         },
@@ -1068,10 +1072,7 @@ fn a_record_of_another_workspace_is_found_by_name_and_brought_here() {
     // a document by.
     assert_eq!(
         host.opened.borrow().clone(),
-        vec![(
-            here,
-            tilo_desktop_search::providers::files::file_uri(&document)
-        )],
+        vec![(here, tilo_desktop_search::file_uri(&document))],
         "the file the record is opens in this workspace"
     );
 }
@@ -1381,7 +1382,7 @@ fn the_palette_the_host_search_opens_takes_the_keys() {
 fn host_session(host: Rc<Host>) -> Session {
     let mut session = crate::common::headless(Options {
         search: SearchOptions {
-            lists: Lists::fixed(host_app_lists()),
+            apps: Some(std::sync::Arc::new(Lists::fixed(host_app_lists()))),
             ..SearchOptions::default()
         },
         apps: Some(host as Rc<dyn AppActions>),
@@ -1590,7 +1591,7 @@ fn a_search_row_for_an_app_starts_it_through_the_sessions_own_host() {
     ));
     let mut session = crate::common::headless(Options {
         search: SearchOptions {
-            lists: Lists::fixed(AppLists {
+            apps: Some(std::sync::Arc::new(Lists::fixed(AppLists {
                 applications: vec![AppEntry {
                     id: "so.tilo.lang.notes".into(),
                     title: "Notebook".into(),
@@ -1598,7 +1599,7 @@ fn a_search_row_for_an_app_starts_it_through_the_sessions_own_host() {
                     description: None,
                 }],
                 ..AppLists::default()
-            }),
+            }))),
             ..SearchOptions::default()
         },
         apps: Some(Rc::clone(&apps) as Rc<dyn AppActions>),
