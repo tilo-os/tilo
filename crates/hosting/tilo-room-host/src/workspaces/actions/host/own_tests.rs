@@ -146,9 +146,12 @@ async fn anyone_gets_one_workspace_of_their_own_and_administers_it() {
             .offer_own_workspaces(OwnWorkspaceOffer::free("tilo.test"))
             .unwrap()
     );
+    let mut offers = offered(&host, &guest, &caller(&guest)).await;
+    offers.sort();
     assert_eq!(
-        offered(&host, &guest, &caller(&guest)).await,
-        [CREATE_OWN_ROOM]
+        offers,
+        [CREATE_OWN_ROOM, tilo_relay_session::workspaces::LIST_ROOMS],
+        "a stranger makes and lists the workspace of their own, and nothing else"
     );
     let created = create_own(&host, &guest, json!({"name": "Ada's workspace"}))
         .await
@@ -303,7 +306,9 @@ async fn an_agents_grant_makes_its_persons_own_workspace_when_it_makes_workspace
         Some((MemberRole::Editor, true)),
         "its person is a member, who administers their own workspace"
     );
-    // Listing answers the grant's person only their own workspace.
+    // Listing answers the grant's person only their own workspace, not the
+    // host's others.
+    workspaces.create("Someone else's").await.unwrap();
     let mut list = own_request(json!({}));
     list.target.address.action = tilo_relay_session::workspaces::LIST_ROOMS.into();
     let listed = settled(host.as_host(&all).invoke(&agent, list))

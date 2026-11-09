@@ -235,6 +235,23 @@ impl Workspaces {
         self.inner.own.get()
     }
 
+    /// Whether `device` is shown `workspace` when it lists this host's
+    /// workspaces: the host's person every one, anyone else only the one of
+    /// their own, and an agent's grant only what its scope reaches.
+    pub(super) fn lists_to(
+        &self,
+        device: &tilo_user_identity::DeviceCert,
+        workspace: &str,
+    ) -> bool {
+        let theirs = device.user_public_key == self.inner.host.cert.user_public_key
+            || self.own_workspace_of(&device.user_public_key).as_deref() == Some(workspace);
+        theirs
+            && device
+                .capabilities
+                .agent
+                .is_none_or(|scope| scope.reaches(workspace))
+    }
+
     /// The workspace UUID of `person`'s own here, if they have one.
     #[must_use]
     pub fn own_workspace_of(&self, person: &[u8; 32]) -> Option<String> {

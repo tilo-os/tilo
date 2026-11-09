@@ -620,7 +620,10 @@ impl Workspaces {
             .collect::<Vec<_>>();
         let mut listed = Vec::with_capacity(workspaces.len());
         for workspace in workspaces {
-            listed.push(page_room(&*workspace.lock().await));
+            let workspace = workspace.lock().await;
+            if self.lists_to(device, workspace.workspace()) {
+                listed.push(page_room(&workspace));
+            }
         }
         Ok(WorkspacesReply::Workspaces(listed))
     }

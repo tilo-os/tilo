@@ -141,7 +141,11 @@ impl Workspaces {
         tilo_user_identity::verify_device_cert_at(device, now)
             .map_err(|error| CollaborationError::new(error.to_string()))?;
         if let WorkspaceOp::Host(operation) = op {
-            if operation == HostOperation::CreateOwnWorkspace && self.own().is_none() {
+            // What anyone may do here is for a host that keeps workspaces of
+            // people's own: making theirs, and listing it.
+            let anyones = operation == HostOperation::CreateOwnWorkspace
+                || (operation == HostOperation::ListWorkspaces && !relay_person);
+            if anyones && self.own().is_none() {
                 return Err(CollaborationError::new(
                     "this host keeps no workspaces of people's own",
                 ));
