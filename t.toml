@@ -292,6 +292,14 @@ when = { step = "suites" }
 git = true
 
 [[check.matrix.set]]
+when = { step = "test-cargo" }
+git = true
+
+[[check.matrix.set]]
+when = { step = "test-spawns" }
+git = true
+
+[[check.matrix.set]]
 when = { step = "too-many-arguments" }
 git = true
 
