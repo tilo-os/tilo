@@ -619,6 +619,19 @@ fn the_turn_reply_is_offered_chats_record_work_before_it_exists() {
         Some("Looking at your task list now."),
         "the reply says the agent's words"
     );
+    // The page names the agent the workspace keeps by the name its keeper gave it, "Assistant",
+    // never the slug its actor works as ("assistant"): the two are the record's display name and
+    // its id, and the byline reads the first.
+    let people = page["people"].as_array().cloned().unwrap_or_default();
+    let named = people
+        .iter()
+        .find(|person| person["id"].as_str() == Some(agent.as_str()))
+        .unwrap_or_else(|| panic!("the page names the agent {agent}: {page}"));
+    assert_eq!(
+        named["name"].as_str(),
+        Some("Assistant"),
+        "the agent's byline is the name its keeper gave it, never its id: {named}"
+    );
     // The turn is still going — the reply is `doing`, not finished — so the item keeps its
     // `record-work`: the agent's next record (what it did, and then its words at the end) has the
     // address it works from, exactly as the first did. An item that vanished with the reply's

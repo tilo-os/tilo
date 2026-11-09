@@ -212,14 +212,17 @@ impl Agents {
         {
             return Some(held.id.0.clone());
         }
-        let name = state.free_id(&crate::i18n::t_args(
+        // The name people read the agent by is the workspace's word for it ("Assistant"); its id,
+        // the actor it works as, is that name's slug, told apart from any agent already holding
+        // it. The two are different strings: naming the agent by the slug showed every member
+        // "assistant" where its keeper meant "Assistant".
+        let display = tilo_resource::NonBlank::parse(&crate::i18n::t_args(
             "session-agent-name",
             &[("number", 1i64.into())],
-        ));
-        let name = tilo_resource::NonBlank::parse(&name)?;
-        let id = record.get().free_id(name.as_str());
+        ))?;
+        let id = record.get().free_id(display.as_str());
         let made = record.invoke(&Record::CREATE_AGENT.with(actions::CreateAgent {
-            name,
+            name: display,
             keeper: Some(person.to_owned()),
             id: Some(id.clone()),
             model: None,
