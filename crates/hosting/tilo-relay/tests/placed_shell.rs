@@ -1,32 +1,34 @@
 //! A workspace's shell command runs on the VM host that holds the workspace's
-//! VM: the host asks the placer which one, waits while none has room, and
-//! asks that VM host's member device, a device of the host's own operator
-//! admitted to the workspace, to run it over the device plane. The command
-//! works on the member's copy of the workspace's files, and its output comes
-//! back as the run.
+//! VM: the relay asks the placer which host runs it, waits while none has
+//! room, and asks that VM host's member device, a device of the relay's own
+//! person, to run it over the device plane. The member holds the workspace as
+//! any member does — entering it the first time the relay asks about it, with
+//! the invitation the relay's own `room.enter` answers — and its command works
+//! on the member's copy of the workspace's files, its output coming back as
+//! the run.
 
 #![allow(
     clippy::significant_drop_tightening,
-    reason = "the host and its routers stay up until the test ends"
+    reason = "the host, the member and their routers stay up until the test ends"
 )]
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::time::Duration;
 
+use iroh::{EndpointAddr, EndpointId};
 use legacy_vm::hosted::control::{self, Reply, Request};
 use legacy_vm::hosted::size::VmSize;
-use tilo_clock::unix_now_ns;
-use tilo_peer_state::actions::{ACTIONS_ALPN, ActionPlane};
-use tilo_peer_state::direct::Replica;
-use tilo_peer_state::join::{MemberRole, decode_and_verify_invitation};
-use tilo_peer_state::{SeedState, StatePeer, seed_workspace};
+use tilo_actions::InvocationId;
+use tilo_actions::remote::environment_runs::{self, RunCommand};
+use tilo_actions::remote::{
+    ActionHost as _, ActionHostError, Caller, InvokeArgument, InvokeRequest,
+};
+use tilo_peer_state::actions::{ActionPlane, NoActions};
 use tilo_relay::host::HostMode;
 use tilo_relay::placed_shells::{Member, Members, PlacedShells};
-use tilo_relay::workspace_join::WorkspaceJoinClient;
-use tilo_relay::workspaces::IssueInvitationRequest;
-use tilo_user_identity::{DeviceCapabilities, RevocationList};
-use ush::environment_runs::EnvironmentRuns;
-use ush::workspace_shell::WorkspaceShells;
+use tilo_runtime::standalone::take_work;
+use tilo_user_identity::DeviceCapabilities;
 
 use crate::common::{Hosted, TestDevice, TestUser, device_endpoint, host_on};
 
@@ -61,73 +63,57 @@ fn placer() -> (String, Arc<AtomicUsize>) {
     (address, asked)
 }
 
-/// Admit `member` to `workspace` through the join exchange the host answers.
-async fn admitted(
-    hosted: &Hosted,
-    workspace: &str,
-    operator: &TestUser,
-    member: &TestDevice,
-    endpoint: &iroh::Endpoint,
-) {
-    let invitation = hosted
-        .host
-        .workspaces()
-        .issue(
-            workspace,
-            hosted.host.device_cert(),
-            IssueInvitationRequest {
-                request_id: [5; 32],
-                role: MemberRole::Editor,
-                recipient_user_public_key: Some(operator.user_pk),
-                invitee_name: None,
-                expires_at_ns: unix_now_ns().checked_add(600_000_000_000).unwrap(),
-                inviter_name: None,
-            },
-        )
-        .await
-        .unwrap();
-    let verified = decode_and_verify_invitation(
-        &invitation.signed_invitation,
-        Some(operator.user_pk),
-        &RevocationList::new(),
-        unix_now_ns(),
-    )
-    .unwrap();
-    WorkspaceJoinClient::new(endpoint.clone())
-        .redeem_hint(
-            &verified.grant().transport[0],
-            invitation.signed_invitation,
-            member.cert.clone(),
-            &member.sk,
-            [8; 32],
-        )
-        .await
-        .unwrap();
+/// The `host:port` an endpoint of this process listens on, as a relay's
+/// members file names a member.
+fn address_of(endpoint: &iroh::Endpoint) -> String {
+    let socket = endpoint
+        .bound_sockets()
+        .into_iter()
+        .find(std::net::SocketAddr::is_ipv4)
+        .expect("the endpoint listens on IPv4");
+    format!("127.0.0.1:{}", socket.port())
 }
 
-/// The member's replica of `workspace`, holding the host's device and its own.
-fn replica(member: &TestDevice, host: &TestDevice, workspace: &str) -> Replica {
-    let now = std::time::SystemTime::now();
-    let roster = vec![member.cert.clone(), host.cert.clone()];
-    let mut peer = StatePeer::new(
-        workspace,
-        member.cert.clone(),
-        roster.clone(),
-        RevocationList::new(),
-        now,
+/// The `host:port` a host of this process is reached at.
+fn host_address(hosted: &Hosted) -> String {
+    address_of(hosted.router.endpoint())
+}
+
+/// `device`'s address, as the relay reaches the member it asks.
+fn member_at(device: &TestDevice, address: &str) -> EndpointAddr {
+    let id = EndpointId::from_bytes(&device.device_pubkey()).unwrap();
+    EndpointAddr::from_parts(
+        id,
+        std::net::ToSocketAddrs::to_socket_addrs(address)
+            .unwrap()
+            .map(iroh::TransportAddr::Ip),
     )
+}
+
+/// A run of `command` in a session, as the relay asks it.
+fn run_request(session: &str, command: &str) -> InvokeRequest {
+    let argument = serde_json::to_value(RunCommand {
+        session: session.into(),
+        command: command.into(),
+        agent: true,
+        account: "acct-1".into(),
+        size: "small".into(),
+    })
     .unwrap();
-    peer.select_admission_v5().unwrap();
-    peer.install_seed(
-        SeedState {
-            workspace_changes: seed_workspace(workspace, &member.cert, &roster).unwrap(),
-            documents: Vec::new(),
-        },
-        &member.sk,
-        now,
-    )
-    .unwrap();
-    Replica::new(peer)
+    let serde_json::Value::Object(argument) = argument else {
+        panic!("a run's argument is an object");
+    };
+    InvokeRequest {
+        target: environment_runs::target(),
+        argument: InvokeArgument::Json(argument),
+        invocation: InvocationId::new(),
+        context: None,
+        confirmation: None,
+        revision: None,
+        on_behalf_of: None,
+        wait_ms: None,
+        appearance: None,
+    }
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -144,36 +130,28 @@ async fn a_command_runs_on_the_vm_host_holding_the_workspace() {
         .unwrap()
         .workspace;
 
-    // The VM host is a member device of the workspace, holding its files:
-    // its plane answers the host's runs with the workspace's shells there.
-    let files = tempfile::tempdir().unwrap();
+    // The VM host is a member device that takes work: it holds the workspace
+    // the relay places on it as any member does, entering it the first time
+    // the relay asks about it, and answers the relay's runs with the
+    // workspace's shells on its own copy of the files.
+    let profile = tempfile::tempdir().unwrap();
     let member_endpoint = device_endpoint(&vm_host).await;
-    admitted(&hosted, &workspace, &operator, &vm_host, &member_endpoint).await;
-    let replicas = files.path().join("replicas");
-    let runs = EnvironmentRuns::new(
-        WorkspaceShells::new(files.path().join("shells"), None)
-            .with_files(move |workspace| replicas.join(workspace)),
-        operator.user_pk,
-    );
-    let plane = ActionPlane::new(vm_host.sk.clone(), Arc::new(runs));
-    plane.hold(replica(&vm_host, &desk, &workspace));
-    let member_router = iroh::protocol::Router::builder(member_endpoint.clone())
-        .accept(ACTIONS_ALPN, plane)
-        .spawn();
-    let member_address = member_endpoint
-        .bound_sockets()
-        .into_iter()
-        .find(std::net::SocketAddr::is_ipv4)
-        .map(|socket| format!("127.0.0.1:{}", socket.port()))
-        .unwrap();
+    let member_address = address_of(&member_endpoint);
+    let member = take_work::Member::open(
+        profile.path(),
+        (vm_host.sk.clone(), vm_host.cert.clone()),
+        member_endpoint.clone(),
+        take_work::Relay::new(&hex::encode(desk.device_pubkey()), &host_address(&hosted)).unwrap(),
+    )
+    .unwrap();
 
-    // The host knows its VM hosts' members, and asks the placer.
+    // The relay knows its VM hosts' members, and asks the placer.
     let (placer, asked) = placer();
     let members = Members::from([(
         VM_HOST.to_owned(),
         Member {
             device: hex::encode(vm_host.device_pubkey()),
-            address: member_address,
+            address: member_address.clone(),
         },
     )]);
     let shells = Arc::new(PlacedShells::new(
@@ -187,6 +165,8 @@ async fn a_command_runs_on_the_vm_host_holding_the_workspace() {
         hosted.router.endpoint().clone(),
     );
 
+    // Nothing in this test admitted the member to the workspace: the relay's
+    // first run is what makes it enter, and that run is answered.
     let ran = {
         let (shells, workspace) = (Arc::clone(&shells), workspace.clone());
         tokio::task::spawn_blocking(move || {
@@ -216,16 +196,9 @@ async fn a_command_runs_on_the_vm_host_holding_the_workspace() {
         "asked again once there was room"
     );
     assert_eq!(
-        std::fs::read_to_string(
-            files
-                .path()
-                .join("replicas")
-                .join(&workspace)
-                .join("out/artifact")
-        )
-        .unwrap(),
+        std::fs::read_to_string(member.files(&workspace).join("out/artifact")).unwrap(),
         "built\n",
-        "the command worked on the VM host's copy of the workspace's files"
+        "the command worked on the VM host's own copy of the workspace's files"
     );
 
     // The session's shell lives on there: the next command starts where
@@ -240,6 +213,65 @@ async fn a_command_runs_on_the_vm_host_holding_the_workspace() {
     let output = String::from_utf8(again.output).unwrap();
     assert!(output.trim_end().ends_with("/out"), "{output}");
 
-    member_router.shutdown().await.unwrap();
+    // A device of another person asking the member for the workspace's shell
+    // is refused there: it takes the work of its own person's workspaces only.
+    let stranger = TestUser::fresh("stranger").enrol("laptop", DeviceCapabilities::member());
+    let stranger_endpoint = device_endpoint(&stranger).await;
+    let asking = ActionPlane::new(stranger.sk.clone(), Arc::new(NoActions));
+    let member_device = asking.remote(
+        &stranger_endpoint,
+        &member_at(&vm_host, &member_address),
+        &workspace,
+    );
+    let answered = match member_device
+        .invoke(
+            &Caller::local_app("tilo.relay"),
+            run_request("run:2", "echo stranger > stranger.txt"),
+        )
+        .wait_timeout(Duration::from_secs(30))
+    {
+        Ok(Some(answered)) => answered,
+        _ => panic!("the member's plane answers, and refuses it"),
+    };
+    let refused = match answered {
+        Ok(receipt) => panic!(
+            "a device of another person runs nothing here: {:?}",
+            receipt.status
+        ),
+        Err(error) => error,
+    };
+    assert!(
+        matches!(refused, ActionHostError::NotPermitted),
+        "the member refuses a device of another person: {refused:?}"
+    );
+    assert!(
+        !member.files(&workspace).join("stranger.txt").exists(),
+        "nothing ran on the member for another person"
+    );
+
+    // A workspace the relay places here later is entered the same way: the
+    // member takes the work of every workspace the relay governs, not only
+    // the first it heard of.
+    let later = hosted
+        .host
+        .workspaces()
+        .create("Second")
+        .await
+        .unwrap()
+        .workspace;
+    let ran = {
+        let (shells, later) = (Arc::clone(&shells), later.clone());
+        tokio::task::spawn_blocking(move || shells.run(&later, "run:1", "pwd", true))
+            .await
+            .unwrap()
+            .unwrap()
+    };
+    assert_eq!(ran.exit, 0);
+    assert_eq!(
+        String::from_utf8(ran.output).unwrap().trim_end(),
+        member.files(&later).to_string_lossy(),
+        "the second workspace's shell runs in its own files here"
+    );
+
     hosted.stop().await;
 }

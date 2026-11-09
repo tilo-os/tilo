@@ -457,6 +457,16 @@ way a device serves its own:
 - A legacy launch goes to a member that advertises `kvm`; its windows reach
   the requester as a window stream (`surface_stream`), with input routed back.
 
+A member holds a workspace as any device does, so its device plane admits the
+relay's runs. The first time the relay asks about a workspace it placed on the
+member, the member enters it: it asks the relay's own `room.enter`, which
+answers an invitation naming the member's person, and redeems it as a device
+joins any workspace. The relay decides which member may enter which
+workspace, never the request: a device of another person asking the member
+gets nothing from it, and a workspace the relay does not govern is refused
+there and remembered for a while, so nothing that names workspaces makes the
+member ask again and again.
+
 ## Terminal
 
 `terminal.session` gains `target: Target` (`Host | Environment { record } |
