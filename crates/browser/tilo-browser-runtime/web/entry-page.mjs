@@ -1036,7 +1036,11 @@ export async function startEntryPage({mode}) {
       }
       const identity = currentIdentity() ?? await browserIdentity({create: false});
       const kept = identity && hostToReconnect(origin, identity.userPublicKey);
-      if (!kept) return null;
+      if (!kept) {
+        console.warn('reconnect: this browser kept nothing to reconnect to this host with',
+          identity ? 'as this person' : 'and holds no person');
+        return null;
+      }
       displayName = chosenDisplayName(identity.userPublicKey) ?? defaultDisplayName(identity.userPublicKey);
       if (kept.owner) {
         // On a machine of their own the owner enters any of its workspaces
