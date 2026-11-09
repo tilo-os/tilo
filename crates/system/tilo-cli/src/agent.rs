@@ -809,7 +809,7 @@ mod login_tests {
         assert_eq!((found.name.as_str(), found.tool), ("Cursor", None));
         let goose = Process {
             comm: "goose".into(),
-            args: vec!["/Users/me/.local/bin/goose".into(), "session".into()],
+            args: vec!["/Users/you/.local/bin/goose".into(), "session".into()],
         };
         assert_eq!(detect(&none, vec![goose]).name, "Goose");
         assert_eq!(detect(&none, vec![shell]).name, UNKNOWN_AGENT);
