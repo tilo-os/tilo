@@ -20,7 +20,7 @@ use tilo_desktop_model::ownership::{DESKTOP_APP, DESKTOP_RECORD};
 use tilo_desktop_model::shared_record::{self, device};
 use tilo_desktop_model::{DesktopTree, Workspace, WorkspaceId, peer_salt_of};
 
-use tilo_action_broker::owner_commits::OwnerCustody as _;
+use tilo_broker_core::custody::OwnerCustody as _;
 
 use crate::engine::{Engine, SealKeys};
 use crate::sync::Client as Sync;

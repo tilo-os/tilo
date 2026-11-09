@@ -395,7 +395,7 @@ impl Engine {
         changes: &[u8],
         sealed: Option<&channel_crypto::ChannelContentKeys>,
     ) -> Result<(), String> {
-        use tilo_action_broker::owner_commits::OwnerCustody as _;
+        use tilo_broker_core::custody::OwnerCustody as _;
         let key = self.identity.device_signing_key.clone();
         let now = SystemTime::now();
         let artifact = collab_types::document_artifact_id(app, &workspace.to_string(), record);
@@ -1126,7 +1126,7 @@ impl Engine {
 /// canonical copy of every workspace it holds, and what it commits leaves on the plane's session
 /// with the workspace's host.
 #[cfg(target_os = "linux")]
-impl tilo_action_broker::owner_commits::OwnerCustody for Engine {
+impl tilo_broker_core::custody::OwnerCustody for Engine {
     /// A held workspace whose host takes part in no channels: its records are documents the owner
     /// commits, never sealed channels.
     fn commits_documents(&self, workspace_id: WorkspaceId) -> bool {
@@ -1313,7 +1313,7 @@ mod tests {
 
     #[test]
     fn a_workspace_this_device_hosts_names_its_own_host_and_commits_here() {
-        use tilo_action_broker::owner_commits::OwnerCustody as _;
+        use tilo_broker_core::custody::OwnerCustody as _;
 
         let state = tempfile::tempdir().expect("a state directory");
         let (identity, _) = identity(DeviceCapabilities::member());
@@ -1338,7 +1338,7 @@ mod tests {
 
     #[test]
     fn a_workspace_this_device_hosts_without_an_address_commits_here() {
-        use tilo_action_broker::owner_commits::OwnerCustody as _;
+        use tilo_broker_core::custody::OwnerCustody as _;
 
         let state = tempfile::tempdir().expect("a state directory");
         let (identity, _) = identity(DeviceCapabilities::member());

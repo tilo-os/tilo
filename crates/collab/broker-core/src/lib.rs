@@ -9,6 +9,7 @@
 //! here.
 
 pub mod actor;
+pub mod custody;
 pub mod published;
 pub mod route;
 pub mod steps;

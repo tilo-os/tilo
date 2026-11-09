@@ -17708,6 +17708,7 @@ name = "tilo-broker-core"
 version = "0.1.0"
 dependencies = [
  "collab-types",
+ "ed25519-dalek 3.0.0",
  "getrandom 0.4.3",
  "hex",
  "serde",
@@ -17715,6 +17716,7 @@ dependencies = [
  "tilo-action-policy",
  "tilo-actions",
  "tilo-desktop-model",
+ "tilo-peer-state",
  "tokio",
  "workspace-hack",
 ]
