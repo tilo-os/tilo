@@ -52,6 +52,14 @@ impl Publication for Published {
     fn pending(&self) -> bool {
         self.publications.borrow().is_building()
     }
+
+    fn settle(&self) -> bool {
+        !self
+            .publications
+            .borrow_mut()
+            .settle(&self.host, &self.planner)
+            .is_empty()
+    }
 }
 
 impl Platform for Packages {

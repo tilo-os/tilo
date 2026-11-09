@@ -974,6 +974,14 @@ impl Host {
         self.inner.store.poll_index()
     }
 
+    /// Whether the store still owes an index: one is being built off the frame, or waits for
+    /// the record it is built from (see [`TiloStore::index_pending`]). A window read before then
+    /// shows the part of the workspace the index has read so far.
+    #[must_use]
+    pub fn index_pending(&self) -> bool {
+        self.inner.store.index_pending()
+    }
+
     /// Wait for the indexes being built and take them in: for a host without frames.
     pub fn wait_index(&self) -> bool {
         self.inner.store.wait_index()

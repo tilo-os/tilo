@@ -155,6 +155,16 @@ impl TiloStore {
         self.held().apps.values().all(AppIndex::answers)
     }
 
+    /// Whether the store still owes an index: one is being derived off the frame, or waits for
+    /// the record it is built from. Until it has them, the rows, counts and lists a window reads
+    /// are of the part of the workspace read so far, so a frame taken then is not the frame of
+    /// the workspace the record holds.
+    #[must_use]
+    pub fn index_pending(&self) -> bool {
+        let held = self.held();
+        held.chunks.has_record() && held.apps.values().any(|held| !held.ready())
+    }
+
     /// Whether every index read from covers the record: it is read from, every chunk the
     /// manifest names is either held and derived or, not held, stamped by the index an earlier
     /// run kept, and no chunk the store holds is left to derive. Until it does, a length or

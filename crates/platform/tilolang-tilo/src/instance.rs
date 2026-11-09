@@ -93,6 +93,13 @@ pub trait Publication {
     fn update(&self);
     /// Whether records are still being read off the frame.
     fn pending(&self) -> bool;
+    /// Bring what is published up to date, waiting for the records being read off the frame:
+    /// for an embedder with no frame to take them in on, which reads what is published once it
+    /// covers the record. Whether what is published changed.
+    fn settle(&self) -> bool {
+        self.update();
+        false
+    }
     /// How many records the updates so far have looked at, one per record per turn: what
     /// publishing a change costs, whatever the workspace holds.
     fn visited(&self) -> u64 {
@@ -2084,6 +2091,32 @@ impl Instance {
     pub fn took_record(&mut self) {
         self.opening = false;
         self.record_loader = None;
+    }
+
+    /// Whether work is still under way off the frame that changes what the window shows: an
+    /// index the store is deriving, or records the publication is reading. A window drawn while
+    /// it is has not read the workspace the record holds.
+    #[must_use]
+    pub fn pending(&self) -> bool {
+        self.host().is_some_and(|host| host.index_pending())
+            || self
+                .publication
+                .as_ref()
+                .is_some_and(|publication| publication.pending())
+    }
+
+    /// Wait for the work under way off the frame and take it in, so that what the window shows
+    /// next is read from indexes and a publication that cover the record: for an embedder with
+    /// no frame to take them in on. Whether what the window shows may have moved.
+    pub fn settle_pending(&mut self) -> bool {
+        let indexed = self.host().is_some_and(|host| host.wait_index());
+        let published = self
+            .publication
+            .as_ref()
+            .is_some_and(|publication| publication.settle());
+        let moved = indexed || published;
+        self.moved |= moved;
+        moved
     }
 
     /// The second half of a frame: what the person did and what the door answered, run in the

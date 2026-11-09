@@ -162,7 +162,8 @@ impl Staged {
 }
 
 /// How often the window and its instance may answer each other before a frame is taken as it
-/// is: the rows a list shows, then the rows those rows show.
+/// is: the rows a list shows, then the rows those rows show. A round runs only when one of them
+/// has something to say, so a window settles in one when neither has.
 const EXCHANGES: usize = 8;
 
 /// What a window is staged over and for, beyond its app, its packages and its size: the
@@ -260,9 +261,7 @@ impl Staged {
         // The window is laid out for a still picture: no frame comes to take in the indexes
         // its load builds off the frame, so they are waited for, as a host without frames
         // waits for them. Until then the window would show the platform's loading state.
-        if let Some(host) = instance.host() {
-            host.wait_index();
-        }
+        instance.settle_pending();
         // Counted from the first frame: a workspace's opening is what it costs to open.
         if staging.costs
             && let Some(host) = instance.host()
@@ -341,14 +340,24 @@ impl Staged {
 
     /// Let the window and its instance answer each other until neither has more to say, laying
     /// the window out after each answer.
+    ///
+    /// Settled is: nothing the window shows is still being read off the frame — an index the
+    /// store derives, records it publishes — the window owes the app no message (the space a
+    /// frame gave a view, rows a list asked for), and the app has nothing that moves what it
+    /// shows. A frame taken before then is a frame of a workspace read so far, or of a list whose
+    /// rows the app has not sent yet: it would be a different frame on another run. What is
+    /// awaited is awaited on its own signal, never by letting more rounds pass.
     fn exchange(&mut self) {
         for _ in 0..EXCHANGES {
+            self.instance.settle_pending();
             if let Some(window) = self.window() {
                 window.flush();
             }
             let moved = self.instance.update();
             let received = self.window().is_some_and(AppWindow::receive);
-            if !moved && !received {
+            let owing =
+                self.window().is_some_and(|window| window.owes()) || self.instance.pending();
+            if !moved && !received && !owing {
                 break;
             }
             self.harness.relayout();
@@ -2225,5 +2234,182 @@ mod tests {
             })
         });
         published || node.children.iter().any(|child| shows_open(child, label))
+    }
+
+    /// A window is staged from a scenario whose changes the store derives off the frame: its
+    /// frame is read only once none of it is still being read, so the same record and scenario
+    /// show the same frame on every run, whatever thread finished when. Read while an index is
+    /// still being derived, the window shows the platform's loading state or a part of the
+    /// workspace, and a check of it finds what no person would see.
+    #[test]
+    fn a_staged_window_settles_on_the_workspace_before_its_frame_is_read() {
+        tilo_ui_host::i18n::ensure();
+        let packages = app_packages("tasks");
+        let app = packages.0.last().expect("the app").meta.app.clone();
+        for scenario in ["a task that is late", "a busy week"] {
+            let mut staged = Staged::over(
+                &app,
+                &packages,
+                scenario,
+                (320, 568),
+                ui::Theme::light(),
+                None,
+                &[],
+            )
+            .expect("the scenario stages");
+            assert!(
+                !staged.instance.pending(),
+                "the staged \"{scenario}\" window still reads the workspace off the frame"
+            );
+            staged
+                .lay_out(
+                    (320, 568),
+                    ui::Theme::light(),
+                    InteractionEnvironment::TOUCH,
+                    1.5,
+                )
+                .expect("lays out");
+            // Laid out, the frame is the person's: the store has read the record whole, nothing
+            // it publishes is being read, and the window owes the app no message that would
+            // change what it shows.
+            assert!(
+                !staged.instance.pending(),
+                "the \"{scenario}\" window is laid out before the store read it whole"
+            );
+            assert!(
+                !staged.window().expect("a window").owes(),
+                "the \"{scenario}\" window is laid out while it still owes the app rows"
+            );
+            // What the frame shows is the workspace's: a workspace read so far shows the
+            // platform's loading state instead of its rows.
+            assert!(
+                !staged.rows().is_empty(),
+                "the \"{scenario}\" window shows no row of a workspace it has read"
+            );
+        }
+        // A store that owes an index is waited for: an index of another schema is derived off
+        // the frame, as one is when a later build of the app declares another, and the frame
+        // read then is the frame of a window that has read nothing.
+        let mut staged = Staged::over(
+            &app,
+            &packages,
+            "a task that is late",
+            (320, 568),
+            ui::Theme::light(),
+            None,
+            &[],
+        )
+        .expect("the scenario stages");
+        let host = staged.instance.host().expect("a host");
+        host.store().open_index(&app, "{}");
+        assert!(
+            staged.instance.pending(),
+            "an index of another schema is derived off the frame"
+        );
+        // The window and its instance answer each other at once, as a frame does: what the
+        // store is deriving is taken in before the answer is read, and the frame after it is the
+        // window's.
+        staged.exchange();
+        assert!(
+            !staged.instance.pending(),
+            "the window is answered while the store still owes the index it shows"
+        );
+        staged
+            .lay_out(
+                (320, 568),
+                ui::Theme::light(),
+                InteractionEnvironment::TOUCH,
+                1.5,
+            )
+            .expect("lays out");
+        assert!(
+            !staged.instance.pending(),
+            "the window is laid out while the store still owes the index it shows"
+        );
+    }
+
+    /// A task's check box is a finger's width wherever a person reaches it: on the page a row
+    /// opens as, and in the row that stands open where it is — at every window and text size a
+    /// finger holds one in. A frame read before the store had read the workspace, or before the
+    /// app had answered the rows a frame of it asked for, once showed it a pixel short: the
+    /// check reaches the same frame on every run, and the box on it is a target.
+    #[test]
+    fn a_tasks_check_box_is_a_target_at_every_layout_a_finger_reaches_it_in() {
+        tilo_ui_host::i18n::ensure();
+        let packages = app_packages("tasks");
+        let app = packages.0.last().expect("the app").meta.app.clone();
+        let mut short = Vec::new();
+        for (width, height) in [(320_u32, 568_u32), (768, 1024)] {
+            let layouts: Vec<crate::layout_check::Layout> = crate::layout_check::layouts()
+                .into_iter()
+                .filter(|layout| layout.size.width == width && layout.size.height == height)
+                .filter(|layout| {
+                    (layout.text_scale - 1.5).abs() < f32::EPSILON
+                        || (layout.display_scale - 1.5).abs() < f64::EPSILON
+                })
+                .collect();
+            let first = layouts[0];
+            let mut staged = Staged::over(
+                &app,
+                &packages,
+                "a task that is late",
+                (width, height),
+                first.theme(),
+                None,
+                &[],
+            )
+            .expect("the scenario stages");
+            staged
+                .lay_out(
+                    (width, height),
+                    first.theme(),
+                    first.input(),
+                    first.display_scale,
+                )
+                .expect("lays out");
+            // The task the scenario answers with opens where it stands, or as a page of its own
+            // from the list a finger comes back to.
+            staged
+                .press_bar_slot(ui::widget::WINDOW_BACK)
+                .expect("back to the list");
+            staged
+                .lay_out(
+                    (width, height),
+                    first.theme(),
+                    first.input(),
+                    first.display_scale,
+                )
+                .expect("lays out");
+            if let Some(at) = crate::layout_check::tappable_row(&staged, (width, height)) {
+                staged.tap_at(at).expect("the row opens");
+            }
+            for layout in layouts {
+                staged
+                    .lay_out(
+                        (layout.size.width, layout.size.height),
+                        layout.theme(),
+                        layout.input(),
+                        layout.display_scale,
+                    )
+                    .expect("lays out");
+                let root = &staged.harness().inspection().root;
+                for problem in crate::layout_check::audit::inspect(
+                    root,
+                    (layout.size.width, layout.size.height),
+                    Some(48.0),
+                    layout.display_scale,
+                )
+                .into_iter()
+                .filter(|problem| problem.kind == crate::layout_check::Kind::SmallHitTarget)
+                {
+                    short.push(format!("{layout}: {} {}", problem.widget, problem.detail));
+                }
+            }
+        }
+        assert!(
+            short.is_empty(),
+            "a check box a finger cannot reach:\n  {}",
+            short.join("\n  ")
+        );
     }
 }

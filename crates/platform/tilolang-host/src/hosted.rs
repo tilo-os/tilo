@@ -266,6 +266,15 @@ impl Publication for Held {
         self.0.publications.borrow().is_building()
     }
 
+    /// `Publications::settle` waits for each record being read off the frame, and reads again
+    /// what it took in: what a window of a host without frames reads once it covers the record.
+    fn settle(&self) -> bool {
+        let mut publications = self.0.publications.borrow_mut();
+        !publications
+            .settle(&self.0.host, &self.0.planner)
+            .is_empty()
+    }
+
     fn visited(&self) -> u64 {
         self.0.publications.borrow().visited()
     }
