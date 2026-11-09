@@ -277,10 +277,21 @@ impl HostedPrograms {
                 // refusal and the watch is not missed.
                 None => match Hold::start(plans) {
                     Ok(hold) => {
-                        self.mark(io, &|key| held_mark(key, false, &refusal));
+                        // Terminal shows the prompt with the provider's page; any other
+                        // terminal gets the whole refusal and where to add the card.
+                        let words = if self.mark(io, &|key| held_mark(key, false, &refusal)) {
+                            "needs a Linux machine.".to_owned()
+                        } else {
+                            match refusal
+                                .step(host_account::NextStepKind::AddPaymentMethod)
+                                .and_then(|step| step.url.as_deref())
+                            {
+                                Some(url) => format!("{} Add it at {url}.", refusal.message),
+                                None => refusal.message.clone(),
+                            }
+                        };
                         let _ = io.stderr.write_str(&format!(
-                            "ush: {name}: {} Waiting for the card; Ctrl+C cancels.\n",
-                            refusal.message
+                            "ush: {name}: {words} Waiting for the card; Ctrl+C cancels.\n"
                         ));
                         waiting = Some(hold);
                     }
@@ -304,18 +315,21 @@ impl HostedPrograms {
     /// Write the mark `make` makes of the runs key to the session's
     /// terminal, when the session has a key and the command writes to the
     /// terminal itself.
-    fn mark(&self, io: &Stdio, make: &dyn Fn(&str) -> String) {
+    /// Write the mark `make` makes with the session's key to the terminal the session's runs are
+    /// shown in, when it is one of the run's streams. Whether it was written: Terminal shows the
+    /// prompt of a held mark, so the shell's own words can stay short.
+    fn mark(&self, io: &Stdio, make: &dyn Fn(&str) -> String) -> bool {
         let Some(key) = &self.runs else {
-            return;
+            return false;
         };
         let terminal = if io.stderr.host_stream() == Some(Std::Err) {
             &io.stderr
         } else if io.stdout.host_stream() == Some(Std::Out) {
             &io.stdout
         } else {
-            return;
+            return false;
         };
-        let _ = terminal.write_str(&make(key));
+        terminal.write_str(&make(key)).is_ok()
     }
 }
 
