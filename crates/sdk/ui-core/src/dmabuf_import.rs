@@ -811,15 +811,18 @@ const SAMPLED_USAGE: vk::ImageUsageFlags = vk::ImageUsageFlags::from_raw(
 );
 
 /// An ioctl request code as the C library types it: glibc's `unsigned long`, musl's `int`, which
-/// carries the same 32 bits.
-#[cfg(not(target_env = "musl"))]
-fn ioctl_request(code: u32) -> libc::c_ulong {
-    libc::c_ulong::from(code)
-}
-
-#[cfg(target_env = "musl")]
-fn ioctl_request(code: u32) -> libc::c_int {
-    libc::c_int::from_ne_bytes(code.to_ne_bytes())
+/// carries the same 32 bits in the low end of whichever is wider.
+const fn ioctl_request(code: u32) -> libc::Ioctl {
+    let code = code.to_ne_bytes();
+    let mut bytes = [0_u8; std::mem::size_of::<libc::Ioctl>()];
+    let mut at = bytes.len() - code.len();
+    let mut read = 0;
+    while read < code.len() {
+        bytes[at] = code[read];
+        at += 1;
+        read += 1;
+    }
+    libc::Ioctl::from_ne_bytes(bytes)
 }
 
 /// `DMA_BUF_IOCTL_EXPORT_SYNC_FILE`: `_IOWR('b', 2, struct dma_buf_export_sync_file)`.
