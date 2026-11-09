@@ -27,7 +27,7 @@
 # its module is split (tools/web/wasm-split/split.sh) into a start module and
 # one module per app, fetched when the app first opens. `--no-split` (dev and
 # quick only) leaves it whole, for a loop that is not about loading apps.
-# `--update` (dev and quick only) brings an OUTPUT_DIR this script built
+# `--update` (dev and quick only; also with `--module-only`) brings an OUTPUT_DIR this script built
 # before up to date, step by step: the module is bound and split again only
 # when the linked module changed, the page's modules and entry pages are
 # copied again, and fonts, data and the compute module are kept. A loop that
@@ -86,8 +86,8 @@ esac
   echo '--no-split and --update are for dev and quick bundles' >&2; exit 2;
 }
 [[ $wasm_only == 0 || -z $wasm_from ]] || { echo '--wasm-only and --wasm-from exclude each other' >&2; exit 2; }
-[[ $module_only == 0 || ( $wasm_only == 0 && -z $wasm_from && $update == 0 ) ]] || {
-  echo '--module-only builds nothing but pkg/; not with --wasm-only, --wasm-from or --update' >&2; exit 2;
+[[ $module_only == 0 || ( $wasm_only == 0 && -z $wasm_from ) ]] || {
+  echo '--module-only builds nothing but pkg/; not with --wasm-only or --wasm-from' >&2; exit 2;
 }
 [[ $update == 0 || ( $wasm_only == 0 && -z $wasm_from ) ]] || {
   echo '--update builds whole bundles; not with --wasm-only or --wasm-from' >&2; exit 2;
@@ -110,7 +110,12 @@ if [[ $bundle == desktop ]]; then
 fi
 [[ "$out" == /* ]] || { echo 'OUTPUT_DIR must be absolute' >&2; exit 2; }
 # Stale modules beside new ones would make the bundle's provenance ambiguous.
-if [[ $update == 1 && -f "$out/build.json" ]]; then
+# A module-only output is pkg/ alone (pkg.next is what a stopped build left,
+# which it replaces), and its stamp names the linked module
+# (and so the profile) it was made from.
+if [[ $update == 1 && $module_only == 1 && -d "$out" && -z "$(ls -A "$out" | grep -vxE 'pkg|pkg\.next')" ]]; then
+  :
+elif [[ $update == 1 && -f "$out/build.json" ]]; then
   python3 -c 'import json,sys; b=json.load(open(sys.argv[1])); sys.exit(b.get("bundle")!=sys.argv[2] or b.get("profile")!=sys.argv[3])' \
     "$out/build.json" "$bundle" "$profile" || {
     echo "--update: $out holds another bundle or profile; build into an empty directory" >&2; exit 2;

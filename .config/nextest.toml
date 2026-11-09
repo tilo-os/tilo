@@ -99,6 +99,25 @@ platform = { host = 'cfg(target_os = "linux")' }
 filter = "package(tilo-browser-peer) and binary(lounge_fresh_page)"
 setup = "lounge-siblings"
 
+# The browser peer's page tests drive the page's own modules in headless
+# Chrome, served beside the runtime module (tools/web/page-bundle.mjs). The
+# harness builds that module once before they start
+# (tools/build-page-bundle.sh) and hands it over as TILO_PAGE_BUNDLE: built
+# inside a test, a cold wasm compile ran out the time the test gives the page
+# to answer.
+[scripts.setup.page-bundle]
+command = ["bash", "tools/build-page-bundle.sh"]
+
+[[profile.default.scripts]]
+platform = { host = 'cfg(target_os = "linux")' }
+filter = "package(tilo-browser-peer) and (binary(passkey_root) or binary(node_workspace))"
+setup = "page-bundle"
+
+[[profile.ci.scripts]]
+platform = { host = 'cfg(target_os = "linux")' }
+filter = "package(tilo-browser-peer) and (binary(passkey_root) or binary(node_workspace))"
+setup = "page-bundle"
+
 # Chat's acceptance drives the app itself, as a desktop starts it: the app, the
 # launcher that starts it and the runtime host the app runs on are packages of
 # other crates, which Cargo builds for no test of the session's.
