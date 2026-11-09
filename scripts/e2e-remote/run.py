@@ -213,12 +213,9 @@ ip -o addr show dev "$dev"
         return status
 
     def wait_session(self, box: Box, timeout: float = 300) -> None:
-        try:
-            self.ready(box, timeout)
-        except (VmError, Failed):
-            # A slot whose session did not come up with the box: start it as tilo-vm does.
-            box.vm.run("slot", "restart", SLOT, timeout=300, slot=False)
-            self.ready(box, timeout)
+        """The box's session as it came up with the box: its desk, with nothing restarted to
+        get there, as a person who turns the box on finds it."""
+        self.ready(box, timeout)
 
     def ready(self, box: Box, timeout: float = 120) -> None:
         """Once `box`'s session answers its control socket with its desk drawn and unlocked,
