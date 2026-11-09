@@ -56,30 +56,7 @@ const BTN_EXTRA: u32 = 0x114;
 
 /// The rectangle an app is shown on, in the compositor's logical layout,
 /// and the output scale it is drawn at.
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub struct Placement {
-    /// Top-left corner, logical pixels.
-    pub origin: (i32, i32),
-    /// Size, logical pixels.
-    pub size: (u32, u32),
-    /// Physical pixels per logical pixel.
-    pub scale: f64,
-}
-
-impl Placement {
-    fn physical_size(self) -> (u32, u32) {
-        let scale = |side: u32| {
-            #[allow(
-                clippy::cast_possible_truncation,
-                clippy::cast_sign_loss,
-                reason = "a surface side on a screen, scaled by a small positive factor"
-            )]
-            let physical = (f64::from(side) * self.scale).round().max(1.0) as u32;
-            physical
-        };
-        (scale(self.size.0), scale(self.size.1))
-    }
-}
+pub use tilo_session_core::surface::Placement;
 
 /// The surface the app is drawn on, as the toolkit asks it.
 struct Surface {

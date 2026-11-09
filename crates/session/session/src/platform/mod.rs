@@ -29,6 +29,9 @@ pub mod identity;
 /// What apps hold and what the person's files say, as this host indexes them.
 pub mod indexes;
 
+/// What this host calls the person at it.
+pub mod person;
+
 /// What the session's own actions ask of the session that holds them.
 pub mod steps;
 
@@ -41,6 +44,9 @@ pub trait Models: Send + Sync {
     /// provider up, or no gateway runs here.
     fn models(&self) -> Option<ui::models::Models>;
 }
+
+/// The layers the session's roles draw on: a panel, a roster or a card, shown over the windows.
+pub mod surfaces;
 
 /// A value the host keeps current: a directory of files it watches on a
 /// Linux desktop, the page's own store on the web.

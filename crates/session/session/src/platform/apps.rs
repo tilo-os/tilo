@@ -23,6 +23,8 @@ pub trait Apps: Send + Sync {
     fn applications(&self) -> Vec<AppEntry>;
     /// How many apps the host knows at all: what a source switch offers.
     fn host_apps(&self) -> Vec<HostAppEntry>;
+    /// Whether the app `id` stands here, as the person has it installed.
+    fn installed(&self, id: &str) -> bool;
 }
 
 /// One reading of a host's app lists.

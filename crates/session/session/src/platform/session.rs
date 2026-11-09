@@ -746,13 +746,22 @@ impl Session {
         // Who is here, over the windows: the roster the bar's faces open and
         // where everyone else's pointer is.
         let people = crate::people::mount(
-            &mut compositor,
-            &mut doors,
-            &options,
-            &handle,
-            sync.clone(),
-            Rc::clone(&intents),
-            Rc::clone(&invitable),
+            &mut crate::platform::surfaces::Hosted::new(
+                &mut compositor,
+                &mut doors,
+                presentation.theme.clone(),
+            ),
+            crate::people::Given {
+                scale: options.scale,
+                seated: options.person.clone(),
+                notes: std::sync::Arc::clone(&notes),
+                apps: Some(std::sync::Arc::new(options.lists.clone())
+                    as std::sync::Arc<dyn crate::platform::apps::Apps>),
+                handle: handle.clone(),
+                sync: sync.clone(),
+                intents: Rc::clone(&intents),
+                invitable: Rc::clone(&invitable),
+            },
         );
 
         // What the floating layer keeps clear of: the banners' stack while a

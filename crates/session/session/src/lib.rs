@@ -191,7 +191,6 @@ mod held;
 mod here;
 #[cfg(target_os = "linux")]
 mod host_account;
-#[cfg(target_os = "linux")]
 mod i18n;
 #[cfg(target_os = "linux")]
 pub mod identity;
@@ -247,7 +246,14 @@ mod pairing;
 mod panels;
 #[cfg(target_os = "linux")]
 mod pass;
-#[cfg(target_os = "linux")]
+// The page mounts the roster on its own surfaces next.
+#[cfg_attr(
+    target_arch = "wasm32",
+    allow(
+        dead_code,
+        reason = "the page mounts the roster on its own surfaces next"
+    )
+)]
 mod people;
 #[cfg(target_os = "linux")]
 mod personal;

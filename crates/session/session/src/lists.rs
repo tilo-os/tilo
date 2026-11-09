@@ -449,6 +449,10 @@ impl crate::platform::apps::Apps for Lists {
     fn host_apps(&self) -> Vec<HostAppEntry> {
         self.latest().host_apps.clone()
     }
+
+    fn installed(&self, id: &str) -> bool {
+        app_catalogue::apps::read_one_from_env(id).is_ok_and(|installed| installed.is_some())
+    }
 }
 
 /// One reading of this device's lists, as search builds its sources from: the sources it keeps

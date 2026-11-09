@@ -19,6 +19,13 @@ ui::embedded_catalog!(pub(crate) fn, ["en-US", "de-DE"]);
 /// files in them. The session's notices and search's rows are first read when
 /// a notice arrives or a query runs, long after startup, so they load here,
 /// where the loop is not yet running.
+#[cfg_attr(
+    target_arch = "wasm32",
+    allow(
+        dead_code,
+        reason = "the page loads the catalogue with its own host next"
+    )
+)]
 pub(crate) fn ensure() {
     CATALOG.ensure();
     tilo_desktop_search::i18n::ensure();
@@ -30,10 +37,12 @@ pub(crate) fn ensure() {
 /// itself draws in. A seeded package that ships German leaves the session's own words (the
 /// toolkit's, the desktop's) English on a German device; a session that has its own German reads
 /// them German still.
+#[cfg(target_os = "linux")]
 pub(crate) struct SeededWords;
 
 /// Let the session read `catalogues` beside its own words: shared, so a package's language never
 /// becomes the one the session draws in.
+#[cfg(target_os = "linux")]
 fn share(catalogues: &[(String, String)]) {
     ensure();
     for (locale, text) in catalogues {
@@ -41,6 +50,7 @@ fn share(catalogues: &[(String, String)]) {
     }
 }
 
+#[cfg(target_os = "linux")]
 impl tilolang_tilo::runtime::Words for SeededWords {
     fn add(&self, catalogues: &[(String, String)]) {
         share(catalogues);
