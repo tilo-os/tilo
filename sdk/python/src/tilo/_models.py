@@ -5,6 +5,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any, AsyncIterator, Awaitable, Callable, Iterator, Mapping, Sequence
 
+from ._errors import ProtocolError
+
 
 def _text(value: Any) -> str | None:
     return value if isinstance(value, str) else None
@@ -211,6 +213,8 @@ class Listing:
             page = await page.more() if page.next_cursor else None
 
     def __iter__(self) -> Iterator[Row]:
+        if not getattr(self._client, "sync", False):
+            raise ProtocolError("the async client walks a listing with `async for`")
         page: Listing | None = self
         while page is not None:
             yield from page.rows

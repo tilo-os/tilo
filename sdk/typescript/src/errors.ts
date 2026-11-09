@@ -19,7 +19,8 @@ export class Refused extends Error {
 /**
  * The call waits for the person to allow it. `url` is where they answer it
  * when the door names one; `wait()` follows the invocation until they
- * decide and answers its result (a `Key` for a key that was created).
+ * decide and answers what it finished with (a `Key` for a key that was
+ * created).
  */
 export class AskPending extends Error {
   readonly url: string | null;
