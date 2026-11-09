@@ -44,9 +44,10 @@ impl Surfaces for Hosted<'_> {
             host.covering_outputs()
                 .with_keyboard(Rc::clone(&heard.wants_keyboard)),
         ));
-        self.compositor.add_host(Box::new(
-            Held::new(Rc::clone(&host)).dismissing(heard.pressed_elsewhere),
-        ));
+        self.compositor.add_host(Box::new(Held(
+            Rc::clone(&host),
+            Some(heard.pressed_elsewhere),
+        )));
         host
     }
 
@@ -90,144 +91,134 @@ impl Layer for RefCell<WidgetHost> {
 }
 
 /// A hosted surface the session keeps a hold of after handing it to the compositor: the chrome,
-/// which the session reads back.
-pub struct Held<T> {
-    tree: Rc<RefCell<T>>,
-    /// What the role closes when the pointer is pressed elsewhere. It runs before the tree is
-    /// borrowed: the role asks the layer it holds — this same cell — to draw again.
-    dismissing: Option<Rc<dyn Fn()>>,
-}
+/// which the session reads back, and when the seam placed it for a role, what that role hears.
+pub struct Held<T>(
+    Rc<RefCell<T>>,
+    /// What the role closes when the pointer is pressed elsewhere: it runs before the tree is
+    /// borrowed, so the role may ask the layer it holds to draw again.
+    Option<Rc<dyn Fn()>>,
+);
 
 impl<T> Held<T> {
-    /// The surface `tree` shows, as the compositor drives it.
+    /// The surface `tree` shows, with nothing of a role to hear, as the compositor drives it.
     pub const fn new(tree: Rc<RefCell<T>>) -> Self {
-        Self {
-            tree,
-            dismissing: None,
-        }
-    }
-
-    /// Do `dismissing` when the pointer is pressed somewhere other than this surface.
-    #[must_use]
-    pub fn dismissing(mut self, dismissing: Rc<dyn Fn()>) -> Self {
-        self.dismissing = Some(dismissing);
-        self
+        Self(tree, None)
     }
 }
 
 impl<T: SurfaceHost> SurfaceHost for Held<T> {
     fn layers(&self) -> Vec<HostLayer> {
-        self.tree.borrow().layers()
+        self.0.borrow().layers()
     }
 
     fn below_windows(&self) -> bool {
-        self.tree.borrow().below_windows()
+        self.0.borrow().below_windows()
     }
 
     fn above_lock(&self) -> bool {
-        self.tree.borrow().above_lock()
+        self.0.borrow().above_lock()
     }
 
     fn drawn_over_lock(&self) -> bool {
-        self.tree.borrow().drawn_over_lock()
+        self.0.borrow().drawn_over_lock()
     }
 
     fn withholds_captures(&self) -> bool {
-        self.tree.borrow().withholds_captures()
+        self.0.borrow().withholds_captures()
     }
 
     fn accepts_pointer(&self, x: f64, y: f64) -> bool {
-        self.tree.borrow().accepts_pointer(x, y)
+        self.0.borrow().accepts_pointer(x, y)
     }
 
     fn pointer_motion(&mut self, x: f64, y: f64) {
-        self.tree.borrow_mut().pointer_motion(x, y);
+        self.0.borrow_mut().pointer_motion(x, y);
     }
 
     fn pointer_leave(&mut self) {
-        self.tree.borrow_mut().pointer_leave();
+        self.0.borrow_mut().pointer_leave();
     }
 
     fn pointer_button(&mut self, button: u32, pressed: bool) {
-        self.tree.borrow_mut().pointer_button(button, pressed);
+        self.0.borrow_mut().pointer_button(button, pressed);
     }
 
     fn pointer_axis(&mut self, horizontal: f64, vertical: f64) {
-        self.tree.borrow_mut().pointer_axis(horizontal, vertical);
+        self.0.borrow_mut().pointer_axis(horizontal, vertical);
     }
 
     fn pressed_elsewhere(&mut self, x: f64, y: f64) {
-        if let Some(dismissing) = &self.dismissing {
-            dismissing();
+        if let Some(dismissed) = &self.1 {
+            dismissed();
         }
-        self.tree.borrow_mut().pressed_elsewhere(x, y);
+        self.0.borrow_mut().pressed_elsewhere(x, y);
     }
 
     fn claim_key(&mut self, key: &HostKey, locked: bool, inhibited: bool) -> KeyClaim {
-        self.tree.borrow_mut().claim_key(key, locked, inhibited)
+        self.0.borrow_mut().claim_key(key, locked, inhibited)
     }
 
     fn wants_keyboard(&self) -> bool {
-        SurfaceHost::wants_keyboard(&*self.tree.borrow())
+        SurfaceHost::wants_keyboard(&*self.0.borrow())
     }
 
     fn key(&mut self, key: &HostKey) {
-        self.tree.borrow_mut().key(key);
+        self.0.borrow_mut().key(key);
     }
 
     fn prepare_frame(&mut self) -> bool {
-        self.tree.borrow_mut().prepare_frame()
+        self.0.borrow_mut().prepare_frame()
     }
 
     fn advance(&mut self) -> bool {
-        self.tree.borrow_mut().advance()
+        self.0.borrow_mut().advance()
     }
 
     fn next_deadline(&self) -> Option<std::time::Instant> {
-        self.tree.borrow().next_deadline()
+        self.0.borrow().next_deadline()
     }
 
     fn set_frame_interval(&mut self, interval: std::time::Duration) {
-        self.tree.borrow_mut().set_frame_interval(interval);
+        self.0.borrow_mut().set_frame_interval(interval);
     }
 
     fn outputs_changed(&mut self, outputs: &[tilo_compositor::HostedOutput]) {
-        self.tree.borrow_mut().outputs_changed(outputs);
+        self.0.borrow_mut().outputs_changed(outputs);
     }
 
     fn window_pictures(&self) -> Vec<tilo_compositor::WindowPicture> {
-        self.tree.borrow().window_pictures()
+        self.0.borrow().window_pictures()
     }
 
     fn backdrops(&self) -> Vec<tilo_compositor::BackdropRequest> {
-        self.tree.borrow().backdrops()
+        self.0.borrow().backdrops()
     }
 
     fn set_backdrops(&mut self, images: Vec<Option<tilo_compositor::BackdropImage>>) {
-        self.tree.borrow_mut().set_backdrops(images);
+        self.0.borrow_mut().set_backdrops(images);
     }
 
     fn cursor(&self) -> tilo_compositor::CursorIcon {
-        self.tree.borrow().cursor()
+        self.0.borrow().cursor()
     }
 
     fn drop_offered(&mut self, mimes: &[String], x: f64, y: f64) -> Option<String> {
-        self.tree.borrow_mut().drop_offered(mimes, x, y)
+        self.0.borrow_mut().drop_offered(mimes, x, y)
     }
 
     fn drop_left(&mut self) {
-        self.tree.borrow_mut().drop_left();
+        self.0.borrow_mut().drop_left();
     }
 
     fn drop_data(&mut self, mime: &str, data: Vec<u8>) {
-        self.tree.borrow_mut().drop_data(mime, data);
+        self.0.borrow_mut().drop_data(mime, data);
     }
 
     fn take_drag(&mut self) -> Option<tilo_compositor::HostDrag> {
-        self.tree.borrow_mut().take_drag()
+        self.0.borrow_mut().take_drag()
     }
 
     fn drag_ended(&mut self, dropped: bool) {
-        self.tree.borrow_mut().drag_ended(dropped);
+        self.0.borrow_mut().drag_ended(dropped);
     }
 }

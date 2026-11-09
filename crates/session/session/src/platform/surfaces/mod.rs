@@ -40,7 +40,8 @@ pub trait Surfaces {
 /// What a layered role hears from the host, beside the input its widget tree is given.
 #[derive(Clone)]
 pub struct Heard {
-    /// Whether the role wants the keyboard while its layer stands.
+    /// Whether the role wants the keyboard while its layer stands. The host asks it holding the
+    /// tree, so it answers and asks the layer for nothing.
     pub wants_keyboard: Rc<dyn Fn() -> bool>,
     /// The pointer was pressed somewhere other than this layer: what the role has open closes.
     /// It runs before the host holds the tree the role placed, so it may ask that layer to draw

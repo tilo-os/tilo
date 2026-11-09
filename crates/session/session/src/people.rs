@@ -131,6 +131,16 @@ struct Shown {
     area: Rect,
 }
 
+impl Shown {
+    /// Close the roster and any card standing in its place, for the next opening to find empty.
+    fn close(&mut self) {
+        self.expanded = None;
+        self.card_of = None;
+        self.own_card = false;
+        self.card_open = None;
+    }
+}
+
 /// The People panel and the other people's pointers: one surface above the chrome, so the desk
 /// keeps its own drawing and the panel floats over it.
 pub struct People {
@@ -162,10 +172,7 @@ impl People {
                 shown.card_of = None;
                 shown.close_card = true;
             } else {
-                shown.expanded = None;
-                shown.card_of = None;
-                shown.own_card = false;
-                shown.card_open = None;
+                shown.close();
             }
         }
         self.redraw();
@@ -215,20 +222,14 @@ impl People {
 
     /// Close the roster: the person pressed elsewhere.
     pub fn dismiss(&self) {
-        let was_open = self.open.replace(false);
-        if was_open {
-            // What the roster shows is cleared before it draws again: the draw holds what it shows
-            // while it draws it.
-            {
-                let mut shown = self.shown.borrow_mut();
-                shown.expanded = None;
-                shown.card_of = None;
-                shown.own_card = false;
-                shown.card_open = None;
-            }
-            self.dismissed.set(Some(ui::time::Instant::now()));
-            self.redraw();
+        if !self.open.replace(false) {
+            return;
         }
+        // What the roster shows is cleared before it draws again: the draw holds what it shows
+        // while it draws it.
+        self.shown.borrow_mut().close();
+        self.dismissed.set(Some(ui::time::Instant::now()));
+        self.redraw();
     }
 
     /// Draw again, though no input reached the panel: it was opened or closed by the session.
@@ -411,15 +412,12 @@ pub fn mount(
         dismissed,
         asks,
     }));
-    // A press anywhere else closes what the roster has open, as their own press does.
-    let elsewhere = Rc::downgrade(&people);
+    // A press anywhere else closes what the roster has open, as their own press does. The hook
+    // stands beside the tree the layer shows, never in it, so holding the roster is no cycle.
+    let roster = Rc::clone(&people);
     let heard = crate::platform::surfaces::Heard {
         wants_keyboard: Rc::new(move || open.get()),
-        pressed_elsewhere: Rc::new(move || {
-            if let Some(people) = elsewhere.upgrade() {
-                people.borrow().dismiss();
-            }
-        }),
+        pressed_elsewhere: Rc::new(move || roster.borrow().dismiss()),
     };
     let placement = crate::platform::surfaces::Placement {
         origin: (0, 0),
@@ -502,13 +500,7 @@ impl Panel {
     /// Leave the panel: what a press away from it does, whether the roster or a person's card stood
     /// there.
     fn dismiss(&mut self) {
-        {
-            let mut shown = self.shown.borrow_mut();
-            shown.expanded = None;
-            shown.card_of = None;
-            shown.own_card = false;
-            shown.card_open = None;
-        }
+        self.shown.borrow_mut().close();
         self.profile.close();
         self.open.set(false);
     }
@@ -776,9 +768,7 @@ impl Panel {
     fn follow(&mut self, hit: CollaboratorsHit, shown: &mut Shown) {
         match hit {
             CollaboratorsHit::Dismiss => {
-                shown.expanded = None;
-                shown.card_of = None;
-                shown.card_open = None;
+                shown.close();
                 self.profile.close();
                 self.open.set(false);
             }
@@ -1288,10 +1278,7 @@ impl Widget for Panel {
         let Some(hit) = shown.overlay.handle_event(event, ctx, true, cursor) else {
             return;
         };
-        // A press away from the roster takes the card with it.
-        if matches!(hit, CollaboratorsHit::Dismiss) {
-            self.profile.close();
-        }
+        // A press away from the roster takes the card with it, as `follow` does.
         self.follow(hit, &mut shown);
     }
 
