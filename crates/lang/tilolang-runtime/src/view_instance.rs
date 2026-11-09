@@ -290,6 +290,13 @@ impl ViewInstance {
         self.live.list_len(list)
     }
 
+    /// The list's length as reading its rows left it: a listing that sizes itself before its
+    /// pages are read holds what it holds once a row past its end is read
+    /// ([`Live::settle_len`]).
+    pub fn settle_len(&mut self, list: &str) {
+        self.live.settle_len(list);
+    }
+
     /// The key of row `index` of `list`.
     pub fn row_key(&self, list: &str, index: usize) -> Option<String> {
         self.live.row_key(list, index)

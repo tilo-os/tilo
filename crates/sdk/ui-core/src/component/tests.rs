@@ -611,6 +611,10 @@ impl RowSource for Rendered {
             .map(|item| item.key.clone())
     }
 
+    fn rendered(&self, key: &str) -> bool {
+        self.items.iter().any(|item| item.key == key)
+    }
+
     fn take_changes(&mut self) -> Vec<crate::widget::virtual_list::ListModelChange<String>> {
         if self.changed.is_empty() {
             return Vec::new();

@@ -112,7 +112,6 @@ impl ListRows {
     pub fn request(&mut self, range: Range<usize>) -> Requested {
         let mut keys = Vec::new();
         let mut rows = Vec::new();
-        let len = self.len();
         if let Ok(mut view) = self.view.try_borrow_mut() {
             for patch in view.hide_rows(&self.list, range.clone()) {
                 if let Patch::Remove { parent, .. } = patch
@@ -139,6 +138,13 @@ impl ListRows {
                 }
             }
         }
+        // How many rows the list has, as reading them left it: a listing that sizes itself
+        // before its pages are read says the most it can hold until a row past its end is read,
+        // and a window told that scrolls past the rows that are there.
+        if let Ok(mut view) = self.view.try_borrow_mut() {
+            view.settle_len(&self.list);
+        }
+        let len = self.len();
         Requested {
             len,
             start: range.start,

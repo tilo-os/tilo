@@ -545,6 +545,20 @@ impl ListModel for DescribedRows {
         }
     }
 
+    /// A row the host has named but not rendered is on its way: the list keeps its slot, of the
+    /// height the rows around it take, and shows a placeholder there until it arrives, rather
+    /// than a row of nothing.
+    fn row_state(&self, index: usize) -> crate::arriving::Arrival<(), &str> {
+        if let Held::Rendered(rows) = &self.held
+            && let Some(key) = self.key_at(index)
+            && let Ok(rows) = rows.try_borrow()
+            && !rows.rendered(&key)
+        {
+            return crate::arriving::Arrival::local();
+        }
+        crate::arriving::Arrival::Ready(())
+    }
+
     fn poll_changes(&mut self) -> Vec<ListModelChange<String>> {
         match &self.held {
             Held::Rendered(rows) => rows
@@ -2332,6 +2346,28 @@ mod tests {
         );
     }
 
+    /// A row the host has named but not rendered is on its way: the list keeps its slot, of the
+    /// height the rows around it take, with a placeholder there rather than a row of nothing.
+    #[test]
+    fn a_row_the_host_has_not_rendered_is_on_its_way() {
+        let rendered: SharedRows = Rc::new(RefCell::new(
+            ViewRows::new(&[("row-0", None), ("row-1", None)], 0.0, 0.0).withholding(&["row-1"]),
+        ));
+        let rows = DescribedRows {
+            held: Held::Rendered(rendered),
+            ..DescribedRows::default()
+        };
+        assert_eq!(rows.key_at(1).as_deref(), Some("row-1"));
+        assert!(
+            rows.row_state(0).ready().is_some(),
+            "the row the host rendered is there"
+        );
+        assert!(
+            rows.row_state(1).is_pending(),
+            "the row it has not rendered is on its way"
+        );
+    }
+
     /// A menu command that reports its choose to `queue` when run.
     fn command(label: &str, key: &str, queue: &crate::Intents<Fired>) -> MenuPart {
         let mut item = MenuItemProps {
@@ -2391,6 +2427,8 @@ mod tests {
     /// holds its rows that way, and each item's document leads its line out as a row does.
     struct ViewRows {
         items: Vec<ViewItem>,
+        /// The rows the host has named but not rendered: they are on their way.
+        withheld: Vec<String>,
         /// The room a row's leading control takes, and the gap after it.
         lead: f32,
         gap: f32,
@@ -2406,9 +2444,16 @@ mod tests {
                         parent: parent.map(str::to_owned),
                     })
                     .collect(),
+                withheld: Vec::new(),
                 lead,
                 gap,
             }
+        }
+
+        /// The same rows, the host having rendered every one but `keys`: those are on their way.
+        fn withholding(mut self, keys: &[&str]) -> Self {
+            self.withheld = keys.iter().map(|key| (*key).to_owned()).collect();
+            self
         }
 
         /// The resource the item of the row `key` is.
@@ -2432,11 +2477,19 @@ mod tests {
 
         fn request_range(&mut self, _range: Range<usize>) {}
 
+        fn rendered(&self, key: &str) -> bool {
+            !self.withheld.iter().any(|held| held == key)
+                && self.items.iter().any(|item| item.key == key)
+        }
+
         fn read(
             &mut self,
             key: &str,
             read: &mut dyn FnMut(&mut dyn Source) -> Result<(), String>,
         ) -> Result<bool, String> {
+            if !self.rendered(key) {
+                return Ok(false);
+            }
             let Some(item) = self.items.iter().find(|item| item.key == key) else {
                 return Ok(false);
             };

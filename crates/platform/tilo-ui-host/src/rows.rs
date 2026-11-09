@@ -210,11 +210,27 @@ impl RemoteRows {
         }
     }
 
+    /// The list has `len` rows now: the keys grow or go with it, and the list hears it as the
+    /// rows it is, so it settles where it now stands and asks for the range it shows.
     fn resize(&mut self, len: usize) {
-        if self.keys.len() != len {
-            self.keys.resize(len, None);
-            *self.index.get_mut() = None;
+        let was = self.keys.len();
+        if was == len {
+            return;
         }
+        if len > was {
+            self.keys.resize(len, None);
+            self.changes.push(ListModelChange::RowsInserted {
+                index: was,
+                count: len.saturating_sub(was),
+            });
+        } else {
+            self.keys.truncate(len);
+            self.changes.push(ListModelChange::RowsRemoved {
+                index: len,
+                count: was.saturating_sub(len),
+            });
+        }
+        *self.index.get_mut() = None;
     }
 
     /// Whether these are the rows of `list` of the view of `lane`.
@@ -315,6 +331,10 @@ impl RowSource for RemoteRows {
         if self.asked.as_ref() != Some(&range) {
             self.wanted = Some(range);
         }
+    }
+
+    fn rendered(&self, key: &str) -> bool {
+        self.rows.contains_key(key)
     }
 
     fn read(
@@ -469,5 +489,28 @@ mod tests {
         assert_eq!(rows.take_wanted(), None, "asked once");
         assert!(!rows.wants());
         assert_eq!(rows.key_at(5), None, "a row not named yet");
+    }
+
+    /// The app names a list shorter than the one the window holds: the list hears it, so it
+    /// settles where it now ends and asks for the rows it shows rather than staying empty.
+    #[test]
+    fn a_list_the_app_names_shorter_is_a_change_of_its_rows() {
+        let mut rows = rows();
+        rows.rows(100, 0, vec!["v/0".into()], Vec::new());
+        let _ = rows.take_changes();
+        rows.request_range(90..100);
+        assert!(rows.take_wanted().is_some(), "asked for the range it shows");
+        // The app reads a row past the list's end: the range it shows holds nothing, and the
+        // list it names is the one it holds.
+        rows.rows(50, 90, Vec::new(), Vec::new());
+        assert_eq!(rows.len(), 50, "the list is as long as the app names it");
+        assert_eq!(
+            rows.take_changes(),
+            [ListModelChange::RowsRemoved {
+                index: 50,
+                count: 50
+            }],
+            "the list hears that its last rows went"
+        );
     }
 }

@@ -968,6 +968,11 @@ pub trait RowSource {
     /// Render the rows of `range` not rendered yet, and forget those rendered outside it.
     fn request_range(&mut self, range: std::ops::Range<usize>);
 
+    /// Whether the row `key` is rendered now, its content there to read: a row named but not
+    /// rendered yet is on its way, and the list shows a placeholder in its slot until it
+    /// arrives ([`crate::widget::virtual_list::ListModel::row_state`]).
+    fn rendered(&self, key: &str) -> bool;
+
     /// Read the rendered row `key` as an instance of a component: `Ok(false)` when it is not
     /// rendered.
     ///

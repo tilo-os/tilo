@@ -297,12 +297,41 @@ pub(crate) struct Virtual {
     rows: Rows,
     built: Vec<(usize, BoundId)>,
     pub len: usize,
+    /// Rows the steps inserted or removed since the rows were read: the listing the rows stand
+    /// for does not hold them, and the count the host holds is the listing's with them.
+    stepped: bool,
     /// The host's rows are no longer known: steps were given that did not fit. The host reads
     /// the list anew when its holder next runs.
     lost: bool,
 }
 
 impl Virtual {
+    /// The list as its holder just read it: `rows` its rows as the host holds them, and `built`
+    /// the ones built, in order. The length is the rows' own: the steps since add theirs.
+    fn new(holder: BoundId, template: RowsOf, rows: Rows, built: Vec<(usize, BoundId)>) -> Self {
+        let len = rows.len();
+        Self {
+            holder,
+            template,
+            rows,
+            built,
+            len,
+            stepped: false,
+            lost: false,
+        }
+    }
+
+    /// The list's length as reading a row of it left it: a listing that checks its items as it
+    /// reads them holds what it holds once it has read them all, and the count the host holds
+    /// until then is the most they can be. The rows the steps added or removed since the listing
+    /// was read stand whatever it says ([`Self::stepped`]).
+    pub(super) fn settle_len(&mut self) {
+        let held = self.rows.len();
+        if !self.stepped && self.rows.len_is_exact() && held < self.len {
+            self.len = held;
+        }
+    }
+
     /// The key of row `index`.
     pub fn key(&self, index: usize) -> Option<String> {
         if index >= self.len {
@@ -606,6 +635,7 @@ impl Live {
                         }
                     }
                     rows.len = rows.len.saturating_add(1);
+                    rows.stepped = true;
                     let fragment = rows.template.fragment(key.clone(), Vec::new());
                     let node = if self.lazy_rows {
                         fragment
@@ -866,6 +896,7 @@ impl Live {
             return false;
         }
         rows.len = rows.len.saturating_sub(1);
+        rows.stepped = true;
         let holder = rows.holder;
         if let Some((place, id)) = built {
             rows.built.remove(place);
@@ -1098,18 +1129,9 @@ impl Builder<'_> {
             self.live
                 .row_changes
                 .insert(key.clone(), RowsChange::Replace);
-            let len = rows.len();
-            self.live.lists.insert(
-                key,
-                Virtual {
-                    holder: self.id,
-                    template,
-                    rows,
-                    built: Vec::new(),
-                    len,
-                    lost: false,
-                },
-            );
+            self.live
+                .lists
+                .insert(key, Virtual::new(self.id, template, rows, Vec::new()));
             return Ok(Vec::new());
         };
         // The rows stand as they are when the rows built before hold the same items, and the
@@ -1159,18 +1181,9 @@ impl Builder<'_> {
         self.live
             .row_changes
             .insert(key.clone(), RowsChange::Steps(steps));
-        let len = rows.len();
-        self.live.lists.insert(
-            key,
-            Virtual {
-                holder: self.id,
-                template,
-                rows,
-                built,
-                len,
-                lost: false,
-            },
-        );
+        self.live
+            .lists
+            .insert(key, Virtual::new(self.id, template, rows, built));
         Ok(children.into_iter().map(|(_, node)| node).collect())
     }
 

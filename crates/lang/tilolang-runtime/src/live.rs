@@ -1626,6 +1626,13 @@ impl Live {
         self.list_node(list).map(|n| n.children.len())
     }
 
+    /// The list's length, as reading a row of it left it ([`Virtual::settle_len`]).
+    pub fn settle_len(&mut self, list: &str) {
+        if let Some(rows) = self.lists.get_mut(list) {
+            rows.settle_len();
+        }
+    }
+
     pub fn row_key(&self, list: &str, index: usize) -> Option<String> {
         if let Some(rows) = self.lists.get(list) {
             return rows.key(index);
