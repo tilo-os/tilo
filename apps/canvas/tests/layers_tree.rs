@@ -29,7 +29,12 @@ fn grouped() -> (TestApp<App>, String, String) {
     for name in ["Sky", "Hills"] {
         app.call("add-layer", json!({"name": name})).unwrap();
     }
-    let ids: Vec<String> = app.state().layers.iter().map(|layer| layer.id.clone()).collect();
+    let ids: Vec<String> = app
+        .state()
+        .layers
+        .iter()
+        .map(|layer| layer.id.clone())
+        .collect();
     let [.., sky, hills] = ids.as_slice() else {
         panic!("two layers were added: {ids:?}");
     };

@@ -326,10 +326,7 @@ impl Core {
                 return trap(format!("sort: type `{ty}` is not declared"));
             };
             let Some(f) = declared.fields.iter().find(|f| f.name == field) else {
-                return trap(format!(
-                    "sort: `{}` has no field `{field}`",
-                    declared.name
-                ));
+                return trap(format!("sort: `{}` has no field `{field}`", declared.name));
             };
             let Some(query) = crate::query::sort_of(&f.name, &f.ty) else {
                 return trap(format!(
@@ -337,10 +334,10 @@ impl Core {
                     declared.name, f.ty
                 ));
             };
-            let label = self
-                .words
-                .borrow()
-                .word(&messages::key_of(&f.id), &[], &messages::label(&f.name));
+            let label =
+                self.words
+                    .borrow()
+                    .word(&messages::key_of(&f.id), &[], &messages::label(&f.name));
             Value::Tuple(vec![Value::Text(label), Value::Text(query)])
         };
         Ok(found)

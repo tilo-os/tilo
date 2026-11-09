@@ -1080,7 +1080,11 @@ fn file_tree(files: &[SnapFile]) -> Option<Element> {
                 };
                 let mut row = ListRow::new(key.to_string(), entry.label.as_str())
                     .depth(depths.depth(key))
-                    .icon(if entry.folder { Icon::Folder } else { Icon::File });
+                    .icon(if entry.folder {
+                        Icon::Folder
+                    } else {
+                        Icon::File
+                    });
                 if let Some(bytes) = entry.size {
                     row = row.value(size(bytes));
                 }

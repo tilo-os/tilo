@@ -2369,7 +2369,6 @@ impl QuickFS {
         self
     }
 
-
     /// Answer and accept `signal`'s attribute, and tell it which directories
     /// the kernel lists; its worker raises the signals once the mount is up
     /// ([`crate::change_signal`]).
@@ -2896,7 +2895,6 @@ impl QuickFS {
             eprintln!("could not append durable file history for inode {ino}: {error}");
         }
     }
-
 
     fn history_projection_for(&self, ino: u64) -> Option<Vec<u8>> {
         self.history.as_ref()?;

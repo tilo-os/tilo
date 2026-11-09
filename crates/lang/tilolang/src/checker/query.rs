@@ -211,10 +211,7 @@ impl Checker<'_> {
             self.err(
                 "E105",
                 name.span,
-                format!(
-                    "`{}` has no field `{}`{hint}; {known}",
-                    key.name, name.name
-                ),
+                format!("`{}` has no field `{}`{hint}; {known}", key.name, name.name),
             );
             return Ex::error();
         };

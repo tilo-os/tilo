@@ -120,7 +120,9 @@ fn the_notebook_lists_its_notes_by_the_order_chosen() {
     // names: `sorts: [Note.title]` in its window.
     let menu = orders(&notebook);
     assert_eq!(
-        menu.iter().map(|(label, _)| label.as_str()).collect::<Vec<_>>()[1..],
+        menu.iter()
+            .map(|(label, _)| label.as_str())
+            .collect::<Vec<_>>()[1..],
         ["Title"],
         "the app declares the fields people may sort by; the list's own order is the first entry"
     );
