@@ -1683,6 +1683,16 @@ impl DesktopChrome {
             self.bar.set_presence(full_presence);
             changed = true;
         }
+        // A bar shown over the desk tells the windows how much of its top edge it covers, so their
+        // own bars move down whole and none of their controls — a title, a Back, a clock of their
+        // own — is left under the bar's, and the bar's clock never reads across them.
+        changed |= self
+            .handle
+            .set_top_overlay_inset(if full_presence == TopBarPresence::Shown {
+                height
+            } else {
+                0.0
+            });
         for (bar, (_, presence)) in self.compact.iter_mut().zip(compact) {
             if bar.presence() != presence {
                 bar.set_presence(presence);

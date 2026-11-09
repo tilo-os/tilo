@@ -252,6 +252,40 @@ fn the_desktop_bar_shown_over_a_window_moves_it_down_whole() {
     );
 }
 
+/// On a phone the desktop's bar shows over the window under an auto-hiding bar, and its clock reads
+/// across the middle of the display: the window's own bar moves down whole, so its Back and the name
+/// it shows stand below the clock's band and nothing of the window is left under it.
+#[test]
+fn a_phone_window_bar_stands_clear_of_the_bar_shown_over_it() {
+    let mut theme = Theme::light();
+    theme.reduce_motion = true;
+    let mut g = page_group();
+    assert!(g.set_tab_toolbar(1, Some(slots())));
+    // The desk's bar over the window, as tall as the band its clock reads in.
+    g.set_top_overlay_inset(TOP);
+    lay_out_in_strip(&mut g, &theme);
+    let bar = g.bar_rect();
+    assert!(
+        bar.y0 >= TOP - 0.5,
+        "the window's bar stands below the one over it: {bar:?}"
+    );
+    let location = g.bar_for_tests().location_rect();
+    let (back, _, _, _) = g.bar_for_tests().toolbar_rects();
+    for control in [back, location] {
+        assert!(
+            control.area() > 0.0 && control.y0 >= TOP - 0.5,
+            "every control on the window's bar stands below the clock's band: {control:?}"
+        );
+    }
+    // A window bar too low for room beneath the clock gives way: the bar is the desk's, the
+    // window's own follows it down and its content with it.
+    let content = g.active_host().map(Widget::get_rect).unwrap_or(Rect::ZERO);
+    assert!(
+        content.y0 >= bar.y1 - 0.5,
+        "the window's content stands below its own bar: {content:?} under {bar:?}"
+    );
+}
+
 fn slots() -> crate::window_toolbar::WindowToolbar {
     use crate::window_toolbar::{ToolbarLocation, ToolbarNavigation, WindowToolbar};
     WindowToolbar {

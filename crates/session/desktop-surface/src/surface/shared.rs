@@ -43,6 +43,7 @@ impl Shared {
             activity_focus: None,
             minter,
             viewport_width: ui::widget::DEFAULT_STRIP_USABLE_PX,
+            top_overlay: 0.0,
             replaced: false,
             shown_tabs: ShownTabs::default(),
             float_covers: Vec::new(),

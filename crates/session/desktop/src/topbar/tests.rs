@@ -2243,6 +2243,44 @@ fn watching_pages_and_marked_agents_read_in_the_avatar_stack() {
     assert!(people.children.iter().all(|face| face.bounds.is_some()));
 }
 
+/// On a phone the bar's clock keeps the band it reads in: nothing else of the bar stands on it, and
+/// the windows move down by the bar's height while it shows over them, so no window's own bar — its
+/// title, its Back — shares the clock's rows.
+#[test]
+fn a_phone_bar_keeps_its_clock_band_to_itself() {
+    let mut workspace = Workspace::new(WorkspaceSlot(1), "Tilo Community");
+    workspace.collaborators = vec![
+        tilo_desktop_model::Collaborator::new("scribe", "Claude Code"),
+        tilo_desktop_model::Collaborator::new("ada", "Lively Heron"),
+    ];
+    let tree = DesktopTree {
+        active: workspace.slot,
+        workspaces: vec![workspace],
+        ..DesktopTree::default()
+    };
+    let mut bar = TopBarChrome::from_tree(&tree);
+    bar.sync_from_tree(&tree);
+    lay_out_and_draw_with_theme(&mut bar, 390.0, &Theme::light());
+    let bar_rect = bar.get_rect();
+    let clock = bar.center_rect;
+    assert!(!clock.is_zero_area(), "a phone bar keeps the time");
+    assert!(
+        bar_rect.contains(clock.center()) && clock.y0 >= bar_rect.y0 && clock.y1 <= bar_rect.y1,
+        "the clock reads inside the bar: {clock:?} in {bar_rect:?}"
+    );
+    // The workspace's name and the people beside the clock yield to it instead of standing on it.
+    assert!(
+        bar.ws_pill_rect.x1 <= clock.x0 + 0.5,
+        "the workspace's name ends before the clock: {:?} {clock:?}",
+        bar.ws_pill_rect
+    );
+    assert!(
+        bar.avatar_stack_rect.x0 >= clock.x1 - 0.5,
+        "the faces begin past the clock: {:?} {clock:?}",
+        bar.avatar_stack_rect
+    );
+}
+
 /// An agent's face on the bar wears its client's hue, as every other face of it does: Claude Code is
 /// the orange its client is known by, not the colour a person with the same name settles on.
 #[test]

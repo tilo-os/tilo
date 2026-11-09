@@ -5679,6 +5679,10 @@ mod tips_tests;
 mod window_controls_tests;
 
 #[cfg(test)]
+#[path = "tabs_phone_bar_tests.rs"]
+mod phone_bar_tests;
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use crate::presence::user_color;
@@ -9468,38 +9472,6 @@ mod tests {
             solo.tab_rects()[0].width() < wide_title,
             "the title is what shrinks"
         );
-    }
-
-    /// A window of one tab names itself in the bar's location slot, and the strip's own "+" stands
-    /// beside that name. Neither paints over the other: the title used to start under the control,
-    /// so the two strings were drawn on top of each other ("New tab" across "Notes").
-    #[test]
-    fn a_windows_title_stands_clear_of_the_new_tab_control() {
-        use crate::window_toolbar::{ToolbarLocation, WindowToolbar};
-        let _settled = crate::motion::testing::settled();
-        let theme = crate::theme::Theme::dark().with_reduce_motion(true);
-        for width in [1280.0, 390.0] {
-            let mut b = TabBar::new("g1", vec![TabDescriptor::new(1, "Notes")], 1);
-            b.set_window_controls(true);
-            // An app that declares a location of its own but names nothing yet: the bar fills the
-            // name in from the tab (`show_toolbar_row`), so this is where the window's title stands.
-            b.set_toolbar(
-                1,
-                Some(WindowToolbar {
-                    location: Some(ToolbarLocation::default()),
-                    ..WindowToolbar::default()
-                }),
-            );
-            lay_out_at_width_with(&mut b, width, &theme);
-            let plus = b.new_tab_rect();
-            let title = b.location_rect();
-            assert!(plus.area() > 0.0, "{width}: the strip offers its +");
-            assert!(title.area() > 0.0, "{width}: the window names itself here");
-            assert!(
-                title.x0 >= plus.x1,
-                "{width}: the title starts past the + ({title:?} over {plus:?})"
-            );
-        }
     }
 
     pub(super) fn four_tab_bar() -> TabBar {

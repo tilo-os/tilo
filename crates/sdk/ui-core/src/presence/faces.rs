@@ -498,15 +498,22 @@ mod tests {
                  {initials_right:.2}",
                 stack.side
             );
-            // And the plain overlap is what had to give way: at the face's own overlap the ground
-            // starts across the letters, which is the bug this step exists for.
+            // And it is the rule that decides the step for every stack the desktop draws, not the
+            // overlap each was handed: an overlap alone stands closer than the letters are wide.
             let outer = stack.side + 2.0 * (RING + GAP);
+            let plain = outer - stack.overlap;
+            let rule = Face::REACH
+                + stack.side / 2.0
+                + stack.side * INITIALS_SPAN / 2.0
+                + INITIALS_CLEARANCE;
             assert!(
-                outer - stack.overlap - Face::REACH < initials_right,
-                "{label}: at an overlap of {:.1} the letters would end at {initials_right:.2}, clear \
-                 of {:.2}",
-                stack.overlap,
-                outer - stack.overlap - Face::REACH
+                plain <= rule,
+                "{label}: an overlap of {:.1} stands wider than the letters need",
+                stack.overlap
+            );
+            assert!(
+                (stack.step() - rule.max(plain)).abs() < 1e-9,
+                "{label}: the step is the rule's, not the overlap's"
             );
         }
     }

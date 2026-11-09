@@ -1404,6 +1404,15 @@ impl GroupRow {
         self.fullscreen_idx().is_some()
     }
 
+    /// How much of this strip's top edge something overlays now (the desktop's top bar while it
+    /// shows over the windows under an auto-hiding one): every window in the strip moves down by
+    /// it, whole, so its own bar stands below the overlay instead of under it.
+    pub fn set_top_overlay_inset(&mut self, inset: f64) {
+        for group in &mut self.groups {
+            group.set_top_overlay_inset(inset);
+        }
+    }
+
     /// Collapse this strip's lane on `output`, where another strip's fullscreen covers it, keeping
     /// its lanes on other displays; `None` shows every lane again.
     pub fn set_covered_output(&mut self, output: Option<u32>) {

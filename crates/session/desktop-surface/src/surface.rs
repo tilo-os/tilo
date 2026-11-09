@@ -206,6 +206,10 @@ struct Shared {
     minter: IdMinter,
     /// Logical width the strip lays out against.
     viewport_width: f64,
+    /// How much of the desk's top edge the desktop bar overlays now
+    /// ([`DesktopHandle::set_top_overlay_inset`]): every window moves down by it, whole, so its own
+    /// bar stands below the bar shown over it rather than under it.
+    top_overlay: f64,
     /// The tree was replaced from outside; rows must be reconciled.
     replaced: bool,
     /// Where each shown window stands and the bounds of the tab it shows, as last laid out.
@@ -446,6 +450,21 @@ impl DesktopHandle {
     /// every resize.
     pub fn set_viewport_width(&self, width: f64) {
         self.shared.borrow_mut().viewport_width = width.max(1.0);
+    }
+
+    /// How much of the desk's top edge something overlays now: the desktop bar's height while it
+    /// shows over the windows under an auto-hiding bar, else zero. Every window moves down by it,
+    /// whole, so the controls on its own bar stand below the bar instead of under it — where the
+    /// bar's clock would read across a window's title on a phone.
+    pub fn set_top_overlay_inset(&self, inset: f64) -> bool {
+        let inset = inset.max(0.0);
+        let mut shared = self.shared.borrow_mut();
+        if (shared.top_overlay - inset).abs() <= f64::EPSILON {
+            return false;
+        }
+        shared.top_overlay = inset;
+        shared.changed();
+        true
     }
 
     /// On a desktop several people share: who holds each window this desktop's person may not close
@@ -2032,9 +2051,17 @@ impl DesktopSurface {
         // drops the gutters and the other windows step aside, wherever the person last panned them.
         // A row is built with this too; here it follows the window menu or the chord between
         // rebuilds.
-        let fullscreen = self.shared.borrow().tree.fullscreen_group();
+        let (fullscreen, top_overlay) = {
+            let shared = self.shared.borrow();
+            (shared.tree.fullscreen_group(), shared.top_overlay)
+        };
         if let Some(row) = self.shown_row() {
             row.set_fullscreen(fullscreen, false);
+        }
+        // The desktop bar over the desk (an auto-hiding one, while it shows): every row's windows
+        // move down by it, so nothing of theirs stands under its clock.
+        for row in self.rows.values_mut() {
+            row.set_top_overlay_inset(top_overlay);
         }
         // A window the workspace holds floating stands over the desk, at the place its record keeps
         // for this device's display; every other strip shows its windows in their strip.
