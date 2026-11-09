@@ -694,7 +694,13 @@ async function connect({
     }
     const record = storage ? undefined : await store.get(PEER_RECORD);
     peer = runtime.WasmPeer.start(
-      withStartFields(certified, {displayName, address: host.address}),
+      withStartFields(certified, {
+        displayName, address: host.address,
+        // What this person's root revoked: announced with this device's
+        // certificate, so the host refuses those keys from the moment each
+        // entry names on.
+        revocations: identity?.revocations?.length ? identity.revocations : undefined,
+      }),
       custodyForWasm,
       storage ? JSON.stringify({profile, device}) : undefined,
       storage ? undefined : (record ?? undefined),

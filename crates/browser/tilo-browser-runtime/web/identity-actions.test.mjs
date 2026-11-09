@@ -612,6 +612,35 @@ test('keeping with a passkey revokes the stand-in and has the host forget it', a
   assert.equal(await actions.keepStandIn(), null, 'a kept root needs no stand-in');
 });
 
+test('the host is asked to forget the stand-in only once its revocation is signed and kept', async () => {
+  const identity = fakeIdentity();
+  const asked = [];
+  let revoked;
+  const settled = new Promise(resolve => { revoked = resolve; });
+  const actions = createIdentityActions({
+    passkeys: withPasskeys, identity, publish: async () => {},
+    standIn: {
+      ask: async body => { asked.push((typeof body === 'string' ? JSON.parse(body) : body).op); return {}; },
+      certify: async () => 'cert',
+      revoke: async key => {
+        asked.push(`revoke ${key}`);
+        await settled;
+        asked.push('revoke kept');
+      },
+    },
+    standInStore: {
+      getItem: () => 'cd'.repeat(32), setItem() {}, removeItem() {},
+    },
+  });
+  await actions.attach(fakeMount());
+  const kept = actions.perform(KEEP.id);
+  await new Promise(resolve => setImmediate(resolve));
+  assert.deepEqual(asked, [`revoke ${'cd'.repeat(32)}`], 'the host still holds the key while the revoke is being signed');
+  revoked();
+  await kept;
+  assert.deepEqual(asked, [`revoke ${'cd'.repeat(32)}`, 'revoke kept', 'retire'], 'retired after the revocation landed');
+});
+
 test('no stand-in where the person never had one, or there is no host to keep one', async () => {
   const identity = fakeIdentity();
   const fake = fakeStandIn();

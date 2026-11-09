@@ -1915,16 +1915,18 @@ const ownChoice = own => ({id: `${OPEN_WORKSPACE}${own.id}`, name: own.name ?? '
 
 /**
  * The person's stand-in on the host `peer` is in, where the runtime can
- * certify one with the root this tab holds and revoke it again.
+ * certify one with the root this tab holds and revoke it again. The root
+ * revokes it by signing, as it revokes any of the person's devices: the
+ * entry is kept with the person and every session of theirs announces it to
+ * its host, so the stand-in approves nothing from then on.
  */
 function standInOf({peer, identity, runtime}) {
-  if (!peer?.origin || typeof runtime?.certifyStandIn !== 'function' || typeof runtime?.revokeDevice !== 'function') return null;
+  if (!peer?.origin || typeof runtime?.certifyStandIn !== 'function' || typeof identity?.revokeDevice !== 'function') return null;
   const codes = loginCodes(peer.origin);
-  const post = httpsPost(peer.origin);
   return {
     ask: body => codes.standIn(body),
     certify: key => runtime.certifyStandIn(identity, key),
-    revoke: key => runtime.revokeDevice(post, identity, key),
+    revoke: key => identity.revokeDevice(key),
   };
 }
 

@@ -170,8 +170,9 @@ export async function saveRecoveryKey(recoveryKey, {userPublicKey, name = 'Tilo'
  * devices (`standIn.certify(key)`, resolving to the certificate as hex),
  * and the host keeps the certificate (`certify`). Once the person keeps
  * their root with a passkey, the root revokes the stand-in as it revokes
- * any of their devices (`standIn.revoke(key)`) and the host forgets it
- * (`retire`). `standInStore` remembers which key it was.
+ * any of their devices (`standIn.revoke(key)`, signed by the root and kept
+ * with the person, which every session of theirs announces to its host) and
+ * the host forgets it (`retire`). `standInStore` remembers which key it was.
  */
 export function createIdentityActions({
   identity, hosts = () => [], lookups = hosts, rpId = globalThis.location?.hostname, name = () => undefined,
