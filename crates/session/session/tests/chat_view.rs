@@ -185,6 +185,90 @@ fn a_chat_channel_placed_on_the_canvas_draws_its_own_page() {
 }
 
 #[test]
+fn the_transcript_is_drawn_below_the_header_never_under_it() {
+    let _settled = ui::motion::testing::settled();
+    let root = common::private_home();
+    let mut session = session(root.path());
+    // The place a person's conversation stands in, the live shell's own size: a transcript
+    // longer than the room the header and the composer leave it.
+    place(&mut session, CHANNEL);
+    common::until(&mut session, "the channel's page", |session| {
+        session.shell_says(MESSAGE)
+    });
+    // The page's header is the channel's name and topic, and the transcript is the scroll view
+    // under them: the room it draws its rows through begins below the header's own band, and a
+    // row's pixels are cut to that room. Measured where they are *drawn* — a row's box cut to
+    // the scroll view's clip — not from its unclipped layout box, which a scrolled row keeps
+    // above the page while nothing of it paints there.
+    let bounds = |session: &Session, text: &str| {
+        session
+            .shell_text_bounds(text)
+            .unwrap_or_else(|| panic!("the page says `{text}`: {:?}", session.accessible_labels()))
+    };
+    let (_, name_y, _, name_h) = bounds(&session, "#design-crit");
+    let (_, topic_y, _, topic_h) = bounds(&session, "Share work, get sharp feedback");
+    let header_bottom = (name_y + name_h).max(topic_y + topic_h);
+    // The clip the transcript draws through is a room under the header's bottom edge: the
+    // header never stands inside it.
+    let (_, clip_y, _, clip_h) = session
+        .shell_scroll_clip(MESSAGE)
+        .unwrap_or_else(|| panic!("the transcript draws through a scroll view: {MESSAGE}"));
+    // The room begins clear of the header, with the gap a section keeps under a block — not
+    // flush on the topic's last line, which is what a header laid over its content looks like.
+    let gap = clip_y - header_bottom;
+    assert!(
+        gap >= 4.0,
+        "the transcript's room begins clear of the header: the header ends at {header_bottom}, \
+         the room begins at {clip_y} (a gap of {gap})"
+    );
+    // The room the transcript is given is the page's to lay out (a merged tree's window bar and
+    // desktop measure decide its height); this test holds only where that room *begins*, which
+    // is the header's own band and the gap under it.
+    assert!(clip_h >= 0.0, "the transcript's room is measured: {clip_h}");
+    // Every row of the transcript that the page draws is drawn inside that room, never across
+    // the header: a row the transcript has scrolled above its room is drawn nowhere.
+    let reading = session
+        .read(CHANNEL)
+        .unwrap_or_else(|| panic!("the session serves {CHANNEL}"));
+    let rows: Vec<String> = reading["messages"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|message| message["text"].as_str())
+        .map(str::trim)
+        .filter(|text| !text.is_empty())
+        .map(str::to_owned)
+        .collect();
+    assert!(!rows.is_empty(), "the channel holds messages: {reading}");
+    for row in &rows {
+        let Some((_, y, _, h)) = session.shell_drawn_text_bounds(row) else {
+            // Scrolled out of the transcript's room: nothing of it paints.
+            continue;
+        };
+        assert!(
+            y >= header_bottom - 0.5,
+            "`{row}` is drawn clear of the header: its band {y}..{end}, the header ends at \
+             {header_bottom}",
+            end = y + h
+        );
+        assert!(
+            y + h <= clip_y + clip_h + 0.5,
+            "`{row}` is drawn inside the transcript's room: its band {y}..{end} ends below \
+             {floor}",
+            end = y + h,
+            floor = clip_y + clip_h
+        );
+    }
+    // The page holds the transcript, whatever room the place's own layout gives it to draw in
+    // (a merged tree's window bar and desktop measure decide that height).
+    assert!(
+        session.shell_says(MESSAGE),
+        "the page holds the transcript: {:?}",
+        session.accessible_labels()
+    );
+}
+
+#[test]
 fn typing_in_the_composer_and_pressing_send_posts_to_the_channel() {
     let _settled = ui::motion::testing::settled();
     let root = common::private_home();

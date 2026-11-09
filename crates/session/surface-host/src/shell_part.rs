@@ -2313,6 +2313,48 @@ impl ShellPart {
         self.text_bounds_all(text).into_iter().next()
     }
 
+    /// Where the first node that says `text` is *drawn*: its own box, cut to the clip of the
+    /// scroll view it stands in, in the desktop's logical layout `(x, y, width, height)`.
+    ///
+    /// A transcript's rows are laid out whole and drawn through their scroll view's viewport: a
+    /// row scrolled above it has a box outside it and no pixels inside it. What this answers is
+    /// where the row's pixels can be — the intersection of its box with every clip between it
+    /// and the screen — so a test asks what the person sees, never where the layout put a row
+    /// that the view cuts off. `None` where the node says `text` but is drawn nowhere.
+    pub fn drawn_text_bounds(&mut self, text: &str) -> Option<(f64, f64, f64, f64)> {
+        let (ox, oy) = self.widgets.placement().origin;
+        let root = self.widgets.host_mut().root_widget_mut();
+        let found = drawn_text(root, text)?;
+        let rect = match found.clip {
+            Some(cut) => found.rect.intersect(cut),
+            None => found.rect,
+        };
+        (rect.width() > 0.0 && rect.height() > 0.0).then(|| {
+            (
+                f64::from(ox) + rect.x0,
+                f64::from(oy) + rect.y0,
+                rect.width(),
+                rect.height(),
+            )
+        })
+    }
+
+    /// The clip a scroll view draws its content through, as the room a transcript has under a
+    /// page's header: where the first scroll on screen whose content says `text` draws. `None`
+    /// where nothing says it or no scroll holds it.
+    pub fn scroll_clip(&mut self, text: &str) -> Option<(f64, f64, f64, f64)> {
+        let (ox, oy) = self.widgets.placement().origin;
+        let root = self.widgets.host_mut().root_widget_mut();
+        let found = drawn_text(root, text)?;
+        let clip = found.clip?;
+        Some((
+            f64::from(ox) + clip.x0,
+            f64::from(oy) + clip.y0,
+            clip.width(),
+            clip.height(),
+        ))
+    }
+
     /// Where every node that says `text` (its name, description or value holds it) stands, in the
     /// desktop's logical layout `(x, y, width, height)`. A name more than one thing on the desk
     /// carries — a strip's name, which the bar's pill and nothing on the desk says — is read by all
@@ -2346,7 +2388,6 @@ impl ShellPart {
     pub fn loaded_apps(&self) -> Vec<String> {
         self.origin.borrow().loaded.keys().cloned().collect()
     }
-
     /// Draw the shell with `theme`, the person's as their appearance settings make it: a
     /// change of mode (dark mode in the quick settings, a theme chosen in Settings) redraws
     /// the bar and every surface over the desk in it.
@@ -2895,6 +2936,52 @@ impl ShellPart {
 pub mod readings;
 use readings::PlaceInvoker;
 
+/// Where a node that says `text` stands in `widget`'s tree, and the clip every enclosing scroll
+/// draws it through: the node's own box, and the intersection of each scroll view's content
+/// viewport on the way down. What a test asks is what the person sees, so a row the transcript
+/// has scrolled out of its room is drawn nowhere, never over the header above it.
+struct DrawnText {
+    rect: vello::kurbo::Rect,
+    clip: Option<vello::kurbo::Rect>,
+}
+
+fn drawn_text(widget: &dyn ui::widget::Widget, text: &str) -> Option<DrawnText> {
+    fn says(widget: &dyn ui::widget::Widget, text: &str) -> Option<vello::kurbo::Rect> {
+        let access = widget.accessibility()?;
+        let held = [
+            access.name.as_deref(),
+            access.description.as_deref(),
+            access.value.as_deref(),
+        ]
+        .into_iter()
+        .flatten()
+        .any(|said| said.contains(text));
+        held.then(|| {
+            access
+                .bounds
+                .map_or_else(|| widget.get_rect(), ui::a11y::AccessBounds::to_rect)
+        })
+    }
+    fn walk(
+        widget: &dyn ui::widget::Widget,
+        text: &str,
+        clip: Option<vello::kurbo::Rect>,
+    ) -> Option<DrawnText> {
+        // This widget's own clip applies to its children; a node inside it is drawn through it.
+        let clip = match widget.child_clip_rect() {
+            Some(own) => Some(clip.map_or(own, |outer| outer.intersect(own))),
+            None => clip,
+        };
+        if let Some(rect) = says(widget, text) {
+            return Some(DrawnText { rect, clip });
+        }
+        widget
+            .children()
+            .into_iter()
+            .find_map(|child| walk(child, text, clip))
+    }
+    walk(widget, text, None)
+}
 #[cfg(test)]
 mod tests_support;
 

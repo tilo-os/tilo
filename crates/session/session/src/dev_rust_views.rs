@@ -49,6 +49,7 @@ impl RustApps {
             &self.chat.message_rows(CHAT_CHANNEL),
             CHAT_CHANNEL,
             chat::model::ME,
+            &chat::views::Names::default(),
         )
     }
 
@@ -60,6 +61,7 @@ impl RustApps {
             &self.chat.message_rows(CHAT_SHORT_CHANNEL),
             CHAT_SHORT_CHANNEL,
             chat::model::ME,
+            &chat::views::Names::default(),
         )
     }
 

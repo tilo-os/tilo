@@ -49,6 +49,44 @@ const AGENT: &str = "assistant";
 /// Enter, the key that submits the canvas entry.
 const KEY_ENTER: u32 = 28;
 
+/// This computer as the person "Quinn Davis": a device of theirs, certified under the person's
+/// root key, kept in an identity root of the test's own — so the session seats them by their root
+/// key (64 hex characters, the id a real session's messages are authored by), not by a plain name.
+/// The kernel's own login name is what [`crate::common::PERSON`] cannot be here: the page must
+/// draw their display name, never the key.
+fn this_computer(env: &mut tilo_test_env::ScopedEnv, display_name: &str) -> tempfile::TempDir {
+    use tilo_user_identity::persist;
+
+    let root = tempfile::tempdir().expect("a directory for this computer's identity");
+    let paths = tilo_user_identity::IdentityPaths::under(root.path());
+    std::fs::create_dir_all(paths.device_privkey.parent().expect("the key's directory"))
+        .expect("this computer's key directory");
+    let person = ed25519_dalek::SigningKey::from_bytes(&[0x31; 32]);
+    let device = ed25519_dalek::SigningKey::from_bytes(&[0x32; 32]);
+    persist::write_device_key(&paths.device_privkey, &device).expect("this computer's device key");
+    let mut cert = tilo_user_identity::DeviceCert {
+        user_public_key: person.verifying_key().to_bytes(),
+        device_public_key: device.verifying_key().to_bytes(),
+        device_label: "The laptop".to_owned(),
+        capabilities: tilo_user_identity::DeviceCapabilities::member(),
+        issued_at_ns: tilo_clock::unix_now_ns(),
+        expires_at_ns: None,
+        signature: [0; 64],
+    };
+    tilo_user_identity::sign_device_cert(&mut cert, &person).expect("a certified device");
+    persist::write_device_cert(&paths.device_cert, &cert).expect("this computer's certificate");
+    env.set("TILO_IDENTITY_ROOT", root.path());
+    // The name they go by, which the desktop shows them by everywhere: never their key.
+    ui::local_identity::install_source(Some(std::sync::Arc::new(
+        ui::local_identity::FixedIdentity(ui::local_identity::LocalIdentity {
+            group_public_key: cert.user_public_key,
+            display_name: display_name.to_owned(),
+            avatar_color: [40, 80, 120],
+        }),
+    )));
+    root
+}
+
 /// A headless session with the shell as the whole screen and the apps a development session seeds,
 /// the framed canvas in front.
 fn session(root: &std::path::Path) -> Session {
@@ -372,6 +410,7 @@ fn the_ask_places_the_channels_page_not_the_apps_window() {
 
 /// The place the ask makes draws Chat's own page, not an empty frame: the words the person
 /// typed stand in the shell's laid-out tree, drawn from the reading the session's own
+/// `ChatViewService` publishes (shell.md §8.1, "The view")./// typed stand in the shell's laid-out tree, drawn from the reading the session's own
 /// `ChatViewService` publishes (shell.md §8.1, "The view").
 ///
 /// The arrangement's own fields are not enough to prove this — `shown_as` and `shows` may name
@@ -402,6 +441,76 @@ fn the_conversations_place_draws_the_page_from_the_sessions_own_service() {
          shell says {:?}",
         place.record,
         session.accessible_labels()
+    );
+}
+
+/// A real session's ask conversation names its people by who they are, never by a key: the
+/// person who asked by their display name, the agent that answers by the name the workspace
+/// keeps for it. No development fixture takes part — this is the path every person's session
+/// takes, with the person seated by their root key's 64 hex characters, as a device is.
+#[test]
+fn the_conversations_page_names_its_people_never_by_a_key() {
+    let _settled = ui::motion::testing::settled();
+    let mut env = tilo_test_env::ScopedEnv::new();
+    let _identity = this_computer(&mut env, "Quinn Davis");
+    let root = private_home();
+    let mut session = session(root.path());
+    ask(&mut session, "what is on my task list?");
+    let place = wait_for(&mut session, "the conversation placed", |session| {
+        arrangement(session)
+            .places
+            .into_iter()
+            .find(|place| place.record.contains("/channels/"))
+    });
+    until(&mut session, "the page's transcript", |session| {
+        session.shell_says("what is on my task list?")
+    });
+    // The person who asked is named by their display name, the one this device shows them by
+    // everywhere (the same name the top bar's face wears): never by their routing key.
+    until(&mut session, "the person named", |session| {
+        session.shell_says("Quinn Davis")
+    });
+    let labels = session.accessible_labels();
+    assert!(
+        labels.iter().any(|label| label.contains("Quinn Davis")),
+        "the person's byline is their display name, never their key: {labels:?}; the place \
+         shows {:?}",
+        place.record
+    );
+    // No routing key reaches the page: a 64-character hex run is a person's root key, and none
+    // stands among the page's people. (The shell's own bar is read separately: this test is the
+    // conversation's page, and nothing else on the desk.)
+    let hex_run = |text: &str| {
+        text.split(|c: char| !c.is_ascii_hexdigit())
+            .any(|run| run.len() >= 32)
+    };
+    let reading = session
+        .read(&place.record)
+        .unwrap_or_else(|| panic!("the session serves {}", place.record));
+    let people = reading["people"].as_array().cloned().unwrap_or_default();
+    assert!(!people.is_empty(), "the page names its people: {reading}");
+    for person in &people {
+        let name = person["name"].as_str().unwrap_or_default();
+        let id = person["id"].as_str().unwrap_or_default();
+        assert!(
+            !name.trim().is_empty() && !hex_run(name) && name != id,
+            "a person is named, never shown their key: {person}"
+        );
+    }
+    // Every message's author is one of those named people: the byline never falls back to an id.
+    for message in reading["messages"].as_array().cloned().unwrap_or_default() {
+        let author = message["author"].as_str().unwrap_or_default();
+        assert!(
+            people
+                .iter()
+                .any(|person| person["id"].as_str() == Some(author)),
+            "every author is named: {message} in {reading}"
+        );
+    }
+    let person = people.iter().find(|person| person["name"] == "Quinn Davis");
+    assert!(
+        person.is_some(),
+        "the reading names the person who asked: {reading}"
     );
 }
 

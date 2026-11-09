@@ -707,6 +707,22 @@ impl Shell {
             .find_map(|(_, part)| part.borrow_mut().text_bounds(text))
     }
 
+    /// Where a shown part draws `text`: its box cut to the clip of the scroll view it stands in.
+    pub(crate) fn drawn_text_bounds(&self, text: &str) -> Option<(f64, f64, f64, f64)> {
+        self.parts
+            .iter()
+            .filter(|(_, part)| part.borrow().placement().is_some())
+            .find_map(|(_, part)| part.borrow_mut().drawn_text_bounds(text))
+    }
+
+    /// The clip a shown part's scroll view draws the content holding `text` through.
+    pub(crate) fn scroll_clip(&self, text: &str) -> Option<(f64, f64, f64, f64)> {
+        self.parts
+            .iter()
+            .filter(|(_, part)| part.borrow().placement().is_some())
+            .find_map(|(_, part)| part.borrow_mut().scroll_clip(text))
+    }
+
     /// Where every shown part lays out `text` for assistive technology: every node of every part
     /// whose label, description or value holds it.
     pub(crate) fn text_bounds_all(&self, text: &str) -> Vec<(f64, f64, f64, f64)> {
@@ -1385,6 +1401,22 @@ impl crate::Session {
     #[must_use]
     pub fn shell_text_bounds(&self, text: &str) -> Option<(f64, f64, f64, f64)> {
         self.shell.as_ref()?.text_bounds(text)
+    }
+
+    /// Where the shell *draws* `text`, logical `(x, y, w, h)` : the first node that says it, its
+    /// box cut to the clip of the scroll view it stands in. A row a transcript has scrolled out
+    /// of its room is drawn nowhere; this is what a person sees of it, never where the layout
+    /// put it.
+    #[must_use]
+    pub fn shell_drawn_text_bounds(&self, text: &str) -> Option<(f64, f64, f64, f64)> {
+        self.shell.as_ref()?.drawn_text_bounds(text)
+    }
+
+    /// The clip the shell's scroll view holding `text` draws its content through, logical
+    /// `(x, y, w, h)` : the room a transcript has under the header above it.
+    #[must_use]
+    pub fn shell_scroll_clip(&self, text: &str) -> Option<(f64, f64, f64, f64)> {
+        self.shell.as_ref()?.scroll_clip(text)
     }
 
     /// Where every node the shell lays out that says `text` stands, logical `(x, y, w, h)`: every
