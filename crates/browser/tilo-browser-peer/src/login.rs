@@ -37,6 +37,76 @@ pub struct Door<'a> {
     pub path: String,
 }
 
+impl Door<'_> {
+    /// The workspace the door lets people into, as its path names it.
+    fn workspace(&self) -> Option<String> {
+        let mut segments = self.path.split('/').filter(|segment| !segment.is_empty());
+        segments.find(|segment| *segment == "directory")?;
+        segments.next().map(str::to_owned)
+    }
+}
+
+/// The invitation to the person's own workspace on the host, which the host
+/// makes the first time any device of theirs asks and answers again after
+/// (`room.create-own`), asked over this device's session in `workspace_id`.
+async fn own_workspace_invitation(
+    peer: &PeerHandle,
+    workspace_id: u64,
+    host_cert: &DeviceCert,
+) -> Result<Vec<u8>, CertifyError> {
+    use tilo_actions::remote::{
+        ActionHost as _, Caller, InvokeArgument, InvokeRequest, ReceiptStatus, RemoteActionTarget,
+    };
+    use tilo_relay_session::workspaces::{
+        CREATE_OWN_ROOM, CreatedWorkspace, HOST_ACTIONS_PROVIDER, HOST_ROOMS_RESOURCE,
+    };
+    let refused = |why: String| {
+        CertifyError::Denied(format!(
+            "The host made no workspace of the person's own: {why}"
+        ))
+    };
+    let host = crate::session_actions::SessionActions::new(
+        peer,
+        workspace_id,
+        host_cert.device_public_key,
+    );
+    let receipt = host
+        .invoke(
+            &Caller::local_person("tilo login"),
+            InvokeRequest {
+                on_behalf_of: None,
+                invocation: tilo_actions::InvocationId::new(),
+                target: RemoteActionTarget {
+                    provider: HOST_ACTIONS_PROVIDER.to_owned(),
+                    address: tilo_actions::ActionAddress::new(HOST_ROOMS_RESOURCE, CREATE_OWN_ROOM),
+                },
+                argument: InvokeArgument::default(),
+                context: None,
+                confirmation: None,
+                revision: None,
+                wait_ms: Some(20_000),
+                appearance: None,
+            },
+        )
+        .await
+        .ok_or_else(|| refused("the host did not answer".to_owned()))?
+        .map_err(|error| refused(error.to_string()))?;
+    let output = match receipt.status {
+        ReceiptStatus::Completed { output } => output,
+        ReceiptStatus::Failed { error } => return Err(refused(error.message)),
+        ReceiptStatus::Rejected { error } => return Err(refused(error.to_string())),
+        ReceiptStatus::Cancelled { .. } | ReceiptStatus::Accepted => {
+            return Err(refused("it did not finish".to_owned()));
+        }
+    };
+    let made: CreatedWorkspace = serde_json::from_value(output.value.unwrap_or_default())
+        .map_err(|error| refused(error.to_string()))?;
+    let invitation = made
+        .invitation
+        .ok_or_else(|| refused("it issued no invitation".to_owned()))?;
+    hex::decode(invitation.invitation).map_err(|error| refused(error.to_string()))
+}
+
 /// A computer that is now one of the person's devices.
 pub struct SignIn {
     /// The link it was signed in with.
@@ -168,6 +238,41 @@ pub async fn enter(
                     "This workspace did not let this computer in.".to_owned(),
                 ));
             }
+        }
+    }
+    // The door lets the person into the site's home workspace. The person's
+    // own workspace (where the agent is set up) admits each of their devices
+    // by an invitation of its own: from inside the home workspace this
+    // device asks the host for the person's workspace, as the page does,
+    // and redeems the invitation it answers with.
+    let lobby = door.and_then(Door::workspace);
+    if let Some(lobby) = lobby.as_deref().filter(|lobby| *lobby != workspace) {
+        let lobby_id = tilo_relay_protocol::room_workspace_id(lobby)
+            .map_err(|error| CertifyError::Request(error.to_string()))?;
+        peer.join(lobby_id).map_err(CertifyError::Request)?;
+        if !admitted(&peer, lobby_id).await {
+            return Err(CertifyError::Denied(
+                "The site's workspace let this computer join, but its session is not admitted to it."
+                    .to_owned(),
+            ));
+        }
+        let invitation = own_workspace_invitation(&peer, lobby_id, &sign_in.host_cert).await?;
+        let reply = crate::invite::ask_to_join(
+            client,
+            &invitation,
+            &sign_in.cert,
+            signer.as_ref(),
+            rand::random(),
+            &sign_in.label,
+        )
+        .await?;
+        if !matches!(
+            reply,
+            tilo_relay_protocol::workspaces::JoinReply::Admitted { .. }
+        ) {
+            return Err(CertifyError::Denied(
+                "The person's workspace did not let this computer in.".to_owned(),
+            ));
         }
     }
     peer.join(workspace_id).map_err(CertifyError::Request)?;
