@@ -14,6 +14,8 @@
 //! hypervisor, chosen for a host packed with many tenants' VMs:
 //!
 //! - the first tier-3 command boots the VM ([`vm`]); later ones run in it;
+//! - the kernel and the root filesystem it boots come from one signed,
+//!   digest-pinned image ([`guest`]);
 //! - once no command has run for the idle limit, it is snapshotted to disk
 //!   and its process ends; the next command restores it;
 //! - every VM has a [`size`] and a persistent disk of that size;
@@ -61,6 +63,7 @@
 pub mod control;
 pub mod files;
 pub mod firecracker;
+pub mod guest;
 pub mod meter;
 pub mod plan;
 pub mod service;

@@ -9,6 +9,7 @@ use std::time::Duration;
 use legacy_vm::hosted::control::{self, Reply, Request};
 use legacy_vm::hosted::files::{self, Served};
 use legacy_vm::hosted::firecracker::Machine;
+use legacy_vm::hosted::guest;
 use legacy_vm::hosted::service::{Service, ServiceConfig};
 use legacy_vm::hosted::vm::{Settings, system_clock};
 
@@ -19,6 +20,9 @@ usage: tilo-legacy hosted <command>
         [--disk-image RAW] [--firecracker PATH] [--plans FILE] [--idle-suspend SECONDS]
                          own this host's workspace VMs; listens on RUN/hosted.sock
   status --run DIR       every VM, its phase and its last wake
+  fetch-guest --images DIR [--ref REF]
+                         fetch the pinned guest image into DIR and print the
+                         kernel's and the root filesystem's paths
   usage --run DIR --account ID [--from MS] [--to MS]
                          the account's usage records and totals, as JSON
   suspend --run DIR WORKSPACE ENVIRONMENT
@@ -85,6 +89,7 @@ pub fn main(args: &[String]) -> Result<ExitCode, String> {
     match command.as_str() {
         "serve" => serve(&Flags::parse(rest, &[])?),
         "files-serve" => files_serve(&Flags::parse(rest, &["--read-only"])?),
+        "fetch-guest" => fetch_guest(&Flags::parse(rest, &[])?),
         "status" => ask(&Flags::parse(rest, &[])?, &Request::Status),
         "usage" => {
             let flags = Flags::parse(rest, &[])?;
@@ -127,6 +132,25 @@ pub fn main(args: &[String]) -> Result<ExitCode, String> {
         }
         other => Err(format!("unknown hosted command {other:?}\n{USAGE}")),
     }
+}
+
+/// Fetch the pinned guest image and say what a VM boots: the kernel's path and
+/// the root filesystem's path, one per line.
+fn fetch_guest(flags: &Flags) -> Result<ExitCode, String> {
+    let images = flags.path("--images")?;
+    let reference = match flags.get("--ref") {
+        Some(reference) if guest::valid_pinned_ref(reference) => reference.to_string(),
+        Some(reference) => {
+            return Err(format!(
+                "{reference} is not a digest-pinned hosted guest reference"
+            ));
+        }
+        None => guest::current_ref().ok_or_else(|| guest::GuestError::NotPublished.to_string())?,
+    };
+    let guest = guest::ensure_guest(&images, &reference).map_err(|e| e.to_string())?;
+    println!("kernel {}", guest.kernel.display());
+    println!("rootfs {}", guest.rootfs.display());
+    Ok(ExitCode::SUCCESS)
 }
 
 fn serve(flags: &Flags) -> Result<ExitCode, String> {
