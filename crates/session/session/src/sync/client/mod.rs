@@ -1298,7 +1298,14 @@ impl Client {
                 update: Box::new(update.clone()),
             },
         )));
-        let hosts = self.host_hints_to_say();
+        #[cfg(target_os = "linux")]
+        let hosts = self
+            .engine
+            .as_ref()
+            .map(|engine| engine.host_hints())
+            .unwrap_or_default();
+        #[cfg(not(target_os = "linux"))]
+        let hosts: Vec<(String, Vec<u8>)> = Vec::new();
         if hosts.is_empty() {
             return;
         }
@@ -1311,20 +1318,6 @@ impl Client {
                     .map(|(workspace, hint)| neighbour_wire::PersonalHost { workspace, hint })
                     .collect(),
             })));
-    }
-
-    /// Where the workspaces this device holds are hosted, as its other devices are told: what a
-    /// device of the person opens at the device hosting it.
-    fn host_hints_to_say(&self) -> Vec<(String, Vec<u8>)> {
-        #[cfg(target_os = "linux")]
-        {
-            self.engine
-                .as_ref()
-                .map(|engine| engine.host_hints())
-                .unwrap_or_default()
-        }
-        #[cfg(not(target_os = "linux"))]
-        Vec::new()
     }
 
     /// Take the workspace lists the person's other devices sent since the last call, each with the
@@ -1544,6 +1537,13 @@ impl Client {
         word
     }
 
+    #[cfg_attr(
+        target_arch = "wasm32",
+        allow(
+            clippy::unused_self,
+            reason = "the page's live plane keeps this device's word next"
+        )
+    )]
     /// Say `frames` on `ws` 's presence track, each as the object the board numbered: one object
     /// per frame, sealed with the workspace scope's keys. Nothing while this session holds no plane
     /// there: presence is ephemeral, and the next change says where its sender is.
