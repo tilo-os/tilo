@@ -332,6 +332,11 @@ pub(crate) struct Shared {
     /// into, and where that field's caret stands for the card to open at.
     #[cfg(target_os = "linux")]
     pub(crate) emoji: crate::emoji::Emoji,
+    /// What the desktop's control hints read from this host and give back: the person's record,
+    /// the reasons this session knows, and what they learned.
+    pub(crate) hints: tilo_desktop::control_hints::HintsFeed,
+    /// The person's settings as the hints' record was last taken from them.
+    pub(crate) hints_stamp: Cell<Option<settings_store::SettingsStamp>>,
     /// The shortcut guide: the sheet naming every key the desktop answers,
     /// and the table it explains.
     #[cfg(target_os = "linux")]

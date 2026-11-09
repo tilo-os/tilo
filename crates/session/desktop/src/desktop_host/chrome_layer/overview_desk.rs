@@ -1,7 +1,10 @@
 //! What the overview shows, as this desktop knows it: its workspace cards with where each runs,
 //! and the overview of the person's Tilo below them ([`crate::overview_tilo`]).
 
-use super::{DesktopChrome, HostActionSource, OverviewDesk, WorkspaceSlot};
+use super::DesktopChrome;
+use crate::overview_panel::OverviewDesk;
+use tilo_desktop_model::WorkspaceSlot;
+use tilo_desktop_surface::HostActionSource;
 
 impl DesktopChrome {
     pub(super) fn overview_desk(&self) -> OverviewDesk {

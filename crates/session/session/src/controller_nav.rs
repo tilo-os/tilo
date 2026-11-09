@@ -108,11 +108,8 @@ fn face_role(family: ControllerFamily, button: GamepadButton) -> Option<FaceRole
         FaceRole::Third,
         FaceRole::Fourth,
     ];
-    family
-        .faces()
-        .iter()
-        .position(|face| *face == glyph)
-        .map(|role| roles[role])
+    let at = family.faces().iter().position(|face| *face == glyph)?;
+    roles.get(at).copied()
 }
 
 #[derive(Clone, Copy, Debug)]

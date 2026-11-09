@@ -25,7 +25,6 @@
 //! view ([`people`]).
 
 mod console;
-mod control_hints;
 pub(crate) mod people;
 
 use std::cell::{Cell, RefCell};
@@ -472,19 +471,10 @@ pub(crate) struct BrowserShell {
     cursor: Option<Point>,
     /// Pointing at what is wrong, to report it.
     picker: crate::feedback_pick::PagePicker,
-    /// The desktop's control hints, and what the page's frame last showed
-    /// them.
-    hints: tilo_desktop::control_hints::ControlHints,
-    hints_frame: tilo_desktop::control_hints::HintFrame,
-    /// The page's settings as the hints last took the person's record from
-    /// them.
+    /// The page's side of the desktop's control hints, and its settings as the
+    /// record was last taken from them.
+    hints: tilo_desktop::control_hints::HintsFeed,
     hints_settings: Option<settings_store::SettingsStamp>,
-    /// How the person points, as the page last learned it: hints name what
-    /// a finger does once they touch the screen.
-    interaction: ui::InteractionEnvironment,
-    /// What the hints painted in the frame before the last one drawn: a
-    /// moving hint damages only there and where it is now.
-    hints_painted_before: Option<Rect>,
     /// The console the page holds in front, while it does
     /// ([`Layout::Console`]).
     console: Option<console::ConsoleHold>,
@@ -535,6 +525,40 @@ impl BrowserShell {
             *ctx.handled = true;
         }
         *ctx.handled
+    }
+
+    /// Why no hint may begin now, as only the page knows: following someone,
+    /// or something of the page holding the person's attention that the
+    /// chrome does not draw.
+    fn hints_quiet(&self) -> Option<ui::control_hints::Quiet> {
+        if self.pinned.followed().is_some() {
+            return Some(ui::control_hints::Quiet::Following);
+        }
+        let busy = self.report_composer_open()
+            || self.picker.is_open()
+            || self.people_open
+            || self.profile.is_open();
+        busy.then_some(ui::control_hints::Quiet::Busy)
+    }
+
+    /// Whether a window of the report composer is open. It asks the person a
+    /// question from the moment it opens ("What happened, and what did you
+    /// expect?"), so a hint would stand over what they are being asked.
+    fn report_composer_open(&self) -> bool {
+        use tilo_desktop_model::TileContent;
+        self.handle.read(|tree| {
+            tree.workspaces.iter().any(|workspace| {
+                workspace.strips.iter().any(|strip| {
+                    strip.window_groups.iter().any(|group| {
+                        group.tabs.iter().any(|tab| {
+                            matches!(&tab.tile,
+                                TileContent::LocalApp { app_id, .. }
+                                    if app_id == tilo_desktop::feedback::PACKAGE)
+                        })
+                    })
+                })
+            })
+        })
     }
 
     /// Whether anything of the page besides a hint changed since it was
@@ -595,7 +619,6 @@ impl BrowserShell {
             tilo_menu = tilo_menu.with_feedback();
         }
         let launchpad = CollaborationLaunchpad::new().with_copy(welcome_copy(offers.mac));
-        let hints = control_hints::load();
         // The page has one window and no compositor to give an app's card one
         // of its own: the desk hosts the cards itself, at the place its
         // floating column gives them.
@@ -606,7 +629,7 @@ impl BrowserShell {
             // The page has no widget layer of its own under the desk, so the
             // layer keeps the asks to itself; `follow_asks` reads them back.
             Rc::default(),
-            vec![Box::new(hints.announcer())],
+            Vec::new(),
         )
         .with_cards();
         // The desktop's shortcut table keeps the native defaults: the page
@@ -636,9 +659,14 @@ impl BrowserShell {
             peer,
             &chrome.wake,
         ));
+        // The page's side of the desktop's control hints: the person's record as
+        // their settings hold it, and what this page alone knows of the moment.
+        let hints = tilo_desktop::control_hints::HintsFeed::default();
+        hints.set_record(settings_store::control_hints::LEARNED.get());
+        let mut top = top;
+        top.set_hints_feed(hints.clone());
         let guide = crate::over_page::OverPage::new(PageGuide::new());
         // The desk answers the person's chords, as the guide shows them.
-        let mut top = top;
         top.set_shortcuts(guide.shortcuts());
         Self {
             desk,
@@ -666,10 +694,7 @@ impl BrowserShell {
             cursor: None,
             picker: crate::feedback_pick::PagePicker::default(),
             hints,
-            hints_frame: tilo_desktop::control_hints::HintFrame::default(),
             hints_settings: settings_store::stamp(),
-            interaction: ui::InteractionEnvironment::default(),
-            hints_painted_before: None,
             console: (offers_layout == Layout::Console).then(console::ConsoleHold::default),
         }
     }
@@ -1439,7 +1464,7 @@ impl BrowserShell {
                 .own_words()
                 .unwrap_or_default()
                 .to_owned(),
-            control_hints: Some(self.hints.enabled()),
+            control_hints: Some(self.top.hints().enabled()),
             key: self.chrome.here.borrow().own_user().map(str::to_owned),
             // Status, colour and what people see are the desktop's to keep;
             // a page shows the person as their host names them.
@@ -1449,7 +1474,12 @@ impl BrowserShell {
 
     fn apply_profile_choice(&mut self, choice: ProfileChoice) {
         let request = match choice {
-            ProfileChoice::ControlHints(on) => return self.set_hints_enabled(on),
+            ProfileChoice::ControlHints(on) => {
+                let mut learned = settings_store::control_hints::LEARNED.get();
+                learned.enabled = on;
+                settings_store::control_hints::LEARNED.set(learned).ok();
+                return;
+            }
             ProfileChoice::Rename(name) => HostRequest::Named(name),
             ProfileChoice::Action(id) if id == REPORT_PROBLEM => {
                 self.report_problem();
@@ -1703,13 +1733,38 @@ impl Widget for BrowserShell {
         }
         changed |= self.follow_picker();
         changed |= self.hold_console();
+        // The person's record moves with every settings change (a switch in
+        // Settings, another device's learning): the chrome takes it again
+        // then, never on a schedule.
+        let settings = settings_store::stamp();
+        if settings != self.hints_settings {
+            self.hints_settings = settings;
+            self.hints
+                .set_record(settings_store::control_hints::LEARNED.get());
+        }
+        // The chord the page's search answers to on this platform.
+        let search_keys = tilo_desktop_surface::search_chord_keys(
+            ui::platform::PlatformConventions::new(if self.offers.mac {
+                ui::platform::Platform::MacOs
+            } else {
+                ui::platform::Platform::Linux
+            }),
+        );
+        self.hints.set_context(
+            self.hints_quiet(),
+            self.chrome.shared.presented.get(),
+            search_keys,
+        );
         changed |= self.top.update(state, path);
+        if let Some(learned) = self.hints.take_learned() {
+            // Not kept, a hint at worst shows once more: nothing to tell.
+            settings_store::control_hints::LEARNED.set(learned).ok();
+        }
         changed |= self.desk.update(state, path);
         changed |= self.follow_asks();
         changed |= self.invite.follow();
         changed |= self.directory.follow();
         changed |= self.guide.follow();
-        self.update_hints();
         // Chosen while the surface updated (search, a banner): the page
         // performs them when it reads this frame's status.
         let choices = self.handle.take_host_choices();
@@ -1787,8 +1842,6 @@ impl Widget for BrowserShell {
         // above windows.
         self.top.draw(scene, transform, text, theme, presence);
         self.draw_pinned_people(scene, transform, text, theme);
-        // Above the bar: a learned hint's dot settles into the avatar.
-        self.draw_hints(scene, transform, text, theme);
         if self.people_open {
             self.draw_people(scene, transform, text, theme);
             self.pinned
@@ -1868,7 +1921,6 @@ impl Widget for BrowserShell {
                 return;
             }
         }
-        self.hints.heard(event, ui::time::now());
         if self.people_event(event, ctx) {
             return;
         }
@@ -1943,7 +1995,6 @@ impl Widget for BrowserShell {
     }
 
     fn set_interaction_environment(&mut self, environment: ui::InteractionEnvironment) {
-        self.interaction = environment;
         for child in self.children_mut() {
             child.set_interaction_environment(environment);
         }
@@ -1968,23 +2019,13 @@ impl Widget for BrowserShell {
     }
 
     fn needs_redraw(&self) -> bool {
-        self.page_needs_redraw() || self.hints.needs_animation_frame(ui::time::now())
+        self.page_needs_redraw() || self.top.needs_animation_frame()
     }
 
-    /// The page repaints whole for anything of its own that changed; a
-    /// hint that moves alone changes only what it painted, there and where
-    /// it was the frame before.
+    /// The page repaints whole for anything of its own that changed.
     fn collect_damage(&self, regions: &mut Vec<Rect>) {
         if self.page_needs_redraw() {
             regions.push(self.get_rect());
-            return;
-        }
-        let now = self.hints.painted_rect();
-        if self.hints.needs_animation_frame(ui::time::now()) || now != self.hints_painted_before {
-            regions.extend(match (self.hints_painted_before, now) {
-                (Some(before), Some(now)) => Some(before.union(now)),
-                (before, now) => before.or(now),
-            });
         }
     }
 
@@ -1992,17 +2033,16 @@ impl Widget for BrowserShell {
     /// by [`Self::needs_redraw`]: a hint drawn by the shell itself, not by a
     /// child, says here that it moves.
     fn needs_animation_frame(&self) -> bool {
-        self.hints.needs_animation_frame(ui::time::now())
-            || [
-                &self.desk as &dyn Widget,
-                &self.top,
-                &self.profile,
-                &self.invite,
-                &self.directory,
-                &self.guide,
-            ]
-            .iter()
-            .any(|child| child.needs_animation_frame())
+        [
+            &self.desk as &dyn Widget,
+            &self.top,
+            &self.profile,
+            &self.invite,
+            &self.directory,
+            &self.guide,
+        ]
+        .iter()
+        .any(|child| child.needs_animation_frame())
     }
 
     /// The earliest wake any part of the page asked for.
@@ -2017,7 +2057,6 @@ impl Widget for BrowserShell {
             )
             .chain(self.pinned.next_wake_deadline())
             .chain(self.linking.due())
-            .chain(self.hints.next_wake_deadline(ui::time::now()))
             .min()
     }
 

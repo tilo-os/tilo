@@ -153,6 +153,29 @@ impl Shared {
         }
     }
 
+    /// The desktop's control hints: the person's record as their settings hold it, the reasons
+    /// this session knows (following someone, setup standing over the desktop), and what they
+    /// learned since.
+    pub(crate) fn follow_hints(&self, setup_up: bool) {
+        let settings = settings_store::stamp();
+        if settings != self.hints_stamp.get() {
+            self.hints_stamp.set(settings);
+            self.hints
+                .set_record(settings_store::control_hints::LEARNED.get());
+        }
+        let quiet = if self.follow.borrow().followed().is_some() {
+            Some(ui::control_hints::Quiet::Following)
+        } else {
+            setup_up.then_some(ui::control_hints::Quiet::Busy)
+        };
+        let search_keys = self.shortcut_guide.search_keys();
+        self.hints.set_context(quiet, !setup_up, search_keys);
+        if let Some(learned) = self.hints.take_learned() {
+            // Not kept, a hint at worst shows once more: nothing to tell.
+            settings_store::control_hints::LEARNED.set(learned).ok();
+        }
+    }
+
     /// Open what the person chose in the history: the app that holds it,
     /// showing it.
     fn open_from_history(

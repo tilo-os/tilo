@@ -70,7 +70,7 @@ impl TopBarChrome {
     }
 
     /// The person's own avatar, when the bar shows it.
-    pub(super) fn own_chip(&self) -> Option<crate::chrome::OwnChip> {
+    pub(crate) fn own_chip(&self) -> Option<crate::chrome::OwnChip> {
         if self.is_compact() {
             return None;
         }

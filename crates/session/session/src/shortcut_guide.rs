@@ -69,6 +69,20 @@ impl ShortcutGuide {
         }
     }
 
+    /// The keys that open search, as this keyboard spells the person's chord for it.
+    pub(crate) fn search_keys(&self) -> Vec<String> {
+        let table = self.state.table();
+        table
+            .borrow()
+            .bindings
+            .get(&settings_store::hardware::ShortcutAction::Search)
+            .map(|chord| {
+                ui::keycaps::active()
+                    .chord_keys(chord.modifiers.iter().map(String::as_str), &chord.key)
+            })
+            .unwrap_or_default()
+    }
+
     /// Let the table follow `chords` , the keys the armed shortcuts answer: the keys claim them,
     /// the guide lists what each runs, and the apps' shortcuts step aside for them. Nothing is
     /// written to the person's settings: the chords are the shortcuts' own, taken from the

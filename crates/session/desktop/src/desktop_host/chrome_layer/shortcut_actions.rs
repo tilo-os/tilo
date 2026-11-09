@@ -8,8 +8,9 @@ use tilo_desktop_surface::navigation::{
 };
 use ui::shortcut_table::{FixedAction, ShortcutAction};
 
-use super::{DesktopAsk, DesktopChrome};
+use super::DesktopChrome;
 use crate::chrome::ChromeIntent;
+use crate::host_contract::DesktopAsk;
 
 impl DesktopChrome {
     /// Perform a desktop shortcut: false for one the desk has no part in (locking the device, the

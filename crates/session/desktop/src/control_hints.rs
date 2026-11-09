@@ -7,11 +7,9 @@
 //! loads it, writes what [`ControlHints::take_changed`] hands back, and folds in what arrives from
 //! their other devices.
 
-use std::cell::RefCell;
-use std::collections::HashMap;
+use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
-use taffy::{NodeId, TaffyTree};
 use ui::control_hints::performed::{self, Performed};
 use ui::control_hints::{Cue, Gesture, HintLayer, HintLook, HintPlace, HintSpec, Learned, Quiet};
 use ui::text_render::TextRenderer;
@@ -118,11 +116,71 @@ pub struct HintFrame {
     pub touch: bool,
 }
 
+/// What a host lends the desktop's control hints: the person's record as their settings hold it,
+/// the reasons only the host knows, and what the person learned since it last looked.
+#[derive(Clone, Default)]
+pub struct HintsFeed {
+    /// The record, and a revision that moves with it: the chrome folds a record in again only
+    /// when it moved.
+    record: Rc<RefCell<(u64, Learned)>>,
+    /// Why no hint may begin, as the host knows and the chrome cannot.
+    quiet: Rc<RefCell<Option<Quiet>>>,
+    /// Whether the person has reached the desktop past setup.
+    presented: Rc<Cell<bool>>,
+    /// The keys that open search on this host, as its keyboard spells them: a page takes its own
+    /// chord, and a desktop the person's saved one.
+    search_keys: Rc<RefCell<Vec<String>>>,
+    /// What the person learned or was shown, waiting for the host to keep it.
+    learned: Rc<RefCell<Option<Learned>>>,
+}
+
+impl HintsFeed {
+    /// The record as the person's settings hold it.
+    pub fn set_record(&self, record: Learned) {
+        let mut held = self.record.borrow_mut();
+        held.0 = held.0.wrapping_add(1);
+        held.1 = record;
+    }
+
+    /// Why no hint may begin now, if anything, whether the person has reached the desktop, and the
+    /// keys that open search here.
+    pub fn set_context(&self, quiet: Option<Quiet>, presented: bool, search_keys: Vec<String>) {
+        self.quiet.replace(quiet);
+        self.presented.set(presented);
+        self.search_keys.replace(search_keys);
+    }
+
+    /// What the person learned since the host last took it, for the host to keep in their
+    /// settings.
+    pub fn take_learned(&self) -> Option<Learned> {
+        self.learned.borrow_mut().take()
+    }
+
+    /// The chrome's part of the feed, as it drives the hints.
+    pub(crate) fn record(&self) -> (u64, Learned) {
+        let held = self.record.borrow();
+        (held.0, held.1.clone())
+    }
+
+    pub(crate) fn reasons(&self) -> (Option<Quiet>, bool) {
+        (*self.quiet.borrow(), self.presented.get())
+    }
+
+    /// The keys that open search on this host.
+    pub(crate) fn search_keys(&self) -> Vec<String> {
+        self.search_keys.borrow().clone()
+    }
+
+    pub(crate) fn note_learned(&self, learned: Learned) {
+        self.learned.replace(Some(learned));
+    }
+}
+
 /// The desktop's control hints on one host.
 pub struct ControlHints {
     layer: HintLayer<Signal>,
-    /// What the hint on screen says to assistive technology, as last drawn, for the host's
-    /// [`HintAnnouncer`].
+    /// What the hint on screen says to assistive technology, as last drawn
+    /// ([`Self::accessibility`]).
     said: Rc<RefCell<Option<ui::a11y::AccessNode>>>,
     /// The motion it was last drawn with, for the frames between draws.
     motion: EffectiveMotion,
@@ -290,65 +348,6 @@ impl ControlHints {
     #[must_use]
     pub fn card_rect(&self) -> Option<Rect> {
         self.layer.card_rect()
-    }
-}
-
-impl ControlHints {
-    /// Where the host's widget tree tells assistive technology about the hint on screen.
-    #[must_use]
-    pub fn announcer(&self) -> HintAnnouncer {
-        HintAnnouncer {
-            said: Rc::clone(&self.said),
-            rect: Rect::ZERO,
-        }
-    }
-}
-
-/// The hint on screen in a host's widget tree, for assistive technology: a polite label with the
-/// hint's words and keys while one shows. It draws nothing and takes no input; the hint itself is
-/// drawn above the windows.
-pub struct HintAnnouncer {
-    said: Rc<RefCell<Option<ui::a11y::AccessNode>>>,
-    rect: Rect,
-}
-
-impl ui::widget::Widget for HintAnnouncer {
-    fn build_layout(
-        &mut self,
-        taffy: &mut TaffyTree<()>,
-        _theme: &Theme,
-        map: &mut HashMap<NodeId, *mut dyn ui::widget::Widget>,
-    ) -> NodeId {
-        use ui::widget::TaffyTreeExt as _;
-        let style = taffy::Style {
-            position: taffy::Position::Absolute,
-            size: taffy::Size {
-                width: taffy::Dimension::length(0.0),
-                height: taffy::Dimension::length(0.0),
-            },
-            ..Default::default()
-        };
-        taffy.widget_leaf(style, map, self)
-    }
-
-    fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        self.rect = ui::widget::layout_rect(taffy, node, origin);
-    }
-
-    fn get_rect(&self) -> Rect {
-        self.rect
-    }
-
-    fn is_layout_dirty(&self) -> bool {
-        false
-    }
-
-    fn accessibility(&self) -> Option<ui::a11y::AccessNode> {
-        self.said.borrow().clone()
-    }
-
-    fn name(&self) -> &'static str {
-        "ControlHintAnnouncer"
     }
 }
 

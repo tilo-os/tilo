@@ -637,6 +637,9 @@ impl Session {
         // explains them: a chord that works is a chord the guide and the
         // menus show, and a person's rebinding reaches every one of them.
         let shortcuts = Rc::new(RefCell::new(std::mem::take(&mut options.config.shortcuts)));
+        // The desktop's control hints, shared by every scheme: the record as the person's
+        // settings hold it and what this session alone knows, for the chrome that draws them.
+        let hints = tilo_desktop::control_hints::HintsFeed::default();
         let chrome = Rc::new(RefCell::new(crate::chrome::host(
             &handle,
             &options,
@@ -657,6 +660,7 @@ impl Session {
                     invitable: Rc::clone(&invitable),
                 },
                 engine: engine.clone(),
+                hints: hints.clone(),
             },
             sync.clone(),
             &overview,
@@ -1287,6 +1291,8 @@ impl Session {
             overview,
             dictation,
             emoji,
+            hints,
+            hints_stamp: Cell::default(),
             shortcut_guide,
             chrome,
             people,
@@ -2104,6 +2110,10 @@ impl Session {
         // answer, and moves while the session runs: the bar's invite button
         // and the roster's footer follow it.
         self.shared.follow_invitable();
+        // What the desktop's control hints teach, learn and stay quiet for: setup owns the screen
+        // until the person reaches the desktop.
+        let setup_up = self.setup.as_ref().is_some_and(|setup| setup.borrow().up());
+        self.shared.follow_hints(setup_up);
         // The person's account with this session's host, in the overview of their Tilo, as it
         // changes.
         if let Some(account) = crate::host_account::changed() {

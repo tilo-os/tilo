@@ -849,6 +849,15 @@ impl Panel {
                 ProfileChoice::Availability(chosen) => {
                     self.asks.borrow_mut().push(PeopleAsk::Availability(chosen));
                 }
+                // The hints' switch is the person's record, which every device reads: the chrome
+                // folds it in as their settings move.
+                ProfileChoice::ControlHints(on) => {
+                    let mut learned = settings_store::control_hints::LEARNED.get();
+                    learned.enabled = on;
+                    if let Err(error) = settings_store::control_hints::LEARNED.set(learned) {
+                        tracing::warn!(%error, "could not keep the control hints' switch");
+                    }
+                }
                 ProfileChoice::Colour(id) => {
                     self.asks.borrow_mut().push(PeopleAsk::Colour(id));
                 }
@@ -867,8 +876,7 @@ impl Panel {
                 | ProfileChoice::Accept(_)
                 | ProfileChoice::Decline(_)
                 | ProfileChoice::Sharing(_)
-                | ProfileChoice::Visibility(_)
-                | ProfileChoice::ControlHints(_) => {}
+                | ProfileChoice::Visibility(_) => {}
             }
         }
     }

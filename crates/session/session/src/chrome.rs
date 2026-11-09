@@ -390,6 +390,8 @@ pub(crate) struct ChromeWiring {
     pub(crate) feeds: BarFeeds,
     /// This device's workspaces, as their records hold them.
     pub(crate) engine: Option<Arc<crate::engine::Engine>>,
+    /// What the desktop's control hints read and give back.
+    pub(crate) hints: tilo_desktop::control_hints::HintsFeed,
 }
 
 /// The bar's view of the session: the desktop's tree, the wall clock, who is here, the machine's
@@ -749,6 +751,7 @@ pub(crate) fn host(
         shortcuts,
         feeds,
         engine,
+        hints,
     } = wiring;
     let reveals = Rc::clone(&feeds.reveals);
     let tree = handle.read(Clone::clone);
@@ -783,6 +786,7 @@ pub(crate) fn host(
     chrome.set_switcher(switcher.clone());
     chrome.set_reveals(reveals);
     chrome.set_shortcuts(shortcuts);
+    chrome.set_hints_feed(hints);
     // Keys come to the chrome while one of the surfaces it draws holds the keyboard: the stack says
     // which, and it says the window's again as soon as the top surface closes.
     let desk = handle.clone();
