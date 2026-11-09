@@ -575,11 +575,16 @@ view suggestions<R>(of: R) {
 /// fields the change wrote, the person looking as "You". What the sentence leaves out stands
 /// under it, muted (`version_notes`): each field the change wrote, what it held before beside
 /// what it holds now, each as the field's type shows it. Steps of one hand, moments apart, group
-/// under the face of the step that opens them. Undo ends the step that offers it, as quiet as
-/// the words around it, a run's undo taking the whole run; each change of theirs in a step of
-/// several is undone on its own, where the step opens. One change made over many items at
-/// once — a command run on a choice of them — is one step: it says how many items it changed,
-/// and its Undo takes them all back together.
+/// under the face of the step that opens them.
+///
+/// A change is taken back where a person means it. The newest step is the change the page shows
+/// the result of, so it offers its undo where it stands, as quiet as the words around it, a
+/// run's undo taking the whole run. Every older step keeps its undo in the step's own menu: a
+/// history reads as a timeline, not as a column of buttons. The step that made the resource
+/// offers nothing to take back — reversing it would remove the thing whose page a person is
+/// reading it on. A step of several changes is opened to each of them, each taken back on its
+/// own there. One change made over many items at once — a command run on a choice of them — is
+/// one step: it says how many items it changed, and its undo takes them all back together.
 view history<R>(of: R) {
     state open: Text = ""
     let steps = steps(of)
@@ -591,6 +596,13 @@ view history<R>(of: R) {
                 // one joins the visit that step's face opened.
                 let prev = steps.previous(s)
                 let joined = if let p = prev { p.who == s.who and s.at - p.at < 1h } else { false }
+                // The newest step, whose result is what the page shows.
+                let newest = prev == .none
+                // The step's first change made the resource: the step holds its making, and
+                // nothing of it is taken back from the page of the thing it made. A step's
+                // versions run oldest first, so its newest is what its sentence says.
+                let made = if let v = s.versions.first() { v.kind == "created" } else { false }
+                let undoable = not made and (s.run != .none or s.mine and s.changes == 1)
                 stack(gap: .related) {
                     row(gap: .tight, align: .start) {
                         if joined {
@@ -602,8 +614,8 @@ view history<R>(of: R) {
                         }
                         stack(gap: .tight, fill: 1.0) {
                             // Who, what, when: one sentence. It wraps rather than squeezing the
-                            // name it opens with — an undo's own word is as long as its language
-                            // says — and what can be undone is offered at its end, quietly.
+                            // name it opens with, and what can be taken back at its end is one
+                            // quiet control.
                             row(gap: .tight, align: .center, wrap: true) {
                                 if let v = s.versions.last() {
                                     ui.Text(v.actor, role: .label)
@@ -616,22 +628,49 @@ view history<R>(of: R) {
                                 ui.Text("·", role: .caption, secondary: true)
                                 ui.Time(s.at, role: .caption, secondary: true)
                                 spacer()
-                                if let run = s.run {
-                                    ui.Button(
-                                        phrase("tilolang-history-undo-run"),
-                                        role: .plain,
-                                        size: .small,
-                                    ) {
-                                        on press: undo(run)
-                                    }
-                                } else if s.changes == 1 and s.mine {
-                                    if let v = s.versions.last() {
-                                        ui.Button(
-                                            phrase("tilolang-undo"),
+                                // Taken back here, quietly, on the step the page ends with; in
+                                // the step's menu anywhere older.
+                                if undoable {
+                                    if newest {
+                                        if let run = s.run {
+                                            ui.Button(
+                                                phrase("tilolang-history-undo-run"),
+                                                role: .plain,
+                                                size: .small,
+                                            ) {
+                                                on press: undo(run)
+                                            }
+                                        } else if let v = s.versions.last() {
+                                            ui.Button(
+                                                phrase("tilolang-undo"),
+                                                role: .plain,
+                                                size: .small,
+                                            ) {
+                                                on press: undo(v)
+                                            }
+                                        }
+                                    } else {
+                                        ui.MenuButton(
+                                            phrase("tilolang-history-actions"),
+                                            icon: .more_horizontal,
+                                            icon_only: true,
                                             role: .plain,
-                                            size: .small,
                                         ) {
-                                            on press: undo(v)
+                                            if let run = s.run {
+                                                ui.MenuItem(
+                                                    phrase("tilolang-history-undo-run"),
+                                                    icon: .undo_2,
+                                                ) {
+                                                    on choose: undo(run)
+                                                }
+                                            } else if let v = s.versions.last() {
+                                                ui.MenuItem(
+                                                    phrase("tilolang-history-revert"),
+                                                    icon: .undo_2,
+                                                ) {
+                                                    on choose: undo(v)
+                                                }
+                                            }
                                         }
                                     }
                                 }
@@ -665,7 +704,7 @@ view history<R>(of: R) {
                                                 ui.Text("·", role: .caption, secondary: true)
                                                 ui.Time(v.at, role: .caption, secondary: true)
                                                 spacer()
-                                                if v.mine {
+                                                if v.mine and v.kind != "created" {
                                                     ui.Button(
                                                         phrase("tilolang-undo"),
                                                         role: .plain,

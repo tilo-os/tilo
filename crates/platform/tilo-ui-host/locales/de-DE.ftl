@@ -108,4 +108,6 @@ tilolang-history-changes = { $count ->
 tilolang-history-show = Änderungen zeigen
 tilolang-history-hide = Änderungen ausblenden
 tilolang-history-undo-run = Ausführung rückgängig machen
+tilolang-history-actions = Aktionen für diese Änderung
+tilolang-history-revert = Diese Änderung zurücknehmen
 

@@ -122,4 +122,8 @@ tilolang-history-changes = { $count ->
 tilolang-history-show = Show changes
 tilolang-history-hide = Hide changes
 tilolang-history-undo-run = Undo run
+# A step of the history holds its revert in its own menu, named by what the menu undoes.
+tilolang-history-actions = Actions for this change
+# Taking an older change back, as a new change that reverses it.
+tilolang-history-revert = Revert this change
 
