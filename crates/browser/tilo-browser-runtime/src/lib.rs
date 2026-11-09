@@ -128,6 +128,7 @@ mod feedback_code;
 mod feedback_composer;
 #[cfg(target_arch = "wasm32")]
 mod feedback_crops;
+mod guide;
 #[cfg(target_arch = "wasm32")]
 mod invite;
 #[cfg(target_arch = "wasm32")]

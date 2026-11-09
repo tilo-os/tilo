@@ -47,7 +47,6 @@ pub use crate::search::{AppActions, SearchOptions};
 pub use crate::setup::BeforeDesk;
 pub use tilo_service::{Service, Services};
 
-use crate::keys::GuideKeys;
 use crate::mount::panels::mount_activities;
 use crate::mount::panels::{KeyContext, mount_controls, mount_setup};
 use crate::mount::services::{mount_services, start_action_plane};
@@ -819,20 +818,23 @@ impl Session {
         if let Some(portal) = &portal_shortcuts {
             portal.set_shortcut_table(shortcuts.borrow().clone());
         }
-        // The guide's keys while it is up: the key surface holds back what
-        // would act behind the guide and hands it the chord it waits for.
-        let guide_keys = GuideKeys::default();
         // The controller the person last used: the guide leads with its
         // buttons, and a key of their own leads with the keyboard again.
         let controller: Rc<Cell<Option<ui::ControllerFamily>>> = Rc::new(Cell::new(None));
         let controller_keys: Rc<Cell<bool>> = Rc::new(Cell::new(false));
-        let shortcut_guide = crate::shortcut_guide::ShortcutGuide::new(
-            guide_seat,
+        // The guide's state while it is up: the key surface holds back what
+        // would act behind the guide and hands it the chord it waits for.
+        let guide_state = Rc::new(tilo_sheets::shortcut_guide::State::new(
             Rc::clone(&shortcuts),
-            guide_keys.clone(),
-            portal_shortcuts.clone(),
+            portal_shortcuts.clone().map(|portal| {
+                Rc::new(crate::shortcut_guide::PortalShortcuts(portal))
+                    as Rc<dyn tilo_sheets::shortcut_guide::AppShortcuts>
+            }),
             Rc::clone(&controller),
-        );
+        ));
+        let shortcut_guide =
+            crate::shortcut_guide::ShortcutGuide::new(guide_seat, Rc::clone(&guide_state));
+        let guide_keys = Rc::clone(&guide_state);
         let (commands, controls_reading, invocations, triggered, readout_place, readout) =
             mount_controls(
                 &mut compositor,

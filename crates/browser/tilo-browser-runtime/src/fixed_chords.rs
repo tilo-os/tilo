@@ -1,7 +1,7 @@
-//! The fixed chords the page's desk leaves to its host: the capture studio,
-//! the shortcut guide and cutting a remote control. Each runs a session
-//! surface over a system's screen, and a page has none, so the chord says so
-//! through the one [`Outcome`] path rather than doing nothing.
+//! The fixed chords the page's desk leaves to its host: the capture studio
+//! and cutting a remote control. Each runs a session surface over a system's
+//! screen, and a page has none, so the chord says so through the one
+//! [`Outcome`] path rather than doing nothing.
 //!
 //! The rest of the fixed chords — closing the window in front, a new window,
 //! another window of the app in front, the terminal, the strip switcher and
@@ -20,13 +20,12 @@ pub(crate) fn unserved(action: FixedAction) -> Option<Outcome> {
         | FixedAction::PictureInPicture
         | FixedAction::SaveRecentReplay => Outcome::new(t("answer-capture-not-in-browser"))
             .saying(t("answer-why-capture-not-in-browser")),
-        FixedAction::ShortcutGuide => Outcome::new(t("answer-guide-not-in-browser"))
-            .saying(t("answer-why-guide-not-in-browser")),
         FixedAction::StopRemoteInput => Outcome::new(t("answer-remote-not-in-browser"))
             .saying(t("answer-why-remote-not-in-browser")),
         // A window's chord with no window to act on: the native session says
         // nothing there either, so there is nothing a person asked for.
-        FixedAction::CloseTab
+        FixedAction::ShortcutGuide
+        | FixedAction::CloseTab
         | FixedAction::NewWindow
         | FixedAction::DuplicateTab
         | FixedAction::OpenTerminal
@@ -48,7 +47,6 @@ mod tests {
             FixedAction::CaptureScreenshot,
             FixedAction::PictureInPicture,
             FixedAction::SaveRecentReplay,
-            FixedAction::ShortcutGuide,
             FixedAction::StopRemoteInput,
         ] {
             let outcome = unserved(action).unwrap_or_else(|| panic!("{action:?} is answered"));

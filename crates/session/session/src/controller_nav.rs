@@ -91,52 +91,28 @@ pub enum FaceRole {
     Fourth,
 }
 
-/// Linux reports face buttons by position. Nintendo prints `A` east and `B` south — the mirror of
-/// Xbox — so the roles follow the legend, matching the glyphs
-/// [`ui::input::ControllerButton::label`] draws.
+/// The face button `button` carries on `family`: the legends are what say which
+/// role it has, since Linux reports face buttons by position and Nintendo
+/// prints `A` east where Xbox prints it south.
 fn face_role(family: ControllerFamily, button: GamepadButton) -> Option<FaceRole> {
-    use GamepadButton::{East, North, South, West};
-    Some(match family {
-        ControllerFamily::Nintendo | ControllerFamily::JoyConPair => match button {
-            East => FaceRole::Confirm,
-            South => FaceRole::Cancel,
-            North => FaceRole::Third,
-            West => FaceRole::Fourth,
-            _ => return None,
-        },
-        // A single right Joy-Con held sideways rotates its legends.
-        ControllerFamily::JoyConRight => match button {
-            South => FaceRole::Confirm,
-            West => FaceRole::Cancel,
-            East => FaceRole::Third,
-            North => FaceRole::Fourth,
-            _ => return None,
-        },
-        ControllerFamily::Generic
-        | ControllerFamily::Xbox
-        | ControllerFamily::PlayStation
-        | ControllerFamily::JoyConLeft => match button {
-            South => FaceRole::Confirm,
-            East => FaceRole::Cancel,
-            West => FaceRole::Third,
-            North => FaceRole::Fourth,
-            _ => return None,
-        },
-    })
-}
-
-/// The face button that carries `role` on `family` , for drawing its glyph.
-pub fn face_button(family: ControllerFamily, role: FaceRole) -> ui::input::ControllerButton {
-    use ui::input::ControllerButton;
-    [
-        (GamepadButton::South, ControllerButton::South),
-        (GamepadButton::East, ControllerButton::East),
-        (GamepadButton::West, ControllerButton::West),
-        (GamepadButton::North, ControllerButton::North),
-    ]
-    .into_iter()
-    .find(|(button, _)| face_role(family, *button) == Some(role))
-    .map_or(ControllerButton::South, |(_, glyph)| glyph)
+    let glyph = match button {
+        GamepadButton::South => ui::input::ControllerButton::South,
+        GamepadButton::East => ui::input::ControllerButton::East,
+        GamepadButton::West => ui::input::ControllerButton::West,
+        GamepadButton::North => ui::input::ControllerButton::North,
+        _ => return None,
+    };
+    let roles = [
+        FaceRole::Confirm,
+        FaceRole::Cancel,
+        FaceRole::Third,
+        FaceRole::Fourth,
+    ];
+    family
+        .faces()
+        .iter()
+        .position(|face| *face == glyph)
+        .map(|role| roles[role])
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -640,20 +616,18 @@ mod tests {
     #[test]
     fn the_guide_draws_the_button_that_carries_each_role() {
         use ui::input::ControllerButton;
+        let faces = ControllerFamily::Xbox.faces();
+        assert_eq!(faces[0], ControllerButton::South);
         assert_eq!(
-            face_button(ControllerFamily::Xbox, FaceRole::Confirm),
-            ControllerButton::South
-        );
-        assert_eq!(
-            face_button(ControllerFamily::Nintendo, FaceRole::Confirm),
+            ControllerFamily::Nintendo.faces()[0],
             ControllerButton::East
         );
         assert_eq!(
-            face_button(ControllerFamily::Nintendo, FaceRole::Third),
+            ControllerFamily::Nintendo.faces()[2],
             ControllerButton::North
         );
         assert_eq!(
-            face_button(ControllerFamily::PlayStation, FaceRole::Cancel),
+            ControllerFamily::PlayStation.faces()[1],
             ControllerButton::East
         );
     }

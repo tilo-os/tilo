@@ -1159,8 +1159,6 @@ answer-why-cannot-start = Apps cannot be started right now.
 # rather than doing nothing.
 answer-capture-not-in-browser = Screenshots and recordings run in Tilo on a computer
 answer-why-capture-not-in-browser = It needs the whole screen, which a browser page does not have.
-answer-guide-not-in-browser = Keyboard shortcuts are listed in Tilo on a computer
-answer-why-guide-not-in-browser = It opens over the whole system, which a browser page is not.
 answer-remote-not-in-browser = Remote control runs in Tilo on a computer
 answer-why-remote-not-in-browser = Nothing here is under someone else's control.
 

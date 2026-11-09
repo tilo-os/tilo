@@ -4,17 +4,17 @@
 //! The guide follows the input the person is using: the keyboard's
 //! navigation pairs and essentials, the controller's buttons, the
 //! touchscreen's gestures. On the keyboard each navigation key can be
-//! changed: pressing it asks the desktop to take the next chord as its new
-//! keys, and a changed pair can go back to its defaults. The desktop owns the
-//! shortcut table and checks every change ([`GuideSeat`]);
-//! [`keyboard_guide`] shapes that table into what the guide shows.
+//! changed: pressing it takes the next chord as its new keys, and a changed
+//! pair can go back to its defaults. [`State`] is that state machine, which
+//! every host keeps and draws with [`sheet`]; [`keyboard_guide`] shapes the
+//! table into what the guide shows.
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
-use settings_store::hardware::{KeyChord, ShortcutAction, ShortcutConfig};
+use settings_store::hardware::{KeyChord, ShortcutAction, ShortcutConfig, ShortcutConfigError};
 use settings_store::keyboard_shortcuts::{ShortcutEntry, catalogue};
-use ui::framework::{Dispatcher, Effected, ResourceApp, ViewCx};
+use ui::framework::{Effected, ResourceApp, ViewCx};
 use ui::input::{
     ControllerBinding, ControllerButton, InputBinding, KeyLegend, KeyboardBinding,
     KeyboardModifier, TouchGesture,
@@ -111,6 +111,9 @@ impl Default for Faces {
     }
 }
 
+/// Who answers what the person pressed on the guide.
+pub type Ask = Rc<dyn Fn(GuideEffect)>;
+
 /// What the guide shows: plain data the shell keeps current.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Guide {
@@ -179,6 +182,307 @@ impl GuideSeat {
     }
 }
 
+/// What the guide waits for and what it was given while waiting.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Caught {
+    /// The person left without choosing keys.
+    Cancelled,
+    /// The keys a shortcut takes.
+    Chord(KeyChord),
+}
+
+/// What the guide changes of the desktop beyond its own table: the apps'
+/// global shortcuts, which step aside for the table the desktop answers.
+pub trait AppShortcuts {
+    /// Answer `table` from now on.
+    fn set_shortcut_table(&self, table: ShortcutConfig);
+}
+
+/// What the guide explains, what it waits for, and what it last showed, as
+/// every host keeps it: the table, the shortcut whose chord is being taken,
+/// why a change was refused, and the chords pressed.
+#[derive(Default)]
+pub struct State {
+    table: Rc<RefCell<ShortcutConfig>>,
+    apps: Option<Rc<dyn AppShortcuts>>,
+    controller: Rc<Cell<Option<ui::ControllerFamily>>>,
+    up: Cell<bool>,
+    listening: RefCell<Option<String>>,
+    caught: RefCell<Vec<Caught>>,
+    message: RefCell<Option<String>>,
+    /// What the guide was last shaped from, and that guide.
+    built: RefCell<Option<(GuideKey, Guide)>>,
+}
+
+/// The state a [`State`] shapes its guide from: a guide is built again only
+/// when one of these changed.
+type GuideKey = (
+    ShortcutConfig,
+    Option<String>,
+    Option<String>,
+    Option<ui::ControllerFamily>,
+);
+
+impl State {
+    /// The guide's state over `table`, the table the desktop answers keys
+    /// with; `apps` is told when a change reaches the apps' shortcuts, and
+    /// `controller` is the controller the person last used, if any.
+    #[must_use]
+    pub fn new(
+        table: Rc<RefCell<ShortcutConfig>>,
+        apps: Option<Rc<dyn AppShortcuts>>,
+        controller: Rc<Cell<Option<ui::ControllerFamily>>>,
+    ) -> Self {
+        Self {
+            table,
+            apps,
+            controller,
+            ..Self::default()
+        }
+    }
+
+    /// Whether the guide is up.
+    #[must_use]
+    pub fn up(&self) -> bool {
+        self.up.get()
+    }
+
+    /// The guide is up, or has gone: a guide that is gone waits for no chord
+    /// and has nothing left to answer.
+    pub fn set_up(&self, up: bool) {
+        self.up.set(up);
+        if !up {
+            self.listening.replace(None);
+            self.caught.borrow_mut().clear();
+            self.message.replace(None);
+        }
+    }
+
+    /// The person asked for the guide, or asked for it to go: whether it is up
+    /// now.
+    pub fn toggle(&self) -> bool {
+        let up = !self.up.get();
+        self.set_up(up);
+        up
+    }
+
+    /// The shortcut whose new chord the next press is, while the guide waits
+    /// for one.
+    #[must_use]
+    pub fn listening(&self) -> Option<String> {
+        self.listening.borrow().clone()
+    }
+
+    /// Wait for a new chord for `action`.
+    pub fn listen_for(&self, action: &str) {
+        self.message.replace(None);
+        self.listening.replace(Some(action.to_owned()));
+    }
+
+    /// Stop waiting for a chord: the guide stays up and takes its keys for
+    /// nothing but itself.
+    pub fn stop_listening(&self) {
+        self.listening.replace(None);
+    }
+
+    /// Keep `caught` for the guide.
+    pub fn catch(&self, caught: Caught) {
+        self.caught.borrow_mut().push(caught);
+    }
+
+    /// What was caught since the guide last looked, oldest first.
+    pub fn take_caught(&self) -> Vec<Caught> {
+        std::mem::take(&mut *self.caught.borrow_mut())
+    }
+
+    /// Carry out what the person chose on the guide.
+    pub fn effect(&self, effect: GuideEffect) {
+        match effect {
+            GuideEffect::Done => self.set_up(false),
+            GuideEffect::Listen { action } => self.listen_for(&action),
+            GuideEffect::Reset { first, second } => self.reset_to_defaults(&first, &second),
+        }
+    }
+
+    /// Answer what was caught since the last pass: a chord the guide waited
+    /// for becomes its shortcut's keys, and leaving the wait says nothing.
+    pub fn follow(&self) {
+        for caught in self.take_caught() {
+            match caught {
+                Caught::Cancelled => {
+                    self.message.replace(None);
+                }
+                Caught::Chord(chord) => {
+                    if let Some(action) = self.listening() {
+                        self.bind(&action, &chord);
+                    }
+                }
+            }
+        }
+    }
+
+    /// The table the desktop answers keys with.
+    #[must_use]
+    pub fn table(&self) -> Rc<RefCell<ShortcutConfig>> {
+        Rc::clone(&self.table)
+    }
+
+    /// Answer `table` from now on: the table the guide explains, the keys and
+    /// the apps' shortcuts all move to it at once.
+    pub fn set_table(&self, table: ShortcutConfig) {
+        *self.table.borrow_mut() = table.clone();
+        if let Some(apps) = &self.apps {
+            apps.set_shortcut_table(table);
+        }
+    }
+
+    /// The guide as it stands now, shaped again only when the table, the
+    /// shortcut it waits for, why a change was refused or the controller in
+    /// hand changed.
+    #[must_use]
+    pub fn shaped(&self) -> Guide {
+        let shown: GuideKey = (
+            self.table.borrow().clone(),
+            self.listening(),
+            self.message.borrow().clone(),
+            self.controller.get(),
+        );
+        if let Some((built, guide)) = self.built.borrow().as_ref()
+            && built == &shown
+        {
+            return guide.clone();
+        }
+        let mut guide = keyboard_guide(&shown.0);
+        guide.listening.clone_from(&shown.1);
+        guide.message.clone_from(&shown.2);
+        // A controller in hand is explained by its own buttons, drawn with the
+        // legends that controller prints.
+        if let Some(family) = shown.3 {
+            guide.modality = Modality::Controller;
+            guide.controller = Some(family);
+            guide.faces = faces(family);
+        }
+        *self.built.borrow_mut() = Some((shown, guide.clone()));
+        guide
+    }
+
+    /// Give the shortcut `action` its keys: `chord`, once the table accepts it
+    /// and the person's settings keep it.
+    fn bind(&self, action: &str, chord: &KeyChord) {
+        let Some(action) = ShortcutAction::from_id(action) else {
+            return;
+        };
+        // A key that types a character needs a modifier: without one the
+        // shortcut would run instead of the letter everywhere.
+        if types_a_character(chord) {
+            self.refuse(crate::word("guide-rebind-needs-modifier"));
+            return;
+        }
+        let mut candidate = self.table.borrow().clone();
+        if let Err(error) = candidate.set(action, chord.clone()) {
+            self.refuse(match error {
+                ShortcutConfigError::Conflict(other) => {
+                    crate::words("guide-rebind-in-use", &[("action", &shortcut_name(other))])
+                }
+                ShortcutConfigError::ReservedSystemKey => crate::word("guide-rebind-reserved"),
+                ShortcutConfigError::Fixed(id) => crate::words(
+                    "guide-rebind-in-use",
+                    &[("action", &fixed_shortcut_name(id))],
+                ),
+                ShortcutConfigError::InvalidChord => crate::word("guide-rebind-unsupported"),
+                ShortcutConfigError::TakenByAction => crate::word("guide-rebind-taken-by-action"),
+            });
+            return;
+        }
+        self.accept(candidate, "guide-rebind-save-failed");
+    }
+
+    /// Put the pair `first` and `second` back on their default chords: both at
+    /// once, so a default the pair shares among itself is free to take.
+    fn reset_to_defaults(&self, first: &str, second: &str) {
+        let (Some(first), Some(second)) = (
+            ShortcutAction::from_id(first),
+            ShortcutAction::from_id(second),
+        ) else {
+            return;
+        };
+        let defaults = ShortcutConfig::default();
+        let mut candidate = self.table.borrow().clone();
+        candidate.bindings.remove(&first);
+        candidate.bindings.remove(&second);
+        let restore = [first, second].into_iter().try_for_each(|action| {
+            defaults
+                .bindings
+                .get(&action)
+                .cloned()
+                .ok_or(ShortcutConfigError::InvalidChord)
+                .and_then(|chord| candidate.set(action, chord))
+        });
+        if let Err(error) = restore {
+            self.refuse(match error {
+                ShortcutConfigError::Conflict(other) => {
+                    crate::words("guide-reset-in-use", &[("action", &shortcut_name(other))])
+                }
+                ShortcutConfigError::TakenByAction => crate::word("guide-reset-taken-by-action"),
+                ShortcutConfigError::ReservedSystemKey
+                | ShortcutConfigError::InvalidChord
+                | ShortcutConfigError::Fixed(_) => crate::word("guide-reset-invalid"),
+            });
+            return;
+        }
+        self.accept(candidate, "guide-reset-save-failed");
+    }
+
+    /// Keep `candidate` as the table the desktop answers: saved first, so a
+    /// table the person's settings cannot keep never runs, then shared with
+    /// the keys, the apps' shortcuts and the guide, and the waiting ends.
+    fn accept(&self, candidate: ShortcutConfig, on_save_failure: &str) {
+        if candidate.save().is_err() {
+            self.refuse(crate::word(on_save_failure));
+            return;
+        }
+        self.set_table(candidate);
+        self.listening.replace(None);
+        self.message.replace(None);
+    }
+
+    /// Say why the last press changed nothing; the guide keeps waiting for the
+    /// keys of the shortcut it asks about.
+    fn refuse(&self, message: String) {
+        self.message.replace(Some(message));
+    }
+}
+
+/// Which face button carries each role on `family`, as the guide draws them.
+#[must_use]
+pub fn faces(family: ui::ControllerFamily) -> Faces {
+    let [confirm, cancel, third, fourth] = family.faces();
+    Faces {
+        confirm,
+        cancel,
+        third,
+        fourth,
+    }
+}
+
+/// Whether `chord` is a key that types: a printable key with no modifier held
+/// would run the shortcut instead of typing.
+fn types_a_character(chord: &KeyChord) -> bool {
+    chord.modifiers.is_empty() && (chord.key == "space" || chord.key.chars().count() == 1)
+}
+
+/// What the person calls the shortcut `action`, as the guide's own words say
+/// it.
+fn shortcut_name(action: ShortcutAction) -> String {
+    crate::word(&action.label_key())
+}
+
+/// What the person calls the fixed shortcut `id`.
+fn fixed_shortcut_name(id: &str) -> String {
+    settings_store::keyboard_shortcuts::fixed_shortcut(id)
+        .map_or_else(|| id.to_owned(), |fixed| crate::word(fixed.label_key))
+}
+
 /// The guide as an app.
 pub struct ShortcutGuideApp;
 
@@ -227,8 +531,9 @@ impl ResourceApp for ShortcutGuideApp {
             None => Err("no desktop to change here".to_owned()),
         });
         let dispatch = cx.dispatcher();
+        let ask: Ask = Rc::new(move |effect| dispatch.effect(&effect));
         cx.switch(&shown, move |_cx, guide| {
-            sheet(guide, &dispatch, presentation.as_ref())
+            sheet(guide, &ask, presentation.as_ref())
         })
     }
 
@@ -294,24 +599,23 @@ fn sample_keyboard_guide() -> Guide {
     }
 }
 
-/// The guide: a sheet over the desktop, Done or Escape to leave it.
-fn sheet(
-    guide: &Guide,
-    dispatch: &Dispatcher<ShortcutGuide>,
-    presentation: Option<&Presentation>,
-) -> Element {
-    let done = dispatch.clone();
-    let dismissed = dispatch.clone();
+/// The guide: a sheet over the desktop, Done or Escape to leave it. `ask`
+/// answers what the person pressed, and `presentation` places the sheet where
+/// the host draws it.
+#[must_use]
+pub fn sheet(guide: &Guide, ask: &Ask, presentation: Option<&Presentation>) -> Element {
+    let done = Rc::clone(ask);
+    let dismissed = Rc::clone(ask);
     Box::new(presented(
         presentation,
         ModalDialog::new(
             t("guide-title"),
-            Scrollable::new_vertical().with_child(body(guide, dispatch)),
+            Scrollable::new_vertical().with_child(body(guide, ask)),
         )
         .with_test_id("shortcut-guide")
         .with_max_width(960.0)
-        .primary_action(t("guide-done"), move || done.effect(&GuideEffect::Done))
-        .on_dismiss(move || dismissed.effect(&GuideEffect::Done)),
+        .primary_action(t("guide-done"), move || done(GuideEffect::Done))
+        .on_dismiss(move || dismissed(GuideEffect::Done)),
     ))
 }
 
@@ -327,7 +631,7 @@ fn hint(binding: InputBinding) -> Element {
     Box::new(InputHint::new(binding))
 }
 
-fn body(guide: &Guide, dispatch: &Dispatcher<ShortcutGuide>) -> Element {
+fn body(guide: &Guide, ask: &Ask) -> Element {
     let gap = ui::tokens::Spacing::BASE.s3;
     let mut column = Column::new()
         .with_gap(gap)
@@ -380,7 +684,7 @@ fn body(guide: &Guide, dispatch: &Dispatcher<ShortcutGuide>) -> Element {
         }
     }
     let column = match guide.modality {
-        Modality::Keys => keys(column, guide, dispatch),
+        Modality::Keys => keys(column, guide, ask),
         Modality::Controller => controller(
             column,
             guide.controller.unwrap_or(ui::ControllerFamily::Generic),
@@ -393,12 +697,12 @@ fn body(guide: &Guide, dispatch: &Dispatcher<ShortcutGuide>) -> Element {
 
 /// The keyboard's navigation pairs, which can be changed, its essentials
 /// and its notes.
-fn keys(mut column: Column, guide: &Guide, dispatch: &Dispatcher<ShortcutGuide>) -> Column {
+fn keys(mut column: Column, guide: &Guide, ask: &Ask) -> Column {
     let gap = ui::tokens::Spacing::BASE.s2;
     column = column.push(heading(&t("guide-navigation-heading")));
     for pair in &guide.pairs {
         let key = |shortcut: &Shortcut| -> Element {
-            let listen = dispatch.clone();
+            let listen = Rc::clone(ask);
             let effect = GuideEffect::Listen {
                 action: shortcut.action.clone(),
             };
@@ -406,7 +710,7 @@ fn keys(mut column: Column, guide: &Guide, dispatch: &Dispatcher<ShortcutGuide>)
                 Container::new()
                     .hug()
                     .interactive(format!("guide-key-{}", shortcut.action), move || {
-                        listen.effect(&effect);
+                        listen(effect.clone());
                     })
                     .with_child(hint(InputBinding::Keyboard(shortcut.keys.clone()))),
             )
@@ -422,7 +726,7 @@ fn keys(mut column: Column, guide: &Guide, dispatch: &Dispatcher<ShortcutGuide>)
             .push(caption("/"))
             .push(key(&pair.next));
         if pair.changed {
-            let reset = dispatch.clone();
+            let reset = Rc::clone(ask);
             let effect = GuideEffect::Reset {
                 first: pair.previous.action.clone(),
                 second: pair.next.action.clone(),
@@ -432,7 +736,7 @@ fn keys(mut column: Column, guide: &Guide, dispatch: &Dispatcher<ShortcutGuide>)
                     &format!("guide-reset-{}", pair.previous.action),
                     &t("guide-reset"),
                 )
-                .on_own_device_effect(move || reset.effect(&effect)),
+                .on_own_device_effect(move || reset(effect.clone())),
             ));
         }
         column = column.push(Box::new(row));

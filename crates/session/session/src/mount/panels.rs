@@ -8,9 +8,9 @@ use tilo_compositor::Compositor;
 use tilo_desktop::overlays::Overlays;
 
 use crate::controls::ControlsReading;
-use crate::keys::{
-    ControllerKeys, DeskKeys, GuideKeys, Invocations, PressedChords, Presses, SessionKeys,
-};
+use tilo_sheets::shortcut_guide::State as GuideState;
+
+use crate::keys::{ControllerKeys, DeskKeys, Invocations, PressedChords, Presses, SessionKeys};
 use crate::panels::{ActivityLayer, Held, Readout, ReadoutPlace, ReadoutPlaces, Reserved};
 use crate::setup::Setup;
 use crate::{BeforeDesk, SessionCommand};
@@ -77,7 +77,7 @@ pub(crate) fn mount_controls(
     doors: &mut Doors,
     shortcuts: Shortcuts,
     portal: Option<tilo_portal::global_shortcuts::Shortcuts>,
-    guide: GuideKeys,
+    guide: Rc<GuideState>,
     KeyContext {
         controller,
         controller_keys,

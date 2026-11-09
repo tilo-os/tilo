@@ -33,6 +33,7 @@ use std::collections::HashMap;
 use std::rc::Rc;
 use std::sync::Arc;
 
+use crate::guide::PageGuide;
 use tilo_desktop::about::{AboutVariant, TiloMenu};
 use tilo_desktop::chrome::{ChromeIntent, DesktopChromeSource};
 use tilo_desktop::collaborators::{
@@ -450,6 +451,9 @@ pub(crate) struct BrowserShell {
     /// The invite sheet, over the page while it is up: the session's own,
     /// made and listed through the workspace's host.
     invite: crate::over_page::OverPage<crate::invite::PageInvite>,
+    /// The shortcut guide, over the page while it is up: the session's own,
+    /// explaining and changing the table this page's desk answers.
+    guide: crate::over_page::OverPage<PageGuide>,
     /// The linked accounts' revision the card last showed.
     linked_seen: Cell<u64>,
     /// Asks again while the card shows a code, until the account links.
@@ -542,6 +546,7 @@ impl BrowserShell {
                 &self.profile,
                 &self.invite,
                 &self.directory,
+                &self.guide,
             ]
             .iter()
             .any(|child| child.needs_redraw())
@@ -627,6 +632,10 @@ impl BrowserShell {
             peer,
             &chrome.wake,
         ));
+        let guide = crate::over_page::OverPage::new(PageGuide::new());
+        // The desk answers the person's chords, as the guide shows them.
+        let mut top = top;
+        top.set_shortcuts(guide.shortcuts());
         Self {
             desk,
             top,
@@ -644,6 +653,7 @@ impl BrowserShell {
             pinned: people::PagePeople::new(),
             directory,
             invite,
+            guide,
             linked_seen: Cell::new(0),
             linking: tilo_app::linked_accounts::LinkingRecheck::default(),
             profile_links: None,
@@ -1172,11 +1182,17 @@ impl BrowserShell {
                 DesktopAsk::Shortcut(ui::shortcut_table::ShortcutAction::QuickSettings) => {
                     let _ = self.page_intent(ChromeIntent::ToggleQuickSettings);
                 }
+                // The shortcut guide explains this page's own table, so the
+                // chord that asks for it opens the guide here as it does on
+                // the desktop.
+                DesktopAsk::Shortcut(ui::shortcut_table::ShortcutAction::ShortcutHelp)
+                | DesktopAsk::FixedShortcut(ui::shortcut_table::FixedAction::ShortcutGuide) => {
+                    self.guide.toggle();
+                }
                 // A fixed chord the desk carries out on its own windows and
-                // strips never reaches here. The capture studio, the shortcut
-                // guide and cutting remote input are surfaces over a system's
-                // screen, which a page has none of: it says so rather than
-                // doing nothing.
+                // strips never reaches here. The capture studio and cutting
+                // remote input are surfaces over a system's screen, which a
+                // page has none of: it says so rather than doing nothing.
                 DesktopAsk::FixedShortcut(action) => self.answer_fixed_shortcut(action),
                 // The page's own keys reach the browser's shortcuts.
                 // Leaving or deleting a workspace is a session's to confirm,
@@ -1690,6 +1706,7 @@ impl Widget for BrowserShell {
         changed |= self.follow_asks();
         changed |= self.invite.follow();
         changed |= self.directory.follow();
+        changed |= self.guide.follow();
         self.update_hints();
         // Chosen while the surface updated (search, a banner): the page
         // performs them when it reads this frame's status.
@@ -1722,6 +1739,7 @@ impl Widget for BrowserShell {
         let pinned = self.pinned.build_layout(taffy, theme, map);
         let directory = self.directory.build_layout(taffy, theme, map);
         let invite = self.invite.build_layout(taffy, theme, map);
+        let guide = self.guide.build_layout(taffy, theme, map);
         let style = Style {
             display: Display::Flex,
             flex_direction: FlexDirection::Column,
@@ -1730,7 +1748,7 @@ impl Widget for BrowserShell {
         };
         taffy.widget_node(
             style,
-            &[desk, top, profile, pinned, invite, directory],
+            &[desk, top, profile, pinned, invite, directory, guide],
             map,
             self,
         )
@@ -1739,7 +1757,7 @@ impl Widget for BrowserShell {
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
         self.rect = ui::widget::layout_rect(taffy, node, origin);
         let inner = Point::new(self.rect.x0, self.rect.y0);
-        if let [desk, top, profile, pinned, invite, directory] =
+        if let [desk, top, profile, pinned, invite, directory, guide] =
             taffy.children(node).unwrap_or_default()[..]
         {
             self.desk.apply_layout(taffy, desk, inner);
@@ -1748,6 +1766,7 @@ impl Widget for BrowserShell {
             self.pinned.apply_layout(taffy, pinned, inner);
             self.invite.apply_layout(taffy, invite, inner);
             self.directory.apply_layout(taffy, directory, inner);
+            self.guide.apply_layout(taffy, guide, inner);
         }
     }
 
@@ -1780,6 +1799,8 @@ impl Widget for BrowserShell {
         // or browses the directory.
         self.invite.draw(scene, transform, text, theme, presence);
         self.directory.draw(scene, transform, text, theme, presence);
+        // Over everything, while the person reads or changes the keys.
+        self.guide.draw(scene, transform, text, theme, presence);
         // Over everything, while picking what to report.
         self.picker.draw(scene, transform, text, theme, self.rect);
         let built = ui::time::now().saturating_duration_since(started);
@@ -1788,7 +1809,7 @@ impl Widget for BrowserShell {
     }
 
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut EventCtx<'_>) {
-        let [desk, top, profile, _, invite, directory] =
+        let [desk, top, profile, _, invite, directory, guide] =
             ctx.taffy.children(ctx.node_id).unwrap_or_default()[..]
         else {
             return;
@@ -1831,6 +1852,20 @@ impl Widget for BrowserShell {
                 return;
             }
         }
+        // The shortcut guide, like the directory: over the desktop, and while
+        // it waits for a shortcut's new keys every press is the guide's.
+        if self.guide.is_open() {
+            if self.guide.heard(event, *ctx.modifiers, self.offers.mac) {
+                self.guide.follow();
+                return;
+            }
+            self.guide
+                .handle_event(event, &mut ctx.reborrow(ctx.path, guide));
+            if *ctx.handled {
+                self.guide.follow();
+                return;
+            }
+        }
         self.hints.heard(event, ui::time::now());
         if self.people_event(event, ctx) {
             return;
@@ -1867,6 +1902,7 @@ impl Widget for BrowserShell {
             && !self.people.wants_pointer_capture()
             && !self.invite.is_open()
             && !self.directory.is_open()
+            && !self.guide.is_open()
             && !self.pinned.wants_pointer_capture()
             && self.cursor.is_none_or(|point| !self.pinned.contains(point))
             && !self.top.menu_open()
@@ -1890,6 +1926,7 @@ impl Widget for BrowserShell {
             &self.pinned,
             &self.invite,
             &self.directory,
+            &self.guide,
         ]
     }
 
@@ -1918,6 +1955,7 @@ impl Widget for BrowserShell {
             &mut self.pinned,
             &mut self.invite,
             &mut self.directory,
+            &mut self.guide,
         ]
     }
 
@@ -1959,6 +1997,7 @@ impl Widget for BrowserShell {
                 &self.profile,
                 &self.invite,
                 &self.directory,
+                &self.guide,
             ]
             .iter()
             .any(|child| child.needs_animation_frame())
