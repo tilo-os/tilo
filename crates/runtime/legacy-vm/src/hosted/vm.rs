@@ -7,7 +7,6 @@
 
 use std::fs::File;
 use std::os::fd::AsRawFd as _;
-use std::os::unix::net::UnixListener;
 use std::os::unix::process::CommandExt as _;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
@@ -521,7 +520,7 @@ impl HostedVm {
             .ok_or_else(|| std::io::Error::other("too many shares for one VM"))?;
         let listener_path = AgentLink::hybrid_listener(&self.files.vsock_socket(), port);
         let _ = std::fs::remove_file(&listener_path);
-        let listener = UnixListener::bind(&listener_path)?;
+        let listener = tilo_files::native::socket::bind(&listener_path)?;
         // A jailed Firecracker runs as the VM's uid: it may connect. The
         // directory holds only this VM's sockets and is closed to others.
         {

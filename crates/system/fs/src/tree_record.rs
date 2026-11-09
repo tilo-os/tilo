@@ -22,7 +22,6 @@
 //! under the same keys.
 
 use std::io::Write as _;
-use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime};
@@ -701,12 +700,13 @@ impl TreePublisher {
     /// This device's connection to the session's identity service, bound to
     /// the workspace whose tree it publishes, as an app's connection is.
     fn connect_identity(&self) -> Result<BrokerSigningIdentity> {
-        let mut stream = UnixStream::connect(&self.identity).with_context(|| {
-            format!(
-                "connect to the identity service at {}",
-                self.identity.display()
-            )
-        })?;
+        let mut stream =
+            tilo_files::native::socket::connect(&self.identity).with_context(|| {
+                format!(
+                    "connect to the identity service at {}",
+                    self.identity.display()
+                )
+            })?;
         let handshake = PresentationHandshake {
             handshake: Handshake {
                 workspace_id: self.cluster.clone(),

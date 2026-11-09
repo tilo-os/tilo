@@ -4,7 +4,6 @@
 //! [`Request::Place`] with the host a workspace's VM runs on.
 
 use std::io;
-use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -129,7 +128,7 @@ pub enum Reply {
 
 /// One request, one reply. `None` when no service listens at `socket`.
 pub fn ask(socket: &Path, request: &Request, patience: Duration) -> io::Result<Option<Reply>> {
-    let mut stream = match UnixStream::connect(socket) {
+    let mut stream = match tilo_files::native::socket::connect(socket) {
         Ok(stream) => stream,
         Err(error)
             if matches!(

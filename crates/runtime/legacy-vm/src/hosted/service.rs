@@ -525,7 +525,7 @@ impl Service {
     ) -> std::io::Result<()> {
         let socket = self.config.socket();
         let _ = std::fs::remove_file(&socket);
-        let listener = UnixListener::bind(&socket)?;
+        let listener = tilo_files::native::socket::bind(&socket)?;
         {
             use std::os::unix::fs::PermissionsExt as _;
             std::fs::set_permissions(&socket, std::fs::Permissions::from_mode(0o600))?;

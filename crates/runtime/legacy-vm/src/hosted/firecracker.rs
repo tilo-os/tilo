@@ -20,7 +20,6 @@
 //! cold from its disk.
 
 use std::io::{self, Write as _};
-use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
@@ -317,7 +316,7 @@ impl Api {
     pub fn wait(&self, patience: Duration) -> Result<(), FirecrackerError> {
         let started = Instant::now();
         while started.elapsed() < patience {
-            if UnixStream::connect(&self.socket).is_ok() {
+            if tilo_files::native::socket::connect(&self.socket).is_ok() {
                 return Ok(());
             }
             std::thread::sleep(Duration::from_millis(2));
@@ -373,7 +372,7 @@ impl Api {
         body: &serde_json::Value,
     ) -> Result<(), FirecrackerError> {
         let body = body.to_string();
-        let mut stream = UnixStream::connect(&self.socket)?;
+        let mut stream = tilo_files::native::socket::connect(&self.socket)?;
         stream.set_read_timeout(Some(Duration::from_secs(120)))?;
         write!(
             stream,
