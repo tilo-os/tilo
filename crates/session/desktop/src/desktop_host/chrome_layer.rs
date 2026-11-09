@@ -20,6 +20,8 @@ use winit::event::{ElementState, Modifiers, MouseButton, WindowEvent};
 
 mod overview_desk;
 mod shortcut_actions;
+#[cfg(test)]
+mod tests;
 
 use super::{PlainOverview, close_tab, column, fill, grow, wake_deadline};
 use crate::about::{TiloMenu, TiloMenuAction};

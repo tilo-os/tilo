@@ -172,7 +172,7 @@ impl OverviewPanel {
 
     /// What the semantic target `target` names among the rows: a row's
     /// key presses it, `<key>:action` its control.
-    pub(super) fn tilo_target(&self, target: &str) -> Option<OverviewPick> {
+    pub(crate) fn tilo_target(&self, target: &str) -> Option<OverviewPick> {
         let (key, action) = match target.strip_suffix(":action") {
             Some(key) => (key, true),
             None => (target, false),

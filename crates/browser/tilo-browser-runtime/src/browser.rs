@@ -1281,6 +1281,9 @@ fn present_desktop(
             authorship,
             notifications: persistence.notifications.clone(),
             peer: config.peer,
+            session: std::sync::Arc::clone(&session),
+            caller: tilo_actions::remote::Caller::local_person(config.author())
+                .in_workspace(config.workspace.clone()),
             wake: Arc::new(move || {
                 let _ = wake.send_event(id);
             }),

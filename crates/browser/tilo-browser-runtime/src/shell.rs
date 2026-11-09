@@ -469,6 +469,12 @@ pub(crate) struct BrowserShell {
     expanded: Option<String>,
     /// The pointer, in logical pixels, for the popover's targets.
     cursor: Option<Point>,
+    /// The agent door, as the overview's Agents rows show it: the read the
+    /// session's door serves, followed while the overview is up.
+    door: tilo_desktop::overview_tilo::door::DoorRead,
+    /// The session the door is read on, and who reads it.
+    session: Arc<tilo_desktop_surface::session::DesktopSession>,
+    caller: tilo_actions::remote::Caller,
     /// Pointing at what is wrong, to report it.
     picker: crate::feedback_pick::PagePicker,
     /// The page's side of the desktop's control hints, and its settings as the
@@ -488,6 +494,11 @@ pub struct ChromeSources {
     /// The peer whose workspace this desktop is in, for the questions only its
     /// host answers.
     pub peer: Option<u32>,
+    /// The session the desktop serves its windows: the agent door the
+    /// overview's Agents rows show is the one it serves.
+    pub session: Arc<tilo_desktop_surface::session::DesktopSession>,
+    /// Who asks the door: this page's person in its workspace.
+    pub caller: tilo_actions::remote::Caller,
     /// The page's notifications, whose unread ones the bell counts.
     pub notifications: tilo_desktop_surface::DesktopNotifications,
     pub wake: Arc<dyn Fn() + Send + Sync>,
@@ -594,6 +605,8 @@ impl BrowserShell {
             shared,
             authorship,
             peer,
+            session,
+            caller,
             notifications,
             wake,
         } = sources;
@@ -692,6 +705,9 @@ impl BrowserShell {
             links_asked: (0, None),
             expanded: None,
             cursor: None,
+            door: tilo_desktop::overview_tilo::door::DoorRead::default(),
+            session,
+            caller,
             picker: crate::feedback_pick::PagePicker::default(),
             hints,
             hints_settings: settings_store::stamp(),
@@ -1163,6 +1179,24 @@ impl BrowserShell {
         None
     }
 
+    /// The agent door as the overview's Agents rows show it: the read the
+    /// session's door serves, followed while the overview is up, so a grant
+    /// appears, works and leaves as it happens. Whether the rows changed.
+    fn follow_agent_door(&mut self) -> bool {
+        if !self.top.overview_open()
+            || !self
+                .door
+                .follow(&*self.session, &self.caller, &self.chrome.wake)
+        {
+            return false;
+        }
+        self.top.set_tilo(tilo_desktop::overview_tilo::TiloDesk {
+            door: self.door.door().cloned(),
+            ..tilo_desktop::overview_tilo::TiloDesk::default()
+        });
+        true
+    }
+
     /// What the desktop's layers asked of the page since it last looked.
     fn follow_asks(&mut self) -> bool {
         let asks: Vec<DesktopAsk> = self
@@ -1201,10 +1235,15 @@ impl BrowserShell {
                         resource: "settings.section:billing".into(),
                     });
                 }
-                // An agent's grant is the device the person runs it on: the root this page
-                // holds revokes it, as it revokes any of their devices.
+                // An agent's grant is the device the person runs it on, and it is taken back
+                // at the door, as Console's card takes it back: the root this page holds
+                // signs the revocation, as it revokes any of their devices.
                 DesktopAsk::RevokeAgentGrant(grant) => {
-                    self.requests.borrow_mut().push(HostRequest::Revoke(grant));
+                    tilo_desktop::overview_tilo::door::DoorRead::revoke(
+                        &*self.session,
+                        &self.caller,
+                        &grant,
+                    );
                 }
                 DesktopAsk::Shortcut(ui::shortcut_table::ShortcutAction::QuickSettings) => {
                     let _ = self.page_intent(ChromeIntent::ToggleQuickSettings);
@@ -1755,6 +1794,7 @@ impl Widget for BrowserShell {
             self.chrome.shared.presented.get(),
             search_keys,
         );
+        changed |= self.follow_agent_door();
         changed |= self.top.update(state, path);
         if let Some(learned) = self.hints.take_learned() {
             // Not kept, a hint at worst shows once more: nothing to tell.

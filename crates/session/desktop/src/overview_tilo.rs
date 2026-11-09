@@ -15,6 +15,12 @@
 //! [`rows`] turns what the host knows ([`TiloDesk`]) into the rows the
 //! overview shows; a press on one is an [`OverviewPick`] the host carries
 //! out, as every pick of the overview is.
+//!
+//! The agents' rows are the agent door's ([`door::DoorRead`]): the read the
+//! host serves, followed while the overview is up, so the rows say who was
+//! let in, what each may reach and what is working, as that changes.
+
+pub mod door;
 
 use std::time::Duration;
 
