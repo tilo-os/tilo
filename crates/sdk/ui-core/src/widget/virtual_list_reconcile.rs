@@ -407,6 +407,7 @@ impl<M: ListModel> VirtualList<M> {
                             RowBuild {
                                 selection,
                                 expanded: self.open.as_ref() == Some(&key),
+                                nest: crate::num::f32_of_f64(self.disclosure),
                             },
                         ),
                         state => self.arriving_row(index, state),

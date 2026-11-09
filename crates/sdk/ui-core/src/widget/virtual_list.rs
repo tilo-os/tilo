@@ -1844,7 +1844,15 @@ impl<M: ListModel + 'static> Widget for VirtualList<M> {
             RowStance::Column => crate::chrome::column_gutter(theme),
         };
         self.lift = crate::chrome::row_bleed(theme);
-        self.disclosure = crate::chrome::disclosure_gutter(theme);
+        let disclosure = crate::chrome::disclosure_gutter(theme);
+        if (disclosure - self.disclosure).abs() > 0.5 {
+            // A row that is a view of the app's own is built with the step its tree indents by,
+            // so the rows built under the theme before are built again where the new step puts
+            // them.
+            let mounted: Vec<M::Key> = self.mounted.iter().map(|row| row.key.clone()).collect();
+            self.invalidate_rows(mounted);
+        }
+        self.disclosure = disclosure;
         self.row_line = f64::from(theme.tokens.metrics.row_single);
         // A chevron hangs left of the column so the column never moves: one left edge.
         let gutter = if self.tree.is_some() || self.model.discloses() {

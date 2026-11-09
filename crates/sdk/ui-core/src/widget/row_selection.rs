@@ -22,14 +22,18 @@ impl RowSelection {
 }
 
 /// What a list tells its row delegate about the row it builds, besides the model and the
-/// row's place in it: the row's selection, and whether it stands open into its item.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+/// row's place in it: the row's selection, whether it stands open into its item, and the step
+/// its tree indents by.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct RowBuild {
     /// How the row stands in the list's selection.
     pub selection: RowSelection,
     /// The row stands open into its item where it stands in the list: the item's document
     /// shows under it, and the row is drawn to hold it.
     pub expanded: bool,
+    /// The gutter one depth of the list's tree indents a row's content by, as the theme draws
+    /// it: a row that is a view of the app's own stands in by the same step its list rows do.
+    pub nest: f32,
 }
 
 /// A row that paints the selection the list holds for it, asked for through

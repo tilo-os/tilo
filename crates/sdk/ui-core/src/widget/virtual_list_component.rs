@@ -30,7 +30,7 @@ use crate::widget::{
     MenuEntry, MenuPart, RowBuild, Spacer, SwipeActionProps, Text, Tone, Widget,
 };
 
-use super::{ListModel, ListModelChange, TREE_INDENT, TreeMarks, VirtualList};
+use super::{ListModel, ListModelChange, TreeMarks, VirtualList};
 use crate::widget::ChangeMarkProps;
 
 /// The height a row is reckoned at before it is laid out: a row with a secondary line.
@@ -882,10 +882,10 @@ fn row_of(
 }
 
 /// A row of a tree that is a view of the app's own: the view stands in the box a list gives a
-/// row's content — one disclosure gutter in for each depth it stands in — so its leading control
-/// and its title stand on the column a [`ListRow`]'s do at that depth, and how far its branch got
-/// follows it.
-fn indent_view(view: Element, depth: u32, progress: Option<String>) -> Element {
+/// row's content — one disclosure gutter (`nest`) in for each depth it stands in — so its leading
+/// control and its title stand on the column a [`ListRow`]'s do at that depth, and how far its
+/// branch got follows it.
+fn indent_view(view: Element, depth: u32, nest: f32, progress: Option<String>) -> Element {
     // The line packs what it holds, so the view starts on the row's column and not one gap
     // further: the row's own depth and the step its chevron takes in front of it are the whole
     // of the room before it, and a row with nothing to fold stands there all the same.
@@ -894,11 +894,7 @@ fn indent_view(view: Element, depth: u32, progress: Option<String>) -> Element {
         .align(Align::Center)
         .gap(Rhythm::None);
     if depth > 0 {
-        #[allow(
-            clippy::cast_possible_truncation,
-            reason = "logical pixels are bounded far below f32::MAX"
-        )]
-        let indent = (f64::from(depth) * TREE_INDENT) as f32;
+        let indent = crate::num::f32_of_f64(f64::from(depth) * f64::from(nest));
         line = line.push(Box::new(Spacer::fixed(indent)));
     }
     let mut slot = Slot::new(view);
@@ -920,7 +916,7 @@ fn bare_row(
     key: &str,
     feel: crate::motion::Feel,
     tree: Option<&TreeMarks<String>>,
-    RowBuild { expanded, .. }: RowBuild,
+    RowBuild { expanded, nest, .. }: RowBuild,
 ) -> Option<(Element, Option<SwipeActionProps>, Attachments)> {
     // What the row over it states, read before the row's own: a row that stands under its
     // parent says only what the parent leaves unsaid, so the day fact it shares with the parent
@@ -1007,7 +1003,7 @@ fn bare_row(
                 );
                 match tree {
                     Some(marks) => {
-                        indent_view(view, marks.depth(&key.to_owned()), progress.clone())
+                        indent_view(view, marks.depth(&key.to_owned()), nest, progress.clone())
                     }
                     None => view,
                 }
@@ -1020,7 +1016,7 @@ fn bare_row(
         // the step a tree gives a row's view, a list row the one it gives a row's content.
         let row = match (expanded, detail) {
             (true, ItemRow::View(document)) => match tree {
-                Some(marks) => indent_view(document, marks.depth(&key.to_owned()), None),
+                Some(marks) => indent_view(document, marks.depth(&key.to_owned()), nest, None),
                 None => document,
             },
             (true, ItemRow::Row(props)) => {
@@ -1811,12 +1807,16 @@ mod tests {
 
     /// What `list` lays out, as the inspection sees it: where each widget stands.
     fn laid_out(list: DescribedList) -> crate::headless::InspectionNode {
-        let mut harness = crate::headless::FrameHarness::for_root(
-            crate::State::new(),
-            list,
-            (900, 600),
-            crate::theme::Theme::dark(),
-        );
+        laid_out_in(list, crate::theme::Theme::dark())
+    }
+
+    /// What `list` lays out under `theme`, as the inspection sees it.
+    fn laid_out_in(
+        list: DescribedList,
+        theme: crate::theme::Theme,
+    ) -> crate::headless::InspectionNode {
+        let mut harness =
+            crate::headless::FrameHarness::for_root(crate::State::new(), list, (900, 600), theme);
         harness.relayout();
         harness.inspection().root
     }
@@ -2279,13 +2279,16 @@ mod tests {
     }
 
     /// The items a test renders as the views an app builds: a list of a collection of any length
-    /// holds its rows that way.
+    /// holds its rows that way, and each item's document leads its line out as a row does.
     struct ViewRows {
         items: Vec<ViewItem>,
+        /// The room a row's leading control takes, and the gap after it.
+        lead: f32,
+        gap: f32,
     }
 
     impl ViewRows {
-        fn new(items: &[(&str, Option<&str>)]) -> Self {
+        fn new(items: &[(&str, Option<&str>)], lead: f32, gap: f32) -> Self {
             Self {
                 items: items
                     .iter()
@@ -2294,6 +2297,8 @@ mod tests {
                         parent: parent.map(str::to_owned),
                     })
                     .collect(),
+                lead,
+                gap,
             }
         }
 
@@ -2326,7 +2331,11 @@ mod tests {
             let Some(item) = self.items.iter().find(|item| item.key == key) else {
                 return Ok(false);
             };
-            read(&mut ViewItemSource { item })?;
+            read(&mut ViewItemSource {
+                item,
+                lead: self.lead,
+                gap: self.gap,
+            })?;
             Ok(true)
         }
 
@@ -2349,6 +2358,8 @@ mod tests {
     /// One item as the host renders it: its row, and the document it opens into.
     struct ViewItemSource<'a> {
         item: &'a ViewItem,
+        lead: f32,
+        gap: f32,
     }
 
     impl Source for ViewItemSource<'_> {
@@ -2378,7 +2389,7 @@ mod tests {
 
         fn children(&mut self, slot: &str) -> Vec<Element> {
             match slot {
-                "detail" => vec![document(&self.item.key)],
+                "detail" => vec![document(&self.item.key, self.lead, self.gap)],
                 _ => Vec::new(),
             }
         }
@@ -2444,9 +2455,9 @@ mod tests {
     }
 
     /// What an item holds, shown where its row stands: the item's own line, and what is written
-    /// about it under that line. Its line leads with the room a row's leading control takes, so
-    /// its title stands where the rows beside it start theirs.
-    fn document(key: &str) -> Element {
+    /// about it under that line. Its line leads with the room a row's leading control takes and
+    /// the gap after it, so its title stands where the rows beside it start theirs.
+    fn document(key: &str, lead: f32, gap: f32) -> Element {
         Box::new(
             Stack::stack()
                 .fill_width()
@@ -2455,14 +2466,12 @@ mod tests {
                 .push(Box::new(
                     Row::row()
                         .fill_width()
-                        .gap(Rhythm::Sibling)
+                        .gap(Rhythm::None)
                         .align(Align::Center)
                         .push(Box::new(
-                            Spacer::fixed(
-                                f64::from(crate::tokens::Metrics::BASE.icon_control) as f32
-                            )
-                            .with_id(format!("leading-{key}")),
+                            Spacer::fixed(lead).with_id(format!("leading-{key}")),
                         ))
+                        .push(Box::new(Spacer::fixed(gap)))
                         .push(Box::new(
                             Text::new(&format!("{}'s words", key)).with_id(format!("title-{key}")),
                         )),
@@ -2503,13 +2512,17 @@ mod tests {
     fn an_item_standing_open_keeps_the_column_of_the_rows_at_its_depth() {
         // row-0 stands at the top with row-2 and row-3 under it, and row-1 beside it at the top:
         // opening one row reads the column of the rows that stay closed at its depth.
-        let list = |open: &str| {
-            let rendered: SharedRows = Rc::new(RefCell::new(ViewRows::new(&[
-                ("row-0", None),
-                ("row-2", Some("row-0")),
-                ("row-3", Some("row-0")),
-                ("row-1", None),
-            ])));
+        let list = |open: &str, theme: &crate::theme::Theme| {
+            let rendered: SharedRows = Rc::new(RefCell::new(ViewRows::new(
+                &[
+                    ("row-0", None),
+                    ("row-2", Some("row-0")),
+                    ("row-3", Some("row-0")),
+                    ("row-1", None),
+                ],
+                theme.tokens.metrics.icon_control,
+                theme.tokens.spacing.s3,
+            )));
             DescribedList::from_props(
                 "list",
                 VirtualListProps {
@@ -2523,41 +2536,52 @@ mod tests {
                 },
             )
         };
+        // The step a tree indents by is the theme's, so the columns must line up wherever the
+        // type scale puts it.
+        let themes = [
+            crate::theme::Theme::dark(),
+            crate::theme::Theme::dark().with_text_scale(1.5),
+        ];
         for (open, depth, beside) in [("row-0", 0, "row-1"), ("row-3", 1, "row-2")] {
-            let node = laid_out(list(open));
-            let at = |id: &str| {
-                rect_of_id(&node, id)
-                    .unwrap_or_else(|| panic!("the widget {id} shows with {open} standing open"))
-            };
-            let grid = row_grid(&node, beside)
-                .unwrap_or_else(|| panic!("the row {beside} lays its content out"));
-            assert_eq!(
-                grid.depth, depth,
-                "the row {beside} stands as deep as the item the person opened"
-            );
-            let content = f64::from(grid.content_left);
-            let document = at(&format!("document-{open}"));
-            assert!(
-                (document[0] - content).abs() < 0.5,
-                "the item standing open starts its document at x {:.0}, where the row {beside} \
-                 starts its content at x {content:.0}",
-                document[0]
-            );
-            let leading = at(&format!("leading-{open}"));
-            assert!(
-                (leading[0] - content).abs() < 0.5,
-                "its leading control stands at x {:.0}, where the row {beside} stands its own at \
+            for theme in themes.clone() {
+                let scaled = theme.text_scale != 1.0;
+                let node = laid_out_in(list(open, &theme), theme.clone());
+                let at = |id: &str| {
+                    rect_of_id(&node, id).unwrap_or_else(|| {
+                        panic!("the widget {id} shows with {open} standing open")
+                    })
+                };
+                let grid = row_grid(&node, beside)
+                    .unwrap_or_else(|| panic!("the row {beside} lays its content out"));
+                assert_eq!(
+                    grid.depth, depth,
+                    "the row {beside} stands as deep as the item the person opened"
+                );
+                let content = f64::from(grid.content_left);
+                let document = at(&format!("document-{open}"));
+                assert!(
+                    (document[0] - content).abs() < 0.5,
+                    "the item standing open starts its document at x {:.0}, where the row {beside} \
+                 starts its content at x {content:.0}{}",
+                    document[0],
+                    if scaled { " at text scale 1.5" } else { "" }
+                );
+                let leading = at(&format!("leading-{open}"));
+                assert!(
+                    (leading[0] - content).abs() < 0.5,
+                    "its leading control stands at x {:.0}, where the row {beside} stands its own at \
                  x {content:.0}",
-                leading[0]
-            );
-            let words = at(&format!("title-{open}"));
-            let said = f64::from(grid.text_x);
-            assert!(
-                (words[0] - said).abs() < 0.5,
-                "its title starts at x {:.0}, where the row {beside} starts its title at x \
+                    leading[0]
+                );
+                let words = at(&format!("title-{open}"));
+                let said = f64::from(grid.text_x);
+                assert!(
+                    (words[0] - said).abs() < 0.5,
+                    "its title starts at x {:.0}, where the row {beside} starts its title at x \
                  {said:.0}",
-                words[0]
-            );
+                    words[0]
+                );
+            }
         }
     }
 }
