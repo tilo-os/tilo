@@ -383,6 +383,7 @@ d-n2xgxnbw = Message
     .w-attached = Attached: { $attachments }
 
 d-oqpazwvc = Editor
+    .w-new-message = New message
     .w-sending = Sending
     .w-it-goes-in-a-moment-take = It goes in a moment. Take it back if you need to.
     .w-undo-send = Undo send
