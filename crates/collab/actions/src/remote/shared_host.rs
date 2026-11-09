@@ -64,4 +64,8 @@ impl<H: ActionHost + ?Sized> ActionHost for std::sync::Arc<H> {
     fn resource_search(&self) -> Option<std::sync::Arc<dyn super::ResourceSearch>> {
         (**self).resource_search()
     }
+
+    fn here(&self, caller: &Caller) -> Option<Vec<super::Here>> {
+        (**self).here(caller)
+    }
 }

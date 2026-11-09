@@ -1104,6 +1104,17 @@ impl From<WireHostError> for ActionHostError {
     }
 }
 
+/// One member of a workspace present now: a person, or an agent acting in it.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct Here {
+    /// The member's id: a person's user root key, or an agent's id.
+    pub who: String,
+    /// The name people read for them; the id when the roster names none.
+    pub name: String,
+    /// `person` or `agent`.
+    pub kind: String,
+}
+
 /// A peer that runs actions on behalf of authenticated remote callers.
 ///
 /// Implementations resolve authority from `caller` alone and must be
@@ -1183,6 +1194,14 @@ pub trait ActionHost {
     /// Where this host's callers put content into their workspace's content
     /// store ([`ContentPuts`]); `None` for a host without one.
     fn content_puts(&self) -> Option<std::sync::Arc<dyn ContentPuts>> {
+        None
+    }
+
+    /// Who is in the workspace now, as this host's collaboration knows it:
+    /// its people and the agents its roster names. `None` for a host that
+    /// keeps no roster, which reports no presence rather than an empty one.
+    fn here(&self, caller: &Caller) -> Option<Vec<Here>> {
+        let _ = caller;
         None
     }
 

@@ -123,6 +123,7 @@ fn an_agent_session_acts_as_its_admitted_agent_in_its_own_execution() {
                 "tilo_do",
                 "tilo_find",
                 "tilo",
+                "tilo_watch",
                 "tilo_status"
             ],
             "{names:?}"

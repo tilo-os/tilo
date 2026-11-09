@@ -13,7 +13,11 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
     /// A host with no search of its own (a standalone runtime, which speaks
     /// for no desk) is told so: answering by its apps' own directories would
     /// be the second ranking `find` stopped having.
-    pub(super) async fn agent_find(&self, args: FindArgs) -> Result<Reply, String> {
+    pub(super) async fn agent_find(
+        &self,
+        args: FindArgs,
+        structured: bool,
+    ) -> Result<Reply, String> {
         if args.query.trim().is_empty() {
             return Err("query needs a word to look for".into());
         }
@@ -52,6 +56,7 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
         let (_, running) = self.providers().await?;
         let forms = self.program_forms().await.unwrap_or_default();
         let mut lines: Vec<String> = Vec::new();
+        let mut hits: Vec<Value> = Vec::new();
         for hit in &found {
             if wanted
                 .as_ref()
@@ -63,6 +68,19 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
                 continue;
             };
             if !lines.contains(&line) {
+                // One hit per resource, by the path it reads at: the search
+                // ranks a resource and each action on it apart, and a caller
+                // acts on the resource.
+                if let Some((path, kind)) = self.locate(hit.app.as_deref(), hit, &running).await
+                    && !hits.iter().any(|hit: &Value| hit["path"] == path)
+                {
+                    hits.push(json!({
+                        "path": path,
+                        "kind": forms.kind(&kind).unwrap_or(&kind),
+                        "label": hit.label.trim(),
+                        "action": hit.open,
+                    }));
+                }
                 lines.push(line);
             }
         }
@@ -87,7 +105,14 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
                 args.query.trim()
             );
         }
-        Ok(Reply::ok(text))
+        let mut reply = Reply::ok(text);
+        if structured {
+            reply.structured = Some(json!({
+                "query": args.query.trim(),
+                "hits": hits.into_iter().take(limit).collect::<Vec<Value>>(),
+            }));
+        }
+        Ok(reply)
     }
 
     /// The app ids `name` means, among the apps this workspace runs and

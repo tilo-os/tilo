@@ -52,3 +52,13 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
         self.start(request.clone(), wait, record).await
     }
 }
+
+/// Whether `message`, a refusal a call got, says the person is being asked:
+/// the host's own answer ([`tilo_actions::remote::ActionHostError::ConfirmationRequired`]),
+/// or this bridge's timeout while they decide. A typed caller is answered
+/// `pending` for it instead of waiting.
+pub(super) fn needs_the_person(message: &str) -> bool {
+    message.contains("requires confirmation")
+        || message.contains("ConfirmationRequired")
+        || message.contains("action_confirmation_required")
+}

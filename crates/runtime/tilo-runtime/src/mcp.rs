@@ -19,7 +19,7 @@ mod schema;
 mod step;
 use serde::Deserialize;
 use serde_json::{Value, json};
-use step::{STEP, SURFACE_STRUCTURED};
+use step::{STEP, STEP_TITLE, SURFACE_STRUCTURED};
 use tilo_actions::remote::{
     ActionHost, Caller, CatalogueLimits, CataloguePage, CatalogueQuery, CatalogueRow,
     InvokeArgument, InvokeRequest, RemoteActionTarget,
@@ -107,6 +107,10 @@ pub struct McpServer<H> {
     narration: Option<Narration>,
     /// The record and action of each invocation still being told, by id.
     narrating: std::sync::Mutex<std::collections::HashMap<tilo_actions::InvocationId, Acting>>,
+    /// The invocations of this session a watch follows, oldest first, each
+    /// with where its latest phase falls in the watch's sequence
+    /// ([`crate::mcp::watch`]).
+    pub(super) runs: std::sync::Mutex<Vec<agent::watch::Run>>,
 }
 
 /// The record an agent call worked in: the app's id and the workspace's
@@ -694,6 +698,7 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
             acted: std::sync::Mutex::default(),
             narration: None,
             narrating: std::sync::Mutex::default(),
+            runs: std::sync::Mutex::default(),
         }
     }
 
@@ -1413,12 +1418,19 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
             .and_then(Value::as_str)
             .map(str::to_owned);
         let step = self.step_gesture(metadata, invocation.as_deref())?;
+        let title = Self::step_title(metadata)?;
         let structured = metadata
             .and_then(|metadata| metadata.pointer(SURFACE_STRUCTURED))
             .and_then(Value::as_bool)
             .unwrap_or(false);
-        STEP.scope(step, self.call_named(parse::<ToolCall>(params), structured))
-            .await
+        STEP.scope(
+            step,
+            STEP_TITLE.scope(
+                title,
+                self.call_named(parse::<ToolCall>(params), structured),
+            ),
+        )
+        .await
     }
     /// [`Self::call_tool`], inside the call's undo step.
     async fn call_named(
@@ -2973,11 +2985,19 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
     /// actor, and the undo step of the tool call they are made in
     /// ([`STEP`]).
     fn context(&self) -> Option<tilo_actions::ActionContext> {
-        self.agent_run().map(|run| tilo_actions::ActionContext {
-            group: Some(run),
-            invoker: Some(tilo_actions::ActionInvoker::actor(self.actor.clone())),
-            gesture: STEP.try_with(|step| *step).ok(),
-            ..tilo_actions::ActionContext::default()
+        self.agent_run().map(|mut run| {
+            // A call naming the run it is a step of (`_meta` run.title) is
+            // attributed to that name, which is what people read in history
+            // and see in presence, not the connection's own label.
+            if let Ok(Some(title)) = STEP_TITLE.try_with(Clone::clone) {
+                run.label = title;
+            }
+            tilo_actions::ActionContext {
+                group: Some(run),
+                invoker: Some(tilo_actions::ActionInvoker::actor(self.actor.clone())),
+                gesture: STEP.try_with(|step| *step).ok(),
+                ..tilo_actions::ActionContext::default()
+            }
         })
     }
     /// The fixed profile actor, confined to the profile's workspace.

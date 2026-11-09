@@ -106,13 +106,17 @@ struct Step {
     /// Where each of them takes a step back: the app's id and its resource the history verbs
     /// are published on, as the task's host named them.
     history: Vec<History>,
-    /// The program's first line, as `history task` names the step.
+    /// The program's first line, as `history task` names the step; a run's name, for the
+    /// steps a client groups by naming a run (`_meta` run).
     program: String,
     changed: u64,
     undone: bool,
     /// Its undo was refused or failed: it stays in effect, and `undo` passes over it to the
     /// step before, so one step that cannot be taken back never holds the others.
     kept: bool,
+    /// The undo step of the run that made it, for the steps a client groups: every call
+    /// naming the same run joins this one.
+    gesture: Option<tilo_actions::ActionId>,
 }
 
 /// Where one app a step changed takes it back: by the app's id and its resource, never by a
@@ -161,6 +165,70 @@ pub(crate) struct Programs {
 }
 
 impl Programs {
+    /// Note what a call of the run `gesture` (named `label`, `""` when the run has no title)
+    /// changed in the app `app`: the calls of one run are one step of the task's, taken back
+    /// in each app they changed, as one program is.
+    pub(super) fn note_run(
+        &mut self,
+        gesture: tilo_actions::ActionId,
+        label: &str,
+        app: &str,
+        changed: u64,
+    ) {
+        if let Some(step) = self
+            .steps
+            .iter_mut()
+            .rev()
+            .find(|step| step.gesture == Some(gesture))
+        {
+            step.changed = step.changed.saturating_add(changed);
+            if !step.apps.iter().any(|known| known == app) {
+                step.history.push(History {
+                    app: app.to_owned(),
+                    resource: format!("tl:{app}"),
+                    published: false,
+                });
+                step.apps.push(app.to_owned());
+            }
+            return;
+        }
+        self.steps.push(Step {
+            number: self.steps.len().saturating_add(1),
+            apps: vec![app.to_owned()],
+            history: vec![History {
+                app: app.to_owned(),
+                resource: format!("tl:{app}"),
+                published: false,
+            }],
+            program: if label.is_empty() {
+                "run".to_owned()
+            } else {
+                format!("run \"{label}\"")
+            },
+            changed,
+            undone: false,
+            kept: false,
+            gesture: Some(gesture),
+        });
+    }
+
+    /// The steps of this session's `history task`, typed.
+    fn steps_json(&self) -> Vec<Value> {
+        self.steps
+            .iter()
+            .map(|step| {
+                json!({
+                    "number": step.number,
+                    "apps": step.apps,
+                    "changed": step.changed,
+                    "program": step.program,
+                    "undone": step.undone,
+                    "kept": step.kept,
+                })
+            })
+            .collect()
+    }
+
     /// The reference of `literal`'s resource (type `ty`), given it the first time it is shown.
     fn name(&mut self, ty: &str, literal: &str) -> String {
         if let Some(known) = self.by_literal.get(literal) {
@@ -772,10 +840,54 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
     }
 
     /// The `tilo` tool.
-    pub(super) async fn agent_tilo(&self, args: TiloArgs) -> Result<Reply, String> {
-        Box::pin(self.tilo_step(args))
-            .await
-            .map(|(reply, _, _)| reply)
+    pub(super) async fn agent_tilo(
+        &self,
+        args: TiloArgs,
+        structured: bool,
+    ) -> Result<Reply, String> {
+        let (mut reply, answer, _) = Box::pin(self.tilo_step(args)).await?;
+        if structured {
+            reply.structured = Some(self.program_answer(answer.as_ref(), &reply));
+        }
+        Ok(reply)
+    }
+
+    /// A program's answer, typed: what it printed, what it changed, and the
+    /// steps of this session's `history task`.
+    fn program_answer(&self, answer: Option<&Value>, reply: &Reply) -> Value {
+        let steps = self.programs.lock_recover().steps_json();
+        let Some(answer) = answer else {
+            // `undo`, `undo task` and `history task` answer text: the steps
+            // they report are the typed answer.
+            return json!({
+                "status": if reply.failed {"failed"} else {"ok"},
+                "output": reply.text.lines().collect::<Vec<&str>>(),
+                "steps": steps,
+            });
+        };
+        let status = match answer.get("state").and_then(Value::as_str) {
+            Some("done") => "ok",
+            Some("preview") => "preview",
+            _ => "failed",
+        };
+        let mut typed = json!({
+            "status": status,
+            "output": answer
+                .get("output")
+                .and_then(Value::as_array)
+                .cloned()
+                .unwrap_or_default(),
+            "changed": answer.get("changed").cloned().unwrap_or_else(|| json!(0)),
+            "apps": answer.get("apps").cloned().unwrap_or_else(|| json!([])),
+            "steps": steps,
+        });
+        if let Some(detail) = answer.get("detail").filter(|detail| !detail.is_null()) {
+            typed["detail"] = detail.clone();
+        }
+        if let Some(error) = answer.get("error").filter(|error| !error.is_null()) {
+            typed["error"] = error.clone();
+        }
+        typed
     }
 
     /// One `tilo` call: its reply, the host's answer when a program ran, and the program as it
@@ -1325,6 +1437,7 @@ fn answer_text(programs: &mut Programs, program: &str, answer: &Value) -> (Strin
                         changed,
                         undone: false,
                         kept: false,
+                        gesture: None,
                     });
                 }
                 false
@@ -1869,6 +1982,7 @@ mod tests {
             changed: 2,
             undone: false,
             kept: false,
+            gesture: None,
         });
         let reply = run(server.undo_steps(false)).expect("the step is taken back");
         assert!(!reply.failed, "{}", reply.text);
