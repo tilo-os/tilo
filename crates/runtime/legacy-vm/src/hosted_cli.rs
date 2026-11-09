@@ -10,6 +10,7 @@ use legacy_vm::hosted::control::{self, Reply, Request};
 use legacy_vm::hosted::files::{self, Served};
 use legacy_vm::hosted::firecracker::Machine;
 use legacy_vm::hosted::guest;
+use legacy_vm::hosted::jail;
 use legacy_vm::hosted::service::{Service, ServiceConfig};
 use legacy_vm::hosted::vm::{Settings, system_clock};
 
@@ -18,7 +19,12 @@ usage: tilo-legacy hosted <command>
 
   serve --state DIR --run DIR --kernel VMLINUX [--initramfs FILE] [--cmdline TEXT]
         [--disk-image RAW] [--firecracker PATH] [--plans FILE] [--idle-suspend SECONDS]
-                         own this host's workspace VMs; listens on RUN/hosted.sock
+        (--jail-helper PATH [--jail-config FILE] | --unjailed)
+                         own this host's workspace VMs; listens on RUN/hosted.sock.
+                         Each VM runs jailed, with a network, through the
+                         privileged tilo-hosted-jail helper and its root-owned
+                         configuration (default /etc/tilo/hosted-jail.json);
+                         --unjailed is for development only: no network
   status --run DIR       every VM, its phase and its last wake
   fetch-guest --images DIR [--ref REF]
                          fetch the pinned guest image into DIR and print the
@@ -87,7 +93,7 @@ impl Flags {
 pub fn main(args: &[String]) -> Result<ExitCode, String> {
     let (command, rest) = args.split_first().ok_or(USAGE)?;
     match command.as_str() {
-        "serve" => serve(&Flags::parse(rest, &[])?),
+        "serve" => serve(&Flags::parse(rest, &["--unjailed"])?),
         "files-serve" => files_serve(&Flags::parse(rest, &["--read-only"])?),
         "fetch-guest" => fetch_guest(&Flags::parse(rest, &[])?),
         "status" => ask(&Flags::parse(rest, &[])?, &Request::Status),
@@ -159,6 +165,21 @@ fn serve(flags: &Flags) -> Result<ExitCode, String> {
         .map_or(Ok(30), str::parse::<u64>)
         .map_err(|_| "--idle-suspend takes seconds".to_string())?;
     let run = flags.path("--run")?;
+    let jail = match (flags.get("--jail-helper"), flags.has("--unjailed")) {
+        (Some(helper), false) => {
+            let config = flags.get("--jail-config").unwrap_or(jail::DEFAULT_CONFIG);
+            Some(Arc::new(jail::Jail::new(jail::Helper::open(
+                PathBuf::from(helper),
+                PathBuf::from(config),
+            )?)))
+        }
+        (None, true) => None,
+        _ => {
+            return Err(format!(
+                "pass --jail-helper (production) or --unjailed (development, no network)\n{USAGE}"
+            ));
+        }
+    };
     let config = ServiceConfig {
         state: flags.path("--state")?,
         plans: flags.get("--plans").map_or_else(
@@ -179,6 +200,7 @@ fn serve(flags: &Flags) -> Result<ExitCode, String> {
             },
             idle_suspend: Duration::from_secs(idle.max(1)),
             self_exe: std::env::current_exe().map_err(|e| e.to_string())?,
+            jail,
         },
     };
     // SAFETY: the handler only stores to an atomic.

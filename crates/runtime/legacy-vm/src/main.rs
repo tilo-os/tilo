@@ -87,10 +87,10 @@ fn main() -> ExitCode {
     };
     let rest = args.split_off(1);
     if command == "confine-fs" {
-        let Some((ro, rw, program)) = virtiofs::parse_confined(&rest) else {
-            return fail("confine-fs: --ro DIR… --rw DIR… -- PROGRAM…");
+        let Some(confinement) = virtiofs::parse_confined(&rest) else {
+            return fail("confine-fs: --ro DIR… --rw DIR… [--isolate [--hide DIR…]] -- PROGRAM…");
         };
-        return fail(&confine::exec_confined(&ro, &rw, &program));
+        return fail(&confine::exec_confined(&confinement));
     }
     #[cfg(target_os = "linux")]
     if command == "hosted" {

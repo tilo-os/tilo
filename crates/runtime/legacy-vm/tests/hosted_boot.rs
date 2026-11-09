@@ -104,6 +104,7 @@ fn a_command_wakes_the_vm_which_sleeps_when_idle_and_is_metered() {
                 || PathBuf::from(env!("CARGO_BIN_EXE_tilo-legacy")),
                 PathBuf::from,
             ),
+            jail: None,
         },
     };
     let service = Arc::new(Service::open(config.clone(), system_clock()).unwrap());

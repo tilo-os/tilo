@@ -71,19 +71,36 @@ pub fn confined_argv(
     argv
 }
 
-/// The read-only and read-write lists of a `confine-fs` command line, and
-/// the program after `--`.
+/// A `confine-fs` command line: what the program may read and write, what
+/// it must not see at all, and the program.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct Confinement {
+    pub ro: Vec<PathBuf>,
+    pub rw: Vec<PathBuf>,
+    /// Namespaces of its own first: no network, and [`Self::hide`] covered.
+    pub isolate: bool,
+    /// Directories that are empty in its mount namespace (with `isolate`).
+    pub hide: Vec<PathBuf>,
+    pub program: Vec<String>,
+}
+
+/// The `confine-fs` arguments in `args`: `--ro DIR`, `--rw DIR`,
+/// `--isolate`, `--hide DIR`, then `--` and the program.
 #[must_use]
-pub fn parse_confined(args: &[String]) -> Option<(Vec<PathBuf>, Vec<PathBuf>, Vec<String>)> {
-    let (mut ro, mut rw) = (Vec::new(), Vec::new());
+pub fn parse_confined(args: &[String]) -> Option<Confinement> {
+    let mut confinement = Confinement::default();
     let mut args = args.iter();
     while let Some(arg) = args.next() {
         match arg.as_str() {
-            "--ro" => ro.push(PathBuf::from(args.next()?)),
-            "--rw" => rw.push(PathBuf::from(args.next()?)),
+            "--ro" => confinement.ro.push(PathBuf::from(args.next()?)),
+            "--rw" => confinement.rw.push(PathBuf::from(args.next()?)),
+            "--hide" => confinement.hide.push(PathBuf::from(args.next()?)),
+            "--isolate" => confinement.isolate = true,
             "--" => {
-                let program: Vec<String> = args.cloned().collect();
-                return (!program.is_empty()).then_some((ro, rw, program));
+                confinement.program = args.cloned().collect();
+                return (!confinement.program.is_empty()
+                    && (confinement.isolate || confinement.hide.is_empty()))
+                .then_some(confinement);
             }
             _ => return None,
         }
@@ -143,7 +160,9 @@ mod tests {
                 daemon.clone(),
             );
             assert_eq!(argv[..2], ["/usr/libexec/tilo/tilo-legacy", "confine-fs"]);
-            let (ro, rw, program) = parse_confined(&argv[2..]).unwrap();
+            let Confinement {
+                ro, rw, program, ..
+            } = parse_confined(&argv[2..]).unwrap();
             assert!(ro.contains(&PathBuf::from("/var/home/you/Music")));
             assert!(ro.contains(&PathBuf::from("/usr")));
             assert_eq!(rw, [PathBuf::from("/run/user/1000/tilo-legacy/linux")]);

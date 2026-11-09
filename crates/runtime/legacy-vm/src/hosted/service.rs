@@ -58,6 +58,7 @@ impl ServiceConfig {
                 "{:016x}",
                 fnv_hash(&format!("{workspace}/{environment}"))
             )),
+            jailed: self.settings.jail.is_some(),
         }
     }
 }
@@ -466,6 +467,7 @@ mod tests {
                 },
                 idle_suspend: Duration::from_secs(30),
                 self_exe: dir.join("tilo-legacy"),
+                jail: None,
             },
         }
     }

@@ -67,22 +67,34 @@ impl Machine {
 /// Where one VM's files are.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct VmFiles {
-    /// Durable: disk, snapshot, meter.
+    /// Durable: the meter and console log, and [`Self::vmm`].
     pub state: PathBuf,
     /// Sockets, short-lived: the API and vsock sockets. Kept short, since a
     /// Unix socket path has at most 107 bytes.
     pub run: PathBuf,
+    /// Firecracker runs in a jail ([`super::jail`]) and sees [`Self::vmm`]
+    /// as `/vm`, [`Self::run`] as `/s` and the guest kernel's directory as
+    /// `/guest`.
+    pub jailed: bool,
 }
 
 impl VmFiles {
+    /// What Firecracker itself reads and writes: the disk, the snapshot,
+    /// its configuration. The VM's own while it runs jailed; the meter is
+    /// never in here.
+    #[must_use]
+    pub fn vmm(&self) -> PathBuf {
+        self.state.join("vmm")
+    }
+
     #[must_use]
     pub fn disk(&self) -> PathBuf {
-        self.state.join("disk.raw")
+        self.vmm().join("disk.raw")
     }
 
     #[must_use]
     pub fn config(&self) -> PathBuf {
-        self.state.join("firecracker.json")
+        self.vmm().join("firecracker.json")
     }
 
     #[must_use]
@@ -97,11 +109,12 @@ impl VmFiles {
 
     #[must_use]
     pub fn snapshot(&self) -> SnapshotFiles {
+        let vmm = self.vmm();
         SnapshotFiles {
-            state: self.state.join("vm.state"),
-            memory: self.state.join("vm.mem"),
-            new_state: self.state.join("vm.state.new"),
-            diff: self.state.join("vm.diff"),
+            state: vmm.join("vm.state"),
+            memory: vmm.join("vm.mem"),
+            new_state: vmm.join("vm.state.new"),
+            diff: vmm.join("vm.diff"),
         }
     }
 
@@ -113,6 +126,28 @@ impl VmFiles {
     #[must_use]
     pub fn vsock_socket(&self) -> PathBuf {
         self.run.join("v.sock")
+    }
+
+    /// `path` as Firecracker names it: the same path unjailed; in a jail,
+    /// under `/vm`, `/s` or (for anything else, the guest kernel's files)
+    /// `/guest`.
+    #[must_use]
+    pub fn for_vmm(&self, path: &Path) -> String {
+        if !self.jailed {
+            return path.display().to_string();
+        }
+        let vmm = self.vmm();
+        let inside = |dir: &str, rest: &Path| Path::new(dir).join(rest).display().to_string();
+        if let Ok(rest) = path.strip_prefix(&vmm) {
+            inside(super::jail::VMM_DIR, rest)
+        } else if let Ok(rest) = path.strip_prefix(&self.run) {
+            inside(super::jail::SOCKETS_DIR, rest)
+        } else {
+            inside(
+                super::jail::GUEST_DIR,
+                Path::new(path.file_name().unwrap_or_default()),
+            )
+        }
     }
 }
 
@@ -193,13 +228,24 @@ pub fn allocated(path: &Path) -> u64 {
     std::fs::metadata(path).map_or(0, |meta| meta.blocks().saturating_mul(512))
 }
 
-/// Firecracker's whole configuration for a cold boot.
+/// Firecracker's whole configuration for a cold boot; with a network
+/// limited to `network_mbit` each way when given ([`super::network`]).
 #[must_use]
-pub fn config_json(machine: &Machine, size: VmSize, files: &VmFiles, tap: Option<&str>) -> String {
-    let path = |path: &Path| path.display().to_string();
+pub fn config_json(
+    machine: &Machine,
+    size: VmSize,
+    files: &VmFiles,
+    network_mbit: Option<u32>,
+) -> String {
+    let path = |path: &Path| files.for_vmm(path);
+    let mut cmdline = machine.cmdline.clone();
+    if network_mbit.is_some() {
+        cmdline.push(' ');
+        cmdline.push_str(&super::network::kernel_ip_arg());
+    }
     let mut boot = json!({
         "kernel_image_path": path(&machine.kernel),
-        "boot_args": machine.cmdline,
+        "boot_args": cmdline,
     });
     if let (Some(initramfs), Some(boot)) = (&machine.initramfs, boot.as_object_mut()) {
         boot.insert("initrd_path".into(), json!(path(initramfs)));
@@ -221,11 +267,13 @@ pub fn config_json(machine: &Machine, size: VmSize, files: &VmFiles, tap: Option
             "guest_cid": GUEST_CID,
             "uds_path": path(&files.vsock_socket()),
         },
+        // Randomness for the guest's TLS from its first moment.
+        "entropy": {},
     });
-    if let (Some(tap), Some(config)) = (tap, config.as_object_mut()) {
+    if let (Some(mbit), Some(config)) = (network_mbit, config.as_object_mut()) {
         config.insert(
             "network-interfaces".into(),
-            json!([{ "iface_id": "eth0", "host_dev_name": tap }]),
+            json!([super::network::interface_json(mbit)]),
         );
     }
     config.to_string()
@@ -286,29 +334,31 @@ impl Api {
     }
 
     /// A diff snapshot: the vCPU and device state to `state`, the pages
-    /// dirtied since boot or restore to `memory`.
-    pub fn snapshot(&self, state: &Path, memory: &Path) -> Result<(), FirecrackerError> {
+    /// dirtied since boot or restore to `memory` (paths as Firecracker
+    /// sees them, [`VmFiles::for_vmm`]).
+    pub fn snapshot(&self, state: &str, memory: &str) -> Result<(), FirecrackerError> {
         self.call(
             "PUT",
             "/snapshot/create",
             &json!({
                 "snapshot_type": "Diff",
-                "snapshot_path": state.display().to_string(),
-                "mem_file_path": memory.display().to_string(),
+                "snapshot_path": state,
+                "mem_file_path": memory,
             }),
         )
     }
 
-    /// Load a snapshot, its memory mapped from `memory` on demand, and run.
-    pub fn restore(&self, state: &Path, memory: &Path) -> Result<(), FirecrackerError> {
+    /// Load a snapshot, its memory mapped from `memory` on demand, and run
+    /// (paths as Firecracker sees them).
+    pub fn restore(&self, state: &str, memory: &str) -> Result<(), FirecrackerError> {
         self.call(
             "PUT",
             "/snapshot/load",
             &json!({
-                "snapshot_path": state.display().to_string(),
+                "snapshot_path": state,
                 "mem_backend": {
                     "backend_type": "File",
-                    "backend_path": memory.display().to_string(),
+                    "backend_path": memory,
                 },
                 "track_dirty_pages": true,
                 "resume_vm": true,
@@ -472,6 +522,7 @@ mod tests {
         VmFiles {
             state: dir.join("state"),
             run: dir.join("run"),
+            jailed: false,
         }
     }
 
@@ -486,15 +537,23 @@ mod tests {
         };
         let files = files(Path::new("/h/vm"));
         let config: serde_json::Value =
-            serde_json::from_str(&config_json(&machine, VmSize::Large, &files, Some("tap7")))
-                .unwrap();
+            serde_json::from_str(&config_json(&machine, VmSize::Large, &files, Some(100))).unwrap();
         assert_eq!(config["machine-config"]["vcpu_count"], 8);
         assert_eq!(config["machine-config"]["mem_size_mib"], 16384);
         assert_eq!(config["machine-config"]["track_dirty_pages"], true);
-        assert_eq!(config["drives"][0]["path_on_host"], "/h/vm/state/disk.raw");
+        assert_eq!(
+            config["drives"][0]["path_on_host"],
+            "/h/vm/state/vmm/disk.raw"
+        );
         assert_eq!(config["drives"][0]["is_root_device"], true);
         assert_eq!(config["vsock"]["uds_path"], "/h/vm/run/v.sock");
-        assert_eq!(config["network-interfaces"][0]["host_dev_name"], "tap7");
+        assert_eq!(config["network-interfaces"][0]["host_dev_name"], "tap0");
+        assert!(
+            config["boot-source"]["boot_args"]
+                .as_str()
+                .unwrap()
+                .ends_with(" ip=10.0.2.15::10.0.2.2:255.255.255.0::eth0:off:10.0.2.3")
+        );
         assert!(config["boot-source"].get("initrd_path").is_none());
         assert_eq!(
             boot_argv(&machine, &files),
@@ -503,16 +562,28 @@ mod tests {
                 "--api-sock",
                 "/h/vm/run/api.sock",
                 "--config-file",
-                "/h/vm/state/firecracker.json"
+                "/h/vm/state/vmm/firecracker.json"
             ]
         );
+        // phase: jailed, Firecracker names everything inside its jail
+        let jailed = VmFiles {
+            jailed: true,
+            ..files
+        };
+        let config: serde_json::Value =
+            serde_json::from_str(&config_json(&machine, VmSize::Small, &jailed, None)).unwrap();
+        assert_eq!(config["boot-source"]["kernel_image_path"], "/guest/vmlinux");
+        assert_eq!(config["drives"][0]["path_on_host"], "/vm/disk.raw");
+        assert_eq!(config["vsock"]["uds_path"], "/s/v.sock");
+        assert!(config.get("network-interfaces").is_none());
+        assert_eq!(jailed.for_vmm(&jailed.snapshot().diff), "/vm/vm.diff");
     }
 
     #[test]
     fn diffs_merge_into_the_sparse_memory_file() {
         let dir = tempfile::tempdir().unwrap();
         let snapshot = files(dir.path()).snapshot();
-        std::fs::create_dir_all(dir.path().join("state")).unwrap();
+        std::fs::create_dir_all(dir.path().join("state/vmm")).unwrap();
         // phase: after a cold boot the first suspend writes the base itself
         {
             assert_eq!(snapshot.next_memory_target(), snapshot.memory);

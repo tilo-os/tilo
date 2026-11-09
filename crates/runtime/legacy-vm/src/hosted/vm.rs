@@ -5,6 +5,7 @@
 //! no valid snapshot and a restore when it has one. Every moment the
 //! Firecracker process runs is metered, and every snapshot held on disk.
 
+use std::fs::File;
 use std::os::fd::AsRawFd as _;
 use std::os::unix::net::UnixListener;
 use std::os::unix::process::CommandExt as _;
@@ -21,6 +22,7 @@ use thiserror::Error;
 
 use super::files::Served;
 use super::firecracker::{self, Api, FirecrackerError, Machine, VmFiles};
+use super::jail::{Jail, JailDirs};
 use super::meter::{Ledger, Meter, RunEnd, UsageRecord, VmIdentity};
 use super::size::VmSize;
 use crate::lifecycle::{Action, Lifecycle, LifecycleError, Phase};
@@ -58,6 +60,11 @@ pub enum VmError {
     Agent(#[from] legacy_agent_protocol::ProtocolError),
     #[error("the VM is not running")]
     NotRunning,
+    #[error(
+        "every Linux VM this host runs at once is running; try again in a minute \
+         (an idle VM goes to sleep after its idle limit)"
+    )]
+    HostFull,
     #[error("{0}")]
     Io(#[from] std::io::Error),
 }
@@ -70,6 +77,10 @@ pub struct Settings {
     pub idle_suspend: Duration,
     /// `tilo-legacy` itself: it confines and serves the shares.
     pub self_exe: PathBuf,
+    /// Every VM in a jail of its own, with a network when the jails have
+    /// one ([`super::jail`]). Unjailed VMs (development only) have no
+    /// network.
+    pub jail: Option<Arc<Jail>>,
 }
 
 /// How the last wake went: what an agent waited for its first command.
@@ -101,6 +112,8 @@ pub struct HostedVm {
     wake_started: Option<Instant>,
     restoring: bool,
     last_wake: Option<Wake>,
+    /// The jail slot the running VM holds.
+    slot: Option<u32>,
 }
 
 impl HostedVm {
@@ -116,7 +129,7 @@ impl HostedVm {
     ) -> Result<Self, VmError> {
         std::fs::create_dir_all(&files.state)?;
         let mut meter = Meter::load(&files.meter()).unwrap_or_else(|| Meter::new(identity));
-        kill_stray(&files);
+        kill_stray(&files, settings.jail.as_deref());
         if let Some(record) = meter.recover() {
             ledger.append(&record)?;
         }
@@ -146,6 +159,7 @@ impl HostedVm {
             wake_started: None,
             restoring: false,
             last_wake: None,
+            slot: None,
         })
     }
 
@@ -256,11 +270,10 @@ impl HostedVm {
     /// its disk. The guest flushes its disk first; it is not shut down
     /// beyond that, so stopping is never billed for a slow shutdown.
     pub fn stop(&mut self) -> Result<(), VmError> {
-        if let Some(mut process) = self.process.take() {
+        if let Some(process) = self.process.take() {
             let _ = self.agent(&HostMessage::MountFiles { shares: Vec::new() });
             let _ = self.sync_guest();
-            let _ = process.kill();
-            let _ = process.wait();
+            self.finish(process);
             self.ended(RunEnd::Stopped)?;
         }
         self.stop_servers();
@@ -300,33 +313,81 @@ impl HostedVm {
         let machine = &settings.machine;
         let snapshot = self.files.snapshot();
         std::fs::create_dir_all(&self.files.run)?;
+        std::fs::create_dir_all(self.files.vmm())?;
         for socket in [self.files.api_socket(), self.files.vsock_socket()] {
             let _ = std::fs::remove_file(socket);
         }
         self.restoring = snapshot.valid();
-        let argv = if self.restoring {
-            firecracker::restore_argv(machine, &self.files)
-        } else {
+        if !self.restoring {
             // A cold boot: memory left from before is no base for anything.
             self.drop_snapshot()?;
+            let network = settings.jail.as_ref().and_then(|jail| jail.network_mbit());
             tilo_files::native::atomic::write_creating_parent(
                 &self.files.config(),
-                firecracker::config_json(machine, self.meter.identity.size, &self.files, None)
+                firecracker::config_json(machine, self.meter.identity.size, &self.files, network)
                     .as_bytes(),
             )?;
-            firecracker::boot_argv(machine, &self.files)
-        };
+        }
         let console = std::fs::File::create(self.files.console_log())?;
-        let (program, rest) = argv.split_first().ok_or(VmError::NotRunning)?;
+        // Held until the spawn: the helper gets them as descriptors.
+        let dirs = if let Some(jail) = &settings.jail {
+            let slot = jail.take().ok_or(VmError::HostFull)?;
+            self.slot = Some(slot);
+            match self.jail_dirs() {
+                Ok(dirs) => Some((jail, slot, dirs)),
+                Err(error) => {
+                    self.release();
+                    return Err(error.into());
+                }
+            }
+        } else {
+            None
+        };
+        let mut command = if let Some((jail, slot, (vmm, sockets, guest))) = &dirs {
+            jail.helper.start(
+                *slot,
+                self.meter.identity.size,
+                !self.restoring,
+                &JailDirs {
+                    vmm,
+                    sockets,
+                    guest: guest.as_ref(),
+                },
+            )
+        } else {
+            let argv = if self.restoring {
+                firecracker::restore_argv(machine, &self.files)
+            } else {
+                firecracker::boot_argv(machine, &self.files)
+            };
+            let (program, rest) = argv.split_first().ok_or(VmError::NotRunning)?;
+            let mut command = Command::new(program);
+            command.args(rest);
+            command
+        };
         self.wake_started = Some(Instant::now());
-        let process = Command::new(program)
-            .args(rest)
+        let spawned = command
             .stdin(Stdio::null())
             .stdout(console.try_clone()?)
             .stderr(console)
             .process_group(0)
-            .spawn()?;
-        let _ = std::fs::write(self.pid_file(), process.id().to_string());
+            .spawn();
+        drop(command);
+        drop(dirs);
+        let process = match spawned {
+            Ok(process) => process,
+            Err(error) => {
+                self.release();
+                return Err(error.into());
+            }
+        };
+        let _ = std::fs::write(
+            self.pid_file(),
+            match self.slot {
+                Some(slot) => format!("{} {slot}", process.id()),
+                None => process.id().to_string(),
+            },
+        );
         self.process = Some(process);
         self.meter.started((self.clock)());
         self.meter.save(&self.files.meter())?;
@@ -336,12 +397,71 @@ impl HostedVm {
         if self.restoring {
             let api = Api::new(self.files.api_socket());
             api.wait(Duration::from_secs(10))?;
-            api.restore(&snapshot.state, &snapshot.memory)?;
+            api.restore(
+                &self.files.for_vmm(&snapshot.state),
+                &self.files.for_vmm(&snapshot.memory),
+            )?;
             // From here the VM writes its disk: this snapshot no longer
             // matches it.
             snapshot.in_use()?;
         }
         Ok(())
+    }
+
+    /// The directories a jail is made of: the VM's state, its sockets, and
+    /// the guest kernel's (absent for a kernel at the filesystem root).
+    fn jail_dirs(&self) -> std::io::Result<(File, File, Option<File>)> {
+        let guest = self
+            .settings
+            .machine
+            .kernel
+            .parent()
+            .map(File::open)
+            .transpose()?;
+        Ok((
+            File::open(self.files.vmm())?,
+            File::open(&self.files.run)?,
+            guest,
+        ))
+    }
+
+    /// End `process` and wait for it: through the helper when jailed (the
+    /// VM's uid is not the service's to signal), then release its jail.
+    fn finish(&mut self, mut process: Child) {
+        if let (Some(jail), Some(slot)) = (&self.settings.jail, self.slot) {
+            if let Err(error) = jail.helper.stop(slot) {
+                eprintln!("tilo-legacy hosted: stopping slot {slot}: {error}");
+            }
+        } else {
+            let _ = process.kill();
+        }
+        let _ = process.wait();
+        self.release();
+    }
+
+    /// The VM is gone: give its jail back. A slot whose release failed is
+    /// not used again, so no later VM inherits what is left in it.
+    fn release(&mut self) {
+        let Some(slot) = self.slot.take() else {
+            return;
+        };
+        let Some(jail) = self.settings.jail.clone() else {
+            return;
+        };
+        let released = self.jail_dirs().and_then(|(vmm, sockets, _)| {
+            jail.helper.release(
+                slot,
+                &JailDirs {
+                    vmm: &vmm,
+                    sockets: &sockets,
+                    guest: None,
+                },
+            )
+        });
+        match released {
+            Ok(()) => jail.give_back(slot),
+            Err(error) => eprintln!("tilo-legacy hosted: releasing slot {slot}: {error}"),
+        }
     }
 
     fn await_agent(&mut self) -> Result<(), VmError> {
@@ -402,7 +522,13 @@ impl HostedVm {
         let listener_path = AgentLink::hybrid_listener(&self.files.vsock_socket(), port);
         let _ = std::fs::remove_file(&listener_path);
         let listener = UnixListener::bind(&listener_path)?;
-        let argv = files_serve_argv(&self.settings.self_exe, share);
+        // A jailed Firecracker runs as the VM's uid: it may connect. The
+        // directory holds only this VM's sockets and is closed to others.
+        {
+            use std::os::unix::fs::PermissionsExt as _;
+            std::fs::set_permissions(&listener_path, std::fs::Permissions::from_mode(0o777))?;
+        }
+        let argv = files_serve_argv(&self.settings.self_exe, share, &self.hidden());
         let (program, rest) = argv.split_first().ok_or(VmError::NotRunning)?;
         let fd = listener.as_raw_fd();
         let mut command = Command::new(program);
@@ -453,10 +579,12 @@ impl HostedVm {
         let api = Api::new(self.files.api_socket());
         api.pause()?;
         let _ = std::fs::remove_file(&snapshot.diff);
-        api.snapshot(&snapshot.new_state, snapshot.next_memory_target())?;
-        if let Some(mut process) = self.process.take() {
-            let _ = process.kill();
-            let _ = process.wait();
+        api.snapshot(
+            &self.files.for_vmm(&snapshot.new_state),
+            &self.files.for_vmm(snapshot.next_memory_target()),
+        )?;
+        if let Some(process) = self.process.take() {
+            self.finish(process);
         }
         self.ended(RunEnd::Suspended)?;
         snapshot.complete()?;
@@ -499,7 +627,9 @@ impl HostedVm {
         if matches!(process.try_wait(), Ok(None)) {
             return true;
         }
-        self.process = None;
+        if let Some(process) = self.process.take() {
+            self.finish(process);
+        }
         let _ = self.ended(RunEnd::Crashed);
         self.stop_servers();
         self.desired.clear();
@@ -510,9 +640,8 @@ impl HostedVm {
     /// A wake or suspend failed half-way: end the process and its run, and
     /// take the phase from what is left on disk.
     fn fail(&mut self) {
-        if let Some(mut process) = self.process.take() {
-            let _ = process.kill();
-            let _ = process.wait();
+        if let Some(process) = self.process.take() {
+            self.finish(process);
             let _ = self.ended(RunEnd::Crashed);
         }
         self.stop_servers();
@@ -568,6 +697,22 @@ impl HostedVm {
     fn pid_file(&self) -> PathBuf {
         self.files.run.join("firecracker.pid")
     }
+
+    /// What a share server must not see: every VM's sockets and the
+    /// service's own (the service's run directory), and the jails.
+    fn hidden(&self) -> Vec<PathBuf> {
+        let mut hidden: Vec<PathBuf> = self
+            .files
+            .run
+            .parent()
+            .map(Path::to_path_buf)
+            .into_iter()
+            .collect();
+        if let Some(jail) = &self.settings.jail {
+            hidden.push(jail.helper.config.chroot_base.clone());
+        }
+        hidden
+    }
 }
 
 impl Drop for HostedVm {
@@ -579,13 +724,16 @@ impl Drop for HostedVm {
 /// The descriptor a share server gets its bound listener on.
 pub const LISTEN_FD: i32 = 3;
 
-/// `tilo-legacy confine-fs --ro … -- tilo-legacy hosted files-serve …`:
-/// Landlock holds the server to its one share (read-only when the share
-/// is) and what it needs to run.
+/// `tilo-legacy confine-fs --isolate --hide … --ro … -- tilo-legacy hosted
+/// files-serve …`: Landlock holds the server to its one share (read-only
+/// when the share is) and what it needs to run, and namespaces of its own
+/// keep it from every socket in `hidden` and from the network.
 #[must_use]
-pub fn files_serve_argv(self_exe: &Path, share: &Served) -> Vec<String> {
+pub fn files_serve_argv(self_exe: &Path, share: &Served, hidden: &[PathBuf]) -> Vec<String> {
     let exe = self_exe.display().to_string();
     let mut argv = vec![exe.clone(), "confine-fs".to_string()];
+    let hidden: Vec<&Path> = hidden.iter().map(PathBuf::as_path).collect();
+    argv.extend(super::jail::hide_args(&hidden));
     for path in SYSTEM_READ_ONLY {
         argv.extend(["--ro".to_string(), (*path).to_string()]);
     }
@@ -612,20 +760,45 @@ pub fn files_serve_argv(self_exe: &Path, share: &Served) -> Vec<String> {
 
 /// A Firecracker a previous service left running for this VM: its run was
 /// closed at the last moment it was seen, so it must not go on unmetered.
-fn kill_stray(files: &VmFiles) {
+/// A jailed one is stopped and its jail released through the helper.
+fn kill_stray(files: &VmFiles, jail: Option<&Jail>) {
     let pid_file = files.run.join("firecracker.pid");
-    let Some(pid) = std::fs::read_to_string(&pid_file)
-        .ok()
-        .and_then(|pid| pid.trim().parse::<i32>().ok())
-    else {
+    let Ok(text) = std::fs::read_to_string(&pid_file) else {
         return;
     };
-    let cmdline = std::fs::read(format!("/proc/{pid}/cmdline")).unwrap_or_default();
-    let api = files.api_socket().display().to_string();
-    if String::from_utf8_lossy(&cmdline).contains(&api) {
-        // SAFETY: `kill` has no memory preconditions; the pid's command
-        // line names this VM's API socket.
-        unsafe { libc::kill(pid, libc::SIGKILL) };
+    let mut words = text.split_whitespace();
+    let pid = words.next().and_then(|pid| pid.parse::<i32>().ok());
+    let slot = words.next().and_then(|slot| slot.parse::<u32>().ok());
+    match (jail, slot) {
+        (Some(jail), Some(slot)) => {
+            jail.claim(slot);
+            let released = jail.helper.stop(slot).and_then(|()| {
+                let (vmm, sockets) = (File::open(files.vmm())?, File::open(&files.run)?);
+                jail.helper.release(
+                    slot,
+                    &JailDirs {
+                        vmm: &vmm,
+                        sockets: &sockets,
+                        guest: None,
+                    },
+                )
+            });
+            match released {
+                Ok(()) => jail.give_back(slot),
+                Err(error) => eprintln!("tilo-legacy hosted: releasing slot {slot}: {error}"),
+            }
+        }
+        _ => {
+            if let Some(pid) = pid {
+                let cmdline = std::fs::read(format!("/proc/{pid}/cmdline")).unwrap_or_default();
+                let api = files.api_socket().display().to_string();
+                if String::from_utf8_lossy(&cmdline).contains(&api) {
+                    // SAFETY: `kill` has no memory preconditions; the pid's
+                    // command line names this VM's API socket.
+                    unsafe { libc::kill(pid, libc::SIGKILL) };
+                }
+            }
+        }
     }
     let _ = std::fs::remove_file(pid_file);
 }
@@ -640,9 +813,21 @@ mod tests {
             path: "/srv/tilo/ws1/files".into(),
             read_only: false,
         };
-        let argv = files_serve_argv(Path::new("/usr/libexec/tilo/tilo-legacy"), &share);
+        let argv = files_serve_argv(
+            Path::new("/usr/libexec/tilo/tilo-legacy"),
+            &share,
+            &[PathBuf::from("/run/tilo-hosted")],
+        );
         assert_eq!(argv[..2], ["/usr/libexec/tilo/tilo-legacy", "confine-fs"]);
-        let (ro, rw, program) = crate::virtiofs::parse_confined(&argv[2..]).unwrap();
+        let crate::virtiofs::Confinement {
+            ro,
+            rw,
+            isolate,
+            hide,
+            program,
+        } = crate::virtiofs::parse_confined(&argv[2..]).unwrap();
+        assert!(isolate, "a share server gets namespaces of its own");
+        assert_eq!(hide, [PathBuf::from("/run/tilo-hosted")]);
         assert_eq!(rw, [PathBuf::from("/srv/tilo/ws1/files")]);
         assert!(ro.contains(&PathBuf::from("/usr/libexec/tilo")));
         assert_eq!(
@@ -661,8 +846,10 @@ mod tests {
             read_only: true,
             ..share
         };
-        let argv = files_serve_argv(Path::new("/usr/libexec/tilo/tilo-legacy"), &read_only);
-        let (ro, rw, program) = crate::virtiofs::parse_confined(&argv[2..]).unwrap();
+        let argv = files_serve_argv(Path::new("/usr/libexec/tilo/tilo-legacy"), &read_only, &[]);
+        let crate::virtiofs::Confinement {
+            ro, rw, program, ..
+        } = crate::virtiofs::parse_confined(&argv[2..]).unwrap();
         assert!(rw.is_empty());
         assert!(ro.contains(&PathBuf::from("/srv/tilo/ws1/files")));
         assert_eq!(program.last().map(String::as_str), Some("--read-only"));
