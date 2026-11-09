@@ -3578,7 +3578,10 @@ mod tests {
                 app.harness().resize((width, 900)).unwrap();
                 app.harness().set_theme(theme.clone());
                 let retry = app.harness().targets()["store.error.refresh"];
-                assert!(retry.x0 >= 0.0 && retry.x1 <= f64::from(width));
+                assert!(
+                    retry.x0 >= 0.0 && retry.x1 <= f64::from(width),
+                    "the refresh control stands inside {width}: {retry:?}"
+                );
                 assert!(retry.y0 >= 0.0 && retry.y1 <= 900.0);
                 let inspection = app.harness().inspection_json().unwrap();
                 assert!(
@@ -3647,7 +3650,10 @@ mod tests {
                 let retry = targets
                     .get("store.error.refresh")
                     .expect("the real source retry control must be observable");
-                assert!(retry.x0 >= 0.0 && retry.x1 <= f64::from(width));
+                assert!(
+                    retry.x0 >= 0.0 && retry.x1 <= f64::from(width),
+                    "the refresh control stands inside {width}: {retry:?}"
+                );
                 assert!(retry.y0 >= 0.0 && retry.y1 <= 900.0);
                 assert!(
                     app.harness()
