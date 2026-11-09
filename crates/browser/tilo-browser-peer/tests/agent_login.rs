@@ -191,6 +191,10 @@ async fn an_agent_logs_in_with_the_tabs_code_and_shows_in_the_workspace_as_the_p
     .await;
     assert_eq!(seen.user, user, "the agent is Bob's, not a second person");
     assert_eq!(seen.label, "Claude Code");
+    assert!(
+        seen.agent,
+        "the device's own word that it runs an agent reaches the person's page: {seen:?}"
+    );
     assert!(seen.recent.contains("Signed in"), "{seen:?}");
 
     // What it does next shows the same way.

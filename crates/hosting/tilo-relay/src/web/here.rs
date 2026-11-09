@@ -421,6 +421,8 @@ struct Line {
 struct Entry {
     user: [u8; 32],
     label: String,
+    /// The device says it runs the agent `label` names.
+    agent: bool,
     window: Option<u64>,
     /// Oldest first.
     actions: Vec<HereAction>,
@@ -448,6 +450,7 @@ impl Entry {
             device,
             user: self.user,
             label: self.label.clone(),
+            agent: self.agent,
             window: self.window,
             status: line.status.clone(),
             recent: line.recent.clone(),
@@ -474,6 +477,10 @@ pub(crate) fn pair_members(reply: &mut HereReply, members: &[([u8; 32], [u8; 32]
             device: *device,
             user: *user,
             label: String::new(),
+            // A device that has posted nothing has said nothing of what
+            // runs on it: its person's surface draws it as a person until
+            // its own word says otherwise.
+            agent: false,
             window: None,
             status: String::new(),
             recent: String::new(),
@@ -550,7 +557,7 @@ impl Here {
             label,
             window,
             mut actions,
-            ..
+            agent,
         } = request;
         let mut job = None;
         let people = state.workspaces.entry(workspace_id).or_default();
@@ -572,6 +579,7 @@ impl Here {
         let entry = people.entry(device).or_insert_with(|| Entry {
             user,
             label: String::new(),
+            agent: false,
             window: None,
             actions: Vec::new(),
             digest: None,
@@ -585,6 +593,10 @@ impl Here {
         });
         entry.user = user;
         entry.label = label;
+        // Whether the device runs an agent rides with the name it gives:
+        // it is what every surface draws it as, and what the person's page
+        // otherwise has no way to learn.
+        entry.agent = agent;
         // Not part of the action set: moving between windows never
         // counts as a change a model is asked about.
         entry.window = window;
@@ -984,6 +996,46 @@ mod tests {
 
     const DEVICE: [u8; 32] = [1; 32];
     const USER: [u8; 32] = [2; 32];
+
+    /// A device that says it runs an agent is listed as one, under the name
+    /// it gave: what every surface draws it as, whether or not the agent's
+    /// own presence reaches them.
+    #[test]
+    fn the_answer_keeps_a_devices_agent_declaration() {
+        let here = Here::new(None);
+        let start = Instant::now();
+        let posting = HereRequest {
+            label: "Claude Code".into(),
+            agent: true,
+            ..request(7, Vec::new())
+        };
+        let (reply, _) = here.post(posting, DEVICE, [3; 32], start, 10);
+        let [agent] = reply.people.as_slice() else {
+            panic!("one person: {reply:?}")
+        };
+        assert!(agent.agent, "the device said an agent runs on it");
+        assert_eq!(agent.label, "Claude Code", "the name its client goes by");
+        assert_eq!(agent.user, [3; 32], "still that person's device");
+
+        // A device that posted no such word is a person: the line the host
+        // keeps it as says nothing it did not say itself.
+        let person = request(7, Vec::new());
+        let (reply, _) = here.post(person, [4; 32], [3; 32], start, 10);
+        assert!(
+            reply
+                .people
+                .iter()
+                .any(|person| person.device == [4; 32] && !person.agent),
+            "{reply:?}"
+        );
+        assert!(
+            reply
+                .people
+                .iter()
+                .any(|person| person.device == DEVICE && person.agent),
+            "the agent keeps its word while it is here: {reply:?}"
+        );
+    }
 
     #[test]
     fn deterministic_lines_cite_their_actions_expire_and_stay_in_their_workspace() {

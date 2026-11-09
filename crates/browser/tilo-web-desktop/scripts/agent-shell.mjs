@@ -829,6 +829,7 @@ try {
         note(`${combo}: the agent lists the workspace's apps`, !listed.failed && apps.length > 0, listed.text.slice(0, 500));
         log(`${combo}: apps`, apps.join(' '));
         log(`${combo}: the page's people now`, await tab.evaluate(`JSON.stringify(globalThis.tiloMount?.state()?.here ?? null)`).catch(() => 'null'));
+        log(`${combo}: the page's members now`, await tab.evaluate(`globalThis.tiloPeople?.() ?? 'no people hook'`).catch(() => 'null'));
 
         // 4. Following it, its card open beside the person: `landing`.
         const followProblem = await followAgent(tab, 'Claude Code');

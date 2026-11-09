@@ -120,6 +120,11 @@ pub struct HostLine {
     pub user: String,
     #[serde(default)]
     pub label: String,
+    /// The device says it is an agent, `label` being the agent's name: what
+    /// a surface draws it as, whether or not the agent's own presence
+    /// reached this desk.
+    #[serde(default)]
+    pub agent: bool,
     #[serde(default)]
     pub status: String,
     #[serde(default)]
@@ -900,7 +905,12 @@ impl HereState {
         // Who each listed person counts as (`person_of`), beside `people` .
         let mut persons: Vec<&str> = Vec::new();
         for member in self.members.iter().flatten() {
-            let agent = member.kind == "agent";
+            let line_of = host(&member.publisher);
+            // An agent is known by the session it declared, never by what it is called: its own
+            // presence says so, and so does the word its device posted here, which the host kept
+            // and authenticated. A page that received only the host's lines still draws the agent
+            // as one; a desktop that received both draws it once.
+            let agent = member.kind == "agent" || line_of.is_some_and(|line| line.agent);
             let person = if agent {
                 member.publisher.as_str()
             } else {
@@ -910,7 +920,6 @@ impl HereState {
                 continue;
             }
             persons.push(person);
-            let line_of = host(&member.publisher);
             // An agent names the record it works in; a person's page says which window they are in.
             let tab = member
                 .focus
@@ -958,7 +967,13 @@ impl HereState {
                 && !self.is_own_person(&l.device)
         };
         for l in self.lines.iter().filter(|l| fresh(l)) {
-            let person = self.person_of(&l.device);
+            // An agent is its own person here, as it is on the board: it is the session the device
+            // declared, not a device of the person it works for.
+            let person = if l.agent {
+                l.device.as_str()
+            } else {
+                self.person_of(&l.device)
+            };
             if persons.contains(&person) {
                 continue;
             }
@@ -973,7 +988,7 @@ impl HereState {
                     .map_or_else(guest_label, str::to_owned),
                 devices: self.devices_of(&l.device),
                 rgb: color_in(&colors, &l.device),
-                agent: false,
+                agent: l.agent,
                 tab,
                 focus_app: None,
                 place: tab.and_then(|tab| worded_place(tree, tab, app_name, status.as_ref())),
@@ -1243,6 +1258,10 @@ pub fn overlay_collaborators(tree: &mut DesktopTree, people: &[Person]) {
             // rounded square — for as long as the row exists.
             if person.agent {
                 known.role_id = Some(crate::collaborators::AGENT_ROLE_MARKER.to_owned());
+            } else if known.role_id.as_deref() == Some(crate::collaborators::AGENT_ROLE_MARKER) {
+                // Software that stopped saying it runs here is not drawn as one: the row outlives
+                // the line that named it.
+                known.role_id = None;
             }
             continue;
         }
@@ -2006,6 +2025,7 @@ mod tests {
             device: device.into(),
             user: format!("{device}-root"),
             label: "From host".into(),
+            agent: false,
             status: status.into(),
             recent: "Edited the text of Welcome note.".into(),
             generated,
@@ -2060,6 +2080,69 @@ mod tests {
             "an agent's line is its own activity"
         );
         assert_eq!(here.own_status().map(|l| l.text), Some("Mine".into()));
+    }
+
+    /// A line from a device that says it runs an agent lists it as one, under the name its client
+    /// goes by: a page that received only the host's lines draws the agent's face, never a
+    /// person's, and never both.
+    #[test]
+    fn a_device_that_says_it_runs_an_agent_lists_as_one_face_named_by_its_client() {
+        let agent = "claude";
+        let line = HostLine {
+            device: agent.into(),
+            user: "ann-root".into(),
+            label: "Claude Code".into(),
+            agent: true,
+            ..HostLine::default()
+        };
+        // Without the live layer the host's lines are all there is.
+        let mut here = HereState::default();
+        here.set_lines(
+            vec![
+                line.clone(),
+                HostLine {
+                    device: "ann".into(),
+                    user: "ann-root".into(),
+                    label: "Ann".into(),
+                    ..HostLine::default()
+                },
+            ],
+            0,
+        );
+        let tree = DesktopTree::default();
+        let people = here.people(&tree, &[], &|_| None, 0);
+        let listed = people
+            .iter()
+            .find(|person| person.id == agent)
+            .unwrap_or_else(|| panic!("the agent is here: {people:?}"));
+        assert!(listed.agent, "software never draws as a person");
+        assert_eq!(
+            listed.label, "Claude Code",
+            "the name the agent's client goes by"
+        );
+        assert_eq!(
+            people
+                .iter()
+                .filter(|person| person.label == "Claude Code")
+                .count(),
+            1,
+            "one face for the one agent: {people:?}"
+        );
+
+        // The same when its own presence arrived first: a shell-less member the host names as an
+        // agent is that agent, not the person's second device.
+        let mut here = HereState::default();
+        here.set_members(
+            Some(member("me", "person", "Me")),
+            Some(vec![member(agent, "person", "")]),
+        );
+        here.set_lines(vec![line], 0);
+        let people = here.people(&tree, &[], &|_| None, 0);
+        let [listed] = people.as_slice() else {
+            panic!("the agent alone: {people:?}")
+        };
+        assert!(listed.agent);
+        assert_eq!(listed.label, "Claude Code");
     }
 
     /// A member's own certificate names the person it is a device of, before any host line says so:

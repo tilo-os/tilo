@@ -1342,6 +1342,11 @@ export async function startEntryPage({mode}) {
     // for keys, what was refused), for tests and tools reading why a
     // record did not arrive. Read only: it hands out no handle on the peer.
     globalThis.tiloChannels = () => page.peer?.channelDiagnostics?.() ?? '';
+    // Who is here, as this page's board merged them — each member's
+    // `agent`, `label`, `device` and `user` — for tests and tools reading
+    // why a member draws as they do. Read only: it hands out no handle on
+    // the peer.
+    globalThis.tiloPeople = () => JSON.stringify(page.peer?.live?.presenceMembers?.() ?? []);
     // A window that opens after a newer version was deployed finds this
     // version's files gone: offer the reload rather than fail it quietly.
     watchForUpdate({offer: () => offerUpdate({page, status}),

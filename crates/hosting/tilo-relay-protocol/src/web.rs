@@ -239,6 +239,11 @@ pub struct HerePerson {
     pub user: [u8; 32],
     /// The display name of their latest post; self-asserted, display only.
     pub label: String,
+    /// The device says it runs an agent ([`HereRequest::agent`]), which
+    /// [`Self::label`] names. It is what a surface draws the device as: an
+    /// agent's face, never a person's, whether or not the agent's own
+    /// presence reached it.
+    pub agent: bool,
     /// The window of their latest post ([`HereRequest::window`]).
     pub window: Option<u64>,
     /// One line, present tense, e.g. "Drafting the welcome note in Notes";
