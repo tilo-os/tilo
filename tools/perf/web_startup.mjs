@@ -103,6 +103,25 @@ const readMarks = () => {
       decoded_bytes: wasm.decodedBodySize,
     },
     heap_mib: performance.memory ? performance.memory.usedJSHeapSize / 1048576 : null,
+    // Everything the page fetched until now, as the network carried it:
+    // what a person waits on before the first frame, whatever kind it is.
+    transfer: (() => {
+      const resources = performance.getEntriesByType('resource');
+      const kind = name => {
+        const path = new URL(name).pathname;
+        if (path.endsWith('.wasm')) return path.includes('/pkg/tilo_browser_runtime_bg') ? 'start_module' : 'split_modules';
+        if (/\.(woff2?|ttf|otf)$/.test(path) || path.includes('/fonts/')) return 'fonts';
+        if (/\.m?js$/.test(path)) return 'scripts';
+        return 'other';
+      };
+      const total = {bytes: 0, count: resources.length};
+      const byKind = {};
+      for (const entry of resources) {
+        total.bytes += entry.transferSize;
+        byKind[kind(entry.name)] = (byKind[kind(entry.name)] ?? 0) + entry.transferSize;
+      }
+      return {total_bytes: total.bytes, requests: total.count, by_kind: byKind};
+    })(),
   };
 };
 
@@ -189,6 +208,12 @@ const main = async () => {
       })
       .then(summary)
       .catch(() => null);
+    // What the page went on to fetch once it drew (the modules it loads in
+    // its idle time, the apps it prefetches), a few seconds on.
+    const idle = await sleep(4000)
+      .then(() => tab.evaluate(`(${readMarks.toString()})()`))
+      .then(read => read.transfer)
+      .catch(() => null);
     // The same page again in the same browser: what a person coming back to
     // it gets, with the module already fetched and compiled once.
     const warm = options.warm
@@ -229,6 +254,8 @@ const main = async () => {
       gpu_steps: steps,
       wasm: settled.wasm ?? null,
       heap_mib: settled.heap_mib ?? null,
+      transfer_at_first_frame: present.transfer ?? null,
+      transfer_after_idle: idle,
       frames: frames ?? null,
       warm: warm ?? null,
       errors: tab.log.filter(line => line.startsWith('EXC ')),
@@ -247,6 +274,12 @@ const main = async () => {
           .map(({step, at_ms}) => `${step} @ ${at_ms?.toFixed(0) ?? '?'} ms`)
           .join(', ')}`,
       );
+    }
+    for (const [when, transfer] of [['at first frame', measurement.transfer_at_first_frame], ['after idle', measurement.transfer_after_idle]]) {
+      if (transfer) {
+        console.log(`transfer ${when.padEnd(15)} ${(transfer.total_bytes / 1048576).toFixed(2)} MiB in ${transfer.requests} requests ` +
+          Object.entries(transfer.by_kind).map(([kind, bytes]) => `${kind} ${(bytes / 1048576).toFixed(2)}`).join(', '));
+      }
     }
     if (measurement.wasm) {
       console.log(
