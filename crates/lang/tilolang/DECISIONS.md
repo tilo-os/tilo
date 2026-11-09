@@ -404,8 +404,13 @@ workspace-model.md. The grammar is [grammar.md](grammar.md); the README shows it
   is expected is E065 with the dot form; `space.width_class == wide` is now `== .wide`.
 - **One `if`.** `if c { a } else { b }` is an expression (`Ek::If` over two block values); `if ...
   then ... else` is gone. As an expression statement (and in a view body) the branches run as
-  statements and `else` is optional. An `if` used as a value needs `else` (E038). `else if`
-  chains in views too.
+  statements. Used as a value with no `else`, it is the Option of the branch (`or_none`): `.none`
+  where the condition does not hold, and the branch itself where the branch is already an Option,
+  so one Option never holds another. `else if` chains in views too.
+- **A value where an Option is expected is the Option of it.** `coerce` wraps a `T` in `.some`
+  for an `Option<T>`, in arguments, fields, comparisons, branch values and component props
+  alike. One level only: it does not apply where the Option's own inner type is an Option, so
+  `.some(x)` written is one `some` and an `Option<Option<T>>` says which level it means.
 - **Blocks are expressions.** `{ stmts; expr }` has the last expression's value; a block that
   returns on every path has any type (it lowers to `unreachable` after the return). A body whose
   last statement is an expression returns it, so `fn f() -> Int { 1 }` needs no `return`.
@@ -445,9 +450,9 @@ workspace-model.md. The grammar is [grammar.md](grammar.md); the README shows it
   `view main(root: T)` is no longer a convention: hosts open `roots[0]` through its default
   view.
 - **New error codes:** E018 package declarations, E035 non-exhaustive match, E036 unknown or
-  repeated variant, wrong binders, E037 a variant with no expected type, E038 an `if` value
-  without `else`, E065 a bare word where a dot literal is expected, E066 view state, E067
-  `open`.
+  repeated variant, wrong binders, E037 a variant with no expected type, E065 a bare word where a
+  dot literal is expected, E066 view state, E067 `open`. E038 (an `if` value without `else`) is
+  retired: one branch is the Option of its value now.
 - **Removed from the compiler's import table:** `is_error` (the runtime still provides it).
 
 ## Outcomes and deltas

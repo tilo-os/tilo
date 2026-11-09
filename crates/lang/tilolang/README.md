@@ -179,7 +179,10 @@ fn label(c: Channel) -> Text {
 ```
 
 `Option<T>` is the built-in `.none | .some(value)` and `Result<T, E>` the built-in
-`.ok(value) | .err(error)`. A `T` is accepted where an `Option<T>` is expected. Enums, options,
+`.ok(value) | .err(error)`. A `T` is accepted where an `Option<T>` is expected: the value it
+holds. One level only, so `label: title` is `label: .some(title)`, `.some(x)` written is one
+`some` and never two, and an Option of an Option — which nothing but a declaration usually
+needs — says which of its levels it means (`.some(.none)`). Enums, options,
 results and resources compare with `==`; options and results are taken apart with `match`
 (`.some(x) => ...`), `if let`, `?.` and `??`.
 
@@ -191,19 +194,30 @@ root names one such resource per room: `root notes: Notes` is `notes` in the pac
 `alias.notes` in a package that uses it.
 
 **`if` and blocks.** There is one `if`: `if cond { ... } else { ... }`. Used as a value its branches
-agree on a type and the value is each block's last expression; as a statement it needs no
-`else`. Any block is an expression (`let n = { let a = 2; a * 2 }`), and a body that ends with an
-expression returns it:
+agree on a type and the value is each block's last expression; with no `else` it is the Option of
+that value, `.none` where the condition does not hold, which is what `else { .none }` gives it.
+A branch that is an Option itself is that Option, so two conditions in a row need no nesting. As
+a statement it needs no `else`. Any block is an expression (`let n = { let a = 2; a * 2 }`), and
+a body that ends with an expression returns it:
 
 ```
 fn title_of(list: TodoList) -> Text {
     if list.name == "" { "Todo" } else { list.name }
 }
+
+fn finished_at(t: Task) -> Option<Time> {
+    if let v = changed(t, .done) { if t.done { v.at } }
+}
+
+fn title_or_none(list: TodoList) -> Option<Text> {
+    if list.name != "" { list.name }
+}
 ```
 
 **Options without `match`.** `if let` binds an Option's value, several at once, each seeing
 the names before it; `x?.f` reads a field (or calls a method) of an Option's value, giving an
-Option; `x ?? y` is the value or the fallback. They mean the same in actions, fns and views:
+Option; `x ?? y` is the value or the fallback. They mean the same in actions, fns and views, and
+an `if` or `if let` without an `else` is the Option of what its branch gives:
 
 ```
 fn last_said(c: Conversation) -> Text {
@@ -478,8 +492,8 @@ A register written from itself (`item.done = not item.done`, `c.n = c.n + 1`) is
 with a default, as above, or make the field a counter for a delta.
 
 **Views.** A view body is UI statements: primitive and view calls (with child blocks), `for`,
-`if`/`else if`/`else`, `match` (each arm one UI call or a block) and `let`, whose type is written
-where a branch leaves it open (`let heading: Option<Date> = if let g = group { g(x) } else { .none }`).
+`if`/`else if`/`else`, `match` (each arm one UI call or a block) and `let`, whose type is its
+value's; a `let` names the type only where the value does not say enough of it.
 Options of UI primitives are the primitives' own enums, written as dot literals; lengths keep
 their units and flags stay bare words. An anchor follows the call as `as name`:
 

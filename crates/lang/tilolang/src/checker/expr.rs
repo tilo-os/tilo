@@ -26,18 +26,17 @@ impl Checker<'_> {
                 ..ex
             };
         }
+        // A value where an Option of it is expected is the value it holds: `label: title` is
+        // `label: .some(title)`. One level only, so `.some(x)` written is one `some` and never
+        // two, and an Option of an Option says which of its levels it means.
         if let Ty::Option(inner) = want
+            && !matches!(**inner, Ty::Option(_))
             && ex.ty.fits(inner)
         {
             let ex = Ex {
                 ty: (**inner).clone(),
                 ..ex
             };
-            return Self::some(ex, want);
-        }
-        if let Ty::Option(inner) = want
-            && ex.ty.same(inner)
-        {
             return Self::some(ex, want);
         }
         // A collection or set read is a list of its items.
@@ -125,7 +124,7 @@ impl Checker<'_> {
                 }
             },
             ExprKind::IfLet { binds, then, els } => {
-                self.if_let_value(binds, then, els.as_deref(), exp, e.span)
+                self.if_let_value(binds, then, els.as_deref(), exp)
             }
             ExprKind::OptChain { base, name, args } => {
                 self.opt_chain(base, name, args.as_deref(), e.span)
@@ -137,9 +136,7 @@ impl Checker<'_> {
             ExprKind::Ident(name) => self.ident(name, e.span, exp),
             ExprKind::Tuple(items) => self.tuple(items, exp),
             ExprKind::List(items) => self.list(items, exp, e.span),
-            ExprKind::If { cond, then, els } => {
-                self.if_value(cond, then, els.as_deref(), exp, e.span)
-            }
+            ExprKind::If { cond, then, els } => self.if_value(cond, then, els.as_deref(), exp),
             ExprKind::Block(b) => self.block_value(b, exp),
             ExprKind::Match { scrutinee, arms } => self.match_value(scrutinee, arms, exp, e.span),
             ExprKind::Variant { name, args } => self.variant(name, args.as_deref(), exp, e.span),

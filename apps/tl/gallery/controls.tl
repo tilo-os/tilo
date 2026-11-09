@@ -61,48 +61,42 @@ view controls(c: Controls) {
     state last: Text = ""
     std.page(c) {
         ui.Section("Boxes and switches") {
-            ui.Checkbox(bind: c.by_email, label: .some("Send by email"))
-            ui.Toggle(bind: c.repeating, label: .some("Repeat weekly"))
-            ui.ControlRow(label: .some("Archived"), selected: c.archived) {
+            ui.Checkbox(bind: c.by_email, label: "Send by email")
+            ui.Toggle(bind: c.repeating, label: "Repeat weekly")
+            ui.ControlRow(label: "Archived", selected: c.archived) {
                 ui.Text("Archived items stay for 30 days.", role: .caption, secondary: true)
             }
         }
         ui.Section("Numbers") {
             ui.NumberInput(
                 bind: c.share,
-                label: .some("Share"),
-                min: .some(0.0),
-                max: .some(1.0),
-                step: .some(0.05),
-                precision: .some(2),
+                label: "Share",
+                min: 0.0,
+                max: 1.0,
+                step: 0.05,
+                precision: 2,
             )
-            ui.Slider(
-                bind: c.share,
-                label: .some("Time"),
-                max: .some(1.0),
-                step: .some(0.05),
-                shows_value: true,
-            )
+            ui.Slider(bind: c.share, label: "Time", max: 1.0, step: 0.05, shows_value: true)
         }
         ui.Section("Choices") {
             ui.Dropdown(
                 bind: c.room,
                 options: ["Studio", "Gallery", "Annex"],
-                placeholder: .some("Choose a room"),
+                placeholder: "Choose a room",
             )
-            ui.ToggleGroup(selected: .some(c.step), caption: .some("Steps")) {
+            ui.ToggleGroup(selected: c.step, caption: "Steps") {
                 ui.Segment("Grid")
                 ui.Segment("List")
                 ui.Segment("Board")
             }
-            ui.ViewTabs(selected: .some(c.showing), label: .some("Views")) {
+            ui.ViewTabs(selected: c.showing, label: "Views") {
                 ui.Segment("Summary")
                 ui.Segment("Details")
                 ui.Segment("History")
             }
         }
         ui.Section("Cases") {
-            ui.EnumField(bind: c.urgency, label: .some("Urgency")) {
+            ui.EnumField(bind: c.urgency, label: "Urgency") {
                 ui.EnumOption("No hurry", name: "none")
                 ui.EnumOption("Low", name: "low")
                 ui.EnumOption("Medium", name: "medium")
@@ -111,53 +105,41 @@ view controls(c: Controls) {
         }
         ui.Section("People") {
             ui.Text("Who looks after it", role: .caption, secondary: true)
-            ui.PersonField(bind: c.owner, people: .some(workspace.members), me: .some(workspace.me))
+            ui.PersonField(bind: c.owner, people: workspace.members, me: workspace.me)
             ui.Text("Who reviews it, still to be picked", role: .caption, secondary: true)
-            ui.PersonField(
-                bind: c.reviewer,
-                people: .some(workspace.members),
-                me: .some(workspace.me),
-            )
+            ui.PersonField(bind: c.reviewer, people: workspace.members, me: workspace.me)
         }
         ui.Section("Steps") {
-            ui.Stepper(steps: ["Draft", "Review", "Send"], current: .some(c.step)) {
+            ui.Stepper(steps: ["Draft", "Review", "Send"], current: c.step) {
                 on station: set(last, "Step")
             }
         }
         ui.Section("Days and times") {
-            ui.DateField(bind: c.starts, label: .some("Starts"), optional: false)
-            ui.DateField(bind: c.ends, label: .some("Ends"), optional: true)
+            ui.DateField(bind: c.starts, label: "Starts", optional: false)
+            ui.DateField(bind: c.ends, label: "Ends", optional: true)
             ui.DatePicker(bind: c.starts)
             ui.TimeField(bind: c.clock)
-            ui.TimePicker(bind: c.clock, label: .some("At"))
+            ui.TimePicker(bind: c.clock, label: "At")
         }
         ui.Section("Colours") {
-            ui.ColorPicker(
-                bind: c.accent,
-                swatches: ["#3a7bd5", "#d55a3a", "#3ad57b"],
-                columns: .some(3),
-            )
+            ui.ColorPicker(bind: c.accent, swatches: ["#3a7bd5", "#d55a3a", "#3ad57b"], columns: 3)
             ui.ColorSwatchPicker(
                 swatches: ["#3a7bd5", "#d55a3a", "#3ad57b", "#d5c23a"],
                 columns: 4,
-                selected: .some(0),
+                selected: 0,
             )
         }
         ui.Section("Text") {
             ui.EditableLabel(bind: c.title)
-            ui.ShortcutRecorder(
-                bind: c.shortcut,
-                default: .some("Ctrl+K"),
-                label: .some("Open with"),
-            )
-            ui.Autocomplete(bind: c.recipient, placeholder: .some("Who it goes to")) {
+            ui.ShortcutRecorder(bind: c.shortcut, default: "Ctrl+K", label: "Open with")
+            ui.Autocomplete(bind: c.recipient, placeholder: "Who it goes to") {
                 ui.Suggestion("ada@example.com")
-                ui.Suggestion("bo@example.com", label: .some("Bo"))
+                ui.Suggestion("bo@example.com", label: "Bo")
             }
-            ui.Link("https://tilo.sh", label: .some("The site"))
+            ui.Link("https://tilo.sh", label: "The site")
         }
         ui.Section("Pictures") {
-            ui.PictureChoice(selected: .some(c.text_size)) {
+            ui.PictureChoice(selected: c.text_size) {
                 ui.PictureOption("Small", picture: .text_size_small)
                 ui.PictureOption("Regular", picture: .text_size_regular)
                 ui.PictureOption("Large", picture: .text_size_large)
@@ -171,11 +153,6 @@ scenario "controls" {
     let mia = person("Mia")
     let g = root Gallery
     g.controls.insert(
-        Controls(
-            title: "Controls",
-            starts: 2026-11-03,
-            clock: 2026-11-03T09:30Z,
-            owner: .some(mia),
-        ),
+        Controls(title: "Controls", starts: 2026-11-03, clock: 2026-11-03T09:30Z, owner: mia),
     )
 }

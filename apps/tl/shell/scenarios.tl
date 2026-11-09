@@ -2041,12 +2041,12 @@ fn channel_named(name: Text) -> Option<chat.TextChannel> {
         match x {
             c: chat.Category => {
                 if let t = c.channels.find(t -> t.name == name) {
-                    return .some(t)
+                    return t
                 }
             }
             t: chat.TextChannel => {
                 if t.name == name {
-                    return .some(t)
+                    return t
                 }
             }
             d: chat.Direct => {}

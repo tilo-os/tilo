@@ -17,12 +17,12 @@
 view framed_canvas(a: Arrangement) {
     stack(gap: .related, fill) {
         canvas_entry(a)
-        ui.Map(name: .some("Canvas"), fill) {
+        ui.Map(name: "Canvas", fill) {
             for s in a.strips {
                 if s.placed {
                     for p in places_of(a, s.key) {
                         ui.MapPin(
-                            name: .some(p.key),
+                            name: p.key,
                             x: pin_x(a, s, p),
                             y: s.canvas_y,
                             width: pin_width(s),
@@ -42,12 +42,12 @@ view framed_canvas(a: Arrangement) {
 view spaces_canvas(a: Arrangement) {
     stack(gap: .related, fill) {
         canvas_entry(a)
-        ui.Map(name: .some("Spaces"), fill) {
+        ui.Map(name: "Spaces", fill) {
             for s in a.strips {
                 if s.placed {
                     for p in places_of(a, s.key) {
                         ui.MapPin(
-                            name: .some(p.key),
+                            name: p.key,
                             x: pin_x(a, s, p),
                             y: s.canvas_y,
                             width: pin_width(s),
@@ -88,7 +88,7 @@ fn pin_x(a: Arrangement, s: ArrangementStrip, p: ArrangementPlace) -> Int {
 /// inside, filling it, or the well its window shows in (shell.md §8). The toolbar stands
 /// outside it.
 view framed_place(a: Arrangement, p: ArrangementPlace) {
-    ui.WindowFrame(name: .some(place_title(p)), fill) {
+    ui.WindowFrame(name: place_title(p), fill) {
         controls: {
             place_controls(a, p)
         }
@@ -131,8 +131,8 @@ view canvas_entry(a: Arrangement) {
                 text: typed,
                 view: .none,
                 strip: .none,
-                x: .some(here_x(a)),
-                y: .some(here_y(a)),
+                x: here_x(a),
+                y: here_y(a),
             )
             .then(set(typed, ""))
     }

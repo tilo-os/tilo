@@ -101,14 +101,14 @@ view gallery(g: Gallery) {
 view basics(b: Basics) {
     state place: Text = "parts"
     state last: Text = ""
-    ui.NavShell(content_kind: .page, title: "Basics", sidebar_title: .some("Gallery")) {
+    ui.NavShell(content_kind: .page, title: "Basics", sidebar_title: "Gallery") {
         sidebar: {
             ui.NavList(selected: place) {
                 ui.NavItem("parts", "Parts", icon: .layout_grid) {
                     on select: set(place, "parts")
                 }
                 ui.NavSection("Collections") {
-                    ui.NavItem("list", "List", icon: .list, count: .some(3)) {
+                    ui.NavItem("list", "List", icon: .list, count: 3) {
                         on select: set(place, "list")
                     }
                     ui.NavItem("board", "Board", icon: .layout_grid) {
@@ -160,7 +160,7 @@ view parts(b: Basics, last: State<Text>) {
         row(gap: .related, wrap: true) {
             ui.Chip("Design", icon: .tag)
             ui.Chip("Due Friday", icon: .calendar)
-            ui.Avatar(b.owner, name: .some("Ada Lovelace"))
+            ui.Avatar(b.owner, name: "Ada Lovelace")
         }
         ui.TextInput(bind: b.note, placeholder: "A note for the team")
     }
@@ -190,7 +190,7 @@ view parts(b: Basics, last: State<Text>) {
 /// The backlog's window: its items as rows, each with a menu, a swipe and a hover toolbar,
 /// over a composer.
 view backlog_list(b: Backlog) {
-    ui.NavShell(content_kind: .list, title: "Backlog", count: .some(b.items.len())) {
+    ui.NavShell(content_kind: .list, title: "Backlog", count: b.items.len()) {
         content: {
             ui.Docked {
                 foot: {
@@ -227,13 +227,13 @@ view backlog_list(b: Backlog) {
 /// a menu, a swipe and a hover toolbar of its own.
 view item_row(x: Item) {
     stack(gap: .tight) {
-        ui.ListRow(x.title, secondary: .some(x.stage))
+        ui.ListRow(x.title, secondary: x.stage)
         if not x.notes.is_empty() {
             ui.BlockEditor(x.notes)
         }
         ui.Reactions(reactions: x.reactions)
         if x.stage == "Doing" {
-            ui.Quote("Can we ship the screenshots with the notes?", caption: .some("Replying to"))
+            ui.Quote("Can we ship the screenshots with the notes?", caption: "Replying to")
         }
     }
     ui.ContextMenu {
@@ -256,25 +256,16 @@ view release_board(r: Release) {
     std.page(r, canvas: true) {
         ui.TabStrip(r.items.first(), focused: true) {
             for x in r.items {
-                ui.TabItem(
-                    x,
-                    title: .some(x.title),
-                    icon: .file_text,
-                    modified: x.stage == "Doing",
-                ) {
-                    ui.TabFace(r.lead, name: .some("Ada Lovelace"))
+                ui.TabItem(x, title: x.title, icon: .file_text, modified: x.stage == "Doing") {
+                    ui.TabFace(r.lead, name: "Ada Lovelace")
                 }
             }
         }
         ui.Scroll(across: true) {
-            ui.Board(name: .some("Release")) {
+            ui.Board(name: "Release") {
                 for stage in ["To do", "Doing", "Done"] {
                     let cards = r.items.filter(x -> x.stage == stage)
-                    ui.BoardLane(
-                        title: .some(stage),
-                        count: .some(cards.len()),
-                        action: .some("New item"),
-                    ) {
+                    ui.BoardLane(title: stage, count: cards.len(), action: "New item") {
                         for x in cards {
                             ui.BoardCard(x) {
                                 board_item_row(x)
@@ -295,7 +286,7 @@ view board_item_row(x: Item) {
 /// The basics, looked after by the person looking.
 scenario "basics" {
     let g = root Gallery
-    g.basics.insert(Basics(title: "Basics", owner: .some(invoker), updated: 2026-06-30T09:00))
+    g.basics.insert(Basics(title: "Basics", owner: invoker, updated: 2026-06-30T09:00))
 }
 
 /// A team's backlog a week into a release.
@@ -316,7 +307,7 @@ scenario "a backlog" {
 /// The same release on a board.
 scenario "a release board" {
     let g = root Gallery
-    let r = g.releases.insert(Release(title: "Release", lead: .some(invoker)))
+    let r = g.releases.insert(Release(title: "Release", lead: invoker))
     r.items.insert(Item(title: "Write the release notes", notes: RichText(""), stage: "To do"))
     r.items.insert(Item(title: "Translate the onboarding", notes: RichText(""), stage: "To do"))
     r.items.insert(Item(title: "Screenshots for the docs", notes: RichText(""), stage: "Doing"))

@@ -1087,25 +1087,20 @@ impl Checker<'_> {
         Ex::new(Ek::Seq(stmts, Box::new(value)), ty)
     }
 
-    /// `if` whose value is used: both branches are required and agree on a type.
+    /// `if` whose value is used: both branches agree on a type, and one branch alone is the
+    /// Option of it (`or_none`).
     fn if_value(
         &mut self,
         cond: &ast::Expr,
         then: &ast::Block,
         els: Option<&ast::Expr>,
         exp: Option<&Ty>,
-        span: Span,
     ) -> Ex {
         let c = self.expr_as(cond, &Ty::Bool);
         let hint = exp.filter(|t| !t.is_error());
         let t = self.block_value(then, hint);
         let Some(els) = els else {
-            if !matches!(t.ty, Ty::Unit | Ty::Error) {
-                self.err("E038", span, "this `if` is used as a value, so it needs an `else` branch: `if cond { a } else { b }`");
-                return Ex::error();
-            }
-            let none = Ex::new(Ek::Unit, Ty::Unit);
-            return Ex::new(Ek::If(Box::new(c), Box::new(t), Box::new(none)), Ty::Unit);
+            return Self::or_none(c, t);
         };
         let want = hint.cloned().unwrap_or_else(|| t.ty.clone());
         let t = self.coerce(t, &want, then.span);

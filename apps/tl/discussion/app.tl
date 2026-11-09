@@ -40,7 +40,7 @@ action comment(all: Comments, text: RichText) -> Comment (
 
 /// Changes what a comment says. Only its author may.
 action edit(c: Comment, text: RichText = c.text) (icon: .pencil, label: "Edit") {
-    require created(c)?.who == .some(invoker) "Only its author can edit a comment"
+    require created(c)?.who == invoker "Only its author can edit a comment"
     require not text.is_empty() "Write a comment first"
     c.text = text
 }
@@ -48,7 +48,7 @@ action edit(c: Comment, text: RichText = c.text) (icon: .pencil, label: "Edit") 
 /// Deletes a comment. Only its author may. The platform takes it back rather than asking first,
 /// and the removal is a version of the comment, so who removed it stays answerable.
 destructive action delete(all: Comments, c: Comment) (icon: .trash, label: "Delete") {
-    require created(c)?.who == .some(invoker) "Only its author can delete a comment"
+    require created(c)?.who == invoker "Only its author can delete a comment"
     all.items.remove(c)
 }
 
@@ -57,7 +57,7 @@ destructive action delete(all: Comments, c: Comment) (icon: .trash, label: "Dele
 /// once. The query is `linked`'s, as `thread`'s is: what the index says links to `about` and is
 /// one of these comments.
 fn said_about(about: host.Resource) -> List<host.Resource> {
-    let said = comments.items.filter(c -> created(c)?.from == .some(about))
+    let said = comments.items.filter(c -> created(c)?.from == about)
     linked(about).filter(l -> said.any(c -> l.of == c)).map(l -> l.of)
 }
 
@@ -73,7 +73,7 @@ view thread(about: host.Resource) {
     state editing: Option<Comment> = .none
     state revised: RichText = RichText("")
     let all = comments.items
-    let said = all.filter(c -> created(c)?.from == .some(about))
+    let said = all.filter(c -> created(c)?.from == about)
     let unread = said.find(c -> not unseen(c).is_empty())
     section("Discussion") {
         for c in said {
@@ -110,7 +110,7 @@ view comment_row(c: Comment, editing: State<Option<Comment>>, revised: State<Ric
                     ui.Time(at, role: .caption, secondary: true)
                 }
             }
-            if editing == .some(c) {
+            if editing == c {
                 rich_input(bind: revised, placeholder: "Edit comment") {
                     on submit: edit(c, revised).then(set(editing, .none))
                 }
@@ -125,7 +125,7 @@ view comment_row(c: Comment, editing: State<Option<Comment>>, revised: State<Ric
             } else {
                 written(c)
             }
-            if made?.who == .some(workspace.me) {
+            if made?.who == workspace.me {
                 ui.HoverToolbar {
                     ui.Button("Edit", icon: .pencil, icon_only: true) {
                         on press: set(revised, c.text).then(set(editing, c))

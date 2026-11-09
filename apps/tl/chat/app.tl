@@ -176,7 +176,7 @@ action send_view(to: TextChannel | Thread | Direct, title: Text, definition: Tex
 
 /// Changes what a message says. Only its author may.
 action edit(m: Message, body: RichText = m.body) (icon: .pencil, label: "Edit") {
-    require created(m)?.who == .some(invoker) "Only its author can edit a message"
+    require created(m)?.who == invoker "Only its author can edit a message"
     require not body.is_empty() "Type a message first"
     m.body = body
 }
@@ -564,7 +564,7 @@ view thread_typing_here(of: Thread) {
 
 /// Edit, for whoever may edit the message (its author): puts the editor in its place.
 view edit_button(m: Message, editing: State<Option<Message>>, revised: State<RichText>) {
-    if created(m)?.who == .some(workspace.me) and not m.body.is_empty() {
+    if created(m)?.who == workspace.me and not m.body.is_empty() {
         ui.Button("Edit", icon: .pencil, icon_only: true) {
             on press: set(revised, m.body).then(set(editing, m))
         }

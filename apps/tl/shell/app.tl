@@ -334,7 +334,7 @@ view bar_part(d: Desk, part: BarPart) {
             battery_status()
             bell(d)
             if d.person != "" {
-                ui.Avatar(name: .some(d.person))
+                ui.Avatar(name: d.person)
             }
         }
     }
@@ -349,7 +349,7 @@ view workspace_menu(d: Desk) {
     let icon_only = bar_is_narrow(space.width)
     ui.MenuButton(name, icon: if icon_only { .layers }, icon_only: icon_only, role: .bar) {
         for w in d.workspaces {
-            ui.MenuItem(w.name, checked: .some(w.current)) {
+            ui.MenuItem(w.name, checked: w.current) {
                 on choose: device.switch_workspace(device.desk, workspace: w.key)
             }
         }

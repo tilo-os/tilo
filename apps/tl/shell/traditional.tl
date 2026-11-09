@@ -28,7 +28,7 @@
 /// told: the window's bar then keeps its title and the shell's controls alone.
 view traditional_desktop(a: Arrangement, lists: Bool) {
     let front = front_place(a)
-    ui.Map(name: .some("Desktop"), ground: true, fill) {
+    ui.Map(name: "Desktop", ground: true, fill) {
         for s in a.strips {
             if s.placed {
                 for p in places_of(a, s.key) {
@@ -70,7 +70,7 @@ view desktop_frame(
     lists: Bool,
 ) {
     ui.MapPin(
-        name: .some(p.key),
+        name: p.key,
         x: s.canvas_x,
         y: s.canvas_y,
         width: if s.canvas_width > 0 { s.canvas_width } else { 720 },
@@ -90,7 +90,7 @@ view desktop_frame(
 /// the frame tells the window's bar to keep its title and the shell's controls alone, the actions
 /// standing once in the desk's bar's menu.
 view frame_classic(a: Arrangement, p: ArrangementPlace, focused: Bool, lists: Bool) {
-    ui.WindowFrame(name: .some(place_title(p)), focused: focused, lists_actions: lists, fill) {
+    ui.WindowFrame(name: place_title(p), focused: focused, lists_actions: lists, fill) {
         controls: {
             frame_buttons(a, p)
         }
@@ -195,7 +195,7 @@ fn front_place(a: Arrangement) -> Text {
 /// actions the app's window header does. `.none` for a place showing no record this store
 /// holds.
 fn placed_resource(record: Text) -> Option<host.Resource> {
-    if record == "" { .none } else { resource(record) }
+    if record != "" { resource(record) }
 }
 
 /// The shell's own commands on a window whose record it cannot read (a foreign surface): its
@@ -245,7 +245,7 @@ view traditional_bar(d: Desk) {
         battery_status()
         bell(d)
         if d.person != "" {
-            ui.Avatar(name: .some(d.person))
+            ui.Avatar(name: d.person)
         }
     }
 }

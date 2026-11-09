@@ -18,7 +18,7 @@ view notices(d: Desk) {
     let shown = all.matching(query)
     row(fill, distribute: .end, padding: .related) {
         ui.FloatingPanel(
-            width: if space.compact { .none } else { .some(360.0) },
+            width: if not space.compact { 360.0 },
             fill: if space.compact { 1.0 } else { 0.0 },
         ) {
             header: {
@@ -114,7 +114,7 @@ view notice_group(d: Desk, sender: Text, notices: List<Notice>) {
 /// unread one is lifted and bears a dot in the person's colour, toned by its kind, so a failure
 /// reads as one at a glance.
 view notice_row(d: Desk, n: Notice) {
-    ui.ListRow(n.title, secondary: .some(n.body), meta: .some(n.origin_app), selected: not n.seen) {
+    ui.ListRow(n.title, secondary: n.body, meta: n.origin_app, selected: not n.seen) {
         trailing: {
             if n.kind == "error" {
                 ui.Badge(dot: not n.seen, tone: .danger)
@@ -163,13 +163,13 @@ view banner_full(d: Desk, n: Notice) {
     let actions = actions_of(d, n)
     ui.Banner(
         n.title,
-        message: .some(banner_line(n)),
+        message: banner_line(n),
         kind: if n.kind == "error" {
             .error
         } else if n.kind == "warning" {
             .warning
         } else if n.kind == "success" { .success } else { .info },
-        action: if actions.is_empty() { .none } else { .some(actions.first()?.label ?? "Open") },
+        action: if not actions.is_empty() { actions.first()?.label ?? "Open" },
     ) {
         on act: device.act_on_notice(device.desk, notice: n.key, action: actions.first()?.key ?? "")
         on dismiss: device.dismiss_notice(device.desk, notice: n.key)
@@ -179,7 +179,7 @@ view banner_full(d: Desk, n: Notice) {
 /// A banner on a narrow desk: the notice as a row, its actions under it.
 view banner_row(d: Desk, n: Notice) {
     stack(gap: .related) {
-        ui.ListRow(n.title, secondary: .some(banner_line(n))) {
+        ui.ListRow(n.title, secondary: banner_line(n)) {
             trailing: {
                 ui.Badge(
                     dot: true,

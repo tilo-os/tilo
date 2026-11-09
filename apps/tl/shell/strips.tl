@@ -50,16 +50,16 @@ fn maximized_strips(a: Arrangement) -> List<ArrangementStrip> {
 /// carries it in its own bar (`preset_menu`); this is the page Settings shows.
 view preset_switch(v: Viewing) {
     row(gap: .tight, align: .center, wrap: true) {
-        ui.Chip("Strips", icon: .columns_2, selected: .some(v.showing == .strips)) {
+        ui.Chip("Strips", icon: .columns_2, selected: v.showing == .strips) {
             on press: show_preset(v, .strips)
         }
-        ui.Chip("Frames", icon: .app_window, selected: .some(v.showing == .frames)) {
+        ui.Chip("Frames", icon: .app_window, selected: v.showing == .frames) {
             on press: show_preset(v, .frames)
         }
-        ui.Chip("Spaces", icon: .layout_grid, selected: .some(v.showing == .spaces)) {
+        ui.Chip("Spaces", icon: .layout_grid, selected: v.showing == .spaces) {
             on press: show_preset(v, .spaces)
         }
-        ui.Chip("Desktop", icon: .monitor, selected: .some(v.showing == .desktop)) {
+        ui.Chip("Desktop", icon: .monitor, selected: v.showing == .desktop) {
             on press: show_preset(v, .desktop)
         }
     }
@@ -86,16 +86,16 @@ view preset_menu(v: Viewing) {
         role: .bar,
         icon_only: space.compact,
     ) {
-        ui.MenuItem("Strips", icon: .columns_2, checked: .some(v.showing == .strips)) {
+        ui.MenuItem("Strips", icon: .columns_2, checked: v.showing == .strips) {
             on choose: show_preset(v, .strips)
         }
-        ui.MenuItem("Frames", icon: .app_window, checked: .some(v.showing == .frames)) {
+        ui.MenuItem("Frames", icon: .app_window, checked: v.showing == .frames) {
             on choose: show_preset(v, .frames)
         }
-        ui.MenuItem("Spaces", icon: .layout_grid, checked: .some(v.showing == .spaces)) {
+        ui.MenuItem("Spaces", icon: .layout_grid, checked: v.showing == .spaces) {
             on choose: show_preset(v, .spaces)
         }
-        ui.MenuItem("Desktop", icon: .monitor, checked: .some(v.showing == .desktop)) {
+        ui.MenuItem("Desktop", icon: .monitor, checked: v.showing == .desktop) {
             on choose: show_preset(v, .desktop)
         }
     }
@@ -215,7 +215,7 @@ view strip_window(a: Arrangement, v: Viewing, s: ArrangementStrip, lists: Bool) 
     let placed = places_of(a, s.key)
     let chosen = placed.find(p -> p.key == s.active)
     let shown = chosen ?? placed.first()
-    ui.WindowFrame(name: .some(window_name(shown)), focused: in_front, lists_actions: lists) {
+    ui.WindowFrame(name: window_name(shown), focused: in_front, lists_actions: lists) {
         controls: {
             window_controls(a, v, s, shown, in_front)
         }
@@ -225,7 +225,7 @@ view strip_window(a: Arrangement, v: Viewing, s: ArrangementStrip, lists: Bool) 
                     on activate(p: session.Place): show_place(v, s.key, p)
                     on close(p: session.Place): session.close(place: p)
                     for p in placed {
-                        ui.TabItem(the_place(p.key), title: .some(place_title(p)))
+                        ui.TabItem(the_place(p.key), title: place_title(p))
                     }
                 }
             }
@@ -260,7 +260,7 @@ fn strip_place(a: Arrangement, s: ArrangementStrip) -> Option<ArrangementPlace> 
 /// The resource of the place in front of `s`, as its tab names it: empty while the strip has no
 /// place in front, which lights its first tab instead.
 fn place_in_front(s: ArrangementStrip) -> Option<session.Place> {
-    if s.active != "" { .some(the_place(s.active)) } else { .none }
+    if s.active != "" { the_place(s.active) }
 }
 
 /// Shows the place `place` and brings its strip forward with it: what choosing a tab does, and
@@ -286,13 +286,13 @@ view window_controls(
 ) {
     row(gap: .tight, align: .center) {
         ui.MenuButton("This window", icon: .more_horizontal, icon_only: true, role: .plain) {
-            ui.MenuItem("Narrow", checked: .some(width_of(s.width) == .narrow)) {
+            ui.MenuItem("Narrow", checked: width_of(s.width) == .narrow) {
                 on choose: session.resize(strip: the_strip(s.key), permille: permille_of(.narrow))
             }
-            ui.MenuItem("Normal", checked: .some(width_of(s.width) == .normal)) {
+            ui.MenuItem("Normal", checked: width_of(s.width) == .normal) {
                 on choose: session.resize(strip: the_strip(s.key), permille: permille_of(.normal))
             }
-            ui.MenuItem("Wide", checked: .some(width_of(s.width) == .wide)) {
+            ui.MenuItem("Wide", checked: width_of(s.width) == .wide) {
                 on choose: session.resize(strip: the_strip(s.key), permille: permille_of(.wide))
             }
             if not in_front {
@@ -302,7 +302,7 @@ view window_controls(
             }
             if let p = shown {
                 if p.pinned {
-                    ui.MenuItem("Unpin window", icon: .pin, checked: .some(true)) {
+                    ui.MenuItem("Unpin window", icon: .pin, checked: true) {
                         on choose: session.pin(place: the_place(p.key), pinned: false)
                     }
                 } else {
@@ -327,7 +327,7 @@ view window_controls(
                                 on choose: session.move(
                                     place: the_place(p.key),
                                     row: the_row(other.row),
-                                    strip: .some(the_strip(other.key)),
+                                    strip: the_strip(other.key),
                                     before: .none,
                                 )
                             }
@@ -374,13 +374,7 @@ view window_controls(
 view place_controls(a: Arrangement, p: ArrangementPlace) {
     row(gap: .tight, align: .center) {
         if p.pinned {
-            ui.Button(
-                "Pin place",
-                icon: .pin,
-                icon_only: true,
-                toggled: .some(true),
-                role: .plain,
-            ) {
+            ui.Button("Pin place", icon: .pin, icon_only: true, toggled: true, role: .plain) {
                 on press: session.pin(place: the_place(p.key), pinned: false)
             }
         } else {
@@ -435,17 +429,11 @@ view place_view(p: ArrangementPlace) {
 
 /// The row the strip `strip` stands in, by the place it holds.
 fn strip_row(a: Arrangement, strip: Text) -> Text {
-    match a.strips.find(s -> s.key == strip) {
-        .some(s) => s.row,
-        .none => "",
-    }
+    a.strips.find(s -> s.key == strip)?.row ?? ""
 }
 
 /// The workspace the strip `strip` stands in: a row is one workspace's, so what a place moves
 /// within is that workspace's strips and rows.
 fn strip_workspace(a: Arrangement, strip: Text) -> Text {
-    match a.strips.find(s -> s.key == strip) {
-        .some(s) => s.workspace,
-        .none => "",
-    }
+    a.strips.find(s -> s.key == strip)?.workspace ?? ""
 }

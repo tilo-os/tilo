@@ -116,7 +116,7 @@ view card_tile(b: Board, col: Column, card: Card) {
 
 /// A card as its row, which the card shows as a card: its title, and the start of its notes.
 view card_row(card: Card) {
-    let notes: Option<Text> = if card.notes == "" { .none } else { .some(card.notes) }
+    let notes = if card.notes != "" { card.notes }
     row(card.title, secondary: notes)
 }
 

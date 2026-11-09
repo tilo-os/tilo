@@ -119,7 +119,7 @@ view screen(a: Arrangement) {
             desk(root Desk, fill)
         }
     } else {
-        desk_around(root Desk, .some(a), fill)
+        desk_around(root Desk, a, fill)
     }
 }
 

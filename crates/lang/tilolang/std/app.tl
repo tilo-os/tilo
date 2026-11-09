@@ -96,7 +96,7 @@ template view places<T>(
 /// @Bo") fills them: the entry shows each as a chip under what is typed, and removing a chip
 /// takes its words away. A parameter the call gave is the default there: it stands where the
 /// words say nothing of it, and the words win where they do, so a list in a place that starts
-/// its items one way (`new_task(tasks, due: if in_today { today } else { .none })`) reads
+/// its items one way (`new_task(tasks, due: if in_today { today })`) reads
 /// "fri" as the day the person said. With no words of its own — nothing typed, space, or only
 /// what the other parameters take — the entry makes nothing: Enter does nothing and leaves the
 /// text there, and Escape leaves none. The host gives it the window's primary action's key, so
@@ -156,13 +156,13 @@ template view browse<R, T>(
     let asked = if let o = order { query + " " + o.query } else { query }
     let shown = items.matching(asked)
     let title = places.find(p -> p.query == query)?.label ?? everything
-    let sidebar_title: Option<Text> = if places.is_empty() { .none } else { .some(meta(of).title) }
+    let sidebar_title = if not places.is_empty() { meta(of).title }
     if opens {
         ui.NavShell(
             content_kind: .document,
             sidebar_title: sidebar_title,
-            overview_title: .some(title),
-            overview_count: .some(shown.len()),
+            overview_title: title,
+            overview_count: shown.len(),
         ) {
             sidebar: {
                 if not places.is_empty() {
@@ -183,8 +183,8 @@ template view browse<R, T>(
     } else {
         ui.NavShell(
             content_kind: .list,
-            title: .some(title),
-            count: .some(shown.len()),
+            title: title,
+            count: shown.len(),
             sidebar_title: sidebar_title,
         ) {
             sidebar: {
@@ -252,8 +252,8 @@ template view browse_rows<T>(
 /// is the page's, not a row over the items, so the page states it once. A move — a drag, `Tab`
 /// and `Shift-Tab`, the accessibility move actions — is reported with the item it lands under
 /// and the item it lands before, and `place` puts it in the one place they name:
-/// `(moved, .none, .none)` is the end of the top level, `(moved, .some(x), .none)` the end of
-/// `x`'s own, and `(moved, .none, .some(x))` where `x` stands. One step, so two people moving
+/// `(moved, .none, .none)` is the end of the top level, `(moved, x, .none)` the end of `x`'s
+/// own, and `(moved, .none, x)` where `x` stands. One step, so two people moving
 /// items at once never leave one in two places. A row's checkbox asks `toggled`. Give `progress`
 /// and a row with items under it says how far its branch got ("1/3"), as the list of the same
 /// items says it. An item whose parent is not among `items` stands at the top, so a deleted
@@ -275,13 +275,7 @@ view outline<T>(
     if items.is_empty() {
         ui.EmptyState(empty, icon: icon)
     } else {
-        ui.TreeView(
-            name: .some(name),
-            fill: fill,
-            reorder: true,
-            tab_indents: true,
-            hide_root: true,
-        ) {
+        ui.TreeView(name: name, fill: fill, reorder: true, tab_indents: true, hide_root: true) {
             on drop(moved: T): place(moved, .none, .none)
             for x in items {
                 // The node just above this one under the same parent, as the outline shows
@@ -290,10 +284,10 @@ view outline<T>(
                     .take(items.index_of(x) ?? 0)
                     .filter(y -> parent(y) == parent(x))
                     .last()
-                let count: Option<Text> = if let c = progress { c(x) } else { .none }
+                let count = if let c = progress { c(x) }
                 ui.TreeViewNode(x, label(x), parent: parent(x), above: above, progress: count) {
-                    on drop(moved: T): place(moved, .none, .some(x))
-                    on into(moved: T): place(moved, .some(x), .none)
+                    on drop(moved: T): place(moved, .none, x)
+                    on into(moved: T): place(moved, x, .none)
                     on check: toggled(x)
                     row: {
                         row(x, parent(x))
@@ -318,8 +312,8 @@ template view sorts<T>(
             on choose: set(chosen, .none)
         }
         for s in of {
-            ui.MenuItem(s.label, checked: chosen == .some(s)) {
-                on choose: set(chosen, .some(s))
+            ui.MenuItem(s.label, checked: chosen == s) {
+                on choose: set(chosen, s)
             }
         }
     }
@@ -419,7 +413,7 @@ view page<R>(
 /// no empty list.
 template view place<R, T>(of: R, name: Text, items: List<T>, row: (T) -> View) {
     let n = items.count()
-    ui.Card(item: of, title: name, count: if n == 0 { .none } else { .some(n) }) {
+    ui.Card(item: of, title: name, count: if n != 0 { n }) {
         if n == 0 {
             ui.Text(phrase("tilolang-all-caught-up"), secondary: true)
         } else {
@@ -519,7 +513,7 @@ view origin<R>(of: R) {
     if let made = created(of), f = made.from {
         let kind = meta(f)
         // The glyph the app gives the type, and a link for a type whose app gives none.
-        let glyph: Option<Text> = if let i = kind.icon { .some(i) } else { .some("link") }
+        let glyph = if let i = kind.icon { i } else { "link" }
         ui.ListRow(kind.title, prefix: phrase("tilolang-from"), item: f, icon: glyph)
     }
 }
@@ -533,7 +527,7 @@ view linked_row<R>(of: R, dense: Bool = false) {
     if kind.row {
         show(of, row: true)
     } else {
-        let glyph: Option<Text> = if let i = kind.icon { .some(i) } else { .some("link") }
+        let glyph = if let i = kind.icon { i } else { "link" }
         ui.ListRow(kind.title, item: of, icon: glyph, dense: dense)
     }
 }

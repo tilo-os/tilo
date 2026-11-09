@@ -13,7 +13,7 @@ view feedback(f: Feedback) {
     state last: Text = ""
     std.page(f) {
         ui.Toolbar {
-            ui.ToolbarButton("Bold", icon: .pencil, toggled: .some(true)) {
+            ui.ToolbarButton("Bold", icon: .pencil, toggled: true) {
                 on press: set(last, "Bold")
             }
             ui.ToolbarButton("Flag", icon: .flag, dot: true) {
@@ -36,30 +36,30 @@ view feedback(f: Feedback) {
                 on activate: set(last, "Release")
             }
         }
-        ui.ObjectHeader("Release 4.2", caption: .some("Ships Friday"), who: f.owner)
+        ui.ObjectHeader("Release 4.2", caption: "Ships Friday", who: f.owner)
         ui.Banner(
             "Sync paused",
-            message: .some("Files sync again when you are online."),
+            message: "Files sync again when you are online.",
             kind: .warning,
-            action: .some("Retry"),
+            action: "Retry",
         ) {
             on act: set(last, "Retry")
         }
         ui.Section("Status") {
             row(gap: .related, wrap: true) {
-                ui.Badge(.some("Beta"))
-                ui.Badge(count: .some(12))
+                ui.Badge("Beta")
+                ui.Badge(count: 12)
                 ui.Badge(dot: true)
-                ui.Badge(.some("Done"), tone: .success)
+                ui.Badge("Done", tone: .success)
                 ui.Icon(.circle_check, tone: .success)
                 ui.SignalMeter(.good)
-                ui.Spinner(.some("Syncing"))
+                ui.Spinner("Syncing")
             }
             ui.StatusLine("Syncing 3 files", status: .active, who: f.owner)
             ui.TextStack(
                 "Quarterly report",
-                secondary: .some("Shared with the team"),
-                tertiary: .some("Edited an hour ago"),
+                secondary: "Shared with the team",
+                tertiary: "Edited an hour ago",
             )
             ui.Facts {
                 ui.Fact("12 pages", icon: .folder)
@@ -68,41 +68,30 @@ view feedback(f: Feedback) {
             }
         }
         ui.Section("Progress") {
-            ui.ProgressBar(.some(0.62), label: .some("Uploading"))
-            ui.ProgressBar(label: .some("Preparing"))
+            ui.ProgressBar(0.62, label: "Uploading")
+            ui.ProgressBar(label: "Preparing")
             progress(0.25)
             row(gap: .related, wrap: true) {
-                ui.ProgressRing(0.4, readout: .some("40%"))
+                ui.ProgressRing(0.4, readout: "40%")
                 ui.ProgressRing(0.9, tone: .warning, size: .small)
             }
-            ui.BarGauge(
-                0.81,
-                label: .some("Disk"),
-                readout: .some("81 of 100 GB"),
-                warning: .some(0.75),
-                danger: .some(0.9),
-            )
+            ui.BarGauge(0.81, label: "Disk", readout: "81 of 100 GB", warning: 0.75, danger: 0.9)
         }
         ui.Section("Numbers") {
             ui.StatGroup {
-                ui.StatTile("Open", "24", change: .some("+3"), trend: .up)
-                ui.StatTile(
-                    "Closed",
-                    "112",
-                    unit: .some("this month"),
-                    samples: [3.0, 5.0, 4.0, 8.0, 6.0],
-                )
+                ui.StatTile("Open", "24", change: "+3", trend: .up)
+                ui.StatTile("Closed", "112", unit: "this month", samples: [3.0, 5.0, 4.0, 8.0, 6.0])
                 ui.StatTile("Late", "2", tone: .danger)
             }
             row(gap: .related) {
                 ui.Sparkline(
                     [3.0, 5.0, 4.0, 8.0, 6.0, 9.0],
-                    label: .some("Requests per second"),
+                    label: "Requests per second",
                     tone: .success,
                 )
                 ui.Sparkline(
                     [9.0, 6.0, 8.0, 4.0, 5.0, 3.0],
-                    label: .some("Errors per minute"),
+                    label: "Errors per minute",
                     smooth: true,
                     filled: false,
                 )
@@ -127,13 +116,13 @@ view feedback(f: Feedback) {
                     .ellipse(cx: 0.65, cy: 0.3, rx: 0.03, ry: 0.06, fill: .accent),
                 ],
                 meaning: .chart,
-                label: .some("Visitors this week, above the target since Thursday"),
-                width: .some(240.0),
-                height: .some(120.0),
+                label: "Visitors this week, above the target since Thursday",
+                width: 240.0,
+                height: 120.0,
             )
         }
         ui.Section("Details") {
-            ui.DisclosureRow("Build log", secondary: .some("Finished in 4 minutes"), icon: .list) {
+            ui.DisclosureRow("Build log", secondary: "Finished in 4 minutes", icon: .list) {
                 ui.Text("Compiled 312 crates.")
                 ui.Text("All tests passed.", role: .caption, secondary: true)
             }
@@ -148,7 +137,7 @@ view feedback(f: Feedback) {
                 ui.KeyHint(["Esc"], "Close")
             }
             ui.Skeleton(.row, leading: .avatar)
-            ui.Skeleton(.text, lines: .some(3))
+            ui.Skeleton(.text, lines: 3)
         }
     }
 }
@@ -156,5 +145,5 @@ view feedback(f: Feedback) {
 /// The feedback group, the person looking syncing the files.
 scenario "feedback" {
     let g = root Gallery
-    g.feedback.insert(Feedback(title: "Feedback", owner: .some(invoker)))
+    g.feedback.insert(Feedback(title: "Feedback", owner: invoker))
 }

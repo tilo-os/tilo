@@ -174,14 +174,14 @@ impl Checker<'_> {
         self.emit(Stmt::If(out.cond, out.then.unwrap_or_default(), out.els));
     }
 
-    /// `if let` whose value is used: both branches are required and agree on a type.
+    /// `if let` whose value is used: both branches agree on a type, and one branch alone is the
+    /// Option of it (`or_none`).
     pub(super) fn if_let_value(
         &mut self,
         binds: &[LetBind],
         then: &ast::Block,
         els: Option<&ast::Expr>,
         exp: Option<&Ty>,
-        span: Span,
     ) -> Ex {
         let hint = exp.filter(|t| !t.is_error()).cloned();
         let Some(els) = els else {
@@ -190,17 +190,17 @@ impl Checker<'_> {
                 |c| c.block_value(then, hint.as_ref()),
                 |_| Ex::new(Ek::Unit, Ty::Unit),
             );
-            let t = out.then.unwrap_or_else(|| Ex::new(Ek::Unit, Ty::Unit));
-            if !matches!(t.ty, Ty::Unit | Ty::Error) {
-                self.err("E038", span, "this `if let` is used as a value, so it needs an `else` branch: `if let x = o { a } else { b }`");
-                return Ex::error();
-            }
-            let none = Ex::new(Ek::Unit, Ty::Unit);
-            let value = Ex::new(
-                Ek::If(Box::new(out.cond), Box::new(t), Box::new(none)),
-                Ty::Unit,
-            );
-            return Ex::new(Ek::Seq(out.prelude, Box::new(value)), Ty::Unit);
+            let value = match out.then {
+                Some(t) => Self::or_none(out.cond, t),
+                // The names are known to be absent here: the branch never runs, so the value is
+                // the nothing the reader asked for, of the type that asked for it.
+                None => match hint {
+                    Some(ty @ Ty::Option(_)) => Self::none_of(&ty),
+                    _ => Ex::new(Ek::Unit, Ty::Unit),
+                },
+            };
+            let ty = value.ty.clone();
+            return Ex::new(Ek::Seq(out.prelude, Box::new(value)), ty);
         };
         let want = std::cell::RefCell::new(hint);
         let out = self.if_let(
@@ -231,6 +231,36 @@ impl Checker<'_> {
             None => out.els,
         };
         Ex::new(Ek::Seq(out.prelude, Box::new(value)), ty)
+    }
+
+    /// An `if` or `if let` with no `else`, whose value is used: the branch's value when its
+    /// condition holds, and `.none` when it does not. A branch that is an Option itself is that
+    /// Option, which is what `else { .none }` gives it too: an absent branch stays absent, and
+    /// one Option never holds another.
+    pub(super) fn or_none(cond: Ex, value: Ex) -> Ex {
+        let (value, ty) = match value.ty.clone() {
+            Ty::Error => return Ex::error(),
+            // A branch that does nothing has no value to be absent: the whole does nothing.
+            Ty::Unit => {
+                let nothing = Ex::new(Ek::Unit, Ty::Unit);
+                return Ex::new(
+                    Ek::If(Box::new(cond), Box::new(value), Box::new(nothing)),
+                    Ty::Unit,
+                );
+            }
+            ty @ Ty::Option(_) => (value, ty),
+            ty => {
+                let opt = Ty::Option(Box::new(ty));
+                (Self::some(value, &opt), opt)
+            }
+        };
+        let none = Self::none_of(&ty);
+        Ex::new(Ek::If(Box::new(cond), Box::new(value), Box::new(none)), ty)
+    }
+
+    /// The `.none` of an Option type.
+    pub(super) fn none_of(ty: &Ty) -> Ex {
+        Ex::host(Imp::NoneV, Vec::new(), ty.clone())
     }
 
     /// `x?.name` or `x?.name(args)`: the field or method of the value of the Option `x`, an

@@ -153,9 +153,9 @@ action add_subtask(tasks: Tasks, t: Task, title: Text) -> Task uses time (
     key: "Ctrl+Shift+N",
 ) {
     let made = tasks.items.insert(
-        Task(title: title, parent: .some(t), project: t.project, section: t.section),
+        Task(title: title, parent: t, project: t.project, section: t.section),
     )
-    let last = tasks.items.filter(x -> x.parent == .some(t) and x != made).last() ?? t
+    let last = tasks.items.filter(x -> x.parent == t and x != made).last() ?? t
     tasks.items.move(made, after: last)
     if t.done or tasks.items.ancestors(t, .parent).any(a -> a.done) { check(t, false) }
     made
@@ -164,19 +164,19 @@ action add_subtask(tasks: Tasks, t: Task, title: Text) -> Task uses time (
 /// Sets the day a task is due by, from the presets or a day the person picks.
 action due_today(t: Task) uses time (label: "Today", icon: .star, key: "Ctrl+T", group: "Due") {
     require not t.done "It is done already"
-    t.due = .some(today)
+    t.due = today
 }
 
 /// Makes a task due tomorrow.
 action due_tomorrow(t: Task) uses time (label: "Tomorrow", icon: .calendar, group: "Due") {
     require not t.done "It is done already"
-    t.due = .some(today + 1d)
+    t.due = today + 1d
 }
 
 /// Makes a task due at the start of next week.
 action due_next_week(t: Task) uses time (label: "Next week", icon: .calendar, group: "Due") {
     require not t.done "It is done already"
-    t.due = .some(today.start_of_week() + 1w)
+    t.due = today.start_of_week() + 1w
 }
 
 /// Makes a task due on a day the person picks.
@@ -201,7 +201,7 @@ trigger ring(t: Task) at t.remind: remind(t)
 
 /// Sets the moment whoever is doing a task is reminded of it.
 action remind_at(t: Task, when: Time) uses time (label: "Remind me", icon: .bell, group: "Remind") {
-    t.remind = .some(when)
+    t.remind = when
 }
 
 /// Clears a task's reminder: it is not told of again.
@@ -218,8 +218,8 @@ action remind(t: Task) uses notify {
         return
     }
     let who: Option<Principal> = if let a = t.assignee {
-        .some(a)
-    } else if let made = created(t) { .some(made.who) } else { .none }
+        a
+    } else if let made = created(t) { made.who }
     if let w = who {
         notify(
             to: w,
@@ -309,7 +309,7 @@ action indent(t: Task, above: Option<Task> (above)) uses time (
     applies above != .none and above != t.parent "Nothing over it to move under"
     if let a = above {
         let under = tasks.items.ancestors(a, .parent).find(x -> x.parent == t.parent) ?? a
-        move_to(tasks, t, .some(under), .none)
+        move_to(tasks, t, under, .none)
     }
 }
 
@@ -339,7 +339,7 @@ action duplicate(tasks: Tasks, t: Task) -> Task (
         let under_copy = under.index_of(x.parent ?? t) ?? -1
         let at = tasks.items.descendants(copy, .parent).at(under_copy) ?? copy
         let below = last_below(tasks.items, at) ?? at
-        let made = tasks.items.insert(copied(x, .some(at)))
+        let made = tasks.items.insert(copied(x, at))
         tasks.items.move(made, after: below)
     }
     copy
@@ -475,31 +475,27 @@ fn folded(items: List<Task>, t: Task) -> Bool {
 /// parent, read once for the view around them. None while the window has not read the whole
 /// workspace: what it holds so far is not the whole.
 fn subtask_count(kids: List<Task>, t: Task) -> Option<Text> {
-    let mine = kids.filter(x -> x.parent == .some(t))
-    if mine.is_empty() {
-        .none
-    } else if let total = mine.counted() {
-        .some("{mine.count(x -> x.done)}/{total}")
-    } else { .none }
+    let mine = kids.filter(x -> x.parent == t)
+    if let total = mine.counted() {
+        if not mine.is_empty() { "{mine.count(x -> x.done)}/{total}" }
+    }
 }
 
 /// When a task is due of its own: a subtask repeats no day its parent already says.
 fn own_due(t: Task, under: Option<Task>) -> Option<Date> {
-    if let p = under {
-        if p.due == t.due { .none } else { t.due }
-    } else { t.due }
+    if let p = under { if p.due != t.due { t.due } } else { t.due }
 }
 
 /// When a task was finished: the moment its box was last checked off, read from the index, one
 /// value a task, never its history.
 fn finished_at(t: Task) -> Option<Time> {
-    if let v = changed(t, .done) { if t.done { .some(v.at) } else { .none } } else { .none }
+    if let v = changed(t, .done) { if t.done { v.at } }
 }
 
 /// The day a task stands under in a place's list: the day it is due on, or in Done the day it
 /// was finished on.
 fn task_day(t: Task, by_day: Bool, done_place: Bool) -> Option<Date> {
-    if by_day { t.due } else if done_place { finished_at(t)?.day() } else { .none }
+    if by_day { t.due } else if done_place { finished_at(t)?.day() }
 }
 
 /// The tasks of a project, in order.
@@ -521,7 +517,7 @@ fn lane_of(p: Project, s: Option<Section>) -> List<Task> {
 /// How many wait somewhere, as a badge shows it: none while nothing waits, and none before the
 /// window has read the whole workspace, so a part read so far never reads as a count.
 fn waiting(count: Option<Int>) -> Option<Int> {
-    if let n = count { if n > 0 { count } else { .none } } else { .none }
+    if let n = count { if n > 0 { count } }
 }
 
 /// The places a window offers, in the order it offers them: what is assigned to the person
@@ -588,16 +584,16 @@ view home(t: Tasks) {
     // The places whose badge counts what waits there: what a person goes to, not a list read
     // through, and a count only once the window has read the whole workspace ([`waiting`]).
     let counted: List<Text> = ["inbox", "today", "assigned_to_me"]
-    let header_count: Option<Int> = if let c = chosen {
-        if counted.any(k -> k == c.key) { waiting(found.counted()) } else { .none }
-    } else { .none }
+    let header_count = if let c = chosen {
+        if counted.any(k -> k == c.key) { waiting(found.counted()) }
+    }
     let entry_placeholder = if let p = project {
         "New task in {p.name}"
     } else if place == Task.today { "New task for today" } else { "New task" }
     ui.NavShell(
         content_kind: .list,
         sidebar_title: "Tasks",
-        title: .some(title),
+        title: title,
         count: header_count,
         actions: [new_task, clear_done],
     ) {
@@ -606,7 +602,7 @@ view home(t: Tasks) {
                 for f in side {
                     let badge = if counted.any(k -> k == f.key) {
                         waiting(t.items.matching(f).counted())
-                    } else { .none }
+                    }
                     ui.NavItem(f, f.label, icon: f.icon, count: badge) {
                         on select: set(place, f)
                     }
@@ -631,11 +627,7 @@ view home(t: Tasks) {
                             }
                             // A task typed in Today that names no day is due today, so it stands
                             // where it was typed.
-                            let add = new_task(
-                                t,
-                                p: project,
-                                due: if in_today { .some(today) } else { .none },
-                            )
+                            let add = new_task(t, p: project, due: if in_today { today })
                             std.add_entry(entry_placeholder, add)
                         }
                     }
@@ -667,18 +659,18 @@ view task_list(
         items,
         opened,
         tree: true,
-        ungrouped: if by_day { .some(phrase("tilolang-no-date")) } else { .none },
-        tail_title: if folds { .some(phrase("tilolang-done")) } else { .none },
+        ungrouped: if by_day { phrase("tilolang-no-date") },
+        tail_title: if folds { phrase("tilolang-done") },
     ) { (x, at) ->
         let heading = task_day(x, by_day, done_place)
         let tail = folds and folded(items, x)
         // The task just over this one in its group, on this side of the fold: what `indent`
         // moves under, and none for the first of a group.
-        let above: Option<Task> = if let p = items.previous(x) {
+        let above = if let p = items.previous(x) {
             if task_day(p, by_day, done_place) == heading and (folds and folded(items, p)) == tail {
-                .some(p)
-            } else { .none }
-        } else { .none }
+                p
+            }
+        }
         task_item(x, at, place, heading, done_place, tail, above, subtask_count(kids, x))
     }
 }
@@ -733,7 +725,7 @@ view project_list(p: Project) {
     let shown = tasks_of(p)
     let kids = shown.filter(x -> x.parent != .none)
     let listed = holding(shown, opened)
-    ui.NavShell(content_kind: .list, title: .some(p.name)) {
+    ui.NavShell(content_kind: .list, title: p.name) {
         content: {
             page(fill) {
                 ui.Docked {
@@ -765,18 +757,18 @@ view project_board(p: Project) {
                 ui.BoardLane {
                     on drop(moved: Task, at: Int): place(moved, .none, at)
                     foot: {
-                        std.add_entry("New task", new_task(tasks, p: .some(p)))
+                        std.add_entry("New task", new_task(tasks, p: p))
                     }
                     for t in loose {
                         task_card(t, sections)
                     }
                 }
                 for s in sections {
-                    let cards = lane_of(p, .some(s))
+                    let cards = lane_of(p, s)
                     ui.BoardLane(s, title: s.name, count: cards.counted()) {
-                        on drop(moved: Task, at: Int): place(moved, .some(s), at)
+                        on drop(moved: Task, at: Int): place(moved, s, at)
                         foot: {
-                            std.add_entry("New task", new_task(tasks, p: .some(p), s: .some(s)))
+                            std.add_entry("New task", new_task(tasks, p: p, s: s))
                         }
                         for t in cards {
                             task_card(t, sections)
@@ -800,9 +792,9 @@ view task_card(t: Task, sections: List<Section>) {
                 }
             }
             for s in sections {
-                if t.section != .some(s) {
+                if t.section != s {
                     ui.MenuItem("Move to {s.name}", icon: .arrow_right) {
-                        on choose: place(t, .some(s), 0)
+                        on choose: place(t, s, 0)
                     }
                 }
             }
@@ -815,8 +807,8 @@ view task_card(t: Task, sections: List<Section>) {
 /// matters, and who is doing it. `place` and `under` leave out what the list and the row over it
 /// already say.
 view task_row(t: Task, place: RowPlace, under: Option<Task>) {
-    let project: Option<Text> = if place == .project { .none } else { t.project?.name }
-    let due: Option<Date> = if place == .day { .none } else { own_due(t, under) }
+    let project = if place != .project { t.project?.name }
+    let due = if place != .day { own_due(t, under) }
     row(
         t.title,
         checkbox: t.done,
@@ -848,7 +840,7 @@ view task_outline_row(t: Task, project: Option<Project>, under: Option<Task>) {
     ui.TreeViewRow(
         checkbox: t.done,
         icon: t.priority.icon(),
-        secondary: if t.project == project { .none } else { t.project?.name },
+        secondary: if t.project != project { t.project?.name },
         trailing: own_due(t, under),
     )
 }
@@ -899,7 +891,7 @@ template view task_body(t: Task) {
         }
         section("Subtasks") {
             // The walk over the tasks under this one is made only where there is one.
-            if not tasks.items.filter(x -> x.parent == .some(t)).is_empty() {
+            if not tasks.items.filter(x -> x.parent == t).is_empty() {
                 let kids = tasks.items.descendants(t, .parent)
                 std.outline(
                     "Subtasks",
@@ -943,12 +935,7 @@ scenario "a busy week" -> Task {
     tasks.items.insert(Task(title: "Take the bins out", done: true))
     let milk = tasks.items.insert(Task(title: "Buy oat milk and eggs", due: 2026-06-30))
     tasks.items.insert(
-        Task(
-            title: "Check what is in the fridge",
-            parent: .some(milk),
-            due: 2026-06-30,
-            done: true,
-        ),
+        Task(title: "Check what is in the fridge", parent: milk, due: 2026-06-30, done: true),
     )
     // What no one has sorted yet: no project, no day.
     tasks.items.insert(Task(title: "Sort the paper mail"))
@@ -962,13 +949,13 @@ scenario "a busy week" -> Task {
         ),
     )
     let service = tasks.items.insert(
-        Task(title: "Find the last service date", parent: .some(call), due: 2026-06-30),
+        Task(title: "Find the last service date", parent: call, due: 2026-06-30),
     )
     tasks.items.insert(
-        Task(title: "Look through the email folder", parent: .some(service), due: 2026-06-30),
+        Task(title: "Look through the email folder", parent: service, due: 2026-06-30),
     )
     tasks.items.insert(
-        Task(title: "Ask whether Tuesday morning works", parent: .some(call), due: 2026-06-30),
+        Task(title: "Ask whether Tuesday morning works", parent: call, due: 2026-06-30),
     )
     tasks.items.insert(Task(title: "Book a haircut", due: 2026-06-29))
     tasks.items.insert(Task(title: "Reply to Mia about Sunday lunch", due: 2026-07-01))
@@ -990,18 +977,16 @@ scenario "a busy week" -> Task {
             due: 2026-07-06,
             priority: .urgent,
             notes: RichText("Lead with the offline editor, then sharing."),
-            assignee: .some(mia),
+            assignee: mia,
         ),
     )
     // Checked off before the subtask under it was added: clearing it keeps the subtask.
     let outline = tasks.items.insert(
-        Task(title: "Outline", done: true, parent: .some(copy), project: launch),
+        Task(title: "Outline", done: true, parent: copy, project: launch),
     )
-    tasks.items.insert(
-        Task(title: "Collect the beta quotes", parent: .some(outline), project: launch),
-    )
-    tasks.items.insert(Task(title: "First draft", parent: .some(copy), project: launch))
-    tasks.items.insert(Task(title: "Screenshots", parent: .some(copy), project: launch))
+    tasks.items.insert(Task(title: "Collect the beta quotes", parent: outline, project: launch))
+    tasks.items.insert(Task(title: "First draft", parent: copy, project: launch))
+    tasks.items.insert(Task(title: "Screenshots", parent: copy, project: launch))
     tasks.items.insert(
         Task(title: "Check the pricing page on phones", project: launch, due: 2026-07-08),
     )
@@ -1045,7 +1030,7 @@ scenario "today" -> Task {
     tasks.items.insert(Task(title: "Pack the kitchen", project: flat, due: 2026-06-30))
     tasks.items.insert(Task(title: "Order boxes and tape", project: flat, due: 2026-07-02))
     // Mine, with no day of its own: it stands in my Today because it is mine.
-    tasks.items.insert(Task(title: "Sort the paper mail", assignee: .some(invoker)))
+    tasks.items.insert(Task(title: "Sort the paper mail", assignee: invoker))
     call
 }
 
@@ -1060,28 +1045,24 @@ scenario "a task's subtasks" -> Task {
             due: 2026-07-06,
             priority: .urgent,
             notes: RichText("Lead with the offline editor, then sharing."),
-            assignee: .some(mia),
+            assignee: mia,
         ),
     )
     // Checked off before the subtask under it was added: clearing it keeps the subtask.
     let outline = tasks.items.insert(
-        Task(title: "Outline", done: true, parent: .some(copy), project: launch),
+        Task(title: "Outline", done: true, parent: copy, project: launch),
     )
     tasks.items.insert(
-        Task(
-            title: "Collect the quotes from the beta testers",
-            parent: .some(outline),
-            project: launch,
-        ),
+        Task(title: "Collect the quotes from the beta testers", parent: outline, project: launch),
     )
     tasks.items.insert(
         Task(
             title: "First draft, with the quotes from the beta testers",
-            parent: .some(copy),
+            parent: copy,
             project: launch,
         ),
     )
-    tasks.items.insert(Task(title: "Screenshots", parent: .some(copy), project: launch))
+    tasks.items.insert(Task(title: "Screenshots", parent: copy, project: launch))
     copy
 }
 
@@ -1091,19 +1072,14 @@ scenario "a shared week" -> Task {
     let scout = agent("Scout")
     let launch = tasks.projects.insert(Project(name: "Website launch"))
     let copy = tasks.items.insert(
-        Task(
-            title: "Write the launch post",
-            project: launch,
-            due: 2026-07-06,
-            assignee: .some(mia),
-        ),
+        Task(title: "Write the launch post", project: launch, due: 2026-07-06, assignee: mia),
     )
     let quotes = tasks.items.insert(
         Task(
             title: "Collect the quotes from the beta testers",
-            parent: .some(copy),
+            parent: copy,
             project: launch,
-            assignee: .some(scout),
+            assignee: scout,
         ),
     )
     tasks.items.insert(
@@ -1111,10 +1087,10 @@ scenario "a shared week" -> Task {
             title: "Check the pricing page on phones",
             project: launch,
             due: 2026-07-08,
-            assignee: .some(invoker),
+            assignee: invoker,
         ),
     )
-    tasks.items.insert(Task(title: "Book the van", due: 2026-07-10, assignee: .some(mia)))
+    tasks.items.insert(Task(title: "Book the van", due: 2026-07-10, assignee: mia))
     invoke(add_subtask(tasks, copy, "Ask three customers for a quote"), by: scout)
     invoke(check(quotes, true), by: mia)
     copy
@@ -1148,20 +1124,10 @@ scenario "a task that is late" -> Task {
         ),
     )
     tasks.items.insert(
-        Task(
-            title: "Find the last service date",
-            parent: .some(call),
-            project: flat,
-            due: 2026-06-29,
-        ),
+        Task(title: "Find the last service date", parent: call, project: flat, due: 2026-06-29),
     )
     tasks.items.insert(
-        Task(
-            title: "Book the engineer's visit",
-            parent: .some(call),
-            project: flat,
-            due: 2026-07-02,
-        ),
+        Task(title: "Book the engineer's visit", parent: call, project: flat, due: 2026-07-02),
     )
     call
 }
@@ -1209,7 +1175,7 @@ scenario "an agent's suggestion" -> Task {
     let scout = agent("Scout")
     let flat = tasks.projects.insert(Project(name: "Move flat"))
     let van = tasks.items.insert(Task(title: "Book the van", project: flat))
-    invoke(suggest schedule(van, due: .some(2026-07-10)), by: scout)
+    invoke(suggest schedule(van, due: 2026-07-10), by: scout)
     van
 }
 
@@ -1257,7 +1223,7 @@ scenario "a discussion on a task" -> Task {
             title: "Order the new office chairs",
             notes: RichText("Two for the window desks, and four for the room."),
             due: 2026-07-01,
-            assignee: .some(ada),
+            assignee: ada,
         ),
     )
     invoke(
@@ -1301,8 +1267,8 @@ scenario "while you were away" -> Task {
     permit = tasks.items.insert(permit)
     survey = tasks.items.insert(survey)
     milk = tasks.items.insert(milk)
-    invoke(assign(paper, .some(ada)), by: bo, at: 2026-06-29T16:20Z)
-    invoke(schedule(survey, .some(2026-06-30)), by: scout, at: 2026-06-29T17:05Z)
+    invoke(assign(paper, ada), by: bo, at: 2026-06-29T16:20Z)
+    invoke(schedule(survey, 2026-06-30), by: scout, at: 2026-06-29T17:05Z)
     invoke(check(milk, true), by: scout, at: 2026-06-29T17:12Z)
     survey
 }
@@ -1318,6 +1284,6 @@ scenario "a task that changed since you looked" -> Task {
         priority: .medium,
     )
     call = tasks.items.insert(call)
-    invoke(schedule(call, .some(2026-06-30)), by: bo, at: 2026-06-29T16:32Z)
+    invoke(schedule(call, 2026-06-30), by: bo, at: 2026-06-29T16:32Z)
     call
 }

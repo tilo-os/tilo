@@ -53,21 +53,26 @@ terse views make agent answers cheaper and more reliable.
 3. **Optional chaining and fallback:** `c.messages.last()?.said ?? "No messages yet"`.
 4. **`if let`, with several bindings:** `if let todos = b.todos, nb = b.notebook { ... }`, in
    actions and views.
-5. **`let` in view bodies,** so a row doesn't need helper functions for derived values; the
-   type is written where a branch has nothing to say what it is
-   (`let heading: Option<K> = if let g = group { g(x) } else { .none }`).
-6. **Date and time literals:** `2026-06-29`, `2026-06-29T07:02Z`, `2026-08`, matching search's
+5. **`let` in view bodies,** so a row doesn't need helper functions for derived values; a
+   `let` names the type only where its value does not say enough of it
+   (`let heading: Option<K> = ...`).
+6. **A value is an Option of it where an Option is expected, and one branch is enough.**
+   `due: today` fills `due: Option<Date>` and `t.due == today` compares it, so `.some(...)` is
+   written only where one Option would otherwise hold another; `if cond { v }` with no `else` is
+   `v` where the condition holds and nothing where it does not, which is what `else { .none }`
+   gave it (`let due = if in_today { today }`).
+7. **Date and time literals:** `2026-06-29`, `2026-06-29T07:02Z`, `2026-08`, matching search's
    literals. Duration literals (`15m`) already exist.
-7. **Lambdas take the values a parameter takes:** `(moved, parent, before) -> move_to(tasks,
+8. **Lambdas take the values a parameter takes:** `(moved, parent, before) -> move_to(tasks,
    moved, parent, before)` for a parameter typed `(T, Option<T>, Option<T>) -> Action`. One
    value stays `x -> ...`, and a key path stays `.field`. What the lambda makes binds a type
    parameter its parameter's result names, so `group: .due` gives a list a heading of days and
-   `group: x -> .some(x.t)` one of words.
-8. **A template's item block fills a described component's part:** `std.outline(...) { x ->
+   `group: x -> x.t` one of words.
+9. **A template's item block fills a described component's part:** `std.outline(...) { x ->
    task_row(x) }` gives the `row: (T) -> View` parameter a block that the tree draws once per
    node it shows, so a view written in `std` names the item's parts without the caller
    repeating them.
-9. **An item block names the values it draws with:** `std.list(items) { (x, at) -> row(x,
+10. **An item block names the values it draws with:** `std.list(items) { (x, at) -> row(x,
    at) }` for a parameter typed `(T, Option<Principal>) -> View`. The item and who else is at
    it reach the row; the item it stands under the row says itself, as the list item's `parent:`.
 

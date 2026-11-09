@@ -619,9 +619,9 @@ view unified(m: Mail) {
         let shown = a.threads.matching(query)
         ui.NavShell(
             content_kind: .document,
-            sidebar_title: .some("All accounts"),
-            overview_title: .some(title),
-            overview_count: .some(shown.len()),
+            sidebar_title: "All accounts",
+            overview_title: title,
+            overview_count: shown.len(),
         ) {
             sidebar: {
                 ui.NavList(selected: query) {
@@ -638,7 +638,7 @@ view unified(m: Mail) {
                                     label_query(l.name),
                                     l.name,
                                     icon: .tag,
-                                    count: .some(a.threads.matching(label_query(l.name)).len()),
+                                    count: a.threads.matching(label_query(l.name)).len(),
                                 ) {
                                     on select: set(query, label_query(l.name))
                                 }
@@ -676,20 +676,15 @@ view mailboxes(a: Account) {
     let title = place_title(m, query)
     ui.NavShell(
         content_kind: .document,
-        sidebar_title: .some(a.address),
-        overview_title: .some(title),
-        overview_count: .some(shown.len()),
+        sidebar_title: a.address,
+        overview_title: title,
+        overview_count: shown.len(),
     ) {
         sidebar: {
             ui.NavList(selected: if query == "" { "all" } else { query }) {
                 for p in places {
                     let unread = a.threads.matching("{p.query} is:unread").len()
-                    ui.NavItem(
-                        p.query,
-                        p.label,
-                        icon: p.icon,
-                        count: if unread > 0 { .some(unread) } else { .none },
-                    ) {
+                    ui.NavItem(p.query, p.label, icon: p.icon, count: if unread > 0 { unread }) {
                         on select: set(query, p.query)
                     }
                 }
@@ -703,7 +698,7 @@ view mailboxes(a: Account) {
                                 label_query(l.name),
                                 l.name,
                                 icon: .tag,
-                                count: .some(a.threads.matching(label_query(l.name)).len()),
+                                count: a.threads.matching(label_query(l.name)).len(),
                             ) {
                                 on select: set(query, label_query(l.name))
                             }
@@ -904,9 +899,9 @@ view editor(d: Draft) {
         if can_undo(d) {
             ui.Banner(
                 "Sending",
-                message: .some("It goes in a moment. Take it back if you need to."),
+                message: "It goes in a moment. Take it back if you need to.",
                 kind: .info,
-                action: .some("Undo send"),
+                action: "Undo send",
             ) {
                 on act: undo_send(d)
             }

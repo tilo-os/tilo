@@ -289,9 +289,10 @@ fn e037_a_variant_needs_a_known_type() {
 }
 
 #[test]
-fn e038_an_if_value_needs_an_else() {
+fn e020_an_if_without_else_is_the_option_of_its_branch() {
+    // `let x = if b { 1 }` is an Option: where an Int is expected, an Option of one is not one.
     expect(
-        "E038",
+        "E020",
         "fn f(b: Bool) -> Int {\n    let x = if b { 1 }\n    return x\n}",
     );
 }

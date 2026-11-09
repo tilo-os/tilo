@@ -378,36 +378,26 @@ view feed(yt: YouTube) {
     // search (`end_search`), so the feed they pick is the one that shows.
     let searched = yt.search_state != ""
     let here = if searched { "search" } else { place }
-    ui.NavShell(content_kind: .grid, sidebar_title: .some("YouTube")) {
+    ui.NavShell(content_kind: .grid, sidebar_title: "YouTube") {
         sidebar: {
             ui.NavList(selected: here) {
                 ui.NavItem("search", "Search YouTube", icon: .search) {
                     on select: set(place, "search")
                 }
-                ui.NavItem("subscriptions", "Subscriptions", icon: .rss, count: .some(subs.len())) {
+                ui.NavItem("subscriptions", "Subscriptions", icon: .rss, count: subs.len()) {
                     on select: set(place, "subscriptions").then(end_search(yt))
                 }
-                ui.NavItem("trending", "Trending", icon: .flame, count: .some(trending.len())) {
+                ui.NavItem("trending", "Trending", icon: .flame, count: trending.len()) {
                     on select: set(place, "trending").then(end_search(yt))
                 }
                 ui.NavSection("You", collapsible: true) {
-                    ui.NavItem("later", "Watch later", icon: .bookmark, count: .some(later.len())) {
+                    ui.NavItem("later", "Watch later", icon: .bookmark, count: later.len()) {
                         on select: set(place, "later").then(end_search(yt))
                     }
-                    ui.NavItem(
-                        "liked",
-                        "Liked videos",
-                        icon: .thumbs_up,
-                        count: .some(liked.len()),
-                    ) {
+                    ui.NavItem("liked", "Liked videos", icon: .thumbs_up, count: liked.len()) {
                         on select: set(place, "liked").then(end_search(yt))
                     }
-                    ui.NavItem(
-                        "history",
-                        "History",
-                        icon: .history,
-                        count: .some(yt.history.len()),
-                    ) {
+                    ui.NavItem("history", "History", icon: .history, count: yt.history.len()) {
                         on select: set(place, "history").then(end_search(yt))
                     }
                 }
@@ -418,7 +408,7 @@ view feed(yt: YouTube) {
                                 "channel/{c.key}",
                                 c.name,
                                 icon: .users,
-                                count: .some(yt.videos.count(v -> v.channel_key == c.key)),
+                                count: yt.videos.count(v -> v.channel_key == c.key),
                             ) {
                                 on select: set(place, "channel").then(end_search(yt)).then(open(c))
                             }
@@ -445,9 +435,9 @@ view feed(yt: YouTube) {
                         if trending.is_empty() {
                             ui.EmptyState(
                                 "Nothing trending yet",
-                                message: .some("Ask YouTube what is trending"),
+                                message: "Ask YouTube what is trending",
                                 icon: .flame,
-                                action: .some("Trending"),
+                                action: "Trending",
                             ) {
                                 on act: load_trending(yt)
                             }
@@ -458,19 +448,15 @@ view feed(yt: YouTube) {
                         if yt.subscriptions.is_empty() {
                             ui.EmptyState(
                                 "No subscriptions yet",
-                                message: .some(
-                                    "A channel's page subscribes to it, and its newest videos arrive here",
-                                ),
+                                message: "A channel's page subscribes to it, and its newest videos arrive here",
                                 icon: .rss,
                             )
                         } else {
                             ui.EmptyState(
                                 "Nothing new yet",
-                                message: .some(
-                                    "Ask YouTube for the newest videos of the channels you follow",
-                                ),
+                                message: "Ask YouTube for the newest videos of the channels you follow",
                                 icon: .rss,
-                                action: .some("Refresh"),
+                                action: "Refresh",
                             ) {
                                 on act: refresh_feed(yt)
                             }
@@ -480,7 +466,7 @@ view feed(yt: YouTube) {
                             if yt.feed_trouble != "" {
                                 ui.Banner(
                                     "YouTube could not be reached",
-                                    message: .some(yt.feed_trouble),
+                                    message: yt.feed_trouble,
                                     kind: .warning,
                                 )
                             }
@@ -496,7 +482,7 @@ view feed(yt: YouTube) {
 /// The videos as cards in a grid, or what the place says while it holds none.
 view video_grid(videos: List<Video>, empty: Text, message: Text) {
     if videos.is_empty() {
-        ui.EmptyState(empty, message: .some(message))
+        ui.EmptyState(empty, message: message)
     } else {
         ui.MediaGrid(size: .regular) {
             for v in videos {
@@ -540,11 +526,11 @@ view search_found(yt: YouTube) {
     if yt.search_state == "searching" {
         ui.ProgressBar(label: "Searching YouTube")
     } else if yt.search_trouble != "" {
-        ui.Banner("The search failed", message: .some(yt.search_trouble), kind: .warning)
+        ui.Banner("The search failed", message: yt.search_trouble, kind: .warning)
     } else if yt.search_text == "" {
         ui.EmptyState(
             "Search YouTube",
-            message: .some("Channels, playlists and videos, by name"),
+            message: "Channels, playlists and videos, by name",
             icon: .search,
         )
     } else {
@@ -554,7 +540,7 @@ view search_found(yt: YouTube) {
         if channels.is_empty() and playlists.is_empty() and videos.is_empty() {
             ui.EmptyState(
                 "Nothing found",
-                message: .some("Nothing matches {yt.search_text}"),
+                message: "Nothing matches {yt.search_text}",
                 icon: .search,
             )
         } else {
@@ -602,7 +588,7 @@ fn share_text(share: Float) -> Text {
 view watched_page(h: WatchEntry) {
     let yt = root YouTube
     let entries = yt.history.sort_by(.watched, desc)
-    ui.NavShell(content_kind: .list, title: .some("History"), count: .some(entries.len())) {
+    ui.NavShell(content_kind: .list, title: "History", count: entries.len()) {
         actions: {
             std.header {
                 button(delete_history(yt)) as clear
@@ -618,7 +604,7 @@ view watched_page(h: WatchEntry) {
 view history_list(yt: YouTube) {
     let entries = yt.history.sort_by(.watched, desc)
     if entries.is_empty() {
-        ui.EmptyState("Nothing watched yet", message: .some("The videos you watch are listed here"))
+        ui.EmptyState("Nothing watched yet", message: "The videos you watch are listed here")
     } else {
         std.list(entries) { (entry, at) ->
             ui.ListItem(item: entry, presence: at) {
