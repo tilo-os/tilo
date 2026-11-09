@@ -1344,47 +1344,41 @@ const SHELL_RUNTIME_UNIT: &str = "tilo-ush.service";
 
 /// Whether `pid`, a process of this account outside this login's namespaces, is the login's own
 /// confined shell runtime: the image's `tilo-ush` executable, running in the `tilo-ush.service`
-/// unit of the service manager this session runs under. systemd starts it in a mount namespace
-/// of its own (`PrivateTmp=`), so the namespace check alone takes it for a sandboxed program;
-/// these are the kernel's facts that tell it apart from one, as no sandbox moves a program into
-/// another unit's cgroup.
+/// unit of this account's own service manager. systemd starts it in a mount namespace of its own
+/// (`PrivateTmp=`), so the namespace check alone takes it for a sandboxed program; these are the
+/// kernel's facts that tell it apart from one, as no sandbox moves a program into another unit's
+/// cgroup.
 fn is_shell_runtime(pid: u32) -> bool {
     shell_runtime_at(
         Path::new(SHELL_RUNTIME),
         &format!("/proc/{pid}/exe"),
         &std::fs::read_to_string(format!("/proc/{pid}/cgroup")).unwrap_or_default(),
-        &std::fs::read_to_string("/proc/self/cgroup").unwrap_or_default(),
+        rustix::process::geteuid().as_raw(),
     )
 }
 
 /// [`is_shell_runtime`] of a process whose executable is at `exe` and whose cgroups are
-/// `theirs`, beside a session whose cgroups are `ours`, with the runtime installed at `runtime`.
-fn shell_runtime_at(runtime: &Path, exe: &str, theirs: &str, ours: &str) -> bool {
+/// `cgroups`, for the account `uid`, with the runtime installed at `runtime`.
+fn shell_runtime_at(runtime: &Path, exe: &str, cgroups: &str, uid: u32) -> bool {
     use std::os::unix::fs::MetadataExt as _;
     let same_file = match (std::fs::metadata(exe), std::fs::metadata(runtime)) {
         (Ok(exe), Ok(runtime)) => exe.dev() == runtime.dev() && exe.ino() == runtime.ino(),
         // A process that cannot be read is not one this door knows.
         _ => false,
     };
-    // The unified hierarchy's line (`0::/path`).
-    let unified = |cgroups: &str| {
-        cgroups
-            .lines()
-            .find_map(|line| line.strip_prefix("0::"))
-            .map(str::to_owned)
-    };
-    // The service manager a cgroup path is under: the path to its `user@<uid>.service`.
-    let manager = |path: &str| {
-        let end = path
-            .split('/')
-            .position(|part| part.starts_with("user@") && part.ends_with(".service"))?;
-        Some(path.split('/').take(end + 1).collect::<Vec<_>>().join("/"))
-    };
-    let (Some(theirs), Some(ours)) = (unified(theirs), unified(ours)) else {
+    // The unified hierarchy's line (`0::/path`): the unit in this account's service manager,
+    // `/user.slice/user-<uid>.slice/user@<uid>.service/.../tilo-ush.service[/...]`.
+    let Some(path) = cgroups.lines().find_map(|line| line.strip_prefix("0::")) else {
         return false;
     };
-    let in_unit = theirs.split('/').any(|part| part == SHELL_RUNTIME_UNIT);
-    same_file && in_unit && manager(&theirs).is_some() && manager(&theirs) == manager(&ours)
+    let parts: Vec<&str> = path.split('/').collect();
+    let slice = format!("user-{uid}.slice");
+    let manager = format!("user@{uid}.service");
+    let in_manager = parts.get(1) == Some(&"user.slice")
+        && parts.get(2) == Some(&slice.as_str())
+        && parts.get(3) == Some(&manager.as_str());
+    let in_unit = parts.iter().skip(4).any(|part| *part == SHELL_RUNTIME_UNIT);
+    same_file && in_manager && in_unit
 }
 
 /// Whether `pid` runs in this process's user and mount namespaces: what tells a program of this
@@ -2588,37 +2582,44 @@ mod tests {
         let other = dir.path().join("other");
         std::fs::write(&other, b"other").unwrap();
         let exe = runtime.to_str().unwrap();
-        let ours =
-            "0::/user.slice/user-1001.slice/user@1001.service/session.slice/tilo-session.service\n";
+        // As a booted box has them: the session in its login's scope, the runtime in its unit.
         let unit = "0::/user.slice/user-1001.slice/user@1001.service/app.slice/tilo-ush.service\n";
-        assert!(shell_runtime_at(&runtime, exe, unit, ours));
+        assert!(shell_runtime_at(&runtime, exe, unit, 1001));
         let below =
             "0::/user.slice/user-1001.slice/user@1001.service/app.slice/tilo-ush.service/run-1\n";
         assert!(
-            shell_runtime_at(&runtime, exe, below, ours),
+            shell_runtime_at(&runtime, exe, below, 1001),
             "a group of the unit's own"
         );
         assert!(
-            !shell_runtime_at(&runtime, other.to_str().unwrap(), unit, ours),
+            !shell_runtime_at(&runtime, other.to_str().unwrap(), unit, 1001),
             "another program in the unit"
         );
         let app = "0::/user.slice/user-1001.slice/user@1001.service/app.slice/app-so.tilo.terminal.scope\n";
         assert!(
-            !shell_runtime_at(&runtime, exe, app, ours),
+            !shell_runtime_at(&runtime, exe, app, 1001),
             "the executable run by an app"
         );
-        let elsewhere =
-            "0::/user.slice/user-1002.slice/user@1002.service/app.slice/tilo-ush.service\n";
+        let session = "0::/user.slice/user-1001.slice/session-81.scope\n";
         assert!(
-            !shell_runtime_at(&runtime, exe, elsewhere, ours),
-            "another login's runtime"
+            !shell_runtime_at(&runtime, exe, session, 1001),
+            "the executable run in the login's scope"
         );
         assert!(
-            !shell_runtime_at(&runtime, "/nonexistent", unit, ours),
+            !shell_runtime_at(&runtime, exe, unit, 1002),
+            "another account's runtime"
+        );
+        let named = "0::/user.slice/user-1001.slice/session-81.scope/tilo-ush.service\n";
+        assert!(
+            !shell_runtime_at(&runtime, exe, named, 1001),
+            "a group named like the unit elsewhere"
+        );
+        assert!(
+            !shell_runtime_at(&runtime, "/nonexistent", unit, 1001),
             "a process that is gone"
         );
         assert!(
-            !shell_runtime_at(&runtime, exe, "", ours),
+            !shell_runtime_at(&runtime, exe, "", 1001),
             "no cgroup to read"
         );
     }
