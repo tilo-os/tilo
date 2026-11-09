@@ -30,7 +30,7 @@ for (const [width, height, mobile] of [[390, 844, true], [1280, 800, false]]) {
     const name = `${width}-${scheme}`;
     // A fresh profile each time: the screen is for a browser new here.
     const context = await browser.context();
-    const tab = await browser.tab({context});
+    const tab = await browser.tab({context, firstRun: true});
     await tab.send('Emulation.setDeviceMetricsOverride', {width, height, deviceScaleFactor: 2, mobile});
     await tab.send('Emulation.setEmulatedMedia', {features: [{name: 'prefers-color-scheme', value: scheme}]});
     await tab.send('Browser.grantPermissions', {origin: server.url, browserContextId: context, permissions: ['clipboardReadWrite', 'clipboardSanitizedWrite']}).catch(() => {});

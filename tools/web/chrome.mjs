@@ -27,6 +27,13 @@ const TYPES = {
 
 export const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 
+/** Run in a page before its own scripts: the entry page's first screen (its
+ * first visit's "Set up with your agent", web/first-run.mjs) counts as seen,
+ * so a test that opens the site in a fresh profile gets the desktop it drives,
+ * as a returning person does. A test of the first screen opts out
+ * (`tab({firstRun: true})`). */
+export const FIRST_RUN_SEEN = "try { localStorage.setItem('tilo-first-run', '1'); } catch {}";
+
 /** Compressed copies by path, kept until the file they were made from changes:
  * a bundle's start module is tens of megabytes and a page load asks for it
  * again every run. */
@@ -293,8 +300,9 @@ export async function launch({args = []} = {}) {
   });
 
   /** A tab: navigate, evaluate (awaiting promises), collect errors. In
-   * `context` (from `context()`) when given, else the browser's own profile. */
-  async function tab({context} = {}) {
+   * `context` (from `context()`) when given, else the browser's own profile.
+   * The entry page's first screen counts as seen unless `firstRun`. */
+  async function tab({context, firstRun = false} = {}) {
     const {result: {targetId}} = await send('Target.createTarget',
       {url: 'about:blank', ...(context ? {browserContextId: context} : {})});
     const {result: {sessionId}} = await send('Target.attachToTarget', {targetId, flatten: true});
@@ -312,6 +320,7 @@ export async function launch({args = []} = {}) {
     listeners.add(listener);
     await send('Runtime.enable', {}, sessionId);
     await send('Page.enable', {}, sessionId);
+    if (!firstRun) await send('Page.addScriptToEvaluateOnNewDocument', {source: FIRST_RUN_SEEN}, sessionId);
     const evaluate = async (expression, {timeout = 120000} = {}) => {
       const reply = await send('Runtime.evaluate', {
         expression, awaitPromise: true, returnByValue: true, timeout,

@@ -15,7 +15,7 @@ import {tmpdir} from 'node:os';
 import {join, resolve} from 'node:path';
 import {pathToFileURL} from 'node:url';
 import {inflateSync} from 'node:zlib';
-import {launch, serve, sleep} from '../../../../tools/web/chrome.mjs';
+import {launch, serve, sleep, FIRST_RUN_SEEN} from '../../../../tools/web/chrome.mjs';
 import {verb} from '../../tilo-browser-runtime/web/desktop-navigation.mjs';
 
 const args = process.argv.slice(2);
@@ -54,6 +54,8 @@ async function playwrightWebkit() {
   // in an ephemeral one.
   const profile = mkdtempSync(join(tmpdir(), 'tilo-webkit-'));
   const context = await engine.launchPersistentContext(profile, {viewport: VIEWPORT});
+  // As chrome.mjs does: the first visit's first screen counts as seen.
+  await context.addInitScript(FIRST_RUN_SEEN);
   const page = context.pages()[0] ?? await context.newPage();
   const errors = [];
   page.on('pageerror', error => errors.push(`EXC ${error.message}`));
