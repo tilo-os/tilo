@@ -158,14 +158,14 @@ mod tests {
         app
     }
 
-    /// The page tree's header, the note's header and where the note's view
-    /// starts, as laid out.
-    fn tops(app: &mut TestApp<crate::NotesShell>) -> (f64, f64, f64) {
+    /// The page tree's header, where the note's own header starts and stops, and where the
+    /// note's view starts, as laid out.
+    fn tops(app: &mut TestApp<crate::NotesShell>) -> (f64, (f64, f64), f64) {
         app.with_surface::<NotesApp, _>(|notes| {
             let g = notes.shell.geometry();
             (
                 g.sidebar_header().height(),
-                g.content_header().height(),
+                (g.content_header().y0, g.content_header().y1),
                 g.content_body().y0,
             )
         })
@@ -178,20 +178,32 @@ mod tests {
             .expect("the notes surface")
     }
 
-    /// The window bar holds the note's controls, so the note has no header
-    /// row of its own at any width: it starts right under the bar, or under
-    /// its notice's strip. Only a docked page tree keeps its header, which
-    /// holds its title (New note is the bar's).
+    /// A window shows one bar. The bar holds the note's controls, so the row the window's
+    /// controls stand in is that bar — drawn by the note's own shell at the window's top, never
+    /// a second row under a bar above it — and the note starts inside it, at the window's top.
+    /// Only a docked page tree keeps its header, which holds its title (New note is the bar's).
     #[test]
     fn a_note_starts_right_under_the_window_bar() {
         let gutter = f64::from(ui::theme::Theme::dark().tokens.spacing.rhythm.group);
         for scenario in ["table", "import_success", "first_note"] {
             for (width, docked) in [(420, false), (1280, true)] {
                 let mut notes = notes_at(scenario, (width, 800));
-                let (tree, note, body) = tops(&mut notes);
+                let (tree, header, body) = tops(&mut notes);
                 assert!(
-                    note.abs() < 1e-9 && body.abs() < 1e-9,
-                    "{scenario} at {width} px: the content starts at the top, its header {note} high, its view at {body}"
+                    body.abs() < 1e-9,
+                    "{scenario} at {width} px: the note's view starts at the window's top, at \
+                     {body}"
+                );
+                assert!(
+                    notes.harness().frame_extent((width, 800)).0.abs() < 1e-9,
+                    "{scenario} at {width} px: the window's bar is the row the note's shell \
+                     draws, so no band of a bar stands above the note"
+                );
+                assert_eq!(
+                    header.0.abs() < 1e-9 && header.1 > 0.0,
+                    notes.harness().row_holds_bar(),
+                    "{scenario} at {width} px: the row that stands at the window's top is the \
+                     window's bar, never a row under one: {header:?}"
                 );
                 assert_eq!(
                     tree > 0.0,
