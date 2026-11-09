@@ -623,11 +623,18 @@ search.md, "What a type declares" and "Types, references and paths".
   Places draw no badge: a count is a query of the app's own (`items.matching(p.query).len()`),
   which a view that counts writes.
 - **A window that is only a list is `std.browse`.** It writes that window from the inputs the app
-  names alone — `of`, `items`, `places`, `sort` with the order each case asks (`by`), `everything`,
-  `empty`, `entry` — with its query state in the order chosen, the title and count naming the place
-  chosen, and the pane beside the list when rows open there. It reads no layout off a type, scans
-  nothing, and takes `opens` from the type alone. An app whose window needs a sidebar of counts,
-  grouped rows or a bar action of its own composes `std.list`, `std.places` and `std.header` itself.
+  names alone — `of`, `items`, `places`, `sorts`, `everything`, `empty`, `entry` — with its query
+  state in the place and order chosen, the title and count naming the place chosen, and the pane
+  beside the list when rows open there. It reads no layout off a type, scans nothing, and takes
+  `opens` from the type alone. An app whose window needs a sidebar of counts, grouped rows or a bar
+  action of its own composes `std.list`, `std.places` and `std.sorts` itself.
+- **A sort is the field the app names, not a string it writes.** `sorts: [Note.title]` is a field
+  reference the compiler checks (E105 for one that does not exist or has no order), held as
+  `Sort<T>`: the field's label, and the order it asks in a query (`sort:title`, `sort:-received`,
+  biggest first for a Date, a Time or a number, A to Z for text). `std.browse` owns the chosen
+  order and its menu, the list's own order first, so no app declares an enum, a state or a
+  mapping to offer "by title". The order reaches the store as that query token, through the
+  same index as a typed search; the app never writes it.
 - **A list groups by the key its caller gives.** `ui.ListItem(group:)` takes the item's own key and
   heads each run of items naming the same key with the key itself, as the platform presents a
   value of its kind — a day as Today, Tomorrow, a weekday; a word as it is written. Items that

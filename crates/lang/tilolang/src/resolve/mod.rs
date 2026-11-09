@@ -1120,6 +1120,21 @@ impl Resolver<'_> {
                         }
                     };
                 }
+                if name.name == "Sort" {
+                    return match inner {
+                        Ty::Record(key) if field_position => {
+                            self.err("E023", te.span, format!("`Sort<{}>` is a value code holds and a window offers, not a stored field's type", key.name));
+                            Ty::Error
+                        }
+                        Ty::Record(key) => Ty::Sort(key),
+                        Ty::Error => Ty::Error,
+                        other => {
+                            let t = other.display(&self.env.app);
+                            self.err("E013", te.span, format!("`Sort<T>` is an order by a field of a type's items; `{t}` is no resource type"));
+                            Ty::Error
+                        }
+                    };
+                }
                 let boxed = Box::new(inner);
                 let ty = match name.name.as_str() {
                     "List" => Ty::List(boxed),

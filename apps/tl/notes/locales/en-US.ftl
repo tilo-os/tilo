@@ -32,13 +32,6 @@ d-v7cub7aw = Notes
 
 d-tmqqtkeb = Notes
 
-d-qef5yqkq = Note order
-    .doc = The order a notebook lists its notes in.
-
-d-spdco6z2 = Date created
-
-d-vs3pg7vu = Title
-
 d-qymo5lg2 = New note
     .doc = Starts a note.
 

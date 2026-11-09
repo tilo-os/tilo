@@ -197,7 +197,7 @@ impl Core {
             | (Ty::List(_) | Ty::Collection(_), Value::Coll(_))
             | (Ty::Option(_), Value::Opt(_))
             | (Ty::Enum(_) | Ty::Result(..), Value::Enum(_))
-            | (Ty::Tuple(_) | Ty::Filter(_), Value::Tuple(_))
+            | (Ty::Tuple(_) | Ty::Filter(_) | Ty::Sort(_), Value::Tuple(_))
             | (Ty::Action, Value::Action(_))
             | (Ty::Principal, Value::Principal(_))
             | (Ty::View, _) => true,

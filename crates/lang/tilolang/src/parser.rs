@@ -233,6 +233,7 @@ const TYPE_ARGS: &[&str] = &[
     "Collection",
     "Option",
     "Filter",
+    "Sort",
     "Result",
     "State",
 ];

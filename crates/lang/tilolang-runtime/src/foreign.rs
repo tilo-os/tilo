@@ -637,6 +637,7 @@ impl Decoder<'_> {
             Ty::Action
             | Ty::View
             | Ty::Choice(_)
+            | Ty::Sort(_)
             | Ty::Bytes
             | Ty::Response
             | Ty::Json

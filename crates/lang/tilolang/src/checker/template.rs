@@ -256,6 +256,22 @@ impl Checker<'_> {
                             Ty::Error
                         }
                     },
+                    // `Sort<T>`: an order by a field of the type `T` names.
+                    "Sort" => match *inner {
+                        Ty::Record(key) => Ty::Sort(key),
+                        other if other.is_error() => Ty::Error,
+                        other => {
+                            let t = other.display(&self.env.app);
+                            self.err(
+                                "E013",
+                                te.span,
+                                format!(
+                                    "`Sort<T>` is an order by a field of a type's items; `{t}` is no resource type"
+                                ),
+                            );
+                            Ty::Error
+                        }
+                    },
                     _ => Ty::Error,
                 }
             }
@@ -291,6 +307,9 @@ impl Checker<'_> {
                 }
             }
             (TypeExprKind::Generic(name, args), _) if args.len() == 1 => {
+                if let ("Sort", Ty::Sort(key)) = (name.name.as_str(), ty) {
+                    return Self::unify(&args[0], &Ty::Record(key.clone()), params, types);
+                }
                 let (("List", Ty::List(inner) | Ty::Collection(inner) | Ty::Set(inner))
                 | ("Option", Ty::Option(inner))
                 | ("Set", Ty::Set(inner))

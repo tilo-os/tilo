@@ -111,13 +111,16 @@ pages, forms. It relies on general language features any author can use:
 An app that needs something `std` doesn't do composes `ui.*` directly and loses nothing native.
 
 A window that is only a list is `std.browse`: it takes the resource its window is of, the items,
-the places and the sort — the order each case asks, `by` — and writes that window the standard
-way: the place and order chosen as its state, the list that one query finds, the title and count
-naming the place, the empty state, the entry that adds an item, and the pane beside the list when
-the rows open there. It draws what the caller named and never reads a shell off the type; `opens`
-is the one fact it takes from the type, and a window whose rows open in front of it states
-`opens: false`. An app whose window is more than this — a sidebar of its own, rows that group or
-nest — composes `std.list`, `std.places` and `std.header` itself.
+the places and the sorts — the fields the app names as orders, `sorts: [Note.title]` — and writes
+that window the standard way: the place and order chosen as its state, the list that one query
+finds, the title and count naming the place, the empty state, the entry that adds an item, and the
+pane beside the list when the rows open there. The app names a field, never the order's spelling:
+the compiler checks the reference, and the order it asks (`sort:title`, `sort:-received`) is
+built from the field where the sort is declared, so the menu and the query cannot disagree. It
+draws what the caller named and never reads a shell off the type; `opens` is the one fact it takes
+from the type, and a window whose rows open in front of it states `opens: false`. An app whose
+window is more than this — a sidebar of its own, rows that group or nest — composes `std.list`,
+`std.places` and `std.sorts` itself.
 
 A list groups without a second widget: the row a list draws takes `group:`, naming the item's
 key, and the list draws a section band for each run of items that names the same key and holds

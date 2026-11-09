@@ -20,14 +20,6 @@ type Notebook {
     notes: Collection<Note>
 }
 
-/// The order a notebook lists its notes in.
-enum NoteOrder {
-    /// Date created
-    created
-    /// Title
-    title
-}
-
 root notebook: Notebook
 
 default view notebook for Notebook
@@ -73,14 +65,7 @@ action untag(n: Note, t: Text) (label: "Untag", group: "Tags") {
 /// The notebook's window: its notes, each opening in a window of its own, in the order the
 /// person looking chose, under the place they chose.
 view notebook(nb: Notebook) {
-    state order: NoteOrder = .created
-    std.browse(
-        nb,
-        nb.notes,
-        places: [Note.pinned],
-        sort: order,
-        by: o -> if o == .title { "title" } else { "" },
-    ) { n ->
+    std.browse(nb, nb.notes, places: [Note.pinned], sorts: [Note.title]) { n ->
         note_row(n)
     }
 }

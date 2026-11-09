@@ -257,6 +257,7 @@ imports! {
     Query = "query" ([H, H, H, H] -> [H]);
     Filters = "filters" ([H] -> [H]);
     FilterLit = "filter_lit" ([H, H, H] -> [H]);
+    SortLit = "sort_lit" ([H, H] -> [H]);
     IdentPart = "ident_part" ([H, I32] -> [H]);
     RichNew = "rich_new" ([H] -> [H]);
     RichPart = "rich_part" ([H, I32] -> [H]);

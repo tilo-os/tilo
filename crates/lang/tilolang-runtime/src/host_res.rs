@@ -73,6 +73,7 @@ fn type_default(ty: &Ty) -> Result<Value, String> {
         | Ty::Choice(_)
         | Ty::Enum(_)
         | Ty::Filter(_)
+        | Ty::Sort(_)
         | Ty::Result(..)
         | Ty::Bytes
         | Ty::Response

@@ -463,6 +463,19 @@ pub const VALUE_TYPES: &[ValueType] = &[
         ],
     },
     ValueType {
+        name: "Sort",
+        id: "host-sort",
+        doc: "The order by one field of a type, as code names it and as a window's sort menu shows it: `Note.title` where the window's sorts are declared.",
+        fields: &[
+            ("label", "Text", "What its menu entry says: the field's label."),
+            (
+                "query",
+                "Text",
+                "The order it asks, as people type it in search: `sort:title`, `sort:-received`.",
+            ),
+        ],
+    },
+    ValueType {
         name: "Match",
         id: "host-match",
         doc: "A match of `grep` in the text of a resource: where it is, what it says, and the facts the system knows of it.",

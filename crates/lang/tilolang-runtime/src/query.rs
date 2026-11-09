@@ -864,11 +864,7 @@ fn order_of(sort: &str, ty: &TypeMeta) -> Result<Order, String> {
         .iter()
         .find(|f| f.name == name)
         .ok_or_else(|| format!("`sort:{sort}`: {} has no field `{name}`", ty.name))?;
-    let held = field.ty.trim_start_matches("Option<").trim_end_matches('>');
-    if !matches!(
-        held,
-        "Date" | "Time" | "Int" | "Float" | "Text" | "std.Identifier"
-    ) {
+    if biggest_first(&field.ty).is_none() {
         return Err(format!(
             "`sort:{sort}`: `{name}` is {}, which has no order",
             field.ty
@@ -885,6 +881,29 @@ fn order_of(sort: &str, ty: &TypeMeta) -> Result<Order, String> {
         absent_last: false,
         then: None,
     })
+}
+
+/// The order by a field written as `ty`, as a window offers it when an app names the field
+/// alone: the latest or largest first for a Date, a Time or a number, A to Z for a Text. None
+/// for a type that has no order.
+#[must_use]
+pub fn sort_of(field: &str, ty: &str) -> Option<String> {
+    Some(if biggest_first(ty)? {
+        format!("sort:-{field}")
+    } else {
+        format!("sort:{field}")
+    })
+}
+
+/// Whether a field written as `ty` has an order, and runs from the biggest — a Date, a Time or
+/// a number, the latest or largest first — rather than from A to Z. None for no order.
+fn biggest_first(ty: &str) -> Option<bool> {
+    let held = ty.trim_start_matches("Option<").trim_end_matches('>');
+    match held {
+        "Date" | "Time" | "Int" | "Float" => Some(true),
+        "Text" | "std.Identifier" => Some(false),
+        _ => None,
+    }
 }
 
 #[cfg(test)]

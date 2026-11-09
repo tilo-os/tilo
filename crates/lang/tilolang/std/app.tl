@@ -8,10 +8,10 @@ app tilo.std "Standard library"
 ///
 /// A window that lists resources composes it: `std.list` puts the items down a column of rows
 /// with what the platform does on a row, `std.places` the places the app names in the sidebar,
-/// `std.header` the sort menu, `std.add_entry` the entry at the list's end, and the app writes
-/// the shell around them and says where each stands. A window that is only that is `std.browse`,
-/// which takes the resource its window is of, the items, the places and the sort, and writes that
-/// shell the standard way.
+/// `std.sorts` the fields it offers as orders, `std.add_entry` the entry at the list's end, and
+/// the app writes the shell around them and says where each stands. A window that is only that is
+/// `std.browse`, which takes the resource its window is of, the items, the places and the sorts,
+/// and writes that shell the standard way.
 ///
 /// The bar's actions are the ones the owner's type declares, which the host places there — the
 /// primary one as the Primary button, the rest behind the bar's one menu; the primary's key is
@@ -118,12 +118,12 @@ template view add_entry(placeholder: Text, create: Action) {
 }
 
 /// The window of `of` that lists `items`: the places the app names (`places`) in the sidebar,
-/// with all of them called `everything`; the sort menu when it gives `sort`, each case asked of
-/// the order as `by` writes it (`"title"`, `"-due"`, `""` for the items as they are); the entry
-/// at the list's end when it gives `entry`; and nothing to list when the place chosen finds
-/// nothing, where it says `empty`. The window owns the query — the place a person chose and the
-/// order they chose are its state, kept for them alone — and the list is that one query, the
-/// title over it and its count naming that place.
+/// with all of them called `everything`; the sort menu when it gives `sorts`, the fields the app
+/// names as orders (`[Note.title]`), the list's own order first; the entry at the list's end when
+/// it gives `entry`; and nothing to list when the place chosen finds nothing, where it says
+/// `empty`. The window owns the query — the place a person chose and the order they chose are its
+/// state, kept for them alone — and the list is that one query, the title over it and its count
+/// naming that place.
 ///
 /// The rows open beside the list when their type has a window of its own (`opens`, the type's own
 /// fact): choosing one opens it in the column beside the list, and the window says beside them
@@ -133,14 +133,13 @@ template view add_entry(placeholder: Text, create: Action) {
 /// `row` draws one item's row and the window puts it down the list, with who else is at the item
 /// as every list shows it. The row the person opened is the list's own, unless the app keeps one
 /// (`opened`) to open a row from elsewhere. A window that needs more — grouped or nested rows, a
-/// sidebar of its own — composes `std.list`, `std.places` and `std.header` itself.
-template view browse<R, T, S>(
+/// sidebar of its own — composes `std.list`, `std.places` and `std.sorts` itself.
+template view browse<R, T>(
     of: R,
     items: List<T>,
     opened: Option<State<Option<T>>> = .none,
     places: List<Filter<T>> = [],
-    sort: Option<State<S>> = .none,
-    by: Option<(S) -> Text> = .none,
+    sorts: List<Sort<T>> = [],
     everything: Text = phrase("tilolang-all", kind: meta(T).plural),
     empty: Text = phrase("tilolang-empty-kind", kind: meta(T).plural),
     entry: Option<Action> = .none,
@@ -149,9 +148,10 @@ template view browse<R, T, S>(
     row: (T) -> View,
 ) {
     state query: Text = ""
+    state order: Option<Sort<T>> = .none
     let kind = meta(T)
-    let order = if let s = sort { if let ask = by { ask(s) } else { "" } } else { "" }
-    let shown = items.matching(if order == "" { query } else { query + " sort:" + order })
+    let asked = if let o = order { query + " " + o.query } else { query }
+    let shown = items.matching(asked)
     let title = places.find(p -> p.query == query)?.label ?? everything
     let sidebar_title: Option<Text> = if places.is_empty() { .none } else { .some(meta(of).title) }
     if opens {
@@ -167,7 +167,9 @@ template view browse<R, T, S>(
                 }
             }
             overview_actions: {
-                std.header(sort: sort)
+                if not sorts.is_empty() {
+                    std.sorts(order, sorts)
+                }
             }
             overview: {
                 browse_rows(shown, opened, empty, kind.icon, entry, entry_placeholder) { x ->
@@ -191,7 +193,9 @@ template view browse<R, T, S>(
                 }
             }
             actions: {
-                std.header(sort: sort)
+                if not sorts.is_empty() {
+                    std.sorts(order, sorts)
+                }
             }
             content: {
                 browse_rows(shown, opened, empty, kind.icon, entry, entry_placeholder) { x ->
@@ -300,22 +304,33 @@ view outline<T>(
     }
 }
 
-/// A window's own controls, before the actions the host puts in the bar: the sort menu, and
-/// `extra`, a page's controls. The window's actions come from what its type declares, and the
-/// host places them after these: its primary action as the labelled Primary button, a command
-/// that toggles a state of the window's resource as a control of its own, and all the rest
-/// behind the bar's one menu, so every action stays reachable at every width without the view
-/// having read them.
-view header<S>(sort: Option<State<S>> = .none, extra: View) {
-    if let s = sort {
-        ui.MenuButton(phrase("tilolang-sort"), icon: .arrow_up_down, icon_only: true) {
-            for c in cases(S) {
-                ui.MenuItem(c.label(), checked: c == s) {
-                    on choose: set(s, c)
-                }
+/// The orders a window offers, in its bar: the list's own order first, called `everything`, then
+/// each field the app named, its entry saying the field's label. The one chosen is the window's
+/// `chosen` order; none of them is the list as the store keeps it. A window lists the orders its
+/// app declares, never every field its item type has.
+template view sorts<T>(
+    chosen: State<Option<Sort<T>>>,
+    of: List<Sort<T>>,
+    everything: Text = phrase("tilolang-order-default"),
+) {
+    ui.MenuButton(phrase("tilolang-sort"), icon: .arrow_up_down, icon_only: true) {
+        ui.MenuItem(everything, checked: chosen == .none) {
+            on choose: set(chosen, .none)
+        }
+        for s in of {
+            ui.MenuItem(s.label, checked: chosen == .some(s)) {
+                on choose: set(chosen, .some(s))
             }
         }
     }
+}
+
+/// A window's own controls, before the actions the host puts in the bar: `extra`, a page's
+/// controls. The window's actions come from what its type declares, and the host places them
+/// after these: its primary action as the labelled Primary button, a command that toggles a
+/// state of the window's resource as a control of its own, and all the rest behind the bar's one
+/// menu, so every action stays reachable at every width without the view having read them.
+template view header(extra: View) {
     extra
 }
 

@@ -377,7 +377,8 @@ impl Core {
             RecNew, RecSetF, RecSetH, RecSetI, RefEq, RefId, RefIs, RefLit, ResAddF, ResAddI,
             ResGetF, ResGetH, ResGetI, ResSetF, ResSetH, ResSetI, ResTextSet, ResourceRef,
             RichEmpty, RichNew, RichPart, RichTime, RunChanges, SetAdd, SetRemove, Single, SomeF,
-            SomeH, SomeI, SpaceF, SpaceI, Speakers, StateAt, StateGet, Steps, StrCmp, StrConcat,
+            SomeH, SomeI, SortLit, SpaceF, SpaceI, Speakers, StateAt, StateGet, Steps, StrCmp,
+            StrConcat,
             StrContains, StrEndsWith, StrEq, StrFind, StrJoin, StrLen, StrLit, StrLower,
             StrMatches, StrReplace, StrSlice, StrSplit, StrStartsWith, StrToInt, StrTrim, StrUpper,
             Suggest, Take, TimeDay, TimeOfDay, TimeParse, TimeShift, TimeSpan, Today, TryInvoke,
@@ -408,7 +409,7 @@ impl Core {
             }
             CollOrdered => self.ret_h(self.coll_ordered(a.h(0)?, a.h(1)?)?),
             Query => self.ret_h(self.query_import(a.h(0)?, a.h(1)?, a.h(2)?, a.h(3)?)?),
-            Filters | FilterLit => self.catalogue_import(imp, a),
+            Filters | FilterLit | SortLit => self.catalogue_import(imp, a),
             IdentPart => self.ret_h(self.ident_part(a.h(0)?, a.h(1)?)?),
             Today | TimeDay | TimeOfDay | TimeSpan | DayShift | DayPart | DayWeekday
             | DayStartOfWeek | DayParse | TimeParse | WallClock => self.time_import(imp, a),

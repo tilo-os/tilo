@@ -80,6 +80,7 @@ tilolang-selected = { $count ->
 }
 tilolang-clear-selection = Auswahl aufheben
 tilolang-sort = Sortieren
+tilolang-order-default = Standard
 tilolang-undo = Rückgängig
 tilolang-typing-unplaced = Keine Eingabe hat übernommen, was du getippt hast: „{ $typed }“
 tilolang-did = { $action }: { $title }

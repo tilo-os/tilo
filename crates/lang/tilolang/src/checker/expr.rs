@@ -195,9 +195,10 @@ impl Checker<'_> {
                     self.not_a_value_of_import(&alias, &name.name, e.span);
                     return Ex::error();
                 }
-                // `Task.today`: a filter the type declares, as the value a query takes.
+                // `Task.today`: a filter the type declares, as the value a query takes; where
+                // a sort is asked (`sorts: [Task.due]`), the order by a field it has.
                 if let Some(Ty::Record(key)) = self.type_named(base)
-                    && let Some(ex) = self.filter_value(&key, name, None, e.span)
+                    && let Some(ex) = self.type_member(&key, name, exp, e.span)
                 {
                     return ex;
                 }
@@ -772,10 +773,14 @@ impl Checker<'_> {
             Ty::Int | Ty::Float | Ty::Bool | Ty::Choice(_) | Ty::Duration => {
                 Ex::new(Ek::Bin(ir::BinOp::Eq, Box::new(l), Box::new(r)), Ty::Bool)
             }
-            // Enums, options, results, tuples and lists compare by value, payloads included.
-            Ty::Enum(_) | Ty::Option(_) | Ty::Result(..) | Ty::Tuple(_) | Ty::List(_) => {
-                Ex::host(Imp::ValueEq, vec![l, r], Ty::Bool)
-            }
+            // Enums, options, results, tuples and lists compare by value, payloads included;
+            // sorts and the options they are chosen as, by the entry they hold.
+            Ty::Enum(_)
+            | Ty::Option(_)
+            | Ty::Result(..)
+            | Ty::Tuple(_)
+            | Ty::List(_)
+            | Ty::Sort(_) => Ex::host(Imp::ValueEq, vec![l, r], Ty::Bool),
             // Filters compare by the query they ask: the filter `Task.inbox` and the entry
             // `filters(Task)` lists for it are the same.
             Ty::Filter(_) => Ex::host(
@@ -929,6 +934,14 @@ impl Checker<'_> {
             // A filter's fields: what a query names it by, what a control shows, what it asks.
             Ty::Filter(_) => {
                 let key = super::platform::host_ty("Filter");
+                let Ty::Record(key) = key else {
+                    return Ex::error();
+                };
+                self.value_field(b, &key, name).unwrap_or_else(Ex::error)
+            }
+            // A sort's: what its menu entry says, and the order it asks.
+            Ty::Sort(_) => {
+                let key = super::platform::host_ty("Sort");
                 let Ty::Record(key) = key else {
                     return Ex::error();
                 };
