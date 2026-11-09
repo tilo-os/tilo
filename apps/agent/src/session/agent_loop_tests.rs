@@ -182,36 +182,6 @@ fn completed_stream_frames_cannot_dispatch_before_a_failed_final_response() {
         runtime_collab::TaskRunUpdate::Failed { message } if message.contains("provider stream reset")));
 }
 
-#[test]
-fn malformed_later_calls_prevent_the_entire_batch_from_dispatching() {
-    let mut f = fixture(
-        "write hello",
-        World::default(),
-        vec![turn(
-            &[
-                invoke("type-text", &serde_json::json!({"text": "Do not write"})),
-                (
-                    tools::LIST_OPERATIONS,
-                    serde_json::json!({"application": false}),
-                ),
-            ],
-            6,
-        )],
-    );
-    f.session.run_task(&f.run).unwrap();
-    assert!(f.world.borrow().steps.is_empty());
-    assert!(
-        !f.sent
-            .borrow()
-            .iter()
-            .any(|request| matches!(request, CollabRequest::InvokeTaskAction { .. }))
-    );
-    assert!(matches!(
-        terminal(&f.sent.borrow()),
-        runtime_collab::TaskRunUpdate::Failed { .. }
-    ));
-}
-
 /// Answers each turn with the next scripted event list and records the
 /// request bodies, like the gateway but without a network.
 #[derive(Default)]
@@ -1622,6 +1592,8 @@ mod anthropic_dialect;
 mod follow_up;
 #[path = "agent_loop/tests/long_run.rs"]
 mod long_run;
+#[path = "agent_loop/tests/malformed_calls.rs"]
+mod malformed_calls;
 #[path = "agent_loop/tests/native_pipeline.rs"]
 mod native_pipeline;
 #[path = "agent_loop/tests/pictures.rs"]
