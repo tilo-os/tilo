@@ -251,6 +251,19 @@ pub(crate) fn interaction_bounds(
     candidates.next().is_none().then_some(only)
 }
 
+/// The node [`interaction_bounds`] finds `interaction` on, the deepest one
+/// a widget owns: what following its actor brings into view.
+pub(crate) fn interaction_node<'tree>(
+    tree: &'tree crate::a11y_tree::SemanticTree,
+    bindings: &[crate::widget::ControlBindingMetadata],
+    interaction: &tilo_actions::SemanticInteraction,
+) -> Option<&'tree crate::a11y_tree::SemanticNode> {
+    let bounds = interaction_bounds(tree, bindings, interaction)?;
+    tree.iter()
+        .filter(|node| node.bounds == Some(bounds) && node.widget_taffy_id.is_some())
+        .last()
+}
+
 /// The control an invocation on `locus` is acted through: the one its address
 /// is bound to, or else the toggle the item holds. `None` when the frame
 /// names none, so the marker rests on the locus itself.

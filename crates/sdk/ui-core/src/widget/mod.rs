@@ -1704,11 +1704,12 @@ pub trait Widget {
         None
     }
 
-    /// Reveal a newly keyboard-focused descendant inside any enclosing
-    /// viewport. Containers override this to scroll; ordinary widgets simply
-    /// recurse toward the target and report whether it was found.
-    fn reveal_descendant(&mut self, target: *const dyn Widget) -> bool {
-        defaults::reveal_descendant(self.children_mut(), target)
+    /// Show `rect` of the descendant `target` (its own rect, or the part of
+    /// it to show, as laid out) inside every enclosing viewport. Containers
+    /// override this to scroll; ordinary widgets simply recurse toward the
+    /// target and report whether it was found.
+    fn reveal_descendant(&mut self, target: *const dyn Widget, rect: vello::kurbo::Rect) -> bool {
+        defaults::reveal_descendant(self.children_mut(), target, rect)
     }
 
     /// Named hit rects for widgets that paint several affordances into one

@@ -6363,7 +6363,8 @@ mod tests {
             })
             .expect("confirmation layout node");
         assert!(
-            account.reveal_descendant(target),
+            // SAFETY: as above, the node is in the live, unchanged tree.
+            account.reveal_descendant(target, unsafe { (*target).get_rect() }),
             "focus reveal must find the input"
         );
         let nodes = layout_with_theme(&mut account, 800.0, 600.0, theme);
@@ -6389,7 +6390,8 @@ mod tests {
                 unsafe { (*widget).test_id() == Some("Next") }
             })
             .expect("Next layout node");
-        assert!(account.reveal_descendant(next_target));
+        // SAFETY: as above.
+        assert!(account.reveal_descendant(next_target, unsafe { (*next_target).get_rect() }));
         assert_eq!(
             account.viewport_offset.get(),
             offset,

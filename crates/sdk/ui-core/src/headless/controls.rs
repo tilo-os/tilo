@@ -21,6 +21,16 @@ use accesskit::{Action as AkAction, Role};
 /// Resource id prefix of a projected control (`ui:<percent-encoded node>`).
 pub const CONTROL_RESOURCE_PREFIX: &str = "ui:";
 
+/// How far following someone has brought a frame's view: the newest action
+/// of theirs it went to, whether it was shown, and whether its view had to be
+/// opened first. A follower starts a new one each time they follow.
+#[derive(Debug, Default)]
+pub struct FollowedView {
+    invocation: Option<tilo_actions::InvocationId>,
+    shown: bool,
+    opened: bool,
+}
+
 /// One control as the exported accessibility tree carries it now.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Control {
@@ -143,6 +153,88 @@ impl FrameHarness {
     pub fn semantic_locus(&self, interaction: &tilo_actions::SemanticInteraction) -> Option<Rect> {
         let (tree, bindings) = self.retained_action_geometry()?;
         crate::action_locus::interaction_bounds(&tree, &bindings, interaction)
+    }
+
+    /// Bring the view to where `actor` acts, while this frame follows them:
+    /// the control their newest action here is bound to scrolls into view;
+    /// where no view here shows it (another sheet, tab or page), the nearest
+    /// view its resource publishes is opened through its own action, and the
+    /// control is scrolled to once that view is laid out. Each action is gone
+    /// to once, so the follower can look around until the next one. Answers
+    /// whether the view moved.
+    pub fn follow_view(&mut self, actor: &str, followed: &mut FollowedView) -> bool {
+        let Some(interaction) = self
+            .presence
+            .agent_marker_interactions(crate::time::now())
+            .into_iter()
+            .find(|interaction| interaction.actor.id == actor)
+        else {
+            return false;
+        };
+        if followed.invocation != Some(interaction.invocation) {
+            *followed = FollowedView {
+                invocation: Some(interaction.invocation),
+                ..FollowedView::default()
+            };
+        }
+        if followed.shown {
+            return false;
+        }
+        let locus = self
+            .retained_action_geometry()
+            .and_then(|(tree, bindings)| {
+                let node = crate::action_locus::interaction_node(&tree, &bindings, &interaction)?;
+                Some((node.widget_taffy_id?, node.bounds?))
+            });
+        if let Some((owner, bounds)) = locus {
+            followed.shown = true;
+            let Some(&widget) = self.node_map.get(&taffy::NodeId::from(owner)) else {
+                return false;
+            };
+            let moved = self.root.reveal_descendant(widget.cast_const(), bounds);
+            if moved {
+                self.relayout();
+            }
+            return moved;
+        }
+        if followed.opened {
+            return false;
+        }
+        followed.opened = true;
+        self.open_view_of(&interaction.resource.id)
+    }
+
+    /// Open the view nearest `resource` that the published resources offer
+    /// (its own, else its closest parent's), as a person choosing it would.
+    fn open_view_of(&mut self, resource: &str) -> bool {
+        fn nearest(resources: &[tilo_actions::ResourceSpec], id: &str) -> Option<(String, String)> {
+            resources.iter().find_map(|spec| {
+                let own = || {
+                    let view = spec
+                        .views
+                        .iter()
+                        .find(|view| view.primary)
+                        .or_else(|| spec.views.first())?;
+                    Some((spec.id.as_str().to_owned(), view.open_action.clone()))
+                };
+                if spec.id.as_str() == id {
+                    return own();
+                }
+                let child = spec
+                    .children
+                    .iter()
+                    .any(|child| child.id.as_str() == id || nearest(&child.children, id).is_some());
+                child
+                    .then(|| nearest(&spec.children, id).or_else(own))
+                    .flatten()
+            })
+        }
+        let Some((owner, open)) = nearest(&self.resources(), resource) else {
+            return false;
+        };
+        let address = tilo_actions::ActionAddress::new(owner, open);
+        self.invoke_action(&address, &serde_json::Map::new(), false, None)
+            .is_ok()
     }
 
     /// Resolve only a currently mounted publication owner, exact app instance
@@ -1126,6 +1218,86 @@ mod locus_tests {
             .unwrap();
         assert!(!frame.history.as_ref().unwrap().live_visible());
         assert!(frame.semantic_locus(&interaction("first")).is_none());
+    }
+
+    /// An agent's action, shown as if it arrived a second ago.
+    fn agent_acting(frame: &mut FrameHarness, resource: &str) -> tilo_actions::SemanticInteraction {
+        let mut event = interaction(resource);
+        event.actor.id = "scribe".into();
+        event.actor.kind = tilo_actions::ActorKind::Agent;
+        let at = crate::time::now()
+            .checked_sub(crate::time::Duration::from_secs(1))
+            .expect("the clock is later than a second ago");
+        frame.update_presence(|presence| presence.apply_interaction_at(event.clone(), at).is_ok());
+        event
+    }
+
+    /// Following an agent that edits far down a long document scrolls the
+    /// view to its edit, once per action; following someone else moves
+    /// nothing.
+    #[test]
+    fn following_an_agent_scrolls_to_its_edit_further_down() {
+        let resource = resource_actions::resource("doc", "Long document", "edit", "Edit");
+        let binding = tilo_actions::ActionBinding::unit_for(&resource, "edit").unwrap();
+        let content = Column::new()
+            .push(Box::new(crate::widget::Spacer::fixed(2000.0)))
+            .push(Box::new(
+                Button::new("far", "Far paragraph").on_action(binding),
+            ));
+        let root = crate::widget::Scrollable::new(crate::widget::ScrollAxis::Vertical).with_child(
+            resource_actions::immediate(Box::new(content), resource, |_| {
+                Ok(tilo_actions::ActionOutput::default())
+            }),
+        );
+        let mut frame = FrameHarness::new(State::new(), Box::new(root), (400, 240));
+        frame.relayout();
+        let event = agent_acting(&mut frame, "doc:root");
+        let view = Rect::new(0.0, 0.0, 400.0, 240.0);
+        let edit = frame.semantic_locus(&event).expect("the edit's control");
+        assert!(edit.y0 > view.y1, "the edit starts out of view: {edit:?}");
+        assert!(!frame.follow_view("someone-else", &mut FollowedView::default()));
+        assert_eq!(
+            frame.semantic_locus(&event),
+            Some(edit),
+            "not following moves nothing"
+        );
+        let mut followed = FollowedView::default();
+        assert!(frame.follow_view("scribe", &mut followed));
+        let edit = frame.semantic_locus(&event).expect("the edit's control");
+        assert!(
+            view.contains(edit.origin()) && edit.y1 <= view.y1,
+            "in view: {edit:?}"
+        );
+        assert!(
+            !frame.follow_view("scribe", &mut followed),
+            "each action is gone to once"
+        );
+    }
+
+    /// An agent acting in a sheet no view here shows opens that sheet's own
+    /// view, once.
+    #[test]
+    fn following_an_agent_into_another_sheet_opens_it() {
+        let mut resource = resource_actions::resource("sheet", "Sheet 2", "open", "Open");
+        resource.views.push(tilo_actions::ResourceViewSpec::new(
+            "sheet", "Sheet 2", "open",
+        ));
+        let opened = Rc::new(Cell::new(0));
+        let count = opened.clone();
+        let root = resource_actions::immediate(Box::new(Column::new()), resource, move |_| {
+            count.set(count.get() + 1);
+            Ok(tilo_actions::ActionOutput::default())
+        });
+        let mut frame = FrameHarness::new(State::new(), root, (400, 240));
+        frame.relayout();
+        agent_acting(&mut frame, "sheet:root");
+        let mut followed = FollowedView::default();
+        assert!(!frame.follow_view("someone-else", &mut FollowedView::default()));
+        assert_eq!(opened.get(), 0, "not following switches nothing");
+        assert!(frame.follow_view("scribe", &mut followed));
+        assert_eq!(opened.get(), 1, "the sheet's view opened");
+        assert!(!frame.follow_view("scribe", &mut followed));
+        assert_eq!(opened.get(), 1, "opened once");
     }
 
     #[test]

@@ -193,6 +193,24 @@ impl Mount {
     }
 
     /// The board's members as the desktop's roster reads them.
+    /// While this page follows an agent, the view inside the window it
+    /// works in goes where it acts: the bound control of its newest action
+    /// scrolls into view, in the sheet, tab or page that shows it. Nobody
+    /// followed, nothing moves the person's view.
+    pub(super) fn follow_view(&mut self) {
+        let Some(desktop) = &self.desktop else {
+            return;
+        };
+        let Some(followed) = desktop.here.borrow().following().map(str::to_owned) else {
+            self.followed_view = ui::headless::FollowedView::default();
+            return;
+        };
+        if self.frame.follow_view(&followed, &mut self.followed_view) {
+            self.pending = true;
+            self.window.request_redraw();
+        }
+    }
+
     fn here_from(&mut self, view: &BoardView) {
         let Some(desktop) = &self.desktop else {
             return;

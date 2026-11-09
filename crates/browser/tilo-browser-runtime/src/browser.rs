@@ -445,6 +445,8 @@ pub(crate) struct Mount {
     window: Arc<Window>,
     canvas: web_sys::HtmlCanvasElement,
     frame: FrameHarness,
+    /// How far following an agent brought the view inside its window.
+    followed_view: ui::headless::FollowedView,
     media: ui::headless::host_media::MediaLane,
     store: Rc<durable_store::MemoryStore>,
     /// Every package record owner the mount opened, flushed together.
@@ -1626,6 +1628,7 @@ fn begin(event_loop: &ActiveEventLoop, id: u64, request: Request) -> Result<(), 
         error: None,
         oversized_scene: false,
         skipped_frame: false,
+        followed_view: ui::headless::FollowedView::default(),
         here_stale: false,
         workspace: config.workspace.clone(),
         theme_seen: crate::page_theme::generation(),
@@ -2125,6 +2128,7 @@ impl Mount {
         }
         // A window the last frame opened shows what its open named.
         self.reveal_opened();
+        self.follow_view();
         if dom::shows(self.id) {
             return self.draw_dom();
         }

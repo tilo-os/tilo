@@ -1937,14 +1937,15 @@ impl Widget for Scrollable {
         Some(self)
     }
 
-    fn reveal_descendant(&mut self, target: *const dyn Widget) -> bool {
+    fn reveal_descendant(&mut self, target: *const dyn Widget, rect: Rect) -> bool {
         let Some(child) = &mut self.child else {
             return false;
         };
-        if !child.reveal_descendant(target) {
+        if !std::ptr::addr_eq(std::ptr::from_ref::<dyn Widget>(child.as_ref()), target)
+            && !child.reveal_descendant(target, rect)
+        {
             return false;
         }
-        let rect = child.get_rect();
         let viewport = self.content_viewport_rect();
         let x = crate::num::f32_of_f64(rect.x0 - viewport.x0 + f64::from(self.offset_x));
         let y = crate::num::f32_of_f64(rect.y0 - viewport.y0 + f64::from(self.offset_y));
