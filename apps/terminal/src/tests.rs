@@ -498,7 +498,7 @@ fn hosted_service_sockets_are_probed_and_never_fall_back() {
 fn session_record_at(target: &crate::target::SessionTarget) -> AutoCommit {
     let mut record = ui::tilo_resource::Replica::<crate::resource::Terminal>::new();
     record
-        .apply(crate::resource::Terminal::RECORD_TARGET.with(target.encode()))
+        .apply(crate::resource::Terminal::RECORD_TARGET.with((target.encode(), None::<String>)))
         .expect("the target is recorded");
     record.doc().clone()
 }
@@ -2750,7 +2750,10 @@ fn terminal_resource_identity_convergence_and_presence() {
         let mut right = left.fork();
         for replica in [&mut left, &mut right] {
             replica
-                .apply(crate::resource::Terminal::CLAIM_PANE.with(uuid::Uuid::new_v4().to_string()))
+                .apply(
+                    crate::resource::Terminal::CLAIM_PANE
+                        .with((uuid::Uuid::new_v4().to_string(), None::<String>)),
+                )
                 .unwrap();
         }
         left.sync_with(&mut right)

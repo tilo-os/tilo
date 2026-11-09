@@ -23,6 +23,10 @@ pub enum OpenState {
     Opening,
     /// A session is attached.
     Open,
+    /// Another device's process, or another participant's, runs the
+    /// session: the tab shows it and starts a shell of its own only when
+    /// the person asks (Restart shell).
+    Joined,
     /// The device's own shell needs the person's allow; the shell is asking.
     AwaitingAllow,
     /// The target could not be opened; the reason is shown on the tab.

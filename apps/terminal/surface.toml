@@ -8,6 +8,8 @@ fields = [
   { path = "target", type = "Option<Atom>", readonly = true },
   { path = "relay_session", type = "Option<Atom>", readonly = true },
   { path = "pane", type = "Option<Atom>", readonly = true },
+  { path = "device", type = "Option<Atom>", readonly = true },
+  { path = "holder", type = "Option<Atom>", readonly = true },
   { path = "runs", type = "Collection<Run>", readonly = true, stored = "collection" },
   { path = "runs.*.command", type = "Atom", label = true },
   { path = "runs.*.cwd", type = "Atom" },
@@ -75,6 +77,7 @@ id = "record-target"
 kind = "undoable"
 params = [
   { name = "target", required = true, schema = { type = "string" } },
+  { name = "device", required = false, schema = { type = ["string", "null"] } },
 ]
 
 [[resources.verbs]]
@@ -89,6 +92,7 @@ id = "claim-pane"
 kind = "undoable"
 params = [
   { name = "pane", required = true, schema = { type = "string" } },
+  { name = "device", required = false, schema = { type = ["string", "null"] } },
 ]
 
 [[resources]]

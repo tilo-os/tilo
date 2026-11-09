@@ -469,6 +469,13 @@ pub struct TerminalWidget {
     local_session: Option<String>,
     /// The relay session the record says this session re-attaches to.
     recorded_relay_session: Option<String>,
+    /// The device this terminal runs on and who uses it, as its window
+    /// says; `None` where the host does not say (a terminal an editor
+    /// starts in its panel), which then treats every session as its own.
+    here: Option<Here>,
+    /// The record says the session is set up in another device's window, or
+    /// another participant's: this terminal joins it instead of starting one.
+    runs_elsewhere: bool,
 
     /// True while the alternate screen is the active buffer.
     alt_active: bool,
@@ -654,6 +661,13 @@ pub struct TerminalWidget {
     run_action: Option<ui::tilo_actions::ActionAddress>,
 }
 
+/// The device a terminal runs on and who uses it there: a session set up
+/// by them on it is this terminal's own to start again.
+struct Here {
+    device: String,
+    me: String,
+}
+
 /// The person's command history this terminal adds its runs to.
 struct RunHistory {
     record: ui::framework::PersonRecord<crate::history::CommandHistory>,
@@ -793,6 +807,8 @@ impl TerminalWidget {
             recorded_target: None,
             local_session: None,
             recorded_relay_session: None,
+            here: None,
+            runs_elsewhere: false,
             alt_active: false,
             modes: TermModes::default(),
             scroll_offset: 0,
@@ -859,7 +875,8 @@ impl TerminalWidget {
     fn begin_local_session(&mut self) {
         self.local_session = Some(uuid::Uuid::new_v4().to_string());
         self.pane_id = uuid::Uuid::new_v4().to_string();
-        self.submit(crate::resource::Terminal::CLAIM_PANE.with(self.pane_id.clone()));
+        let device = self.here_device();
+        self.submit(crate::resource::Terminal::CLAIM_PANE.with((self.pane_id.clone(), device)));
         self.begin_runs();
         self.emulating = true;
         self.emulator = crate::emulator::Emulator::new(self.width, self.height);
@@ -874,6 +891,22 @@ impl TerminalWidget {
         if let Ok(mut current) = self.waker.lock() {
             *current = waker;
         }
+    }
+
+    /// This terminal runs on `device`, used by `me`: a session another
+    /// device or participant set up is joined, not started again
+    /// ([`crate::resource::Terminal::runs_elsewhere`]).
+    pub(crate) fn runs_on(&mut self, device: &str, me: &str) {
+        self.here = Some(Here {
+            device: device.to_owned(),
+            me: me.to_owned(),
+        });
+    }
+
+    /// The device this terminal says its session is set up on, when its
+    /// host said.
+    pub(crate) fn here_device(&self) -> Option<String> {
+        self.here.as_ref().map(|here| here.device.clone())
     }
 
     /// Color used for the block cursor on the last `draw`. Test-only accessor
@@ -1214,6 +1247,7 @@ impl TerminalWidget {
             OpenState::Unopened => ("unopened", None),
             OpenState::Opening => ("opening", None),
             OpenState::Open => ("open", None),
+            OpenState::Joined => ("joined", None),
             OpenState::AwaitingAllow => ("awaiting_allow", None),
             OpenState::Failed(reason) => ("failed", Some(reason.as_str())),
             OpenState::NoRuntime(reason) => ("no_runtime", Some(reason.as_str())),
@@ -2945,6 +2979,10 @@ impl TerminalWidget {
         self.runs.session = Some(std::rc::Rc::clone(state));
         self.recorded_target = state.session_target();
         self.recorded_relay_session = state.relay().map(str::to_owned);
+        self.runs_elsewhere = self
+            .here
+            .as_ref()
+            .is_some_and(|here| state.runs_elsewhere(&here.device, &here.me));
         if !state.pane_id().is_empty() {
             state.pane_id().clone_into(&mut self.pane_id);
         }

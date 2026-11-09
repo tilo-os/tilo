@@ -232,6 +232,7 @@ pub fn terminal(action: <terminal::resource::Terminal as Resource>::Action) -> A
         TerminalAction::RecordTarget(record) => {
             ProjectAction::RecordTerminalTarget(project::project::RecordTerminalTarget {
                 target: record.target,
+                device: record.device,
             })
         }
         TerminalAction::RecordRelaySession(record) => {
@@ -242,6 +243,7 @@ pub fn terminal(action: <terminal::resource::Terminal as Resource>::Action) -> A
         TerminalAction::ClaimPane(claim) => {
             ProjectAction::ClaimTerminalPane(project::project::ClaimTerminalPane {
                 pane: claim.pane,
+                device: claim.device,
             })
         }
         TerminalAction::Run(run) => ProjectAction::RunInTerminal(project::project::RunInTerminal {

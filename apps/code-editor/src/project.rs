@@ -396,15 +396,18 @@ impl Project {
 
     /// Record terminal target
     ///
-    /// Record where the embedded terminal's session runs.
+    /// Record where the embedded terminal's session runs, and the window
+    /// it is set up in.
     #[action(external, id = "record-target", audience = "agents")]
     pub fn record_terminal_target(
         &mut self,
+        cx: &mut ActionCx,
         #[param("An encoded session target")] target: String,
+        #[param("The device of the window that sets the session up")] device: Option<String>,
     ) -> Result<(), Refusal> {
         self.terminal_panel
             .get_or_insert_with(Terminal::default)
-            .record_target(target)
+            .record_target(cx, target, device)
     }
 
     /// Record terminal relay session
@@ -423,15 +426,18 @@ impl Project {
 
     /// Claim terminal pane
     ///
-    /// Scope presence to a new process's pane of the embedded terminal.
+    /// Scope presence to a new process's pane of the embedded terminal,
+    /// and say where that process runs.
     #[action(external, id = "claim-pane", audience = "agents")]
     pub fn claim_terminal_pane(
         &mut self,
+        cx: &mut ActionCx,
         #[param("The pane's id")] pane: String,
+        #[param("The device the process runs on")] device: Option<String>,
     ) -> Result<(), Refusal> {
         self.terminal_panel
             .get_or_insert_with(Terminal::default)
-            .claim_pane(pane)
+            .claim_pane(cx, pane, device)
     }
 
     /// Run in terminal

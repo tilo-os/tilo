@@ -298,6 +298,79 @@ fn run_takes_one_command_line_for_a_running_session() {
     settle_until(&mut app, |state| state.runs.len() == 1);
 }
 
+/// A terminal opened on a session another device's process runs joins it:
+/// it starts no shell and claims no pane, so it writes nothing to a record
+/// it only opened, and a run asked of the record still reaches the process
+/// that runs the session. Reopened where it ran, a session is its own to
+/// start again; a joined one starts here only when the person asks.
+#[test]
+fn a_terminal_joining_a_session_run_elsewhere_claims_nothing_and_runs_reach_its_process() {
+    use std::cell::RefCell;
+    use std::rc::Rc;
+    use ui::widget::Widget as _;
+
+    let (mut app, _print, lines) = marked_session("");
+    settle_until(&mut app, |state| !state.pane_id().is_empty());
+    let session = Rc::new(app.state());
+    let device = session
+        .device
+        .clone()
+        .expect("the claim names its device")
+        .0;
+    let holder = session.holder.clone().expect("and who started it").0;
+    assert!(
+        !session.runs_elsewhere(&device, &holder),
+        "reopened where it ran, the session is its own"
+    );
+    assert!(session.runs_elsewhere("laptop", &holder));
+    assert!(session.runs_elsewhere(&device, "person:bea"));
+
+    // The same person opens the session on their laptop.
+    let opened = Rc::new(RefCell::new(0_u32));
+    let count = Rc::clone(&opened);
+    let mut joined = crate::TerminalWidget::spawn_headless().unwrap();
+    joined.set_sessions(Sessions::scripted(RecentTarget::none(), move |_, _, _| {
+        *count.borrow_mut() += 1;
+        Ok(crate::inner::TerminalBackend::for_test())
+    }));
+    joined.runs_on("laptop", &holder);
+    let queue = crate::runs::RunQueue::default();
+    joined.run_through(queue.clone());
+    joined.present_session(&session);
+    let doc = automerge::AutoCommit::new();
+    for _ in 0..3 {
+        joined.sync(&doc, &automerge::ROOT);
+    }
+    assert_eq!(*opened.borrow(), 0, "joining starts no shell");
+    assert_eq!(joined.session_state(), &crate::sessions::OpenState::Joined);
+    let read = joined.read_session();
+    assert_eq!(
+        read["session"],
+        serde_json::Value::Null,
+        "no process of its own"
+    );
+    assert_eq!(
+        read["pane"],
+        session.pane_id(),
+        "its presence is the running session's"
+    );
+    assert!(
+        !queue.runs(session.pane_id()),
+        "the runs are not its to answer"
+    );
+
+    // A run asked of the record reaches the process that runs it.
+    app.call("run", serde_json::json!({ "command": "echo joined" }))
+        .expect("runs");
+    assert_eq!(typed_line(&mut app, &lines), "echo joined");
+    settle_until(&mut app, |state| state.runs.len() == 1);
+
+    // Asked to, the joined terminal runs a shell of its own.
+    assert!(joined.can_restart());
+    joined.restart_session().expect("a shell here");
+    assert_eq!(*opened.borrow(), 1);
+}
+
 /// Runs of two sessions are one history: the person's own record keeps
 /// both, each naming its session and run and who ran it, and its search
 /// finds a command whichever session ran it.

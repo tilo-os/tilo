@@ -8,6 +8,7 @@ terminal-start-failed-title = Die Shell konnte nicht starten
 terminal-start-retry = Erneut versuchen
 terminal-prompt = Befehlszeile
 terminal-restart = Shell neu starten
+terminal-runs-elsewhere = Die Shell dieser Sitzung läuft auf einem anderen Gerät oder für jemand anderen. „Shell neu starten“ startet hier eine.
 terminal-reconnecting = Verbindung wird wiederhergestellt…
 terminal-held-title = Dafür braucht es eine Linux-Maschine.
 terminal-held-add-card-message = Füge eine Karte hinzu, um fortzufahren.

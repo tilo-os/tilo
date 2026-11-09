@@ -8,6 +8,7 @@ terminal-start-failed-title = The shell couldn’t start
 terminal-start-retry = Try again
 terminal-prompt = Command line
 terminal-restart = Restart shell
+terminal-runs-elsewhere = This session's shell runs on another device or for someone else. Restart shell to run one here.
 terminal-reconnecting = Reconnecting…
 terminal-held-title = This needs a Linux machine.
 terminal-held-add-card-message = Add a card to continue.
