@@ -10,9 +10,7 @@ use tilo_endpoint_reachability::Reachability;
 use tilo_network_actor::{HostIdentity, NetCmd, NetEvent};
 
 use super::adopt::{enter, redeem};
-use super::{
-    ChannelLink, DeviceActions, Engine, Enrolled, Outgoing, carry_out, endpoint_for, heard,
-};
+use super::{ChannelLink, Cmd, DeviceActions, Engine, Enrolled, carry_out, endpoint_for, heard};
 
 /// The runtime the collaboration plane's thread runs on: two workers of its own, so what the plane
 /// settles never waits behind what a session shows.
@@ -103,7 +101,7 @@ struct Listening {
 pub(super) fn run(
     identity: Option<HostIdentity>,
     engine: Option<Arc<Engine>>,
-    mut commands: tokio::sync::mpsc::UnboundedReceiver<Outgoing>,
+    mut commands: tokio::sync::mpsc::UnboundedReceiver<Cmd>,
     arrivals: std::sync::mpsc::Sender<NetEvent>,
     enrollments: std::sync::mpsc::Sender<Enrolled>,
     ready: std::sync::mpsc::Sender<Result<(EndpointId, EndpointAddr, Reachability), String>>,
@@ -149,11 +147,11 @@ pub(super) fn run(
         };
         while let Some(command) = commands.recv().await {
             let command = match command {
-                Outgoing::Enroll(request) => {
+                Cmd::Enroll(request) => {
                     asking.ask(Ask::Invitation(request));
                     continue;
                 }
-                Outgoing::Enter(request) => {
+                Cmd::Enter(request) => {
                     asking.ask(Ask::Entry(Box::new(request)));
                     continue;
                 }

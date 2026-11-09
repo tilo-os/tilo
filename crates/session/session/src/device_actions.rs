@@ -477,7 +477,7 @@ mod tests {
     use tilo_user_identity::DeviceCert;
 
     use super::*;
-    use crate::sync::Outgoing;
+    use crate::platform::plane::Cmd;
 
     const WORKSPACE: &str = testing::WORKSPACE;
     /// How long the device asked has to answer before the test fails.
@@ -772,7 +772,7 @@ mod tests {
     struct Content {
         plane: Arc<crate::content::Plane>,
         address: EndpointId,
-        said: tokio::sync::mpsc::UnboundedReceiver<Outgoing>,
+        said: tokio::sync::mpsc::UnboundedReceiver<Cmd>,
     }
 
     impl Content {
@@ -805,15 +805,15 @@ mod tests {
     /// workspace's topic, and an answer to the one device that asked.
     fn carry(
         from: EndpointId,
-        said: &mut tokio::sync::mpsc::UnboundedReceiver<Outgoing>,
+        said: &mut tokio::sync::mpsc::UnboundedReceiver<Cmd>,
         to: &crate::content::Plane,
     ) {
         while let Ok(outgoing) = said.try_recv() {
             match outgoing {
-                Outgoing::Publish { ws, msg } => {
+                Cmd::Publish { ws, msg } => {
                     to.heard(ws, WORKSPACE, from, &msg);
                 }
-                Outgoing::Content(RecordContentDelivery { ws, msg, .. }) => {
+                Cmd::Content(RecordContentDelivery { ws, msg, .. }) => {
                     to.heard(ws, WORKSPACE, from, &msg);
                 }
                 _ => {}

@@ -17,6 +17,9 @@
 #[cfg(target_os = "linux")]
 pub mod session;
 
+/// What a session says to the collaboration plane, as every host carries it.
+pub(crate) mod plane;
+
 /// What a host lists as apps.
 pub mod apps;
 

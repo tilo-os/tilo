@@ -77,10 +77,7 @@ fn list_of(
 }
 
 /// A session in `WORKSPACE` with no transport, and what it would have said.
-fn session(
-    label: &str,
-    user: Option<u8>,
-) -> (Client, tokio::sync::mpsc::UnboundedReceiver<Outgoing>) {
+fn session(label: &str, user: Option<u8>) -> (Client, tokio::sync::mpsc::UnboundedReceiver<Cmd>) {
     let own = OwnPresence {
         label: label.to_owned(),
         user: user.map(person),
@@ -91,7 +88,7 @@ fn session(
     (sync, said)
 }
 
-fn sent(said: &mut tokio::sync::mpsc::UnboundedReceiver<Outgoing>) -> Vec<Outgoing> {
+fn sent(said: &mut tokio::sync::mpsc::UnboundedReceiver<Cmd>) -> Vec<Cmd> {
     let mut commands = Vec::new();
     while let Ok(command) = said.try_recv() {
         commands.push(command);
@@ -897,10 +894,10 @@ fn a_host_is_dialled_before_the_workspaces_it_carries() {
     let commands = sent(&mut said);
     let connect = commands
         .iter()
-        .position(|command| matches!(command, Outgoing::Connect(addr) if addr.id == host));
+        .position(|command| matches!(command, Cmd::Connect(addr) if addr.id == host));
     let join = commands
         .iter()
-        .position(|command| matches!(command, Outgoing::Join(_)));
+        .position(|command| matches!(command, Cmd::Join(_)));
     assert_eq!(connect, Some(0), "the host is dialled first");
     assert_eq!(join, Some(1), "the workspace is joined after its host");
 }
@@ -909,12 +906,12 @@ fn a_host_is_dialled_before_the_workspaces_it_carries() {
 fn taking_part_says_where_this_person_is() {
     let (sync, mut said) = session("Quinten", None);
     let commands = sent(&mut said);
-    assert!(matches!(commands[0], Outgoing::Join(ws) if ws == topic(WORKSPACE)));
+    assert!(matches!(commands[0], Cmd::Join(ws) if ws == topic(WORKSPACE)));
 
     assert!(
         commands
             .iter()
-            .all(|command| !matches!(command, Outgoing::Publish { .. })),
+            .all(|command| !matches!(command, Cmd::Publish { .. })),
         "presence no longer rides the workspace's messages"
     );
     let said = sync.take_said();
@@ -958,7 +955,7 @@ fn leaving_a_workspace_leaves_its_topic() {
     let (sync, mut said) = session("Quinten", None);
     sent(&mut said);
     sync.follow_desktop(&DesktopTree::default());
-    assert!(matches!(sent(&mut said)[0], Outgoing::Leave(ws) if ws == topic(WORKSPACE)));
+    assert!(matches!(sent(&mut said)[0], Cmd::Leave(ws) if ws == topic(WORKSPACE)));
 }
 
 /// What `sync` said on its workspaces' presence tracks since the last call,

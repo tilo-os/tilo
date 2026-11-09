@@ -153,7 +153,7 @@ mod tests {
     use tilo_user_identity::{DeviceCapabilities, DeviceCert};
 
     use super::*;
-    use crate::sync::Outgoing;
+    use crate::platform::plane::Cmd;
 
     /// One of the person's devices' certificates, signed by their root.
     fn certificate(root: &SigningKey, n: u8, now: SystemTime) -> DeviceCert {
@@ -202,7 +202,7 @@ mod tests {
         let mut dialled = Vec::new();
         while let Ok(command) = commands.try_recv() {
             match command {
-                Outgoing::ConnectDevice(addr) => dialled.push(*addr.id.as_bytes()),
+                Cmd::ConnectDevice(addr) => dialled.push(*addr.id.as_bytes()),
                 other => panic!("a sibling dial sent something else: {other:?}"),
             }
         }

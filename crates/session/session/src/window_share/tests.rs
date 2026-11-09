@@ -61,7 +61,8 @@ use wayland_protocols_misc::zwp_input_method_v2::client::{
 };
 
 use super::SHARES_RESOURCE;
-use crate::sync::{Client, Outgoing, OwnPresence};
+use crate::platform::plane::Cmd;
+use crate::sync::{Client, OwnPresence};
 use crate::{Options, Session};
 
 type Arguments = serde_json::Map<String, Value>;
@@ -180,7 +181,7 @@ fn governed(mut desk: DesktopTree, owner: &str, members: &[(String, Role)]) -> D
 struct Member {
     session: Session,
     sync: Rc<Client>,
-    said: UnboundedReceiver<Outgoing>,
+    said: UnboundedReceiver<Cmd>,
 }
 
 fn member(seed: u8, desk: DesktopTree) -> Member {
@@ -280,12 +281,12 @@ fn said(from: &Member, ws: Topic, msg: NeighbourMsg) -> NetEvent {
 fn carry(from: &mut Member, to: &Member) {
     while let Ok(outgoing) = from.said.try_recv() {
         match outgoing {
-            Outgoing::PublishSurfaceTo { ws, msg, viewers } => {
+            Cmd::PublishSurfaceTo { ws, msg, viewers } => {
                 if viewers.contains(&to.sync.peer()) {
                     to.sync.hear(said(from, ws, *msg));
                 }
             }
-            Outgoing::SendControl { ws, msg, target } if target == to.sync.publisher() => {
+            Cmd::SendControl { ws, msg, target } if target == to.sync.publisher() => {
                 to.sync.hear(said(from, ws, *msg));
             }
             _ => {}

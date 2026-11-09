@@ -1,29 +1,10 @@
-//! Who is here with this person: the session as a client of the
-//! collaboration plane.
+//! This desktop's transport of the collaboration plane: the peer actor on an iroh endpoint, on the
+//! device's own collaboration key, and what it carries between the session and the others.
 //!
-//! The session takes part in the workspace each window shows. It says this
-//! person's presence on the workspace's live plane — that they are here, what
-//! they say they are doing, how available they are, whose view they follow,
-//! where their pointer is — as a [`Presence`] frame on
-//! [`Track::Presence`], and hears everyone else's from there. The frame is
-//! the one a browser and an agent say too, so the three are present to each
-//! other alike, and the session needs nothing of its own to be one of them.
-//!
-//! Nothing here is drawn. The roster it feeds is the desktop's
-//! (`tilo_desktop::here`): the People panel, the bar's faces and the markers
-//! on windows read the desktop, on this session and on every other.
-//!
-//! The transport is `tilo-network-actor`'s peer actor on an Iroh endpoint,
-//! on the device's own collaboration key. The device certificate the actor
-//! announces beside it names the device and the person it belongs to, so two
-//! devices of one person are one face; what everyone here calls that person
-//! is the person's own word, said on the workspace's presence, never their
-//! machine's name.
-//!
-//! That endpoint keeps number 0's directory behind a gate and its relays
-//! held back ([`tilo_endpoint_reachability`]): a desktop whose workspaces
-//! have nobody else in them publishes nothing and keeps no relay, and the
-//! first workspace shown with other live members in it starts both.
+//! The device certificate the actor announces names the device and its person, so two devices of
+//! one person are one face. The endpoint keeps number 0's directory behind a gate and its relays
+//! held back ([`tilo_endpoint_reachability`]): a desktop with nobody else in its workspaces
+//! publishes nothing and keeps no relay.
 
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
@@ -31,7 +12,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use crate::fabric::{Continuity, SessionFabric};
-use collab_types::presence::{Availability, Presence, ShellPresence, Shown};
+use collab_types::presence::{Presence, ShellPresence, Shown};
 use iroh::{EndpointAddr, EndpointId};
 use neighbour_wire::NeighbourMsg;
 use tilo_action_broker::record_content::ContentSources;
@@ -47,16 +28,19 @@ use tilo_endpoint_reachability::{Need, Reachability};
 use tilo_live::live::Track;
 use tilo_live::plane::Heard;
 use tilo_live::presence;
-use tilo_live::presence::{Board, Device};
+use tilo_live::presence::Board;
 use tilo_network_actor::{
-    HostIdentity, NetCmd, NetEvent, PersonalFabricPayload, RecordContentDelivery, RosterDevice,
-    WorkspaceControlRoute, WorkspaceId, native_ingress, workspace_topic_id,
+    HostIdentity, NetCmd, NetEvent, WorkspaceControlRoute, WorkspaceId, native_ingress,
+    workspace_topic_id,
 };
 
+use super::presence::{OwnPresence, Plane, Workspace, now_ms};
+use super::{InCall, LiveCall};
 use crate::channels::ChannelLink;
 use crate::content;
 use crate::device_actions::DeviceActions;
 use crate::engine::Engine;
+use crate::platform::plane::Cmd;
 
 mod adopt;
 mod arrivals;
@@ -64,47 +48,6 @@ mod gate;
 mod plane;
 
 use plane::{Serving, run};
-/// The call a device is in, as its presence carries it.
-pub use tilo_live::presence::Call as InCall;
-/// A call in progress in a workspace, as the people in it say.
-pub use tilo_live::presence::{LiveCall, LiveCaller};
-
-/// What this session says of itself here.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub struct OwnPresence {
-    /// The person's name, as everyone here sees it.
-    pub label: String,
-    /// The person (user root, hex) this device is certified as.
-    pub user: Option<String>,
-    /// What they say they are doing, in their own words.
-    pub status: Option<String>,
-    /// How available they say they are.
-    pub availability: Availability,
-    /// The voice channel they are in here, if any: what everyone else's roster says beside their
-    /// face.
-    pub call: Option<InCall>,
-    /// Whose view they follow, by that member's publisher.
-    pub following: Option<String>,
-}
-
-impl OwnPresence {
-    /// What the board says of this device: the person's own word, and what only its certificate and
-    /// its last wave add.
-    fn word(&self, device: &str, wave: Option<presence::Wave>) -> presence::Own {
-        presence::Own {
-            label: self.label.clone(),
-            device: device.to_owned(),
-            user: self.user.clone(),
-            status: self.status.clone(),
-            availability: self.availability,
-            call: self.call.clone(),
-            following: self.following.clone(),
-            wave,
-            pointer: None,
-            shell: None,
-        }
-    }
-}
 
 /// How long redeeming an invitation to a workspace may take: the host is asked three times, each
 /// exchange with its own bound.
@@ -166,15 +109,12 @@ pub(crate) struct ReceivedSurface {
 pub(crate) struct SiblingDials {
     /// This device's endpoint id: its own session is never dialled.
     ours: [u8; 32],
-    outgoing: tokio::sync::mpsc::UnboundedSender<Outgoing>,
+    outgoing: tokio::sync::mpsc::UnboundedSender<Cmd>,
 }
 
 impl SiblingDials {
     /// Dial from `ours` , the endpoint this device's sessions run on.
-    pub(crate) fn new(
-        ours: [u8; 32],
-        outgoing: tokio::sync::mpsc::UnboundedSender<Outgoing>,
-    ) -> Self {
+    pub(crate) fn new(ours: [u8; 32], outgoing: tokio::sync::mpsc::UnboundedSender<Cmd>) -> Self {
         Self { ours, outgoing }
     }
 
@@ -190,87 +130,8 @@ impl SiblingDials {
         };
         let _ = self
             .outgoing
-            .send(Outgoing::ConnectDevice(EndpointAddr::new(id)));
+            .send(Cmd::ConnectDevice(EndpointAddr::new(id)));
     }
-}
-
-/// What the sync thread is asked to do.
-#[derive(Debug)]
-pub(crate) enum Outgoing {
-    /// Take part in the topic of a workspace.
-    Join(WorkspaceId),
-    /// Take part in a workspace through this device's own custody session with its host: the
-    /// session that carries the workspace's app records here and this person's writes there.
-    TakePart(native_ingress::Connect),
-    /// Stop taking part in the topic of a workspace.
-    Leave(WorkspaceId),
-    /// Publish `msg` on the topic of a workspace.
-    Publish {
-        ws: WorkspaceId,
-        msg: Box<NeighbourMsg>,
-    },
-    /// Send one piece of a record's content to the device of the workspace that asked for it, and
-    /// nothing else.
-    Content(RecordContentDelivery),
-    /// Send one window's stream on the topic of the workspace it is shared in,
-    /// to the members that asked to view it and no one else.
-    PublishSurfaceTo {
-        ws: WorkspaceId,
-        msg: Box<NeighbourMsg>,
-        viewers: Vec<neighbour_wire::PeerId>,
-    },
-    /// Say one workspace-control message to `target` alone, over the authenticated direct route:
-    /// which of its windows this device shows.
-    SendControl {
-        ws: WorkspaceId,
-        msg: Box<NeighbourMsg>,
-        target: EndpointId,
-    },
-    /// Dial a workspace host: an always-on peer that keeps what this person's devices publish while
-    /// the others are away.
-    Connect(EndpointAddr),
-    /// Redeem an invitation into the workspace the desk made for it.
-    Enroll(Enrolling),
-    /// Take one of the person's workspaces in as their further device, at the host the list names.
-    Enter(Entering),
-    /// Hear the person's other devices from now on.
-    WatchSiblings,
-    /// Say `msg` to each of the person's devices whose session is up.
-    TellSiblings(Box<NeighbourMsg>),
-    /// Dial one of the person's own devices: the session between the two carries their device
-    /// fabric ([`tilo_network_actor::NetCmd::Connect`]).
-    ConnectDevice(EndpointAddr),
-    /// Send this device's fabric to the person's other devices, or to the one at `target` .
-    Fabric {
-        user_public_key: [u8; 32],
-        target: Option<EndpointId>,
-        payload: PersonalFabricPayload,
-    },
-    /// Stream one staged spool object to one of the person's devices from the checkpoint it
-    /// confirmed: the bytes of a Nearby Send it was offered.
-    NearbySpool {
-        user_public_key: [u8; 32],
-        target: EndpointId,
-        checkpoint: tilo_network_actor::NearbyTransferCheckpoint,
-        file: std::fs::File,
-    },
-    /// Ask `ws` 's hosts for the record on `channel` , which they replay a joining device only once
-    /// it asks (an on-demand record, or a part of a chain behind its head).
-    OpenRecord { ws: WorkspaceId, channel: [u8; 32] },
-    /// Ask the host of the joined workspace on `ws` to replay what it retains: something a message
-    /// let go earlier waited for has arrived, and the message is decided again when it comes back.
-    Replay(WorkspaceId),
-    /// Send this device's owner's outgoing custody of the workspace on `ws` to its peers: what the
-    /// owner just committed leaves this device.
-    PublishCustody(WorkspaceId),
-    /// Say which devices workspace `ws` admits, and until when each of their certificates holds:
-    /// they alone send and receive its window streams.
-    Roster {
-        ws: WorkspaceId,
-        devices: Vec<RosterDevice>,
-    },
-    /// The session is going: stop the peer actor.
-    Stop,
 }
 
 /// A workspace this session is joining: the invitation that admits this
@@ -374,7 +235,7 @@ pub struct Client {
     arrived_in: RefCell<Option<String>>,
     /// The arrival the bar shows.
     arrival: RefCell<Option<ArrivalNotice>>,
-    outgoing: tokio::sync::mpsc::UnboundedSender<Outgoing>,
+    outgoing: tokio::sync::mpsc::UnboundedSender<Cmd>,
     arrived: std::sync::mpsc::Receiver<NetEvent>,
     /// The window streams that reached this device: their frames, starts,
     /// ends and control, which the shares take ([`Self::take_surfaces`]).
@@ -409,6 +270,9 @@ pub struct Client {
     /// The records' content this session keeps and asks the workspaces for: `None` until the
     /// session hands its plane over ([`Self::attach_content`]).
     content: RefCell<Option<Arc<content::Plane>>>,
+    /// The devices each workspace's record content reaches this one from: those heard on its topic,
+    /// and its hosts.
+    topologies: RefCell<std::collections::BTreeMap<WorkspaceId, content::Topology>>,
     /// The certificates each of the person's other devices was heard with,
     /// by its publisher.
     siblings: RefCell<std::collections::BTreeMap<EndpointId, Vec<tilo_user_identity::DeviceCert>>>,
@@ -481,129 +345,14 @@ impl Drop for Client {
         // The live planes dial through this endpoint: they end before it does,
         // and before the thread that holds it joins.
         drop(self.live.take());
-        let _ = self.outgoing.send(Outgoing::Stop);
+        let _ = self.outgoing.send(Cmd::Stop);
         if let Some(thread) = self.thread.take() {
             let _ = thread.join();
         }
     }
 }
 
-/// The clock presence arrives and is drawn on, in milliseconds: one clock for what a board heard
-/// and what a surface draws, so a pointer's motion is measured against the arrivals it was heard
-/// on.
-#[expect(
-    clippy::cast_precision_loss,
-    reason = "milliseconds since the epoch are exact in an f64 for the life of a session"
-)]
-fn now_ms() -> f64 {
-    ui::time::unix_now_ms() as f64
-}
-
-/// One workspace this session takes part in: its topic, the devices its records' content reaches
-/// this one from, and the board of who is here.
-#[derive(Debug)]
-pub(crate) struct Workspace {
-    /// The workspace's topic.
-    pub(super) ws: WorkspaceId,
-    /// The workspace, as its id travels: the uuid string every publish names.
-    pub(super) id: String,
-    /// The devices a record's content of this workspace reaches this one from: those heard on its
-    /// topic, and its hosts.
-    pub(super) content: content::Topology,
-    /// What each member here said of themselves, and what this device says.
-    pub(super) board: Board,
-}
-
-impl Workspace {
-    fn new(ws: WorkspaceId, id: String, publisher: Device) -> Self {
-        Self {
-            board: Board::new(id.clone(), publisher),
-            ws,
-            id,
-            content: content::Topology::default(),
-        }
-    }
-
-    /// Who is here, as the desktop lists them, on the clock presence is heard on.
-    pub(super) fn members(&self, now_ms: f64) -> Vec<LiveMember> {
-        self.board
-            .here()
-            .map(|member| LiveMember::of(&presence::shown(member, now_ms)))
-            .collect()
-    }
-
-    /// The calls in progress here, as those in them say.
-    pub(super) fn calls(&self) -> Vec<LiveCall> {
-        self.board.calls()
-    }
-
-    /// Everyone here, as a surface that draws them reads them, smoothed at `now_ms` .
-    pub(super) fn shown(&self, now_ms: f64) -> Vec<Shown> {
-        self.board
-            .here()
-            .map(|member| presence::shown(member, now_ms))
-            .collect()
-    }
-
-    /// Their device's certificate arrived: it names the device and the person it belongs to. Only
-    /// the sender's own, validly signed certificate says who is there: one naming another device,
-    /// or signed by nobody, is refused, so nobody here can be named as somebody else. What everyone
-    /// calls them is the person's own word, never their device's name.
-    pub(super) fn certify(&mut self, from: EndpointId, cert: &tilo_user_identity::DeviceCert) {
-        if cert.device_public_key != *from.as_bytes() {
-            tracing::warn!(
-                peer = %from,
-                device = %hex::encode(cert.device_public_key),
-                "refusing a certificate that is not the sender's own device"
-            );
-            return;
-        }
-        if let Err(error) =
-            tilo_user_identity::verify_device_cert_at(cert, tilo_clock::unix_now_ns())
-        {
-            tracing::warn!(peer = %from, %error, "refusing a device certificate");
-            return;
-        }
-        self.board.certify(
-            *from.as_bytes(),
-            hex::encode(cert.user_public_key),
-            &cert.device_label,
-        );
-    }
-}
-
-/// The workspaces this session takes part in, and the one in front.
-#[derive(Debug)]
-pub(crate) struct Plane {
-    /// This device's publisher.
-    pub(super) publisher: EndpointId,
-    pub(super) workspaces: Vec<Workspace>,
-    /// The workspace in front: whose roster the desktop shows.
-    pub(super) active: Option<WorkspaceId>,
-}
-
 impl Plane {
-    pub(super) fn workspace(&mut self, ws: WorkspaceId) -> Option<&mut Workspace> {
-        self.workspaces
-            .iter_mut()
-            .find(|workspace| workspace.ws == ws)
-    }
-
-    /// The workspace in front, if it is one this session takes part in.
-    fn front(&self) -> Option<&Workspace> {
-        let active = self.active;
-        self.workspaces
-            .iter()
-            .find(|workspace| Some(workspace.ws) == active)
-    }
-
-    fn front_mut(&mut self) -> Option<&mut Workspace> {
-        let active = self.active;
-        self.workspaces
-            .iter_mut()
-            .find(|workspace| Some(workspace.ws) == active)
-    }
-
     /// Take one event from the plane.
     pub(super) fn apply(&mut self, event: NetEvent) {
         match event {
@@ -615,60 +364,6 @@ impl Plane {
             }
             _ => {}
         }
-    }
-
-    /// Take one message a peer published on `ws` .
-    pub(super) fn message(&mut self, ws: WorkspaceId, from: EndpointId, msg: NeighbourMsg) {
-        if from == self.publisher {
-            return;
-        }
-        if let NeighbourMsg::IdentityHello { cert, .. } = msg
-            && let Some(workspace) = self.workspace(ws)
-        {
-            workspace.certify(from, &cert);
-        }
-    }
-
-    /// How many times what the workspace in front knows of its people changed: a surface drawing
-    /// that workspace draws again when this moved.
-    pub(super) fn revision(&self) -> u64 {
-        self.front()
-            .map_or(0, |workspace| workspace.board.revision())
-    }
-
-    /// Everyone here in `workspace`, as a surface that draws them reads them, if this session
-    /// takes part in that workspace.
-    pub(super) fn shown(&self, workspace: &str, now_ms: f64) -> Vec<Shown> {
-        self.workspaces
-            .iter()
-            .find(|held| held.id == workspace)
-            .map_or_else(Vec::new, |held| held.shown(now_ms))
-    }
-
-    /// When what this device says is next due, on the clock presence is heard on, if anything is.
-    pub(super) fn next_due(&self, now_ms: f64) -> Option<f64> {
-        self.front()
-            .and_then(|workspace| workspace.board.next_due(now_ms))
-    }
-
-    /// Say `word` in the workspace in front and take what it owes now, with the object each frame
-    /// is on that workspace's presence track.
-    fn say_in_front(
-        &mut self,
-        word: &presence::Own,
-        now_ms: f64,
-    ) -> Option<(DeskWorkspaceId, Vec<(u32, Presence)>)> {
-        let workspace = self.front_mut()?;
-        workspace.board.say(word);
-        let desk = DeskWorkspaceId::parse(&workspace.id)?;
-        Some((desk, workspace.board.flush(now_ms)))
-    }
-
-    /// Take what the workspace in front's board owes at `now_ms` .
-    fn due_in_front(&mut self, now_ms: f64) -> Option<(DeskWorkspaceId, Vec<(u32, Presence)>)> {
-        let workspace = self.front_mut()?;
-        let desk = DeskWorkspaceId::parse(&workspace.id)?;
-        Some((desk, workspace.board.due(now_ms)?))
     }
 }
 
@@ -691,23 +386,10 @@ pub struct Entry {
 }
 
 impl Client {
-    /// Take part in the collaboration plane: bind this device's endpoint,
-    /// start the peer actor, and from then on hear the workspaces the session
-    /// joins.
-    ///
-    /// `entry` is this device as it enters.
-    ///
-    /// The session's channels, when `engine` keeps them, hear the workspaces'
-    /// governance on this plane and tell it which devices each workspace admits:
-    /// what they say travels as the plane's own messages.
-    ///
-    /// `beside` is what else this session serves on its endpoint — this
-    /// device's exit, when it offers one. An endpoint's protocols are fixed
-    /// once it binds, so they come in here; [`Self::serves`] says what was
-    /// taken.
-    ///
-    /// `documents` is where what admission takes in from another device goes,
-    /// so the apps this device runs show what everyone wrote.
+    /// Take part in the collaboration plane: bind this device's endpoint, start the peer actor,
+    /// and from then on hear the workspaces the session joins. `beside` is what else this session
+    /// serves on that endpoint (its protocols are fixed once it binds), and `documents` is where
+    /// what admission takes in from another device goes.
     ///
     /// # Errors
     /// The endpoint could not be bound.
@@ -726,12 +408,9 @@ impl Client {
         let (ready, bound) = std::sync::mpsc::channel();
         let (user, device) = certified_as(identity.as_ref());
         let fabric = restored_fabric(identity.as_ref(), outgoing.clone(), entry.continuity);
-        // What the actor serves for the session is installed before it starts: every actor built
-        // from here on answers those doors.
+        // What the actor serves is installed before it starts: every actor built after answers it.
         let versions = crate::network::install(fabric.as_ref(), questions);
-        // The channels this session runs, if it runs any: their side of the plane is the engine's,
-        // opened before the plane starts. The thread takes its own handle, and this one tells them
-        // where the plane is.
+        // The channels' side of the plane is the engine's, opened before the plane starts.
         let link = engine.as_ref().and_then(|engine| engine.link());
         let plane_link = link.clone();
         let enrolling = engine.clone();
@@ -739,8 +418,8 @@ impl Client {
         let serving = Arc::clone(&device_actions);
         let endpoint_handle = Arc::new(std::sync::OnceLock::new());
         let bound_endpoint = Arc::clone(&endpoint_handle);
-        // The workspaces' live plane: its relay role, when this device may serve one, is one more
-        // protocol on the endpoint this session binds. Its planes open once the endpoint is bound.
+        // The live plane's relay role, when this device may serve one, is one more protocol on the
+        // endpoint this session binds.
         let mut live = engine
             .as_ref()
             .map(|engine| crate::live::Live::new(Arc::clone(engine), Arc::clone(&wake)));
@@ -770,11 +449,7 @@ impl Client {
             link.attach(outgoing.clone());
         }
         let sync = Self {
-            plane: RefCell::new(Plane {
-                publisher,
-                workspaces: Vec::new(),
-                active: None,
-            }),
+            plane: RefCell::new(Plane::new(publisher)),
             own: RefCell::new(entry.own),
             says: RefCell::default(),
             here: Here::default(),
@@ -797,6 +472,7 @@ impl Client {
             device,
             desk: RefCell::new(None),
             content: RefCell::new(None),
+            topologies: RefCell::new(std::collections::BTreeMap::new()),
             siblings: RefCell::new(std::collections::BTreeMap::new()),
             host_hints: RefCell::new(std::collections::BTreeMap::new()),
             sibling_arrived: std::cell::Cell::new(false),
@@ -815,11 +491,11 @@ impl Client {
         };
         // The person's other devices are heard from the start, so a list one of them published is
         // taken even when this session shows none of their workspaces yet.
-        let _ = sync.outgoing.send(Outgoing::WatchSiblings);
+        let _ = sync.outgoing.send(Cmd::WatchSiblings);
         // The hosts next: a workspace joined before them is replayed to this device when its host
         // session comes up, never lost.
         for host in entry.hosts {
-            let _ = sync.outgoing.send(Outgoing::Connect(host));
+            let _ = sync.outgoing.send(Cmd::Connect(host));
         }
         Ok(sync)
     }
@@ -863,36 +539,32 @@ impl Client {
         self.live.as_ref()
     }
 
-    /// Redeem `request`'s invitation off the loop: this device joins the
-    /// workspace, takes in what it held before, and takes part in it. What became
-    /// of it is handed back by [`Self::take_enrolled`].
+    /// Redeem `request`'s invitation off the loop: this device joins the workspace and takes in
+    /// what it held before. [`Self::take_enrolled`] says what became of it.
     ///
     /// # Errors
-    /// The plane takes no enrollment: this session holds no workspaces, or the
-    /// plane has stopped.
+    /// The plane takes no enrollment: this session holds no workspaces, or it has stopped.
     pub fn enroll(&self, request: Enrolling) -> Result<(), String> {
         if self.engine.is_none() {
             return Err("this session keeps no workspaces to enroll into".into());
         }
         self.outgoing
-            .send(Outgoing::Enroll(request))
+            .send(Cmd::Enroll(request))
             .map_err(|_| "the collaboration plane is gone".to_owned())
     }
 
-    /// Take `request`'s workspace in as this person's further device, off the
-    /// loop: the workspace admits it at its host, what the workspace holds
-    /// before arrives with the answer, and this device takes part in it from
-    /// then on. What became of it is handed back by [`Self::take_enrolled`].
+    /// Take `request`'s workspace in as this person's further device, off the loop: what the
+    /// workspace holds before arrives with the host's answer. [`Self::take_enrolled`] says what
+    /// became of it.
     ///
     /// # Errors
-    /// The plane takes no entry: this session holds no workspaces, or the
-    /// plane has stopped.
+    /// The plane takes no entry: this session holds no workspaces, or it has stopped.
     pub fn enter(&self, request: Entering) -> Result<(), String> {
         if self.engine.is_none() {
             return Err("this session keeps no workspaces to take in".into());
         }
         self.outgoing
-            .send(Outgoing::Enter(request))
+            .send(Cmd::Enter(request))
             .map_err(|_| "the collaboration plane is gone".to_owned())
     }
 
@@ -1006,6 +678,9 @@ impl Client {
                     plane
                         .workspaces
                         .push(Workspace::new(*ws, id.clone(), publisher));
+                    self.topologies
+                        .borrow_mut()
+                        .insert(*ws, content::Topology::default());
                     joined.push((*ws, id.clone()));
                 }
             }
@@ -1022,7 +697,7 @@ impl Client {
             }
         }
         for (ws, id) in joined {
-            let _ = self.outgoing.send(Outgoing::Join(ws));
+            let _ = self.outgoing.send(Cmd::Join(ws));
             if let Some(desk) = DeskWorkspaceId::parse(&id) {
                 self.say_into(&id);
                 // This device takes part in the workspace through its own custody session too, the
@@ -1032,13 +707,14 @@ impl Client {
                 if let Some(connect) = self.engine.as_ref().and_then(|engine| {
                     native_ingress::Connect::new(engine.owner().clone(), desk).ok()
                 }) {
-                    let _ = self.outgoing.send(Outgoing::TakePart(connect));
+                    let _ = self.outgoing.send(Cmd::TakePart(connect));
                 }
             }
             changed = true;
         }
         for ws in left {
-            let _ = self.outgoing.send(Outgoing::Leave(ws));
+            let _ = self.outgoing.send(Cmd::Leave(ws));
+            self.topologies.borrow_mut().remove(&ws);
             changed = true;
         }
         if front_changed {
@@ -1338,16 +1014,20 @@ impl Client {
             return;
         }
         let (sources, connected) = {
-            let plane = self.plane.borrow();
-            match plane.workspaces.iter().find(|workspace| workspace.ws == ws) {
-                Some(workspace) => (
-                    workspace.content.sources(self.publisher()),
-                    Some((
-                        workspace.id.clone(),
-                        workspace.content.devices(self.publisher()),
-                    )),
+            let workspace = self
+                .plane
+                .borrow()
+                .workspaces
+                .iter()
+                .find(|workspace| workspace.ws == ws)
+                .map(|workspace| workspace.id.clone());
+            let topologies = self.topologies.borrow();
+            match (workspace, topologies.get(&ws)) {
+                (Some(id), Some(topology)) => (
+                    topology.sources(self.publisher()),
+                    Some((id, topology.devices(self.publisher()))),
                 ),
-                None => (ContentSources::default(), None),
+                _ => (ContentSources::default(), None),
             }
         };
         // The devices of the workspace this session reaches are the ones an offer round asks: one
@@ -1370,12 +1050,11 @@ impl Client {
         ws: WorkspaceId,
         change: impl FnOnce(&mut content::Topology) -> bool,
     ) -> bool {
-        self.plane
-            .borrow_mut()
-            .workspaces
-            .iter_mut()
-            .find(|workspace| workspace.ws == ws)
-            .is_some_and(|workspace| change(&mut workspace.content))
+        let mut topologies = self.topologies.borrow_mut();
+        let Some(topology) = topologies.get_mut(&ws) else {
+            return false;
+        };
+        change(topology)
     }
 
     /// Hand `event` to the content plane when it is one of a record's content messages; whether it
@@ -1456,7 +1135,7 @@ impl Client {
         msg: NeighbourMsg,
         viewers: &[neighbour_wire::PeerId],
     ) {
-        let _ = self.outgoing.send(Outgoing::PublishSurfaceTo {
+        let _ = self.outgoing.send(Cmd::PublishSurfaceTo {
             ws,
             msg: Box::new(msg),
             viewers: viewers.to_vec(),
@@ -1466,7 +1145,7 @@ impl Client {
     /// Say `msg` to `target` alone, as a workspace-control message on the topic of the workspace
     /// `ws` .
     pub(crate) fn publish_control(&self, ws: WorkspaceId, msg: NeighbourMsg, target: EndpointId) {
-        let _ = self.outgoing.send(Outgoing::SendControl {
+        let _ = self.outgoing.send(Cmd::SendControl {
             ws,
             msg: Box::new(msg),
             target,
@@ -1585,7 +1264,7 @@ impl Client {
         let Some(user) = self.user else {
             return;
         };
-        let _ = self.outgoing.send(Outgoing::TellSiblings(Box::new(
+        let _ = self.outgoing.send(Cmd::TellSiblings(Box::new(
             NeighbourMsg::PersonalWorkspaces {
                 user_public_key: user,
                 update: Box::new(update.clone()),
@@ -1599,15 +1278,15 @@ impl Client {
         if hosts.is_empty() {
             return;
         }
-        let _ = self.outgoing.send(Outgoing::TellSiblings(Box::new(
-            NeighbourMsg::PersonalHosts {
+        let _ = self
+            .outgoing
+            .send(Cmd::TellSiblings(Box::new(NeighbourMsg::PersonalHosts {
                 user_public_key: user,
                 hosts: hosts
                     .into_iter()
                     .map(|(workspace, hint)| neighbour_wire::PersonalHost { workspace, hint })
                     .collect(),
-            },
-        )));
+            })));
     }
 
     /// Take the workspace lists the person's other devices sent since the last call, each with the
@@ -1720,7 +1399,7 @@ impl Client {
         if let Some(actions) = self.device_actions.get() {
             actions.learn(addr.clone());
         }
-        let _ = self.outgoing.send(Outgoing::ConnectDevice(addr));
+        let _ = self.outgoing.send(Cmd::ConnectDevice(addr));
     }
 
     /// Where the person's own devices are dialled as this device's siblings from a thread of their
@@ -1973,7 +1652,7 @@ impl Client {
     pub(crate) fn offline(
         publisher: EndpointId,
         own: OwnPresence,
-    ) -> (Self, tokio::sync::mpsc::UnboundedReceiver<Outgoing>) {
+    ) -> (Self, tokio::sync::mpsc::UnboundedReceiver<Cmd>) {
         Self::offline_at(publisher, own, Vec::new())
     }
 
@@ -1983,7 +1662,7 @@ impl Client {
         publisher: EndpointId,
         own: OwnPresence,
         hosts: Vec<EndpointAddr>,
-    ) -> (Self, tokio::sync::mpsc::UnboundedReceiver<Outgoing>) {
+    ) -> (Self, tokio::sync::mpsc::UnboundedReceiver<Cmd>) {
         Self::offline_reaching(publisher, own, hosts, Reachability::default())
     }
 
@@ -1994,7 +1673,7 @@ impl Client {
         own: OwnPresence,
         hosts: Vec<EndpointAddr>,
         reachability: Reachability,
-    ) -> (Self, tokio::sync::mpsc::UnboundedReceiver<Outgoing>) {
+    ) -> (Self, tokio::sync::mpsc::UnboundedReceiver<Cmd>) {
         Self::planeless(publisher, own, hosts, reachability)
     }
 
@@ -2006,19 +1685,15 @@ impl Client {
         own: OwnPresence,
         hosts: Vec<EndpointAddr>,
         reachability: Reachability,
-    ) -> (Self, tokio::sync::mpsc::UnboundedReceiver<Outgoing>) {
+    ) -> (Self, tokio::sync::mpsc::UnboundedReceiver<Cmd>) {
         let (outgoing, said) = tokio::sync::mpsc::unbounded_channel();
         let (_unheard, arrived) = std::sync::mpsc::channel();
         for host in hosts {
-            let _ = outgoing.send(Outgoing::Connect(host));
+            let _ = outgoing.send(Cmd::Connect(host));
         }
         (
             Self {
-                plane: RefCell::new(Plane {
-                    publisher,
-                    workspaces: Vec::new(),
-                    active: None,
-                }),
+                plane: RefCell::new(Plane::new(publisher)),
                 own: RefCell::new(own),
                 says: RefCell::default(),
                 here: Here::default(),
@@ -2048,6 +1723,7 @@ impl Client {
                 device: String::new(),
                 desk: RefCell::new(None),
                 content: RefCell::new(None),
+                topologies: RefCell::new(std::collections::BTreeMap::new()),
                 siblings: RefCell::new(std::collections::BTreeMap::new()),
                 host_hints: RefCell::new(std::collections::BTreeMap::new()),
                 sibling_arrived: std::cell::Cell::new(false),
@@ -2156,7 +1832,7 @@ fn certified_as(identity: Option<&HostIdentity>) -> (Option<[u8; 32]>, String) {
 /// first tick is recorded with it: the record it keeps is this device's, named by its certificate.
 fn restored_fabric(
     identity: Option<&HostIdentity>,
-    outgoing: tokio::sync::mpsc::UnboundedSender<Outgoing>,
+    outgoing: tokio::sync::mpsc::UnboundedSender<Cmd>,
     continuity: Continuity,
 ) -> Option<Arc<SessionFabric>> {
     let identity = identity?;
@@ -2259,17 +1935,10 @@ impl PeerDocuments {
     }
 }
 
-/// Hear the peer actor: what it says reaches the session, and what a workspace's
-/// host says after this device joined it — the workspace's state as it stands, its
-/// people and everything its apps recorded — is taken in where this device's
-/// workspaces are kept.
-///
-/// The replay goes in on a thread of its own, in the order the host said it,
-/// so it never holds up what the session shows, and each run of one session
-/// in one commit, as a host replays a workspace in one go.
-///
-/// What admission takes in from another device is handed to this device's apps
-/// through `documents`, so a record an app holds shows what everyone wrote.
+/// Hear the peer actor: what it says reaches the session, and what a workspace's host says after
+/// this device joined it is taken in where this device's workspaces are kept, on a thread of its
+/// own and in the host's order. What admission takes in from another device goes to this device's
+/// apps through `documents`.
 fn heard(
     holds_custody: bool,
     arrivals: std::sync::mpsc::Sender<NetEvent>,
@@ -2390,27 +2059,25 @@ async fn admit(
 /// command that ends it.
 async fn carry_out(
     plane: &tokio::sync::mpsc::Sender<NetCmd>,
-    command: Outgoing,
+    command: Cmd,
     events: &tokio::sync::mpsc::Sender<NetEvent>,
 ) -> Option<bool> {
     Some(match command {
-        Outgoing::Join(ws) => plane
+        Cmd::Join(ws) => plane
             .send(NetCmd::JoinWorkspace {
                 ws,
                 on_event: events.clone(),
             })
             .await
             .is_ok(),
-        Outgoing::TakePart(connect) => plane.send(NetCmd::NativeConnect(connect)).await.is_ok(),
-        Outgoing::Leave(ws) => plane.send(NetCmd::LeaveWorkspace { ws }).await.is_ok(),
-        Outgoing::Publish { ws, msg } => {
-            plane.send(NetCmd::Publish { ws, msg: *msg }).await.is_ok()
-        }
-        Outgoing::Content(delivery) => plane
+        Cmd::TakePart(connect) => plane.send(NetCmd::NativeConnect(connect)).await.is_ok(),
+        Cmd::Leave(ws) => plane.send(NetCmd::LeaveWorkspace { ws }).await.is_ok(),
+        Cmd::Publish { ws, msg } => plane.send(NetCmd::Publish { ws, msg: *msg }).await.is_ok(),
+        Cmd::Content(delivery) => plane
             .send(NetCmd::PublishRecordContent(delivery))
             .await
             .is_ok(),
-        Outgoing::PublishSurfaceTo { ws, msg, viewers } => plane
+        Cmd::PublishSurfaceTo { ws, msg, viewers } => plane
             .send(NetCmd::PublishSurfaceTo {
                 ws,
                 msg: *msg,
@@ -2418,7 +2085,7 @@ async fn carry_out(
             })
             .await
             .is_ok(),
-        Outgoing::SendControl { ws, msg, target } => plane
+        Cmd::SendControl { ws, msg, target } => plane
             .send(NetCmd::PublishWorkspaceControl {
                 ws,
                 msg: *msg,
@@ -2426,27 +2093,27 @@ async fn carry_out(
             })
             .await
             .is_ok(),
-        Outgoing::Connect(addr) => plane
+        Cmd::Connect(addr) => plane
             .send(NetCmd::ConnectHost {
                 addr,
                 expectation: None,
             })
             .await
             .is_ok(),
-        Outgoing::WatchSiblings => plane
+        Cmd::WatchSiblings => plane
             .send(NetCmd::WatchSiblings {
                 on_event: events.clone(),
             })
             .await
             .is_ok(),
-        Outgoing::TellSiblings(msg) => plane
+        Cmd::TellSiblings(msg) => plane
             .send(NetCmd::PublishToSiblings { msg: *msg })
             .await
             .is_ok(),
-        Outgoing::ConnectDevice(addr) => plane.send(NetCmd::Connect { addr }).await.is_ok(),
+        Cmd::ConnectDevice(addr) => plane.send(NetCmd::Connect { addr }).await.is_ok(),
         // A fabric frame goes to the one device it is for, or to each of the person's devices whose
         // session is up.
-        Outgoing::Fabric {
+        Cmd::Fabric {
             user_public_key,
             target,
             payload,
@@ -2466,7 +2133,7 @@ async fn carry_out(
         }
         // A staged object's bytes go to the one device that asked for them,
         // from the checkpoint it confirmed it holds.
-        Outgoing::NearbySpool {
+        Cmd::NearbySpool {
             user_public_key,
             target,
             checkpoint,
@@ -2480,26 +2147,23 @@ async fn carry_out(
             })
             .await
             .is_ok(),
-        Outgoing::Replay(ws) => plane.send(NetCmd::NativeReplay { ws }).await.is_ok(),
-        Outgoing::PublishCustody(ws) => plane.send(NetCmd::NativePublish { ws }).await.is_ok(),
-        Outgoing::OpenRecord { ws, channel } => {
+        Cmd::Replay(ws) => plane.send(NetCmd::NativeReplay { ws }).await.is_ok(),
+        Cmd::PublishCustody(ws) => plane.send(NetCmd::NativePublish { ws }).await.is_ok(),
+        Cmd::OpenRecord { ws, channel } => {
             plane.send(NetCmd::OpenRecord { ws, channel }).await.is_ok()
         }
-        Outgoing::Roster { ws, devices } => plane
+        Cmd::Roster { ws, devices } => plane
             .send(NetCmd::SetWorkspaceRoster { ws, devices })
             .await
             .is_ok(),
         // Redeemed beside this loop, which never waits on a host.
-        Outgoing::Enroll(_) | Outgoing::Enter(_) => true,
-        Outgoing::Stop => return None,
+        Cmd::Enroll(_) | Cmd::Enter(_) => true,
+        Cmd::Stop => return None,
     })
 }
 
-/// The certificate among `certs` that says who authored `update` , if the device was heard with
-/// one.
-/// The update names its author, and a device it arrived from is only that author if the certificate
-/// the device's session came up with is the author's: a list is worth no more than the device that
-/// signed it.
+/// The certificate among `certs` that says who authored `update`, if the device was heard with
+/// one: a list is worth no more than the device that signed it.
 fn author_of(
     certs: &[tilo_user_identity::DeviceCert],
     update: &tilo_user_identity::DirectoryUpdate,

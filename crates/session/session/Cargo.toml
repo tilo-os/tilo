@@ -111,6 +111,9 @@ tilo-lock = { version = "0.1.0", path = "../../platform/tilo-lock" }
 # this session's own endpoint, and the relay role a member serves for the
 # others.
 tilo-live = { path = "../../collab/tilo-live", features = ["plane"] }
+# The endpoint every device dials: presence names a publisher and where it is reached with it, on
+# every host.
+iroh.workspace = true
 
 zeroize.workspace = true
 chrono = { workspace = true, default-features = true }
@@ -375,8 +378,6 @@ tempfile.workspace = true
 # A joined workspace's records are untrusted bytes: a worker process of this
 # executable decodes them, and `main` serves that worker.
 tilo-automerge-isolate.workspace = true
-# The endpoint every device dials.
-iroh.workspace = true
 # The MLS vault's master key: the Secret Service, the Keychain, or the store a
 # headless machine names with `TILO_SECRETS_DIR`.
 tilo-secrets.workspace = true

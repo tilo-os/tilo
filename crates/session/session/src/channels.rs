@@ -29,7 +29,7 @@ use tilo_lock::MutexRecover as _;
 use tilo_network_actor::{RosterDevice, WorkspaceId, workspace_topic_id};
 
 use crate::engine::Engine;
-use crate::sync::Outgoing;
+use crate::platform::plane::Cmd;
 
 pub(crate) use vault::MlsVault;
 
@@ -125,7 +125,7 @@ pub struct ChannelLink {
     /// read asks once, and the plane asks a host session that starts later itself.
     asked: Mutex<BTreeSet<(WorkspaceId, [u8; 32])>>,
     /// What this session says on the collaboration plane, once it is running.
-    outgoing: Mutex<Option<tokio::sync::mpsc::UnboundedSender<Outgoing>>>,
+    outgoing: Mutex<Option<tokio::sync::mpsc::UnboundedSender<Cmd>>>,
     park: Arc<GovernancePark>,
 }
 
@@ -142,7 +142,7 @@ impl ChannelLink {
     }
 
     /// Say `message` on the collaboration plane from now on; `None` once the plane is gone.
-    pub(crate) fn attach(&self, outgoing: tokio::sync::mpsc::UnboundedSender<Outgoing>) {
+    pub(crate) fn attach(&self, outgoing: tokio::sync::mpsc::UnboundedSender<Cmd>) {
         *self.outgoing.lock_recover() = Some(outgoing);
         // What was told before the plane ran was told to no one: every workspace this device holds
         // is read and told again.
@@ -219,7 +219,7 @@ impl ChannelLink {
         if asked.contains(&(ws, channel)) {
             return;
         }
-        if outgoing.send(Outgoing::OpenRecord { ws, channel }).is_err() {
+        if outgoing.send(Cmd::OpenRecord { ws, channel }).is_err() {
             // The plane is gone: the next read asks again.
             return;
         }
@@ -231,7 +231,7 @@ impl ChannelLink {
     pub(crate) fn ask_replay(&self, workspace: ModelWorkspaceId) {
         let outgoing = self.outgoing.lock_recover().clone();
         if let Some(outgoing) = outgoing {
-            let _ = outgoing.send(Outgoing::Replay(workspace_topic_id(workspace)));
+            let _ = outgoing.send(Cmd::Replay(workspace_topic_id(workspace)));
         }
     }
 
@@ -241,7 +241,7 @@ impl ChannelLink {
     pub(crate) fn publish_custody(&self, workspace: ModelWorkspaceId) {
         let outgoing = self.outgoing.lock_recover().clone();
         if let Some(outgoing) = outgoing {
-            let _ = outgoing.send(Outgoing::PublishCustody(workspace_topic_id(workspace)));
+            let _ = outgoing.send(Cmd::PublishCustody(workspace_topic_id(workspace)));
         }
     }
 
@@ -249,7 +249,7 @@ impl ChannelLink {
     /// roster is told again when a later pass finds it changed.
     fn tell_roster(&self, ws: WorkspaceId, devices: Roster) -> bool {
         let outgoing = self.outgoing.lock_recover().clone();
-        outgoing.is_some_and(|outgoing| outgoing.send(Outgoing::Roster { ws, devices }).is_ok())
+        outgoing.is_some_and(|outgoing| outgoing.send(Cmd::Roster { ws, devices }).is_ok())
     }
 }
 
@@ -269,7 +269,7 @@ impl GovernanceTransport for ChannelLink {
         let outgoing = self.outgoing.lock_recover().clone();
         outgoing.is_some_and(|outgoing| {
             outgoing
-                .send(Outgoing::Publish {
+                .send(Cmd::Publish {
                     ws: workspace_topic_id(workspace),
                     msg: Box::new(message),
                 })
@@ -604,7 +604,7 @@ mod tests {
             "once the plane takes the roster, the workspace is not read again"
         );
         assert!(
-            matches!(sent.try_recv(), Ok(Outgoing::Roster { .. })),
+            matches!(sent.try_recv(), Ok(Cmd::Roster { .. })),
             "and the plane was told it"
         );
     }

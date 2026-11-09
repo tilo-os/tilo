@@ -18,7 +18,7 @@ use tilo_device_fabric::{
 use tilo_lock::MutexRecover as _;
 use tilo_network_actor::PersonalFabricPayload;
 
-use crate::sync::Outgoing;
+use crate::platform::plane::Cmd;
 
 /// What the person lets of this device continue on their other devices: each
 /// facet's switch of their `continuity` settings, under the master switch,
@@ -77,7 +77,7 @@ impl Continuity {
 /// frames leave.
 pub(crate) struct SessionFabric {
     runtime: Arc<Mutex<FabricRuntime>>,
-    outgoing: tokio::sync::mpsc::UnboundedSender<Outgoing>,
+    outgoing: tokio::sync::mpsc::UnboundedSender<Cmd>,
     /// The person's root key: a frame goes only to the devices that proved a certificate of it.
     user_public_key: [u8; 32],
     /// This device's key: what a credential one of the person's devices sealed for it opens with.
@@ -99,7 +99,7 @@ impl std::fmt::Debug for SessionFabric {
 impl SessionFabric {
     pub(crate) fn new(
         runtime: FabricRuntime,
-        outgoing: tokio::sync::mpsc::UnboundedSender<Outgoing>,
+        outgoing: tokio::sync::mpsc::UnboundedSender<Cmd>,
         user_public_key: [u8; 32],
         device_signing_key: ed25519_dalek::SigningKey,
         continuity: Continuity,
@@ -280,7 +280,7 @@ impl SessionFabric {
     }
 
     fn publish(&self, target: Option<EndpointId>, payload: PersonalFabricPayload) {
-        let _ = self.outgoing.send(Outgoing::Fabric {
+        let _ = self.outgoing.send(Cmd::Fabric {
             user_public_key: self.user_public_key,
             target,
             payload,
@@ -379,7 +379,7 @@ impl FabricLink for SessionFabric {
                 PersonalFabricSendError::Rejected("that device has no session with this one".into())
             })?;
         self.outgoing
-            .send(Outgoing::NearbySpool {
+            .send(Cmd::NearbySpool {
                 user_public_key: self.user_public_key,
                 target: endpoint,
                 checkpoint: offer.checkpoint,

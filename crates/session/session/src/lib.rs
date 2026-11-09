@@ -315,7 +315,6 @@ mod status;
 pub mod surfaces;
 #[cfg(target_os = "linux")]
 mod switcher;
-#[cfg(target_os = "linux")]
 pub mod sync;
 #[cfg(target_os = "linux")]
 mod system_sounds;
