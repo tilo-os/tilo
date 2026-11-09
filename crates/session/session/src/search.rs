@@ -428,11 +428,27 @@ impl SessionSearch {
     /// conversation's "Move to inbox").
     #[must_use]
     pub(crate) fn find(&self, needle: &str) -> Vec<tilo_desktop_search::Hit> {
+        self.find_in(needle, None)
+    }
+
+    /// [`Self::find`] for a caller confined to `workspace` (an agent): what that workspace's apps
+    /// publish and its records hold, and none of the desk's own rows, whose windows and places
+    /// are the person's across every workspace (a window's title names what another workspace
+    /// holds). `None` is the person's search, over everything they see.
+    #[must_use]
+    pub(crate) fn find_in(
+        &self,
+        needle: &str,
+        workspace: Option<&str>,
+    ) -> Vec<tilo_desktop_search::Hit> {
         let needle = needle.trim();
         if needle.is_empty() {
             return Vec::new();
         }
-        let (mut sources, published) = self.sources("", &Scope::Workspace);
+        let (mut sources, mut published) = self.sources(workspace.unwrap_or(""), &Scope::Workspace);
+        if workspace.is_some() {
+            published.retain(|actions| actions.app != DESKTOP_APP);
+        }
         sources.push(Held::new(tilo_desktop_search::providers::Captures(
             published.clone(),
         )));
@@ -788,29 +804,51 @@ impl SearchHost for SessionSearch {
 impl ResourceSearch for SearchThrough {
     fn find(
         &self,
-        _caller: &Caller,
+        caller: &Caller,
         needle: &str,
     ) -> tilo_actions::remote::Pending<Result<Vec<Found>, ActionHostError>> {
+        // An agent finds what the workspace it works in holds: the search is the person's, over
+        // every workspace they see, and an agent is in one.
+        let workspace = match caller.principal() {
+            tilo_actions::remote::CallerPrincipal::Person(_) => None,
+            _ => match caller.workspace() {
+                Some(workspace) => Some(workspace.to_owned()),
+                None => {
+                    return tilo_actions::remote::Pending::ready(Err(
+                        ActionHostError::Unavailable {
+                            reason:
+                                "an agent searches the workspace it works in, and works in none"
+                                    .to_owned(),
+                        },
+                    ));
+                }
+            },
+        };
         let (done, answer) = tilo_actions::remote::pending();
-        self.ask(needle.trim().to_owned(), done);
+        self.ask(needle.trim().to_owned(), workspace, done);
         answer.map(Ok)
     }
 }
 
 /// A host's [`ResourceSearch`] that asks the thread holding the desktop, as the session's own doors
 /// are asked: the session's search is not `Send` , and every call of it runs on the loop's pass.
-pub(crate) struct SearchThrough(std::sync::Arc<dyn Fn(String, FoundSearch) + Send + Sync>);
+pub(crate) struct SearchThrough(
+    std::sync::Arc<dyn Fn(String, Option<String>, FoundSearch) + Send + Sync>,
+);
 
 /// Where the session's answer to a search goes.
 pub(crate) type FoundSearch = tilo_actions::remote::Completer<Vec<Found>>;
 
 impl SearchThrough {
-    pub(crate) fn new(ask: std::sync::Arc<dyn Fn(String, FoundSearch) + Send + Sync>) -> Self {
+    pub(crate) fn new(
+        ask: std::sync::Arc<dyn Fn(String, Option<String>, FoundSearch) + Send + Sync>,
+    ) -> Self {
         Self(ask)
     }
 
-    fn ask(&self, needle: String, done: FoundSearch) {
-        (self.0)(needle, done);
+    /// Ask for what `needle` finds, in `workspace` alone where one is named ([`SessionSearch::find_in`]).
+    fn ask(&self, needle: String, workspace: Option<String>, done: FoundSearch) {
+        (self.0)(needle, workspace, done);
     }
 }
 
@@ -1229,6 +1267,38 @@ mod tests {
             at: 1,
             device: None,
         }
+    }
+
+    /// The desk's own rows (a window, by the title of what it shows) span every workspace: the
+    /// person's search finds them, and an agent's, confined to one workspace, never does.
+    #[test]
+    fn an_agents_search_finds_nothing_of_the_desks_own_rows() {
+        let search = SessionSearch::new(SearchOptions::default(), "", None, None, None);
+        let window =
+            tilo_actions::ResourceSpec::new("window:7", "desktop.window", "Quarterly plan — Notes")
+                .with_action(tilo_actions::ActionSpec::immediate_encoded(
+                    "focus",
+                    "Quarterly plan — Notes",
+                    tilo_actions::ExecutionLocus::ClientLocal,
+                    tilo_actions::EncodedAction {
+                        type_id: "desktop.window".into(),
+                        payload: Vec::new(),
+                    },
+                ));
+        search.observe(&[window], Vec::new(), None, Vec::new());
+        let titles = |hits: Vec<tilo_desktop_search::Hit>| -> Vec<String> {
+            hits.into_iter().map(|hit| hit.title).collect()
+        };
+        let person = titles(search.find("Quarterly plan"));
+        assert!(
+            person.iter().any(|title| title.contains("Quarterly plan")),
+            "the person's search finds the window: {person:?}"
+        );
+        let agent = titles(search.find_in("Quarterly plan", Some("garden")));
+        assert!(
+            !agent.iter().any(|title| title.contains("Quarterly plan")),
+            "an agent in one workspace finds no window of the desk: {agent:?}"
+        );
     }
 
     #[test]

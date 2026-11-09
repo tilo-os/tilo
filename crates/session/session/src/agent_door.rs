@@ -1455,6 +1455,8 @@ enum DoorAsk {
     /// search lives on the loop's thread.
     Find {
         needle: String,
+        /// The workspace an agent asking works in, which alone it finds in; `None` for the person.
+        workspace: Option<String>,
         done: crate::search::FoundSearch,
     },
     /// Run one of their actions as a step of an agent's turn, already decided
@@ -1568,8 +1570,17 @@ impl SessionDoors {
 
     /// What the session's one search finds by `needle` , answered on the loop's pass: the search
     /// lives on the thread holding the desktop.
-    pub(crate) fn find(&self, needle: String, done: crate::search::FoundSearch) {
-        self.ask(DoorAsk::Find { needle, done });
+    pub(crate) fn find(
+        &self,
+        needle: String,
+        workspace: Option<String>,
+        done: crate::search::FoundSearch,
+    ) {
+        self.ask(DoorAsk::Find {
+            needle,
+            workspace,
+            done,
+        });
     }
 
     /// Answer what the connections asked since the last pass, from `doors`,
@@ -1591,10 +1602,14 @@ impl SessionDoors {
         let asked = std::mem::take(&mut *self.asks.lock_recover());
         for ask in asked {
             match ask {
-                DoorAsk::Find { needle, done } => {
+                DoorAsk::Find {
+                    needle,
+                    workspace,
+                    done,
+                } => {
                     done.complete(crate::search::found_all(
                         &needle,
-                        search.find(&needle),
+                        search.find_in(&needle, workspace.as_deref()),
                         shows,
                     ));
                 }
@@ -2019,7 +2034,9 @@ impl ActionHost for Host {
     fn resource_search(&self) -> Option<Arc<dyn tilo_actions::remote::ResourceSearch>> {
         let session = Arc::clone(&self.session);
         Some(Arc::new(crate::search::SearchThrough::new(Arc::new(
-            move |needle: String, done: crate::search::FoundSearch| session.find(needle, done),
+            move |needle: String, workspace: Option<String>, done: crate::search::FoundSearch| {
+                session.find(needle, workspace, done);
+            },
         ))) as Arc<dyn tilo_actions::remote::ResourceSearch>)
     }
 
