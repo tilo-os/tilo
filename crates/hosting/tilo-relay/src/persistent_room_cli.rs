@@ -1400,7 +1400,7 @@ pub(crate) async fn run(
             })
             .unwrap_or_else(|| shown.clone());
         workspaces
-            .offer_own_workspaces(crate::workspaces::OwnWorkspaceOffer {
+            .offer_own_workspaces(tilo_relay::workspaces::OwnWorkspaceOffer {
                 host,
                 storage_bytes: gigabytes.saturating_mul(1_000_000_000),
             })
