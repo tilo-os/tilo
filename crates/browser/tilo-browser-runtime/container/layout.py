@@ -27,6 +27,7 @@ import hashlib
 import json
 import os
 import pathlib
+import posixpath
 import re
 import shutil
 import sys
@@ -131,6 +132,10 @@ shutil.copytree(bundle, assets)
 pages = {'index.html': './entry-page.mjs', 'app/index.html': '../entry-page.mjs',
          'sign-in.html': './sign-in.mjs'}
 pages = {page: entry for page, entry in pages.items() if (assets / page).is_file()}
+# The files served at the top, beside which the pages are written: the pages
+# themselves (their `src` in a fragment is not a file) and the icon Safari
+# looks for there. Everything else the bundle holds is served under `v/`.
+top_level = frozenset({*pages, 'apple-touch-icon.png'})
 graphs = {}
 for entry in dict.fromkeys(pages.values()):
     start = pathlib.PurePosixPath(entry).name
