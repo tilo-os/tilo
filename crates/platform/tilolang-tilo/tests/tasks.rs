@@ -62,10 +62,11 @@ pub(crate) fn target(v: &Value) -> Option<String> {
 }
 
 /// The arguments `new_task` takes for a task added with only its title: the list it is added
-/// to, nothing for the project, section, day, time and assignee, and what was typed.
+/// to, nothing for the project, section and place it is typed in, nothing for the day, time and
+/// assignee, and what was typed.
 pub(crate) fn create(root: &Value, title: &str) -> Vec<Value> {
     let mut args = vec![root.clone()];
-    args.resize(6, Value::none());
+    args.resize(7, Value::none());
     args.push(Value::text(title));
     args
 }
@@ -254,6 +255,63 @@ fn an_entry_reads_when_it_is_due_in_the_persons_zone() {
             "Pay rent"
         ],
         "every dated entry after today, soonest first"
+    );
+}
+
+#[test]
+fn an_entry_in_today_reads_the_same_words_as_the_inbox() {
+    let (mut ada, _) = workspace();
+    ada.host.runtime().set_members(
+        vec![
+            tilolang_runtime::members::Member::person("ada", "owner"),
+            tilolang_runtime::members::Member::person("bo", "editor"),
+        ],
+        None,
+    );
+    // Thursday 2026-10-29: Friday is the next day. Today's entry takes the same words the
+    // inbox's does, a day, a moment and who it is for, and a task that names no day is today's.
+    let mut view = ada.view(APP);
+    go_to(&mut view, "Today");
+    enter(&mut view, "Call the bank fri 10am @bo");
+    enter(&mut view, "Water the plants");
+    ada.commit();
+    let day = |d: &str| Value::some(Value::text(d));
+    let made: Vec<(Value, Value, Value, Value)> = items(&ada)
+        .iter()
+        .map(|t| {
+            (
+                read(&ada, t, "title"),
+                read(&ada, t, "due"),
+                read(&ada, t, "at"),
+                read(&ada, t, "assignee"),
+            )
+        })
+        .collect();
+    assert_eq!(
+        made,
+        vec![
+            (
+                Value::text("Call the bank"),
+                day("2026-10-30"),
+                day("2026-10-30T10:00:00Z"),
+                Value::some(Value::Principal(Principal::new("bo"))),
+            ),
+            (
+                Value::text("Water the plants"),
+                day("2026-10-29"),
+                Value::none(),
+                Value::none(),
+            ),
+        ],
+        "the words fill the task the same way here: fri 10am is Friday at ten, and no day is today"
+    );
+    let mut view = ada.view(APP);
+    assert_eq!(count(&view, "Today"), Some(1), "{:?}", places(&view));
+    go_to(&mut view, "Today");
+    assert_eq!(
+        home_list_titles(&ada, &mut view),
+        ["Water the plants"],
+        "the task that named no day stands in Today; the one for Friday waits"
     );
 }
 
@@ -2643,7 +2701,6 @@ fn every_declared_action_is_offered() {
         "indent",
         "outdent",
         "remove",
-        "new_task_today",
         "place",
         "move_to",
     ] {

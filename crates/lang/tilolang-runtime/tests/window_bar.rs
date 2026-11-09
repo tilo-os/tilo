@@ -70,6 +70,7 @@ mod cases {
                     Value::none(),
                     Value::none(),
                     Value::none(),
+                    Value::none(),
                     Value::text(title),
                 ],
             ))
@@ -298,7 +299,7 @@ mod cases {
             .collect();
         assert_eq!(
             buttons,
-            ["New task", "New task due today", "Delete finished tasks"],
+            ["New task", "Delete finished tasks"],
             "the bar holds the actions the view placed, in its order:\n{}",
             dump(tree)
         );

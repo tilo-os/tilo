@@ -126,9 +126,6 @@ d-ifftrju4 = Its project, as a project's list is of one
 d-rs3ubifz = New task
     .doc = Adds a task: under the title a program or an agent gives it, or the words typed in the entry at the end of a list, to the inbox or to `p`, in the lane `s` of its board.
 
-d-boggc6yt = New task due today
-    .doc = Adds a task that is due today: what the entry of the Today place runs, so a task typed there stands in Today.
-
 d-zjuy7y7f = New project
     .doc = Starts a project.
 

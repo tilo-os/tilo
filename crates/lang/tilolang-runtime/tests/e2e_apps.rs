@@ -768,6 +768,7 @@ mod cases {
                 Value::none(),
                 Value::none(),
                 Value::none(),
+                Value::none(),
                 Value::text("milk"),
             ],
         ));
@@ -776,6 +777,7 @@ mod cases {
             "new_task",
             vec![
                 res(&list),
+                Value::none(),
                 Value::none(),
                 Value::none(),
                 Value::none(),
@@ -818,6 +820,7 @@ mod cases {
             "new_task",
             vec![
                 res(&list),
+                Value::none(),
                 Value::none(),
                 Value::none(),
                 Value::none(),
@@ -1200,6 +1203,7 @@ mod cases {
                     Value::none(),
                     Value::none(),
                     Value::none(),
+                    Value::none(),
                     Value::text(t),
                 ],
             ));
@@ -1299,6 +1303,7 @@ mod cases {
                 "new_task",
                 vec![
                     res(&list),
+                    Value::none(),
                     Value::none(),
                     Value::none(),
                     Value::none(),
@@ -1406,6 +1411,7 @@ mod cases {
                 Value::none(),
                 Value::none(),
                 Value::none(),
+                Value::none(),
                 Value::text(title),
             ],
         ));
@@ -1449,29 +1455,29 @@ mod cases {
     fn the_morning_cards_are_each_apps_own_place() {
         let apps = apps();
         let m = morning(&apps);
-        // Tasks' Today place: due today, or hers to do whenever. A task with no date, or one
-        // already done, is Tasks' own business and not hers this morning.
-        m.w.call(
-            &apps.todo,
-            "new_task_today",
-            vec![
-                res(&m.list),
-                Value::none(),
-                Value::text("call the landlord"),
-            ],
-        );
-        m.w.call(
-            &apps.todo,
-            "new_task",
-            vec![
-                res(&m.list),
-                Value::none(),
-                Value::none(),
-                Value::none(),
-                Value::none(),
-                Value::some(Value::Principal(me())),
-                Value::text("review the plan"),
-            ],
+        // Tasks' Today place: due today, or hers to do whenever. A task with no date is Tasks'
+        // own business and not hers this morning.
+        let task = |today: bool, by: Option<Value>, title: &str| {
+            m.w.call(
+                &apps.todo,
+                "new_task",
+                vec![
+                    res(&m.list),
+                    Value::none(),
+                    Value::none(),
+                    Value::some(Value::Bool(today)),
+                    Value::none(),
+                    Value::none(),
+                    by.unwrap_or_else(Value::none),
+                    Value::text(title),
+                ],
+            );
+        };
+        task(true, None, "call the landlord");
+        task(
+            false,
+            Some(Value::some(Value::Principal(me()))),
+            "review the plan",
         );
         add_todo(&m, &apps, "sort the paper mail", false);
         add_todo(&m, &apps, "bins", true);
@@ -1604,8 +1610,17 @@ mod cases {
         for day in ["mon", "tue", "wed", "thu", "fri", "sat", "sun"] {
             m.w.call(
                 &apps.todo,
-                "new_task_today",
-                vec![res(&m.list), Value::none(), Value::text(day)],
+                "new_task",
+                vec![
+                    res(&m.list),
+                    Value::none(),
+                    Value::none(),
+                    Value::some(Value::Bool(true)),
+                    Value::none(),
+                    Value::none(),
+                    Value::none(),
+                    Value::text(day),
+                ],
             );
         }
         let view = m.w.view(&apps.today, "today", vec![res(&m.today)]);
@@ -1704,6 +1719,7 @@ mod cases {
             "new_task",
             vec![
                 res(&m.list),
+                Value::none(),
                 Value::none(),
                 Value::none(),
                 Value::none(),
@@ -1839,6 +1855,7 @@ mod cases {
                     Value::none(),
                     Value::none(),
                     Value::none(),
+                    Value::none(),
                     Value::text(t),
                 ],
             );
@@ -1900,9 +1917,9 @@ mod cases {
             vec![res(&project), Value::text("Move flat")],
         );
         let mut v = w.view(&apps.todo, "home", vec![res(&list)]);
-        // The window opens on today, whose entry adds a task for today and takes no words
-        // besides its title: the person picks the inbox, whose entry reads a day, a moment, who
-        // the task is for and the project it is of.
+        // The window opens on today, whose entry makes a task that names no day today's: the
+        // person picks the inbox, whose entry reads a day, a moment, who the task is for and
+        // the project it is of, and leaves the day to the words.
         choose(&v, "is:inbox");
         v.poll_patches().unwrap();
         let entry = of_kind(v.tree(), "ui.TextInput")
@@ -2007,9 +2024,8 @@ mod cases {
         );
         let list = w.create("Tasks");
         let mut v = w.view(&apps.todo, "home", vec![res(&list)]);
-        // The window opens on today, whose entry adds a task for today and so takes only its
-        // title: the person picks the inbox, whose entry reads a day, a moment and who the task
-        // is for before the words it leaves as the title.
+        // The person picks the inbox, where an entry that would only name a day, a moment and
+        // who the task is for names nothing: no words of its own, no task.
         choose(&v, "is:inbox");
         v.poll_patches().unwrap();
         let entry = of_kind(v.tree(), "ui.TextInput")
@@ -2071,6 +2087,7 @@ mod cases {
             "new_task",
             vec![
                 res(&list),
+                Value::none(),
                 Value::none(),
                 Value::none(),
                 Value::none(),
@@ -2253,6 +2270,7 @@ mod cases {
                 Value::none(),
                 Value::none(),
                 Value::none(),
+                Value::none(),
                 Value::text("milk"),
             ],
         ));
@@ -2348,6 +2366,7 @@ mod cases {
                 "new_task",
                 vec![
                     res(&list),
+                    Value::none(),
                     Value::none(),
                     Value::none(),
                     Value::none(),

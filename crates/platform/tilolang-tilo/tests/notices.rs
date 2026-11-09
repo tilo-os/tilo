@@ -277,6 +277,7 @@ fn reminded_workspace() -> (Replica, Meta, std::rc::Rc<std::cell::RefCell<String
             Value::none(),
             Value::none(),
             Value::none(),
+            Value::none(),
             Value::text("Call the landlord"),
         ],
     ) else {
