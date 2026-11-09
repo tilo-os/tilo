@@ -677,6 +677,15 @@ mod tests {
         }
     }
 
+    /// Move to the ask, as a person answering it does: a press on the bar the card hangs from
+    /// gives the bar the keyboard. A card that arrived unasked never answers the keys typed where
+    /// the person was, so its own keys are taken only after this.
+    fn move_to_the_bar(frame: &mut Framed<DesktopChrome>) {
+        let bar = bar_rect(frame);
+        Framed::harness_mut(frame).click_at(bar.x0 + 4.0, bar.y0 + bar.height() / 2.0);
+        settle(frame);
+    }
+
     fn ask_rect(frame: &Framed<DesktopChrome>) -> Rect {
         frame.bar().avatar_ask_rect()
     }
@@ -714,6 +723,7 @@ mod tests {
     #[test]
     fn escape_folds_the_ask_and_its_answer_reaches_the_host() {
         let (mut frame, host) = asking_desktop((1440, 900));
+        move_to_the_bar(&mut frame);
         Framed::harness_mut(&mut frame).key("Escape");
         assert!(host.ask.borrow().as_ref().is_some_and(|ask| !ask.open));
         settle(&mut frame);
@@ -791,6 +801,7 @@ mod tests {
     #[test]
     fn a_narrow_bars_dot_opens_the_ask_again() {
         let (mut frame, host) = asking_desktop((420, 800));
+        move_to_the_bar(&mut frame);
         Framed::harness_mut(&mut frame).key("Escape");
         assert!(
             host.ask.borrow().as_ref().is_some_and(|ask| !ask.open),
