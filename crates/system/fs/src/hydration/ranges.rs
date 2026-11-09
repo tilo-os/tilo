@@ -421,11 +421,25 @@ impl Hydrator {
         priority: Priority,
     ) -> Result<()> {
         let wants = chunk_wants(manifest, claimed);
-        let wants = self.fill_from_local(content, manifest, wants).await?;
+        let mut wants = self.fill_from_local(content, manifest, wants).await?;
         if wants.is_empty() {
             return Ok(());
         }
         let peers = self.known_peers();
+        if peers.is_empty() && self.source.is_some() {
+            // No peer to ask for ranges: the source hands over whole chunks,
+            // which then fill the area as resident chunks do.
+            let chunks = wants
+                .iter()
+                .filter_map(|want| manifest.chunks().get(want.index))
+                .map(|chunk| Hash::from(chunk.hash))
+                .collect::<std::collections::BTreeSet<_>>();
+            self.fetch_from_source(chunks.into_iter().collect()).await;
+            wants = self.fill_from_local(content, manifest, wants).await?;
+            if wants.is_empty() {
+                return Ok(());
+            }
+        }
         if peers.is_empty() {
             return Err(anyhow!("no peers to fetch {content} from"));
         }

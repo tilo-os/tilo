@@ -191,6 +191,24 @@ pub fn load_workspace_share_issuer(
 }
 
 impl PeerCredentials {
+    /// The credentials of a device whose key another service keeps: `cert`
+    /// must verify at `now_ns` and name `signing`'s key.
+    ///
+    /// # Errors
+    ///
+    /// The certificate is invalid at `now_ns`, or names another device.
+    pub fn certified(
+        cert: DeviceCert,
+        signing: ed25519_dalek::SigningKey,
+        now_ns: u64,
+    ) -> std::result::Result<Self, CertifiedIdentityError> {
+        verify_device_cert_at(&cert, now_ns)?;
+        if cert.device_public_key != signing.verifying_key().to_bytes() {
+            return Err(CertifiedIdentityError::DeviceKeyMismatch);
+        }
+        Ok(Self { cert, signing })
+    }
+
     /// Root-signed certificate binding this device to its human identity.
     pub fn cert(&self) -> &DeviceCert {
         &self.cert

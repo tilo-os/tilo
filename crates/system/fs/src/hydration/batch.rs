@@ -172,7 +172,10 @@ impl Hydrator {
         }
         let peers = self.known_peers();
         if peers.is_empty() {
-            report.missing = todo.iter().map(|w| w.hash).collect();
+            report.missing = self
+                .fetch_from_source(todo.iter().map(|w| w.hash).collect())
+                .await;
+            report.fetched = todo.len().saturating_sub(report.missing.len());
             return report;
         }
         let window = WINDOW_PER_PEER.saturating_mul(peers.len());
@@ -188,6 +191,15 @@ impl Hydrator {
             report.fetched = report.fetched.saturating_add(fetched);
             report.bytes = report.bytes.saturating_add(bytes);
             report.missing.extend(missing);
+        }
+        if !report.missing.is_empty() {
+            let asked = report.missing.len();
+            report.missing = self
+                .fetch_from_source(std::mem::take(&mut report.missing))
+                .await;
+            report.fetched = report
+                .fetched
+                .saturating_add(asked.saturating_sub(report.missing.len()));
         }
         report
     }
