@@ -371,8 +371,8 @@ fn what_a_run_did_in_tasks_is_marked_on_its_rows() {
     settle(&mut app);
     let ground = chroma_in(&mut app, [0.0, 0.0, 8.0, 8.0]);
     // Every row the run touched that the inbox still holds is marked: the one it removed
-    // stays as a struck row, all at the row's own height, with the agent's face on its
-    // trailing edge. The one it checked off left the inbox for Done.
+    // stays as a struck row, all at the row's own height, with the agent's face leading the
+    // line it says under the title. The one it checked off left the inbox for Done.
     let listed = change_marks::rows(&mut app);
     assert!(
         listed.len() == 2 && listed.iter().all(|(_, _, marked)| *marked),
@@ -388,10 +388,17 @@ fn what_a_run_did_in_tasks_is_marked_on_its_rows() {
             (rect[3] - listed[0].1[3]).abs() < 0.5,
             "{name} keeps the row's height"
         );
-        let face = [rect[0] + rect[2] - 24.0, rect[1], 24.0, rect[3]];
+        // What it says leads the line under the title: the face stands at the row's left, where
+        // the words start, and not on the trailing edge.
+        let leading = [rect[0], rect[1], rect[2] / 2.0, rect[3]];
         assert!(
-            chroma_in(&mut app, face) > ground.saturating_add(24),
-            "{name} shows the agent's face"
+            chroma_in(&mut app, leading) > ground.saturating_add(24),
+            "{name} shows the agent's face where its words start"
+        );
+        let trailing = [rect[0] + rect[2] - 24.0, rect[1], 24.0, rect[3]];
+        assert!(
+            chroma_in(&mut app, trailing) <= ground.saturating_add(24),
+            "{name} keeps its trailing edge for the row's own controls"
         );
     }
     // The header counts them, once.
@@ -440,11 +447,11 @@ fn a_tasks_history_shows_its_due_day_before_and_after_and_who_set_it() {
     app.invoke(None, None, &tasks, &add, &titled, false)
         .unwrap();
     settle(&mut app);
-    // The row opens the task's page, which stays open while the days it waits at move it out
-    // of the inbox, into Today and on to Upcoming.
+    // The row opens where it stands, and stays open while the days the task waits at move it
+    // out of the inbox, into Today and on to Upcoming.
     let row = named(&mut app, "SwipeRow", "Call the landlord");
     app.harness()
-        .click_at(row[0] + row[2] / 4.0, row[1] + row[3] / 2.0);
+        .click_at(row[0] + row[2] / 2.0, row[1] + row[3] / 2.0);
     settle(&mut app);
     let task = published_with(&mut app, &tasks, "Pick date…");
     let schedule = action_id(&mut app, &task, "Pick date…");
@@ -455,6 +462,7 @@ fn a_tasks_history_shows_its_due_day_before_and_after_and_who_set_it() {
     };
     app.invoke(None, None, &task, &schedule, &due("2026-11-02"), false)
         .unwrap();
+    settle(&mut app);
     // The agent's run puts it off twice: one entry of two changes.
     let (agent, ambient) = run();
     for day in ["2026-11-04", "2026-11-05"] {
