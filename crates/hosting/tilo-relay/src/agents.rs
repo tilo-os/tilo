@@ -32,7 +32,7 @@ use tilo_actions::remote::{
     ActionHost, ActionHostError, Caller, CallerPrincipal, CataloguePage, CatalogueQuery,
     Confirmation, ConfirmedInvocation, InvocationReceipt, InvocationState, InvokeRequest, Pending,
 };
-use tilo_agent_participant::workspace_actions::WorkspaceMember;
+use tilo_agent_participant::workspace_actions::{ShellRan, WorkspaceMember, WorkspaceShell};
 use tilo_agent_participant::{
     AgentHost, AgentHostLink, AppCatalogue, ApprovalDone, CatalogueFactory, FeedbackReviewer,
     HostActions, HostEndpoint, ModelChoice, SupervisorHost, Witness, WorkspaceActions,
@@ -295,6 +295,58 @@ pub struct AgentOptions {
     /// The model the host lends its workspaces' reporters to look over their
     /// reports' reviews, if any.
     pub feedback_reviewer: Option<Arc<dyn FeedbackReviewer>>,
+    /// Where the workspaces' Terminal sessions run their commands on this
+    /// host ([`host_shells`]); `None` leaves them to the devices running
+    /// them.
+    pub shell: Option<Arc<dyn WorkspaceShell>>,
+}
+
+/// The shells of the workspaces this host serves, their files under
+/// `state`, their Linux programs in the hosted VMs the host's environment
+/// names (`TILO_HOSTED_VM_SOCKET`, `TILO_HOSTED_ACCOUNT`,
+/// `TILO_HOSTED_VM_SIZE`, `TILO_HOSTED_PLANS`); without them, ush's own
+/// commands only.
+#[must_use]
+pub fn host_shells(state: PathBuf) -> Arc<dyn WorkspaceShell> {
+    Arc::new(HostShells(ush::workspace_shell::WorkspaceShells::from_env(
+        state,
+    )))
+}
+
+/// What a host lends its workspaces' records service: a model that looks
+/// over feedback reviews, and where Terminal sessions run their commands.
+type Lent = (
+    Option<Arc<dyn FeedbackReviewer>>,
+    Option<Arc<dyn WorkspaceShell>>,
+);
+
+/// ush's workspace shells, as the workspace actions run a session's
+/// commands.
+pub struct HostShells(pub ush::workspace_shell::WorkspaceShells);
+
+impl WorkspaceShell for HostShells {
+    fn run(
+        &self,
+        workspace: &str,
+        session: &str,
+        command: &str,
+        agent: bool,
+    ) -> Result<ShellRan, String> {
+        let ran = self
+            .0
+            .run(workspace, session, command, agent)
+            .map_err(|error| error.to_string())?;
+        Ok(ShellRan {
+            command: ran.command,
+            cwd: ran.cwd,
+            exit: ran.exit,
+            output: ran.output,
+            truncated: ran.truncated,
+            started_ms: ran.started_ms,
+            ended_ms: ran.ended_ms,
+            refusal: ran.refusal,
+        })
+    }
 }
 
 /// The host's app-serving plane: agents and the workspaces' page actions.
@@ -347,11 +399,16 @@ struct RelayRecordsLink {
     browser_origin: Arc<std::sync::RwLock<Option<Arc<String>>>>,
     web_entry: Option<String>,
     feedback_reviewer: Option<Arc<dyn FeedbackReviewer>>,
+    shell: Option<Arc<dyn WorkspaceShell>>,
 }
 
 impl WorkspaceRecordsLink for RelayRecordsLink {
     fn feedback_reviewer(&self) -> Option<Arc<dyn FeedbackReviewer>> {
         self.feedback_reviewer.clone()
+    }
+
+    fn shell(&self) -> Option<Arc<dyn WorkspaceShell>> {
+        self.shell.clone()
     }
 
     fn user_public_key(&self) -> [u8; 32] {
@@ -448,6 +505,7 @@ pub async fn start_serving_records(
     identity: RelayIdentity,
     catalogue: Option<CatalogueFactory>,
     feedback_reviewer: Option<Arc<dyn FeedbackReviewer>>,
+    shell: Option<Arc<dyn WorkspaceShell>>,
 ) -> Result<Relay, RelayError> {
     let host_cert = identity.device_cert.clone();
     let catalogue = catalogue.unwrap_or_else(|| Arc::new(AppCatalogue::native));
@@ -455,7 +513,13 @@ pub async fn start_serving_records(
     let plane = Arc::new(WorkspaceRecordsPlane(WorkspaceActions::new(catalogue)));
     let web_entry = cfg.web_entry.clone();
     let relay = Relay::start_with_app_serving(cfg, identity, Some(plane.clone())).await?;
-    attach_records(&plane.0, &relay, &host_cert, web_entry, feedback_reviewer)?;
+    attach_records(
+        &plane.0,
+        &relay,
+        &host_cert,
+        web_entry,
+        (feedback_reviewer, shell),
+    )?;
     Ok(relay)
 }
 
@@ -465,10 +529,11 @@ fn attach_records(
     relay: &Relay,
     host_cert: &DeviceCert,
     web_entry: Option<String>,
-    feedback_reviewer: Option<Arc<dyn FeedbackReviewer>>,
+    (feedback_reviewer, shell): Lent,
 ) -> Result<(), RelayError> {
     actions
         .attach(Arc::new(RelayRecordsLink {
+            shell,
             user_public_key: relay.workspace_records().user_public_key(),
             workspaces: relay.workspaces().cloned(),
             browser_origin: Arc::clone(&relay.browser_origin),
@@ -541,7 +606,7 @@ async fn start_inner(
         &relay,
         &host_cert,
         web_entry,
-        options.feedback_reviewer,
+        (options.feedback_reviewer, options.shell),
     )?;
     agents
         .start(
