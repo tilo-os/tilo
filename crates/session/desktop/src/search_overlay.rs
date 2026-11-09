@@ -495,14 +495,20 @@ impl Widget for SearchOverlay {
         // chrome's — the palette is drawn from here — so the deadline goes with the card's. A
         // search that never asked for it shows the rows it had when the person stopped typing,
         // and Enter on an app's row comes long after the person pressed it.
-        let answering = (self.handle.search_open() && self.handle.search_searching())
+        // Rows are still expected to join what the search shows (a window's
+        // content index being built, an app's server still looking): look
+        // again shortly, so a late row is drawn when it arrives. This is not
+        // "still searching": the rows already shown are the search's answer,
+        // and a fresh window's content must not keep them drawn as if it
+        // were.
+        let expecting = (self.handle.search_open() && self.handle.search_expecting())
             .then(|| ui::time::now().checked_add(tilo_desktop_search::ANSWER_POLL))
             .flatten();
         search
             .palette()
             .and_then(ui::Widget::next_wake_deadline)
             .into_iter()
-            .chain(answering)
+            .chain(expecting)
             .min()
     }
 

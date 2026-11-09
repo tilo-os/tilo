@@ -146,7 +146,9 @@ impl Session {
         let deadline = now.checked_add(Duration::from_secs(5)).unwrap_or(now);
         loop {
             self.frame();
-            if !self.handle.search_searching() {
+            // A source still out does not make the search "still searching"
+            // once its ready rows are shown, so wait on the sources.
+            if !self.handle.search_expecting() {
                 return;
             }
             assert!(ui::time::now() < deadline, "the search never finished");
@@ -665,7 +667,7 @@ fn a_keystroke_in_the_palette_does_not_rebuild_the_page_with_many_windows() {
             let deadline = start.checked_add(Duration::from_secs(5)).unwrap_or(start);
             loop {
                 page.relayout();
-                if !handle.search_searching() {
+                if !handle.search_expecting() {
                     break;
                 }
                 assert!(ui::time::now() < deadline, "the search never finished");
@@ -694,7 +696,7 @@ fn a_keystroke_in_the_palette_does_not_rebuild_the_page_with_many_windows() {
                      composition with {windows} windows open: every window's scene is measured and \
                      drawn again for a change in the card alone"
                 );
-                if !handle.search_searching() && drawn > 2 {
+                if !handle.search_expecting() && drawn > 2 {
                     break;
                 }
                 assert!(ui::time::now() < deadline, "the search never finished");

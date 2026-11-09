@@ -223,9 +223,14 @@ fn key_search(
     settle_search(desk, chrome, handle);
 }
 
-/// Draw the desk's and the card's frames until the search has ended. A source answers on a worker,
-/// and its answer wakes the desk: a test pumps what the wake asks for and draws the frame it
-/// brings, as a host does.
+/// Draw the desk's and the card's frames until every source of the open search has answered. A
+/// source answers on a worker, and its answer wakes the desk: a test pumps what the wake asks for
+/// and draws the frame it brings, as a host does.
+///
+/// A source still out does not make the search "still searching" once the rows that are ready are
+/// shown ([`DesktopHandle::search_searching`]), so this waits on the sources themselves
+/// ([`DesktopHandle::search_expecting`]): a row a later answer brings is drawn before the test
+/// reads what the card holds.
 fn settle_search(
     desk: &mut ui::headless::FrameHarness,
     chrome: &mut ui::headless::FrameHarness,
@@ -237,7 +242,7 @@ fn settle_search(
     loop {
         desk.relayout();
         chrome.relayout();
-        if !handle.search_searching() {
+        if !handle.search_expecting() {
             return;
         }
         assert!(ui::time::now() < deadline, "the search never finished");

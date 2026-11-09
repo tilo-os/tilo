@@ -25,6 +25,9 @@ const MORE_PREFIX: &str = "more:";
 
 mod rows;
 
+#[cfg(test)]
+mod ready_rows_tests;
+
 use rows::{
     all_results_entry, always_shown, entries_for, everywhere, kind_facets, narrowed, stands_tall,
 };
@@ -477,15 +480,38 @@ impl DesktopSearch {
                 || !self.rows_placed())
     }
 
-    /// Whether the search is over: every source has answered for the query,
-    /// no application's answer is still coming, and the rows are cut to the
-    /// room the card gave them. While this is false the search is still
-    /// filling in and its rows will change — what the desk publishes as a
-    /// search still searching.
+    /// Whether the search is over: the rows that are ready are cut to the
+    /// card's room, and no source that is still out holds them back. What
+    /// the desk publishes as a search still searching.
+    ///
+    /// A source still out — a window opened a moment ago whose content
+    /// index is being built, an app's own server still looking — does not
+    /// make the search "still searching" once the apps, actions and places
+    /// that were ready are shown: the person reads those at once, and the
+    /// late rows join them when they come ([`Self::expecting`], which a
+    /// host polls for). Holding the ready rows behind the slowest source is
+    /// what kept a fresh window's search saying "Searching…" for the 14–57 s
+    /// its content index took on a page, measured on the page desk.
     #[must_use]
     pub fn settled(&self) -> bool {
-        // With nothing open there is nothing to wait for.
-        self.sources.is_none() || (self.rows_placed() && !self.waiting() && !self.answering())
+        // With nothing open there is nothing to wait for. Rows that are ready
+        // are the search's answer, so a source still out does not make it
+        // searching. With nothing ready yet, it is still searching while a
+        // source owes a row; a query that found nothing at all, with no
+        // source left to answer, is settled too.
+        self.sources.is_none()
+            || (self.rows_placed() && (!self.rows.is_empty() || !self.expecting()))
+    }
+
+    /// Whether rows are still expected to join the ones shown: a source has
+    /// yet to answer, or an application's answer is still coming, or a
+    /// source that holds the frame's state still owes its share. What a
+    /// host looks again for, so a late row is drawn when it arrives, even
+    /// though the rows already shown are the search's answer
+    /// ([`Self::settled`]).
+    #[must_use]
+    pub fn expecting(&self) -> bool {
+        self.sources.is_some() && (self.waiting() || self.answering())
     }
 
     /// Run the query again when the palette's text changed since the rows

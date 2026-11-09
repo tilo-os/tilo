@@ -1372,6 +1372,31 @@ impl ui_core::widget::document_effects::DocumentEffects for ResourceRoot {
 /// in the frame that asks for them.
 const OFF_THREAD_ENTRIES: usize = 1024;
 
+/// Whether `entries` are indexed away from the frame that asks for them.
+///
+/// Natively, a few short entries index in that frame: tantivy costs tens of
+/// microseconds, and a build that landed at once saves the search a look
+/// again. A page moves every build off the frame — its one thread runs the
+/// toolkit's background queue between frames, so a build in the frame holds
+/// the palette's first paint until it finishes. A set large enough to be
+/// slow, or one carrying prose bodies, moves off the frame on either host.
+fn indexes_off_frame(entries: &[SearchEntry]) -> bool {
+    // Tests drive both rules on the host they run on.
+    #[cfg(test)]
+    if let Some(forced) = FORCE_OFF_FRAME.with(std::cell::Cell::get) {
+        return forced;
+    }
+    cfg!(target_arch = "wasm32")
+        || entries.len() >= OFF_THREAD_ENTRIES
+        || entries.iter().any(|entry| entry.body.is_some())
+}
+
+#[cfg(test)]
+thread_local! {
+    /// Tests set whether every build moves off the frame, as a page's does.
+    pub(crate) static FORCE_OFF_FRAME: std::cell::Cell<Option<bool>> = const { std::cell::Cell::new(None) };
+}
+
 /// What the resource's search entries are of: a revision of the resource
 /// and the entries its surfaces show.
 #[derive(PartialEq)]
@@ -1482,6 +1507,17 @@ impl SearchCache {
 
     /// Index `entries`, of `state`: in this frame when they are few, else
     /// away from the UI thread. The index search answers from now.
+    ///
+    /// A page never indexes in the frame that asks for it, however few the
+    /// entries. Its one thread runs the toolkit's
+    /// [`background`](ui_core::background) queue between frames, so a build
+    /// in the frame holds the palette's first paint until it finishes, and
+    /// indexing a window's content into tantivy there is what the page
+    /// desk measured as the 14–57 s between typing and the first row, per
+    /// app, moving with whichever window was opened last. A background job
+    /// runs after the frame returns, so the ready rows paint at once and the
+    /// content's rows join them when the index is built
+    /// ([`SearchCache::building`], which the search showing polls for).
     fn build(
         &mut self,
         state: SearchState,
@@ -1492,7 +1528,7 @@ impl SearchCache {
         {
             self.builds = self.builds.saturating_add(1);
         }
-        if entries.len() >= OFF_THREAD_ENTRIES || entries.iter().any(|entry| entry.body.is_some()) {
+        if indexes_off_frame(&entries) {
             let (send, arriving) = std::sync::mpsc::channel();
             let building = entries.clone();
             let spawned = ui_core::background::Background::current().spawn(
@@ -1516,6 +1552,14 @@ impl SearchCache {
             indexed: Arc::clone(&indexed),
         });
         indexed
+    }
+
+    /// Whether an index is being built off the frame for a state this cache
+    /// was asked for: the search showing looks again shortly, so the rows the
+    /// build finds are drawn when it lands.
+    pub(crate) fn building(&mut self) -> bool {
+        self.receive();
+        self.building.is_some()
     }
 
     /// The index holding the surfaces' answers to the waiting search, once

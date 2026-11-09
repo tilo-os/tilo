@@ -16,6 +16,7 @@ pub trait DesktopSearchApi {
     fn waiting(&self) -> bool;
     fn answering(&self) -> bool;
     fn settled(&self) -> bool;
+    fn expecting(&self) -> bool;
     fn filling_in(&self) -> bool;
     fn open(&mut self, data: SearchData);
     fn close(&mut self);
@@ -53,6 +54,9 @@ impl DesktopSearchApi for DesktopSearch {
     }
     fn settled(&self) -> bool {
         Self::settled(self)
+    }
+    fn expecting(&self) -> bool {
+        Self::expecting(self)
     }
     fn filling_in(&self) -> bool {
         Self::filling_in(self)
@@ -212,11 +216,19 @@ impl LazyDesktopSearch {
             .is_some_and(|search| search.filling_in())
     }
 
-    /// Whether the search is over: every source has answered for the query
-    /// and its rows are cut to the card. Nothing is open while its code is
-    /// on its way, so there is nothing to wait for.
+    /// Whether the search is over: the rows that are ready are cut to the
+    /// card, and no source still out holds them back. Nothing is open while
+    /// its code is on its way, so there is nothing to wait for.
     pub fn settled(&self) -> bool {
         self.search.as_ref().is_none_or(|search| search.settled())
+    }
+
+    /// Whether rows are still expected to join the ones shown: what a host
+    /// looks again for, so a late row is drawn when it arrives.
+    pub fn expecting(&self) -> bool {
+        self.search
+            .as_ref()
+            .is_some_and(|search| search.expecting())
     }
 
     /// Open over `data` with an empty query, or once the code is in.
