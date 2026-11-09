@@ -300,6 +300,92 @@ fn a_second_ask_brings_the_conversation_forward() {
     );
 }
 
+/// An ask while the conversation is already the place in front: the message is posted, and asking
+/// is not refused because the place it belongs in is where it already stands (`shell.md` §8.1).
+///
+/// The first ask leaves its conversation as the place in front — the place it made is the strip's
+/// active tab, so bringing it forward is the activation that would refuse "that place is in front
+/// already". The second ask succeeds all the same: the turn is delivered, and the action that
+/// typed it is not answered with `nothing_to_place`.
+#[test]
+fn an_ask_in_front_already_is_posted_and_not_refused() {
+    let _settled = ui::motion::testing::settled();
+    let root = private_home();
+    let mut session = session(root.path());
+    ask(&mut session, "what is on my task list?");
+    let first = wait_for(&mut session, "the conversation placed", |session| {
+        let place = arrangement(session)
+            .places
+            .into_iter()
+            .find(|place| place.record.contains("/channels/"))?;
+        let in_front = arrangement(session)
+            .strips
+            .iter()
+            .any(|strip| strip.key == place.strip && strip.active == place.key);
+        in_front.then_some(place)
+    });
+    let channel = first
+        .record
+        .rsplit('/')
+        .next()
+        .expect("the place shows a channel")
+        .to_owned();
+    let messages = |session: &Session| -> usize {
+        session
+            .read(&first.record)
+            .and_then(|reading| reading["messages"].as_array().map(Vec::len))
+            .unwrap_or_default()
+    };
+    let before = messages(&session);
+
+    // The second ask through the same action the canvas entry's typing runs: the ask is the
+    // person's, and the conversation it belongs in already stands in front.
+    let asked = "and what is due today?";
+    session
+        .invoke(
+            "shell:arrangement",
+            "place-found",
+            serde_json::json!({"text": asked, "x": 0, "y": 0})
+                .as_object()
+                .expect("arguments"),
+        )
+        .unwrap_or_else(|error| {
+            panic!("an ask whose conversation is in front already succeeds: {error:?}")
+        });
+
+    // The message was posted: the reading the place draws holds the second question.
+    let after = session
+        .read(&first.record)
+        .unwrap_or_else(|| panic!("the session serves the channel's reading: {}", first.record));
+    let texts: Vec<&str> = after["messages"]
+        .as_array()
+        .map(|messages| messages.iter().filter_map(|m| m["text"].as_str()).collect())
+        .unwrap_or_default();
+    assert!(
+        texts.contains(&asked),
+        "the ask in front already is posted: {texts:?}"
+    );
+    assert_eq!(
+        messages(&session),
+        before + 1,
+        "it adds the one message, in the conversation's one place: {texts:?}"
+    );
+    assert!(
+        channel_has_one_place(&session, &channel),
+        "the conversation keeps the place it stood in"
+    );
+}
+
+/// Whether the conversation `channel` stands in exactly one place of the desk.
+fn channel_has_one_place(session: &Session, channel: &str) -> bool {
+    arrangement(session)
+        .places
+        .into_iter()
+        .filter(|place| place.record.rsplit('/').next() == Some(channel))
+        .count()
+        == 1
+}
+
 /// The conversation the canvas places is usable in a real session, not only in a development one:
 /// the channel the ask made is published by the session's own `ChatViewService`, and its `post`
 /// verb — the one the page's composer runs — writes a message the reading the place draws then

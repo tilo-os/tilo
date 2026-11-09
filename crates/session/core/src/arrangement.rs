@@ -762,7 +762,9 @@ impl Arrangement {
         // a resource places it where the person typed, as it always has — a second place of a note
         // is the person's to make.
         if asked_agent && let Some(held) = self.place_of(&resource) {
-            self.ask(asked, ArrangementAction::Activate { place: held }, busy)?;
+            // The ask succeeded: its message is posted whether or not the conversation stood in
+            // front already, so bringing it forward tolerates that (`bring_forward`).
+            self.bring_forward(asked, held, busy)?;
             return Ok(Some(held));
         }
         let surface = self.surface_at_strip(strip)?;
@@ -823,11 +825,7 @@ impl Arrangement {
         view: &str,
     ) -> Result<Option<u64>, String> {
         if let Some(held) = self.place_in(workspace, resource) {
-            self.ask(
-                asked,
-                ArrangementAction::Activate { place: held },
-                Busy::default(),
-            )?;
+            self.bring_forward(asked, held, Busy::default())?;
             return Ok(None);
         }
         let surface = self.surface_on(Some(workspace), None)?;
@@ -846,6 +844,22 @@ impl Arrangement {
         };
         self.ask(asked, action, Busy::default())?;
         Ok(Some(surface.place))
+    }
+
+    /// Bring the place `place` forward as `asked`'s step, for a caller that is raising what
+    /// already stands rather than making it: a place already in front is where it should be, so
+    /// the activation that would refuse ("that place is in front already") is no failure — a
+    /// text that asks posts its message and then brings the conversation forward, and the ask
+    /// has succeeded whether or not that place was in front.
+    ///
+    /// # Errors
+    /// Why the place could not be activated at all.
+    fn bring_forward(&mut self, asked: &str, place: u64, busy: Busy) -> Result<(), String> {
+        match self.ask(asked, ArrangementAction::Activate { place }, busy) {
+            Ok(_) => Ok(()),
+            Err(why) if why == "that place is in front already" => Ok(()),
+            Err(why) => Err(why),
+        }
     }
 
     /// The system's `open` (`docs/designs/app-language/one-app-model.md` §3): stand `resource`
@@ -868,15 +882,7 @@ impl Arrangement {
         if let Some(held) = self.place_of(resource) {
             // Opening what is open brings it forward; one already in front is where it should be,
             // and asking to activate it again would refuse ("that place is in front already").
-            match self.ask(
-                asked,
-                ArrangementAction::Activate { place: held },
-                Busy::default(),
-            ) {
-                Ok(_) => {}
-                Err(why) if why == "that place is in front already" => {}
-                Err(why) => return Err(why),
-            }
+            self.bring_forward(asked, held, Busy::default())?;
             return Ok(None);
         }
         let anchor = if beside.trim().is_empty() {
