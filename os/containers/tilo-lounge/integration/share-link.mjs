@@ -163,8 +163,23 @@ try {
   report.adaBar = adaBar;
   if (!adaBar.share) await failed('Ada’s bar offers no Share in a workspace');
   if (!adaBar.tilo.includes(`/#/@${hostRoute}/w/${workspace}/${APP}`)) await failed(`Open in Tilo leads elsewhere: ${adaBar.tilo}`);
-  const canvas = JSON.parse(await ada.evaluate(`JSON.stringify(globalThis.tiloMount.canvas.getBoundingClientRect())`));
-  await click(ada, canvas.x + canvas.width / 2, canvas.y + canvas.height / 2);
+  const editor = await until(ada, `(() => {
+    // The text field the page publishes for its editor, where it is drawn.
+    globalThis.tiloMount?.requestSemantics?.();
+    const found = [];
+    const node = n => { found.push(n); (n.children || []).forEach(node); };
+    const walk = n => { if (n.semantics) node(n.semantics); (n.children || []).forEach(walk); };
+    const root = globalThis.tiloMount?.state()?.semantics?.root;
+    if (root) walk(root);
+    const field = found.find(n => (n.bounds || n.rect) && /text|edit/i.test(n.role ?? '') && !/static|label/i.test(n.role ?? ''));
+    if (!field) return null;
+    const b = field.bounds || field.rect;
+    const [x0, y0, x1, y1] = Array.isArray(b) ? b : [b.x0 ?? b.x, b.y0 ?? b.y, b.x1 ?? b.x + b.width, b.y1 ?? b.y + b.height];
+    const canvas = globalThis.tiloMount.canvas.getBoundingClientRect();
+    return JSON.stringify({x: canvas.left + (x0 + x1) / 2, y: canvas.top + Math.min(y0 + 12, (y0 + y1) / 2), role: field.role});
+  })()`, 'the document’s text field', 60_000);
+  const {x, y} = JSON.parse(editor);
+  await click(ada, x, y);
   const first = `Shared from Ada ${Date.now().toString(36)}`;
   await type(ada, first);
   await shows(ada, first, 'Ada’s own words');
