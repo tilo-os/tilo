@@ -29,6 +29,17 @@ use crate::{Console, Doors, Nav, Reads, ago, faced, page, tr, trf};
 /// (`console.agent:<client>`).
 pub(crate) const AGENT_KIND: &str = "console.agent";
 
+/// An agent as the type its rows are items of: what a published agent says it
+/// is, so search names it by its type rather than by a tag the card writes. An
+/// agent is a client of the agent door, not a record in a document, so it
+/// declares its kind and name by hand.
+pub(crate) struct Agent;
+
+impl ui::tilo_resource::words::RowType for Agent {
+    const KIND: &'static str = AGENT_KIND;
+    const LABEL: &'static str = "Agent";
+}
+
 /// The address of the agent of `client`.
 pub(crate) fn agent_resource_id(client: &str) -> String {
     format!("{AGENT_KIND}:{client}")
@@ -51,7 +62,7 @@ fn card_view() -> ui::tilo_actions::ResourceViewSpec {
 /// the card's commands.
 pub(crate) fn live_agent(client: &str) -> LiveRow {
     let agent = || client.to_owned();
-    LiveRow::new(agent_resource_id(client), AGENT_KIND, client.to_owned())
+    LiveRow::typed::<Agent>(agent_resource_id(client), client.to_owned())
         .effect(&ConsoleEffect::ViewAgent { agent: agent() })
         .effect(&ConsoleEffect::StopAgent { agent: agent() })
         .effect(&ConsoleEffect::UndoAgentRun { agent: agent() })

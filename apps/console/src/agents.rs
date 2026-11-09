@@ -38,6 +38,18 @@ pub(crate) fn query() -> wire::RunsQuery {
 /// (`console.run:<run id>`), so a link to a run names it in one segment.
 pub(crate) const RUN_KIND: &str = "console.run";
 
+/// A run as the type its rows are items of: what a published run says it is,
+/// so search names it as it names a record's item ("runs of Console") instead
+/// of taking the app's word for it. A run lives in the agent door's answer,
+/// not in a document, so it declares its kind and name by hand, as Tube's
+/// fetched catalogue does.
+pub(crate) struct Run;
+
+impl ui::tilo_resource::words::RowType for Run {
+    const KIND: &'static str = RUN_KIND;
+    const LABEL: &'static str = "Run";
+}
+
 /// How many of the runs read are published as resources of their own: a
 /// published tree stays bounded, and any other run's address is answered by
 /// [`live_run`] alone.
@@ -71,7 +83,7 @@ pub(crate) fn live_run(runs: &[wire::AgentRun], id: &str) -> LiveRow {
         .iter()
         .find(|run| run.id == id)
         .map_or_else(|| tr("console-run"), |run| run.instruction.clone());
-    LiveRow::new(run_resource_id(id), RUN_KIND, label)
+    LiveRow::typed::<Run>(run_resource_id(id), label)
         .effect(&ConsoleEffect::ViewRun { run: id.to_owned() })
         .view(run_view())
 }
