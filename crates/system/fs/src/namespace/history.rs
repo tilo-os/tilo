@@ -187,9 +187,46 @@ impl Namespace {
             .put_object(&automerge::ROOT, HISTORY_KEY, ObjType::Map)?)
     }
 
-    fn record_map(&self, record_id: FileRecordId) -> Option<ObjId> {
-        let root = self.history_root()?;
-        object(self.doc.get(&root, record_id.0.to_string()).ok().flatten())
+    /// Every document map holding record histories: one until two devices that each made their
+    /// own document meet, and one per device after, since a merge keeps both maps under the key
+    /// rather than choosing between them. A reader takes the maps together, or it would see the
+    /// versions of one device and none of the other's.
+    fn history_roots(&self) -> Vec<ObjId> {
+        self.doc
+            .get_all(&automerge::ROOT, HISTORY_KEY)
+            .map(|values| {
+                values
+                    .into_iter()
+                    .filter_map(|(value, id)| match value {
+                        Value::Object(ObjType::Map) => Some(id),
+                        _ => None,
+                    })
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    /// Every map under `parent`'s `key`: more than one where two devices each wrote their own.
+    fn sub_maps(&self, parent: &ObjId, key: &str) -> Vec<ObjId> {
+        self.doc
+            .get_all(parent, key)
+            .unwrap_or_default()
+            .into_iter()
+            .filter_map(|(value, id)| match value {
+                Value::Object(ObjType::Map) => Some(id),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// Every map `record_id`'s history has, for the same reason as [`Self::history_roots`]: two
+    /// devices that both wrote the record's history each made one.
+    fn record_maps(&self, record_id: FileRecordId) -> Vec<ObjId> {
+        let mut maps = Vec::new();
+        for root in self.history_roots() {
+            maps.extend(self.sub_maps(&root, &record_id.0.to_string()));
+        }
+        maps
     }
 
     /// `record_id`'s versions, oldest first by version id.
@@ -198,22 +235,20 @@ impl Namespace {
         record_id: FileRecordId,
     ) -> BTreeMap<FileVersionId, FileVersionV1> {
         let mut versions = BTreeMap::new();
-        let Some(record) = self.record_map(record_id) else {
-            return versions;
-        };
-        let Some(map) = object(self.doc.get(&record, VERSIONS_KEY).ok().flatten()) else {
-            return versions;
-        };
-        for key in self.doc.keys(&map) {
-            let Some(bytes) = scalar_bytes(self.doc.get(&map, &key).ok().flatten()) else {
-                continue;
-            };
-            let Ok(version) =
-                collab_types::canonical::from_canonical_bytes::<FileVersionV1>(&bytes)
-            else {
-                continue;
-            };
-            versions.insert(version.id, version);
+        for record in self.record_maps(record_id) {
+            for map in self.sub_maps(&record, VERSIONS_KEY) {
+                for key in self.doc.keys(&map) {
+                    let Some(bytes) = scalar_bytes(self.doc.get(&map, &key).ok().flatten()) else {
+                        continue;
+                    };
+                    let Ok(version) =
+                        collab_types::canonical::from_canonical_bytes::<FileVersionV1>(&bytes)
+                    else {
+                        continue;
+                    };
+                    versions.insert(version.id, version);
+                }
+            }
         }
         versions
     }
@@ -224,22 +259,20 @@ impl Namespace {
         record_id: FileRecordId,
     ) -> BTreeMap<Uuid, FileConflictV1> {
         let mut conflicts = BTreeMap::new();
-        let Some(record) = self.record_map(record_id) else {
-            return conflicts;
-        };
-        let Some(map) = object(self.doc.get(&record, CONFLICTS_KEY).ok().flatten()) else {
-            return conflicts;
-        };
-        for key in self.doc.keys(&map) {
-            let Some(bytes) = scalar_bytes(self.doc.get(&map, &key).ok().flatten()) else {
-                continue;
-            };
-            let Ok(conflict) =
-                collab_types::canonical::from_canonical_bytes::<FileConflictV1>(&bytes)
-            else {
-                continue;
-            };
-            conflicts.insert(conflict.id, conflict);
+        for record in self.record_maps(record_id) {
+            for map in self.sub_maps(&record, CONFLICTS_KEY) {
+                for key in self.doc.keys(&map) {
+                    let Some(bytes) = scalar_bytes(self.doc.get(&map, &key).ok().flatten()) else {
+                        continue;
+                    };
+                    let Ok(conflict) =
+                        collab_types::canonical::from_canonical_bytes::<FileConflictV1>(&bytes)
+                    else {
+                        continue;
+                    };
+                    conflicts.insert(conflict.id, conflict);
+                }
+            }
         }
         conflicts
     }
