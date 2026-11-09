@@ -413,6 +413,11 @@ pub struct Kept<'a> {
     /// Whether `id` is this device's to keep to itself: a window it had
     /// open before it joined the workspace is not the workspace's.
     pub private: &'a dyn Fn(u64) -> bool,
+    /// Whether this device closed `id` since it last wrote the record: the
+    /// window's entry there goes when it writes again, and until then the
+    /// record's copy is not laid back into this desk, where no window fills
+    /// it.
+    pub closed: &'a dyn Fn(u64) -> bool,
     /// Whether the fold lays down the desk of the device that writes it:
     /// which of its windows float is then what the write records, so its
     /// floats stay as this device has them.
@@ -424,15 +429,8 @@ impl Kept<'_> {
     pub const NOTHING: Kept<'static> = Kept {
         mine: &|_| false,
         private: &|_| false,
+        closed: &|_| false,
         writing: false,
-    };
-
-    /// All of this device's is: a writer's, whose own layout the record does
-    /// not hold yet and whose write adds it beside everyone else's.
-    pub const OWN: Kept<'static> = Kept {
-        mine: &|_| true,
-        private: &|_| true,
-        writing: true,
     };
 }
 
@@ -464,13 +462,17 @@ pub fn fold(doc: &AutoCommit, workspace: &mut Workspace, device: &str, kept: &Ke
             window_groups: strip
                 .window_groups
                 .iter()
-                .map(|group| {
+                .filter_map(|group| {
                     let tabs: Vec<Tab> = group
                         .tabs
                         .iter()
+                        .filter(|tab| !(kept.closed)(tab.id))
                         .map(|tab| shown(tab, local_tabs.get(&tab.id).copied(), device))
                         .collect();
-                    match local_groups.get(&group.id) {
+                    if tabs.is_empty() {
+                        return None;
+                    }
+                    Some(match local_groups.get(&group.id) {
                         Some(local) => {
                             let active_tab = if tabs.iter().any(|tab| tab.id == local.active_tab) {
                                 local.active_tab
@@ -496,7 +498,7 @@ pub fn fold(doc: &AutoCommit, workspace: &mut Workspace, device: &str, kept: &Ke
                             tabs,
                             ..group.clone()
                         },
-                    }
+                    })
                 })
                 .collect(),
         })
