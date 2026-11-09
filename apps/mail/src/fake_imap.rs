@@ -13,7 +13,6 @@ use std::sync::{Arc, Mutex};
 
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::TcpListener;
-use tokio::sync::Notify;
 
 /// The folders a server has, named and marked as one provider does.
 #[derive(Clone, Copy, Debug)]
@@ -83,7 +82,10 @@ impl State {
 pub struct FakeImap {
     pub port: u16,
     state: Arc<Mutex<State>>,
-    changed: Arc<Notify>,
+    /// How many times the mailbox changed: a connection hears every change
+    /// its own receiver has not seen yet, so one made while it was between
+    /// commands is answered all the same.
+    changed: Arc<tokio::sync::watch::Sender<usize>>,
     /// How many connections are waiting in IDLE now.
     idling: Arc<std::sync::atomic::AtomicUsize>,
 }
@@ -111,7 +113,7 @@ impl FakeImap {
         let server = Self {
             port,
             state,
-            changed: Arc::new(Notify::new()),
+            changed: Arc::new(tokio::sync::watch::Sender::new(0)),
             idling: Arc::default(),
         };
         let serving = server.clone();
@@ -130,6 +132,11 @@ impl FakeImap {
         server
     }
 
+    /// The mailbox changed as another client would have changed it.
+    fn announce(&self) {
+        self.changed.send_modify(|changes| *changes += 1);
+    }
+
     /// Put a message into `folder` as another client or a delivery would,
     /// and tell idling connections. Its UID.
     pub fn append(&self, folder: &str, raw: &str, flags: &[&str]) -> u32 {
@@ -146,7 +153,7 @@ impl FakeImap {
             drop(state);
             uid
         };
-        self.changed.notify_waiters();
+        self.announce();
         uid
     }
 
@@ -163,7 +170,7 @@ impl FakeImap {
             }
             drop(state);
         }
-        self.changed.notify_waiters();
+        self.announce();
     }
 
     /// How many connections wait in IDLE for news of the mailbox.
@@ -187,6 +194,7 @@ impl FakeImap {
         let (read, mut write) = tokio::io::split(stream);
         let mut reader = BufReader::new(read);
         let mut selected: Option<String> = None;
+        let mut news = self.changed.subscribe();
         if write
             .write_all(b"* OK [CAPABILITY IMAP4rev1 IDLE MOVE UIDPLUS SPECIAL-USE] ready\r\n")
             .await
@@ -220,41 +228,38 @@ impl FakeImap {
                     return;
                 }
                 let _ = write.flush().await;
-                // New mail or a flag ends the wait with an untagged answer;
-                // the client then says DONE.
+                // New mail or a flag ends the wait with an untagged answer, and
+                // the client then says DONE. A change made while this connection
+                // was between commands is one its receiver has not seen, so the
+                // wait answers that at once rather than sleeping through it.
                 let mut done = String::new();
-                let waiting = self.changed.notified();
-                tokio::pin!(waiting);
-                waiting.as_mut().enable();
                 self.idling
                     .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-                let leave = || {
-                    self.idling
-                        .fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
-                };
-                tokio::select! {
-                    () = waiting => {
-                        leave();
-                        let count = selected
-                            .as_deref()
-                            .map_or(0, |name| self.messages(name).len());
-                        if write
-                            .write_all(format!("* {count} EXISTS\r\n").as_bytes())
-                            .await
-                            .is_err()
-                        {
-                            return;
-                        }
-                        let _ = write.flush().await;
-                        if reader.read_line(&mut done).await.unwrap_or(0) == 0 {
-                            return;
-                        }
-                    }
+                let heard = tokio::select! {
+                    _ = news.changed() => Some(true),
                     read = reader.read_line(&mut done) => {
-                        leave();
-                        if read.unwrap_or(0) == 0 {
-                            return;
-                        }
+                        read.is_ok_and(|read| read > 0).then_some(false)
+                    }
+                };
+                self.idling
+                    .fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
+                let Some(heard) = heard else {
+                    return;
+                };
+                if heard {
+                    let count = selected
+                        .as_deref()
+                        .map_or(0, |name| self.messages(name).len());
+                    if write
+                        .write_all(format!("* {count} EXISTS\r\n").as_bytes())
+                        .await
+                        .is_err()
+                    {
+                        return;
+                    }
+                    let _ = write.flush().await;
+                    if reader.read_line(&mut done).await.unwrap_or(0) == 0 {
+                        return;
                     }
                 }
                 format!("{tag} OK IDLE terminated\r\n")
@@ -299,7 +304,7 @@ impl FakeImap {
         mailbox.messages.push(Stored { uid, flags, raw });
         let validity = mailbox.validity;
         drop(state);
-        self.changed.notify_waiters();
+        self.announce();
         format!("{tag} OK [APPENDUID {validity} {uid}] APPEND completed\r\n")
     }
 
