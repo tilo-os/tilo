@@ -161,6 +161,9 @@ agents and History see one model whichever tier ran a command.
 3. Tier 3 on the existing compute and placement system: one command as one
    job, writes as actions, guests scoped to the session, and a quota for
    compute on Tilo's own host.
+   On a host that serves other people's workspaces, tier 3 runs in the
+   workspace environment's own VM, metered per second and limited by the
+   account's plan ([`environments.md`](environments.md#hosted-workspace-vms)).
 4. The integration test: a workspace on a test site, with no Linux on the
    host, where `ls`, `jq` and `cargo build` all work, the last one on the
    member's device.

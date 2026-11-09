@@ -50,6 +50,7 @@ device's files folder as `~`, for a Terminal in no workspace. See
 | Tilo apps | The launcher sandbox (unchanged) | ~0 |
 | Environments (CLI) | Namespaces + seccomp + Landlock over shared read-only images | ~0 idle (socket activated); images are shared by content address |
 | Legacy apps | A VM on a host with KVM | Real: metered, quota'd, suspended when idle |
+| Hosted workspaces' Linux programs | The workspace environment's own Firecracker VM | Real: billed per second while it runs, limited per plan, snapshotted when idle |
 
 A member that takes work runs the first two. A legacy launch is a request to
 a member that advertises KVM.
@@ -331,6 +332,38 @@ the supervisor asks the legacy VM service to ensure the VM; the guest agent runs
 
 The Windows appliance (`crates/windows/windows-vm`) is the `windows` legacy VM;
 its guest bridge moves to the same vsock agent protocol.
+
+## Hosted workspace VMs
+
+On a host that serves other people's workspaces, a workspace's shell, its own
+commands and Tilo's actions run as everywhere else, and need no VM. A Linux
+program the shell hands on (tier 3: `cargo`, `npm`, `python`) runs in a VM of
+that workspace environment's own, never in a guest sharing the host's kernel
+(`crates/runtime/legacy-vm/src/hosted`).
+
+- **One VM per workspace environment,** with a size (`small` 2 vCPU / 4 GB,
+  `default` 4 / 8, `large` 8 / 16, `xlarge` 16 / 32) and a persistent disk of
+  50, 50, 110 or 250 GB.
+- **Lifecycle:** the first program boots it; once no program has run for the
+  idle limit (30 s by default) it is snapshotted to disk and its process
+  ends; the next program restores it. It is the legacy VM's lifecycle and
+  agent, on Firecracker: a restored VM maps its memory file and reads pages
+  as the guest touches them, and a suspend writes only the pages written
+  since the last one. The crate docs have the measurements behind the choice.
+- **Files:** the environment's granted directories, at the same paths, served
+  over vsock (the agent mounts them as FUSE). Each is served by its own host
+  process held to that directory by Landlock.
+- **Metering:** each run of the VM's process and each held snapshot is a
+  usage record (VM, workspace, account, size, start, end, seconds) in the
+  account's ledger, billed per second with the sub-second rest carried to
+  the next run. A stopped or suspended VM costs nothing.
+- **Plans:** an account's plan bounds its running VMs, its VMs kept and the
+  sizes it may use. A refused program says why in plain words, and what to
+  do.
+- **ush** runs the program through the VM's agent with the shell's streams
+  relayed, when the host names its hosted-VM service (`TILO_HOSTED_VM_SOCKET`,
+  `TILO_HOSTED_ACCOUNT`, `TILO_HOSTED_VM_SIZE`). Run records are the shell's,
+  unchanged.
 
 ## Members that take work
 
