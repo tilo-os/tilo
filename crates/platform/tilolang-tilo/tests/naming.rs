@@ -207,3 +207,61 @@ fn a_note_with_no_title_is_called_the_words_its_type_declares() {
         "typed first, its title names it instead: {rows:#?}"
     );
 }
+
+const MAIL: (&str, &str) = (
+    include_str!("../../../../apps/tl/mail/app.tl"),
+    include_str!("../../../../apps/tl/mail/app.ids"),
+);
+const MAIL_APP: &str = "so.tilo.lang.mail";
+
+/// A mail workspace staged from the scenario `name`, and the resource it made.
+fn mail_staged(name: &str) -> (Replica, Option<ResourceRef>) {
+    let (mut ada, loaded) = Replica::new("ada", AutoCommit::new(), &[MAIL]);
+    let meta = loaded.last().unwrap().meta.clone();
+    ada.host.root_of(MAIL_APP).unwrap();
+    ada.commit();
+    let scenario = meta
+        .scenarios
+        .iter()
+        .find(|scenario| scenario.name == name)
+        .unwrap_or_else(|| panic!("Mail stages {name}"));
+    let made = ada
+        .host
+        .runtime()
+        .invoke_action(&Principal::new("ada"), (scenario.action.as_str(), vec![]))
+        .unwrap();
+    ada.commit();
+    let made = match made {
+        tilolang_runtime::InvokeOutcome::Done(Value::Ref(made)) => Some((*made.target).clone()),
+        _ => None,
+    };
+    (ada, made)
+}
+
+#[test]
+fn a_draft_is_named_by_its_subject_not_the_address_it_goes_from() {
+    let (ada, draft) = mail_staged("a reply being written");
+    let draft = draft.expect("the scenario writes a draft");
+    assert_eq!(
+        ada.host.label_at(&draft),
+        "Re: Launch plan for the autumn release",
+        "the field its type says names it, not the address it goes from"
+    );
+}
+
+#[test]
+fn a_draft_with_no_subject_is_called_the_words_its_type_declares() {
+    let (ada, _) = mail_staged("a busy inbox");
+    let root = ada.host.root_of(MAIL_APP).unwrap();
+    let Value::Ref(draft) = crate::legibility::call(
+        &ada,
+        "ada",
+        MAIL_APP,
+        "new_draft",
+        vec![Value::resource(&root)],
+    ) else {
+        panic!("a new draft");
+    };
+    let draft = (*draft.target).clone();
+    assert_eq!(ada.host.label_at(&draft), "New message");
+}

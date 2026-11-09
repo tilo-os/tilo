@@ -120,12 +120,24 @@ pub struct TypeDecl {
     /// `(origin: mail.message)`: the outside service whose resources the type holds
     /// (convergence.md, "Outside services"), as the dotted name of one of its kinds.
     pub origin: Option<Ident>,
+    /// `(title: subject)`: the field a record of the type is named by
+    /// ([`crate::resolve::TypeInfo::name_field`]).
+    pub title: Option<TitleDecl>,
     /// `(untitled: "Untitled")`: what a record of the type is called while its title is empty
     /// ([`crate::resolve::TypeInfo::name_field`]).
     pub untitled: Option<UntitledDecl>,
     pub fields: Vec<FieldDecl>,
     /// `search { ... }`: what search, a list's filters and agents offer of the type.
     pub search: Option<SearchBlock>,
+    pub span: Span,
+}
+
+/// The field a record of a type is named by, as the app writes it: a field of the type that
+/// holds text, which every surface that names one of its records reads (a row, a window's title,
+/// a reference, history).
+#[derive(Clone, Debug, PartialEq)]
+pub struct TitleDecl {
+    pub field: Ident,
     pub span: Span,
 }
 

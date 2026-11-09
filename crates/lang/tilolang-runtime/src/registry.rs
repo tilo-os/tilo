@@ -27,18 +27,24 @@ pub struct TypeInfo {
     pub id: TypeId,
     pub name: String,
     pub fields: Vec<FieldInfo>,
+    /// `(title: subject)`: the field the type says names its records, by name.
+    pub title: Option<String>,
 }
 
 impl TypeInfo {
-    /// The field a record of the type is named by: its first text field, as a row, a menu, a
-    /// link and a history entry show it. A register of text is a code or a label, never what
-    /// the record is called. A type with no such field names its records by the type's name
-    /// and the record's `created`.
+    /// The field a record of the type is named by: the one it says, else its first text field,
+    /// as a row, a menu, a link and a history entry show it. A register of text is a code or a
+    /// label, never what the record is called. A type with no such field names its records by
+    /// the type's name and the record's `created`.
     #[must_use]
     pub fn name_field(&self) -> Option<&FieldInfo> {
-        self.fields
-            .iter()
-            .find(|f| matches!(f.kind, FieldKind::Text | FieldKind::RichText))
+        match &self.title {
+            Some(name) => self.field_by_id_or_name(name),
+            None => self
+                .fields
+                .iter()
+                .find(|f| matches!(f.kind, FieldKind::Text | FieldKind::RichText)),
+        }
     }
 
     pub fn field(&self, id: &str) -> Option<&FieldInfo> {
@@ -196,6 +202,7 @@ fn type_info(t: &TypeMeta, app: &str) -> Result<TypeInfo, String> {
         id: t.id.clone(),
         name: t.name.clone(),
         fields,
+        title: t.title.clone(),
     })
 }
 

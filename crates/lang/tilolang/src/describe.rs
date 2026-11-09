@@ -29,14 +29,19 @@ pub fn declarations(meta: &PackageMeta) -> String {
     for t in &meta.types {
         out.push('\n');
         doc(&mut out, &t.doc, "");
-        match &t.untitled {
-            Some(untitled) => {
-                let _ = writeln!(out, "type {} (untitled: {}) {{", t.name, quoted(untitled));
-            }
-            None => {
-                let _ = writeln!(out, "type {} {{", t.name);
-            }
+        let mut options = Vec::new();
+        if let Some(title) = &t.title {
+            options.push(format!("title: {title}"));
         }
+        if let Some(untitled) = &t.untitled {
+            options.push(format!("untitled: {}", quoted(untitled)));
+        }
+        let options = if options.is_empty() {
+            String::new()
+        } else {
+            format!(" ({})", options.join(", "))
+        };
+        let _ = writeln!(out, "type {}{options} {{", t.name);
         fields(&mut out, &t.fields, "    ");
         out.push_str("}\n");
     }

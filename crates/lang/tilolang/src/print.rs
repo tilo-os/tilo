@@ -1016,6 +1016,9 @@ impl Printer<'_> {
                 if let Some(origin) = &t.origin {
                     options.push(format!("origin: {}", origin.name));
                 }
+                if let Some(title) = &t.title {
+                    options.push(format!("title: {}", title.field.name));
+                }
                 if let Some(untitled) = &t.untitled {
                     options.push(format!("untitled: {}", quote(&untitled.words)));
                 }

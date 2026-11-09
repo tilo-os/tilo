@@ -622,6 +622,7 @@ pub fn host_meta() -> PackageMeta {
             ],
             search: crate::meta::SearchMeta::default(),
             origin: None,
+            title: None,
             untitled: None,
         })
         .chain(std::iter::once(TypeMeta {
@@ -631,6 +632,7 @@ pub fn host_meta() -> PackageMeta {
             fields: Vec::new(),
             search: crate::meta::SearchMeta::default(),
             origin: None,
+            title: None,
             untitled: None,
         }))
         .chain(std::iter::once(TypeMeta {
@@ -646,6 +648,7 @@ pub fn host_meta() -> PackageMeta {
             ],
             search: crate::meta::SearchMeta::default(),
             origin: None,
+            title: None,
             untitled: None,
         }))
         .chain(VALUE_TYPES.iter().map(|value| {
@@ -667,6 +670,7 @@ pub fn host_meta() -> PackageMeta {
                     .collect(),
                 search: crate::meta::SearchMeta::default(),
                 origin: None,
+                title: None,
                 untitled: None,
             }
         }))

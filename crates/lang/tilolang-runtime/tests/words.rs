@@ -148,6 +148,87 @@ view editor_with_own_words(n: Note) {
     }
 
     #[test]
+    fn a_type_that_says_which_field_names_it_is_called_by_that_field() {
+        const DRAFTS: &str = r#"app so.tilo.drafts "Drafts"
+
+type Draft (title: subject, untitled: "New message") {
+    from: Text
+    subject: Text
+    body: Text
+}
+
+type Drafts {
+    drafts: Collection<Draft>
+}
+
+root Drafts
+
+default view drafts for Drafts
+
+default view draft_editor for Draft
+
+primary action new_draft(ds: Drafts, subject: Text = "") -> Draft (icon: .plus) {
+    ds.drafts.insert(Draft(from: "me", subject: subject))
+}
+
+view drafts(ds: Drafts) {
+    for d in ds.drafts {
+        ui.ListRow(title: meta(d).title)
+    }
+}
+
+view draft_editor(d: Draft) {
+    ui.TextInput(bind: d.subject, title: true)
+}
+"#;
+        let app = App::compile(DRAFTS, &[]);
+        let rt = Runtime::new(AmStore::new(), SimpleAuthority::new()).unwrap();
+        app.load(&rt);
+        let ds = rt.create("Drafts").unwrap();
+        let draft = |subject: &str| {
+            returned_ref(
+                rt.invoke_action(
+                    &me(),
+                    (
+                        app.action("new_draft").as_str(),
+                        vec![Value::resource(&ds), Value::Text(subject.to_owned())],
+                    ),
+                )
+                .unwrap(),
+            )
+        };
+        let hi = draft("Hi there");
+        assert_eq!(
+            rt.title(&hi).unwrap(),
+            "Hi there",
+            "the field the type names, not the first one it declares"
+        );
+        let empty = draft("");
+        assert_eq!(rt.title(&empty).unwrap(), "New message");
+        let mut list = rt
+            .open_view(&me(), &app.view("drafts"), vec![Value::resource(&ds)])
+            .unwrap();
+        list.poll_patches().unwrap();
+        let titles: Vec<String> = of_kind(list.tree(), "ui.ListRow")
+            .into_iter()
+            .map(|row| text_prop(row, "title"))
+            .collect();
+        assert_eq!(titles, ["Hi there", "New message"]);
+        let mut editor = rt
+            .open_view(
+                &me(),
+                &app.view("draft_editor"),
+                vec![Value::resource(&empty)],
+            )
+            .unwrap();
+        editor.poll_patches().unwrap();
+        assert_eq!(
+            text_prop(of_kind(editor.tree(), "ui.TextInput")[0], "placeholder"),
+            "New message"
+        );
+    }
+
+    #[test]
     fn a_views_words_draw_in_the_readers_language() {
         let app = App::compile(SOURCE, &[]);
         let catalogue = tilolang::messages::source_catalogue(app.meta());

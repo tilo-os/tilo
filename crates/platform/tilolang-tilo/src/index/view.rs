@@ -361,6 +361,20 @@ impl View<'_> {
         schema: &TypeSchema,
     ) -> Result<Option<(FieldValue, String)>, IndexError> {
         let schema = self.schema_of(path, &schema.id).unwrap_or(schema);
+        // A type that says which field names its records is named by that field alone: one it
+        // holds nothing in leaves the record untitled, never named by another text it holds.
+        if let Some(field) = schema
+            .title
+            .as_deref()
+            .and_then(|id| schema.field(id))
+            .filter(|field| field.kind.holds_text())
+        {
+            let text = self
+                .field(path, &field.id)?
+                .and_then(crate::reads::text_value)
+                .filter(|text| !crate::reads::is_empty(text));
+            return Ok(text.map(|text| (first_line(&text), path.to_owned())));
+        }
         // Its own texts name it before its items' do: a channel called "design" whose messages
         // hold text is "design", not the first of its messages.
         for field in &schema.fields {

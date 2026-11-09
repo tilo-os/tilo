@@ -676,6 +676,7 @@ fn build_meta(
                     fields,
                     search: info.search.clone(),
                     origin: info.origin.clone(),
+                    title: info.title.clone(),
                     untitled: info.untitled.clone(),
                 });
             }

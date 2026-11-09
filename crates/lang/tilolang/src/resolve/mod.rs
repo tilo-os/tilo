@@ -344,6 +344,7 @@ impl Env {
                 fields,
                 search: t.search.clone(),
                 origin: t.origin.clone(),
+                title: t.title.clone(),
                 untitled: t.untitled.clone(),
             });
         }
@@ -583,6 +584,54 @@ impl Resolver<'_> {
         }
     }
 
+    /// A type that says which field names its records names one: a field of the type that holds
+    /// text, written by whoever writes text (`merge text`, not `merge register`).
+    fn check_title(&mut self, decls: &[&ast::TypeDecl]) {
+        for t in decls {
+            let Some(title) = &t.title else {
+                continue;
+            };
+            let Some(info) = self
+                .env
+                .types
+                .iter()
+                .find(|x| x.key.app == self.env.app && x.key.name == t.name.name)
+            else {
+                continue;
+            };
+            let holds_text = |f: &FieldInfo| {
+                matches!(f.ty, Ty::Text | Ty::RichText) && f.merge != MergeKind::Register
+            };
+            let why = match info.field(&title.field.name) {
+                Some(field) if holds_text(field) => continue,
+                Some(field) if matches!(field.ty, Ty::Text | Ty::RichText) => {
+                    format!("`{}` merges as a register, a code or a label", field.name)
+                }
+                Some(field) => format!("`{}` is `{}`", field.name, field.ty),
+                None => format!("no field of it is `{}`", title.field.name),
+            };
+            let fields: Vec<&str> = info
+                .fields
+                .iter()
+                .filter(|f| holds_text(f))
+                .map(|f| f.name.as_str())
+                .collect();
+            let hint = crate::diag::suggestion(&title.field.name, fields.iter().copied());
+            let text_fields = match fields.as_slice() {
+                [] => String::new(),
+                fields => format!("; its text fields are: {}", fields.join(", ")),
+            };
+            self.err(
+                "E140",
+                title.field.span,
+                format!(
+                    "`{}` says `{}` names its records, and {why}; a record is named by a field that holds text{hint}{text_fields}",
+                    t.name.name, title.field.name
+                ),
+            );
+        }
+    }
+
     /// A type that says what it is called while its title is empty has a title to empty: one
     /// text field a record of it is named by. The words are shown as written, so they hold some.
     fn check_untitled(&mut self, decls: &[&ast::TypeDecl]) {
@@ -595,7 +644,9 @@ impl Resolver<'_> {
                 .types
                 .iter()
                 .find(|x| x.key.app == self.env.app && x.key.name == t.name.name)
-                .is_some_and(|info| info.name_field().is_some());
+                // A type that says which field names it has that field's own error when it is
+                // no title: it is never also told it has none.
+                .is_none_or(|info| t.title.is_some() || info.name_field().is_some());
             if untitled.words.trim().is_empty() {
                 self.err(
                     "E139",
@@ -611,7 +662,7 @@ impl Resolver<'_> {
                     "E139",
                     untitled.span,
                     format!(
-                        "`{}` has no text field, so nothing of it is its title and it is never untitled; give it one (`title: Text`) or leave `untitled:` off",
+                        "`{}` has no text field, so nothing of it is its title and it is never untitled; give it one (`title: Text`), say which field names it (`title: <field>`), or leave `untitled:` off",
                         t.name.name
                     ),
                 );

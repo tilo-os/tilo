@@ -340,6 +340,10 @@ pub struct TypeMeta {
     /// which the system keeps in step with the service (`crate::origin`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub origin: Option<String>,
+    /// `(title: subject)`: the field a record of the type is named by, as the field's name. A
+    /// type that says none is named by its first text field.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
     /// `(untitled: "Untitled")`: what one of its records is called while its title is empty,
     /// as the app wrote it. Surfaces that name a record fall back to it, and the control that
     /// edits the record's title shows it while the title holds nothing.

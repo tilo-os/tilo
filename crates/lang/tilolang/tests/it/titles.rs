@@ -1,11 +1,20 @@
-//! A type says once what one of its records is called while its title is empty
-//! (`type Note (untitled: "Untitled")`): every surface that names one falls back to those
-//! words, and the title field's input shows them as its placeholder.
+//! A type says once which field names its records (`type Draft (title: subject)`), and once
+//! what one is called while that field is empty (`(untitled: "New message")`): every surface
+//! that names one reads that field and falls back to those words, and the field's input shows
+//! them as its placeholder.
 
-use crate::common::{codes, compile_body, validate};
+use crate::common::{codes, compile_body, compile_with, validate};
 
 const NOTE: &str = r#"type Note (untitled: "Untitled") {
     title: Text
+    body: Text
+}
+"#;
+
+const DRAFT: &str = r#"type Draft (title: subject, untitled: "New message") {
+    from: Text
+    to: Text
+    subject: Text
     body: Text
 }
 "#;
@@ -19,6 +28,79 @@ fn note(compiled: &tilolang::Compiled) -> tilolang::meta::TypeMeta {
         .find(|t| t.name == "Note")
         .expect("the type")
         .clone()
+}
+
+/// The type `Draft` as the package describes it.
+fn draft(compiled: &tilolang::Compiled) -> tilolang::meta::TypeMeta {
+    compiled
+        .meta
+        .types
+        .iter()
+        .find(|t| t.name == "Draft")
+        .expect("the type")
+        .clone()
+}
+
+#[test]
+fn the_type_says_which_field_names_its_records() {
+    let compiled = compile_body(DRAFT);
+    assert_eq!(draft(&compiled).title.as_deref(), Some("subject"));
+    assert_eq!(draft(&compiled).untitled.as_deref(), Some("New message"));
+    let (module, _) = tilolang::parser::parse_module(&format!("app t.x \"X\"\n{DRAFT}"));
+    let printed = tilolang::print::print_module(&module.expect("it parses"));
+    assert!(
+        printed.contains(r#"type Draft (title: subject, untitled: "New message") {"#),
+        "{printed}"
+    );
+}
+
+#[test]
+fn a_type_that_says_nothing_is_named_by_its_first_text_field() {
+    let compiled = compile_body(NOTE);
+    assert_eq!(note(&compiled).title, None);
+    assert_eq!(
+        note(&compiled).fields.first().map(|f| f.name.as_str()),
+        Some("title")
+    );
+}
+
+#[test]
+fn a_type_must_name_a_text_field_it_has() {
+    assert_eq!(
+        codes("type Note (title: titel) {\n    title: Text\n}"),
+        ["E140"]
+    );
+    assert_eq!(
+        codes("type Note (title: done) {\n    title: Text\n    done: Bool\n}"),
+        ["E140"]
+    );
+}
+
+#[test]
+fn a_register_of_text_is_never_what_a_record_is_called() {
+    assert_eq!(
+        codes("type Note (title: key) {\n    key: Text merge register\n    title: Text\n}"),
+        ["E140"]
+    );
+}
+
+#[test]
+fn a_title_no_field_can_fill_is_erroring_once() {
+    assert_eq!(
+        codes("type Note (title: done, untitled: \"Note\") {\n    title: Text\n    done: Bool\n}"),
+        ["E140"]
+    );
+}
+
+#[test]
+fn a_mistyped_title_names_the_field_it_meant() {
+    let err = compile_with(
+        "app t.x \"X\"\ntype Note (title: titel) {\n    title: Text\n}\n",
+        &[],
+    )
+    .expect_err("no such field");
+    let message = err.first().map(|d| d.message.as_str()).unwrap_or_default();
+    assert!(message.contains("did you mean `title`?"), "{message}");
 }
 
 #[test]

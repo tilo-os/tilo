@@ -531,6 +531,7 @@ impl Reader<'_> {
                     fields,
                     search: SearchMeta::default(),
                     origin: None,
+                    title: None,
                     untitled: None,
                 });
             }
@@ -565,6 +566,7 @@ impl Reader<'_> {
             fields,
             search: SearchMeta::default(),
             origin: None,
+            title: None,
             untitled: None,
         });
     }

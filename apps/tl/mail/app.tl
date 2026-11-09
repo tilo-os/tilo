@@ -99,7 +99,7 @@ type Message (origin: imap.message) {
 
 /// A message being written: who it goes to, what it says, what it answers, and how it stands on
 /// its way out. The account it goes from is named by its key.
-type Draft {
+type Draft (title: subject, untitled: "New message") {
     from: Text
     to: Text
     cc: Text
@@ -769,7 +769,7 @@ view thread_row(t: Thread) {
 /// One message being written in a list: its subject and who it goes to.
 view draft_row(d: Draft) {
     row(
-        d.subject,
+        meta(d).title,
         secondary: if d.sent or d.recalled { delivery_says(d) } else { d.to },
         mark: if d.sent and not d.recalled { .send },
     )
@@ -890,7 +890,7 @@ view message(m: Message) {
 
 /// A message being written: its window.
 view editor(d: Draft) {
-    std.document(d, title: if d.subject == "" { "New message" } else { d.subject }) {
+    std.document(d) {
         if d.sent or d.recalled {
             field("Status") {
                 text(delivery_says(d))

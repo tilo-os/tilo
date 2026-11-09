@@ -1036,6 +1036,17 @@ pub fn first_text(
     schema: &TypeSchema,
     (path, items): (&str, &RecordItems<'_>),
 ) -> Option<(String, String)> {
+    // A type that says which field names its records is named by that field alone: a title it
+    // holds nothing in leaves the record untitled rather than named by another text it holds
+    // (`(title: subject)` on a draft whose subject is not typed yet).
+    if let Some(field) = schema
+        .title
+        .as_deref()
+        .and_then(|id| schema.field(id))
+        .filter(|field| field.kind.holds_text())
+    {
+        return Some((field_text(doc, obj, field)?, path.to_owned()));
+    }
     // Its own texts, in the order the type declares them, then the records and collections it
     // holds ([`TypeSchema::naming_scan`], the one order naming uses).
     let fields = schema.naming_scan();
@@ -1085,6 +1096,28 @@ pub fn first_text(
         }
     }
     None
+}
+
+/// The first non-blank line of the text `field` holds in `obj`, a text or rich text: what a
+/// record named by that field alone says.
+fn field_text(doc: &Doc, obj: &ObjId, field: &FieldSchema) -> Option<String> {
+    let text = match field.kind {
+        MergeKind::Text => read_key(doc, obj, field.id.as_str()).ok()?,
+        MergeKind::RichText => {
+            let rich = map_at(doc, obj, field.id.as_str())
+                .map_or_else(tilolang_runtime::rich::RichValue::default, |under| {
+                    tilolang_runtime::rich::read_under(doc, &under)
+                });
+            rich.written_text()
+        }
+        _ => return None,
+    };
+    let line = text
+        .lines()
+        .find(|line| !line.trim().is_empty())
+        .unwrap_or_default()
+        .to_owned();
+    (!line.trim().is_empty()).then_some(line)
 }
 
 /// The first non-empty text `obj` holds in its own [`MergeKind::Text`] fields, and where it

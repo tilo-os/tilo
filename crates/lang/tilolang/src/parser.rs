@@ -7,8 +7,8 @@ use crate::ast::{
     ActionDecl, ActionOpt, ActionRole, AliasDecl, AppHeader, Arg, AssignOp, BinOp, Block,
     DefaultViewDecl, EnumDecl, Expr, ExprKind, FieldDecl, FnDecl, Ident, Item, LetBind, MatchArm,
     MergeSpec, Module, NodeId, Param, Pattern, Place, Proposal, RootDecl, ScenarioDecl,
-    SearchBlock, SearchEntry, SearchEntryKind, StateDecl, Stmt, StmtKind, StrPart, TypeDecl,
-    TypeExpr, TypeExprKind, UiArm, UiCall, UiKind, UiStmt, UnOp, UntitledDecl, UseDecl,
+    SearchBlock, SearchEntry, SearchEntryKind, StateDecl, Stmt, StmtKind, StrPart, TitleDecl,
+    TypeDecl, TypeExpr, TypeExprKind, UiArm, UiCall, UiKind, UiStmt, UnOp, UntitledDecl, UseDecl,
     VariantDecl, ViewDecl, ViewsDecl,
 };
 use crate::diag::{Diagnostic, Span};
@@ -1120,6 +1120,7 @@ impl<'a> Parser<'a> {
         let node = self.node();
         let name = self.ident("a type name")?;
         let mut origin = None;
+        let mut title = None;
         let mut untitled = None;
         if self.eat(&Tok::LParen) {
             loop {
@@ -1127,10 +1128,15 @@ impl<'a> Parser<'a> {
                 if self.eat(&Tok::RParen) {
                     break;
                 }
-                let key = self.ident("`origin` or `untitled`")?;
+                let key = self.ident("`origin`, `title` or `untitled`")?;
                 self.expect(&Tok::Colon)?;
                 match key.name.as_str() {
                     "origin" => origin = Some(self.type_origin()?),
+                    "title" => {
+                        let span = self.span();
+                        let field = self.ident("the field that names a record of the type")?;
+                        title = Some(TitleDecl { field, span });
+                    }
                     "untitled" => {
                         let span = self.span();
                         let words =
@@ -1141,7 +1147,7 @@ impl<'a> Parser<'a> {
                         return self.fail(
                             key.span,
                             format!(
-                                "a type's options are `origin:` and `untitled:`, not `{other}:`"
+                                "a type's options are `origin:`, `title:` and `untitled:`, not `{other}:`"
                             ),
                         );
                     }
@@ -1209,6 +1215,7 @@ impl<'a> Parser<'a> {
             doc,
             name,
             origin,
+            title,
             untitled,
             fields,
             search,
