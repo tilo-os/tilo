@@ -18943,6 +18943,40 @@ dependencies = [
 ]
 
 [[package]]
+name = "tilo-front-door"
+version = "0.1.0"
+dependencies = [
+ "base64 0.22.1",
+ "ed25519-dalek 3.0.0",
+ "getrandom 0.4.3",
+ "hex",
+ "http-body-util",
+ "hyper",
+ "hyper-util",
+ "iroh",
+ "iroh-base",
+ "serde",
+ "serde_json",
+ "sha2 0.11.0",
+ "tempfile",
+ "tilo-actions",
+ "tilo-automerge-isolate",
+ "tilo-clock",
+ "tilo-files",
+ "tilo-net",
+ "tilo-relay-session",
+ "tilo-room-host",
+ "tilo-runtime",
+ "tilo-user-identity",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+ "url",
+ "uuid",
+ "workspace-hack",
+]
+
+[[package]]
 name = "tilo-fs"
 version = "0.1.0"
 dependencies = [

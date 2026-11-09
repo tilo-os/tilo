@@ -1,0 +1,43 @@
+[package]
+name = "tilo-front-door"
+version = "0.1.0"
+edition = "2024"
+publish.workspace = true
+description = "The MCP front door of hosted Tilo: OAuth 2.1 for agents, sign-in with a device of the person, scope consent, revocable grants, and routing of each agent session to the tilo-runtime endpoint of its workspace's host."
+license = "MIT OR Apache-2.0"
+
+[dependencies]
+base64.workspace = true
+getrandom.workspace = true
+hex.workspace = true
+http-body-util = "0.1.3"
+hyper = { version = "1.8.1", features = ["http1", "server"] }
+hyper-util = { version = "0.1.20", features = ["tokio"] }
+ed25519-dalek.workspace = true
+iroh.workspace = true
+iroh-base.workspace = true
+tilo-actions = { path = "../../collab/actions" }
+tilo-relay-session = { path = "../tilo-relay-session" }
+serde = { workspace = true, features = ["derive"] }
+serde_json.workspace = true
+sha2.workspace = true
+tilo-clock = { path = "../../platform/tilo-clock" }
+tilo-files = { path = "../../platform/tilo-files" }
+tilo-net = { path = "../../platform/tilo-net", features = ["http"] }
+tilo-user-identity = { path = "../../collab/tilo-user-identity" }
+tokio = { workspace = true, features = ["macros", "net", "rt-multi-thread", "sync", "time"] }
+tracing.workspace = true
+tracing-subscriber = { workspace = true, features = ["env-filter"] }
+url.workspace = true
+uuid.workspace = true
+workspace-hack = { version = "0.1" }
+
+[dev-dependencies]
+tempfile.workspace = true
+tilo-actions = { path = "../../collab/actions", features = ["test-support"] }
+tilo-automerge-isolate.workspace = true
+tilo-room-host = { path = "../tilo-room-host" }
+tilo-runtime = { path = "../../runtime/tilo-runtime" }
+
+[lints]
+workspace = true
