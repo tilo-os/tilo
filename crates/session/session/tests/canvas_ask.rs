@@ -157,6 +157,63 @@ fn ask(session: &mut Session, text: &str) {
     }
 }
 
+/// What the person's ask made: the agent the workspace keeps, the message they asked on, the
+/// channel the answer lands in, and the reply Chat derives from the summons and the agent.
+struct Summons {
+    agent: String,
+    message: String,
+    channel: String,
+    reply: String,
+    item: String,
+}
+
+/// Ask `text` on the canvas and wait for the agent's turn: what the person's ask made, as the
+/// turn's reply and the item Chat publishes for the summons are addressed.
+fn asked(session: &mut Session, text: &str) -> Summons {
+    ask(session, text);
+    let workspace = workspace(session);
+    let runs = session.conversation_runs();
+    let turns = wait_for(session, "the agent's turn", |_session| {
+        let turns = runs.runs(&workspace).ok()?;
+        (!turns.is_empty()).then_some(turns)
+    });
+    let turn = &turns[0];
+    let (address, message) = turn
+        .issue
+        .rsplit_once("/messages/")
+        .expect("the issue names the conversation's message");
+    let channel = address.rsplit('/').next().unwrap_or_default().to_owned();
+    let agent = format!("agent:{}", turn.agent);
+    let reply = chat::record::reply_id(
+        &tilo_resource::Id::from_raw(message),
+        &format!("agent:{}", turn.agent),
+    );
+    Summons {
+        reply: reply.to_string(),
+        item: format!("chat.messages/messages/{message}"),
+        agent,
+        message: message.to_owned(),
+        channel,
+    }
+}
+
+/// The row the served page draws for `reply`, in the channel `channel`: the reply the agent's
+/// record made, read as the page reads it.
+fn reply_in_page(session: &Session, channel: &str, reply: &str) -> serde_json::Value {
+    let page = session
+        .read(&format!("chat.workspace/channels/{channel}"))
+        .unwrap_or_else(|| panic!("the session serves the channel {channel}"));
+    page["messages"]
+        .as_array()
+        .and_then(|messages| {
+            messages
+                .iter()
+                .find(|row| row["id"].as_str() == Some(reply))
+        })
+        .unwrap_or_else(|| panic!("the reply exists: {reply} in {page}"))
+        .clone()
+}
+
 /// A question typed into the canvas entry posts into the person's ask conversation with the agent
 /// the workspace keeps, and that conversation stands on the canvas where they typed.
 #[test]
@@ -531,27 +588,15 @@ fn the_turn_reply_is_offered_chats_record_work_before_it_exists() {
     let _settled = ui::motion::testing::settled();
     let root = private_home();
     let mut session = session(root.path());
-    ask(&mut session, "what is on my task list?");
-    let workspace = workspace(&session);
-    let runs = session.conversation_runs();
-    let turns = wait_for(&mut session, "the agent's turn", |_session| {
-        let turns = runs.runs(&workspace).ok()?;
-        (!turns.is_empty()).then_some(turns)
-    });
-    let turn = &turns[0];
-    let (address, message) = turn
-        .issue
-        .rsplit_once("/messages/")
-        .expect("the issue names the conversation's message");
+    let summons = asked(&mut session, "what is on my task list?");
     // The summons's item, as the session's Chat service publishes it — the resource an agent
     // names to record what it did with the message. Its `record-work` is Chat's own declaration
     // (`ChatPart::RECORD_WORK`), its action type Chat's.
-    let item = format!("chat.messages/messages/{message}");
     let offered = session
         .service_resources()
         .into_iter()
-        .find(|resource| resource.id.as_str() == item)
-        .unwrap_or_else(|| panic!("the session publishes the summons's item {item}"));
+        .find(|resource| resource.id.as_str() == summons.item)
+        .unwrap_or_else(|| panic!("the session publishes the summons's item {}", summons.item));
     let record_work = offered
         .actions
         .iter()
@@ -579,7 +624,6 @@ fn the_turn_reply_is_offered_chats_record_work_before_it_exists() {
     // agent — the very address the turn's answer is — written as the agent, before the reply
     // existed to be published. The step runs exactly as the session's own `DoorAsk::Step` runs a
     // step no surface door publishes: through the services, as `agent:<id>`.
-    let agent = format!("agent:{}", turn.agent);
     let mut arguments = serde_json::Map::new();
     arguments.insert(
         "work".into(),
@@ -590,29 +634,17 @@ fn the_turn_reply_is_offered_chats_record_work_before_it_exists() {
         serde_json::json!("Looking at your task list now."),
     );
     session
-        .invoke_service_step_as(&agent, &item, "record-work", &arguments)
+        .invoke_service_step_as(&summons.agent, &summons.item, "record-work", &arguments)
         .unwrap_or_else(|error| panic!("Chat records the work: {error}"));
-    let channel = address.rsplit('/').next().unwrap_or_default().to_owned();
-    let reply = chat::record::reply_id(
-        &tilo_resource::Id::from_raw(message),
-        &format!("agent:{}", turn.agent),
-    );
     // The reading the page draws: Chat's own `#[view(default)]` over the channel, served by the
     // session — the same reading a place of the conversation shows.
     let page = session
-        .read(&format!("chat.workspace/channels/{channel}"))
-        .unwrap_or_else(|| panic!("the session serves the channel {channel}"));
-    let reply_row = page["messages"]
-        .as_array()
-        .and_then(|messages| {
-            messages
-                .iter()
-                .find(|row| row["id"].as_str() == Some(reply.as_str()))
-        })
-        .unwrap_or_else(|| panic!("the reply exists: {} in {page}", reply.as_str()));
+        .read(&format!("chat.workspace/channels/{}", summons.channel))
+        .unwrap_or_else(|| panic!("the session serves the channel {}", summons.channel));
+    let reply_row = reply_in_page(&session, &summons.channel, &summons.reply);
     assert_eq!(
         reply_row["author"].as_str(),
-        Some(agent.as_str()),
+        Some(summons.agent.as_str()),
         "the reply is the agent's"
     );
     assert_eq!(
@@ -626,8 +658,8 @@ fn the_turn_reply_is_offered_chats_record_work_before_it_exists() {
     let people = page["people"].as_array().cloned().unwrap_or_default();
     let named = people
         .iter()
-        .find(|person| person["id"].as_str() == Some(agent.as_str()))
-        .unwrap_or_else(|| panic!("the page names the agent {agent}: {page}"));
+        .find(|person| person["id"].as_str() == Some(summons.agent.as_str()))
+        .unwrap_or_else(|| panic!("the page names the agent {}: {page}", summons.agent));
     assert_eq!(
         named["name"].as_str(),
         Some("Assistant"),
@@ -638,7 +670,7 @@ fn the_turn_reply_is_offered_chats_record_work_before_it_exists() {
     // address it works from, exactly as the first did. An item that vanished with the reply's
     // first record is why an ask whose plan took several steps went unanswered halfway.
     let still_offered = session.service_resources().into_iter().any(|resource| {
-        resource.id.as_str() == item
+        resource.id.as_str() == summons.item
             && resource
                 .actions
                 .iter()
@@ -646,7 +678,8 @@ fn the_turn_reply_is_offered_chats_record_work_before_it_exists() {
     });
     assert!(
         still_offered,
-        "the summons keeps its record-work while the turn is going: {item}"
+        "the summons keeps its record-work while the turn is going: {}",
+        summons.item
     );
 }
 
@@ -664,20 +697,9 @@ fn a_failed_turn_offers_a_retry_that_asks_the_agent_again_on_the_same_message() 
     let _settled = ui::motion::testing::settled();
     let root = private_home();
     let mut session = session(root.path());
-    ask(&mut session, "what is on my task list?");
+    let summons = asked(&mut session, "what is on my task list?");
     let workspace = workspace(&session);
     let runs = session.conversation_runs();
-    let turns = wait_for(&mut session, "the agent's turn", |_session| {
-        let turns = runs.runs(&workspace).ok()?;
-        (!turns.is_empty()).then_some(turns)
-    });
-    let turn = &turns[0];
-    let (address, message) = turn
-        .issue
-        .rsplit_once("/messages/")
-        .expect("the issue names the conversation's message");
-    let agent = format!("agent:{}", turn.agent);
-    let item = format!("chat.messages/messages/{message}");
     // The run ends without an answer: the provider failed, and its account is the reason.
     let mut failed = serde_json::Map::new();
     failed.insert(
@@ -689,27 +711,12 @@ fn a_failed_turn_offers_a_retry_that_asks_the_agent_again_on_the_same_message() 
         serde_json::json!("The model connection closed"),
     );
     session
-        .invoke_service_step_as(&agent, &item, "record-work", &failed)
+        .invoke_service_step_as(&summons.agent, &summons.item, "record-work", &failed)
         .unwrap_or_else(|error| panic!("Chat records the failed turn: {error}"));
-    let channel = address.rsplit('/').next().unwrap_or_default().to_owned();
-    let reply = chat::record::reply_id(
-        &tilo_resource::Id::from_raw(message),
-        &format!("agent:{}", turn.agent),
-    );
+    let channel_resource = format!("chat.workspace/channels/{}", summons.channel);
     // The page the place draws: Chat's own reading of the channel, with the failure row the person
     // sees and the Retry it offers.
-    let channel_resource = format!("chat.workspace/channels/{channel}");
-    let page = session
-        .read(&channel_resource)
-        .unwrap_or_else(|| panic!("the session serves the channel {channel}"));
-    let reply_row = page["messages"]
-        .as_array()
-        .and_then(|messages| {
-            messages
-                .iter()
-                .find(|row| row["id"].as_str() == Some(reply.as_str()))
-        })
-        .unwrap_or_else(|| panic!("the reply exists: {} in {page}", reply.as_str()));
+    let reply_row = reply_in_page(&session, &summons.channel, &summons.reply);
     assert_eq!(
         reply_row["work"]["state"].as_str(),
         Some("provider_failed"),
@@ -722,7 +729,7 @@ fn a_failed_turn_offers_a_retry_that_asks_the_agent_again_on_the_same_message() 
     );
     assert_eq!(
         reply_row["retry_summons"].as_str(),
-        Some(message),
+        Some(summons.message.as_str()),
         "the Retry names the message the reply answered, never a new one: {reply_row}"
     );
     // The Retry is the channel's own verb, published as the page's Retry runs it.
@@ -734,43 +741,34 @@ fn a_failed_turn_offers_a_retry_that_asks_the_agent_again_on_the_same_message() 
         offers_retry,
         "the channel offers its retry: {channel_resource}"
     );
-    let before = session.person_messages_in(&channel);
+    let before = session.person_messages_in(&summons.channel);
     let mut arguments = serde_json::Map::new();
-    arguments.insert("channel".into(), serde_json::json!(channel));
-    arguments.insert("reply".into(), serde_json::json!(reply.as_str()));
-    arguments.insert("summons".into(), serde_json::json!(message));
+    arguments.insert("channel".into(), serde_json::json!(summons.channel));
+    arguments.insert("reply".into(), serde_json::json!(summons.reply.as_str()));
+    arguments.insert("summons".into(), serde_json::json!(summons.message));
     session
         .invoke(&channel_resource, "retry", &arguments)
         .unwrap_or_else(|error| panic!("the retry runs: {error:?}"));
     // Nothing is posted: the person's words stay the one message they wrote.
     assert_eq!(
-        session.person_messages_in(&channel),
+        session.person_messages_in(&summons.channel),
         before,
         "a retry asks again on the same message, never posting the question twice"
     );
     // The same message is a turn again, with the agent the conversation keeps.
     let again = wait_for(&mut session, "the turn again", |_session| {
         let turns = runs.runs(&workspace).ok()?;
-        turns
-            .into_iter()
-            .find(|turn| turn.issue.ends_with(&format!("/messages/{message}")))
+        turns.into_iter().find(|turn| {
+            turn.issue
+                .ends_with(&format!("/messages/{}", summons.message))
+        })
     });
     assert_eq!(
         again.instruction, "what is on my task list?",
         "the turn is the person's own question, asked again"
     );
     // And the page no longer draws the stale Retry: the reply it named was asked again.
-    let page = session
-        .read(&channel_resource)
-        .unwrap_or_else(|| panic!("the session still serves the channel {channel}"));
-    let reply_row = page["messages"]
-        .as_array()
-        .and_then(|messages| {
-            messages
-                .iter()
-                .find(|row| row["id"].as_str() == Some(reply.as_str()))
-        })
-        .unwrap_or_else(|| panic!("the reply is still there: {page}"));
+    let reply_row = reply_in_page(&session, &summons.channel, &summons.reply);
     assert_eq!(
         reply_row["retry"].as_bool(),
         Some(false),
