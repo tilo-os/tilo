@@ -7,6 +7,7 @@ test can assert what the SDK sent.
 
 from __future__ import annotations
 
+import base64
 import json
 from typing import Any
 
@@ -44,6 +45,9 @@ class FakeDoor:
         self.calls: list[dict[str, Any]] = []
         self.edits: list[dict[str, Any]] = []
         self.uploads: list[bytes] = []
+        self.contents: dict[str, bytes] = {}
+        # The most bytes one tilo_get answers, small so a test sees paging.
+        self.piece = 4
         self.upload_sessions: list[str | None] = []
         self.keys: list[dict[str, Any]] = [
             {
@@ -96,6 +100,7 @@ class FakeDoor:
         if not request.headers.get("authorization"):
             return self.refuse(401, "unauthorized", "send a key")
         self.uploads.append(request.content)
+        self.contents[f"tilo.content:{len(request.content)}"] = request.content
         self.upload_sessions.append(request.headers.get("mcp-session-id"))
         return httpx.Response(
             201, json={"content": f"tilo.content:{len(request.content)}", "size": len(request.content)}
@@ -221,7 +226,26 @@ class FakeDoor:
             return self.watch(arguments)
         if name == "tilo":
             return self.program(arguments)
+        if name == "tilo_get":
+            return self.get(arguments)
         return None
+
+    def get(self, arguments: dict[str, Any]) -> Any:
+        content = arguments.get("content", "")
+        data = self.contents.get(content)
+        if data is None:
+            return self.failed(
+                "", "not_found", f"the workspace has no {content}", "upload it first"
+            )
+        offset = int(arguments.get("offset") or 0)
+        piece = data[offset : offset + self.piece]
+        return {
+            "content": content,
+            "size": len(data),
+            "offset": offset,
+            "length": len(piece),
+            "bytes": base64.b64encode(piece).decode(),
+        }
 
     def account(self, name: str, arguments: dict[str, Any]) -> Any:
         if name == "tilo_ls":

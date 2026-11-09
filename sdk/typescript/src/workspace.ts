@@ -18,7 +18,12 @@ import type { Answer } from "./wire.ts";
 
 const RUN_PREFIX = "sdk:";
 
-/** File bytes into the workspace: upload first, then an action takes the reference. */
+/**
+ * File bytes in and out of the workspace, named `tilo.content:<hash>`.
+ *
+ * Upload first, then an action takes the reference; an action that makes a
+ * file (Writer's `export-content`) answers one to download.
+ */
 export class Files {
   readonly workspace: Workspace;
 
@@ -75,6 +80,35 @@ export class Files {
     }
     void name;
     return body.content;
+  }
+
+  /** The bytes of `content`, a `tilo.content:<hash>` in this workspace. */
+  async download(content: string): Promise<Uint8Array> {
+    const pieces: Uint8Array[] = [];
+    let received = 0;
+    for (;;) {
+      const answer = await this.workspace.call("tilo_get", { content, offset: received });
+      const { bytes, size } = answer;
+      if (typeof bytes !== "string" || typeof size !== "number") {
+        throw new ProtocolError(`tilo_get answered no bytes for ${content}`);
+      }
+      const piece = Uint8Array.from(atob(bytes), (char) => char.charCodeAt(0));
+      pieces.push(piece);
+      received += piece.length;
+      if (received >= size) {
+        break;
+      }
+      if (piece.length === 0) {
+        throw new ProtocolError(`tilo_get stopped at ${received} of ${size} bytes of ${content}`);
+      }
+    }
+    const whole = new Uint8Array(received);
+    let at = 0;
+    for (const piece of pieces) {
+      whole.set(piece, at);
+      at += piece.length;
+    }
+    return whole;
   }
 }
 

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import base64
 from typing import Any, AsyncIterator, Mapping
 
 from ._errors import ProtocolError, Refused
@@ -20,7 +21,11 @@ RUN_PREFIX = "sdk:"
 
 
 class Files:
-    """File bytes into the workspace: upload first, then an action takes the reference."""
+    """File bytes in and out of the workspace, named `tilo.content:<hash>`.
+
+    Upload first, then an action takes the reference; an action that makes a
+    file (Writer's `export-content`) answers one to download.
+    """
 
     def __init__(self, workspace: Workspace) -> None:
         self.workspace = workspace
@@ -34,6 +39,10 @@ class Files:
         return self.workspace.client.handoff(
             self.workspace._upload(_bytes_of(path_or_bytes))
         )
+
+    def download(self, content: str) -> Any:
+        """The bytes of `content`, a `tilo.content:<hash>` in this workspace."""
+        return self.workspace.client.handoff(self.workspace._download(content))
 
 
 def _bytes_of(data: Any) -> bytes:
@@ -277,6 +286,24 @@ class Workspace:
                 f"the door answered the upload with {response.status_code}", status=response.status_code
             )
         return str(body["content"])
+
+    async def _download(self, content: str) -> bytes:
+        received = bytearray()
+        while True:
+            answer = await self._call(
+                "tilo_get", {"content": content, "offset": len(received)}
+            )
+            piece = answer.get("bytes")
+            size = answer.get("size")
+            if not isinstance(piece, str) or not isinstance(size, int):
+                raise ProtocolError(f"tilo_get answered no bytes for {content}")
+            received += base64.b64decode(piece)
+            if len(received) >= size:
+                return bytes(received)
+            if not piece:
+                raise ProtocolError(
+                    f"tilo_get stopped at {len(received)} of {size} bytes of {content}"
+                )
 
     async def _mint(self, name: str | None, expires_in: int | None) -> MintedKey:
         workspace = await self._id()

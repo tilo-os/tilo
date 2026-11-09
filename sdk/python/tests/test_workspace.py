@@ -237,6 +237,20 @@ async def test_an_upload_answers_its_content_reference(workspace, door):
     assert imported == {"imported": content}
 
 
+async def test_a_download_gathers_every_piece(workspace, door):
+    content = await workspace.files.upload(b"cover letter")
+
+    assert await workspace.files.download(content) == b"cover letter"
+    assert [call["arguments"]["offset"] for call in door.asked("tilo_get")] == [0, 4, 8]
+
+
+async def test_a_download_of_unknown_content_is_refused(workspace):
+    with pytest.raises(Refused) as refused:
+        await workspace.files.download("tilo.content:nothing")
+
+    assert refused.value.code == "not_found"
+
+
 async def test_a_field_is_read_from_the_snapshot_and_written_as_a_field_edit(workspace, door):
     page = await workspace.read(TODO)
     assert page.title == "Todo"

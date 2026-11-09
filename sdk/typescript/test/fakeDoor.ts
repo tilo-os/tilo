@@ -44,6 +44,9 @@ export class FakeDoor {
   calls: RecordedCall[] = [];
   edits: { resource: string; edit: Answer }[] = [];
   uploads: Uint8Array[] = [];
+  contents = new Map<string, Uint8Array>();
+  /** The most bytes one tilo_get answers, small so a test sees paging. */
+  piece = 4;
   uploadSessions: (string | null)[] = [];
   keys: Answer[] = [
     {
@@ -109,6 +112,7 @@ export class FakeDoor {
     const bytes =
       body instanceof Uint8Array ? body : new TextEncoder().encode(String(body ?? ""));
     this.uploads.push(bytes);
+    this.contents.set(`tilo.content:${bytes.length}`, bytes);
     this.uploadSessions.push(headers["mcp-session-id"] ?? null);
     return json({ content: `tilo.content:${bytes.length}`, size: bytes.length }, 201);
   }
@@ -220,9 +224,28 @@ export class FakeDoor {
         return this.watch(args);
       case "tilo":
         return this.program(args);
+      case "tilo_get":
+        return this.get(args);
       default:
         return null;
     }
+  }
+
+  private get(args: Answer): Answer {
+    const content = String(args.content ?? "");
+    const data = this.contents.get(content);
+    if (data === undefined) {
+      return this.failed("", "not_found", `the workspace has no ${content}`, "upload it first");
+    }
+    const offset = Number(args.offset ?? 0);
+    const piece = data.subarray(offset, offset + this.piece);
+    return {
+      content,
+      size: data.length,
+      offset,
+      length: piece.length,
+      bytes: btoa(String.fromCharCode(...piece)),
+    };
   }
 
   private account(name: string, args: Answer): Answer | null {

@@ -277,4 +277,28 @@ describe("acting", () => {
     expect(imported).toEqual({ imported: content });
     await tilo.close();
   });
+
+  it("downloads content in pieces", async () => {
+    const house = door();
+    const tilo = open(house);
+    const workspace = tilo.workspace("jane-doe");
+    const content = await workspace.files.upload(new TextEncoder().encode("cover letter"));
+
+    const bytes = await workspace.files.download(content);
+
+    expect(new TextDecoder().decode(bytes)).toBe("cover letter");
+    expect(house.asked("tilo_get").map((call) => call.arguments.offset)).toEqual([0, 4, 8]);
+    await tilo.close();
+  });
+
+  it("refuses to download unknown content", async () => {
+    const tilo = open(door());
+    const workspace = tilo.workspace("jane-doe");
+
+    const refused = await workspace.files.download("tilo.content:nothing").catch((error) => error);
+
+    expect(refused).toBeInstanceOf(Refused);
+    expect(refused.code).toBe("not_found");
+    await tilo.close();
+  });
 });
