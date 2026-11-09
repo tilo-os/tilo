@@ -157,6 +157,22 @@ fn ask(session: &mut Session, text: &str) {
     }
 }
 
+/// The row of the message `id` on a channel's page, as Chat's own reading draws it.
+fn message_row<'a>(page: &'a serde_json::Value, id: &str) -> &'a serde_json::Value {
+    page["messages"]
+        .as_array()
+        .and_then(|messages| messages.iter().find(|row| row["id"].as_str() == Some(id)))
+        .unwrap_or_else(|| panic!("the message {id} is on the page: {page}"))
+}
+
+/// Whether the session's services publish `resource` with the verb `action`.
+fn offers(session: &Session, resource: &str, action: &str) -> bool {
+    session.service_resources().into_iter().any(|published| {
+        published.id.as_str() == resource
+            && published.actions.iter().any(|offered| offered.id == action)
+    })
+}
+
 /// A question typed into the canvas entry posts into the person's ask conversation with the agent
 /// the workspace keeps, and that conversation stands on the canvas where they typed.
 #[test]
@@ -602,14 +618,7 @@ fn the_turn_reply_is_offered_chats_record_work_before_it_exists() {
     let page = session
         .read(&format!("chat.workspace/channels/{channel}"))
         .unwrap_or_else(|| panic!("the session serves the channel {channel}"));
-    let reply_row = page["messages"]
-        .as_array()
-        .and_then(|messages| {
-            messages
-                .iter()
-                .find(|row| row["id"].as_str() == Some(reply.as_str()))
-        })
-        .unwrap_or_else(|| panic!("the reply exists: {} in {page}", reply.as_str()));
+    let reply_row = message_row(&page, reply.as_str());
     assert_eq!(
         reply_row["author"].as_str(),
         Some(agent.as_str()),
@@ -637,13 +646,7 @@ fn the_turn_reply_is_offered_chats_record_work_before_it_exists() {
     // `record-work`: the agent's next record (what it did, and then its words at the end) has the
     // address it works from, exactly as the first did. An item that vanished with the reply's
     // first record is why an ask whose plan took several steps went unanswered halfway.
-    let still_offered = session.service_resources().into_iter().any(|resource| {
-        resource.id.as_str() == item
-            && resource
-                .actions
-                .iter()
-                .any(|action| action.id == "record-work")
-    });
+    let still_offered = offers(&session, &item, "record-work");
     assert!(
         still_offered,
         "the summons keeps its record-work while the turn is going: {item}"
@@ -702,14 +705,7 @@ fn a_failed_turn_offers_a_retry_that_asks_the_agent_again_on_the_same_message() 
     let page = session
         .read(&channel_resource)
         .unwrap_or_else(|| panic!("the session serves the channel {channel}"));
-    let reply_row = page["messages"]
-        .as_array()
-        .and_then(|messages| {
-            messages
-                .iter()
-                .find(|row| row["id"].as_str() == Some(reply.as_str()))
-        })
-        .unwrap_or_else(|| panic!("the reply exists: {} in {page}", reply.as_str()));
+    let reply_row = message_row(&page, reply.as_str());
     assert_eq!(
         reply_row["work"]["state"].as_str(),
         Some("provider_failed"),
@@ -726,10 +722,7 @@ fn a_failed_turn_offers_a_retry_that_asks_the_agent_again_on_the_same_message() 
         "the Retry names the message the reply answered, never a new one: {reply_row}"
     );
     // The Retry is the channel's own verb, published as the page's Retry runs it.
-    let offers_retry = session.service_resources().into_iter().any(|resource| {
-        resource.id.as_str() == channel_resource
-            && resource.actions.iter().any(|action| action.id == "retry")
-    });
+    let offers_retry = offers(&session, &channel_resource, "retry");
     assert!(
         offers_retry,
         "the channel offers its retry: {channel_resource}"
@@ -763,14 +756,7 @@ fn a_failed_turn_offers_a_retry_that_asks_the_agent_again_on_the_same_message() 
     let page = session
         .read(&channel_resource)
         .unwrap_or_else(|| panic!("the session still serves the channel {channel}"));
-    let reply_row = page["messages"]
-        .as_array()
-        .and_then(|messages| {
-            messages
-                .iter()
-                .find(|row| row["id"].as_str() == Some(reply.as_str()))
-        })
-        .unwrap_or_else(|| panic!("the reply is still there: {page}"));
+    let reply_row = message_row(&page, reply.as_str());
     assert_eq!(
         reply_row["retry"].as_bool(),
         Some(false),
