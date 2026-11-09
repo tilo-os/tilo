@@ -1,6 +1,7 @@
 use super::morning::{MorningCommand, MorningPreferences, MorningSource};
 use tilo_sort::CompactSort as _;
 mod morning_sources;
+mod runs;
 mod serve;
 pub use serve::{ServedTree, is_document_write, is_personal, is_read, refused_to_agent};
 
@@ -379,6 +380,11 @@ pub struct WorkspaceActivityPane {
     scoped_tree_rows: Vec<HistoryEntry>,
     history_index: WorkspaceHistoryIndex,
     detached_records: Vec<super::index::DetachedRecordHistory>,
+    /// The last lines of the command runs [`Self::serve_runs`] showed, by the content hash of
+    /// their output: recorded output never changes, so a live read need not read it again.
+    command_tails: RefCell<HashMap<String, (Vec<String>, bool)>>,
+    /// The record documents one read of the runs read, copied once each for that read.
+    served_documents: RefCell<HashMap<String, automerge::AutoCommit>>,
     projected_origins: HashMap<HistoryEntryId, WorkspaceHistoryId>,
     feed_coverage: FeedCoverage,
     pub(super) scope: WorkspaceScope,
@@ -554,6 +560,8 @@ impl WorkspaceActivityPane {
             scoped_tree_rows: Vec::new(),
             history_index: WorkspaceHistoryIndex::new(),
             detached_records: Vec::new(),
+            command_tails: RefCell::default(),
+            served_documents: RefCell::default(),
             projected_origins: HashMap::new(),
             feed_coverage: FeedCoverage::default(),
             scope: WorkspaceScope::default(),

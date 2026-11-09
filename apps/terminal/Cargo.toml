@@ -63,6 +63,8 @@ tilo-content = { path = "../../crates/system/content" }
 workspace-hack = { version = "0.1" }
 
 [dev-dependencies]
+# The stored shape History reads a session's runs by.
+tilo-automerge.workspace = true
 # Tests see this package's samples. The key must not be the package name:
 # a dependency named `terminal` claims `--features terminal/thin` in the
 # collection build, and the app then links the whole runtime statically.

@@ -361,6 +361,7 @@ activity-why-this-work = Warum diese Arbeit
 activity-no-decision = Es wurde kein Entscheidungsweg aufgezeichnet.
 activity-affected-records = Betroffene Einträge
 activity-undo-task-needs-open = Öffne alle betroffenen Dokumente, um diese Aufgabe gemeinsam rückgängig zu machen.
+activity-undo-run-by-action = Mache diesen Lauf Aktion für Aktion rückgängig.
 activity-undo-task-needs-documents = Nichts geändert. Öffne zuerst alle betroffenen Dokumente.
 activity-undo-task-partial = Aufgabe teilweise rückgängig gemacht; spätere Bearbeitungen anderer wurden behalten.
 activity-undo-task-partial-records = Aufgabe rückgängig gemacht, außer den unten genannten Einträgen.

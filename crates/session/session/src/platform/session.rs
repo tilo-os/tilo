@@ -1480,6 +1480,7 @@ impl Session {
         );
         let undo_door: std::sync::Arc<dyn crate::task_undo::UndoDoor> = door_host.clone();
         activity.attach_door(undo_door);
+        activity.attach_content(std::sync::Arc::clone(&record_content));
         let control = crate::test_control::Control::open(&options, door_host);
         tilo_startup_metrics::mark("control-door-open");
         let door = crate::agent_door::mount_named(

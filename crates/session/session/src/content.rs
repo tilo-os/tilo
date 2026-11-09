@@ -118,6 +118,16 @@ impl Plane {
         Arc::new(Media(Arc::clone(&self.shelf)))
     }
 
+    /// The bytes this device keeps of `app` 's content in `workspace` under `hash` (lower-case
+    /// hex): never a fetch of what it lacks.
+    pub(crate) fn read(&self, workspace: &str, app: &str, hash: &str) -> Option<Vec<u8>> {
+        let scope = ContentScope {
+            workspace: workspace.to_owned(),
+            app: app.to_owned(),
+        };
+        ContentShelf::read(self.shelf.as_ref(), &scope, hash)
+    }
+
     /// Whether this device keeps `digest` of `app` 's content in `workspace` : what this session
     /// says of itself when another of the person's devices offers it work reading that content.
     pub(crate) fn holds(&self, workspace: &str, app: &str, digest: [u8; 32]) -> bool {

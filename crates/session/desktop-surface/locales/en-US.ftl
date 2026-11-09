@@ -349,6 +349,7 @@ activity-why-this-work = Why this work
 activity-no-decision = No decision route was recorded.
 activity-affected-records = Affected records
 activity-undo-task-needs-open = Open every affected document to undo this task together.
+activity-undo-run-by-action = Undo this run one action at a time.
 activity-undo-task-needs-documents = Nothing changed. Open every affected document first.
 activity-undo-task-partial = Task partly undone; later collaborator edits were kept.
 activity-undo-task-partial-records = Task undone, except for records listed below.

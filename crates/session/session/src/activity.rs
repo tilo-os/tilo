@@ -155,6 +155,7 @@ impl Activity {
                 lists,
                 engine: RefCell::default(),
                 door: RefCell::default(),
+                content: RefCell::default(),
                 undos: crate::task_undo::Undos::default(),
                 woken: Arc::clone(&woken),
                 wake: wake.clone(),
@@ -246,6 +247,12 @@ impl Activity {
     /// it changed, as the person at the screen.
     pub(crate) fn attach_door(&self, door: Arc<dyn crate::task_undo::UndoDoor>) {
         *self.0.host.door.borrow_mut() = Some(door);
+    }
+
+    /// Read the output of the command runs History shows from `content` , the records' content
+    /// this device keeps.
+    pub(crate) fn attach_content(&self, content: Arc<crate::content::Plane>) {
+        *self.0.host.content.borrow_mut() = Some(content);
     }
 
     /// Take part in `link` 's fabric: what the person's devices answer each other about unlocking a
@@ -666,6 +673,8 @@ struct NativeActivityHost {
     engine: RefCell<Option<Arc<crate::engine::Engine>>>,
     /// The session's action door, once its apps run here: the records an agent's run is undone in.
     door: RefCell<Option<Arc<dyn crate::task_undo::UndoDoor>>>,
+    /// The records' content this device keeps: what a command an agent ran printed.
+    content: RefCell<Option<Arc<crate::content::Plane>>>,
     undos: crate::task_undo::Undos,
     /// What asks the desk for the frame that shows how an undo ended.
     woken: Arc<AtomicBool>,
@@ -717,6 +726,10 @@ impl ActivityHost for NativeActivityHost {
     /// for one.
     fn writable(&self, origin: &HistoryOrigin) -> bool {
         matches!(origin, HistoryOrigin::DesktopTree)
+    }
+
+    fn record_content(&self, workspace: &str, app: &str, hash: &str) -> Option<Vec<u8>> {
+        self.content.borrow().as_ref()?.read(workspace, app, hash)
     }
 
     fn app_display_name(&self, app: &str) -> Option<String> {
