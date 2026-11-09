@@ -939,6 +939,19 @@ impl TabBar {
             .flatten()
     }
 
+    /// The words pill `i` draws beside its mark: its title as the bar last measured it, or none
+    /// for a pill shown as its icon alone — the bar's location names the window then, and two
+    /// labels would stand on each other in one place.
+    pub(super) fn pill_label(&self, i: usize) -> Option<&str> {
+        let tab = self.tabs.get(i)?;
+        match self.visible_titles.get(i) {
+            Some(Some(label)) => Some(label.as_str()),
+            Some(None) => None,
+            // Not measured this frame yet: the tab's own title, as the bar keeps it.
+            None => Some(tab.title.as_str()),
+        }
+    }
+
     /// A pill shown as its icon alone: a pinned tab, or the one tab of a
     /// window whose app put its slots in the title's row.
     fn icon_only(&self, id: u64) -> bool {
@@ -1767,12 +1780,11 @@ impl TabBar {
             return;
         }
         let clip_r = Rect::new(r.x0, r.y0, clip_x1.max(r.x0), r.y1);
-        // Backstop only — `visible_titles` already carries the elided form.
-        let label = self
-            .visible_titles
-            .get(i)
-            .and_then(|s| s.as_deref())
-            .unwrap_or(t.title.as_str());
+        // A pill drawn as its icon alone says nothing here: the words the window goes by stand
+        // in the bar's location, once.
+        let Some(label) = self.pill_label(i) else {
+            return;
+        };
         scene.push_layer(
             vello::peniko::Fill::NonZero,
             vello::peniko::BlendMode::default(),

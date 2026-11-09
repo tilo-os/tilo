@@ -321,3 +321,28 @@ fn solo_bar_with_slots() -> TabBar {
     assert!(b.set_toolbar(1, Some(browser_slots())));
     b
 }
+
+/// One place says what a window is: its only tab is drawn as its icon alone when the bar's
+/// slots carry the app's location, so the title is not painted over the location beside it.
+#[test]
+fn a_windows_only_tab_says_nothing_beside_the_bars_location() {
+    let mut b = solo_bar_with_slots();
+    let theme = crate::theme::Theme::light();
+    let mut text = crate::text_render::TextRenderer::new();
+    b.tab_rects = vec![Rect::new(0.0, 6.0, 40.0, 34.0)];
+    b.visible_titles = vec![b.visible_title(0, &mut text, &theme)];
+    assert!(
+        b.visible_titles[0].is_none(),
+        "the solo pill of a window with slots shows its icon alone"
+    );
+    assert_eq!(
+        b.pill_label(0),
+        None,
+        "and draws no words there: the bar's location names the window"
+    );
+    // A bar of one tab with no slots of its own names the window by its title.
+    let mut plain = TabBar::new("g2", vec![TabDescriptor::new(1, "DuckDuckGo")], 1);
+    plain.set_window_controls(true);
+    plain.visible_titles = vec![Some("DuckDuckGo".to_owned())];
+    assert_eq!(plain.pill_label(0), Some("DuckDuckGo"));
+}
