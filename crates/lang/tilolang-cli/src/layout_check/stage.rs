@@ -121,6 +121,30 @@ impl Platform for Packages {
 pub struct Staged {
     instance: Instance,
     harness: FrameHarness,
+    /// What the window has cost so far, as [`Self::take_work`] reports it since the last call.
+    work: Work,
+}
+
+/// What laying a window out cost, in the toolkit's own units rather than in time: frames laid
+/// out, layout nodes built, and text shaped that the renderer's cache did not hold.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize)]
+pub struct Work {
+    /// Frames the toolkit laid out (a layout is one, plus one per change the app answered it
+    /// with).
+    pub frames: u64,
+    /// Layout nodes built: every node of each tree a frame rebuilt.
+    pub nodes: u64,
+    /// Text shaped that the renderer's cache did not hold.
+    pub shaped: u64,
+}
+
+impl Work {
+    /// Add `other` to this.
+    pub fn add(&mut self, other: Self) {
+        self.frames = self.frames.saturating_add(other.frames);
+        self.nodes = self.nodes.saturating_add(other.nodes);
+        self.shaped = self.shaped.saturating_add(other.shaped);
+    }
 }
 
 impl Staged {
@@ -295,7 +319,11 @@ impl Staged {
         }
         let harness =
             FrameHarness::new_with_theme(ui::State::new(), Box::new(window), viewport, theme);
-        let mut staged = Self { instance, harness };
+        let mut staged = Self {
+            instance,
+            harness,
+            work: Work::default(),
+        };
         // The window a person sees: the desktop's bar over the app's frame, the app's slots in
         // it, and the app told that the bar hosts them, as the desktop tells it.
         Self::name_window(&mut staged.harness, app, packages);
@@ -369,6 +397,23 @@ impl Staged {
 
     pub fn harness(&self) -> &FrameHarness {
         &self.harness
+    }
+
+    /// What laying the window out has cost since the last call: frames laid out, layout nodes
+    /// built, and text shaped that the renderer's cache did not hold.
+    pub fn take_work(&mut self) -> Work {
+        let frames = self.harness.relayout_frames();
+        let nodes = self.harness.layout_nodes_built();
+        let (_, misses, _) = self.harness.take_text_shape_stats();
+        let delta = Work {
+            frames: frames.saturating_sub(self.work.frames),
+            nodes: nodes.saturating_sub(self.work.nodes),
+            shaped: misses,
+        };
+        self.work.frames = frames;
+        self.work.nodes = nodes;
+        self.work.shaped = self.work.shaped.saturating_add(misses);
+        delta
     }
 
     pub fn harness_mut(&mut self) -> &mut FrameHarness {

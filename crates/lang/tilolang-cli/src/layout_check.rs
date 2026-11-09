@@ -21,6 +21,7 @@ use std::sync::PoisonError;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 pub use audit::Kind;
+pub use stage::Work;
 use tilo_render_protocol::patch::ResourceRef;
 use ui::interaction::InteractionEnvironment;
 
@@ -323,6 +324,10 @@ pub struct Report {
     pub unreached: Vec<Unreached>,
     /// Layouts run, over every scenario of every app.
     pub layouts: usize,
+    /// What laying every window out cost, in the toolkit's own units rather than in time: the
+    /// frames laid out, the layout nodes built and the text shaped outside the cache. A budget
+    /// test holds a layout to these, which no machine's load moves.
+    pub work: Work,
     pub elapsed_ms: u64,
 }
 
@@ -395,7 +400,14 @@ pub fn check(options: &Options) -> Result<Report, String> {
     // what every scene before it showed: the scenes of one app decide in order, as the check
     // ran them one after another, while the apps decide at the same time.
     let (mut opened, shown) = run_opens(&apps, &scenes, &phase, options)?;
+    // A dump is read as a page of one layout after another: the units ran at the same time, and
+    // their pages are printed where the work stands, in the order the check would have done it
+    // alone.
+    for found in phase.iter().chain(opened.iter()) {
+        eprint!("{}", found.dump);
+    }
     let mut layouts_run: usize = 0;
+    let mut work = Work::default();
     let mut gathered: Vec<BTreeMap<Identity, Finding>> = Vec::new();
     gathered.resize_with(apps.len(), BTreeMap::new);
     for ((scene, units), opened) in scenes
@@ -411,6 +423,9 @@ pub fn check(options: &Options) -> Result<Report, String> {
             .saturating_add(press.layouts)
             .saturating_add(push.layouts)
             .saturating_add(opened.layouts);
+        for found in [&*scenario, &*press, &*push, &*opened] {
+            work.add(found.work);
+        }
         let Some(held) = gathered.get_mut(scene.app) else {
             continue;
         };
@@ -450,6 +465,7 @@ pub fn check(options: &Options) -> Result<Report, String> {
         stale,
         unreached,
         layouts: layouts_run,
+        work,
         elapsed_ms: u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX),
     })
 }
@@ -525,30 +541,36 @@ fn mixed_language() -> Vec<audit::Problem> {
 /// work shares.
 struct App {
     dir: PathBuf,
-    /// Where its package and the ones it uses are found.
-    search: Vec<PathBuf>,
     short: String,
     meta: tilolang::PackageMeta,
     sources: source::SourceMap,
     /// The layers laid out: the window's own, and every other root the app declares.
     roots: Vec<Option<String>>,
+    /// Its packages compiled, as a window loads them: a worker copies them into the window it
+    /// lays out rather than compiling them again, which takes seconds to run.
+    compiled: Vec<tilolang_tilo::tilolang::Compiled>,
+    /// The packages it uses as metadata rather than as a package directory: the native apps'
+    /// (each a committed description) and the platform's, which every window of it loads too.
+    platform: Vec<tilolang_tilo::tilolang::PackageMeta>,
 }
 
 impl App {
     fn read(dir: &Path, search: &[PathBuf], root: Option<&str>) -> Result<Self, String> {
         let mut search = search.to_vec();
         search.extend(dir.parent().map(Path::to_path_buf));
-        let (built, _platform) = build(dir, &search)?;
+        let (built, platform) = build(dir, &search)?;
         let sources = source::SourceMap::new(&built);
         let meta = built.last().ok_or("no package")?.compiled.meta.clone();
         let short = meta.app.rsplit('.').next().unwrap_or(&meta.app).to_owned();
+        let compiled = built.into_iter().map(|built| built.compiled).collect();
         Ok(Self {
             dir: dir.to_path_buf(),
-            search,
             short,
             roots: layers_of(&meta, root),
             meta,
             sources,
+            compiled,
+            platform,
         })
     }
 }
@@ -679,6 +701,11 @@ struct Found {
     shown: Shown,
     /// The `--press` labels a control carried in this unit of work.
     pressed: BTreeSet<String>,
+    /// What laying its windows out cost, in the toolkit's own units.
+    work: stage::Work,
+    /// What the unit dumped (`--dump`): the toolkit's inspection of each layout at the dump
+    /// size, held until every unit has run so the page reads in the order the work does.
+    dump: String,
 }
 
 /// Add what `found` gathered to `into`, as a further layout of the app shows the same.
@@ -750,22 +777,17 @@ fn machine_lock() -> Result<advisory_lock::FileLock, String> {
 }
 
 /// Run every unit of `units` at the same time, each on a worker of its own, and return what each
-/// found in the order given. A worker reads an app's package itself: the compiled packages a
-/// window loads belong to one window at a time, so no two workers share them.
+/// found in the order given. A worker lays its windows out on packages of its own: the compiled
+/// packages a window loads belong to one window at a time, so each worker copies the app's.
 fn run(apps: &[App], units: &[Unit], options: &Options) -> Result<Vec<Found>, String> {
     if units.is_empty() {
         return Ok(Vec::new());
     }
     // Every worker below takes a core, so a second check at the same time only slows both.
     let _machine = machine_lock()?;
-    // A dump is read as a page of one layout after another, so it runs alone.
-    let workers = if options.dump.is_some() {
-        1
-    } else {
-        std::thread::available_parallelism()
-            .map_or(1, std::num::NonZero::get)
-            .min(units.len())
-    };
+    let workers = std::thread::available_parallelism()
+        .map_or(1, std::num::NonZero::get)
+        .min(units.len());
     let taken: Vec<Mutex<Option<Result<Found, String>>>> =
         units.iter().map(|_| Mutex::new(None)).collect();
     let next = AtomicUsize::new(0);
@@ -917,15 +939,7 @@ fn run_opens(
         }
         Ok(opened)
     };
-    if options.dump.is_some() {
-        for app in busy {
-            if let Some(slot) = slots.get(app) {
-                *slot.lock().unwrap_or_else(PoisonError::into_inner) = Some(chain(app));
-            }
-        }
-    } else {
-        opens_together(&busy, &slots, &chain)?;
-    }
+    opens_together(&busy, &slots, &chain)?;
     let mut opened: Vec<Found> = (0..scenes.len()).map(|_| Found::default()).collect();
     let mut shown: Vec<Shown> = vec![Shown::new(); apps.len()];
     for (app, slot) in slots.into_iter().enumerate() {
@@ -1002,6 +1016,8 @@ impl Worker<'_> {
                 What::Scenario | What::Press | What::Push => BTreeSet::new(),
             },
             pressed: BTreeSet::new(),
+            work: stage::Work::default(),
+            dumped: String::new(),
         };
         check.unit(&packages, unit)?;
         Ok(Found {
@@ -1009,11 +1025,13 @@ impl Worker<'_> {
             layouts: check.ran,
             shown: check.shown,
             pressed: check.pressed,
+            work: check.work,
+            dump: check.dumped,
         })
     }
 
-    /// `app`'s package compiled, on the first unit of it this worker runs, and again when the
-    /// worker moves to another app.
+    /// `app`'s packages as the window loads them, copied on the first unit of it this worker
+    /// runs and again when the worker moves to another app.
     fn packages(&mut self, app: usize) -> Result<Rc<stage::Packages>, String> {
         if let Some((held, packages)) = &self.loaded
             && *held == app
@@ -1023,10 +1041,11 @@ impl Worker<'_> {
         let Some(held) = self.apps.get(app) else {
             return Err(format!("no app {app}"));
         };
-        let (built, platform) = build(&held.dir, &held.search)?;
+        // A copy of what the app's own read compiled: the window loads packages of its own,
+        // and compiling them again would spend seconds of every worker's first unit on it.
         let packages = Rc::new(stage::Packages(
-            Rc::new(built.into_iter().map(|b| b.compiled).collect()),
-            platform,
+            Rc::new(held.compiled.clone()),
+            held.platform.clone(),
         ));
         self.loaded = Some((app, Rc::clone(&packages)));
         Ok(packages)
@@ -1360,6 +1379,10 @@ struct AppCheck<'a> {
     /// the run reports: a mark a window shows in one scenario and not another is pressed where
     /// it stands.
     pressed: BTreeSet<String>,
+    /// What laying this unit's windows out cost, in the toolkit's own units.
+    work: stage::Work,
+    /// The `--dump` page of this unit of work, as [`Found::dump`].
+    dumped: String,
 }
 
 impl AppCheck<'_> {
@@ -1758,9 +1781,14 @@ impl AppCheck<'_> {
             .window_bar_layout(f64::from(viewport.0));
         if self.dump == Some(viewport) {
             let json = serde_json::to_string_pretty(&bar).map_err(|e| e.to_string())?;
-            eprintln!("== {} {label} at {layout} — the bar\n{json}", self.meta.app);
+            let _ = writeln!(
+                self.dumped,
+                "== {} {label} at {layout} — the bar\n{json}",
+                self.meta.app
+            );
             let json = serde_json::to_string_pretty(&inspection).map_err(|e| e.to_string())?;
-            eprintln!(
+            let _ = writeln!(
+                self.dumped,
                 "== {} {label} at {layout} — the frame\n{json}",
                 self.meta.app
             );
@@ -1825,6 +1853,7 @@ impl AppCheck<'_> {
             }
             self.gather(&problem, layout, label);
         }
+        self.work.add(staged.take_work());
         Ok(())
     }
 
