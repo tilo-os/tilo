@@ -302,49 +302,9 @@ impl Activity {
         self.0.desk.record_now(tree, time, shows)
     }
 
-    /// Record `tree` as `asked` 's arranging action: one change of the desk whose own entry names
-    /// who asked and what they did. Whether the desk changed at all.
-    pub(crate) fn record_action(
-        &self,
-        tree: &DesktopTree,
-        time: i64,
-        asked: &tilo_actions::ActionContext,
-        shows: &[(tilo_desktop_model::TabId, String)],
-    ) -> bool {
-        self.0.desk.record_action(tree, time, asked, shows)
-    }
-
-    /// The record each window of the desk shows, by tab, as the desk keeps it.
-    pub(crate) fn records(&self) -> Vec<(tilo_desktop_model::TabId, String)> {
-        self.0.desk.records()
-    }
-
-    /// Take back `person` 's last step of the desk, and put the desk it leaves where the session
-    /// takes it up ([`Self::take_restored`]). Whether there was a step.
-    pub(crate) fn undo_desk(&self, person: &str) -> bool {
-        self.rewind(person, false)
-    }
-
-    /// Bring back the last step of the desk `person` took back.
-    pub(crate) fn redo_desk(&self, person: &str) -> bool {
-        self.rewind(person, true)
-    }
-
-    fn rewind(&self, person: &str, redo: bool) -> bool {
-        let stepped = if redo {
-            self.0.desk.redo(person)
-        } else {
-            self.0.desk.undo(person)
-        };
-        if stepped && let Some(tree) = self.0.desk.tree() {
-            *self.0.restored.borrow_mut() = Some(tree);
-        }
-        stepped
-    }
-
-    /// The last step of the desk's history, as who made it and what it did.
-    pub(crate) fn last_step(&self, person: &str) -> Option<(String, String)> {
-        self.0.desk.last_step(person)
+    /// The desk document, which the arrangement reads and changes too.
+    pub(crate) fn desk(&self) -> std::rc::Rc<tilo_session_core::desk::Desk> {
+        self.0.desk.desk()
     }
 
     /// The workspace a change the model wrote back leaves the desk at, if one is waiting.
@@ -1114,24 +1074,21 @@ mod tests {
             ))),
             ..tilo_actions::ActionContext::default()
         };
+        let document = desk.activity.desk();
         assert!(
-            desk.activity
-                .record_action(&tree, now_seconds(), &asked, &[]),
+            document.record_action(&tree, now_seconds(), &asked, &[]),
             "the desk keeps the move"
         );
         assert_eq!(
-            desk.activity.last_step("ada"),
+            document.last_step("ada"),
             Some(("agent-task:reading".to_owned(), "move".to_owned())),
             "the step names who asked and what they did"
         );
 
         // The person takes it back: the move is undone, and the rename before it is still there —
         // the two are separate steps.
-        assert!(desk.activity.undo_desk("ada"), "the person takes it back");
-        let restored = desk
-            .activity
-            .take_restored()
-            .expect("the desk to take the step back is staged for the pass");
+        assert!(document.undo("ada"), "the person takes it back");
+        let restored = document.tree().expect("the desk the step took it back to");
         assert_eq!(
             restored
                 .active_workspace()
@@ -1139,14 +1096,10 @@ mod tests {
             Some("Plans"),
             "exactly the move is undone"
         );
-        assert!(
-            desk.activity.undo_desk("ada"),
-            "the rename before it is its own step"
-        );
-        let restored = desk
-            .activity
-            .take_restored()
-            .expect("and the desk before it is staged too");
+        assert!(document.undo("ada"), "the rename before it is its own step");
+        let restored = document
+            .tree()
+            .expect("and the desk before it is there too");
         assert_eq!(
             restored
                 .active_workspace()

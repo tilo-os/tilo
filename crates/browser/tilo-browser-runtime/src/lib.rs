@@ -25,6 +25,16 @@
     allow(dead_code, reason = "only the browser page fetches deferred code")
 )]
 mod app_load;
+// The desk's arranging actions in the page: its tests run on the host too.
+#[cfg(any(target_arch = "wasm32", test))]
+#[cfg_attr(
+    not(target_arch = "wasm32"),
+    allow(
+        dead_code,
+        reason = "only the browser page arranges its desk; the host runs its tests"
+    )
+)]
+mod arranging;
 // Native builds compile it for its tests; the page is its only user.
 #[cfg(target_arch = "wasm32")]
 mod background_work;

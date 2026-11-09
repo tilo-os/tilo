@@ -4,5 +4,6 @@
 //! gives back what the desk is, how it changed and who changed it. Every role that moves here
 //! removes the copy the other host kept, so the two run the same rules.
 
+pub mod arrangement;
 pub mod desk;
 pub mod presence;

@@ -21452,6 +21452,8 @@ dependencies = [
  "tilo-actions",
  "tilo-automerge-fork",
  "tilo-desktop-model",
+ "tilo-desktop-search",
+ "tilo-desktop-surface",
  "tilo-ui",
  "workspace-hack",
 ]
@@ -21703,6 +21705,7 @@ dependencies = [
  "tilo-render-protocol",
  "tilo-resource",
  "tilo-service",
+ "tilo-session-core",
  "tilo-topbar",
  "tilo-ui",
  "tilo-ui-host",

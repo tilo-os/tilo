@@ -1301,8 +1301,9 @@ pub(crate) struct Persistence {
     /// The desk's own document: the profile's copy of it, which is the desk's
     /// history when this page is in no workspace. The rules of the document —
     /// what one change of the desk is, who made it, how a step is taken back —
-    /// are the session core's, the same the native session runs.
-    pub desk: Desk,
+    /// are the session core's, the same the native session runs. Shared with
+    /// the page's arrangement, which arranges that desk by action.
+    desk: Rc<Desk>,
     /// Where the document is kept, and why the last write of it was refused.
     profile: Rc<ProfileStore>,
     /// The peer whose workspace this page joined, whose copy of the desk document
@@ -1315,6 +1316,11 @@ pub(crate) struct Persistence {
 }
 
 impl Persistence {
+    /// The desk document, as the page's arrangement keeps it too.
+    pub(crate) fn desk(&self) -> Rc<Desk> {
+        Rc::clone(&self.desk)
+    }
+
     /// Write the desktop if it changed since the last save.
     ///
     /// # Errors
@@ -1738,11 +1744,11 @@ pub(crate) fn mount(
         refused: RefCell::new(None),
     });
     let persistence = Persistence {
-        desk: Desk::new(
+        desk: Rc::new(Desk::new(
             document,
             &inputs.author,
             Some(Rc::clone(&profile) as Rc<dyn Store>),
-        ),
+        )),
         profile,
         store,
         saved_revision: Cell::new(0),

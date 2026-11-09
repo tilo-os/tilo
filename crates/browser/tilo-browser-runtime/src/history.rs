@@ -271,7 +271,8 @@ impl PageHistory {
             return;
         }
         let job = {
-            let mut document = self.writer.desk.document_mut();
+            let desk = self.writer.desk();
+            let mut document = desk.document_mut();
             self.describer.next(&mut document)
         };
         let Some(job) = job else {
@@ -307,7 +308,7 @@ impl PageHistory {
         let document = self
             .peer
             .and_then(crate::replication::desktop_history)
-            .unwrap_or_else(|| self.writer.desk.document());
+            .unwrap_or_else(|| self.writer.desk().document());
         crate::desktop::as_desk_document(&document, &self.author)
     }
 
@@ -642,7 +643,7 @@ impl tilo_desktop_surface::HistorySource for PageHistory {
         let mut hasher = std::collections::hash_map::DefaultHasher::new();
         self.peer
             .and_then(crate::replication::desktop_history_heads)
-            .unwrap_or_else(|| self.writer.desk.heads())
+            .unwrap_or_else(|| self.writer.desk().heads())
             .hash(&mut hasher);
         let mut tree_records = self.shared.bound_records();
         tree_records.compact_sort_by_key(|(tab, _)| *tab);

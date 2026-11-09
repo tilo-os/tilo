@@ -13,7 +13,6 @@ use std::path::{Path, PathBuf};
 use std::rc::Rc;
 
 use automerge::AutoCommit;
-use tilo_actions::ActionContext;
 use tilo_desktop_model::{DesktopTree, STATE_SCHEMA_VERSION};
 use tilo_session_core::desk::{Desk, Loaded, Store};
 
@@ -159,7 +158,8 @@ pub(crate) fn refuse(notice: &StateNotice) {
 
 /// The desk's document, and what this device made of the one it kept.
 pub(crate) struct DeskDoc {
-    desk: Desk,
+    /// Shared with the arrangement, which reads and writes the same desk.
+    desk: Rc<Desk>,
     /// The desk on disk this build did not open, if any.
     refused: Option<StateNotice>,
     /// The desk an older Tilo kept on this device, which this one did not bring over, if any. The
@@ -221,7 +221,7 @@ impl DeskDoc {
     ) -> Self {
         let store = path.map(|path| Rc::new(FileAt(path)) as Rc<dyn Store>);
         Self {
-            desk: Desk::new(doc, person, store),
+            desk: Rc::new(Desk::new(doc, person, store)),
             refused: None,
             notice,
         }
@@ -231,7 +231,7 @@ impl DeskDoc {
     fn refusing(notice: StateNotice, person: &str) -> Self {
         refuse(&notice);
         Self {
-            desk: Desk::new(AutoCommit::new(), person, None),
+            desk: Rc::new(Desk::new(AutoCommit::new(), person, None)),
             refused: Some(notice),
             notice: None,
         }
@@ -249,13 +249,15 @@ impl DeskDoc {
         }
     }
 
-    /// The record each window of the desk shows, by tab, as the document keeps it.
-    pub(crate) fn records(&self) -> Vec<(tilo_desktop_model::TabId, String)> {
-        self.desk.records()
-    }
-
+    /// The desk the document holds, for a test that reads what a session left.
+    #[cfg(test)]
     pub(crate) fn tree(&self) -> Option<DesktopTree> {
         self.desk.tree()
+    }
+
+    /// The desk document itself, as the arrangement keeps it too.
+    pub(crate) fn desk(&self) -> Rc<Desk> {
+        Rc::clone(&self.desk)
     }
 
     /// Record `desktop` as it stands, at `time` (seconds since the epoch): one change of the desk,
@@ -278,35 +280,6 @@ impl DeskDoc {
         shows: &[(tilo_desktop_model::TabId, String)],
     ) -> bool {
         self.desk.record_now(desktop, time, shows, None)
-    }
-
-    /// Record `desktop` as it stands as `asked`'s arranging action: one change of the desk whose
-    /// own entry says who asked and what they did, so the history names it and the step is the
-    /// person's to take back. Whether the desk changed at all.
-    pub(crate) fn record_action(
-        &self,
-        desktop: &DesktopTree,
-        time: i64,
-        asked: &ActionContext,
-        shows: &[(tilo_desktop_model::TabId, String)],
-    ) -> bool {
-        self.desk.record_action(desktop, time, asked, shows)
-    }
-
-    /// Take back `person` 's last change of the desk. Whether there was one.
-    pub(crate) fn undo(&self, person: &str) -> bool {
-        self.desk.undo(person)
-    }
-
-    /// Bring back the last change of the desk `person` took back.
-    pub(crate) fn redo(&self, person: &str) -> bool {
-        self.desk.redo(person)
-    }
-
-    /// The last step of the desk's history, as who made it and what it did: what the history names
-    /// it by.
-    pub(crate) fn last_step(&self, person: &str) -> Option<(String, String)> {
-        self.desk.last_step(person)
     }
 
     /// The document, for a reader that lists what happened to the desk.

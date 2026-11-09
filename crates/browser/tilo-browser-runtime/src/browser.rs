@@ -521,6 +521,9 @@ struct Desktop {
     handle: tilo_desktop_surface::DesktopHandle,
     shared: crate::desktop::Shared,
     persistence: Rc<crate::desktop::Persistence>,
+    /// The person's arrangement of this desk: what the palette, a script and an
+    /// agent arrange the windows with, as a session's arrangement does.
+    arrangement: crate::arranging::Arranging,
     /// Navigation commands name the mount generation they were issued for.
     generation: String,
     /// What the desktop asked of the page since its last status.
@@ -1218,6 +1221,11 @@ fn present_desktop(
         images: Rc::clone(&shared.images),
         image_owners: Rc::clone(&shared.image_owners),
         desktop: Some(Desktop {
+            arrangement: crate::arranging::Arranging::new(
+                &config.author(),
+                handle.clone(),
+                persistence.desk(),
+            ),
             handle,
             shared,
             persistence,

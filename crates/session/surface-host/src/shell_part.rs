@@ -450,90 +450,12 @@ pub struct DeskReading {
     pub tray: Vec<TrayReading>,
 }
 
-/// A workspace the person's desk shows, as their arrangement names it.
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ArrangementWorkspaceReading {
-    pub key: String,
-    pub name: String,
-    /// Whether it is the workspace in front: a desk holds several and shows one, so a shell draws
-    /// the rows of this one and no other.
-    pub current: bool,
-}
-
-/// A row of the desk, as the person's arrangement names it.
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ArrangementRowReading {
-    pub key: String,
-    pub workspace: String,
-    pub name: String,
-    pub shell: String,
-}
-
-/// A strip of the desk, as the person's arrangement names it.
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ArrangementStripReading {
-    pub key: String,
-    pub workspace: String,
-    pub row: String,
-    /// Its width in per-mille of its row's usable width.
-    pub width: i64,
-    pub maximized: bool,
-    pub active: String,
-    pub placed: bool,
-    pub canvas_x: i64,
-    pub canvas_y: i64,
-    pub canvas_width: i64,
-    pub canvas_height: i64,
-    /// Whether the strip's window floats above the workspace's windows,
-    /// rather than standing among them in its row.
-    #[serde(default)]
-    pub floating: bool,
-    /// The corner of the work area a floating window keeps its distance from:
-    /// `top-left`, `top-right`, `bottom-right` or `bottom-left`.
-    #[serde(default, skip_serializing_if = "String::is_empty")]
-    pub float_corner: String,
-    /// Its distance from that corner's side edge, in canvas pixels.
-    #[serde(default)]
-    pub float_dx: i64,
-    /// Its distance from that corner's top or bottom edge, in canvas pixels.
-    #[serde(default)]
-    pub float_dy: i64,
-    /// Its floating width and height in canvas pixels.
-    #[serde(default)]
-    pub float_width: i64,
-    #[serde(default)]
-    pub float_height: i64,
-    pub shell: String,
-}
-
-/// A place of the desk, as the person's arrangement names it.
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ArrangementPlaceReading {
-    pub key: String,
-    pub strip: String,
-    pub shows: String,
-    pub shown_as: String,
-    pub record: String,
-    /// The title the place recorded when it was made, kept for the record's own bookkeeping:
-    /// what a surface shows a window by is [`Self::name`].
-    pub title: String,
-    /// What every surface calls this place: its window's title and the app's own name
-    /// (`Groceries — Notes`), or the app's name alone when the window has no title. Never an
-    /// app id.
-    pub name: String,
-    pub pinned: bool,
-    pub shell: String,
-}
-
-/// The reading of [`ARRANGEMENT_RESOURCE`]: the person's arrangement as the session holds it,
-/// as JSON on the door.
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ArrangementReading {
-    pub workspaces: Vec<ArrangementWorkspaceReading>,
-    pub rows: Vec<ArrangementRowReading>,
-    pub strips: Vec<ArrangementStripReading>,
-    pub places: Vec<ArrangementPlaceReading>,
-}
+/// The arrangement's readings are the session core's, which the page publishes through the same
+/// contract: what a shell reads from this door is what every host's arrangement holds.
+pub use tilo_session_core::arrangement::{
+    ArrangementPlaceReading, ArrangementReading, ArrangementRowReading, ArrangementStripReading,
+    ArrangementWorkspaceReading,
+};
 
 /// A running application's tray item, as the bar shows it.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]

@@ -12,6 +12,10 @@ serde.workspace = true
 serde_json.workspace = true
 tilo-actions = { path = "../../collab/actions" }
 tilo-desktop-model = { path = "../desktop-model" }
+# The desk as the surfaces draw it and the person arranges it: the handle the arrangement changes
+# and the search text typed on the canvas places through.
+tilo-desktop-search = { path = "../desktop-search" }
+tilo-desktop-surface = { path = "../desktop-surface", default-features = false }
 # The undo log and the clock are the toolkit's shared, portable parts.
 ui = { package = "tilo-ui", path = "../../sdk/ui-core", default-features = false }
 

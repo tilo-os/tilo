@@ -10,6 +10,8 @@ license.workspace = true
 tilo-compositor = { path = "../compositor" }
 tilo-desktop-policy = { path = "../desktop-policy" }
 tilo-desktop-surface = { path = "../desktop-surface" }
+# The arrangement's readings, which every host's arrangement holds.
+tilo-session-core = { path = "../core" }
 ui = { package = "tilo-ui", path = "../../sdk/ui-core" }
 vello.workspace = true
 winit.workspace = true

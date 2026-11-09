@@ -964,10 +964,10 @@ impl Session {
         // workspace shares as its own desk record. A device that kept its
         // arrangement beside the desk before this build has what it holds
         // opened on the desk, once.
-        let arrangement = arrangement::Arrangement::new(
+        let arrangement = arrangement::open(
             &options.person,
             handle.clone(),
-            activity.clone(),
+            &activity,
             options.state.as_deref(),
         );
         let arrangement = Rc::new(RefCell::new(arrangement));
