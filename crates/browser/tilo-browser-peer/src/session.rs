@@ -583,6 +583,9 @@ enum Command {
     /// The network is back: a session waiting out its backoff tries again
     /// now; a connected or failed one stays as it is.
     Retry,
+    /// A revocation this device's person's root signed: announce it to
+    /// every workspace this session is admitted to.
+    Revoke(tilo_user_identity::RevocationEntry),
     Refresh,
     Close,
 }
@@ -845,6 +848,14 @@ impl PeerHandle {
         self.commands
             .send(command)
             .map_err(|_| "peer session is closed".to_string())
+    }
+
+    /// Add `entry`, which this device's person's root signed, to the
+    /// revocations this session announces: a host reads them with this
+    /// device's certificate, and the one entry takes effect from the moment it
+    /// names, without waiting for the next session.
+    pub fn revoke(&self, entry: tilo_user_identity::RevocationEntry) -> Result<(), String> {
+        self.send(Command::Revoke(entry))
     }
 
     /// Subscribe to a workspace.
@@ -1375,7 +1386,8 @@ impl Task {
     /// certificate and that it answers compaction requests. Returns `false`
     /// when the session could not take them.
     fn announce(&self, client: &RelayClient, workspace_id: u64) -> bool {
-        if let Some(hello) = identity_hello(workspace_id, &self.config.cert)
+        if let Some(hello) =
+            identity_hello(workspace_id, &self.config.cert, &self.config.revocations)
             && client.send(hello).is_err()
         {
             return false;
@@ -1383,6 +1395,45 @@ impl Task {
         client
             .send(Envelope::CompactVolunteer { workspace_id })
             .is_ok()
+    }
+
+    /// Take `entry` into what this session announces and send its identity
+    /// again to every workspace the host admitted it to. An entry that does
+    /// not verify, or that names another person's root, changes nothing: a
+    /// host refuses a hello whose revocations are not its sender's own.
+    fn revoke(
+        &mut self,
+        entry: tilo_user_identity::RevocationEntry,
+        client: Option<&RelayClient>,
+    ) -> bool {
+        if entry.user_public_key != self.config.cert.user_public_key {
+            return true;
+        }
+        let Ok(changed) = self.config.revocations.insert(entry) else {
+            return true;
+        };
+        let Some(client) = client else {
+            return true;
+        };
+        if !changed {
+            return true;
+        }
+        let admitted: Vec<u64> = lock(&self.shared)
+            .status
+            .workspaces
+            .iter()
+            .filter(|(_, ready)| **ready)
+            .map(|(workspace_id, _)| *workspace_id)
+            .collect();
+        for workspace_id in admitted {
+            if let Some(hello) =
+                identity_hello(workspace_id, &self.config.cert, &self.config.revocations)
+                && client.send(hello).is_err()
+            {
+                return false;
+            }
+        }
+        true
     }
 
     fn compaction_requested(&mut self, workspace_id: u64, request: [u8; 16], route: DocumentRoute) {
@@ -2066,6 +2117,7 @@ impl Task {
                 self.administer(&request, done, client);
                 true
             }
+            Command::Revoke(entry) => self.revoke(entry, client),
             // Handled by the caller's loop.
             Command::Reconnect | Command::Retry | Command::Refresh | Command::Close => true,
         }
@@ -3473,15 +3525,26 @@ fn refusal_text(reason: &str) -> String {
 /// The phrasing this session uses for the one answer that is a refusal.
 const REFUSAL: &str = "the workspace refused the change";
 
-/// This device's certificate for a workspace's other members. A native shell
-/// accepts a member's edits only from a device whose certificate it holds,
-/// and a browser has no direct neighbours to hand it over, so it goes through
-/// the host, which authenticates the author and keeps it for later joiners.
-fn identity_hello(workspace_id: u64, cert: &DeviceCert) -> Option<Envelope> {
+/// This device's certificate for a workspace's other members, and the
+/// revocations its person's root signed. A native shell accepts a member's
+/// edits only from a device whose certificate it holds, and a browser has no
+/// direct neighbours to hand it over, so it goes through the host, which
+/// authenticates the author and keeps it for later joiners. A host reads the
+/// revocations with it: a device of the person it may no longer trust, or the
+/// stand-in approver it holds for them, is refused from the moment each entry
+/// names on, and what they signed before stays valid.
+fn identity_hello(
+    workspace_id: u64,
+    cert: &DeviceCert,
+    revocations: &RevocationList,
+) -> Option<Envelope> {
+    let mut entries: Vec<tilo_user_identity::RevocationEntry> =
+        revocations.iter().cloned().collect();
+    entries.sort_by_key(|entry| entry.revoked_device_public_key);
     let hello = neighbour_wire::NeighbourMsg::IdentityHello {
         protocol: neighbour_wire::PEER_PROTOCOL_VERSION,
         cert: Box::new(cert.clone()),
-        revocations: Vec::new(),
+        revocations: entries,
     };
     let (channel, _) = neighbour_wire::retention(&hello, false)?;
     let body = postcard::to_allocvec(&hello).ok()?;
