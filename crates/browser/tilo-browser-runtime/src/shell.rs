@@ -105,6 +105,10 @@ pub(crate) enum HostRequest {
     /// page has the workspace's session open the resource there, as a mention's notice does. It
     /// never reaches the embedding page.
     ShowInApp { app: String, resource: String },
+    /// The person takes back the agent grant of this device (its key, as
+    /// hex): the page's root signs the revocation and every session of
+    /// theirs announces it (`onHostAction('revoke-device', key)`).
+    Revoke(String),
 }
 
 /// The page's host action that lets the person choose their name; the
@@ -1172,12 +1176,10 @@ impl BrowserShell {
                         resource: "settings.section:billing".into(),
                     });
                 }
-                // The agent door is the hosting provider's MCP front door, which serves the
-                // revoke: a page has no door of its own to take a grant back at.
+                // An agent's grant is the device the person runs it on: the root this page
+                // holds revokes it, as it revokes any of their devices.
                 DesktopAsk::RevokeAgentGrant(grant) => {
-                    web_sys::console::warn_1(
-                        &format!("no agent door here to revoke the grant {grant} at").into(),
-                    );
+                    self.requests.borrow_mut().push(HostRequest::Revoke(grant));
                 }
                 DesktopAsk::Shortcut(ui::shortcut_table::ShortcutAction::QuickSettings) => {
                     let _ = self.page_intent(ChromeIntent::ToggleQuickSettings);

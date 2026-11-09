@@ -201,6 +201,9 @@ mod page_theme;
 mod page_person;
 #[cfg(target_arch = "wasm32")]
 mod peer;
+// The person's agent door, as the page carries it to their host.
+#[cfg(target_arch = "wasm32")]
+mod agent_door;
 // The page's presence on its workspaces' boards.
 #[cfg(target_arch = "wasm32")]
 mod peer_presence;

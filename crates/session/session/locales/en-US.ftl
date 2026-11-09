@@ -146,6 +146,7 @@ action-failed-that-app = That app
 action-failed-no-workspace = This session has no workspace open
 action-failed-that-settings = Settings
 action-failed-that-change = That change
+action-failed-that-agent = Taking that agent's access back
 downloaded-apps-app-name = Downloaded apps
 downloaded-apps-unreadable-title = Your downloaded apps could not be read
 downloaded-apps-unreadable-body = This computer could not read the list of programs you added to your apps, so they are not listed now. Nothing was removed: they are still on this computer.

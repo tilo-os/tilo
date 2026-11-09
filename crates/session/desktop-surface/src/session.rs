@@ -14,23 +14,28 @@
 //! next takes [`Openings::open`]. Until then the ask stays pending, so a window shows its open as
 //! in progress, then done or refused, exactly as with a broker.
 //! The session also serves the workspace's activity, as a native session's broker does
-//! (`activity`).
+//! (`activity`), and carries the person's own asks of their agent door
+//! ([`agent_door::PROVIDER`]) to the door the desktop's host hands it
+//! ([`DesktopSession::serve_agent_door`]): the person's host, on a page.
 
 mod activity;
+#[cfg(test)]
+mod agent_door_tests;
 
 pub use activity::{ActivityAsk, ActivityReads, ActivityRequests, activity_requests};
 
+use std::collections::HashSet;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use tilo_actions::InvocationId;
 use tilo_actions::remote::{
     APPLICATION_OPEN_ACTION, APPLICATION_RESOURCE_PREFIX, ActionHost, ActionHostError, Caller,
     CataloguePage, CatalogueQuery, Completer, InvocationReceipt, InvocationState, InvokeArgument,
     InvokeRequest, NODE_PERMITS_ACTION, NODE_RESOURCE_PREFIX, Pending, ReceiptStatus,
-    SHARE_NODE_ACTION, UNSHARE_NODE_ACTION, application_provider, application_provider_record,
-    pending, provider_workspace, workspace_activity as wire,
+    SHARE_NODE_ACTION, UNSHARE_NODE_ACTION, agent_door, application_provider,
+    application_provider_record, pending, provider_workspace, workspace_activity as wire,
 };
+use tilo_actions::{ActorKind, InvocationId};
 
 use tilo_lock::MutexRecover as _;
 
@@ -183,6 +188,10 @@ pub struct DesktopSession {
     asked: Asked,
     nodes: Arc<std::sync::Mutex<Vec<NodeAsk>>>,
     activity: Arc<activity::Door>,
+    /// Where the person's asks of their agent door go, once the host has one.
+    agent_door: std::sync::Mutex<Option<Arc<dyn ActionHost + Send + Sync>>>,
+    /// The invocations admitted there, which it answers for.
+    door_invocations: std::sync::Mutex<HashSet<InvocationId>>,
     woken: Arc<AtomicBool>,
 }
 
@@ -228,6 +237,8 @@ pub fn serve(
             asked: Arc::clone(&asked),
             nodes: Arc::clone(&nodes),
             activity: Arc::clone(&activity),
+            agent_door: std::sync::Mutex::default(),
+            door_invocations: std::sync::Mutex::default(),
             woken,
         }),
         Openings {
@@ -240,6 +251,40 @@ pub fn serve(
 }
 
 impl DesktopSession {
+    /// Carry the person's asks of their agent door to `door` from now on.
+    pub fn serve_agent_door(&self, door: Arc<dyn ActionHost + Send + Sync>) {
+        *self.agent_door.lock_recover() = Some(door);
+    }
+
+    /// The agent door, when `id` is an invocation it admitted.
+    fn door_of(&self, id: &InvocationId) -> Option<Arc<dyn ActionHost + Send + Sync>> {
+        if !self.door_invocations.lock_recover().contains(id) {
+            return None;
+        }
+        self.agent_door.lock_recover().clone()
+    }
+
+    /// Ask the agent door `request` for `caller`: the person themselves,
+    /// never an agent or an app acting for them.
+    fn ask_agent_door(
+        &self,
+        caller: &Caller,
+        request: InvokeRequest,
+    ) -> Pending<Result<InvocationReceipt, ActionHostError>> {
+        if caller.actor().kind != ActorKind::Person {
+            return Pending::ready(Err(ActionHostError::UnknownAction));
+        }
+        let Some(door) = self.agent_door.lock_recover().clone() else {
+            return Pending::ready(Err(ActionHostError::Unavailable {
+                reason: "No agent door answers here".into(),
+            }));
+        };
+        self.door_invocations
+            .lock_recover()
+            .insert(request.invocation);
+        door.invoke(caller, request)
+    }
+
     /// The app `request` opens in this desktop's workspace, the record it
     /// opens it on (`None` for the app's own), and the content it opens in
     /// it, by hash.
@@ -331,6 +376,9 @@ impl ActionHost for DesktopSession {
             }
             return self.activity.invoke(caller, request);
         }
+        if request.target.provider == agent_door::PROVIDER {
+            return self.ask_agent_door(caller, request);
+        }
         if let Some(node) = request
             .target
             .address
@@ -399,17 +447,28 @@ impl ActionHost for DesktopSession {
     }
 
     fn observe(&self, caller: &Caller, id: &InvocationId) -> Option<InvocationState> {
-        // Every open is answered whole at admission; what stays open is a view of the activity.
+        // Every open is answered whole at admission; what stays open is a view of the activity
+        // or of the agent door.
+        if let Some(door) = self.door_of(id) {
+            return door.observe(caller, id);
+        }
         self.activity.observe(caller, id)
     }
 
     fn next_change(&self, caller: &Caller, id: &InvocationId) -> Option<Pending<()>> {
+        if let Some(door) = self.door_of(id) {
+            return door.next_change(caller, id);
+        }
         self.activity.next_change(caller, id)
     }
 
     fn cancel(&self, caller: &Caller, id: &InvocationId) -> Pending<Result<(), ActionHostError>> {
         if self.activity.serves(id) {
             return Pending::ready(self.activity.cancel(caller, id));
+        }
+        if let Some(door) = self.door_of(id) {
+            self.door_invocations.lock_recover().remove(id);
+            return door.cancel(caller, id);
         }
         Pending::ready(Err(ActionHostError::Refused {
             reason: "Opening an app can't be cancelled".into(),

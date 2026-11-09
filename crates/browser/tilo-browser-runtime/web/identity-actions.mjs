@@ -80,6 +80,8 @@ export const ACTION_GAP_MS = 2000;
 const PAUSE_POLL_MS = 1000;
 /** Where this browser session remembers that it asked. */
 const ASKED_KEY = 'tilo.identity.asked';
+/** The desktop's ask to revoke one of the person's devices, by key (hex). */
+export const REVOKE_DEVICE = 'revoke-device';
 /** How often, while a pairing link is open, to ask for devices waiting. */
 const PAIR_POLL_MS = 3000;
 
@@ -454,6 +456,10 @@ export function createIdentityActions({
           shown.set(invite.id, showPairLink({link, expiresAt: invite.expiresAt, copy: () => tryCopy(link)}));
           stopPairing ??= every(() => { void askPending(); }, PAIR_POLL_MS);
           await askPending();
+        } else if (id === REVOKE_DEVICE && typeof value === 'string') {
+          // An agent's grant taken back at the person's door: the root
+          // revokes the device it runs on, as it revokes any of theirs.
+          await identity.revokeDevice(value);
         } else if (id === SIGN_IN.id) {
           const origins = [...new Set(lookups())];
           await signIn({rpId, fetchEnvelope: root => find(root, origins)});

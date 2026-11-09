@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
   ACTION_GAP_MS, ASK_AFTER_ACTIONS, createIdentityActions, KEEP, LINKED_ID, NAME, PAIR, passkeysUsable, PHOTO, RECOVERY, RESET_PHOTO,
-  SIGN_IN, syncProfile,
+  REVOKE_DEVICE, SIGN_IN, syncProfile,
 } from './identity-actions.mjs';
 import {openInvites} from './pairing.mjs';
 import {IdentityError} from './identity.mjs';
@@ -50,6 +50,17 @@ test('without passkeys the ask offers a recovery key, never a passkey it cannot 
   assert.equal(ask.title, 'Come back as “Ada” next time?');
   assert.equal(ask.action.title, 'Save key');
   assert.doesNotMatch(ask.body, /passkey/);
+});
+
+test('an agent grant taken back at the door is revoked by the root this tab holds', async () => {
+  const revoked = [];
+  const identity = {...fakeIdentity(), revokeDevice: async key => { revoked.push(key); return {key}; }};
+  const errors = [];
+  const actions = createIdentityActions({identity, session: memorySession(), passkeys: async () => false,
+    onError: error => errors.push(error)});
+  await actions.perform(REVOKE_DEVICE, 'ab'.repeat(32));
+  assert.deepEqual(revoked, ['ab'.repeat(32)]);
+  assert.deepEqual(errors, []);
 });
 
 function memorySession() {

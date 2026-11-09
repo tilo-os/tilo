@@ -149,6 +149,7 @@ action-failed-that-app = Diese App
 action-failed-no-workspace = Diese Sitzung hat keinen Workspace geöffnet
 action-failed-that-settings = Einstellungen
 action-failed-that-change = Diese Änderung
+action-failed-that-agent = Den Zugriff dieses Agenten zurückzunehmen
 downloaded-apps-app-name = Heruntergeladene Apps
 downloaded-apps-unreadable-title = Deine heruntergeladenen Apps ließen sich nicht lesen
 downloaded-apps-unreadable-body = Dieser Rechner konnte die Liste der Programme, die du zu deinen Apps hinzugefügt hast, nicht lesen, deshalb werden sie jetzt nicht aufgelistet. Nichts wurde entfernt: sie sind weiterhin auf diesem Computer.

@@ -17,19 +17,26 @@
 //! A request whose answer does not come within [`REPLY_DEADLINE`] is
 //! answered as unavailable, as is every request waiting when the host says
 //! the device cannot be reached, so a caller always hears back.
+//!
+//! An invocation the device accepted and still runs, a live read most of
+//! all, is followed here: [`ActionHost::next_change`] asks the device to
+//! hold its answer until the invocation moves, and the state it answers is
+//! kept, so whoever waits is woken by the change itself rather than asking
+//! again. A page, whose one thread never blocks, observes only what is kept.
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, Weak};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
-use tilo_actions::InvocationId;
 use tilo_actions::remote::{
     ActionHost, ActionHostError, Caller, CataloguePage, CatalogueQuery, Completer,
-    InvocationReceipt, InvocationState, InvokeRequest, Pending, ReceiptStatus, RemoteActionFrame,
-    RemoteActionMessage, pending,
+    InvocationReceipt, InvocationState, InvokeRequest, MAX_REMOTE_WAIT, Pending, ReceiptStatus,
+    RemoteActionFrame, RemoteActionMessage, UpdateMark, pending,
 };
+use tilo_actions::{InvocationId, InvocationUpdate};
 use tilo_lock::MutexRecover as _;
+use web_time::Instant;
 
 use crate::session::{PeerEvent, PeerEvents, PeerHandle};
 
@@ -38,6 +45,10 @@ pub const REPLY_DEADLINE: Duration = Duration::from_secs(30);
 
 /// How often requests past their deadline are answered.
 const SWEEP: Duration = Duration::from_millis(500);
+
+/// An answer to a held ask that comes sooner than this with nothing new is
+/// a device that does not hold: half of [`MAX_REMOTE_WAIT`].
+const HELD: Duration = Duration::from_secs(5);
 
 /// One device's actions in one workspace, asked through `peer`'s session.
 /// Cheap to clone; the last clone dropped stops listening.
@@ -78,6 +89,19 @@ struct Waiting {
     receipts: HashMap<InvocationId, Vec<Asked<Answered<InvocationReceipt>>>>,
     updates: HashMap<InvocationId, Vec<Asked<Option<InvocationState>>>>,
     cancels: HashMap<InvocationId, Vec<Asked<Answered<()>>>>,
+    follows: HashMap<InvocationId, Followed>,
+}
+
+/// An invocation the device accepted, as it last answered for it.
+struct Followed {
+    state: InvocationState,
+    /// Whether the device holds an answer until the invocation moves; one
+    /// that answers at once is not asked to, so nobody spins on it.
+    holds: bool,
+    /// The held ask out now: when it was sent.
+    asked: Option<Instant>,
+    /// Waiting for the invocation to move.
+    waiters: Vec<Completer<()>>,
 }
 
 /// An answer to give once the lock on [`Waiting`] is released: completing
@@ -185,6 +209,9 @@ impl Waiting {
             // An update the device pushes unasked answers whoever waits for
             // one; with nobody waiting, the next observe asks again.
             RemoteActionMessage::Update { invocation, state } => {
+                if let (Some(followed), Some(state)) = (self.follows.get_mut(&invocation), &state) {
+                    followed.state = state.clone();
+                }
                 for asked in self.updates.remove(&invocation).unwrap_or_default() {
                     give.push(Give::Update(asked.answer, state.clone()));
                 }
@@ -237,6 +264,32 @@ impl SessionActions {
         Self(inner)
     }
 
+    /// The device's answer to observing `id`, waited for: callers off a
+    /// page observe from threads that may block.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn ask_state(&self, id: &InvocationId) -> Option<InvocationState> {
+        let (answer, answered) = pending();
+        self.0
+            .waiting
+            .lock_recover()
+            .updates
+            .entry(*id)
+            .or_default()
+            .push(Asked::new(answer));
+        self.0
+            .send(RemoteActionMessage::Observe {
+                invocation: *id,
+                wait_ms: None,
+                seen: None,
+            })
+            .ok()?;
+        answered
+            .wait_timeout(REPLY_DEADLINE)
+            .ok()
+            .flatten()
+            .flatten()
+    }
+
     /// The device whose actions these are.
     #[must_use]
     pub fn device(&self) -> [u8; 32] {
@@ -245,29 +298,52 @@ impl SessionActions {
 }
 
 /// Answer requests past their deadline until the actions are dropped.
+#[cfg(not(target_arch = "wasm32"))]
 fn sweep(inner: Weak<Inner>) {
     let spawned = std::thread::Builder::new()
         .name("session-actions-deadline".into())
         .spawn(move || {
             loop {
                 std::thread::sleep(SWEEP);
-                let Some(inner) = inner.upgrade() else {
+                if !expire(&inner) {
                     return;
-                };
-                let mut give = Vec::new();
-                {
-                    let mut waiting = inner.waiting.lock_recover();
-                    if waiting.is_empty() {
-                        continue;
-                    }
-                    waiting.expire(Instant::now(), &mut give);
                 }
-                give.into_iter().for_each(Give::give);
             }
         });
     // Without the thread, every request is still answered when the device
     // answers or the session ends; only the deadline is lost.
     drop(spawned);
+}
+
+/// Answer requests past their deadline until the actions are dropped: on
+/// the page's own thread, between its other work.
+#[cfg(target_arch = "wasm32")]
+fn sweep(inner: Weak<Inner>) {
+    n0_future::task::spawn(async move {
+        loop {
+            n0_future::time::sleep(SWEEP).await;
+            if !expire(&inner) {
+                return;
+            }
+        }
+    });
+}
+
+/// Answer what waited past its deadline; whether the actions still exist.
+fn expire(inner: &Weak<Inner>) -> bool {
+    let Some(inner) = inner.upgrade() else {
+        return false;
+    };
+    let mut give = Vec::new();
+    {
+        let mut waiting = inner.waiting.lock_recover();
+        if waiting.is_empty() {
+            return true;
+        }
+        waiting.expire(Instant::now(), &mut give);
+    }
+    give.into_iter().for_each(Give::give);
+    true
 }
 
 impl Inner {
@@ -300,6 +376,36 @@ impl Inner {
             }
         }
         give.into_iter().for_each(Give::give);
+    }
+
+    /// What the held ask for `id`, sent having seen `seen`, answered: keep
+    /// it, and wake whoever waits for the invocation to move.
+    fn followed(&self, id: InvocationId, seen: UpdateMark, state: Option<InvocationState>) {
+        let mut waiting = self.waiting.lock_recover();
+        let Some(followed) = waiting.follows.get_mut(&id) else {
+            return;
+        };
+        // Nothing new, long before the hold was up: a device that does not
+        // hold, which is asked as it is observed from then on.
+        let quick = followed
+            .asked
+            .take()
+            .is_some_and(|sent| sent.elapsed() < HELD);
+        match state {
+            Some(state) => {
+                if quick && UpdateMark::of(&state.update) == seen {
+                    followed.holds = false;
+                }
+                followed.state = state;
+            }
+            // Unreachable, or no longer the caller's: nothing to hold.
+            None => followed.holds = false,
+        }
+        let waiters = std::mem::take(&mut followed.waiters);
+        drop(waiting);
+        for waiter in waiters {
+            waiter.complete(());
+        }
     }
 
     /// Send `message` to the device; `Err` when the session cannot carry it.
@@ -361,32 +467,100 @@ impl ActionHost for SessionActions {
                 asked.answer.complete(Err(error.clone()));
             }
         }
-        answered
+        // What the device accepted and still runs is followed from here.
+        let inner = Arc::downgrade(&self.0);
+        answered.map(move |receipt| {
+            let accepted = matches!(
+                &receipt,
+                Ok(InvocationReceipt {
+                    status: ReceiptStatus::Accepted,
+                    ..
+                })
+            );
+            if let Some(inner) = inner.upgrade().filter(|_| accepted) {
+                inner
+                    .waiting
+                    .lock_recover()
+                    .follows
+                    .entry(invocation)
+                    .or_insert_with(|| Followed {
+                        state: InvocationState::new(
+                            invocation,
+                            InvocationUpdate::Accepted { invocation },
+                        ),
+                        holds: true,
+                        asked: None,
+                        waiters: Vec::new(),
+                    });
+            }
+            receipt
+        })
     }
 
-    /// The device's answer to asking, waited for as the trait's synchronous
-    /// shape requires: callers observe from threads that may block.
+    /// The invocation as the device last answered for it. A followed one
+    /// whose device holds its answers is answered from what is kept; any
+    /// other is asked, and waited for, off a page.
     fn observe(&self, _caller: &Caller, id: &InvocationId) -> Option<InvocationState> {
-        let (answer, answered) = pending();
-        self.0
+        let kept = self
+            .0
             .waiting
             .lock_recover()
+            .follows
+            .get(id)
+            .map(|followed| (followed.holds, followed.state.clone()));
+        match kept {
+            Some((true, state)) => Some(state),
+            #[cfg(target_arch = "wasm32")]
+            kept => kept.map(|(_, state)| state),
+            #[cfg(not(target_arch = "wasm32"))]
+            _ => self.ask_state(id),
+        }
+    }
+
+    /// Ask the device to answer once the followed invocation `id` moves;
+    /// `None` for one not followed, settled, or on a device that does not
+    /// hold its answers.
+    fn next_change(&self, _caller: &Caller, id: &InvocationId) -> Option<Pending<()>> {
+        let (woken, change) = pending();
+        let mut waiting = self.0.waiting.lock_recover();
+        let followed = waiting
+            .follows
+            .get_mut(id)
+            .filter(|followed| followed.holds && !followed.state.is_terminal())?;
+        followed.waiters.push(woken);
+        if followed.asked.is_some() {
+            drop(waiting);
+            return Some(change);
+        }
+        followed.asked = Some(Instant::now());
+        let seen = UpdateMark::of(&followed.state.update);
+        let (answer, answered) = pending();
+        waiting
             .updates
             .entry(*id)
             .or_default()
             .push(Asked::new(answer));
-        self.0
-            .send(RemoteActionMessage::Observe {
-                invocation: *id,
-                wait_ms: None,
-                seen: None,
-            })
-            .ok()?;
-        answered
-            .wait_timeout(REPLY_DEADLINE)
-            .ok()
-            .flatten()
-            .flatten()
+        drop(waiting);
+        let inner = Arc::downgrade(&self.0);
+        let invocation = *id;
+        answered.then(move |state| {
+            if let Some(inner) = inner.upgrade() {
+                inner.followed(invocation, seen, state.flatten());
+            }
+        });
+        let wait_ms = u32::try_from(MAX_REMOTE_WAIT.as_millis()).unwrap_or(u32::MAX);
+        let sent = self.0.send(RemoteActionMessage::Observe {
+            invocation,
+            wait_ms: Some(wait_ms),
+            seen: Some(seen),
+        });
+        if sent.is_err() {
+            let asked = self.0.waiting.lock_recover().updates.remove(id);
+            for asked in asked.unwrap_or_default() {
+                asked.answer.complete(None);
+            }
+        }
+        Some(change)
     }
 
     fn cancel(&self, _caller: &Caller, id: &InvocationId) -> Pending<Answered<()>> {
