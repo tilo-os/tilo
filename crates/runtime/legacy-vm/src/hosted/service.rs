@@ -6,6 +6,13 @@
 //! Each VM is locked on its own, so one VM's boot never holds up another's
 //! command; admission is one lock, so two wakes never both take an
 //! account's last slot.
+//!
+//! A host can be taken back by its cloud at short notice (an Azure Spot VM
+//! is evicted about 30 seconds after the notice). Given the notice, the
+//! service takes no more wakes and suspends every awake VM at once onto its
+//! state directory, which lives on storage that outlives the host; the next
+//! service to open that directory, on another host, restores each VM on its
+//! next command ([`Service::evict`]).
 
 use std::collections::BTreeMap;
 use std::os::unix::net::{UnixListener, UnixStream};
@@ -93,6 +100,8 @@ pub struct Service {
     clock: Clock,
     vms: Mutex<BTreeMap<String, Arc<Entry>>>,
     admission: Mutex<()>,
+    /// The host is being taken back: no more wakes.
+    evicting: AtomicBool,
 }
 
 /// Why a wake did not happen.
@@ -101,6 +110,8 @@ pub enum EnsureError {
     Refused(host_account::Refusal),
     Invalid(String),
     Vm(VmError),
+    /// The host is being taken back; the VM continues on another one.
+    Moving,
 }
 
 impl std::fmt::Display for EnsureError {
@@ -109,6 +120,10 @@ impl std::fmt::Display for EnsureError {
             Self::Refused(refusal) => refusal.fmt(f),
             Self::Invalid(message) => f.write_str(message),
             Self::Vm(error) => write!(f, "the workspace's Linux VM could not start: {error}"),
+            Self::Moving => f.write_str(
+                "the workspace's Linux VM is moving to another host, saved as it was; \
+                 run the command again in a minute",
+            ),
         }
     }
 }
@@ -129,6 +144,7 @@ impl Service {
             clock,
             vms: Mutex::new(BTreeMap::new()),
             admission: Mutex::new(()),
+            evicting: AtomicBool::new(false),
             config,
         };
         let vms_dir = service.config.state.join("vms");
@@ -216,6 +232,11 @@ impl Service {
     /// The entry for `request`, reserved as awake, or why not.
     fn admit(&self, request: &VmRequest) -> Result<Arc<Entry>, EnsureError> {
         let _admission = lock(&self.admission);
+        // Under the admission lock, so no wake slips in after the eviction's
+        // suspends began.
+        if self.evicting.load(Ordering::SeqCst) {
+            return Err(EnsureError::Moving);
+        }
         let plans = Plans::load(&self.config.plans).map_err(EnsureError::Invalid)?;
         let id = format!("{}/{}", request.workspace, request.environment);
         let (existing_entry, awake, existing) = {
@@ -335,6 +356,38 @@ impl Service {
         }
     }
 
+    /// The host is being taken back: take no more wakes, and suspend every
+    /// awake VM onto the state directory, all at once, since the notice is
+    /// short and each suspend mostly waits on its disk. A VM whose suspend
+    /// fails is stopped, so its disk is consistent and it boots afresh.
+    pub fn evict(&self) {
+        {
+            let _admission = lock(&self.admission);
+            self.evicting.store(true, Ordering::SeqCst);
+        }
+        let entries: Vec<Arc<Entry>> = lock(&self.vms).values().cloned().collect();
+        std::thread::scope(|scope| {
+            for entry in &entries {
+                scope.spawn(move || {
+                    let mut vm = lock(&entry.vm);
+                    if vm.awake()
+                        && let Err(error) = vm.suspend()
+                    {
+                        eprintln!("tilo-legacy hosted: {}: suspend: {error}", entry.id());
+                        let _ = vm.stop();
+                    }
+                    entry.awake.store(vm.awake(), Ordering::SeqCst);
+                });
+            }
+        });
+    }
+
+    /// Whether the host is being taken back.
+    #[must_use]
+    pub fn evicting(&self) -> bool {
+        self.evicting.load(Ordering::SeqCst)
+    }
+
     #[must_use]
     pub fn status(&self) -> Vec<VmStatus> {
         let entries: Vec<Arc<Entry>> = lock(&self.vms).values().cloned().collect();
@@ -395,7 +448,14 @@ impl Service {
     }
 
     /// Serve the socket until `stop` is set, polling awake VMs between.
-    pub fn serve(self: &Arc<Self>, stop: &AtomicBool) -> std::io::Result<()> {
+    /// When `evict_notice` names a file, its appearing is the notice that
+    /// the host is being taken back ([`Service::evict`]); whatever watches
+    /// the cloud for that notice writes it.
+    pub fn serve(
+        self: &Arc<Self>,
+        stop: &AtomicBool,
+        evict_notice: Option<&Path>,
+    ) -> std::io::Result<()> {
         let socket = self.config.socket();
         let _ = std::fs::remove_file(&socket);
         let listener = UnixListener::bind(&socket)?;
@@ -406,6 +466,17 @@ impl Service {
         let accepting = Arc::clone(self);
         std::thread::spawn(move || accept_loop(&listener, &accepting));
         while !stop.load(Ordering::SeqCst) {
+            if let Some(notice) = evict_notice
+                && !self.evicting()
+                && notice.exists()
+            {
+                eprintln!(
+                    "tilo-legacy hosted: {} says this host is being taken back: suspending every VM",
+                    notice.display()
+                );
+                self.evict();
+                eprintln!("tilo-legacy hosted: every VM is saved");
+            }
             std::thread::sleep(POLL);
             self.tick();
         }
@@ -538,6 +609,47 @@ mod tests {
             panic!("usage");
         };
         assert_eq!(by_size.first().map(|usage| usage.running_seconds), Some(60));
+    }
+
+    #[test]
+    fn a_host_being_taken_back_wakes_nothing_and_keeps_its_vms_for_the_next() {
+        let dir = tempfile::tempdir().unwrap();
+        let config = config(dir.path());
+        existing(&config, "ws1", "acct-1", None);
+        let service = Service::open(config.clone(), clock(0)).unwrap();
+        assert!(!service.evicting());
+        service.evict();
+        assert!(service.evicting());
+        let Reply::Error(message) = service.handle(Request::Ensure {
+            vm: request("ws1", "acct-1", VmSize::Small),
+            shares: Vec::new(),
+        }) else {
+            panic!("a host being taken back wakes nothing");
+        };
+        assert_eq!(
+            message,
+            "the workspace's Linux VM is moving to another host, saved as it was; \
+             run the command again in a minute"
+        );
+        assert!(
+            config.files("ws1", "default").meter().is_file(),
+            "the VM stays where the next host finds it"
+        );
+        // phase: another host opens the same state and has the VM
+        let next = ServiceConfig {
+            run: dir.path().join("run-of-the-next-host"),
+            ..config
+        };
+        let elsewhere = Service::open(next, clock(10_000)).unwrap();
+        assert!(!elsewhere.evicting());
+        assert_eq!(
+            elsewhere
+                .status()
+                .iter()
+                .map(|vm| (vm.vm.as_str(), vm.account.as_str()))
+                .collect::<Vec<_>>(),
+            [("ws1/default", "acct-1")]
+        );
     }
 
     #[test]

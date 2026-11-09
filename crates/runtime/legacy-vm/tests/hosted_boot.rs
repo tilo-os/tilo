@@ -1,6 +1,7 @@
 //! A real hosted VM: a command wakes it, its output comes back, it is
 //! snapshotted when idle, the next command restores it, and every second
-//! it ran is metered.
+//! it ran is metered. A host being taken back saves its running VM, and
+//! another host restores it from the same state.
 //!
 //! It needs KVM and a guest, so it is ignored by default. Run it on a host
 //! with `/dev/kvm` and Firecracker:
@@ -36,6 +37,29 @@ fn env_path(name: &str) -> PathBuf {
     let path = std::env::var_os(name).map(PathBuf::from);
     assert!(path.is_some(), "set {name}: see this file's docs");
     path.unwrap_or_default()
+}
+
+fn config(scratch: &std::path::Path, run: &str) -> ServiceConfig {
+    ServiceConfig {
+        state: scratch.join("state"),
+        run: scratch.join(run),
+        plans: scratch.join("plans.json"),
+        settings: Settings {
+            machine: Machine {
+                firecracker: env_path("TILO_HOSTED_FIRECRACKER"),
+                kernel: env_path("TILO_HOSTED_KERNEL"),
+                initramfs: Some(env_path("TILO_HOSTED_INITRAMFS")),
+                cmdline: Machine::DEFAULT_CMDLINE.into(),
+                base_disk: None,
+            },
+            idle_suspend: Duration::from_secs(2),
+            self_exe: std::env::var_os("TILO_LEGACY_BIN").map_or_else(
+                || PathBuf::from(env!("CARGO_BIN_EXE_tilo-legacy")),
+                PathBuf::from,
+            ),
+            jail: None,
+        },
+    }
 }
 
 fn run(link: &AgentLink, script: &str, cwd: &str) -> (i32, String, String) {
@@ -87,26 +111,7 @@ fn a_command_wakes_the_vm_which_sleeps_when_idle_and_is_metered() {
     let share = scratch.path().join("ws/files");
     std::fs::create_dir_all(&share).unwrap();
     std::fs::write(share.join("in.txt"), "from the host\n").unwrap();
-    let config = ServiceConfig {
-        state: scratch.path().join("state"),
-        run: scratch.path().join("run"),
-        plans: scratch.path().join("plans.json"),
-        settings: Settings {
-            machine: Machine {
-                firecracker: env_path("TILO_HOSTED_FIRECRACKER"),
-                kernel: env_path("TILO_HOSTED_KERNEL"),
-                initramfs: Some(env_path("TILO_HOSTED_INITRAMFS")),
-                cmdline: Machine::DEFAULT_CMDLINE.into(),
-                base_disk: None,
-            },
-            idle_suspend: Duration::from_secs(2),
-            self_exe: std::env::var_os("TILO_LEGACY_BIN").map_or_else(
-                || PathBuf::from(env!("CARGO_BIN_EXE_tilo-legacy")),
-                PathBuf::from,
-            ),
-            jail: None,
-        },
-    };
+    let config = config(scratch.path(), "run");
     let service = Arc::new(Service::open(config.clone(), system_clock()).unwrap());
     let request = VmRequest {
         workspace: "ws1".into(),
@@ -229,4 +234,74 @@ fn a_command_wakes_the_vm_which_sleeps_when_idle_and_is_metered() {
                 && record.identity.vm == "ws1/default"
                 && record.identity.size == VmSize::Small)
     );
+}
+
+#[test]
+#[ignore = "needs KVM, Firecracker and a guest: see the file's docs"]
+fn a_host_taken_back_saves_its_vm_and_the_next_host_restores_it() {
+    let scratch = tempfile::Builder::new().prefix("he").tempdir().unwrap();
+    let share = scratch.path().join("ws/files");
+    std::fs::create_dir_all(&share).unwrap();
+    let cwd = share.display().to_string();
+    let shares = [ShareRequest {
+        path: share,
+        read_only: false,
+    }];
+    let request = VmRequest {
+        workspace: "ws1".into(),
+        environment: "default".into(),
+        account: "acct-1".into(),
+        size: VmSize::Small,
+    };
+    let uptime = |link: &AgentLink| -> f64 {
+        let (code, out, err) = run(link, "cut -d' ' -f1 /proc/uptime", &cwd);
+        assert_eq!(code, 0, "stderr: {err}");
+        out.trim().parse().unwrap()
+    };
+
+    // phase: a running VM with something only its memory holds
+    let first = Service::open(config(scratch.path(), "run-a"), system_clock()).unwrap();
+    let (link, booted) = first.ensure(&request, &shares).unwrap();
+    assert!(booted.is_some(), "the first command boots the VM");
+    let (code, _, err) = run(&link, "echo kept > /dev/shm/only-in-memory", &cwd);
+    assert_eq!(code, 0, "stderr: {err}");
+    let before = uptime(&link);
+
+    // phase: the notice comes; every VM is saved within it, and nothing more wakes
+    let saving = Instant::now();
+    first.evict();
+    let saved_in = saving.elapsed();
+    eprintln!("saved on the notice in {saved_in:?}");
+    assert!(
+        saved_in < Duration::from_secs(20),
+        "well within Azure's 30 s"
+    );
+    assert_eq!(
+        first.status().first().map(|vm| vm.phase.as_str()),
+        Some("Suspended")
+    );
+    let refused = first.ensure(&request, &shares).map(|_| ()).unwrap_err();
+    assert!(
+        refused.to_string().contains("moving to another host"),
+        "{refused}"
+    );
+    drop(first);
+
+    // phase: another host, the same state: the next command restores the VM as it was
+    let next = Service::open(config(scratch.path(), "run-b"), system_clock()).unwrap();
+    let (link, restored) = next.ensure(&request, &shares).unwrap();
+    eprintln!(
+        "restored on the next host in {} ms",
+        restored.expect("restored")
+    );
+    let (_, kept, _) = run(&link, "cat /dev/shm/only-in-memory", &cwd);
+    assert_eq!(
+        kept, "kept\n",
+        "the guest's memory came back, not a fresh boot"
+    );
+    assert!(
+        uptime(&link) >= before,
+        "the guest kept running from where it was"
+    );
+    next.stop("ws1", "default").unwrap();
 }

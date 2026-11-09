@@ -19,12 +19,15 @@ usage: tilo-legacy hosted <command>
 
   serve --state DIR --run DIR --kernel VMLINUX [--initramfs FILE] [--cmdline TEXT]
         [--disk-image RAW] [--firecracker PATH] [--plans FILE] [--idle-suspend SECONDS]
-        (--jail-helper PATH [--jail-config FILE] | --unjailed)
+        [--evict-notice FILE] (--jail-helper PATH [--jail-config FILE] | --unjailed)
                          own this host's workspace VMs; listens on RUN/hosted.sock.
                          Each VM runs jailed, with a network, through the
                          privileged tilo-hosted-jail helper and its root-owned
                          configuration (default /etc/tilo/hosted-jail.json);
-                         --unjailed is for development only: no network
+                         --unjailed is for development only: no network.
+                         When FILE appears (written by whatever watches the
+                         cloud's notice that it takes this host back), every
+                         VM is suspended onto STATE and no more are woken
   status --run DIR       every VM, its phase and its last wake
   fetch-guest --images DIR [--ref REF]
                          fetch the pinned guest image into DIR and print the
@@ -214,7 +217,10 @@ fn serve(flags: &Flags) -> Result<ExitCode, String> {
         "tilo-legacy hosted: serving {}",
         service.config().socket().display()
     );
-    service.serve(&STOP).map_err(|e| e.to_string())?;
+    let evict_notice = flags.get("--evict-notice").map(PathBuf::from);
+    service
+        .serve(&STOP, evict_notice.as_deref())
+        .map_err(|e| e.to_string())?;
     Ok(ExitCode::SUCCESS)
 }
 
