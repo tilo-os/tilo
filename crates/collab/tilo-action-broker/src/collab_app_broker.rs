@@ -788,220 +788,9 @@ struct PresenceEnvelope {
 /// The broker's actor, its published actions and their admission: every host's.
 pub use tilo_broker_core::actor::{BrokerActor, RunFacts, principal_id_for_root};
 pub use tilo_broker_core::published::{PublishedAction, PublishedInput, PublishedSurface};
-
-fn validate_view_action_binding(action: &PublishedAction, role: &str) -> Result<(), BrokerError> {
-    if action.operation_kind != tilo_actions::OperationKind::View {
-        return Err(BrokerError::failed(format!(
-            "resource view {role} action must be a view operation"
-        )));
-    }
-    if action.contract.confirmation != tilo_actions::ConfirmationPolicy::None {
-        return Err(BrokerError::failed(format!(
-            "resource view {role} action must not require confirmation"
-        )));
-    }
-    if action.params.iter().any(|parameter| parameter.required) {
-        return Err(BrokerError::failed(format!(
-            "resource view {role} action must not require caller parameters"
-        )));
-    }
-    Ok(())
-}
-
-fn validate_resource_range_binding(
-    actions: &[PublishedAction],
-    action: &PublishedAction,
-    range: &tilo_actions::ResourceViewRangeSpec,
-) -> Result<(), BrokerError> {
-    let names = [&range.start_param, &range.end_param, &range.unit_param];
-    let target = actions
-        .iter()
-        .find(|target| target.resource == action.resource && target.action == range.action)
-        .ok_or_else(|| BrokerError::failed("resource range action missing".into()))?;
-    if names.iter().any(|name| name.is_empty())
-        || names[0] == names[1]
-        || names[0] == names[2]
-        || names[1] == names[2]
-        || target.operation_kind != tilo_actions::OperationKind::View
-        || target.contract.confirmation != tilo_actions::ConfirmationPolicy::None
-    {
-        return Err(BrokerError::failed("invalid resource range binding".into()));
-    }
-    for (name, ty) in [
-        (&range.start_param, tilo_actions::ParamType::Integer),
-        (&range.end_param, tilo_actions::ParamType::Integer),
-        (&range.unit_param, tilo_actions::ParamType::Text),
-    ] {
-        if !target
-            .params
-            .iter()
-            .any(|p| p.name.as_ref() == name && p.ty == ty)
-        {
-            return Err(BrokerError::failed(
-                "invalid resource range parameter".into(),
-            ));
-        }
-    }
-    if target
-        .params
-        .iter()
-        .any(|p| p.required && !names.iter().any(|n| p.name.as_ref() == *n))
-    {
-        return Err(BrokerError::failed(
-            "resource range requires unrelated input".into(),
-        ));
-    }
-    Ok(())
-}
-
-/// The checks every published surface passes, whichever request carried it:
-/// addresses non-empty, unique and separator-free, kinds and labels present,
-/// contracts and parameters valid, resource views consistent.
-fn validate_published_surface(
-    rows: Vec<PublishedAction>,
-) -> Result<Vec<PublishedAction>, BrokerError> {
-    let mut seen = std::collections::HashSet::with_capacity(rows.len());
-    let mut actions = Vec::with_capacity(rows.len());
-    for published in rows {
-        if published.resource.is_empty()
-            || published.action.is_empty()
-            || published.resource.contains(tilo_actions::KEY_SEP)
-            || published.action.contains(tilo_actions::KEY_SEP)
-            || !seen.insert((published.resource.clone(), published.action.clone()))
-        {
-            return Err(BrokerError::failed(
-                "exported action addresses must be non-empty, unique, and contain no separator"
-                    .into(),
-            ));
-        }
-        if published.resource_kind.trim().is_empty()
-            || published.resource_label.trim().is_empty()
-            || published.action_label.trim().is_empty()
-        {
-            return Err(BrokerError::failed(
-                "exported actions require non-empty kind and labels".into(),
-            ));
-        }
-        if let Some(reason) = published.contract.validate_declaration().into_iter().next() {
-            return Err(BrokerError::failed(format!(
-                "invalid exported action contract: {reason}"
-            )));
-        }
-        let mut parameter_names = std::collections::HashSet::new();
-        for parameter in &published.params {
-            if !parameter_names.insert(parameter.name.as_ref()) {
-                return Err(BrokerError::failed(
-                    "exported action parameter names must be unique".into(),
-                ));
-            }
-            if let Some(reason) = parameter.validate_declaration().into_iter().next() {
-                return Err(BrokerError::failed(format!(
-                    "invalid exported action parameter `{}`: {reason}",
-                    parameter.name
-                )));
-            }
-        }
-        actions.push(published);
-    }
-    validate_resource_view_descriptors(&actions)?;
-    Ok(actions)
-}
-
-/// Recheck the resource-view invariants after decoding an untrusted action
-/// surface. A view with a mount must carry that action in the same atomic
-/// publication/page so the broker can prove the binding before exposing it.
-fn validate_resource_view_descriptors(actions: &[PublishedAction]) -> Result<(), BrokerError> {
-    #[derive(Default)]
-    struct ResourceViews<'a> {
-        ids: std::collections::HashSet<&'a str>,
-        open_actions: std::collections::HashSet<&'a str>,
-        primary_count: usize,
-    }
-
-    let mut resources = std::collections::HashMap::<&str, ResourceViews<'_>>::new();
-    for action in actions {
-        let Some(view) = &action.view else {
-            continue;
-        };
-        if view.id.is_empty() || view.id.contains(tilo_actions::KEY_SEP) {
-            return Err(BrokerError::failed(
-                "resource view id must be non-empty and contain no separator".into(),
-            ));
-        }
-        if view.label.trim().is_empty() {
-            return Err(BrokerError::failed(
-                "resource view label must be non-empty".into(),
-            ));
-        }
-        if view.open_action != action.action {
-            return Err(BrokerError::failed(
-                "resource view must be attached to its open action".into(),
-            ));
-        }
-        validate_view_action_binding(action, "open")?;
-
-        let seen = resources.entry(&action.resource).or_default();
-        if !seen.ids.insert(&view.id) {
-            return Err(BrokerError::failed(
-                "resource view ids must be unique per resource".into(),
-            ));
-        }
-        if !seen.open_actions.insert(&view.open_action) {
-            return Err(BrokerError::failed(
-                "at most one resource view may reference an open action".into(),
-            ));
-        }
-        if view.primary {
-            seen.primary_count = seen.primary_count.saturating_add(1);
-            if seen.primary_count > 1 {
-                return Err(BrokerError::failed(
-                    "at most one resource view may be primary".into(),
-                ));
-            }
-        }
-
-        if let Some(range) = &view.range {
-            validate_resource_range_binding(actions, action, range)?;
-        }
-
-        let Some(mount) = &view.mount else {
-            continue;
-        };
-        if mount.action.trim().is_empty()
-            || mount.capability_param.trim().is_empty()
-            || mount.view_param.trim().is_empty()
-            || mount.capability_param == mount.view_param
-        {
-            return Err(BrokerError::failed(
-                "resource view mount requires an action and distinct parameter names".into(),
-            ));
-        }
-        let mount_action = actions.iter().find(|candidate| {
-            candidate.resource == action.resource && candidate.action == mount.action
-        });
-        let Some(mount_action) = mount_action else {
-            return Err(BrokerError::failed(
-                "resource view mount action is not exported by its resource".into(),
-            ));
-        };
-        validate_view_action_binding(mount_action, "mount")?;
-        for (role, name) in [
-            ("capability", mount.capability_param.as_str()),
-            ("view", mount.view_param.as_str()),
-        ] {
-            if !mount_action.params.iter().any(|parameter| {
-                parameter.name.as_ref() == name
-                    && parameter.ty == tilo_actions::ParamType::Text
-                    && !parameter.required
-            }) {
-                return Err(BrokerError::failed(format!(
-                    "resource view mount {role} parameter `{name}` must name an optional text parameter"
-                )));
-            }
-        }
-    }
-    Ok(())
-}
+pub(crate) use tilo_broker_core::published::{
+    validate_published_surface, validate_resource_view_descriptors,
+};
 
 #[derive(Clone, Debug)]
 pub struct InvocationEnvelope {
@@ -8586,7 +8375,8 @@ fn directory_row_question(
                 }
             }
             let published = published_directory_action(row)?;
-            validate_resource_view_descriptors(std::slice::from_ref(&published))?;
+            validate_resource_view_descriptors(std::slice::from_ref(&published))
+                .map_err(BrokerError::failed)?;
             Ok(DirectoryQuestion::of(
                 &row.resource_kind,
                 &row.resource,
@@ -8650,7 +8440,7 @@ fn filter_directory_page(
         .filter(|row| row.action.is_some())
         .map(published_directory_action)
         .collect::<Result<Vec<_>, _>>()?;
-    validate_resource_view_descriptors(&page_actions)?;
+    validate_resource_view_descriptors(&page_actions).map_err(BrokerError::failed)?;
     let questions = page
         .rows
         .iter()

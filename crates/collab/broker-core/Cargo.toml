@@ -16,10 +16,13 @@ serde.workspace = true
 serde_json.workspace = true
 hex.workspace = true
 tokio = { workspace = true, features = ["sync"] }
-workspace-hack = { version = "0.1" }
 
 [lints]
 workspace = true
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+# The unified feature set is native (its tokio pulls mio, which refuses wasm32).
+workspace-hack = { version = "0.1" }
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 # Browser entropy for the crypto the action vocabulary pulls in.

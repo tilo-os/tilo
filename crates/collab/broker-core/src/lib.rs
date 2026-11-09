@@ -14,7 +14,9 @@ pub mod route;
 pub mod steps;
 
 pub use actor::{BrokerActor, RunFacts, principal_id_for_root};
-pub use published::{PublishedAction, PublishedInput, PublishedSurface};
+pub use published::{
+    PublishedAction, PublishedInput, PublishedSurface, validate_published_surface,
+};
 pub use route::CrdtRoute;
 pub use steps::{
     ContinuationServices, HostStepOutcome, HostStepRequest, HostStepServices, LiveRead, LiveView,

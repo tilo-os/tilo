@@ -1545,7 +1545,10 @@ impl JoinedChannel {
         let peer_id = self.peer_id;
         let unavailable = || BrokerError::failed("action surface registry unavailable".into());
         let (actions, table) = match change {
-            SurfaceChange::Whole(rows) => (validate_published_surface(rows)?, None),
+            SurfaceChange::Whole(rows) => (
+                validate_published_surface(rows).map_err(BrokerError::failed)?,
+                None,
+            ),
             SurfaceChange::Delta(delta) => {
                 // Apply to a copy: a delta that does not apply, or whose
                 // result is not a valid surface, changes nothing.
@@ -1560,7 +1563,10 @@ impl JoinedChannel {
                 table.apply(&delta).map_err(|reason| {
                     BrokerError::failed(format!("action surface delta refused: {reason}"))
                 })?;
-                (validate_published_surface(table.actions())?, Some(table))
+                (
+                    validate_published_surface(table.actions()).map_err(BrokerError::failed)?,
+                    Some(table),
+                )
             }
         };
         let offers = !actions.is_empty();
