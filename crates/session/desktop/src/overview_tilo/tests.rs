@@ -42,6 +42,7 @@ fn tilo_cloud() -> HostAccount {
                 max_vms: 5,
                 sizes: vec!["small".into()],
                 included_vm_seconds: Some(100 * 3600),
+                ..Limits::default()
             },
         }],
         standing: Some(Standing {

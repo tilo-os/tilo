@@ -101,6 +101,7 @@ fn tilo_cloud(build_box: &str) -> HostAccount {
         max_vms: 5,
         sizes: vec!["small".into(), "medium".into()],
         included_vm_seconds: Some(100 * 3600),
+        ..Limits::default()
     };
     HostAccount {
         host: "Tilo Cloud".into(),
