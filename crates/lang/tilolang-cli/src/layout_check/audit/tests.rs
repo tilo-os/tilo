@@ -14,6 +14,7 @@ fn node(widget: &str, id: &str, rect: [f64; 4], role: Option<Role>) -> Inspectio
         child_clip: None,
         page_title: None,
         layout: None,
+        paint_key: None,
         semantics: role.map(AccessNode::new),
         children: Vec::new(),
     }
@@ -1150,6 +1151,7 @@ fn stack_node(id: &str, rect: [f64; 4], children: Vec<InspectionNode>) -> Inspec
         child_clip: None,
         page_title: None,
         layout: None,
+        paint_key: None,
         semantics: None,
         children,
     }

@@ -228,36 +228,6 @@ params = [
 ]
 
 [[resources.verbs]]
-id = "publish-signal-account"
-kind = "undoable"
-params = [
-  { name = "id", required = true, schema = { type = "string" } },
-  { name = "display_name", required = true, schema = { type = "string" } },
-  { name = "aci", required = true, schema = { type = "string" } },
-  { name = "generation", required = true, schema = { type = "integer", minimum = 0 } },
-]
-
-[[resources.verbs]]
-id = "publish-sms-account"
-kind = "undoable"
-params = [
-  { name = "id", required = true, schema = { type = "string" } },
-  { name = "display_name", required = true, schema = { type = "string" } },
-  { name = "scope", required = true, schema = { type = "string" } },
-  { name = "generation", required = true, schema = { type = "integer", minimum = 0 } },
-]
-
-[[resources.verbs]]
-id = "publish-whatsapp-account"
-kind = "undoable"
-params = [
-  { name = "id", required = true, schema = { type = "string" } },
-  { name = "display_name", required = true, schema = { type = "string" } },
-  { name = "jid", required = true, schema = { type = "string" } },
-  { name = "generation", required = true, schema = { type = "integer", minimum = 0 } },
-]
-
-[[resources.verbs]]
 id = "remove-account"
 kind = "undoable"
 params = [
