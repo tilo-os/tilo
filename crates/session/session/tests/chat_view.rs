@@ -72,6 +72,12 @@ fn session(root: &std::path::Path) -> Session {
 /// Place `resource` on the canvas of the workspace in front, through the arrangement's
 /// published `place`, as an agent puts it there.
 fn place(session: &mut Session, resource: &str) -> u64 {
+    place_at(session, resource, 720, 620)
+}
+
+/// Place `resource` on the canvas of the workspace in front at `width` by `height`, through the
+/// arrangement's published `place`, as an agent puts it there.
+fn place_at(session: &mut Session, resource: &str, width: i64, height: i64) -> u64 {
     let (workspace, row, strip, place) = {
         let tree = session.handle().read(Clone::clone);
         let workspace = tree.active_workspace().expect("a workspace is in front");
@@ -90,8 +96,8 @@ fn place(session: &mut Session, resource: &str) -> u64 {
         "resource": resource,
         "x": 80,
         "y": 60,
-        "width": 720,
-        "height": 620,
+        "width": width,
+        "height": height,
     })
     .as_object()
     .unwrap()
@@ -131,6 +137,53 @@ fn shot(session: &mut Session, root: &std::path::Path, name: &str) {
         answer.get("ok").is_some(),
         "the snapshot is taken: {answer}"
     );
+}
+
+#[test]
+fn a_place_620_to_700_tall_still_gives_its_transcript_its_room() {
+    // A place 620 to 700 logical pixels tall leaves the channel page's window that room less its
+    // bar, its head and the composer — and the transcript must still be given the height that is
+    // left. At these sizes the transcript's scroll viewport is never zero: the page names the
+    // channel under that room's top, and the composer stands under the room's foot.
+    let _settled = ui::motion::testing::settled();
+    for height in [620, 640, 660, 680, 700] {
+        let root = common::private_home();
+        let mut session = session(root.path());
+        place_at(&mut session, CHANNEL, 720, height);
+        common::until(&mut session, "the channel's page", |session| {
+            session.shell_says(MESSAGE)
+        });
+        let (_, clip_y, _, clip_h) = session.shell_scroll_clip(MESSAGE).unwrap_or_else(|| {
+            panic!(
+                "at {height} the transcript draws through its scroll view: {:?}",
+                session.accessible_labels()
+            )
+        });
+        assert!(
+            clip_h > 0.0,
+            "at {height} the transcript keeps the room under the bar and head: {clip_h}"
+        );
+        // The composer keeps its room at the foot, and the transcript's room ends over it.
+        let (_, composer_y, _, composer_h) = session
+            .shell_text_bounds("Message #design-crit")
+            .unwrap_or_else(|| {
+                panic!(
+                    "at {height} the page offers its composer: {:?}",
+                    session.accessible_labels()
+                )
+            });
+        assert!(
+            composer_h > 0.0,
+            "at {height} the composer keeps its own height"
+        );
+        assert!(
+            clip_y + clip_h <= composer_y + 1.0,
+            "at {height} the transcript's room stands over the composer: it ends at {}, the \
+             composer starts at {}",
+            clip_y + clip_h,
+            composer_y
+        );
+    }
 }
 
 #[test]
