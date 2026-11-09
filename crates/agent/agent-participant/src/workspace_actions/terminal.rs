@@ -7,7 +7,8 @@
 //! no such process on any device: the host is where its sessions run. So a
 //! person's device (an agent on one of their computers among them) asking
 //! the host for a session's `run` has it run here, by the host's
-//! [`WorkspaceShell`], in that session's own shell, and the host records the
+//! [`WorkspaceShell`], in that session's shell (an agent's run in a shell of its
+//! own, which keeps its directory between commands), and the host records the
 //! run on the session record through the record's own `record-run`, under
 //! the invocation's context: History keeps it as the agent's run, with its
 //! command, directory, exit status and output.
@@ -147,13 +148,17 @@ impl Worker {
             cluster_id: workspace.clone(),
             ..route
         };
-        let agent = request
+        let run = request
             .context
             .as_ref()
             .and_then(|context| context.group.as_ref())
-            .is_some_and(|group| group.kind == "agent-run");
+            .filter(|group| group.kind == "agent-run" && !group.id.is_empty());
+        let agent = run.is_some();
         let jobs = self.shared.jobs.lock_recover().clone()?;
-        let session = route.record.clone();
+        // An agent's run has a shell of its own, wherever its runs are
+        // recorded: two agents in one workspace never share a directory
+        // or variables. A person's commands share the session's shell.
+        let session = run.map_or_else(|| route.record.clone(), |run| format!("run:{}", run.id));
         let ended = Ended {
             workspace_id,
             invocation,
