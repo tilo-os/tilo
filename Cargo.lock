@@ -24234,6 +24234,7 @@ dependencies = [
  "hex",
  "host-fs",
  "landlock",
+ "legacy-agent-protocol",
  "legacy-vm",
  "libc",
  "package-store",

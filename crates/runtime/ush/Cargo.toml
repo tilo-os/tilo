@@ -63,8 +63,10 @@ tilo-sandbox-core = { path = "../../system/sandbox-core" }
 # The guest's own network namespace: a DNS stub that answers only the
 # record's NetHost grants, and nftables that admit only what it answered.
 tilo-egress = { path = "../egress" }
-# Installed legacy apps become commands in every guest (`LegacyLaunch`).
+# Installed legacy apps become commands in every guest (`LegacyLaunch`);
+# a hosted workspace's programs run in its own VM (`hosted_vm`).
 legacy-vm = { path = "../legacy-vm" }
+legacy-agent-protocol = { path = "../legacy-agent-protocol" }
 
 anyhow.workspace = true
 tilo-paths.workspace = true

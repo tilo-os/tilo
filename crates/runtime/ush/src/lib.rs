@@ -72,6 +72,7 @@ pub mod guest_exec;
 pub mod helper_runtime;
 pub mod home;
 pub mod host;
+pub mod hosted_vm;
 pub mod images;
 pub mod policy;
 pub mod records;
