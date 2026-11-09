@@ -964,6 +964,38 @@ mod tests {
         assert_eq!(plain.window_header_row_height(), 0.0);
     }
 
+    /// A root that draws no header row of its own — a desk of windows — offers each window its
+    /// own bar: a row its windows draw is no second row under the bar over the desk.
+    #[test]
+    fn a_desk_of_windows_is_no_second_row_under_the_bar() {
+        use crate::component::Described as _;
+        let _hosted = HostedReset;
+        let inner = crate::widget::NavShell::new()
+            .content(Box::new(crate::widget::Text::new("Body")))
+            .content_header(
+                "Design",
+                vec![Box::new(
+                    crate::widget::Button::new("catch-up", "Mia changed 3 messages")
+                        .with_popover(crate::widget::Text::new("What changed")),
+                )],
+            );
+        let desk = crate::widget::WindowFrame::from_props(
+            "desk",
+            crate::widget::WindowFrameProps {
+                body: Some(Box::new(inner)),
+                ..crate::widget::WindowFrameProps::default()
+            },
+        );
+        let mut harness = harness_of(Box::new(desk));
+        harness.present_in_window_bar();
+        assert!(!harness.row_holds_bar(), "the desk draws no row of its own");
+        assert_eq!(
+            harness.window_header_row_height(),
+            0.0,
+            "the row its window draws is no second row under the bar over the desk"
+        );
+    }
+
     fn harness_of(root: Box<dyn Widget>) -> FrameHarness {
         FrameHarness::new_with_controlled_inputs(
             crate::State::new(),
