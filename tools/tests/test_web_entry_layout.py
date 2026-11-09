@@ -73,6 +73,9 @@ class Layout(unittest.TestCase):
             'device-custody.mjs': "export const openDeviceCustody = () => null;\n",
             'identity-profile.mjs': "export const identityProfile = () => '';\n",
             'entered-workspaces.mjs': "export const enteredWorkspaces = () => [];\n",
+            # The first screen's module, which the entry page loads by a script
+            # of its own as well as through the entry module.
+            'first-run.mjs': "export const firstRun = null;\n",
         }
         for name, text in modules.items():
             module = bundle / name
@@ -120,6 +123,17 @@ class Layout(unittest.TestCase):
             version = result.stdout.strip()
             self.assertEqual(self.hints(site, 'index.html'),
                              [f'./v/{version}/{name}' for name in self.EXPECTED])
+
+    def test_every_script_a_page_loads_is_a_file_of_the_site(self):
+        with tempfile.TemporaryDirectory() as directory:
+            result, site = self.lay_out(pathlib.Path(directory))
+            self.assertEqual(result.returncode, 0, result.stderr)
+            version = result.stdout.strip()
+            for page in ('index.html', 'app/index.html', 'sign-in.html'):
+                for src in re.findall(r'<script\b[^>]*\bsrc="([^"]+)"', self.page(site, page)):
+                    self.assertIn(f'v/{version}/', src, f'{page} loads {src} outside the versioned directory')
+                    self.assertTrue((site / page).parent.joinpath(src).resolve().is_file(), f'{page}: {src}')
+            self.assertIn(f'src="./v/{version}/first-run.mjs"', self.page(site, 'index.html'))
 
     def test_the_app_entry_page_points_one_level_up(self):
         with tempfile.TemporaryDirectory() as directory:

@@ -156,6 +156,15 @@ for page, entry in pages.items():
     for rel in ('preload', 'modulepreload'):
         hint = f'<link rel="{rel}" href="{prefix}'
         text = text.replace(hint, f'{hint}v/{version}/')
+    # A module the page loads by a script of its own (the first screen's,
+    # which works before the entry module is in) is in the bundle too, and
+    # moves with it: left at the page's path it would be a request for nothing.
+    def versioned(match):
+        name = match.group(2)
+        if not (assets / name).is_file():
+            sys.exit(f'{page}: loads {name}, which is not in the bundle')
+        return f'{match.group(1)}{prefix}v/{version}/{name}"'
+    text = re.sub(r'(<script\b[^>]*\bsrc=")' + re.escape(prefix) + r'(?!v/)([^"]+\.m?js)"', versioned, text)
     # The start module the page preloads itself leads the graph's hints; every
     # other module it reaches gets one here.
     anchor = f'<link rel="modulepreload" href="{prefix}v/{version}/{start}">'
