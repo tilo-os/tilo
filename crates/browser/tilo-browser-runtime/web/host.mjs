@@ -263,7 +263,9 @@ export async function mountDesktop(target,options={}) {
   }
   function active(){return !closed&&!crashed&&!surface.inert&&registry.current(token)&&id!==undefined&&runtimeReady;}
   // The pictures people chose for their profiles, worn by their avatars here.
-  async function showPhoto(user,url){const pixels=url?await photoPixels(url):null;if(active()&&runtime.desktop_set_person_photo)runtime.desktop_set_person_photo(id,user,pixels?.width??0,pixels?.height??0,pixels?.rgba??new Uint8Array());}
+  // The people on the desktop's bar and cards are the desktop's: a page
+  // showing one app has none to give a picture, links or a status to.
+  async function showPhoto(user,url){if(config.app)return;const pixels=url?await photoPixels(url):null;if(active()&&runtime.desktop_set_person_photo)runtime.desktop_set_person_photo(id,user,pixels?.width??0,pixels?.height??0,pixels?.rgba??new Uint8Array());}
   // What the person says they are doing and how they share it, as their
   // profile keeps it: set on another of their devices, it shows here too.
   function ownStatus(profile){
@@ -273,10 +275,10 @@ export async function mountDesktop(target,options={}) {
     // Whether their picture is a linked account's, which a newer one of
     // that account's replaces, or one they uploaded, which stays.
     options.onHostAction?.('set-linked',{photoFrom:typeof profile.photo_from==='string'?profile.photo_from:null,linked:Array.isArray(profile.linked)?profile.linked:[],keep:false});
-    if(active()&&runtime.desktop_set_own_status)runtime.desktop_set_own_status(id,status,sharing);
+    if(!config.app&&active()&&runtime.desktop_set_own_status)runtime.desktop_set_own_status(id,status,sharing);
   }
   // The accounts elsewhere someone's profile names, which their card says.
-  function showLinked(user,linked){if(active()&&runtime.desktop_set_person_links)runtime.desktop_set_person_links(id,user,JSON.stringify(linked));}
+  function showLinked(user,linked){if(!config.app&&active()&&runtime.desktop_set_person_links)runtime.desktop_set_person_links(id,user,JSON.stringify(linked));}
   const photos=followPhotos({profileOf:user=>fetchPersonProfile(options.peer.origin,user),show:showPhoto,linked:showLinked,own:()=>options.peer?.userPublicKey,onOwn:ownStatus,onError:error=>report({photoError:String(error)})});
   const nativeCatalogue = createNativeCatalogueBridge({current:active,
     actions:()=>options.peer?.actions,
