@@ -45,6 +45,7 @@ pub mod crash_records;
 pub mod downloaded_apps;
 pub mod feedback;
 pub mod home_relay_hosting;
+pub mod host_account;
 mod nodes;
 pub mod own_device;
 mod pending;
