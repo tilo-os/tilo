@@ -391,14 +391,14 @@ impl ActionPalette {
         self.sync_list();
     }
 
-    /// The size the card asks for: the rows it holds, up to the tallest list
-    /// the host allows.
+    /// The size the card asks for, as layout measures it: the rows it holds,
+    /// up to the tallest list the host allows.
     #[must_use]
-    pub fn desired_size(&self) -> (f64, f64) {
+    pub fn desired_size(&self) -> (f32, f32) {
         if self.shows_field_only() {
             return (
-                self.card_width(),
-                PADDING * 2.0 + INPUT_HEIGHT * self.layout_scale(),
+                self.card_width() as f32,
+                (PADDING * 2.0 + INPUT_HEIGHT * self.layout_scale()) as f32,
             );
         }
         let list = if self.host_visible.is_empty() {
@@ -406,7 +406,10 @@ impl ActionPalette {
         } else {
             self.fitted_list_height()
         };
-        (self.card_width(), self.chrome_height() + list)
+        (
+            self.card_width() as f32,
+            (self.chrome_height() + list) as f32,
+        )
     }
 
     /// The card's height less its result list: the field, the band and the

@@ -34,7 +34,7 @@ pub trait DesktopSearchApi {
     fn usage(&self) -> &Usage;
     fn set_usage(&mut self, usage: Usage);
     fn set_room(&mut self, width: f64, list_height: f64);
-    fn desired_size(&self) -> (f64, f64);
+    fn desired_size(&self) -> (f32, f32);
     fn palette(&self) -> &dyn Widget;
     fn palette_mut(&mut self) -> &mut dyn Widget;
     fn query_field(&self, key: &[u8; 32]) -> Option<ui::action_palette::QueryField>;
@@ -108,7 +108,7 @@ impl DesktopSearchApi for DesktopSearch {
     fn set_room(&mut self, width: f64, list_height: f64) {
         Self::set_room(self, width, list_height);
     }
-    fn desired_size(&self) -> (f64, f64) {
+    fn desired_size(&self) -> (f32, f32) {
         self.palette().desired_size()
     }
     fn palette(&self) -> &dyn Widget {
@@ -346,7 +346,7 @@ impl LazyDesktopSearch {
         }
     }
 
-    pub fn desired_size(&self) -> (f64, f64) {
+    pub fn desired_size(&self) -> (f32, f32) {
         self.search
             .as_ref()
             .map_or((0.0, 0.0), |search| search.desired_size())

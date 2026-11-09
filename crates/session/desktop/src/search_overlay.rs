@@ -86,6 +86,24 @@ impl SearchOverlay {
         self.handle.toggle_search();
         self.handle.note_search_activity();
     }
+
+    /// The card's left edge, inside the desk's edges even where it is barely
+    /// wider than the card.
+    fn card_left(&self, x: f64, width: f64) -> f64 {
+        x.clamp(
+            self.rect.x0 + PALETTE_EDGE,
+            (self.rect.x1 - width - PALETTE_EDGE).max(self.rect.x0 + PALETTE_EDGE),
+        )
+    }
+}
+
+/// A place on the desk, as layout measures it.
+#[allow(
+    clippy::cast_possible_truncation,
+    reason = "a desk is a few thousand pixels"
+)]
+fn place(value: f64) -> taffy::LengthPercentageAuto {
+    taffy::LengthPercentageAuto::length(value as f32)
 }
 
 impl Widget for SearchOverlay {
@@ -166,24 +184,15 @@ impl Widget for SearchOverlay {
         let search = self.handle.search_palette();
         let mut search = search.borrow_mut();
         search.set_room(width, ui::action_palette::list_cap(area, &theme));
-        let (card_width, card_height) = search.desired_size();
+        let size = search.desired_size();
         let Ok(current) = taffy.style(palette) else {
             return false;
         };
-        #[allow(
-            clippy::cast_possible_truncation,
-            reason = "a place or size on the desk is a few thousand logical pixels"
-        )]
-        let px = |value: f64| value as f32;
         let mut style = current.clone();
-        style.size = taffy::Size::from_lengths(px(card_width), px(card_height));
-        let at = |value: f64| taffy::LengthPercentageAuto::length(px(value));
-        let x0 = origin.x.clamp(
-            self.rect.x0 + PALETTE_EDGE,
-            (self.rect.x1 - card_width - PALETTE_EDGE).max(self.rect.x0 + PALETTE_EDGE),
-        );
-        style.inset.left = at(x0 - self.rect.x0);
-        style.inset.top = at(origin.y - self.rect.y0);
+        style.size = taffy::Size::from_lengths(size.0, size.1);
+        let x0 = self.card_left(origin.x, f64::from(size.0));
+        style.inset.left = place(x0 - self.rect.x0);
+        style.inset.top = place(origin.y - self.rect.y0);
         if style == *current {
             // Nothing moved: still this frame laid the card out for this pace.
             self.built = self.pace();
@@ -215,23 +224,14 @@ impl Widget for SearchOverlay {
                 .palette_mut()
                 .map(|palette| palette.build_layout(taffy, theme, map));
             if let Some(node) = node {
-                let (width, _) = search.desired_size();
+                let width = f64::from(search.desired_size().0);
                 let mut style = taffy.style(node).cloned().unwrap_or_default();
                 style.position = taffy::Position::Absolute;
-                // Inside the desk's edges, even where it is barely wider than the card.
-                let x0 = origin.x.clamp(
-                    self.rect.x0 + PALETTE_EDGE,
-                    (self.rect.x1 - width - PALETTE_EDGE).max(self.rect.x0 + PALETTE_EDGE),
-                );
-                #[allow(
-                    clippy::cast_possible_truncation,
-                    reason = "a place on the desk is a few thousand logical pixels"
-                )]
-                let at = |value: f64| taffy::LengthPercentageAuto::length(value as f32);
+                let x0 = self.card_left(origin.x, width);
                 style.inset = taffy::Rect {
-                    left: at(x0 - self.rect.x0),
+                    left: place(x0 - self.rect.x0),
                     right: taffy::LengthPercentageAuto::auto(),
-                    top: at(origin.y - self.rect.y0),
+                    top: place(origin.y - self.rect.y0),
                     bottom: taffy::LengthPercentageAuto::auto(),
                 };
                 let _ = taffy.set_style(node, style);
