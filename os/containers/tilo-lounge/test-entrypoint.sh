@@ -118,6 +118,7 @@ lounge \
   TILO_ROOMS_BOTS='/usr/local/share/tilo/bots/discord-bridge.json guild=1521251563828416532 server=Tilo mirror-channels=yes;/opt/echo.json a=b' \
   TILO_ROOMS_INACTIVE_AFTER_DAYS=7 \
   TILO_ROOMS_ROLES_FILE=/run/tilo-rooms/roles.json \
+  TILO_ROOMS_OWN_WORKSPACES=10 \
   TILO_ROOMS_FETCH_PROXY=0 \
   TILO_ROOMS_WEB=127.0.0.1:0 \
   TILO_ROOMS_RELAY_PLAIN=0.0.0.0:9880 \
@@ -166,6 +167,7 @@ pair --discord-redirect-url https://eu1.tilo.sh/discord/callback || fail "the Di
 pair --discord-authorize-url https://discord.com/oauth2/authorize || fail "the Discord consent page did not reach the host"
 pair --inactive-after-days 7 || fail "the inactivity setting did not reach the host"
 pair --roles-file /run/tilo-rooms/roles.json || fail "the roles file did not reach the host"
+pair --own-workspaces 10 || fail "the own workspaces' size did not reach the host"
 grep -Fqx -- --fetch-proxy "$work/args" && fail "fetch proxy 0 still asked for the proxy"
 # Every workspace's arrangement is its shared desktop record: the host has no
 # layout flag, so a deployment that still names one (eu1 does) starts without
@@ -205,6 +207,8 @@ pair --public-origin https://eu1.tilo.sh || fail "eu1's origin did not reach the
 # it does not read does.
 fails_with lounge TILO_ROOMS_ADMISSION=anyone
 grep -Fq TILO_ROOMS_ADMISSION "$work/err" || fail "the refusal does not name the setting"
+fails_with lounge TILO_ROOMS_OWN_WORKSPACES=lots
+grep -Fq TILO_ROOMS_OWN_WORKSPACES "$work/err" || fail "the refusal does not name the setting"
 fails_with lounge TILO_ROOMS_MAX_SPECTATORS=2000
 grep -Fq TILO_ROOMS_MAX_SPECTATORS "$work/err" || fail "the refusal does not name the setting"
 

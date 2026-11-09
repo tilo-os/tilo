@@ -110,6 +110,17 @@ pub struct PersistentArgs {
     /// Apply per-person change and content budgets to members.
     #[arg(long = "member-limits")]
     pub member_limits: bool,
+    /// Give each person who asks a workspace of their own on this host
+    /// (`room.create-own`), keeping up to this many gigabytes of it: 10 when
+    /// the flag names no number.
+    #[arg(
+        long = "own-workspaces",
+        value_name = "GB",
+        num_args = 0..=1,
+        default_missing_value = "10",
+        requires = "persistent"
+    )]
+    pub own_workspaces: Option<u64>,
     /// List the workspace in the public directory with this description, so
     /// anyone may join it through its door at `--default-role`. Settled at
     /// every start; without it the workspace is not listed.
@@ -1378,6 +1389,23 @@ pub(crate) async fn run(
         .workspace_name
         .clone()
         .unwrap_or_else(|| workspace_name(&name));
+    if let Some(gigabytes) = persistent.own_workspaces {
+        let host = args
+            .web
+            .public_origin
+            .as_deref()
+            .map(|origin| {
+                let host = origin.split_once("://").map_or(origin, |(_, host)| host);
+                host.trim_end_matches('/').to_owned()
+            })
+            .unwrap_or_else(|| shown.clone());
+        workspaces
+            .offer_own_workspaces(crate::workspaces::OwnWorkspaceOffer {
+                host,
+                storage_bytes: gigabytes.saturating_mul(1_000_000_000),
+            })
+            .map_err(|error| anyhow::anyhow!("read whose own workspaces are whose: {error}"))?;
+    }
     let workspace = governed_room(&workspaces, &shown, &id_file, &store, &root).await?;
     // The certificate this host serves the workspace with: a build renamed
     // the host's own after a workspace was made with it, and the host took
