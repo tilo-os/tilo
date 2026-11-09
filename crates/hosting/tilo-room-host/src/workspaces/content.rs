@@ -123,6 +123,25 @@ impl Workspaces {
         }
     }
 
+    /// The uuid of the workspace governed here whose channels are
+    /// `workspace`; `None` for one not governed here.
+    pub async fn workspace_identity(&self, workspace: u64) -> Option<String> {
+        let workspaces = self
+            .inner
+            .workspaces
+            .lock()
+            .await
+            .iter()
+            .map(|(identity, governed)| (identity.clone(), governed.clone()))
+            .collect::<Vec<_>>();
+        for (identity, governed) in workspaces {
+            if governed.lock().await.workspace_id() == workspace {
+                return Some(identity);
+            }
+        }
+        None
+    }
+
     /// The bytes named `hash` this host keeps for the workspace of `workspace`
     /// governed here, checked against the hash: what its bots fetched and
     /// the files it keeps for members. `None` for a workspace not governed here

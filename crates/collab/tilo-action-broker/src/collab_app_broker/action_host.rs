@@ -686,7 +686,10 @@ impl AppBrokerState {
             | RemoteActionMessage::ConfirmationRequest { .. }
             // A retired verb: nothing asks for a reading this way, and
             // nothing is answered.
-            | RemoteActionMessage::RetiredResourceWatch { .. } => None,
+            | RemoteActionMessage::RetiredResourceWatch { .. }
+            // An application puts content through its own store, not into
+            // another device's over this door.
+            | RemoteActionMessage::ContentPutRequest { .. } => None,
             RemoteActionMessage::CatalogueResponse { .. }
             | RemoteActionMessage::Receipt(_)
             | RemoteActionMessage::Update { .. }
@@ -695,6 +698,7 @@ impl AppBrokerState {
             | RemoteActionMessage::FeedbackResponse { .. }
             | RemoteActionMessage::ConfirmationResponse { .. }
             | RemoteActionMessage::RetiredResourceReading { .. }
+            | RemoteActionMessage::ContentPutResponse { .. }
             | RemoteActionMessage::CatalogueChanged { .. } => Some(person.clone()),
         };
         permitted.ok_or_else(|| {

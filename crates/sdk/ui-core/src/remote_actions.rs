@@ -707,6 +707,8 @@ fn apply(inner: &mut Inner, answer: RemoteActionMessage) -> Option<RemoteActionM
         // offer a surface makes is its host's to read, not this client's.
         | RemoteActionMessage::RetiredResourceWatch { .. }
         | RemoteActionMessage::RetiredResourceReading { .. }
+        | RemoteActionMessage::ContentPutRequest { .. }
+        | RemoteActionMessage::ContentPutResponse { .. }
         | RemoteActionMessage::CatalogueChanged { .. } => None,
     }
 }

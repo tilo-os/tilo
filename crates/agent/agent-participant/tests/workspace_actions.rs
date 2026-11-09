@@ -46,6 +46,9 @@ mod governed_agent;
 mod governed_sealed;
 mod harness;
 #[cfg(test)]
+#[path = "workspace_actions/hosted_documents.rs"]
+pub mod hosted_documents;
+#[cfg(test)]
 #[path = "workspace_actions/member_own.rs"]
 mod member_own;
 #[path = "workspace_actions/resource_support.rs"]
@@ -806,10 +809,11 @@ async fn every_listed_themes_action_is_one_the_host_can_run() {
         })
         .await
         .unwrap();
-    // The catalogue offers only what the record's door runs: the record's
-    // document operations — the host runs no app's code, so effects and
-    // views stay with the app where it is open. A listed operation may fail,
-    // need confirmation or other arguments, but is never unknown.
+    // The catalogue offers only what the host runs: the record's document
+    // operations, and the effects that answer (an export kept as content),
+    // which it runs in the record's own view as a window would. Views move
+    // a window and stay with the app where it is open. A listed operation
+    // may fail, need confirmation or other arguments, but is never unknown.
     let listed: Vec<_> = page
         .rows
         .iter()
@@ -817,10 +821,12 @@ async fn every_listed_themes_action_is_one_the_host_can_run() {
         .collect();
     assert!(!listed.is_empty(), "a themes record offers its operations");
     assert!(
-        listed
-            .iter()
-            .all(|action| action.kind == tilo_actions::OperationKind::Document),
-        "the record catalogue must offer only document operations: {:?}",
+        listed.iter().all(|action| {
+            action.kind == tilo_actions::OperationKind::Document
+                || (action.kind == tilo_actions::OperationKind::Effect
+                    && tilo_agent_participant::apps::offered_to_agents(action))
+        }),
+        "the record catalogue must offer only what the host runs: {:?}",
         listed
             .iter()
             .map(|action| &action.address)

@@ -171,6 +171,9 @@ tokio = { workspace = true, features = ["full"] }
 channel-crypto = { path = "../../collab/channel-crypto" }
 # Reads the links the host mints back the way a page does.
 tilo-reference = { path = "../../collab/reference" }
+# Writes the Word files an agent uploads, and reads Writer's documents.
+tilo-doc-codecs = { path = "../../doc/tilo-doc-codecs" }
+tilo-doc = { path = "../../doc/tilo-doc" }
 # The campaign benchmark's `TILO_BENCH_TRACE`.
 tracing-subscriber = { workspace = true, features = ["fmt", "env-filter"] }
 

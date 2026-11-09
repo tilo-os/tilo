@@ -129,7 +129,17 @@ impl AgentParticipant {
                     result: Err(ActionHostError::ConfirmationRequired),
                 }
             }
+            // An agent keeps no content for others to put into.
+            RemoteActionMessage::ContentPutRequest { correlation, .. } => {
+                RemoteActionMessage::ContentPutResponse {
+                    correlation,
+                    result: Err(ActionHostError::Unavailable {
+                        reason: tilo_actions::remote::CONTENT_PUTS_UNAVAILABLE.into(),
+                    }),
+                }
+            }
             RemoteActionMessage::FeedbackResponse { .. }
+            | RemoteActionMessage::ContentPutResponse { .. }
             | RemoteActionMessage::CatalogueResponse { .. }
             | RemoteActionMessage::RecordResponse { .. }
             | RemoteActionMessage::Receipt(_)

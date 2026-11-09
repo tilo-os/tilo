@@ -47,9 +47,11 @@
 //! ([`WorkspaceRecordsLink::host_keys`]), for each record a request reads or
 //! acts on, fresh for every act.
 
+mod content;
 mod feedback;
 mod reads;
 mod terminal;
+pub use content::{MAX_PUT_BYTES, WorkspaceStores};
 pub use terminal::{ShellRan, TERMINAL_APP, Watching, WorkspaceShell};
 
 use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
@@ -223,6 +225,13 @@ pub trait WorkspaceRecordsLink: Send + Sync {
     fn content_blob(&self, _workspace: u64, _hash: &str) -> Option<Vec<u8>> {
         None
     }
+    /// `workspace`'s content store on this host: where a caller's uploads
+    /// go, what the record workers it runs actions in are lent, and what
+    /// the host answers the workspace's members from. Absence leaves the
+    /// workers without one and refuses uploads.
+    fn workspace_content(&self, _workspace: u64) -> Option<tilo_content::ContentStore> {
+        None
+    }
     /// The model the host looks over its reporters' reviews with, when it
     /// lends one ([`FeedbackReviewer`]). Absence leaves reviews to the
     /// reporters' own devices.
@@ -321,6 +330,14 @@ enum Job {
     },
     /// A Terminal session's run that ended in the host's shell, to record.
     Ran(Box<terminal::Ended>),
+    /// A step of an upload into a workspace whose store the service has not
+    /// found yet.
+    Content {
+        workspace_id: u64,
+        caller: Caller,
+        step: tilo_actions::remote::ContentPutStep,
+        done: Completer<Result<tilo_actions::remote::ContentPutAnswer, ActionHostError>>,
+    },
 }
 
 impl Job {
@@ -330,6 +347,7 @@ impl Job {
             Self::Catalogue { .. } => "catalogue",
             Self::Invoke { .. } => "invoke",
             Self::Ran(_) => "ran",
+            Self::Content { .. } => "content",
         }
     }
 }
@@ -343,6 +361,10 @@ struct Shared {
     ledger: Mutex<Ledger>,
     link: OnceLock<Arc<dyn WorkspaceRecordsLink>>,
     jobs: Mutex<Option<mpsc::Sender<(Instant, Job)>>>,
+    /// Each workspace's content store, once found.
+    stores: content::Stores,
+    /// The uploads callers have open.
+    puts: tilo_actions::remote::HostedContentPuts,
 }
 
 /// The host's page actions over every record of its workspaces.
@@ -362,6 +384,8 @@ impl WorkspaceActions {
                 ledger: Mutex::new(Ledger::default()),
                 link: OnceLock::new(),
                 jobs: Mutex::new(None),
+                stores: Mutex::default(),
+                puts: tilo_actions::remote::HostedContentPuts::default(),
             }),
             catalogue,
         }
@@ -477,51 +501,8 @@ impl WorkspaceActions {
                 }
                 answer.map(respond)
             }
-            RemoteActionMessage::Invoke(mut request) => {
-                // Answered at admission: a wait is ignored, as an older host
-                // would, and is no part of the remembered request.
-                request.wait_ms = None;
-                let invocation = request.invocation;
-                let receipt = |status| {
-                    Pending::ready(RemoteActionMessage::Receipt(InvocationReceipt {
-                        invocation,
-                        status,
-                    }))
-                };
-                if !self.admits(caller, &request) {
-                    return Some(receipt(ReceiptStatus::Rejected {
-                        error: ActionHostError::UnknownAction,
-                    }));
-                }
-                {
-                    let mut ledger = self.ledger();
-                    if let Some(entry) = ledger.entries.get(&invocation) {
-                        if entry.caller != *caller || !entry.request.same_invocation(&request) {
-                            return Some(receipt(ReceiptStatus::Rejected {
-                                error: ActionHostError::InvocationConflict,
-                            }));
-                        }
-                        let state = InvocationState::new(invocation, entry.update.clone());
-                        return Some(receipt(state.receipt().status));
-                    }
-                    ledger.insert(caller, request);
-                }
-                let (done, answer) = pending();
-                let job = Job::Invoke {
-                    workspace_id,
-                    invocation,
-                    done,
-                };
-                if let Err(Job::Invoke { done, .. }) = self.submit(job) {
-                    self.ledger().forget(&invocation);
-                    done.complete(InvocationReceipt {
-                        invocation,
-                        status: ReceiptStatus::Rejected {
-                            error: unavailable(),
-                        },
-                    });
-                }
-                answer.map(RemoteActionMessage::Receipt)
+            RemoteActionMessage::Invoke(request) => {
+                self.invoke_request(workspace_id, caller, request)
             }
             RemoteActionMessage::Observe { invocation, .. } => {
                 let state = self.ledger().owned(caller, &invocation).map(|entry| {
@@ -536,6 +517,9 @@ impl WorkspaceActions {
                     result: self.cancel(caller, &invocation),
                 })
             }
+            RemoteActionMessage::ContentPutRequest { correlation, step } => {
+                self.content_put(workspace_id, caller, correlation, step)
+            }
             RemoteActionMessage::FeedbackResponse { .. }
             | RemoteActionMessage::CatalogueResponse { .. }
             | RemoteActionMessage::Receipt(_)
@@ -547,8 +531,65 @@ impl WorkspaceActions {
             | RemoteActionMessage::ConfirmationResponse { .. }
             | RemoteActionMessage::RetiredResourceWatch { .. }
             | RemoteActionMessage::RetiredResourceReading { .. }
+            | RemoteActionMessage::ContentPutResponse { .. }
             | RemoteActionMessage::CatalogueChanged { .. } => return None,
         })
+    }
+
+    /// Admit `request` from `caller` and run it on the service's thread,
+    /// answering its receipt.
+    fn invoke_request(
+        &self,
+        workspace_id: u64,
+        caller: &Caller,
+        mut request: InvokeRequest,
+    ) -> Pending<RemoteActionMessage> {
+        // Answered at admission: a wait is ignored, as an older host
+        // would, and is no part of the remembered request.
+        request.wait_ms = None;
+        let invocation = request.invocation;
+        let receipt = |status| {
+            Pending::ready(RemoteActionMessage::Receipt(InvocationReceipt {
+                invocation,
+                status,
+            }))
+        };
+        if !self.admits(caller, &request) {
+            return receipt(ReceiptStatus::Rejected {
+                error: ActionHostError::UnknownAction,
+            });
+        }
+        {
+            let mut ledger = self.ledger();
+            if let Some(entry) = ledger.entries.get(&invocation) {
+                if entry.caller != *caller || !entry.request.same_invocation(&request) {
+                    return receipt(ReceiptStatus::Rejected {
+                        error: ActionHostError::InvocationConflict,
+                    });
+                }
+                let state = InvocationState::new(invocation, entry.update.clone());
+                return receipt(state.receipt().status);
+            }
+            ledger.insert(caller, request);
+        }
+        let (done, answer) = pending();
+        let job = Job::Invoke {
+            workspace_id,
+            invocation,
+            done,
+        };
+        if let Err(Job::Invoke { done, .. }) = self.submit(job) {
+            self.ledger().forget(&invocation);
+            done.complete(InvocationReceipt {
+                invocation,
+                status: ReceiptStatus::Rejected {
+                    error: ActionHostError::Unavailable {
+                        reason: "the host's workspace actions are not running".into(),
+                    },
+                },
+            });
+        }
+        answer.map(RemoteActionMessage::Receipt)
     }
 
     fn feedback_request(
@@ -629,7 +670,8 @@ impl HostActions {
     ) -> Option<Pending<RemoteActionMessage>> {
         use tilo_relay_protocol::agents::AGENTS_PROVIDER;
         let supervisor = match &message {
-            RemoteActionMessage::FeedbackRequest { .. } => false,
+            RemoteActionMessage::FeedbackRequest { .. }
+            | RemoteActionMessage::ContentPutRequest { .. } => false,
             RemoteActionMessage::CatalogueRequest { query, .. } => {
                 query.provider.as_deref() == Some(AGENTS_PROVIDER)
             }
@@ -647,6 +689,7 @@ impl HostActions {
             | RemoteActionMessage::ConfirmationResponse { .. }
             | RemoteActionMessage::RetiredResourceWatch { .. }
             | RemoteActionMessage::RetiredResourceReading { .. }
+            | RemoteActionMessage::ContentPutResponse { .. }
             | RemoteActionMessage::CatalogueChanged { .. } => return None,
         };
         if supervisor {
@@ -1156,6 +1199,12 @@ impl Worker {
                     done,
                 } => done.complete(self.invoke(workspace_id, invocation)),
                 Job::Ran(ended) => self.ran(&ended),
+                Job::Content {
+                    workspace_id,
+                    caller,
+                    step,
+                    done,
+                } => done.complete(self.content_put(workspace_id, &caller, step)),
             }
         }
     }
@@ -1352,6 +1401,7 @@ impl Worker {
                 },
             )
             .map_err(|error| error.to_string())?;
+            let app = self.lend(app, &route.cluster_id);
             self.mounted.insert(
                 route.clone(),
                 Mounted {
@@ -2180,6 +2230,7 @@ impl Worker {
             Seed::New,
         )
         .map_err(|error| refused(error.to_string()))?;
+        let hosted = self.lend(hosted, workspace);
         let route = DocumentRoute {
             app_id: app.to_owned(),
             cluster_id: workspace.to_owned(),

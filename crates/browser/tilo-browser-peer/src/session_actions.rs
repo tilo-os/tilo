@@ -31,14 +31,17 @@ use std::time::Duration;
 
 use tilo_actions::remote::{
     ActionHost, ActionHostError, Caller, CataloguePage, CatalogueQuery, Completer,
-    InvocationReceipt, InvocationState, InvokeRequest, MAX_REMOTE_WAIT, Pending, ReceiptStatus,
-    RemoteActionFrame, RemoteActionMessage, UpdateMark, pending, serve,
+    ContentPutAnswer, InvocationReceipt, InvocationState, InvokeRequest, MAX_REMOTE_WAIT, Pending,
+    ReceiptStatus, RemoteActionFrame, RemoteActionMessage, UpdateMark, pending, serve,
 };
 use tilo_actions::{InvocationId, InvocationUpdate};
 use tilo_lock::MutexRecover as _;
 use web_time::Instant;
 
 use crate::session::{PeerEvent, PeerEvents, PeerHandle};
+
+#[cfg(not(target_arch = "wasm32"))]
+mod puts;
 
 /// How long a request waits for the device's answer.
 pub const REPLY_DEADLINE: Duration = Duration::from_secs(30);
@@ -90,6 +93,7 @@ struct Waiting {
     updates: HashMap<InvocationId, Vec<Asked<Option<InvocationState>>>>,
     cancels: HashMap<InvocationId, Vec<Asked<Answered<()>>>>,
     follows: HashMap<InvocationId, Followed>,
+    puts: HashMap<u64, Asked<Answered<ContentPutAnswer>>>,
 }
 
 /// An invocation the device accepted, as it last answered for it.
@@ -114,6 +118,10 @@ enum Give {
     ),
     Update(Completer<Option<InvocationState>>, Option<InvocationState>),
     Cancel(Completer<Answered<()>>, Answered<()>),
+    Put(
+        Completer<Answered<ContentPutAnswer>>,
+        Answered<ContentPutAnswer>,
+    ),
 }
 
 impl Give {
@@ -123,6 +131,7 @@ impl Give {
             Self::Receipt(answer, value) => answer.complete(value),
             Self::Update(answer, value) => answer.complete(value),
             Self::Cancel(answer, value) => answer.complete(value),
+            Self::Put(answer, value) => answer.complete(value),
         }
     }
 }
@@ -147,6 +156,9 @@ impl Waiting {
         }
         for asked in self.cancels.drain().flat_map(|(_, all)| all) {
             give.push(Give::Cancel(asked.answer, Err(error.clone())));
+        }
+        for (_, asked) in self.puts.drain() {
+            give.push(Give::Put(asked.answer, Err(error.clone())));
         }
     }
 
@@ -173,6 +185,17 @@ impl Waiting {
         for asked in split(&mut self.cancels, now) {
             give.push(Give::Cancel(asked.answer, Err(late())));
         }
+        let expired: Vec<u64> = self
+            .puts
+            .iter()
+            .filter(|(_, asked)| asked.until <= now)
+            .map(|(correlation, _)| *correlation)
+            .collect();
+        for correlation in expired {
+            if let Some(asked) = self.puts.remove(&correlation) {
+                give.push(Give::Put(asked.answer, Err(late())));
+            }
+        }
     }
 
     fn is_empty(&self) -> bool {
@@ -180,6 +203,7 @@ impl Waiting {
             && self.receipts.is_empty()
             && self.updates.is_empty()
             && self.cancels.is_empty()
+            && self.puts.is_empty()
     }
 
     /// The requests `message` answers.
@@ -221,6 +245,14 @@ impl Waiting {
                     give.push(Give::Cancel(asked.answer, result.clone()));
                 }
             }
+            RemoteActionMessage::ContentPutResponse {
+                correlation,
+                result,
+            } => {
+                if let Some(asked) = self.puts.remove(&correlation) {
+                    give.push(Give::Put(asked.answer, result));
+                }
+            }
             _ => {}
         }
     }
@@ -260,6 +292,30 @@ pub async fn ask<H: ActionHost + Clone + Send + Sync + 'static>(
 }
 
 impl SessionActions {
+    /// Ask the device for `step` of an upload, waiting for its answer.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn put_step(&self, step: tilo_actions::remote::ContentPutStep) -> Answered<ContentPutAnswer> {
+        let correlation = self.0.next_correlation.fetch_add(1, Ordering::Relaxed);
+        let (answer, answered) = pending();
+        self.0
+            .waiting
+            .lock_recover()
+            .puts
+            .insert(correlation, Asked::new(answer));
+        if let Err(error) = self
+            .0
+            .send(RemoteActionMessage::ContentPutRequest { correlation, step })
+        {
+            self.0.waiting.lock_recover().puts.remove(&correlation);
+            return Err(error);
+        }
+        answered
+            .wait_timeout(REPLY_DEADLINE)
+            .ok()
+            .flatten()
+            .unwrap_or_else(|| Err(unavailable("the device did not answer in time")))
+    }
+
     /// The actions of the device `device` in `workspace_id`, asked through
     /// `peer`, a session already in that workspace.
     #[must_use]
@@ -441,6 +497,13 @@ impl Inner {
 }
 
 impl ActionHost for SessionActions {
+    /// Uploads into the content store of the device's workspace, step by step
+    /// over the session: a caller off a page waits for each answer.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn content_puts(&self) -> Option<Arc<dyn tilo_actions::remote::ContentPuts>> {
+        Some(Arc::new(puts::SessionPuts(self.clone())))
+    }
+
     fn query(&self, _caller: &Caller, query: CatalogueQuery) -> Pending<Answered<CataloguePage>> {
         let correlation = self.0.next_correlation.fetch_add(1, Ordering::Relaxed);
         let (answer, answered) = pending();

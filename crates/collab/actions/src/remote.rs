@@ -83,7 +83,9 @@ pub use catalogue::{
     ViewResourceQuery,
 };
 pub use content_put::{
-    CONTENT_PUTS_UNAVAILABLE, ContentPut, ContentPuts, MAX_CONTENT_PUT_CHUNK, MAX_OPEN_CONTENT_PUTS,
+    CONTENT_PUTS_UNAVAILABLE, ContentPut, ContentPutAnswer, ContentPutStep, ContentPuts,
+    HostedContentPuts, MAX_CONTENT_PUT_CHUNK, MAX_CONTENT_PUT_FRAME_BYTES, MAX_HOSTED_CONTENT_PUTS,
+    MAX_OPEN_CONTENT_PUTS,
 };
 pub use nodes::{
     NODE_PERMITS_ACTION, NODE_RESOURCE_PREFIX, SHARE_NODE_ACTION, UNSHARE_NODE_ACTION, node_target,
@@ -1325,6 +1327,19 @@ pub enum RemoteActionMessage {
     /// being asked, so the host that placed it reads what the surface can do
     /// as it is rather than as it was when it first joined.
     CatalogueChanged { page: CataloguePage },
+    /// One step of putting bytes into the content store of the device's
+    /// workspace ([`ContentPutStep`]): how a client of another device's
+    /// actions (an agent's MCP session through its own device) hands it a
+    /// file an action then names by `tilo.content:<hash>`.
+    ContentPutRequest {
+        correlation: u64,
+        step: ContentPutStep,
+    },
+    /// Answer to [`Self::ContentPutRequest`] with the same correlation.
+    ContentPutResponse {
+        correlation: u64,
+        result: Result<ContentPutAnswer, ActionHostError>,
+    },
 }
 
 /// Largest piece of a record one answer carries, before encoding.
@@ -1424,6 +1439,7 @@ impl RemoteActionMessage {
                 | Self::RecordRequest { .. }
                 | Self::FeedbackRequest { .. }
                 | Self::ConfirmationRequest { .. }
+                | Self::ContentPutRequest { .. }
         )
     }
 }
@@ -1579,6 +1595,16 @@ pub fn serve<H: ActionHost + Clone + Send + 'static>(
         RemoteActionMessage::ConfirmationRequest { correlation, .. } => Pending::ready(
             confirmation::unanswered(correlation, ActionHostError::ConfirmationRequired),
         ),
+        // Uploads over a session are kept by a host that keeps them open
+        // between steps ([`HostedContentPuts`]); a stateless one has none.
+        RemoteActionMessage::ContentPutRequest { correlation, .. } => {
+            Pending::ready(RemoteActionMessage::ContentPutResponse {
+                correlation,
+                result: Err(ActionHostError::Unavailable {
+                    reason: CONTENT_PUTS_UNAVAILABLE.into(),
+                }),
+            })
+        }
         RemoteActionMessage::CatalogueResponse { .. }
         | RemoteActionMessage::Receipt(_)
         | RemoteActionMessage::Update { .. }
@@ -1588,6 +1614,7 @@ pub fn serve<H: ActionHost + Clone + Send + 'static>(
         | RemoteActionMessage::ConfirmationResponse { .. }
         | RemoteActionMessage::RetiredResourceWatch { .. }
         | RemoteActionMessage::RetiredResourceReading { .. }
+        | RemoteActionMessage::ContentPutResponse { .. }
         | RemoteActionMessage::CatalogueChanged { .. } => return None,
     };
     // An abandoned answer still answers: the caller hears a refusal.
@@ -1638,6 +1665,12 @@ pub fn refuse(
         RemoteActionMessage::ConfirmationRequest { correlation, .. } => {
             confirmation::unanswered(*correlation, error)
         }
+        RemoteActionMessage::ContentPutRequest { correlation, .. } => {
+            RemoteActionMessage::ContentPutResponse {
+                correlation: *correlation,
+                result: Err(error),
+            }
+        }
         RemoteActionMessage::CatalogueResponse { .. }
         | RemoteActionMessage::Receipt(_)
         | RemoteActionMessage::Update { .. }
@@ -1647,6 +1680,7 @@ pub fn refuse(
         | RemoteActionMessage::ConfirmationResponse { .. }
         | RemoteActionMessage::RetiredResourceWatch { .. }
         | RemoteActionMessage::RetiredResourceReading { .. }
+        | RemoteActionMessage::ContentPutResponse { .. }
         | RemoteActionMessage::CatalogueChanged { .. } => return None,
     })
 }

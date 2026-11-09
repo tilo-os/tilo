@@ -238,9 +238,17 @@ pub struct Replica {
     /// route plan): a bot's steps read through them, where a person's
     /// reads go through the record's mounted component.
     offers_reads: bool,
-    /// An agent's: it also runs the record's effects and views that answer
-    /// ([`offered_to_agents`]), waiting for what they end as.
+    /// It also runs the record's effects that answer ([`offered_to_agents`]),
+    /// waiting for what they end as: an agent's, and the host's for its own
+    /// person, whose callers there (an agent's session through one of their
+    /// devices, a script) have no window to run them in. The answer is the
+    /// same as a window's.
     runs_effects: bool,
+    /// An agent's or a bot's: offered only what reaches agents. An agent's
+    /// also runs the record's views that answer and the effects its host
+    /// renders; a view moves a window, which the host's person has their
+    /// own of.
+    automated: bool,
 }
 
 /// The parameter an effect is told where on a device to write by. An agent
@@ -406,7 +414,8 @@ impl Replica {
             .kind(app_id)
             .ok_or_else(|| AppError::UnknownApp(app_id.to_owned()))?;
         let offers_reads = matches!(actor, ReplicaActor::Bot { .. });
-        let runs_effects = matches!(actor, ReplicaActor::Agent);
+        let runs_effects = matches!(actor, ReplicaActor::Agent | ReplicaActor::Owner);
+        let automated = matches!(actor, ReplicaActor::Agent | ReplicaActor::Bot { .. });
         let (invoker, permissions) = replica_standing(actor, workspace, participant);
         let (checkout, bytes, created) = seeded(definition, kind, workspace, participant, seed)?;
         let opening = AttachedView::opening(definition, workspace, checkout, bytes)
@@ -426,6 +435,7 @@ impl Replica {
             place: None,
             offers_reads,
             runs_effects,
+            automated,
         })
     }
 
@@ -434,7 +444,7 @@ impl Replica {
     /// actions, a member's comment) is offered what people are,
     /// `audience = "people"` included.
     const fn automated(&self) -> bool {
-        self.runs_effects || self.offers_reads
+        self.automated
     }
 
     #[must_use]
@@ -476,9 +486,9 @@ impl Replica {
     /// view now, as inert descriptors — those on the parts of a chain the
     /// app keeps beside the record included — and the effects any member may ask
     /// the host to run for themselves ([`tilo_actions::MEMBER_OWN_TAG`]);
-    /// for a bot, the record's read effects too; for an agent, the effects
-    /// and views [`offered_to_agents`], without a [`PATH_PARAM`] to write
-    /// to. An agent or a bot is offered only what reaches agents.
+    /// for a bot, the record's read effects too; for an agent and the host
+    /// acting for its person, the effects and views [`offered_to_agents`],
+    /// without a [`PATH_PARAM`] to write to. An agent or a bot is offered only what reaches agents.
     #[must_use]
     pub fn survey(&self) -> Vec<ActionDescriptor> {
         let resources = self.view.resources();
@@ -491,7 +501,9 @@ impl Replica {
             .filter(|descriptor| !self.automated() || descriptor.contract.reaches_agents())
             .filter(|descriptor| {
                 self.offers(descriptor, &in_chains)
-                    || (self.runs_effects && offered_when_host_renders(descriptor))
+                    || (self.runs_effects
+                        && self.automated
+                        && offered_when_host_renders(descriptor))
             })
             .map(|mut descriptor| {
                 if self.runs_effects && descriptor.kind != tilo_actions::OperationKind::Document {
@@ -524,11 +536,14 @@ impl Replica {
                     || (self.offers_reads && descriptor.contract.kind == policy::ActionKind::Read)
                     || (self.runs_effects && offered_to_agents(descriptor))
             }
-            tilo_actions::OperationKind::View => self.runs_effects && offered_to_agents(descriptor),
+            tilo_actions::OperationKind::View => {
+                self.runs_effects && self.automated && offered_to_agents(descriptor)
+            }
         }
     }
 
-    /// For an agent, whether the operation at `address` is an effect or
+    /// For an agent or the host acting for its person, whether the
+    /// operation at `address` is an effect or
     /// view of the record, which it then runs to the end, refused when it
     /// is not one [`Self::survey`] offers or names where to write. A view of
     /// the agent's own caret runs as any participant's does.
@@ -548,7 +563,9 @@ impl Replica {
             // The door refuses what the view does not publish.
             return Ok(false);
         };
-        if descriptor.kind == tilo_actions::OperationKind::Document {
+        if descriptor.kind == tilo_actions::OperationKind::Document
+            || (descriptor.kind == tilo_actions::OperationKind::View && !self.automated)
+        {
             return Ok(false);
         }
         // A view that moves only the agent's own caret, or types at it, is

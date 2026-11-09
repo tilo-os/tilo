@@ -35,6 +35,8 @@ use std::time::{Duration, Instant};
 
 use tilo_browser_peer::Host;
 use tilo_content::ContentStore;
+
+use crate::workspace_actions::WorkspaceStores;
 use tilo_relay_protocol::agents::AgentStatus;
 use tilo_user_identity::DeviceCert;
 
@@ -90,7 +92,7 @@ struct Shared {
     /// Each agent's thread, with its control to wake it for shutdown.
     threads: Mutex<Vec<(JoinHandle<()>, Arc<AgentControl>)>>,
     /// Each workspace's content store, by the workspace's uuid.
-    content: Mutex<BTreeMap<String, ContentStore>>,
+    content: Arc<WorkspaceStores>,
     /// Each agent's session state, by its agent id: kept while the host
     /// runs, so an agent stopped and started again keeps its channel keys.
     sessions: Mutex<BTreeMap<String, Arc<tilo_browser_peer::MemoryPeerStore>>>,
@@ -104,22 +106,9 @@ struct Shared {
 type HostClock = Arc<dyn Fn() -> u64 + Send + Sync>;
 
 impl Shared {
-    /// The content store of `workspace`, under the state directory. One workspace's
-    /// store never answers for another's.
+    /// The content store of `workspace`, under the state directory.
     fn workspace_content(&self, workspace: &str) -> Result<ContentStore, String> {
-        let workspace = uuid::Uuid::parse_str(workspace)
-            .map_err(|_| "the workspace is not a uuid".to_string())?
-            .hyphenated()
-            .to_string();
-        let mut stores = self.content.lock_recover();
-        let store = stores
-            .entry(workspace)
-            .or_insert_with_key(|workspace| {
-                ContentStore::in_dir(self.state_dir.join(CONTENT_DIR).join(workspace))
-            })
-            .clone();
-        drop(stores);
-        Ok(store)
+        self.content.get(workspace)
     }
 }
 
@@ -162,6 +151,7 @@ impl AgentHost {
         clock: HostClock,
     ) -> Self {
         let shared = Arc::new(Shared {
+            content: Arc::new(WorkspaceStores::in_dir(state_dir.join(CONTENT_DIR))),
             state_dir,
             model,
             catalogue,
@@ -170,7 +160,6 @@ impl AgentHost {
             runtime: OnceLock::new(),
             stopping: AtomicBool::new(false),
             threads: Mutex::new(Vec::new()),
-            content: Mutex::new(BTreeMap::new()),
             sessions: Mutex::new(BTreeMap::new()),
             clock,
         });
@@ -186,6 +175,14 @@ impl AgentHost {
             written: Arc::new(Mutex::new(String::new())),
             owned_runtime: None,
         }
+    }
+
+    /// Each workspace's content store on this host, shared with the host's
+    /// workspace actions: what an agent's apps keep, a caller's uploads and
+    /// what the workspace's members are answered from are one store.
+    #[must_use]
+    pub fn workspace_stores(&self) -> Arc<WorkspaceStores> {
+        Arc::clone(&self.shared.content)
     }
 
     /// The supervisor browsers steer agents through.
