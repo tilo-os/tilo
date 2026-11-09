@@ -533,8 +533,8 @@ pub(crate) fn billing_fixture(
     scenario: Option<&str>,
 ) -> Option<ui::tilo_actions::remote::host_account::HostAccount> {
     use ui::tilo_actions::remote::host_account::{
-        Entitlement, HostAccount, HostKind, Invoice, InvoiceStatus, Limits, PlanOffer, Standing,
-        Usage, WorkspaceUsage,
+        Entitlement, HostAccount, HostKind, Invoice, InvoiceStatus, Limits, PaymentMethod,
+        PlanOffer, Standing, Usage, WorkspaceUsage,
     };
     let pro = Limits {
         max_running: 2,
@@ -547,7 +547,10 @@ pub(crate) fn billing_fixture(
         "billing" => Standing {
             account: "acct-ada".into(),
             plan: Some("pro".into()),
-            payment_method: true,
+            payment_method: Some(PaymentMethod {
+                brand: Some("Visa".into()),
+                last4: Some("4242".into()),
+            }),
             entitlements: vec![Entitlement::LinuxVms],
             limits: Some(pro.clone()),
             usage: Usage {

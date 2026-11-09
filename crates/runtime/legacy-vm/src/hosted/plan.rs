@@ -18,7 +18,7 @@ use std::path::Path;
 
 use serde::{Deserialize, Serialize};
 use tilo_actions::remote::host_account::{
-    self, Invoice, NextStep, NextStepKind, PlanOffer, Reason,
+    self, Invoice, NextStep, NextStepKind, PaymentMethod, PlanOffer, Reason,
 };
 
 use super::size::VmSize;
@@ -46,6 +46,11 @@ pub struct Plan {
     /// words.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub credit: Option<String>,
+    /// On a host that sells VMs: the card on file, as the provider
+    /// describes it (brand, last four digits). An account the file names has
+    /// a card on file whether or not the provider describes it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub card: Option<PaymentMethod>,
 }
 
 impl Default for Plan {
@@ -60,6 +65,7 @@ impl Default for Plan {
             period_start_ms: None,
             invoices: Vec::new(),
             credit: None,
+            card: None,
         }
     }
 }

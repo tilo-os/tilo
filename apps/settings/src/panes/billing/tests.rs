@@ -21,7 +21,7 @@ fn an_account_on_a_plan_says_what_it_has_and_used() {
         facts(&account("billing")),
         [
             ("Plan".to_owned(), "Pro, $20 a month".to_owned()),
-            ("Card".to_owned(), "On file".to_owned()),
+            ("Card".to_owned(), "Visa ·· 4242".to_owned()),
             (
                 "Linux machines this month".to_owned(),
                 "37 hr of 100 hr".to_owned()
@@ -89,4 +89,22 @@ fn a_self_hosted_host_sells_nothing() {
     let own = HostAccount::sells_nothing("Ada's server", HostKind::SelfHosted);
     assert!(!own.sells());
     assert!(page_of(&own, BillingEffect::ManageBilling).is_err());
+}
+
+/// The card says as much of itself as the provider describes: brand and last four, the last
+/// four alone, or only that there is one.
+#[test]
+fn the_card_says_what_the_provider_describes() {
+    en();
+    let mut cloud = account("billing");
+    let line = |cloud: &HostAccount| card_line(cloud);
+    assert_eq!(line(&cloud), "Visa ·· 4242");
+    let standing = cloud.standing.as_mut().unwrap();
+    standing.payment_method = Some(PaymentMethod {
+        brand: None,
+        last4: Some("0005".into()),
+    });
+    assert_eq!(line(&cloud), "Card ·· 0005");
+    cloud.standing.as_mut().unwrap().payment_method = Some(PaymentMethod::default());
+    assert_eq!(line(&cloud), "On file");
 }

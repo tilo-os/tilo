@@ -64,7 +64,7 @@ fn an_account_without_a_card_sees_the_offers_and_no_entitlement() {
         ["pro"]
     );
     let standing = account.standing.as_ref().unwrap();
-    assert!(!standing.payment_method);
+    assert!(standing.payment_method.is_none());
     assert!(!standing.entitled(Entitlement::LinuxVms));
     assert_eq!(standing.limits, None);
     assert_eq!(
@@ -83,7 +83,7 @@ fn an_account_with_a_card_has_its_plan_limits_credit_and_invoices() {
             max_vms: 5,
             sizes: vec![VmSize::Small],
             plan: Some("pro".into()),
-            credit: Some("$12.40 credit".into()),
+            credit: Some("$12.40".into()),
             invoices: vec![tilo_actions::remote::host_account::Invoice {
                 id: "in_1".into(),
                 issued_ms: 1,
@@ -100,14 +100,14 @@ fn an_account_with_a_card_has_its_plan_limits_credit_and_invoices() {
         Some("Pro")
     );
     let standing = account.standing.unwrap();
-    assert!(standing.payment_method);
+    assert!(standing.payment_method.is_some());
     assert!(standing.entitled(Entitlement::LinuxVms));
     let limits = standing.limits.unwrap();
     assert_eq!(
         (limits.max_running, limits.sizes, limits.included_vm_seconds),
         (2, vec!["small".to_string()], Some(360_000))
     );
-    assert_eq!(standing.credit.as_deref(), Some("$12.40 credit"));
+    assert_eq!(standing.credit.as_deref(), Some("$12.40"));
     assert_eq!(standing.invoices.len(), 1);
 }
 
@@ -179,7 +179,7 @@ fn a_card_added_is_read_once_the_plans_file_changes() {
             let _ = tell.send(());
         })
         .unwrap();
-    assert!(!hosted.read(0).standing.unwrap().payment_method);
+    assert!(hosted.read(0).standing.unwrap().payment_method.is_none());
     let mut plans = selling();
     plans.accounts.insert("acct-1".into(), Plan::default());
     tilo_files::native::atomic::write_creating_parent(&path, &serde_json::to_vec(&plans).unwrap())
@@ -187,5 +187,5 @@ fn a_card_added_is_read_once_the_plans_file_changes() {
     changed
         .recv_timeout(Duration::from_secs(10))
         .expect("the change is told");
-    assert!(hosted.read(0).standing.unwrap().payment_method);
+    assert!(hosted.read(0).standing.unwrap().payment_method.is_some());
 }

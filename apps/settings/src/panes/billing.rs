@@ -20,7 +20,7 @@ use std::time::Duration;
 use ui::LocalState;
 use ui::framework::{EffectAnswer, EffectCx, Effected, ViewCx};
 use ui::tilo_actions::remote::InvokeArgument;
-use ui::tilo_actions::remote::host_account::{self, HostAccount, InvoiceStatus};
+use ui::tilo_actions::remote::host_account::{self, HostAccount, InvoiceStatus, PaymentMethod};
 use ui::tilo_resource;
 use ui::widget::Element;
 
@@ -262,14 +262,7 @@ fn facts(account: &HostAccount) -> Vec<(String, String)> {
     };
     let mut facts = vec![
         (t("settings-billing-plan"), plan),
-        (
-            t("settings-billing-card"),
-            t(if has_card(account) {
-                "settings-billing-card-on-file"
-            } else {
-                "settings-billing-card-none"
-            }),
-        ),
+        (t("settings-billing-card"), card_line(account)),
     ];
     if let Some(standing) = standing {
         let seconds = standing.usage.vm_seconds();
@@ -296,11 +289,34 @@ fn facts(account: &HostAccount) -> Vec<(String, String)> {
     facts
 }
 
+fn card(account: &HostAccount) -> Option<&PaymentMethod> {
+    account.standing.as_ref()?.payment_method.as_ref()
+}
+
 fn has_card(account: &HostAccount) -> bool {
-    account
-        .standing
-        .as_ref()
-        .is_some_and(|standing| standing.payment_method)
+    card(account).is_some()
+}
+
+/// The card on file as the provider describes it, "Visa ·· 4242", or as much of that as it says.
+fn card_line(account: &HostAccount) -> String {
+    let Some(card) = card(account) else {
+        return t("settings-billing-card-none");
+    };
+    match (&card.brand, &card.last4) {
+        (Some(brand), Some(last4)) => t_args(
+            "settings-billing-card-brand-last4",
+            &[
+                ("brand", brand.clone().into()),
+                ("last4", last4.clone().into()),
+            ],
+        ),
+        (None, Some(last4)) => t_args(
+            "settings-billing-card-last4",
+            &[("last4", last4.clone().into())],
+        ),
+        (Some(brand), None) => brand.clone(),
+        (None, None) => t("settings-billing-card-on-file"),
+    }
 }
 
 /// The account with the provider: what [`facts`] says, and the provider's page, which is where a

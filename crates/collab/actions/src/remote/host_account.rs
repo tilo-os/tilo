@@ -197,6 +197,19 @@ pub struct Invoice {
     pub url: String,
 }
 
+/// A payment method on file, as the provider describes it: enough for the
+/// person to recognise it ("Visa ·· 4242"), never enough to charge it.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct PaymentMethod {
+    /// Its brand, in the provider's words ("Visa"); `None` when the
+    /// provider does not say.
+    pub brand: Option<String>,
+    /// The last four digits of its number; `None` when the provider does
+    /// not say.
+    pub last4: Option<String>,
+}
+
 /// The account's standing with a host that sells something.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
@@ -205,14 +218,14 @@ pub struct Standing {
     pub account: String,
     /// The [`PlanOffer::id`] it is on; `None` before it chose one.
     pub plan: Option<String>,
-    /// Whether a payment method is on file.
-    pub payment_method: bool,
+    /// The payment method on file; `None` while there is none.
+    pub payment_method: Option<PaymentMethod>,
     pub entitlements: Vec<Entitlement>,
     /// What the account may use now; `None` while it is entitled to nothing.
     pub limits: Option<Limits>,
     pub usage: Usage,
-    /// Credit the account has left, in the provider's words ("$12.40
-    /// credit"); `None` when it has none.
+    /// Credit the account has left, as the provider writes the amount
+    /// ("$12.40"); `None` when it has none.
     pub credit: Option<String>,
     /// Newest first.
     pub invoices: Vec<Invoice>,

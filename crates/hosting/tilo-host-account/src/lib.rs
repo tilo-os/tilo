@@ -227,7 +227,7 @@ pub fn account_of(plans: &Plans, account: &str, name: &str, usage: Usage) -> Hos
         Some(plan) => Standing {
             account: account.to_owned(),
             plan: plan.plan.clone(),
-            payment_method: true,
+            payment_method: Some(plan.card.clone().unwrap_or_default()),
             entitlements: vec![Entitlement::LinuxVms],
             limits: Some(Limits {
                 max_running: plan.max_running,
