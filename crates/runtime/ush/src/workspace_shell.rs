@@ -66,12 +66,32 @@ pub struct ShellRun {
 
 /// The shells of the workspaces one host serves.
 pub struct WorkspaceShells {
-    /// Each workspace's directory, content and kept files, below here.
+    /// Each workspace's content and kept files, and its directory unless
+    /// [`Self::with_files`] says where it is, below here.
     state: PathBuf,
+    /// Where each workspace's files are, when not below `state`.
+    files_of: Option<Box<FilesOf>>,
     /// Where Linux programs run, when this host runs them.
     vms: Option<HostedTarget>,
     sessions: Mutex<HashMap<(String, String), Shared>>,
 }
+
+/// Where a workspace's files are on this host.
+type FilesOf = dyn Fn(&str) -> PathBuf + Send + Sync;
+
+/// Who pays for a workspace's VM, and its size, when the one asking says.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Payer {
+    pub account: String,
+    pub size: legacy_vm::hosted::size::VmSize,
+}
+
+/// What a caller is shown of a command while it runs: everything it printed
+/// so far, each time that grew.
+pub type Seen<'a> = &'a (dyn Fn(&[u8]) + Sync);
+
+/// How often a running command's output is looked at for [`Seen`].
+const SEEN_EVERY: std::time::Duration = std::time::Duration::from_millis(250);
 
 /// One session's shell, which its runs take turns in.
 type Shared = Arc<Mutex<Session>>;
@@ -91,9 +111,21 @@ impl WorkspaceShells {
     pub fn new(state: impl Into<PathBuf>, vms: Option<HostedTarget>) -> Self {
         Self {
             state: state.into(),
+            files_of: None,
             vms,
             sessions: Mutex::new(HashMap::new()),
         }
+    }
+
+    /// The same shells, each workspace's working in the directory `files_of`
+    /// names: its files as this host holds them, a member's synced replica.
+    #[must_use]
+    pub fn with_files(
+        mut self,
+        files_of: impl Fn(&str) -> PathBuf + Send + Sync + 'static,
+    ) -> Self {
+        self.files_of = Some(Box::new(files_of));
+        self
     }
 
     /// Shells under `state`, running Linux programs in the VMs the host's
@@ -112,7 +144,10 @@ impl WorkspaceShells {
     /// The directory `workspace`'s shells work in: its files on this host.
     #[must_use]
     pub fn files(&self, workspace: &str) -> PathBuf {
-        self.state.join(safe(workspace)).join("files")
+        self.files_of.as_ref().map_or_else(
+            || self.state.join(safe(workspace)).join("files"),
+            |files_of| files_of(workspace),
+        )
     }
 
     /// Run `command` in `workspace`'s Terminal session `session`, as an agent
@@ -129,12 +164,32 @@ impl WorkspaceShells {
         command: &str,
         agent: bool,
     ) -> io::Result<ShellRun> {
-        let shell = self.session(workspace, session)?;
-        let mut session = shell.lock().unwrap_or_else(PoisonError::into_inner);
-        Ok(session.run(command, agent))
+        self.run_for(workspace, session, command, agent, None, None)
     }
 
-    fn session(&self, workspace: &str, session: &str) -> io::Result<Shared> {
+    /// [`Self::run`], its VM paid for by `payer` rather than this host's
+    /// own account when given (the first run of a workspace's session
+    /// decides it), and `seen` shown what the command printed so far while
+    /// it runs.
+    ///
+    /// # Errors
+    ///
+    /// The workspace's directory could not be made.
+    pub fn run_for(
+        &self,
+        workspace: &str,
+        session: &str,
+        command: &str,
+        agent: bool,
+        payer: Option<&Payer>,
+        seen: Option<Seen<'_>>,
+    ) -> io::Result<ShellRun> {
+        let shell = self.session(workspace, session, payer)?;
+        let mut session = shell.lock().unwrap_or_else(PoisonError::into_inner);
+        Ok(session.run(command, agent, seen))
+    }
+
+    fn session(&self, workspace: &str, session: &str, payer: Option<&Payer>) -> io::Result<Shared> {
         let key = (workspace.to_owned(), session.to_owned());
         let open = self
             .sessions
@@ -145,7 +200,7 @@ impl WorkspaceShells {
         if let Some(open) = open {
             return Ok(open);
         }
-        let opened = Arc::new(Mutex::new(self.open(workspace)?));
+        let opened = Arc::new(Mutex::new(self.open(workspace, payer)?));
         Ok(Arc::clone(
             self.sessions
                 .lock()
@@ -155,9 +210,9 @@ impl WorkspaceShells {
         ))
     }
 
-    fn open(&self, workspace: &str) -> io::Result<Session> {
+    fn open(&self, workspace: &str, payer: Option<&Payer>) -> io::Result<Session> {
         let root = self.state.join(safe(workspace));
-        let files = root.join("files");
+        let files = self.files(workspace);
         std::fs::create_dir_all(&files)?;
         let grants = vec![tilo_environment::dir_grant(&files, true).map_err(io::Error::other)?];
         let environment = Arc::new(Files {
@@ -166,12 +221,19 @@ impl WorkspaceShells {
             content: EnvironmentContent::at(root.join("content")),
         });
         let refused = Arc::new(Mutex::new(None));
-        let programs: Arc<dyn Programs> = match &self.vms {
+        let target = self.vms.clone().map(|mut target| {
+            if let Some(payer) = payer {
+                target.account.clone_from(&payer.account);
+                target.size = payer.size;
+            }
+            target
+        });
+        let programs: Arc<dyn Programs> = match target {
             Some(target) => {
                 let shared = files.clone();
                 Arc::new(
                     HostedPrograms::new(
-                        target.clone(),
+                        target,
                         workspace.to_owned(),
                         ENVIRONMENT.to_owned(),
                         Box::new(move || shares_of(vec![shared.clone()], Vec::new())),
@@ -212,7 +274,7 @@ impl WorkspaceShells {
 }
 
 impl Session {
-    fn run(&mut self, command: &str, agent: bool) -> ShellRun {
+    fn run(&mut self, command: &str, agent: bool, seen: Option<Seen<'_>>) -> ShellRun {
         let cwd = self.shell.cwd().to_string_lossy().into_owned();
         *self.refused.lock().unwrap_or_else(PoisonError::into_inner) = None;
         self.shell.set_stdio(Stdio {
@@ -227,7 +289,29 @@ impl Session {
             id: format!("{started_ms:x}"),
             label: command.to_owned(),
         }));
-        let exit = self.shell.run_script(command);
+        let exit = match seen {
+            Some(seen) => {
+                let printed = self.captured.clone();
+                let done = std::sync::atomic::AtomicBool::new(false);
+                std::thread::scope(|scope| {
+                    scope.spawn(|| {
+                        let mut shown = 0;
+                        while !done.load(std::sync::atomic::Ordering::Acquire) {
+                            std::thread::sleep(SEEN_EVERY);
+                            let now = printed.peek();
+                            if now.len() != shown {
+                                shown = now.len();
+                                seen(&now);
+                            }
+                        }
+                    });
+                    let exit = self.shell.run_script(command);
+                    done.store(true, std::sync::atomic::Ordering::Release);
+                    exit
+                })
+            }
+            None => self.shell.run_script(command),
+        };
         self.shell.set_run(None);
         let ended_ms = now_ms();
         let mut output = self.captured.take();
