@@ -277,14 +277,11 @@ fn picking_a_day_asks_until_when_and_runs_once_the_day_reads() {
         submit(&mut app, "Pick date").is_none(),
         "submit closed the form"
     );
-    if !reads(&mut app, "Jul 20") {
-        let today: Vec<String> = all_names(&mut app);
-        open_place(&mut app, "Inbox");
-        let inbox: Vec<String> = all_names(&mut app);
-        open_place(&mut app, "Upcoming");
-        let upcoming: Vec<String> = all_names(&mut app);
-        panic!("NOT CHANGED\ntoday: {today:?}\ninbox: {inbox:?}\nupcoming: {upcoming:?}");
-    }
+    assert!(
+        reads(&mut app, "Jul 20"),
+        "the task is due on the day it was picked: {:?}",
+        all_names(&mut app)
+    );
 }
 
 #[test]
