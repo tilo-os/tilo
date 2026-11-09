@@ -934,22 +934,13 @@ try {
   // one outlasts that gap — the swipe split after three events, the strip
   // panning 36 px and the app scrolling the rest. So every event is sent
   // before any is waited for, as a trackpad's report arrives together.
-  const sidewaysSwipe = async (tab, x, y, forward = true) => {
+  const sidewaysSwipe = async (tab, x, y, forward = true, picture = null) => {
     const steps = [6, 12, 18, 24, 18, 12, 6];
     await Promise.all(steps.map(step => wheel(tab, x, y, {deltaX: forward ? step : -step})));
-    await settle(tab, 2);
-  };
-  // [`sidewaysSwipe`] with a look in the middle, for the run's pictures: the
-  // person looking at the run sees the strip part-way through a swipe. The
-  // pause it takes is longer than the desk's gesture gap, so the swipe is two
-  // gestures as far as the desk is concerned; nothing measured here is a
-  // gesture the gate judges.
-  const sidewaysSwipeForAPicture = async (tab, x, y, forward, look) => {
-    const send = steps => Promise.all(steps.map(step => wheel(tab, x, y, {deltaX: forward ? step : -step})));
-    await send([6, 12, 18]);
-    await settle(tab, 1);
-    await look();
-    await send([24, 18, 12, 6]);
+    // The run's picture of the strip mid-swipe: the ask is off the gesture's
+    // own path — sent, not waited for — so the events go in as the fingers'
+    // report does, and the shot lands a round trip later.
+    if (picture) void tab.screenshot().then(shot => { if (shot) writeFileSync(`${out}/${picture}`, shot); }).catch(() => {});
     await settle(tab, 2);
   };
   const rightClick = async (tab, x, y) => {
@@ -1017,22 +1008,12 @@ try {
   if (!startPan) failed('the strip does not overflow, so nothing can pan');
   // The way the strip still has room: a gesture at its end pans nothing.
   const forward = startPan.offset < startPan.max / 2;
-  // A gesture for the run's pictures alone, then the one the gate judges. The
-  // first leaves the strip where it found it, so the judged gesture starts and
-  // ends in the same room: the picture the person looking at the run sees is
-  // the strip mid-swipe, taken inside that gesture.
-  const pictureFrom = await panOf(a.tab);
-  await sidewaysSwipeForAPicture(a.tab, centre.x, centre.y, forward, async () => {
-    const midScroll = await a.tab.screenshot();
-    if (midScroll) writeFileSync(`${out}/strip-mid-scroll.png`, midScroll);
-  });
-  if ((await panOf(a.tab)).offset !== pictureFrom.offset) {
-    await sidewaysSwipe(a.tab, centre.x, centre.y, !forward);
-  }
-  const panBefore = await panOf(a.tab);
+  // The picture the person looking at the run sees is the strip mid-swipe,
+  // taken inside the gesture the gate judges, so the two are one swipe.
+  const panBefore = await restPanOf(a.tab);
   const frameBefore = await picture(a.tab);
-  await sidewaysSwipe(a.tab, centre.x, centre.y, forward);
-  const panAfter = await panOf(a.tab);
+  await sidewaysSwipe(a.tab, centre.x, centre.y, forward, 'strip-mid-scroll.png');
+  const panAfter = await restPanOf(a.tab);
   const moved = panAfter.offset - panBefore.offset;
   report.sideways = {forward, before: panBefore, after: panAfter};
   if (Math.abs(moved) < 1) {
