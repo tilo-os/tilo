@@ -95,16 +95,16 @@ mod cases {
         }
     }
 
-    /// The title a window's bar shows for the place it stands on.
+    /// The title a window's bar shows for the place it stands on: the content column's, or in a
+    /// window whose overview is what a person chooses from, the overview's.
     fn title(tree: &UiNode) -> String {
         let shell = of_kind(tree, "ui.NavShell")
             .into_iter()
             .next()
             .unwrap_or_else(|| panic!("a window has a bar:\n{}", dump(tree)));
-        shell
-            .props
-            .get("overview_title")
-            .and_then(Value::as_text)
+        ["title", "overview_title"]
+            .iter()
+            .find_map(|prop| shell.props.get(*prop).and_then(Value::as_text))
             .unwrap_or_else(|| panic!("the bar titles the window:\n{}", dump(tree)))
             .to_owned()
     }
@@ -126,27 +126,27 @@ mod cases {
 
     /// A window whose place the run stages stands on that place: the bar names it, and the entry
     /// at the list's end says what typing there does, where the declaration's default would have
-    /// made both say Inbox.
+    /// made both say Today.
     #[test]
     fn a_run_stages_the_place_its_window_stands_on() {
         let w = tasks();
         let root = w.root("Tasks");
         w.task(&root, "milk");
         let plain = w.window("home", &root);
-        assert_eq!(title(plain.tree()), "Inbox", "the declaration's default");
-        assert_eq!(entry_placeholder(plain.tree()), "New task");
+        assert_eq!(title(plain.tree()), "Today", "the declaration's default");
+        assert_eq!(entry_placeholder(plain.tree()), "New task for today");
 
-        w.stage("place", "Task.today");
-        let today = w.window("home", &root);
+        w.stage("place", "Task.inbox");
+        let inbox = w.window("home", &root);
         assert_eq!(
-            title(today.tree()),
-            "Today",
+            title(inbox.tree()),
+            "Inbox",
             "the place the run staged:\n{}",
-            dump(today.tree())
+            dump(inbox.tree())
         );
         assert_eq!(
-            entry_placeholder(today.tree()),
-            "New task for today",
+            entry_placeholder(inbox.tree()),
+            "New task",
             "what typing in the window does follows the place it stands on"
         );
 

@@ -1208,8 +1208,11 @@ mod cases {
             }
         }
         let mut v = w.view(&apps.todo, "home", vec![res(&list)]);
-        // It starts on the inbox: what is unsorted and open, and the task done with is in
-        // neither, so it stands in Done alone.
+        // The window opens on today, and neither task has a day: the person picks the inbox,
+        // where what is unsorted and open stands, and the task done with is in Done alone.
+        assert!(row_titles(v.tree()).is_empty(), "nothing is due today");
+        choose(&v, "is:inbox");
+        v.poll_patches().unwrap();
         assert_eq!(row_titles(v.tree()), ["eggs"]);
         let before = w.rt.history(&list.doc).unwrap().len();
         choose(&v, "is:done");
@@ -1841,14 +1844,18 @@ mod cases {
             );
         }
         let mut v = w.view(&apps.todo, "home", vec![res(&list)]);
+        // The window opens on today, and neither task has a day: the person picks the inbox,
+        // where both wait to be sorted.
+        choose(&v, "is:inbox");
+        v.poll_patches().unwrap();
         let (compact, wide) = (at(&mut v, COMPACT), at(&mut v, WIDE));
         for tree in [&compact, &wide] {
             assert!(of_kind(tree, "grid").is_empty());
-            assert_eq!(
-                of_kind(tree, "ui.TextInput").len(),
-                1,
-                "the quick add alone"
-            );
+            let entries = of_kind(tree, "ui.TextInput")
+                .into_iter()
+                .filter(|field| on(field, "entry"))
+                .count();
+            assert_eq!(entries, 1, "one quick add for the list, not one per row");
             let rows = of_kind(tree, "ui.ListRow");
             assert_eq!(rows.len(), 2);
             assert!(
@@ -1893,6 +1900,11 @@ mod cases {
             vec![res(&project), Value::text("Move flat")],
         );
         let mut v = w.view(&apps.todo, "home", vec![res(&list)]);
+        // The window opens on today, whose entry adds a task for today and takes no words
+        // besides its title: the person picks the inbox, whose entry reads a day, a moment, who
+        // the task is for and the project it is of.
+        choose(&v, "is:inbox");
+        v.poll_patches().unwrap();
         let entry = of_kind(v.tree(), "ui.TextInput")
             .into_iter()
             .find(|field| on(field, "entry"))
@@ -1995,6 +2007,11 @@ mod cases {
         );
         let list = w.create("Tasks");
         let mut v = w.view(&apps.todo, "home", vec![res(&list)]);
+        // The window opens on today, whose entry adds a task for today and so takes only its
+        // title: the person picks the inbox, whose entry reads a day, a moment and who the task
+        // is for before the words it leaves as the title.
+        choose(&v, "is:inbox");
+        v.poll_patches().unwrap();
         let entry = of_kind(v.tree(), "ui.TextInput")
             .into_iter()
             .find(|field| on(field, "entry"))
