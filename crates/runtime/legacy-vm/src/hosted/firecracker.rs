@@ -487,6 +487,12 @@ pub fn create_disk(machine: &Machine, disk: &Path, size: VmSize) -> io::Result<(
                 base.display()
             )));
         }
+        // The copy takes the base's mode, and a fetched guest's root
+        // filesystem is read-only: the VM's own disk is the service's to write.
+        std::fs::set_permissions(
+            &partial,
+            <std::fs::Permissions as std::os::unix::fs::PermissionsExt>::from_mode(0o600),
+        )?;
         grow_disk(&partial, size)?;
     } else {
         std::fs::File::create(&partial)?.set_len(size.disk_bytes())?;
@@ -513,9 +519,33 @@ pub fn grow_disk(disk: &Path, size: VmSize) -> io::Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use std::os::unix::fs::FileExt as _;
+    use std::os::unix::fs::{FileExt as _, PermissionsExt as _};
 
     use super::*;
+
+    #[test]
+    fn a_disk_copied_from_a_read_only_base_is_the_vms_to_write() {
+        let dir = tempfile::tempdir().unwrap();
+        let base = dir.path().join("rootfs.ext4");
+        std::fs::write(&base, [7_u8; 4096]).unwrap();
+        std::fs::set_permissions(&base, std::fs::Permissions::from_mode(0o444)).unwrap();
+        let machine = Machine {
+            firecracker: dir.path().join("firecracker"),
+            kernel: dir.path().join("vmlinux"),
+            initramfs: None,
+            cmdline: Machine::DEFAULT_CMDLINE.into(),
+            base_disk: Some(base),
+        };
+        let disk = dir.path().join("vmm/disk.raw");
+        create_disk(&machine, &disk, VmSize::Small).unwrap();
+        let meta = std::fs::metadata(&disk).unwrap();
+        assert_eq!(meta.permissions().mode() & 0o777, 0o600);
+        assert_eq!(
+            meta.len(),
+            VmSize::Small.disk_bytes(),
+            "grown to the VM's size"
+        );
+    }
 
     fn files(dir: &Path) -> VmFiles {
         VmFiles {
