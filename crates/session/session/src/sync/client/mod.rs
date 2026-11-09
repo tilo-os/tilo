@@ -759,16 +759,27 @@ impl Client {
     /// with no pass in between.
     pub fn next_deadline(&self) -> Option<Instant> {
         let now = now_ms();
-        let due = self.next_due_at()?;
+        let due = self.plane.borrow().next_due(now)?;
         let wait = (due - now).max(0.0) / 1_000.0;
         Instant::now().checked_add(Duration::from_secs_f64(wait))
     }
 
-    /// When this device next owes its word in the workspace in front, in Unix milliseconds: what a
-    /// host with its own clock arms a timer with.
+    /// Say what `workspace`'s board owes now — the keepalives, the repeats and the loss repairs —
+    /// as a host that shows one workspace at a time asks with its own timer. Whether anything left.
+    pub fn due_in(&self, workspace: &str) -> bool {
+        let now = now_ms();
+        let Some((desk, frames)) = self.plane.borrow_mut().due_in(workspace, now) else {
+            return false;
+        };
+        self.say_frames(desk, frames);
+        true
+    }
+
+    /// When `workspace`'s board next owes a word, in Unix milliseconds: what a host with its own
+    /// clock arms its timer with.
     #[must_use]
-    pub fn next_due_at(&self) -> Option<f64> {
-        self.plane.borrow().next_due(now_ms())
+    pub fn next_due_in(&self, workspace: &str) -> Option<f64> {
+        self.plane.borrow().next_due_in(workspace, now_ms())
     }
 
     /// Hear everything that reached the plane since the last call. Whether anything did.

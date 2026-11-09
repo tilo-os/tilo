@@ -242,6 +242,29 @@ impl Plane {
         let desk = DeskWorkspaceId::parse(&workspace.id)?;
         Some((desk, workspace.board.due(now_ms)?))
     }
+
+    /// Take what `workspace`'s board owes at `now_ms`, as a host that names one workspace at a time
+    /// asks with its own timer: the keepalives, the repeats and the loss repairs it holds.
+    pub(super) fn due_in(
+        &mut self,
+        workspace: &str,
+        now_ms: f64,
+    ) -> Option<(DeskWorkspaceId, Vec<(u32, Presence)>)> {
+        let held = self
+            .workspaces
+            .iter_mut()
+            .find(|held| held.id == workspace)?;
+        let desk = DeskWorkspaceId::parse(&held.id)?;
+        Some((desk, held.board.due(now_ms)?))
+    }
+
+    /// When `workspace`'s board next owes a word, on the clock presence is heard on.
+    pub(super) fn next_due_in(&self, workspace: &str, now_ms: f64) -> Option<f64> {
+        self.workspaces
+            .iter()
+            .find(|held| held.id == workspace)
+            .and_then(|held| held.board.next_due(now_ms))
+    }
 }
 
 /// Who each window of this desk is, by tab, as presence names records: the short digest of the app

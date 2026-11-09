@@ -384,28 +384,30 @@ pub(crate) fn say(peer: u32, workspace: &str, value: &JsPresence) -> Result<f64,
         page.client
             .set_where(pointer_of(value)?, shell_from_js(value)?);
         let mut own = page.client.own();
-        own.following = value.following.clone();
+        own.following.clone_from(&value.following);
         page.client.set_own(own);
         page.client.follow();
         page.take_said();
-        Ok(page.client.next_due_at().unwrap_or(0.0))
+        Ok(page.client.next_due_in(workspace).unwrap_or(0.0))
     })
 }
 
 /// Publish what `peer` owes now (keepalives, repeats), and answer when it next has something to say
 /// (`0` for nothing).
 pub(crate) fn due(peer: u32, workspace: &str) -> Result<f64, JsError> {
-    let number = workspace_number(workspace)?;
+    workspace_number(workspace)?;
     PAGES.with_borrow_mut(|pages| {
         let page = pages
             .get_mut(&peer)
             .ok_or_else(|| js_error("not a started peer"))?;
-        if !page.workspaces.contains_key(&number) {
+        if !page.workspaces.values().any(|shown| shown == workspace) {
             return Ok(0.0);
         }
         page.take_said();
-        page.client.follow();
-        Ok(page.client.next_due_at().unwrap_or(0.0))
+        // What this workspace's board owes, whether or not it is the one in front: a page shows
+        // each of its workspaces at once, and each keeps its own schedule.
+        page.client.due_in(workspace);
+        Ok(page.client.next_due_in(workspace).unwrap_or(0.0))
     })
 }
 
@@ -516,7 +518,8 @@ pub(crate) fn leave(peer: u32, workspace: &str) -> Result<(), JsError> {
             .publish_presence(number, vec![Presence::desktop(workspace, Payload::Left)])
             .map_err(js_error)?;
         page.workspaces.remove(&number);
-        page.follow(None);
+        let front = page.workspaces.keys().next().copied();
+        page.follow(front);
         Ok(())
     })
 }
