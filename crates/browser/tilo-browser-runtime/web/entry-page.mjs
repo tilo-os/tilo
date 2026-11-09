@@ -37,6 +37,7 @@ import {followConnection} from './connection-status.mjs';
 import {followRefusal, hostUnreachable, reachedHost, refusalText, rejoinedName, retryUnreachable} from './session-refusal.mjs';
 import {rendererUnavailable} from './webgpu-safety.mjs';
 import {createWorkspaceActions, invitedLine} from './workspace-actions.mjs';
+import {ensureOwnWorkspace} from './own-workspace.mjs';
 import {
   chooseDisplayName, chooseWorkspace, chosenDisplayName, chosenWorkspace, enteredWorkspaces, forgetGoneWorkspaces,
   heldWorkspaces, hostDeviceOf, hostToReconnect, joinGranted, joinViaHost, keepJoinedHost, keepOwnedHost,
@@ -1204,13 +1205,25 @@ export async function startEntryPage({mode}) {
     // makes, and signs in with a passkey, once the page can.
     if (firstRun) offerFirstRun({page, identityActions});
     // Leaving the first screen (skipped, or the agent is in) opens the
-    // person's own workspace, where the site gives them one: the home
-    // workspace let them in already (they stay in it, and find it in the
-    // workspace menu), but their own comes first.
+    // person's own workspace: the one their host keeps for them, where the
+    // agent was set up, or else their own desktop where the site gives one.
+    // The home workspace let them in already (they stay in it, and find it
+    // in the workspace menu), but their own comes first.
     if (firstRun && !embed && here.kind !== 'own') {
-      firstRun.whenDone(() => void ownDesktopAllowed(page.entry?.home).then(open => {
-        if (open) void openWorkspace({choice: {id: `${OPEN_WORKSPACE}own`, name: 'Your desktop', own: true}, page, status});
-      }));
+      firstRun.whenDone(() => {
+        if (hostedOwn) return void openWorkspace({choice: ownChoice(hostedOwn), page, status});
+        void ownDesktopAllowed(page.entry?.home).then(open => {
+          if (open) void openWorkspace({choice: {id: `${OPEN_WORKSPACE}own`, name: 'Your desktop', own: true}, page, status});
+        });
+      });
+    }
+    // A tab an agent just signed in as a device of the person: it paired
+    // through the home workspace, and opens the person's own one next.
+    if (!embed && page.peer && takeOpenOwn()) {
+      void ensureOwnWorkspace(page).then(own => {
+        own.peer?.dispose?.();
+        return openWorkspace({choice: ownChoice(own), page, status});
+      }, error => console.warn('signed in: opening your workspace', error));
     }
     // What the kept profile says of linked accounts, or that none is kept:
     // either way a linked account's picture may be worn now, and never
@@ -1845,7 +1858,18 @@ function offerFirstRun({page, identityActions}) {
   const codes = loginCodes(peer.origin);
   if (identityActions) {
     firstRun.offerSetup(async () => {
-      const {link} = await identityActions.connectAgent();
+      // The agent is set up in the person's own workspace on this host,
+      // where the host keeps one; a host that keeps none sets it up here.
+      if (!hostedOwn) {
+        try {
+          hostedOwn = await ensureOwnWorkspace(page);
+          hostedOwn.peer?.dispose?.();
+        } catch (error) {
+          if (error?.code !== 'unknown_action' && !/no such action is offered/i.test(error?.message ?? '')) throw error;
+          console.info('first run: this host keeps no workspaces of people\'s own;', error?.message);
+        }
+      }
+      const {link} = await identityActions.connectAgent({workspace: hostedOwn?.id});
       const made = await codes.create(link);
       // While the person's root is in this tab alone, a stand-in on the
       // host keeps them from being lost with it.
@@ -1860,10 +1884,27 @@ function offerFirstRun({page, identityActions}) {
   firstRun.offerAgentSignIn(async () => ({...await codes.create(null), signIn: ({user, invite}) => {
     const url = page.link.format({mode: 'desktop', target: {scope: {kind: 'room', host: peer.origin, room: peer.workspace}}});
     try { globalThis.localStorage?.setItem(SEEN, '1'); } catch { /* The pairing link skips the first screen anyway. */ }
+    try { globalThis.sessionStorage?.setItem(OPEN_OWN, '1'); } catch { /* Then the home workspace stays in front. */ }
     globalThis.location.assign(`${url}${new URL(url).hash.includes('?') ? '&' : '?'}pair=${pairSecret(user, invite)}`);
     globalThis.location.reload();
   }}));
 }
+
+/** The person's own workspace on the home host, once the first screen had
+ * it made for the agent it set up. */
+let hostedOwn = null;
+/** Set for the one load after an agent signed this tab in: open the
+ * person's own workspace once paired. */
+const OPEN_OWN = 'tilo-open-own-workspace';
+const takeOpenOwn = () => {
+  try {
+    const set = globalThis.sessionStorage?.getItem(OPEN_OWN) === '1';
+    if (set) globalThis.sessionStorage.removeItem(OPEN_OWN);
+    return set;
+  } catch { return false; }
+};
+/** The workspace switcher's choice of the person's own hosted workspace. */
+const ownChoice = own => ({id: `${OPEN_WORKSPACE}${own.id}`, name: own.name ?? 'My workspace', origin: own.origin, room: own.id});
 
 /**
  * The person's stand-in on the host `peer` is in, where the runtime can
@@ -1890,8 +1931,8 @@ function pairingOf({peer, identity, runtime, link}) {
   if (!peer?.origin || !peer.workspace || !runtime?.pendingPairings || !link) return null;
   const post = httpsPost(peer.origin);
   return {
-    link: invite => {
-      const url = link.format({mode: 'desktop', target: {scope: {kind: 'room', host: peer.origin, room: peer.workspace}}});
+    link: (invite, room = peer.workspace) => {
+      const url = link.format({mode: 'desktop', target: {scope: {kind: 'room', host: peer.origin, room}}});
       return `${url}${new URL(url).hash.includes('?') ? '&' : '?'}pair=${pairSecret(identity.userPublicKey, invite)}`;
     },
     pending: async () => JSON.parse(await runtime.pendingPairings(post, identity)),

@@ -392,7 +392,7 @@ async function pairingFixture({invites = [INVITE_A, INVITE_B]} = {}) {
     copy: async () => {}, onAgent: agent => fixture.agents.push(agent),
     every: run => { fixture.poll = run; return () => { fixture.poll = null; }; },
     pairing: {
-      link: invite => `https://tilo.example/#/@rooms.example/w/WORKSPACE?pair=${identity.userPublicKey}${invite}`,
+      link: (invite, room = 'WORKSPACE') => `https://tilo.example/#/@rooms.example/w/${room}?pair=${identity.userPublicKey}${invite}`,
       pending: async () => host.pending,
       answer: async (digest, approved) => {
         if (host.fail) throw host.fail;
@@ -499,6 +499,12 @@ test('an agent’s link is a pairing link to this tab with a fresh invite, open 
   });
   assert.equal(typeof pairing.poll, 'function', 'the tab looks for the agent while the link is open');
   assert.deepEqual(pairing.sheets, [], 'no sheet: the first screen shows the prompt');
+});
+
+test('an agent set up in the person’s own workspace gets a link that opens it', async () => {
+  const pairing = await pairingFixture();
+  const made = await pairing.actions.connectAgent({workspace: 'MINE'});
+  assert.equal(made.link, `https://tilo.example/#/@rooms.example/w/MINE?pair=${pairing.identity.userPublicKey}${INVITE_A}`);
 });
 
 test('the agent that answers its link is approved without asking, once, and said to have signed in', async () => {

@@ -341,10 +341,11 @@ export function createIdentityActions({
       try { standInStore?.setItem(standInKey, key); } catch { /* Made again next time: the host names the same key. */ }
       return key;
     },
-    /** A pairing link for an agent set up from this tab: `{link, expiresAt}`. */
-    async connectAgent() {
+    /** A pairing link for an agent set up from this tab: `{link, expiresAt}`,
+     * opening `workspace` (on the same host) when named, else this one. */
+    async connectAgent({workspace} = {}) {
       const invite = invites.open();
-      const link = pairing?.link(invite.id);
+      const link = workspace ? pairing?.link(invite.id, workspace) : pairing?.link(invite.id);
       if (!link) {
         invites.spend(invite.id);
         throw new IdentityError('no-workspace', 'Join a workspace before setting up an agent in it');
