@@ -34,13 +34,36 @@ fn os(what: &str) -> io::Error {
     io::Error::new(error.kind(), format!("{what}: {error}"))
 }
 
+/// Say which step an error comes from.
+trait Step<T> {
+    fn step(self, what: &str) -> io::Result<T>;
+}
+
+impl<T, E: Into<io::Error>> Step<T> for Result<T, E> {
+    fn step(self, what: &str) -> io::Result<T> {
+        self.map_err(|error| {
+            let error: io::Error = error.into();
+            io::Error::new(error.kind(), format!("{what}: {error}"))
+        })
+    }
+}
+
 fn check(result: libc::c_int, what: &str) -> io::Result<()> {
     if result < 0 { Err(os(what)) } else { Ok(()) }
 }
 
 /// Refuse every caller but the service, then become root for the rest.
+///
+/// The helper's file capabilities only let it change its ids: a process
+/// that becomes uid 0 keeps the capabilities it had, and is given root's
+/// only by `execve`. So the service's call switches to root and runs the
+/// helper again, with the same arguments and descriptors; that run, whose
+/// caller is root, goes on. Only root can start the helper as root.
 pub fn enter(config: &JailConfig) -> io::Result<()> {
     let caller = rustix::process::getuid().as_raw();
+    if caller == 0 && rustix::process::geteuid().as_raw() == 0 {
+        return Ok(());
+    }
     if caller != config.service_uid {
         return Err(io::Error::new(
             io::ErrorKind::PermissionDenied,
@@ -48,13 +71,21 @@ pub fn enter(config: &JailConfig) -> io::Result<()> {
         ));
     }
     // SAFETY: plain system calls; with the helper's capabilities they make
-    // every id root's, so the jailer runs as the root it expects.
+    // every id root's.
     unsafe {
         check(libc::setgroups(0, std::ptr::null()), "setgroups")?;
         check(libc::setresgid(0, 0, 0), "becoming root (setresgid)")?;
         check(libc::setresuid(0, 0, 0), "becoming root (setresuid)")?;
     }
-    Ok(())
+    let error = std::process::Command::new("/proc/self/exe")
+        .args(std::env::args_os().skip(1))
+        .env_clear()
+        .env("PATH", "/usr/sbin:/usr/bin:/sbin:/bin")
+        .exec();
+    Err(io::Error::new(
+        error.kind(),
+        format!("running the helper as root: {error}"),
+    ))
 }
 
 /// A directory descriptor the service passed, checked: a directory, owned
@@ -177,21 +208,22 @@ fn prepare(config: &JailConfig, start: &Start) -> io::Result<std::process::Comma
     let vmm = passed_dir(VMM_FD, &owners, "VM's state")?;
     let sockets = passed_dir(SOCKETS_FD, &owners, "VM's sockets")?;
     let guest = passed_dir(GUEST_FD, &[], "guest kernel's")?;
-    hand_over(&vmm, vm, service_gid)?;
-    hand_over(&sockets, vm, service_gid)?;
+    hand_over(&vmm, vm, service_gid).step("handing the VM its state")?;
+    hand_over(&sockets, vm, service_gid).step("handing the VM its sockets")?;
 
     let jail = config.jail_dir(slot);
     std::fs::DirBuilder::new()
         .recursive(true)
         .mode(0o711)
-        .create(&config.chroot_base)?;
+        .create(&config.chroot_base)
+        .step("making the jails' directory")?;
     if let Some(exec_dir) = jail.parent() {
         std::fs::DirBuilder::new()
             .recursive(true)
             .mode(0o711)
             .create(exec_dir)?;
     }
-    fresh_dir(&jail, 0o700, None)?;
+    fresh_dir(&jail, 0o700, None).step("making the jail")?;
     let root = jail.join("root");
     for point in [VMM_DIR, SOCKETS_DIR, GUEST_DIR] {
         std::fs::DirBuilder::new()
@@ -199,7 +231,7 @@ fn prepare(config: &JailConfig, start: &Start) -> io::Result<std::process::Comma
             .mode(0o700)
             .create(root.join(point.trim_start_matches('/')))?;
     }
-    cgroup_parent(config)?;
+    cgroup_parent(config).step("making the VMs' cgroup")?;
     if let Some(net) = &config.network {
         connect(config, net, slot)?;
     }
@@ -274,8 +306,14 @@ fn prepare(config: &JailConfig, start: &Start) -> io::Result<std::process::Comma
     Ok(jailer)
 }
 
+/// Bind the directory `source` names at `target`. A descriptor opened
+/// before this process made its own mount namespace names a mount of the
+/// old one, which `mount` refuses, so the bind goes by the directory's
+/// path, and the result must be the very directory the service opened: a
+/// directory swapped in between is refused.
 fn bind(source: &File, target: &Path, read_only: bool) -> io::Result<()> {
-    let from = CString::new(format!("/proc/self/fd/{}", source.as_raw_fd()))?;
+    let path = std::fs::read_link(format!("/proc/self/fd/{}", source.as_raw_fd()))?;
+    let from = CString::new(path.as_os_str().as_bytes())?;
     let to = CString::new(target.as_os_str().as_bytes())?;
     // SAFETY: both strings live across the calls.
     unsafe {
@@ -289,7 +327,17 @@ fn bind(source: &File, target: &Path, read_only: bool) -> io::Result<()> {
             ),
             "binding a directory into the jail",
         )?;
-        if read_only {
+    }
+    let (passed, bound) = (source.metadata()?, std::fs::metadata(target)?);
+    if (passed.dev(), passed.ino()) != (bound.dev(), bound.ino()) {
+        return Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            format!("{} changed while it was bound", path.display()),
+        ));
+    }
+    if read_only {
+        // SAFETY: as above.
+        unsafe {
             check(
                 libc::mount(
                     std::ptr::null(),
@@ -319,12 +367,13 @@ fn connect(config: &JailConfig, net: &super::NetworkConfig, slot: u32) -> io::Re
         .recursive(true)
         .mode(0o711)
         .create(config.chroot_base.join("net"))?;
-    fresh_dir(&net_dir, 0o700, Some(net_uid))?;
+    fresh_dir(&net_dir, 0o700, Some(net_uid)).step("making the network's directory")?;
     let host = File::open("/proc/self/ns/net")?;
     let holder = spawn_holder(net_uid)?;
     let cgroup = net_cgroup(config, slot);
     let _ = std::fs::create_dir(&cgroup);
-    std::fs::write(cgroup.join("cgroup.procs"), holder.to_string())?;
+    std::fs::write(cgroup.join("cgroup.procs"), holder.to_string())
+        .step("moving the network into its cgroup")?;
 
     let namespace = File::open(format!("/proc/{holder}/ns/net"))?;
     // SAFETY: `setns` on a namespace descriptor this owns.
@@ -335,7 +384,7 @@ fn connect(config: &JailConfig, net: &super::NetworkConfig, slot: u32) -> io::Re
     for sysctl in ["all", "default"] {
         let path = format!("/proc/sys/net/ipv6/conf/{sysctl}/disable_ipv6");
         if Path::new(&path).exists() {
-            std::fs::write(path, "1")?;
+            std::fs::write(path, "1").step("turning IPv6 off")?;
         }
     }
     create_tap(TAP, vm)?;
@@ -372,7 +421,8 @@ fn connect(config: &JailConfig, net: &super::NetworkConfig, slot: u32) -> io::Re
 
     let pid_file = net_dir.join("pasta.pid");
     let pasta = spawn_pasta(&net.pasta, &host, net_uid, holder, &pid_file, net.resolver)?;
-    std::fs::write(cgroup.join("cgroup.procs"), pasta.to_string())?;
+    std::fs::write(cgroup.join("cgroup.procs"), pasta.to_string())
+        .step("moving pasta into its cgroup")?;
     control.enslave(BRIDGE, UPLINK)?;
     for link in ["lo", TAP, UPLINK, BRIDGE] {
         control.up(link)?;
@@ -391,11 +441,27 @@ fn spawn_holder(net_uid: u32) -> io::Result<u32> {
     check(pid, "fork")?;
     if pid == 0 {
         drop(ready_r);
-        let status = holder_child(net_uid).map_or(1_u8, |()| 0);
+        // It outlives everything here: it keeps no descriptor of the
+        // helper's (the VM's directories among them) but its status pipe.
+        let keep = ready_w.as_raw_fd().unsigned_abs();
+        // SAFETY: closing descriptors only.
+        unsafe {
+            libc::syscall(libc::SYS_close_range, 0_u32, keep.saturating_sub(1), 0_u32);
+            libc::syscall(
+                libc::SYS_close_range,
+                keep.saturating_add(1),
+                u32::MAX,
+                0_u32,
+            );
+        }
+        let outcome = holder_child(net_uid);
         let mut ready = File::from(ready_w);
-        let _ = ready.write_all(&[status]);
+        let _ = match &outcome {
+            Ok(()) => ready.write_all(b"ok"),
+            Err(error) => ready.write_all(error.to_string().as_bytes()),
+        };
         drop(ready);
-        if status != 0 {
+        if outcome.is_err() {
             // SAFETY: leaving the forked child.
             unsafe { libc::_exit(1) };
         }
@@ -405,12 +471,12 @@ fn spawn_holder(net_uid: u32) -> io::Result<u32> {
         }
     }
     drop(ready_w);
-    let mut status = [1_u8];
-    let read = File::from(ready_r).read(&mut status)?;
-    if read != 1 || status[0] != 0 {
-        return Err(io::Error::other(
-            "the VM's network namespace could not be made (user namespaces off?)",
-        ));
+    let mut said = String::new();
+    File::from(ready_r).read_to_string(&mut said)?;
+    if said != "ok" {
+        return Err(io::Error::other(format!(
+            "the VM's network namespace could not be made: {said}"
+        )));
     }
     u32::try_from(pid).map_err(|_| io::Error::other("pid out of range"))
 }
@@ -422,6 +488,10 @@ fn holder_child(uid: u32) -> io::Result<()> {
         check(libc::setresgid(uid, uid, uid), "setresgid")?;
         check(libc::prctl(libc::PR_SET_KEEPCAPS, 1, 0, 0, 0), "keepcaps")?;
         check(libc::setresuid(uid, uid, uid), "setresuid")?;
+        // Changing ids made this process undumpable, which makes its own
+        // /proc files root's: it could not write its uid map, nor could
+        // `pasta`, the same uid, open its namespaces.
+        check(libc::prctl(libc::PR_SET_DUMPABLE, 1, 0, 0, 0), "dumpable")?;
         // Kept capabilities are not effective after the switch: make them
         // so for `unshare`, which then makes the user namespace this uid's.
         set_capabilities(true)?;
@@ -430,14 +500,12 @@ fn holder_child(uid: u32) -> io::Result<()> {
             "unshare",
         )?;
     }
-    std::fs::write("/proc/self/setgroups", "deny")?;
-    std::fs::write("/proc/self/uid_map", format!("{uid} {uid} 1"))?;
-    std::fs::write("/proc/self/gid_map", format!("{uid} {uid} 1"))?;
+    std::fs::write("/proc/self/setgroups", "deny").step("setgroups deny")?;
+    std::fs::write("/proc/self/uid_map", format!("{uid} {uid} 1")).step("uid map")?;
+    std::fs::write("/proc/self/gid_map", format!("{uid} {uid} 1")).step("gid map")?;
     // SAFETY: as above.
     unsafe {
         set_capabilities(false)?;
-        // Its namespaces are opened by `pasta`, as the same uid.
-        check(libc::prctl(libc::PR_SET_DUMPABLE, 1, 0, 0, 0), "dumpable")?;
         // Gone with Firecracker, which this process's parent becomes.
         check(
             libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGKILL, 0, 0, 0),
@@ -671,7 +739,7 @@ pub fn stop(config: &JailConfig, slot: u32) -> io::Result<()> {
     for cgroup in [vm_cgroup(config, slot), net_cgroup(config, slot)] {
         let kill = cgroup.join("cgroup.kill");
         if kill.exists() {
-            std::fs::write(kill, "1")?;
+            std::fs::write(kill, "1").step("killing a VM's cgroup")?;
         }
     }
     Ok(())
@@ -689,7 +757,7 @@ pub fn release(config: &JailConfig, slot: u32) -> io::Result<()> {
         while cgroup.exists() {
             let events = std::fs::read_to_string(cgroup.join("cgroup.events")).unwrap_or_default();
             if events.lines().any(|line| line == "populated 0") {
-                std::fs::remove_dir(&cgroup)?;
+                std::fs::remove_dir(&cgroup).step("removing a VM's cgroup")?;
                 break;
             }
             if started.elapsed() > Duration::from_secs(10) {
@@ -701,8 +769,9 @@ pub fn release(config: &JailConfig, slot: u32) -> io::Result<()> {
             std::thread::sleep(Duration::from_millis(10));
         }
     }
-    hand_over(&vmm, config.service_uid, config.service_gid)?;
-    hand_over(&sockets, config.service_uid, config.service_gid)?;
+    hand_over(&vmm, config.service_uid, config.service_gid).step("handing the VM's state back")?;
+    hand_over(&sockets, config.service_uid, config.service_gid)
+        .step("handing the VM's sockets back")?;
     for dir in [config.jail_dir(slot), config.net_dir(slot)] {
         match std::fs::remove_dir_all(&dir) {
             Err(error) if error.kind() != io::ErrorKind::NotFound => return Err(error),
