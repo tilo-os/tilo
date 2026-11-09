@@ -134,15 +134,16 @@ pub fn session(workspace: &str) -> Option<ContentStore> {
 
 /// Tell every store a session's process opens from here on which workspaces it draws, the one in
 /// front first: a place of any of them reads its pictures through it.
+///
+/// Off unix there is no device keeping a session's content, so no store opens for the workspaces
+/// to be read through: the list is taken and dropped.
 pub fn set_session_workspaces(workspaces: Vec<String>) {
     #[cfg(unix)]
     {
         device::set_session_workspaces(workspaces);
     }
     #[cfg(not(unix))]
-    {
-        let _ = workspaces;
-    }
+    drop(workspaces);
 }
 
 #[cfg(test)]
