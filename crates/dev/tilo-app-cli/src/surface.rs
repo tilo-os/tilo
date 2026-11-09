@@ -49,6 +49,24 @@ pub const FLAG: &str = "--surface";
 
 const HEADER: &str = "# Written by `tilo-app surface`; review changes like an API change.\n\n";
 
+/// The file's format, written at its top: what the file describes of an app.
+/// A file without it was written before surfaces published read actions. See
+/// [`Committed`].
+pub const FORMAT: u64 = 2;
+
+/// The line naming the format, before the resources.
+fn format_line() -> String {
+    format!("format = {FORMAT}\n\n")
+}
+
+/// A committed surface as its app has it: the format the file was written in,
+/// and its resources.
+#[derive(Clone, Debug)]
+pub struct Committed {
+    pub format: u64,
+    pub resources: Vec<Value>,
+}
+
 /// What an app's binary reports about its surface.
 #[derive(Debug, Default)]
 pub struct SurfaceReport {
@@ -436,6 +454,7 @@ fn leading<'a>(
 /// fields one per line, then its verbs, their parameters one per line.
 pub fn render(resources: &[Value]) -> Result<String> {
     let mut text = String::from(HEADER);
+    text.push_str(&format_line());
     for resource in resources.iter().map(filed) {
         let Value::Object(map) = &resource else {
             bail!("a resource of the surface is not a table");
@@ -530,7 +549,7 @@ pub fn write(app_dir: &Path, resources: &[Value]) -> Result<PathBuf> {
 }
 
 /// The committed surface, if the app has one.
-pub fn committed(app_dir: &Path) -> Result<Option<Vec<Value>>> {
+pub fn committed(app_dir: &Path) -> Result<Option<Committed>> {
     let path = app_dir.join(FILE);
     let Ok(text) = std::fs::read_to_string(&path) else {
         return Ok(None);
@@ -538,12 +557,14 @@ pub fn committed(app_dir: &Path) -> Result<Option<Vec<Value>>> {
     let toml: toml::Value =
         toml::from_str(&text).with_context(|| format!("{} is not TOML", path.display()))?;
     let json = serde_json::to_value(toml).context("reading the committed surface")?;
-    Ok(Some(
-        json.get("resources")
+    Ok(Some(Committed {
+        format: json.get("format").and_then(Value::as_u64).unwrap_or(1),
+        resources: json
+            .get("resources")
             .and_then(Value::as_array)
             .map(|resources| resources.iter().map(normalized).collect())
             .unwrap_or_default(),
-    ))
+    }))
 }
 
 fn keyed<'a>(items: impl IntoIterator<Item = &'a Value>, key: &str) -> BTreeMap<String, &'a Value> {
@@ -600,34 +621,55 @@ fn written_before_types(before: &Value) -> bool {
             && params.clone().all(|param| param.get("type").is_none())
 }
 
-/// Whether the committed verb `before` is `now` but for the types of its
-/// parameters, which a file written before parameters had them leaves out.
-fn same_but_untyped(before: &Value, now: &Value) -> bool {
-    let mut untyped = now.clone();
-    for param in untyped
-        .get_mut("params")
-        .and_then(Value::as_array_mut)
-        .into_iter()
-        .flatten()
-        .filter_map(Value::as_object_mut)
-    {
-        param.remove("type");
+/// Whether the committed `before` is `now` but for what a file written
+/// earlier leaves out: a verb's parameters' types (before the vocabulary),
+/// and the value it answers with (before [`FORMAT`]). Such a file stays
+/// current until its app's surface is written again.
+fn same_but_earlier(before: &Value, now: &Value, untyped: bool, unreturned: bool) -> bool {
+    let mut earlier = now.clone();
+    if let Some(object) = earlier.as_object_mut() {
+        if untyped && let Some(params) = object.get_mut("params").and_then(Value::as_array_mut) {
+            for param in params.iter_mut().filter_map(Value::as_object_mut) {
+                param.remove("type");
+            }
+        }
+        if untyped || unreturned {
+            object.remove("returns");
+        }
     }
-    untyped == *before
+    earlier == *before
+}
+
+/// Whether `verb` is a read action: it changes nothing, so a file written
+/// before surfaces published read actions ([`written_before_reads`]) is
+/// current without it until its app is next written.
+fn is_read(verb: &Value) -> bool {
+    text(verb, "kind") == "read"
+}
+
+/// Whether the committed file `format` was written before surfaces published
+/// their apps' read actions. Such a file stays current until the app's
+/// surface is next written, which adds them with their parameters and the
+/// values they answer with; once it has them ([`FORMAT`]), a read action it
+/// lacks is drift as any other.
+fn written_before_reads(format: u64) -> bool {
+    format < FORMAT
 }
 
 /// How the committed surface `before` differs from `now`, one line each.
-fn differences(kind: &str, before: &Value, now: &Value) -> Vec<String> {
+fn differences(kind: &str, before: &Value, now: &Value, format: u64) -> Vec<String> {
     let mut changes = Vec::new();
     let older = written_before_types(before);
+    let unread = written_before_reads(format);
     for (what, list, key) in [("verb", "verbs", "id"), ("field", "fields", "path")] {
         let old = by(before.get(list), key);
         let new = by(now.get(list), key);
         for (name, value) in &new {
             match old.get(name) {
+                None if what == "verb" && unread && is_read(value) => {}
                 None => changes.push(format!("{kind}: new {what} `{name}`")),
                 Some(previous) if older && same_but_older(previous, value) => {}
-                Some(previous) if older && same_but_untyped(previous, value) => {}
+                Some(previous) if same_but_earlier(previous, value, older, unread) => {}
                 Some(previous) if previous != value => {
                     changes.push(format!("{kind}: {what} `{name}` changed"));
                 }
@@ -795,7 +837,7 @@ fn history_messages(app: &str, resource: &Value) -> Vec<String> {
 pub fn findings(
     app: &str,
     report: &SurfaceReport,
-    committed: Option<&[Value]>,
+    committed: Option<&Committed>,
     catalog: Option<&BTreeSet<String>>,
     missing: Level,
 ) -> ContractReport {
@@ -839,7 +881,8 @@ pub fn findings(
             format!("there is no committed {FILE}; write it with `tilo-app surface`"),
         )),
         Some(committed) => {
-            let committed: Vec<Value> = committed.iter().map(filed).collect();
+            let before_format = committed.format;
+            let committed: Vec<Value> = committed.resources.iter().map(filed).collect();
             let reported: Vec<Value> = report.resources.iter().map(filed).collect();
             let old = keyed(&committed, "kind");
             let new = keyed(&reported, "kind");
@@ -849,7 +892,7 @@ pub fn findings(
                     changes.push(format!("new resource `{kind}`"));
                     continue;
                 };
-                changes.extend(differences(kind, before, now));
+                changes.extend(differences(kind, before, now, before_format));
                 let storage = incompatible(before, now);
                 let bumped = now.get("version").and_then(Value::as_u64)
                     > before.get("version").and_then(Value::as_u64);
@@ -1084,7 +1127,7 @@ pub fn check_report(
     Ok(findings(
         &app_id(app_dir)?,
         report,
-        committed(app_dir)?.as_deref(),
+        committed(app_dir)?.as_ref(),
         catalog.as_ref(),
         level,
     ))
@@ -1140,6 +1183,14 @@ mod tests {
         }
     }
 
+    /// A committed surface of `resources`, as the writer writes it.
+    fn written(resources: Vec<Value>) -> Committed {
+        Committed {
+            format: FORMAT,
+            resources,
+        }
+    }
+
     fn rules(found: &ContractReport) -> Vec<(&'static str, Level)> {
         found
             .findings
@@ -1154,10 +1205,11 @@ mod tests {
         let now = report(&[resource(1, "String", &["rename"])]);
         write(temp.path(), &now.resources).unwrap();
         let committed = committed(temp.path()).unwrap().unwrap();
+        assert_eq!(committed.format, FORMAT);
         let filed_now: Vec<Value> = now.resources.iter().map(filed).collect();
-        assert_eq!(committed, filed_now);
+        assert_eq!(committed.resources, filed_now);
         // What the file leaves out is not drift.
-        assert!(committed[0]["fields"][0].get("title").is_none());
+        assert!(committed.resources[0]["fields"][0].get("title").is_none());
         let catalog: BTreeSet<String> = ["notes-rename", "notes-book-title"]
             .into_iter()
             .map(str::to_owned)
@@ -1231,17 +1283,69 @@ mod tests {
         assert_eq!(surface.types[0].name, "Renamed");
     }
 
+    /// A file written before its app published read actions stays current
+    /// without them; once it has them, a read verb it lacks is drift.
+    #[test]
+    fn a_file_written_before_read_actions_takes_them_when_written_again() {
+        let before = vec![normalized(&resource(1, "String", &["rename"]))];
+        let mut now = report(&[resource(1, "String", &["rename"])]);
+        let read = serde_json::json!({
+            "id": "read-form-fields",
+            "kind": "read",
+            "returns": {"type": {"named": "FormFields"}},
+        });
+        now.resources[0]["verbs"]
+            .as_array_mut()
+            .unwrap()
+            .push(read.clone());
+        let older = Committed {
+            format: 1,
+            resources: before,
+        };
+        let found = findings("so.tilo.notes", &now, Some(&older), None, Level::Warning);
+        assert!(found.findings.is_empty(), "{}", found.render());
+
+        // Written, it lists the read action, and the file is what the code is.
+        let temp = tempfile::tempdir().unwrap();
+        write(temp.path(), &now.resources).unwrap();
+        let committed = committed(temp.path()).unwrap().unwrap();
+        let found = findings(
+            "so.tilo.notes",
+            &now,
+            Some(&committed),
+            None,
+            Level::Warning,
+        );
+        assert!(found.findings.is_empty(), "{}", found.render());
+
+        // A file that has them takes no other new verb.
+        let mut more = report(&[resource(1, "String", &["rename"])]);
+        more.resources[0]["verbs"].as_array_mut().unwrap().extend([
+            read.clone(),
+            serde_json::json!({"id": "retitle", "kind": "undoable"}),
+        ]);
+        let found = findings(
+            "so.tilo.notes",
+            &more,
+            Some(&committed),
+            None,
+            Level::Warning,
+        );
+        assert_eq!(rules(&found), [("surface", Level::Error)]);
+        assert!(found.findings[0].message.contains("retitle"));
+    }
+
     #[test]
     fn a_record_that_stopped_being_the_persons_is_drift() {
         let before = filed(&resource(1, "String", &["rename"]));
         let mut now = before.clone();
         now["person"] = Value::Bool(true);
         assert_eq!(
-            differences("notes.book", &before, &now),
+            differences("notes.book", &before, &now, FORMAT),
             ["notes.book: person changed"]
         );
         assert_eq!(
-            differences("notes.book", &now, &before),
+            differences("notes.book", &now, &before, FORMAT),
             ["notes.book: person changed"]
         );
     }
@@ -1255,7 +1359,7 @@ mod tests {
         let found = findings(
             "so.tilo.notes",
             &now,
-            Some(&before),
+            Some(&written(before.clone())),
             Some(&BTreeSet::new()),
             Level::Error,
         );
@@ -1279,7 +1383,13 @@ mod tests {
 
         // With a new storage version the change is drift to commit only.
         let bumped = report(&[resource(2, "Atom", &["rename"])]);
-        let found = findings("so.tilo.notes", &bumped, Some(&before), None, Level::Error);
+        let found = findings(
+            "so.tilo.notes",
+            &bumped,
+            Some(&written(before.clone())),
+            None,
+            Level::Error,
+        );
         assert_eq!(rules(&found), [("surface", Level::Error)]);
 
         // A plain map moved to a shared one is stored alike: drift only.
@@ -1289,10 +1399,22 @@ mod tests {
             &["rename"],
         ))];
         let shared = report(&[resource(1, "tilo_resource::Map<Progress>", &["rename"])]);
-        let found = findings("so.tilo.notes", &shared, Some(&map), None, Level::Error);
+        let found = findings(
+            "so.tilo.notes",
+            &shared,
+            Some(&written(map.clone())),
+            None,
+            Level::Error,
+        );
         assert_eq!(rules(&found), [("surface", Level::Error)]);
         let other = report(&[resource(1, "Map<Atom>", &["rename"])]);
-        let found = findings("so.tilo.notes", &other, Some(&map), None, Level::Error);
+        let found = findings(
+            "so.tilo.notes",
+            &other,
+            Some(&written(map.clone())),
+            None,
+            Level::Error,
+        );
         assert_eq!(
             rules(&found),
             [("storage", Level::Error), ("surface", Level::Error)]

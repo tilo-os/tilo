@@ -137,40 +137,38 @@ fn a_native_app_read_action_answers_with_its_published_type() {
     let scratch = tempfile::tempdir().unwrap();
     let dir = scratch.path().join("reader");
     std::fs::create_dir(&dir).unwrap();
+    let apps = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../apps");
+    let run = |write: bool| {
+        let mut command = Command::new(env!("CARGO_BIN_EXE_tilolang"));
+        command.arg("check").arg(&dir).arg("--search").arg(&apps);
+        if write {
+            command.arg("--write-ids");
+        }
+        let output = command.output_locked().unwrap();
+        (
+            output.status.success(),
+            String::from_utf8_lossy(&output.stderr).into_owned(),
+        )
+    };
     std::fs::write(
         dir.join("app.tl"),
         "app so.tilo.test.reader \"Reader\"\n\nuse so.tilo.pdf-viewer as pdf\n\n\
          action file_of(d: pdf.Document) -> Text {\n    let form = pdf.read_form_fields(d)\n    form.file\n}\n",
     )
     .unwrap();
-    let output = Command::new(env!("CARGO_BIN_EXE_tilolang"))
-        .arg("check")
-        .arg(&dir)
-        .arg("--search")
-        .arg(Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../apps"))
-        .output_locked()
-        .unwrap();
-    assert!(
-        output.status.success(),
-        "{}",
-        String::from_utf8_lossy(&output.stderr)
-    );
+    let (passed, stderr) = run(true);
+    assert!(passed, "{stderr}");
 
     // A field the PDF's form does not answer with is a compile error, as a typed value's.
     std::fs::write(
         dir.join("app.tl"),
         "app so.tilo.test.reader \"Reader\"\n\nuse so.tilo.pdf-viewer as pdf\n\n\
-         action pages_of(d: pdf.Document) -> Int {\n    let form = pdf.read_form_fields(d)\n    form.pages\n}\n",
+         action file_of(d: pdf.Document) -> Text {\n    let form = pdf.read_form_fields(d)\n    form.pages\n}\n",
     )
     .unwrap();
-    let output = Command::new(env!("CARGO_BIN_EXE_tilolang"))
-        .arg("check")
-        .arg(&dir)
-        .arg("--search")
-        .arg(Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../apps"))
-        .output_locked()
-        .unwrap();
-    assert!(!output.status.success(), "a form has no pages");
+    let (passed, stderr) = run(false);
+    assert!(!passed, "a form has no pages");
+    assert!(stderr.contains("pages"), "{stderr}");
 }
 
 /// Runs `check` on `dir`, writing with `--write-ids` when `write`: whether it passed, and what
