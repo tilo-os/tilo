@@ -375,9 +375,8 @@ impl Staged {
     ) -> Result<(), String> {
         theme.reduce_motion = true;
         self.harness.set_input_scale(display_scale)?;
-        self.harness.set_interaction_environment(input);
         self.harness
-            .relayout_window_themed(viewport, theme)
+            .relayout_window_themed_for(viewport, theme, input)
             .map_err(|error| format!("layout failed: {error:?}"))?;
         self.exchange();
         // A motion that lands even when reduced (a cross-fade) runs out on the toolkit's clock.
@@ -582,9 +581,8 @@ impl Staged {
         input: InteractionEnvironment,
     ) -> Result<(), String> {
         theme.reduce_motion = false;
-        self.harness.set_interaction_environment(input);
         self.harness
-            .relayout_window_themed(viewport, theme)
+            .relayout_window_themed_for(viewport, theme, input)
             .map_err(|error| format!("layout failed: {error:?}"))?;
         self.exchange();
         self.settle()

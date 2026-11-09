@@ -151,6 +151,24 @@ impl FrameHarness {
         Ok(())
     }
 
+    /// Lay the whole window out at `viewport` under `theme` for a person
+    /// using `input`, as [`Self::relayout_window_themed`] does: the window is
+    /// laid out once, for the person and the size it will be read at, which
+    /// [`Self::set_interaction_environment`] would otherwise do first at the
+    /// size it was last laid out at.
+    ///
+    /// # Errors
+    /// As [`Self::relayout_themed`].
+    pub fn relayout_window_themed_for(
+        &mut self,
+        viewport: (u32, u32),
+        theme: crate::theme::Theme,
+        input: crate::interaction::InteractionEnvironment,
+    ) -> Result<(), crate::widget::WidgetLayoutError> {
+        self.take_interaction_environment(input);
+        self.relayout_window_themed(viewport, theme)
+    }
+
     /// The History control the window lists beside the app's slots, as the
     /// desktop's bar (or, outside a session, the runner's slot row) shows
     /// it: none while the app has no History to open.

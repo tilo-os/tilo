@@ -2500,8 +2500,22 @@ impl FrameHarness {
     }
 
     /// Set the input capabilities for the next frame without synthesising an
-    /// OS event. Controls receive the same propagation as in the live host.
+    /// OS event, laying the window out at once. Controls receive the same
+    /// propagation as in the live host.
     pub fn set_interaction_environment(
+        &mut self,
+        environment: crate::interaction::InteractionEnvironment,
+    ) {
+        self.take_interaction_environment(environment);
+        self.relayout();
+    }
+
+    /// Take the input capabilities for the next frame without synthesising an
+    /// OS event, leaving the window to be laid out by whoever takes them: what
+    /// they change reaches the frame that follows, so a host that lays the
+    /// window out anyway ([`Self::relayout_window_themed_for`]) lays it out
+    /// once, at the size and state it will be read in.
+    fn take_interaction_environment(
         &mut self,
         environment: crate::interaction::InteractionEnvironment,
     ) {
@@ -2510,7 +2524,6 @@ impl FrameHarness {
         self.interaction = environment;
         self.root.set_interaction_environment(environment);
         self.invalidate_layout_tree();
-        self.relayout();
     }
 
     pub fn interaction_environment(&self) -> crate::interaction::InteractionEnvironment {
