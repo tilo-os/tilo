@@ -191,6 +191,40 @@ impl OverviewPanel {
         if whole {
             scene.pop_layer();
         }
+        self.paint_scroll_thumb(
+            scene,
+            transform,
+            theme,
+            panel,
+            if whole { content } else { band },
+        );
+    }
+
+    /// The list's thumb in the panel's trailing margin while the list holds more than it shows,
+    /// so a row cut by the panel's foot reads as more to scroll to, not as the last one.
+    fn paint_scroll_thumb(
+        &self,
+        scene: &mut Scene,
+        transform: Affine,
+        theme: &Theme,
+        panel: Rect,
+        viewport: Rect,
+    ) {
+        let overflow = self.max_scroll_y();
+        if overflow <= 0.5 {
+            return;
+        }
+        let lane = Rect::new(self.content_rect().x1, viewport.y0, panel.x1, viewport.y1);
+        let bar = ui::widget::Scrollbar::vertical();
+        let height = self.viewport_height();
+        bar.draw(
+            scene,
+            transform,
+            bar.track_in(lane, theme),
+            ui::widget::ScrollMetrics::new(height + overflow, height, self.scroll_y),
+            theme,
+            false,
+        );
     }
 
     fn paint_backdrop(&self, scene: &mut Scene, transform: Affine, theme: &Theme, panel: Rect) {

@@ -1,6 +1,7 @@
 use tilo_actions::remote::agent_door::{Door, Grant, Run};
 use tilo_actions::remote::host_account::{
-    Entitlement, Invoice, Limits, PlanOffer, Standing, Usage, WorkspaceUsage,
+    Entitlement, Invoice, InvoiceStatus, Limits, PaymentMethod, PlanOffer, Standing, Usage,
+    WorkspaceUsage,
 };
 
 use super::*;
@@ -48,7 +49,7 @@ fn tilo_cloud() -> HostAccount {
         standing: Some(Standing {
             account: "acct-1".into(),
             plan: Some("pro".into()),
-            payment_method: true,
+            payment_method: Some(PaymentMethod::default()),
             entitlements: vec![Entitlement::LinuxVms],
             limits: Some(Limits {
                 included_vm_seconds: Some(100 * 3600),
@@ -62,7 +63,7 @@ fn tilo_cloud() -> HostAccount {
                 }],
                 ..Usage::default()
             },
-            credit: Some("$12.40 credit".into()),
+            credit: Some("$12.40".into()),
             invoices: vec![
                 Invoice {
                     id: "in_2".into(),
@@ -121,8 +122,10 @@ fn a_self_hosted_host_shows_and_offers_no_plans_or_billing() {
     );
 }
 
+/// Tilo Cloud is one row: the plan, the hours used of those it includes and the credit, with
+/// Manage billing. Invoices are Settings' Billing page's, not the overview's.
 #[test]
-fn tilo_cloud_shows_its_plan_usage_billing_and_the_invoices_worth_a_row() {
+fn tilo_cloud_is_one_line_with_manage_billing_and_no_invoices() {
     en();
     let desk = TiloDesk {
         hosts: vec![tilo_cloud()],
@@ -134,7 +137,7 @@ fn tilo_cloud_shows_its_plan_usage_billing_and_the_invoices_worth_a_row() {
     assert_eq!(host.title, "Tilo Cloud");
     assert_eq!(
         host.detail.as_deref(),
-        Some("Pro · 1 hr of 100 hr this month, $12.40 credit")
+        Some("Pro · 1 of 100 hr · $12.40 credit")
     );
     assert_eq!(
         host.action,
@@ -143,21 +146,11 @@ fn tilo_cloud_shows_its_plan_usage_billing_and_the_invoices_worth_a_row() {
             OverviewPick::OpenPage("https://tilo.sh/billing".into())
         ))
     );
-    assert_eq!(
-        items[1..3]
+    assert!(
+        !items
             .iter()
-            .map(|item| (item.title.as_str(), item.detail.as_deref()))
-            .collect::<Vec<_>>(),
-        [
-            ("Invoice, $24.10", Some("Due")),
-            ("Invoice, $20.00", Some("Paid"))
-        ]
-    );
-    assert_eq!(
-        items[1].press,
-        Some(OverviewPick::OpenPage(
-            "https://tilo.sh/billing/invoices/in_2".into()
-        ))
+            .any(|item| item.key.starts_with("overview-invoice")),
+        "no invoices in the overview"
     );
     assert_eq!(
         usage_line(&desk.hosts, "ws-build").as_deref(),

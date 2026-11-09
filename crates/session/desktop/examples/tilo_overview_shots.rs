@@ -23,10 +23,11 @@ use std::path::PathBuf;
 
 use tilo_actions::remote::agent_door::{Door, Grant, Run};
 use tilo_actions::remote::host_account::{
-    Entitlement, HostAccount, HostKind, Invoice, InvoiceStatus, Limits, PlanOffer, Standing, Usage,
-    WorkspaceUsage,
+    Entitlement, HostAccount, HostKind, Invoice, InvoiceStatus, Limits, PaymentMethod, PlanOffer,
+    Standing, Usage, WorkspaceUsage,
 };
 use tilo_desktop::about::{AboutLinks, AboutVariant, TiloMenu};
+use tilo_desktop::chrome::ClockSnapshot;
 use tilo_desktop::desktop_host::{DesktopChrome, NoticeTiles, PermissiveRules};
 use tilo_desktop::overlays::Overlays;
 use tilo_desktop::overview_tilo::{AccountLine, TiloDesk};
@@ -115,7 +116,7 @@ fn tilo_cloud(build_box: &str) -> HostAccount {
         standing: Some(Standing {
             account: "acct-ada".into(),
             plan: Some("pro".into()),
-            payment_method: true,
+            payment_method: Some(PaymentMethod::default()),
             entitlements: vec![Entitlement::LinuxVms],
             limits: Some(pro),
             usage: Usage {
@@ -127,7 +128,7 @@ fn tilo_cloud(build_box: &str) -> HostAccount {
                 }],
                 ..Usage::default()
             },
-            credit: Some("$12.40 credit".into()),
+            credit: Some("$12.40".into()),
             invoices: vec![
                 Invoice {
                     id: "in_2".into(),
@@ -193,7 +194,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 handle.clone(),
                 "g".into(),
                 std::rc::Rc::new(PermissiveRules::new(handle)),
-                TopBarChrome::from_tree(&tree).with_tilo_mark(),
+                TopBarChrome::from_tree(&tree)
+                    .with_tilo_mark()
+                    .with_clock(ClockSnapshot {
+                        unix_seconds: 1_794_250_800,
+                        clock: "9:41".into(),
+                        weekday: "Mon".into(),
+                        date: "Nov 9".into(),
+                    }),
                 TiloMenu::new(AboutVariant::Native, &AboutLinks::default()),
                 false,
             );

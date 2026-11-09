@@ -423,9 +423,9 @@ pub fn workspace_access_label(card: &WorkspaceCard) -> String {
     let others: Vec<&WorkspacePerson> = card.others().collect();
     let name = |index: usize| others.get(index).map_or("", |p| p.name.as_str());
     match others.len() {
-        // No owner, no membership capability recorded at all.
-        0 if card.people.is_empty() => t("overview-access-nobody"),
-        0 => t("overview-access-private"),
+        // Nobody else in it: a workspace of the person's own, whether or not it recorded who
+        // holds it.
+        0 => t("overview-access-only-you"),
         1 => t_args("overview-access-one", &[("name", name(0).into())]),
         2 => t_args(
             "overview-access-two",
@@ -667,7 +667,7 @@ mod workspace_tests {
             let cards = workspace_cards(&tree);
             assert_eq!(cards.len(), 1);
             assert!(cards[0].is_private());
-            assert_eq!(workspace_access_label(&cards[0]), "Private to you");
+            assert_eq!(workspace_access_label(&cards[0]), "Only you");
             assert_eq!(workspace_shares_label(&cards[0]), None);
         }
 
@@ -694,7 +694,7 @@ mod workspace_tests {
             let card = &workspace_cards(&tree)[0];
             // Ada holds a file, not the workspace: she is not a member…
             assert!(card.is_private(), "a file grant must not admit a member");
-            assert_eq!(workspace_access_label(card), "Private to you");
+            assert_eq!(workspace_access_label(card), "Only you");
             // …and the file shows up as exactly one share, named the way the permissions pane names
             // it.
             assert_eq!(card.shares.len(), 1);

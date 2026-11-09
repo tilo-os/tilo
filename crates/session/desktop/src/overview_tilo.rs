@@ -6,7 +6,8 @@
 //! runs; what a host offers the person's account, and what it used, is its
 //! answer to [`tilo_actions::remote::host_account::ACCOUNT`] ([`HostAccount`]); a plan, its card and
 //! its invoices are the person's account with a hosting provider, whose own
-//! pages manage them. The overview shows that answer only once it means
+//! pages manage them. The overview says the plan, what was used and the credit in one line;
+//! invoices are Settings' Billing page's. The overview shows that answer only once it means
 //! something: a host that is not this device, a plan, or usage
 //! ([`hosting_relevant`]). Someone with one device that sells nothing sees no
 //! hosting at all.
@@ -18,7 +19,7 @@
 use std::time::Duration;
 
 use tilo_actions::remote::agent_door::{self, Reach};
-use tilo_actions::remote::host_account::{HostAccount, HostKind, InvoiceStatus};
+use tilo_actions::remote::host_account::{HostAccount, HostKind};
 use ui::icons::Icon;
 
 use crate::i18n::{t, t_args};
@@ -138,12 +139,13 @@ fn host_row(index: usize, host: &HostAccount) -> TiloItem {
                 .as_ref()
                 .and_then(|limits| limits.included_vm_seconds);
             Some(match included {
+                // One unit for both, the hour a plan includes: "37 of 100 hr".
                 Some(included) => t_args(
                     "overview-tilo-plan-used-of",
                     &[
                         ("plan", plan.name.clone().into()),
-                        ("used", vm_time(used).into()),
-                        ("included", vm_time(included).into()),
+                        ("used", ui::format::count(used / 3600).into()),
+                        ("included", ui::format::count(included / 3600).into()),
                     ],
                 ),
                 None => t_args(
@@ -155,7 +157,9 @@ fn host_row(index: usize, host: &HostAccount) -> TiloItem {
                 ),
             })
         }
-        (Some(standing), None) if !standing.payment_method => Some(t("overview-tilo-no-card")),
+        (Some(standing), None) if standing.payment_method.is_none() => {
+            Some(t("overview-tilo-no-card"))
+        }
         (Some(_), None) => Some(t("overview-tilo-no-plan")),
         (None, _) => Some(t(match host.kind {
             HostKind::Device => "overview-tilo-host-device",
@@ -166,8 +170,8 @@ fn host_row(index: usize, host: &HostAccount) -> TiloItem {
     let detail = match host.standing.as_ref().and_then(|s| s.credit.clone()) {
         Some(credit) => detail.map(|detail| {
             t_args(
-                "overview-two-facts",
-                &[("first", detail.into()), ("second", credit.into())],
+                "overview-tilo-with-credit",
+                &[("detail", detail.into()), ("credit", credit.into())],
             )
         }),
         None => detail,
@@ -185,45 +189,6 @@ fn host_row(index: usize, host: &HostAccount) -> TiloItem {
             )
         }),
     }
-}
-
-/// The invoices worth a row: the open and past-due ones, then the newest
-/// paid one.
-fn invoice_rows(host: usize, account: &HostAccount) -> Vec<TiloItem> {
-    let Some(standing) = &account.standing else {
-        return Vec::new();
-    };
-    let unpaid = standing
-        .invoices
-        .iter()
-        .filter(|invoice| matches!(invoice.status, InvoiceStatus::Open | InvoiceStatus::PastDue));
-    let last_paid = standing
-        .invoices
-        .iter()
-        .find(|invoice| invoice.status == InvoiceStatus::Paid);
-    unpaid
-        .chain(last_paid)
-        .take(3)
-        .map(|invoice| {
-            let status = t(match invoice.status {
-                InvoiceStatus::Paid => "overview-tilo-invoice-paid",
-                InvoiceStatus::Open => "overview-tilo-invoice-open",
-                InvoiceStatus::PastDue => "overview-tilo-invoice-past-due",
-                InvoiceStatus::Void => "overview-tilo-invoice-void",
-            });
-            TiloItem {
-                key: format!("overview-invoice:{host}:{}", invoice.id),
-                icon: Some(Icon::FileText),
-                title: t_args(
-                    "overview-tilo-invoice",
-                    &[("amount", invoice.amount.clone().into())],
-                ),
-                detail: Some(status),
-                press: Some(OverviewPick::OpenPage(invoice.url.clone())),
-                action: None,
-            }
-        })
-        .collect()
 }
 
 fn agent_row(grant: &agent_door::Grant) -> TiloItem {
@@ -274,7 +239,6 @@ pub fn rows(desk: &TiloDesk) -> Vec<TiloRow> {
         rows.push(TiloRow::Caption(t("overview-tilo-hosts")));
         for (index, host) in desk.hosts.iter().enumerate() {
             rows.push(TiloRow::Item(host_row(index, host)));
-            rows.extend(invoice_rows(index, host).into_iter().map(TiloRow::Item));
         }
     }
     if let Some(door) = desk.door.as_ref().filter(|door| !door.grants.is_empty()) {

@@ -985,7 +985,9 @@ mod tests {
     /// account's About zooms back in.
     #[test]
     fn hosts_stand_below_the_workspaces_and_manage_billing_opens_the_providers_page() {
-        use tilo_actions::remote::host_account::{HostAccount, HostKind, PlanOffer, Standing};
+        use tilo_actions::remote::host_account::{
+            HostAccount, HostKind, PaymentMethod, PlanOffer, Standing,
+        };
         ui::i18n::I18nManager::init("en-US");
         let mut with_host = desk();
         with_host.tilo.hosts = vec![HostAccount {
@@ -998,7 +1000,7 @@ mod tests {
             }],
             standing: Some(Standing {
                 plan: Some("pro".into()),
-                payment_method: true,
+                payment_method: Some(PaymentMethod::default()),
                 ..Standing::default()
             }),
             manage_billing: Some("https://tilo.sh/billing".into()),

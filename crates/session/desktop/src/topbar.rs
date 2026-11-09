@@ -845,6 +845,14 @@ impl TopBarChrome {
         self
     }
 
+    /// The reading a bar drawn without a chrome shows, which no host keeps current: a capture's
+    /// fixed time.
+    #[must_use]
+    pub fn with_clock(mut self, clock: ClockSnapshot) -> Self {
+        self.clock = clock;
+        self
+    }
+
     /// The desktop this bar belongs to, when its host gave it one.
     #[must_use]
     pub fn chrome(&self) -> Option<&Chrome> {
