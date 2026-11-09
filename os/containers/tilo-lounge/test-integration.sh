@@ -22,9 +22,10 @@
 # by default a directory of its own under the scratch directory.
 # Needs buildah, node, chromium (CHROME or Playwright's cache), curl and a
 # Rust toolchain for the image's own tilo-crypto, which mints the site's
-# certificate (TILO_CRYPTO_BIN names a built one instead). It runs as root in
-# the buildah image in a micro-VM step, without a daemon, and as any user with
-# buildah locally.
+# certificate (TILO_CRYPTO_BIN names a built one instead), and for the tilo
+# command an agent runs (TILO_CLI_BIN names a built one instead). It runs as
+# root in the buildah image in a micro-VM step, without a daemon, and as any
+# user with buildah locally.
 set -euo pipefail
 usage='usage: test-integration.sh IMAGE BUNDLE [WORK]'
 . "$(dirname -- "${BASH_SOURCE[0]}")/../../../tools/ci/publish/lib.sh"
@@ -176,6 +177,7 @@ start_image() {
     TILO_ROOMS_ROLES_FILE=/run/tilo-rooms/roles.json \
     TILO_ROOMS_FETCH_PROXY=0 \
     TILO_ROOMS_CHAT_CHANNELS=general \
+    TILO_ROOMS_OWN_WORKSPACES=10 \
     /usr/local/bin/tilo-lounge >> "$log" 2>&1 &
   image_pid=$!
 }
@@ -305,6 +307,24 @@ echo "ok: a restart on the volume serves the same workspace ($minted)"
 # The web entry the deployment serves beside the relay: its home is the
 # Lounge, joined through the door of the workspace this volume holds.
 start_site "$minted"
+
+# A person sets Tilo up through their agent: a fresh browser's first screen
+# copies the prompt, what it tells an agent to run runs here as the agent
+# would (`tilo login <code>` with this commit's `tilo`), and the tab follows
+# each step into the person's own workspace with the agent there and what it
+# does beside its name. Then the same person, on a browser that keeps nothing
+# of them, signs in through the agent on the computer that is already theirs.
+tilo_bin=${TILO_CLI_BIN:-}
+if [[ -z $tilo_bin ]]; then
+  cargo build --quiet --locked --manifest-path "$repo_root/Cargo.toml" -p tilo-cli --bin tilo \
+    || fail 'could not build the tilo command'
+  tilo_bin=${CARGO_TARGET_DIR:-$repo_root/target}/debug/tilo
+fi
+node "$here/integration/agent-setup.mjs" "$site_url" "$relay_origin" "$tilo_bin" "$work/site.ca.crt" \
+  "$work/agent-setup" \
+  || fail 'a person did not get set up through their agent'
+echo 'ok: a person set up through their agent landed in their own workspace with the agent there'
+echo 'ok: the person signed in again on a fresh browser through the agent'
 
 # Two people: real browsers on the web entry, each its own person, both
 # joining the Lounge through its door, chatting, sharing a desk and seeing
