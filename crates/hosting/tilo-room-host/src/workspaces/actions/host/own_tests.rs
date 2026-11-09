@@ -260,6 +260,7 @@ async fn an_agents_grant_makes_its_persons_own_workspace_when_it_makes_workspace
             issued_at_ns: now,
             expires_at_ns: Some(now + 3_600_000_000_000),
             signature: [0; 64],
+            issuer: None,
         };
         sign_device_cert(&mut cert, &root).unwrap();
         cert
