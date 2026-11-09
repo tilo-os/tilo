@@ -26,6 +26,8 @@ struct Desktop {
     started: Mutex<Vec<String>>,
     /// Whether its steps are a task agent's steps of its run.
     for_tasks: bool,
+    /// Whether its steps are a turn's (the session's own, as a session's desk publishes them).
+    for_turns: bool,
 }
 
 impl crate::services::HostStepServices for Desktop {
@@ -37,6 +39,9 @@ impl crate::services::HostStepServices for Desktop {
     }
     fn for_tasks(&self) -> bool {
         self.for_tasks
+    }
+    fn for_turns(&self) -> bool {
+        self.for_turns
     }
     fn descriptors(&self) -> Vec<tilo_actions::ActionDescriptor> {
         vec![tilo_actions::ActionDescriptor {
@@ -303,6 +308,54 @@ async fn a_door_connection_takes_a_host_step_through_its_run() {
                     .is_err()
             );
             assert_eq!(desktop.started.lock().unwrap().len(), 1);
+            drop(f);
+        })
+        .await;
+}
+
+/// A session's own step is a turn's, and the door's connection works no turn: its run, started
+/// by the person's admission, is what admits it, as it admits the connection's app actions. Taken
+/// as the task agent; refused once the run stops.
+#[tokio::test(flavor = "current_thread")]
+async fn a_door_connection_takes_a_session_step_in_its_run_though_it_works_no_turn() {
+    tokio::task::LocalSet::new()
+        .run_until(async {
+            let desk = Arc::new(Desktop {
+                for_turns: true,
+                ..Desktop::default()
+            });
+            let f = Fixture::with_services(None, vec![desk.clone()]);
+            let agent = admit(&f);
+            let host = f.state.task_run_host(&agent.presentation()).unwrap();
+            let caller = connection(&host);
+            let receipt = host
+                .invoke(&caller, list_windows_request(61))
+                .await
+                .expect("answered")
+                .unwrap();
+            assert!(
+                matches!(
+                    receipt.status,
+                    tilo_actions::remote::ReceiptStatus::Accepted
+                        | tilo_actions::remote::ReceiptStatus::Completed { .. }
+                ),
+                "{receipt:?}"
+            );
+            assert_eq!(
+                desk.started.lock().unwrap().as_slice(),
+                [format!("agent:{}", agent.delegation.agent_id)]
+            );
+            for run in f.native.runs.lock().unwrap().iter_mut() {
+                run.active = false;
+            }
+            f.state.refresh_native_task_delivery();
+            assert!(
+                host.invoke(&caller, list_windows_request(62))
+                    .await
+                    .expect("answered")
+                    .is_err()
+            );
+            assert_eq!(desk.started.lock().unwrap().len(), 1);
             drop(f);
         })
         .await;

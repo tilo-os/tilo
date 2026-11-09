@@ -21,24 +21,30 @@ impl AppBrokerState {
     /// exactly as the same agent's app action in that turn is admitted: the run the agent works
     /// for the turn's message, decided by [`TrackerRuns::authorize_action`] over the person's,
     /// the agent's and the run's live grants, and refused in the same words the app action
-    /// hears. A caller working no turn takes none of them.
+    /// hears. A caller working no turn takes none of them — unless it works in a run of its own
+    /// (`run`, an agent door connection's [`super::TaskRunHost`]): that run is what admits it,
+    /// turn or none, exactly as it admits the connection's app actions.
     ///
     /// # Errors
-    /// The caller works no turn, the turn ended, or the turn's grants refuse the step.
+    /// The caller works no turn and no run, the turn or run ended, or its grants refuse the step.
     fn admit_turn_step(
         &self,
         caller: &Caller,
         workspace: &str,
         steps: &dyn HostStepServices,
         (descriptor, argument): (&tilo_actions::ActionDescriptor, &Option<String>),
-        turn: Option<&tilo_action_policy::turn::Turn>,
+        (run, turn): (
+            Option<&super::TaskRunHost>,
+            Option<&tilo_action_policy::turn::Turn>,
+        ),
     ) -> Result<(), ActionHostError> {
         let actor = super::BrokerActor::for_caller(caller);
-        let turn = turn
-            .or_else(|| actor.turn())
-            .ok_or_else(|| ActionHostError::Refused {
+        let turn = turn.or_else(|| actor.turn());
+        if run.is_none() && turn.is_none() {
+            return Err(ActionHostError::Refused {
                 reason: "a session step is a step of a turn's: this agent works no turn".into(),
-            })?;
+            });
+        }
         let agent = actor.id().trim_start_matches("agent:");
         let service = self
             .tracker_runs(workspace)
@@ -49,7 +55,16 @@ impl AppBrokerState {
             .runs(workspace)
             .map_err(|reason| ActionHostError::Unavailable { reason })?
             .into_iter()
-            .find(|run| run.active && run.agent == agent && run.turn.as_ref() == Some(turn))
+            .find(|held| {
+                held.active
+                    && held.agent == agent
+                    && match run {
+                        // The run the connection works in, by its issue: its turn, if it has
+                        // one, is the run's own.
+                        Some(host) => held.issue == host.issue(),
+                        None => held.turn.as_ref() == turn,
+                    }
+            })
             .ok_or_else(|| ActionHostError::Refused {
                 reason: format!("the turn this step answers is no longer going ({agent})"),
             })?;
@@ -270,8 +285,14 @@ impl AppBrokerState {
         let by_turn = steps.for_turns() && policy.is_agent();
         let turn = turn.or_else(|| caller.turn());
         if by_turn {
-            self.admit_turn_step(caller, workspace_id, steps, (&descriptor, &argument), turn)
-                .map_err(abandon)?;
+            self.admit_turn_step(
+                caller,
+                workspace_id,
+                steps,
+                (&descriptor, &argument),
+                (run, turn),
+            )
+            .map_err(abandon)?;
         } else {
             self.framework_policy(
                 (&workspace, &policy, now),
@@ -323,7 +344,13 @@ impl AppBrokerState {
             }
             if by_turn {
                 // The turn still goes, and still lets this agent take this step.
-                self.admit_turn_step(caller, workspace_id, steps, (&descriptor, &argument), turn)?;
+                self.admit_turn_step(
+                    caller,
+                    workspace_id,
+                    steps,
+                    (&descriptor, &argument),
+                    (run, turn),
+                )?;
             } else {
                 self.admit_answer(
                     (&workspace, &policy, now),
