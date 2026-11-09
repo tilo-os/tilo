@@ -16,7 +16,7 @@ name: Build / kernel
 on:
   push:
     branches: ["stable"]
-    tags: ["v*"]
+    tags: ["v[0-9]*.[0-9]*.[0-9]*"]
     paths:
       - "os/kernel/**"
       - "os/kernel-buildroot-snapshot.env"
