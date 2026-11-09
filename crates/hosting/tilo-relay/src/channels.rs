@@ -5,7 +5,10 @@
 //! ([`ChannelEncryption`]). What its members send for a channel reaches it
 //! through the workspace host's [`ChannelSink`], and what it settles is
 //! retained by the workspace as its own governance, so whoever joins the
-//! workspace later reads the group's history from it. Each workspace hands the
+//! workspace later reads the group's history from it, and handed to the
+//! workspace's direct link, so a member device linked there hears this
+//! device's access requests and commits as it hears every other member's
+//! ([`Workspaces::publish_channel_governance`]). Each workspace hands the
 //! service its governance as the workspace settles
 //! ([`ChannelSink::settled`]), so the service decides a record's channel from
 //! the same state the host does, at the same moment.

@@ -28,6 +28,7 @@ pub mod app_files;
 #[cfg(feature = "agents")]
 mod applications;
 mod authority;
+mod channel_governance;
 mod collaboration;
 mod content;
 #[cfg(any(test, feature = "test-support"))]
@@ -2467,48 +2468,6 @@ impl Workspaces {
             Ok(record.collaboration.clone())
         })?;
         Ok(true)
-    }
-
-    /// Retain channel governance messages as this relay's own, once what the
-    /// workspace's governance already handed its store is durable: a channel's
-    /// group is built on it.
-    ///
-    /// # Errors
-    ///
-    /// The messages could not be retained, or this host holds no such
-    /// workspace.
-    pub async fn publish_channel_governance(
-        &self,
-        workspace: &str,
-        messages: Vec<neighbour_wire::NeighbourMsg>,
-    ) -> Result<(), String> {
-        let governed = self
-            .workspace(workspace)
-            .await
-            .map_err(|error| error.to_string())?;
-        let (workspace_id, publisher) = {
-            let governed = governed.lock().await;
-            (governed.workspace_id(), Arc::clone(&governed.publisher))
-        };
-        self.retain_channel_governance(workspace_id, messages)
-            .await?;
-        publisher.flushed().await;
-        Ok(())
-    }
-
-    /// Retain channel governance messages as this relay's own.
-    async fn retain_channel_governance(
-        &self,
-        workspace_id: u64,
-        messages: Vec<neighbour_wire::NeighbourMsg>,
-    ) -> Result<(), String> {
-        for admission in self
-            .enqueue_channel_governance(workspace_id, messages)
-            .await?
-        {
-            admission.durable().await?;
-        }
-        Ok(())
     }
 
     /// Take `message`, `author`'s write to the record `(app, record)` the

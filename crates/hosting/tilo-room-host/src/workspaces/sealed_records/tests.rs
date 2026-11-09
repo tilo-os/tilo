@@ -1345,3 +1345,70 @@ async fn a_device_that_holds_changes_the_repair_lacks_still_reaches_a_joiner() {
     drop(workspaces);
     relay.shutdown().await;
 }
+
+/// The node asks to be let into a channel a member opened, and the member is
+/// linked to it directly, as a member device's runtime is: the member hears
+/// the node's request, so it can admit the node. Without it the node takes
+/// every member's request in and is never let into a channel itself.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_member_linked_directly_hears_the_nodes_channel_governance() {
+    let dir = tempfile::tempdir().unwrap();
+    let (key, cert) = governor_with(tilo_user_identity::cloud_enrollment::host_capabilities());
+    let relay = test_host_taking_part(dir.path(), &key, &cert).await;
+    let workspaces = relay.workspaces().clone();
+    let created = workspaces.create("Lounge").await.unwrap();
+    let (member_key, _) = member_device(&workspaces, &created.workspace, (&key, &cert), 3).await;
+
+    let host_link = workspaces
+        .direct()
+        .link(created.workspace_id)
+        .expect("the node serves the workspace over a direct link");
+    let member = tilo_peer_state::direct::DirectSync::new(host_link.read(Clone::clone), member_key);
+    let mut heard = member.heard();
+    let mut caught_up = member.caught_up();
+    let linked = member.clone();
+    let pairing = tokio::spawn(async move {
+        tilo_peer_state::direct::DirectSync::pair(&linked, &host_link).await
+    });
+    tokio::time::timeout(
+        std::time::Duration::from_secs(10),
+        caught_up.wait_for(|caught_up| *caught_up),
+    )
+    .await
+    .expect("the member catches up with the node")
+    .unwrap();
+
+    let channel = collab_types::workspace_scope(&created.workspace);
+    let request =
+        collab_types::MlsAccessRequestV1::signed(channel, vec![1, 2, 3], 1, &key).unwrap();
+    workspaces
+        .publish_channel_governance(
+            &created.workspace,
+            vec![neighbour_wire::NeighbourMsg::MlsAccessRequest {
+                workspace: created.workspace.clone(),
+                request: Box::new(request.clone()),
+                delivery: 1,
+            }],
+        )
+        .await
+        .unwrap();
+
+    let arrived = tokio::time::timeout(std::time::Duration::from_secs(10), async {
+        loop {
+            let frame = heard.recv().await.unwrap();
+            if let neighbour_wire::NeighbourMsg::MlsAccessRequest { request: held, .. } =
+                frame.message
+            {
+                break *held;
+            }
+        }
+    })
+    .await
+    .expect("the member hears the node's access request");
+    assert_eq!(arrived, request);
+    assert_eq!(*arrived.device.as_bytes(), cert.device_public_key);
+
+    pairing.abort();
+    drop(workspaces);
+    relay.shutdown().await;
+}
