@@ -45,7 +45,17 @@ mkdirSync(out, {recursive: true});
 const report = {site, relay, origin, at: new Date().toISOString()};
 // Every page this run opened, so a failure leaves what each one said behind.
 const opened = [];
+// A failure stops the run then and there. Every caller writes `failed(...)`
+// without waiting for it — a failure is the end of the script, not a promise
+// whose answer matters — so the first thing it does is say it, and the page
+// logs it keeps follow. Without that, the caller went on past the failure and
+// printed an `ok` under the `FAIL` that had already announced the run over.
+let reported = false;
 const failed = async (message, tab) => {
+  if (!reported) {
+    reported = true;
+    console.error(`FAIL: ${message}`);
+  }
   report.error = message;
   if (tab) report.shown = await snapshot(tab).catch(() => null);
   for (const page of opened) {
@@ -61,7 +71,6 @@ const failed = async (message, tab) => {
     const lines = (page.log ?? []).slice(-40);
     if (lines.length) console.error(`--- ${name} said:\n${lines.join('\n')}`);
   }
-  console.error(`FAIL: ${message}`);
   process.exit(1);
 };
 
@@ -909,6 +918,33 @@ try {
   // browser: no page scroll, zoom or history.
   const nav = tab => tab.evaluate('JSON.stringify(globalThis.tiloMount?.navigation?.getSnapshot?.() ?? null)').then(JSON.parse);
   const panOf = async tab => (await nav(tab))?.desktopPan ?? null;
+  // [`panOf`] once the strip has come to rest: opening a window glides the
+  // strip to bring it into view (`scroll_group_into_view_animated`), and that
+  // glide publishes the pan it is passing through. A pan read mid-glide is a
+  // strip still moving, and what it moves on to is the glide finishing, not
+  // the gesture that followed. A window on a strip that fits is at home, the
+  // offset in both reads.
+  //
+  // Two reads that agree are not enough by themselves: a glide drawing a few
+  // frames a second moves its pan between any two reads close together, and
+  // the reads can land in the gaps between frames. A pan that stayed the same
+  // across a frame the desk actually presented is at rest; a pan that stayed
+  // the same because nothing was drawn yet is not.
+  const restPanOf = async tab => {
+    const frames = () => tab.evaluate('Number(globalThis.tiloMount?.canvas?.parentElement?.dataset?.frames ?? 0)');
+    let before = await panOf(tab);
+    let drawn = await frames();
+    const deadline = Date.now() + 30_000;
+    for (;;) {
+      await sleep(1000);
+      const after = await panOf(tab);
+      const now = await frames();
+      if (JSON.stringify(after) === JSON.stringify(before) && now > drawn) return after;
+      if (Date.now() > deadline) return after;
+      before = after;
+      drawn = now;
+    }
+  };
   const namesOf = async tab => {
     await tab.evaluate('globalThis.tiloMount?.requestSemantics?.()').catch(() => {});
     await settle(tab, 1);
