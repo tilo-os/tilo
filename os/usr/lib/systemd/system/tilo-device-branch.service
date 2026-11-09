@@ -56,6 +56,12 @@ AmbientCapabilities=
 SystemCallArchitectures=native
 SystemCallFilter=@system-service
 SystemCallFilter=~@mount @network-io @resources @obsolete @debug @swap
+# Starting each person's Secret Service as them (fork, then setuid) reports a
+# failed exec over an AF_UNIX socket pair, which the parent reads with recv:
+# without both the kernel killed the re-key with SIGSYS once its journal was
+# written. PrivateNetwork= and RestrictAddressFamilies=AF_UNIX keep that pair
+# the only socket it can make.
+SystemCallFilter=socketpair recvfrom
 
 [Install]
 WantedBy=sysinit.target

@@ -122,7 +122,7 @@ ORDER = ["P01", "P02", "R06", "R01", "A14", "R02", "R03", "A15", "A17", "R04",
 # The coding agents' end-to-end scenario (checks/agents_e2e.py), in its order: each check needs
 # the ones before it. It runs only when named (`--only agents-e2e`, the e2e-agents check), in
 # no shard of vm-acceptance and in no run of every check.
-E2E_ORDER = ["E01", "E02", "E03", "E04", "E05", "E06", "E07"]
+E2E_ORDER = ["E01", "E02", "E03", "E08", "E04", "E05", "E06", "E07"]
 EXPLICIT_AREAS = {"agents-e2e"}
 
 
@@ -522,7 +522,13 @@ def main() -> int:
         sys.exit(f"other VMs are running ({others}); this laptop runs one VM at a time")
     need = args.memory_mb + 1024
     if vm_name not in running_vms() and mem_available_mb() < need:
-        sys.exit(f"only {mem_available_mb()} MiB available, the VM needs {need} MiB with headroom")
+        if args.runner == "local":
+            sys.exit(f"only {mem_available_mb()} MiB available, the VM needs {need} MiB with headroom")
+        # A CI runner's machine is the run's own, sized by what its runs needed: refused here,
+        # a run never shows it needs more, and the next is sized as small again. It starts, and
+        # what it held sizes the next one (a VM short of memory ends at the runner's limit).
+        print(f"only {mem_available_mb()} MiB available, the VM wants {need} MiB with headroom; "
+              "starting it anyway", flush=True)
 
     meta = {
         "suite": "scripts/vm-acceptance", "suite_commit": git("rev-parse", "HEAD"),

@@ -260,6 +260,7 @@ impl Shared {
         // resource typing the text would place, so it reads the same catalogue the canvas places
         // through.
         let catalog = self.arrangement.borrow().targets();
+        self.session_doors.keep_tabs(&self.handle);
         self.session_doors.answer(
             &self.doors,
             &self.services,

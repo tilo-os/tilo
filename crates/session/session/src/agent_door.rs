@@ -783,18 +783,26 @@ impl Loop {
                 if self.connections.load(Ordering::Relaxed) >= MAX_CONNECTIONS {
                     return Err(PeerRefusal::Busy);
                 }
-                peer_decision(&peer)?;
-                Ok(pid)
+                match peer_decision(&peer) {
+                    Ok(()) => Ok(From::Login(pid)),
+                    // The login's confined shell runtime runs in a mount namespace systemd made
+                    // for it: it is let in to ask for its environments' doors, and for nothing
+                    // else (`serve_connection`).
+                    Err(PeerRefusal::Sandboxed) if is_shell_runtime(pid) => {
+                        Ok(From::ShellRuntime(pid))
+                    }
+                    Err(refusal) => Err(refusal),
+                }
             });
-            let pid = match pressed {
-                Ok(pid) => pid,
+            let from = match pressed {
+                Ok(from) => from,
                 Err(refusal) => {
                     tracing::info!(?refusal, "agent door: a connection is refused");
                     refuse(stream, &refusal);
                     continue;
                 }
             };
-            self.serve(stream, From::Login(pid));
+            self.serve(stream, from);
         }
     }
 
@@ -1329,6 +1337,50 @@ pub(crate) fn identify(stream: &UnixStream) -> Result<(u32, Peer), PeerRefusal> 
     ))
 }
 
+/// The image's confined shell runtime, and the unit of the login's own service manager it runs
+/// in (os/usr/lib/systemd/user/tilo-ush.service).
+const SHELL_RUNTIME: &str = "/usr/libexec/tilo-ush";
+const SHELL_RUNTIME_UNIT: &str = "tilo-ush.service";
+
+/// Whether `pid`, a process of this account outside this login's namespaces, is the login's own
+/// confined shell runtime: the image's `tilo-ush` executable, running in the `tilo-ush.service`
+/// unit of this account's own service manager. systemd starts it in a mount namespace of its own
+/// (`PrivateTmp=`), so the namespace check alone takes it for a sandboxed program; these are the
+/// kernel's facts that tell it apart from one, as no sandbox moves a program into another unit's
+/// cgroup.
+fn is_shell_runtime(pid: u32) -> bool {
+    shell_runtime_at(
+        Path::new(SHELL_RUNTIME),
+        &format!("/proc/{pid}/exe"),
+        &std::fs::read_to_string(format!("/proc/{pid}/cgroup")).unwrap_or_default(),
+        rustix::process::geteuid().as_raw(),
+    )
+}
+
+/// [`is_shell_runtime`] of a process whose executable is at `exe` and whose cgroups are
+/// `cgroups`, for the account `uid`, with the runtime installed at `runtime`.
+fn shell_runtime_at(runtime: &Path, exe: &str, cgroups: &str, uid: u32) -> bool {
+    use std::os::unix::fs::MetadataExt as _;
+    let same_file = match (std::fs::metadata(exe), std::fs::metadata(runtime)) {
+        (Ok(exe), Ok(runtime)) => exe.dev() == runtime.dev() && exe.ino() == runtime.ino(),
+        // A process that cannot be read is not one this door knows.
+        _ => false,
+    };
+    // The unified hierarchy's line (`0::/path`): the unit in this account's service manager,
+    // `/user.slice/user-<uid>.slice/user@<uid>.service/.../tilo-ush.service[/...]`.
+    let Some(path) = cgroups.lines().find_map(|line| line.strip_prefix("0::")) else {
+        return false;
+    };
+    let parts: Vec<&str> = path.split('/').collect();
+    let slice = format!("user-{uid}.slice");
+    let manager = format!("user@{uid}.service");
+    let in_manager = parts.get(1) == Some(&"user.slice")
+        && parts.get(2) == Some(&slice.as_str())
+        && parts.get(3) == Some(&manager.as_str());
+    let in_unit = parts.iter().skip(4).any(|part| *part == SHELL_RUNTIME_UNIT);
+    same_file && in_manager && in_unit
+}
+
 /// Whether `pid` runs in this process's user and mount namespaces: what tells a program of this
 /// login from one a sandbox put elsewhere.
 fn shares_security_namespaces(pid: u32) -> bool {
@@ -1403,6 +1455,8 @@ enum DoorAsk {
     /// search lives on the loop's thread.
     Find {
         needle: String,
+        /// The workspace an agent asking works in, which alone it finds in; `None` for the person.
+        workspace: Option<String>,
         done: crate::search::FoundSearch,
     },
     /// Run one of their actions as a step of an agent's turn, already decided
@@ -1447,6 +1501,9 @@ pub(crate) struct SessionDoors {
     /// The session's own actions, which it hands to a connection's door as they are read on
     /// its pass: `None` on a session that serves no broker and lists them itself.
     actions: std::sync::OnceLock<Arc<crate::session_actions::SessionActions>>,
+    /// The workspace each of the desk's windows stands in, by its tab, as of the loop's last
+    /// pass: an agent works in one workspace, and the desk's windows of another are not its.
+    tabs: std::sync::Mutex<HashMap<u64, String>>,
 }
 
 /// How long a connection's thread waits on the session's pass for an answer (its record, a change,
@@ -1500,7 +1557,39 @@ impl SessionDoors {
             wake,
             person: person.to_owned(),
             actions: std::sync::OnceLock::new(),
+            tabs: std::sync::Mutex::new(HashMap::new()),
         }
+    }
+
+    /// Keep where the desk's windows stand now, read from `handle` on the loop's pass.
+    pub(crate) fn keep_tabs(&self, handle: &DesktopHandle) {
+        let tabs = handle.read(|tree| {
+            let mut tabs = HashMap::new();
+            for workspace in &tree.workspaces {
+                let id = workspace.id().to_string();
+                for tab in workspace
+                    .strips
+                    .iter()
+                    .flat_map(|strip| &strip.window_groups)
+                    .flat_map(|group| &group.tabs)
+                {
+                    tabs.insert(tab.id, id.clone());
+                }
+            }
+            tabs
+        });
+        *self.tabs.lock_recover() = tabs;
+    }
+
+    /// Whether the desk's window `resource` (`desktop:tab:<tab>`) stands in a workspace other than
+    /// `workspace`: a window the desk no longer knows is no one's.
+    fn window_elsewhere(&self, resource: &str, workspace: &str) -> bool {
+        tilo_desktop_surface::window::resource_tab(resource).is_some_and(|tab| {
+            self.tabs
+                .lock_recover()
+                .get(&tab)
+                .is_none_or(|stands| stands != workspace)
+        })
     }
 
     /// The session's own actions this door hands a connection, once the session has them.
@@ -1520,8 +1609,17 @@ impl SessionDoors {
 
     /// What the session's one search finds by `needle` , answered on the loop's pass: the search
     /// lives on the thread holding the desktop.
-    pub(crate) fn find(&self, needle: String, done: crate::search::FoundSearch) {
-        self.ask(DoorAsk::Find { needle, done });
+    pub(crate) fn find(
+        &self,
+        needle: String,
+        workspace: Option<String>,
+        done: crate::search::FoundSearch,
+    ) {
+        self.ask(DoorAsk::Find {
+            needle,
+            workspace,
+            done,
+        });
     }
 
     /// Answer what the connections asked since the last pass, from `doors`,
@@ -1543,10 +1641,14 @@ impl SessionDoors {
         let asked = std::mem::take(&mut *self.asks.lock_recover());
         for ask in asked {
             match ask {
-                DoorAsk::Find { needle, done } => {
+                DoorAsk::Find {
+                    needle,
+                    workspace,
+                    done,
+                } => {
                     done.complete(crate::search::found_all(
                         &needle,
-                        search.find(&needle),
+                        search.find_in(&needle, workspace.as_deref()),
                         shows,
                     ));
                 }
@@ -1798,6 +1900,16 @@ impl Host {
             caller.principal(),
             tilo_actions::remote::CallerPrincipal::Person(_)
         );
+        // An agent works in one workspace: a desk window of another is not its to read or act on,
+        // whatever it names it by.
+        if !person
+            && let Some(workspace) = caller.workspace()
+            && self
+                .session
+                .window_elsewhere(request.target.address.resource.as_str(), workspace)
+        {
+            return Pending::ready(Err(ActionHostError::NotPermitted));
+        }
         if person && (own || self.state.is_none()) {
             return self.invoke_person_step(caller, request);
         }
@@ -1923,6 +2035,32 @@ impl ActionHost for Host {
         caller: &Caller,
         query: CatalogueQuery,
     ) -> Pending<Result<CataloguePage, ActionHostError>> {
+        // An agent works in one workspace: the desk's windows of another (each listed by the title
+        // of what it shows) are not its to read or act on. The person's own catalogue is theirs.
+        let confined = match caller.principal() {
+            tilo_actions::remote::CallerPrincipal::Person(_) => None,
+            _ => caller.workspace().map(str::to_owned),
+        };
+        if let Some(workspace) = confined {
+            let session = Arc::clone(&self.session);
+            let page = match &self.state {
+                Some(state) => state.action_query(caller, &query),
+                None => Pending::ready(Ok(CataloguePage::from_rows(
+                    String::new(),
+                    self.session_rows(),
+                    &query,
+                ))),
+            };
+            return page.map(move |page| {
+                page.map(|mut page| {
+                    page.rows.retain(|row| {
+                        !session.window_elsewhere(&row.resource.id, &workspace)
+                            && !session.window_elsewhere(&row.parent_resource, &workspace)
+                    });
+                    page
+                })
+            });
+        }
         match &self.state {
             Some(state) => state.action_query(caller, &query),
             // A desktop that runs no broker (a session in a window of another, a test with no
@@ -2007,7 +2145,9 @@ impl ActionHost for Host {
     fn resource_search(&self) -> Option<Arc<dyn tilo_actions::remote::ResourceSearch>> {
         let session = Arc::clone(&self.session);
         Some(Arc::new(crate::search::SearchThrough::new(Arc::new(
-            move |needle: String, done: crate::search::FoundSearch| session.find(needle, done),
+            move |needle: String, workspace: Option<String>, done: crate::search::FoundSearch| {
+                session.find(needle, workspace, done);
+            },
         ))) as Arc<dyn tilo_actions::remote::ResourceSearch>)
     }
 
@@ -2258,6 +2398,9 @@ enum From {
     Environment(u32, Arc<environments::Environment>),
     /// Another of the person's devices, over iroh ([`crate::remote_door`]).
     Device(Box<tilo_runtime::remote_door::Origin>),
+    /// The login's confined shell runtime, by the pid that opened it ([`is_shell_runtime`]): it
+    /// asks for its environments' doors, and is served nothing else.
+    ShellRuntime(u32),
 }
 
 /// Serve one connection of this account, on its own thread: read what it opens with, ask the
@@ -2286,6 +2429,19 @@ fn serve_connection(opened: Opened, serving: &Serving) {
         }
     };
     let (pid, entrance) = match from {
+        From::ShellRuntime(pid) => {
+            match runtime_portal::environment_door::Request::of(&first) {
+                Some(request) => environments::open(stream, request, pid, serving.clone()),
+                None => {
+                    tracing::info!(
+                        pid,
+                        "agent door: the shell runtime asked for something other than an environment's door"
+                    );
+                    refuse(stream, &PeerRefusal::Sandboxed);
+                }
+            }
+            return;
+        }
         From::Login(pid) => (pid, Origin::Host),
         From::Environment(pid, environment) => (pid, Origin::Environment(environment)),
         From::Device(origin) => {
@@ -2541,6 +2697,86 @@ mod tests {
         }
         assert!(seats.readings().is_empty(), "the seat left with it");
         assert!(!seats.stop("claude-code"), "nothing to stop twice");
+    }
+
+    /// The login's shell runtime is the image's executable in its own unit of the session's
+    /// service manager; the same executable run anywhere else, or another program in that unit,
+    /// is not it.
+    #[test]
+    fn the_shell_runtime_is_its_executable_in_its_unit_of_this_login() {
+        let dir = tempfile::tempdir().unwrap();
+        let runtime = dir.path().join("tilo-ush");
+        std::fs::write(&runtime, b"runtime").unwrap();
+        let other = dir.path().join("other");
+        std::fs::write(&other, b"other").unwrap();
+        let exe = runtime.to_str().unwrap();
+        // As a booted box has them: the session in its login's scope, the runtime in its unit.
+        let unit = "0::/user.slice/user-1001.slice/user@1001.service/app.slice/tilo-ush.service\n";
+        assert!(shell_runtime_at(&runtime, exe, unit, 1001));
+        let below =
+            "0::/user.slice/user-1001.slice/user@1001.service/app.slice/tilo-ush.service/run-1\n";
+        assert!(
+            shell_runtime_at(&runtime, exe, below, 1001),
+            "a group of the unit's own"
+        );
+        assert!(
+            !shell_runtime_at(&runtime, other.to_str().unwrap(), unit, 1001),
+            "another program in the unit"
+        );
+        let app = "0::/user.slice/user-1001.slice/user@1001.service/app.slice/app-so.tilo.terminal.scope\n";
+        assert!(
+            !shell_runtime_at(&runtime, exe, app, 1001),
+            "the executable run by an app"
+        );
+        let session = "0::/user.slice/user-1001.slice/session-81.scope\n";
+        assert!(
+            !shell_runtime_at(&runtime, exe, session, 1001),
+            "the executable run in the login's scope"
+        );
+        assert!(
+            !shell_runtime_at(&runtime, exe, unit, 1002),
+            "another account's runtime"
+        );
+        let named = "0::/user.slice/user-1001.slice/session-81.scope/tilo-ush.service\n";
+        assert!(
+            !shell_runtime_at(&runtime, exe, named, 1001),
+            "a group named like the unit elsewhere"
+        );
+        assert!(
+            !shell_runtime_at(&runtime, "/nonexistent", unit, 1001),
+            "a process that is gone"
+        );
+        assert!(
+            !shell_runtime_at(&runtime, exe, "", 1001),
+            "no cgroup to read"
+        );
+    }
+
+    /// An agent works in one workspace: the desk's windows of another, and windows the desk no
+    /// longer knows, are not its; the windows of its own are, and so is anything not a window.
+    #[test]
+    fn a_window_of_another_workspace_is_not_an_agents() {
+        let doors = SessionDoors::new(Arc::new(|| {}), "person");
+        doors
+            .tabs
+            .lock_recover()
+            .extend([(7, "studio".to_owned()), (9, "garden".to_owned())]);
+        assert!(
+            !doors.window_elsewhere("desktop:tab:7", "studio"),
+            "its own"
+        );
+        assert!(
+            doors.window_elsewhere("desktop:tab:9", "studio"),
+            "another's"
+        );
+        assert!(
+            doors.window_elsewhere("desktop:tab:11", "studio"),
+            "one no longer on the desk"
+        );
+        assert!(
+            !doors.window_elsewhere("notes.notebook", "studio"),
+            "a resource that is no window"
+        );
     }
 
     #[test]

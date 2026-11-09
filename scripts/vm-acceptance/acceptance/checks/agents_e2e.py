@@ -28,7 +28,8 @@ import time
 import uuid
 from pathlib import Path
 
-from ..action_jobs import invoke as invoke_job
+from .. import core
+from ..action_jobs import PendingJob
 from ..core import CheckFailed, Unobservable, check, expect
 from ..vm import VmError, wait_until
 
@@ -54,6 +55,32 @@ SHEET_S = 60
 REPLY_S = 45
 # The guest's files root and the trees in it (tilo_paths::workspace_tree).
 GUEST_TREES = "/var/workspace/.workspaces"
+# The desk's own actions: an action's id is `resource\x1faction`.
+SESSION = "so.tilo.session"
+NEW_WORKSPACE = "desktop:chrome\x1fnew-workspace"
+SWITCH_WORKSPACE = "desktop:chrome\x1fswitch-workspace"
+
+
+def invoke(ctx, provider: str, action_id: str, args: dict | None = None, *, confirmed: bool = False,
+           name: str = "invoke", timeout: float = 60):
+    """Invoke an action as the person does, `confirmed` when they confirm it as they ask (the
+    request's own `confirmed`, which `tilo-control actions invoke` does not say), and follow it
+    to its end: its output's value."""
+    (ctx.out / "data").mkdir(parents=True, exist_ok=True)
+    request = {"op": "actions_invoke", "provider": provider, "id": action_id, "args": args or {}}
+    if confirmed:
+        request["confirmed"] = True
+    reply = ctx.vm.raw(request)
+    if isinstance(reply, dict) and reply.get("err"):
+        raise CheckFailed(f"{name}: {action_id.split(chr(31))[-1]} was refused: {reply['err']}")
+    answer = reply.get("answer", reply) if isinstance(reply, dict) else {}
+    receipt = answer.get("receipt") or {}
+    update = receipt.get("update") or {}
+    if receipt.get("broker_invocation_id") is None:
+        if update.get("state") == "succeeded":
+            return (update.get("output") or {}).get("value")
+        raise CheckFailed(f"{name}: no job for {action_id.split(chr(31))[-1]}: {str(reply)[:300]}")
+    return PendingJob(ctx.vm, answer, ctx.out / "data", name).finish(timeout)
 
 
 # -- the desk ---------------------------------------------------------------------------
@@ -69,7 +96,7 @@ def held_here(state: dict, workspace_id) -> bool:
 
 def create_workspace(ctx, name: str) -> dict:
     before = {w["id"] for w in workspaces(ctx)}
-    ctx.vm.invoke("actions", "workspace.create", {"name": name})
+    invoke(ctx, SESSION, NEW_WORKSPACE, {"name": name}, name=f"new-workspace-{name.split()[0].lower()}")
     st = ctx.wait_state(lambda s: [w for w in s["workspace_tree"]["workspaces"] if w["id"] not in before],
                         15, f"the workspace {name}")
     made = next(w for w in st["workspace_tree"]["workspaces"] if w["id"] not in before)
@@ -79,9 +106,10 @@ def create_workspace(ctx, name: str) -> dict:
 
 
 def select_workspace(ctx, workspace: dict) -> None:
+    core.keep_awake(ctx)
     if ctx.state()["workspace_tree"]["active"] == workspace["id"]:
         return
-    ctx.vm.invoke("actions", f"workspace.select.{workspace['room']}")
+    invoke(ctx, SESSION, SWITCH_WORKSPACE, {"workspace": str(workspace["id"])}, name="switch-workspace")
     ctx.wait_state(lambda s: s["workspace_tree"]["active"] == workspace["id"], 10,
                    f"workspace {workspace.get('name', workspace['id'])} in front")
 
@@ -120,17 +148,38 @@ class Terminal:
         select_workspace(self.ctx, self.workspace)
         self.calls += 1
         name = f"{self.name}-{self.calls:02d}-{operations[0]}"
-        return invoke_job(self.ctx.vm, self.row(*operations), args, self.ctx.out / "data", name,
-                          timeout=timeout)
+        args = dict(args or {})
+        confirmed = bool(args.pop("confirm", False))
+        row = self.row(*operations)
+        return invoke(self.ctx, row["provider"], row["id"], args, confirmed=confirmed, name=name,
+                      timeout=timeout)
 
     def inspect(self) -> dict:
         return self.call("inspect-session") or {}
 
     def screen(self) -> str:
-        return (self.call(("read", "read-screen")) or {}).get("output", "")
+        """What the session shows, a wrapped line joined again: the screen breaks a line at its
+        width, and a line exactly that wide went on in the next."""
+        info = self.call(("read", "read-screen")) or {}
+        lines = info.get("output", "").split("\n")
+        width = max((len(line) for line in lines), default=0)
+        joined: list[str] = []
+        carry = False
+        for line in lines:
+            if carry:
+                joined[-1] += line
+            else:
+                joined.append(line)
+            carry = width >= 40 and len(line) == width
+        return "\n".join(joined)
 
     def run(self, command: str) -> None:
+        """Type `command` at the environment's shell (Tilo's own, `ush-sh`) and press Enter."""
         self.call("run", {"command": command, "confirm": True})
+
+    def bash(self, script: str) -> None:
+        """Run `script` in the guest's bash: what a person's script or an agent's tools run."""
+        self.run("bash -c " + shlex.quote(script))
 
     def ask(self, command: str, timeout: float = 30) -> list[str]:
         """Run `command` and return the lines it printed starting with `{M}` (without it),
@@ -138,12 +187,12 @@ class Terminal:
         the shell joins (`E2E''<nonce>`), so the command's own echo never matches."""
         nonce = uuid.uuid4().hex[:8]
         marker = f"E2E{nonce}"
-        self.run(command.replace("{M}", f"E2E''{nonce}"))
+        self.bash(command.replace("{M}", f"E2E''{nonce}"))
         deadline = time.monotonic() + timeout
         while True:
             lines = self.screen().splitlines()
             hits = [i for i, line in enumerate(lines) if line.startswith(marker)]
-            if hits and any(re.search(r"\]\$\s*$", line) for line in lines[hits[-1] + 1:]):
+            if hits and any(re.search(r"\$\s*$", line) for line in lines[hits[-1] + 1:]):
                 return [lines[i][len(marker):] for i in hits]
             if time.monotonic() > deadline:
                 self.ctx.write(f"{self.name}-screen.txt", "\n".join(lines))
@@ -242,8 +291,9 @@ class Agent:
         self.next_id = 0
 
     def start(self) -> None:
-        self.env["terminal"].run(f"bash ~/{AGENTS_DIR}/mcp_agent.sh {self.guest_dir} {self.server}"
-                                 " >/dev/null 2>&1 &")
+        # Started from the shell, as a person starts Claude Code, and left running beside it.
+        self.env["terminal"].bash(f"(bash ~/{AGENTS_DIR}/mcp_agent.sh {self.guest_dir} {self.server}"
+                                  " </dev/null >/dev/null 2>&1 &)")
         hello = wait_until(lambda: slot_read(self.ctx, f"{self.host_dir}/hello"), 30, interval=0.5)
         if hello is None:
             raise CheckFailed(f"{self.name}: the client did not start in {self.env['name']}")
@@ -288,8 +338,11 @@ class Agent:
     def tool(self, name: str, arguments: dict) -> dict:
         return self.call("tools/call", {"name": name, "arguments": arguments})
 
-    def initialize(self) -> int:
-        return self.send("initialize", {"protocolVersion": PROTOCOL, "capabilities": {},
+    def initialize(self, workspace: str | None = None) -> int:
+        """`initialize`, asking to work in `workspace` (by id) where given, as
+        `tilo-runtime --connect --workspace ID` asks on the host."""
+        capabilities = ({"experimental": {"so.tilo": {"workspace": workspace}}} if workspace else {})
+        return self.send("initialize", {"protocolVersion": PROTOCOL, "capabilities": capabilities,
                                         "clientInfo": {"name": CLIENT, "version": "1"}})
 
     def quit(self) -> None:
@@ -314,6 +367,13 @@ def is_error(reply) -> bool | None:
         return value if isinstance(value, bool) else None
     except (KeyError, TypeError, AttributeError):
         return None
+
+
+def finds(reply, title: str) -> bool:
+    """Whether a `tilo_find` reply names `title` among what it found: its "nothing matches"
+    answer repeats the query, which is no finding."""
+    text = text_of(reply)
+    return is_error(reply) is False and not text.startswith("nothing matches") and title in text
 
 
 def tool_until(agent: Agent, name: str, arguments: dict, ready, timeout: float = 30) -> dict:
@@ -452,16 +512,20 @@ def environments(ctx, res):
         workspace = create_workspace(ctx, f"{name} {run}")
         # Notes opened there, as the person would before asking an agent for a note.
         ctx.open_app(NOTES)
-        if ctx.wait_presented(NOTES, 45) is None:
-            raise CheckFailed(f"Notes showed no frame in {name}")
         terminal = open_terminal(ctx, f"terminal-{name.lower()}", workspace)
         entered = enter_environment(terminal, env_name)
-        line = terminal.ask(
-            "printf '%s %s %s %s %s\\n' {M}-ENV \"$TILO_WORKSPACE\" \"$TILO_ENVIRONMENT\" "
-            "\"${TILO_AGENT_SOCK:-none}\" \"$HOME\"", SHELL_S)[-1].split()
+        # One field a line: the screen wraps a line at its width.
+        said = {}
+        for line in terminal.ask(
+                "for v in TILO_WORKSPACE TILO_ENVIRONMENT TILO_AGENT_SOCK HOME; do "
+                "printf '%s %s %s\\n' {M}-ENV \"$v\" \"${!v:-none}\"; done", SHELL_S):
+            parts = line.split()
+            if len(parts) == 3 and parts[0] == "-ENV":
+                said[parts[1]] = parts[2]
         env = {"name": name, "env_name": env_name, "workspace": workspace, "terminal": terminal,
-               "record": entered["record"], "tilo_workspace": line[1], "environment": line[2],
-               "agent_sock": line[3], "home": line[4], "probe": f".e2e-probe-{run}-{name.lower()}"}
+               "record": entered["record"], "tilo_workspace": said.get("TILO_WORKSPACE", ""),
+               "environment": said.get("TILO_ENVIRONMENT", ""), "agent_sock": said.get("TILO_AGENT_SOCK", ""),
+               "home": said.get("HOME", ""), "probe": f".e2e-probe-{run}-{name.lower()}"}
         envs.append(env)
     res.metrics["environments"] = [{k: e[k] for k in ("name", "record", "tilo_workspace", "environment",
                                                      "agent_sock", "home")} for e in envs]
@@ -483,7 +547,7 @@ def environments(ctx, res):
     want(one["tilo_workspace"] != two["tilo_workspace"], "both environments name one workspace")
     # Each shell writes in its `~`; each sees its own file alone, and not the other's tree.
     for e in envs:
-        e["terminal"].run(f"echo {e['name']} > ~/{e['probe']}")
+        e["terminal"].bash(f"echo {e['name']} > ~/{e['probe']}")
     for e, other in ((one, two), (two, one)):
         lines = e["terminal"].ask(
             "for f in $(ls -a ~); do printf '%s %s\\n' {M}-LS \"$f\"; done; "
@@ -526,6 +590,7 @@ def admitted(ctx, res):
         expect(isinstance(reply, dict) and "result" in reply,
                f"{e['name']}: initialize was not answered after the person allowed it: {str(reply)[:300]}")
         e["dialog"] = dialog
+        e["served_as"] = ((reply.get("result") or {}).get("serverInfo") or {}).get("agent")
         agent.send("notifications/initialized", notify=True)
         agents[e["name"]] = agent
     res.metrics["sheets"] = {e["name"]: e["dialog"] for e in (one, two)}
@@ -536,66 +601,143 @@ def admitted(ctx, res):
         mine = [k for k in keys if k.startswith(want)]
         expect(len(mine) == 1, f"{e['name']}: the desk seats no single agent {want}<n>: {keys}")
         e["agent_id"] = mine[0]
+        expect(e["served_as"] == e["agent_id"],
+               f"{e['name']}: the door told the client it is {e['served_as']!r}, the desk seats {e['agent_id']!r}")
     expect(one["agent_id"] != two["agent_id"], f"both agents are {one['agent_id']}")
     res.metrics["agents"] = {e["name"]: e["agent_id"] for e in (one, two)}
     scene["agents"] = agents
 
 
-@check("E03", AREA, "Each agent's tool calls act in its own workspace: its note lands there and not in the "
-                    "other, and the change is its own")
+def _workspaces_named(row: dict, envs) -> set[str]:
+    """The run's workspaces a listing row names, by their ids in its address."""
+    text = json.dumps(row)
+    return {e["name"] for e in envs if e["tilo_workspace"] in text}
+
+
+def person_note(ctx, env: dict, title: str) -> None:
+    """The person makes a note titled `title` in `env`'s workspace, through Notes' own new-note
+    there, as its window offers it."""
+    select_workspace(ctx, env["workspace"])
+
+    # The desk lists the apps of the workspace in front: its Notes is the one Notes listed.
+    def offered():
+        rows = [r for r in ctx.vm.actions(NOTES, programmatic=True)
+                if r.get("application") == NOTES and r.get("operation") == "new-note"]
+        return rows if len(rows) == 1 else None
+
+    rows = wait_until(offered, 30, interval=1.0)
+    if not rows:
+        raise Unobservable(f"{env['name']}: its Notes offers no single new-note in front")
+    try:
+        invoke(ctx, rows[0]["provider"], rows[0]["id"], {"title": title}, name=f"{env['name']}-person-note")
+    except CheckFailed as exc:
+        if "needs_confirmation" not in str(exc):
+            raise
+        invoke(ctx, rows[0]["provider"], rows[0]["id"], {"title": title}, confirmed=True,
+               name=f"{env['name']}-person-note")
+
+
+@check("E03", AREA, "Each agent's tool calls act in its own workspace: it lists that workspace's apps and "
+                    "finds what is in it, and nothing of the other")
 def own_workspace(ctx, res):
     scene = _scene(ctx)
     agents = _need(scene, "agents", "E02")
     one, two = scene["envs"]
-    titles = {e["name"]: f"E2E {e['name']} note {scene['run']}" for e in (one, two)}
-    for e in (one, two):
+    envs = (one, two)
+    titles = {e["name"]: f"E2E {e['name']} note {scene['run']}" for e in envs}
+    for e in envs:
+        person_note(ctx, e, titles[e["name"]])
+    problems = []
+
+    def want(ok: bool, message: str) -> None:
+        if not ok:
+            problems.append(message)
+
+    for e, other in ((one, two), (two, one)):
         agent = agents[e["name"]]
         tools = agent.call("tools/list")
         names = sorted(t.get("name") for t in (tools.get("result") or {}).get("tools") or [])
-        expect("tilo_do" in names and "tilo_find" in names, f"{e['name']}: tools/list offers {names}")
-        listing = tool_until(agent, "tilo_ls", {"path": "notes"}, lambda t: "#new-note" in t, 45)
-        expect("#new-note" in text_of(listing),
-               f"{e['name']}: Notes, open in {e['name']}, lists no new-note on the door: {str(listing)[:300]}")
-        made, e["asked_for_note"] = tool_answering(
+        want("tilo_do" in names and "tilo_find" in names, f"{e['name']}: tools/list offers {names}")
+        apps = tool_until(agent, "tilo_ls", {}, lambda t: any(
+            line.startswith("notes ") and "running" in line for line in t.splitlines()), 45)
+        e["apps"] = text_of(apps)[:600]
+        want(is_error(apps) is False and "running" in text_of(apps),
+             f"{e['name']}: the agent's tilo_ls does not list Notes running in its workspace: {text_of(apps)[:300]}")
+        found = tool_until(agent, "tilo_find", {"query": titles[e["name"]]},
+                           lambda t: not t.startswith("nothing matches") and titles[e["name"]] in t)
+        want(finds(found, titles[e["name"]]),
+             f"{e['name']}: the agent does not find its workspace's note: {text_of(found)[:300]}")
+        theirs = agent.tool("tilo_find", {"query": titles[other["name"]]})
+        want(not finds(theirs, titles[other["name"]]),
+             f"{e['name']}: the agent finds {other['name']}'s note: {text_of(theirs)[:300]}")
+        e["found"] = text_of(found)[:300]
+        # What the desk shows the agent of itself: none of it may name the other workspace's note.
+        desk = agent.tool("tilo_ls", {"path": "session"})
+        windows = agent.tool("tilo_ls", {"path": "session/Windows"})
+        e["desk"] = (text_of(desk) + "\n" + text_of(windows))[:2000]
+        want(titles[other["name"]] not in e["desk"],
+             f"{e['name']}: the desk shows the agent {other['name']}'s note: {e['desk'][:300]}")
+        agent.keep()
+    res.metrics["found"] = {e["name"]: e["found"] for e in envs}
+    res.metrics["desk"] = {e["name"]: e["desk"][:600] for e in envs}
+    if problems:
+        raise CheckFailed("; ".join(problems))
+
+
+# Why an agent at a desktop's door changes nothing in a workspace of this device today: its
+# invocations reach the broker as a delegate of the person, and a native workspace admits an
+# agent's action only through a task run (task_run_host), which the door does not start.
+NO_TASK_RUN = ("native task agent requires authenticated task action admission",
+               "action_evidence_unavailable: original caller missing")
+
+
+@check("E08", AREA, "An agent's change lands in its own workspace, not the other's, and is attributed to its id")
+def own_change(ctx, res):
+    scene = _scene(ctx)
+    agents = _need(scene, "agents", "E02")
+    one, two = scene["envs"]
+    envs = (one, two)
+    titles = {e["name"]: f"E2E {e['name']} agent note {scene['run']}" for e in envs}
+    files = {e["name"]: f"e2e-{e['name'].lower()}-{scene['run']}.txt" for e in envs}
+    for e in envs:
+        agent = agents[e["name"]]
+        made, asked_note = tool_answering(
             ctx, agent, "tilo_do", {"path": "notes#new-note", "args": {"title": titles[e["name"]]}},
             f"{e['name']}-new-note")
-        e["new_note"] = made
+        wrote, asked_file = tool_answering(
+            ctx, agent, "tilo_do",
+            {"path": "terminal#run", "args": {"command": f"echo {agent.name} > {files[e['name']]}; pwd"}},
+            f"{e['name']}-file")
+        e["new_note"], e["new_file"], e["asked_for_change"] = made, wrote, [asked_note, asked_file]
         agent.keep()
-        expect(is_error(made) is False, f"{e['name']}: new-note was refused: {str(made)[:400]}")
-    res.metrics["new_note"] = {e["name"]: text_of(e["new_note"])[:200] for e in (one, two)}
-    res.metrics["asked_for_note"] = {e["name"]: e["asked_for_note"] for e in (one, two)}
+    res.metrics["new_note"] = {e["name"]: text_of(e["new_note"])[:300] for e in envs}
+    res.metrics["new_file"] = {e["name"]: text_of(e["new_file"])[:300] for e in envs}
+    refused = [text_of(e[k]) for e in envs for k in ("new_note", "new_file") if is_error(e[k]) is not False]
+    if refused and all(any(reason in said for reason in NO_TASK_RUN) for said in refused):
+        raise core.ExpectedFailure(
+            "the door's agents change nothing in a native workspace: their actions are refused without "
+            f"a task run ({refused[0][:160]}); the agent door starts none (task_run_host)")
+    problems = []
     for e, other in ((one, two), (two, one)):
         agent = agents[e["name"]]
-        found = tool_until(agent, "tilo_find", {"query": titles[e["name"]]}, lambda t: titles[e["name"]] in t)
-        expect(titles[e["name"]] in text_of(found),
-               f"{e['name']}: the agent does not find its own note: {str(found)[:300]}")
-        theirs = agent.tool("tilo_find", {"query": titles[other["name"]]})
-        expect(titles[other["name"]] not in text_of(theirs),
-               f"{e['name']}: the agent finds {other['name']}'s note: {text_of(theirs)[:300]}")
-        e["read_back"] = text_of(found)[:400]
-    # The desk itself, not the agents' replies: what each workspace holds, read by the person.
-    for e, other in ((one, two), (two, one)):
-        select_workspace(ctx, e["workspace"])
-        rows = ctx.vm.actions(titles[e["name"]])
-        mine = [r for r in rows if r.get("application") == NOTES]
-        ctx.write(f"E03-{e['name']}-listing.json", json.dumps(rows, indent=1))
-        expect(mine, f"{e['name']}: the desk does not list the note {titles[e['name']]!r} in {e['name']}")
-        rooms = {r.get("room") for r in mine}
-        e["note_rooms"] = sorted(str(r) for r in rooms)
-    expect(not set(one["note_rooms"]) & set(two["note_rooms"]),
-           f"the two notes are in one room: {one['note_rooms']} / {two['note_rooms']}")
-    res.metrics["note_rooms"] = {e["name"]: e["note_rooms"] for e in (one, two)}
-    attribution = {}
-    for e in (one, two):
-        agent = agents[e["name"]]
-        status = agent.tool("tilo_status", {})
-        attribution[e["name"]] = text_of(status)[:600]
-    res.metrics["status"] = attribution
-    for e in (one, two):
-        expect(e["agent_id"] in attribution[e["name"]] or e["agent_id"] in e["read_back"]
-               or e["agent_id"] in text_of(e["new_note"]),
-               f"{e['name']}: nothing the agent's change shows names {e['agent_id']}: "
-               f"{attribution[e['name']][:200]!r}")
+        if is_error(e["new_note"]) is not False:
+            problems.append(f"{e['name']}: new-note was refused: {text_of(e['new_note'])[:300]}")
+        else:
+            found = tool_until(agent, "tilo_find", {"query": titles[e["name"]]},
+                               lambda t: not t.startswith("nothing matches") and titles[e["name"]] in t)
+            if not finds(found, titles[e["name"]]):
+                problems.append(f"{e['name']}: the agent does not find its own note")
+            if finds(agents[other["name"]].tool("tilo_find", {"query": titles[e["name"]]}), titles[e["name"]]):
+                problems.append(f"{other['name']}'s agent finds {e['name']}'s note")
+        if is_error(e["new_file"]) is not False:
+            problems.append(f"{e['name']}: terminal#run was refused: {text_of(e['new_file'])[:300]}")
+        else:
+            if slot_read(ctx, f"{e['tree']}/{files[e['name']]}") is None:
+                problems.append(f"{e['name']}: the agent's file is not in its workspace's files")
+            if slot_read(ctx, f"{other['tree']}/{files[e['name']]}") is not None:
+                problems.append(f"{e['name']}: the agent's file landed in {other['name']}'s files")
+    if problems:
+        raise CheckFailed("; ".join(problems))
 
 
 @check("E04", AREA, "An agent in an environment asking for the other workspace is refused, before anyone "
@@ -604,10 +746,9 @@ def other_workspace(ctx, res):
     scene = _scene(ctx)
     _need(scene, "agents", "E02")
     one, two = scene["envs"]
-    agent = Agent(ctx, one, "studio-asks-garden",
-                  server=f"tilo-runtime --connect --workspace {two['workspace']['id']}")
+    agent = Agent(ctx, one, "studio-asks-garden")
     agent.start()
-    reply = agent.reply(agent.initialize(), REPLY_S)
+    reply = agent.reply(agent.initialize(workspace=two["tilo_workspace"]), REPLY_S)
     asked = no_sheet(ctx, 3)
     agent.keep()
     res.metrics["reply"] = reply
@@ -650,7 +791,8 @@ def stop_one(ctx, res):
     scene = _scene(ctx)
     agents = _need(scene, "agents", "E02")
     one, two = scene["envs"]
-    ctx.vm.invoke(*_desk_stop(ctx, two["agent_id"]))
+    provider, action, args = _desk_stop(ctx, two["agent_id"])
+    invoke(ctx, provider, action, args, name="stop-agent")
     stopped = agents[two["name"]]
     ended = wait_until(lambda: any(l.get("e2e") == "eof" for l in stopped.lines()), 20, interval=0.5)
     keys = seated_keys(ctx)
@@ -666,12 +808,12 @@ def stop_one(ctx, res):
 
 
 def _desk_stop(ctx, agent_id: str) -> tuple[str, str, dict]:
-    rows = [r for r in ctx.vm.actions(programmatic=True) if r.get("operation") == "stop-agent"]
+    """The person's Stop on the agent `agent_id` at their desk (`session:desk` stop-agent)."""
+    rows = [r for r in ctx.vm.actions("stop") if str(r.get("id", "")).endswith("\x1fstop-agent")]
     ctx.write("E06-stop-rows.json", json.dumps(rows, indent=1))
     if not rows:
-        raise Unobservable("the desk offers no Stop (stop-agent) action")
-    row = rows[0]
-    return row["provider"], row["id"], {"agent": agent_id, "confirm": True}
+        raise Unobservable("the desk offers no Stop for an agent (stop-agent)")
+    return rows[0]["provider"], rows[0]["id"], {"agent": agent_id}
 
 
 # The host probe: a program of the login, outside every environment, connecting to an

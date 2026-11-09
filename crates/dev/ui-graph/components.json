@@ -1731,6 +1731,46 @@
       }
     },
     {
+      "name": "DragSource",
+      "doc": "A view a person can pick up and drag to a drop target in the same window: a search hit, a row of a list, a message's attachment. What it carries is `resource`; the ghost under the pointer says `title`.\nA press that does not travel is the content's own, so a dragged row still opens when clicked and a dragged chip still presses.",
+      "props": [
+        {
+          "name": "resource",
+          "doc": "The resource the drag carries, as its published address (`chat.workspace/messages/m1`): what a drop target receives.",
+          "type": "text",
+          "required": true,
+          "positional": true,
+          "data": true
+        },
+        {
+          "name": "title",
+          "doc": "What the drag's ghost says under the pointer, and what assistive technology reads instead of the resource's address.",
+          "type": {
+            "option": "text"
+          }
+        }
+      ],
+      "slots": [
+        {
+          "name": "content",
+          "doc": "What it draws.",
+          "accepts": "view",
+          "default": true
+        }
+      ],
+      "events": [
+        {
+          "name": "activate",
+          "doc": "It was picked up and let go without travelling: the content's own press did not take it. Reported so a source that wraps something inert still says what happened.",
+          "press": true
+        }
+      ],
+      "semantics": {
+        "role": "Group",
+        "label": "title"
+      }
+    },
+    {
       "name": "Drawing",
       "doc": "Shapes drawn with the design system over a box of their own: a ring, a gauge, a small chart, a diagram. Colours are theme roles and widths tokens; a press reports which shape.",
       "props": [
@@ -1802,6 +1842,28 @@
       "semantics": {
         "role": "Image",
         "label": "label"
+      }
+    },
+    {
+      "name": "DropTarget",
+      "doc": "A view that takes what another view dragged to it: a chat composer takes an attachment, a dock takes a resource. A drag over it draws the toolkit's drop line, and letting go inside it reports what the drag carried.\nIt takes a resource dragged out of any [`ui.DragSource`](super::DragSource) and a run's item ([`ui.DragItem`](super::DragItem)); nothing else, so a file dragged in from another application is not silently swallowed (`ui.DropZone` is the component for files).",
+      "slots": [
+        {
+          "name": "content",
+          "doc": "What it draws.",
+          "accepts": "view",
+          "default": true
+        }
+      ],
+      "events": [
+        {
+          "name": "drop",
+          "doc": "A resource was dropped on it: carries the resource the drag carried, as its address. The view decides what to do with it — a composer attaches it to the draft, a canvas places it where it was dropped.",
+          "value": "resource"
+        }
+      ],
+      "semantics": {
+        "role": "Group"
       }
     },
     {
@@ -2034,6 +2096,11 @@
         {
           "name": "inline",
           "doc": "Sit within the content, as a list without rows, rather than fill the window.",
+          "type": "bool"
+        },
+        {
+          "name": "error",
+          "doc": "Something failed: the glyph takes the danger colour, and the message reads as an error (a view that could not be shown and why, `shell.md` §6).",
           "type": "bool"
         }
       ],
@@ -2719,6 +2786,16 @@
           },
           "many": true,
           "default": true
+        }
+      ],
+      "events": [
+        {
+          "name": "drop",
+          "doc": "A resource was dragged onto the map and let go: carries the resource the drag carried, as its address, and where it was let go — its canvas x, then its canvas y. The view decides what to do with it; the shell's canvas places it there.",
+          "value": "resource",
+          "at": {
+            "list": "int"
+          }
         }
       ],
       "semantics": {

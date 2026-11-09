@@ -51,7 +51,9 @@ fn serve_native_sessions(mut control: UnixStream) {
         .unwrap();
     let mut reader = BufReader::new(control.try_clone().unwrap());
     let mut previous: Option<ServiceChild> = None;
-    for index in 0..13 {
+    let mut index = 0;
+    let mut created = false;
+    while index < 13 {
         let kind = if index % 2 == 0 {
             "environment"
         } else {
@@ -62,15 +64,28 @@ fn serve_native_sessions(mut control: UnixStream) {
         // for the hello first keeps the check free of how long the terminal
         // took between switches.
         let hello = read_json(&mut reader);
-        if let Some(mut previous) = previous.take() {
-            previous.assert_cancelled(true);
-        }
         assert_eq!(hello["op"], "hello");
         assert_eq!(hello["protocol"], 2);
         control
             .write_all(b"{\"result\":\"ready\",\"protocol\":2}\n")
             .unwrap();
         let request = read_json(&mut reader);
+        if request["op"] == "create-environment" {
+            // Asked between two sessions over the same connection, which keeps
+            // serving: the session open stays open.
+            assert!(!created, "one environment made");
+            assert_eq!(request["name"], "Agent one");
+            control
+                .write_all(
+                    b"{\"result\":\"environments\",\"environments\":[{\"key\":\"env-0123456789ab\",\"name\":\"Agent one\"}]}\n",
+                )
+                .unwrap();
+            created = true;
+            continue;
+        }
+        if let Some(mut previous) = previous.take() {
+            previous.assert_cancelled(true);
+        }
         assert_eq!(request["op"], "open-session");
         assert_eq!(request["target"]["kind"], kind);
         assert_eq!(request["requested_by"], "person");
@@ -110,7 +125,12 @@ fn serve_native_sessions(mut control: UnixStream) {
             lease: supervisor,
             child,
         });
+        index += 1;
     }
+    assert!(
+        created,
+        "the terminal made its environment on its inherited connection"
+    );
     previous.as_mut().unwrap().assert_cancelled(false);
 }
 
@@ -136,6 +156,24 @@ fn native_mounted_terminal_switches_default_host_default_on_one_inherited_connec
         OpenState::Open
     );
     assert_eq!(recorded(&app), Some(SessionTarget::default()));
+    // A Terminal in a process of its own makes environments, as one the shell
+    // hosts does: over the connection the launcher opened for it.
+    on_tab(&mut app, |terminal| {
+        terminal.perform(crate::resource::TerminalEffect::CreateEnvironment {
+            name: "Agent one".into(),
+        })
+    })
+    .unwrap();
+    let inspection = app
+        .effect(&crate::resource::TerminalEffect::InspectSession)
+        .unwrap()
+        .value
+        .unwrap();
+    assert_eq!(
+        inspection["known_environments"][0]["record"], "env-0123456789ab",
+        "{inspection}"
+    );
+    assert_eq!(inspection["lifecycle"], "open", "the session stays open");
     {
         let _agent = ui::invocation_scope::InvokerScope::enter(
             ui::tilo_actions::ActionInvoker::actor("agent:fixture"),

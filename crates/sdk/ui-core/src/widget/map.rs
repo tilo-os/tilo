@@ -22,7 +22,7 @@ use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, Vec2};
 use vello::peniko::{BlendMode, Fill};
 
-use crate::component::{Component, Described, SlotType, SlotViews, Source};
+use crate::component::{Component, Described, Event, ResourceId, SlotType, SlotViews, Source};
 use crate::gesture::{GesturePhase, TouchGestureArena, TouchGestureEvent};
 use crate::presence::PresenceCtx;
 use crate::text_render::TextRenderer;
@@ -118,6 +118,11 @@ pub struct MapProps {
     /// The pins, in the order the map draws them (the last on top).
     #[component(slot(default))]
     pub pins: Vec<MapPinProps>,
+    /// A resource was dragged onto the map and let go: carries the resource the drag carried,
+    /// as its address, and where it was let go — its canvas x, then its canvas y. The view
+    /// decides what to do with it; the shell's canvas places it there.
+    #[component(event(value = ResourceId, at = Vec<i64>))]
+    pub drop: Event,
 }
 
 /// One pin of a map, as an instance gives it: its key, its place and the view it shows.
@@ -213,6 +218,9 @@ pub struct Map {
     /// Input or a new document value changed what this widget paints: it
     /// repaints once, and rests after the frame draws it.
     dirty: bool,
+    /// What a resource dragged onto the map and let go does: the map reports it with where it
+    /// was dropped, and the view places it.
+    drop: Event,
 }
 
 impl Default for Map {
@@ -240,6 +248,7 @@ impl Map {
             key_pan: f64::from(crate::tokens::Metrics::BASE.wheel_line),
             placed: HashMap::new(),
             laid: Rc::default(),
+            drop: Event::None,
         }
     }
 
@@ -254,6 +263,12 @@ impl Map {
     #[must_use]
     pub fn camera(&self) -> MapCamera {
         self.camera
+    }
+
+    /// The key the map is known by on the drag bus: its own, so a drag that started in a pin
+    /// never lands back on the map it came from.
+    fn drop_key(&self) -> String {
+        format!("map\u{1f}{}", self.rect.x0)
     }
 
     /// Look with `camera`: where the person left the canvas on this device.
@@ -392,9 +407,11 @@ impl Described for Map {
             name: _,
             ground,
             pins,
+            drop,
         } = props;
         let mut map = Self::new();
         map.ground = ground;
+        map.drop = drop;
         for pin in pins {
             let place = PinPlace {
                 x: pin.x.unwrap_or(0) as f64,
@@ -423,7 +440,9 @@ impl Described for Map {
             name: _,
             ground,
             pins,
+            drop,
         } = props;
+        self.drop = drop;
         if pins.len() != self.pins.len()
             || pins
                 .iter()
@@ -911,6 +930,32 @@ impl Widget for Map {
         let mut changed = false;
         for child in &mut self.parts.children {
             changed |= child.update(state, path);
+        }
+        // A resource another view dragged and let go inside the map is a drop here: the map
+        // reports what it carried and the canvas point under the pointer, and the view places
+        // it there (the shell's own `open`, or its place at a point).
+        if let Some(landed) = crate::widget::drag_bus::take(&self.drop_key(), self.rect) {
+            let crate::dnd::DragPayload::Custom { kind, blob } = landed.payload else {
+                return changed;
+            };
+            if kind != crate::widget::drag_source::RESOURCE_PAYLOAD
+                && kind != crate::widget::drag_run::ITEM_PAYLOAD
+            {
+                return changed;
+            }
+            if let Ok(resource) = String::from_utf8(blob)
+                && !resource.is_empty()
+            {
+                let at = self.camera.to_canvas(self.rect.origin(), landed.pointer);
+                self.drop.fire(Some(crate::component::Value::List(vec![
+                    crate::component::Value::Resource(resource),
+                    crate::component::Value::List(vec![
+                        crate::component::Value::Int(at.x.round() as i64),
+                        crate::component::Value::Int(at.y.round() as i64),
+                    ]),
+                ])));
+                changed = true;
+            }
         }
         changed
     }
