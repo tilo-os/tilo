@@ -1457,3 +1457,81 @@ fn a_lift_reaching_past_what_its_row_shows_is_a_selection_bleed() {
     let empty = lift([0.0, 0.0, 0.0, 0.0], [0.0, 0.0, 0.0, 0.0]);
     assert_eq!(reach_past(empty), None, "no lift at all");
 }
+
+/// The one main action a window declares stands in its bar as the primary button: a bar
+/// that shows it as every other action, behind its door, or not at all is what a person
+/// cannot tell from the rest of the row.
+#[test]
+fn a_bar_keeps_its_main_action_as_the_primary_button() {
+    let main = ui::window_toolbar::WindowToolbar {
+        actions: vec![
+            ui::window_toolbar::ToolbarAction::new("new", "plus", "New task")
+                .labelled()
+                .primary(),
+            ui::window_toolbar::ToolbarAction::new("sort", "arrow-up-down", "Sort").labelled(),
+        ],
+        ..ui::window_toolbar::WindowToolbar::default()
+    };
+    let shown = bar(
+        vec![
+            ui::window_toolbar::BarControl::new(
+                "action",
+                "new",
+                ui::kurbo::Rect::new(0.0, 0.0, 71.0, 28.0),
+            )
+            .named("New task")
+            .labelled()
+            .primary(),
+            ui::window_toolbar::BarControl::new(
+                "action",
+                "sort",
+                ui::kurbo::Rect::new(0.0, 0.0, 71.0, 28.0),
+            )
+            .named("Sort")
+            .labelled(),
+        ],
+        400.0,
+    );
+    assert!(
+        super::bar_primary(Some(&main), &shown).is_empty(),
+        "the main action stands as the primary button"
+    );
+    // Drawn as every other action, the bar does not say what the window is for.
+    let plain = bar(
+        vec![
+            ui::window_toolbar::BarControl::new(
+                "action",
+                "new",
+                ui::kurbo::Rect::new(0.0, 0.0, 71.0, 28.0),
+            )
+            .named("New task")
+            .labelled(),
+        ],
+        400.0,
+    );
+    let found = super::bar_primary(Some(&main), &plain);
+    assert_eq!(found.len(), 1, "{found:?}");
+    assert_eq!(found[0].kind, Kind::UnmarkedBarPrimary);
+    // Behind the bar's door is no place for it either, and neither is out of the bar.
+    let folded = bar(
+        vec![
+            ui::window_toolbar::BarControl::new(
+                "overflow",
+                "window-toolbar-more",
+                ui::kurbo::Rect::new(0.0, 0.0, 28.0, 28.0),
+            )
+            .named("More actions")
+            .menu(),
+        ],
+        0.0,
+    );
+    assert_eq!(
+        super::bar_primary(Some(&main), &folded).len(),
+        1,
+        "an action only in the menu is no main action a person sees"
+    );
+    let absent = bar(Vec::new(), 0.0);
+    assert_eq!(super::bar_primary(Some(&main), &absent).len(), 1);
+    // A window that declares no main action has none drawn as one.
+    assert!(super::bar_primary(None, &shown).is_empty());
+}

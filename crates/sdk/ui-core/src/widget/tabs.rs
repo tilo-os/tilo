@@ -1270,6 +1270,11 @@ impl TabBar {
                 let control = BarControl::new("leading", action.id.clone(), *rect)
                     .named(action.name.clone())
                     .words(slots.leading_words.get(index).copied().unwrap_or(0.0));
+                let control = if action.primary {
+                    control.primary()
+                } else {
+                    control
+                };
                 push(if labelled {
                     control.icon(icon).labelled()
                 } else {
@@ -1315,6 +1320,9 @@ impl TabBar {
                 }
                 if action.menu || !action.items.is_empty() {
                     control = control.menu();
+                }
+                if action.primary {
+                    control = control.primary();
                 }
                 push(if action.labelled && slots.actions_labelled {
                     control.labelled()
@@ -4121,7 +4129,7 @@ impl Widget for TabBar {
         // has room says what the control does, as it does for every other control.
         if self.new_tab && self.new_tab_words.map(|(scale, _)| scale) != Some(theme.text_scale) {
             let words = crate::text_render::with_layout_renderer(theme.text_scale, |text| {
-                super::window_toolbar_row::labelled_face(Rect::ZERO, NEW_TAB)
+                super::window_toolbar_row::labelled_face(Rect::ZERO, NEW_TAB, false)
                     .intrinsic_width(text, theme)
             });
             self.new_tab_words = Some((theme.text_scale, words));
@@ -5216,7 +5224,7 @@ impl TabBar {
         // active tab, a lift of the bar under the pointer. Where the bar has room for its words
         // it says them, as every control of the bar does.
         let face = if self.new_tab_labelled {
-            super::window_toolbar_row::labelled_face(self.new_tab_rect, NEW_TAB)
+            super::window_toolbar_row::labelled_face(self.new_tab_rect, NEW_TAB, false)
                 .hovered(self.hover_new_tab)
         } else {
             crate::widget::ButtonFace::icon_only(self.new_tab_rect, icons::Icon::Plus, NEW_TAB)
@@ -8873,6 +8881,7 @@ mod tests {
                 toggles: false,
                 destructive: false,
                 labelled: false,
+                primary: false,
             }],
             ..WindowToolbar::default()
         }
@@ -8983,6 +8992,7 @@ mod tests {
                 toggles: false,
                 destructive: false,
                 labelled: false,
+                primary: false,
             });
         }
         slots

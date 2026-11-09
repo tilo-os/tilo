@@ -104,7 +104,9 @@ fn every_kind_of_broken_layout_is_caught_at_the_view_that_breaks_it() {
             | Kind::DuplicateBarControl
             | Kind::IconOnlyBarAction
             // The fixture's windows compose no shell with a header row of its own under a bar.
+            // None declares the one main thing to do either.
             | Kind::StackedHeaderRows
+            | Kind::UnmarkedBarPrimary
             // No window in this fixture lists items beside a pane that says nothing is chosen.
             | Kind::PlaceholderPane
             // The fixture's windows compose no sidebar over a header naming a place.

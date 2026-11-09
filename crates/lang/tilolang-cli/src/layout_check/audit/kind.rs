@@ -111,10 +111,14 @@ pub enum Kind {
     /// A page given a column of its own inside another page: the gutter is counted twice, so
     /// what it holds stands inset from the rows beside it and narrower than them.
     PageInPage,
+    /// A window whose view declares one main action that does not stand in its bar as the
+    /// primary button: the thing a person is most likely to do looks like every other control,
+    /// or is not in the row at all.
+    UnmarkedBarPrimary,
 }
 
 impl Kind {
-    pub const ALL: [Self; 36] = [
+    pub const ALL: [Self; 37] = [
         Self::Overflow,
         Self::ClippedText,
         Self::Overlap,
@@ -151,6 +155,7 @@ impl Kind {
         Self::NestedScroller,
         Self::RepeatedRowTitle,
         Self::PageInPage,
+        Self::UnmarkedBarPrimary,
     ];
 
     pub fn name(self) -> &'static str {
@@ -191,6 +196,7 @@ impl Kind {
             Self::NestedScroller => "nested-scroller",
             Self::RepeatedRowTitle => "repeated-row-title",
             Self::PageInPage => "page-in-page",
+            Self::UnmarkedBarPrimary => "unmarked-bar-primary",
         }
     }
 }

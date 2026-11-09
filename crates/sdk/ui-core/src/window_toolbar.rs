@@ -522,6 +522,13 @@ pub struct ToolbarAction {
     /// row, in the row's fold order.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub labelled: bool,
+    /// It is the app's one main action for what the window shows
+    /// ([`Self::primary`]): the bar draws it as the primary button, its
+    /// words or its icon on the accent, so a person sees at once what the
+    /// window is for. It leads the actions and stands in the row at every
+    /// width, never behind the bar's door.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub primary: bool,
 }
 
 fn enabled() -> bool {
@@ -552,6 +559,7 @@ impl ToolbarAction {
             toggles: false,
             destructive: false,
             labelled: false,
+            primary: false,
         }
     }
 
@@ -611,6 +619,14 @@ impl ToolbarAction {
     #[must_use]
     pub fn labelled(mut self) -> Self {
         self.labelled = true;
+        self
+    }
+
+    /// The app's one main action for what the window shows
+    /// ([`Self::primary`]).
+    #[must_use]
+    pub fn primary(mut self) -> Self {
+        self.primary = true;
         self
     }
 }
@@ -948,8 +964,10 @@ impl WindowToolbar {
     /// icon stays ([`ToolbarAction::menu`], a menu button's items).
     #[must_use]
     pub fn bounded(mut self) -> Self {
+        // A window's main action never falls out of its bar for having no glyph: its words say
+        // what it does wherever the row has room for them.
         self.actions
-            .retain(|action| shown_icon(&action.icon, action.menu));
+            .retain(|action| action.primary || shown_icon(&action.icon, action.menu));
         // The row's actions first, in their order, then the menu's: the
         // row shows a prefix of the declared actions.
         self.actions.sort_by_key(|action| action.menu);
@@ -1606,6 +1624,9 @@ pub struct BarControl {
     pub menu: bool,
     /// The bar shows it with its name beside its icon.
     pub labelled: bool,
+    /// It is drawn as the primary button: the app's one main action, its words or its icon on
+    /// the accent.
+    pub primary: bool,
     /// The width its words need, where it has words the bar shows only when it has room for
     /// them (`0.0`: it asks for no words, or has none).
     pub words: f64,
@@ -1624,6 +1645,7 @@ impl BarControl {
             icon: None,
             menu: false,
             labelled: false,
+            primary: false,
             words: 0.0,
             rect: [rect.x0, rect.y0, rect.width(), rect.height()],
         }
@@ -1654,6 +1676,13 @@ impl BarControl {
     #[must_use]
     pub fn labelled(mut self) -> Self {
         self.labelled = true;
+        self
+    }
+
+    /// It is drawn as the primary button.
+    #[must_use]
+    pub fn primary(mut self) -> Self {
+        self.primary = true;
         self
     }
 
@@ -1705,6 +1734,7 @@ mod tests {
                 toggles: false,
                 destructive: false,
                 labelled: false,
+                primary: false,
             }],
             ..WindowToolbar::default()
         }
@@ -1787,6 +1817,7 @@ mod tests {
                 toggles: false,
                 destructive: false,
                 labelled: false,
+                primary: false,
             });
         }
         many.actions.push(ToolbarAction {
@@ -1801,6 +1832,7 @@ mod tests {
             toggles: false,
             destructive: false,
             labelled: false,
+            primary: false,
         });
         for n in 6..20 {
             many.actions.push(ToolbarAction {
@@ -1815,6 +1847,7 @@ mod tests {
                 toggles: false,
                 destructive: false,
                 labelled: false,
+                primary: false,
             });
         }
         let bounded = many.clone().bounded();

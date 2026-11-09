@@ -214,10 +214,12 @@ pub(super) struct Measured {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(super) struct MeasureKey {
     pub(super) labels: Vec<String>,
-    /// Each leading action's name where it is labelled, else empty.
-    pub(super) leading: Vec<String>,
-    /// Each action's name where it is labelled, else empty.
-    pub(super) actions: Vec<String>,
+    /// Each leading action's name where it is labelled, else empty, and whether it is the
+    /// app's primary one: the face it is drawn with decides how wide its button is.
+    pub(super) leading: Vec<(String, bool)>,
+    /// Each action's name where it is labelled, else empty, and whether it is the app's
+    /// primary one.
+    pub(super) actions: Vec<(String, bool)>,
     pub(super) forms: Vec<String>,
     pub(super) editable: bool,
     pub(super) picker: bool,
@@ -265,6 +267,18 @@ pub(super) fn folded_views(measured: ViewsMeasure) -> ViewsPlace {
     measured
         .location
         .map_or(ViewsPlace::Menu(measured.menu), ViewsPlace::InLocation)
+}
+
+/// The actions a row never gives up: those up to and including the window's main one
+/// ([`crate::window_toolbar::ToolbarAction::primary`]), and none where it declares none.
+fn main_action_floor(toolbar: &WindowToolbar, row_actions: usize) -> usize {
+    toolbar
+        .actions
+        .iter()
+        .take_while(|action| !action.menu)
+        .position(|action| action.primary)
+        .map_or(0, |index| index + 1)
+        .min(row_actions)
 }
 
 /// Whether `toolbar`'s location can be the views' picker: a plain label,
@@ -343,7 +357,9 @@ impl Slots {
     /// location narrower than [`MIN_LOCATION_PX`], the rest goes into the
     /// overflow menu in [`Slots::yielding`]'s order, so the location stays
     /// in the row, elided. One action never goes into the menu alone: the
-    /// menu's button would take its place and hide it.
+    /// menu's button would take its place and hide it. The window's main
+    /// action ([`crate::window_toolbar::ToolbarAction::primary`]) stays in
+    /// the row at every width, its icon alone where the words do not fit.
     ///
     /// The location shows the widest form of its label that stands whole
     /// beside the navigation, with everything that yields before it in the
@@ -406,6 +422,17 @@ impl Slots {
         } else {
             icons
         };
+        // A row short of room for the words keeps the window's main action and puts the rest
+        // behind its door, rather than standing glyphs nobody can name with room beside them.
+        let floor = main_action_floor(
+            toolbar,
+            toolbar
+                .row_actions()
+                .min(crate::window_toolbar::MAX_ACTIONS),
+        );
+        if !slots.actions_labelled && slots.actions.len() > floor && floor > 0 {
+            slots = Self::arranged_below(toolbar, row, views, shown, (&[], &[]), floor, false);
+        }
         slots.form = form;
         // What the actions' words need, whether or not this layout shows them: a row that had
         // room for a label and showed its icon instead is what a check reports.
@@ -490,8 +517,24 @@ impl Slots {
         toolbar: &WindowToolbar,
         row: Rect,
         views: ViewsSize,
+        shown: (f64, f64, bool),
+        labels: (&[f64], &[f64]),
+    ) -> Self {
+        Self::arranged_below(toolbar, row, views, shown, labels, usize::MAX, true)
+    }
+
+    /// [`Self::arranged`] keeping at most `most` actions in the row: a bar short of room for
+    /// the words keeps the window's main action and puts the rest behind its door. A row that
+    /// folds down to one action keeps it (`keep_alone`) unless its words are what it cannot
+    /// show: then the menu's row says what its glyph cannot.
+    pub(super) fn arranged_below(
+        toolbar: &WindowToolbar,
+        row: Rect,
+        views: ViewsSize,
         (form_w, least, shortened): (f64, f64, bool),
         (labels, action_labels): (&[f64], &[f64]),
+        most: usize,
+        keep_alone: bool,
     ) -> Self {
         let row_actions = toolbar
             .row_actions()
@@ -513,7 +556,8 @@ impl Slots {
         // A menu holding one action alone saves no width: its button takes
         // the action's place and hides it.
         let lone = |inline: usize, place: ViewsPlace| {
-            row_actions - inline == 1
+            keep_alone
+                && row_actions - inline == 1
                 && toolbar.actions.len() == row_actions
                 && (toolbar.views.is_none() || place != ViewsPlace::Overflow)
         };
@@ -525,8 +569,11 @@ impl Slots {
         if shortened {
             all.plain = 0;
         }
+        // The window's main action stands in the row wherever the bar is drawn
+        // ([`crate::window_toolbar::ToolbarAction::primary`]).
+        let floor = main_action_floor(toolbar, row_actions);
         for &place in &places {
-            let mut inline = row_actions;
+            let mut inline = row_actions.min(most).max(floor).min(row_actions);
             loop {
                 let slots = Self::with_inline(
                     toolbar,
@@ -545,7 +592,7 @@ impl Slots {
                 if room && placed && !lone(inline, place) {
                     return slots;
                 }
-                if inline == 0 {
+                if inline <= floor {
                     break;
                 }
                 inline -= 1;
@@ -553,12 +600,18 @@ impl Slots {
         }
         let mut last = Self::default();
         for (kept, place) in Self::yielding(all, measured) {
-            let inline =
-                if kept.plain == all.plain && kept.navigating == all.navigating && lone(0, place) {
-                    row_actions
-                } else {
-                    0
-                };
+            let kept = Kept {
+                inline: kept.inline.max(floor),
+                ..kept
+            };
+            let inline = if kept.plain == all.plain
+                && kept.navigating == all.navigating
+                && lone(kept.inline, place)
+            {
+                row_actions
+            } else {
+                kept.inline
+            };
             let slots = Self::with_inline(
                 toolbar,
                 row,

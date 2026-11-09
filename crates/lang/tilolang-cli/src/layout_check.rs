@@ -1850,6 +1850,10 @@ impl AppCheck<'_> {
             bar_height,
             staged.harness().window_header_row_height(),
         ));
+        problems.extend(audit::bar_primary(
+            ui::window_toolbar::shown().as_ref(),
+            &bar,
+        ));
         for mut problem in problems {
             // A list draws a row as one widget keyed by the row: what it is about is the row
             // view's node, the deepest the row's tree holds.

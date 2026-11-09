@@ -28,6 +28,7 @@ fn browser() -> WindowToolbar {
             toggles: false,
             destructive: false,
             labelled: false,
+            primary: false,
         }],
         ..WindowToolbar::default()
     }
@@ -1610,3 +1611,21 @@ fn a_change_a_key_just_asked_for_lands_and_one_of_state_moves_nothing() {
 
 #[path = "reactions_tests.rs"]
 mod reactions;
+
+/// The window's main action is painted as the primary button, where the row has room for its
+/// words; every other action stands on the bar's plain face.
+#[test]
+fn the_windows_main_action_is_painted_as_the_primary_button() {
+    let primary = paint::labelled_face(crate::kurbo::Rect::ZERO, "New task", true);
+    assert_eq!(
+        primary.role_of(),
+        crate::widget::ButtonRole::Primary,
+        "the main action stands on the accent"
+    );
+    let other = paint::labelled_face(crate::kurbo::Rect::ZERO, "Sort", false);
+    assert_eq!(
+        other.role_of(),
+        crate::widget::ButtonRole::Plain,
+        "every other action stands on the bar's plain face"
+    );
+}

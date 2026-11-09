@@ -1428,3 +1428,96 @@ fn a_scenario_that_fails_is_said_rather_than_shown_empty() {
     };
     assert!(why.contains("no such scenario"), "{why}");
 }
+
+/// The one main action an app declares for its window stands in the window's bar as the
+/// primary button, at a desk's width and in a hand's: a person sees at once what the window is
+/// for, and the action narrows to its icon before it ever leaves the row.
+#[test]
+fn the_windows_main_action_stands_in_the_bar_as_the_primary_button() {
+    tilo_ui_host::i18n::ensure();
+    for (app, scenario, action) in [
+        ("tasks", "a busy week", "New task"),
+        ("notes", "a first note", "New note"),
+    ] {
+        let packages = app_packages(app);
+        the_main_action_of(app, &packages, scenario, action);
+    }
+}
+
+fn the_main_action_of(app: &str, packages: &Rc<stage::Packages>, scenario: &str, action: &str) {
+    for (size, dark) in [
+        ((1280, 800), false),
+        ((1280, 800), true),
+        ((390, 844), false),
+        ((390, 844), true),
+        ((320, 568), false),
+        ((320, 568), true),
+    ] {
+        let theme = if dark {
+            ui::Theme::dark()
+        } else {
+            ui::Theme::light()
+        };
+        let mut staged = stage::Staged::over(
+            &format!("so.tilo.lang.{app}"),
+            packages,
+            scenario,
+            size,
+            theme.clone(),
+            None,
+            &[],
+        )
+        .expect("the scenario stages");
+        let input = if size.0 < 600 {
+            ui::interaction::InteractionEnvironment::TOUCH
+        } else {
+            ui::interaction::InteractionEnvironment::POINTER
+        };
+        staged
+            .lay_out(size, theme, input, 1.0)
+            .expect("the app lays out");
+        let bar = staged.harness_mut().window_bar_layout(f64::from(size.0));
+        let primary: Vec<&ui::window_toolbar::BarControl> = bar
+            .controls
+            .iter()
+            .filter(|control| control.primary)
+            .collect();
+        assert_eq!(
+            primary.len(),
+            1,
+            "one bar draws one main action at {size:?}: {bar:?}"
+        );
+        let control = primary[0];
+        assert_eq!(
+            control.name, action,
+            "the app's own main action: {control:?}"
+        );
+        assert_eq!(
+            control.slot, "action",
+            "it stands among the app's actions: {control:?}"
+        );
+        assert!(
+            !control.menu,
+            "what the window is for never hides behind the bar's door: {control:?}"
+        );
+        assert!(
+            control.rect[2] > 0.0 && control.rect[3] > 0.0,
+            "it stands where the person reaches it at {size:?}: {control:?}"
+        );
+        if size.0 >= 1280 {
+            assert!(
+                control.labelled,
+                "a desk's bar says the main action's words at {size:?}: {control:?}"
+            );
+        }
+        if size.0 <= 320 {
+            // The narrowest bar says the words where it has room for them and stands as its
+            // icon alone where it has not: either way it is the primary button still.
+            assert!(
+                control.labelled || control.rect[2] <= 28.5,
+                "the narrowest bar keeps the main action to its icon alone, still on the \
+                 accent at {size:?}: {control:?}"
+            );
+        }
+    }
+}

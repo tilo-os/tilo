@@ -389,6 +389,9 @@ pub struct ButtonFace {
     pub enabled: bool,
     /// It ends, removes or discards something: the destructive role's face.
     pub destructive: bool,
+    /// It is the app's one main action: the primary role's face, the glyph on the accent, so
+    /// the bar still says what the window is for where its words do not fit.
+    pub primary: bool,
 }
 
 /// Paint one icon button of a window's bar with the shared button face
@@ -407,6 +410,8 @@ pub fn paint_icon_button(
 ) {
     let role = if face.destructive {
         crate::widget::ButtonRole::Destructive
+    } else if face.primary {
+        crate::widget::ButtonRole::Primary
     } else {
         crate::widget::ButtonRole::Plain
     };

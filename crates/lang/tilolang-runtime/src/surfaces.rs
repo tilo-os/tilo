@@ -735,13 +735,20 @@ impl Core {
             )?;
         }
         for (index, action) in by_place.into_iter().flatten().enumerate() {
+            let primary = flag(&action, PRIMARY);
             let node = Self::action_button(
                 &action,
                 &format!("{key}~{slot}~action-{index}"),
                 entry,
                 true,
             );
-            self.put_in_slot(shell, slot, node)?;
+            // The window's main action leads the actions of its bar: it stands where a person
+            // looks first, and the app's own controls follow it.
+            if primary {
+                self.put_in_slot_front(shell, slot, node)?;
+            } else {
+                self.put_in_slot(shell, slot, node)?;
+            }
         }
         // What the view left unplaced stands in the bar's own "…", beside what does not fit in
         // its row: one bar has one door, and the app's own menu beside it is a second "…" with
@@ -1113,6 +1120,30 @@ impl Core {
     fn put_in_slot(&self, at: usize, name: &str, node: NodeBuild) -> Result<(), RuntimeError> {
         let child = self.push(node)?;
         self.put_at_in_slot(at, name, child)
+    }
+
+    /// The node `node` at the front of `at`'s slot `name`, the slot made when it has none: the
+    /// window's main action leads the actions of its bar.
+    fn put_in_slot_front(
+        &self,
+        at: usize,
+        name: &str,
+        node: NodeBuild,
+    ) -> Result<(), RuntimeError> {
+        let child = self.push(node)?;
+        let key = self.key(at)?;
+        let slot = if let Some(slot) = self.slot(at, name)? {
+            slot
+        } else {
+            let mut props = BTreeMap::new();
+            props.insert("name".to_owned(), Value::text(name));
+            let mut slot = empty(SLOT, &format!("{key}~slot-{name}"));
+            slot.props = props;
+            let slot = self.push(slot)?;
+            self.insert(at, usize::MAX, slot)?;
+            slot
+        };
+        self.insert(slot, 0, child)
     }
 
     /// The node `child` (one of the arena's) at the end of `at`'s slot `name`, the slot made

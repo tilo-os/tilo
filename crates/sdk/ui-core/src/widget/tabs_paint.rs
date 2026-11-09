@@ -189,6 +189,7 @@ impl TabBar {
                 on: open,
                 enabled: true,
                 destructive: false,
+                primary: false,
             },
         );
     }

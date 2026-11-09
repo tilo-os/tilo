@@ -1857,6 +1857,11 @@ impl<'a> ButtonFace<'a> {
         self.role = role;
         self
     }
+    /// What the face is drawn as, for a test that holds a bar's action to what it paints.
+    #[cfg(test)]
+    pub(crate) const fn role_of(&self) -> ButtonRole {
+        self.role
+    }
     /// What the face says means something ([`Tone::Neutral`] is no tone): the
     /// icon and the label take the tone's colour.
     #[must_use]
@@ -2644,21 +2649,26 @@ impl Widget for Button {
     /// A button that shows its glyph alone asked for that: the bar draws it as the glyph the
     /// app put on it instead of spending the room a second control needs on words the button
     /// itself keeps off. Its name is still what it says for itself (its tooltip, its menu row).
+    /// The window's one main action ([`ButtonRole::Primary`]) is declared as such whatever its
+    /// glyph: the bar draws it as the primary button, in its row at every width.
     fn window_slot(&self, id: String) -> Option<crate::window_toolbar::ToolbarAction> {
         let name = self.accessibility()?.name.filter(|name| !name.is_empty())?;
         let icon = self.icon.map_or("", crate::icons::Icon::name);
+        let primary = self.role == ButtonRole::Primary;
         let action = crate::window_toolbar::ToolbarAction::new(id, icon, name)
             .enabled(self.is_enabled())
             .on(self.toggled == Some(true));
-        Some(
-            if self.menu_only || self.opens_menu || self.icon.is_none() {
-                action.in_menu()
-            } else if self.label.trim().is_empty() {
-                action
-            } else {
-                action.labelled()
-            },
-        )
+        // The window's one main action stands in the row wherever the bar has room for its
+        // words or only for its icon: what the window is for never hides behind its door.
+        Some(if primary {
+            action.labelled().primary()
+        } else if self.menu_only || self.opens_menu || self.icon.is_none() {
+            action.in_menu()
+        } else if self.label.trim().is_empty() {
+            action
+        } else {
+            action.labelled()
+        })
     }
 
     /// Returns the raw string (a fluent key or plain text); the host

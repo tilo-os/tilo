@@ -250,6 +250,7 @@ pub(super) fn paint_slots(
         on,
         enabled,
         destructive: false,
+        primary: false,
     };
     let poses: Poses<'_> = interaction
         .map(|i| &i.poses)
@@ -314,7 +315,7 @@ pub(super) fn paint_slots(
         let slot = Slot::Leading(i);
         let lifted = face(slot.clone(), action.enabled, shows_on(toolbar, &slot));
         if action.labelled && slots.labelled && rect.area() > 0.0 {
-            let face = labelled_face(*rect, &action.name)
+            let face = labelled_face(*rect, &action.name, action.primary)
                 .hovered(lifted.hovered && lifted.enabled)
                 .pressed(lifted.pressed && lifted.enabled)
                 .toggled(lifted.on)
@@ -326,6 +327,10 @@ pub(super) fn paint_slots(
         }
         let Some(icon) = Icon::from_name(&action.icon).filter(|_| rect.area() > 0.0) else {
             continue;
+        };
+        let lifted = ButtonFace {
+            primary: action.primary,
+            ..lifted
         };
         posed(scene, transform, pose, (&slot, *rect), |scene, at| {
             paint_icon_button(scene, at, tr, theme, (*rect, icon), lifted);
@@ -395,10 +400,11 @@ pub(super) fn paint_slots(
         let mut lifted = face(slot.clone(), action.enabled, shows_on(toolbar, &slot));
         lifted.hovered |= interaction.is_some_and(|it| it.menu_open == Some(Slot::Action(i)));
         lifted.destructive = action.destructive;
+        lifted.primary = action.primary;
         // A command that names itself stands as words where the row has room for them, its
         // icon beside them; its icon alone where not.
         if action.labelled && slots.actions_labelled {
-            let face = labelled_face(*rect, &action.name)
+            let face = labelled_face(*rect, &action.name, action.primary)
                 .hovered(lifted.hovered && lifted.enabled)
                 .pressed(lifted.pressed && lifted.enabled)
                 .toggled(lifted.on)
@@ -444,7 +450,7 @@ pub(super) fn paint_slots(
         let slot = Slot::Notice(i);
         let lifted = face(slot.clone(), action.enabled, false);
         if slots.notice_labelled.get(i).copied().unwrap_or(false) {
-            let face = labelled_face(*rect, &action.name)
+            let face = labelled_face(*rect, &action.name, action.primary)
                 .hovered(lifted.hovered && lifted.enabled)
                 .pressed(lifted.pressed && lifted.enabled)
                 .disabled(!lifted.enabled);
@@ -585,12 +591,21 @@ pub(crate) fn location_shown<'a>(
     (location.form(form), theme.tokens.colors.text_primary)
 }
 
-/// A labelled leading action's text button in `rect`, saying `name`
-/// ([`crate::window_toolbar::ToolbarAction::labelled`]): the bar's plain
-/// face, at the size of its icon buttons.
-pub(crate) fn labelled_face(rect: Rect, name: &str) -> crate::widget::ButtonFace<'_> {
+/// A labelled action's text button in `rect`, saying `name`
+/// ([`crate::window_toolbar::ToolbarAction::labelled`]), at the size of the bar's icon
+/// buttons: the bar's plain face, or the primary button's accent where it is the app's one
+/// main action ([`crate::window_toolbar::ToolbarAction::primary`]).
+pub(crate) fn labelled_face(
+    rect: Rect,
+    name: &str,
+    primary: bool,
+) -> crate::widget::ButtonFace<'_> {
     crate::widget::ButtonFace::new(rect, name)
-        .role(crate::widget::ButtonRole::Plain)
+        .role(if primary {
+            crate::widget::ButtonRole::Primary
+        } else {
+            crate::widget::ButtonRole::Plain
+        })
         .control_size(crate::widget::ControlSize::Small)
 }
 

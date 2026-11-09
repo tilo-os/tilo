@@ -488,38 +488,27 @@ impl ToolbarRow {
                     .collect()
             })
             .unwrap_or_default();
-        let leading: Vec<String> = self
-            .toolbar()
-            .map(|toolbar| {
-                toolbar
-                    .leading
-                    .iter()
-                    .map(|action| {
+        let words = |actions: &[crate::window_toolbar::ToolbarAction]| -> Vec<(String, bool)> {
+            actions
+                .iter()
+                .map(|action| {
+                    (
                         if action.labelled {
                             action.name.clone()
                         } else {
                             String::new()
-                        }
-                    })
-                    .collect()
-            })
-            .unwrap_or_default();
-        let actions: Vec<String> = self
+                        },
+                        action.primary,
+                    )
+                })
+                .collect()
+        };
+        let leading = self
             .toolbar()
-            .map(|toolbar| {
-                toolbar
-                    .actions
-                    .iter()
-                    .map(|action| {
-                        if action.labelled {
-                            action.name.clone()
-                        } else {
-                            String::new()
-                        }
-                    })
-                    .collect()
-            })
-            .unwrap_or_default();
+            .map_or_else(Vec::new, |toolbar| words(&toolbar.leading));
+        let actions = self
+            .toolbar()
+            .map_or_else(Vec::new, |toolbar| words(&toolbar.actions));
         let key = MeasureKey {
             labels,
             leading,
@@ -546,8 +535,8 @@ impl ToolbarRow {
         };
         if key.labels.is_empty()
             && key.forms.is_empty()
-            && key.leading.iter().all(String::is_empty)
-            && key.actions.iter().all(String::is_empty)
+            && key.leading.iter().all(|(name, _)| name.is_empty())
+            && key.actions.iter().all(|(name, _)| name.is_empty())
         {
             let had = self.views_size.take().is_some();
             if had {
@@ -569,7 +558,7 @@ impl ToolbarRow {
             let actions = key
                 .notice
                 .iter()
-                .map(|name| labelled_face(Rect::ZERO, name).intrinsic_width(text, theme))
+                .map(|name| labelled_face(Rect::ZERO, name, false).intrinsic_width(text, theme))
                 .collect();
             let style = theme.text(TextRole::Body);
             let mut width = |label: &str| f64::from(text.measure_style(label, None, &style).0);
@@ -587,14 +576,14 @@ impl ToolbarRow {
                 menu: picker_width(widest, theme),
                 location: Some(picker_width(0.0, theme)),
             });
-            let mut widths = |names: &[String]| -> Vec<f64> {
+            let mut widths = |names: &[(String, bool)]| -> Vec<f64> {
                 names
                     .iter()
-                    .map(|name| {
+                    .map(|(name, primary)| {
                         if name.is_empty() {
                             0.0
                         } else {
-                            labelled_face(Rect::ZERO, name).intrinsic_width(text, theme)
+                            labelled_face(Rect::ZERO, name, *primary).intrinsic_width(text, theme)
                         }
                     })
                     .collect()

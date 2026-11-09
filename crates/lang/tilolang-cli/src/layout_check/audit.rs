@@ -7,7 +7,7 @@ mod bar;
 mod kind;
 mod text;
 
-pub use bar::{bar, stacked_header_rows};
+pub use bar::{bar, bar_primary, stacked_header_rows};
 pub use kind::Kind;
 pub use text::clipped_text;
 use text::header_row_problem;

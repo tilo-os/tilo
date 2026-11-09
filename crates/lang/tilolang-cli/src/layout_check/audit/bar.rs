@@ -116,3 +116,60 @@ fn same_control(a: &ui::window_toolbar::BarControl, b: &ui::window_toolbar::BarC
     }
     !a.name.is_empty() && a.name == b.name
 }
+
+/// What is wrong with the window's bar against what its app declared: the one main action a
+/// view declares stands in the row as the primary button, so a person sees at once what the
+/// window is for, rather than as one more action or behind the bar's door.
+pub fn bar_primary(
+    toolbar: Option<&ui::window_toolbar::WindowToolbar>,
+    layout: &ui::window_toolbar::BarLayout,
+) -> Vec<Problem> {
+    let Some(toolbar) = toolbar else {
+        return Vec::new();
+    };
+    let mut out = Vec::new();
+    for action in toolbar
+        .actions
+        .iter()
+        .chain(&toolbar.leading)
+        .filter(|action| action.primary)
+    {
+        let named = if action.name.is_empty() {
+            format!("\"{}\"", action.id)
+        } else {
+            format!("\"{}\"", action.name)
+        };
+        let control = layout
+            .controls
+            .iter()
+            .find(|control| control.id == action.id);
+        let detail = match control {
+            Some(control) if control.menu => format!(
+                "the window's main action {named} is only in the bar's menu, where nothing says \
+                 it is what the window is for: the primary button stands in the row"
+            ),
+            Some(control) if control.primary => continue,
+            Some(control) => format!(
+                "the window's main action {named} stands in the bar as every other action \
+                 does, {}, where the primary button says so on the accent",
+                if control.labelled {
+                    "its words"
+                } else {
+                    "its icon alone"
+                }
+            ),
+            None => format!(
+                "the window's main action {named} does not stand in its bar at all, so nothing \
+                 says what the window is for"
+            ),
+        };
+        out.push(Problem {
+            kind: Kind::UnmarkedBarPrimary,
+            keys: Vec::new(),
+            widget: BAR.to_owned(),
+            id: Some(action.id.clone()),
+            detail,
+        });
+    }
+    out
+}

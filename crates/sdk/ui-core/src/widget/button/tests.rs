@@ -1885,3 +1885,42 @@ fn a_button_named_beyond_its_label_is_announced_with_that_name() {
         "an icon-only button keeps the name its label only states"
     );
 }
+
+/// The app's one main action is declared to the window's bar as such, and stays in its row:
+/// it is drawn as the primary button rather than as every other action, and it is never the
+/// slot the bar keeps behind its one door.
+#[test]
+fn the_primary_button_declares_the_windows_main_action() {
+    use crate::widget::Widget as _;
+    let primary = Button::new("new", "New note")
+        .with_icon(crate::icons::Icon::Plus)
+        .role(ButtonRole::Primary);
+    let slot = primary
+        .window_slot("new".to_owned())
+        .expect("a button names its slot");
+    assert!(slot.primary, "the bar draws it as the primary button");
+    assert!(slot.labelled, "where the bar has room it says its words");
+    assert!(
+        !slot.menu,
+        "what the window is for is never behind its door"
+    );
+
+    // A main action an app declares without a glyph is still no row of the bar's menu.
+    let bare = Button::new("new", "New note").role(ButtonRole::Primary);
+    let slot = bare
+        .window_slot("new".to_owned())
+        .expect("a button names its slot");
+    assert!(slot.primary && !slot.menu);
+
+    // Every other action is not the main one, and an icon-less one stands in the menu.
+    let other = Button::new("sort", "Sort").with_icon(crate::icons::Icon::ArrowUpDown);
+    let slot = other
+        .window_slot("sort".to_owned())
+        .expect("a button names its slot");
+    assert!(!slot.primary);
+    let unmarked = Button::new("untag", "Untag");
+    let slot = unmarked
+        .window_slot("untag".to_owned())
+        .expect("a button names its slot");
+    assert!(!slot.primary && slot.menu);
+}
