@@ -198,7 +198,7 @@ export function domView(document) {
     prompt(text, {copied}) {
       $('first-run-prompt').textContent = text;
       this.copied(copied);
-      if (copied) say('Prompt copied. Paste it into your agent. Waiting for it to sign in…');
+      if (copied) say('Prompt copied. Paste it into your agent. Waiting for it to log in…');
       $('first-run-heading-wait').focus({preventScroll: true});
     },
     copied(ok) { $('first-run-again').textContent = ok ? 'Copied' : 'Copy'; if (ok) setTimeout(() => { $('first-run-again').textContent = 'Copy again'; }, 1500); },
@@ -210,7 +210,7 @@ export function domView(document) {
       state('connected');
       const name = label || 'Your agent';
       $('first-run-connected').textContent = `${name} is connected`;
-      say(`${name} signed in as you. Opening your workspace…`);
+      say(`${name} logged in as you. Opening your workspace…`);
     },
     signInReady(ready) { $('first-run-passkey').disabled = !ready; },
     signingIn(busy) { $('first-run-passkey').setAttribute('aria-busy', String(busy)); },
