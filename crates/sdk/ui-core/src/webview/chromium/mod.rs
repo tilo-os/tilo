@@ -2161,8 +2161,11 @@ fn command_within_limits(command: &WebViewCommand) -> bool {
                     .is_none_or(|text| text.len() <= super::MAX_PAGE_DIALOG_ANSWER)
         }
         WebViewCommand::SetZoomLevel(level) => level.is_finite() && (-5.0..=9.0).contains(level),
+        // A cancel names the page request it stops, by the id that request
+        // was sent under.
         WebViewCommand::RequestNavigationHistory { request_id, .. }
-        | WebViewCommand::PaintCapture { request_id } => {
+        | WebViewCommand::PaintCapture { request_id }
+        | WebViewCommand::CancelPage { request_id } => {
             *request_id > 0 && i32::try_from(*request_id).is_ok()
         }
         WebViewCommand::NavigateToHistoryEntry { request_id, id } => {
@@ -2175,6 +2178,8 @@ fn command_within_limits(command: &WebViewCommand) -> bool {
         WebViewCommand::Page {
             request_id,
             request,
+            // An actor is bounded by how it is made ([`super::PageActor`]).
+            actor: _,
         } => *request_id > 0 && i32::try_from(*request_id).is_ok() && request.valid(),
         WebViewCommand::PaintResource { request_id, url } => {
             *request_id > 0
@@ -2804,9 +2809,12 @@ fn encode_command(command: WebViewCommand) -> Option<Value> {
         }
         WebViewCommand::Page {
             request_id,
+            actor,
             request,
-        } => super::page::encode_request(request_id, &request),
-        WebViewCommand::CancelPage => json!({ "op": "page_cancel" }),
+        } => super::page::encode_request(request_id, actor.as_ref(), &request),
+        WebViewCommand::CancelPage { request_id } => {
+            json!({ "op": "page_cancel", "request_id": request_id })
+        }
         WebViewCommand::PaintCapture { request_id } => json!({
             "op": "paint_capture",
             "request_id": request_id,

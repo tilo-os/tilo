@@ -84,6 +84,7 @@ mod page_answer;
 mod page_clipboard;
 mod page_find;
 mod page_stopping;
+mod page_turns;
 pub(crate) mod personal;
 #[cfg(test)]
 mod regression_tests;
@@ -158,6 +159,9 @@ fn action_failed(
 struct PageOperation {
     invocation: ui::tilo_actions::InvocationId,
     request_id: u32,
+    /// Who asked, as the engine is told: the invoker the action door
+    /// admitted, or `None` for the tab's one unnamed actor.
+    actor: Option<ui::webview::PageActor>,
     /// The action as it was asked, for an answer that says what ran: a
     /// capture's picture is an artifact, a read's is the page to look at.
     acted: ui::webview::PageRequest,
@@ -518,8 +522,6 @@ pub struct BrowserWidget {
     loading_started: Option<ui::time::Instant>,
     /// The page shows its article in reader view.
     reader_view: bool,
-    /// The reader view a running page operation asked for.
-    reader_request: Option<bool>,
     title: String,
     favicon: Option<vello::peniko::ImageData>,
     /// The favicon as the engine sent it, for the window's bar
@@ -669,6 +671,13 @@ pub struct BrowserWidget {
     resource_pip_deadline: Option<ui::time::Instant>,
     page_operation: Option<PageOperation>,
     page_operation_result: Option<ui::tilo_actions::InvocationUpdate>,
+    /// Page actions admitted while another held the tab, in the order they
+    /// came: several actors may work in one tab, and each takes its turn.
+    page_waiting: std::collections::VecDeque<page_turns::WaitingPage>,
+    /// Reads of the tab's record that are with the engine, and their answers
+    /// not yet read. They take no turn: the record answers whatever runs.
+    page_record_reads: Vec<page_turns::RecordRead>,
+    page_record_answers: Vec<ui::tilo_actions::InvocationUpdate>,
     /// Effects waiting on an operation this window accepted.
     pending_replies: Vec<(ui::tilo_actions::InvocationId, ui::framework::EffectReply)>,
     page_request_seq: u32,
@@ -1486,7 +1495,6 @@ impl BrowserWidget {
             progress: if headless { 1.0 } else { 0.0 },
             loading_started: None,
             reader_view: false,
-            reader_request: None,
             title: String::new(),
             favicon: None,
             favicon_png: None,
@@ -1571,6 +1579,9 @@ impl BrowserWidget {
             resource_pip_deadline: None,
             page_operation: None,
             page_operation_result: None,
+            page_waiting: std::collections::VecDeque::new(),
+            page_record_reads: Vec::new(),
+            page_record_answers: Vec::new(),
             pending_replies: Vec::new(),
             page_request_seq: 0,
             pending_pip: None,
@@ -2068,9 +2079,12 @@ impl BrowserWidget {
 
     /// Read and operate the page's content without its pixels: an outline
     /// whose interactive elements carry refs, and actions on those refs.
+    /// `actor` is who asks, as the engine is told. An action admitted while
+    /// another holds the tab waits its turn ([`page_turns`]).
     fn start_page_operation(
         &mut self,
         invocation: ui::tilo_actions::InvocationId,
+        actor: Option<ui::webview::PageActor>,
         request: PageRequest,
     ) -> Result<(), String> {
         let request = match request {
@@ -2091,75 +2105,20 @@ impl BrowserWidget {
             return Err(why);
         }
         if !request.valid() {
-            if !request.frame_valid() {
-                return Err(format!(
-                    "`{}` was given a frame id the page outline never printed",
-                    request.action()
-                ));
-            }
-            if let PageRequest::Scroll { .. } = request {
-                return Err(
-                    "`scroll` goes to an end of the page, by a distance, or brings an element \
-                     into view: one of them, and no two"
-                        .into(),
-                );
-            }
-            return Err(format!(
-                "`{}` names no element of the page outline, or arguments the page cannot take",
-                request.action()
-            ));
+            return Err(Self::refused_page_request(&request));
         }
-        // A settled operation's update waits here until the effect reply that
-        // asked for it reads it ([`Self::settle_replies`]). One whose reply is
-        // gone is spent: that caller was answered `accepted` and moved on, so
-        // nothing will ever read it here (`tilo_status` still answers it), and
-        // holding the slot would refuse every later action in this tab. An
-        // operation still in flight is never abandoned: it settles at its own
-        // deadline.
-        self.abandon_unwatched_page_result();
-        if self.page_operation.is_some() {
-            return Err("another page action is already running in this tab".into());
+        if matches!(request, PageRequest::Ledger { .. }) {
+            return self.read_page_record(invocation, actor, request);
         }
-        // A result the caller stopped waiting for while its page action ran on
-        // to completion is refused here exactly like one still running: the
-        // slot frees itself when that action settles and nobody reads it.
-        if self.page_operation_result.is_some() {
-            return Err("another page action is already running in this tab".into());
-        }
-        // The page runs nothing while it waits on its question: an action
-        // sent now would only time out.
-        if let Some(dialog) = self.page_dialogs.current() {
-            let refused = dialog::blocked_output(invocation, Some(dialog));
-            self.page_operation_result = Some(refused);
-            return Ok(());
-        }
-        // A secret filled into the page is the person's credential: the page
-        // holds a sign-in from the moment it is sent.
-        if matches!(request, PageRequest::Fill { secret: true, .. }) {
-            self.hold_sign_in();
-        }
-        self.page_request_seq = self.page_request_seq % i32::MAX.unsigned_abs() + 1;
-        let act = request.described();
-        let acted = request.clone();
-        let now = std::time::Instant::now();
-        self.page_operation = Some(PageOperation {
-            invocation,
-            request_id: self.page_request_seq,
-            acted,
-            phase: PagePhase::Queued {
-                request,
-                until: now + PAGE_LOAD_WAIT,
-            },
-            deadline: now + PAGE_OPERATION_TIMEOUT,
-            settled_while_sent: None,
-            act,
-        });
+        self.take_page_turn(invocation, actor, request)?;
         self.drive_page_operation();
         Ok(())
     }
 
-    /// Send a request once its page has settled, and bound every phase.
+    /// Send a request once its page has settled, and bound every phase. The
+    /// action that waited longest takes the tab first, when nothing holds it.
     fn drive_page_operation(&mut self) {
+        self.run_waiting_page_actions();
         let now = std::time::Instant::now();
         let loading = self.page_loading();
         let Some(operation) = self.page_operation.as_mut() else {
@@ -2172,6 +2131,7 @@ impl BrowserWidget {
         {
             self.engine.send(WebViewCommand::Page {
                 request_id: operation.request_id,
+                actor: operation.actor.clone(),
                 request,
             });
             return;
@@ -2183,7 +2143,6 @@ impl BrowserWidget {
             return;
         };
         self.note_text_entered(&operation.acted);
-        self.reader_request = None;
         self.page_operation_result = Some(match operation.phase {
             PagePhase::Navigating { reply } => self.page_success(
                 operation.invocation,
@@ -2207,7 +2166,6 @@ impl BrowserWidget {
             return;
         };
         self.note_text_entered(&operation.acted);
-        self.reader_request = None;
         let dialog = self.page_dialogs.current();
         // The page asked and the question went before it could be read:
         // nothing is left to answer, so the action is refused as it was.
@@ -2224,13 +2182,19 @@ impl BrowserWidget {
     }
 
     fn accept_page_result(&mut self, request_id: u32, result: Result<PageReply, PageFailure>) {
+        if self.reads_page_record(request_id) {
+            self.accept_page_record(request_id, result);
+            return;
+        }
         let Some(operation) = self.page_operation.take_if(|operation| {
             operation.request_id == request_id && matches!(operation.phase, PagePhase::Sent)
         }) else {
             return;
         };
         self.note_text_entered(&operation.acted);
-        if let Some(enabled) = self.reader_request.take()
+        // The reader view follows the request the page answered, whichever
+        // actor's it was and however long it waited its turn.
+        if let PageRequest::Reader { enabled } = operation.acted
             && result.is_ok()
         {
             self.reader_view = enabled;
@@ -2268,11 +2232,13 @@ impl BrowserWidget {
             // would contradict the at-most-once contract this app publishes
             // and the broker would refuse the answer, taking the whole
             // session's page actions down with it.
+            // What the tab's other actors did meanwhile is often why: it
+            // travels with the refusal as it does with an answer.
             Err(failure) => action_failed(
                 operation.invocation,
                 format!("browser.page.{}", failure.code),
                 failure.message,
-                None,
+                Self::page_record_details(&failure.record),
             ),
         });
     }
@@ -5174,6 +5140,7 @@ impl Widget for BrowserWidget {
                     self.page_operation
                         .as_ref()
                         .map(|operation| operation.deadline),
+                    self.page_wait_deadline(),
                 ]
             })
             .into_iter()
@@ -5422,7 +5389,13 @@ impl BrowserWidget {
         page.actions.extend(self.capabilities.permission_answers());
         let element = String::new();
         for (spec, asking) in [
-            (E::ReadPage { frame: None }, &["frame"][..]),
+            (
+                E::ReadPage {
+                    from: None,
+                    frame: None,
+                },
+                &["from", "frame"][..],
+            ),
             (
                 E::FindPageElement {
                     role: None,
@@ -5431,6 +5404,13 @@ impl BrowserWidget {
                     frame: None,
                 },
                 &["role", "name", "nth", "frame"][..],
+            ),
+            (
+                E::FindPageText {
+                    text: String::new(),
+                    frame: None,
+                },
+                &["text", "frame"][..],
             ),
             (
                 E::ClickPage {
@@ -5487,6 +5467,16 @@ impl BrowserWidget {
                 },
                 &["element", "cross_origin", "frame"][..],
             ),
+            (
+                E::FillPageForm {
+                    form: String::new(),
+                    answers: serde_json::Map::new(),
+                    submit: None,
+                    submit_button: None,
+                    cross_origin: None,
+                },
+                &["form", "answers", "submit", "submit_button", "cross_origin"][..],
+            ),
             (E::ReadPageChanges { frame: None }, &["frame"][..]),
             (
                 E::ReadPageElementAt {
@@ -5533,6 +5523,9 @@ impl BrowserWidget {
             ),
             (E::ReadPageConsole { since: None }, &["since"][..]),
             (E::ReadPageNetwork { since: None }, &["since"][..]),
+            (E::ReadPageRecord { since: None }, &["since"][..]),
+            (E::ReadPageFields { frame: None }, &["frame"][..]),
+            (E::ReadPageForms { frame: None }, &["frame"][..]),
             (
                 E::CapturePage {
                     element: None,
@@ -5855,6 +5848,12 @@ impl BrowserWidget {
         {
             return self.page_operation_result.take();
         }
+        if let Some(never_ran) = self.answer_a_page_action_that_waited_too_long(invocation) {
+            return Some(never_ran);
+        }
+        if let Some(record) = self.take_page_record_answer(invocation) {
+            return Some(record);
+        }
         if self
             .resource_navigation_result
             .as_ref()
@@ -6065,13 +6064,32 @@ impl BrowserWidget {
         self.poll_active_pip_element();
     }
 
-    /// Start `operation` for `invocation`: done at once with its output, or
-    /// accepted, settling later through [`Self::poll_invocation`].
+    /// [`Self::admit_for`] with no invoker: the person at this window, who
+    /// is the tab's one unnamed actor.
+    #[cfg(test)]
     pub(crate) fn admit(
         &mut self,
         invocation: ui::tilo_actions::InvocationId,
         operation: BrowserOperation,
     ) -> Result<ui::framework::Effected, String> {
+        self.admit_for(invocation, None, operation)
+    }
+
+    /// Start `operation` for `invocation`: done at once with its output, or
+    /// accepted, settling later through [`Self::poll_invocation`].
+    ///
+    /// `invoker` is who the action door admitted the invocation for. A page
+    /// action reaches the engine under that principal's name, so a tab
+    /// several actors work in tells each what changed since its own last
+    /// read and keeps what each did under its name. The name is the admitted
+    /// principal and nothing else ([`ui::webview::PageActor::named`]).
+    pub(crate) fn admit_for(
+        &mut self,
+        invocation: ui::tilo_actions::InvocationId,
+        invoker: Option<&ui::tilo_actions::ActionInvoker>,
+        operation: BrowserOperation,
+    ) -> Result<ui::framework::Effected, String> {
+        let actor = invoker.and_then(|invoker| ui::webview::PageActor::named(&invoker.actor));
         if matches!(operation, BrowserOperation::ReadServiceSession) {
             if let Some(pending) = &self.service_forget {
                 return Ok(ui::framework::Effected::value(pending.report()));
@@ -6109,7 +6127,7 @@ impl BrowserWidget {
             _ => {}
         }
         if let BrowserOperation::Page(request) = operation {
-            self.start_page_operation(invocation, request)?;
+            self.start_page_operation(invocation, actor, request)?;
             return Ok(ui::framework::Effected::Pending);
         }
         if matches!(&operation, BrowserOperation::ToggleReaderView) {
@@ -6117,10 +6135,7 @@ impl BrowserWidget {
                 return Err("Reader view needs a web page".into());
             }
             let enabled = !self.reader_view;
-            self.start_page_operation(invocation, PageRequest::Reader { enabled })?;
-            // Refused at once (the page waits on its question), nothing is
-            // to follow the reply.
-            self.reader_request = self.page_operation.is_some().then_some(enabled);
+            self.start_page_operation(invocation, actor, PageRequest::Reader { enabled })?;
             return Ok(ui::framework::Effected::Pending);
         }
         let is_navigation = matches!(

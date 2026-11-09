@@ -5,9 +5,10 @@
 
 use std::sync::Arc;
 
-use ui::tilo_actions::ActionSpec;
-use ui::webview::{FrameId, PageKey, WebViewEngine as _};
+use ui::tilo_actions::{ActionInvoker, ActionSpec, InvocationId, InvocationUpdate};
+use ui::webview::{FrameId, PageKey, PageNavigation, PageRecordNote, WebViewEngine as _};
 
+use super::page_turns::{MAX_WAITING_PAGE_ACTIONS, PAGE_TURN_WAIT};
 use super::tests::{effect_operation, synced};
 use super::*;
 
@@ -49,18 +50,107 @@ fn start(
     id: &str,
     args: &serde_json::Value,
 ) -> Result<ui::tilo_actions::InvocationId, String> {
+    let _ = (doc, root);
+    start_as(widget, None, id, args)
+}
+/// Start the published page action `id` for the invoker the action door
+/// admitted, or for nobody: the person at the window.
+fn start_as(
+    widget: &mut BrowserWidget,
+    invoker: Option<&ActionInvoker>,
+    id: &str,
+    args: &serde_json::Value,
+) -> Result<InvocationId, String> {
     let action = page_action(widget, id);
     let encoded = action
         .build_json(args.as_object().ok_or("arguments are an object")?)
         .map_err(|error| error.to_string())?;
-    let invocation = ui::tilo_actions::InvocationId::new();
-    let _ = (doc, root);
+    let invocation = InvocationId::new();
     match widget
-        .admit(invocation, effect_operation(&encoded.payload))
+        .admit_for(invocation, invoker, effect_operation(&encoded.payload))
         .map(Some)?
     {
         Some(ui::framework::Effected::Pending) => Ok(invocation),
         other => Err(format!("a page action must be accepted, got {other:?}")),
+    }
+}
+/// Who asked the engine for what, in the order it was asked.
+fn page_asks(engine: &TestEngine) -> Vec<(Option<String>, &'static str)> {
+    engine
+        .commands()
+        .into_iter()
+        .filter_map(|command| match command {
+            WebViewCommand::Page { actor, request, .. } => Some((
+                actor.map(|actor| actor.as_str().to_owned()),
+                request.action(),
+            )),
+            _ => None,
+        })
+        .collect()
+}
+/// The request ids the engine was asked under, in order.
+fn page_request_ids(engine: &TestEngine) -> Vec<u32> {
+    engine
+        .commands()
+        .into_iter()
+        .filter_map(|command| match command {
+            WebViewCommand::Page { request_id, .. } => Some(request_id),
+            _ => None,
+        })
+        .collect()
+}
+/// The requests the engine was told to stop.
+fn page_cancels(engine: &TestEngine) -> Vec<u32> {
+    engine
+        .commands()
+        .into_iter()
+        .filter_map(|command| match command {
+            WebViewCommand::CancelPage { request_id } => Some(request_id),
+            _ => None,
+        })
+        .collect()
+}
+/// An engine answer that says `message` and nothing else.
+fn answer(message: &str) -> PageReply {
+    PageReply {
+        url: "https://shop.test/".into(),
+        message: message.into(),
+        outline: None,
+        data: None,
+        image: None,
+        navigation: PageNavigation::None,
+        loading: false,
+        record: PageRecordNote::default(),
+    }
+}
+/// Let the engine's answers arrive and read `invocation`'s, as the reply of
+/// its own caller does.
+fn settled(
+    widget: &mut BrowserWidget,
+    doc: &AutoCommit,
+    root: &ObjId,
+    invocation: InvocationId,
+) -> InvocationUpdate {
+    for _ in 0..4 {
+        widget.sync(doc, root);
+        if let Some(update) = widget.poll_invocation(invocation) {
+            return update;
+        }
+    }
+    panic!("{invocation:?} never settled");
+}
+/// The value a settled page action succeeded with.
+fn succeeded(update: InvocationUpdate) -> serde_json::Value {
+    match update {
+        InvocationUpdate::Succeeded { output, .. } => output.value.expect("an answer has a value"),
+        other => panic!("the page action must succeed, got {other:?}"),
+    }
+}
+/// The failure a settled page action ended with.
+fn failed(update: InvocationUpdate) -> ui::tilo_actions::ActionFailure {
+    match update {
+        InvocationUpdate::Failed { error, .. } => error,
+        other => panic!("the page action must fail, got {other:?}"),
     }
 }
 fn page_action_contract(id: &str) -> ui::tilo_actions::ActionContract {
@@ -97,6 +187,11 @@ fn page_actions_publish_programmatic_write_contracts() {
         "wait-page-settled",
         "read-page-console",
         "read-page-network",
+        "read-page-record",
+        "read-page-fields",
+        "find-page-text",
+        "read-page-forms",
+        "fill-page-form",
         "capture-page",
     ] {
         let action = page_action(&widget, id);
@@ -145,7 +240,10 @@ fn read_returns_the_engine_outline_in_the_declared_shape() {
     .unwrap();
     assert_eq!(
         page_requests(&engine),
-        vec![PageRequest::Outline { frame: None }]
+        vec![PageRequest::Outline {
+            from: None,
+            frame: None,
+        }]
     );
     widget.sync(&doc, &root);
     let Some(ui::tilo_actions::InvocationUpdate::Succeeded { output, .. }) =
@@ -229,7 +327,10 @@ fn a_read_on_a_loading_page_waits_for_it_to_settle() {
     widget.sync(&doc, &root);
     assert_eq!(
         page_requests(&engine),
-        vec![PageRequest::Outline { frame: None }]
+        vec![PageRequest::Outline {
+            from: None,
+            frame: None,
+        }]
     );
     widget.sync(&doc, &root);
     assert!(matches!(
@@ -423,6 +524,7 @@ fn agent_reads_and_consented_writes_reach_the_engine_typed() {
         page_requests(&engine),
         vec![
             PageRequest::Outline {
+                from: None,
                 frame: Some(FrameId::parse("1").unwrap()),
             },
             PageRequest::Changes { frame: None },
@@ -647,6 +749,7 @@ fn an_action_that_navigates_completes_on_the_page_it_opened() {
         image: None,
         navigation: ui::webview::PageNavigation::Started,
         loading: true,
+        record: PageRecordNote::default(),
     }));
     let click = start(
         &mut widget,
@@ -661,17 +764,22 @@ fn an_action_that_navigates_completes_on_the_page_it_opened() {
         widget.poll_invocation(click).is_none(),
         "a click that started a navigation waits for it"
     );
-    assert!(
-        start(
-            &mut widget,
-            &mut doc,
-            &root,
-            "read-page",
-            &serde_json::json!({})
-        )
-        .is_err(),
-        "a second page action is refused while one runs"
+    // A second page action is not refused while one runs: it waits its turn
+    // behind the click, and reaches no page before the click's has opened.
+    let read = start(
+        &mut widget,
+        &mut doc,
+        &root,
+        "read-page",
+        &serde_json::json!({}),
+    )
+    .expect("a second page action waits its turn while one runs");
+    assert_eq!(
+        page_requests(&engine).len(),
+        1,
+        "the read waits behind the click"
     );
+    assert!(widget.poll_invocation(read).is_none());
     engine.send(WebViewCommand::Navigate(
         "https://shop.test/checkout".into(),
     ));
@@ -685,6 +793,26 @@ fn an_action_that_navigates_completes_on_the_page_it_opened() {
     assert_eq!(value["url"], "https://shop.test/checkout");
     assert_eq!(value["message"], "Clicked button \"Checkout\"");
     assert_eq!(value["navigation"], "started");
+    // The read ran after the click, on the page the click opened.
+    let value = succeeded(settled(&mut widget, &doc, &root, read));
+    assert_eq!(value["url"], "https://shop.test/checkout");
+    assert_eq!(
+        value["outline"],
+        "- document \"https://shop.test/checkout — test page\""
+    );
+    assert_eq!(
+        page_requests(&engine),
+        vec![
+            PageRequest::Click {
+                element: "d1e4".into(),
+                frame: None,
+            },
+            PageRequest::Outline {
+                from: None,
+                frame: None,
+            },
+        ]
+    );
 }
 
 // Phase `engine_refusals_become_typed_invocation_failures`.
@@ -771,7 +899,14 @@ fn a_settled_page_result_nobody_waits_for_does_not_hold_the_tab() {
     widget.current_uri = "https://site.test/form".into();
     let abandoned = ui::tilo_actions::InvocationId::new();
     widget
-        .start_page_operation(abandoned, PageRequest::Outline { frame: None })
+        .start_page_operation(
+            abandoned,
+            None,
+            PageRequest::Outline {
+                from: None,
+                frame: None,
+            },
+        )
         .unwrap();
     // Its page answered after the caller was answered `accepted`.
     widget.page_operation = None;
@@ -787,7 +922,14 @@ fn a_settled_page_result_nobody_waits_for_does_not_hold_the_tab() {
     // The next action in this tab runs rather than being refused.
     let next = ui::tilo_actions::InvocationId::new();
     widget
-        .start_page_operation(next, PageRequest::Outline { frame: None })
+        .start_page_operation(
+            next,
+            None,
+            PageRequest::Outline {
+                from: None,
+                frame: None,
+            },
+        )
         .expect("an unwatched result must not refuse the next page action");
     assert!(
         widget
@@ -812,26 +954,44 @@ fn a_settled_page_result_nobody_waits_for_does_not_hold_the_tab() {
     );
 
     // An operation still running is left alone: it settles at its own
-    // deadline, and refusing the next action while it runs is right.
+    // deadline, and the next action waits its turn behind it.
     let running = ui::tilo_actions::InvocationId::new();
     widget
-        .start_page_operation(running, PageRequest::Outline { frame: None })
+        .start_page_operation(
+            running,
+            None,
+            PageRequest::Outline {
+                from: None,
+                frame: None,
+            },
+        )
         .unwrap();
-    assert!(
-        widget
-            .start_page_operation(
-                ui::tilo_actions::InvocationId::new(),
-                PageRequest::Outline { frame: None }
-            )
-            .is_err(),
-        "a second page action is refused while one runs"
-    );
+    let behind = ui::tilo_actions::InvocationId::new();
+    widget
+        .start_page_operation(
+            behind,
+            None,
+            PageRequest::Outline {
+                from: None,
+                frame: None,
+            },
+        )
+        .expect("a second page action waits its turn while one runs");
     assert!(
         widget
             .page_operation
             .as_ref()
             .is_some_and(|operation| operation.invocation == running),
         "the running action keeps the slot"
+    );
+    assert_eq!(
+        widget
+            .page_waiting
+            .iter()
+            .map(|waiting| waiting.invocation)
+            .collect::<Vec<_>>(),
+        vec![behind],
+        "the second waits behind it"
     );
 }
 
@@ -844,7 +1004,14 @@ fn a_page_action_either_finishes_or_says_what_became_of_it() {
     widget.current_uri = "https://site.test/form".into();
     let cancelled = ui::tilo_actions::InvocationId::new();
     widget
-        .start_page_operation(cancelled, PageRequest::Outline { frame: None })
+        .start_page_operation(
+            cancelled,
+            None,
+            PageRequest::Outline {
+                from: None,
+                frame: None,
+            },
+        )
         .unwrap();
     let answer = widget
         .answer_a_cancelled_page_operation(cancelled, true)
@@ -867,7 +1034,14 @@ fn a_page_action_either_finishes_or_says_what_became_of_it() {
     // Running out of time says the same about what the page did.
     let slow = ui::tilo_actions::InvocationId::new();
     widget
-        .start_page_operation(slow, PageRequest::Outline { frame: None })
+        .start_page_operation(
+            slow,
+            None,
+            PageRequest::Outline {
+                from: None,
+                frame: None,
+            },
+        )
         .unwrap();
     let operation = widget.page_operation.take().unwrap();
     let ui::tilo_actions::InvocationUpdate::Failed { error, .. } =
@@ -913,7 +1087,7 @@ fn page_in(mode: BrowsingMode, url: &str) -> BrowserWidget {
 #[test]
 fn a_page_read_asks_first_only_where_the_window_holds_the_persons_sign_ins() {
     use ui::permissions::policy::Answer::{Allow, Ask};
-    const OBSERVE: [&str; 8] = [
+    const OBSERVE: [&str; 12] = [
         "read-page",
         "capture-page",
         "find-page-element",
@@ -922,8 +1096,12 @@ fn a_page_read_asks_first_only_where_the_window_holds_the_persons_sign_ins() {
         "wait-page-settled",
         "read-page-console",
         "read-page-network",
+        "read-page-record",
+        "read-page-fields",
+        "find-page-text",
+        "read-page-forms",
     ];
-    const ACT: [&str; 12] = [
+    const ACT: [&str; 13] = [
         "click-page",
         "fill-page",
         "select-page",
@@ -936,6 +1114,7 @@ fn a_page_read_asks_first_only_where_the_window_holds_the_persons_sign_ins() {
         "pointer-path",
         "pointer-page",
         "scroll-page",
+        "fill-page-form",
     ];
     let visitor = page_in(BrowsingMode::Visitor, "https://github.com/ada");
     for id in OBSERVE {
@@ -1087,4 +1266,1210 @@ fn an_agent_typing_into_a_password_field_signs_a_visitors_page_in() {
             "{id}: and it stays signed in"
         );
     }
+}
+
+/// An agent the action door admitted, by its principal.
+fn agent(principal: &str) -> ActionInvoker {
+    ActionInvoker::admitted(&ui::tilo_actions::InteractionActor::new(
+        principal,
+        ui::tilo_actions::ActorKind::Agent,
+    ))
+}
+
+/// The engine is told who asks: the principal the action door admitted the
+/// invocation for, and nobody for an invocation without one.
+#[test]
+fn the_admitted_invoker_is_who_asks_the_engine() {
+    let (engine, mut widget, doc, root) = page_on("https://shop.test/");
+    let ada = agent("agent:ada");
+    let read = start_as(&mut widget, Some(&ada), "read-page", &serde_json::json!({})).unwrap();
+    succeeded(settled(&mut widget, &doc, &root, read));
+    // The person at the window is admitted by no door: the tab's one
+    // unnamed actor, as every caller was before a tab had several.
+    let own = start_as(&mut widget, None, "read-page", &serde_json::json!({})).unwrap();
+    succeeded(settled(&mut widget, &doc, &root, own));
+    // An agent acting for a person asks under its own principal, never the
+    // person's: what it did is set down as its own.
+    let for_ada = ActionInvoker::admitted(
+        &ui::tilo_actions::InteractionActor::new(
+            "agent:task-7",
+            ui::tilo_actions::ActorKind::Agent,
+        )
+        .acting_for("person:ada"),
+    );
+    let click = start_as(
+        &mut widget,
+        Some(&for_ada),
+        "click-page",
+        &serde_json::json!({"element": "d1e4"}),
+    )
+    .unwrap();
+    succeeded(settled(&mut widget, &doc, &root, click));
+    // A principal longer than the engine takes is shortened the same way
+    // every time, so one actor keeps one name.
+    let long = agent(&format!("agent:{}", "x".repeat(120)));
+    for _ in 0..2 {
+        let read = start_as(
+            &mut widget,
+            Some(&long),
+            "read-page",
+            &serde_json::json!({}),
+        )
+        .unwrap();
+        succeeded(settled(&mut widget, &doc, &root, read));
+    }
+    // An invoker with no principal is nobody, not an actor called "".
+    let nameless = ActionInvoker::default();
+    let read = start_as(
+        &mut widget,
+        Some(&nameless),
+        "read-page",
+        &serde_json::json!({}),
+    )
+    .unwrap();
+    succeeded(settled(&mut widget, &doc, &root, read));
+
+    let asks = page_asks(&engine);
+    assert_eq!(
+        asks[..3],
+        [
+            (Some("agent:ada".to_owned()), "outline"),
+            (None, "outline"),
+            (Some("agent:task-7".to_owned()), "click"),
+        ]
+    );
+    let shortened = asks[3]
+        .0
+        .clone()
+        .expect("a long principal still names its actor");
+    assert_eq!(shortened.encode_utf16().count(), 64);
+    assert!(shortened.starts_with("agent:xxxx"), "{shortened}");
+    assert_eq!(asks[4].0.as_ref(), Some(&shortened));
+    assert_eq!(asks[5], (None, "outline"));
+}
+
+/// Several actors act in one tab: an action admitted while another runs is
+/// not refused. It waits, runs in the order it came, and answers the
+/// invocation that asked for it.
+#[test]
+fn a_second_actors_action_waits_its_turn_and_answers_its_own_invocation() {
+    let (engine, mut widget, doc, root) = page_on("https://shop.test/");
+    let (ada, ben, cy) = (agent("agent:ada"), agent("agent:ben"), agent("agent:cy"));
+    engine.push_page_reply(Ok(answer("Filled textbox \"Email\"")));
+    engine.push_page_reply(Ok(answer("Clicked button \"Send\"")));
+    engine.push_page_reply(Ok(answer("Chose Belgium")));
+    let fill = start_as(
+        &mut widget,
+        Some(&ada),
+        "fill-page",
+        &serde_json::json!({"element": "d1e2", "text": "ada@example.org"}),
+    )
+    .unwrap();
+    let click = start_as(
+        &mut widget,
+        Some(&ben),
+        "click-page",
+        &serde_json::json!({"element": "d1e9"}),
+    )
+    .expect("a second actor's action waits its turn");
+    let select = start_as(
+        &mut widget,
+        Some(&cy),
+        "select-page",
+        &serde_json::json!({"element": "d1e5", "values": ["Belgium"]}),
+    )
+    .expect("and a third behind it");
+    // One request is with the engine; the others have reached nothing.
+    assert_eq!(
+        page_asks(&engine),
+        vec![(Some("agent:ada".to_owned()), "fill")]
+    );
+    assert!(widget.poll_invocation(click).is_none());
+    assert!(widget.poll_invocation(select).is_none());
+
+    // Each is answered as its own, in the order it came. The third is read
+    // first here: its answer is still its own, and it still ran last.
+    let filled = succeeded(settled(&mut widget, &doc, &root, fill));
+    assert_eq!(filled["message"], "Filled textbox \"Email\"");
+    assert_eq!(
+        page_asks(&engine).len(),
+        1,
+        "the next waits until this answer was read"
+    );
+    widget.sync(&doc, &root);
+    assert!(
+        widget.poll_invocation(select).is_none(),
+        "the third does not overtake the second"
+    );
+    let clicked = succeeded(settled(&mut widget, &doc, &root, click));
+    assert_eq!(clicked["message"], "Clicked button \"Send\"");
+    let chosen = succeeded(settled(&mut widget, &doc, &root, select));
+    assert_eq!(chosen["message"], "Chose Belgium");
+    assert_eq!(
+        page_asks(&engine),
+        vec![
+            (Some("agent:ada".to_owned()), "fill"),
+            (Some("agent:ben".to_owned()), "click"),
+            (Some("agent:cy".to_owned()), "select"),
+        ]
+    );
+    assert!(widget.page_waiting.is_empty());
+    assert!(page_cancels(&engine).is_empty());
+}
+
+/// A caller that gives up on an action still waiting its turn takes it out
+/// before it ran: the engine never hears of it, it is known to have changed
+/// nothing, and the action that is running goes on.
+#[test]
+fn a_waiting_action_whose_caller_gives_up_never_reaches_the_engine() {
+    let (engine, mut widget, doc, root) = page_on("https://shop.test/");
+    let (ada, ben) = (agent("agent:ada"), agent("agent:ben"));
+    engine.push_page_reply(Ok(answer("Filled textbox \"Email\"")));
+    let fill = start_as(
+        &mut widget,
+        Some(&ada),
+        "fill-page",
+        &serde_json::json!({"element": "d1e2", "text": "ada@example.org"}),
+    )
+    .unwrap();
+    let click = start_as(
+        &mut widget,
+        Some(&ben),
+        "click-page",
+        &serde_json::json!({"element": "d1e9"}),
+    )
+    .unwrap();
+    let stopped = failed(
+        widget
+            .poll_invocation_cancelling(click, true)
+            .expect("a waiting action is answered when its caller gives up"),
+    );
+    assert_eq!(stopped.code, "browser.page.cancelled");
+    assert!(
+        stopped.message.contains("never ran and changed nothing"),
+        "{}",
+        stopped.message
+    );
+    assert!(!stopped.retryable);
+    assert_eq!(stopped.details.unwrap()["outcome"], "not_run");
+    assert!(
+        widget.poll_invocation_cancelling(click, true).is_none(),
+        "it is answered once"
+    );
+    // Ada's action was not the one given up on: it runs to its answer.
+    let filled = succeeded(settled(&mut widget, &doc, &root, fill));
+    assert_eq!(filled["message"], "Filled textbox \"Email\"");
+    for _ in 0..3 {
+        widget.sync(&doc, &root);
+    }
+    assert_eq!(
+        page_asks(&engine),
+        vec![(Some("agent:ada".to_owned()), "fill")],
+        "the cancelled click never reached the engine"
+    );
+    assert!(
+        page_cancels(&engine).is_empty(),
+        "and the engine was told to stop nothing"
+    );
+}
+
+/// A caller that gives up on the action that is running stops that request
+/// by name, so no other actor's action is stopped with it, and the action
+/// that waited behind it takes its turn.
+#[test]
+fn stopping_the_running_action_names_its_request_and_the_next_takes_its_turn() {
+    let (engine, mut widget, doc, root) = page_on("https://shop.test/");
+    let (ada, ben) = (agent("agent:ada"), agent("agent:ben"));
+    let fill = start_as(
+        &mut widget,
+        Some(&ada),
+        "fill-page",
+        &serde_json::json!({"element": "d1e2", "text": "ada@example.org"}),
+    )
+    .unwrap();
+    let read = start_as(&mut widget, Some(&ben), "read-page", &serde_json::json!({})).unwrap();
+    let stopped = failed(
+        widget
+            .poll_invocation_cancelling(fill, true)
+            .expect("the running action is stopped when its caller gives up"),
+    );
+    assert_eq!(stopped.code, "browser.page.cancelled");
+    assert!(stopped.message.contains("unknown"), "{}", stopped.message);
+    let asked = page_request_ids(&engine);
+    assert_eq!(asked.len(), 1);
+    assert_eq!(
+        page_cancels(&engine),
+        asked,
+        "the cancel names the request it stops"
+    );
+    // Ben's read was not stopped: it runs next and answers as its own.
+    let value = succeeded(settled(&mut widget, &doc, &root, read));
+    assert_eq!(
+        value["outline"],
+        "- document \"https://shop.test/ — test page\""
+    );
+    assert_eq!(
+        page_asks(&engine),
+        vec![
+            (Some("agent:ada".to_owned()), "fill"),
+            (Some("agent:ben".to_owned()), "outline"),
+        ]
+    );
+    assert_eq!(page_cancels(&engine).len(), 1, "nothing else was stopped");
+    assert_ne!(page_request_ids(&engine)[1], page_cancels(&engine)[0]);
+}
+
+/// The wait is bounded in number: past it an action is turned away at once,
+/// told how many wait and who holds the tab, rather than queued without end.
+#[test]
+fn a_tab_with_its_turns_taken_turns_the_next_action_away_saying_who_holds_it() {
+    let (engine, mut widget, _doc, _root) = page_on("https://shop.test/");
+    let (ada, ben) = (agent("agent:ada"), agent("agent:ben"));
+    start_as(
+        &mut widget,
+        Some(&ada),
+        "fill-page",
+        &serde_json::json!({"element": "d1e2", "text": "ada@example.org"}),
+    )
+    .unwrap();
+    for _ in 0..MAX_WAITING_PAGE_ACTIONS {
+        start_as(&mut widget, Some(&ben), "read-page", &serde_json::json!({}))
+            .expect("an action within the bound waits its turn");
+    }
+    let refused = start_as(&mut widget, Some(&ben), "read-page", &serde_json::json!({}))
+        .expect_err("an action past the bound is turned away");
+    assert!(
+        refused.contains(&format!("{MAX_WAITING_PAGE_ACTIONS} page actions waiting")),
+        "{refused}"
+    );
+    assert!(
+        refused.contains("fill by \"agent:ada\""),
+        "it says who holds the tab: {refused}"
+    );
+    assert_eq!(widget.page_waiting.len(), MAX_WAITING_PAGE_ACTIONS);
+    assert_eq!(page_asks(&engine).len(), 1, "only the running one was sent");
+}
+
+/// The wait is bounded in time: an action that has waited as long as one may
+/// is answered as never run, which is more than a timeout at the page can
+/// say, and the actions around it keep their order.
+#[test]
+fn an_action_that_waited_too_long_is_answered_as_never_run() {
+    let (engine, mut widget, doc, root) = page_on("https://shop.test/");
+    let (ada, ben, cy) = (agent("agent:ada"), agent("agent:ben"), agent("agent:cy"));
+    let fill = start_as(
+        &mut widget,
+        Some(&ada),
+        "fill-page",
+        &serde_json::json!({"element": "d1e2", "text": "ada@example.org"}),
+    )
+    .unwrap();
+    let click = start_as(
+        &mut widget,
+        Some(&ben),
+        "click-page",
+        &serde_json::json!({"element": "d1e9"}),
+    )
+    .unwrap();
+    let read = start_as(&mut widget, Some(&cy), "read-page", &serde_json::json!({})).unwrap();
+    assert!(
+        widget.poll_invocation(click).is_none(),
+        "within its wait it waits"
+    );
+    // Ben's click has waited as long as one may.
+    let waited = std::time::Instant::now()
+        .checked_sub(std::time::Duration::from_millis(1))
+        .unwrap();
+    widget.page_waiting[0].until = waited;
+    let busy = failed(
+        widget
+            .poll_invocation(click)
+            .expect("an action that waited too long is answered"),
+    );
+    assert_eq!(busy.code, "browser.page.busy");
+    assert!(!busy.retryable, "a page action answers at most once");
+    assert!(
+        busy.message.contains("never ran") && busy.message.contains("changed nothing"),
+        "{}",
+        busy.message
+    );
+    assert!(
+        busy.message
+            .contains(&format!("{} seconds", PAGE_TURN_WAIT.as_secs()))
+            && busy.message.contains("fill by \"agent:ada\""),
+        "it says how long it waited and behind whom: {}",
+        busy.message
+    );
+    assert_eq!(busy.details.unwrap()["outcome"], "not_run");
+
+    // One nobody asked about again is answered the same when its turn comes,
+    // and never runs late.
+    let late = start_as(
+        &mut widget,
+        Some(&ben),
+        "click-page",
+        &serde_json::json!({"element": "d1e9"}),
+    )
+    .unwrap();
+    widget.page_waiting[1].until = waited;
+    succeeded(settled(&mut widget, &doc, &root, fill));
+    succeeded(settled(&mut widget, &doc, &root, read));
+    let busy = failed(settled(&mut widget, &doc, &root, late));
+    assert_eq!(busy.code, "browser.page.busy");
+    assert_eq!(
+        page_asks(&engine),
+        vec![
+            (Some("agent:ada".to_owned()), "fill"),
+            (Some("agent:cy".to_owned()), "outline"),
+        ],
+        "neither click reached the engine"
+    );
+}
+
+/// The tab's record and the review of its fields are page reads like the
+/// others: typed requests, answered in the shape every page read has.
+#[test]
+fn the_record_and_the_fields_are_read_typed_and_answer_in_the_declared_shape() {
+    let (engine, mut widget, mut doc, root) = page_on("https://shop.test/form");
+    let record = serde_json::json!({
+        "entries": [
+            {"seq": 1, "time_ms": 1_700_000_000_000_u64, "actor": "agent:ada", "action": "fill",
+                "ok": true, "message": "Filled textbox \"Email\"",
+                "url": "https://shop.test/form", "navigation": "possible",
+                "target": {"role": "textbox", "name": "Email"}, "text": "ada@example.org"},
+            {"seq": 2, "time_ms": 1_700_000_000_500_u64, "actor": "agent:ben",
+                "action": "select", "ok": true, "url": "https://shop.test/form",
+                "target": {"role": "combobox", "name": "Country"}, "values": ["Belgium"]},
+        ],
+        "next": 2, "more": false, "dropped": 0, "waiting": 0,
+    });
+    let review = serde_json::json!({"fields": [
+        {"role": "textbox", "name": "Email", "value": "ada@example.org", "required": true,
+            "set": {"how": "action", "by": "agent:ada", "seq": 1}},
+        {"role": "searchbox", "name": "Search", "value": "toaster",
+            "set": {"how": "action", "by": "agent:ada", "seq": 5, "changed": true}},
+        {"role": "textbox", "name": "Password", "value": "<14 characters hidden>",
+            "set": {"how": "input"}},
+    ]});
+    engine.push_page_reply(Ok(PageReply {
+        data: Some(record.clone()),
+        ..answer("2 actions")
+    }));
+    engine.push_page_reply(Ok(PageReply {
+        data: Some(serde_json::json!({
+            "entries": [], "next": 2, "more": false, "dropped": 0, "waiting": 0,
+        })),
+        ..answer("0 actions")
+    }));
+    engine.push_page_reply(Ok(PageReply {
+        outline: Some(
+            "- textbox \"Email\" = ada@example.org (set by \"agent:ada\", action 1)".into(),
+        ),
+        data: Some(review.clone()),
+        ..answer("3 fields, 1 changed after they were set")
+    }));
+    let mut answers = Vec::new();
+    for (id, args) in [
+        ("read-page-record", serde_json::json!({})),
+        ("read-page-record", serde_json::json!({"since": 2})),
+        ("read-page-fields", serde_json::json!({})),
+        (
+            "read-page-fields",
+            serde_json::json!({"frame": "[frame=1.2]"}),
+        ),
+    ] {
+        let invocation = start(&mut widget, &mut doc, &root, id, &args).unwrap();
+        answers.push(succeeded(settled(&mut widget, &doc, &root, invocation)));
+    }
+    assert_eq!(
+        page_requests(&engine),
+        vec![
+            PageRequest::Ledger { since: 0 },
+            PageRequest::Ledger { since: 2 },
+            PageRequest::Fields { frame: None },
+            PageRequest::Fields {
+                frame: Some(FrameId::parse("1.2").unwrap()),
+            },
+        ]
+    );
+    for value in &answers {
+        assert_eq!(value["provenance"], "web-content", "{value}");
+        assert!(value["url"].is_string(), "{value}");
+        assert!(value["message"].is_string() && value["title"].is_string());
+        assert_eq!(value["navigation"], "none");
+    }
+    // The record is who did what, by the description that still names the
+    // element later, with what was written.
+    assert_eq!(answers[0]["message"], "2 actions");
+    assert_eq!(answers[0]["data"], record);
+    assert_eq!(answers[0]["data"]["entries"][0]["actor"], "agent:ada");
+    assert_eq!(
+        answers[0]["data"]["entries"][0]["target"],
+        serde_json::json!({"role": "textbox", "name": "Email"})
+    );
+    assert_eq!(answers[1]["data"]["entries"], serde_json::json!([]));
+    assert_eq!(answers[1]["data"]["next"], 2);
+    // The review is every field with what it holds now and who set it.
+    assert_eq!(answers[2]["data"], review);
+    assert!(
+        answers[2]["outline"]
+            .as_str()
+            .is_some_and(|outline| outline.contains("set by \"agent:ada\""))
+    );
+    assert_eq!(
+        answers[2]["data"]["fields"][1]["set"],
+        serde_json::json!({"how": "action", "by": "agent:ada", "seq": 5, "changed": true})
+    );
+    assert_eq!(answers[3]["data"]["fields"], serde_json::json!([]));
+    // A frame the outline never printed is refused before the page is asked.
+    let refused = start(
+        &mut widget,
+        &mut doc,
+        &root,
+        "read-page-fields",
+        &serde_json::json!({"frame": "#fr"}),
+    )
+    .unwrap_err();
+    assert!(refused.contains("frame"), "{refused}");
+    assert_eq!(page_requests(&engine).len(), 4);
+}
+
+/// Reading the record takes no turn: it reads nothing of the page, so it is
+/// with the engine at once whatever holds the tab, and whoever reviews a tab
+/// is never queued behind the actors they are watching.
+#[test]
+fn reading_the_record_takes_no_turn() {
+    let (engine, mut widget, doc, root) = page_on("https://shop.test/");
+    let (ada, ben, rev) = (agent("agent:ada"), agent("agent:ben"), agent("person:rev"));
+    let fill = start_as(
+        &mut widget,
+        Some(&ada),
+        "fill-page",
+        &serde_json::json!({"element": "d1e2", "text": "ada@example.org"}),
+    )
+    .unwrap();
+    let click = start_as(
+        &mut widget,
+        Some(&ben),
+        "click-page",
+        &serde_json::json!({"element": "d1e9"}),
+    )
+    .unwrap();
+    let read = start_as(&mut widget, Some(&ben), "read-page", &serde_json::json!({})).unwrap();
+    let record = start_as(
+        &mut widget,
+        Some(&rev),
+        "read-page-record",
+        &serde_json::json!({"since": 7}),
+    )
+    .unwrap();
+    assert_eq!(
+        page_asks(&engine),
+        vec![
+            (Some("agent:ada".to_owned()), "fill"),
+            (Some("person:rev".to_owned()), "ledger"),
+        ],
+        "the record is asked for while the fill still runs, ahead of what waits"
+    );
+    assert_eq!(
+        widget.page_waiting.len(),
+        2,
+        "and it took no place among them"
+    );
+    // It is answered before the fill's answer was read, and says how many
+    // actions wait their turn in this tab.
+    widget.sync(&doc, &root);
+    let value = succeeded(
+        widget
+            .poll_invocation(record)
+            .expect("the record answers whatever runs"),
+    );
+    assert_eq!(value["data"]["next"], 7);
+    assert_eq!(value["data"]["waiting"], 2);
+    assert_eq!(value["provenance"], "web-content");
+    // The actions it was read beside are untouched, and keep their order.
+    succeeded(settled(&mut widget, &doc, &root, fill));
+    succeeded(settled(&mut widget, &doc, &root, click));
+    succeeded(settled(&mut widget, &doc, &root, read));
+    assert_eq!(
+        page_asks(&engine)
+            .into_iter()
+            .map(|(_, action)| action)
+            .collect::<Vec<_>>(),
+        vec!["fill", "ledger", "click", "outline"]
+    );
+
+    // A caller that gives up on a read of the record stops that request and
+    // no other.
+    let running = start_as(&mut widget, Some(&ada), "read-page", &serde_json::json!({})).unwrap();
+    let given_up = start_as(
+        &mut widget,
+        Some(&rev),
+        "read-page-record",
+        &serde_json::json!({}),
+    )
+    .unwrap();
+    let stopped = failed(
+        widget
+            .poll_invocation_cancelling(given_up, true)
+            .expect("a read of the record is answered when its caller gives up"),
+    );
+    assert_eq!(stopped.code, "browser.page.cancelled");
+    assert_eq!(stopped.details.unwrap()["outcome"], "not_run");
+    let asked = page_request_ids(&engine);
+    assert_eq!(page_cancels(&engine), vec![*asked.last().unwrap()]);
+    succeeded(settled(&mut widget, &doc, &root, running));
+    assert!(widget.poll_invocation(given_up).is_none(), "answered once");
+}
+
+/// An actor learns the tab moved under it from the answer it was waiting for
+/// anyway: what the others did since it last heard travels in its output,
+/// and with a refusal, where it is often the reason.
+#[test]
+fn what_the_others_did_reaches_the_callers_output() {
+    let (engine, mut widget, doc, root) = page_on("https://shop.test/form");
+    let ada = agent("agent:ada");
+    let theirs = serde_json::json!([
+        {"seq": 4, "actor": "agent:ben", "action": "fill", "ok": true,
+            "target": {"role": "textbox", "name": "Email"}, "text": "ben@example.org"},
+        {"seq": 5, "actor": "agent:ben", "action": "click", "ok": true,
+            "target": {"role": "button", "name": "Next"},
+            "url": "https://shop.test/form", "to_url": "https://shop.test/pay"},
+    ]);
+    let others = theirs.as_array().unwrap().clone();
+    engine.push_page_reply(Ok(PageReply {
+        record: PageRecordNote {
+            seq: Some(6),
+            others: others.clone(),
+            others_earlier: 3,
+        },
+        ..answer("Filled searchbox \"Search\"")
+    }));
+    let fill = start_as(
+        &mut widget,
+        Some(&ada),
+        "fill-page",
+        &serde_json::json!({"element": "d1e3", "text": "kettle"}),
+    )
+    .unwrap();
+    let value = succeeded(settled(&mut widget, &doc, &root, fill));
+    assert_eq!(value["message"], "Filled searchbox \"Search\"");
+    assert_eq!(value["seq"], 6, "its own place in the record");
+    assert_eq!(value["others"], theirs);
+    assert_eq!(value["others_earlier"], 3);
+    assert_eq!(
+        value["provenance"], "web-content",
+        "what the others wrote is page content like the rest"
+    );
+
+    // Told once: an answer that carries nothing of the others has no such
+    // fields, rather than empty ones to be mistaken for news.
+    let read = start_as(&mut widget, Some(&ada), "read-page", &serde_json::json!({})).unwrap();
+    let value = succeeded(settled(&mut widget, &doc, &root, read));
+    for key in ["seq", "others", "others_earlier"] {
+        assert!(value.get(key).is_none(), "{key}: {value}");
+    }
+
+    // A refusal is told the same: the element went stale because Ben's
+    // click left the page.
+    let mut stale = PageFailure::new(
+        "stale_element",
+        "d1e3 belongs to a page this tab has left; read the page again",
+    );
+    stale.record = PageRecordNote {
+        seq: Some(7),
+        others: others[1..].to_vec(),
+        others_earlier: 0,
+    };
+    engine.push_page_reply(Err(stale));
+    let click = start_as(
+        &mut widget,
+        Some(&ada),
+        "click-page",
+        &serde_json::json!({"element": "d1e3"}),
+    )
+    .unwrap();
+    let refused = failed(settled(&mut widget, &doc, &root, click));
+    assert_eq!(refused.code, "browser.page.stale_element");
+    assert!(!refused.retryable);
+    let details = refused
+        .details
+        .expect("the refusal says what the others did");
+    assert_eq!(details["seq"], 7);
+    assert_eq!(details["others"], serde_json::json!([theirs[1]]));
+    assert!(details.get("others_earlier").is_none());
+}
+
+/// A long page is read on from where a read stopped, and its words are found
+/// by searching for them: both are typed reads, answered in the shape every
+/// page read has, and a line a search answers is one a read starts from.
+#[test]
+fn a_long_page_is_read_on_and_its_words_are_found_by_searching() {
+    let (engine, mut widget, mut doc, root) = page_on("https://law.test/act");
+    engine.push_page_reply(Ok(PageReply {
+        outline: Some("1240: - paragraph \"Condition 1240. Within 30 days.\"".into()),
+        ..answer("Read lines 1240 to 2001 of 2001")
+    }));
+    let found = serde_json::json!({
+        "matches": [{"line": 1500,
+            "text": "Condition 1500. See Section 1500 of the ACT, within 30 days."}],
+        "total": 1,
+    });
+    engine.push_page_reply(Ok(PageReply {
+        outline: Some("1500: Condition 1500. See Section 1500 of the ACT, within 30 days.".into()),
+        data: Some(found.clone()),
+        ..answer("1 line holds those words")
+    }));
+    let mut answers = Vec::new();
+    for (id, args) in [
+        ("read-page", serde_json::json!({"from": 1240})),
+        (
+            "find-page-text",
+            serde_json::json!({"text": "Section 1500 of the ACT"}),
+        ),
+        (
+            "find-page-text",
+            serde_json::json!({"text": "within 30 days", "frame": "1"}),
+        ),
+        ("read-page", serde_json::json!({"from": 1500, "frame": "1"})),
+        // The words are counted as the engine counts them, whatever their
+        // script: 200 of them are 200, however many bytes they take.
+        (
+            "find-page-text",
+            serde_json::json!({"text": "é".repeat(200)}),
+        ),
+    ] {
+        let invocation = start(&mut widget, &mut doc, &root, id, &args).unwrap();
+        answers.push(succeeded(settled(&mut widget, &doc, &root, invocation)));
+    }
+    assert_eq!(
+        page_requests(&engine),
+        vec![
+            PageRequest::Outline {
+                from: Some(1240),
+                frame: None,
+            },
+            PageRequest::Search {
+                text: "Section 1500 of the ACT".into(),
+                frame: None,
+            },
+            PageRequest::Search {
+                text: "within 30 days".into(),
+                frame: Some(FrameId::parse("1").unwrap()),
+            },
+            PageRequest::Outline {
+                from: Some(1500),
+                frame: Some(FrameId::parse("1").unwrap()),
+            },
+            PageRequest::Search {
+                text: "é".repeat(200),
+                frame: None,
+            },
+        ]
+    );
+    for value in &answers {
+        assert_eq!(value["provenance"], "web-content", "{value}");
+    }
+    assert_eq!(answers[0]["message"], "Read lines 1240 to 2001 of 2001");
+    assert!(
+        answers[0]["outline"]
+            .as_str()
+            .is_some_and(|outline| outline.starts_with("1240: "))
+    );
+    // A search answers the lines that hold the words, as findings and as the
+    // lines themselves; the line is what the next read starts from.
+    assert_eq!(answers[1]["data"], found);
+    assert_eq!(answers[1]["data"]["matches"][0]["line"], 1500);
+    assert_eq!(
+        answers[1]["outline"],
+        "1500: Condition 1500. See Section 1500 of the ACT, within 30 days."
+    );
+    assert_eq!(
+        answers[2]["data"],
+        serde_json::json!({"matches": [], "total": 0})
+    );
+
+    // What no engine takes is refused before the page is asked.
+    let asked = page_requests(&engine).len();
+    for (id, args) in [
+        ("read-page", serde_json::json!({"from": 0})),
+        ("read-page", serde_json::json!({"from": 1_000_001})),
+        ("find-page-text", serde_json::json!({"text": ""})),
+        (
+            "find-page-text",
+            serde_json::json!({"text": "x".repeat(201)}),
+        ),
+        (
+            "find-page-text",
+            serde_json::json!({"text": "Total", "frame": "#fr"}),
+        ),
+    ] {
+        let refused = start(&mut widget, &mut doc, &root, id, &args).unwrap_err();
+        assert!(!refused.is_empty(), "{id} {args}");
+    }
+    let refused = start(
+        &mut widget,
+        &mut doc,
+        &root,
+        "read-page",
+        &serde_json::json!({"from": 1_000_001}),
+    )
+    .unwrap_err();
+    assert!(refused.contains("between 1 and 1000000"), "{refused}");
+    let refused = start(
+        &mut widget,
+        &mut doc,
+        &root,
+        "find-page-text",
+        &serde_json::json!({"text": "x".repeat(201)}),
+    )
+    .unwrap_err();
+    assert!(refused.contains("1 to 200 characters"), "{refused}");
+    assert_eq!(page_requests(&engine).len(), asked);
+
+    // A line past the page's end is the engine's to refuse: it knows how
+    // long the page is, and its refusal reaches the caller as it was said.
+    engine.push_page_reply(Err(PageFailure::new(
+        "invalid_request",
+        "there is no line 5000: the page has 2001 lines",
+    )));
+    let beyond = start(
+        &mut widget,
+        &mut doc,
+        &root,
+        "read-page",
+        &serde_json::json!({"from": 5000}),
+    )
+    .unwrap();
+    let refused = failed(settled(&mut widget, &doc, &root, beyond));
+    assert_eq!(refused.code, "browser.page.invalid_request");
+    assert!(
+        refused.message.contains("no line 5000"),
+        "{}",
+        refused.message
+    );
+}
+
+/// A form is read as what it asks and answered by the names it asks under:
+/// the answers reach the engine as the object they are, the form is sent
+/// with its first button or a named one, and what came of each answer
+/// reaches the caller.
+#[test]
+fn a_pages_forms_are_read_and_answered_by_the_names_they_ask_under() {
+    let (engine, mut widget, mut doc, root) = page_on("https://visa.test/apply");
+    let forms = serde_json::json!({"forms": [{
+        "form": "form1", "label": "Apply for a permit", "method": "GET", "action": "/done",
+        "signature": "5f1c2a9be0", "submit": ["Send application"],
+        "fields": [
+            {"name": "Date of birth: Month", "kind": "number", "required": true, "value": "",
+                "element": "d1e4"},
+            {"name": "Languages", "kind": "choices", "choices": ["English", "Dutch", "German"],
+                "value": [], "elements": ["d1e9", "d1e10", "d1e11"]},
+            {"name": "Nationality", "kind": "choice", "choices": ["Kenya", "Other"],
+                "value": "", "element": "d1e12"},
+            {"name": "Passcode", "kind": "secret", "required": true, "value": "",
+                "element": "d1e14"},
+        ],
+    }]});
+    engine.push_page_reply(Ok(PageReply {
+        outline: Some("- form1 \"Apply for a permit\" (GET /done) signature=5f1c2a9be0".into()),
+        data: Some(forms.clone()),
+        ..answer("1 form")
+    }));
+    let placed = serde_json::json!({
+        "form": "form1", "signature": "5f1c2a9be0",
+        "results": [
+            {"name": "Date of birth: Month", "ok": true},
+            {"name": "Languages", "ok": true},
+            {"name": "Nationality", "ok": true},
+            {"name": "Passcode", "ok": false, "code": "secret_field",
+                "message": "\"Passcode\" is a secret: fill it with the secret fill",
+                "element": "d1e14"},
+        ],
+        "set": [
+            {"name": "Date of birth: Month", "value": "11"},
+            {"name": "Languages", "value": "English, German"},
+            {"name": "Nationality", "value": "Other"},
+        ],
+        "submitted": false,
+        "now_asks": ["Which country?"],
+        "unanswered": ["Which country?", "Passcode"],
+    });
+    engine.push_page_reply(Ok(PageReply {
+        data: Some(placed.clone()),
+        navigation: PageNavigation::Possible,
+        record: PageRecordNote {
+            seq: Some(1),
+            ..PageRecordNote::default()
+        },
+        ..answer(
+            "Placed 3 of 4 answers; the form now also asks \"Which country?\"; not sent, since \
+             not every answer was placed",
+        )
+    }));
+    let first_answers = serde_json::json!({
+        "Date of birth: Month": 11,
+        "Languages": ["English", "German"],
+        "Nationality": "Other",
+        "Passcode": "0000",
+    });
+    let mut answers = Vec::new();
+    for (id, args) in [
+        ("read-page-forms", serde_json::json!({})),
+        (
+            "fill-page-form",
+            serde_json::json!({"form": "form1", "answers": first_answers, "submit": true}),
+        ),
+        // The form named by its signature, sent with the button a label
+        // names, and allowed to leave for another site.
+        (
+            "fill-page-form",
+            serde_json::json!({"form": "5f1c2a9be0",
+                "answers": {"Which country?": "Portugal", "Newsletter": false},
+                "submit_button": "Send application", "cross_origin": true}),
+        ),
+        // Answered, and left for its caller to send.
+        (
+            "fill-page-form",
+            serde_json::json!({"form": "form1", "answers": {"Arrival": "2027-02-03"}}),
+        ),
+        ("read-page-forms", serde_json::json!({"frame": "2"})),
+    ] {
+        let invocation = start(&mut widget, &mut doc, &root, id, &args).unwrap();
+        answers.push(succeeded(settled(&mut widget, &doc, &root, invocation)));
+    }
+    let object = |value: serde_json::Value| value.as_object().unwrap().clone();
+    assert_eq!(
+        page_requests(&engine),
+        vec![
+            PageRequest::Forms { frame: None },
+            PageRequest::FillForm {
+                form: "form1".into(),
+                answers: object(first_answers),
+                submit: ui::webview::FormSubmit::First,
+                cross_origin: false,
+            },
+            PageRequest::FillForm {
+                form: "5f1c2a9be0".into(),
+                answers: object(
+                    serde_json::json!({"Which country?": "Portugal", "Newsletter": false})
+                ),
+                submit: ui::webview::FormSubmit::Button("Send application".into()),
+                cross_origin: true,
+            },
+            PageRequest::FillForm {
+                form: "form1".into(),
+                answers: object(serde_json::json!({"Arrival": "2027-02-03"})),
+                submit: ui::webview::FormSubmit::No,
+                cross_origin: false,
+            },
+            PageRequest::Forms {
+                frame: Some(FrameId::parse("2").unwrap()),
+            },
+        ]
+    );
+    for value in &answers {
+        assert_eq!(value["provenance"], "web-content", "{value}");
+    }
+    // The forms as what they ask, with the id and the signature an answer
+    // names them by.
+    assert_eq!(answers[0]["data"], forms);
+    assert_eq!(answers[0]["data"]["forms"][0]["signature"], "5f1c2a9be0");
+    assert!(
+        answers[0]["outline"]
+            .as_str()
+            .is_some_and(|outline| outline.contains("signature=5f1c2a9be0"))
+    );
+    // What came of each answer, what the form asks now, and the action's
+    // place in the tab's record.
+    assert_eq!(answers[1]["data"], placed);
+    assert_eq!(answers[1]["data"]["results"][3]["code"], "secret_field");
+    assert_eq!(
+        answers[1]["data"]["now_asks"],
+        serde_json::json!(["Which country?"])
+    );
+    assert_eq!(answers[1]["data"]["submitted"], false);
+    assert_eq!(answers[1]["seq"], 1);
+    assert_eq!(answers[1]["navigation"], "possible");
+    assert!(
+        answers[1]["message"]
+            .as_str()
+            .is_some_and(|message| message.contains("now also asks \"Which country?\""))
+    );
+    assert_eq!(answers[3]["data"]["form"], "form1");
+    assert_eq!(answers[4]["data"], serde_json::json!({"forms": []}));
+
+    // A call that placed nothing fails with the reason the engine gave, by
+    // its own code, and asks for no retry of an action that runs once.
+    for (code, message) in [
+        (
+            "no_form",
+            "No form has the signature 5f1c2a9be0 any more; read the forms again",
+        ),
+        (
+            "secret_field",
+            "\"Passcode\" is a secret: fill it with the secret fill",
+        ),
+        ("no_field", "The form does not ask \"Shoe size\""),
+    ] {
+        engine.push_page_reply(Err(PageFailure::new(code, message)));
+        let invocation = start(
+            &mut widget,
+            &mut doc,
+            &root,
+            "fill-page-form",
+            &serde_json::json!({"form": "5f1c2a9be0", "answers": {"Shoe size": "44"}}),
+        )
+        .unwrap();
+        let refused = failed(settled(&mut widget, &doc, &root, invocation));
+        assert_eq!(refused.code, format!("browser.page.{code}"));
+        assert_eq!(refused.message, message);
+        assert!(!refused.retryable, "{code}");
+    }
+}
+
+/// What a form cannot take never reaches the page: the bounds the engine
+/// accepts are held here, and the action's own types before them.
+#[test]
+fn a_forms_answers_are_bounded_before_they_reach_the_page() {
+    let (engine, mut widget, mut doc, root) = page_on("https://visa.test/apply");
+    let too_many: serde_json::Map<String, serde_json::Value> = (0..=200)
+        .map(|number| (format!("Question {number}"), serde_json::json!("x")))
+        .collect();
+    for (why, args) in [
+        (
+            "a form of no name",
+            serde_json::json!({"form": "", "answers": {"Arrival": "x"}}),
+        ),
+        (
+            "a name longer than an id or a signature",
+            serde_json::json!({"form": "f".repeat(65), "answers": {}}),
+        ),
+        (
+            "more answers than a form takes",
+            serde_json::json!({"form": "form1", "answers": too_many}),
+        ),
+        (
+            "an answer under no name",
+            serde_json::json!({"form": "form1", "answers": {"": "x"}}),
+        ),
+        (
+            "an answer that is an object",
+            serde_json::json!({"form": "form1", "answers": {"Arrival": {"day": 3}}}),
+        ),
+        (
+            "an answer that is nothing",
+            serde_json::json!({"form": "form1", "answers": {"Arrival": null}}),
+        ),
+        (
+            "a choice that is no text",
+            serde_json::json!({"form": "form1", "answers": {"Languages": ["English", 3]}}),
+        ),
+        (
+            "more choices than one answer makes",
+            serde_json::json!({"form": "form1", "answers": {"Languages": vec!["x"; 65]}}),
+        ),
+        (
+            "a text longer than a field takes",
+            serde_json::json!({"form": "form1", "answers": {"Notes": "x".repeat(65_537)}}),
+        ),
+        (
+            "a button named while saying not to send",
+            serde_json::json!({"form": "form1", "answers": {}, "submit": false,
+                "submit_button": "Send application"}),
+        ),
+        (
+            "a label longer than any button's",
+            serde_json::json!({"form": "form1", "answers": {},
+                "submit_button": "x".repeat(201)}),
+        ),
+        // The action's own types refuse these before the bounds are asked.
+        (
+            "answers that are no object",
+            serde_json::json!({"form": "form1", "answers": "Arrival=2027-02-03"}),
+        ),
+        (
+            "a way of sending that is neither yes nor no",
+            serde_json::json!({"form": "form1", "answers": {}, "submit": "Send application"}),
+        ),
+        ("no answers at all", serde_json::json!({"form": "form1"})),
+    ] {
+        let refused = start(&mut widget, &mut doc, &root, "fill-page-form", &args).expect_err(why);
+        assert!(!refused.is_empty(), "{why}");
+    }
+    assert!(
+        page_requests(&engine).is_empty(),
+        "a refused form reached the page"
+    );
+    // A refusal for its bounds says what a form takes.
+    let refused = start(
+        &mut widget,
+        &mut doc,
+        &root,
+        "fill-page-form",
+        &serde_json::json!({"form": "form1", "answers": {"Arrival": {"day": 3}}}),
+    )
+    .unwrap_err();
+    assert!(
+        refused.contains("at most 200 answers") && refused.contains("a list of texts"),
+        "{refused}"
+    );
+    // Within them it goes: a form with nothing left to answer is only sent.
+    let sent = start(
+        &mut widget,
+        &mut doc,
+        &root,
+        "fill-page-form",
+        &serde_json::json!({"form": "form1", "answers": {}, "submit": true}),
+    )
+    .unwrap();
+    succeeded(settled(&mut widget, &doc, &root, sent));
+    assert_eq!(
+        page_requests(&engine),
+        vec![PageRequest::FillForm {
+            form: "form1".into(),
+            answers: serde_json::Map::new(),
+            submit: ui::webview::FormSubmit::First,
+            cross_origin: false,
+        }]
+    );
+}
+
+/// Answering a form is an action like a click or a submit: it waits its turn
+/// behind another actor's, is told what that actor did, and when it sends
+/// the form it completes on the page the form opened.
+#[test]
+fn answering_a_form_takes_its_turn_and_completes_on_the_page_it_sent_to() {
+    let (engine, mut widget, doc, root) = page_on("https://visa.test/apply");
+    let (ada, ben) = (agent("agent:ada"), agent("agent:ben"));
+    engine.push_page_reply(Ok(answer("Clicked checkbox \"Accept terms\"")));
+    let sent = serde_json::json!({
+        "form": "form1", "signature": "5f1c2a9be0",
+        "results": [{"name": "Which country?", "ok": true}],
+        "set": [{"name": "Which country?", "value": "Portugal"}],
+        "submitted": true, "now_asks": [], "unanswered": [],
+    });
+    let theirs = serde_json::json!([
+        {"seq": 1, "actor": "agent:ada", "action": "click", "ok": true,
+            "target": {"role": "checkbox", "name": "Accept terms"}},
+    ]);
+    engine.push_page_reply(Ok(PageReply {
+        url: "https://visa.test/apply".into(),
+        data: Some(sent.clone()),
+        navigation: PageNavigation::Started,
+        loading: true,
+        record: PageRecordNote {
+            seq: Some(2),
+            others: theirs.as_array().unwrap().clone(),
+            others_earlier: 0,
+        },
+        ..answer("Placed 1 answer and sent the form with \"Send application\"")
+    }));
+    let click = start_as(
+        &mut widget,
+        Some(&ada),
+        "click-page",
+        &serde_json::json!({"element": "d1e7"}),
+    )
+    .unwrap();
+    let form = start_as(
+        &mut widget,
+        Some(&ben),
+        "fill-page-form",
+        &serde_json::json!({"form": "form1", "answers": {"Which country?": "Portugal"},
+            "submit": true}),
+    )
+    .expect("answering a form waits its turn behind the click");
+    assert_eq!(
+        page_asks(&engine),
+        vec![(Some("agent:ada".to_owned()), "click")],
+        "the form's answers have reached nothing yet"
+    );
+    assert!(widget.poll_invocation(form).is_none());
+    succeeded(settled(&mut widget, &doc, &root, click));
+    widget.sync(&doc, &root);
+    widget.sync(&doc, &root);
+    assert_eq!(
+        page_asks(&engine),
+        vec![
+            (Some("agent:ada".to_owned()), "click"),
+            (Some("agent:ben".to_owned()), "fill_form"),
+        ]
+    );
+    assert!(
+        widget.poll_invocation(form).is_none(),
+        "a form that was sent waits for the page it opened"
+    );
+    engine.send(WebViewCommand::Navigate(
+        "https://visa.test/done?other=Portugal".into(),
+    ));
+    let value = succeeded(settled(&mut widget, &doc, &root, form));
+    assert_eq!(value["url"], "https://visa.test/done?other=Portugal");
+    assert_eq!(value["navigation"], "started");
+    assert_eq!(
+        value["message"],
+        "Placed 1 answer and sent the form with \"Send application\""
+    );
+    assert_eq!(value["data"], sent);
+    assert_eq!(value["data"]["submitted"], true);
+    assert_eq!(value["seq"], 2, "it took a place in the tab's record");
+    assert_eq!(
+        value["others"], theirs,
+        "and was told of the click before it"
+    );
+}
+
+/// The form action is published like the page's other actions that act: it
+/// runs once, its answers are an object, and it is sent by a yes or by a
+/// button's label, each a parameter of its own type.
+#[test]
+fn the_new_page_actions_declare_what_they_take() {
+    use ui::tilo_actions::ParamType;
+    let (_, widget, _, _) = page_on("https://visa.test/apply");
+    let types = |id: &str| -> Vec<(String, ParamType)> {
+        page_action(&widget, id)
+            .params()
+            .iter()
+            .map(|param| (param.name.to_string(), param.ty))
+            .collect()
+    };
+    assert_eq!(
+        types("fill-page-form"),
+        vec![
+            ("form".to_owned(), ParamType::Text),
+            ("answers".to_owned(), ParamType::Object),
+            ("submit".to_owned(), ParamType::Boolean),
+            ("submit_button".to_owned(), ParamType::Text),
+            ("cross_origin".to_owned(), ParamType::Boolean),
+        ]
+    );
+    assert!(
+        types("fill-page-form")
+            .iter()
+            .all(|(_, ty)| *ty != ParamType::Secret),
+        "a form's answers are never secrets: a secret takes the secret fill"
+    );
+    assert_eq!(
+        page_action_contract("fill-page-form").retry,
+        ui::tilo_actions::RetryPolicy::AtMostOnce,
+        "a form is answered, and sent, once"
+    );
+    assert_eq!(
+        types("read-page"),
+        vec![
+            ("from".to_owned(), ParamType::Integer),
+            ("frame".to_owned(), ParamType::Text),
+        ]
+    );
+    assert_eq!(
+        types("find-page-text"),
+        vec![
+            ("text".to_owned(), ParamType::Text),
+            ("frame".to_owned(), ParamType::Text),
+        ]
+    );
+    assert_eq!(
+        types("read-page-forms"),
+        vec![("frame".to_owned(), ParamType::Text)]
+    );
 }

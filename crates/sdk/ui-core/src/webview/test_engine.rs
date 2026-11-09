@@ -276,6 +276,19 @@ impl TestEngine {
                 PageRequest::Console { .. } | PageRequest::Network { .. } => {
                     Some(serde_json::json!({"entries": [], "next": 0, "dropped": 0}))
                 }
+                // A tab nothing has operated yet has an empty record, and a
+                // test page has no fields.
+                PageRequest::Ledger { since } => Some(serde_json::json!({
+                    "entries": [], "next": since, "more": false, "dropped": 0, "waiting": 0,
+                })),
+                PageRequest::Fields { .. } => Some(serde_json::json!({"fields": []})),
+                // A test page holds no words to find and asks nothing.
+                PageRequest::Search { .. } => Some(serde_json::json!({"matches": [], "total": 0})),
+                PageRequest::Forms { .. } => Some(serde_json::json!({"forms": []})),
+                PageRequest::FillForm { form, .. } => Some(serde_json::json!({
+                    "form": form, "signature": "", "results": [], "set": [],
+                    "submitted": false, "now_asks": [], "unanswered": [],
+                })),
                 PageRequest::At { x, y, .. } => {
                     Some(serde_json::json!({"x": x, "y": y, "element": null}))
                 }
@@ -313,12 +326,14 @@ impl TestEngine {
                     | PageRequest::Fill { .. }
                     | PageRequest::Select { .. }
                     | PageRequest::Submit { .. }
+                    | PageRequest::FillForm { .. }
             ) {
                 PageNavigation::Possible
             } else {
                 PageNavigation::None
             },
             loading: false,
+            record: super::PageRecordNote::default(),
         })
     }
 
@@ -721,7 +736,7 @@ impl WebViewEngine for TestEngine {
             | WebViewCommand::ImeFinish
             // The test engine runs a page action as it arrives, so there is
             // never one left to stop.
-            | WebViewCommand::CancelPage => {}
+            | WebViewCommand::CancelPage { .. } => {}
             WebViewCommand::CopySelection { request_id } => {
                 let text = inner.selection.clone();
                 inner
@@ -740,6 +755,7 @@ impl WebViewEngine for TestEngine {
             WebViewCommand::Page {
                 request_id,
                 request,
+                ..
             } => {
                 let result = Self::page_reply_locked(&mut inner, &request);
                 inner

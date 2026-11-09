@@ -212,11 +212,15 @@ fn a_page_waiting_on_permission_names_the_request_in_what_it_reads() {
         image: None,
         navigation: ui::webview::page::PageNavigation::None,
         loading: false,
+        record: ui::webview::PageRecordNote::default(),
     };
     let update = widget.page_success(
         ui::tilo_actions::InvocationId::new(),
         &reply,
-        &ui::webview::PageRequest::Outline { frame: None },
+        &ui::webview::PageRequest::Outline {
+            from: None,
+            frame: None,
+        },
         None,
     );
     let ui::tilo_actions::InvocationUpdate::Succeeded { output, .. } = update else {
@@ -251,7 +255,10 @@ fn a_page_waiting_on_permission_names_the_request_in_what_it_reads() {
     let update = widget.page_success(
         ui::tilo_actions::InvocationId::new(),
         &reply,
-        &ui::webview::PageRequest::Outline { frame: None },
+        &ui::webview::PageRequest::Outline {
+            from: None,
+            frame: None,
+        },
         None,
     );
     let ui::tilo_actions::InvocationUpdate::Succeeded { output, .. } = update else {

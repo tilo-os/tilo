@@ -10,8 +10,8 @@
 
 use ui::tilo_resource::{self, Effect};
 use ui::webview::{
-    FrameId, KeyModifiers, PageKey, PageRequest, PointerButton, PointerPoint, PointerStep,
-    PointerStepKind, ScrollTarget,
+    FormSubmit, FrameId, KeyModifiers, PageKey, PageRequest, PointerButton, PointerPoint,
+    PointerStep, PointerStepKind, ScrollTarget,
 };
 
 /// How long a settle waits for the page to go quiet, and at most, by default.
@@ -395,7 +395,9 @@ pub enum BrowserEffect {
     /// Read page content
     ///
     /// Answers with the page's outline: its elements and their refs. A frame
-    /// carries the id that addresses its own document.
+    /// carries the id that addresses its own document. A long page is read
+    /// in parts: a read that stops short says so, with the line to read on
+    /// from, and lines keep their numbers while the page does not change.
     #[effect(
         row,
         job,
@@ -406,6 +408,10 @@ pub enum BrowserEffect {
         untrusted
     )]
     ReadPage {
+        #[param(
+            "Line of the outline to start at, from 1: the line a read that stopped short named, or the line of a find-page-text match (default 1, the top)"
+        )]
+        from: Option<u32>,
         #[param(
             "Frame id from the outline, such as 1 or 1.2: the action then runs in that frame's own document, with its own outline and refs. The outline's own [frame=1] is read as the id it carries"
         )]
@@ -543,6 +549,73 @@ pub enum BrowserEffect {
         )]
         since: Option<u64>,
     },
+    /// Who did what on the page
+    ///
+    /// The tab's record of the actions that operated its page, in the order
+    /// they ran: who asked, what was done, the element it acted on by role
+    /// and name, the text it wrote or the options it chose, and how it
+    /// ended. A filled secret is never in it, and reading the page takes no
+    /// place in it. It also says how many actions wait their turn.
+    #[effect(
+        row,
+        job,
+        cancellable,
+        returns,
+        idempotent,
+        audience = "agents",
+        untrusted
+    )]
+    ReadPageRecord {
+        #[param(
+            "Only actions after this place in the record: the `next` of the previous answer (default 0)"
+        )]
+        since: Option<u64>,
+    },
+    /// Page fields and who set them
+    ///
+    /// Every field of the page with what it holds now and who set it: an
+    /// action and who asked for it, a person typing into the page, or the
+    /// page's own script, and whether the field changed after it was set. A
+    /// secret is listed by its length, never its text. Nothing is sent to
+    /// the page.
+    #[effect(
+        row,
+        job,
+        cancellable,
+        returns,
+        idempotent,
+        audience = "agents",
+        untrusted
+    )]
+    ReadPageFields {
+        #[param(
+            "Frame id from the outline, such as 1 or 1.2: the fields are then read from that frame's own document"
+        )]
+        frame: Option<String>,
+    },
+    /// Page forms and what they ask
+    ///
+    /// Each form of the page as the questions it asks: its id and signature,
+    /// every question by name with its kind, the answers it offers, whether
+    /// it is required and what it holds now, and the buttons that send the
+    /// form. A form's id or signature and its questions' names are what
+    /// `fill-page-form` takes. The signature names the same form on a later
+    /// visit, and stops naming it once the form asks something else.
+    #[effect(
+        row,
+        job,
+        cancellable,
+        returns,
+        idempotent,
+        audience = "agents",
+        untrusted
+    )]
+    ReadPageForms {
+        #[param(
+            "Frame id from the outline, such as 1 or 1.2: the forms are then read from that frame's own document"
+        )]
+        frame: Option<String>,
+    },
     /// Find a page element by what it says
     ///
     /// Answers with the ref of the element a stable description names, read
@@ -571,6 +644,31 @@ pub enum BrowserEffect {
         nth: Option<u32>,
         #[param(
             "Frame id from the outline, such as 1 or 1.2: the element is then found in that frame's own document"
+        )]
+        frame: Option<String>,
+    },
+    /// Find words on the page
+    ///
+    /// Answers with the outline lines that hold the words, in any letter
+    /// case, each with its line number and the text around the match. A line
+    /// number is what `read-page` takes as `from`, so a long page is read
+    /// from where the words are instead of from its top. It reads what the
+    /// outline reads: a secret's value is found by neither. Controls and
+    /// headings are found by `find-page-element`.
+    #[effect(
+        row,
+        job,
+        cancellable,
+        returns,
+        idempotent,
+        audience = "agents",
+        untrusted
+    )]
+    FindPageText {
+        #[param("Words to find, as the page writes them: 1 to 200 characters")]
+        text: String,
+        #[param(
+            "Frame id from the outline, such as 1 or 1.2: the words are then found in that frame's own document"
         )]
         frame: Option<String>,
     },
@@ -725,6 +823,33 @@ pub enum BrowserEffect {
             "Frame id from the outline, such as 1 or 1.2: the action then runs in that frame's own document, with its own outline and refs. The outline's own [frame=1] is read as the id it carries"
         )]
         frame: Option<String>,
+    },
+    /// Answer page form
+    ///
+    /// Places a form's answers by the names it asks under, in the form's own
+    /// order, and says for each whether it was placed. An answer that makes
+    /// the form ask something new is said. The form is sent only when asked,
+    /// when every answer was placed and nothing required is empty. What it
+    /// cannot place is refused for that field alone, with the ref the field's
+    /// own action takes: a secret goes through `fill-page-secret`, a file
+    /// through `fill-page-files`. A form that sends its data to another site
+    /// than the page's own is refused unless `cross_origin` allows it.
+    #[effect(row, job, cancellable, returns, audience = "agents", untrusted)]
+    FillPageForm {
+        #[param("The form's id from read-page-forms, such as form1, or its signature")]
+        form: String,
+        #[param(
+            "Answers by the names the form asks under: each a text, a number, true or false, or a list of texts where several are chosen. Never a secret: a password or card field is refused here and takes fill-page-secret"
+        )]
+        answers: serde_json::Map<String, serde_json::Value>,
+        #[param("Send the form with its first submit button once it is answered (default false)")]
+        submit: Option<bool>,
+        #[param(
+            "Send the form with the submit button of this label, as read-page-forms lists it, instead of the first"
+        )]
+        submit_button: Option<String>,
+        #[param("Allow sending the form to another site than the page's own (default false)")]
+        cross_origin: Option<bool>,
     },
     /// Answer the page's question
     ///
@@ -979,7 +1104,8 @@ impl BrowserEffect {
             Self::AnswerPermission { request, allow } => {
                 BrowserOperation::AnswerPermission { request, allow }
             }
-            Self::ReadPage { frame } => page(PageRequest::Outline {
+            Self::ReadPage { from, frame } => page(PageRequest::Outline {
+                from,
                 frame: page_frame(frame),
             }),
             Self::CapturePage {
@@ -1014,6 +1140,43 @@ impl BrowserEffect {
             Self::ReadPageNetwork { since } => page(PageRequest::Network {
                 since: since.unwrap_or(0),
             }),
+            Self::ReadPageRecord { since } => page(PageRequest::Ledger {
+                since: since.unwrap_or(0),
+            }),
+            Self::ReadPageFields { frame } => page(PageRequest::Fields {
+                frame: page_frame(frame),
+            }),
+            Self::ReadPageForms { frame } => page(PageRequest::Forms {
+                frame: page_frame(frame),
+            }),
+            Self::FindPageText { text, frame } => page(PageRequest::Search {
+                text,
+                frame: page_frame(frame),
+            }),
+            Self::FillPageForm {
+                form,
+                answers,
+                submit,
+                submit_button,
+                cross_origin,
+            } => {
+                let button = submit_button.filter(|label| !label.trim().is_empty());
+                page(PageRequest::FillForm {
+                    form,
+                    answers,
+                    submit: match (button, submit) {
+                        // Naming the button that sends the form while saying
+                        // not to send it asks for two things. Neither is
+                        // guessed: a button of no name is refused before it
+                        // reaches the page.
+                        (Some(_), Some(false)) => FormSubmit::Button(String::new()),
+                        (Some(label), _) => FormSubmit::Button(label),
+                        (None, Some(true)) => FormSubmit::First,
+                        (None, _) => FormSubmit::No,
+                    },
+                    cross_origin: cross_origin.unwrap_or(false),
+                })
+            }
             Self::FindPageElement {
                 role,
                 name,

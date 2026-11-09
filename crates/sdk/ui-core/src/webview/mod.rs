@@ -31,8 +31,9 @@ pub mod page;
 pub mod paint;
 pub mod text_input;
 pub use page::{
-    FrameId, MAX_POINTER_STEPS, PageFailure, PageKey, PageNavigation, PageReply, PageRequest,
-    PointerButton, PointerPoint, PointerStep, PointerStepKind, ScrollTarget,
+    FormSubmit, FrameId, MAX_POINTER_STEPS, PageActor, PageFailure, PageKey, PageNavigation,
+    PageRecordNote, PageReply, PageRequest, PointerButton, PointerPoint, PointerStep,
+    PointerStepKind, ScrollTarget,
 };
 pub mod profile;
 pub mod test_engine;
@@ -713,16 +714,24 @@ pub enum WebViewCommand {
     /// Read or operate the current page's content. Exactly one
     /// [`WebViewEvent::PageResult`] with the same id answers it; engines
     /// without page automation answer [`PageFailure::unavailable`].
+    ///
+    /// `actor` names who asks, when the caller admitted someone by name:
+    /// several actors may work in one tab, and the engine keeps what each
+    /// has read, and what each did, under that name. `None` is the one
+    /// unnamed actor a tab has always had.
     Page {
         request_id: u32,
+        actor: Option<PageActor>,
         request: PageRequest,
     },
-    /// Stop the page action that is running. An action nobody waits for any
-    /// more must not hold the page: the tab answers it as settled with an
-    /// unknown outcome rather than running the next action behind it. No
-    /// request id is carried: a tab runs one page action at a time, so the
-    /// action that is running is the one to stop.
-    CancelPage,
+    /// Stop the page action `request_id` names. An action nobody waits for
+    /// any more must not hold the page: the tab answers it as settled with an
+    /// unknown outcome rather than running the next action behind it. The
+    /// request is named because several actors' actions may be in one tab:
+    /// a caller that gives up stops its own action and never another's.
+    CancelPage {
+        request_id: u32,
+    },
     /// Capture the page's layout for the paint stream: every box and text
     /// line the engine laid out (see `tilo_paint_stream::snapshot`). Exactly
     /// one [`WebViewEvent::PaintSnapshot`] with the same id answers it.
