@@ -206,6 +206,19 @@ pub struct Person {
     pub call: Option<ui::CallPresence>,
 }
 
+impl Person {
+    /// The app following them brings forward where no window here shows their record: the one in
+    /// front on their screen, else (an agent has no screen) the app of the record they act in.
+    #[must_use]
+    pub fn followed_app(&self) -> Option<&str> {
+        self.screen
+            .as_ref()
+            .and_then(|screen| screen.windows.iter().find(|window| window.focused))
+            .map(|window| window.app.as_str())
+            .or(self.focus_app.as_deref())
+    }
+}
+
 /// What the page told the desktop about the workspace.
 #[derive(Debug, Default)]
 pub struct HereState {

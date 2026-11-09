@@ -52,6 +52,9 @@ tokio = { workspace = true, features = ["rt-multi-thread", "macros", "sync", "ti
 # their workspaces name.
 tilo-runtime = { path = "../../runtime/tilo-runtime" }
 collab-types = { path = "../../collab/collab-types" }
+# `tilo mcp` asks the host to open the record its agent acts in as a window.
+tilo-actions = { path = "../../collab/actions" }
+tilo-clock = { version = "0.1.0", path = "../../platform/tilo-clock" }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 # The workspace-hack's native feature set does not build for wasm32.
@@ -59,7 +62,6 @@ workspace-hack = { version = "0.1" }
 
 [dev-dependencies]
 tempfile.workspace = true
-tilo-clock = { version = "0.1.0", path = "../../platform/tilo-clock" }
 tilo-test-env = { path = "../../dev/test-env" }
 
 [[test]]

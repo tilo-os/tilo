@@ -80,6 +80,7 @@ async fn an_agents_computer_lists_the_workspace_and_writes_what_another_device_s
     let _laptop = participant::Participant::start(&hosted.relay, &root).await;
     let mut browser = Browser::open(&hosted, &browser_device, &host).await;
     let sheets = browser.create(SHEETS);
+    let desk = put_desk(&mut browser);
     browser.peer.barrier().unwrap().recv().unwrap().unwrap();
 
     // The agent's computer enters the workspace as a device of the person's,
@@ -90,20 +91,18 @@ async fn an_agents_computer_lists_the_workspace_and_writes_what_another_device_s
     ) else {
         panic!("a key names a person")
     };
-    let server = McpServer::new(
-        SessionActions::new(&agent.peer, agent.workspace, host.cert.device_public_key),
-        WORKSPACE.into(),
-        person,
-    )
-    .with_surface(Surface::Agent)
-    .with_agent_run("run-1", "Claude Code");
+    let actions = SessionActions::new(&agent.peer, agent.workspace, host.cert.device_public_key);
+    let server = McpServer::new(actions.clone(), WORKSPACE.into(), person.clone())
+        .with_surface(Surface::Agent)
+        .with_agent_run("run-1", "Claude Code");
 
     // The agent shows itself present in the workspace from the moment it
     // enters it, as `tilo mcp` does.
     let presence = mcp_presence::Presence::new(
         &agent.peer,
-        WORKSPACE.into(),
-        agent.workspace,
+        actions,
+        person,
+        (WORKSPACE.into(), agent.workspace),
         "Claude Code".into(),
     );
     presence.arrive();
@@ -150,7 +149,7 @@ async fn an_agents_computer_lists_the_workspace_and_writes_what_another_device_s
         .expect("the call names the record it worked in");
     assert_eq!(acted.app, SHEETS);
     assert_eq!(acted.record, sheets.record);
-    presence.called(&new_sheet, false, Some(acted));
+    presence.called(&new_sheet, false, Some(acted)).await;
 
     // The other device hears the agent present — as an agent, saying what it
     // does and in which record (the frame a desktop turns into a member of
@@ -160,6 +159,7 @@ async fn an_agents_computer_lists_the_workspace_and_writes_what_another_device_s
     let deadline = tilo_test_env::hang_deadline();
     let mut view: Option<collab_types::presence::ShellPresence> = None;
     let mut edited = false;
+    let mut shown = false;
     loop {
         for frame in heard(&mut browser) {
             if let collab_types::PeerPresencePayload::Shell(shell) = frame.payload
@@ -192,15 +192,19 @@ async fn an_agents_computer_lists_the_workspace_and_writes_what_another_device_s
                 edited = true;
             }
         }
+        // The workbook it works in is open on the workspace's desk, as a
+        // window of the person's, for every page to draw.
+        shown = shown || desk_windows(&mut browser, &desk, &sheets.record) > 0;
         let said = view
             .as_ref()
             .is_some_and(|view| view.activity.as_deref() == Some("Adding sheets"));
-        if edited && said {
+        if edited && said && shown {
             break;
         }
         assert!(
             Instant::now() < deadline,
-            "the agent's sheet and what it says it is doing never reached the browser"
+            "the agent's sheet ({edited}), its window ({shown}) and what it says it is doing \
+             ({said}) never all reached the browser"
         );
         tokio::time::sleep(Duration::from_millis(50)).await;
     }
@@ -217,6 +221,15 @@ async fn an_agents_computer_lists_the_workspace_and_writes_what_another_device_s
         record: sheets.record.clone(),
     };
     assert_eq!(view.focus(), Some((SHEETS, edited_record.short_digest())));
+
+    // Another call in the same workbook opens no second window of it.
+    presence.called(&new_sheet, false, server.acted()).await;
+    browser.peer.barrier().unwrap().recv().unwrap().unwrap();
+    assert_eq!(
+        desk_windows(&mut browser, &desk, &sheets.record),
+        1,
+        "one window shows the workbook"
+    );
 
     // And it leaves with the connection, rather than standing there.
     presence.leave();
@@ -381,4 +394,64 @@ async fn an_agent_runs_a_command_in_its_workspace_in_one_step() {
         );
         tokio::time::sleep(Duration::from_millis(50)).await;
     }
+}
+
+/// The workspace's shared desk as a page first writes it: one strip and no
+/// window yet.
+fn put_desk(browser: &mut Browser) -> DocumentRoute {
+    use tilo_desktop_model::{DesktopTree, Strip, StripId, Workspace, WorkspaceSlot};
+    let mut workspace = Workspace::new(WorkspaceSlot(1), "Workspace");
+    workspace.strips = vec![Strip {
+        id: StripId(10),
+        name: "Main".into(),
+        window_groups: Vec::new(),
+    }];
+    let desktop = tilo_desktop_model::ownership::SharedDesktop {
+        tree: DesktopTree {
+            workspaces: vec![workspace],
+            ..DesktopTree::default()
+        },
+        ..tilo_desktop_model::ownership::SharedDesktop::default()
+    };
+    let mut doc = automerge::AutoCommit::new();
+    tilo_desktop_model::shared_record::write(&mut doc, &desktop).unwrap();
+    doc.commit();
+    let route = DocumentRoute {
+        app_id: tilo_desktop_model::ownership::DESKTOP_APP.into(),
+        cluster_id: browser.cluster_id.clone(),
+        record: tilo_desktop_model::ownership::DESKTOP_RECORD.into(),
+    };
+    let bytes = doc.save();
+    browser
+        .peer
+        .publish(
+            route.clone(),
+            &collab_types::DocumentMutation::Snapshot(bytes.clone()),
+        )
+        .unwrap();
+    // The host never echoes a device's own change back to it.
+    browser
+        .documents
+        .entry(route.clone())
+        .or_default()
+        .push(([0; 32], bytes));
+    route
+}
+
+/// How many windows of the desk at `desk` show `record`, as the page has
+/// received it.
+fn desk_windows(browser: &mut Browser, desk: &DocumentRoute, record: &str) -> usize {
+    use tilo_automerge::ApplyIncoming as _;
+    browser.pump();
+    let mut doc = automerge::AutoCommit::new();
+    for (_, bytes) in browser.documents.get(desk).into_iter().flatten() {
+        doc.load_incoming(bytes).unwrap();
+    }
+    tilo_desktop_model::shared_record::read(&doc, None).map_or(0, |desktop| {
+        desktop
+            .records
+            .iter()
+            .filter(|(tab, shown)| shown == record && desktop.tree.tab(*tab).is_some())
+            .count()
+    })
 }

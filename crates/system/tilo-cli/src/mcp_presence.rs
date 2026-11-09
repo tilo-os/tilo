@@ -12,6 +12,11 @@
 //! every tool call, and restates it while the agent thinks, so an agent that
 //! idles between calls stays present; the frame that says the agent has left
 //! goes out when the connection ends.
+//!
+//! The record it acts in is open as a window on the workspace's desk before
+//! a frame names it: the host the agent acts through opens it there, as a
+//! window of the person's, so everyone in the workspace sees it as they see a
+//! colleague's, and following the agent brings that window forward.
 
 use std::sync::{Arc, Mutex, PoisonError, Weak};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -21,7 +26,14 @@ use collab_types::presence::{
     MAX_ACTIVITY_BYTES, Presence as Frame, ShellPresence, ShellWindow, user_color,
 };
 use serde_json::Value;
+use tilo_actions::InvocationId;
+use tilo_actions::remote::{
+    APPLICATION_OPEN_ACTION, APPLICATION_RESOURCE_PREFIX, ActionHost as _, Caller, InvokeArgument,
+    InvokeRequest, ReceiptStatus, application_action_target, application_record_target,
+    settle_with,
+};
 use tilo_browser_peer::PeerHandle;
+use tilo_browser_peer::session_actions::SessionActions;
 use tilo_relay_protocol::live::LiveRecord;
 use tilo_runtime::mcp::ActedRecord;
 
@@ -34,9 +46,18 @@ const KEEPALIVE: Duration = Duration::from_secs(1);
 /// person reads at a glance, where the roster draws it.
 const SHOWN_CHARS: usize = 64;
 
+/// Longest the agent waits for the host to open the record it acts in as a
+/// window before it says it is there anyway: a desktop then shows its app
+/// until the window arrives.
+const OPENING: tilo_clock::Duration = tilo_clock::Duration::from_secs(5);
+
 /// The agent `tilo mcp` serves, present in the workspace its device entered.
 pub struct Presence {
     peer: PeerHandle,
+    /// The host the agent acts through, which opens the windows it acts in.
+    actions: SessionActions,
+    /// Who asks it: the person the agent acts for.
+    caller: Caller,
     /// The workspace, as its presence frames name it.
     cluster: String,
     /// The workspace's number on this device's session.
@@ -62,9 +83,17 @@ struct Said {
 impl Presence {
     /// The agent's presence in the workspace `cluster` this device entered.
     #[must_use]
-    pub fn new(peer: &PeerHandle, cluster: String, workspace_id: u64, label: String) -> Arc<Self> {
+    pub fn new(
+        peer: &PeerHandle,
+        actions: SessionActions,
+        person: String,
+        (cluster, workspace_id): (String, u64),
+        label: String,
+    ) -> Arc<Self> {
         Arc::new(Self {
             peer: peer.clone(),
+            actions,
+            caller: Caller::local_person(person),
             colour: user_color(&label),
             cluster,
             workspace_id,
@@ -95,8 +124,9 @@ impl Presence {
 
     /// Say what the call `request` made is doing now, and the record it
     /// worked in (`acted`): the line the person reads under the agent's
-    /// face, and where following it brings them.
-    pub fn called(&self, request: &Value, failed: bool, acted: Option<ActedRecord>) {
+    /// face, and where following it brings them. A record it moved into is
+    /// opened as a window first, so the frame that names it finds it shown.
+    pub async fn called(&self, request: &Value, failed: bool, acted: Option<ActedRecord>) {
         let line = now_line(request, failed);
         let focus = acted.map(|worked| LiveRecord {
             app: worked.app,
@@ -104,6 +134,17 @@ impl Presence {
         });
         if line.is_none() && focus.is_none() {
             return;
+        }
+        let moved = focus.as_ref().filter(|focus| {
+            self.said
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .focus
+                .as_ref()
+                != Some(*focus)
+        });
+        if let Some(focus) = moved {
+            self.open(focus).await;
         }
         {
             let mut said = self.said.lock().unwrap_or_else(PoisonError::into_inner);
@@ -115,6 +156,24 @@ impl Presence {
             }
         }
         self.say();
+    }
+
+    /// Open `focus` as a window on the workspace's desk, asked of the host the
+    /// agent acts through ([`open_request`]), and wait while the host opens
+    /// it. Whether it opened is no matter to the agent's work: a record the
+    /// host cannot show is still where the agent acts.
+    async fn open(&self, focus: &LiveRecord) {
+        let request = open_request(&self.cluster, focus);
+        let invocation = request.invocation;
+        let Some(Ok(receipt)) = self.actions.invoke(&self.caller, request).await else {
+            return;
+        };
+        if matches!(receipt.status, ReceiptStatus::Accepted) {
+            let until = tilo_clock::Instant::now()
+                .checked_add(OPENING)
+                .unwrap_or_else(tilo_clock::Instant::now);
+            let _ = settle_with(&self.actions, &self.caller, invocation, None, until).await;
+        }
     }
 
     /// Say the agent has left, so the workspace drops it from the list
@@ -186,6 +245,34 @@ fn frame(
         selection: None,
         chat: None,
         reaction: None,
+    }
+}
+
+/// What opens the record `focus` names in workspace `cluster`: its app's
+/// `open` on that record, or on the app's own record when it names none.
+fn open_request(cluster: &str, focus: &LiveRecord) -> InvokeRequest {
+    let resource = format!("{APPLICATION_RESOURCE_PREFIX}{}", focus.app);
+    let target = if focus.record.is_empty() {
+        application_action_target(cluster, &focus.app, resource, APPLICATION_OPEN_ACTION)
+    } else {
+        application_record_target(
+            cluster,
+            &focus.app,
+            &focus.record,
+            resource,
+            APPLICATION_OPEN_ACTION,
+        )
+    };
+    InvokeRequest {
+        invocation: InvocationId::new(),
+        target,
+        argument: InvokeArgument::None,
+        context: None,
+        confirmation: None,
+        revision: None,
+        on_behalf_of: None,
+        wait_ms: None,
+        appearance: None,
     }
 }
 

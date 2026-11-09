@@ -121,19 +121,17 @@ fn open(
         .ok()
         .and_then(|bytes| bytes.try_into().ok())
         .ok_or("this computer's login names no person; log in again")?;
-    let server = McpServer::new(
-        SessionActions::new(&peer, workspace_id, host),
-        device.workspace.clone(),
-        person(user),
-    )
-    .with_surface(Surface::Agent)
-    .with_agent_run(run, device.agent.clone());
+    let actions = SessionActions::new(&peer, workspace_id, host);
+    let server = McpServer::new(actions.clone(), device.workspace.clone(), person(user))
+        .with_surface(Surface::Agent)
+        .with_agent_run(run, device.agent.clone());
     // The person's desktops see the agent present from the moment it enters
     // the workspace, not from its first action.
     let presence = mcp_presence::Presence::new(
         &peer,
-        device.workspace.clone(),
-        workspace_id,
+        actions,
+        person(user),
+        (device.workspace.clone(), workspace_id),
         device.agent.clone(),
     );
     presence.arrive();
@@ -259,9 +257,9 @@ fn show(session: &Arc<Session>, request: &Value, answer: &Value) {
         || answer.get("error").is_some();
     // The workspace sees the agent present, doing this and where, beside the
     // line this connection adds to the person's recent actions.
-    session
-        .presence
-        .called(request, failed, session.server.acted());
+    let said = Arc::clone(session);
+    let (call, acted) = (request.clone(), session.server.acted());
+    tokio::spawn(async move { said.presence.called(&call, failed, acted).await });
     let Some((title, resource)) = described(request) else {
         return;
     };

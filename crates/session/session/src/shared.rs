@@ -94,11 +94,7 @@ impl Shared {
             .map(|person| Place {
                 id: &person.id,
                 tab: person.tab,
-                app: person
-                    .screen
-                    .as_ref()
-                    .and_then(|screen| screen.windows.iter().find(|window| window.focused))
-                    .map(|window| window.app.as_str()),
+                app: person.followed_app(),
             })
             .collect();
         let step = follow.step(&places);

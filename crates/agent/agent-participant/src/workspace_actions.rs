@@ -68,7 +68,8 @@ use tilo_actions::remote::{
     APPLICATION_OPEN_ACTION, APPLICATION_RESOURCE_PREFIX, ActionHostError, Caller, CallerPrincipal,
     CataloguePage, CatalogueProvider, CatalogueQuery, CatalogueRow, Completer, Confirmation,
     InvocationReceipt, InvocationState, InvokeArgument, InvokeRequest, Pending, ReceiptStatus,
-    RemoteActionMessage, pending, provider_workspace, workspace_provider,
+    RemoteActionMessage, application_provider, application_provider_record, pending,
+    provider_workspace, workspace_provider,
 };
 use tilo_actions::{
     ActionFailure, ActionOutput, ConfirmationPolicy, InvocationId, InvocationUpdate, PROMPTED_PARAM,
@@ -1667,6 +1668,9 @@ impl Worker {
         {
             return Ok(output);
         }
+        if let Some((named, app)) = application_provider(&request.target.provider) {
+            return self.show_on_desk(workspace_id, caller, named, app, &request.target);
+        }
         // Acting on a record waits for that record's keys and no other's;
         // opening an app on a new record needs only the workspace.
         let named = record_of(&request.target.provider, "");
@@ -1781,6 +1785,79 @@ impl Worker {
             .ok_or(Outcome::Rejected(ActionHostError::UnknownAction))?
             .to_owned();
         self.open_new(workspace_id, named, &app)
+    }
+
+    /// Show the record an application's `open` names (its own record when it names none) as a
+    /// window on the workspace's shared desktop, opened by `caller`: what a device of the owner's
+    /// that draws no desk asks for the record it works in (an agent's `tilo mcp`), so every member
+    /// sees it open as they see a colleague's window, without anyone's view moving to it
+    /// ([`crate::desk`]). A record a window already shows is left where the people put it.
+    #[allow(
+        clippy::result_large_err,
+        reason = "the outcome becomes the receipt the host records"
+    )]
+    fn show_on_desk(
+        &mut self,
+        workspace_id: u64,
+        caller: &Caller,
+        named: &str,
+        app: &str,
+        target: &tilo_actions::remote::RemoteActionTarget,
+    ) -> Result<ActionOutput, Outcome> {
+        let unknown = || Outcome::Rejected(ActionHostError::UnknownAction);
+        let CallerPrincipal::Person(person) = caller.principal() else {
+            return Err(unknown());
+        };
+        if !self.serves_as_owner(caller)
+            || target.address.action != APPLICATION_OPEN_ACTION
+            || tilo_relay_protocol::room_workspace_id(named).ok() != Some(workspace_id)
+        {
+            return Err(unknown());
+        }
+        let title = self
+            .catalogue
+            .get(app)
+            .map(|definition| definition.title().to_owned())
+            .ok_or_else(unknown)?;
+        let desk = crate::participant::desktop_route(named);
+        let state = self
+            .refresh(
+                workspace_id,
+                Needs::Act {
+                    app_id: &desk.app_id,
+                    record: &desk.record,
+                },
+            )
+            .map_err(Outcome::Rejected)?;
+        let route = DocumentRoute {
+            app_id: app.to_owned(),
+            cluster_id: named.to_owned(),
+            record: application_provider_record(&target.provider)
+                .unwrap_or_default()
+                .to_owned(),
+        };
+        if !state.records.contains_key(&route) {
+            return Err(Outcome::Rejected(ActionHostError::Refused {
+                reason: format!("this workspace has no {app} record {}", route.record),
+            }));
+        }
+        let workspace = self
+            .workspaces
+            .get_mut(&workspace_id)
+            .ok_or_else(|| commit_failed("the workspace was not joined".into(), true))?;
+        let view = crate::desk::View {
+            app_id: app,
+            title: &title,
+            record: &route.record,
+            beside: None,
+        };
+        let Some(change) = crate::desk::place_view(workspace.desktop.doc(), person, &view) else {
+            return Ok(ActionOutput::default());
+        };
+        workspace.desktop.receive(change.clone());
+        self.commit(workspace_id, &desk, &DocumentMutation::Incremental(change))
+            .map_err(|reason| commit_failed(reason, true))?;
+        Ok(ActionOutput::default())
     }
 
     /// Commit what the owner's action changed, each record on its own
