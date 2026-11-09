@@ -20677,6 +20677,7 @@ dependencies = [
  "iroh-base",
  "iroh-relay",
  "launcher",
+ "legacy-vm",
  "libc",
  "neighbour-wire",
  "package-store",

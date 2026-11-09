@@ -298,31 +298,51 @@ pub struct AgentOptions {
     /// Where the workspaces' Terminal sessions run their commands on this
     /// host ([`host_shells`]); `None` leaves them to the devices running
     /// them.
-    pub shell: Option<Arc<dyn WorkspaceShell>>,
+    pub shell: Option<Arc<HostShells>>,
 }
 
-/// The shells of the workspaces this host serves, their files under
-/// `state`, their Linux programs in the hosted VMs the host's environment
-/// names (`TILO_HOSTED_VM_SOCKET`, `TILO_HOSTED_ACCOUNT`,
-/// `TILO_HOSTED_VM_SIZE`, `TILO_HOSTED_PLANS`); without them, ush's own
+/// The shells of the workspaces this host serves.
+///
+/// With VM hosts (a placer, [`crate::placed_shells::PLACER_ENV`]) a
+/// workspace's shell runs on the member device that holds its VM
+/// ([`PlacedShells`](crate::placed_shells::PlacedShells)). Without, it runs
+/// here, its files under `state`, its Linux programs in the hosted VMs the
+/// host's environment names (`TILO_HOSTED_VM_SOCKET`, `TILO_HOSTED_ACCOUNT`,
+/// `TILO_HOSTED_VM_SIZE`, `TILO_HOSTED_PLANS`), and without those, ush's own
 /// commands only.
-#[must_use]
-pub fn host_shells(state: PathBuf) -> Arc<dyn WorkspaceShell> {
-    Arc::new(HostShells(ush::workspace_shell::WorkspaceShells::from_env(
-        state,
-    )))
+///
+/// # Errors
+///
+/// A placer is named, but its members or account are not usable.
+pub fn host_shells(state: PathBuf) -> Result<Arc<HostShells>, String> {
+    Ok(Arc::new(
+        match crate::placed_shells::PlacedShells::from_env()? {
+            Some(placed) => HostShells::Placed(placed),
+            None => HostShells::Here(ush::workspace_shell::WorkspaceShells::from_env(state)),
+        },
+    ))
 }
 
 /// What a host lends its workspaces' records service: a model that looks
 /// over feedback reviews, and where Terminal sessions run their commands.
-type Lent = (
-    Option<Arc<dyn FeedbackReviewer>>,
-    Option<Arc<dyn WorkspaceShell>>,
-);
+type Lent = (Option<Arc<dyn FeedbackReviewer>>, Option<Arc<HostShells>>);
 
-/// ush's workspace shells, as the workspace actions run a session's
-/// commands.
-pub struct HostShells(pub ush::workspace_shell::WorkspaceShells);
+/// Where the workspace actions run a session's commands.
+pub enum HostShells {
+    /// Here: ush's workspace shells, in this process.
+    Here(ush::workspace_shell::WorkspaceShells),
+    /// On the member device holding the workspace's VM.
+    Placed(crate::placed_shells::PlacedShells),
+}
+
+impl HostShells {
+    /// Ask VM hosts' members, if any, as `relay`'s own device.
+    fn serve_from(&self, relay: &Relay) {
+        if let (Self::Placed(placed), Some(workspaces)) = (self, relay.workspaces()) {
+            placed.ask_from(workspaces.plane(), relay.endpoint());
+        }
+    }
+}
 
 impl WorkspaceShell for HostShells {
     fn run(
@@ -332,8 +352,11 @@ impl WorkspaceShell for HostShells {
         command: &str,
         agent: bool,
     ) -> Result<ShellRan, String> {
-        let ran = self
-            .0
+        let shells = match self {
+            Self::Here(shells) => shells,
+            Self::Placed(placed) => return placed.run(workspace, session, command, agent),
+        };
+        let ran = shells
             .run(workspace, session, command, agent)
             .map_err(|error| error.to_string())?;
         Ok(ShellRan {
@@ -505,7 +528,7 @@ pub async fn start_serving_records(
     identity: RelayIdentity,
     catalogue: Option<CatalogueFactory>,
     feedback_reviewer: Option<Arc<dyn FeedbackReviewer>>,
-    shell: Option<Arc<dyn WorkspaceShell>>,
+    shell: Option<Arc<HostShells>>,
 ) -> Result<Relay, RelayError> {
     let host_cert = identity.device_cert.clone();
     let catalogue = catalogue.unwrap_or_else(|| Arc::new(AppCatalogue::native));
@@ -531,6 +554,10 @@ fn attach_records(
     web_entry: Option<String>,
     (feedback_reviewer, shell): Lent,
 ) -> Result<(), RelayError> {
+    if let Some(shell) = &shell {
+        shell.serve_from(relay);
+    }
+    let shell = shell.map(|shell| shell as Arc<dyn WorkspaceShell>);
     actions
         .attach(Arc::new(RelayRecordsLink {
             shell,

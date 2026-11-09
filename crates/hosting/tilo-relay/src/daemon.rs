@@ -728,6 +728,12 @@ impl Relay {
         self.endpoint.addr()
     }
 
+    /// The iroh endpoint this relay's device dials from.
+    #[must_use]
+    pub fn endpoint(&self) -> Endpoint {
+        self.endpoint.clone()
+    }
+
     /// The compactor keeping this relay's retained document channels short.
     pub fn compactor(&self) -> &crate::compaction::Compactor {
         &self.web.relay.compactor

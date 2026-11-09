@@ -301,7 +301,10 @@ pub async fn start_relay_lending(
     #[cfg(feature = "agents")]
     if let Some(mut options) = options {
         options.feedback_reviewer = lent.feedback_reviewer;
-        options.shell = Some(tilo_relay::agents::host_shells(state_root.join("shells")));
+        options.shell = Some(
+            tilo_relay::agents::host_shells(state_root.join("shells"))
+                .map_err(anyhow::Error::msg)?,
+        );
         let (relay, agents) = tilo_relay::agents::start(cfg, identity, options)
             .await
             .context("start the relay with agents")?;
@@ -318,7 +321,10 @@ pub async fn start_relay_lending(
             identity,
             None,
             lent.feedback_reviewer,
-            Some(tilo_relay::agents::host_shells(state_root.join("shells"))),
+            Some(
+                tilo_relay::agents::host_shells(state_root.join("shells"))
+                    .map_err(anyhow::Error::msg)?,
+            ),
         )
         .await
         .context("start the relay serving its workspaces' records")?;

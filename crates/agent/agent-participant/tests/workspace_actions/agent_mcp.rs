@@ -296,7 +296,7 @@ async fn an_agent_runs_a_command_in_its_workspace_in_one_step() {
         &host,
         state.path(),
         Options {
-            shell: Some(tilo_relay::agents::host_shells(shells.clone())),
+            shell: Some(tilo_relay::agents::host_shells(shells.clone()).unwrap()),
             ..Options::offering(common::catalogue, ModelChoice::Scripted)
         },
     )

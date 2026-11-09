@@ -52,7 +52,7 @@ pub struct Options {
     /// The reviewer a host lends its workspaces' reporters.
     pub feedback_reviewer: Option<Arc<dyn FeedbackReviewer>>,
     /// Where the host runs its workspaces' Terminal sessions.
-    pub shell: Option<Arc<dyn tilo_agent_participant::workspace_actions::WorkspaceShell>>,
+    pub shell: Option<Arc<tilo_relay::agents::HostShells>>,
 }
 
 impl Default for Options {
