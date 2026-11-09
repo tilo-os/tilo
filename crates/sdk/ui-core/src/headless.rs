@@ -404,6 +404,10 @@ pub struct FrameHarness {
     /// The harness stands in for the desktop's window bar, hosting the app's slots, search and
     /// History and painting it over every capture.
     window_bar: bool,
+    /// The app's frame holds the window's bar in a header row of its own, as a window's frame
+    /// hosts one: the row fills the window and the window's controls stand at its trailing end,
+    /// so the window shows one bar.
+    row_holds: bool,
     /// The window bar's search over the app's widgets, painted in the bar
     /// ([`Self::search_in_window`]).
     window_search: Box<crate::widget::WindowSearch>,
@@ -1523,6 +1527,7 @@ impl FrameHarness {
             drawn_permissions: crate::permissions::shared_revision(),
             child_node: NodeId::from(0usize),
             window_bar: false,
+            row_holds: false,
             window_search: Box::new(crate::widget::WindowSearch::new()),
             slot_row: None,
             window_app: None,

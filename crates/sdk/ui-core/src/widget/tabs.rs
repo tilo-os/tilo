@@ -14,6 +14,7 @@ use crate::widget::TaffyTreeExt;
 use crate::widget::Widget;
 use crate::widget::hover_intent::{HoverIntent, Item as IntentItem, Sample as IntentSample};
 use crate::widget::window_header::HistoryControl;
+use crate::widget::window_toolbar_row::MIN_LOCATION_PX;
 use std::collections::{HashMap, HashSet};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
@@ -426,6 +427,11 @@ pub struct TabBar {
     closable: bool,
     /// Whether the strip offers a new-tab control.
     new_tab: bool,
+    /// How wide the new-tab control's words stand, measured for the text scale it was measured
+    /// at (`None` until a layout has measured them): where the bar has room, it says them.
+    new_tab_words: Option<(f32, f64)>,
+    /// The strip shows the new-tab control with its words, the bar having room for them.
+    new_tab_labelled: bool,
     /// Per-tab content marks, keyed by tab id (a sidecar like the others).
     marks: HashMap<u64, TabMark>,
     /// When each busy tab became busy: its arc turns for [`BUSY_TURNING`].
@@ -621,6 +627,8 @@ impl TabBar {
             show_maximize: true,
             closable: true,
             new_tab: true,
+            new_tab_words: None,
+            new_tab_labelled: false,
             marks: HashMap::new(),
             busy_since: HashMap::new(),
             busy_drawn: None,
@@ -1183,6 +1191,19 @@ impl TabBar {
                 out.push(control);
             }
         };
+        // The strip's own door to another application, after the tabs: a control of the bar as
+        // much as the app's slots are, and read with them.
+        if self.new_tab_rect.area() > 0.0 {
+            let control = BarControl::new("new-tab", "tab-new", self.new_tab_rect)
+                .named(NEW_TAB.to_owned())
+                .icon(Some(icons::Icon::Plus.name().to_owned()))
+                .words(self.new_tab_words.map_or(0.0, |(_, words)| words));
+            push(if self.new_tab_labelled {
+                control.labelled()
+            } else {
+                control
+            });
+        }
         if let Some(toolbar) = self.active_toolbar() {
             let slots = self.toolbar_row.slots();
             spare = slots.spare;
@@ -3793,6 +3814,10 @@ const TOOLBAR_LEAD_GAP: f64 = crate::tokens::Spacing::BASE.s2 as f64;
 /// Square at pill height so the "+" chip reads as part of the pill row.
 pub const NEW_TAB_CHIP_PX: f64 = TAB_BAR_HEIGHT - 2.0 * TAB_PILL_INSET_Y;
 
+/// What the strip's new-tab control says for itself: its words where the bar has room for
+/// them, and what it is called to assistive technology everywhere.
+const NEW_TAB: &str = "New tab";
+
 const PILL_GAP: f64 = 6.0;
 /// Text inset on either end of a pill; the leading glyph starts here too.
 const PILL_PAD_X: f64 = 12.0;
@@ -4080,6 +4105,15 @@ impl Widget for TabBar {
         self.touch();
         self.reduce_motion = theme.reduce_motion || self.host_reduced_motion;
         self.motion = EffectiveMotion::new(theme.tokens.motion, self.reduce_motion);
+        // The room the new-tab control's words need, measured once per text scale: a bar that
+        // has room says what the control does, as it does for every other control.
+        if self.new_tab && self.new_tab_words.map(|(scale, _)| scale) != Some(theme.text_scale) {
+            let words = crate::text_render::with_layout_renderer(theme.text_scale, |text| {
+                super::window_toolbar_row::labelled_face(Rect::ZERO, NEW_TAB)
+                    .intrinsic_width(text, theme)
+            });
+            self.new_tab_words = Some((theme.text_scale, words));
+        }
         self.min_pointer_target = f64::from(theme.tokens.metrics.min_pointer_target);
         // A compact window says its app's notice in a strip under the bar's
         // rows: the bar measures it for the width it last had.
@@ -4282,12 +4316,27 @@ impl Widget for TabBar {
         // `x` is the strip's write head; the "+" chip is suppressed once pills
         // fill the bar. A window's title stands beside it too: one window is
         // still a place a person opens another application.
-        let plus_x1 = x + NEW_TAB_CHIP_PX;
-        self.new_tab_rect = if self.new_tab && plus_x1 <= row.x1 {
-            Rect::new(x, pill_y0, plus_x1, pill_y1)
+        let icon_x1 = x + NEW_TAB_CHIP_PX;
+        self.new_tab_rect = if self.new_tab && icon_x1 <= row.x1 {
+            Rect::new(x, pill_y0, icon_x1, pill_y1)
         } else {
             Rect::ZERO
         };
+        // The control says what it does where the row has room for its words and the location
+        // keeps the room it works at: a glyph nobody can name only where the room is not there.
+        self.new_tab_labelled = false;
+        if self.new_tab_rect.area() > 0.0
+            && let Some((_, words)) = self.new_tab_words
+        {
+            let words_x1 = x + words.max(NEW_TAB_CHIP_PX);
+            if words_x1 <= row.x1
+                && row.x1 - words_x1 >= MIN_LOCATION_PX
+                && words_x1 > self.new_tab_rect.x1
+            {
+                self.new_tab_rect.x1 = words_x1;
+                self.new_tab_labelled = true;
+            }
+        }
         self.lay_out_toolbar_row();
     }
     /// An undrawn bar repaints, and so does one whose own state moved since
@@ -4592,7 +4641,7 @@ impl Widget for TabBar {
         tab_children.extend(self.dev_build_access());
         tab_children.extend(self.shared_access());
         if self.new_tab {
-            let new_tab = AccessNode::new(Role::Button).with_name("New tab");
+            let new_tab = AccessNode::new(Role::Button).with_name(NEW_TAB);
             let new_tab = if self.new_tab_rect.area() > 0.0 {
                 new_tab.with_bounds(self.new_tab_rect)
             } else {
@@ -5151,12 +5200,17 @@ impl TabBar {
         if !(self.new_tab_rect.area() > 0.0 && self.pending_drag.is_none()) {
             return;
         }
-        // The shared icon button: bare at rest so it never competes with the
-        // active tab, a lift of the bar under the pointer.
-        let face =
-            crate::widget::ButtonFace::icon_only(self.new_tab_rect, icons::Icon::Plus, "New tab")
+        // The shared small button: bare at rest so it never competes with the
+        // active tab, a lift of the bar under the pointer. Where the bar has room for its words
+        // it says them, as every control of the bar does.
+        let face = if self.new_tab_labelled {
+            super::window_toolbar_row::labelled_face(self.new_tab_rect, NEW_TAB)
+                .hovered(self.hover_new_tab)
+        } else {
+            crate::widget::ButtonFace::icon_only(self.new_tab_rect, icons::Icon::Plus, NEW_TAB)
                 .control_size(crate::widget::ControlSize::Small)
-                .hovered(self.hover_new_tab);
+                .hovered(self.hover_new_tab)
+        };
         crate::widget::Button::paint(scene, transform, tr, theme, &face);
     }
 
@@ -9308,6 +9362,55 @@ mod tests {
         lay_out_at_width_with(&mut tabbed, 900.0, &theme);
         assert!((tabbed.bar_height() - TAB_BAR_HEIGHT).abs() < f64::EPSILON);
         assert!(!tabbed.toolbar_hit(location.center()));
+    }
+
+    /// The strip's own door to another application is a control of the bar as much as the
+    /// app's slots are: the bar reads it, it says what it does where the bar has room for its
+    /// words, and it stands as its glyph only where the room is not there.
+    #[test]
+    fn the_new_tab_control_says_what_it_does_where_the_bar_has_room() {
+        let theme = crate::theme::Theme::dark().with_reduce_motion(true);
+        let bar = |width: f64| {
+            let mut b = TabBar::new("g1", vec![TabDescriptor::new(1, "Chat")], 1);
+            b.set_window_controls(true);
+            lay_out_at_width_with(&mut b, width, &theme);
+            b
+        };
+        let wide = bar(1200.0);
+        let chip = wide
+            .bar_layout()
+            .controls
+            .into_iter()
+            .find(|control| control.slot == "new-tab")
+            .expect("the bar reads the strip's own door");
+        assert_eq!(chip.name, "New tab");
+        assert!(chip.labelled, "a bar with room says what the control does");
+        assert!(
+            chip.rect[2] >= chip.words - 0.5 && chip.words > NEW_TAB_CHIP_PX,
+            "the control stands as wide as its words: {chip:?}"
+        );
+
+        // A bar without the room says nothing it cannot say whole: its glyph stands alone.
+        let mut narrow = TabBar::new(
+            "g1",
+            vec![
+                TabDescriptor::new(1, "A conversation about the release"),
+                TabDescriptor::new(2, "Another conversation"),
+            ],
+            1,
+        );
+        narrow.set_window_controls(true);
+        lay_out_at_width_with(&mut narrow, 320.0, &theme);
+        let chip = narrow
+            .bar_layout()
+            .controls
+            .into_iter()
+            .find(|control| control.slot == "new-tab")
+            .expect("the bar reads the strip's own door");
+        assert!(
+            !chip.labelled,
+            "a bar without room for the words keeps the glyph: {chip:?}"
+        );
     }
 
     /// A window with a single tab still offers the button that opens another

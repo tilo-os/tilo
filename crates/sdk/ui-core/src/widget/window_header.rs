@@ -184,6 +184,13 @@ pub trait WindowHeader {
     fn window_bar_slot(&self) -> Option<WindowBarSlot> {
         None
     }
+
+    /// The height of the header row this widget draws at the window's top, while it draws one
+    /// of its own: `0.0` draws none. A window shows one bar, so a row under the window's bar is
+    /// a second one.
+    fn header_row_height(&self) -> f64 {
+        0.0
+    }
 }
 
 /// The window's bar, as the host offers it to a header row.
@@ -232,6 +239,18 @@ pub(crate) fn offer_window_bar(root: &mut dyn Widget, bar: Option<WindowBar>) ->
     root.children_mut()
         .into_iter()
         .any(|child| offer_window_bar(child, bar))
+}
+
+/// The height of the header row the first header row in `root`'s tree draws at the window's
+/// top, `0.0` while none draws one.
+pub(crate) fn header_row_height(root: &dyn Widget) -> f64 {
+    if let Some(header) = super::capability::capability::<dyn WindowHeader>(root) {
+        return header.header_row_height();
+    }
+    root.children()
+        .into_iter()
+        .map(header_row_height)
+        .fold(0.0, f64::max)
 }
 
 /// The slot of the first header row in `root`'s tree that holds the bar.

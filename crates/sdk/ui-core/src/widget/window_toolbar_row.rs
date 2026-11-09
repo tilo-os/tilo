@@ -63,12 +63,13 @@ use layout::{LocationForms, MeasureKey, Measured, Slot, Slots, ViewsMeasure, loc
 #[cfg(test)]
 use location_label::edited_word;
 use location_label::{LocationLabel, trailing_word};
+pub(crate) use paint::labelled_face;
 #[cfg(test)]
 pub(crate) use paint::location_shown;
+use paint::picker_width;
 #[cfg(test)]
 use paint::shows_on;
 pub(crate) use paint::{LocationLift, PickerText, paint_picker};
-use paint::{labelled_face, picker_width};
 
 /// Action targets of the slots, as assistive technology and automation
 /// address them.
@@ -96,7 +97,7 @@ const SECTION_GAP: f64 = crate::tokens::Spacing::BASE.s2 as f64;
 /// The location's leading icon: a control glyph.
 const LOCATION_ICON_PX: f64 = crate::tokens::Metrics::BASE.icon_control as f64;
 /// A location narrower than this is not shown: the bar keeps its buttons.
-const MIN_LOCATION_PX: f64 = crate::tokens::Metrics::BASE.location_min_width as f64;
+pub(crate) const MIN_LOCATION_PX: f64 = crate::tokens::Metrics::BASE.location_min_width as f64;
 /// Actions move into the overflow menu, last first, while the location
 /// would be narrower than this.
 const COMFORTABLE_LOCATION_PX: f64 = crate::tokens::Metrics::BASE.location_comfortable_width as f64;

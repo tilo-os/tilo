@@ -79,6 +79,12 @@ impl WindowHeader for NavShell {
         true
     }
 
+    /// The row the shell draws at the window's top, while it draws one: the window's bar holds
+    /// it while it can, so a row under the bar is a second one.
+    fn header_row_height(&self) -> f64 {
+        self.geometry.header_height
+    }
+
     fn window_bar_slot(&self) -> Option<crate::widget::WindowBarSlot> {
         let g = &self.geometry;
         (g.window_controls.width() > 0.0).then(|| crate::widget::WindowBarSlot {

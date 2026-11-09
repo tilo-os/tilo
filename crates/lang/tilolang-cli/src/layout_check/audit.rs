@@ -99,10 +99,14 @@ pub enum Kind {
     /// A selection lift a list painted across the space around what its row shows: the person's
     /// choice filled edge to edge, gutters and all, where a row paints it around its content.
     SelectionBleed,
+    /// A window that shows its bar and, under it, a second header row of its own: two stacked
+    /// header rows where one bar carries the app's title, navigation and actions, and the
+    /// window's controls stand at its end.
+    StackedHeaderRows,
 }
 
 impl Kind {
-    pub const ALL: [Self; 31] = [
+    pub const ALL: [Self; 32] = [
         Self::Overflow,
         Self::ClippedText,
         Self::Overlap,
@@ -134,6 +138,7 @@ impl Kind {
         Self::IconOnlyBarAction,
         Self::PlaceholderPane,
         Self::SelectionBleed,
+        Self::StackedHeaderRows,
     ];
 
     pub fn name(self) -> &'static str {
@@ -169,6 +174,7 @@ impl Kind {
             Self::IconOnlyBarAction => "icon-only-bar-action",
             Self::PlaceholderPane => "placeholder-pane",
             Self::SelectionBleed => "selection-bleed",
+            Self::StackedHeaderRows => "stacked-header-rows",
         }
     }
 }
@@ -1364,16 +1370,28 @@ impl Walk<'_> {
 /// the app's.
 const BAR: &str = "WindowBar";
 
+/// The slot of the strip's own control that opens another application.
+const NEW_TAB: &str = "new-tab";
+
 /// What is wrong with one window's bar as it lays itself out across the window: a control it
 /// shows twice, and an action that asks for its words standing as its icon alone while the bar
 /// has room for those words.
 pub fn bar(layout: &ui::window_toolbar::BarLayout) -> Vec<Problem> {
     let mut out = Vec::new();
     for (index, control) in layout.controls.iter().enumerate() {
+        // The strip's own door to another application stands before the app's slots and says
+        // what it opens: it is no copy of an action of the app's, whatever glyph both wear.
+        if control.slot == NEW_TAB {
+            continue;
+        }
         let Some(later) = layout.controls.get(index.saturating_add(1)..) else {
             continue;
         };
-        let Some(second) = later.iter().find(|second| same_control(control, second)) else {
+        let Some(second) = later
+            .iter()
+            .filter(|second| second.slot != NEW_TAB)
+            .find(|second| same_control(control, second))
+        else {
             continue;
         };
         let what = |control: &ui::window_toolbar::BarControl| {
@@ -1425,6 +1443,26 @@ pub fn bar(layout: &ui::window_toolbar::BarLayout) -> Vec<Problem> {
         });
     }
     out
+}
+
+/// What is wrong with a window that shows its bar and, under it, a second header row of its
+/// own: one bar per window, the app's title, navigation, actions and catch-up standing in it and
+/// the window's controls at its end.
+pub fn stacked_header_rows(bar_height: f64, header_row: f64) -> Vec<Problem> {
+    if bar_height <= EPSILON || header_row <= EPSILON {
+        return Vec::new();
+    }
+    vec![Problem {
+        kind: Kind::StackedHeaderRows,
+        keys: Vec::new(),
+        widget: SHELL.to_owned(),
+        id: None,
+        detail: format!(
+            "the window shows a bar {bar_height:.0}px tall and, under it, a header row of its \
+             own {header_row:.0}px tall: one bar per window, with the app's title, navigation \
+             and actions standing in it and the window's controls at its trailing end",
+        ),
+    }]
 }
 
 /// Whether one bar shows `a` and `b` as the same control: the same action under two ids, or two
@@ -2815,6 +2853,28 @@ mod tests {
             .into_iter()
             .map(|problem| problem.kind)
             .collect()
+    }
+
+    /// A window shows one bar: a header row of the app's under the bar is a second row, and the
+    /// bar is where the app's title, navigation and actions stand.
+    #[test]
+    fn a_header_row_under_the_bar_is_a_second_row() {
+        let found = super::stacked_header_rows(44.0, 56.0);
+        assert_eq!(found.len(), 1, "the bar and the row under it are two rows");
+        assert_eq!(found[0].kind, Kind::StackedHeaderRows);
+        assert!(
+            found[0].detail.contains("44px") && found[0].detail.contains("56px"),
+            "the finding says both heights: {}",
+            found[0].detail
+        );
+        assert!(
+            super::stacked_header_rows(0.0, 56.0).is_empty(),
+            "a row holding the bar leaves no row under it"
+        );
+        assert!(
+            super::stacked_header_rows(44.0, 0.0).is_empty(),
+            "an app drawing no row of its own stacks nothing under the bar"
+        );
     }
 
     /// One bar shows each control once: the same action under two ids, or two controls one glyph

@@ -588,7 +588,7 @@ pub(crate) fn location_shown<'a>(
 /// A labelled leading action's text button in `rect`, saying `name`
 /// ([`crate::window_toolbar::ToolbarAction::labelled`]): the bar's plain
 /// face, at the size of its icon buttons.
-pub(super) fn labelled_face(rect: Rect, name: &str) -> crate::widget::ButtonFace<'_> {
+pub(crate) fn labelled_face(rect: Rect, name: &str) -> crate::widget::ButtonFace<'_> {
     crate::widget::ButtonFace::new(rect, name)
         .role(crate::widget::ButtonRole::Plain)
         .control_size(crate::widget::ControlSize::Small)

@@ -16,9 +16,9 @@ use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
 
 use super::FrameHarness;
-#[cfg(test)]
 use crate::widget::tabs::TAB_BAR_HEIGHT;
-use crate::widget::{TabBar, TabDescriptor, Widget, WindowSearchRequest};
+use crate::widget::window_controls::{ControlsState, WindowControls};
+use crate::widget::{TabBar, TabDescriptor, Widget, WindowBar, WindowSearchRequest};
 
 /// The one tab the stand-in window shows.
 const TAB: u64 = 1;
@@ -33,6 +33,10 @@ impl FrameHarness {
     /// History in the window's bar, its frame under the bar. The window
     /// keeps the size it had; the app gets the part under the bar, and a
     /// capture (`super::write_capture`) names the whole window.
+    ///
+    /// A header row that cannot stand as slots (it holds a catch-up, a popover) is the window's
+    /// bar instead, as a window's frame hosts it: the row fills the window and the window's
+    /// controls stand at its trailing end ([`Self::row_holds_bar`]).
     pub fn present_in_window_bar(&mut self) {
         self.invalidate_local();
         if self.window_bar {
@@ -45,12 +49,70 @@ impl FrameHarness {
             history.set_open_button(false);
             history.set_window_presents(true);
         }
-        crate::widget::window_header::offer_window_search(self.root.as_mut(), true);
-        self.invalidate_layout_tree();
+        // The bar the frame offers its content's header row, and whether the row holds it: a
+        // row that does fills the window, one that does not leaves the bar its band above.
+        let bar = self.window_bar_offer();
+        crate::widget::window_header::offer_window_bar(self.root.as_mut(), Some(bar));
+        self.lay_out_the_window();
+        let slot = crate::widget::window_header::window_bar_slot(self.root.as_ref());
+        self.row_holds = slot.is_some() && self.window_header_row_height() > 0.0;
+        // A row holding the bar carries the search the app keeps in it; a bar over the frame
+        // presents the window's own.
+        crate::widget::window_header::offer_window_search(self.root.as_mut(), !self.row_holds);
+        self.lay_out_the_window();
         let frame = self.content_viewport(self.viewport);
         if let Err(error) = self.resize(frame) {
             tracing::warn!(%error, "window bar: the frame under it did not lay out");
         }
+    }
+
+    /// Lay the app's frame out over the whole window, whatever size the window keeps: what the
+    /// bar or the header row was just offered changes the frame's structure.
+    fn lay_out_the_window(&mut self) {
+        self.invalidate_layout_tree();
+        self.invalidate_local();
+        if let Err(error) = self.try_relayout() {
+            tracing::warn!(%error, "window bar: the frame did not lay out");
+        }
+    }
+
+    /// The window's bar as the frame offers it to the content's header row: the room the
+    /// window's controls take at its trailing end, shown now, listing nothing else.
+    fn window_bar_offer(&self) -> WindowBar {
+        let width = f64::from(self.viewport.0);
+        let row = Rect::new(0.0, 0.0, width, TAB_BAR_HEIGHT);
+        WindowBar {
+            controls_width: WindowControls::lay_out(row).pill.width(),
+            revealed: true,
+            top_inset: 0.0,
+            lists_actions: false,
+        }
+    }
+
+    /// Whether the app's frame holds the window's bar in a header row of its own, rather than
+    /// standing under a bar of the window's.
+    #[must_use]
+    pub fn row_holds_bar(&self) -> bool {
+        self.row_holds
+    }
+
+    /// Where the content's header row stands and where the window's controls go while the row
+    /// holds the bar.
+    pub(super) fn row_bar_slot(&self) -> Option<crate::widget::WindowBarSlot> {
+        self.row_holds
+            .then(|| crate::widget::window_header::window_bar_slot(self.root.as_ref()))
+            .flatten()
+    }
+
+    /// The height of the header row the app's frame draws of its own under the window's bar: a
+    /// window shows one bar, so a row under it is a second one. `0.0` while the frame holds the
+    /// bar itself.
+    #[must_use]
+    pub fn window_header_row_height(&self) -> f64 {
+        if self.row_holds {
+            return 0.0;
+        }
+        crate::widget::window_header::header_row_height(self.root.as_ref())
     }
 
     /// Whether the harness draws the desktop's window bar over the app.
@@ -406,8 +468,12 @@ impl FrameHarness {
     }
 
     /// The bar's height in whole logical pixels across a window `width`
-    /// wide: its row, and a compact window's notice strip under it.
+    /// wide: its row, and a compact window's notice strip under it. None while the app's frame
+    /// holds the bar in a header row of its own: the row is the bar.
     pub(super) fn window_bar_height_px(&self, width: u32) -> u32 {
+        if self.row_holds {
+            return 0;
+        }
         let height = self.window_bar(f64::from(width)).bar_height().ceil();
         // A bar is a row or two and a strip tall, far inside `u32`.
         #[allow(
@@ -446,7 +512,60 @@ impl FrameHarness {
                 controls: Vec::new(),
             };
         }
+        // A row holding the bar is the app's own: its slots are read in the frame, and the bar
+        // shows the window's controls at the row's trailing end.
+        if self.row_holds {
+            return crate::window_toolbar::BarLayout {
+                spare: 0.0,
+                controls: self
+                    .row_bar_slot()
+                    .map(|slot| {
+                        self.row_controls(slot)
+                            .iter()
+                            .map(|(control, rect)| {
+                                let icon = match control {
+                                    crate::widget::window_controls::WindowControl::Minimize => {
+                                        crate::icons::Icon::Minus
+                                    }
+                                    crate::widget::window_controls::WindowControl::Maximize => {
+                                        crate::icons::Icon::Maximize2
+                                    }
+                                    crate::widget::window_controls::WindowControl::Close => {
+                                        crate::icons::Icon::X
+                                    }
+                                };
+                                crate::window_toolbar::BarControl::new(
+                                    match control {
+                                        crate::widget::window_controls::WindowControl::Minimize => {
+                                            "minimize"
+                                        }
+                                        crate::widget::window_controls::WindowControl::Maximize => {
+                                            "maximize"
+                                        }
+                                        crate::widget::window_controls::WindowControl::Close => {
+                                            "close"
+                                        }
+                                    },
+                                    control.target(),
+                                    rect,
+                                )
+                                .named(crate::i18n::I18nManager::lookup_plain(
+                                    control.name_key(false),
+                                ))
+                                .icon(Some(icon.name().to_owned()))
+                            })
+                            .collect()
+                    })
+                    .unwrap_or_default(),
+            };
+        }
         self.painted_window_bar(width).bar_layout()
+    }
+
+    /// The window's controls where they stand while the app's header row holds the bar: laid
+    /// out at the row's trailing end, as a window's frame puts them there.
+    fn row_controls(&self, slot: crate::widget::WindowBarSlot) -> WindowControls {
+        WindowControls::lay_out(slot.controls)
     }
 
     /// How the window's bar, as the desktop draws it across a window
@@ -588,6 +707,19 @@ impl FrameHarness {
             "a hosted window's bar wears its app's icon, as every desktop window's does: \
              mount the app with FrameHarness::for_app"
         );
+        // The app's header row is the bar: it draws itself, and only the window's controls stand
+        // over its trailing end.
+        if self.row_holds {
+            if let Some(slot) = self.row_bar_slot() {
+                self.row_controls(slot).paint(
+                    scene,
+                    transform,
+                    &self.theme,
+                    ControlsState::default(),
+                );
+            }
+            return;
+        }
         let mut bar = self.window_bar(width);
         let title = self.window_tab().title;
         let frame_top = self.frame_top();
@@ -777,6 +909,53 @@ mod tests {
         let (_, _, _, actions) = bar.toolbar_rects();
         assert_eq!(actions.len(), 1);
         crate::window_toolbar::declare(None);
+    }
+
+    /// A header row that cannot stand as slots (it opens a popover, as a window's catch-up
+    /// does) is the window's bar: the row fills the window, its title and the window's controls
+    /// stand in it, and no second row stacks above. A row that can stand as slots leaves the
+    /// bar the band above the frame, and draws no row.
+    #[test]
+    fn a_header_row_that_keeps_a_popover_is_the_window_bar() {
+        let _hosted = HostedReset;
+        let row = |actions: Vec<crate::widget::Element>| {
+            crate::widget::NavShell::new()
+                .content(Box::new(crate::widget::Text::new("Body")))
+                .content_header("Design", actions)
+        };
+        let popover = crate::widget::Button::new("catch-up", "Mia changed 3 messages")
+            .with_popover(crate::widget::Text::new("What changed"));
+        let mut harness = harness_of(Box::new(row(vec![Box::new(popover)])));
+        harness.present_in_window_bar();
+        assert!(harness.row_holds_bar(), "the row is the window's bar");
+        assert_eq!(
+            harness.frame_extent((800, 600)).0,
+            0.0,
+            "no bar band stands above the row"
+        );
+        let bar = harness.window_bar_layout(800.0);
+        assert!(
+            bar.controls.iter().any(|control| control.slot == "close"),
+            "the window's controls stand at the row's end: {bar:?}"
+        );
+        assert_eq!(
+            harness.window_header_row_height(),
+            0.0,
+            "the row is the bar, not a second one under it"
+        );
+
+        // A row of a button stands as the bar's slots: the bar keeps its band and the frame
+        // draws no row of its own.
+        let mut plain = harness_of(Box::new(row(vec![Box::new(crate::widget::Button::new(
+            "action", "New",
+        ))])));
+        plain.present_in_window_bar();
+        assert!(!plain.row_holds_bar());
+        assert!(
+            plain.frame_extent((800, 600)).0 > 0.0,
+            "the frame stands under the window's bar"
+        );
+        assert_eq!(plain.window_header_row_height(), 0.0);
     }
 
     fn harness_of(root: Box<dyn Widget>) -> FrameHarness {

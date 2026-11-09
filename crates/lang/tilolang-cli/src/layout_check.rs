@@ -1806,6 +1806,12 @@ impl AppCheck<'_> {
         ));
         problems.extend(mixed_language());
         problems.extend(audit::bar(&bar));
+        // A window shows one bar: a header row under it is a second one.
+        let (bar_height, _) = staged.harness().frame_extent(viewport);
+        problems.extend(audit::stacked_header_rows(
+            bar_height,
+            staged.harness().window_header_row_height(),
+        ));
         for mut problem in problems {
             // A list draws a row as one widget keyed by the row: what it is about is the row
             // view's node, the deepest the row's tree holds.

@@ -101,6 +101,8 @@ fn every_kind_of_broken_layout_is_caught_at_the_view_that_breaks_it() {
             // window's controls alone, each once, and no action stands as an icon.
             | Kind::DuplicateBarControl
             | Kind::IconOnlyBarAction
+            // The fixture's windows compose no shell with a header row of its own under a bar.
+            | Kind::StackedHeaderRows
             // No window in this fixture lists items beside a pane that says nothing is chosen.
             | Kind::PlaceholderPane
             // The fixture's cards each hold what they are given, so none stands empty.
