@@ -357,6 +357,20 @@ required = false
 type = "text"
 
 [[resources.verbs]]
+id = "branch-workspace"
+kind = "outside"
+
+[[resources.verbs.params]]
+name = "source"
+required = true
+type = "text"
+
+[[resources.verbs.params]]
+name = "name"
+required = false
+type = "text"
+
+[[resources.verbs]]
 id = "join-workspace"
 kind = "read"
 params = []
