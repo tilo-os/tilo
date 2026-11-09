@@ -62,7 +62,7 @@ impl SlotViews {
             })
         });
         let host = Rc::new(RefCell::new(SlotView::new(slot, self.scale, focused)));
-        compositor.add_host(Box::new(Held(Rc::clone(&host))));
+        compositor.add_host(Box::new(Held::new(Rc::clone(&host))));
         self.hosts.insert(slot, Rc::clone(&host));
         host
     }

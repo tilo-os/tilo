@@ -79,7 +79,7 @@ pub(crate) fn mount_banners(
                 options.scale,
                 stack,
             )));
-            compositor.add_host(Box::new(Held(Rc::clone(&surface))));
+            compositor.add_host(Box::new(Held::new(Rc::clone(&surface))));
             doors.add(surface);
             notices.show_banners_elsewhere();
         }

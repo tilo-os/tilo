@@ -209,7 +209,8 @@ fn serve(link: &SessionLink, service: &mut RecordService) {
     });
 }
 
-/// The shell's spaces canvas over the arrangement the part holds now.
+/// The shell's spaces canvas over the arrangement the part holds now: the view the person's
+/// Spaces style draws, its places standing as their own views rather than in frames.
 fn canvas(part: &ShellPart) -> tilolang_tilo::runtime::ViewInstance {
     let host = part.instance.host().expect("the shell runs");
     let app = host
@@ -226,16 +227,7 @@ fn canvas(part: &ShellPart) -> tilolang_tilo::runtime::ViewInstance {
             },
         )
         .unwrap();
-    let view = host
-        .package(&app)
-        .unwrap()
-        .meta
-        .views
-        .iter()
-        .find(|view| view.name == "spaces_canvas")
-        .unwrap()
-        .id
-        .clone();
+    let view = host.package(&app).unwrap().view_id("spaces").unwrap();
     host.open_resource(&root, Some(&view)).unwrap()
 }
 

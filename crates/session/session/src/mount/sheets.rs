@@ -208,7 +208,7 @@ fn mount_lock_view(
             let seat = sheet.seat().clone();
             seat.presentation().cover_every_display();
             let sheet = Rc::new(RefCell::new(sheet));
-            compositor.add_host(Box::new(Held(Rc::clone(&sheet))));
+            compositor.add_host(Box::new(Held::new(Rc::clone(&sheet))));
             doors.add(sheet);
             Some(seat)
         }
@@ -264,7 +264,7 @@ fn mount_sheet<S: tilo_sheets::Seat + 'static>(
         Ok(sheet) => {
             let seat = sheet.seat().clone();
             let sheet = Rc::new(RefCell::new(sheet));
-            compositor.add_host(Box::new(Held(Rc::clone(&sheet))));
+            compositor.add_host(Box::new(Held::new(Rc::clone(&sheet))));
             doors.add(sheet);
             Some(seat)
         }

@@ -261,7 +261,7 @@ impl Shell {
             Rc::new(move |key: &str| pictured(&handle, key)),
         );
         let part = Rc::new(RefCell::new(part));
-        compositor.add_host(Box::new(Held(Rc::clone(&part))));
+        compositor.add_host(Box::new(Held::new(Rc::clone(&part))));
         // Each display's part is its own surface on the door: what the person, a script or an agent
         // drives the shell through, and what reads its labels.
         doors.add(Rc::clone(&part) as tilo_surface_host::Shared);

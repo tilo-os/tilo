@@ -30,7 +30,7 @@ pub(crate) fn mount_setup(
     crate::setup::lend(waiter.clone(), person);
     surface.map(|surface| {
         let setup = Rc::new(RefCell::new(Setup::new(surface, scale, waiter)));
-        compositor.add_host(Box::new(Held(Rc::clone(&setup))));
+        compositor.add_host(Box::new(Held::new(Rc::clone(&setup))));
         doors.add(Rc::clone(&setup) as tilo_surface_host::Shared);
         setup
     })
@@ -96,7 +96,7 @@ pub(crate) fn mount_controls(
     // answers with.
     let places: ReadoutPlaces = Rc::new(RefCell::new(ReadoutPlace::default()));
     let readout = Rc::new(RefCell::new(Readout::new(scale, Rc::clone(&places), band)));
-    compositor.add_host(Box::new(Held(Rc::clone(&readout))));
+    compositor.add_host(Box::new(Held::new(Rc::clone(&readout))));
     let shared: tilo_surface_host::Shared = readout.clone();
     doors.add(shared);
     let commands = Rc::new(RefCell::new(Vec::new()));
@@ -170,7 +170,7 @@ pub(crate) fn mount_activities(
                 readout,
                 options.scale,
             )));
-            compositor.add_host(Box::new(Held(Rc::clone(&surface))));
+            compositor.add_host(Box::new(Held::new(Rc::clone(&surface))));
             doors.add(surface);
             Some(link)
         }

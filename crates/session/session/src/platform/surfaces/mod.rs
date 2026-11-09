@@ -43,6 +43,8 @@ pub struct Heard {
     /// Whether the role wants the keyboard while its layer stands.
     pub wants_keyboard: Rc<dyn Fn() -> bool>,
     /// The pointer was pressed somewhere other than this layer: what the role has open closes.
+    /// It runs before the host holds the tree the role placed, so it may ask that layer to draw
+    /// again.
     pub pressed_elsewhere: Rc<dyn Fn()>,
 }
 

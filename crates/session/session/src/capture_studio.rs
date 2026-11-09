@@ -249,7 +249,7 @@ pub(crate) fn mount(
             let sheet = sheet.always_serving();
             let seat = sheet.seat().clone();
             let sheet = Rc::new(RefCell::new(sheet));
-            compositor.add_host(Box::new(Held(Rc::clone(&sheet))));
+            compositor.add_host(Box::new(Held::new(Rc::clone(&sheet))));
             doors.add(sheet);
             Some(CaptureStudio {
                 seat,

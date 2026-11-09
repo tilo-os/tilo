@@ -667,7 +667,10 @@ impl Session {
             &overlays,
             &switcher,
         )));
-        compositor.add_host(crate::shell::under(options.shell, Held(Rc::clone(&chrome))));
+        compositor.add_host(crate::shell::under(
+            options.shell,
+            Held::new(Rc::clone(&chrome)),
+        ));
         // Search's code is asked for as the session starts, so it is in by the
         // time someone searches; a search asked for before then opens now,
         // and the desk publishes it on its next pass.

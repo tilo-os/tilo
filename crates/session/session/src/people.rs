@@ -300,6 +300,21 @@ impl Published for People {
         self.open.get()
     }
 
+    /// The controls the open roster and its card show, where they stand: what the host drew.
+    fn controls(&mut self) -> Vec<(String, (f64, f64, f64, f64))> {
+        match self.layer() {
+            Some(layer) if self.open.get() => layer.controls(),
+            _ => Vec::new(),
+        }
+    }
+
+    fn press(&mut self, name: &str) -> Result<(), String> {
+        match self.layer() {
+            Some(layer) if self.open.get() => layer.press(name),
+            _ => Err(format!("no control named {name}")),
+        }
+    }
+
     /// Who is here, as the open roster lists them: each person's name, what they are doing, and
     /// where they are. While a person's card stands in the roster's place, there are no rows to
     /// read: the card is what is read, and what is read is what the host drew of it.
