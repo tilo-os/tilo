@@ -50,7 +50,7 @@ TILO_ROOMS_WAIT_LIST_MAX TILO_ROOMS_PUBLIC_API TILO_ROOMS_LIVE_ORIGIN
 TILO_ROOMS_DEFAULT_ROLE TILO_ROOMS_CHAT_CHANNELS TILO_ROOMS_FEEDBACK_CHANNEL
 TILO_ROOMS_SEED_APPS TILO_ROOMS_AUTHOR_APPS TILO_ROOMS_REFOUND TILO_ROOMS_BOTS TILO_ROOMS_LAYOUT
 TILO_ROOMS_INACTIVE_AFTER_DAYS TILO_ROOMS_ROOT_FILE TILO_ROOMS_ROLES_FILE
-TILO_ROOMS_OWN_WORKSPACES
+TILO_ROOMS_OWN_WORKSPACES TILO_ROOMS_IROH_LISTEN
 TILO_ROOMS_STATE
 TILO_ROOMS_WEB_ENTRY TILO_ROOMS_SITE_ORIGINS TILO_ROOMS_RELAY_ORIGIN
 TILO_ROOMS_RELAY_PLAIN TILO_ROOMS_LIVE TILO_ROOMS_LIVE_ORIGIN TILO_ROOMS_WEB
@@ -160,6 +160,12 @@ if [ -n "$own" ]; then
     ''|*[!0-9]*) fail "TILO_ROOMS_OWN_WORKSPACES is gigabytes per person, not $own" ;;
   esac
   set -- "$@" --own-workspaces "$own"
+fi
+# The host's own endpoint at a fixed address, for the operator's devices that
+# dial it (the members that take its workspaces' work); otherwise the machine
+# picks a port at each start.
+if [ -n "${TILO_ROOMS_IROH_LISTEN:-}" ]; then
+  set -- "$@" --iroh-listen "$TILO_ROOMS_IROH_LISTEN"
 fi
 if [ "${TILO_ROOMS_FETCH_PROXY:-1}" != 0 ]; then
   set -- "$@" --fetch-proxy

@@ -110,6 +110,11 @@ pub struct PersistentArgs {
     /// Apply per-person change and content budgets to members.
     #[arg(long = "member-limits")]
     pub member_limits: bool,
+    /// Where the host's own endpoint (iroh, UDP) listens: devices of the
+    /// operator that dial it, such as the members that take its workspaces'
+    /// work, name this port. Without it the machine picks one at each start.
+    #[arg(long = "iroh-listen", value_name = "ADDRESS", requires = "persistent")]
+    pub iroh_listen: Option<std::net::SocketAddr>,
     /// Give each person who asks a workspace of their own on this host
     /// (`room.create-own`), keeping up to this many gigabytes of it: 10 when
     /// the flag names no number.
@@ -1365,6 +1370,9 @@ pub(crate) async fn run(
         state_root: tilo_relay_protocol::metrics::room_relay_root(&state),
         identity_root: state.join("identity"),
         member_limits: persistent.member_limits.then(Default::default),
+        iroh_listen: persistent
+            .iroh_listen
+            .unwrap_or(tilo_relay::RelayConfig::default().iroh_listen),
         ..Default::default()
     };
     let hosted = start_relay_lending(
