@@ -247,6 +247,9 @@ pub fn terminal(action: <terminal::resource::Terminal as Resource>::Action) -> A
         TerminalAction::Run(run) => ProjectAction::RunInTerminal(project::project::RunInTerminal {
             command: run.command,
         }),
+        TerminalAction::Stop(_) => {
+            ProjectAction::StopInTerminal(project::project::StopInTerminal {})
+        }
         TerminalAction::Rerun(rerun) => {
             ProjectAction::RerunInTerminal(project::project::RerunInTerminal {
                 run: rerun.runs.to_string(),

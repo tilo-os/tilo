@@ -482,6 +482,16 @@ impl Project {
             .rerun_test(cx, terminal_requests, &Id::from(run), test)
     }
 
+    /// Stop in terminal
+    ///
+    /// Stop what the embedded terminal's session is running, as Ctrl+C does
+    /// at its prompt. The session's record keeps nothing of it: the shell,
+    /// or the workspace's host that runs the session, ends the run.
+    #[action(keywords = "stop, cancel, interrupt, ctrl c", id = "stop")]
+    pub fn stop_in_terminal(&mut self) -> Result<(), Refusal> {
+        self.terminal()?.stop()
+    }
+
     /// Record terminal run
     ///
     /// Record a run the embedded terminal's session ended.

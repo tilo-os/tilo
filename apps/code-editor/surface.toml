@@ -154,6 +154,10 @@ params = [
 ]
 
 [[resources.verbs]]
+id = "stop"
+kind = "undoable"
+
+[[resources.verbs]]
 id = "record-run"
 kind = "undoable"
 params = [
