@@ -474,6 +474,74 @@ pub trait Source {
     }
 }
 
+/// A source a host holds as an erased handle and asks through it.
+///
+/// A host keeps the sources it adds — the files, the apps' content, Settings,
+/// the catalogue, a workspace's records — as `Arc<dyn Source>`. Reached as
+/// `&dyn Source`, no `Arc<S>` impl applies, and the trait's default
+/// [`Source::shared`] says it cannot move: the source would be asked on the
+/// frame, one source per frame, so a search over everything spends a frame on
+/// each of them and the last answers seconds later on a page. Holding the
+/// `Arc<dyn Source + Send + Sync>` itself keeps the handle to hand the worker,
+/// and the bound is the type's, so a source that cannot move is one a host
+/// cannot add.
+pub struct Held(Arc<dyn Source + Send + Sync>);
+
+impl Held {
+    /// `source`, held as the handle a worker is handed.
+    #[must_use]
+    pub fn new(source: impl Source + Send + Sync + 'static) -> Self {
+        Self(Arc::new(source))
+    }
+
+    /// A source already kept behind a handle.
+    #[must_use]
+    pub fn of(source: Arc<dyn Source + Send + Sync>) -> Self {
+        Self(source)
+    }
+}
+
+impl<S: Source + Send + Sync + 'static> From<Arc<S>> for Held {
+    fn from(source: Arc<S>) -> Self {
+        Self(source)
+    }
+}
+
+impl Source for Held {
+    fn id(&self) -> &str {
+        self.0.id()
+    }
+    fn name(&self) -> String {
+        self.0.name()
+    }
+    fn max_score(&self) -> i32 {
+        self.0.max_score()
+    }
+    fn query(&self, needle: &str) -> Vec<Hit> {
+        self.0.query(needle)
+    }
+    fn shared(&self) -> Option<Arc<dyn Source + Send + Sync>> {
+        // The handle is `Send + Sync` by its type, so the source itself moves:
+        // the worker asks the source the host kept, with no second copy of it
+        // to build. This is what a host's source could not say through
+        // `&dyn Source` — the concrete source's own default answer, `None` —
+        // and the one thing `Held` exists to restore.
+        Some(Arc::clone(&self.0))
+    }
+    fn browse_rank(&self) -> u8 {
+        self.0.browse_rank()
+    }
+    fn intent(&self, hit: &Hit) -> f32 {
+        self.0.intent(hit)
+    }
+    fn verbatim(&self) -> bool {
+        self.0.verbatim()
+    }
+    fn poll(&self) -> bool {
+        self.0.poll()
+    }
+}
+
 /// A source a host keeps between searches (its index built once) is
 /// searched through a shared handle: one held in an [`Arc`] can move to a
 /// worker, so a worker is handed the handle rather than the source.
@@ -1961,5 +2029,55 @@ mod tests {
         assert_eq!(window.thing(), Thing::Window(0));
         assert_ne!(groceries.thing(), bills.thing());
         assert_ne!(groceries.thing(), Thing::Window(0));
+    }
+}
+
+#[cfg(test)]
+mod held_tests {
+    use super::*;
+
+    /// A source a host keeps, with nothing of the frame in it: it answers from
+    /// wherever it is asked, so it can move.
+    struct Kept;
+
+    impl Source for Kept {
+        fn id(&self) -> &str {
+            "kept"
+        }
+        fn query(&self, _: &str) -> Vec<Hit> {
+            Vec::new()
+        }
+    }
+
+    /// A host's source keeps its handle to a worker: the source held as the
+    /// erased `Arc<dyn Source>` a host keeps moves, where the same source
+    /// reached as a bare `&dyn Source` does not.
+    ///
+    /// This is the whole of the bug the palette had. A host keeps its sources
+    /// as `Arc<dyn Source>`, and the search reached each as `&dyn Source`: the
+    /// trait object's own `shared` answer is the *source's*, which for a
+    /// concrete source is the trait's default `None`. Every source a host adds
+    /// was therefore asked on the frame, one source per frame: a search over
+    /// everything spent a frame on each of them, and the last answered long
+    /// after the key. [`Held`] keeps the `Arc`, so the handle, not the erased
+    /// trait object, decides where the source is asked.
+    #[test]
+    fn a_host_source_reached_through_its_handle_moves_where_the_erased_one_cannot() {
+        let kept: Arc<dyn Source + Send + Sync> = Arc::new(Kept);
+
+        // Reached as the erased trait object — what the palette used to do — the
+        // source says it cannot move, and is asked on the frame.
+        let erased: &dyn Source = &*kept;
+        assert!(
+            erased.shared().is_none(),
+            "an erased source answers the trait's default and stays on the frame"
+        );
+
+        // Held as the handle a host keeps, it moves to a worker.
+        let held = Held::of(Arc::clone(&kept));
+        assert!(
+            held.shared().is_some(),
+            "a host's source, held by its handle, is asked on a worker: not one source a frame"
+        );
     }
 }

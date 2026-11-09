@@ -16,7 +16,7 @@ use tilo_action_broker::collab_app_broker::AppBrokerState;
 use tilo_action_broker::services::LaunchPlace;
 use tilo_actions::remote::{
     APPLICATION_OPEN_ACTION, APPLICATION_RESOURCE_PREFIX, Caller, InvokeArgument, InvokeRequest,
-    RemoteActionTarget, application_open_target, application_provider,
+    RemoteActionTarget, application_open_target, application_provider, provider_workspace,
 };
 use tilo_actions::{ActionDescriptor, DoorError, ExecutionLocus, InvocationId};
 use tilo_app_launch::routing;
@@ -845,10 +845,16 @@ impl Apps {
         arguments: serde_json::Map<String, serde_json::Value>,
         place: OpenPlace,
     ) -> Result<(), DoorError> {
-        let Some((workspace, _)) = application_provider(&target.provider) else {
-            return Err(no_action_host());
+        // A row is published in one of two shapes: a workspace's `open` of an app
+        // (`workspace:<workspace>`, what `application_open_target` builds) and an app's own action
+        // (`application:<workspace>:<app>`). Read both, or every app row answers that apps cannot be
+        // started.
+        let workspace = match application_provider(&target.provider) {
+            Some((workspace, _)) => workspace.to_owned(),
+            None => provider_workspace(&target.provider)
+                .ok_or_else(no_action_host)?
+                .to_owned(),
         };
-        let workspace = workspace.to_owned();
         let app = target
             .address
             .resource

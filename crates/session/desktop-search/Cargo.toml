@@ -24,6 +24,11 @@ settings = ["dep:settings-store"]
 # The apps a person can get, from the catalogue the Store reads. Native
 # only.
 catalogue = ["dep:app-catalogue"]
+# The search engine's code is not linked in: the program fetches it when
+# something first asks (`tilo-search`'s `lazy-engine`). What the browser
+# desktop builds with, so a test of the palette's own engine fetch sees the
+# same deferred engine the page does.
+lazy-engine = ["ui/lazy-engine"]
 
 [dependencies]
 # Every Tilo app's manifest metadata: where it runs, its names and keywords.

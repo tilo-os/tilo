@@ -74,7 +74,7 @@ pub struct SearchHostFeed {
     /// What providers publish through the host's action host, run by address there.
     pub published: Vec<tilo_desktop_search::providers::PublishedActions>,
     /// The host's own sources, each over what is published or a service answers.
-    pub sources: Vec<std::sync::Arc<dyn tilo_desktop_search::Source>>,
+    pub sources: Vec<tilo_desktop_search::Held>,
     /// The sources the person switched off.
     pub preferences: tilo_desktop_search::SearchPreferences,
     /// Now, in Unix seconds.
@@ -977,7 +977,7 @@ impl DesktopSurface {
         let mut applications = self.tiles.search_applications();
         applications.extend(feed.applications);
         let mut sources = feed.sources;
-        sources.push(std::sync::Arc::new(
+        sources.push(tilo_desktop_search::Held::new(
             tilo_desktop_search::providers::people::People::new(workspace, people),
         ));
         let mut data = SearchData {

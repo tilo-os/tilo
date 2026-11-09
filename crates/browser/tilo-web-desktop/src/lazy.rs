@@ -310,6 +310,26 @@ split_code! {
         => tilo_ui::history_mode::HISTORY, module = "history", hash = "e1a7c5039b6d2f84";
 }
 
+/// Once the page has drawn its first frame, fetch the search engine's code.
+///
+/// The engine is a module of its own here, and a search that fetches it has no
+/// rows until it lands — it says it is still searching the whole time, which on
+/// a cold page is the wait between typing and the first row. The page fetching
+/// it as soon as it has drawn something leaves that wait to the person's own
+/// time before they first search, and the palette's own fetch (as it opens) is
+/// then a no-op. Nothing of it is needed for the first frame, so it waits for
+/// one, and a fetch that fails is tried again as the engine's loader says.
+fn prepare_search_after_first_frame() {
+    let work = Closure::once_into_js(move |_deadline: f64| {
+        if tilo_browser_runtime::first_frame_presented() {
+            tilo_search::prepare_engine();
+        } else {
+            prepare_search_after_first_frame();
+        }
+    });
+    after_idle(SPELLING_POLL_MS, &work);
+}
+
 /// How often the page looks again whether its first frame is up, or the
 /// dictionaries' code is in.
 const SPELLING_POLL_MS: u32 = 250;
@@ -351,6 +371,7 @@ fn prepare_spelling_when_idle(delay: u32) {
 
 pub(crate) fn register() {
     tilo_search::defer_engine(fetch_search);
+    prepare_search_after_first_frame();
     spellcheck::defer_dictionaries(fetch_spelling);
     spellcheck::build_dictionaries_in_steps();
     prepare_spelling_when_idle(SPELLING_POLL_MS);
