@@ -1236,9 +1236,11 @@ class Client final : public CefClient, public CefRenderHandler, public CefLifeSp
       // Whatever an agent reads or does next, its logs start here.
       const auto action=d->GetString("action").ToString();
       if(action=="console" || action=="network") agent_log_->Request(d);
+      // The tab's own record of what was done in it reads nothing of the page.
+      else if(action=="ledger") page_automation_->Ledger(d);
       else { agent_log_->Activate();page_automation_->Request(d); }
     }
-    else if(op=="page_cancel") {if(page_automation_)page_automation_->Cancel();}
+    else if(op=="page_cancel") {if(page_automation_)page_automation_->Cancel(d->HasKey("request_id")?d->GetInt("request_id"):0);}
     else if(op=="paint_capture") paint_snapshot_->Capture(d);
     else if(op=="paint_resource") paint_snapshot_->Resource(d);
     else if(op=="document_size") document_size_->Enable(d->GetBool("enabled"));
@@ -2522,10 +2524,12 @@ bool ValidCommand(CefRefPtr<CefDictionaryValue> d) {
     if(action!="outline" && action!="click" && action!="fill" && action!="select" && action!="fill_files" && action!="press" && action!="submit" &&
        action!="changes" && action!="at" && action!="settle" && action!="console" && action!="network" &&
        action!="reader" && action!="pointer" && action!="hover" && action!="drag" && action!="path" &&
-       action!="scroll" && action!="pointer_rest" && action!="capture" && action!="find")return false;
+       action!="scroll" && action!="pointer_rest" && action!="capture" && action!="find" &&
+       action!="ledger" && action!="fields" && action!="forms" && action!="fill_form" && action!="search")return false;
     const bool elementless=action=="find" || action=="outline" || action=="press" || action=="changes" || action=="at" || action=="settle" ||
       action=="console" || action=="network" || action=="reader" || action=="pointer" || action=="hover" ||
-      action=="drag" || action=="path" || action=="scroll" || action=="pointer_rest" || action=="capture";
+      action=="drag" || action=="path" || action=="scroll" || action=="pointer_rest" || action=="capture" ||
+      action=="ledger" || action=="fields" || action=="forms" || action=="fill_form" || action=="search";
     if(action=="pointer") {
       if(!type("steps",VTYPE_LIST) || !type("button",VTYPE_STRING))return false;
       const auto button=d->GetString("button").ToString();
@@ -2566,12 +2570,39 @@ bool ValidCommand(CefRefPtr<CefDictionaryValue> d) {
     }
     if(action=="settle" && (!type("quiet_ms",VTYPE_INT) || !type("timeout_ms",VTYPE_INT) || d->GetInt("quiet_ms")<50 ||
        d->GetInt("timeout_ms")<d->GetInt("quiet_ms") || d->GetInt("timeout_ms")>20000))return false;
-    if((action=="console" || action=="network") && (!number("since") || Number(d,"since")<0))return false;
+    if((action=="console" || action=="network" || action=="ledger") && (!number("since") || Number(d,"since")<0))return false;
+    // Who asks, when the caller says: a name the tab keeps each actor's own
+    // read baseline under and sets its actions down by.
+    if(d->HasKey("actor") && (!type("actor",VTYPE_STRING) || d->GetString("actor").empty() || d->GetString("actor").length()>64))return false;
     // A picture is painted at most as wide as the app asks and no wider
     // than the engine's own bound; a wider one is refused, not cut.
     if(action=="capture" && d->HasKey("max_width") &&
        (!type("max_width",VTYPE_INT) || d->GetInt("max_width")<1 || d->GetInt("max_width")>CAPTURE_MAX_WIDTH))return false;
     if(action=="fill" && (!type("text",VTYPE_STRING) || d->GetString("text").length()>65536))return false;
+    // A read of the outline may read on from a line an earlier read or a
+    // search named; a search says the words it looks for.
+    if(d->HasKey("from") && (action!="outline" || !type("from",VTYPE_INT) || d->GetInt("from")<1 || d->GetInt("from")>1000000))return false;
+    if(action=="search" && (!type("text",VTYPE_STRING) || d->GetString("text").empty() || d->GetString("text").length()>200))return false;
+    // A form's answers: the form by the id or signature its read gave, each
+    // answer under the name the form asks it by, as text, a number, yes or
+    // no, or the chosen ones of several, and whether to send it and how.
+    if(action=="fill_form") {
+      if(!type("form",VTYPE_STRING) || d->GetString("form").empty() || d->GetString("form").length()>64 || !type("answers",VTYPE_DICTIONARY))return false;
+      auto answers=d->GetDictionary("answers");CefDictionaryValue::KeyList names;answers->GetKeys(names);
+      if(names.size()>200)return false;
+      for(const auto& name:names) {
+        if(name.empty() || name.length()>200)return false;
+        const auto kind=answers->GetType(name);
+        if(kind==VTYPE_STRING) { if(answers->GetString(name).length()>65536)return false; }
+        else if(kind==VTYPE_LIST) {
+          auto chosen=answers->GetList(name);
+          if(chosen->GetSize()>64)return false;
+          for(size_t i=0;i<chosen->GetSize();++i)if(chosen->GetType(i)!=VTYPE_STRING || chosen->GetString(i).length()>1024)return false;
+        } else if(kind!=VTYPE_BOOL && kind!=VTYPE_INT && kind!=VTYPE_DOUBLE)return false;
+      }
+      if(d->HasKey("submit") && !type("submit",VTYPE_BOOL) &&
+         !(type("submit",VTYPE_STRING) && !d->GetString("submit").empty() && d->GetString("submit").length()<=200))return false;
+    }
     if(action=="select") {
       if(!type("values",VTYPE_LIST))return false;auto values=d->GetList("values");
       if(!values->GetSize() || values->GetSize()>64)return false;
@@ -2666,7 +2697,13 @@ bool ValidCommand(CefRefPtr<CefDictionaryValue> d) {
   }
   // An agent stops a page action it no longer waits for: the tab is freed
   // rather than held by a request whose caller is gone.
-  if(op=="page_cancel") {CefDictionaryValue::KeyList keys;d->GetKeys(keys);return no_payload();}
+  if(op=="page_cancel") {
+    // The request a caller gives up on, when it names one: several actors'
+    // actions may be in one tab, and a cancel must not stop another's.
+    CefDictionaryValue::KeyList keys;d->GetKeys(keys);
+    for(const auto& key:keys)if(key!="op" && key!="tab" && key!="request_id")return false;
+    return !d->HasKey("request_id") || (type("request_id",VTYPE_INT) && d->GetInt("request_id")>0);
+  }
   if(op=="popups") return type("enabled",VTYPE_BOOL);
   if(op=="page_clipboard") return no_payload();
   if(op=="clipboard_contents") {

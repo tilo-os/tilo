@@ -14,6 +14,13 @@ globalThis.__tiloPage ||= (() => {
   });
   const MAX_LINES = 1200, MAX_CHARS = 100000, MAX_VISITED = 40000;
   const MAX_TEXT = 200, MAX_NAME = 120, MAX_VALUE = 200, MAX_OPTIONS = 30;
+  // A paragraph is read whole: a page's own words are what a reader came
+  // for, and a paragraph cut after a sentence or two cannot be read at all.
+  // The whole page a read may walk, of which each read carries a part.
+  const MAX_PROSE = 2000, MAX_ALL_LINES = 20000, MAX_ALL_CHARS = 2000000;
+  // How a line break stands in text being gathered, and what two or more
+  // of them with nothing but space between are.
+  const LINE_BREAK = '\u0000', PARAGRAPH_BREAK = /\u0000(?:\s*\u0000)+/;
   const INPUT_ROLES = {button: 'button', submit: 'button', reset: 'button', image: 'button',
     file: 'file', color: 'color', checkbox: 'checkbox', radio: 'radio', range: 'slider',
     number: 'spinbutton', search: 'searchbox'};
@@ -48,11 +55,21 @@ globalThis.__tiloPage ||= (() => {
 
   const ids = new WeakMap(), refs = new Map();
   let next = 0, doc = 0;
-  // The outlines this tab's agent last saw, per frame id ('' for the main
-  // document), for `changes`.
+  // The outlines each actor in this tab last saw, per frame id ('' for the
+  // main document), for `changes`. Several agents may read one tab, and each
+  // keeps its own: one's read never takes what changed away from another. A
+  // caller that names no actor is the one unnamed actor.
+  const MAX_BASELINES = 64;
   const lastLinesByFrame = new Map();
-  const getLastLines = () => lastLinesByFrame.get(frameId()) ?? null;
-  const setLastLines = lines => lastLinesByFrame.set(frameId(), lines);
+  let actorId = '';
+  const baselineKey = () => `${actorId}\n${frameId()}`;
+  const getLastLines = () => lastLinesByFrame.get(baselineKey()) ?? null;
+  const setLastLines = lines => {
+    const key = baselineKey();
+    lastLinesByFrame.delete(key);
+    lastLinesByFrame.set(key, lines);
+    if (lastLinesByFrame.size > MAX_BASELINES) lastLinesByFrame.delete(lastLinesByFrame.keys().next().value);
+  };
   const MAX_DIFF_CELLS = 4000000, MAX_SETTLE_POLL_MS = 50;
   // Revealed lines one hover reports, and moves between a drag's two ends.
   const MAX_REVEAL_LINES = 40, MAX_DRAG_STEPS = 64;
@@ -79,7 +96,11 @@ globalThis.__tiloPage ||= (() => {
   const MAX_SCROLL_TURN = 2000;
   // How many turns in a row the wheel may give nothing before the page is
   // taken to have stopped moving for it.
-  const MAX_SCROLL_STILL = 4;
+  // The furthest one turn of the wheel carries a box, as the engine turns
+  // it; how many looks a turn the box has not shown is waited for before it
+  // is taken as never made; and how many turns in a row may go unshown
+  // before the box is taken as stopped.
+  const MAX_WHEEL_TURN = 2000, SCROLL_OWED_LOOKS = 3, MAX_SCROLL_UNSHOWN = 1;
   // How far the wheel is sent toward an end of the page: past any page.
   const WHEEL_TO_THE_END = 1e6;
   // The box an element's own overflow scrolls, found up its tree; the page's
@@ -95,7 +116,6 @@ globalThis.__tiloPage ||= (() => {
   const scrollable = element => Math.max(element.scrollHeight - element.clientHeight, 0);
   const scrollRoot = () => document.scrollingElement || document.documentElement;
   // How much further a box can go in the direction the wheel turns it.
-  const room = box => Math.max(scrollable(box) - scrollYOffset(box), 0);
   // How far down a box is scrolled. The page's own box needs no special case:
   // the window holds the document's scrolling element and the document, and
   // asking either of them for what it holds never moves the page.
@@ -104,6 +124,14 @@ globalThis.__tiloPage ||= (() => {
   // read that answers it: null when no scroll is being answered.
   let scrollMoved = null;
   const takeScrollMoved = () => { const moved = scrollMoved; scrollMoved = null; return moved; };
+  // Where that scroll left the box, and how far the box goes: a caller that
+  // scrolls by distances knows where it is without a picture of the page.
+  let scrollAt = null;
+  const takeScrollAt = () => { const at = scrollAt; scrollAt = null; return at; };
+  const placeOf = box => {
+    const at = Math.round(scrollYOffset(box));
+    return {at, of: Math.max(Math.round(scrollable(box)), at)};
+  };
   const FRAME_SETTLE_MS = 250, FRAME_SETTLE_STILL = 2, FRAME_MS = 16;
   // The wheel turns over a page that has laid itself out, as a person's does:
   // a sheet that arrives late, and the reflow it causes, are waited for. The
@@ -140,10 +168,7 @@ globalThis.__tiloPage ||= (() => {
       // The row is centred in its box when there is room for that, and the
       // wheel turns toward it from where the box is scrolled to now.
       const delta = Math.round(visible.top - area.top - (area.height - visible.height) / 2);
-      const from = scrollYOffset(box);
-      const left = delta > 0 ? Math.min(delta, room(box)) : Math.max(delta, -from);
-      scrolling = {box, x: point.x, y: point.y, rest: left, travelled: Math.sign(left), start: from, still: 0};
-      return {ok: true, x: point.x, y: point.y, left};
+      return beginScroll(box, point, scrollYOffset(box) + delta);
     }
     // The box the caller named, or the page itself; a point inside it that
     // the wheel can turn over is its visible centre.
@@ -156,48 +181,67 @@ globalThis.__tiloPage ||= (() => {
     const point = element ? (clip(element.getBoundingClientRect()) || clip(area)) : {x: innerWidth / 2, y: innerHeight / 2};
     if (!point) throw failure('not_visible', `${command.element} has no box on the page`);
     const scroller = root ? scrollRoot() : box;
-    const from = scrollYOffset(scroller);
-    let left = 0, travelled = 0;
-    if (command.to === 'top' || command.to === 'bottom') {
-      // An end of the page is a whole page away, more than any distance the
-      // wheel is allowed: the wheel keeps turning until the page stops
-      // moving, so a page that loads more on the way down goes on, and the
-      // turns end only when a turn gives nothing.
-      travelled = command.to === 'bottom' ? 1 : -1;
-      left = travelled * WHEEL_TO_THE_END;
-    } else if (typeof command.by === 'number') {
-      // A distance is the whole distance asked for: how far it actually moves
-      // the page is the wheel's own business, and what the box cannot take it
-      // keeps looking for as the page under it grows.
-      travelled = Math.sign(command.by);
-      left = command.by;
-    }
-    // A box already at the end the wheel would take it to leaves the wheel
-    // nothing to do, and the answer says so at once.
-    if (left * travelled <= 0) { scrollMoved = 0; return {ok: true, x: point.x, y: point.y, left: 0}; }
-    scrolling = {box: scroller, x: point.x, y: point.y, rest: left, travelled, start: from, still: 0};
-    return {ok: true, x: point.x, y: point.y, left};
+    // Where the box is asked to go: an end of it, or a distance from where
+    // it stands now.
+    const goal = command.to === 'bottom' ? Infinity : command.to === 'top' ? 0
+      : typeof command.by === 'number' ? scrollYOffset(scroller) + command.by : scrollYOffset(scroller);
+    return beginScroll(scroller, point, goal);
   }
-  // What the box the wheel turns over has left of the distance after a turn:
-  // a list that renders more as it scrolls says so here, and the wheel turns
-  // again, as a hand's next turn would.
+  // A scroll is the wheel turned until the box stands where it was asked to
+  // go, or as near as it can go: the end of what it holds now, which grows
+  // for a list that renders more as it scrolls. What is left is always
+  // measured from where the box stands, so a turn the page shows late, or
+  // one the wheel made twice, is put right by the next turn and never
+  // carries the box past where it was asked to go for good.
+  const scrollAnswer = (left, wait) => wait ? {ok: true, x: scrolling.x, y: scrolling.y, left, wait: true}
+    : {ok: true, x: scrolling.x, y: scrolling.y, left};
+  // The next turn toward where the box was asked to go; none when it stands
+  // there. The turn is owed by the box until the box has shown it.
+  function scrollTurn() {
+    const box = scrolling.box, held = scrollable(box), now = scrollYOffset(box);
+    const goal = Math.max(0, Math.min(scrolling.goal, held));
+    let left = Math.round(goal - now);
+    // A box asked to go further than it holds is turned at its end all the
+    // same: a page that loads more once its end is reached is given the
+    // turn that makes it, and the looks after it for what it loads to
+    // arrive. A turn that brings nothing is one never shown.
+    if (!left && scrolling.goal > held && now >= held - 1) left = Math.round(Math.min(scrolling.goal, WHEEL_TO_THE_END) - now);
+    scrolling.owed = Math.max(-MAX_WHEEL_TURN, Math.min(MAX_WHEEL_TURN, left));
+    return scrollAnswer(scrolling.owed, false);
+  }
+  function beginScroll(box, point, goal) {
+    scrolling = {box, x: point.x, y: point.y, goal, start: scrollYOffset(box), still: 0, owed: 0, unshown: 0};
+    scrollMoved = 0;
+    scrollAt = placeOf(box);
+    return scrollTurn();
+  }
+  // What the box has left to go after a turn. A turn the box has not shown
+  // in full is waited for while the box moves, and a few looks more when it
+  // does not: the page shows a turn a frame or a few after the wheel made
+  // it, and turning again meanwhile would make it twice. A turn never shown
+  // was given nothing by the page (a frame still settling, a box whose
+  // content arrives later) and is made once more; a second one never shown
+  // says the box has stopped.
   function scrollLeft() {
     if (!scrolling) return {ok: true, x: innerWidth / 2, y: innerHeight / 2, left: 0};
-    const box = scrolling.box, now = scrollYOffset(box), moved = Math.abs(now - scrolling.start);
-    scrollMoved = (scrollMoved || 0) + Math.round(now - scrolling.start);
-    scrolling.rest -= scrolling.travelled > 0 ? Math.min(moved || now, scrolling.rest)
-      : -Math.min(moved || -now, -scrolling.rest);
+    const box = scrolling.box, now = scrollYOffset(box), gone = now - scrolling.start;
+    scrollMoved = (scrollMoved || 0) + Math.round(gone);
+    scrollAt = placeOf(box);
     scrolling.start = now;
-    // A turn that moved nothing may have been given nothing by the page yet —
-    // a frame still settling, a box whose content arrives later — so it is
-    // tried again, a few times, before the wheel says the page has stopped.
-    // The turns the wheel is allowed are what ends a page that never moves.
-    if (!moved && ++scrolling.still <= MAX_SCROLL_STILL)
-      return {ok: true, x: scrolling.x, y: scrolling.y, left: scrolling.travelled > 0 ? Math.min(scrolling.rest, room(box))
-        : -Math.max(-scrolling.rest - Math.max(now, 0), 0)};
-    const left = !moved ? 0 : scrolling.travelled > 0 ? Math.min(scrolling.rest, room(box))
-      : -Math.max(-scrolling.rest - Math.max(now, 0), 0);
-    return {ok: true, x: scrolling.x, y: scrolling.y, left: Math.round(left)};
+    if (scrolling.owed) {
+      const owed = scrolling.owed - gone;
+      scrolling.owed = Math.abs(owed) < 1 || owed * scrolling.owed < 0 ? 0 : owed;
+      if (!scrolling.owed) { scrolling.still = 0; scrolling.unshown = 0; }
+      else {
+        scrolling.still = gone ? 0 : scrolling.still + 1;
+        if (scrolling.still <= SCROLL_OWED_LOOKS)
+          return scrollAnswer(Math.round(scrolling.owed) || Math.sign(scrolling.owed), true);
+        scrolling.owed = 0;
+        scrolling.still = 0;
+        if (++scrolling.unshown > MAX_SCROLL_UNSHOWN) return scrollAnswer(0, false);
+      }
+    }
+    return scrollTurn();
   }
   // The class the page's own sheets never use: a resting pointer puts it on
   // the elements it is over, and a hover-only rule reads `:hover` as it.
@@ -733,17 +777,20 @@ globalThis.__tiloPage ||= (() => {
     return failure('invalid_request', `Read the element at a point in the page itself, not in frame ${frameId()}`);
   }
 
-  function outline() {
-    const {lines, frames: listed, cut} = outlineLines();
-    setLastLines(lines);
+  function outline(from) {
+    const {lines, frames: listed, cut, first, last} = outlineLines(from);
+    // What `changes` compares with is a read from the top: reading on leaves
+    // it as it was.
+    const onward = first > 1;
+    if (!onward) setLastLines(lines);
     const frame = frameId();
     const where = frame ? ` in frame ${frame}` : '';
     // A read that stopped short says so in its answer, not only in its last
     // line: an agent that reads the message and acts on it would otherwise
     // believe it has seen the whole page, when what it was asked to check may
     // be in the part it never saw.
-    return {ok: true, message: cut ? `Read ${lines.length} lines${where}, and stopped there: ${cut}`
-        : `Read ${lines.length} lines${where}`,
+    const read = onward ? `Read lines ${first} to ${last}${where}` : `Read ${lines.length} lines${where}`;
+    return {ok: true, message: cut ? `${read}, and stopped there: ${cut}` : read,
       outline: lines.join('\n'), data: {frames: listed}};
   }
 
@@ -753,9 +800,16 @@ globalThis.__tiloPage ||= (() => {
   function changes() {
     // What a scroll answers says how far it took the page, so a turn that
     // changed no line still tells the caller the page moved, and by how much.
-    const moved = takeScrollMoved();
+    const moved = takeScrollMoved(), place = takeScrollAt();
     const before = getLastLines(), {lines} = outlineLines();
     setLastLines(lines);
+    const stands = place ? ` ${place.at} of ${place.of}` : '';
+    const travelled = moved === null ? '' : moved ? `Scrolled ${Math.abs(moved)}px ${moved > 0 ? 'down' : 'up'}${stands ? ',' : ''}${stands ? ' to' + stands : ''}`
+      : `Did not move${stands ? ', at' + stands : ''}`;
+    // A scroll answers with how far it went. A caller that had not read the
+    // page is told so, not handed the whole page for turning a wheel.
+    if (!before && moved !== null)
+      return {ok: true, message: `${travelled}; the page had not been read before, so read it to see what it shows`, outline: ''};
     if (!before)
       return {ok: true, message: `First read: ${lines.length} lines`, outline: lines.join('\n')};
     if (before.length * lines.length > MAX_DIFF_CELLS)
@@ -773,7 +827,7 @@ globalThis.__tiloPage ||= (() => {
       else { out.push('- ' + before[i++]); removed++; }
     }
     const diff = added || removed ? `${added} lines added, ${removed} removed` : 'Nothing changed';
-    const told = moved === null ? diff : moved ? `Scrolled ${Math.abs(moved)}px ${moved > 0 ? 'down' : 'up'}; ${diff[0].toLowerCase()}${diff.slice(1)}` : `Did not move; ${diff[0].toLowerCase()}${diff.slice(1)}`;
+    const told = moved === null ? diff : `${travelled}; ${diff[0].toLowerCase()}${diff.slice(1)}`;
     return {ok: true, message: told, outline: out.join('\n')};
   }
 
@@ -969,20 +1023,37 @@ globalThis.__tiloPage ||= (() => {
     return out;
   }
 
-  function outlineLines() {
+  function walkLines(maxLines, maxChars) {
     const lines = [];
     let chars = 0, visited = 0, truncated = false, pending = '', pendingDepth = 0;
     const emit = (depth, text) => {
-      if (lines.length >= MAX_LINES || chars >= MAX_CHARS) { truncated = true; return false; }
+      if (lines.length >= maxLines || chars >= maxChars) { truncated = true; return false; }
       const line = '  '.repeat(Math.min(depth, 24)) + '- ' + text;
       lines.push(line);
       chars += line.length + 1;
       return true;
     };
+    // Running text is printed whole. Where the page breaks it with two line
+    // breaks, as pages without paragraph elements do, each part is a line of
+    // its own; and a run longer than a line carries goes on in the next
+    // line, broken at the end of a sentence, so no word of it is left out.
     const flush = () => {
-      const text = clean(pending, MAX_TEXT);
+      const run = pending;
       pending = '';
-      if (text) emit(pendingDepth, `text ${quote(text)}`);
+      for (const paragraph of run.split(PARAGRAPH_BREAK)) {
+        let text = clean(paragraph.replaceAll(LINE_BREAK, ' '), Infinity);
+        while (text) {
+          let piece = text;
+          if (piece.length > MAX_PROSE) {
+            const held = piece.slice(0, MAX_PROSE);
+            const sentence = Math.max(held.lastIndexOf('. '), held.lastIndexOf('? '), held.lastIndexOf('! ')) + 1;
+            const word = held.lastIndexOf(' ');
+            piece = piece.slice(0, sentence > MAX_PROSE / 2 ? sentence : word > MAX_PROSE / 2 ? word : MAX_PROSE);
+          }
+          text = text.slice(piece.length).trim();
+          if (!emit(pendingDepth, `text ${quote(piece.trim())}`)) return;
+        }
+      }
     };
     markHoverTargets();
     const hovering = hoverTargets || new Set();
@@ -1010,6 +1081,11 @@ globalThis.__tiloPage ||= (() => {
       const element = node, tag = element.localName;
       if (SKIP.has(tag) || element.getAttribute('aria-hidden') === 'true') return;
       if (tag === 'input' && type(element) === 'hidden') return;
+      // A line break inside running text: two of them end a paragraph.
+      if (tag === 'br') {
+        if (pending && !context.inside && context.visible) pending += LINE_BREAK;
+        return;
+      }
       if (element.checkVisibility && !element.checkVisibility()) return;
       const style = getComputedStyle(element);
       const visible = style.visibility === 'visible';
@@ -1124,15 +1200,65 @@ globalThis.__tiloPage ||= (() => {
     if (document.body) visit(document.body, 0, {inside: false, pointer: false, visible: true});
     flush();
     prune();
+    return {lines, truncated, frames: frames()};
+  }
+
+  // The outline is read a part at a time: as much as one read carries, from
+  // the line the caller names (the first when it names none). The page is
+  // walked whole each time, so a line keeps its number between reads of a
+  // page that has not changed, and a read that stopped is read on from where
+  // it stopped.
+  function outlineLines(from) {
+    const {lines: all, truncated: beyond, frames: listed} = walkLines(MAX_ALL_LINES, MAX_ALL_CHARS);
+    const first = Math.max(1, Math.floor(from) || 1) - 1;
+    if (first > 0 && first >= all.length)
+      throw failure('invalid_request', `The page's outline has ${all.length} lines; there is no line ${first + 1} to read from`);
+    let end = first, chars = 0;
+    while (end < all.length && end - first < MAX_LINES && chars < MAX_CHARS) chars += all[end++].length + 1;
+    const lines = all.slice(first, end);
     // What stopped the read, so the reader knows whether more of the page is
     // still there to reach and how to reach it.
     const cap = chars >= MAX_CHARS && lines.length < MAX_LINES
       ? `${MAX_CHARS} characters of outline` : `${MAX_LINES} outline lines`;
-    const cut = !truncated ? '' : `this read carries ${cap} and the page goes on past them: ` +
-      'read the page again once it has finished loading, or name an element by where it ' +
-      'is on the screen with read-page-element-at';
-    if (truncated) lines.push(`- text "… ${cut}"`);
-    return {lines, cut, frames: frames()};
+    const cut = end < all.length
+      ? `this read carries ${cap} (lines ${first + 1} to ${end} of ${beyond ? 'more than ' : ''}${all.length}) and the page goes on past them: ` +
+        `read on from line ${end + 1} with from, or name an element by where it is on the screen with read-page-element-at`
+      : beyond ? `this read ends at line ${end}, as far as a page is read, and the page goes on past them: ` +
+        'name an element by where it is on the screen with read-page-element-at' : '';
+    if (cut) lines.push(`- text "… ${cut}"`);
+    return {lines, cut, frames: listed, first: first + 1, last: end, total: all.length};
+  }
+
+  // Where the page says something: the outline lines that hold the words,
+  // by their numbers, so a reader goes to them instead of reading the page
+  // through to find them. It reads what the outline reads, so what the
+  // outline hides (a secret's value) is not found either.
+  const MAX_SEARCH_HITS = 30, SEARCH_CONTEXT = 160;
+  function search(text) {
+    const wanted = clean(text, MAX_TEXT);
+    if (!wanted) throw failure('invalid_request', 'A search needs the words to look for');
+    // A line holds its words as it prints them, quotes escaped.
+    const needle = quote(wanted).slice(1, -1).toLowerCase();
+    const {lines: all, truncated: beyond} = walkLines(MAX_ALL_LINES, MAX_ALL_CHARS);
+    const hits = [];
+    let total = 0;
+    all.forEach((line, index) => {
+      const at = line.toLowerCase().indexOf(needle);
+      if (at < 0) return;
+      total++;
+      if (hits.length >= MAX_SEARCH_HITS) return;
+      const start = Math.max(0, at - SEARCH_CONTEXT), end = Math.min(line.length, at + needle.length + SEARCH_CONTEXT);
+      hits.push({line: index + 1, text: (start ? '…' : '') + line.slice(start, end).trim() + (end < line.length ? '…' : '')});
+    });
+    const where = frameId() ? ` in frame ${frameId()}` : '';
+    if (!total)
+      return {ok: true, message: `Nothing on the page${where} says ${quote(wanted)}${beyond ? ', as far as a page is read' : ''}. ` +
+        'Words on either side of a link, or in two paragraphs, are on separate lines: search for fewer of them',
+        outline: '', data: {matches: [], total: 0}};
+    const listed = total > hits.length ? `, the first ${hits.length} listed` : '';
+    return {ok: true, message: `${total} ${total === 1 ? 'line says' : 'lines say'} ${quote(wanted)}${where}${listed}; ` +
+      'read on from a line by giving its number as from',
+      outline: hits.map(hit => `${hit.line}: ${hit.text}`).join('\n'), data: {matches: hits, total}};
   }
 
   // What the page shows that an agent can act on, as the outline prints it:
@@ -1282,7 +1408,8 @@ globalThis.__tiloPage ||= (() => {
       : role ? closeness(candidate.kind, role) : 0}));
     scored.sort((a, b) => a.near - b.near);
     const nearest = scored.slice(0, MAX_FIND_NEAR).map(({candidate}) => candidate.line);
-    return failure('not_found', `Nothing on the page is ${asked}. The nearest are: ${nearest.join('; ')}.${frames}`);
+    return failure('not_found', `Nothing on the page is ${asked}. The nearest are: ${nearest.join('; ')}.${frames} ` +
+      'A find names controls and headings; words in the page\'s text are found by searching for them');
   }
 
   // The element a stable description names, answered with its ref in this
@@ -2169,12 +2296,460 @@ globalThis.__tiloPage ||= (() => {
     return {x: end.x, y: end.y, element: end.element};
   }
 
+  // Who set what a field holds. Several actors may work in one tab (agents,
+  // and people typing into the page), and whoever reviews the form afterwards
+  // is owed the truth about each answer: which actor's action wrote it,
+  // whether it was typed straight into the page, and whether anything changed
+  // it after. An action opens the window its own input lands in, and each
+  // edit it causes keeps the window open a little longer; an edit outside
+  // any window is direct input when the browser trusts its event, and the
+  // page's own script when it does not.
+  const ACTS = new Set(['locate', 'fill', 'fill_files', 'select', 'submit', 'focus', 'arm', 'fill_form']);
+  const ACTING_MS = 1500, GESTURE_ACTING_MS = 20000;
+  const provenance = new WeakMap();
+  let acting = null;
+  function heldValue(element) {
+    const tag = element.localName, kind = type(element);
+    if (tag === 'input' && (kind === 'checkbox' || kind === 'radio')) return element.checked ? 'checked' : 'unchecked';
+    if (tag === 'input' && kind === 'file') return [...(element.files || [])].map(file => file.name).join(', ');
+    if (tag === 'select') return [...element.selectedOptions].map(option => clean(option.label, MAX_NAME)).join(', ');
+    if (tag === 'input' || tag === 'textarea')
+      return secret(element) ? `<${element.value.length} characters hidden>` : element.value;
+    if (element.isContentEditable) return element.innerText;
+    const aria = element.getAttribute('aria-checked');
+    return aria === null ? '' : aria === 'true' ? 'checked' : 'unchecked';
+  }
+  const noteEdit = event => {
+    const path = event.composedPath ? event.composedPath() : [];
+    const element = path[0] && path[0].nodeType === 1 ? path[0] : event.target;
+    if (!element || element.nodeType !== 1) return;
+    const now = performance.now();
+    const live = acting && now < acting.until ? acting : null;
+    if (live) live.until = Math.max(live.until, now + ACTING_MS);
+    // An event that leaves a field holding what it held says nothing new of
+    // who set it: a field tells of its change again when focus leaves it,
+    // which may be during someone else's action.
+    const held = heldValue(element), known = provenance.get(element);
+    if (known && known.value === held) return;
+    provenance.set(element, {by: live ? live.actor : '', how: live ? 'action' : event.isTrusted ? 'input' : 'page',
+      seq: live ? live.seq : 0, value: held});
+  };
+  addEventListener('input', noteEdit, true);
+  addEventListener('change', noteEdit, true);
+
+  // The description that names an element wherever its document sits in its
+  // history: the role and name `find` reads back, and its number among equal
+  // matches when there are several. What an action did is recorded by it, so
+  // the record still names the field once its document's refs are gone.
+  function targetOf(element) {
+    try {
+      const all = findCandidates();
+      const own = all.find(candidate => candidate.element === element);
+      if (!own) return null;
+      const same = all.filter(candidate => candidate.kind === own.kind && (!own.label || candidate.label === own.label));
+      const target = {role: own.kind};
+      if (own.label) target.name = own.label;
+      if (same.length > 1) target.nth = same.indexOf(own) + 1;
+      return target;
+    } catch (_) { return null; }
+  }
+  // What a form asks may change with an answer. A field that appears when
+  // another is answered is said in that answer, so its caller does not go
+  // on with a form it has not read.
+  const askedNames = () => {
+    try { return readForms().flatMap(surface => surface.fields.map(field => `${surface.id}\n${field.name}`)); }
+    catch (_) { return null; }
+  };
+  function opening(act) {
+    const before = askedNames();
+    const result = act();
+    if (!before || !result || result.ok === false || typeof result.message !== 'string') return result;
+    const known = new Set(before);
+    const opened = (askedNames() || []).filter(name => !known.has(name)).map(name => name.split('\n')[1]);
+    if (opened.length) result.message += `; the form now also asks ${opened.slice(0, 8).map(quote).join(', ')}`;
+    return result;
+  }
+  const acted = (ref, result) => {
+    if (result && result.ok !== false && typeof ref === 'string') {
+      try { const target = targetOf(resolve(ref)); if (target) result.target = target; } catch (_) {}
+    }
+    return result;
+  };
+
+  // Every field of the document with what it holds now and who set it: the
+  // read a filled form is reviewed by. It reads values only, and asks the
+  // page's own validity without running its validation events.
+  const FIELD_KINDS = new Set(['textbox', 'searchbox', 'combobox', 'listbox', 'checkbox', 'radio', 'switch',
+    'slider', 'spinbutton', 'file', 'color']);
+  const MAX_FIELDS = 400;
+  function fields() {
+    const listed = [], lines = [];
+    const counts = {action: 0, input: 0, page: 0, changed: 0, unset: 0};
+    let cut = 0;
+    // The question each field answers, as the page's forms name it, so a
+    // review and an answer speak of a field by the same name.
+    const questions = new Map();
+    for (const surface of readForms()) {
+      for (const asked of surface.fields) {
+        if (grouped(asked))
+          for (const option of asked.options) questions.set(option.control, {form: surface.id, question: asked.name, answer: option.label});
+        else questions.set(asked.control, {form: surface.id, question: asked.name});
+      }
+    }
+    for (const candidate of findCandidates()) {
+      const element = candidate.element;
+      if (!FIELD_KINDS.has(candidate.kind) || element.localName === 'option') continue;
+      if (listed.length >= MAX_FIELDS) { cut++; continue; }
+      const held = heldValue(element);
+      const field = {element: refOf(element), role: candidate.kind, name: candidate.label,
+        value: clean(held, MAX_VALUE)};
+      if (candidate.places) field.under = candidate.places.replace(/: $/, '');
+      if (element.required || element.getAttribute('aria-required') === 'true') field.required = true;
+      if (element.disabled || element.readOnly) field.locked = true;
+      const validity = element.validity;
+      if ((validity && !validity.valid) || element.getAttribute('aria-invalid') === 'true') {
+        field.invalid = true;
+        const problem = clean(element.validationMessage || '', MAX_VALUE);
+        if (problem) field.problem = problem;
+      }
+      // A radio's answer is the one that is chosen: what an unchosen one was
+      // set to before says nothing of the answer its group gives now.
+      const set = candidate.kind === 'radio' && held === 'unchecked' ? null : provenance.get(element);
+      let said = 'not set since this page was first read';
+      if (set) {
+        const who = set.how === 'action' ? `${set.by ? quote(set.by) : 'an unnamed actor'}, action ${set.seq}`
+          : set.how === 'input' ? 'direct input into the page' : "the page's own script";
+        field.set = {how: set.how};
+        if (set.how === 'action') { field.set.by = set.by; field.set.seq = set.seq; }
+        if (set.value !== held) { field.set.changed = true; counts.changed++; said = `changed after it was set by ${who}`; }
+        else { counts[set.how]++; said = `set by ${who}`; }
+      } else counts.unset++;
+      const asked = questions.get(element);
+      if (asked) {
+        field.form = asked.form;
+        field.question = asked.question;
+        if (asked.answer !== undefined) field.answer = asked.answer;
+      }
+      listed.push(field);
+      lines.push(asked ? `- ${quote(asked.question)}: ${candidate.line} (${said})` : `- ${candidate.line} (${said})`);
+    }
+    const where = frameId() ? ` in frame ${frameId()}` : '';
+    const more = cut ? `, and ${cut} more fields past the ${MAX_FIELDS} this read carries` : '';
+    const message = `${listed.length} fields${where}: ${counts.action} set by actions, ${counts.input} by direct input, ` +
+      `${counts.page} by the page's script, ${counts.changed} changed after they were set, ${counts.unset} not set${more}`;
+    return {ok: true, message, outline: lines.join('\n'), data: {fields: listed, counts}};
+  }
+
+  // A page's forms as typed actions. A form is what a page asks of whoever
+  // fills it in: named questions, each of a kind, some with the answers it
+  // offers. Read that way, an agent answers a form by its questions' names
+  // in one action instead of finding and operating each control, and the
+  // same answers work on the next visit, since a name outlives the refs of
+  // the document it was read in. A form is known again by its signature,
+  // which says what it asks and where it sends it, so a caller that learned
+  // a form once can tell it has changed. What this cannot place (a secret,
+  // a file, a field written by typing, a name the form no longer asks) is
+  // said field by field with the ref the element's own action takes, so the
+  // caller falls back to that action for those fields only.
+  const MAX_FORMS = 24, MAX_FORM_FIELDS = 150, MAX_CHOICES = 80, MAX_SAID_CHOICES = 12;
+  const INPUT_KINDS = new Set(['email', 'tel', 'url', 'number', 'date', 'time', 'datetime-local', 'month', 'week',
+    'range', 'color']);
+  const YES = new Set(['true', 'yes', 'on', 'checked', '1']), NO = new Set(['false', 'no', 'off', 'unchecked', '0']);
+  const lower = text => String(text).trim().toLowerCase();
+  // A form's own members, read past any control the page named like them.
+  const formElements = form => [...Reflect.get(HTMLFormElement.prototype, 'elements', form)];
+  function signatureOf(text) {
+    let hash = 0x811c9dc5;
+    for (let i = 0; i < text.length; i++) { hash ^= text.charCodeAt(i); hash = Math.imul(hash, 0x01000193); }
+    return (hash >>> 0).toString(16).padStart(8, '0');
+  }
+  function groupName(element) {
+    const group = element.closest('fieldset,[role=group],[role=radiogroup]');
+    return group ? name(group, 'group') : '';
+  }
+  function formLabel(form) {
+    const own = name(form, 'form');
+    if (own) return own;
+    // The heading a form stands under names it. A heading inside it names a
+    // part of it, and is the form's only when nothing stands over the form.
+    // A heading of something the page is telling its reader (the summary of
+    // what is wrong with the answers) is not a name for the form under it.
+    let last = null;
+    for (const heading of document.querySelectorAll('h1,h2,h3')) {
+      if (!(heading.compareDocumentPosition(form) & Node.DOCUMENT_POSITION_FOLLOWING)) break;
+      if (!form.contains(heading) && !heading.closest('[role=alert],[role=alertdialog],[role=status]')) last = heading;
+    }
+    if (last) return clean(last.innerText, MAX_NAME);
+    const inside = form.querySelector('h1,h2,h3,h4');
+    return inside ? clean(inside.innerText, MAX_NAME) : '';
+  }
+  function formSurface(id, form, controls) {
+    const fields = [], submit = [], groups = new Map();
+    const shares = control => controls.some(other => other !== control && other.localName === 'input' &&
+      type(other) === 'checkbox' && other.name === control.name);
+    for (const control of controls) {
+      if (fields.length >= MAX_FORM_FIELDS) break;
+      const tag = control.localName, kind = tag === 'input' ? type(control) : tag;
+      if (!['input', 'select', 'textarea', 'button'].includes(tag) || kind === 'hidden' || control.disabled) continue;
+      if (control.checkVisibility && !control.checkVisibility()) continue;
+      if (tag === 'button' || ['submit', 'image', 'button', 'reset'].includes(kind)) {
+        const sends = tag === 'button' ? control.type === 'submit' : kind === 'submit' || kind === 'image';
+        if (sends) submit.push({label: name(control, 'button') || 'Submit', control});
+        continue;
+      }
+      // Radios of one name are one question with one answer; checkboxes of
+      // one name are one question with any of its answers.
+      if (kind === 'radio' || (kind === 'checkbox' && control.name && shares(control))) {
+        const key = `${kind}:${control.name}`;
+        let group = groups.get(key);
+        if (!group) {
+          group = {label: groupName(control) || clean(control.name, MAX_NAME), group: '',
+            kind: kind === 'radio' ? 'choice' : 'choices', options: []};
+          groups.set(key, group);
+          fields.push(group);
+        }
+        if (group.options.length < MAX_CHOICES)
+          group.options.push({label: name(control, role(control)) || clean(control.value, MAX_NAME), control});
+        if (control.required) group.required = true;
+        continue;
+      }
+      const field = {label: name(control, role(control)) || clean(control.name, MAX_NAME), group: groupName(control), control};
+      if (tag === 'select') {
+        field.kind = control.multiple ? 'choices' : 'choice';
+        field.options = [...control.options].filter(option => option.value !== '' && !option.disabled)
+          .slice(0, MAX_CHOICES).map(option => ({label: clean(option.label, MAX_NAME)}));
+      } else if (kind === 'checkbox') field.kind = 'flag';
+      else if (kind === 'file') field.kind = 'file';
+      else if (secret(control)) field.kind = 'secret';
+      else field.kind = INPUT_KINDS.has(kind) ? kind : 'text';
+      if (control.required || control.getAttribute('aria-required') === 'true') field.required = true;
+      if (control.readOnly) field.locked = true;
+      fields.push(field);
+    }
+    // A question is answered by its name, so each name is one question's: a
+    // label two questions share ("Day") is said with the group it is in.
+    const shared = label => fields.filter(field => field.label === label).length > 1;
+    const taken = new Map();
+    for (const field of fields) {
+      const base = (field.group && field.label && shared(field.label) ? `${field.group}: ${field.label}` : field.label) || 'field';
+      const count = (taken.get(base) || 0) + 1;
+      taken.set(base, count);
+      field.name = count === 1 ? base : `${base} (${count})`;
+    }
+    let where = '';
+    const method = form ? (form.getAttribute('method') || 'get').toUpperCase() : '';
+    if (form) {
+      try {
+        const url = new URL(form.getAttribute('action') || '', location.href);
+        where = url.origin === location.origin ? url.pathname : url.origin + url.pathname;
+      } catch (_) {}
+    }
+    const signature = signatureOf([method, where,
+      ...fields.map(field => `${field.name}:${field.kind}:${field.required ? 1 : 0}`)].join('|'));
+    return {id, form, label: form ? formLabel(form) : '', method, where, signature, fields, submit};
+  }
+  function readForms() {
+    const read = [...document.querySelectorAll('form')].slice(0, MAX_FORMS)
+      .map((form, index) => formSurface(`form${index + 1}`, form, formElements(form)));
+    const loose = [...document.querySelectorAll('input,select,textarea,button')].filter(control => !control.form);
+    if (loose.some(control => control.localName !== 'button')) read.push(formSurface('page', null, loose));
+    return read.filter(surface => surface.fields.length);
+  }
+  const grouped = field => !field.control;
+  function fieldValue(field) {
+    if (grouped(field)) return field.options.filter(option => option.control.checked).map(option => option.label);
+    if (field.kind === 'choice' || field.kind === 'choices')
+      return [...field.control.selectedOptions].filter(option => option.value !== '').map(option => clean(option.label, MAX_NAME));
+    if (field.kind === 'flag') return field.control.checked;
+    if (field.kind === 'secret') return field.control.value ? `<${field.control.value.length} characters hidden>` : '';
+    if (field.kind === 'file') return [...(field.control.files || [])].map(file => clean(file.name, MAX_NAME));
+    return clean(field.control.value, MAX_VALUE);
+  }
+  const unanswered = value => Array.isArray(value) ? !value.length : value === '' || value === false;
+  function forms() {
+    const lines = [], listed = [];
+    let asked = 0;
+    for (const surface of readForms()) {
+      const head = [surface.id];
+      if (surface.label) head.push(quote(surface.label));
+      if (surface.method) head.push(`(${surface.method} ${surface.where})`);
+      head.push(`signature=${surface.signature}`);
+      lines.push(`- ${head.join(' ')}`);
+      const out = {form: surface.id, label: surface.label, method: surface.method, action: surface.where,
+        signature: surface.signature, fields: [], submit: surface.submit.map(button => button.label)};
+      for (const field of surface.fields) {
+        const value = fieldValue(field), entry = {name: field.name, kind: field.kind};
+        const said = [field.kind];
+        if (field.options) {
+          entry.choices = field.options.map(option => option.label);
+          // An answer that is a control of its own is said with the ref its
+          // own action takes; a select's options have none.
+          const some = field.options.slice(0, MAX_SAID_CHOICES)
+            .map(option => option.control ? `${quote(option.label)} [ref=${refOf(option.control)}]` : quote(option.label)).join(', ');
+          const more = entry.choices.length > MAX_SAID_CHOICES ? `, … ${entry.choices.length - MAX_SAID_CHOICES} more` : '';
+          said[0] = `${field.kind === 'choice' ? 'one of' : 'any of'} ${some}${more}`;
+        }
+        if (field.kind === 'flag') said[0] = 'yes or no';
+        if (field.required) { entry.required = true; said.push('required'); }
+        if (field.locked) { entry.locked = true; said.push('read-only'); }
+        if (!unanswered(value)) { entry.value = value; said.push(`now ${quote(Array.isArray(value) ? value.join(', ') : value === true ? 'yes' : value)}`); }
+        if (grouped(field)) entry.elements = field.options.map(option => refOf(option.control));
+        else { entry.element = refOf(field.control); said.push(`[ref=${entry.element}]`); }
+        out.fields.push(entry);
+        lines.push(`  - ${quote(field.name)}: ${said.join(', ')}`);
+        asked++;
+      }
+      for (const button of surface.submit) lines.push(`  - submit ${quote(button.label)}`);
+      listed.push(out);
+    }
+    const message = listed.length ? `${listed.length} ${listed.length === 1 ? 'form asks' : 'forms ask'} ${asked} questions`
+      : 'This page has no form';
+    return {ok: true, message, outline: lines.join('\n'), data: {forms: listed}};
+  }
+  // One answer placed in the field it names, as the element's own action
+  // would place it; what it left the field holding is its return.
+  function placeAnswer(field, value) {
+    const ref = grouped(field) ? '' : refOf(field.control);
+    if (field.kind === 'secret')
+      throw failure('secret_field', `${quote(field.name)} is a password or card field; fill ${ref} with fill_secret, which keeps the text out of logs and history`);
+    if (field.kind === 'file') throw failure('needs_files', `${quote(field.name)} takes files; choose them for ${ref} with fill_files`);
+    if (field.locked) throw failure('not_editable', `${quote(field.name)} is read-only`);
+    if (grouped(field)) {
+      const wanted = field.kind === 'choices' && Array.isArray(value) ? value : [value];
+      const chosen = wanted.map(one => {
+        const option = field.options.find(option => option.label === String(one)) ||
+          field.options.find(option => lower(option.label) === lower(one));
+        if (!option)
+          throw failure('no_option', `${quote(field.name)} has no answer ${quote(String(one))}; it offers ${field.options.map(option => quote(option.label)).join(', ')}`);
+        return option;
+      });
+      for (const option of field.options) {
+        const want = chosen.includes(option);
+        if (field.kind === 'choice' ? want && !option.control.checked : option.control.checked !== want) option.control.click();
+      }
+      const missed = chosen.find(option => !option.control.checked);
+      if (missed) throw failure('rejected', `The page did not take ${quote(missed.label)} for ${quote(field.name)}`);
+      return chosen.map(option => option.label).join(', ');
+    }
+    if (field.kind === 'choice' || field.kind === 'choices') {
+      select(ref, (Array.isArray(value) ? value : [value]).map(String));
+      return [...field.control.selectedOptions].map(option => clean(option.label, MAX_NAME)).join(', ');
+    }
+    if (field.kind === 'flag') {
+      const want = typeof value === 'boolean' ? value : YES.has(lower(value)) ? true : NO.has(lower(value)) ? false : null;
+      if (want === null) throw failure('invalid_request', `${quote(field.name)} is answered yes or no`);
+      if (field.control.checked !== want) field.control.click();
+      if (field.control.checked !== want) throw failure('rejected', `The page did not take the answer to ${quote(field.name)}`);
+      return want ? 'yes' : 'no';
+    }
+    if (typeof value !== 'string' && typeof value !== 'number') throw failure('invalid_request', `${quote(field.name)} takes text`);
+    const filled = fill(ref, String(value), false);
+    if (filled && Array.isArray(filled.input))
+      throw failure('needs_typing', `${quote(field.name)} is written by typing; fill ${ref} on its own`);
+    return clean(String(value), MAX_VALUE);
+  }
+  function fillForm(id, answers, submitWith, crossOrigin) {
+    const read = readForms();
+    const surface = read.find(candidate => candidate.id === id) || read.find(candidate => candidate.signature === id);
+    if (!surface) {
+      const has = read.map(candidate => candidate.label ? `${candidate.id} ${quote(candidate.label)}` : candidate.id).join(', ');
+      throw failure('no_form', has ? `This page has no form ${quote(String(id))}: it has ${has}. A form named by a signature it no longer has has changed; read the page's forms again`
+        : 'This page has no form');
+    }
+    const before = new Set(surface.fields.map(field => field.name));
+    const results = [], set = [];
+    // Answers are placed in the order the form asks its questions, whatever
+    // order they were given in, and the form is read again after each: an
+    // answer may open the question another answer is for.
+    const waiting = new Map(Object.entries(answers || {}));
+    const named = (fields, asked) => {
+      const alike = fields.filter(field => lower(field.name) === lower(asked));
+      return fields.find(field => field.name === asked) || (alike.length === 1 ? alike[0] : null);
+    };
+    let asks = surface;
+    while (waiting.size) {
+      const answered = new Map();
+      for (const asked of waiting.keys()) {
+        const field = named(asks.fields, asked);
+        if (field && !answered.has(field)) answered.set(field, asked);
+      }
+      const field = asks.fields.find(candidate => answered.has(candidate));
+      if (!field) break;
+      const asked = answered.get(field), value = waiting.get(asked);
+      waiting.delete(asked);
+      try {
+        set.push({name: field.name, value: placeAnswer(field, value)});
+        results.push({name: field.name, ok: true});
+      } catch (error) {
+        const result = {name: field.name, ok: false, code: error && error.code || 'script',
+          message: clean(error && error.message || error, 300)};
+        if (!grouped(field)) result.element = refOf(field.control);
+        results.push(result);
+      }
+      if (waiting.size) asks = readForms().find(candidate => candidate.id === surface.id) || asks;
+    }
+    for (const asked of waiting.keys())
+      results.push({name: asked, ok: false, code: 'no_field', message: `The form asks nothing named ${quote(asked)}`});
+    const placed = set.length, missed = results.filter(result => !result.ok);
+    // What the form asks now: an answer may have opened a question the form
+    // did not ask before, and a required one left empty holds a submit back.
+    const after = readForms().find(candidate => candidate.id === surface.id);
+    const opened = after ? after.fields.filter(field => !before.has(field.name)).map(field => field.name) : [];
+    const empty = after ? after.fields.filter(field => field.required && unanswered(fieldValue(field))).map(field => field.name) : [];
+    let submitted = false, held = '';
+    if (submitWith !== undefined && submitWith !== null && submitWith !== false) {
+      try {
+        if (missed.length) held = 'not sent, since not every answer was placed';
+        else if (!surface.form) held = 'not sent: these fields are in no form, so click the button that sends them';
+        else {
+          const button = typeof submitWith === 'string'
+            ? surface.submit.find(candidate => candidate.label === submitWith) ||
+              surface.submit.find(candidate => lower(candidate.label) === lower(submitWith))
+            : surface.submit[0];
+          if (typeof submitWith === 'string' && !button)
+            throw failure('no_submit', `the form has no button ${quote(submitWith)}; it has ${surface.submit.map(candidate => quote(candidate.label)).join(', ') || 'none'}`);
+          guardSubmission(surface.form, button ? button.control : null, crossOrigin);
+          const invalid = formElements(surface.form).find(control => control.willValidate && !control.validity.valid);
+          if (invalid) held = `not sent: ${summary(invalid)} [ref=${refOf(invalid)}] ${clean(invalid.validationMessage, 200)}`;
+          else {
+            const send = HTMLFormElement.prototype.requestSubmit;
+            if (button) Reflect.apply(send, surface.form, [button.control]); else Reflect.apply(send, surface.form, []);
+            submitted = true;
+          }
+        }
+      } catch (error) {
+        held = `not sent: ${clean(error && error.message || error, 300)}`;
+      }
+    }
+    const said = [`Answered ${placed} of ${results.length} questions of ${surface.id}${surface.label ? ' ' + quote(surface.label) : ''}`];
+    if (missed.length) said.push(`not placed: ${missed.map(result => `${quote(result.name)} (${result.message})`).join('; ')}`);
+    if (submitted) said.push('sent'); else if (held) said.push(held);
+    if (opened.length) said.push(`the form now also asks ${opened.map(quote).join(', ')}`);
+    if (!submitted && empty.length) said.push(`still required: ${empty.map(quote).join(', ')}`);
+    if (!placed && !submitted) throw failure(missed[0] ? missed[0].code : 'invalid_request', said.join('; '));
+    return {ok: true, message: said.join('; '),
+      data: {form: surface.id, signature: surface.signature, results, set, submitted, now_asks: opened, unanswered: empty}};
+  }
+
   return {
     nativeTextInputElement, configureNativeTextEditor, fillFilesElement, fence, typed,
     run(command) {
       try {
         if (!doc) doc = command.doc;
         frameAddress = typeof command.frame === 'string' ? command.frame : '';
+        // Who asks, when the caller says: its own read baseline, and the name
+        // the edits its action causes are set down under.
+        if (typeof command.actor === 'string' || typeof command.seq === 'number' ||
+            command.action === 'outline' || command.action === 'changes')
+          actorId = typeof command.actor === 'string' ? command.actor : '';
+        if (typeof command.seq === 'number') {
+          if (ACTS.has(command.action))
+            acting = {actor: actorId, seq: command.seq, until: performance.now() + ACTING_MS};
+          else if (command.action === 'gesture_begin')
+            acting = {actor: actorId, seq: command.seq, until: performance.now() + GESTURE_ACTING_MS};
+          else if (command.action === 'gesture_end' && acting)
+            acting.until = Math.min(acting.until, performance.now() + ACTING_MS);
+        }
         // A gesture that spans two engine steps: read what is about to
         // change, let the pointer do its work, then answer with the change.
         if (command.action === 'gesture_begin') {
@@ -2223,7 +2798,7 @@ globalThis.__tiloPage ||= (() => {
         switch (command.action) {
           case 'prepare_text_input': case 'start_text_input': case 'check_text_input': case 'commit_text_input': case 'cancel_text_input': case 'undo_text_input': case 'redo_text_input':
             return guardedTextInput(command);
-          case 'outline': return outline();
+          case 'outline': return outline(command.from);
           // The ref of the element a stable description names, read from the
           // page as it is now.
           case 'find': return find(command);
@@ -2232,6 +2807,10 @@ globalThis.__tiloPage ||= (() => {
           // is enough and nothing is applied.
           case 'need_styles': { const n = markHoverTargets(); return {ok: true, need_styles: n > 0, doc: typeof doc === 'number' ? doc : command.doc}; }
           case 'changes': return changes();
+          case 'fields': return fields();
+          case 'forms': return forms();
+          case 'search': return search(command.text);
+          case 'fill_form': arm('script'); return fillForm(command.form, command.answers, command.submit, command.cross_origin);
           // A turn of the wheel: where it turns, and what is left of the
           // distance once the page has given what it has.
           case 'scroll_target': return scrollTarget(command);
@@ -2241,18 +2820,18 @@ globalThis.__tiloPage ||= (() => {
           case 'frame_element': return frameElement(command.frame);
           case 'frame_fence': return fence();
           case 'settle': return settle(command.quiet_ms, command.timeout_ms);
-          case 'locate': arm('pointer'); return locate(command.element, command.cross_origin);
+          case 'locate': arm('pointer'); return acted(command.element, locate(command.element, command.cross_origin));
           case 'locate_box': return locateBox(command.element);
           case 'capture': return captureRegion(command.element);
-          case 'fill': { arm('script'); return fill(command.element, command.text, command.secret); }
-          case 'fill_files': arm('script'); return fillFilesTarget(command.element, command.paths);
-          case 'select': arm('script'); return select(command.element, command.values);
-          case 'submit': arm('script'); return submit(command.element, command.cross_origin);
+          case 'fill': { arm('script'); return acted(command.element, opening(() => fill(command.element, command.text, command.secret))); }
+          case 'fill_files': arm('script'); return acted(command.element, fillFilesTarget(command.element, command.paths));
+          case 'select': arm('script'); return acted(command.element, opening(() => select(command.element, command.values)));
+          case 'submit': arm('script'); return acted(command.element, submit(command.element, command.cross_origin));
           case 'focus': {
             watch = null;
             const focused = focus(command.element, command.key, command.cross_origin);
             arm('key');
-            return focused;
+            return acted(command.element, focused);
           }
           case 'arm': return arm('key');
           case 'reader': return reader(command.enabled === true);

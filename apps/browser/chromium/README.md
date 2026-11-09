@@ -381,6 +381,153 @@ Not yet covered: cross-origin and same-origin iframe content (listed as
 python3 apps/browser/chromium/tests/page_actions.py target/chromium/tilo-chromium-host
 ```
 
+### Reading a page
+
+An outline line of text carries a paragraph whole; names and values stay
+short. Running text the page parts with two line breaks, as pages without
+paragraph elements do, is a line to each part. A run longer than 2000
+characters goes on in the next line, broken at the end of a sentence, so no
+word of the page's text is left out. One read carries at most 1200 lines or 100000
+characters. A read that stops short says so in its message and its last line,
+with the line to read on from: `outline` takes an optional `from`, the number
+of the line to start at (the first is 1, the most 1000000). The page is walked whole on each
+read (up to 20000 lines), so a line keeps its number between reads of a page
+that has not changed. Reading on does not move the baseline `changes`
+compares with; only a read from the top does. A `from` past the page's last
+line is refused.
+
+A `scroll` answers with how far it went and where it left what it scrolled
+(`Scrolled 700px down, to 1400 of 23400; nothing changed`, or `Did not move,
+at 0 of 23400`), then with what changed in the outline. A scroll by a distance
+goes that distance from wherever the box stands. The wheel is turned toward
+the place asked for and what is left is measured from where the box stands
+after each turn, so a turn the page shows late, or drops, neither stops the
+scroll short nor carries it too far. A box asked to go further than it holds
+is turned once more at its end, for a page that loads more there. On a page
+its caller has not read, a scroll says so in place of the changes and does not
+answer with the page.
+
+`action: "search"` with `text` (1 to 200 UTF-16 units) and optionally a
+`frame`, whose document is then the one searched, answers with the outline
+lines that hold those words in any letter case: `data.total`, and up to 30
+`data.matches` of `line` and the `text` around the match, also printed as
+`line: text`. A match's line is a `from` to read on from. It reads what the
+outline reads, so a secret's value is found by neither. Words on either side
+of a link, or in two paragraphs, are on separate lines. `find` names controls
+and headings only; its refusal says words are found by searching.
+
+### Several actors in one tab
+
+A tab may be worked in by more than one actor at once: two agents, agents on
+other devices, an agent and the person reviewing what it did. `page` takes an
+optional `actor`, a name of 1 to 64 UTF-16 units the caller gives whoever asks.
+The engine trusts it as it trusts the rest of the command: the app decides who
+may act and passes the name of the invoker it admitted.
+
+- **Each actor reads its own changes.** `changes` answers with what changed
+  since that actor's own last `outline` or `changes`, per frame. Another
+  actor's read takes nothing away from it. A caller that names no actor is
+  the one unnamed actor.
+- **Actions take turns.** A request that arrives while another runs waits and
+  runs in the order it came; it is not refused. At most 32 wait, each for at
+  most 30 seconds, after which it is answered `busy` as never run. A private
+  `text_input` request never waits and is still answered `busy`.
+- **A cancel names its request.** `page_cancel` takes an optional
+  `request_id`. A request still waiting is answered `cancelled` as never run;
+  the one running is stopped as before; any other request is left alone.
+  Without `request_id` it stops the request that is running.
+- **The tab keeps a record.** Every action that operates the page (`click`,
+  `fill`, `select`, `fill_files`, `press`, `submit`, `hover`, `drag`, `path`,
+  `pointer`, `scroll`, `reader`) is set down when it ends: `seq`, `time_ms`,
+  `actor`, `action`, `ok` (and `code`), `message`, `url` (and `to_url` when
+  the page left it), `navigation`, the `target` it acted on as `role`, `name`
+  and `nth` (what `find` takes, so it still names the element after the
+  document's refs are gone), the `text` it wrote and the `values` it chose.
+  A secret fill's text is never recorded, and nor is text the page refused.
+  Reads take no place in it. `page` with `action: "ledger"` and `since`
+  answers with the entries after that place, `next`, `more`, `dropped`, the
+  action `running` and how many are `waiting`. It reads nothing of the page,
+  so it answers at once whatever is running. `running` is an operating action
+  this host is carrying out now: a read that is running, or an action its
+  caller has not sent yet, shows as neither. The record holds the newest 1000
+  actions of the tab and lasts as long as the tab.
+- **An actor is told what the others did.** An answer to a named actor
+  carries `others`: the newest eight record entries of other actors since
+  that actor last heard from the tab (`others_earlier` counts older ones). An
+  operating action's own answer carries its `seq`. A refusal carries both as
+  an answer does: what the others did is often why an action was refused.
+  `seq`, `next`, `dropped` and `time_ms` are numbers that may arrive written
+  as doubles (`3.0`); they are whole.
+- **A form is reviewed by who set each field.** `action: "fields"` lists every
+  field of the document (or of a named `frame`) with what it holds now and
+  `set`: `how` is `action` (with `by` and `seq`), `input` (typed straight into
+  the page, as a person does) or `page` (the page's own script), and
+  `changed` when the field no longer holds what was set. Secrets are listed
+  by length. A field nothing set since the page was first read carries no
+  `set`. It reads values and the page's own validity without dispatching
+  events, and takes no place in the record.
+
+Attribution of edits is by time: an action opens a window its own input lands
+in, which each edit it causes extends, so direct input within 1.5 seconds of an
+action's last edit is read as that action's. Tracking starts when the document
+is first read or operated, so what was typed before that carries no `set`.
+
+### A form as typed actions
+
+`action: "forms"` reads the document's forms (or a named `frame`'s) as what
+they ask. Each form has an id (`form1`, `form2` in document order; `page` for
+fields in no form), a `label` (its own name, else the heading it stands under),
+its `method` and `action` path, a `signature` and its `submit` buttons by
+label. Each field has a `name`, a `kind` (`text`, `email`, `tel`, `url`,
+`number`, `date`, `time`, `datetime-local`, `month`, `week`, `range`, `color`,
+`choice`, `choices`, `flag`, `secret`, `file`), its `choices` when it offers
+them, `required`, `locked`, the `value` it holds and the ref (`element`, or
+`elements` for a group) its own action takes. Radios of one name are one
+`choice`; checkboxes of one name are one `choices`; a select's empty option is
+no answer and is not listed. A label two fields share is said with its group
+(`"Date of birth: Day"`). Hidden and disabled controls are not listed. The
+signature is a hash of the method, the path and every field's name, kind and
+whether it is required, so it names the same form on a later visit and stops
+naming it once the form asks something else. The outline prints an answer
+that is a control of its own (a radio, a checkbox of a group) with its ref.
+
+A `fill` or a `select` that makes a form ask something it did not ask before
+says so in its message (`; the form now also asks "Which country?"`). `fields`
+names each field by the question it answers as well: `form`, `question` and,
+for one answer of a group, `answer`, and its outline line starts with the
+question.
+
+`action: "fill_form"` answers a form: `form` (an id or a signature, 1 to 64
+UTF-16 units), `answers` (an object of at most 200 names of 1 to 200 units,
+each to text of at most 65536 units, a number, a boolean, or a list of at
+most 64 strings of at most 1024 units for `choices`) and optionally `submit`
+(`true` for the form's first submit button, a button's label of 1 to 200
+units, or `false`, which is the same as leaving it out) and `cross_origin`
+(a boolean, as on `submit`: a form that sends its data to another site is
+sent only with it). It takes no `frame`: a form in a frame is answered with
+its fields' own actions. Answers are placed in the form's own order, and
+the form is read again after each, so an answer that opens a question is
+placed before the answer to it. A name matches exactly, or in any letter case
+when only one field is like it. The answer's `data` carries `results` (one per
+answer: `ok`, or `code`, `message` and the field's `element`), `set` (name and
+the value placed), `submitted`, `now_asks` (fields that appeared) and
+`unanswered` (required fields still empty). Placing is the same DOM edit and
+events `fill` and `select` make; a checkbox or radio is clicked through the
+DOM.
+
+What it does not place is refused per field, for the caller to do with that
+field's own action: `secret_field` (use `fill` with `secret`), `needs_files`
+(`fill_files`), `needs_typing` (an editor `fill` types into), `no_option`,
+`not_editable`, `rejected`, and `no_field` for a name the form does not ask.
+A form with an answer not placed is not sent, nor one with a required field
+empty or invalid; the message says which. A call that places nothing and
+sends nothing fails with the first refusal's code. A form named by a signature
+it no longer has fails with `no_form`. `fill_form` takes a place in the tab's
+record with its `answers` as placed; `forms` is a read and takes none.
+
+Fields inside open shadow roots and in frames of another site are not read as
+part of a form; they stay reachable by the outline and their own actions.
+
 ### Private guarded text input
 
 `text_input` is a separate backend protocol; it does not activate page-agent

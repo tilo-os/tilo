@@ -10,6 +10,7 @@
 #include "include/wrapper/cef_closure_task.h"
 #include <algorithm>
 #include <cmath>
+#include <deque>
 #include <map>
 #include <functional>
 #include <chrono>
@@ -66,7 +67,7 @@ class PageAutomation final : public CefDevToolsMessageObserver {
       :browser_(browser),emit_(std::move(emit)),click_(std::move(click)),key_(std::move(key)),pointer_(std::move(pointer)),wheel_(std::move(wheel)),
        action_began_(std::move(action_began)),action_ended_(std::move(action_ended)) {}
   void Attach() { registration_=browser_->GetHost()->AddDevToolsMessageObserver(this); }
-  void Detach() { registration_=nullptr;browser_=nullptr;pending_.reset();CancelFileDialog(); }
+  void Detach() { registration_=nullptr;browser_=nullptr;pending_.reset();waiting_.clear();CancelFileDialog(); }
   // A page asked for files. A click this automation is driving holds the
   // chooser for `fill_files`; anything else keeps the platform panel.
   bool HoldFileDialog(CefRefPtr<CefFileDialogCallback> callback) {
@@ -109,10 +110,55 @@ class PageAutomation final : public CefDevToolsMessageObserver {
   // The tab asked this action to stop. The page cannot be told mid-request, so
   // the answer is the one thing that is true: it was not observed to finish,
   // and whether it took effect is unknown.
-  void Cancel() {
+  //
+  // Several actors may have actions in one tab, one running and others
+  // waiting their turn, so a caller that gives up names the request it gives
+  // up on: one still waiting is taken out before it ran, and is known to
+  // have changed nothing; the one running is stopped as above; any other is
+  // left alone. A cancel that names no request stops the one running.
+  void Cancel(int request=0) {
+    if(request>0) {
+      for(auto it=waiting_.begin();it!=waiting_.end();++it) {
+        if((*it)->GetInt("request_id")!=request) continue;
+        waiting_.erase(it);
+        Unrun(request,Failure("cancelled","The action was cancelled while it waited its turn in this tab, so it never ran and changed nothing"));
+        return;
+      }
+      if(!pending_ || pending_->request!=request) return;
+    }
     if(!pending_) return;
     Finish(Failure("cancelled","The action was cancelled before the page answered it, so whether "
       "it took effect is unknown; read the page again to see what it did"));
+  }
+  // What was done in this tab, in the order it was done, after the place
+  // `since` names: who asked, what they asked for, what it acted on and how
+  // it ended. It reads nothing of the page, so it answers at once whatever
+  // is running, and says what is running and how many wait behind it.
+  void Ledger(CefRefPtr<CefDictionaryValue> d) {
+    const double since=d->GetType("since")==VTYPE_DOUBLE?d->GetDouble("since"):d->GetInt("since");
+    auto list=CefListValue::Create();size_t count=0;bool more=false;double last=since;
+    for(const auto& entry:ledger_) {
+      if(entry->GetDouble("seq")<=since) continue;
+      if(count>=kMaxLedgerRead) { more=true;break; }
+      list->SetDictionary(count++,entry->Copy(false));last=entry->GetDouble("seq");
+    }
+    auto data=CefDictionaryValue::Create();
+    data->SetList("entries",list);data->SetDouble("next",last);data->SetBool("more",more);
+    data->SetDouble("dropped",static_cast<double>(ledger_dropped_));
+    data->SetInt("waiting",static_cast<int>(waiting_.size()));
+    if(pending_ && pending_->seq) {
+      auto running=CefDictionaryValue::Create();
+      running->SetDouble("seq",static_cast<double>(pending_->seq));
+      running->SetString("actor",pending_->actor);running->SetString("action",pending_->asked);
+      data->SetDictionary("running",running);
+    }
+    if(d->GetType("actor")==VTYPE_STRING) Seen(d->GetString("actor").ToString(),static_cast<uint64_t>(last));
+    auto fields=CefDictionaryValue::Create();fields->SetBool("ok",true);
+    fields->SetString("url",browser_?browser_->GetMainFrame()->GetURL():CefString());
+    fields->SetString("message",std::to_string(count)+(count==1?" action":" actions")+(more?", and more after them":""));
+    fields->SetString("navigation","none");fields->SetBool("navigated",false);fields->SetBool("loading",false);fields->SetNull("outline");
+    fields->SetDictionary("data",data);fields->SetInt("request_id",d->GetInt("request_id"));
+    emit_("page_result",fields);
   }
   // Whether an action is running: the tab refuses another one while it is.
   bool Busy() const { return static_cast<bool>(pending_); }
@@ -146,9 +192,27 @@ class PageAutomation final : public CefDevToolsMessageObserver {
     if(!queued_.empty()) { queued_.push_back(command->Copy(false));return; }
     Run(command);
   }
-  void Run(CefRefPtr<CefDictionaryValue> command) {
+  // `turn` says the request is the one whose turn has come: the first of
+  // those that waited, which runs ahead of whatever arrived since.
+  void Run(CefRefPtr<CefDictionaryValue> command,bool turn=false) {
     const int request=command->GetInt("request_id");
     if(!browser_) return;
+    // Several actors may work in one tab, so an action that arrives while
+    // another runs waits its turn and runs in the order it came, rather than
+    // being refused and left to its caller to ask again. One that arrives in
+    // the moment the tab is free while others still wait goes behind them,
+    // never ahead. A private text edit never waits: its lease is of the
+    // moment it was asked in.
+    if((pending_ || (!turn && !waiting_.empty())) && !refused_.count(request) && command->GetString("op")!="text_input") {
+      if(waiting_.size()>=kMaxWaiting) Unrun(request,Failure("busy",Holding()));
+      else {
+        waiting_.push_back(command->Copy(false));
+        CefPostDelayedTask(TID_UI,base::BindOnce([](CefRefPtr<PageAutomation> self,int request) { self->WaitedOut(request); },
+          CefRefPtr<PageAutomation>(this),request),kMaxWaitMs);
+      }
+      if(!pending_) CefPostTask(TID_UI,base::BindOnce([](CefRefPtr<PageAutomation> self) { self->RunWaiting(); },CefRefPtr<PageAutomation>(this)));
+      RunQueued();return;
+    }
     // An action runs over the page as if it were being looked at: a page the
     // window is not showing never settles, never loads and takes no wheel.
     if(action_began_) action_began_();
@@ -176,6 +240,11 @@ class PageAutomation final : public CefDevToolsMessageObserver {
     // The document generation this action runs against (see host.cc's fences).
     const uint64_t generation=command->GetType("generation")==VTYPE_INT?static_cast<uint64_t>(command->GetInt("generation")):0;
     pending_=Pending(request,++token_,navigations_,false,owned,std::string{},generation);
+    pending_->asked=owned->GetString("action").ToString();
+    pending_->actor=owned->GetType("actor")==VTYPE_STRING?owned->GetString("actor").ToString():std::string();
+    pending_->began_url=browser_->GetMainFrame()->GetURL().ToString();
+    pending_->asked_command=owned;
+    if(!private_text && Operates(pending_->asked)) pending_->seq=++acted_seq_;
     // A call still in flight belongs to the request it was sent for: the new
     // request's answers are matched against calls of its own only.
     call_=0;
@@ -426,6 +495,16 @@ class PageAutomation final : public CefDevToolsMessageObserver {
     // A drawing path's points in the view's space, and the one being sent.
     std::vector<std::pair<double,double>> points;size_t point_index=0;bool drawing=false;
     uint64_t generation=0;
+    // Who asked, what they asked for and where the page was when they did.
+    // The command an action carries is replaced as it is carried out (a
+    // gesture ends as a read), and the tab's record is of what was asked.
+    std::string actor,asked,began_url;CefRefPtr<CefDictionaryValue> asked_command,target;
+    // What the page said of an action that answers only once the page has
+    // handled it (a form's answers, field by field), kept for that answer.
+    CefRefPtr<CefDictionaryValue> result_data;
+    // The place this action takes in the tab's record when it operates the
+    // page; a read takes none.
+    uint64_t seq=0;
     Pending()=default;
     Pending(int request,uint64_t token,uint64_t navigations,bool retried,CefRefPtr<CefDictionaryValue> command,
       std::string message,uint64_t generation)
@@ -939,6 +1018,7 @@ class PageAutomation final : public CefDevToolsMessageObserver {
     const auto& source=pending_->command;
     command->SetInt("doc",document_);
     command->SetBool("gesture_page",true);
+    Mark(command);
     // The page mirrors a hover through its own CSS only when that CSS opens
     // something, which it said before the gesture began.
     command->SetBool("mirror",pending_->hover_styles);
@@ -1022,9 +1102,14 @@ class PageAutomation final : public CefDevToolsMessageObserver {
     }
     // The wheel turns by the distance that is left, signed: a positive one
     // carries the page down — its content up — and a negative one back up.
-    const auto turn=std::max(-kMaxScrollTurn,std::min(kMaxScrollTurn,scroll_.left));
-    scroll_.left-=turn;++scroll_.turns;
-    wheel_(scroll_.x,scroll_.y,-turn);
+    // A turn the page has not shown yet is waited for, not made again: the
+    // page says so, and is asked once more what is left.
+    const bool wait=value->GetType("wait")==VTYPE_BOOL && value->GetBool("wait");
+    if(!wait) {
+      const auto turn=std::max(-kMaxScrollTurn,std::min(kMaxScrollTurn,scroll_.left));
+      scroll_.left-=turn;++scroll_.turns;
+      wheel_(scroll_.x,scroll_.y,-turn);
+    }
     auto command=CefDictionaryValue::Create();
     command->SetString("action","scroll_left");command->SetInt("doc",document_);
     // The page is asked what is left after the frame the wheel moved it in.
@@ -2030,6 +2115,7 @@ class PageAutomation final : public CefDevToolsMessageObserver {
     const bool elementless=!pending_->command->HasKey("element");
     command->SetString("action",action=="click"?"locate":action=="press"?(elementless?"arm":"focus"):action);
     command->SetInt("doc",PrivateText()?text_frame_.document:document_);
+    if(!PrivateText()) Mark(command);
     if(!PrivateText() && !world_frame_.number.empty()) command->SetString("frame",world_frame_.number);
     for(const char* key:{"element","text","key","lease","history_scope"}) if(pending_->command->HasKey(key)) command->SetString(key,pending_->command->GetString(key));
     for(const char* key:{"cross_origin","secret","native_caret","enabled"}) if(pending_->command->HasKey(key)) command->SetBool(key,pending_->command->GetBool(key));
@@ -2041,6 +2127,12 @@ class PageAutomation final : public CefDevToolsMessageObserver {
     if(pending_->command->HasKey("expires_ms")) command->SetDouble("expires_ms",Number(pending_->command,"expires_ms"));
     if(pending_->command->HasKey("values")) command->SetList("values",pending_->command->GetList("values")->Copy());
     if(pending_->command->HasKey("paths")) command->SetList("paths",pending_->command->GetList("paths")->Copy());
+    // The line a read of the outline starts from, when it reads on.
+    if(pending_->command->GetType("from")==VTYPE_INT) command->SetInt("from",pending_->command->GetInt("from"));
+    // A form's answers travel whole, by the names the form asks them under.
+    if(pending_->command->GetType("form")==VTYPE_STRING) command->SetString("form",pending_->command->GetString("form"));
+    if(pending_->command->GetType("answers")==VTYPE_DICTIONARY) command->SetDictionary("answers",pending_->command->GetDictionary("answers")->Copy(false));
+    if(pending_->command->HasKey("submit")) command->SetValue("submit",pending_->command->GetValue("submit")->Copy());
     auto wrapped=CefValue::Create();wrapped->SetDictionary(command);
     auto params=CefDictionaryValue::Create();
     params->SetString("expression",std::string(kPageAutomation)+"\n;globalThis.__tiloPage.run("+CefWriteJSON(wrapped,JSON_WRITER_DEFAULT).ToString()+")");
@@ -2236,6 +2328,9 @@ class PageAutomation final : public CefDevToolsMessageObserver {
   }
   void Act(CefRefPtr<CefDictionaryValue> value) {
     const auto action=Action();
+    // What the page says the action acted on, by the description that still
+    // names it once this document's refs are gone: kept for the tab's record.
+    if(value && value->GetType("target")==VTYPE_DICTIONARY) pending_->target=value->GetDictionary("target")->Copy(false);
     if(action=="scroll") { ScrollTurn(value);return; }
     // A click inside a frame is a pointer event in the top document, so its
     // point is moved by the frame's place in the page. The frame is where the
@@ -2271,6 +2366,17 @@ class PageAutomation final : public CefDevToolsMessageObserver {
     // answer's findings.
     if(action=="find") { pending_->navigation="none";
       Succeed(Text(value,"message"),std::nullopt,value->GetType("data")==VTYPE_DICTIONARY?value->GetDictionary("data"):nullptr);return; }
+    // The fields of the page with who set each, and its forms as the
+    // questions they ask: reads like the outline.
+    if(action=="fields" || action=="forms" || action=="search") { pending_->navigation="none";
+      Succeed(Text(value,"message"),Text(value,"outline"),value->GetType("data")==VTYPE_DICTIONARY?value->GetDictionary("data"):nullptr);return; }
+    // A form answered whole runs the page's input handlers, and may send
+    // the form: it answers once the page has handled that, with what the
+    // page said of each answer.
+    if(action=="fill_form") {
+      pending_->navigation="possible";
+      if(value->GetType("data")==VTYPE_DICTIONARY) pending_->result_data=value->GetDictionary("data")->Copy(false);
+    }
     if(action=="fill_files") { FileTarget(value);return; }
     // A picture of the page is taken after the page says where the area is:
     // the page's own box, never one the caller made up.
@@ -2475,6 +2581,7 @@ class PageAutomation final : public CefDevToolsMessageObserver {
   }
   void Succeed(const std::string& message,std::optional<std::string> outline,CefRefPtr<CefDictionaryValue> data=nullptr,CefRefPtr<CefDictionaryValue> history=nullptr) {
     auto fields=CefDictionaryValue::Create();fields->SetBool("ok",true);
+    if(!data && pending_->result_data) data=pending_->result_data;
     fields->SetString("url",browser_->GetMainFrame()->GetURL());fields->SetString("message",message.substr(0,1024));
     // A navigation the page asked for that the browser never began is not one.
     const bool navigated=pending_->navigation=="started" && navigations_!=pending_->navigations;
@@ -2533,13 +2640,125 @@ class PageAutomation final : public CefDevToolsMessageObserver {
     }
     Finish(Failure(code,message));
   }
+  // Whether an action operates the page, and so takes a place in the tab's
+  // record: reading it, waiting on it and picturing it do not.
+  static bool Operates(const std::string& action) {
+    for(const char* name:{"click","fill","select","fill_files","press","submit","hover","drag","path","pointer","scroll","reader","fill_form"})
+      if(action==name) return true;
+    return false;
+  }
+  // The actor and the record's place the page hears of with an action, so
+  // the read baseline is the actor's own and the edits the action causes are
+  // set down under its name.
+  void Mark(CefRefPtr<CefDictionaryValue> command) const {
+    if(!pending_->actor.empty()) command->SetString("actor",pending_->actor);
+    if(pending_->seq) command->SetDouble("seq",static_cast<double>(pending_->seq));
+  }
+  static double NowMs() {
+    return std::chrono::duration<double,std::milli>(std::chrono::system_clock::now().time_since_epoch()).count();
+  }
+  // At most `most` bytes of `text`, never ending inside a character.
+  static std::string Clip(std::string text,size_t most) {
+    if(text.size()<=most) return text;
+    size_t end=most;
+    while(end>0 && (static_cast<unsigned char>(text[end])&0xC0)==0x80) --end;
+    text.resize(end);return text;
+  }
+  // The action that is running, for an actor told to wait or turned away.
+  std::string Running() const {
+    if(!pending_) return "nothing";
+    return pending_->actor.empty()?pending_->asked:pending_->asked+" by \""+pending_->actor+"\"";
+  }
+  std::string Holding() const {
+    return "This tab has "+std::to_string(waiting_.size())+" page actions waiting behind the one that is running ("+
+      Running()+"); ask again once they have answered";
+  }
+  // An answer for a request that never ran. The action that is running still
+  // has the page, so nothing of it is put back here.
+  void Unrun(int request,CefRefPtr<CefDictionaryValue> fields) {
+    fields->SetInt("request_id",request);
+    emit_("page_result",fields);
+  }
+  // A request waited as long as one may behind the others: it is answered as
+  // never run rather than left to wait on a tab that is not moving.
+  void WaitedOut(int request) {
+    for(auto it=waiting_.begin();it!=waiting_.end();++it) {
+      if((*it)->GetInt("request_id")!=request) continue;
+      waiting_.erase(it);
+      Unrun(request,Failure("busy","Waited "+std::to_string(kMaxWaitMs/1000)+" seconds behind other page actions in this tab and never ran, "
+        "so it changed nothing; running now: "+Running()));
+      return;
+    }
+  }
+  // The next action that waited its turn runs, now that the tab is free.
+  void RunWaiting() {
+    if(pending_ || waiting_.empty() || !browser_) return;
+    auto next=waiting_.front();waiting_.pop_front();
+    Run(next,true);
+  }
+  // How far an actor has heard of what the others did in this tab.
+  void Seen(const std::string& actor,uint64_t seq) {
+    auto& seen=seen_[actor];
+    seen=std::max(seen,seq);
+    if(seen_.size()>kMaxActors) seen_.erase(seen_.begin()->first==actor?std::next(seen_.begin()):seen_.begin());
+  }
+  // An operating action is set down in the tab's record as it ends, and
+  // every answer to a named actor says what the other actors did in the tab
+  // since that actor last heard from it: the page an agent acts on next may
+  // not be the page it read, and it is told so rather than left to find out.
+  void Record(CefRefPtr<CefDictionaryValue> fields) {
+    if(pending_->command->GetString("op")=="text_input" || !pending_->asked_command) return;
+    const auto& asked=pending_->asked_command;
+    if(pending_->seq) {
+      const bool ok=fields->GetType("ok")==VTYPE_BOOL && fields->GetBool("ok");
+      auto entry=CefDictionaryValue::Create();
+      entry->SetDouble("seq",static_cast<double>(pending_->seq));entry->SetDouble("time_ms",NowMs());
+      entry->SetString("actor",pending_->actor);entry->SetString("action",pending_->asked);
+      entry->SetBool("ok",ok);
+      if(!ok && fields->GetType("code")==VTYPE_STRING) entry->SetString("code",fields->GetString("code"));
+      if(fields->GetType("message")==VTYPE_STRING) entry->SetString("message",Clip(fields->GetString("message").ToString(),kMaxLedgerText));
+      entry->SetString("url",pending_->began_url);
+      const auto now=browser_?browser_->GetMainFrame()->GetURL().ToString():std::string();
+      if(!now.empty() && now!=pending_->began_url) entry->SetString("to_url",now);
+      if(fields->GetType("navigation")==VTYPE_STRING) entry->SetString("navigation",fields->GetString("navigation"));
+      if(pending_->target) entry->SetDictionary("target",pending_->target->Copy(false));
+      if(asked->GetType("frame")==VTYPE_STRING) entry->SetString("frame",asked->GetString("frame"));
+      // What was written is part of the record. A secret never is, and nor
+      // is text the page did not take.
+      const bool secret=asked->GetType("secret")==VTYPE_BOOL && asked->GetBool("secret");
+      if(ok && !secret && asked->GetType("text")==VTYPE_STRING) entry->SetString("text",Clip(asked->GetString("text").ToString(),kMaxLedgerText));
+      if(ok && asked->GetType("values")==VTYPE_LIST) entry->SetList("values",asked->GetList("values")->Copy());
+      // A form's answers as the page placed them, by the names it asked.
+      if(ok && fields->GetType("data")==VTYPE_DICTIONARY && fields->GetDictionary("data")->GetType("set")==VTYPE_LIST)
+        entry->SetList("answers",fields->GetDictionary("data")->GetList("set")->Copy());
+      ledger_.push_back(entry);
+      if(ledger_.size()>kMaxLedger) { ledger_.pop_front();++ledger_dropped_; }
+      fields->SetDouble("seq",static_cast<double>(pending_->seq));
+    }
+    if(asked->GetType("actor")!=VTYPE_STRING) return;
+    const uint64_t seen=seen_.count(pending_->actor)?seen_[pending_->actor]:0;
+    std::vector<CefRefPtr<CefDictionaryValue>> theirs;
+    for(const auto& entry:ledger_) {
+      if(static_cast<uint64_t>(entry->GetDouble("seq"))<=seen || entry->GetString("actor").ToString()==pending_->actor) continue;
+      theirs.push_back(entry);
+    }
+    Seen(pending_->actor,acted_seq_);
+    if(theirs.empty()) return;
+    const size_t first=theirs.size()>kMaxOthers?theirs.size()-kMaxOthers:0;
+    auto list=CefListValue::Create();
+    for(size_t i=first;i<theirs.size();++i) list->SetDictionary(i-first,theirs[i]->Copy(false));
+    fields->SetList("others",list);
+    if(first) fields->SetInt("others_earlier",static_cast<int>(first));
+  }
   void Finish(CefRefPtr<CefDictionaryValue> fields) {
     const int request=pending_->request;const bool text_input=pending_->command->GetString("op")=="text_input";
+    Record(fields);
     // A rest the gesture could not tell mid-step is told now, while the request
     // that asked for it is still the one running.
     if(rest_pending_) { rest_pending_=false;RestPointer(rest_point_);rest_pending_=false;call_=0; }
     scroll_pending_=false;
     pending_.reset();call_=0;
+    if(!waiting_.empty()) { CefPostTask(TID_UI,base::BindOnce([](CefRefPtr<PageAutomation> self) { self->RunWaiting(); },CefRefPtr<PageAutomation>(this))); }
     if(!queued_.empty()) { CefPostTask(TID_UI,base::BindOnce([](CefRefPtr<PageAutomation> self) { self->RunQueued(); },CefRefPtr<PageAutomation>(this))); }
     if(native_attempted_) {
       auto params=CefDictionaryValue::Create();params->SetString("objectGroup","tilo-private-native-caret");
@@ -2586,6 +2805,18 @@ class PageAutomation final : public CefDevToolsMessageObserver {
   // Requests that came while a refusal or an action was still answering:
   // answered behind it, in the order they came.
   std::vector<CefRefPtr<CefDictionaryValue>> queued_;
+  // Actions that came while another ran, waiting their turn in the order
+  // they came: as many as may wait, and as long as one may.
+  std::deque<CefRefPtr<CefDictionaryValue>> waiting_;
+  static constexpr size_t kMaxWaiting=32;
+  static constexpr int64_t kMaxWaitMs=30000;
+  // The tab's record of the actions that operated it, oldest first, with the
+  // place the newest took and how many the record let go of; and how far
+  // each actor has heard of the others' part in it.
+  std::deque<CefRefPtr<CefDictionaryValue>> ledger_;
+  uint64_t acted_seq_=0,ledger_dropped_=0;
+  std::map<std::string,uint64_t> seen_;
+  static constexpr size_t kMaxLedger=1000,kMaxLedgerRead=200,kMaxOthers=8,kMaxActors=64,kMaxLedgerText=200;
   int stage_=static_cast<int>(Stage::FrameTree);int call_=0;
   // The stage that asked for that call, which its answer is answered in.
   int stage_at_call_=static_cast<int>(Stage::FrameTree);

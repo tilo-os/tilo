@@ -392,10 +392,54 @@ EMBEDDED = b'''<!doctype html><title>Card details</title>
 '''
 
 
+# A form as offices write them: questions that share a label inside named
+# groups, one answer of several, any answers of several, and a question the
+# form asks only once another is answered a certain way.
+APPLY = b'''<!doctype html><title>Apply</title>
+<h1>Apply for a permit</h1>
+<div role="alert"><h2>Check your answers</h2><p>Answer every question.</p></div>
+<form action="/done" method="get">
+<fieldset><legend>Date of birth</legend><label>Day <input name="dob_day"></label><label>Month <input name="dob_month"></label></fieldset>
+<fieldset><legend>Expiry date</legend><label>Day <input name="exp_day"></label><label>Month <input name="exp_month"></label></fieldset>
+<fieldset><legend>Refused before?</legend><label><input type="radio" name="refused" value="yes"> Yes</label><label><input type="radio" name="refused" value="no"> No</label></fieldset>
+<fieldset><legend>Languages</legend><label><input type="checkbox" name="lang" value="en"> English</label><label><input type="checkbox" name="lang" value="nl"> Dutch</label><label><input type="checkbox" name="lang" value="de"> German</label></fieldset>
+<label>Nationality <select name="nationality" id="nat"><option value="">Select a country</option><option>Kenya</option><option>Other</option></select></label>
+<div id="other" hidden><label>Which country? <input name="other" required></label></div>
+<label>Arrival <input type="date" name="arrival"></label>
+<label>Passcode <input type="password" name="code"></label>
+<button>Send application</button>
+</form>
+<script>document.getElementById('nat').addEventListener('change', e => document.getElementById('other').hidden = e.target.value !== 'Other');</script>'''
+
+
+# A paragraph as an essay writes them: longer than a line or two, with the
+# point at its end.
+ESSAY = ('<!doctype html><title>Essay</title><article><h1>On reading</h1><p>' +
+         ' '.join(f'Sentence {number} of this paragraph says a little more than the one before it did.'
+                  for number in range(1, 13)) +
+         ' The last sentence is the one that matters: read to the end.</p></article>').encode()
+
+
+# A page as old sites still serve them: no doctype, so the page scrolls its
+# body, and a table for its layout.
+OLD = ('<title>Old page</title><table width="600">' +
+       ''.join(f'<tr><td height="60">Row {number} of an essay laid out in a table.</td></tr>' for number in range(1, 301)) +
+       '</table>').encode()
+
+
+# An essay as pages without paragraph elements write it: running text in one
+# element, its paragraphs parted by two line breaks, one of them far longer
+# than a line of the outline carries.
+RUN_SENTENCES = [f'Sentence {number} of the long paragraph goes on for a while before it stops.' for number in range(1, 81)]
+RUN = ('<title>Run</title><font>First paragraph, a short one.<br><br>' + ' '.join(RUN_SENTENCES) +
+       '<br><br>Last paragraph: the point of it all.</font>').encode()
+
+
 class Handler(http.server.BaseHTTPRequestHandler):
     def do_GET(self):
         path = urlparse(self.path).path
         body = FORM if path == '/form' else AGENT if path == '/agent' else ARTICLE if path == '/article' \
+            else APPLY if path == '/apply' else ESSAY if path == '/essay' else OLD if path == '/old' else RUN if path == '/run' \
             else LATER if path == '/later' \
             else GESTURE if path == '/gesture' \
             else CANVAS if path == '/canvas' \
@@ -458,6 +502,22 @@ class PageActions(unittest.TestCase):
     def outline(self):
         return self.ok('outline')['outline']
 
+    def begin(self, action, **fields):
+        # A request sent without waiting for its answer, as a second actor's
+        # is while the first's still runs.
+        self.request += 1
+        self.h.send(op='page', request_id=self.request, action=action, **fields)
+        return self.request
+
+    def answers(self, *requests):
+        # The answers to `requests`, in the order the engine gave them.
+        wanted, got = set(requests), []
+        while wanted:
+            event = self.h.until(lambda e: e['event'] == 'page_result' and e['request_id'] in wanted)
+            wanted.discard(event['request_id'])
+            got.append(event)
+        return got
+
     def ref(self, outline, pattern):
         found = re.search(pattern + r'[^\n]*\[ref=(d\d+e\d+)\]', outline) or re.search(
             re.escape(pattern) + r'(?:[^\n]*\n)*?[^\n]*\[ref=(d\d+e\d+)\]', outline)
@@ -503,6 +563,322 @@ class PageActions(unittest.TestCase):
         # the text it carries may hold what JSON would escape.
         found = re.search(r'"nonce":(\d+)}$', title) if title.startswith('{') else None
         return found.group(1) if found else None
+
+    def test_two_actors_in_one_tab_each_read_their_own_changes(self):
+        # Two agents share a tab. What one reads must not take what changed
+        # away from the other: each is told what changed since its own read.
+        self.h.navigate(self.url + '/form')
+        first = self.ok('outline', actor='ada')['outline']
+        self.ok('outline', actor='ben')
+        email = self.ref(first, 'textbox "Email"')
+        self.ok('fill', element=email, text='ada@example.org', actor='ada')
+        seen_by_ben = self.ok('changes', actor='ben')
+        self.assertIn('+', seen_by_ben['outline'])
+        self.assertIn('ada@example.org', seen_by_ben['outline'])
+        # Ben's read is Ben's: Ada has not read since her fill, so she is
+        # still told of it, where one shared baseline said nothing changed.
+        seen_by_ada = self.ok('changes', actor='ada')
+        self.assertIn('ada@example.org', seen_by_ada['outline'], seen_by_ada)
+        self.assertEqual(self.ok('changes', actor='ada')['message'], 'Nothing changed')
+        # A caller that names no actor keeps the one baseline it always had.
+        self.assertTrue(self.ok('changes')['message'].startswith('First read'))
+        self.assertEqual(self.ok('changes')['message'], 'Nothing changed')
+
+    def test_an_action_behind_another_waits_its_turn_and_runs_in_order(self):
+        # A second actor's action arriving while the first's still runs is
+        # not refused: it runs after it, and each is answered as its own.
+        self.h.navigate(self.url + '/form')
+        outline = self.outline()
+        email, search = self.ref(outline, 'textbox "Email"'), self.ref(outline, 'searchbox "Search"')
+        waiting = self.begin('settle', quiet_ms=1500, timeout_ms=6000, actor='ada')
+        filled = self.begin('fill', element=email, text='ben@example.org', actor='ben')
+        searched = self.begin('fill', element=search, text='kettle', actor='cy')
+        first, second, third = self.answers(waiting, filled, searched)
+        self.assertEqual([first['request_id'], second['request_id'], third['request_id']], [waiting, filled, searched])
+        self.assertTrue(first['ok'] and second['ok'] and third['ok'], (first, second, third))
+        outline = self.outline()
+        self.assertIn('value="ben@example.org"', outline)
+        self.assertIn('value="kettle"', outline)
+
+    def test_a_waiting_action_cancelled_never_runs_and_the_running_one_goes_on(self):
+        self.h.navigate(self.url + '/form')
+        email = self.ref(self.outline(), 'textbox "Email"')
+        running = self.begin('settle', quiet_ms=1200, timeout_ms=6000, actor='ada')
+        waiting = self.begin('fill', element=email, text='never@example.org', actor='ben')
+        self.h.send(op='page_cancel', request_id=waiting)
+        cancelled, settled = self.answers(waiting, running)
+        self.assertEqual(cancelled['request_id'], waiting)
+        self.assertFalse(cancelled['ok'])
+        self.assertEqual(cancelled['code'], 'cancelled')
+        self.assertIn('changed nothing', cancelled['message'])
+        # The cancel named Ben's request: Ada's ran to its end.
+        self.assertEqual(settled['request_id'], running)
+        self.assertTrue(settled['ok'], settled)
+        self.assertNotIn('never@example.org', self.outline())
+
+    def test_the_tab_keeps_a_record_of_who_did_what(self):
+        # Whoever looks at a tab several actors worked in can read what each
+        # did, by the description that still names a field after its page is
+        # gone, with what was written and never a secret.
+        self.h.navigate(self.url + '/form')
+        outline = self.outline()
+        email, password = self.ref(outline, 'textbox "Email"'), self.ref(outline, 'textbox "Password"')
+        country = self.ref(outline, 'combobox "Country"')
+        self.ok('fill', element=email, text='ada@example.org', actor='ada')
+        self.ok('fill', element=password, text='hunter2-secret', secret=True, actor='ada')
+        chosen = self.ok('select', element=country, values=['Belgium'], actor='ben')
+        # An answer says where its action stands in the record.
+        self.assertEqual(chosen['seq'], 3)
+        refused = self.page('fill', element=country, text='x', actor='ben')
+        self.assertFalse(refused['ok'])
+        record = self.ok('ledger', since=0)
+        entries = record['data']['entries']
+        self.assertEqual([(e['seq'], e['actor'], e['action'], e['ok']) for e in entries],
+                         [(1, 'ada', 'fill', True), (2, 'ada', 'fill', True), (3, 'ben', 'select', True), (4, 'ben', 'fill', False)])
+        self.assertEqual(entries[0]['target'], {'role': 'textbox', 'name': 'Email'})
+        self.assertEqual(entries[0]['text'], 'ada@example.org')
+        self.assertEqual(entries[0]['url'], self.url + '/form')
+        # The secret is in the page and nowhere in its record.
+        self.assertNotIn('text', entries[1])
+        self.assertNotIn('hunter2', json.dumps(record))
+        self.assertEqual(entries[2]['values'], ['Belgium'])
+        self.assertEqual(entries[3]['code'], 'not_editable')
+        self.assertNotIn('text', entries[3])
+        # The description the record keeps names the field again later.
+        found = self.ok('find', **entries[0]['target'])
+        self.assertEqual(found['data']['element'], email)
+        # A reader asks for what came after the place it has read to.
+        later = self.ok('ledger', since=record['data']['next'])
+        self.assertEqual(later['data']['entries'], [])
+        self.assertEqual(self.ok('ledger', since=2)['data']['entries'][0]['seq'], 3)
+        # Reading is not acting: no read took a place in the record.
+        self.assertEqual(record['data']['next'], 4)
+
+    def test_the_record_answers_while_an_action_runs(self):
+        self.h.navigate(self.url + '/form')
+        email = self.ref(self.outline(), 'textbox "Email"')
+        self.ok('fill', element=email, text='ada@example.org', actor='ada')
+        running = self.begin('settle', quiet_ms=1200, timeout_ms=6000, actor='ada')
+        asked = self.begin('ledger', since=0, actor='rev')
+        first = self.h.until(lambda e: e['event'] == 'page_result' and e['request_id'] in (running, asked))
+        self.assertEqual(first['request_id'], asked, 'the record waits on nothing the page is doing')
+        self.assertEqual(len(first['data']['entries']), 1)
+        self.answers(running)
+
+    def test_an_actor_is_told_what_the_others_did_since_it_last_heard(self):
+        # The page an agent acts on next may not be the page it read. Its
+        # next answer says what the others did meanwhile, once.
+        self.h.navigate(self.url + '/form')
+        outline = self.ok('outline', actor='ada')['outline']
+        email, search = self.ref(outline, 'textbox "Email"'), self.ref(outline, 'searchbox "Search"')
+        self.ok('fill', element=email, text='ben@example.org', actor='ben')
+        self.ok('fill', element=search, text='lamp', actor='ben')
+        mine = self.ok('fill', element=search, text='kettle', actor='ada')
+        self.assertEqual([(o['actor'], o['action'], o['target']['name']) for o in mine['others']],
+                         [('ben', 'fill', 'Email'), ('ben', 'fill', 'Search')])
+        # Told once: nothing more came from Ben since.
+        self.assertNotIn('others', self.ok('outline', actor='ada'))
+        # Ben in turn hears of Ada's fill, and never of his own.
+        theirs = self.ok('changes', actor='ben')
+        self.assertEqual([(o['actor'], o['text']) for o in theirs['others']], [('ada', 'kettle')])
+        # A caller with no name is told nothing of others, as before.
+        self.assertNotIn('others', self.ok('outline'))
+
+    def test_a_review_reads_every_field_with_who_set_it(self):
+        # A form several actors filled is reviewed field by field: what each
+        # holds now, who set it, and whether anything changed it afterwards.
+        self.h.navigate(self.url + '/form')
+        outline = self.outline()
+        email, search = self.ref(outline, 'textbox "Email"'), self.ref(outline, 'searchbox "Search"')
+        country, terms = self.ref(outline, 'combobox "Country"'), self.ref(outline, 'checkbox "Accept terms"')
+        password = self.ref(outline, 'textbox "Password"')
+        self.ok('fill', element=email, text='ada@example.org', actor='ada')
+        self.ok('select', element=country, values=['Belgium'], actor='ben')
+        self.ok('click', element=terms, actor='ben')
+        self.ok('fill', element=password, text='hunter2-secret', secret=True, actor='ada')
+        self.ok('fill', element=search, text='kettle', actor='ada')
+        # The page's own script rewrites one answer behind everyone's back.
+        self.main_world('(document.querySelector("[name=q]").value = "toaster", 1)')
+        review = self.ok('fields', actor='rev')
+        fields = {field['name']: field for field in review['data']['fields']}
+        self.assertEqual(fields['Email']['value'], 'ada@example.org')
+        self.assertEqual(fields['Email']['set'], {'how': 'action', 'by': 'ada', 'seq': 1})
+        self.assertTrue(fields['Email']['required'])
+        self.assertEqual(fields['Country']['value'], 'Belgium')
+        self.assertEqual(fields['Country']['set'], {'how': 'action', 'by': 'ben', 'seq': 2})
+        self.assertEqual(fields['Accept terms']['value'], 'checked')
+        self.assertEqual(fields['Accept terms']['set'], {'how': 'action', 'by': 'ben', 'seq': 3})
+        # A secret is reviewed by who set it, never by what it is.
+        self.assertEqual(fields['Password']['value'], '<14 characters hidden>')
+        self.assertEqual(fields['Password']['set']['by'], 'ada')
+        self.assertNotIn('hunter2', json.dumps(review))
+        # What the field holds now is the truth, and the review says it is no
+        # longer what Ada wrote.
+        self.assertEqual(fields['Search']['value'], 'toaster')
+        self.assertEqual(fields['Search']['set'], {'how': 'action', 'by': 'ada', 'seq': 5, 'changed': True})
+        self.assertIn('changed after it was set by "ada", action 5', review['outline'])
+        # A field nobody touched says so.
+        self.assertNotIn('set', fields['Proof of address'])
+        self.assertIn('1 changed after they were set', review['message'])
+        # Reviewing changed nothing and took no place in the record.
+        self.assertEqual(self.ok('ledger', since=0)['data']['next'], 5)
+
+    def test_typing_into_the_page_is_reviewed_as_direct_input(self):
+        # A person at the page is not an action: what they type is told apart
+        # from what any agent's action wrote.
+        self.h.navigate(self.url + '/form')
+        outline = self.ok('outline', actor='ada')['outline']
+        email, search = self.ref(outline, 'textbox "Email"'), self.ref(outline, 'searchbox "Search"')
+        self.ok('fill', element=email, text='ada@example.org', actor='ada')
+        time.sleep(2)
+        self.main_world('(document.querySelector("[name=q]").focus(), 1)')
+        for char in 'lamp':
+            for down in (True, False):
+                self.h.send(op='key', key=char, down=down, ctrl=False, shift=False, alt=False, meta=False)
+        self.h.settle(1)
+        fields = {field['name']: field for field in self.ok('fields')['data']['fields']}
+        self.assertEqual(fields['Search']['value'], 'lamp')
+        self.assertEqual(fields['Search']['set'], {'how': 'input'})
+        self.assertEqual(fields['Email']['set'], {'how': 'action', 'by': 'ada', 'seq': 1})
+
+    def test_a_page_s_forms_are_read_as_the_questions_they_ask(self):
+        # A form is what a page asks of whoever fills it in. Read that way,
+        # each question has a name, a kind and the answers it offers, and the
+        # form is known again by what it asks.
+        self.h.navigate(self.url + '/apply')
+        read = self.ok('forms')
+        self.assertEqual(len(read['data']['forms']), 1)
+        form = read['data']['forms'][0]
+        # The form is named by the heading it stands under, not by the
+        # heading of what the page tells its reader in between.
+        self.assertEqual((form['form'], form['label'], form['method'], form['action']),
+                         ('form1', 'Apply for a permit', 'GET', '/done'))
+        asked = {field['name']: field for field in form['fields']}
+        # A label two questions share is said with the group each is in.
+        self.assertEqual(list(asked), ['Date of birth: Day', 'Date of birth: Month', 'Expiry date: Day',
+                                       'Expiry date: Month', 'Refused before?', 'Languages', 'Nationality',
+                                       'Arrival', 'Passcode'])
+        self.assertEqual((asked['Refused before?']['kind'], asked['Refused before?']['choices']), ('choice', ['Yes', 'No']))
+        self.assertEqual((asked['Languages']['kind'], asked['Languages']['choices']), ('choices', ['English', 'Dutch', 'German']))
+        # The option that stands for no answer is not one of the answers.
+        self.assertEqual((asked['Nationality']['kind'], asked['Nationality']['choices']), ('choice', ['Kenya', 'Other']))
+        self.assertEqual(asked['Arrival']['kind'], 'date')
+        self.assertEqual(asked['Passcode']['kind'], 'secret')
+        self.assertEqual(form['submit'], ['Send application'])
+        self.assertIn('- form1 "Apply for a permit" (GET /done) signature=' + form['signature'], read['outline'])
+        # An answer that is a control of its own carries the ref its own
+        # action takes; a select's options are not controls and carry none.
+        self.assertRegex(read['outline'], r'  - "Refused before\?": one of "Yes" \[ref=d\d+e\d+\], "No" \[ref=d\d+e\d+\]')
+        self.assertIn('  - "Nationality": one of "Kenya", "Other", [ref=', read['outline'])
+        # A question the form does not ask yet is not listed; the same form
+        # read again on a later visit is the same form.
+        self.assertNotIn('Which country?', asked)
+        self.h.navigate(self.url + '/apply')
+        self.assertEqual(self.ok('forms')['data']['forms'][0]['signature'], form['signature'])
+        # Reading asked the page nothing and is no part of the tab's record.
+        self.assertEqual(self.ok('ledger', since=0)['data']['entries'], [])
+
+    def test_a_form_is_answered_by_its_questions_names_and_sent(self):
+        self.h.navigate(self.url + '/apply')
+        signature = self.ok('forms')['data']['forms'][0]['signature']
+        answers = {'Date of birth: Day': '9', 'Date of birth: Month': 11, 'Expiry date: Day': '14',
+                   'Expiry date: Month': '3', 'Refused before?': 'no', 'Languages': ['English', 'German'],
+                   'Nationality': 'Other', 'Arrival': '2027-02-03'}
+        first = self.ok('fill_form', form='form1', answers=answers, submit=True, actor='ada')
+        # Every answer was placed, and answering opened a question the form
+        # had not asked: it is said, and the form is not sent without it.
+        self.assertEqual([result['ok'] for result in first['data']['results']], [True] * 8)
+        self.assertFalse(first['data']['submitted'])
+        self.assertEqual(first['data']['now_asks'], ['Which country?'])
+        self.assertEqual(first['data']['unanswered'], ['Which country?'])
+        self.assertIn('the form now also asks "Which country?"', first['message'])
+        self.assertEqual(first['navigation'], 'possible')
+        # The form asks something new now, so it is no longer the form that
+        # signature named: a caller holding the old one is told, not obeyed.
+        stale = self.page('fill_form', form=signature, answers={'Which country?': 'Portugal'}, submit=True, actor='ada')
+        self.assertFalse(stale['ok'])
+        self.assertEqual(stale['code'], 'no_form')
+        sent = self.ok('fill_form', form='form1', answers={'Which country?': 'Portugal'}, submit='Send application', actor='ada')
+        self.assertTrue(sent['data']['submitted'])
+        self.assertEqual(sent['navigation'], 'started')
+        query = parse_qs(urlparse(sent['url']).query)
+        self.assertEqual(urlparse(sent['url']).path, '/done')
+        self.assertEqual(query, {'dob_day': ['9'], 'dob_month': ['11'], 'exp_day': ['14'], 'exp_month': ['3'],
+                                 'refused': ['no'], 'lang': ['en', 'de'], 'nationality': ['Other'],
+                                 'other': ['Portugal'], 'arrival': ['2027-02-03']})
+        # The tab's record holds each answer by the name it was asked under.
+        entries = self.ok('ledger', since=0)['data']['entries']
+        self.assertEqual([(entry['actor'], entry['action'], entry['ok']) for entry in entries],
+                         [('ada', 'fill_form', True), ('ada', 'fill_form', False), ('ada', 'fill_form', True)])
+        self.assertIn({'name': 'Languages', 'value': 'English, German'}, entries[0]['answers'])
+        self.assertEqual(entries[2]['answers'], [{'name': 'Which country?', 'value': 'Portugal'}])
+        self.assertEqual(entries[2]['to_url'], sent['url'])
+
+    def test_answers_are_placed_in_the_form_s_order_so_one_can_open_the_next(self):
+        # A caller gives a form's answers together. The form takes them in
+        # the order it asks, so the answer that opens a question is placed
+        # before the answer to it, whatever order they were given in.
+        self.h.navigate(self.url + '/apply')
+        sent = self.ok('fill_form', form='form1', submit=True, answers={
+            'Which country?': 'Portugal', 'Arrival': '2027-02-03', 'Nationality': 'Other'})
+        self.assertEqual([(result['name'], result['ok']) for result in sent['data']['results']],
+                         [('Nationality', True), ('Which country?', True), ('Arrival', True)])
+        self.assertTrue(sent['data']['submitted'], sent)
+        query = parse_qs(urlparse(sent['url']).query)
+        self.assertEqual((query['nationality'], query['other'], query['arrival']), (['Other'], ['Portugal'], ['2027-02-03']))
+
+    def test_an_answer_that_opens_a_question_says_so(self):
+        # Choosing "Other" makes the form ask which country. The action that
+        # chose it says so, so its caller does not go on without reading it.
+        self.h.navigate(self.url + '/apply')
+        nationality = self.ref(self.outline(), 'combobox "Nationality"')
+        chosen = self.ok('select', element=nationality, values=['Other'])
+        self.assertEqual(chosen['message'], 'Selected "Other" in combobox "Nationality"; the form now also asks "Which country?"')
+        # An answer that opens nothing says nothing more.
+        again = self.ok('select', element=nationality, values=['Other'])
+        self.assertEqual(again['message'], 'Selected "Other" in combobox "Nationality"')
+        country = self.ref(self.outline(), 'textbox "Which country\\?"')
+        self.assertEqual(self.ok('fill', element=country, text='Portugal')['message'], 'Filled textbox "Which country?"')
+
+    def test_a_form_says_which_answers_it_could_not_place(self):
+        # What a form cannot take by name is said answer by answer, with the
+        # ref the field's own action takes, and nothing is sent half answered.
+        self.h.navigate(self.url + '/apply')
+        answered = self.ok('fill_form', form='form1', submit=True, actor='ada', answers={
+            'Arrival': '2027-02-03', 'Nationality': 'Atlantis', 'Passcode': 'hunter2-secret',
+            'Shoe size': '44', 'refused before?': 'Yes'})
+        results = {result['name']: result for result in answered['data']['results']}
+        self.assertTrue(results['Arrival']['ok'])
+        # A name is matched whatever its letter case when only one is like it.
+        self.assertTrue(results['Refused before?']['ok'])
+        self.assertEqual(results['Nationality']['code'], 'no_option')
+        self.assertIn('"Kenya", "Other"', results['Nationality']['message'])
+        self.assertEqual(results['Passcode']['code'], 'secret_field')
+        self.assertRegex(results['Passcode']['element'], r'^d\d+e\d+$')
+        self.assertEqual(results['Shoe size']['code'], 'no_field')
+        self.assertFalse(answered['data']['submitted'])
+        self.assertIn('not sent, since not every answer was placed', answered['message'])
+        # The secret was not placed, and is nowhere in the answer or the record.
+        self.assertNotIn('hunter2', json.dumps(answered))
+        self.assertNotIn('hunter2', json.dumps(self.ok('ledger', since=0)))
+        self.assertEqual(urlparse(answered['url']).path, '/apply')
+        # The fields it did place are reviewed as set by its actor.
+        fields = {field['name']: field for field in self.ok('fields')['data']['fields']}
+        self.assertEqual(fields['Arrival']['set'], {'how': 'action', 'by': 'ada', 'seq': 1})
+        self.assertEqual(fields['Yes']['set'], {'how': 'action', 'by': 'ada', 'seq': 1})
+        # A review names a field by the question the form asks, the name an
+        # answer was given under: the two speak of one field one way.
+        self.assertEqual((fields['Yes']['form'], fields['Yes']['question'], fields['Yes']['answer']),
+                         ('form1', 'Refused before?', 'Yes'))
+        self.assertEqual(fields['Arrival']['question'], 'Arrival')
+        days = [field['question'] for field in self.ok('fields')['data']['fields'] if field['name'] == 'Day']
+        self.assertEqual(days, ['Date of birth: Day', 'Expiry date: Day'])
+        self.assertIn('- "Refused before?": ', self.ok('fields')['outline'])
+        # A call that places nothing is a failure, and says of what.
+        nothing = self.page('fill_form', form='form1', answers={'Shoe size': '44'}, actor='ada')
+        self.assertFalse(nothing['ok'])
+        self.assertEqual(nothing['code'], 'no_field')
+        self.assertFalse(self.page('fill_form', form='form9', answers={'Arrival': '2027-02-03'})['ok'])
 
     def test_outline_lists_structure_with_refs_and_hides_secrets(self):
         self.h.navigate(self.url + '/form')
@@ -1125,6 +1501,38 @@ class PageActions(unittest.TestCase):
         self.assertIn('Condition 14', self.outline(), 'the wheel loaded the section it scrolled to')
         self.assertTrue(self.main_world('scrollY > 0'), 'the page itself moved')
 
+    def test_scrolling_by_a_distance_goes_that_far_each_time_and_says_where_it_is(self):
+        # A reader goes down a long page a screen at a time. Each scroll by a
+        # distance goes that far from wherever the page stands, down or up,
+        # and says where it left the page, on a page of today and on one that
+        # scrolls its body as old pages do.
+        for page in ('/long', '/old'):
+            with self.subTest(page=page):
+                self.h.navigate(self.url + page)
+                self.ok('outline')
+                for stands in (700, 1400, 2100):
+                    moved = self.ok('scroll', by=700)
+                    self.assertEqual(self.main_world('scrollY'), stands, moved['message'])
+                    self.assertTrue(moved['message'].startswith(f'Scrolled 700px down, to {stands} of '), moved['message'])
+                back = self.ok('scroll', by=-1000)
+                self.assertEqual(self.main_world('scrollY'), 1100, back['message'])
+                self.assertTrue(back['message'].startswith('Scrolled 1000px up, to 1100 of '), back['message'])
+                # At the top there is nowhere up to go, and the answer says so.
+                self.ok('scroll', to='top')
+                self.assertEqual(self.main_world('scrollY'), 0)
+                still = self.ok('scroll', by=-500)
+                self.assertTrue(still['message'].startswith('Did not move, at 0 of '), still['message'])
+                self.assertEqual(self.main_world('scrollY'), 0)
+
+    def test_a_scroll_of_a_page_not_read_yet_does_not_answer_with_the_whole_page(self):
+        self.h.navigate(self.url + '/long')
+        moved = self.ok('scroll', by=700)
+        self.assertTrue(moved['message'].startswith('Scrolled 700px down, to 700 of '), moved['message'])
+        self.assertIn('had not been read before', moved['message'])
+        self.assertFalse(moved['outline'])
+        # What the page showed then is what the next scroll is told against.
+        self.assertIn('nothing changed', self.ok('scroll', by=700)['message'])
+
     def test_scrolling_back_up_returns_to_the_top(self):
         self.h.navigate(self.url + '/scroll')
         self.ok('scroll', to='bottom')
@@ -1297,6 +1705,95 @@ class PageActions(unittest.TestCase):
         short = self.ok('outline')
         self.assertNotIn('stopped there', short['message'], short)
         self.assertNotIn('the page goes on', short['outline'])
+
+    def test_a_paragraph_is_read_whole(self):
+        # A page's own words are what a reader came for. A paragraph cut after
+        # a sentence or two cannot be read at all, however often it is read.
+        self.h.navigate(self.url + '/essay')
+        outline = self.outline()
+        self.assertIn('Sentence 1 of this paragraph', outline)
+        self.assertIn('The last sentence is the one that matters: read to the end.', outline)
+        self.assertNotIn('…', outline)
+
+    def test_running_text_is_read_to_its_last_word(self):
+        # A page that writes an essay as one run of text, its paragraphs
+        # parted by line breaks, is read paragraph by paragraph, and a
+        # paragraph longer than a line carries goes on in the next line:
+        # no word of it is left out.
+        self.h.navigate(self.url + '/run')
+        lines = [json.loads(line.split('text ', 1)[1]) for line in self.outline().splitlines() if 'text "' in line]
+        self.assertEqual(lines[0], 'First paragraph, a short one.')
+        self.assertEqual(lines[-1], 'Last paragraph: the point of it all.')
+        middle = lines[1:-1]
+        self.assertGreater(len(middle), 1, 'the long paragraph is carried by several lines')
+        self.assertEqual(' '.join(middle), ' '.join(RUN_SENTENCES))
+        # Each line ends where a sentence does, and none says it was cut.
+        for line in middle:
+            self.assertTrue(line.endswith('stops.'), line[-60:])
+            self.assertLessEqual(len(line), 2000)
+        self.assertEqual(self.ok('search', text='Sentence 80 of the long paragraph')['data']['total'], 1)
+
+    def test_a_long_page_is_read_on_from_where_a_read_stopped(self):
+        # A read carries as much as one read may, and says the line to read
+        # on from; reading on carries the next part, to the end of the page.
+        self.h.navigate(self.url + '/long')
+        first = self.ok('outline', actor='ada')
+        last = max(int(number) for number in re.findall(r'Condition (\d+)\.', first['outline']))
+        self.assertLess(last, 2000)
+        onward = re.search(r'read on from line (\d+) with from', first['message'])
+        self.assertIsNotNone(onward, first['message'])
+        rest = self.ok('outline', actor='ada', **{'from': int(onward.group(1))})
+        # Nothing is skipped and nothing is read twice.
+        self.assertIn(f'Condition {last + 1}.', rest['outline'].splitlines()[0])
+        self.assertNotIn(f'Condition {last}.', rest['outline'])
+        self.assertTrue(rest['message'].startswith(f'Read lines {onward.group(1)} to '), rest['message'])
+        reads = 1
+        while 'the page goes on past them' in rest['outline']:
+            onward = re.search(r'read on from line (\d+) with from', rest['message'])
+            rest = self.ok('outline', actor='ada', **{'from': int(onward.group(1))})
+            reads += 1
+            self.assertLess(reads, 10)
+        self.assertIn('Condition 2000.', rest['outline'])
+        self.assertNotIn('stopped there', rest['message'])
+        # Reading on is not a new look at the page: what changed is still
+        # told against the read from the top.
+        self.assertEqual(self.ok('changes', actor='ada')['message'], 'Nothing changed')
+        # A line the page does not have is not one to read from.
+        beyond = self.page('outline', **{'from': 5000})
+        self.assertFalse(beyond['ok'])
+        self.assertIn('there is no line 5000', beyond['message'])
+
+    def test_words_on_a_page_are_found_by_searching_for_them(self):
+        # A reader looking for a sentence goes to it: a search answers with
+        # the lines that hold the words, and a read starts from one of them.
+        self.h.navigate(self.url + '/long')
+        found = self.ok('search', text='Section 1500 of the ACT')
+        self.assertEqual(found['data']['total'], 1)
+        hit = found['data']['matches'][0]
+        self.assertIn('Condition 1500.', hit['text'])
+        self.assertEqual(found['outline'], f"{hit['line']}: {hit['text']}")
+        around = self.ok('outline', **{'from': hit['line']})
+        self.assertIn('Condition 1500.', around['outline'].splitlines()[0])
+        # Many lines are counted, and as many listed as one answer carries.
+        many = self.ok('search', text='within 30 days')
+        self.assertEqual(many['data']['total'], 2000)
+        self.assertEqual(len(many['data']['matches']), 30)
+        self.assertIn('the first 30 listed', many['message'])
+        nothing = self.ok('search', text='no such words here')
+        self.assertEqual(nothing['data'], {'matches': [], 'total': 0})
+        self.assertIn('search for fewer of them', nothing['message'])
+        # A find that was asked for words says where words are found.
+        missed = self.page('find', role='paragraph')
+        self.assertFalse(missed['ok'])
+        self.assertIn('found by searching for them', missed['message'])
+        # A search reads what the outline reads: a secret is in neither.
+        self.h.navigate(self.url + '/form')
+        password = self.ref(self.outline(), 'textbox "Password"')
+        self.ok('fill', element=password, text='hunter2-secret', secret=True)
+        self.assertEqual(self.ok('search', text='hunter2')['data']['total'], 0)
+        self.assertEqual(self.ok('search', text='place order')['data']['total'], 1)
+        # Searching is a read: it took no place in the tab's record.
+        self.assertEqual([entry['action'] for entry in self.ok('ledger', since=0)['data']['entries']], ['fill'])
 
     def find(self, **fields):
         # A find is a read of the page: it answers with a ref, or with why it
