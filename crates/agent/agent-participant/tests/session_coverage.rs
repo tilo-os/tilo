@@ -2220,6 +2220,25 @@ impl RelayWorkspace {
         .await
     }
 
+    /// Wait until Ana has heard `name`'s own view of itself: what the news
+    /// names the member who changed a record by.
+    async fn ana_hears(&mut self, name: &str) {
+        let what = format!("Ana to hear {name}");
+        wait_for(&what, || {
+            self.ana.0.pump();
+            self.rae.0.pump();
+            self.ben.0.pump();
+            let heard = self
+                .ana
+                .0
+                .remote_members()
+                .iter()
+                .any(|member| member.shell.label == name);
+            async move { heard.then_some(()) }
+        })
+        .await;
+    }
+
     async fn ana_waits(&mut self, task: &str) {
         wait_for("Ana to wait", || {
             self.ana.0.pump();
@@ -2410,18 +2429,22 @@ async fn a_news_replan_that_finds_nothing_to_do_keeps_the_task_waiting() {
         async move { held.then_some(()) }
     })
     .await;
+    // The news names the member who changed the record as their own presence
+    // says it, so Ana hears Ben before the plan is asked again.
+    workspace.ana_hears("Ben").await;
     gate.send(()).unwrap();
     let told = last_turn(
         &workspace
             .next_request(&sent, "the plan again for the news")
             .await,
     );
-    // The peers here reach no live plane, so no member's view of itself
-    // arrives and the arrival is named by the post the app shows: what the
-    // news says of Ben is his post alone.
+    // The news says what arrived and who changed the record it arrived in;
+    // the post's own sender names the line, so it is not repeated there.
     assert!(
-        told.contains("new messages arrived (chat).\n- chat: Ben: Standing by for LR-2042\n"),
-        "the news is Ben's post alone, by name: {told}"
+        told.contains(
+            "new messages arrived (chat).\n- chat, changed by Ben: Standing by for LR-2042\n"
+        ),
+        "the news names Ben's post: {told}"
     );
     assert!(told.contains("1. wait for a message"), "{told}");
 
