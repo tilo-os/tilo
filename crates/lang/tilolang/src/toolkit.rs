@@ -115,8 +115,8 @@ fn lang_type(ty: &Type) -> crate::types::Ty {
         Type::List(inner) | Type::Set(inner) => Ty::List(Box::new(lang_type(inner))),
         Type::Map { value, .. } => Ty::Map(Box::new(lang_type(value))),
         Type::Choice { name, .. } | Type::Cases { name } => Ty::Enum(key(name)),
-        // Whichever enum the bound field declares, which a description does not name.
-        Type::Action | Type::Enum => Ty::Error,
+        // Whichever enum or record the bound field names, which a description does not name.
+        Type::Action | Type::Enum | Type::Link => Ty::Error,
     }
 }
 

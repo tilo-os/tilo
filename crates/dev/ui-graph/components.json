@@ -328,6 +328,20 @@
           "type": {
             "option": "text"
           }
+        },
+        {
+          "name": "links",
+          "doc": "The records a `[[` link offers, each as it reads for the person now: choosing one writes a reference to it in the text, which every reader reads as it reads now. A view names them, `links: nb.notes`.",
+          "type": {
+            "list": "link"
+          }
+        },
+        {
+          "name": "commands",
+          "doc": "The commands the editor's slash menu offers besides the block kinds, by their labels: choosing one reports it as `command`.",
+          "type": {
+            "list": "text"
+          }
         }
       ],
       "events": [
@@ -335,6 +349,18 @@
           "name": "open_reference",
           "doc": "A reference in the text was activated, carrying the reference. Without one, the reference is opened.",
           "value": "text"
+        },
+        {
+          "name": "command",
+          "doc": "A command of `commands` was chosen, carrying its label: the view does what the label says, as it would for a button it placed.",
+          "value": "text"
+        },
+        {
+          "name": "headings",
+          "doc": "The document's headings, in the order they stand, each time they change. A view that draws an outline of the document keeps them as its state.",
+          "value": {
+            "list": "text"
+          }
         }
       ],
       "bindings": [

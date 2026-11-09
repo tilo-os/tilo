@@ -42,6 +42,9 @@ pub struct Convert<'a> {
     pub invokes: &'a dyn Fn(&str, &str) -> Toggled,
     /// How a reference in rich text reads for the person reading.
     pub embeds: &'a dyn Fn(&Reference) -> InlineView,
+    /// The catalogue's reference to a record, and how it reads for the person reading: what a
+    /// component offered it as a link shows.
+    pub link: &'a dyn Fn(&ResourceRef) -> (String, String),
 }
 
 impl Convert<'_> {
@@ -53,7 +56,7 @@ impl Convert<'_> {
         let mut props: std::collections::BTreeMap<String, wire::Value> = node
             .props
             .iter()
-            .map(|(name, value)| (name.clone(), self.value(value)))
+            .map(|(name, value)| (name.clone(), self.prop(&node.kind, name, value)))
             .collect();
         if node.kind == "choice"
             && let Some(Value::Text(id)) = node.props.get("enum")
@@ -93,6 +96,38 @@ impl Convert<'_> {
                 .filter(|child| !virtual_list || child.kind == SLOT)
                 .map(|child| self.node(child))
                 .collect(),
+        }
+    }
+
+    /// The window's value of the prop `name` of a node of the component `kind`: a record the
+    /// component offers as a link is named as the catalogue names it and reads as it reads for
+    /// the person now, which the view names by the record itself.
+    fn prop(&self, kind: &str, name: &str, value: &Value) -> wire::Value {
+        let ty = wire::description(kind)
+            .and_then(|description| description.prop(name))
+            .map(|prop| &prop.ty);
+        match ty {
+            Some(ty) => self.typed(value, ty),
+            None => self.value(value),
+        }
+    }
+
+    /// The window's value of `value` as a value of the prop's `ty`: a record as what names it
+    /// and how it reads now, in a list too.
+    fn typed(&self, value: &Value, ty: &wire::PropType) -> wire::Value {
+        use wire::PropType as Type;
+        match (ty, value) {
+            (Type::Link, Value::Ref(reference)) => {
+                let (reference, title) = (self.link)(&reference.target);
+                wire::Value::Link { reference, title }
+            }
+            (Type::List(inner) | Type::Set(inner), Value::List(items)) => {
+                wire::Value::List(items.iter().map(|item| self.typed(item, inner)).collect())
+            }
+            (Type::Option(inner), Value::Opt(Some(held))) => {
+                wire::Value::Opt(Some(Box::new(self.typed(held, inner))))
+            }
+            _ => self.value(value),
         }
     }
 
@@ -310,6 +345,7 @@ pub fn runtime_value(value: &wire::Value) -> Option<Value> {
         | wire::Value::Map(_)
         | wire::Value::Action(_)
         | wire::Value::Picture(_)
+        | wire::Value::Link { .. }
         | wire::Value::Case { .. } => {
             return None;
         }

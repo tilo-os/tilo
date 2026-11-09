@@ -13,7 +13,7 @@ use super::{Checker, Ctx, Ex};
 use crate::abi::Imp;
 use crate::ast::{self, ExprKind, UiCall, UiKind, UiStmt};
 use crate::diag::Span;
-use crate::ir::{LocalId, Stmt};
+use crate::ir::{Ek, LocalId, Stmt};
 use crate::prims;
 use crate::toolkit::{self, Description, Type};
 use crate::types::Ty;
@@ -707,6 +707,17 @@ impl Checker<'_> {
                 if v.ty.is_error() {
                     return;
                 }
+                // A list of records the view names is handed the collection itself, which the
+                // component offers record by record; every other list is a value of its own.
+                if let Ty::Collection(item) = &v.ty
+                    && let Type::List(listed) | Type::Set(listed) = ty
+                    && fits(listed, item)
+                {
+                    let item = (**item).clone();
+                    let list = self.list_from(v, item);
+                    self.arg_prop(node, name, list);
+                    return;
+                }
                 if matches!(v.ty, Ty::Collection(_)) {
                     // Not copied whole on every change, and not yet followed by the host
                     // item by item: a view takes it live instead.
@@ -742,6 +753,29 @@ impl Checker<'_> {
                 }
             }
         }
+    }
+
+    /// The collection `v`'s items as one list: what a prop of many takes, built item by item so
+    /// a collection is never copied where it stands.
+    fn list_from(&mut self, v: Ex, item: Ty) -> Ex {
+        let ty = Ty::List(Box::new(item.clone()));
+        let out = self.fresh(ty.clone());
+        let mut run = self.new_for(v, &item);
+        run.body.push(Stmt::Eval(Ex::host(
+            Imp::ListPushH,
+            vec![Ex::local(out, ty.clone()), Ex::local(run.item_local, item)],
+            Ty::Unit,
+        )));
+        Ex::new(
+            Ek::Seq(
+                vec![
+                    Stmt::Set(out, Ex::host(Imp::ListNew, Vec::new(), ty.clone())),
+                    Stmt::ForList(Box::new(run)),
+                ],
+                Box::new(Ex::local(out, ty.clone())),
+            ),
+            ty,
+        )
     }
 
     /// The value of an identity prop, when it is a filter: `selected: place`, `ui.NavItem(Task.today)`.
@@ -1464,8 +1498,9 @@ fn lang_type(ty: &Type) -> Ty {
         Type::Action => super::platform::host_ty("Action"),
         // A `Cases` set is the `ui` package's enum of that name (components.md §4.1).
         Type::Cases { name } => Ty::Enum(toolkit::key(name)),
-        // A case is whichever enum the bound field declares, which a description does not name.
-        Type::Resource | Type::Icon | Type::Choice { .. } | Type::Enum => Ty::Error,
+        // A case is whichever enum the bound field declares, which a description does not name;
+        // a record is any of the app's types, which a description does not name either.
+        Type::Resource | Type::Link | Type::Icon | Type::Choice { .. } | Type::Enum => Ty::Error,
     }
 }
 
@@ -1494,7 +1529,7 @@ fn fits(ty: &Type, found: &Ty) -> bool {
                 | (Type::RichText, Ty::RichText)
                 | (Type::Float, Ty::Float | Ty::Int)
                 | (Type::Picture, Ty::Text)
-                | (Type::Resource, Ty::Record(_))
+                | (Type::Resource | Type::Link, Ty::Record(_))
         ),
     }
 }

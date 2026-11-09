@@ -38,6 +38,7 @@ mod lanes;
 mod legacy;
 mod legibility;
 mod library;
+mod link_editor;
 mod links;
 mod make_from;
 mod marks;

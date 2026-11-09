@@ -137,6 +137,10 @@ fn sample(ty: &Type) -> Value {
             name: "Ada".into(),
         },
         Type::Resource => Value::Resource("r".into()),
+        Type::Link => Value::Link {
+            reference: "tl:a.b".into(),
+            title: "x".into(),
+        },
         Type::Time => Value::Text("2026-06-30T08:42:00Z".into()),
         Type::Icon => Value::Icon("pin".into()),
         Type::Picture => Value::Picture(tilo_ui_graph::component::Picture {

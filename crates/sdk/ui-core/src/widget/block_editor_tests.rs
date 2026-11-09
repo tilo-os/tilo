@@ -2771,10 +2771,7 @@ fn host_slash_commands_hand_the_block_to_the_host() {
     assert_eq!(request.block, editor.blocks()[0].id);
     assert!(editor.take_slash_request().is_none(), "once");
 
-    let page = PageEntry {
-        id: Uuid::from_u128(7),
-        title: "Trip ideas".into(),
-    };
+    let page = PageEntry::page(Uuid::from_u128(7), "Trip ideas");
     assert!(editor.link_block_to_page(&request.block, &page));
     assert_eq!(editor.blocks()[0].text(), "Trip ideas");
     assert!(
@@ -2782,7 +2779,7 @@ fn host_slash_commands_hand_the_block_to_the_host() {
             .line
             .marks()
             .iter()
-            .any(|span| span.mark == Mark::Link(page.id) && span.range == (0..10))
+            .any(|span| span.mark == Mark::Link(Uuid::from_u128(7)) && span.range == (0..10))
     );
 
     // Link to note opens the link picker where the slash was.

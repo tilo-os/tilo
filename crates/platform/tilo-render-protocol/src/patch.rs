@@ -180,12 +180,27 @@ pub enum Value {
     Action(Offered),
     /// A picture: where its bytes are read from, and what it says to assistive technology.
     Picture(Picture),
+    /// A record a view names: what refers to it, and how it reads for the person now.
+    Link {
+        reference: String,
+        title: String,
+    },
 }
 
 /// An action a node offers ([`Value::Action`]), as the toolkit holds one.
 pub use tilo_ui_graph::component::Offered;
 /// A picture a node shows ([`Value::Picture`]): its address, and its accessible name.
 pub use tilo_ui_graph::component::Picture;
+
+/// The description of the component a node of `kind` is of (`ui.BlockEditor`): what its props
+/// are, which is the one list of them a host reads a node's values by.
+#[must_use]
+pub fn description(kind: &str) -> Option<&'static tilo_ui_graph::component::Description> {
+    tilo_ui_graph::component::catalogue().get(kind.strip_prefix("ui.")?)
+}
+
+/// The type a described component's prop takes, as the catalogue declares it.
+pub use tilo_ui_graph::component::Type as PropType;
 
 impl Value {
     #[must_use]

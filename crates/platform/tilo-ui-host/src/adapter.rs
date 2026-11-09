@@ -164,6 +164,7 @@ impl Adapter {
             | Prop::Map(_)
             | Prop::Action(_)
             | Prop::Picture(_)
+            | Prop::Link { .. }
             | Prop::Case { .. } => {
                 return None;
             }
@@ -432,6 +433,10 @@ fn convert(value: &Value, ty: &Type, reconciler: &Reconciler) -> Option<Prop> {
         ),
         (Type::Action, Value::Action(offered)) => Prop::Action(offered.clone()),
         (Type::RichText, Value::Rich(rich)) => Prop::Rich(rich.clone()),
+        (Type::Link, Value::Link { reference, title }) => Prop::Link {
+            reference: reference.clone(),
+            title: title.clone(),
+        },
         _ => return None,
     })
 }

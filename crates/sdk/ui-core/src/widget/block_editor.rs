@@ -782,6 +782,14 @@ pub struct BlockEditor {
     access_row_builds: std::cell::Cell<usize>,
     image_preview_rects: Vec<Option<Rect>>,
     image_store: Option<crate::ImageStore>,
+    /// Whether the slash menu offers the link command: the picker has pages or records to offer.
+    link_pages_offered: bool,
+    /// The slash commands the editor's host answers itself (a picture, a page made here).
+    host_commands: Vec<SlashHostCommand>,
+    /// The slash commands the view that placed the editor answers, by their labels.
+    view_commands: Vec<String>,
+    /// What choosing one of the view's commands does.
+    view_command: Option<Box<dyn FnMut(&str)>>,
     /// Retain decoded dimensions even if the bounded image cache evicts pixels.
     /// Layout must not alternate between a placeholder and the actual aspect ratio.
     image_dimensions: HashMap<String, (u32, u32)>,
@@ -997,6 +1005,10 @@ impl BlockEditor {
             access_row_builds: std::cell::Cell::new(0),
             image_preview_rects: Vec::new(),
             image_store: None,
+            link_pages_offered: false,
+            host_commands: Vec::new(),
+            view_commands: Vec::new(),
+            view_command: None,
             image_dimensions: HashMap::new(),
             image_resize: None,
             viewport_height: None,
@@ -2687,6 +2699,14 @@ impl BlockEditor {
         match command {
             SlashCommand::Block(kind) => self.slash_make_block(focused_idx, trigger, kind),
             SlashCommand::LinkPage => self.slash_link_page(focused_idx, trigger),
+            // A command of the view that placed the editor runs there, by its label.
+            SlashCommand::Host(SlashHostCommand::Named(label)) => {
+                if let Some(run) = self.view_command.as_mut() {
+                    run(&label);
+                }
+                self.edit_pending = true;
+                self.dirty = true;
+            }
             SlashCommand::Host(command) => {
                 if let Some(block) = self.blocks.get(focused_idx) {
                     self.slash_request = Some(SlashRequest {
@@ -2763,7 +2783,9 @@ impl BlockEditor {
     /// pages, [`Self::set_link_pages`]); and each of `host`, which the host
     /// carries out when [`Self::take_slash_request`] hands it over.
     pub fn set_slash_commands(&mut self, link_pages: bool, host: &[SlashHostCommand]) {
-        self.slash_menu.set_commands(link_pages, host);
+        self.link_pages_offered = link_pages;
+        self.host_commands = host.to_vec();
+        self.refresh_slash_commands();
     }
 
     /// [`Self::set_slash_commands`], as a builder.
@@ -2790,11 +2812,16 @@ impl BlockEditor {
         let Some(block) = self.blocks.get_mut(index) else {
             return false;
         };
+        // A record the page stands for, when it names one, is written as a reference to it.
+        let mark = match (&page.reference, page.id) {
+            (Some(reference), _) => Mark::Mention(reference.clone()),
+            (None, Some(id)) => Mark::Link(id),
+            (None, None) => return false,
+        };
         block.line.set_text(&page.title);
-        block.line.set_marks(vec![MarkSpan::new(
-            0..page.title.len(),
-            Mark::Link(page.id),
-        )]);
+        block
+            .line
+            .set_marks(vec![MarkSpan::new(0..page.title.len(), mark)]);
         block.line.set_cursor_pos(page.title.len());
         self.edit_pending = true;
         self.commit_pending = true;
@@ -4167,7 +4194,57 @@ impl BlockEditor {
     }
 
     pub fn set_link_pages(&mut self, pages: Vec<PageEntry>) {
+        self.link_pages_offered = true;
         self.link_popover.set_items(pages);
+        self.refresh_slash_commands();
+    }
+
+    /// Offer the records a view names in the `[[` picker and the slash menu's link command:
+    /// choosing one writes a run that refers to it, which every reader reads as it reads now.
+    pub fn set_links(&mut self, links: impl IntoIterator<Item = (String, String)>) {
+        let entries: Vec<PageEntry> = links
+            .into_iter()
+            .map(|(reference, title)| PageEntry::link(&reference, &title))
+            .collect();
+        self.link_pages_offered = !entries.is_empty();
+        self.link_popover.set_items(entries);
+        self.refresh_slash_commands();
+    }
+
+    /// Offer the commands a view answers besides the block kinds, by their labels: choosing one
+    /// runs [`Self::on_command`].
+    pub fn set_view_commands(&mut self, commands: &[String]) {
+        self.view_commands = commands.to_vec();
+        self.refresh_slash_commands();
+    }
+
+    /// The slash menu's rows: the block kinds, a link when there are pages or records to link,
+    /// and each command the host or the view answers.
+    fn refresh_slash_commands(&mut self) {
+        let mut host = self.host_commands.clone();
+        host.extend(
+            self.view_commands
+                .iter()
+                .map(|label| SlashHostCommand::Named(label.clone())),
+        );
+        self.slash_menu.set_commands(self.link_pages_offered, &host);
+    }
+
+    /// Run `command` with the label of the view's slash command the person chose, each time.
+    pub fn on_command(&mut self, command: impl FnMut(&str) + 'static) {
+        self.view_command = Some(Box::new(command));
+    }
+
+    /// The document's headings, each with its level (1 for `#`), in the order they stand.
+    #[must_use]
+    pub fn headings(&self) -> Vec<(u8, String)> {
+        self.blocks
+            .iter()
+            .filter_map(|block| match block.kind {
+                BlockKind::Heading(level) => Some((level, block.text().to_owned())),
+                _ => None,
+            })
+            .collect()
     }
 
     /// Supply an asynchronous, host-policy-owned image loader. The editor
@@ -4937,6 +5014,14 @@ impl BlockEditor {
         let (Some(head), Some(tail)) = (text.get(..head_end), text.get(cursor..)) else {
             return;
         };
+        // A record a view offers is written as a reference to it (a `mention`), which every
+        // reader reads as it reads now; a page is written as the link its id names.
+        let mark = match (&page.reference, embedded, page.id) {
+            (Some(reference), _, _) => Mark::Mention(reference.clone()),
+            (None, true, Some(id)) => Mark::Transclusion(id),
+            (None, false, Some(id)) => Mark::Link(id),
+            (None, _, None) => return,
+        };
         let mark_start = head_end;
         let title_end = mark_start.saturating_add(page.title.len());
         let mut new_text = String::with_capacity(text.len().saturating_add(page.title.len()));
@@ -4944,11 +5029,6 @@ impl BlockEditor {
         new_text.push_str(&page.title);
         new_text.push_str(tail);
         b.line.set_text(&new_text);
-        let mark = if embedded {
-            Mark::Transclusion(page.id)
-        } else {
-            Mark::Link(page.id)
-        };
         b.line.add_mark(MarkSpan::new(mark_start..title_end, mark));
         b.line.set_cursor_pos(title_end);
         self.dirty = true;
@@ -10876,6 +10956,7 @@ impl Widget for BlockEditor {
     fn update(&mut self, state: &AppModel, path: &ModelPath) -> bool {
         let edited = self.take_body_edits();
         let followed = self.follow_body();
+        self.publish_headings();
         super::defaults::update(self.children_mut(), state, path) || edited || followed
     }
 }

@@ -452,6 +452,33 @@ impl PropType for ResourceId {
     }
 }
 
+/// A record a view names, as a component offers it: what refers to it, and how it reads for the
+/// person now. What the component writes of it names the record, never the text, so a record
+/// renamed later reads by its new title wherever it was linked.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Link {
+    /// What refers to it: the catalogue's reference, the value a `mention` mark carries.
+    pub reference: String,
+    /// How it reads for the person now: its title, or the phrase for one they cannot read.
+    pub title: String,
+}
+
+impl PropType for Link {
+    fn ty() -> Type {
+        Type::Link
+    }
+
+    fn from_value(value: &Value) -> Result<Self, String> {
+        match value {
+            Value::Link { reference, title } => Ok(Self {
+                reference: reference.clone(),
+                title: title.clone(),
+            }),
+            other => Err(wrong(&Self::ty(), other)),
+        }
+    }
+}
+
 /// One of the design system's closed sets (a role, a size) as a prop: [`Type::Choice`] of its
 /// cases' snake-case names. Crate-wide, so a component declares its choices beside itself:
 /// `crate::component::choice!(MyRole, "MyRole", { A => "a", B => "b" });`.

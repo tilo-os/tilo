@@ -978,10 +978,7 @@ impl NotesApp {
             .workspace
             .pages()
             .iter()
-            .map(|p| PageEntry {
-                id: p.id,
-                title: p.title.clone(),
-            })
+            .map(|p| PageEntry::page(p.id, p.title.clone()))
             .collect();
         self.main.editor_mut().set_link_pages(page_entries);
     }
@@ -1212,6 +1209,10 @@ impl NotesApp {
         let Some(request) = self.main.take_slash_request() else {
             return;
         };
+        // A view's own command runs in the view that named it: a page's window answers none.
+        if let ui::widget::SlashHostCommand::Named(_) = request.command {
+            return;
+        }
         let Some(page) = self.main.page_id() else {
             return;
         };
@@ -1219,6 +1220,7 @@ impl NotesApp {
             ui::widget::SlashHostCommand::Image => {
                 self.request(&NotesEffect::InsertImage { page });
             }
+            ui::widget::SlashHostCommand::Named(_) => {}
             ui::widget::SlashHostCommand::Page => {
                 let title = request.text.trim();
                 let named = !title.is_empty();
@@ -1234,13 +1236,9 @@ impl NotesApp {
                     tracing::warn!(%error, "notes: sub-note not created");
                     return;
                 }
-                self.main.editor_mut().link_block_to_page(
-                    &request.block,
-                    &PageEntry {
-                        id,
-                        title: title.to_owned(),
-                    },
-                );
+                self.main
+                    .editor_mut()
+                    .link_block_to_page(&request.block, &PageEntry::page(id, title));
                 self.self_dirty = true;
                 if !named {
                     // As Ctrl+N does: the new note, its title taking the

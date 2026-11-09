@@ -546,6 +546,10 @@ impl<'a> Validator<'a> {
                 offered.icon.as_ref().map_or(Ok(()), |icon| self.key(icon))
             }
             Value::Picture(picture) => self.string(&picture.src),
+            Value::Link { reference, title } => {
+                self.string(reference)?;
+                self.string(title)
+            }
             Value::Rich(rich) => {
                 if rich.blocks.len() > self.limits.rows as usize
                     || rich.embeds.len() > self.limits.rows as usize
@@ -781,6 +785,7 @@ pub fn fits(value: &Value, ty: &Type) -> bool {
         | (Type::Resource, Value::Ref(_))
         | (Type::Icon | Type::Time, Value::Text(_))
         | (Type::Picture, Value::Picture(_))
+        | (Type::Link, Value::Link { .. })
         | (Type::RichText, Value::Rich(_))
         | (Type::Action, Value::Action(_))
         // The case's fields are read against the catalogue's set where the node is built.
@@ -795,7 +800,8 @@ pub fn fits(value: &Value, ty: &Type) -> bool {
             | Value::Rich(_)
             | Value::Map(_)
             | Value::Action(_)
-            | Value::Picture(_),
+            | Value::Picture(_)
+            | Value::Link { .. },
         ) => false,
         (Type::Text, _) => true,
         (Type::Choice { cases, .. }, Value::Text(case) | Value::Enum(case)) => cases.contains(case),

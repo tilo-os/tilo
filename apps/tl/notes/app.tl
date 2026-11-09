@@ -84,6 +84,7 @@ view note_row(n: Note) {
 /// A note's window: its title, its tags as chips that come off with their remove button, its
 /// body, and what happened to it.
 view note_editor(n: Note) {
+    let nb = root Notebook
     std.document(n) {
         ui.TextInput(bind: n.title, title: true)
         if not n.tags.is_empty() {
@@ -101,7 +102,8 @@ view note_editor(n: Note) {
                 on: file.choose(insert_image(n), accept: ["image/png", "image/jpeg", "image/webp"]),
             )
         }
-        ui.BlockEditor(bind: n.body, placeholder: "Write something")
+        ui.BlockEditor(bind: n.body, placeholder: "Write something", links: nb.notes)
+        std.linked(n, compact: true)
         discussion.thread(n)
         std.history(n)
     }

@@ -440,6 +440,10 @@ pub enum Type {
     /// A case of one of the app's own enums, by its name: which cases it holds is the field the
     /// binding names, so a description says only that it takes such a field.
     Enum,
+    /// A record a view names, as the component offers it: what refers to it, and how it reads
+    /// for the person now. What the component writes of it names the record, never the text, so
+    /// a record renamed later reads by its new title everywhere it was linked.
+    Link,
 }
 
 impl Type {
@@ -464,6 +468,7 @@ impl Type {
             Self::Map { key, value } => format!("Map<{}, {}>", key.show(), value.show()),
             Self::Action => "Action".into(),
             Self::Enum => "a case of an enum".into(),
+            Self::Link => "Link".into(),
         }
     }
 }
@@ -504,6 +509,12 @@ pub enum Value {
     Case {
         case: String,
         fields: Vec<(String, Value)>,
+    },
+    /// A record a view names: what refers to it (the catalogue's reference, `tilo_reference`),
+    /// and how it reads for the person now (its title, or the phrase for one they cannot read).
+    Link {
+        reference: String,
+        title: String,
     },
 }
 
@@ -561,6 +572,7 @@ impl Value {
             Self::List(_) => "List",
             Self::Map(_) => "Map",
             Self::Action(_) => "Action",
+            Self::Link { .. } => "Link",
         }
     }
 }

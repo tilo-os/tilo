@@ -1,0 +1,262 @@
+//! A note's editor offers the notebook's notes as `[[` links, each by the title it reads as
+//! now; a reference written into a note is what `linked()` reports the note by.
+
+use automerge::AutoCommit;
+use serde_json::json;
+use tilolang_runtime::rich::{Reference, RichValue};
+use tilolang_runtime::store::{LinkHow, Store as _};
+use tilolang_runtime::{NameHost, Principal, ResourceRef, Value, ViewInstance};
+use tilolang_tilo::publish::PlanRequest;
+use tilolang_tilo::record::DynValue;
+
+use crate::fixtures::{Replica, field_id};
+
+const DISCUSSION: &str = include_str!("../../../../apps/tl/discussion/app.tl");
+const DISCUSSION_IDS: &str = include_str!("../../../../apps/tl/discussion/app.ids");
+const NOTES: &str = include_str!("../../../../apps/tl/notes/app.tl");
+const NOTES_IDS: &str = include_str!("../../../../apps/tl/notes/app.ids");
+const APP: &str = "so.tilo.lang.notes";
+
+struct Workspace {
+    ada: Replica,
+    plan: String,
+    groceries: String,
+}
+
+/// A notebook holding `Plan` and `Groceries`.
+fn workspace() -> Workspace {
+    let (mut ada, packages) = Replica::new(
+        "ada",
+        AutoCommit::new(),
+        &[(DISCUSSION, DISCUSSION_IDS), (NOTES, NOTES_IDS)],
+    );
+    let meta = packages[1].meta.clone();
+    let root = ada.host.root_of(APP).unwrap();
+    ada.commit();
+    let mut made: Vec<String> = Vec::new();
+    for title in ["Plan", "Groceries"] {
+        call(
+            &mut ada,
+            &meta,
+            "Notebook",
+            &root.id_string(),
+            "new_note",
+            json!({}),
+        );
+        let notes = notes(&ada, &meta, &root);
+        let note = notes.last().expect("the note just made").clone();
+        let note = format!(
+            "{}/{}:{}",
+            root.id_string(),
+            field_id(&meta, "Notebook", "notes"),
+            note
+        );
+        call(
+            &mut ada,
+            &meta,
+            "Note",
+            &note,
+            "retitle",
+            json!({ "title": title }),
+        );
+        made.push(note);
+    }
+    Workspace {
+        ada,
+        plan: made[0].clone(),
+        groceries: made[1].clone(),
+    }
+}
+
+fn call(
+    replica: &mut Replica,
+    meta: &tilolang_runtime::Meta,
+    ty: &str,
+    resource: &str,
+    name: &str,
+    args: serde_json::Value,
+) {
+    let action = meta
+        .actions
+        .iter()
+        .find(|a| a.name == name)
+        .unwrap_or_else(|| panic!("no action {name}"));
+    let args = args.as_object().cloned().unwrap_or_default();
+    let kind = format!("tl.{APP}.{ty}");
+    let planned = replica
+        .host
+        .plan(&PlanRequest {
+            app: APP,
+            kind: &kind,
+            action_id: &action.id,
+            resource: Some(resource),
+            args: &args,
+            caller: None,
+            from: None,
+        })
+        .unwrap();
+    replica.apply(&planned);
+}
+
+/// The notebook's notes, as their ids in the collection.
+fn notes(replica: &Replica, meta: &tilolang_runtime::Meta, root: &ResourceRef) -> Vec<String> {
+    let record = replica.host.store().record(&root.doc).unwrap();
+    match record.get(&field_id(meta, "Notebook", "notes")) {
+        Some(DynValue::Collection(items)) => {
+            items.iter().map(|(id, _)| id.as_str().to_owned()).collect()
+        }
+        other => panic!("{other:?}"),
+    }
+}
+
+/// The node of `kind` at or under `node`.
+fn find<'a>(node: &'a tilo_ui_host::UiNode, kind: &str) -> Option<&'a tilo_ui_host::UiNode> {
+    if node.kind == kind {
+        return Some(node);
+    }
+    node.children.iter().find_map(|child| find(child, kind))
+}
+
+/// What the notes the editor offers read as, in the order the view names them.
+fn offered(editor: &tilo_ui_host::UiNode) -> Vec<(String, String)> {
+    match editor.props.get("links") {
+        Some(tilo_ui_host::Value::List(items)) => items
+            .iter()
+            .map(|item| match item {
+                tilo_ui_host::Value::Link { reference, title } => {
+                    (reference.clone(), title.clone())
+                }
+                other => panic!("a link, not {other:?}"),
+            })
+            .collect(),
+        other => panic!("no links offered: {other:?}"),
+    }
+}
+
+/// Names, as a window no workspace named anybody to reads them.
+struct Names;
+
+impl NameHost for Names {
+    fn name(&self, who: &Principal) -> String {
+        who.shown()
+    }
+}
+
+/// The view of the note `note`, and the tree the window receives of it.
+fn window(replica: &Replica, note: &str) -> (ViewInstance, tilo_ui_host::UiNode) {
+    let package = replica.host.package(APP).unwrap();
+    let ty = package
+        .meta
+        .types
+        .iter()
+        .find(|ty| ty.name == "Note")
+        .unwrap()
+        .id
+        .clone();
+    let target = ResourceRef {
+        ty,
+        ..ResourceRef::parse_id(note, String::new()).unwrap()
+    };
+    let view = replica.host.open_resource(&target, None).unwrap();
+    let names = Names;
+    let convert = tilolang_tilo::instance::wire::Convert {
+        names: &names,
+        field_name: &|_| String::new(),
+        cases: &|_| Vec::new(),
+        toggles: &|_, _| None,
+        invokes: &|_, _| None,
+        embeds: &|_| tilo_render_protocol::patch::rich::InlineView::Elsewhere,
+        link: &|at| tilolang_tilo::instance::link_of(&replica.host, at),
+    };
+    let tree = convert.node(view.tree());
+    (view, tree)
+}
+
+#[test]
+fn a_note_offers_its_notebooks_notes_by_the_titles_they_read_as_now() {
+    let Workspace {
+        mut ada,
+        plan,
+        groceries,
+    } = workspace();
+    let (_view, tree) = window(&ada, &plan);
+    let editor = find(&tree, "ui.BlockEditor").expect("the note's body is the editor");
+    let links = offered(editor);
+    assert_eq!(
+        links
+            .iter()
+            .map(|(_, title)| title.as_str())
+            .collect::<Vec<_>>(),
+        ["Plan", "Groceries"],
+        "the notebook's notes, each by its title: {links:?}"
+    );
+    assert!(
+        links.iter().all(
+            |(reference, title)| reference.contains("so.tilo.lang.notes") && reference != title
+        ),
+        "each is the catalogue's reference to the note, never its title: {links:?}"
+    );
+
+    // A note renamed later is offered by its new title: the view names the record, and how it
+    // reads is read now.
+    let package = ada.host.package(APP).unwrap();
+    call(
+        &mut ada,
+        &package.meta,
+        "Note",
+        &groceries,
+        "retitle",
+        json!({ "title": "Shopping" }),
+    );
+    let (_view, tree) = window(&ada, &plan);
+    let editor = find(&tree, "ui.BlockEditor").expect("the note's body is the editor");
+    assert_eq!(
+        offered(editor)
+            .iter()
+            .map(|(_, title)| title.as_str())
+            .collect::<Vec<_>>(),
+        ["Plan", "Shopping"],
+        "the new title, not the one it had when the view first ran"
+    );
+}
+
+#[test]
+fn a_reference_written_into_a_note_is_a_mention_that_linked_reports() {
+    let Workspace {
+        ada,
+        plan,
+        groceries,
+    } = workspace();
+    let (view, tree) = window(&ada, &plan);
+    let key = find(&tree, "ui.BlockEditor")
+        .expect("the note's body is the editor")
+        .key
+        .clone();
+
+    // What choosing a note in the editor writes: a run that reads as the note's title, marked
+    // as the reference to it (`ui.BlockEditor`'s own test drives the picker to this).
+    let (_view, other) = window(&ada, &groceries);
+    let (reference, title) = offered(find(&other, "ui.BlockEditor").unwrap())
+        .into_iter()
+        .find(|(_, title)| title == "Groceries")
+        .expect("the note it offers");
+    let target = Reference::of_mark(&reference).expect("a reference");
+    let mut body = RichValue::from_text("Groceries: ");
+    body.push_reference(&title, &target);
+    view.edit(&key, &Value::Rich(body)).expect("the body edits");
+
+    let mentioned = ada
+        .host
+        .store()
+        .linked(&ResourceRef::parse_id(&groceries, String::new()).unwrap())
+        .unwrap();
+    let plan_id = ResourceRef::parse_id(&plan, String::new())
+        .unwrap()
+        .id_string();
+    assert!(
+        mentioned
+            .iter()
+            .any(|link| link.how == LinkHow::Mention && link.of.id_string() == plan_id),
+        "the note that mentions it, and how: {mentioned:?}"
+    );
+}

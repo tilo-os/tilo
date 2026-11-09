@@ -2303,6 +2303,7 @@ fn convert_with<T>(
     let toggles = |key: &str, event: &str| toggles(host, view, key, event);
     let invokes = |key: &str, event: &str| invokes(view, key, event);
     let embeds = |reference: &crate::runtime::rich::Reference| inline_view(host, names, reference);
+    let link = |target: &ResourceRef| link_of(host, target);
     run(&Convert {
         names,
         field_name: &field_name,
@@ -2310,6 +2311,7 @@ fn convert_with<T>(
         toggles: &toggles,
         invokes: &invokes,
         embeds: &embeds,
+        link: &link,
     })
 }
 
@@ -2323,6 +2325,37 @@ fn referenced_resource(
     host.package(&at.app)?;
     let id = crate::runtime::rich::resource_id(reference)?;
     ResourceRef::parse_id(id, String::new())
+}
+
+/// The catalogue's reference to the record `target` and how it reads for the viewer now: what a
+/// component offering it as a link is given (`ui.BlockEditor`'s `links`). A type no package here
+/// declares is named by its own id, as the record is found again by that.
+#[must_use]
+pub fn link_of(host: &Host, target: &ResourceRef) -> (String, String) {
+    use crate::runtime::Store as _;
+    let mut target = target.clone();
+    if let Ok(ty) = host.store().type_of(&target) {
+        target.ty = ty;
+    }
+    let title = host.label_at(&target);
+    let reference = host
+        .find_in_packages(|package| {
+            package
+                .meta
+                .types
+                .iter()
+                .find(|declared| declared.id == target.ty)
+                .map(|declared| {
+                    crate::runtime::rich::resource_reference(
+                        &package.meta.app,
+                        &declared.name,
+                        &target,
+                    )
+                    .mark_value()
+                })
+        })
+        .unwrap_or_default();
+    (reference, title)
 }
 
 /// How a reference in rich text reads for the viewer: a person by what the workspace calls them; a
@@ -2377,6 +2410,7 @@ fn plain(names: &NoNames) -> Convert<'_> {
         toggles: &|_, _| None,
         invokes: &|_, _| None,
         embeds: &|_| tilo_render_protocol::patch::rich::InlineView::Elsewhere,
+        link: &|_| (String::new(), String::new()),
     }
 }
 

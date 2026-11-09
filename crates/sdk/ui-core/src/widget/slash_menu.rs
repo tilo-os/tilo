@@ -27,13 +27,17 @@ pub enum SlashCommand {
 /// A slash command only the editor's host can carry out. A host offers the
 /// ones it answers with
 /// [`BlockEditor::set_slash_commands`](crate::widget::block_editor::BlockEditor::set_slash_commands).
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub enum SlashHostCommand {
     /// Choose a picture and put it after the block.
     Image,
     /// Make a page inside this one: titled with the block's text, which
     /// becomes a link to it, or untitled and opened for naming.
     Page,
+    /// A command the view that placed the editor answers, by the label it
+    /// names it with: choosing it runs what the view gave for it
+    /// ([`BlockEditor::on_command`](crate::widget::block_editor::BlockEditor::on_command)).
+    Named(String),
 }
 
 pub type SlashMenu = FilterMenu<SlashCommand>;
@@ -175,6 +179,19 @@ fn entries(link_pages: bool, host: &[SlashHostCommand]) -> Vec<MenuEntry<SlashCo
             None,
             SlashCommand::Host(SlashHostCommand::Image),
         ));
+    }
+    for named in host {
+        let SlashHostCommand::Named(label) = named else {
+            continue;
+        };
+        rows.push(MenuEntry {
+            // The view's own label is the row's, not a message of the platform's catalogue.
+            label: label.clone(),
+            keywords: &[],
+            value: SlashCommand::Host(SlashHostCommand::Named(label.clone())),
+            icon: Some(Icon::Command),
+            hint: None,
+        });
     }
     rows.extend([
         block(

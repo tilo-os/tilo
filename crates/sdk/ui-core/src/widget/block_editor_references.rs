@@ -16,7 +16,7 @@ use vello::kurbo::{Point, Rect};
 use winit::event::{ElementState, MouseButton, WindowEvent};
 
 use super::BlockEditor;
-use crate::component::{Bound, Component, Described, Event, PropType, Type, Value};
+use crate::component::{Bound, Component, Described, Event, Link, PropType, Type, Value};
 use crate::theme::Theme;
 use crate::widget::block_editor_body::BodyBinding;
 use crate::widget::marks::{Mark, MentionColors, MentionPaint};
@@ -63,6 +63,21 @@ pub struct BlockEditorProps {
     /// reference is opened.
     #[component(event(value = String))]
     pub open_reference: Event,
+    /// The records a `[[` link offers, each as it reads for the person now: choosing one writes
+    /// a reference to it in the text, which every reader reads as it reads now. A view names
+    /// them, `links: nb.notes`.
+    pub links: Vec<Link>,
+    /// The commands the editor's slash menu offers besides the block kinds, by their labels:
+    /// choosing one reports it as `command`.
+    pub commands: Vec<String>,
+    /// A command of `commands` was chosen, carrying its label: the view does what the label
+    /// says, as it would for a button it placed.
+    #[component(event(value = String))]
+    pub command: Event,
+    /// The document's headings, in the order they stand, each time they change. A view that
+    /// draws an outline of the document keeps them as its state.
+    #[component(event(value = Vec<String>))]
+    pub headings: Event,
 }
 
 /// The editor's references: how each reads, where each was painted, and what activating one
@@ -83,6 +98,10 @@ pub(super) struct References {
     hits: Vec<(Rect, String)>,
     /// What activating a reference does.
     on_open: Option<Box<dyn FnMut(&str)>>,
+    /// What the view does with the document's headings.
+    headings: Event,
+    /// The headings last reported to it: it is told again only when they change.
+    reported: Option<Vec<String>>,
 }
 
 impl BlockEditor {
@@ -260,50 +279,130 @@ impl Described for BlockEditor {
     type Props = BlockEditorProps;
 
     fn from_props(key: &str, props: BlockEditorProps) -> Self {
-        if !BodyBinding::bound(&props.rich, &props.markdown) {
-            // Rich text shown, not edited: painted as it reads, taking no input.
-            let mut editor = Self::new()
-                .with_wrap_lines(true)
-                .with_compact_paragraph_spacing(true)
-                .with_block_handles(false)
-                .with_flush_text()
-                .with_read_only(true);
-            editor.set_props(props);
-            return editor;
-        }
-        // As native Notes edits a note: lines wrap at the column, paragraphs sit close.
-        let mut editor = Self::new()
-            .with_id(key)
-            .with_wrap_lines(true)
-            .with_compact_paragraph_spacing(true);
-        let (body, placeholder) = BodyBinding::of(props.rich, props.markdown, props.placeholder);
-        editor.set_empty_hint(&placeholder);
-        editor.show_body(&body);
-        editor.body = Some(body);
-        editor
-    }
-
-    fn set_props(&mut self, props: BlockEditorProps) -> bool {
-        let editing = BodyBinding::bound(&props.rich, &props.markdown);
-        if editing != self.body.is_some() {
-            // Editing and showing take different input and different layout: build it again.
-            return false;
-        }
         let BlockEditorProps {
             rich,
             markdown,
             value,
             placeholder,
             open_reference,
+            links,
+            commands,
+            command,
+            headings,
         } = props;
-        if self.body.is_none() {
+        let editing = BodyBinding::bound(&rich, &markdown);
+        let mut editor = if editing {
+            // As native Notes edits a note: lines wrap at the column, paragraphs sit close.
+            Self::new()
+                .with_id(key)
+                .with_wrap_lines(true)
+                .with_compact_paragraph_spacing(true)
+        } else {
+            // Rich text shown, not edited: painted as it reads, taking no input.
+            Self::new()
+                .with_wrap_lines(true)
+                .with_compact_paragraph_spacing(true)
+                .with_block_handles(false)
+                .with_flush_text()
+                .with_read_only(true)
+        };
+        editor.offer(
+            links,
+            &commands,
+            command,
+            headings,
+            open_reference,
+            !editing,
+        );
+        editor.set_image_store(Some(crate::pictures::Pictures::window().store().clone()));
+        if editing {
+            let (body, placeholder) = BodyBinding::of(rich, markdown, placeholder);
+            editor.set_empty_hint(&placeholder);
+            editor.show_body(&body);
+            editor.body = Some(body);
+        } else {
+            editor.show_rich_text(&value.unwrap_or_default());
+        }
+        editor.publish_headings();
+        editor
+    }
+
+    fn set_props(&mut self, props: BlockEditorProps) -> bool {
+        let BlockEditorProps {
+            rich,
+            markdown,
+            value,
+            placeholder,
+            open_reference,
+            links,
+            commands,
+            command,
+            headings,
+        } = props;
+        let editing = BodyBinding::bound(&rich, &markdown);
+        if editing != self.body.is_some() {
+            // Editing and showing take different input and different layout: build it again.
+            return false;
+        }
+        let showing = self.body.is_none();
+        self.offer(links, &commands, command, headings, open_reference, showing);
+        let rebound = if showing {
             self.show_rich_text(&value.unwrap_or_default());
+            true
+        } else {
+            self.rebind_body(rich, markdown, &placeholder.unwrap_or_default())
+        };
+        self.publish_headings();
+        rebound
+    }
+}
+
+impl BlockEditor {
+    /// What the view gives the editor itself, beside the body it edits: the records its `[[`
+    /// link offers, the commands its slash menu answers, the headings it is told of, and what
+    /// activating a reference does.
+    fn offer(
+        &mut self,
+        links: Vec<Link>,
+        commands: &[String],
+        command: Event,
+        headings: Event,
+        open_reference: Event,
+        open_by_itself: bool,
+    ) {
+        self.set_links(
+            links
+                .iter()
+                .map(|link| (link.reference.clone(), link.title.clone())),
+        );
+        self.set_view_commands(commands);
+        self.on_command(move |label| {
+            command.fire(Some(Value::Text(label.to_owned())));
+        });
+        if open_by_itself {
+            // A shown text opens the reference itself; an edited one's host opens it, so an
+            // editor that binds a field offers no event of its own here.
             self.on_open_reference(move |reference| {
                 open_reference.fire(Some(Value::Text(reference.to_owned())));
             });
-            return true;
         }
-        self.rebind_body(rich, markdown, &placeholder.unwrap_or_default())
+        self.references.headings = headings;
+    }
+
+    /// Tell the view the document's headings once they are not the ones it was told of: what it
+    /// draws an outline of this document from.
+    pub(super) fn publish_headings(&mut self) {
+        if self.references.headings.is_none() {
+            return;
+        }
+        let headings: Vec<String> = self.headings().into_iter().map(|(_, text)| text).collect();
+        if self.references.reported.as_ref() == Some(&headings) {
+            return;
+        }
+        self.references.reported = Some(headings.clone());
+        self.references.headings.fire(Some(Value::List(
+            headings.into_iter().map(Value::Text).collect(),
+        )));
     }
 }
 
@@ -475,6 +574,175 @@ mod tests {
         assert!(
             queue.take().is_empty(),
             "a click beside a reference opens nothing"
+        );
+    }
+
+    /// Type `text` into `editor`, as the person does.
+    fn type_keys(editor: &mut BlockEditor, text: &str) {
+        for ch in text.chars() {
+            let typed = ch.to_string();
+            let event = if ch == ' ' {
+                crate::synthetic_input::key_press(
+                    winit::keyboard::Key::Named(winit::keyboard::NamedKey::Space),
+                    Some(" "),
+                )
+            } else {
+                crate::synthetic_input::char_key(&typed)
+            };
+            crate::testing::dispatch(editor, &event);
+        }
+    }
+
+    #[test]
+    fn the_records_a_view_links_are_offered_and_chosen_as_references_to_them() {
+        use crate::widget::CursorPlacement;
+        use crate::widget::marks::Mark;
+
+        let fired = crate::Intents::<Fired>::default();
+        let body = crate::LocalState::new(RichText::default());
+        let plan = |title: &str| Link {
+            reference: "tl:so.tilo.notes:tl.so.tilo.notes.d/f:t1".into(),
+            title: title.into(),
+        };
+        let mut editor = BlockEditor::from_props(
+            "b",
+            BlockEditorProps {
+                rich: bound(&fired, body.clone()),
+                links: vec![plan("Plan")],
+                ..BlockEditorProps::default()
+            },
+        );
+        editor.focus_block(0, CursorPlacement::End);
+        // `[[` opens the picker over the records the view named, and the typed query narrows it.
+        type_keys(&mut editor, "[[pl");
+        assert!(editor.link_popover().is_visible());
+        assert_eq!(
+            editor
+                .link_popover()
+                .highlighted()
+                .map(|page| page.title.as_str()),
+            Some("Plan"),
+            "the record the view named, by the title it reads as now"
+        );
+        crate::testing::dispatch(
+            &mut editor,
+            &crate::synthetic_input::key_press(
+                winit::keyboard::Key::Named(winit::keyboard::NamedKey::Enter),
+                None,
+            ),
+        );
+        assert_eq!(editor.blocks()[0].text(), "Plan");
+        eprintln!("MARKS {:?}", editor.blocks()[0].line.marks());
+        assert!(
+            matches!(
+                editor.blocks()[0].line.marks().first().map(|span| &span.mark),
+                Some(Mark::Mention(reference)) if reference == "tl:so.tilo.notes:tl.so.tilo.notes.d/f:t1"
+            ),
+            "what is written names the record, so it reads as it reads now wherever it goes"
+        );
+
+        // The last document the view is told of is the one the pick left behind.
+        editor.take_body_edits();
+        let edit = fired
+            .take()
+            .into_iter()
+            .rev()
+            .find_map(|fired| match fired.value {
+                Some(Value::Rich(rich)) => Some(rich),
+                _ => None,
+            });
+        let edited = edit.expect("the view is told what the document is now");
+        let mention = edited.blocks[0]
+            .marks
+            .iter()
+            .find(|mark| mark.name == "mention")
+            .expect("a mention mark");
+        assert_eq!(
+            edited.blocks[0].text, "Plan",
+            "the run reads as the record's title"
+        );
+        assert!(matches!(
+            &mention.value,
+            tilo_ui_graph::rich::Attr::Text(reference)
+                if reference == "tl:so.tilo.notes:tl.so.tilo.notes.d/f:t1"
+        ));
+
+        // A record renamed later is offered by its new title: the view names the record, and the
+        // title is how it reads now, never text kept from before.
+        editor.set_props(BlockEditorProps {
+            rich: bound(&fired, body),
+            links: vec![plan("Plan for Q4")],
+            ..BlockEditorProps::default()
+        });
+        assert_eq!(
+            editor
+                .link_popover()
+                .highlighted()
+                .map(|page| page.title.as_str()),
+            Some("Plan for Q4")
+        );
+    }
+
+    #[test]
+    fn the_views_commands_run_by_their_labels_and_it_hears_the_documents_headings() {
+        use tilo_ui_graph::rich::{Attr, Block};
+
+        let fired = crate::Intents::<Fired>::default();
+        let rich = RichText {
+            blocks: vec![
+                Block {
+                    kind: "heading".into(),
+                    text: "Plan".into(),
+                    attrs: [("level".to_owned(), Attr::Int(2))].into(),
+                    ..Block::default()
+                },
+                Block {
+                    kind: "paragraph".into(),
+                    text: "ship it".into(),
+                    ..Block::default()
+                },
+            ],
+            embeds: Vec::new(),
+        };
+        let body = crate::LocalState::new(rich);
+        let props = |value: &crate::LocalState<RichText>| BlockEditorProps {
+            rich: bound(&fired, value.clone()),
+            commands: vec!["Link to note…".into()],
+            command: Event::View(Intent::new(&fired, "b", "command")),
+            headings: Event::View(Intent::new(&fired, "b", "headings")),
+            ..BlockEditorProps::default()
+        };
+        let mut editor = BlockEditor::from_props("b", props(&body));
+        assert_eq!(
+            editor.headings(),
+            vec![(2, "Plan".to_owned())],
+            "the document's headings, each with its level"
+        );
+        assert_eq!(
+            fired.take(),
+            vec![Fired {
+                key: "b".into(),
+                event: "headings".into(),
+                value: Some(Value::List(vec![Value::Text("Plan".into())])),
+            }],
+            "the view is told them, to draw an outline of the document"
+        );
+
+        // The view's own `/` command, chosen by the label it named, runs it by that label.
+        editor.focus_block(0, crate::widget::CursorPlacement::End);
+        type_keys(&mut editor, " /link");
+        let _ = fired.take();
+        crate::testing::dispatch(
+            &mut editor,
+            &crate::synthetic_input::key_press(
+                winit::keyboard::Key::Named(winit::keyboard::NamedKey::Enter),
+                None,
+            ),
+        );
+        assert!(
+            fired.take().iter().any(|fired| fired.event == "command"
+                && fired.value == Some(Value::Text("Link to note…".into()))),
+            "the command the person chose, by its label"
         );
     }
 
