@@ -125,24 +125,11 @@ fn empty(file: &File) -> io::Result<bool> {
     Ok(result)
 }
 fn mount_id(file: &File) -> io::Result<u64> {
-    let mut value = std::mem::MaybeUninit::<libc::statx>::uninit();
-    if unsafe {
-        libc::statx(
-            file.as_raw_fd(),
-            c"".as_ptr(),
-            libc::AT_EMPTY_PATH | libc::AT_SYMLINK_NOFOLLOW,
-            libc::STATX_MNT_ID,
-            value.as_mut_ptr(),
-        )
-    } != 0
-    {
-        return Err(io::Error::last_os_error());
-    }
-    let value = unsafe { value.assume_init() };
-    if value.stx_mask & libc::STATX_MNT_ID == 0 {
-        return Err(refused("Original source mount identity is unavailable"));
-    }
-    Ok(value.stx_mnt_id)
+    crate::fd::mount_id(
+        file,
+        rustix::fs::AtFlags::SYMLINK_NOFOLLOW,
+        "Original source mount identity is unavailable",
+    )
 }
 impl Removal {
     pub(super) fn create(

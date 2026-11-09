@@ -1040,23 +1040,11 @@ fn check_view(view: &File, receipt: &ViewReceipt) -> io::Result<()> {
     Ok(())
 }
 fn mount_id(view: &File) -> io::Result<u64> {
-    let mut stat: libc::statx = unsafe { std::mem::zeroed() };
-    if unsafe {
-        libc::statx(
-            view.as_raw_fd(),
-            c"".as_ptr(),
-            libc::AT_EMPTY_PATH | libc::AT_STATX_DONT_SYNC,
-            libc::STATX_MNT_ID,
-            &raw mut stat,
-        )
-    } != 0
-    {
-        return Err(io::Error::last_os_error());
-    }
-    if stat.stx_mask & libc::STATX_MNT_ID == 0 || stat.stx_mnt_id == 0 {
-        return Err(refused("retained FUSE mount identity unavailable"));
-    }
-    Ok(stat.stx_mnt_id)
+    crate::fd::mount_id(
+        view,
+        rustix::fs::AtFlags::STATX_DONT_SYNC,
+        "retained FUSE mount identity unavailable",
+    )
 }
 fn send_json<T: serde::Serialize>(io: &mut Handoff<'_>, value: &T) -> io::Result<()> {
     let bytes = serde_json::to_vec(value).map_err(io::Error::other)?;

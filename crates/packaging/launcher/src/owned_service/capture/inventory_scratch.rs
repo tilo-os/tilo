@@ -176,23 +176,9 @@ fn filesystem(directory: &File) -> io::Result<libc::statfs> {
     Ok(unsafe { value.assume_init() })
 }
 pub(super) fn identity(directory: &File) -> io::Result<(u64, u64, u64)> {
-    let mut value = std::mem::MaybeUninit::<libc::statx>::uninit();
-    if unsafe {
-        libc::statx(
-            directory.as_raw_fd(),
-            c"".as_ptr(),
-            libc::AT_EMPTY_PATH | libc::AT_SYMLINK_NOFOLLOW,
-            libc::STATX_INO | libc::STATX_MNT_ID,
-            value.as_mut_ptr(),
-        )
-    } < 0
-    {
-        return Err(io::Error::last_os_error());
-    }
-    let value = unsafe { value.assume_init() };
-    if value.stx_mask & (libc::STATX_INO | libc::STATX_MNT_ID)
-        != (libc::STATX_INO | libc::STATX_MNT_ID)
-    {
+    let mask = rustix::fs::StatxFlags::INO | rustix::fs::StatxFlags::MNT_ID;
+    let value = crate::fd::statx(directory, rustix::fs::AtFlags::SYMLINK_NOFOLLOW, mask)?;
+    if value.stx_mask & mask.bits() != mask.bits() {
         return Err(refuse("Inventory scratch mount identity is unavailable"));
     }
     let facts = directory.metadata()?;

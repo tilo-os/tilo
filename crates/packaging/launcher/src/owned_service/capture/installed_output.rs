@@ -94,23 +94,11 @@ fn capacity(file: &File) -> io::Result<u64> {
     out.f_bavail.checked_mul(out.f_frsize).ok_or_else(refuse)
 }
 fn mount_id(file: &File) -> io::Result<u64> {
-    let mut stat: libc::statx = unsafe { std::mem::zeroed() };
-    if unsafe {
-        libc::statx(
-            file.as_raw_fd(),
-            c"".as_ptr(),
-            libc::AT_EMPTY_PATH | libc::AT_STATX_DONT_SYNC,
-            libc::STATX_MNT_ID,
-            &raw mut stat,
-        )
-    } < 0
-    {
-        return Err(io::Error::last_os_error());
-    }
-    if stat.stx_mask & libc::STATX_MNT_ID == 0 || stat.stx_mnt_id == 0 {
-        return Err(refuse());
-    }
-    Ok(stat.stx_mnt_id)
+    crate::fd::mount_id(
+        file,
+        rustix::fs::AtFlags::STATX_DONT_SYNC,
+        "Installed copy output mount identity is unavailable",
+    )
 }
 
 impl InstalledCopyOutputAdmission {
