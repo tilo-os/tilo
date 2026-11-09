@@ -3,7 +3,7 @@
 
 use vello::peniko::Color;
 
-use super::{Leading, ListRow};
+use super::{AvatarTint, Leading, ListRow};
 
 impl ListRow {
     /// The colour the leading avatar is drawn in: its own presence colour,
@@ -11,8 +11,8 @@ impl ListRow {
     /// identity derives.
     #[must_use]
     pub fn avatar_colour(mut self, colour: Color) -> Self {
-        if let Some(Leading::Avatar { colour: slot, .. }) = &mut self.leading {
-            *slot = Some(colour);
+        if let Some(Leading::Avatar { tint, .. }) = &mut self.leading {
+            *tint = Some(AvatarTint::Colour(colour));
         }
         self
     }

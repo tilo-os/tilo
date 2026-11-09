@@ -167,6 +167,15 @@ impl Suggestion {
         }
     }
 
+    /// The heading of a group of suggestions: a small, dim title over the
+    /// rows under it, which is never armed or chosen.
+    pub fn heading(title: impl Into<String>) -> Self {
+        Self {
+            role: RowRole::Header { busy: false },
+            ..Self::new(title)
+        }
+    }
+
     #[must_use]
     pub fn with_icon(mut self, icon: Icon) -> Self {
         self.icon = Some(icon);

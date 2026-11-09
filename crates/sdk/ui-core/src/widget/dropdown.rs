@@ -86,6 +86,9 @@ pub struct Dropdown {
     /// The legacy constructor uses equal value/label pairs.
     values: Vec<String>,
     options: Vec<String>,
+    /// The heading each option stands under in the open list, parallel to
+    /// `options`: `None` for an option with none.
+    groups: Vec<Option<String>>,
     /// The keys that do what an option does, by its value, shown at the
     /// row's end so a menu teaches its shortcuts.
     shortcuts: Vec<(String, String)>,
@@ -112,6 +115,10 @@ pub struct Dropdown {
     /// The open list: the options the filter shows, the highlighted one
     /// armed, scrolled to keep it in view.
     list: SuggestionList,
+    /// The row in the open list each option the filter shows stands in,
+    /// parallel to the filter's matches: a group's heading takes a row of
+    /// its own, so a row is not an option's position.
+    rows_at: Vec<usize>,
     query_rect: Rect,
 
     /// One-shot: align `highlight` to the selected option on the next
@@ -254,6 +261,7 @@ impl Dropdown {
             accessible_name: None,
             values: options.clone(),
             options,
+            groups: Vec::new(),
             shortcuts: Vec::new(),
             binding: Some(crate::doc_source::text_key(value_path)),
             on_change: None,
@@ -274,6 +282,7 @@ impl Dropdown {
                 list.set_max_height(Some(MAX_LIST_HEIGHT));
                 list
             },
+            rows_at: Vec::new(),
             query_rect: Rect::ZERO,
             align_highlight_on_sync: false,
             rect: Rect::ZERO,
@@ -522,6 +531,7 @@ impl Dropdown {
         }
         self.values.clone_from(&options);
         self.options = options;
+        self.groups.clear();
     }
 
     /// What the list offers, in order.
@@ -539,6 +549,26 @@ impl Dropdown {
         }
         self.values = values;
         self.options = labels;
+        self.groups.clear();
+    }
+
+    /// Set stable values with presentation labels, each under a heading: the
+    /// heading stands above its group's options in the open list, small and
+    /// dim like a menu's section, and is never chosen itself. Heads run in
+    /// order; an empty heading's options stand with no heading at all.
+    pub fn set_grouped_value_options(&mut self, groups: Vec<(String, Vec<(String, String)>)>) {
+        self.values.clear();
+        self.options.clear();
+        self.groups.clear();
+        for (heading, options) in groups {
+            for (value, label) in options {
+                self.values.push(value);
+                self.options.push(label);
+                self.groups
+                    .push((!heading.is_empty()).then(|| heading.clone()));
+            }
+        }
+        self.layout_dirty = true;
     }
 
     /// The keys that do what each option does, by value: shown at the
@@ -743,6 +773,15 @@ impl Dropdown {
             .unwrap_or(0)
     }
 
+    /// The row of the open list the selected option within `filtered` stands
+    /// in, or 0: its position among the matches, past any headings above it.
+    fn selected_row(&self, filtered: &[usize]) -> usize {
+        self.rows_at
+            .get(self.selected_pos(filtered))
+            .copied()
+            .unwrap_or(0)
+    }
+
     fn has_selected_value(&self) -> bool {
         !self.selected.is_empty() || self.values.contains(&self.selected)
     }
@@ -757,22 +796,11 @@ impl Dropdown {
     }
 
     /// Hand the open list its rows (the options the filter shows, the
-    /// applied one checked, each with its keys), its anchor and its bounds.
+    /// applied one checked, each with its keys, each under its group's
+    /// heading), its anchor and its bounds.
     fn refresh_list(&mut self) {
-        let rows: Vec<Suggestion> = self
-            .filtered()
-            .into_iter()
-            .filter_map(|index| {
-                let label = self.options.get(index)?;
-                let value = self.values.get(index)?;
-                let mut row = Suggestion::labelled(value.clone(), label.clone())
-                    .with_checked(self.menu.is_none() && *value == self.selected);
-                if let Some((_, keys)) = self.shortcuts.iter().find(|(of, _)| of == value) {
-                    row = row.with_shortcut(keys.clone());
-                }
-                Some(row)
-            })
-            .collect();
+        let (rows, rows_at) = self.rows_for(&self.filtered());
+        self.rows_at = rows_at;
         // A list that filters keeps room for its empty-result line, so it
         // keeps its width while a query narrows it.
         let hint = (rows.is_empty() || self.supports_filter())
@@ -793,6 +821,37 @@ impl Dropdown {
         } else {
             crate::widget::PanelAlign::Leading
         });
+    }
+
+    /// The open list's rows for the options `filtered` shows, and the row in
+    /// them each of those options stands in: a group's heading takes a row
+    /// above its first shown option, so a filter that hides the rest of a
+    /// group never leaves its heading standing alone.
+    fn rows_for(&self, filtered: &[usize]) -> (Vec<Suggestion>, Vec<usize>) {
+        let mut rows: Vec<Suggestion> = Vec::with_capacity(filtered.len());
+        let mut at: Vec<usize> = Vec::with_capacity(filtered.len());
+        let mut standing: Option<&str> = None;
+        for index in filtered {
+            let (Some(label), Some(value)) = (self.options.get(*index), self.values.get(*index))
+            else {
+                continue;
+            };
+            let heading = self.groups.get(*index).and_then(Option::as_deref);
+            if heading != standing {
+                if let Some(heading) = heading {
+                    rows.push(Suggestion::heading(heading));
+                }
+                standing = heading;
+            }
+            at.push(rows.len());
+            let mut row = Suggestion::labelled(value.clone(), label.clone())
+                .with_checked(self.menu.is_none() && *value == self.selected);
+            if let Some((_, keys)) = self.shortcuts.iter().find(|(of, _)| of == value) {
+                row = row.with_shortcut(keys.clone());
+            }
+            rows.push(row);
+        }
+        (rows, at)
     }
 
     /// The open list's panel.
@@ -817,9 +876,10 @@ impl Dropdown {
         let options = filtered
             .iter()
             .enumerate()
-            .filter_map(|(row, &index)| {
+            .filter_map(|(pos, &index)| {
                 let label = self.options.get(index)?;
                 let value = self.values.get(index)?;
+                let row = self.rows_at.get(pos).copied().unwrap_or(pos);
                 let mut option = AccessNode::new(Role::ListBoxOption)
                     .with_name(label.clone())
                     .with_key(Self::option_key(value))
@@ -855,12 +915,18 @@ impl Dropdown {
             return;
         }
         self.typing.type_text(typed, now);
-        let next = self.typing.target(
-            self.options.iter().map(String::as_str),
-            self.list.highlight(),
-        );
-        if let Some(index) = next {
-            self.list.set_highlight(Some(index));
+        // The list is short enough to filter nothing when typing arms an
+        // option, so a row still stands among the options in order.
+        let armed = self
+            .list
+            .highlight()
+            .and_then(|row| self.rows_at.iter().position(|at| *at == row));
+        let next = self
+            .typing
+            .target(self.options.iter().map(String::as_str), armed);
+        if let Some(pos) = next {
+            let row = self.rows_at.get(pos).copied().unwrap_or(pos);
+            self.list.set_highlight(Some(row));
         }
     }
 
@@ -876,7 +942,7 @@ impl Dropdown {
         self.list.clear();
         self.refresh_list();
         let filtered = self.filtered();
-        self.list.set_highlight(Some(self.selected_pos(&filtered)));
+        self.list.set_highlight(Some(self.selected_row(&filtered)));
     }
 
     /// A menu button's face: a Plain icon-only button, its hover, open and
@@ -1163,7 +1229,7 @@ impl Widget for Dropdown {
             self.align_highlight_on_sync = false;
             self.refresh_list();
             let filtered = self.filtered();
-            self.list.set_highlight(Some(self.selected_pos(&filtered)));
+            self.list.set_highlight(Some(self.selected_row(&filtered)));
         }
     }
 
@@ -1626,6 +1692,8 @@ impl Widget for Dropdown {
             if !self.open || !matches!(action, Action::Activate) {
                 return false;
             }
+            // The option's row, past the group headings above it.
+            let row = self.rows_at.get(row).copied().unwrap_or(row);
             self.list.set_highlight(Some(row));
             self.select_highlighted(state.doc(), root);
             return true;
