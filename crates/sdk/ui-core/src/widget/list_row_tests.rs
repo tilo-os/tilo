@@ -922,19 +922,7 @@ fn a_rows_box_presses_as_far_as_the_pointer_needs() {
         let inspection = h.inspection();
         let node = find(&inspection.root, "ListRow").expect("the row");
         let row_rect = rect_of(node);
-        let boxed = node
-            .semantics
-            .as_ref()
-            .and_then(|semantics| {
-                semantics
-                    .children
-                    .iter()
-                    .find(|child| child.role == crate::a11y::Role::Checkbox)
-            })
-            .expect("the row's box is a control of its own")
-            .bounds
-            .expect("a box a reader presses says where it stands")
-            .to_rect();
+        let boxed = boxed_rect(node.semantics.as_ref().expect("the row is read"));
         let target = f64::from(input.minimum_target());
         assert!(
             boxed.width() >= target - 0.5 && boxed.height() >= target - 0.5,
@@ -964,6 +952,66 @@ fn a_rows_box_presses_as_far_as_the_pointer_needs() {
 /// The edge a row draws its leading box at, from the theme's metrics.
 fn m_icon(theme: &Theme) -> f64 {
     f64::from(theme.tokens.metrics.icon_control)
+}
+
+/// Where a row's leading box takes a press: the row's own control, whose bounds say where it
+/// stands.
+fn boxed_rect(access: &crate::a11y::AccessNode) -> Rect {
+    access
+        .children
+        .iter()
+        .find(|child| child.role == crate::a11y::Role::Checkbox)
+        .expect("the row's box is a control of its own")
+        .bounds
+        .expect("a box a reader presses says where it stands")
+        .to_rect()
+}
+
+/// A finger's press on the box a row leads with is the target a finger needs, whatever band the
+/// row's text was last measured in: a row laid out for a mouse at large text (its band 47.25 px,
+/// under a finger's 48) and then handed a finger's pointer — the person touched the screen, and
+/// the row is read before a fresh frame places it again — still presses 48×48. A press is not
+/// painted, so where the band is smaller than the target it reaches past the band rather than
+/// under the least a finger presses.
+#[test]
+fn a_rows_box_keeps_its_target_when_the_pointer_grows_it() {
+    use crate::interaction::InteractionEnvironment;
+    use taffy::{AvailableSpace, Size};
+
+    let theme = Theme::dark().with_text_scale(1.5);
+    let mut row = ListRow::new("boiler", "Call the landlord about the boiler")
+        .checkbox(false, |_| {})
+        .on_activate(|| {});
+    // The window laid the row out for a mouse: its band is the line at large text.
+    row.set_interaction_environment(InteractionEnvironment::POINTER);
+    let mut taffy = TaffyTree::<()>::new();
+    let mut nodes = std::collections::HashMap::new();
+    let mut text = TextRenderer::new();
+    let node = row.build_layout(&mut taffy, &theme, &mut nodes);
+    taffy
+        .compute_layout_with_measure(
+            node,
+            Size {
+                width: AvailableSpace::Definite(320.0),
+                height: AvailableSpace::Definite(568.0),
+            },
+            |known, available, node_id, _, _| {
+                nodes.get(&node_id).map_or(Size::ZERO, |&ptr| unsafe {
+                    (*ptr).measure(known, available, &mut text)
+                })
+            },
+        )
+        .expect("the row lays out");
+    row.apply_layout(&taffy, node, Point::ZERO);
+    // The person's finger: the row is told its pointer, and read as it stands.
+    row.set_interaction_environment(InteractionEnvironment::TOUCH);
+    let access = Widget::accessibility(&row).expect("the row is read");
+    let boxed = boxed_rect(&access);
+    let target = f64::from(InteractionEnvironment::TOUCH.minimum_target());
+    assert!(
+        boxed.width() >= target - 0.01 && boxed.height() >= target - 0.01,
+        "a finger's press on the box is {target}×{target} wide: {boxed:?}"
+    );
 }
 
 #[test]
