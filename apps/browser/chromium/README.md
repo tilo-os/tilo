@@ -709,6 +709,26 @@ explicit internal-URL rejection at the Browser boundary, and native-engine
 blank/canonical URL, cancellation/recovery, history refusal, and renderer
 termination followed by Reload.
 
+## Several actors, end to end
+
+```sh
+cargo build --locked -p browser --example native_page_actors
+tools/with-test-environment.sh target/debug/examples/native_page_actors --host PATH
+```
+
+Drives the real Browser's registered page actions against an engine host that
+is already built (`PATH` is its executable) and a form fixture on the
+loopback, as the host runs them for actors it admitted: two named agents
+answer one form at once through `fill-page-form`, the second waiting its turn
+and being told what the first did; a review reads who set each field
+(`read-page-fields`) and the tab's record (`read-page-record`); words are
+found by line (`find-page-text`) and read on from (`read-page` with `from`);
+and the form is sent, completing on the page it opened, where the fixture
+says what the site received. It runs on Linux and macOS, starts no supervisor
+and builds no engine. It is the real Browser, so it runs only inside the test
+environment: started through `cargo run` it would browse with the profile of
+whoever runs it, and it refuses to.
+
 ## Extensions and tabs
 
 Chromium finds an extension's tabs through the tab strips of its own windows.

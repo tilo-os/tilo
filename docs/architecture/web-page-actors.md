@@ -147,7 +147,7 @@ rather than half filled, which sends the caller back to reading it.
 | --- | --- |
 | Two agents, one tab | Turns, own reads, told of the other, one record |
 | Two agents, two tabs | Two pages with two records; one profile, so the site's own session (a basket, a sign-in) is shared between them |
-| Two devices, one tab | One page on the device that runs it; the other sees the paint stream and acts through `browser.page` over its session |
+| Two devices, one tab | One page on the device that runs it; the other is to see the paint stream and act through `browser.page` over its session (not wired yet, see below) |
 | Two agents and a person | The person's typing is direct input; the review read tells the three apart |
 | Three devices, one tab | As two; each device's actor has its own read and is told of the others |
 
@@ -169,9 +169,16 @@ rather than half filled, which sends the caller back to reading it.
   for everyone watching, as agents are shown in other apps.
 - **Who types.** Direct input is one source. Input that arrives through a
   shared window should carry the person it came from.
-- **Between devices, end to end.** The parts exist (paint stream, actions
-  over a session); the cases above are tested in one engine, not yet between
-  two devices.
+- **A second device.** Two parts are missing before another device can see
+  or work in a tab, so the cases with two or three devices cannot be run yet.
+  The native session takes no paint stream: an app that offers its page as
+  one is refused, and nothing asks a window for a keyframe, so no viewer
+  receives the stream. And an action reaches only the workspace's host: an
+  agent's connection and a page ask the host's device, and nothing answers
+  for a page shown in another member's window. On one device everything
+  above runs: the engine's own tests, and the real Browser's page actions
+  driven as two named agents and a reviewer
+  (`apps/browser/examples/native_page_actors.rs`).
 - **Dialogs in another site's frame.** A consent dialog a site shows in a
   frame of another site reads as empty, so an agent cannot answer it. Real
   shops and news sites put their cookie question there.
