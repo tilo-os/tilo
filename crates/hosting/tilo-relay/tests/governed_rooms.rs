@@ -35,9 +35,30 @@ use crate::common::{TestDevice, TestUser, device_endpoint};
 const APP: &str = "so.tilo.chat";
 
 async fn start(state: &std::path::Path, alice: &TestUser, host: &TestDevice) -> Relay {
+    start_at(state, alice, host, "127.0.0.1:0".parse().unwrap()).await
+}
+
+/// [`start`] with its iroh endpoint at `iroh_listen`: a restarted relay that
+/// keeps its address. A host names its address in each workspace's
+/// governance when it opens it, so one restarted elsewhere changes that
+/// governance to say where it is now.
+async fn start_at(
+    state: &std::path::Path,
+    alice: &TestUser,
+    host: &TestDevice,
+    iroh_listen: std::net::SocketAddr,
+) -> Relay {
+    if iroh_listen.port() != 0 {
+        // The stopped relay's connections let go of its socket shortly after
+        // its shutdown returns.
+        tilo_test_env::wait_for("the stopped relay's address to be free", || {
+            std::net::UdpSocket::bind(iroh_listen).ok().map(drop)
+        });
+    }
     Relay::start(
         RelayConfig {
             state_root: state.to_path_buf(),
+            iroh_listen,
             ..RelayConfig::default()
         },
         tilo_relay::daemon::RelayIdentity {
@@ -479,11 +500,13 @@ async fn an_invited_person_joins_a_governed_room_edits_sees_presence_and_is_remo
         "a removed member is not admitted: {refused:?}"
     );
 
-    // The room survives a restart of its relay, governance and all.
+    // The room survives a restart of its relay, governance and all: a relay
+    // that comes back where it was changes nothing of it.
+    let iroh_listen = *relay.node_addr().ip_addrs().next().unwrap();
     alice_session.close().await;
     bob_session.close().await;
     relay.shutdown().await;
-    let relay = start(state.path(), &alice, &host).await;
+    let relay = start_at(state.path(), &alice, &host, iroh_listen).await;
     let workspaces = relay.workspaces().unwrap().list().await;
     let [restored] = workspaces.as_slice() else {
         panic!("one governed workspace: {workspaces:?}")
