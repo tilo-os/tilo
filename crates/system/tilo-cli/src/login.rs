@@ -50,8 +50,9 @@ pub const SITE_ENV: &str = "TILO_SITE";
 pub const TEST_CA_ENV: &str = "TILO_TEST_CA_FILE";
 /// What Tilo's tools let the agent do, as it tells the person.
 const WHAT_TILO_DOES: &str = "you are in their Tilo workspace as them, where they see you by \
-     name with what you do: tilo_ls lists its apps and documents, tilo_read reads one, and \
-     tilo_do runs their actions, which History keeps as your run";
+     name with what you do: tilo_ls lists its apps and documents, tilo_read reads one, \
+     tilo_do runs their actions, and tilo_do with path terminal#run runs a shell command \
+     there, all of which History keeps as your run";
 
 /// The HTTPS client every request here goes through.
 static CLIENT: OnceLock<tilo_net::Client> = OnceLock::new();
@@ -908,8 +909,8 @@ mod tests {
              (in Claude Code: /exit, then `claude --continue`).\n2. Then call the tilo_ls \
              tool, and tell the person what you can do in Tilo: you are in their Tilo workspace \
              as them, where they see you by name with what you do: tilo_ls lists its apps and \
-             documents, tilo_read reads one, and tilo_do runs their actions, which History keeps \
-             as your run."
+             documents, tilo_read reads one, tilo_do runs their actions, and tilo_do with path \
+             terminal#run runs a shell command there, all of which History keeps as your run."
         );
         let other = agent::named("Your agent");
         let next = next_steps(&other, &Tools::Yours, tilo);

@@ -108,7 +108,7 @@ fn tools() -> Vec<Value> {
         ),
         (
             "tilo_do",
-            "Run an action and get its result: `{path: \"notes/Todo#append-paragraph\", args: {text: \"Buy milk\"}}`. Several in order, stopping at the first failure: `calls: [{path, args}, …]`. Start an app: `{path: \"notes#open\"}`. Answers `ok` with the result, or `failed: why`; still running after wait_ms (default 5000) it says `pending <id>` for tilo_status. Same invocation_id never runs twice. A shell command in the workspace: `{path: \"terminal#run\", args: {command: \"cargo build\"}}` answers with its output; give a build wait_ms of a few minutes.",
+            "Run an action, get its result: `{path: \"notes/Todo#append-paragraph\", args: {text: \"Buy milk\"}}`. Several in order, stopping at a failure: `calls: [{path, args}, …]`. `notes#open` starts an app; `terminal#run` runs a shell `command`. Answers `ok` with the result, or `failed: why`; running past wait_ms (default 5000): `pending <id>` for tilo_status. Same invocation_id never runs twice.",
             json!({"path":string,"args":{"type":"object"},"calls":{"type":"array","minItems":1,"maxItems":MAX_CALLS,"items":call},"wait_ms":integer,"invocation_id":string}),
             json!([]),
             json!({"readOnlyHint":false,"destructiveHint":true,"idempotentHint":false,"openWorldHint":true}),

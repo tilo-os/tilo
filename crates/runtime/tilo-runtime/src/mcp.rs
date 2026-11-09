@@ -136,9 +136,10 @@ const AGENT_INSTRUCTIONS: &str = "These tools act in the person's Tilo workspace
      them; tilo_read reads a resource; tilo_do runs an action. To run a shell command in the \
      workspace (ls, git, cargo build, npm test), call tilo_do with path \"terminal#run\" and \
      args {command: \"...\"}: it answers with the command line, the directory it ran in, its \
-     exit status and its output, and the next command runs in the same shell. If a command \
-     answers with a refusal, tell the person what it says, then run the command again once they \
-     did it.";
+     exit status and its output. Nothing needs opening first: the first command starts your own \
+     shell in the workspace's files, and every later call runs in that same shell, so a cd or an \
+     export carries over. If a command answers with a refusal, tell the person what it says, then \
+     run the command again once they did it.";
 
 /// A session's requests that work at once; more wait for a turn. One agent
 /// cannot occupy the host with every call it can send.
