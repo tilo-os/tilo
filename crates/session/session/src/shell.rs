@@ -95,6 +95,10 @@ pub(crate) struct Shell {
     /// app id: published with the packages the places show, and kept for the rest of the session (a
     /// view keeps drawing what it read once the card is there).
     needed: std::collections::BTreeSet<String>,
+    /// Whether the store moved since the last pass and its packages must be published again: a
+    /// style that failed to load and was reinstalled fixed has the same package id and needs
+    /// its new module sent (`shell.md` §6).
+    republish: bool,
     /// How many of the session's turns read some of them: what the views composed in places waited
     /// on comes in one turn for everything one run of them read, not one per resource.
     rounds: u64,
@@ -150,6 +154,7 @@ impl Shell {
             reading: std::collections::BTreeMap::new(),
             reads: std::collections::BTreeMap::new(),
             needed: std::collections::BTreeSet::new(),
+            republish: false,
             rounds: 0,
             record: Rc::new(RefCell::new(tilo_resource::Doc::new())),
             parts: Vec::new(),
@@ -374,6 +379,11 @@ impl Shell {
         for app in self.link.take_wanted_packages().into_keys() {
             asked |= self.needed.insert(app);
         }
+        // The store moved: every package it holds is sent again, so a reinstalled style's new
+        // module reaches the shell even though its package id did not change.
+        if std::mem::take(&mut self.republish) {
+            asked = true;
+        }
         let key = (services.revision(), arrangement.clone());
         let moved_on = asked || self.followed.as_ref() != Some(&key);
         if !moved_on && wanted.is_empty() {
@@ -392,7 +402,10 @@ impl Shell {
                 self.needed.iter().map(String::as_str).collect();
             apps.extend(placed.values().filter_map(|ty| app_of(ty)));
             for app in apps {
-                if let Some(module) = services.module(app) {
+                if let Some(module) = services
+                    .module(app)
+                    .or_else(|| crate::desk_styles::module_from_store(app))
+                {
                     packages.insert(app.to_owned(), module);
                 }
             }
@@ -492,27 +505,48 @@ impl Shell {
     /// what every frame runs.
     pub(crate) fn refresh_styles(&mut self) {
         // The shell's own styles, from the package it runs: the four that ship are its views.
-        let own = crate::desk_styles::of_shell(&self.packages);
         let Ok(catalog) = package_store::Catalog::from_env() else {
+            let own = crate::desk_styles::of_shell(&self.packages);
             let mut styles = self.desk.styles.borrow_mut();
             styles.list = own;
             styles.revision = styles.revision.saturating_add(1);
             return;
         };
         let moved = crate::desk_styles::fingerprint(&catalog);
-        let mut styles = self.desk.styles.borrow_mut();
-        if styles.fingerprint == Some(moved.clone()) {
-            return;
+        let moved = {
+            let mut styles = self.desk.styles.borrow_mut();
+            if styles.fingerprint == Some(moved.clone()) {
+                return;
+            }
+            styles.fingerprint = Some(moved);
+            true
+        };
+        // A package installed or taken away is published again, so a style that failed and was
+        // reinstalled fixed draws again with no restart (`shell.md` §6). The failure it had is
+        // cleared too: the desk must draw it again for its view to run and tell whether it is
+        // fixed, and a store that moved is the only news the session gets of a reinstall.
+        if moved {
+            self.republish = true;
+            for style in crate::desk_styles::installed(&catalog) {
+                self.needed.insert(style.package.clone());
+            }
+            for entry in self.desk.styles.borrow_mut().list.iter_mut() {
+                if !entry.loads {
+                    entry.loads = true;
+                    entry.reason.clear();
+                }
+            }
         }
-        styles.fingerprint = Some(moved);
         // The store's styles, the shell's own among them when the store holds the shell: each
         // package's styles are offered once, the shell's own from the package the shell runs.
+        let own = crate::desk_styles::of_shell(&self.packages);
         let mut list = crate::desk_styles::installed(&catalog);
         for style in own {
             if !list.iter().any(|s| s.style == style.style) {
                 list.push(style);
             }
         }
+        let mut styles = self.desk.styles.borrow_mut();
         styles.list = list;
         styles.revision = styles.revision.saturating_add(1);
     }
@@ -521,6 +555,95 @@ impl Shell {
     /// reading on.
     pub(crate) fn link(&self) -> Rc<SessionLink> {
         Rc::clone(&self.link)
+    }
+
+    /// The views that could not be shown since the last call, each an app, a view and why: what
+    /// the parts reported (`shell.md` §6, "Nothing can lock a person out").
+    pub(crate) fn take_view_failures(
+        &self,
+    ) -> Vec<tilo_surface_host::ViewFailure> {
+        self.parts
+            .iter()
+            .flat_map(|(_, part)| part.borrow().take_view_failures())
+            .collect()
+    }
+
+    /// The apps whose view failure ended since the last call, and the view calls that ran again
+    /// and succeeded: a style that failed draws again (`shell.md` §6, "Nothing can lock a
+    /// person out").
+    pub(crate) fn take_view_recoveries(&self) -> (Vec<String>, Vec<(String, String)>) {
+        let mut apps = Vec::new();
+        let mut calls = Vec::new();
+        for (_, part) in &self.parts {
+            let (part_apps, part_calls) = part.borrow().take_view_recoveries();
+            apps.extend(part_apps);
+            calls.extend(part_calls);
+        }
+        (apps, calls)
+    }
+
+    /// A style whose view failure ended — its package loaded, or its call ran again and
+    /// succeeded — loads again: the desk returns to the person's choice with no restart
+    /// (`shell.md` §6). `app` is the app whose failure ended, and `style` the call's view when
+    /// one names it (`app:view`).
+    pub(crate) fn note_style_recovered(&mut self, app: &str, style: Option<&str>) {
+        let mut styles = self.desk.styles.borrow_mut();
+        let mut moved = false;
+        for entry in styles.list.iter_mut() {
+            let of_app = entry.package == app;
+            let named = style.is_some_and(|style| {
+                entry.style == format!("{app}:{style}") || entry.style == style
+            });
+            if (of_app || named) && !entry.loads {
+                entry.loads = true;
+                entry.reason.clear();
+                moved = true;
+            }
+        }
+        if moved {
+            styles.revision = styles.revision.saturating_add(1);
+        }
+    }
+
+    /// A style the person chose could not be shown: its entry says so with `failure`'s reason,
+    /// and the desk draws the built-in strips while the person's choice stays as it was
+    /// (`shell.md` §6, "Nothing can lock a person out"). The notice naming the style and why,
+    /// once per failure, for the session to raise.
+    ///
+    /// The entry is marked by the style's own view reference: a failure names the app and the
+    /// view it called (`me.styles:timeline`), and the style the switch lists is that pair.
+    /// Fixing the package flips it back: the desk asks the runtime again, the call succeeds, and
+    /// the next [`Self::take_view_failures`] has nothing to say of it.
+    pub(crate) fn note_style_failure(
+        &mut self,
+        failure: &tilo_surface_host::ViewFailure,
+    ) -> Option<crate::notices::Notice> {
+        let style = if failure.view.contains(':') {
+            failure.view.clone()
+        } else {
+            format!("{}:{}", failure.app, failure.view)
+        };
+        let mut styles = self.desk.styles.borrow_mut();
+        let Some(found) = styles.list.iter_mut().find(|s| s.style == style) else {
+            // A view that is no desk style failed some other way (a place's own view): the
+            // desk has nothing to say of it.
+            return None;
+        };
+        if !found.loads && found.reason == failure.reason {
+            return None;
+        }
+        found.loads = false;
+        found.reason.clone_from(&failure.reason);
+        let name = if found.line.is_empty() {
+            found.name.clone()
+        } else {
+            found.line.clone()
+        };
+        styles.revision = styles.revision.saturating_add(1);
+        Some(crate::notices::desk_style_failed_notice(
+            &name,
+            &failure.reason,
+        ))
     }
 
     /// The surface the desk shows over its windows, by the name the views read (`d.here`): `none`
@@ -1246,6 +1369,25 @@ impl crate::Session {
         // style a person or their agent installed is offered without a restart (shell.md §6).
         // Read before the desk is published, so the reading carries the list.
         shell.refresh_styles();
+        // What the shell's views could not show — a style package that did not load, a view
+        // that failed — so the desk says so and the person's choice is kept: a style that
+        // cannot load shows the built-in strips until it is fixed (shell.md §6, "Nothing can
+        // lock a person out").
+        for failure in shell.take_view_failures() {
+            if let Some(notice) = shell.note_style_failure(&failure) {
+                // Raised through the session's own notices, as every notice it tells: the
+                // notifications service when one runs, the desk's own otherwise.
+                self.shared.notifications.borrow().tell(notice);
+            }
+        }
+        for (apps, calls) in [shell.take_view_recoveries()] {
+            for app in apps {
+                shell.note_style_recovered(&app, None);
+            }
+            for (app, view) in calls {
+                shell.note_style_recovered(&app, Some(&view));
+            }
+        }
         shell.publish();
         let arrangement = self.shared.arrangement.borrow().reading();
         shell.publish_readings(&self.shared.services.borrow());

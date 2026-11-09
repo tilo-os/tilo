@@ -710,7 +710,14 @@ pub const KINDS: &[OriginKind] = &[
                 "loads",
                 "Bool",
                 "Whether the style loads: false for one whose package does not compile against \
-                 the shell and the session, so the switch can say so.",
+                 the shell and the session, or whose view failed when it ran, so the switch can \
+                 say so and the desk shows the built-in strips until it is fixed.",
+            ),
+            field(
+                "reason",
+                "Text",
+                "Why the style does not load, in the runtime's words, when it does not; empty \
+                 when it does.",
             ),
         ],
     },

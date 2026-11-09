@@ -525,8 +525,13 @@ pub struct DeskStyleReading {
     /// The view's doc line, in its author's words: what the switch lists it by.
     pub line: String,
     /// Whether the style loads: false for one whose package does not compile against the shell
-    /// and the session, so the switch can say so.
+    /// and the session, or whose view failed when it ran, so the switch can say so and the desk
+    /// shows the built-in strips until it is fixed (`shell.md` §6).
     pub loads: bool,
+    /// Why the style does not load, in the runtime's words, when it does not; empty when it
+    /// does.
+    #[serde(default)]
+    pub reason: String,
 }
 
 /// A workspace the person's desk shows, as their arrangement names it.
@@ -790,6 +795,16 @@ pub struct SessionLink {
     /// loaded, by app id, each with the type it read: what the session publishes next
     /// ([`SessionLink::take_wanted_packages`]).
     wanted_packages: RefCell<BTreeMap<String, String>>,
+    /// The views that could not be shown — a package that did not load, a view that failed —
+    /// each an app, a view and why: what the session hears so it can say so where the person's
+    /// own choice is the one that failed (`shell.md` §6, "Nothing can lock a person out").
+    view_failures: RefCell<Vec<tilolang_tilo::runtime::foreign::ViewFailure>>,
+    /// The apps whose view failure ended — its package now loads: what the session hears so a
+    /// style the person chose comes back (`shell.md` §6).
+    view_recoveries: RefCell<Vec<String>>,
+    /// The view calls whose failure ended — the call ran again and succeeded, each an app and a
+    /// view: what the session hears so a style the person chose comes back (`shell.md` §6).
+    recovered_calls: RefCell<Vec<(String, String)>>,
     asked: RefCell<VecDeque<Ask>>,
     /// How many effects the shell handed the session, and how many the session ran.
     handed: Cell<u64>,
@@ -1276,6 +1291,7 @@ impl SessionOrigin {
                         ("name", text(&s.name)),
                         ("line", text(&s.line)),
                         ("loads", Value::Bool(s.loads)),
+                        ("reason", text(&s.reason)),
                     ]
                 },
             ));
@@ -2388,6 +2404,22 @@ impl ShellPart {
     pub fn loaded_apps(&self) -> Vec<String> {
         self.origin.borrow().loaded.keys().cloned().collect()
     }
+
+    /// The views that could not be shown since the last call, each an app, a view and why: what
+    /// the session hears so it can say so where the person's own choice is the one that failed
+    /// (`shell.md` §6, "Nothing can lock a person out").
+    #[must_use]
+    pub fn take_view_failures(&self) -> Vec<tilolang_tilo::runtime::foreign::ViewFailure> {
+        self.origin.borrow().link.take_view_failures()
+    }
+
+    /// The apps whose view failure ended since the last call, and the view calls that ran again
+    /// and succeeded: what a style the person chose comes back from (`shell.md` §6, "Nothing
+    /// can lock a person out").
+    #[must_use]
+    pub fn take_view_recoveries(&self) -> (Vec<String>, Vec<(String, String)>) {
+        self.origin.borrow().link.take_view_recoveries()
+    }
     /// Draw the shell with `theme`, the person's as their appearance settings make it: a
     /// change of mode (dark mode in the quick settings, a theme chosen in Settings) redraws
     /// the bar and every surface over the desk in it.
@@ -2685,6 +2717,25 @@ impl ShellPart {
                 host.runtime().take_wanted_packages().into_iter().collect();
             if !packages.is_empty() {
                 self.origin.borrow().link.want_packages(packages);
+            }
+            // What the views could not show — a package that did not load, a view that failed
+            // — so the session says so where it is the person's choice that failed
+            // (`shell.md` §6, "Nothing can lock a person out").
+            let failed = host.runtime().take_view_failures();
+            if !failed.is_empty() {
+                self.origin.borrow().link.view_failed(failed);
+            }
+            // An app whose package failed to load and now loaded: its style draws again.
+            let recovered = host.runtime().take_recovered_apps();
+            if !recovered.is_empty() {
+                self.origin.borrow().link.view_recovered(recovered);
+            }
+            // A call that failed and now runs: the style it draws is back.
+            for failure in host.runtime().take_recovered_views() {
+                self.origin
+                    .borrow()
+                    .link
+                    .view_recovered_call((failure.app, failure.view));
             }
         }
         // What a composed view opened (a video row pressed on a channel's page): a place the

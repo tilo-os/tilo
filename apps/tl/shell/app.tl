@@ -81,8 +81,12 @@ type DeskStyle (origin: session.desk_style) {
     /// The view's doc line, in its author's words: what the switch lists it by.
     line: Text merge register
     /// Whether the style loads: false for one whose package does not compile against the shell
-    /// and the session, so the switch can say so.
+    /// and the session, or whose view failed when it ran, so the switch can say so and the desk
+    /// shows the built-in strips until it is fixed (`shell.md` §6).
     loads: Bool
+    /// Why the style does not load, in the runtime's words, when it does not; empty when it
+    /// does.
+    reason: Text
 }
 
 /// A workspace on this device.
@@ -210,8 +214,30 @@ default view shell_settings for Shell
 ///
 /// The traditional desktop is the one style that is the chrome's too: picking its layout
 /// (`apply` of `windows_desktop`) lays the desk out that way, as picking it in the switch does.
+///
+/// A style that does not load — its package did not compile against the shell and the session,
+/// or its view failed — draws the built-in strips instead, and the person's choice stays as it
+/// was: the session marks the style `loads: false` with why, and raises a notice naming it
+/// (`shell.md` §6, "Nothing can lock a person out"). Fixing the package flips it back, and the
+/// desk shows the chosen style again without a restart.
 view desk_view(a: Arrangement) {
-    show(a, view: style_of(viewing), fill)
+    let d = root Desk
+    let chosen = style_of(viewing)
+    if loads_style(d, chosen) {
+        show(a, view: chosen, fill)
+    } else {
+        show(a, view: "so.tilo.shell:strips", fill)
+    }
+}
+
+/// Whether the style `chosen` loads, as the session publishes it (`DeskStyle.loads`): a style
+/// the session has not listed yet is one it has said nothing against, so it is drawn and, if it
+/// cannot be, the failed state the runtime draws stands in for it.
+fn loads_style(d: Desk, chosen: Text) -> Bool {
+    if let found = d.styles.find(s -> s.style == chosen) {
+        return found.loads
+    }
+    true
 }
 
 /// The time, to the minute, and the timer Clocks runs beside it: its label and what it has

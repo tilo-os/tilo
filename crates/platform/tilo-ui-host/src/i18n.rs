@@ -107,6 +107,7 @@ mod tests {
             "tilolang-home-heading",
             "tilolang-home-empty",
             "tilolang-open-failed",
+            "tilolang-view-failed",
             "tilolang-seen-failed",
             "tilolang-back",
             "tilolang-detail",

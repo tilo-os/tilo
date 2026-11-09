@@ -120,6 +120,43 @@ impl SessionLink {
         self.wanted_packages.borrow_mut().extend(wanted);
     }
 
+    /// The views could not be shown: `failed` says each call's app, view and why. What the
+    /// session hears, so it says so where the person's choice is the one that failed
+    /// (`shell.md` §6, "Nothing can lock a person out"). Each is handed out once.
+    pub(super) fn view_failed(&self, failed: Vec<tilolang_tilo::runtime::foreign::ViewFailure>) {
+        self.view_failures.borrow_mut().extend(failed);
+    }
+
+    /// The views that could not be shown since the last call, each an app, a view and why: what
+    /// the session says the person should hear about.
+    #[must_use]
+    pub fn take_view_failures(&self) -> Vec<tilolang_tilo::runtime::foreign::ViewFailure> {
+        std::mem::take(&mut *self.view_failures.borrow_mut())
+    }
+
+    /// The views that could not be shown and now can — the apps whose package failed to load
+    /// and then loaded, and the calls that ran again and succeeded: what the session hears so
+    /// a style the person chose comes back (`shell.md` §6). Each once.
+    pub(super) fn view_recovered(&self, apps: Vec<String>) {
+        self.view_recoveries.borrow_mut().extend(apps);
+    }
+
+    /// A view call whose failure ended: what the session hears so a style the person chose
+    /// comes back (`shell.md` §6).
+    pub(super) fn view_recovered_call(&self, view: (String, String)) {
+        self.recovered_calls.borrow_mut().push(view);
+    }
+
+    /// The apps whose view failure ended since the last call, and the view calls that ran
+    /// again and succeeded: a style comes back from either (`shell.md` §6).
+    #[must_use]
+    pub fn take_view_recoveries(&self) -> (Vec<String>, Vec<(String, String)>) {
+        (
+            std::mem::take(&mut *self.view_recoveries.borrow_mut()),
+            std::mem::take(&mut *self.recovered_calls.borrow_mut()),
+        )
+    }
+
     /// Publish the reading of every resource a place of `arrangement` names, from what the
     /// session publishes: `resources`, its catalogue, says each one's kind and `read` its
     /// reading. A place naming nothing the catalogue holds as a tilolang record keeps its
@@ -291,11 +328,24 @@ impl SessionOrigin {
                 .retain(|_, (ty, _)| app_of(ty) != Some(app.as_str()));
         }
         for (app, wasm) in wanted {
-            if self.loaded.contains_key(&app) {
+            // A package this part already runs is loaded again when its module changed: a
+            // style reinstalled fixed has the same id and new code (`shell.md` §6).
+            if self
+                .loaded
+                .get(&app)
+                .is_some_and(|held| std::sync::Arc::ptr_eq(held, &wasm))
+            {
                 continue;
             }
             let Some(meta) = tilolang_tilo::runtime::Meta::from_wasm(&wasm) else {
+                // A package the places show that carries no description cannot be drawn: its
+                // views draw a failed state naming it rather than waiting for ever (`shell.md`
+                // §6, "Nothing can lock a person out"), and the session hears of it.
                 tracing::error!(app, "a package the places show carries no description");
+                cx.host
+                    .runtime()
+                    .app_failed(&app, "the package carries no description".to_owned());
+                moved = true;
                 continue;
             };
             match cx.host.load_foreign_package(&wasm, &meta) {
@@ -304,7 +354,13 @@ impl SessionOrigin {
                     moved = true;
                 }
                 Err(error) => {
+                    // The package does not compile against what this runtime holds, or is not
+                    // a package: nothing more is coming for it, so its views draw a failed
+                    // state saying so instead of a skeleton that never fills. The failure is
+                    // the shell's to say, through the session's notices (`shell.md` §6).
                     tracing::error!(app, %error, "a package the places show did not load");
+                    cx.host.runtime().app_failed(&app, error.to_string());
+                    moved = true;
                 }
             }
         }

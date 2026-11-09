@@ -19,6 +19,11 @@ pub enum RuntimeError {
     Engine(#[from] CallError),
     #[error("denied: {0}")]
     Denied(String),
+    /// A view call that cannot be shown: its package did not load, or its view failed when it
+    /// ran. The call draws a failed state where it stands (`shell.md` §6), and its host is told
+    /// ([`crate::foreign::FailedViews`]); it is never the whole screen's failure.
+    #[error("a view could not be shown: {0:?}")]
+    ViewFailed(Box<crate::foreign::ViewFailure>),
     #[error("no suggestion is pending for run {0}")]
     NotPending(String),
 }

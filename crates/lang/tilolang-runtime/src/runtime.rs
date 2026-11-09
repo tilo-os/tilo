@@ -311,6 +311,9 @@ impl Runtime {
     /// declared until now runs again, and draws it through that app's own views.
     fn package_arrived(&self, app: &str) {
         let arrivals = self.core.wanted_packages.borrow_mut().arrived(app);
+        // A package that failed to load here and now arrived: its views draw again, and the
+        // failure that stood in for them is forgotten.
+        self.core.failed_views.borrow_mut().app_arrived(app);
         self.core.view_states.borrow_mut().set(
             crate::foreign::packages_key(),
             Value::Int(i64::try_from(arrivals).unwrap_or(i64::MAX)),
@@ -346,6 +349,33 @@ impl Runtime {
     /// Whether a view waits on the package of an app no host has served yet.
     pub fn wants_packages(&self) -> bool {
         self.core.wanted_packages.borrow().wants()
+    }
+
+    /// The view calls that could not be shown since the last call — their package did not load
+    /// here, or their view failed when it ran — each an app, a view and why
+    /// ([`crate::foreign::ViewFailure`]). What the host says the person should hear about
+    /// (`shell.md` §6, "Nothing can lock a person out"). Each is handed out once.
+    pub fn take_view_failures(&self) -> Vec<crate::foreign::ViewFailure> {
+        self.core.failed_views.borrow_mut().take()
+    }
+
+    /// The host could not load the package of `app`, for `reason`: a view of its that a screen
+    /// calls draws a failed state naming it rather than waiting for a package that is not
+    /// coming. [`Runtime::app_loaded`] clears it when the package does load.
+    pub fn app_failed(&self, app: &str, reason: String) {
+        self.core.failed_views.borrow_mut().app_failed(app, reason);
+    }
+
+    /// The apps whose package failed to load and then loaded here: what the host says the
+    /// person's choice is back (`shell.md` §6). Each once.
+    pub fn take_recovered_apps(&self) -> Vec<String> {
+        self.core.failed_views.borrow_mut().take_recovered()
+    }
+
+    /// The view calls whose failure ended — the call ran again and succeeded: what the host
+    /// says the person's view is back (`shell.md` §6). Each once.
+    pub fn take_recovered_views(&self) -> Vec<crate::foreign::ViewFailure> {
+        self.core.failed_views.borrow_mut().take_recovered_views()
     }
 
     /// Whether `error` — a view call's failure — was waiting on a reading that has not arrived
