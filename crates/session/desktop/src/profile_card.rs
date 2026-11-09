@@ -507,44 +507,7 @@ impl ProfileCard {
     /// Someone else's card: who they are, what they are doing, and what this person can do with
     /// them.
     fn other_body(&self, model: &ProfileModel, other: &OtherPerson) -> Column {
-        let mut avatar = Avatar::person(&model.name, &model.identity).size(AvatarSize::Large);
-        if let Some(colour) = model.colour {
-            avatar = avatar.with_presence(colour);
-        }
-        // An agent's face is square with the agent mark (its colour is its client's hue, as the
-        // host gives it): never a person's.
-        if other.agent.is_some() {
-            avatar = avatar.agent();
-        }
-        let mut who = Column::new()
-            .with_no_padding()
-            .with_rhythm(ui::tokens::Rhythm::Tight)
-            .push(Box::new(
-                Text::new(&model.name)
-                    .with_id("profile-other-name")
-                    .with_role(TextRole::Subheading)
-                    .with_wrap_mode(ui::text_render::TextWrapMode::WordOrGlyph),
-            ));
-        // How they are here, under their name: their presence, before anything about where they
-        // are.
-        if let Some(presence) = other.presence {
-            who = who.push(Box::new(
-                Text::new(&t(availability_key(presence)))
-                    .with_id("profile-other-availability")
-                    .with_role(TextRole::Caption)
-                    .dimmed(),
-            ));
-        }
-        if let Some(place) = &other.place {
-            who = who.push(Box::new(
-                Text::new(place).with_role(TextRole::Caption).dimmed(),
-            ));
-        }
-        let header = Row::new()
-            .no_wrap()
-            .with_align_items(taffy::AlignItems::Center)
-            .push(Box::new(avatar))
-            .push(Box::new(who));
+        let header = Self::other_header(model, other);
         let mut body = Column::new()
             .with_rhythm(ui::tokens::Rhythm::Related)
             .with_padding_rhythm(ui::tokens::Rhythm::Related, ui::tokens::Rhythm::Related)
@@ -579,6 +542,62 @@ impl ProfileCard {
                 .push(Box::new(Divider::horizontal()))
                 .push(Self::key_row(key, false));
         }
+        if let Some(actions) = self.other_actions(model, other) {
+            body = body
+                .push(Box::new(Divider::horizontal()))
+                .push(Box::new(actions));
+        }
+        if let Some(agent) = &other.agent {
+            body = body.push(Box::new(self.agent_commands(agent)));
+        }
+        body
+    }
+
+    /// Someone else's face, name and how and where they are here, side by side.
+    fn other_header(model: &ProfileModel, other: &OtherPerson) -> Row {
+        let mut avatar = Avatar::person(&model.name, &model.identity).size(AvatarSize::Large);
+        if let Some(colour) = model.colour {
+            avatar = avatar.with_presence(colour);
+        }
+        // An agent's face is square with the agent mark (its colour is its client's hue, as the
+        // host gives it): never a person's.
+        if other.agent.is_some() {
+            avatar = avatar.agent();
+        }
+        let mut who = Column::new()
+            .with_no_padding()
+            .with_rhythm(ui::tokens::Rhythm::Tight)
+            .push(Box::new(
+                Text::new(&model.name)
+                    .with_id("profile-other-name")
+                    .with_role(TextRole::Subheading)
+                    .with_wrap_mode(ui::text_render::TextWrapMode::WordOrGlyph),
+            ));
+        // How they are here, under their name: their presence, before anything about where they
+        // are.
+        if let Some(presence) = other.presence {
+            who = who.push(Box::new(
+                Text::new(&t(availability_key(presence)))
+                    .with_id("profile-other-availability")
+                    .with_role(TextRole::Caption)
+                    .dimmed(),
+            ));
+        }
+        if let Some(place) = &other.place {
+            who = who.push(Box::new(
+                Text::new(place).with_role(TextRole::Caption).dimmed(),
+            ));
+        }
+        Row::new()
+            .no_wrap()
+            .with_align_items(taffy::AlignItems::Center)
+            .push(Box::new(avatar))
+            .push(Box::new(who))
+    }
+
+    /// What this person can do with someone else: message, follow, or open an agent's card;
+    /// `None` when there is nothing.
+    fn other_actions(&self, model: &ProfileModel, other: &OtherPerson) -> Option<Row> {
         let mut actions = Row::new()
             .no_wrap()
             .with_align_items(taffy::AlignItems::Center);
@@ -630,15 +649,7 @@ impl ProfileCard {
             ));
             any = true;
         }
-        if any {
-            body = body
-                .push(Box::new(Divider::horizontal()))
-                .push(Box::new(actions));
-        }
-        if let Some(agent) = &other.agent {
-            body = body.push(Box::new(self.agent_commands(agent)));
-        }
-        body
+        any.then_some(actions)
     }
 
     /// What can be done with an agent from its face: Stop, Undo run, Take over and Revoke, each

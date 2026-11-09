@@ -591,9 +591,13 @@ fn a_search_still_filling_in_asks_for_frames_before_the_bar_ticks() {
 fn desk_tree_with(n: u64) -> DesktopTree {
     let groups: Vec<WindowGroup> = (0..n)
         .map(|i| {
-            let tab = window(20 + i, &format!("Window {i}"), "so.tilo.notes");
+            let tab = window(
+                i.saturating_add(20),
+                &format!("Window {i}"),
+                "so.tilo.notes",
+            );
             WindowGroup {
-                id: 3 + i,
+                id: i.saturating_add(3),
                 active_tab: tab.id,
                 tabs: vec![tab],
                 width: WindowWidth::Normal,

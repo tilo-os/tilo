@@ -170,13 +170,14 @@ impl Widget for SearchOverlay {
         let Ok(current) = taffy.style(palette) else {
             return false;
         };
-        let mut style = current.clone();
-        style.size = taffy::Size::from_lengths(card_width as f32, card_height as f32);
         #[allow(
             clippy::cast_possible_truncation,
-            reason = "a place on the desk is a few thousand logical pixels"
+            reason = "a place or size on the desk is a few thousand logical pixels"
         )]
-        let at = |value: f64| taffy::LengthPercentageAuto::length(value as f32);
+        let px = |value: f64| value as f32;
+        let mut style = current.clone();
+        style.size = taffy::Size::from_lengths(px(card_width), px(card_height));
+        let at = |value: f64| taffy::LengthPercentageAuto::length(px(value));
         let x0 = origin.x.clamp(
             self.rect.x0 + PALETTE_EDGE,
             (self.rect.x1 - card_width - PALETTE_EDGE).max(self.rect.x0 + PALETTE_EDGE),

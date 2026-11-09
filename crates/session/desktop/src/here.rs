@@ -473,21 +473,13 @@ impl HereState {
             }
             held.2 = now_ms;
         }
-        let gone: Vec<String> = self
+        let mut finished: Vec<AgentFinished> = self
             .working_agents
-            .iter()
-            .filter(|(_, (_, _, seen))| now_ms.saturating_sub(*seen) >= REJOIN_QUIET_MS)
-            .map(|(publisher, _)| publisher.clone())
-            .collect();
-        let mut finished: Vec<AgentFinished> = gone
-            .into_iter()
-            .filter_map(|publisher| {
-                let (label, last, _) = self.working_agents.remove(&publisher)?;
-                Some(AgentFinished {
-                    publisher,
-                    label,
-                    last,
-                })
+            .extract_if(|_, (_, _, seen)| now_ms.saturating_sub(*seen) >= REJOIN_QUIET_MS)
+            .map(|(publisher, (label, last, _))| AgentFinished {
+                publisher,
+                label,
+                last,
             })
             .collect();
         finished.sort_by(|a, b| a.publisher.cmp(&b.publisher));
