@@ -98,7 +98,7 @@ async fn outbox_survives_a_host_restart_and_is_replayed() {
     .await;
     let mut laptop = participant::Participant::start(&host.relay, &root).await;
     let listen = host.web.addr;
-    let iroh_listen = *host.relay.node_addr().ip_addrs().next().unwrap();
+    let iroh_listen = host.iroh_listen();
 
     let store = Arc::new(MemoryPeerStore::default());
     let peer = PeerHandle::start(

@@ -121,8 +121,10 @@ async fn browser_over_https_is_certified_syncs_and_is_revoked() {
         "acknowledged"
     );
 
-    // 5. Revocation: the host ends the HTTPS session, refuses the handshake
-    // from then on, and the browser stops in `failed`.
+    // 5. Revocation: the host ends the session and refuses the handshake
+    // from then on. It closes the handshake without saying why, so the page
+    // cannot tell a revoked device from one it no longer admits: after a few
+    // refusals in a row it stops in `failed` with `not-admitted`.
     let mut entry = RevocationEntry {
         user_public_key: user,
         revoked_device_public_key: browser_cert.device_public_key,
@@ -137,7 +139,7 @@ async fn browser_over_https_is_certified_syncs_and_is_revoked() {
         async move { (snapshot.phase == "failed").then_some(snapshot) }
     })
     .await;
-    assert_eq!(failed.error_code, Some("device-revoked"));
+    assert_eq!(failed.error_code, Some("not-admitted"));
     assert_eq!(browser.status().phase, TransportPhase::Failed);
     browser.close();
     laptop_peer.close();
