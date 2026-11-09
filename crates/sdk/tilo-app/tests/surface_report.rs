@@ -105,3 +105,82 @@ fn the_surface_report_names_verbs_fields_and_unpublished_bindings() {
     assert_eq!(unbound.len(), 1, "{report}");
     assert!(unbound[0].as_str().unwrap().contains("bunp"), "{report}");
 }
+
+/// What a read action answers, as the surface publishes it.
+#[derive(serde::Serialize, tilo_app::tilo_resource::JsonSchema)]
+pub struct Counted {
+    /// How many there are.
+    pub count: i64,
+    /// What they are.
+    pub what: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Effect)]
+#[effect(operation = "test.surface-report.effects")]
+pub enum ReadEffect {
+    /// Count what the record holds.
+    #[effect(kind = "read", returns = Counted, idempotent)]
+    Count,
+    /// Zoom the window in.
+    #[effect(view)]
+    ZoomIn,
+}
+
+struct ReadingApp;
+
+impl ResourceApp for ReadingApp {
+    type Resource = Counter;
+    const ID: &'static str = "so.tilo.test-surface-reads";
+    const TITLE: &'static str = "Counter";
+
+    fn view(cx: &mut ViewCx<Counter>) -> Element {
+        cx.effects(|effect: ReadEffect, _cx| match effect {
+            ReadEffect::Count => Ok(Effected::value(Counted {
+                count: 0,
+                what: String::new(),
+            })),
+            ReadEffect::ZoomIn => Ok(Effected::done()),
+        })
+    }
+}
+
+/// A read effect is an action of the app's own resource in its surface, with
+/// the value it answers with; what the window shows of itself is no action a
+/// caller of another language has.
+#[test]
+fn a_read_effect_publishes_its_answer_as_an_action_of_the_resource() {
+    let report = tilo_app::framework::headless::surface_report::<ReadingApp>();
+    let surface = &report["resources"][0];
+    let verbs = surface["verbs"].as_array().unwrap();
+    let count = verbs
+        .iter()
+        .find(|verb| verb["id"] == "count")
+        .unwrap_or_else(|| panic!("a read effect publishes a verb: {report}"));
+    assert_eq!(count["kind"], "read");
+    assert_eq!(
+        count["returns"]["type"],
+        serde_json::json!({"named": "Counted"}),
+        "{report}"
+    );
+    assert_eq!(
+        count["returns"]["schema"]["properties"]["what"]["type"],
+        "string"
+    );
+    let counted = surface["types"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|ty| ty["name"] == "Counted")
+        .unwrap_or_else(|| panic!("the answer's record is declared: {report}"));
+    let fields: Vec<&str> = counted["fields"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|field| field["name"].as_str())
+        .collect();
+    assert_eq!(fields, ["count", "what"]);
+    assert!(
+        !verbs.iter().any(|verb| verb["id"] == "zoom-in"),
+        "a view is no action of the catalogue: {report}"
+    );
+}

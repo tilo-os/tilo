@@ -1200,6 +1200,37 @@ mod tests {
         assert_eq!(render(&[value["resources"][0].clone()]).unwrap(), text);
     }
 
+    /// What an action answers with is part of the file, its schema without
+    /// the prose the types' doc comments put in it.
+    #[test]
+    fn an_actions_answer_reads_back_with_its_type() {
+        let mut book = resource(1, "String", &["rename"]);
+        book["verbs"][0]["returns"] = serde_json::json!({
+            "type": {"named": "Renamed"},
+            "schema": {
+                "type": "object",
+                "properties": {"title": {"type": "string", "description": "The title"}},
+            },
+        });
+        book["types"] = serde_json::json!([{
+            "name": "Renamed",
+            "fields": [{"name": "title", "type": "text"}],
+        }]);
+        let text = render(&[book]).unwrap();
+        assert!(!text.contains("The title"), "{text}");
+        let value: Value =
+            serde_json::to_value(toml::from_str::<toml::Value>(&text).unwrap()).unwrap();
+        let surface: tilo_actions::surface::Surface =
+            serde_json::from_value(value["resources"][0].clone()).unwrap();
+        let returns = surface.verbs[0].returns.clone().unwrap();
+        assert_eq!(
+            returns.ty,
+            tilo_actions::surface::FieldType::Named("Renamed".to_owned())
+        );
+        assert_eq!(returns.schema["properties"]["title"]["type"], "string");
+        assert_eq!(surface.types[0].name, "Renamed");
+    }
+
     #[test]
     fn a_record_that_stopped_being_the_persons_is_drift() {
         let before = filed(&resource(1, "String", &["rename"]));
