@@ -70,7 +70,15 @@ fn entry(doc: &mut AutoCommit, collection: &str, id: &str, order: &str) -> ObjId
 }
 
 /// The agent's `run`: a request queued in the session's record, as one change of its run.
-fn ask(doc: &mut AutoCommit, record: &str, id: &str, order: &str, command: &str, group: &str, at: i64) {
+fn ask(
+    doc: &mut AutoCommit,
+    record: &str,
+    id: &str,
+    order: &str,
+    command: &str,
+    group: &str,
+    at: i64,
+) {
     let request = entry(doc, "requests", id, order);
     let value = doc.put_object(&request, "value", ObjType::Map).unwrap();
     doc.put(&value, "command", command).unwrap();
@@ -344,8 +352,7 @@ impl Connection {
         let mut open = Vec::new();
         for (index, file) in files.iter().enumerate() {
             let record = ui::RecordId::for_file(file);
-            let checkout =
-                ui::RecordCheckout::new(record.clone(), ui::RecordKind::new("note"));
+            let checkout = ui::RecordCheckout::new(record.clone(), ui::RecordKind::new("note"));
             let mut doc = AutoCommit::new();
             ui::record::init(&mut doc, &record, &checkout.kind, &workspace.to_string());
             doc.commit();
@@ -354,7 +361,11 @@ impl Connection {
             let context = tilo_actions::ActionContext::for_resource(record.as_str(), "note", *file)
                 .with_app(NOTES_APP, "Notes")
                 .with_described(crate::activity::testing::verb("Write the note"))
-                .with_group(GROUP, "Claude Code #2", ui::history_source::steps::AGENT_RUN);
+                .with_group(
+                    GROUP,
+                    "Claude Code #2",
+                    ui::history_source::steps::AGENT_RUN,
+                );
             let at = 10_i64.saturating_add(i64::try_from(index).unwrap_or(0));
             doc.commit_with(
                 CommitOptions::default()
@@ -386,12 +397,21 @@ impl Connection {
             .expect("workspace")
             .id();
         let record = ui::RecordId::for_tab(3);
-        let checkout = ui::RecordCheckout::new(record.clone(), ui::RecordKind::new("terminal.session"));
+        let checkout =
+            ui::RecordCheckout::new(record.clone(), ui::RecordKind::new("terminal.session"));
         let mut doc = AutoCommit::new();
         ui::record::init(&mut doc, &record, &checkout.kind, &workspace.to_string());
         doc.commit();
         doc.set_actor(ActorId::from(b"claude-code-agent".as_slice()));
-        ask(&mut doc, &record.to_string(), "req-1", "a0", command, GROUP, at);
+        ask(
+            &mut doc,
+            &record.to_string(),
+            "req-1",
+            "a0",
+            command,
+            GROUP,
+            at,
+        );
         self.open.push((TERMINAL_APP.to_owned(), checkout, doc));
     }
 
@@ -417,7 +437,9 @@ impl Connection {
     /// The connection's run, as the activity serves it now.
     fn run(&mut self) -> wire::AgentRun {
         self.refresh();
-        let served = self.pane.serve_runs(&wire::RunsQuery::default(), &self.tree);
+        let served = self
+            .pane
+            .serve_runs(&wire::RunsQuery::default(), &self.tree);
         let total = served.total;
         served
             .runs
@@ -476,9 +498,7 @@ fn a_connections_run_is_undone_whole_while_its_documents_are_open() {
     );
 
     // The budget note is busy elsewhere: the run cannot be taken back whole until it is open.
-    connection
-        .closed
-        .push(Connection::record("budget.note"));
+    connection.closed.push(Connection::record("budget.note"));
     let run = connection.run();
     assert_eq!(
         run.undo_blocked.as_deref(),
