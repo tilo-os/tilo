@@ -1832,13 +1832,6 @@ impl WindowGroup {
             .map_or_else(|| self.bar.bar_rect(), |slot| slot.row)
     }
 
-    /// Whether `p` is on the held row's new-tab door: the app's own controls under it never hear
-    /// the press.
-    fn held_new_tab_hit(&self, p: Point) -> bool {
-        let plus = self.held.new_tab;
-        plus.area() > 0.0 && plus.contains(p)
-    }
-
     /// Whether `p` is in the part of the row that holds the bar which the window keeps for its own
     /// furniture: a press there is the window's controls', never the window's to move by.
     fn held_furniture_hit(&self, p: Point) -> bool {
@@ -1877,8 +1870,7 @@ impl WindowGroup {
         if self.held_bar.is_some() {
             return true;
         }
-        let plus = self.bar.new_tab_rect();
-        if plus.area() > 0.0 && plus.contains(p) {
+        if self.new_tab_hit(p) {
             return false;
         }
         if self.bar.toolbar_hit(p) || self.search.hit(p) || self.window_control_hit(p) {
@@ -1938,8 +1930,7 @@ impl WindowGroup {
         if self.held_bar.is_some() {
             return true;
         }
-        let plus = self.bar.new_tab_rect();
-        (plus.area() <= 0.0 || !plus.contains(p)) && !self.bar.toolbar_hit(p) && !self.search.hit(p)
+        !self.new_tab_hit(p) && !self.bar.toolbar_hit(p) && !self.search.hit(p)
     }
 
     /// True when `p` is in the group's trailing-edge resize target.
@@ -2083,7 +2074,7 @@ impl WindowGroup {
         if self.held_bar.is_some() {
             // The row's own controls name themselves; the window's furniture names what it does.
             return self
-                .held_new_tab_hit(p)
+                .new_tab_hit(p)
                 .then(|| (self.held.new_tab, crate::widget::tabs::NEW_TAB.to_owned()));
         }
         if !self.navigation_bar_visible() {

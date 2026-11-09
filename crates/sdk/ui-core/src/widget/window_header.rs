@@ -373,15 +373,22 @@ pub(crate) struct RowFurnitureState {
 /// ([`RowFurniture`]): the window's own controls, the window's search and its new-tab door, each
 /// with the gap the bar keeps between its sections. Every window that lets its row hold the bar
 /// reserves this, so its app's own controls end where the window's begin.
+///
+/// The furniture laid out in a row wider than any window says it: what a row keeps and what stands
+/// in it are one arrangement, never two that can drift apart.
 #[must_use]
 pub fn merged_row_width() -> f64 {
-    use crate::widget::window_controls::{CONTROL_GAP, CONTROL_PX, LEAD_GAP, WindowControls};
-    WindowControls::trailing_room()
-        + LEAD_GAP
-        + CONTROL_PX
-        + CONTROL_GAP
-        + crate::widget::tabs::NEW_TAB_CHIP_PX
+    let wide = Rect::new(0.0, 0.0, WIDE_ENOUGH, WIDE_ENOUGH);
+    let slot = WindowBarSlot {
+        row: wide,
+        controls: wide,
+        hides_with_bar: false,
+    };
+    (wide.x1 - RowFurniture::of(slot).new_tab.x0).max(0.0)
 }
+
+/// A side wider than any window: the furniture is measured in one, so nothing it holds is cut.
+const WIDE_ENOUGH: f64 = 10_000.0;
 
 /// Whether `widget` is a window's frame: a window standing in a shell, which offers the bar to
 /// its own content's header row as it draws.

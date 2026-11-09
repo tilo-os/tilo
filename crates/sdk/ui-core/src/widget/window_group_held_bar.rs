@@ -190,7 +190,7 @@ impl WindowGroup {
                 ..
             } => {
                 let over = held.controls.hit(self.last_cursor);
-                let plus = self.held_new_tab_hit(self.last_cursor);
+                let plus = self.new_tab_hit(self.last_cursor);
                 match state {
                     ElementState::Pressed => {
                         self.held_pressed = over;
