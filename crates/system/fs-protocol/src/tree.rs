@@ -100,6 +100,19 @@ impl Tree {
             .and_then(|node| node.parent.as_deref())
             .is_some_and(|parent| parent == TRASH_ID)
     }
+
+    /// The tree `record` holds, as its saved bytes: what a device that reads a
+    /// workspace's Files record rather than writing it sees, such as the host
+    /// keeping the files' content. A record no mount has written yet holds no
+    /// node.
+    ///
+    /// # Errors
+    ///
+    /// `record` is not a saved document, or the nodes it holds are malformed.
+    pub fn of_record(record: &[u8]) -> Result<Self, ModelError> {
+        let document = automerge::AutoCommit::load(record)?;
+        FilesTree::read(&document)
+    }
 }
 
 /// One file or folder of a [`Tree`], as the document holds it.
