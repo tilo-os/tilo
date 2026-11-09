@@ -32,6 +32,8 @@ pub(crate) fn unserved(action: FixedAction) -> Option<Outcome> {
 
 #[cfg(test)]
 mod tests {
+    use super::*;
+
     /// A chord the page cannot serve says what it is and why, in a notice the
     /// person can read, instead of doing nothing.
     #[test]
