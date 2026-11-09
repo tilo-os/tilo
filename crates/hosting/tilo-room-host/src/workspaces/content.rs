@@ -1,12 +1,13 @@
 //! Content a governed workspace's records reference that this host keeps: what
 //! its bots fetched from outside (a bridged person's avatar, a file posted
-//! elsewhere) and the surfaces of the apps it decided changes with, whichever
+//! elsewhere), the surfaces of the apps it decided changes with, whichever
 //! version those changes were written by, which members decide the host's
-//! changes against.
+//! changes against, and the files of a workspace its members wrote and left
+//! ([`crate::workspaces::ContentKeeper`]).
 //!
 //! A member asks the workspace for content its record lacks with the workspace's
 //! presence ([`NeighbourMsg::RecordContentWant`]), as it asks any member.
-//! The host answers from what it keeps, to that member's device alone, in
+//! The host answers from everything it keeps, to that member's device alone, in
 //! the same bounded pieces a member answers with; the member keeps the
 //! content once every piece arrived and the bytes hash to what it asked.
 //!
@@ -16,6 +17,11 @@
 //! and it lacks ([`super::surfaces`]). It asks the workspace on its own
 //! presence, and the pieces members answer it with come to it, not to another
 //! device.
+//!
+//! Several keepers keep for a host at once (its bots' files, its workspaces'
+//! files), each of them saying which of the pieces members answer the host
+//! with are its own; and several sources serve, each answering with the
+//! content it keeps and leaving the rest to the others.
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, RwLock};
@@ -87,8 +93,8 @@ pub trait ContentKeeper: Send + Sync {
 /// members answer the host with, once it has them.
 #[derive(Default)]
 pub(super) struct ContentSlot {
-    pub(super) source: RwLock<Option<Arc<dyn WorkspaceContent>>>,
-    pub(super) keeper: RwLock<Option<Arc<dyn ContentKeeper>>>,
+    pub(super) sources: RwLock<Vec<Arc<dyn WorkspaceContent>>>,
+    pub(super) keepers: RwLock<Vec<Arc<dyn ContentKeeper>>>,
     /// The app surfaces this host asked the workspace for, by hash
     /// ([`Workspaces::ask_surface`]).
     pub(super) surfaces: Mutex<ContentWants<()>>,
@@ -98,15 +104,23 @@ pub(super) struct ContentSlot {
 }
 
 impl ContentSlot {
-    fn get(&self) -> Option<Arc<dyn WorkspaceContent>> {
-        self.source.read_recover().clone()
+    fn get(&self) -> Vec<Arc<dyn WorkspaceContent>> {
+        self.sources.read_recover().clone()
+    }
+
+    fn keepers(&self) -> Vec<Arc<dyn ContentKeeper>> {
+        self.keepers.read_recover().clone()
     }
 }
 
 impl Workspaces {
-    /// Answer members' requests for content from `content`.
+    /// Answer members' requests for content from `content`, beside whatever
+    /// else this host serves.
     pub fn serve_content(&self, content: Arc<dyn WorkspaceContent>) {
-        *self.inner.content.source.write_recover() = Some(content);
+        let mut sources = self.inner.content.sources.write_recover();
+        if !sources.iter().any(|served| Arc::ptr_eq(served, &content)) {
+            sources.push(content);
+        }
     }
 
     /// The bytes named `hash` this host keeps for the workspace of `workspace`
@@ -114,7 +128,7 @@ impl Workspaces {
     /// the files it keeps for members. `None` for a workspace not governed here
     /// or content it does not keep.
     pub async fn kept_content(&self, workspace: u64, hash: &str) -> Option<Vec<u8>> {
-        let source = self.inner.content.get()?;
+        let sources = self.inner.content.get();
         let workspaces = self
             .inner
             .workspaces
@@ -125,30 +139,35 @@ impl Workspaces {
             .collect::<Vec<_>>();
         for (identity, governed) in workspaces {
             if governed.lock().await.workspace_id() == workspace {
-                return source
-                    .read(&identity, "", hash)
-                    .filter(|bytes| tilo_content::verify(hash, bytes));
+                return sources.iter().find_map(|source| {
+                    source
+                        .read(&identity, "", hash)
+                        .filter(|bytes| tilo_content::verify(hash, bytes))
+                });
             }
         }
         None
     }
 
-    /// Hand the pieces of content members send this host to `keeper`.
+    /// Hand the pieces of content members send this host to `keeper`, beside
+    /// whatever else this host keeps.
     pub fn keep_content(&self, keeper: Arc<dyn ContentKeeper>) {
-        *self.inner.content.keeper.write_recover() = Some(keeper);
+        let mut keepers = self.inner.content.keepers.write_recover();
+        if !keepers.iter().any(|kept| Arc::ptr_eq(kept, &keeper)) {
+            keepers.push(keeper);
+        }
     }
 
     /// `frame`, a piece of content the member device `from` sent this host
-    /// in `workspace`: to the keeper, or, when it is a surface the host asked
-    /// for, into the content plane the host decides with. Dropped when the
-    /// host expects neither.
+    /// in `workspace`: to the keeper that asked for it, or, when it is a
+    /// surface the host asked for, into the content plane the host decides
+    /// with. Dropped when the host expects neither.
     pub fn content_for_host(&self, workspace: &str, from: [u8; 32], frame: &[u8]) {
-        let keeper = self.inner.content.keeper.read_recover().clone();
-        if let Some(keeper) = keeper
-            && keeper.expects(workspace, frame)
-        {
-            keeper.piece(workspace, from, frame);
-            return;
+        for keeper in self.inner.content.keepers() {
+            if keeper.expects(workspace, frame) {
+                keeper.piece(workspace, from, frame);
+                return;
+            }
         }
         // The asker of a surface is this host: a piece is kept when it is
         // addressed to the host's own device, whoever among the members
@@ -166,12 +185,15 @@ impl Workspaces {
     }
 
     /// Whether `frame`, a piece of content a member sent this host in
-    /// `workspace`, answers a request this host made: its keeper's
+    /// `workspace`, answers a request this host made: a keeper's
     /// ([`ContentKeeper::expects`]) or its own for a surface.
     pub(crate) fn host_expects(&self, workspace: &str, frame: &[u8]) -> bool {
-        let keeper = self.inner.content.keeper.read_recover().clone();
         let device = self.inner.host.cert.device_public_key;
-        keeper.is_some_and(|keeper| keeper.expects(workspace, frame))
+        self.inner
+            .content
+            .keepers()
+            .iter()
+            .any(|keeper| keeper.expects(workspace, frame))
             || self
                 .inner
                 .content
@@ -206,8 +228,12 @@ impl Workspaces {
     }
 
     /// Publish `body`, a `NeighbourMsg::RecordContentWant` naming this
-    /// host, on `workspace`'s presence: the members keeping the content answer
-    /// the host. The number of devices it reached.
+    /// host, to `workspace`'s members: the ones keeping the content answer the
+    /// host. A member reaches the workspace's other devices only through this
+    /// host, and the host asks them the same way they ask it — on the live
+    /// plane for the members reaching it there, and on the workspace's own
+    /// link for those directly connected, which is where their answers come
+    /// from. The number of devices it reached on the live plane.
     ///
     /// # Errors
     ///
@@ -220,11 +246,20 @@ impl Workspaces {
             .lock()
             .await
             .workspace_id();
-        self.inner
+        let reached = self
+            .inner
             .host
             .records
-            .host_presence(workspace_id, body)
-            .await
+            .host_presence(workspace_id, body.clone())
+            .await?;
+        // ignored-failure: the body is the host's own request, which it just encoded
+        if let Ok(message) = postcard::from_bytes::<NeighbourMsg>(&body)
+            && let Some(link) = self.inner.direct.link(workspace_id)
+            && let Err(error) = link.send(message)
+        {
+            tracing::debug!(%workspace, %error, "a workspace's link did not carry the host's request");
+        }
+        Ok(reached)
     }
 
     /// The answer to `body`, a presence `workspace`'s member published, when it
@@ -254,7 +289,8 @@ impl Workspaces {
                 self.inner
                     .content
                     .get()
-                    .and_then(|content| content.read(workspace, &app_id, &hash))
+                    .iter()
+                    .find_map(|source| source.read(workspace, &app_id, &hash))
             })
             // A record started by an older version of an app reads its writes
             // with that version's surface, which the workspace's content plane

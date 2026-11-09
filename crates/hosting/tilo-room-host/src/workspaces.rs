@@ -1445,11 +1445,29 @@ impl Workspaces {
                     frame.message,
                     neighbour_wire::NeighbourMsg::RecordContentWant { .. }
                 );
+                let answering = matches!(
+                    frame.message,
+                    neighbour_wire::NeighbourMsg::RecordContentPiece { .. }
+                        | neighbour_wire::NeighbourMsg::RecordContentLacks { .. }
+                );
                 let Ok(body) = postcard::to_allocvec(&frame.message) else {
                     continue;
                 };
                 if let Err(error) = workspaces.absorb(&name, frame.author, &body).await {
                     tracing::warn!(%name, %error, "the host did not keep what its link admitted");
+                }
+                // What a member answers the host with answers a request the
+                // host made, and is the host's to keep: a device that keeps
+                // its workspace's files reads the pieces here
+                // ([`Self::content_for_host`]).
+                if answering {
+                    let (workspaces, name, author) =
+                        (workspaces.clone(), name.clone(), frame.author);
+                    let body = body.clone();
+                    tokio::task::spawn_blocking(move || {
+                        workspaces.content_for_host(&name, author, &body);
+                    });
+                    continue;
                 }
                 if !asking {
                     continue;
@@ -1935,6 +1953,26 @@ impl Workspaces {
                 workspaces.replay_soon(name);
             }
         });
+    }
+
+    /// Ask to be let into the channel that seals `record` of `app` in
+    /// `workspace`, when this host takes part in the workspace's channels:
+    /// what a host that reads a record its members write sealed asks for once
+    /// it finds the record shut, since its keys arrive only after the
+    /// channel's participants admit it ([`Self::join_soon`]). Nothing when
+    /// the workspace is not governed here; the keys arrive on the channel
+    /// service's own time, and the record reads once they have.
+    pub async fn ask_to_open(&self, workspace: &str, app: &str, record: &str) {
+        let Ok(state) = self.workspace(workspace).await else {
+            return;
+        };
+        let mut governed = state.lock().await;
+        #[cfg(any(feature = "agents", feature = "web"))]
+        self.join_soon(&mut governed, app.to_owned(), record.to_owned());
+        #[cfg(not(any(feature = "agents", feature = "web")))]
+        {
+            let _ = (&mut governed, app, record);
+        }
     }
 
     /// Take in `message` if it is a notice rather than a record write: an
