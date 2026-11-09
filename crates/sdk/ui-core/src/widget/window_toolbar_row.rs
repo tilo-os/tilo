@@ -104,7 +104,7 @@ const COMFORTABLE_LOCATION_PX: f64 = crate::tokens::Metrics::BASE.location_comfo
 
 /// What a row of the open menu (the overflow's, a menu button's, or the
 /// location's picker) runs.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 enum MenuEntry {
     /// The sidebar's toggle, where the row has no room for it.
     Sidebar,
@@ -115,8 +115,9 @@ enum MenuEntry {
     /// Leading action `n`, where the row has no room for it.
     Leading(usize),
     View(usize),
-    /// Item `.1` of menu button `.0`.
-    Item(usize, usize),
+    /// Item `.1` of the menu button `.0` names: the button by its id, so the row the person
+    /// chooses runs for the button it stands under however the app re-declares its slots.
+    Item(String, usize),
     /// The location's choice `n`, committed.
     Choice(usize),
 }
@@ -173,6 +174,10 @@ pub(crate) struct ToolbarRow {
     /// The button the open menu hangs from: the overflow button, a menu
     /// button, or the location's picker.
     menu_slot: Option<Slot>,
+    /// The action whose menu is open, by its id, while it is a menu button's: the menu stays with
+    /// that button while the app declares its slots again and the commands before it come, go or
+    /// change, rather than following whatever now stands where it once did.
+    menu_action: Option<String>,
     /// The views' sizes as the theme draws them, and the labels and text
     /// scale they were measured for.
     views_size: Option<Measured>,
@@ -236,6 +241,7 @@ impl ToolbarRow {
             menu_entries: Vec::new(),
             choice_trigger: Rect::ZERO,
             menu_slot: None,
+            menu_action: None,
             views_size: None,
             suggestions: SuggestionList::new(),
             suggestion_values: Vec::new(),
@@ -292,7 +298,7 @@ impl ToolbarRow {
     pub(crate) fn close_popups(&mut self) -> bool {
         let mut closed = false;
         if self.menu.is_open() {
-            self.menu.close();
+            self.close_menu();
             closed = true;
         }
         if self.picking() {
@@ -346,7 +352,7 @@ impl ToolbarRow {
             // Another tab: what the person typed belongs to the tab they
             // typed it in, and goes with it.
             self.abandon_edit();
-            self.menu.close();
+            self.close_menu();
             self.hover = None;
             self.pressed = None;
             self.outgoing = self
@@ -688,13 +694,13 @@ impl ToolbarRow {
         }
         // The open menu follows what it hangs from, and goes with it.
         let anchor = match self.menu_slot {
-            Some(Slot::Action(i)) => self.slots.actions.get(i).copied().unwrap_or(Rect::ZERO),
+            Some(Slot::Action(_)) => self.menu_button_rect(),
             Some(Slot::Location) => self.choice_anchor(),
             Some(Slot::ViewsMenu) => self.slots.views_menu,
             _ => self.slots.overflow,
         };
         if anchor.area() <= 0.0 {
-            self.menu.close();
+            self.close_menu();
         } else if self.menu.is_open() {
             self.menu.reanchor(anchor, self.popup_area);
         }
@@ -724,6 +730,20 @@ impl ToolbarRow {
             .filter_map(MenuItem::label)
             .map(str::to_owned)
             .collect()
+    }
+
+    /// Where the open menu's row `label` stands, for a test to press.
+    #[cfg(test)]
+    pub(crate) fn menu_row(&self, label: &str) -> Option<Rect> {
+        if !self.menu.is_open() {
+            return None;
+        }
+        let index = self
+            .menu
+            .items()
+            .iter()
+            .position(|item| item.label() == Some(label))?;
+        self.menu.item_rect(index)
     }
 
     /// What the location's picker hangs from: the label and chevron it
@@ -1079,7 +1099,7 @@ impl ToolbarRow {
         // The navigation the row has no room for leads the menu, in the
         // row's order.
         for entry in self.folded_navigation() {
-            if let Some(item) = self.navigation_item(entry) {
+            if let Some(item) = self.navigation_item(entry.clone()) {
                 items.push(item);
                 entries.push(Some(entry));
             }
@@ -1143,7 +1163,7 @@ impl ToolbarRow {
             entries.push(None);
             for (j, item) in action.items.iter().enumerate() {
                 items.push(menu_item(item));
-                entries.push(Some(MenuEntry::Item(i, j)));
+                entries.push(Some(MenuEntry::Item(action.id.clone(), j)));
             }
         }
         if items.is_empty() {
@@ -1244,13 +1264,15 @@ impl ToolbarRow {
             return false;
         };
         let items = action.items.iter().map(menu_item).collect();
+        let id = action.id.clone();
         let entries = (0..action.items.len())
-            .map(|j| Some(MenuEntry::Item(index, j)))
+            .map(|j| Some(MenuEntry::Item(id.clone(), j)))
             .collect();
         let Some(anchor) = self.slots.actions.get(index).copied() else {
             return false;
         };
         self.open_menu(items, entries, Slot::Action(index), anchor);
+        self.menu_action = Some(id);
         true
     }
 
@@ -1266,13 +1288,37 @@ impl ToolbarRow {
         self.menu.open_anchored(anchor, self.popup_area);
         self.menu_entries = entries;
         self.menu_slot = Some(slot);
+        self.menu_action = None;
     }
 
-    /// Run item `item` of menu button `index`.
-    fn run_item(&mut self, index: usize, item: usize) -> bool {
+    /// Close the open menu, and forget the button it hung from.
+    fn close_menu(&mut self) {
+        self.menu.close();
+        self.menu_action = None;
+    }
+
+    /// Where the menu button whose menu is open stands now, by the action it is: `Rect::ZERO`
+    /// where the app declares it no longer, or out of the row's way.
+    fn menu_button_rect(&self) -> Rect {
+        let Some(id) = self.menu_action.as_deref() else {
+            return Rect::ZERO;
+        };
+        let Some(toolbar) = self.toolbar() else {
+            return Rect::ZERO;
+        };
+        toolbar
+            .actions
+            .iter()
+            .position(|action| action.id == id)
+            .and_then(|index| self.slots.actions.get(index).copied())
+            .unwrap_or(Rect::ZERO)
+    }
+
+    /// Run item `item` of the menu button `id` names.
+    fn run_item(&mut self, id: &str, item: usize) -> bool {
         let Some(chosen) = self
             .toolbar()
-            .and_then(|toolbar| toolbar.actions.get(index))
+            .and_then(|toolbar| toolbar.actions.iter().find(|action| action.id == id))
             .and_then(|action| action.items.get(item))
             .filter(|chosen| chosen.enabled)
         else {
@@ -1339,13 +1385,13 @@ impl ToolbarRow {
 
     /// Run what open menu row `row` stands for.
     fn run_menu_entry(&mut self, row: usize) -> bool {
-        match self.menu_entries.get(row).copied().flatten() {
+        match self.menu_entries.get(row).cloned().flatten() {
             Some(MenuEntry::Sidebar) => self.activate(&Slot::Sidebar),
             Some(MenuEntry::Forward) => self.activate(&Slot::Forward),
             Some(MenuEntry::Action(index)) => self.run_action(index),
             Some(MenuEntry::Leading(index)) => self.run_leading(index),
             Some(MenuEntry::View(index)) => self.choose_view(index),
-            Some(MenuEntry::Item(index, item)) => self.run_item(index, item),
+            Some(MenuEntry::Item(id, item)) => self.run_item(&id, item),
             Some(MenuEntry::Choice(index)) => self.commit_choice(index),
             None => false,
         }
@@ -1502,7 +1548,7 @@ impl ToolbarRow {
             );
             if let Some(row) = self.menu.take_selection() {
                 self.run_menu_entry(row);
-                self.menu.close();
+                self.close_menu();
             }
             // The menu is modal while it is up: the keyboard is its, and so
             // is the press that closes it.
@@ -1808,7 +1854,7 @@ impl ToolbarRow {
     /// does when its row is picked. Returns `ran`.
     fn ran_from_menu(&mut self, ran: bool) -> bool {
         if ran && self.menu.is_open() && !self.menu_open_for(&Slot::Location) {
-            self.menu.close();
+            self.close_menu();
         }
         ran
     }

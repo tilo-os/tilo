@@ -594,4 +594,114 @@ mod tests {
             "the press reaches the window"
         );
     }
+
+    /// An app whose bar holds a menu, as a list's sort menu does: the row's button says what the
+    /// menu is, and the rows it lists run by their id.
+    struct SortApp {
+        content: crate::widget::Column,
+        heard: Rc<RefCell<Vec<ToolbarEvent>>>,
+    }
+
+    impl crate::widget::Decorator for SortApp {
+        type Inner = crate::widget::Column;
+
+        fn inner(&self) -> &Self::Inner {
+            &self.content
+        }
+
+        fn inner_mut(&mut self) -> &mut Self::Inner {
+            &mut self.content
+        }
+
+        fn sync(&mut self, state: &crate::widget::AppModel, path: &crate::widget::ModelPath) {
+            for event in crate::window_toolbar::take_events() {
+                self.heard.borrow_mut().push(event);
+            }
+            crate::window_toolbar::declare(Some(WindowToolbar {
+                actions: vec![
+                    ToolbarAction::new("sort", "arrow-up-down", "Sort")
+                        .labelled()
+                        .with_items(vec![
+                            ToolbarAction::new("sort~row-0", "", "Everything"),
+                            ToolbarAction::new("sort~row-1", "", "Title"),
+                        ]),
+                ],
+                ..WindowToolbar::default()
+            }));
+            self.content.sync(state, path);
+        }
+    }
+
+    fn sort_app() -> (FrameHarness, Rc<RefCell<Vec<ToolbarEvent>>>) {
+        let heard = Rc::new(RefCell::new(Vec::new()));
+        let app = SortApp {
+            content: crate::widget::Column::new()
+                .push(Box::new(crate::widget::Button::new("send", "Send"))),
+            heard: Rc::clone(&heard),
+        };
+        let mut harness = FrameHarness::for_root(
+            crate::State::new(),
+            app,
+            (900, 600),
+            crate::theme::Theme::dark().with_reduce_motion(true),
+        );
+        harness.host_window_slots();
+        harness.relayout();
+        (harness, heard)
+    }
+
+    // A menu in the window's own bar opens on one click and stays open while it is read: the
+    // frames that follow the click leave it up, a second click on its button closes it, and a row
+    // chosen in it runs.
+    #[test]
+    fn a_menu_in_a_window_of_its_own_opens_on_one_click_and_stays_open() {
+        let (mut harness, heard) = sort_app();
+        let button = slot(&harness, "window-toolbar-action:sort")
+            .and_then(|button| button.bounds)
+            .expect("the sort menu stands in the row");
+        let (x, y) = ((button.x0 + button.x1) / 2.0, (button.y0 + button.y1) / 2.0);
+        harness.send_host_event(&crate::synthetic_input::cursor_moved(x, y));
+        harness.send_host_event(&crate::synthetic_input::mouse_press());
+        harness.send_host_event(&crate::synthetic_input::mouse_release());
+        harness.relayout();
+        let rows = |harness: &FrameHarness| {
+            let inspection = harness.inspection();
+            let row = inspection
+                .root
+                .children
+                .iter()
+                .find(|node| node.path == WINDOW_SLOTS);
+            let mut names = Vec::new();
+            fn walk(node: &crate::a11y::AccessNode, names: &mut Vec<String>) {
+                if let Some(name) = &node.name {
+                    names.push(name.clone());
+                }
+                for child in &node.children {
+                    walk(child, names);
+                }
+            }
+            if let Some(semantics) = row.and_then(|row| row.semantics.as_ref()) {
+                walk(semantics, &mut names);
+            }
+            names
+        };
+        assert!(
+            rows(&harness).iter().any(|name| name == "Title"),
+            "one click opens the menu: {:?}",
+            rows(&harness)
+        );
+        // It stays up: the frames after the click leave it alone.
+        for _ in 0..4 {
+            harness.relayout();
+        }
+        assert!(
+            rows(&harness).iter().any(|name| name == "Title"),
+            "the menu stays open: {:?}",
+            rows(&harness)
+        );
+        assert!(
+            heard.borrow().is_empty(),
+            "opening the menu runs none of its rows"
+        );
+    }
 }

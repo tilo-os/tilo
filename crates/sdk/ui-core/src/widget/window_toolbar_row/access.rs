@@ -252,7 +252,8 @@ impl ToolbarRow {
             if !action.items.is_empty() {
                 let slot = Slot::Action(i);
                 node.state.expanded = Some(self.menu_open_for(&slot));
-                let entries = (0..action.items.len()).map(|j| MenuEntry::Item(i, j));
+                let entries =
+                    (0..action.items.len()).map(|j| MenuEntry::Item(action.id.clone(), j));
                 node = node.with_children(vec![self.menu_node(
                     action.name.clone(),
                     &slot,
@@ -314,7 +315,8 @@ impl ToolbarRow {
             if action.items.is_empty() {
                 entries.push(MenuEntry::Action(i));
             } else {
-                entries.extend((0..action.items.len()).map(|j| MenuEntry::Item(i, j)));
+                entries
+                    .extend((0..action.items.len()).map(|j| MenuEntry::Item(action.id.clone(), j)));
             }
         }
         entries
@@ -340,12 +342,12 @@ impl ToolbarRow {
             .iter()
             .enumerate()
             .filter_map(|(position, entry)| {
-                let (name, target, enabled, checked) = self.entry_semantics(*entry)?;
+                let (name, target, enabled, checked) = self.entry_semantics(entry.clone())?;
                 let rect = open
                     .then(|| {
                         self.menu_entries
                             .iter()
-                            .position(|row| *row == Some(*entry))
+                            .position(|row| row.as_ref() == Some(entry))
                             .and_then(|row| self.menu.item_rect(row))
                     })
                     .flatten()
@@ -412,9 +414,10 @@ impl ToolbarRow {
                     (leading.toggles || leading.on).then_some(leading.on),
                 )
             }),
-            MenuEntry::Item(i, j) => toolbar
+            MenuEntry::Item(id, j) => toolbar
                 .actions
-                .get(i)
+                .iter()
+                .find(|menu| menu.id == *id)
                 .and_then(|menu| menu.items.get(j))
                 .map(action),
             MenuEntry::View(i) => {
@@ -555,17 +558,17 @@ impl ToolbarRow {
                     let ran = self.activate(&Slot::Action(i));
                     return if opens { ran } else { self.ran_from_menu(ran) };
                 }
-                let Some((i, j)) = toolbar.actions.iter().enumerate().find_map(|(i, action)| {
+                let Some((action, j)) = toolbar.actions.iter().find_map(|action| {
                     action
                         .items
                         .iter()
                         .position(|item| item.id == id)
-                        .map(|j| (i, j))
+                        .map(|j| (action.id.clone(), j))
                 }) else {
                     return false;
                 };
                 // A menu button's item runs without its menu open.
-                let ran = self.run_item(i, j);
+                let ran = self.run_item(&action, j);
                 return self.ran_from_menu(ran);
             }
         };
