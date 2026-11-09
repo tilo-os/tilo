@@ -969,7 +969,7 @@ impl Core {
         {
             return None;
         }
-        let Some(Value::Ref(subject)) = aref.args.first() else {
+        let Value::Ref(subject) = aref.args.first()? else {
             return None;
         };
         let id = subject.target.id_string();
