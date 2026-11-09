@@ -6,6 +6,7 @@ terminal-target-manage = Manage environments…
 terminal-target-choose = Choose where this runs
 terminal-start-failed-title = The shell couldn’t start
 terminal-start-retry = Try again
+terminal-prompt = Command line
 terminal-restart = Restart shell
 terminal-reconnecting = Reconnecting…
 terminal-held-title = This needs a Linux machine.

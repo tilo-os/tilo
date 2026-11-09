@@ -512,10 +512,13 @@ fn audit_access_node_contract(node: &AccessNode, path: &str, issues: &mut Vec<Ac
 }
 
 fn audit_access_children(node: &AccessNode, path: &str, issues: &mut Vec<AccessibilityIssue>) {
+    // A child is keyed when its id stays the same across a rebuild: by the key
+    // it hashed, or by the semantic key it named — the same test the semantic
+    // tree gives a synthetic node's durability.
     let keyed = node
         .children
         .iter()
-        .filter(|child| child.key.is_some())
+        .filter(|child| child.is_keyed())
         .count();
     if keyed > 0 && keyed < node.children.len() {
         push_audit_issue(

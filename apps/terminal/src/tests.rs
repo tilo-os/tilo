@@ -4718,3 +4718,81 @@ fn copy_on_select_is_kept_for_the_next_terminal() {
         "a new terminal opens with the choice already made"
     );
 }
+
+/// An agent's command run at this session is shown at the prompt — where a
+/// person types it — for everyone, and a page following the agent goes
+/// there. Nobody following moves nothing.
+#[test]
+#[serial_test::serial]
+fn an_agents_narrated_run_lands_at_the_prompt() {
+    let mut app =
+        ui::framework::testing::TestApp::<crate::resource::TerminalShell>::new().expect("terminal");
+    app.settle();
+    let prompt = app
+        .with_surface(|terminal: &mut crate::TerminalView| terminal.prompt_rect())
+        .expect("hosted terminal");
+    assert!(
+        prompt.width() > 0.0 && prompt.height() > 0.0,
+        "the prompt has a line: {prompt:?}"
+    );
+    // The session's record is where a command run is asked: its prompt is
+    // bound to that action, as a button is bound to the one it presses.
+    let bindings = ui::widget::controls::control_action_bindings(app.harness().root_widget());
+    let run = bindings
+        .iter()
+        .find_map(|binding| match &binding.kind {
+            ui::widget::ControlBindingKind::Action(address) if address.action == "run" => {
+                Some(address.clone())
+            }
+            _ => None,
+        })
+        .expect("the prompt is bound to the session's run");
+    let event = ui::tilo_actions::SemanticInteraction {
+        version: ui::tilo_actions::INTERACTION_VERSION,
+        invocation: ui::tilo_actions::InvocationId::new(),
+        sequence: 1,
+        actor: ui::tilo_actions::InteractionActor {
+            id: "scribe".into(),
+            kind: ui::tilo_actions::ActorKind::Agent,
+            for_person: None,
+        },
+        phase: ui::tilo_actions::InteractionPhase::Applying,
+        action: ui::tilo_actions::InteractionAction {
+            id: run.action.clone(),
+            label: "Run".into(),
+            app: None,
+        },
+        resource: ui::tilo_actions::ActionResource {
+            id: run.resource,
+            kind: "terminal.session".into(),
+            label: "Terminal".into(),
+        },
+        anchor: ui::tilo_actions::InteractionAnchor::Resource,
+        group: None,
+    };
+    // The cursor rests on the prompt, for a viewer following nobody.
+    let locus = app
+        .harness()
+        .semantic_locus(&event)
+        .expect("the run is shown at the prompt");
+    assert!(
+        (locus.center() - prompt.center()).length() < 0.5,
+        "the cursor is on the prompt's line: {locus:?} vs {prompt:?}"
+    );
+    // A follower's view goes there; a person following someone else moves
+    // nothing, and each action is gone to once.
+    app.harness()
+        .update_presence(|presence| presence.apply_interaction(event.clone()).is_ok());
+    let mut followed = ui::headless::FollowedView::default();
+    assert!(
+        !app.harness()
+            .follow_view("someone-else", &mut ui::headless::FollowedView::default()),
+        "not following moves nothing"
+    );
+    assert!(app.harness().follow_view("scribe", &mut followed));
+    assert!(!app.harness().follow_view("scribe", &mut followed));
+    // A control the frame cannot name an action for, or an action it cannot
+    // find, is the contract every native app is audited by.
+    let audit = app.harness().native_app_audit();
+    assert!(audit.is_certified(), "{audit:#?}");
+}

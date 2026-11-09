@@ -16,6 +16,7 @@ use crate::a11y_tree::{
     SEMANTIC_OPERATION_TYPE, SemanticActionKind, SemanticId, SemanticNode, SemanticTree,
 };
 use crate::host_core::HostCore as _;
+use crate::widget::Widget;
 use accesskit::{Action as AkAction, Role};
 
 /// Resource id prefix of a projected control (`ui:<percent-encoded node>`).
@@ -150,19 +151,35 @@ impl FrameHarness {
 
     /// The exact retained control locus for a semantic action, if uniquely
     /// available. Missing/ambiguous/domain-specific targets return no geometry.
+    /// An agent that has said where its caret or selection is in this frame's
+    /// text is there, whatever control its action is bound to.
     pub fn semantic_locus(&self, interaction: &tilo_actions::SemanticInteraction) -> Option<Rect> {
+        if interaction.actor.kind.acts_for_someone()
+            && let Some((_, rect)) = self.text_locus(&interaction.actor.id)
+        {
+            return Some(rect);
+        }
         let (tree, bindings) = self.retained_action_geometry()?;
         crate::action_locus::interaction_bounds(&tree, &bindings, interaction)
     }
 
+    /// Where this frame shows `actor`'s caret or selection in text: the widget
+    /// that draws it and its box, when a text widget here reports it.
+    fn text_locus(&self, actor: &str) -> Option<(*const dyn Widget, Rect)> {
+        let (key, range) = crate::presence::capability::actor_text_range(&self.presence, actor)?;
+        crate::presence::capability::range_locus(self.root.as_ref(), &self.theme, key, range)
+    }
+
     /// Bring the view to where `actor` acts, while this frame follows them:
-    /// the control their newest action here is bound to scrolls into view;
-    /// where no view here shows it (another sheet, tab or page), the nearest
-    /// view its resource publishes is opened through its own action, and the
-    /// control is scrolled to once that view is laid out. Each action is gone
-    /// to once, so the follower can look around until the next one. Answers
-    /// whether the view moved.
+    /// the text their caret or selection is in scrolls into view; else the
+    /// control their newest action here is bound to; where no view here shows
+    /// it (another sheet, tab or page), the nearest view its resource
+    /// publishes is opened through its own action, and the place is scrolled
+    /// to once that view is laid out. Each action is gone to once, so the
+    /// follower can look around until the next one. Answers whether the view
+    /// went there.
     pub fn follow_view(&mut self, actor: &str, followed: &mut FollowedView) -> bool {
+        self.invalidate_local();
         let Some(interaction) = self
             .presence
             .agent_marker_interactions(crate::time::now())
@@ -180,6 +197,10 @@ impl FrameHarness {
         if followed.shown {
             return false;
         }
+        if let Some((widget, rect)) = self.text_locus(actor) {
+            followed.shown = true;
+            return self.reveal(widget, rect);
+        }
         let locus = self
             .retained_action_geometry()
             .and_then(|(tree, bindings)| {
@@ -191,17 +212,23 @@ impl FrameHarness {
             let Some(&widget) = self.node_map.get(&taffy::NodeId::from(owner)) else {
                 return false;
             };
-            let moved = self.root.reveal_descendant(widget.cast_const(), bounds);
-            if moved {
-                self.relayout();
-            }
-            return moved;
+            return self.reveal(widget.cast_const(), bounds);
         }
         if followed.opened {
             return false;
         }
         followed.opened = true;
         self.open_view_of(&interaction.resource.id)
+    }
+
+    /// Scroll `rect` of `target` into every viewport that shows it, and lay
+    /// the frame out again when something moved. Answers whether it did.
+    fn reveal(&mut self, target: *const dyn Widget, rect: Rect) -> bool {
+        let moved = self.root.reveal_descendant(target, rect);
+        if moved {
+            self.relayout();
+        }
+        moved
     }
 
     /// Open the view nearest `resource` that the published resources offer
@@ -692,7 +719,7 @@ pub(super) fn is_control_operation(spec: &tilo_actions::ActionSpec) -> bool {
 mod locus_tests {
     use super::*;
     use crate::state::State;
-    use crate::widget::{Button, Column, Container, ListRow, resource_actions};
+    use crate::widget::{BlockContent, Button, Column, Container, ListRow, resource_actions};
     use std::cell::Cell;
     use std::rc::Rc;
 
@@ -1033,6 +1060,7 @@ mod locus_tests {
             &mut presence,
             &tree,
             &bindings,
+            &[],
             viewport,
             "native-primary",
             crate::time::now(),
@@ -1300,6 +1328,72 @@ mod locus_tests {
         assert_eq!(opened.get(), 1, "opened once");
     }
 
+    /// A note long enough to read down: forty paragraphs, the last ones far
+    /// below a short window.
+    fn long_note() -> crate::widget::BlockEditor {
+        let mut blocks = vec![BlockContent::paragraph("p-0", "A note about the move.")];
+        for index in 1..40 {
+            blocks.push(BlockContent::paragraph(
+                format!("p-{index}"),
+                format!("Paragraph {index} of the note."),
+            ));
+        }
+        let mut editor = crate::widget::BlockEditor::new();
+        editor.present_blocks(&blocks);
+        editor
+    }
+
+    /// An agent editing text further down a long note is there for every
+    /// viewer — its cursor rests on the words it wrote, not on whatever
+    /// control the action is bound to — and a follower's view scrolls to
+    /// them, once per action. A non-follower's view stays where they left it.
+    #[test]
+    fn following_an_agents_edit_in_text_scrolls_to_the_range_it_wrote() {
+        let root = crate::widget::Scrollable::new(crate::widget::ScrollAxis::Vertical)
+            .with_child(Box::new(long_note()));
+        let mut frame = FrameHarness::new(State::new(), Box::new(root), (400, 240));
+        frame.relayout();
+        let event = agent_acting(&mut frame, "notes.document:root");
+        // Where the agent says it is: the end of the paragraph it wrote.
+        let written = 13;
+        let block = crate::widget::block_editor::block_presence_key("p-33");
+        frame.update_presence(|presence| {
+            presence.set_remote_caret("scribe".into(), block.clone(), written);
+            true
+        });
+        let viewport = Rect::new(0.0, 0.0, 400.0, 240.0);
+        let edit = frame
+            .semantic_locus(&event)
+            .expect("the agent's place in the note");
+        assert!(
+            edit.y0 > viewport.y1,
+            "the edited paragraph starts out of view: {edit:?}"
+        );
+        assert!(
+            edit.height() < 40.0,
+            "the cursor is on the line, not the whole note: {edit:?}"
+        );
+        assert!(!frame.follow_view("someone-else", &mut FollowedView::default()));
+        assert_eq!(
+            frame.semantic_locus(&event),
+            Some(edit),
+            "not following moves nothing"
+        );
+        let mut followed = FollowedView::default();
+        assert!(frame.follow_view("scribe", &mut followed));
+        let shown = frame
+            .semantic_locus(&event)
+            .expect("the agent's place in view");
+        assert!(
+            viewport.contains(shown.origin()) && shown.y1 <= viewport.y1,
+            "the words it wrote are in view: {shown:?}"
+        );
+        assert!(
+            !frame.follow_view("scribe", &mut followed),
+            "each action is gone to once"
+        );
+    }
+
     #[test]
     fn semantic_locus_refuses_a_control_whose_resource_is_no_longer_published() {
         let resource = resource_actions::resource("stale", "Same label", "edit", "Edit");
@@ -1364,6 +1458,7 @@ mod locus_tests {
                 presence,
                 &tree,
                 &bindings,
+                &[],
                 viewport,
                 "native-primary",
                 now,
@@ -1398,6 +1493,7 @@ mod locus_tests {
             &mut presence,
             &tree,
             &bindings,
+            &[],
             viewport,
             "native-primary",
             at,

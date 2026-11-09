@@ -223,8 +223,24 @@ pub(crate) fn default_bindings(widget: &(impl Widget + ?Sized)) -> Vec<ControlBi
     } else if let Some(node) = widget.accessibility() {
         semantic_action_bindings_into(&node, &mut bindings);
     }
+    // The widget a decorator wraps is no child of it: the walk meets it in the
+    // decorator's place. A surface whose root widget is one of those — a
+    // terminal, whose prompt line is bound to the session's `run` — binds its
+    // controls there, and asking only its children would never reach them.
+    bindings.extend(decorated_bindings(widget));
     widget.for_each_child(&mut |child| bindings.extend(control_action_bindings(child)));
     bindings
+}
+
+/// What the widget `widget` decorates binds on its own, if it decorates one:
+/// a decorator's inner widget is no child of it, and a decorator that keeps
+/// its inner widget out of the tree answers no
+/// [`Decorated`](crate::widget::decorator::Decorated).
+fn decorated_bindings(widget: &(impl Widget + ?Sized)) -> Vec<ControlBindingMetadata> {
+    capability::<dyn crate::widget::decorator::Decorated>(widget)
+        .and_then(|decorated| capability::<dyn ActionControls>(decorated.decorated()))
+        .map(ActionControls::control_action_bindings)
+        .unwrap_or_default()
 }
 
 fn result_to_children(
@@ -415,11 +431,17 @@ pub fn action_control_bindings(widget: &dyn Widget) -> Vec<ControlBindingMetadat
     children_action_control_bindings(widget)
 }
 
-/// The action-emitter bindings of `widget`'s exposed children. A wrapper's own
-/// bindings are semantic and never consume action availability, so this is a
-/// wrapper's whole action inventory without materializing accessibility.
+/// The action-emitter bindings of `widget`'s exposed children, and of the
+/// widget a decorator wraps — no child of it, but met in its place. A wrapper's
+/// own bindings are semantic and never consume action availability, so this is
+/// a wrapper's whole action inventory without materializing accessibility.
 pub fn children_action_control_bindings(widget: &dyn Widget) -> Vec<ControlBindingMetadata> {
     let mut bindings = Vec::new();
+    if let Some(inner) = capability::<dyn crate::widget::decorator::Decorated>(widget)
+        && let Some(controls) = capability::<dyn ActionControls>(inner.decorated())
+    {
+        bindings.extend(controls.action_control_bindings());
+    }
     widget.for_each_child(&mut |child| bindings.extend(action_control_bindings(child)));
     bindings
 }
@@ -444,6 +466,12 @@ pub fn has_action_control_bindings(widget: &dyn Widget) -> bool {
 /// action availability; the counterpart of
 /// [`children_action_control_bindings`].
 pub fn children_have_action_control_bindings(widget: &dyn Widget) -> bool {
+    if capability::<dyn crate::widget::decorator::Decorated>(widget)
+        .and_then(|inner| capability::<dyn ActionControls>(inner.decorated()))
+        .is_some_and(ActionControls::has_action_control_bindings)
+    {
+        return true;
+    }
     let mut found = false;
     widget.for_each_child(&mut |child| {
         if !found {

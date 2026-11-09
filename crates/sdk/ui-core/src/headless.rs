@@ -4091,6 +4091,12 @@ impl FrameHarness {
                 f64::from(self.viewport.0),
                 f64::from(self.viewport.1),
             );
+            let text_loci = crate::presence::capability::agent_text_loci(
+                self.root.as_ref(),
+                &self.theme,
+                &self.presence,
+                &self.presence.visible_interactions(interaction_now),
+            );
             crate::action_locus::draw_action_presence(
                 &mut crate::paint::PaintCtx::new(
                     &mut self.scene,
@@ -4101,6 +4107,7 @@ impl FrameHarness {
                 &mut self.presence,
                 &tree,
                 &bindings,
+                &text_loci,
                 viewport,
                 "retained-primary",
                 interaction_now,

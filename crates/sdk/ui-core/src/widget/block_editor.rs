@@ -6452,6 +6452,24 @@ pub fn document_selection_presence_key(start_block_id: &str, span: usize) -> Pre
     }
 }
 
+/// A caret (`start == end`) or band of one block's line, at the geometry
+/// that line draws a peer's own at.
+fn line_range_rects(
+    line: &RichTextLine,
+    theme: &crate::theme::Theme,
+    start: usize,
+    end: usize,
+) -> Vec<vello::kurbo::Rect> {
+    if start >= end {
+        vec![line.caret_rect(theme, start)]
+    } else {
+        line.inner()
+            .selection_rects(theme, start, end)
+            .into_iter()
+            .collect()
+    }
+}
+
 /// `(start block id, span)` of a document selection key.
 fn document_selection_parts(key: &PresenceKey) -> Option<(&str, usize)> {
     let PresenceKey::Widget { path } = key else {
@@ -11012,6 +11030,49 @@ impl crate::presence::capability::PublishesPresence for BlockEditor {
                 .spanning("body", self.spanned_ranges(selection_across));
         }
         Some(self.drawn_at(selection))
+    }
+
+    /// Where a peer's caret or band at `key` is drawn: in the block that key
+    /// names, or across the blocks a spanning selection covers, at each
+    /// line's own caret and selection geometry.
+    fn presence_range_rects(
+        &self,
+        theme: &crate::theme::Theme,
+        key: &PresenceKey,
+        range: crate::presence::SelectionRange,
+    ) -> Vec<vello::kurbo::Rect> {
+        let named = self
+            .blocks
+            .iter()
+            .find(|block| &self.presence_key_for(&block.id) == key);
+        if let Some(block) = named {
+            return line_range_rects(&block.line, theme, range.start, range.end);
+        }
+        let Some((start_id, span)) = document_selection_parts(key) else {
+            return Vec::new();
+        };
+        let Some(start) = self.blocks.iter().position(|block| block.id == start_id) else {
+            return Vec::new();
+        };
+        let last = start
+            .saturating_add(span)
+            .min(self.blocks.len().saturating_sub(1));
+        let mut rects = Vec::new();
+        for index in start..=last {
+            let Some(line) = self.blocks.get(index).map(|block| &block.line) else {
+                break;
+            };
+            // The endpoints hold the payload's bytes; the blocks between are
+            // covered whole, as they are painted.
+            let from = if index == start { range.start } else { 0 };
+            let to = if index == last {
+                range.end
+            } else {
+                line.value().len()
+            };
+            rects.extend(line_range_rects(line, theme, from.min(to), to.max(from)));
+        }
+        rects
     }
 }
 

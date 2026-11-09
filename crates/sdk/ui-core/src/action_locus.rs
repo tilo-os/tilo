@@ -15,11 +15,16 @@ pub struct PaintedActionMarker {
 /// Paint semantic activity against this frame's exact action bindings. Both
 /// native and retained hosts use this projection; an unresolved action remains
 /// in the activity rail rather than guessing a control from its label.
+///
+/// `text_loci` say where a frame's own text widgets draw the actor of an
+/// invocation that has said where its caret or selection is: an agent editing
+/// text is there, whatever control its action is bound to.
 pub(crate) fn draw_action_presence(
     paint: &mut crate::paint::PaintCtx<'_>,
     presence: &mut crate::presence::PresenceCtx,
     tree: &crate::a11y_tree::SemanticTree,
     bindings: &[crate::widget::ControlBindingMetadata],
+    text_loci: &[(tilo_actions::InvocationId, vello::kurbo::Rect)],
     viewport: vello::kurbo::Rect,
     surface: &str,
     now: crate::time::Instant,
@@ -29,7 +34,12 @@ pub(crate) fn draw_action_presence(
     // landed in — are marks already: the rail would name them twice.
     let mut resolved = presence.take_shown();
     for interaction in presence.visible_interactions(now) {
-        let Some(bounds) = interaction_bounds(tree, bindings, &interaction) else {
+        let Some(bounds) = text_loci
+            .iter()
+            .find(|(invocation, _)| *invocation == interaction.invocation)
+            .map(|(_, rect)| *rect)
+            .or_else(|| interaction_bounds(tree, bindings, &interaction))
+        else {
             continue;
         };
         let bounds = bounds.intersect(viewport);
@@ -251,17 +261,45 @@ pub(crate) fn interaction_bounds(
     candidates.next().is_none().then_some(only)
 }
 
-/// The node [`interaction_bounds`] finds `interaction` on, the deepest one
-/// a widget owns: what following its actor brings into view.
+/// The node [`interaction_bounds`] finds `interaction` on, reached through the
+/// widget that draws it: a synthetic child a widget publishes (a terminal's
+/// prompt line) belongs to the widget above it. What following its actor
+/// brings into view.
 pub(crate) fn interaction_node<'tree>(
     tree: &'tree crate::a11y_tree::SemanticTree,
     bindings: &[crate::widget::ControlBindingMetadata],
     interaction: &tilo_actions::SemanticInteraction,
 ) -> Option<&'tree crate::a11y_tree::SemanticNode> {
     let bounds = interaction_bounds(tree, bindings, interaction)?;
-    tree.iter()
-        .filter(|node| node.bounds == Some(bounds) && node.widget_taffy_id.is_some())
-        .last()
+    let mut owned = None;
+    let mut behind = None;
+    for node in tree.iter().filter(|node| node.bounds == Some(bounds)) {
+        behind = Some(node);
+        if node.widget_taffy_id.is_some() {
+            owned = Some(node);
+        }
+    }
+    if owned.is_some() {
+        return owned;
+    }
+    // The node is a synthetic child of the widget that draws it: the nearest
+    // node above it that a widget owns is that widget.
+    let mut parents = std::collections::HashMap::new();
+    for node in tree.iter() {
+        for child in &node.children {
+            parents.insert(child.clone(), node.id.clone());
+        }
+    }
+    let mut cursor = behind?.id.clone();
+    while let Some(parent) = parents.get(&cursor) {
+        if let Some(node) = tree.node(parent)
+            && node.widget_taffy_id.is_some()
+        {
+            return Some(node);
+        }
+        cursor = parent.clone();
+    }
+    None
 }
 
 /// The control an invocation on `locus` is acted through: the one its address

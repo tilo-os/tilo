@@ -449,6 +449,17 @@ fn draw_presence_layer(
         })
         .unwrap_or_default()
     };
+    // An agent that said where its caret or selection is in text is there.
+    let text_loci = app
+        .with_native_presentation(|root, _, _, _, _| {
+            crate::presence::capability::agent_text_loci(
+                root,
+                &app.theme,
+                &app.presence_ctx,
+                &app.presence_ctx.visible_interactions(now),
+            )
+        })
+        .unwrap_or_default();
     layer.record(|scene| {
         part_drawn(scene, PartKey::new("ui.remote-presence", ()), |scene| {
             crate::presence::draw_remote_presence(
@@ -472,6 +483,7 @@ fn draw_presence_layer(
                 &mut app.presence_ctx,
                 &app.accessibility.semantic_tree,
                 &bindings,
+                &text_loci,
                 window_rect,
                 app.window.app_id.as_deref().unwrap_or("native-primary"),
                 now,

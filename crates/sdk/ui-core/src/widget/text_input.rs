@@ -7102,6 +7102,28 @@ impl crate::presence::capability::PublishesPresence for TextInput {
             .flatten()
             .map(|text| crate::shared_selection::SharedSelection::of_text(text).within(self.rect))
     }
+
+    /// This field's own key, at the very geometry a peer's caret and band are
+    /// drawn at.
+    fn presence_range_rects(
+        &self,
+        theme: &Theme,
+        key: &PresenceKey,
+        range: crate::presence::SelectionRange,
+    ) -> Vec<Rect> {
+        if self.presence_key().as_ref() != Some(key) || self.holds_secret() {
+            return Vec::new();
+        }
+        if range.start == range.end {
+            vec![self.caret_rect(theme, range.start)]
+        } else {
+            self.selection_rects(
+                theme,
+                range.start.min(range.end),
+                range.start.max(range.end),
+            )
+        }
+    }
 }
 
 impl crate::widget::controls::ActionControls for TextInput {

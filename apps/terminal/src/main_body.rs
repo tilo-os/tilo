@@ -649,6 +649,9 @@ pub struct TerminalWidget {
     /// Input or a new document value changed what this widget paints: it
     /// repaints once, and rests after the frame draws it.
     dirty: bool,
+    /// The session's `run`, as this widget's record publishes it: what a
+    /// narrated run is shown at. `None` without a record of its own.
+    run_action: Option<ui::tilo_actions::ActionAddress>,
 }
 
 /// The person's command history this terminal adds its runs to.
@@ -845,6 +848,7 @@ impl TerminalWidget {
             environments_panel: EnvironmentsPanel::default(),
             runs: RunState::default(),
             copy: ui::CopyWatch::default(),
+            run_action: None,
         }
     }
 
@@ -1015,6 +1019,33 @@ impl TerminalWidget {
 
     fn terminal_transcript_target(&self) -> String {
         format!("terminal.transcript:{}", self.pane_id)
+    }
+
+    /// The line the session's input goes in, keyed per pane so two terminals
+    /// on one surface stay two places.
+    fn terminal_prompt_target(&self) -> String {
+        format!("terminal.prompt:{}", self.pane_id)
+    }
+
+    /// Where the prompt stands: the cursor's own cell. The on-screen
+    /// keyboard's caret and a run asked of the session both land here.
+    #[must_use]
+    pub fn prompt_rect(&self) -> Rect {
+        let row = self
+            .grid
+            .len()
+            .saturating_sub(self.height)
+            .saturating_add(self.cursor_y)
+            .saturating_sub(self.viewport_start_y);
+        let x = self.grid_rect.x0 + self.cursor_x as f64 * self.char_w;
+        let y = self.grid_rect.y0 + row as f64 * self.char_h - self.view.sub;
+        Rect::new(x, y, x + self.char_w.max(1.0), y + self.char_h.max(1.0))
+    }
+
+    /// The `run` a narrated one lands at, as the record this terminal's
+    /// surface publishes it ([`Self::run_action`]).
+    pub(crate) fn set_run_action(&mut self, run: ui::tilo_actions::ActionAddress) {
+        self.run_action = Some(run);
     }
 
     fn terminal_link_resource_id(&self, link_id: u16) -> String {
@@ -1213,6 +1244,7 @@ impl TerminalWidget {
                     AccessNode::new(Role::Link)
                         .with_name(link_resource_label(url))
                         .with_description("Link in visible terminal output")
+                        .with_semantic_key(self.terminal_link_resource_id(link_id))
                         .with_action_target(self.terminal_link_resource_id(link_id))
                         .with_state(AccessState::new().focusable(true))
                 })
@@ -1229,6 +1261,7 @@ impl TerminalWidget {
         Some(
             AccessNode::new(Role::Button)
                 .with_name(self.chip_label()?)
+                .with_semantic_key(format!("terminal.target:{}", self.pane_id))
                 .with_action_target(format!("terminal.target:{}", self.pane_id))
                 .with_bounds(self.chip_rect)
                 .with_state(
@@ -3051,7 +3084,8 @@ impl Widget for TerminalWidget {
         dyn Findable,
         dyn ui::AppWidget,
         dyn ui::presence::capability::PublishesPresence,
-        dyn ui::undo::LocalUndo
+        dyn ui::undo::LocalUndo,
+        dyn ui::widget::controls::ActionControls
     );
 
     fn test_id(&self) -> Option<&str> {
@@ -3469,17 +3503,7 @@ impl Widget for TerminalWidget {
     }
 
     fn ime_cursor_rect(&self) -> Option<Rect> {
-        self.focused.then(|| {
-            let row = self
-                .grid
-                .len()
-                .saturating_sub(self.height)
-                .saturating_add(self.cursor_y)
-                .saturating_sub(self.viewport_start_y);
-            let x = self.grid_rect.x0 + self.cursor_x as f64 * self.char_w;
-            let y = self.grid_rect.y0 + row as f64 * self.char_h - self.view.sub;
-            Rect::new(x, y, x + self.char_w.max(1.0), y + self.char_h.max(1.0))
-        })
+        self.focused.then(|| self.prompt_rect())
     }
 
     /// A terminal always declares terminal input, so the on-screen keyboard
@@ -3607,6 +3631,18 @@ impl Widget for TerminalWidget {
         if let Some(picker) = self.target_picker_accessibility() {
             transcript.children.push(picker);
         }
+        // The prompt: the line input goes in, where a run the session's
+        // record is asked for is shown landing. It carries no verb of its
+        // own — typing reaches the process as keys, never as an action — and
+        // a terminal with no record behind it runs nothing to show.
+        if self.run_action.is_some() {
+            transcript.children.push(
+                AccessNode::new(Role::TextInput)
+                    .with_name(t("terminal-prompt"))
+                    .with_semantic_key(self.terminal_prompt_target())
+                    .with_bounds(self.prompt_rect()),
+            );
+        }
         if let Some(failure) = self.start_failure_accessibility() {
             transcript.children.push(failure);
         }
@@ -3724,6 +3760,21 @@ impl Widget for TerminalWidget {
         } else {
             false
         }
+    }
+}
+
+impl ui::widget::controls::ActionControls for TerminalWidget {
+    /// The prompt is where a `run` on this session's record lands: the
+    /// framework shows a colleague or an agent acting there its cursor,
+    /// bound exactly as a button is to the action it presses.
+    fn control_action_bindings(&self) -> Vec<ui::widget::ControlBindingMetadata> {
+        let Some(run) = &self.run_action else {
+            return Vec::new();
+        };
+        vec![ui::widget::ControlBindingMetadata {
+            control_id: self.terminal_prompt_target(),
+            kind: ui::widget::ControlBindingKind::Action(run.clone()),
+        }]
     }
 }
 

@@ -192,11 +192,10 @@ impl Mount {
         });
     }
 
-    /// The board's members as the desktop's roster reads them.
     /// While this page follows an agent, the view inside the window it
-    /// works in goes where it acts: the bound control of its newest action
-    /// scrolls into view, in the sheet, tab or page that shows it. Nobody
-    /// followed, nothing moves the person's view.
+    /// works in goes where it acts: the words its caret sits in scroll into
+    /// view, else the bound control of its newest action, in the sheet, tab or
+    /// page that shows it. Nobody followed, nothing moves the person's view.
     pub(super) fn follow_view(&mut self) {
         let Some(desktop) = &self.desktop else {
             return;
@@ -211,6 +210,7 @@ impl Mount {
         }
     }
 
+    /// The board's members as the desktop's roster reads them.
     fn here_from(&mut self, view: &BoardView) {
         let Some(desktop) = &self.desktop else {
             return;

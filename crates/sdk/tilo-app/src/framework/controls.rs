@@ -579,8 +579,11 @@ impl<R: Resource> Actions<R> {
             .ok()
     }
 
-    /// The id the resource is published at.
-    pub(crate) fn resource_id(&self) -> String {
+    /// The id the resource is published at: the resource an action address
+    /// on it names, as a surface binding a control of its own to one of its
+    /// actions says where that action lands
+    /// ([`ControlBindingMetadata`](ui_core::widget::ControlBindingMetadata)).
+    pub fn resource_id(&self) -> String {
         self.table.resource.borrow().base.id.0.clone()
     }
 

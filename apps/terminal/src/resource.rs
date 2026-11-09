@@ -789,6 +789,13 @@ impl ResourceSurface<Terminal, TerminalEffect> for TerminalWidget {
     fn attach(&mut self, cx: SurfaceCx<Terminal>) {
         self.wake_through(cx.waker());
         self.bind(cx.dispatcher());
+        // A command run at this session is asked of its record: the prompt is
+        // where that action lands, so a colleague or an agent that runs one
+        // is shown acting there.
+        self.set_run_action(ui::tilo_actions::ActionAddress::new(
+            cx.actions().resource_id(),
+            Terminal::RUN.id,
+        ));
         if cx.mode().is_live()
             && let (Some(history), Some(record)) = (
                 cx.person::<crate::history::CommandHistory>(),
@@ -881,6 +888,13 @@ impl ResourceSurface<Terminal, TerminalEffect> for crate::TerminalView {
     fn attach(&mut self, cx: SurfaceCx<Terminal>) {
         self.wake_through(cx.waker());
         self.bind(cx.dispatcher());
+        // A command run at this session is asked of its record: the prompt is
+        // where that action lands, so a colleague or an agent that runs one
+        // is shown acting there.
+        self.set_run_action(ui::tilo_actions::ActionAddress::new(
+            cx.actions().resource_id(),
+            Terminal::RUN.id,
+        ));
         if cx.mode().is_live()
             && let (Some(history), Some(record)) = (
                 cx.person::<crate::history::CommandHistory>(),

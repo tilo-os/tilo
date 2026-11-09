@@ -61,6 +61,18 @@ use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use crate::time::Instant;
 
+/// The widget a [`Decorator`] stands for, as an inventory that walks widgets
+/// by their children reaches it: a decorator's inner widget is no child of
+/// its own, so [`controls::control_action_bindings`] asks for it here. A
+/// decorator that keeps its inner widget out of the tree — a sheet that is not
+/// shown — answers nothing.
+///
+/// [`controls::control_action_bindings`]: crate::widget::controls::control_action_bindings
+pub trait Decorated: Widget {
+    /// The widget this one stands for.
+    fn decorated(&self) -> &dyn Widget;
+}
+
 /// A widget as `&dyn Widget`, also one that already is a trait object: a
 /// decorator's inner widget may be either, and its layout walk hands the
 /// inner widget on ([`Widget::for_each_layout_child`]).
@@ -160,6 +172,14 @@ macro_rules! decorator_trait {
             )*
         }
 
+        /// The widget a decorator stands for: what an inventory walking
+        /// widgets by their children asks it for its own bindings.
+        impl<T: Decorator> Decorated for T {
+            fn decorated(&self) -> &dyn Widget {
+                self.inner().as_dyn_widget()
+            }
+        }
+
         $(#[$impl_attr])*
         impl<T: Decorator> Widget for T {
             $($impl_items)*
@@ -217,6 +237,12 @@ macro_rules! decorator_trait {
                 const _: () = {
                     use crate::widget::decorator::concrete::Decorator;
 
+                    impl crate::widget::decorator::Decorated for $d ty {
+                        fn decorated(&self) -> &dyn Widget {
+                            Decorator::inner(self).as_dyn_widget()
+                        }
+                    }
+
                     impl Widget for $d ty {
                         $($impl_items)*
                         $(
@@ -266,7 +292,18 @@ decorator_trait! {
             true
         }
 
-        fn provide<'a>(&'a self, request: &mut capability::Request<'a, '_>) {
+        fn provide<'a>(&'a self, request: &mut capability::Request<'a, '_>)
+        where
+            Self: Decorated,
+        {
+            // What an inventory walking widgets by their children asks for the
+            // widget this one stands for: its inner is no child of it. A
+            // decorator that keeps its inner out of the tree overrides this to
+            // answer nothing.
+            if request.wants::<dyn Decorated>() {
+                request.provide::<dyn Decorated>(self);
+                return;
+            }
             self.inner().provide(request);
         }
 

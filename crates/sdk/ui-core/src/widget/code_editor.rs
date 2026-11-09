@@ -914,6 +914,22 @@ impl crate::presence::capability::PublishesPresence for CodeEditor {
     fn presence_key(&self) -> Option<PresenceKey> {
         self.inner.presence_key()
     }
+
+    /// The code's own caret and band geometry, as the field it wraps draws
+    /// them.
+    fn presence_range_rects(
+        &self,
+        theme: &crate::theme::Theme,
+        key: &PresenceKey,
+        range: crate::presence::SelectionRange,
+    ) -> Vec<vello::kurbo::Rect> {
+        crate::presence::capability::PublishesPresence::presence_range_rects(
+            &self.inner,
+            theme,
+            key,
+            range,
+        )
+    }
 }
 
 // ---------------------------------------------------------------------------
