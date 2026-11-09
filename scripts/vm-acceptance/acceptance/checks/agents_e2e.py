@@ -685,8 +685,8 @@ def own_workspace(ctx, res):
         raise CheckFailed("; ".join(problems))
 
 
-@check("E08", AREA, "An agent's change lands in its own workspace, not the other's: the note it makes "
-                    "there is found there and not from the other")
+@check("E08", AREA, "An agent's change lands in its own workspace, not the other's: its open of Notes "
+                    "answers ok, and the note it makes there is found there and not from the other")
 def own_change(ctx, res):
     scene = _scene(ctx)
     agents = _need(scene, "agents", "E02")
@@ -695,15 +695,21 @@ def own_change(ctx, res):
     titles = {e["name"]: f"E2E {e['name']} agent note {scene['run']}" for e in envs}
     for e in envs:
         agent = agents[e["name"]]
+        # Opening the app is a host action of the agent's run: its answer is what the agent
+        # reads back, and it must say how the open went, not only put up a window.
+        opened, _ = tool_answering(ctx, agent, "tilo_do", {"path": "notes#open"}, f"{e['name']}-open")
         made, asked = tool_answering(
             ctx, agent, "tilo_do", {"path": "notes#new-note", "args": {"title": titles[e["name"]]}},
             f"{e['name']}-new-note")
-        e["new_note"], e["asked_for_note"] = made, asked
+        e["opened"], e["new_note"], e["asked_for_note"] = opened, made, asked
         agent.keep()
+    res.metrics["opened"] = {e["name"]: text_of(e["opened"])[:300] for e in envs}
     res.metrics["new_note"] = {e["name"]: text_of(e["new_note"])[:300] for e in envs}
     problems = []
     for e, other in ((one, two), (two, one)):
         agent = agents[e["name"]]
+        if is_error(e["opened"]) is not False or not text_of(e["opened"]).startswith("ok"):
+            problems.append(f"{e['name']}: notes#open did not answer ok: {text_of(e['opened'])[:300]}")
         if is_error(e["new_note"]) is not False:
             problems.append(f"{e['name']}: new-note was refused: {text_of(e['new_note'])[:300]}")
             continue
