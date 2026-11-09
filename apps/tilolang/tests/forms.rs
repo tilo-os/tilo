@@ -28,6 +28,9 @@ fn staged(viewport: (u32, u32)) -> TestApp<TlApp> {
     let mut app =
         TestApp::<TlApp>::capture_at(Some("a busy week"), viewport).expect("the scenario stages");
     settle(&mut app);
+    // The scenario answers with a task, shown open where it stands. Choosing a place leaves it,
+    // as a person does, so what the test reads next is the list.
+    open_place(&mut app, "Inbox");
     app
 }
 
@@ -178,21 +181,6 @@ fn choose(app: &mut TestApp<TlApp>, title: &str, item: &str) {
     click(app, at.center());
 }
 
-/// Open the menu of the task `title` and choose the command `path` names: a run of commands
-/// of one kind (`Due`) stands as one row that opens them, so the command inside it is reached
-/// through its run's row.
-fn choose_command(app: &mut TestApp<TlApp>, title: &str, path: &[&str]) {
-    let row = bounds_of(app, title, None)
-        .unwrap_or_else(|| panic!("the task {title} shows: {:?}", all_names(app)));
-    right_click(app, row.center());
-    for item in path {
-        let items = menu_items(app);
-        let at = bounds_of(app, item, Some(ui::a11y::Role::MenuItem))
-            .unwrap_or_else(|| panic!("the menu offers {item}: {items:?}"));
-        click(app, at.center());
-    }
-}
-
 /// The form's field named `label`, which has the keyboard: a form opens on its first field.
 fn field(app: &mut TestApp<TlApp>, label: &str) {
     let focused = accessible(app).into_iter().any(|node| {
@@ -215,9 +203,9 @@ fn a_tasks_menu_offers_the_actions_that_ask_for_more() {
     let row = bounds_of(&mut app, "Book a haircut", None).expect("the task shows");
     right_click(&mut app, row.center());
     let items = menu_items(&mut app);
-    // The dates are one run of commands of a kind, standing as one row that opens them; the
-    // assignment asks for a person and stands on its own.
-    for item in ["Due", "Assign…"] {
+    // The day and the assignment both ask for what nobody gave them; what the view places
+    // stands on its own, and the commands the task's type offers wait behind "More".
+    for item in ["Pick date…", "Assign…"] {
         assert!(items.iter().any(|shown| shown == item), "{item}: {items:?}");
     }
 }
@@ -227,7 +215,7 @@ fn picking_a_day_asks_until_when_and_runs_once_the_day_reads() {
     let _settled = ui::motion::testing::settled();
     let mut app = staged(DESKTOP);
     open_place(&mut app, "Today");
-    choose_command(&mut app, "Book a haircut", &["Due", "Pick date…"]);
+    choose(&mut app, "Book a haircut", "Pick date…");
     assert!(
         reads(&mut app, "Pick date…"),
         "the form is titled by its action: {:?}",
@@ -261,7 +249,7 @@ fn picking_a_day_asks_until_when_and_runs_once_the_day_reads() {
     // Closing the form keeps what was typed for next time.
     escape(&mut app);
     assert!(submit(&mut app, "Pick date").is_none(), "the form closed");
-    choose_command(&mut app, "Book a haircut", &["Due", "Pick date…"]);
+    choose(&mut app, "Book a haircut", "Pick date…");
     let shown = accessible(&mut app)
         .into_iter()
         .find(|node| node.role == ui::a11y::Role::TextInput && node.name.as_deref() == Some("Due"))
@@ -289,11 +277,14 @@ fn picking_a_day_asks_until_when_and_runs_once_the_day_reads() {
         submit(&mut app, "Pick date").is_none(),
         "submit closed the form"
     );
-    assert!(
-        reads(&mut app, "Jul 20"),
-        "the task is due on the day it was picked: {:?}",
-        all_names(&mut app)
-    );
+    if !reads(&mut app, "Jul 20") {
+        let today: Vec<String> = all_names(&mut app);
+        open_place(&mut app, "Inbox");
+        let inbox: Vec<String> = all_names(&mut app);
+        open_place(&mut app, "Upcoming");
+        let upcoming: Vec<String> = all_names(&mut app);
+        panic!("NOT CHANGED\ntoday: {today:?}\ninbox: {inbox:?}\nupcoming: {upcoming:?}");
+    }
 }
 
 #[test]
@@ -336,7 +327,7 @@ fn shots() {
                 // The inbox's list is the window on a phone; its rows are the tasks.
                 settle(&mut app);
             }
-            choose_command(&mut app, "Book a haircut", &["Due", "Pick date…"]);
+            choose(&mut app, "Book a haircut", "Pick date…");
             app.harness().render_png(&name("snooze"));
             field(&mut app, "Due");
             app.harness().type_text("next friday");

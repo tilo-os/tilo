@@ -639,7 +639,8 @@ fn the_home_list_shows_the_inbox_tasks_of_a_busy_week() {
     });
 }
 
-/// The row the keyboard is on, as the list publishes it, and the open menu's box.
+/// The box of the row the keyboard is on: moving through a list focuses a row without
+/// choosing it, so the row the keyboard is on is the focused one.
 fn keyboard_row(app: &mut TestApp<TlApp>) -> Option<[f64; 4]> {
     let snapshot = app.harness().inspection();
     let mut all = Vec::new();
@@ -649,7 +650,7 @@ fn keyboard_row(app: &mut TestApp<TlApp>) -> Option<[f64; 4]> {
         .find(|node| {
             node.semantics
                 .as_ref()
-                .is_some_and(|semantics| semantics.state.selected)
+                .is_some_and(|semantics| semantics.state.focused)
         })
         .map(|node| node.rect)
 }
@@ -677,6 +678,8 @@ fn a_row_menu_opened_from_the_keyboard_stands_under_that_row() {
     let mut app =
         TestApp::<TlApp>::capture_at(Some("a busy week"), DESKTOP).expect("the scenario stages");
     settle(&mut app);
+    // Choosing a place leaves the task the scenario showed open, as a person does.
+    click_item(&mut app, "Today");
     // The list takes the keyboard, and Down puts it on a row.
     app.harness().key("Tab");
     settle(&mut app);
@@ -720,8 +723,10 @@ fn the_today_list_takes_in_tomorrows_task_when_the_persons_midnight_passes() {
         let mut app = TestApp::<TlApp>::capture_at(Some("a busy week"), DESKTOP)
             .expect("the scenario stages");
         settle(&mut app);
+        // Choosing a place leaves the task the scenario showed open.
         click_item(&mut app, "Today");
-        settle(&mut app);
+        // The task the day is about, opened where it stands: its history reads its age.
+        click_item(&mut app, "Call the landlord");
         assert!(
             shows(&mut app, "Call the landlord"),
             "today's task is listed"

@@ -604,13 +604,15 @@ view home(t: Tasks) {
                         waiting(t.items.matching(f).counted())
                     }
                     ui.NavItem(f, f.label, icon: f.icon, count: badge) {
-                        on select: set(place, f)
+                        // Choosing a place is leaving the task that was open where it stood: it
+                        // is another list, and a task of the one left does not belong in it.
+                        on select: set(place, f).then(set(opened, .none))
                     }
                 }
                 ui.NavSection("Projects", add: new_project(t)) {
                     for p in t.projects {
                         ui.NavItem(Task.project(p), p.name, icon: .folder) {
-                            on select: set(place, Task.project(p))
+                            on select: set(place, Task.project(p)).then(set(opened, .none))
                         }
                     }
                 }
