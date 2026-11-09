@@ -178,6 +178,11 @@ if ((build)); then
     "$repo_root/dist/dev/nested-session-build.sh" "$build_out" \
         || die "the nested-session build failed (see above)"
 fi
+# A build another tree made — shared through TILO_NESTED_SESSION_BUILD, left in a copied
+# target/, or made before a source change — is refused by name: running it would run that
+# tree's code as this one's (dist/dev/build-provenance.sh, and the session that read another
+# tree's build as this tree's fixes failing).
+"$repo_root/dist/dev/build-provenance.sh" verify "$build_out" "$thin"
 for name in tilo-session tilo-launcher tilo-install tilo-app-package tilo-runtime-bundle \
             tilo-model-gateway tilo-ush tilo-control; do
     [[ -f $bin/$name ]] || die "missing $bin/$name (run without --no-build)"

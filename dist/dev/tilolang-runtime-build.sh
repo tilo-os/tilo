@@ -32,4 +32,8 @@ INCLUDE_PACKAGES=$(jq -r '.packages | join(" ")' <<<"$runtime_plan") \
 rm -rf "$out"
 mkdir -p "$out"
 cp -p "$target/thin-app/tilolang-app" "$target/thin-app/libruntime_dylib.so" "$out/"
+# Which tree made these: the runtime a session swaps in (`tilolang dev --build-runtime`) and
+# the `thin-app` build beside it must be this tree's, and a run that reuses either checks the
+# record before it starts (dist/dev/build-provenance.sh).
+"$repo_root/dist/dev/build-provenance.sh" write "$out" "$target/thin-app"
 printf 'built the thin tilolang runtime in %s\n' "$out"

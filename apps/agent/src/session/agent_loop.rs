@@ -259,7 +259,7 @@ impl ActiveTurn {
             TurnEvent::Neutral(event) => {
                 self.presentation.apply(&event);
                 if let Some(error) = &self.presentation.error {
-                    self.finished = Some(Err(self.retained_failure(Failure::model(error))));
+                    self.finished = Some(Err(self.retained_failure(&Failure::model(error))));
                 }
             }
             TurnEvent::Frame { event, output } => {
@@ -282,7 +282,7 @@ impl ActiveTurn {
             }
             TurnEvent::Finished(result) => {
                 self.finished = Some(
-                    result.map_err(|error| self.retained_failure(Failure::unreachable(error))),
+                    result.map_err(|error| self.retained_failure(&Failure::unreachable(error))),
                 );
             }
         }
@@ -291,7 +291,7 @@ impl ActiveTurn {
     /// The failure, with what the turn streamed before it ended kept under
     /// labels in the run's record: the partial answer and the provider's own
     /// exposed reasoning are for debugging, never the person's reply.
-    fn retained_failure(&self, failure: Failure) -> Failure {
+    fn retained_failure(&self, failure: &Failure) -> Failure {
         failure.retained(&self.presentation.text, &self.presentation.reasoning)
     }
 }
@@ -1285,7 +1285,7 @@ impl Session {
         // stopped the turn is the record kept beside it.
         let failure = Failure::spoken(said, reason);
         Ok(match self.turn.take() {
-            Some(turn) => turn.retained_failure(failure),
+            Some(turn) => turn.retained_failure(&failure),
             None => failure,
         })
     }
@@ -1427,9 +1427,16 @@ impl Session {
                         // so the loop can answer its calls with what was wrong
                         // instead of ending the run. Retaining the text as a
                         // failure stays for a turn that cannot be answered,
-                        // which the loop judges below.
+                        // which the loop judges below. The person's sentence is
+                        // the catalogue's, never the parser's own words ("invoke:
+                        // missing operation"): those are the record kept beside
+                        // it, for whoever debugs the run.
                         Err(error) => {
-                            let failure = active.retained_failure(Failure::said(error));
+                            let failure = Failure::spoken(
+                                &crate::i18n::t("agent-failure-invalid-response"),
+                                &error,
+                            )
+                            .retained(&active.presentation.text, &active.presentation.reasoning);
                             active.refused = Some((body.clone(), failure.clone()));
                             active.finished = Some(Err(failure));
                         }
@@ -1551,9 +1558,14 @@ impl Session {
                 if let Some(end) = state.finished_despite_failed_plan(&error) {
                     return Ok(Some(end));
                 }
-                return Ok(Some(LoopEnd::Failed(Failure::said(format!(
-                    "The model's answer couldn't be used: {error}. Run this again."
-                )))));
+                // The person reads one clean sentence of what happened; the
+                // parser's own reason ("the model called no tool", a call the
+                // loop cannot read) is the record kept beside it, never the
+                // reply's words.
+                return Ok(Some(LoopEnd::Failed(Failure::spoken(
+                    &crate::i18n::t("agent-failure-invalid-response"),
+                    &error,
+                ))));
             }
         };
         // Calls the turn did not report as they completed (a transport that
