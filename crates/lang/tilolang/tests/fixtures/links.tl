@@ -86,12 +86,14 @@ action mentioning(n: Note) -> List<Text> {
 
 /// The board: its notes.
 view board(b: Board) {
+    // The note this window's list shows opened where it stands.
+    state opened: Option<Note> = .none
     ui.NavShell(content_kind: .list) {
         content: {
             if b.notes.is_empty() {
                 ui.EmptyState("Nothing yet", icon: .file_text)
             } else {
-                std.list(b.notes) { (n, at) ->
+                std.list(b.notes, opened) { (n, at) ->
                     ui.ListItem(item: n, presence: at) {
                         note_row(n)
                     }

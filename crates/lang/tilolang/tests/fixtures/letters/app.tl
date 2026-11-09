@@ -57,6 +57,8 @@ view compose(d: Draft) {
 /// apart as a letter's filters say. It opens on the drafts.
 view desk(desk: Desk) {
     state query: Text = "is:drafts"
+    // The draft this window's list shows opened where it stands.
+    state opened: Option<Draft> = .none
     let kind = meta(Draft)
     let places = filters(Draft).filter(f -> f.toggle)
     let shown = desk.drafts.matching(query)
@@ -78,7 +80,7 @@ view desk(desk: Desk) {
             if shown.is_empty() {
                 ui.EmptyState("No letters here", icon: kind.icon)
             } else {
-                std.list(shown) { (d, at) ->
+                std.list(shown, opened) { (d, at) ->
                     ui.ListItem(item: d, presence: at) {
                         draft_row(d)
                     }
