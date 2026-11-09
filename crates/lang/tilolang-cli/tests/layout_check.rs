@@ -71,6 +71,8 @@ fn every_kind_of_broken_layout_is_caught_at_the_view_that_breaks_it() {
             | Kind::BareRow
             | Kind::RaggedColumns
             | Kind::DoubleSelection
+            // The fixture's lists paint no selection of their own.
+            | Kind::SelectionBleed
             | Kind::CrampedGutter
             | Kind::SeveralAdds
             | Kind::CodedName

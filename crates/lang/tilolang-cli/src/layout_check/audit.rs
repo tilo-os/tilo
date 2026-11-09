@@ -96,10 +96,13 @@ pub enum Kind {
     /// from: with nothing chosen the list lists for the whole window, and the pane appears when
     /// something opens in it.
     PlaceholderPane,
+    /// A selection lift a list painted across the space around what its row shows: the person's
+    /// choice filled edge to edge, gutters and all, where a row paints it around its content.
+    SelectionBleed,
 }
 
 impl Kind {
-    pub const ALL: [Self; 30] = [
+    pub const ALL: [Self; 31] = [
         Self::Overflow,
         Self::ClippedText,
         Self::Overlap,
@@ -130,6 +133,7 @@ impl Kind {
         Self::DuplicateBarControl,
         Self::IconOnlyBarAction,
         Self::PlaceholderPane,
+        Self::SelectionBleed,
     ];
 
     pub fn name(self) -> &'static str {
@@ -164,6 +168,7 @@ impl Kind {
             Self::DuplicateBarControl => "duplicate-bar-control",
             Self::IconOnlyBarAction => "icon-only-bar-action",
             Self::PlaceholderPane => "placeholder-pane",
+            Self::SelectionBleed => "selection-bleed",
         }
     }
 }
@@ -1507,6 +1512,7 @@ fn measure_walk(
         .map(|id| keys.push(id.to_owned()))
         .is_some();
     measure_one(widget, keys, clip, text, out);
+    selection_lifts(widget, keys, out);
     let inner = widget
         .child_clip_rect()
         .map_or(clip, |child| clip.intersect(child));
@@ -1589,6 +1595,58 @@ fn measure_one(
             });
         }
     }
+}
+
+/// A lift a list painted past the row it selects: it stands around what the row shows, grown by
+/// the bleed a row grows its own face by ([`ui::widget::RowLift`]), so a lift reaching further
+/// fills the gutters beside the row with the person's choice.
+fn selection_lifts(widget: &dyn Widget, keys: &[String], out: &mut Vec<Problem>) {
+    let Some(lifts) = ui::widget::capability::capability::<dyn ui::widget::PaintedRowLifts>(widget)
+        .map(ui::widget::PaintedRowLifts::painted_row_lifts)
+    else {
+        return;
+    };
+    for lift in lifts {
+        let Some(over) = reach_past(lift) else {
+            continue;
+        };
+        out.push(Problem {
+            kind: Kind::SelectionBleed,
+            keys: keys.iter().rev().cloned().collect(),
+            widget: widget.name().to_owned(),
+            id: widget.test_id().map(str::to_owned),
+            detail: format!(
+                "selects {} of the {} its row shows, reaching {over:.0} past it",
+                size(lift.rect),
+                size(lift.content)
+            ),
+        });
+    }
+}
+
+/// How far a lift reaches past the row it selects, more than the bleed a row's face grows by.
+fn reach_past(lift: ui::widget::RowLift) -> Option<f64> {
+    let room = Rect::new(
+        lift.content.x0 - lift.bleed,
+        lift.content.y0 - lift.bleed,
+        lift.content.x1 + lift.bleed,
+        lift.content.y1 + lift.bleed,
+    );
+    if lift.rect.width() <= 0.0 || lift.rect.height() <= 0.0 {
+        return None;
+    }
+    [
+        room.x0 - lift.rect.x0,
+        lift.rect.x1 - room.x1,
+        room.y0 - lift.rect.y0,
+        lift.rect.y1 - room.y1,
+    ]
+    .into_iter()
+    .fold(None, |most: Option<f64>, over| {
+        (over > EPSILON)
+            .then(|| most.map_or(over, |most| most.max(over)))
+            .or(most)
+    })
 }
 
 #[cfg(test)]
@@ -2915,5 +2973,25 @@ mod tests {
             400.0,
         );
         assert!(kinds(&quiet).is_empty());
+    }
+
+    /// A choice a list painted wide of what its row shows fills the gutter beside it: the lift
+    /// the list recorded is read against the row's own box, grown by the row's bleed and no
+    /// further, so the strip the person sees stands where the row does.
+    #[test]
+    fn a_lift_reaching_past_what_its_row_shows_is_a_selection_bleed() {
+        let lift = |whole: [f64; 4], content: [f64; 4]| ui::widget::RowLift {
+            rect: rect(whole),
+            content: rect(content),
+            bleed: 8.0,
+        };
+        let inset = lift([624.0, 100.0, 1280.0, 148.0], [672.0, 100.0, 1232.0, 148.0]);
+        assert_eq!(reach_past(inset), Some(40.0), "the gutters either side");
+        let around = lift([664.0, 100.0, 1240.0, 148.0], [672.0, 100.0, 1232.0, 148.0]);
+        assert_eq!(reach_past(around), None, "a lift grown by the row's bleed");
+        let whole = lift([0.0, 0.0, 300.0, 40.0], [0.0, 0.0, 300.0, 40.0]);
+        assert_eq!(reach_past(whole), None, "a row showing everything it has");
+        let empty = lift([0.0, 0.0, 0.0, 0.0], [0.0, 0.0, 0.0, 0.0]);
+        assert_eq!(reach_past(empty), None, "no lift at all");
     }
 }

@@ -273,7 +273,10 @@ type ReorderValidator<M> =
     Box<dyn FnMut(&M, &<M as ListModel>::Key, &DropTarget<<M as ListModel>::Key>) -> bool>;
 type ReorderCommit<M> = Box<dyn FnMut(&mut M, ReorderDrop<<M as ListModel>::Key>) -> bool>;
 use super::row_selection::selection_sink;
-pub use super::row_selection::{RowBuild, RowSelection, RowSelectionSink};
+pub use super::row_selection::{
+    PaintedRowLifts, RowBuild, RowContentBox, RowLift, RowSelection, RowSelectionSink,
+    row_content_box,
+};
 
 struct MountedRow<K> {
     key: K,
@@ -494,6 +497,9 @@ pub struct VirtualList<M: ListModel> {
     disclosure: f64,
     /// How far a row's lift bleeds past its text ([`crate::chrome::row_bleed`]).
     lift: f64,
+    /// The selection lifts the last painted frame drew for its rows, and what those rows show
+    /// ([`crate::widget::RowLift`]): an audit holds a lift to the row it selects.
+    painted_lifts: Vec<crate::widget::RowLift>,
     /// Where the rows stand between the list's edges ([`Self::flush`], [`Self::in_column`]).
     stance: RowStance,
     /// The space above the first row and below the last ([`Self::with_edges`]).
@@ -708,6 +714,7 @@ impl<M: ListModel> VirtualList<M> {
                 crate::tokens::Metrics::BASE.icon_sm + crate::tokens::Spacing::BASE.rhythm.related,
             ),
             lift: f64::from(crate::tokens::Spacing::BASE.s2),
+            painted_lifts: Vec::new(),
             stance: RowStance::Bleed,
             edges: None,
             rows_beside_bar: false,
@@ -1697,11 +1704,18 @@ where
     }
 }
 
+impl<M: ListModel> crate::widget::PaintedRowLifts for VirtualList<M> {
+    fn painted_row_lifts(&self) -> Vec<crate::widget::RowLift> {
+        self.painted_lifts.clone()
+    }
+}
+
 impl<M: ListModel + 'static> Widget for VirtualList<M> {
     crate::provides!(
         dyn crate::widget::controls::ActionControls,
         dyn crate::resources::PublishesResources,
-        dyn crate::widget::ResourceOperations
+        dyn crate::widget::ResourceOperations,
+        dyn crate::widget::PaintedRowLifts
     );
 
     fn set_interaction_environment(
