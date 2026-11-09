@@ -45,7 +45,8 @@ test('the search chord is the page\'s, never a key the surface forwards',()=>{
   assert.equal(keyboardRoute(key('KeyK',{ctrlKey:true}),false,false),'browser','Ctrl+K on Linux');
   assert.equal(semanticKeyboardRoute(key('KeyK',{metaKey:true}),false,true),'native');
   assert.equal(semanticKeyboardRoute(key('KeyK',{ctrlKey:true}),false,false),'native');
-  // A typed `k` in the palette's field is still the field's.
-  assert.equal(semanticKeyboardRoute(key('KeyK'),false,true),'forward');
-  assert.equal(semanticKeyboardRoute(key('KeyK'),false,false),'forward');
+  // A typed `k` with no command key is text, which the surface types where its field has the
+  // keyboard: it is never the chord.
+  assert.equal(keyboardRoute(key('KeyK'),false,false),'text');
+  assert.equal(keyboardRoute(key('KeyK'),false,true),'text');
 });
