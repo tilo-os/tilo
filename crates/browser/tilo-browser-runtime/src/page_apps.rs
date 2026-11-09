@@ -8,9 +8,9 @@
 use std::sync::Arc;
 
 use tilo_desktop_search::ResourceKind;
-use tilo_desktop_search::model::{Hit, Source};
-use tilo_desktop_search::model::LaunchPlace;
 use tilo_desktop_search::Target;
+use tilo_desktop_search::model::LaunchPlace;
+use tilo_desktop_search::model::{Hit, Source};
 use tilo_desktop_search::providers::AppEntry;
 use tilo_desktop_search::providers::host_apps::HostAppEntry;
 use tilo_desktop_search::{Held, SearchPreferences};

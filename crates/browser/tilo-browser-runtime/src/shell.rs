@@ -344,7 +344,10 @@ fn mount_people(
     peer: Option<u32>,
     wake: &Arc<dyn Fn() + Send + Sync>,
     invitable: Rc<Cell<bool>>,
-) -> (Rc<RefCell<tilo_session::people::People>>, crate::layers::Layers) {
+) -> (
+    Rc<RefCell<tilo_session::people::People>>,
+    crate::layers::Layers,
+) {
     let mut layers = crate::layers::Layers::default();
     let wake = {
         let wake = Arc::clone(wake);
@@ -358,8 +361,9 @@ fn mount_people(
             scale: 1.0,
             seated: chrome.authorship.author.clone(),
             notes: Rc::new(move || shared.shown_records()),
-            apps: Some(Arc::new(crate::page_apps::PageApps)
-                as Arc<dyn tilo_session::platform::apps::Apps>),
+            apps: Some(
+                Arc::new(crate::page_apps::PageApps) as Arc<dyn tilo_session::platform::apps::Apps>
+            ),
             handle: handle.clone(),
             sync: peer.and_then(crate::peer_sync::client),
             intents: Rc::clone(intents),
@@ -506,11 +510,7 @@ impl BrowserShell {
     fn drawn_children(&self) -> Vec<&dyn Widget> {
         let mut children: Vec<&dyn Widget> = vec![&self.desk, &self.top, &self.profile];
         children.extend(self.layers.iter().map(|layer| layer as &dyn Widget));
-        children.extend([
-            &self.invite as &dyn Widget,
-            &self.directory,
-            &self.guide,
-        ]);
+        children.extend([&self.invite as &dyn Widget, &self.directory, &self.guide]);
         children
     }
 
@@ -553,10 +553,7 @@ impl BrowserShell {
     fn page_needs_redraw(&self) -> bool {
         self.drawn_minute.get() != minute()
             || self.picker.needs_animation_frame()
-            || self
-                .drawn_children()
-                .into_iter()
-                .any(Widget::needs_redraw)
+            || self.drawn_children().into_iter().any(Widget::needs_redraw)
     }
 
     pub fn new(
@@ -741,9 +738,9 @@ impl BrowserShell {
         drop(follow);
         match step {
             tilo_session_core::presence::Step::Rest => false,
-            tilo_session_core::presence::Step::Bring(tilo_session_core::presence::Target::Window(
-                tab,
-            )) => {
+            tilo_session_core::presence::Step::Bring(
+                tilo_session_core::presence::Target::Window(tab),
+            ) => {
                 self.handle.focus_tab(tab);
                 true
             }
@@ -853,7 +850,6 @@ impl BrowserShell {
         }
         true
     }
-
 
     fn dispatch(&self, command: impl Into<Verb>) {
         if let Err(error) = self.handle.dispatch(command) {
@@ -1679,9 +1675,13 @@ impl Widget for BrowserShell {
             {
                 layer.apply_layout(taffy, node, inner);
             }
-            for (sheet, &node) in [&mut self.invite as &mut dyn Widget, &mut self.directory, &mut self.guide]
-                .into_iter()
-                .zip(children.get(sheets..).unwrap_or_default())
+            for (sheet, &node) in [
+                &mut self.invite as &mut dyn Widget,
+                &mut self.directory,
+                &mut self.guide,
+            ]
+            .into_iter()
+            .zip(children.get(sheets..).unwrap_or_default())
             {
                 sheet.apply_layout(taffy, node, inner);
             }
@@ -1871,7 +1871,11 @@ impl Widget for BrowserShell {
     fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
         let mut children: Vec<&mut (dyn Widget + '_)> =
             vec![&mut self.desk, &mut self.top, &mut self.profile];
-        children.extend(self.layers.iter_mut().map(|layer| layer as &mut (dyn Widget + '_)));
+        children.extend(
+            self.layers
+                .iter_mut()
+                .map(|layer| layer as &mut (dyn Widget + '_)),
+        );
         children.extend([
             &mut self.invite as &mut (dyn Widget + '_),
             &mut self.directory,

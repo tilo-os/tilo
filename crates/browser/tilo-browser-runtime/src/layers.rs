@@ -199,7 +199,8 @@ impl Widget for LayerWidget {
         state: &mut ui::widget::Edits<'_>,
         path: &ui::widget::ModelPath,
     ) -> bool {
-        self.root.perform_semantic_action(target, action, state, path)
+        self.root
+            .perform_semantic_action(target, action, state, path)
     }
 
     fn is_layout_dirty(&self) -> bool {
@@ -281,6 +282,9 @@ impl Surfaces for Placing<'_> {
 
     /// The page has one tree and one publication of what it shows: a role's layer is drawn in it,
     /// so there is nothing to register beside it.
-    fn publish(&mut self, _published: Rc<std::cell::RefCell<dyn tilo_session_core::door::Published>>) {
+    fn publish(
+        &mut self,
+        _published: Rc<std::cell::RefCell<dyn tilo_session_core::door::Published>>,
+    ) {
     }
 }

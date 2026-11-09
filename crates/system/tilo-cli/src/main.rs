@@ -1890,7 +1890,15 @@ mod tests {
         assert_eq!(
             listed(EVERYWHERE),
             [
-                "app", "action", "workspace", "keys", "account", "files", "run", "device", "agent",
+                "app",
+                "action",
+                "workspace",
+                "keys",
+                "account",
+                "files",
+                "run",
+                "device",
+                "agent",
                 "package"
             ]
         );
