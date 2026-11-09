@@ -655,7 +655,7 @@ view home(t: Tasks) {
         sidebar_title: "Tasks",
         title: .some(title),
         count: header_count,
-        actions: [clear_done],
+        actions: [new_task, new_task_today, clear_done],
     ) {
         // The places this window offers, and the projects of its root under them: what a
         // window offers in its sidebar is what the app declares.
