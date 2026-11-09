@@ -728,7 +728,12 @@ impl WorkspaceActivityPane {
                 DetailAction::Split => wire::DetailAction::Split,
                 DetailAction::Merge => wire::DetailAction::Merge,
             },
-            label: self.detail_action_label(action),
+            // An agent connection's run is no task: it is named as the run it is.
+            label: if action == DetailAction::UndoTask && self.selected_group_run().is_some() {
+                t("activity-detail-undo-run")
+            } else {
+                self.detail_action_label(action)
+            },
         })
         .collect()
     }
@@ -923,30 +928,7 @@ impl WorkspaceActivityPane {
                 Ok(self.apply_detail_action(action, tree))
             }
             wire::UNDO_RUN => detail(self, &read(arguments)?, DetailAction::UndoTask, tree),
-            wire::UNDO_RECORD => {
-                let query: wire::RecordQuery = read(arguments)?;
-                let task = if let Some(task) = query.task {
-                    // Named by its task: the run recorded for it, if it changed anything.
-                    self.task_agent_run(&task)
-                        .and_then(|indexed| indexed.run.task.clone())
-                } else {
-                    if !self.select_range(&query.range) {
-                        return Err(t("activity-history-gone"));
-                    }
-                    self.selected_agent_run()
-                        .and_then(|indexed| indexed.run.task.clone())
-                };
-                let Some(task) = task else {
-                    return Err(t("activity-undo-task-unavailable"));
-                };
-                // Asked of the task, so undo names the run's group in the document: the same step a
-                // task-wide undo would take back, one record at a time.
-                Ok(if self.undo_task_record(&task, &query.app_id, &query.id) {
-                    handled_outcome()
-                } else {
-                    WorkspaceActivityOutcome::default()
-                })
-            }
+            wire::UNDO_RECORD => self.serve_undo_record(&read(arguments)?),
             wire::CHOOSE_SOURCE => {
                 detail(self, &read(arguments)?, DetailAction::MorningSource, tree)
             }
@@ -962,6 +944,50 @@ impl WorkspaceActivityPane {
             wire::SOURCE => Ok(self.serve_source(&read(arguments)?)),
             other => Err(format!("workspace activity has no action `{other}`")),
         }
+    }
+
+    /// Undo one record's share of the run `query` names: the task it was recorded for, or the
+    /// agent connection's group the range's changes are under. The document's own history takes it
+    /// back as that one step.
+    fn serve_undo_record(
+        &mut self,
+        query: &wire::RecordQuery,
+    ) -> Result<WorkspaceActivityOutcome, String> {
+        // Named by its task, the run is the one recorded for it, if it changed anything.
+        if let Some(task) = query.task.as_deref() {
+            let Some(task) = self
+                .task_agent_run(task)
+                .and_then(|indexed| indexed.run.task.clone())
+            else {
+                return Err(t("activity-undo-task-unavailable"));
+            };
+            let asked = self.undo_task_record(&task, &query.app_id, &query.id);
+            return Ok(if asked {
+                handled_outcome()
+            } else {
+                WorkspaceActivityOutcome::default()
+            });
+        }
+        if !self.select_range(&query.range) {
+            return Err(t("activity-history-gone"));
+        }
+        // Asked of the run as the record's history knows it, so undo names its group in that
+        // document: the same step a run-wide undo would take back, one record at a time.
+        let asked = if let Some(task) = self
+            .selected_agent_run()
+            .and_then(|indexed| indexed.run.task.clone())
+        {
+            self.undo_task_record(&task, &query.app_id, &query.id)
+        } else if let Some(group) = self.selected_group_run() {
+            self.undo_group_record(&group, &query.app_id, &query.id)
+        } else {
+            return Err(t("activity-undo-task-unavailable"));
+        };
+        Ok(if asked {
+            handled_outcome()
+        } else {
+            WorkspaceActivityOutcome::default()
+        })
     }
 
     /// Move the boundary between the work sessions `boundary` names.

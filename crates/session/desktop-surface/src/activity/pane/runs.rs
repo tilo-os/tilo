@@ -4,7 +4,9 @@
 //! A run is either a recorded marker (an instruction an agent worked across records, with its
 //! steps) or an agent connection's work group (every invocation of one MCP session, which the
 //! history groups as `agent-run`). Both read as the same timeline: each action is one record's
-//! share of the run, opening as what that record is.
+//! share of the run, opening as what that record is. Both undo the same way: by asking each
+//! changed document's own history to undo the run it grouped under, so a task and a connection's
+//! group are named alike.
 //!
 //! A command is never copied into the history. An agent asks a shell session to run a command
 //! line, which queues a request in the session's record; the shell runs it and records the run as
@@ -23,8 +25,8 @@ use tilo_actions::terminal_text;
 
 use super::serve::{author, hex, millis, scope};
 use super::{
-    ActivityTree, HistoryEntry, HistoryEntryId, IndexedAgentRun, RecordId, WorkspaceActivityPane,
-    humanize_app_id, t,
+    ActivityTree, HistoryEntry, HistoryEntryId, IndexedAgentRun, RecordId, UndoRun,
+    WorkspaceActivityPane, humanize_app_id, t,
 };
 
 /// The app whose records are shell sessions: a step there ran a program.
@@ -86,6 +88,15 @@ struct Segment<'a> {
     app: String,
     record: String,
     entries: Vec<&'a HistoryEntry>,
+}
+
+/// The agent connection whose run `entry` is a change of, when it is one.
+fn agent_run_group(entry: &HistoryEntry) -> Option<&tilo_actions::WorkGroup> {
+    entry
+        .context
+        .as_ref()
+        .and_then(|context| context.group.as_ref())
+        .filter(|group| group.kind == AGENT_RUN)
 }
 
 impl WorkspaceActivityPane {
@@ -205,12 +216,7 @@ impl WorkspaceActivityPane {
             if covered.contains(&entry.id) {
                 continue;
             }
-            let Some(group) = entry
-                .context
-                .as_ref()
-                .and_then(|context| context.group.as_ref())
-                .filter(|group| group.kind == AGENT_RUN)
-            else {
+            let Some(group) = agent_run_group(entry) else {
                 continue;
             };
             match groups.iter_mut().find(|(held, _)| held.id == group.id) {
@@ -241,10 +247,7 @@ impl WorkspaceActivityPane {
             }
             let mut actions = Vec::new();
             for segment in &segments {
-                let undo = self.segment_undoable(segment).then(|| wire::Offer {
-                    action: wire::DetailAction::Undo,
-                    label: t("activity-detail-undo-step"),
-                });
+                let undo = self.segment_undo(segment);
                 actions.extend(self.segment_actions(segment, workspace, None, undo));
             }
             let mut agent = author(&first.author);
@@ -275,7 +278,7 @@ impl WorkspaceActivityPane {
                 },
                 now: now(&actions),
                 actions,
-                undo_blocked: Some(t("activity-undo-run-by-action")),
+                undo_blocked: self.undo_blocked(&self.run_steps(&members)),
             });
         }
         runs
@@ -304,17 +307,68 @@ impl WorkspaceActivityPane {
         }
     }
 
-    /// Whether every change of `segment` can be taken back here as one band.
-    fn segment_undoable(&self, segment: &Segment<'_>) -> bool {
-        self.host.mutations_available()
-            && segment.app != TERMINAL_APP
-            && segment.entries.iter().all(|entry| {
-                entry.is_revertible()
-                    && self
-                        .projected_origins
-                        .get(&entry.id)
-                        .is_some_and(|projected| self.host.writable(&projected.origin))
+    /// The offer to take back one segment's record on its own, when its document is open here: it
+    /// goes through the host like the whole run, one document of it at a time.
+    fn segment_undo(&self, segment: &Segment<'_>) -> Option<wire::Offer> {
+        if !Self::step_is_undoable(&segment.app, &segment.record) {
+            return None;
+        }
+        let step = (segment.app.clone(), segment.record.clone());
+        self.undo_blocked(std::slice::from_ref(&step))
+            .is_none()
+            .then(|| wire::Offer {
+                action: wire::DetailAction::UndoRecord,
+                label: t("activity-detail-undo-step"),
             })
+    }
+
+    /// The documents `entries` are changes of, as the steps undoing a run asks each history for:
+    /// each distinct app and record, but for a command line the run asked a shell session to run
+    /// and a change of the workspace's own layout, which no document takes back.
+    fn run_steps(&self, entries: &[&HistoryEntry]) -> Vec<(String, String)> {
+        let mut steps: Vec<(String, String)> = Vec::new();
+        for entry in entries {
+            let (app, record) = self.origin_of(entry);
+            let step = (app, record);
+            if Self::step_is_undoable(&step.0, &step.1) && !steps.contains(&step) {
+                steps.push(step);
+            }
+        }
+        steps
+    }
+
+    /// Whether a change of `app`'s `record` is one its own history takes back: a shell session
+    /// keeps no history to undo, and the workspace's own layout is no record's.
+    fn step_is_undoable(app: &str, record: &str) -> bool {
+        app != TERMINAL_APP && !record.is_empty()
+    }
+
+    /// The agent connection whose run the timeline selection names, with the documents its changes
+    /// in the selection are: the selection is one connection's work.
+    pub(super) fn selected_group_run(&self) -> Option<UndoRun> {
+        let entries = self.selected_entries();
+        let mut id: Option<String> = None;
+        for entry in entries {
+            let Some(group) = agent_run_group(entry) else {
+                continue;
+            };
+            match &id {
+                Some(held) if held != &group.id => return None,
+                _ => id = Some(group.id.clone()),
+            }
+        }
+        let id = id?;
+        let members = entries
+            .iter()
+            .filter(|entry| agent_run_group(entry).is_some_and(|group| group.id == id))
+            .collect::<Vec<_>>();
+        Some(UndoRun {
+            steps: self.run_steps(&members),
+            // Each document's history knows the connection by its group, which is also how the
+            // activity shows the run.
+            shown: id.clone(),
+            named: id,
+        })
     }
 
     /// The actions one run's changes in one record are: one per command line it asked a shell

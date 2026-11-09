@@ -350,6 +350,28 @@ struct UndoApply {
     partial: bool,
 }
 
+/// The undo of an agent's run the host is carrying out: which invocation to ask about, the run it
+/// takes back and the documents it asked for.
+#[derive(Clone, Debug)]
+struct PendingUndo {
+    invocation: uuid::Uuid,
+    run: String,
+    steps: Vec<(String, String)>,
+}
+
+/// An agent's run as undoing it needs it.
+#[derive(Clone, Debug)]
+struct UndoRun {
+    /// The run's name in each document it changed: the task it worked, or the agent connection's
+    /// group, which that document's history undoes the run by.
+    named: String,
+    /// The run as the activity shows it, which its outcome is reported beside: the recorded run's
+    /// own id, or the connection's group.
+    shown: String,
+    /// The documents it changed: each its app and record.
+    steps: Vec<(String, String)>,
+}
+
 /// The workspace-activity sheet.
 #[allow(
     clippy::struct_excessive_bools,
@@ -427,8 +449,8 @@ pub struct WorkspaceActivityPane {
     host: Rc<dyn ActivityHost>,
     /// The active workspace's durable identity, hex.
     workspace: String,
-    /// The undo of an agent's run the host is carrying out, and the run.
-    undo_pending: Option<(uuid::Uuid, String)>,
+    /// The undo of an agent's run the host is carrying out.
+    undo_pending: Option<PendingUndo>,
     facet_index: HistoryFacetIndex,
     lens: LensSelection,
     comparison: Option<HistoryComparison>,
@@ -975,45 +997,20 @@ impl WorkspaceActivityPane {
     /// and record), or in every record the run changed when it names none. Returns whether it was
     /// asked.
     fn undo_task_run_of(&mut self, task_id: &str, only: Option<&(String, String)>) -> bool {
-        if self.undo_pending.is_some() {
-            return true;
-        }
         let Some(indexed) = self.task_agent_run(task_id) else {
             return false;
         };
-        let steps: Vec<(String, String)> = indexed
-            .run
-            .steps
-            .iter()
-            .map(|step| (step.app.clone(), step.record.clone()))
-            .filter(|step| only.is_none_or(|one| one == step))
-            .collect();
-        if steps.is_empty() {
-            return false;
-        }
-        let run = indexed.run.id.clone();
-        let invocation = uuid::Uuid::new_v4();
-        let undo = TaskRunUndo {
-            workspace: self.workspace.clone(),
-            invocation,
-            task_id: task_id.to_owned(),
-            steps,
+        let run = UndoRun {
+            named: task_id.to_owned(),
+            shown: indexed.run.id.clone(),
+            steps: indexed
+                .run
+                .steps
+                .iter()
+                .map(|step| (step.app.clone(), step.record.clone()))
+                .collect(),
         };
-        match self.host.undo_task_run(undo) {
-            Ok(()) => {
-                self.undo_pending = Some((invocation, run));
-                // Quiet until it lands.
-                self.agent_undo_notice = None;
-                true
-            }
-            Err(error) => {
-                self.agent_undo_notice = Some((
-                    run,
-                    t_args("activity-undo-task-refused", &[("detail", error.into())]),
-                ));
-                true
-            }
-        }
+        self.undo_run_of(&run, only)
     }
 
     /// Undo the agent's run of task `task_id` in one changed record, from the run's step list: the
@@ -1023,12 +1020,69 @@ impl WorkspaceActivityPane {
         self.undo_task_run_of(task_id, Some(&only))
     }
 
+    /// Ask the host to undo an agent connection's whole run, through each changed document's own
+    /// history. Returns whether it was asked.
+    fn undo_group_run(&mut self, group: &UndoRun) -> bool {
+        self.undo_run_of(group, None)
+    }
+
+    /// Ask the host to undo one record of an agent connection's run, the record `only` names (its
+    /// app and record). Returns whether it was asked.
+    fn undo_group_record(&mut self, group: &UndoRun, app: &str, record: &str) -> bool {
+        let only = (app.to_owned(), record.to_owned());
+        self.undo_run_of(group, Some(&only))
+    }
+
+    /// Ask the host to undo the run in the documents `steps` name, or in the one of them `only`
+    /// names: each document's own history takes back what it grouped under the run, so later edits
+    /// by others stay. Returns whether it was asked.
+    fn undo_run_of(&mut self, run: &UndoRun, only: Option<&(String, String)>) -> bool {
+        if self.undo_pending.is_some() {
+            return true;
+        }
+        let steps: Vec<(String, String)> = run
+            .steps
+            .iter()
+            .filter(|step| only.is_none_or(|one| one == *step))
+            .cloned()
+            .collect();
+        if steps.is_empty() {
+            return false;
+        }
+        let invocation = uuid::Uuid::new_v4();
+        let undo = TaskRunUndo {
+            workspace: self.workspace.clone(),
+            invocation,
+            task_id: run.named.clone(),
+            steps: steps.clone(),
+        };
+        match self.host.undo_task_run(undo) {
+            Ok(()) => {
+                self.undo_pending = Some(PendingUndo {
+                    invocation,
+                    run: run.shown.clone(),
+                    steps,
+                });
+                // Quiet until it lands.
+                self.agent_undo_notice = None;
+                true
+            }
+            Err(error) => {
+                self.agent_undo_notice = Some((
+                    run.shown.clone(),
+                    t_args("activity-undo-task-refused", &[("detail", error.into())]),
+                ));
+                true
+            }
+        }
+    }
+
     /// Tell how the host's undo of an agent's run ended, once it has.
     fn poll_undo(&mut self) {
-        let Some((invocation, run)) = self.undo_pending.clone() else {
+        let Some(pending) = self.undo_pending.clone() else {
             return;
         };
-        let Some(result) = self.host.poll_task_run_undo(invocation) else {
+        let Some(result) = self.host.poll_task_run_undo(pending.invocation) else {
             return;
         };
         self.undo_pending = None;
@@ -1041,35 +1095,24 @@ impl WorkspaceActivityPane {
                     .collect();
                 // Every record of the run the host did not ask a document about is one undo did not
                 // reach: it is named, never quietly left behind.
-                self.unreverted = self
-                    .agent_runs
+                self.unreverted = pending
+                    .steps
                     .iter()
-                    .find(|indexed| indexed.run.id == run)
-                    .map_or_else(Vec::new, |indexed| {
-                        indexed
-                            .run
-                            .steps
-                            .iter()
-                            .filter(|step| {
-                                !asked
-                                    .iter()
-                                    .any(|(app, record)| app == &step.app && record == &step.record)
+                    .filter(|step| !asked.contains(step))
+                    .map(|(app, record)| {
+                        let record = RecordId::parse(record)
+                            .and_then(|id| id.file_path())
+                            .and_then(|path| {
+                                path.file_name()
+                                    .map(|name| name.to_string_lossy().into_owned())
                             })
-                            .map(|step| {
-                                let record = RecordId::parse(&step.record)
-                                    .and_then(|id| id.file_path())
-                                    .and_then(|path| {
-                                        path.file_name()
-                                            .map(|name| name.to_string_lossy().into_owned())
-                                    })
-                                    .unwrap_or_else(|| step.record.clone());
-                                t_args(
-                                    "activity-undo-task-record-left",
-                                    &[("record", record.into()), ("app", step.app.clone().into())],
-                                )
-                            })
-                            .collect()
-                    });
+                            .unwrap_or_else(|| record.clone());
+                        t_args(
+                            "activity-undo-task-record-left",
+                            &[("record", record.into()), ("app", app.clone().into())],
+                        )
+                    })
+                    .collect();
                 if self.unreverted.is_empty() {
                     t("activity-undo-task-done")
                 } else {
@@ -1078,30 +1121,56 @@ impl WorkspaceActivityPane {
             }
             Err(error) => t_args("activity-undo-task-refused", &[("detail", error.into())]),
         };
-        self.agent_undo_notice = Some((run, notice));
+        self.agent_undo_notice = Some((pending.run, notice));
     }
 
     fn can_undo_agent_run(&self) -> bool {
         if !self.host.mutations_available() {
             return false;
         }
-        let Some(indexed) = self.selected_agent_run() else {
-            return false;
-        };
-        // A run is undone in the documents it changed, which the host does
-        // for the task that recorded it; a run no task names has no one to
-        // carry that out here.
-        indexed.run.task.is_some()
-            && indexed
-                .run
-                .steps
-                .iter()
-                .all(|step| self.record_is_open(step))
+        if let Some(indexed) = self.selected_agent_run() {
+            // A run is undone in the documents it changed, which the host does
+            // for the task that recorded it; a run no task names has no one to
+            // carry that out here.
+            return indexed.run.task.is_some()
+                && indexed
+                    .run
+                    .steps
+                    .iter()
+                    .all(|step| self.record_is_open(step));
+        }
+        // An agent connection's run is undone by its group, which its documents' history takes
+        // back the same way a task's.
+        self.selected_group_run()
+            .is_some_and(|group| self.undo_blocked(&group.steps).is_none())
+    }
+
+    /// Why the documents `steps` (each its app and record) cannot be undone whole from here, if
+    /// they cannot: an undo at a time, and only where this device holds each document open.
+    fn undo_blocked(&self, steps: &[(String, String)]) -> Option<String> {
+        if !self.host.mutations_available() {
+            return Some(t("activity-served-read-only"));
+        }
+        if self.undo_pending.is_some() {
+            return Some(t("activity-undo-run-in-progress"));
+        }
+        if steps.is_empty() {
+            return Some(t("activity-undo-run-nothing-to-undo"));
+        }
+        (!steps
+            .iter()
+            .all(|(_, record)| self.record_id_is_open(record)))
+        .then(|| t("activity-undo-run-needs-open"))
     }
 
     /// Whether the document behind a run's step is open here, which undoing just that step needs.
     fn record_is_open(&self, step: &ui::RunStep) -> bool {
-        RecordId::parse(&step.record).is_some_and(|id| self.open_agent_records.contains(&id))
+        self.record_id_is_open(&step.record)
+    }
+
+    /// Whether the record `record` is open here, which undoing its share of a run needs.
+    fn record_id_is_open(&self, record: &str) -> bool {
+        RecordId::parse(record).is_some_and(|id| self.open_agent_records.contains(&id))
     }
 
     /// Whether one record of the selected run can be undone on its own from the task view.
@@ -1109,12 +1178,19 @@ impl WorkspaceActivityPane {
         self.host.mutations_available() && self.undo_pending.is_none() && self.record_is_open(step)
     }
 
-    fn selected_ids(&self) -> Vec<HistoryEntryId> {
+    /// The timeline's changes the selection covers, oldest first.
+    fn selected_entries(&self) -> &[HistoryEntry] {
         self.timeline
             .selection()
             .and_then(|(start, end)| self.timeline.entries().get(start..=end))
-            .map(|entries| entries.iter().map(|entry| entry.id).collect())
             .unwrap_or_default()
+    }
+
+    fn selected_ids(&self) -> Vec<HistoryEntryId> {
+        self.selected_entries()
+            .iter()
+            .map(|entry| entry.id)
+            .collect()
     }
 
     fn clear_comparison(&mut self) {
@@ -2045,16 +2121,20 @@ impl WorkspaceActivityPane {
         if !self.host.mutations_available() {
             return UndoApply::default();
         }
-        let Some(indexed) = self.selected_agent_run().cloned() else {
+        if let Some(indexed) = self.selected_agent_run().cloned() {
+            // An agent's run of a task is undone by each document's own history, which also takes
+            // back what a change queued outside the document (a file renamed on disk); reverting
+            // the document alone would leave that behind.
+            if let Some(task) = &indexed.run.task {
+                self.undo_task_run(task);
+            }
             return UndoApply::default();
-        };
-        // An agent's run of a task is undone by each document's own history, which also takes back
-        // what a change queued outside the document (a file renamed on disk); reverting the
-        // document alone would leave that behind.
-        let Some(task) = &indexed.run.task else {
-            return UndoApply::default();
-        };
-        self.undo_task_run(task);
+        }
+        // An agent connection's run is undone by its group, which each document's history takes
+        // back the same way.
+        if let Some(group) = self.selected_group_run() {
+            self.undo_group_run(&group);
+        }
         UndoApply::default()
     }
 
