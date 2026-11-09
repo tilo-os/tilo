@@ -1,0 +1,245 @@
+//! A member device entering the workspaces the relay it serves places on it.
+//!
+//! A relay that hosts a workspace runs the workspace's shell on the member
+//! device holding its VM ([`crate::standalone::take_work`]). The member holds the
+//! workspace as any member does, so its device plane admits the relay's runs;
+//! the first time the relay asks about a workspace the member does not hold
+//! yet, the member asks the relay to enter it:
+//!
+//! 1. it asks the relay's own `room.enter`
+//!    ([`ENTER_ROOM`](tilo_relay_session::workspaces::ENTER_ROOM)) over a
+//!    session of its own, as the device its custody certifies;
+//! 2. it redeems the invitation the relay answers with
+//!    ([`super::Joined::join`]), which makes the workspace one it holds and
+//!    syncs from then on.
+//!
+//! What admits the member is the relay's own decision, never the ask. The
+//! relay answers `room.enter` for the workspaces it governs, to a device of
+//! its own person, with an invitation that names that person only. So a
+//! device of another person asking the member about a workspace it does not
+//! hold gets nothing from it: the invitation is not for its person, and once
+//! the member holds the workspace its plane refuses that device as it refuses
+//! any stranger. A workspace no relay of this member's governs is refused by
+//! the relay, and the member remembers the refusal for a while rather than
+//! asking again for every request that names it.
+
+use super::Joined;
+use crate::standalone::take_work::Relay;
+use std::collections::BTreeMap;
+use std::sync::{Arc, Mutex};
+use std::time::Instant;
+use tilo_actions::remote::{InvokeArgument, InvokeRequest, ReceiptStatus, RemoteActionTarget};
+use tilo_actions::{ActionAddress, InvocationId};
+use tilo_desktop_model::WorkspaceId;
+use tilo_peer_state::StatePeer;
+use tilo_peer_state::actions::{ReadFuture, Workspaces};
+use tilo_relay_session::RelayClient;
+use tilo_relay_session::workspaces::{
+    ENTER_ROOM, EnteredWorkspace, HOST_ACTIONS_PROVIDER, HOST_ROOMS_RESOURCE, ask_host,
+};
+
+/// How long the relay is given to admit this member to a workspace it placed
+/// here: the session, the ask and the invitation redeemed.
+const ENTER_WITHIN: std::time::Duration = std::time::Duration::from_secs(30);
+/// How long the invitation this member redeems stays redeemable.
+const ENTER_INVITATION_SECONDS: u64 = 600;
+/// How long a refusal keeps this member from asking the relay about the same
+/// workspace again.
+const REFUSED_FOR: std::time::Duration = std::time::Duration::from_secs(30);
+/// How many refusals are remembered before the oldest is forgotten, so nothing
+/// that names many workspaces can grow what this member keeps.
+const KEPT_REFUSALS: usize = 64;
+
+/// The workspaces a member answers for, as its device plane reads them: those
+/// it holds, and on a miss the one the relay it serves enters it into.
+pub(in crate::standalone) struct Entering {
+    joined: Arc<Joined>,
+    /// The relay that places this member's work: the one host this member
+    /// enters a workspace for.
+    relay: Relay,
+    /// One enter at a time, so two requests for a workspace the member does
+    /// not hold yet make one enter.
+    turn: tokio::sync::Mutex<()>,
+    /// The workspaces the relay did not admit this member to, and why, while
+    /// it is not worth asking again.
+    refused: Refusals,
+}
+
+impl Entering {
+    pub(in crate::standalone) fn new(joined: Arc<Joined>, relay: Relay) -> Self {
+        Self {
+            joined,
+            relay,
+            turn: tokio::sync::Mutex::new(()),
+            refused: Refusals::default(),
+        }
+    }
+
+    /// Enter `workspace`, unless the member holds it already or the relay
+    /// refused it a moment ago.
+    async fn enter(&self, workspace: &str) -> Result<(), String> {
+        let Some(workspace) = WorkspaceId::parse(workspace) else {
+            return Err("the plane named no workspace".into());
+        };
+        if self.joined.owner.contains_workspace(workspace) {
+            return Ok(());
+        }
+        if let Some(reason) = self.refused.reason(workspace) {
+            return Err(reason);
+        }
+        let _turn = self.turn.lock().await;
+        if self.joined.owner.contains_workspace(workspace) {
+            // What another request waited for this turn entered.
+            return Ok(());
+        }
+        let entered = match tokio::time::timeout(ENTER_WITHIN, self.ask_the_relay(workspace)).await
+        {
+            Ok(entered) => entered,
+            Err(_) => Err("the relay did not admit this member in time".into()),
+        };
+        if let Err(reason) = &entered {
+            tracing::debug!(%workspace, %reason, "a workspace is not entered on this member");
+            self.refused.remember(workspace, reason.clone());
+        }
+        entered
+    }
+
+    /// Ask the relay to enter this member into `workspace`, and hold what it
+    /// answers.
+    async fn ask_the_relay(&self, workspace: WorkspaceId) -> Result<(), String> {
+        let client = RelayClient::connect_v2_to_own_device(
+            self.joined.endpoint.clone(),
+            self.relay.endpoint_addr()?,
+            self.joined.operator(),
+            self.relay.device(),
+            self.joined.device_cert().clone(),
+            self.joined.device_key(),
+            tilo_user_identity::RevocationList::new(),
+        )
+        .await
+        .map_err(|error| format!("this member could not reach its relay: {error}"))?;
+        let invitation = ask_invitation(&client, workspace).await?;
+        if self.joined.join(&invitation).await? != workspace {
+            return Err("the relay admitted this member to another workspace".into());
+        }
+        Ok(())
+    }
+}
+
+/// The workspaces the relay refused this member, and why, while asking again
+/// about them is not worth it: one answer from the relay per workspace is
+/// kept, so a request that names a workspace this member may not have costs
+/// no ask at all.
+#[derive(Default)]
+struct Refusals(Mutex<BTreeMap<WorkspaceId, (Instant, String)>>);
+
+impl Refusals {
+    /// Why the relay refused this member `workspace` a moment ago, if it did.
+    fn reason(&self, workspace: WorkspaceId) -> Option<String> {
+        self.reason_at(workspace, Instant::now())
+    }
+
+    fn reason_at(&self, workspace: WorkspaceId, now: Instant) -> Option<String> {
+        let refused = self.0.lock().ok()?;
+        let fresh = refused
+            .get(&workspace)
+            .filter(|(at, _)| now.saturating_duration_since(*at) < REFUSED_FOR)
+            .map(|(_, reason)| reason.clone());
+        drop(refused);
+        fresh
+    }
+
+    fn remember(&self, workspace: WorkspaceId, reason: String) {
+        self.remember_at(workspace, Instant::now(), reason);
+    }
+
+    fn remember_at(&self, workspace: WorkspaceId, at: Instant, reason: String) {
+        let Ok(mut refused) = self.0.lock() else {
+            return;
+        };
+        refused
+            .retain(|_, (remembered, _)| at.saturating_duration_since(*remembered) < REFUSED_FOR);
+        while refused.len() >= KEPT_REFUSALS {
+            let Some(oldest) = refused
+                .iter()
+                .min_by_key(|(_, (remembered, _))| *remembered)
+                .map(|(workspace, _)| *workspace)
+            else {
+                break;
+            };
+            refused.remove(&oldest);
+        }
+        refused.insert(workspace, (at, reason));
+    }
+}
+
+impl Workspaces for Entering {
+    fn read<'a>(
+        &'a self,
+        workspace: &'a str,
+        read: &'a mut (dyn FnMut(&StatePeer) + Send),
+    ) -> ReadFuture<'a> {
+        Box::pin(async move {
+            let read: &mut (dyn FnMut(&StatePeer) + Send) = read;
+            if held(&self.joined, workspace, &mut *read).await {
+                return true;
+            }
+            if let Err(reason) = self.enter(workspace).await {
+                tracing::debug!(%workspace, %reason, "a workspace's request is refused here");
+                return false;
+            }
+            held(&self.joined, workspace, &mut *read).await
+        })
+    }
+}
+
+/// Whether this member holds `workspace`, reading what it holds out of the
+/// store it keeps it in.
+async fn held(joined: &Joined, workspace: &str, read: &mut (dyn FnMut(&StatePeer) + Send)) -> bool {
+    Workspaces::read(&joined.owner, workspace, read).await
+}
+
+/// Ask `client`'s relay to enter this device into `workspace`, and answer the
+/// invitation text it redeems.
+async fn ask_invitation(client: &RelayClient, workspace: WorkspaceId) -> Result<String, String> {
+    let arguments = serde_json::Map::from_iter([
+        ("room".to_owned(), workspace.to_string().into()),
+        (
+            "expires_in_seconds".to_owned(),
+            ENTER_INVITATION_SECONDS.into(),
+        ),
+    ]);
+    let invoke = InvokeRequest {
+        invocation: InvocationId::new(),
+        target: RemoteActionTarget {
+            provider: HOST_ACTIONS_PROVIDER.to_owned(),
+            address: ActionAddress::new(HOST_ROOMS_RESOURCE.to_owned(), ENTER_ROOM),
+        },
+        argument: InvokeArgument::Json(arguments),
+        context: None,
+        confirmation: None,
+        revision: None,
+        on_behalf_of: None,
+        wait_ms: None,
+        appearance: None,
+    };
+    let entered: EnteredWorkspace = match ask_host(client, invoke).await? {
+        ReceiptStatus::Completed { output } => {
+            serde_json::from_value(output.value.unwrap_or_default())
+                .map_err(|error| format!("the relay answered no invitation: {error}"))?
+        }
+        ReceiptStatus::Rejected { error } => {
+            return Err(format!("the relay refused to enter it: {error}"));
+        }
+        ReceiptStatus::Failed { error } => return Err(error.message),
+        ReceiptStatus::Accepted | ReceiptStatus::Cancelled { .. } => {
+            return Err("the relay did not answer the entry".into());
+        }
+    };
+    let signed = entered.invitation.decode()?.signed_invitation;
+    Ok(tilo_peer_state::join::encode_invitation_text(&signed))
+}
+
+#[cfg(test)]
+#[path = "joined_enter_tests.rs"]
+mod tests;

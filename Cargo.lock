@@ -21122,6 +21122,7 @@ dependencies = [
  "tokio",
  "tracing",
  "tracing-subscriber",
+ "ush",
  "uuid",
  "workspace-hack",
 ]

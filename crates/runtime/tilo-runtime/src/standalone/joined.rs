@@ -42,6 +42,9 @@ pub(super) use hosted::RecordCreation;
 /// already keep it in.
 pub(super) const JOINED_WORKSPACES: &str = "joined-rooms.json";
 
+#[path = "joined_enter.rs"]
+pub(in crate::standalone) mod enter;
+
 #[path = "mcp_admission.rs"]
 mod mcp_admission;
 pub(super) use mcp_admission::{Refusal, SessionAdmission};
@@ -157,6 +160,37 @@ impl Joined {
     /// This device's endpoint, which the profile's other services share.
     pub(super) fn endpoint(&self) -> iroh::Endpoint {
         self.endpoint.clone()
+    }
+
+    /// The joined workspaces kept in `profile`, held as the device `custody`
+    /// certifies, over `endpoint`: what a profile that serves them alone
+    /// starts with, as a member device that takes its workspaces' work does.
+    pub(in crate::standalone) fn from_profile(
+        profile: &Path,
+        custody: HostIdentity,
+        endpoint: iroh::Endpoint,
+    ) -> io::Result<Arc<Self>> {
+        let broker = (
+            Arc::new(Mutex::new(BrokerChannels::default())),
+            Arc::new(FanoutState::new()),
+        );
+        let refused = desktop_enrolled(profile)?;
+        Self::open(profile, custody, endpoint, refused, broker)
+    }
+
+    /// This device's signing key, as its plane signs every request it makes.
+    pub(in crate::standalone) fn device_key(&self) -> ed25519_dalek::SigningKey {
+        self.custody.device_signing_key.clone()
+    }
+
+    /// The device certificate this profile's custody holds.
+    pub(in crate::standalone) fn device_cert(&self) -> &tilo_user_identity::DeviceCert {
+        &self.custody.device_cert
+    }
+
+    /// The person this device belongs to: whose devices may ask it for work.
+    pub(in crate::standalone) fn operator(&self) -> [u8; 32] {
+        self.custody.device_cert.user_public_key
     }
 
     /// How this profile asks the other devices of its workspaces whether they

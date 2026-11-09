@@ -130,6 +130,9 @@ workspace-hack = { version = "0.1" }
 ui = { package = "tilo-ui", path = "../../sdk/ui-core" }
 [target.'cfg(target_os = "linux")'.dependencies]
 fuser.workspace = true
+# The member that takes work runs its workspaces' shells: ush's own commands
+# in process, and Linux programs in the local hosted-VM service.
+ush = { path = "../ush" }
 
 # App Sandbox or Seatbelt: how every app launches on stock macOS.
 [target.'cfg(target_os = "macos")'.dependencies]
