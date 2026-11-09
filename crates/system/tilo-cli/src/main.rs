@@ -43,6 +43,7 @@ mod aliases;
 mod cleanup;
 mod desktop;
 mod health;
+mod hosted;
 mod login;
 mod mcp;
 mod mcp_presence;
@@ -68,8 +69,33 @@ fn helper() -> String {
     long_about = None
 )]
 struct Cli {
+    #[arg(
+        short = 'w',
+        long,
+        global = true,
+        help = "A hosted workspace to act in, by name or id (key: TILO_API_KEY)"
+    )]
+    workspace: Option<String>,
+    #[arg(
+        long,
+        global = true,
+        hide = true,
+        help = "The hosted door (also TILO_DOOR; https://mcp.tilo.sh by default)"
+    )]
+    door: Option<String>,
     #[command(subcommand)]
     cmd: Cmd,
+}
+
+impl Cli {
+    /// The command `cmd`, with no hosted workspace or door named.
+    const fn of(cmd: Cmd) -> Self {
+        Self {
+            workspace: None,
+            door: None,
+            cmd,
+        }
+    }
 }
 
 /// `tilo device` under its own names: `device`, `tilo-device`, and the
@@ -137,12 +163,14 @@ enum Cmd {
         #[command(subcommand)]
         cmd: desktop::ActionCmd,
     },
-    /// Do one thing this desktop can do.
+    /// Do one thing this desktop, or a hosted workspace (-w), can do.
     #[command(
         hide = true,
-        after_help = "Examples:\n  tilo do new-terminal-window\n  tilo do rename-note title=Groceries\n  tilo do set-volume 40\n\n\
+        after_help = "Examples:\n  tilo do new-terminal-window\n  tilo do rename-note title=Groceries\n  tilo do set-volume 40\n  \
+                      tilo -w jane-doe do pdf-viewer/application.pdf#read-form-fields\n\n\
                       `tilo actions` lists what there is. Options are written name=value; a single\n\
-                      value goes to the one the action needs."
+                      value goes to the one the action needs. With -w, the path is app/resource#action\n\
+                      in that hosted workspace, as an agent's tilo_do takes it, with the key in TILO_API_KEY."
     )]
     Do {
         /// The action's name, as `tilo actions` lists it, or words of its title.
@@ -155,6 +183,48 @@ enum Cmd {
     Workspace {
         #[command(subcommand)]
         cmd: desktop::WorkspaceCmd,
+    },
+    /// Keys to your hosted workspaces, for your code and its agents.
+    #[command(
+        after_help = "Examples:\n  tilo keys create \"Visa backend\"   Ask for a key; you approve it in your Tilo\n  \
+                            tilo keys mint -w jane-doe          A key for one workspace, for an agent there\n  \
+                            tilo keys ls\n  tilo keys revoke grant-…           Revokes the keys it minted too"
+    )]
+    Keys {
+        /// The answer as JSON, typed as the SDK gets it.
+        #[arg(long)]
+        json: bool,
+        #[command(subcommand)]
+        cmd: hosted::KeysCmd,
+    },
+    /// Your hosted account: its workspaces.
+    #[command(
+        after_help = "Examples:\n  tilo account workspaces create \"Applicant: Jane Doe\"\n  tilo account workspaces ls"
+    )]
+    Account {
+        /// The answer as JSON, typed as the SDK gets it.
+        #[arg(long)]
+        json: bool,
+        #[command(subcommand)]
+        cmd: hosted::AccountCmd,
+    },
+    /// Files into a hosted workspace.
+    #[command(after_help = "Example:\n  tilo files put passport.png -w jane-doe\n  \
+                            tilo -w jane-doe do pdf-viewer#import-pdf-content content=tilo.content:… name=application.pdf")]
+    Files {
+        /// The answer as JSON, typed as the SDK gets it.
+        #[arg(long)]
+        json: bool,
+        #[command(subcommand)]
+        cmd: hosted::FilesCmd,
+    },
+    /// Run a tilolang program in a hosted workspace, as one undoable step.
+    #[command(after_help = "Example:\n  tilo run visa.tl -w jane-doe")]
+    Run {
+        file: std::path::PathBuf,
+        /// The answer as JSON, typed as the SDK gets it.
+        #[arg(long)]
+        json: bool,
     },
     /// List what this desktop can do.
     #[command(hide = true)]
@@ -373,7 +443,7 @@ fn command_here(here: Here) -> clap::Command {
         })
         .mut_subcommands(|sub| {
             let absent = match sub.get_name() {
-                "open" | "action" | "do" | "workspace" => !here.desktop,
+                "open" | "action" | "workspace" => !here.desktop,
                 "app" => !here.apps,
                 "device" => !(here.system || nouns::any_present(nouns::DEVICE, here.has)),
                 "status" | "rollback" => !here.system,
@@ -496,6 +566,21 @@ fn examples(here: Here) -> String {
     if nouns::any_present(nouns::PACKAGE, here.has) {
         lines.push(("tilo package pack", "Make a package of your app"));
     }
+    // Hosted workspaces answer from anywhere, with a key.
+    lines.extend([
+        (
+            "tilo keys create \"Visa backend\"",
+            "A key for your own backend: you approve it in your Tilo",
+        ),
+        (
+            "tilo account workspaces create \"Jane Doe\"",
+            "A hosted workspace, one per customer",
+        ),
+        (
+            "tilo keys mint -w jane-doe",
+            "An MCP URL and token for an agent in that workspace alone",
+        ),
+    ]);
     render_examples(&lines)
 }
 
@@ -673,15 +758,106 @@ fn app_open(args: &[OsString], spelling: &tilo_control::front::Spelling) -> Resu
     Ok(desktop::run_open(&app, &items, spelling))
 }
 
+/// `tilo do`: in the hosted workspace `-w` names, else on this desktop. A
+/// `-w` or `--json` after the action lands in its options, and is taken out.
+fn run_do(
+    door: Option<&str>,
+    mut workspace: Option<String>,
+    action: String,
+    mut args: Vec<String>,
+    spelling: &tilo_control::front::Spelling,
+) -> ExitCode {
+    if let Some(at) = args
+        .iter()
+        .position(|arg| arg == "-w" || arg == "--workspace")
+        && let Some(named) = args.get(at.saturating_add(1)).cloned()
+    {
+        workspace = Some(named);
+        args.drain(at..=at.saturating_add(1));
+    }
+    let Some(workspace) = workspace else {
+        return desktop::run_action(desktop::ActionCmd::Run { action, args }, spelling);
+    };
+    let json = args.iter().any(|arg| arg == "--json");
+    args.retain(|arg| arg != "--json");
+    hosted::act(door, json, &workspace, &action, &args)
+}
+
+/// `tilo completions <shell>`: every name this program goes by.
+fn completions(shell: Shell) -> Result<ExitCode> {
+    let mut output = Vec::new();
+    let everything = Here {
+        desktop: true,
+        apps: true,
+        system: true,
+        has: |_| true,
+    };
+    clap_complete::generate(shell, &mut completing(everything), "tilo", &mut output);
+    for name in ["device", "system"] {
+        let mut device = device_here(DeviceCli::command(), everything);
+        clap_complete::generate(shell, &mut device, name, &mut output);
+    }
+    let mut package = package_command(everything);
+    clap_complete::generate(shell, &mut package, "package", &mut output);
+    let mut agent = AgentCli::command();
+    clap_complete::generate(shell, &mut agent, "agent", &mut output);
+    clap_complete::generate(shell, &mut ActionCli::command(), "action", &mut output);
+    append_app_completions(shell, &mut output)?;
+    output.extend_from_slice(desktop::dynamic_completions(shell).as_bytes());
+    if shell == Shell::Zsh && output.starts_with(b"#compdef tilo\n") {
+        // One file answers every name this program goes by.
+        output.splice(
+            ..b"#compdef tilo\n".len(),
+            b"#compdef tilo device system action package agent\n"
+                .iter()
+                .copied(),
+        );
+    }
+    if let Err(error) = std::io::stdout().write_all(&output)
+        && error.kind() != std::io::ErrorKind::BrokenPipe
+    {
+        return Err(error).context("writing completions");
+    }
+    Ok(ExitCode::SUCCESS)
+}
+
+/// The commands that act in hosted workspaces (and `do`, which acts here or
+/// there): their answer, or the command back when it is none of them.
+fn run_hosted(
+    door: Option<&str>,
+    workspace: Option<String>,
+    cmd: Cmd,
+    spelling: &tilo_control::front::Spelling,
+) -> Result<Result<ExitCode>, Cmd> {
+    let needs_workspace = || anyhow::anyhow!("name the workspace: -w <name or id>");
+    Ok(match cmd {
+        Cmd::Do { action, args } => Ok(run_do(door, workspace, action, args, spelling)),
+        Cmd::Keys { json, cmd } => Ok(hosted::keys(door, json, workspace.as_deref(), cmd)),
+        Cmd::Account { json, cmd } => Ok(hosted::account(door, json, cmd)),
+        Cmd::Files { json, cmd } => workspace
+            .ok_or_else(needs_workspace)
+            .map(|workspace| hosted::files(door, json, &workspace, cmd)),
+        Cmd::Run { file, json } => workspace
+            .ok_or_else(needs_workspace)
+            .map(|workspace| hosted::program(door, json, &workspace, &file)),
+        other => return Err(other),
+    })
+}
+
 fn run(cli: Cli) -> Result<ExitCode> {
     let spelling = tilo_control::front::Spelling::tilo();
-    match cli.cmd {
+    let cmd = match run_hosted(cli.door.as_deref(), cli.workspace, cli.cmd, &spelling) {
+        Ok(answered) => return answered,
+        Err(cmd) => cmd,
+    };
+    match cmd {
+        Cmd::Do { .. }
+        | Cmd::Keys { .. }
+        | Cmd::Account { .. }
+        | Cmd::Files { .. }
+        | Cmd::Run { .. } => bail!("run_hosted answers the hosted commands"),
         Cmd::Open { app, items } => Ok(desktop::run_open(&app, &items, &spelling)),
         Cmd::Action { cmd } => Ok(desktop::run_action(cmd, &spelling)),
-        Cmd::Do { action, args } => Ok(desktop::run_action(
-            desktop::ActionCmd::Run { action, args },
-            &spelling,
-        )),
         Cmd::Actions { filter } => Ok(desktop::run_action(
             desktop::ActionCmd::List { filter },
             &spelling,
@@ -691,42 +867,7 @@ fn run(cli: Cli) -> Result<ExitCode> {
             what,
             prefix.as_deref().unwrap_or_default(),
         )),
-        Cmd::Completions { shell } => {
-            let mut output = Vec::new();
-            let everything = Here {
-                desktop: true,
-                apps: true,
-                system: true,
-                has: |_| true,
-            };
-            clap_complete::generate(shell, &mut completing(everything), "tilo", &mut output);
-            for name in ["device", "system"] {
-                let mut device = device_here(DeviceCli::command(), everything);
-                clap_complete::generate(shell, &mut device, name, &mut output);
-            }
-            let mut package = package_command(everything);
-            clap_complete::generate(shell, &mut package, "package", &mut output);
-            let mut agent = AgentCli::command();
-            clap_complete::generate(shell, &mut agent, "agent", &mut output);
-            clap_complete::generate(shell, &mut ActionCli::command(), "action", &mut output);
-            append_app_completions(shell, &mut output)?;
-            output.extend_from_slice(desktop::dynamic_completions(shell).as_bytes());
-            if shell == Shell::Zsh && output.starts_with(b"#compdef tilo\n") {
-                // One file answers every name this program goes by.
-                output.splice(
-                    ..b"#compdef tilo\n".len(),
-                    b"#compdef tilo device system action package agent\n"
-                        .iter()
-                        .copied(),
-                );
-            }
-            if let Err(error) = std::io::stdout().write_all(&output)
-                && error.kind() != std::io::ErrorKind::BrokenPipe
-            {
-                return Err(error).context("writing completions");
-            }
-            Ok(ExitCode::SUCCESS)
-        }
+        Cmd::Completions { shell } => completions(shell),
         Cmd::Device { cmd } => run_system_command(cmd),
         Cmd::Agent { cmd } => agent::run(cmd),
         Cmd::Login { code, agent, site } => login::login(&code, agent.as_deref(), site.as_deref()),
@@ -861,21 +1002,15 @@ compdef _tilo_with_app_completion tilo
 
 fn run_system(cmd: DeviceCmd) -> Result<ExitCode> {
     match cmd {
-        DeviceCmd::Status { json } => run(Cli {
-            cmd: Cmd::Status { json },
-        }),
-        DeviceCmd::Rollback { yes } => run(Cli {
-            cmd: Cmd::Rollback { yes },
-        }),
+        DeviceCmd::Status { json } => run(Cli::of(Cmd::Status { json })),
+        DeviceCmd::Rollback { yes } => run(Cli::of(Cmd::Rollback { yes })),
         DeviceCmd::Upgrade {
             to,
             yes,
             reboot,
             check,
         } => os_upgrade(to.as_deref(), yes, reboot, check),
-        DeviceCmd::Boot { entry } => run(Cli {
-            cmd: Cmd::Boot { entry },
-        }),
+        DeviceCmd::Boot { entry } => run(Cli::of(Cmd::Boot { entry })),
         DeviceCmd::Repair => {
             print_repair_help();
             Ok(ExitCode::SUCCESS)
@@ -1754,7 +1889,10 @@ mod tests {
     fn help_on_a_tilo_desktop_lists_what_works_there_verbatim() {
         assert_eq!(
             listed(EVERYWHERE),
-            ["app", "action", "workspace", "device", "agent", "package"]
+            [
+                "app", "action", "workspace", "keys", "account", "files", "run", "device", "agent",
+                "package"
+            ]
         );
         let help = command_here(EVERYWHERE).render_help().to_string();
         assert_eq!(
@@ -1762,32 +1900,40 @@ mod tests {
             concat!(
                 "Use apps and actions, and look after your devices\n",
                 "\n",
-                "Usage: tilo <COMMAND>\n",
+                "Usage: tilo [OPTIONS] <COMMAND>\n",
                 "\n",
                 "Commands:\n",
                 "  app        Find, get, update and remove apps\n",
                 "  action     See what this desktop can do, and do it\n",
                 "  workspace  Your workspaces on this desktop\n",
+                "  keys       Keys to your hosted workspaces, for your code and its agents\n",
+                "  account    Your hosted account: its workspaces\n",
+                "  files      Files into a hosted workspace\n",
+                "  run        Run a tilolang program in a hosted workspace, as one undoable step\n",
                 "  device     Your devices: update them, go back, repair them, develop on them\n",
                 "  agent      Connect agents to this desktop, and choose their models\n",
                 "  package    Make and sign packages\n",
                 "  help       Print this message or the help of the given subcommand(s)\n",
                 "\n",
                 "Options:\n",
-                "  -h, --help  Print help\n",
+                "  -w, --workspace <WORKSPACE>  A hosted workspace to act in, by name or id (key: TILO_API_KEY)\n",
+                "  -h, --help                   Print help\n",
                 "\n",
                 "Examples:\n",
-                "  tilo open calculator         Open Calculator\n",
-                "  tilo open notes ~/plan.md    Open a file in Notes\n",
-                "  tilo actions                 What this desktop can do\n",
-                "  tilo do new-terminal-window  Do one of those things\n",
-                "  tilo app search pdf          Find apps\n",
-                "  tilo app update              Update every app\n",
-                "  tilo status                  What runs on this device\n",
-                "  tilo device update           Move onto the newest system\n",
-                "  tilo update                  Update apps and this device\n",
-                "  tilo agent connect claude    Let Claude Code act on this desktop\n",
-                "  tilo package pack            Make a package of your app\n",
+                "  tilo open calculator                       Open Calculator\n",
+                "  tilo open notes ~/plan.md                  Open a file in Notes\n",
+                "  tilo actions                               What this desktop can do\n",
+                "  tilo do new-terminal-window                Do one of those things\n",
+                "  tilo app search pdf                        Find apps\n",
+                "  tilo app update                            Update every app\n",
+                "  tilo status                                What runs on this device\n",
+                "  tilo device update                         Move onto the newest system\n",
+                "  tilo update                                Update apps and this device\n",
+                "  tilo agent connect claude                  Let Claude Code act on this desktop\n",
+                "  tilo package pack                          Make a package of your app\n",
+                "  tilo keys create \"Visa backend\"            A key for your own backend: you approve it in your Tilo\n",
+                "  tilo account workspaces create \"Jane Doe\"  A hosted workspace, one per customer\n",
+                "  tilo keys mint -w jane-doe                 An MCP URL and token for an agent in that workspace alone\n",
             )
         );
     }
@@ -1803,7 +1949,10 @@ mod tests {
             system: false,
             has: |_| false,
         };
-        assert_eq!(listed(elsewhere), ["app", "login"]);
+        assert_eq!(
+            listed(elsewhere),
+            ["app", "keys", "account", "files", "run", "login"]
+        );
         let help = command_here(elsewhere).render_help().to_string();
         for absent in [
             "tilo open",
@@ -1821,14 +1970,14 @@ mod tests {
             has: |_| false,
         };
         // A bare computer (the tilo.sh installer's) logs in to the person's
-        // workspace, and does nothing else yet.
-        assert_eq!(listed(nothing), ["login"]);
-        assert!(
-            !command_here(nothing)
-                .render_help()
-                .to_string()
-                .contains("Examples")
+        // workspace, and reaches hosted workspaces with a key.
+        assert_eq!(
+            listed(nothing),
+            ["keys", "account", "files", "run", "login"]
         );
+        let bare = command_here(nothing).render_help().to_string();
+        assert!(bare.contains("tilo keys create"), "{bare}");
+        assert!(!bare.contains("tilo open"), "{bare}");
         // Hidden, not removed: a typed command reaches its one plain sentence.
         let typed = command_here(nothing)
             .try_get_matches_from(["tilo", "device", "status"])
