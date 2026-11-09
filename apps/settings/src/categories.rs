@@ -88,6 +88,7 @@ pub enum Category {
     Permissions,
     Updates,
     About,
+    Billing,
 }
 
 impl Category {
@@ -117,6 +118,7 @@ impl Category {
         Category::Power,
         // Hubs
         Category::Users,
+        Category::Billing,
         Category::ExternalAccounts,
         Category::AgentModels,
         Category::Permissions,
@@ -149,6 +151,7 @@ impl Category {
             | Category::RegionFormats
             | Category::TimeDate => Section::Personal,
             Category::Users
+            | Category::Billing
             | Category::ExternalAccounts
             | Category::AgentModels
             | Category::Permissions => Section::Hubs,
@@ -211,6 +214,7 @@ impl Category {
             Category::Permissions => Icon::Shield,
             Category::Updates => Icon::Refresh,
             Category::About => Icon::Info,
+            Category::Billing => Icon::Landmark,
         }
     }
 
@@ -298,6 +302,7 @@ impl Category {
             Category::Permissions => "permissions",
             Category::Updates => "updates",
             Category::About => "about",
+            Category::Billing => "billing",
         }
     }
 }

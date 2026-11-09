@@ -78,6 +78,7 @@ fn page_icon(slug: &str) -> Option<ui::icons::Icon> {
         "notifications" => Icon::Bell,
         "default-apps" => Icon::LayoutGrid,
         "storage" => Icon::HardDrive,
+        "billing" => Icon::Landmark,
         "external_accounts" => Icon::Mail,
         "agent_models" => Icon::Sparkles,
         "region_formats" => Icon::Globe,

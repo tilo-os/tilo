@@ -119,6 +119,8 @@ const NETWORK_SCENARIOS: [&str; 19] = [
     NETWORK_VPN_BLOCKING,
 ];
 
+/// Billing for an account new to its provider: no card yet, nothing used.
+const BILLING_NEW: &str = "billing-new";
 /// Devices & sync with a device's row open, asking whether to remove it.
 const DEVICES_REMOVE: &str = "devices-remove";
 /// Speakers' room layout step: the first speaker selected, a speaker
@@ -189,6 +191,7 @@ pub fn names() -> &'static [&'static str] {
                 NETWORK_VPN_KILL_SWITCH,
                 NETWORK_VPN_BLOCKING,
                 DEVICES_REMOVE,
+                BILLING_NEW,
                 SPEAKERS_LAYOUT,
                 SPEAKERS_LAYOUT_PICKED,
                 SPEAKERS_LAYOUT_DRAG,
@@ -254,6 +257,9 @@ pub struct CaptureScene {
     /// The person's home relay and the workspaces this device hosts, as a
     /// stand-in for the host's answer, for the devices & sync capture.
     pub home_relay: Option<ui::tilo_actions::remote::home_relay_hosting::HomeRelayHosting>,
+    /// The person's account with their hosting provider, as a stand-in for
+    /// the host's answer, for the billing captures.
+    pub billing: Option<ui::tilo_actions::remote::host_account::HostAccount>,
     /// Whether the capture asks about removing the first other device.
     pub device_removal: bool,
     pub network: Option<NetworkSample>,
@@ -428,6 +434,7 @@ pub fn prepare(fixture: &mut Fixture<Settings>) {
         device_removal: fixture.scenario() == Some(DEVICES_REMOVE),
         home_relay: (fixture.scenario() == Some(Category::DeviceMesh.slug()))
             .then(home_relay_fixture),
+        billing: billing_fixture(fixture.scenario()),
         fleet_devices: if matches!(
             fixture.scenario(),
             Some(scenario) if scenario == Category::DeviceMesh.slug() || scenario == DEVICES_REMOVE
@@ -518,6 +525,76 @@ fn home_relay_fixture() -> ui::tilo_actions::remote::home_relay_hosting::HomeRel
             workspace("4d6f1a2c-0000-4000-8000-000000000003", "Taxes", false),
         ],
     }
+}
+
+/// Tilo Cloud selling Pro: for `billing`, the account on it with a card, most of a working week
+/// of Linux machine time, credit and two invoices; for `billing-new`, an account with nothing yet.
+pub(crate) fn billing_fixture(
+    scenario: Option<&str>,
+) -> Option<ui::tilo_actions::remote::host_account::HostAccount> {
+    use ui::tilo_actions::remote::host_account::{
+        Entitlement, HostAccount, HostKind, Invoice, InvoiceStatus, Limits, PlanOffer, Standing,
+        Usage, WorkspaceUsage,
+    };
+    let pro = Limits {
+        max_running: 2,
+        max_vms: 5,
+        sizes: vec!["small".into(), "medium".into()],
+        included_vm_seconds: Some(100 * 3600),
+        ..Limits::default()
+    };
+    let standing = match scenario? {
+        "billing" => Standing {
+            account: "acct-ada".into(),
+            plan: Some("pro".into()),
+            payment_method: true,
+            entitlements: vec![Entitlement::LinuxVms],
+            limits: Some(pro.clone()),
+            usage: Usage {
+                workspaces: vec![WorkspaceUsage {
+                    workspace: "4d6f1a2c-0000-4000-8000-000000000002".into(),
+                    vm_seconds: 37 * 3600,
+                    running: true,
+                    ..WorkspaceUsage::default()
+                }],
+                ..Usage::default()
+            },
+            credit: Some("$12.40".into()),
+            invoices: vec![
+                Invoice {
+                    id: "in_2".into(),
+                    issued_ms: 1_793_491_200_000,
+                    amount: "$24.10".into(),
+                    status: InvoiceStatus::Open,
+                    url: "https://tilo.sh/billing/invoices/in_2".into(),
+                },
+                Invoice {
+                    id: "in_1".into(),
+                    issued_ms: 1_790_812_800_000,
+                    amount: "$20.00".into(),
+                    status: InvoiceStatus::Paid,
+                    url: "https://tilo.sh/billing/invoices/in_1".into(),
+                },
+            ],
+        },
+        BILLING_NEW => Standing {
+            account: "acct-ada".into(),
+            ..Standing::default()
+        },
+        _ => return None,
+    };
+    Some(HostAccount {
+        host: "Tilo Cloud".into(),
+        kind: HostKind::Provider,
+        plans: vec![PlanOffer {
+            id: "pro".into(),
+            name: "Pro".into(),
+            price: Some("$20 a month".into()),
+            limits: pro,
+        }],
+        standing: Some(standing),
+        manage_billing: Some("https://tilo.sh/billing".into()),
+    })
 }
 
 /// Three devices of one person: a laptop holding work nothing else has
@@ -801,6 +878,7 @@ pub fn staged(scenario: Option<&str>) -> Staged {
             | NETWORK_MOBILE_PUK,
         ) => Staged::Pane(Category::Network),
         Some(DEVICES_REMOVE) => Staged::Pane(Category::DeviceMesh),
+        Some(BILLING_NEW) => Staged::Pane(Category::Billing),
         Some(SPEAKERS_LAYOUT | SPEAKERS_LAYOUT_PICKED | SPEAKERS_LAYOUT_DRAG) => {
             Staged::Pane(Category::Speakers)
         }
@@ -955,7 +1033,7 @@ mod tests {
     fn scenarios_name_their_pane_and_size() {
         assert_eq!(
             names().len(),
-            Category::ALL.len() + 46 + CODEC_SCENARIOS.len() + WINDOWS_SCENARIOS.len()
+            Category::ALL.len() + 47 + CODEC_SCENARIOS.len() + WINDOWS_SCENARIOS.len()
         );
         assert_eq!(
             staged(Some(DISPLAYS_KEYBOARD)),
@@ -991,6 +1069,7 @@ mod tests {
             staged(Some(DEVICES_REMOVE)),
             Staged::Pane(Category::DeviceMesh)
         );
+        assert_eq!(staged(Some(BILLING_NEW)), Staged::Pane(Category::Billing));
         for scenario in CODEC_SCENARIOS {
             assert_eq!(staged(Some(scenario)), Staged::Pane(Category::Updates));
             assert!(codec_status(Some(scenario)).is_some());

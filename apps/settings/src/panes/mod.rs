@@ -24,6 +24,7 @@ pub mod agent_sign_in;
 pub mod agent_vertex;
 pub mod appearance;
 pub mod audio;
+pub mod billing;
 pub mod bluetooth;
 pub mod device_mesh;
 pub mod disk_unlock;
@@ -91,6 +92,7 @@ pub(crate) fn view(
         crate::categories::Category::About => about::view(cx, app),
         crate::categories::Category::ExternalAccounts => accounts::view(cx, app),
         crate::categories::Category::AgentModels => agent_models::view(cx, app),
+        crate::categories::Category::Billing => billing::view(cx, app),
     }
 }
 
