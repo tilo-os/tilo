@@ -318,6 +318,10 @@ impl Decorator for DragSource {
     }
 }
 
+#[cfg(test)]
+#[path = "drag_source_tests.rs"]
+mod tests;
+
 impl crate::component::SlotViews for DragSource {
     fn len(&self) -> usize {
         1

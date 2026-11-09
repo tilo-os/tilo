@@ -147,3 +147,36 @@ fn a_pin_shown_by_a_still_theme_lands_at_once() {
     assert_eq!(placed.progress(now), 1.0, "shown on the frame it happens");
     assert!(!placed.is_moving(now), "and it asks for nothing");
 }
+
+#[test]
+fn a_map_is_known_by_the_key_its_view_gave_it_not_by_where_it_stands() {
+    use crate::component::{Described, Event};
+    // Two maps at the same origin are two canvases, and a drag let go over one must never land
+    // on the other. The map's key on the drag bus is the stable one the view named it by, never
+    // a place it happens to stand at: two maps' plates side by side at the same x would share a
+    // key, and one would take the other's drop.
+    let left = Map::from_props(
+        "left",
+        MapProps {
+            drop: Event::None,
+            ..MapProps::default()
+        },
+    );
+    let right = Map::from_props(
+        "right",
+        MapProps {
+            drop: Event::None,
+            ..MapProps::default()
+        },
+    );
+    assert_ne!(
+        left.drop_key(),
+        right.drop_key(),
+        "two maps are told apart by their views' keys"
+    );
+    assert!(
+        left.drop_key().contains("left"),
+        "the left map is known by its own key: {}",
+        left.drop_key()
+    );
+}

@@ -221,6 +221,10 @@ pub struct Map {
     /// What a resource dragged onto the map and let go does: the map reports it with where it
     /// was dropped, and the view places it.
     drop: Event,
+    /// The key the map is known by on the drag bus, namespaced from the view that built it: a
+    /// drag that started in one of its pins never lands back on the map it came from, and two
+    /// maps never answer each other's drops.
+    key: String,
 }
 
 impl Default for Map {
@@ -249,6 +253,7 @@ impl Map {
             placed: HashMap::new(),
             laid: Rc::default(),
             drop: Event::None,
+            key: String::new(),
         }
     }
 
@@ -265,10 +270,11 @@ impl Map {
         self.camera
     }
 
-    /// The key the map is known by on the drag bus: its own, so a drag that started in a pin
-    /// never lands back on the map it came from.
-    fn drop_key(&self) -> String {
-        format!("map\u{1f}{}", self.rect.x0)
+    /// The key the map is known by on the drag bus: its own stable one, so a drag that started
+    /// in a pin never lands back on the map it came from, and two maps never answer each other's
+    /// drops.
+    fn drop_key(&self) -> &str {
+        &self.key
     }
 
     /// Look with `camera`: where the person left the canvas on this device.
@@ -402,7 +408,7 @@ impl Map {
 impl Described for Map {
     type Props = MapProps;
 
-    fn from_props(_key: &str, props: MapProps) -> Self {
+    fn from_props(key: &str, props: MapProps) -> Self {
         let MapProps {
             name: _,
             ground,
@@ -410,6 +416,7 @@ impl Described for Map {
             drop,
         } = props;
         let mut map = Self::new();
+        map.key = format!("map\u{1f}{key}");
         map.ground = ground;
         map.drop = drop;
         for pin in pins {
@@ -860,6 +867,16 @@ impl Widget for Map {
         self.rect
     }
 
+    /// A pin holding the pointer — a drag it latched, a menu open in what it shows — owns input
+    /// as it does anywhere: without this the map would inherit the leaf default, and a drag a
+    /// pin started would lose the pointer the moment it left the pin's box.
+    fn wants_pointer_capture(&self) -> bool {
+        self.parts
+            .children
+            .iter()
+            .any(|child| child.wants_pointer_capture())
+    }
+
     fn children(&self) -> Vec<&dyn Widget> {
         self.parts
             .children
@@ -934,7 +951,7 @@ impl Widget for Map {
         // A resource another view dragged and let go inside the map is a drop here: the map
         // reports what it carried and the canvas point under the pointer, and the view places
         // it there (the shell's own `open`, or its place at a point).
-        if let Some(landed) = crate::widget::drag_bus::take(&self.drop_key(), self.rect) {
+        if let Some(landed) = crate::widget::drag_bus::take(self.drop_key(), self.rect) {
             let crate::dnd::DragPayload::Custom { kind, blob } = landed.payload else {
                 return changed;
             };

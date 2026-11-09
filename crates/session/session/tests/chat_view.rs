@@ -611,3 +611,90 @@ fn a_resource_dropped_on_the_composer_rides_with_the_message_and_the_agents_turn
         "the turn asks what the person wrote first: {instruction}"
     );
 }
+
+/// The example drag from a message's attachment chip onto the canvas: a press on a chip inside
+/// the transcript's scrolling region travels out of it, lifts the chip carrying its resource,
+/// and the map under the pointer where it is let go runs the system's `place`. The video the
+/// chip holds is placed at the point it was let go, not left unplaced or placed at the origin.
+#[test]
+fn an_attachment_chip_dragged_out_of_the_transcript_places_its_resource_on_the_canvas() {
+    let _settled = ui::motion::testing::settled();
+    let root = common::private_home();
+    let mut session = session(root.path());
+    // The small demo channel whose whole transcript fits: its shared video's row is what the
+    // page draws for the attachment, in reach of a pointer.
+    const SHARED: &str = "I rewrote my window compositor in Rust and it changed EVERYTHING!!!";
+    const DROPPED: &str = "tube.video:vid_rust_async";
+    place(&mut session, "chat.workspace.channels:c_general");
+    common::until(&mut session, "the channel's page", |session| {
+        session.shell_says(SHARED)
+    });
+    // The chip stands on screen: its row's label, drawn through the transcript's scroll view.
+    let (chip_x, chip_y, chip_w, chip_h) = session.shell_text_bounds(SHARED).unwrap_or_else(|| {
+        panic!(
+            "the attachment's row stands on screen: {:?}",
+            session.accessible_labels()
+        )
+    });
+    // Bare canvas under the place: the map fills the desk below the entry, and the channel's
+    // window stands over it. A spot near the map's foot, left of the window's right edge and
+    // below its bottom, is the map itself — not the window's own drop target (its composer).
+    let (from_x, from_y) = (chip_x + chip_w / 2.0, chip_y + chip_h / 2.0);
+    let (to_x, to_y) = (60.0, f64::from(common::HEIGHT) - 40.0);
+    // The resources placed before the drag: the drag adds the video beside the channel.
+    let before: Vec<String> = common::places(&session)
+        .into_iter()
+        .map(|place| place.record)
+        .collect();
+    assert!(
+        !before.iter().any(|record| record == DROPPED),
+        "the video is not placed before the drag: {before:?}"
+    );
+    shot(&mut session, root.path(), "before-drag.png");
+    let socket = root.path().join("test-control.sock");
+    assert_eq!(
+        common::control(
+            &mut session,
+            &socket,
+            &json!({
+                "op": "drag",
+                "x_from": from_x,
+                "y_from": from_y,
+                "x_to": to_x,
+                "y_to": to_y,
+            })
+        ),
+        json!({"ok": {}}),
+        "the drag is taken"
+    );
+    // The drag places the resource the chip held: the map's `drop` ran the system's `place`, so
+    // a place of the video stands in the arrangement, at the canvas point it was let go.
+    common::until(&mut session, "the video placed on the canvas", |session| {
+        common::places(session)
+            .iter()
+            .any(|place| place.record == DROPPED)
+    });
+    let placed: Vec<String> = common::places(&session)
+        .into_iter()
+        .map(|place| place.record)
+        .collect();
+    assert!(
+        placed.iter().any(|record| record == DROPPED),
+        "the dragged chip places the resource it holds; before: {before:?}, after: {placed:?}; the \
+         shell refused {:?}",
+        session.shell_refusals()
+    );
+    // The video's strip stands where it was dropped, not at the origin: its canvas point is the
+    // map point under the pointer where the drag ended.
+    let place_key = common::places(&session)
+        .into_iter()
+        .find(|place| place.record == DROPPED)
+        .and_then(|place| place.key.parse().ok())
+        .expect("the video's place stands in the arrangement");
+    let strip = common::strip_of(&session, place_key).expect("the video's place has a strip");
+    assert!(
+        strip.canvas_x > 0 && strip.canvas_y > 0,
+        "the drop places the video at the point it was let go, not the origin: {strip:?}"
+    );
+    shot(&mut session, root.path(), "dragged-out.png");
+}
