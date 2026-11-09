@@ -625,7 +625,9 @@ fn open_session(socket: &Path, runs: Option<&str>, command: Vec<String>) -> (Uni
         | ServeResponse::NoRuntime { reason } => {
             panic!("the service refused the session: {reason}")
         }
-        ServeResponse::Environments { .. } | ServeResponse::Allowed => {
+        ServeResponse::Environments { .. }
+        | ServeResponse::Allowed
+        | ServeResponse::Branched { .. } => {
             panic!("a session request answered with something else")
         }
     }

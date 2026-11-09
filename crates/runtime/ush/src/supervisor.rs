@@ -562,6 +562,10 @@ pub enum ServeRequest {
         #[serde(default)]
         args: serde_json::Value,
     },
+    /// Branch the environments of the request's workspace into the workspace
+    /// `into`, a branch of it the person made ([`crate::branch`]). Only the
+    /// session may ask: an app names no workspace but its own.
+    BranchWorkspace { into: String },
 }
 
 /// One environment as an app sees it: what it is called, what it has, and
@@ -647,6 +651,11 @@ pub enum ServeResponse {
     },
     /// The allow was recorded.
     Allowed,
+    /// The workspace's environments are the branch's too.
+    Branched {
+        #[serde(flatten)]
+        branched: crate::branch::Branched,
+    },
 }
 
 /// Decide one request: the environment record it names (`None` for the
@@ -900,6 +909,10 @@ fn serve_request(
         } => return serve_host(transport, writer, store, caller, &req),
         ServeRequest::AllowHost { expiry } => {
             reply(writer, &allow_host(caller, store, *expiry), None)?;
+            return Ok(Served::Done);
+        }
+        ServeRequest::BranchWorkspace { into } => {
+            reply(writer, &branch_workspace(caller, store, into), None)?;
             return Ok(Served::Done);
         }
         ServeRequest::OpenSession { .. } => {}
@@ -1227,6 +1240,33 @@ fn allow_host(
     }
 }
 
+/// Branch the environments of the workspace `store` is of into `into`, for the session alone.
+fn branch_workspace(caller: &crate::host::Caller, store: &Store, into: &str) -> ServeResponse {
+    if *caller != crate::host::Caller::Session {
+        return ServeResponse::Denied {
+            reason: "only the session branches a workspace".into(),
+        };
+    }
+    let into = match crate::workspace::WorkspaceId::parse(Some(into)) {
+        Ok(into) if !into.is_primary() => into,
+        Ok(_) => {
+            return ServeResponse::Denied {
+                reason: "a branch is a workspace of its own".into(),
+            };
+        }
+        Err(reason) => return ServeResponse::Denied { reason },
+    };
+    let branched = crate::branch::branch_environments(store, &store.for_workspace(&into));
+    AuditLog::at(store.audit_dir()).append(
+        &crate::audit::AuditRecord::new("serve", "-", "branch-workspace", branched.is_ok())
+            .because(format!("{} into {into}", store.workspace_id().as_str())),
+    );
+    match branched {
+        Ok(branched) => ServeResponse::Branched { branched },
+        Err(reason) => ServeResponse::Denied { reason },
+    }
+}
+
 /// Answer a request about the environments themselves.
 fn directory(req: &ServeRequest, store: &Store) -> Result<Vec<EnvironmentEntry>, String> {
     let records = Records::of(store);
@@ -1288,7 +1328,8 @@ fn directory(req: &ServeRequest, store: &Store) -> Result<Vec<EnvironmentEntry>,
         }
         ServeRequest::ListEnvironments
         | ServeRequest::OpenSession { .. }
-        | ServeRequest::AllowHost { .. } => {}
+        | ServeRequest::AllowHost { .. }
+        | ServeRequest::BranchWorkspace { .. } => {}
     }
     let mut out = Vec::new();
     for key in records.keys().map_err(|e| e.to_string())? {
