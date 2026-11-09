@@ -47,6 +47,8 @@ for file in etc/tilo/hosted-jail.json etc/tilo usr/share/tilo/cosign.pub usr/sha
 done
 grep -q '"service_uid": 10001' "$root/etc/tilo/hosted-jail.json" || die 'the jail serves another uid'
 grep -q '"pasta": "/usr/bin/pasta"' "$root/etc/tilo/hosted-jail.json" || die 'the jail names another pasta'
+grep -q 'use-sigstore-attachments: true' "$root/etc/containers/registries.d/registry.tilo.so.yaml" \
+  || die 'skopeo is not told where the guest'"'"'s signature is'
 grep -A3 '"registry.tilo.so/tilo/hosted-guest"' "$root/etc/containers/policy.json" \
   | grep -q '"keyPath": "/usr/share/tilo/cosign.pub"' || die 'the guest is not held to the release key'
 echo 'the VM host image holds what a host runs'

@@ -62,6 +62,9 @@ COPY --chmod=0644 os/containers/tilo-vm-host/hosted-jail.json /etc/tilo/hosted-j
 # fetch-guest accepts only the guest the release key signed
 # (/etc/containers/policy.json's scope for registry.tilo.so/tilo/hosted-guest).
 COPY --chmod=0644 os/etc/containers/policy.json /etc/containers/policy.json
+# Where the signatures are: cosign keeps them as sigstore attachments in the
+# same repository, which skopeo looks at only when told to.
+COPY --chmod=0644 os/etc/containers/registries.d/registry.tilo.so.yaml /etc/containers/registries.d/registry.tilo.so.yaml
 COPY --chmod=0644 keys/cosign.pub /usr/share/tilo/cosign.pub
 COPY --chmod=0644 keys/release/rekor.pub /usr/share/tilo/release/rekor.pub
 

@@ -67,7 +67,8 @@ mkdir -p "$run"
 chown tilo-hosted:tilo-hosted "$run"
 
 # 4. the guest
-as_service() { setpriv --reuid=10001 --regid=10001 --init-groups --inh-caps=-all -- "$@"; }
+# The service's own home: skopeo reads its configuration under $HOME.
+as_service() { HOME=$data setpriv --reuid=10001 --regid=10001 --init-groups --inh-caps=-all -- "$@"; }
 if [ -n "${TILO_VM_GUEST_REF:-}" ]; then
   guest=$(as_service tilo-legacy hosted fetch-guest --images "$data/images" --ref "$TILO_VM_GUEST_REF")
 else
@@ -93,4 +94,4 @@ if [ "$memory_mib" = auto ]; then
 fi
 if [ -n "$memory_mib" ]; then set -- "$@" --memory-mib "$memory_mib"; fi
 if [ -n "${TILO_VM_STATUS_LISTEN:-}" ]; then set -- "$@" --status-listen "$TILO_VM_STATUS_LISTEN"; fi
-exec setpriv --reuid=10001 --regid=10001 --init-groups --inh-caps=-all -- tilo-legacy hosted serve "$@"
+HOME=$data exec setpriv --reuid=10001 --regid=10001 --init-groups --inh-caps=-all -- tilo-legacy hosted serve "$@"
