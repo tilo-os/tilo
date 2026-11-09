@@ -1,13 +1,15 @@
 //! Revocations the relay's workspaces carry.
 //!
-//! A person's root revokes one of their devices, and any device announces
+//! A person's root revokes a key it made, and any device of theirs announces
 //! the signed entry in a workspace it shares with the relay (`IdentityHello`).
-//! The relay takes it from there. An entry its own person's root signed joins
-//! the relay's revocation log, which every handshake, session and
-//! administration door reads, so the device is refused everywhere at once.
-//! Every workspace the relay governs writes the entries it may carry into its
-//! governance: the device leaves the workspace's access and channels, and every
-//! member's replica refuses it from the workspace's own history.
+//! The relay takes it from there. Every entry joins the relay's revocation
+//! log, which every handshake, session and administration door reads, so the
+//! key is refused everywhere at once — a device of the person's, and the
+//! stand-in approver this host holds for them, which no workspace lists
+//! because a stand-in is no device. Every workspace the relay governs also
+//! writes the entries it may carry into its governance: the device leaves the
+//! workspace's access and channels, and every member's replica refuses it from
+//! the workspace's own history.
 
 use std::time::SystemTime;
 
@@ -15,6 +17,12 @@ use tilo_lock::RwLockRecover as _;
 use tilo_user_identity::{RevocationEntry, verify_revocation_entry};
 
 use super::{GovernedWorkspace, Workspaces};
+
+/// Revocations the relay keeps in its log. A key's revocation is a statement
+/// its root signed, and the relay refuses a key it was told to forget for as
+/// long as it serves the person: past this many, the log holds what it has and
+/// says so rather than grow without bound.
+const MAX_LOGGED_REVOCATIONS: usize = 4096;
 
 impl Workspaces {
     /// Take in the root-signed `entries` a device announced.
@@ -29,7 +37,7 @@ impl Workspaces {
         if entries.is_empty() {
             return Ok(());
         }
-        self.record_own(&entries)?;
+        self.record(&entries)?;
         let workspaces = self
             .inner
             .workspaces
@@ -49,19 +57,42 @@ impl Workspaces {
         refused
     }
 
-    /// Add the entries of the relay's own person to its revocation log and
-    /// its live list.
-    fn record_own(&self, entries: &[RevocationEntry]) -> Result<(), String> {
+    /// Add `entries` to the relay's revocation log and its live list: what
+    /// this host refuses from each entry's moment on.
+    ///
+    /// A root signs only about the keys it made, so whose root signed a
+    /// verified entry decides whose keys it reaches, and the relay keeps them
+    /// all: its own person's devices, a member's, and the stand-in approver it
+    /// holds for a member whose root lives in one browser tab — a key no
+    /// workspace lists, because a stand-in is no device, but the one this host
+    /// signs with when it approves a returning sign-in.
+    fn record(&self, entries: &[RevocationEntry]) -> Result<(), String> {
         let host = &self.inner.host;
+        let state_root = host.access.state_root();
         let live = self.revocations();
-        let own = entries.iter().filter(|entry| {
-            entry.user_public_key == host.cert.user_public_key
-                && !live.is_revoked_at(&entry.revoked_device_public_key, entry.revoked_at_ns)
-        });
+        let fresh = entries
+            .iter()
+            .filter(|entry| {
+                !live.is_revoked_at(&entry.revoked_device_public_key, entry.revoked_at_ns)
+            })
+            .collect::<Vec<_>>();
+        if fresh.is_empty() {
+            return Ok(());
+        }
+        let logged =
+            crate::store::load_revocations(state_root).map_err(|error| error.to_string())?;
+        let mut room = MAX_LOGGED_REVOCATIONS.saturating_sub(logged.len());
         let mut changed = false;
-        for entry in own {
-            crate::store::append_revocation(host.access.state_root(), entry)
-                .map_err(|error| error.to_string())?;
+        for entry in fresh {
+            if room == 0 {
+                tracing::warn!("the relay's revocation log is full: a revocation was not kept");
+                break;
+            }
+            if crate::store::append_revocation(state_root, entry)
+                .map_err(|error| error.to_string())?
+            {
+                room -= 1;
+            }
             changed |= host
                 .revocations
                 .write_recover()
