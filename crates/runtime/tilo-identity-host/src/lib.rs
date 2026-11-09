@@ -19,11 +19,9 @@ pub mod broker;
 pub mod certificates;
 #[cfg(unix)]
 pub mod certification_ceremony;
-#[cfg(unix)]
 pub mod custody;
 #[cfg(unix)]
 pub mod device_admin;
-#[cfg(unix)]
 pub mod device_fleet;
 #[cfg(unix)]
 pub mod enrolled_transport;
@@ -41,7 +39,7 @@ pub mod provisioning;
 #[cfg(unix)]
 pub mod registry;
 
-#[cfg(not(unix))]
+#[cfg(all(not(unix), not(target_arch = "wasm32")))]
 mod unsupported_host;
-#[cfg(not(unix))]
+#[cfg(all(not(unix), not(target_arch = "wasm32")))]
 pub use unsupported_host::{device_fleet, provisioning, registry};

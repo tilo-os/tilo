@@ -812,7 +812,11 @@ impl Joined {
         let custody = &raw const self.custody;
         // SAFETY: no run has been admitted yet, so nothing reads this store
         // concurrently; each admission afterwards pins what it reads.
-        unsafe { (*(custody.cast_mut())).identity_paths = Some(paths) };
+        unsafe {
+            (*(custody.cast_mut())).custody = Some(std::sync::Arc::new(
+                tilo_identity_host::custody::files::Files::new(paths),
+            ));
+        }
     }
 }
 

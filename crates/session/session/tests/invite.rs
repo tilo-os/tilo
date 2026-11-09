@@ -85,7 +85,7 @@ fn identity(cert: &DeviceCert, key: &SigningKey) -> HostIdentity {
         device_signing_key: key.clone(),
         workspace_device_certs: HashMap::new(),
         workspace_revocations: HashMap::new(),
-        identity_paths: None,
+        custody: None,
     }
 }
 

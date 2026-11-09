@@ -218,7 +218,7 @@ impl Devices {
                         device_signing_key: person.phone_key.clone(),
                         workspace_device_certs: std::collections::HashMap::default(),
                         workspace_revocations: std::collections::HashMap::default(),
-                        identity_paths: None,
+                        custody: None,
                     }),
                     own: OwnPresence::default(),
                     hosts: Vec::new(),

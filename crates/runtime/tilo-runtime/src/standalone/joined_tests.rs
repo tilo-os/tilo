@@ -142,7 +142,7 @@ impl Joined {
                 device_signing_key: key.clone(),
                 workspace_device_certs: std::collections::HashMap::default(),
                 workspace_revocations: std::collections::HashMap::default(),
-                identity_paths: None,
+                custody: None,
             },
             local_endpoint(&key).await,
             BTreeSet::new(),
@@ -324,7 +324,7 @@ impl HostedWorkspace {
 fn assert_changed_custody_refused(joined: &Joined, workspace: WorkspaceId, actor: &str) {
     let mut custody = joined.custody.clone();
     // In memory only: this probe compares what it holds, never a disk.
-    custody.identity_paths = None;
+    custody.custody = None;
     let workspace_cert = custody.device_cert.clone();
     let default_root = SigningKey::from_bytes(&[95; 32]);
     custody.device_cert.user_public_key = default_root.verifying_key().to_bytes();
@@ -565,7 +565,7 @@ async fn a_foreign_runtime_joins_a_hosted_workspace_as_an_editor_and_syncs_both_
         device_signing_key: device_key.clone(),
         workspace_device_certs: std::collections::HashMap::default(),
         workspace_revocations: std::collections::HashMap::default(),
-        identity_paths: None,
+        custody: None,
     };
     let own_workspace = WorkspaceId::parse("bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb").unwrap();
     let joined = Joined::open(
@@ -1145,7 +1145,7 @@ async fn a_joined_workspace_s_record_content_crosses_the_host_both_ways() {
             device_signing_key: device_key.clone(),
             workspace_device_certs: std::collections::HashMap::default(),
             workspace_revocations: std::collections::HashMap::default(),
-            identity_paths: None,
+            custody: None,
         },
         local_endpoint(&device_key).await,
         BTreeSet::new(),
@@ -1297,7 +1297,7 @@ async fn a_want_through_the_host_waits_for_its_offline_holder_and_arrives_when_i
             device_signing_key: device_key.clone(),
             workspace_device_certs: std::collections::HashMap::default(),
             workspace_revocations: std::collections::HashMap::default(),
-            identity_paths: None,
+            custody: None,
         },
         local_endpoint(&device_key).await,
         BTreeSet::new(),

@@ -188,12 +188,7 @@ async fn an_execution_ending_after_the_snapshot_cannot_hide_changed_custody() {
 async fn custody_that_cannot_be_read_keeps_the_run() {
     let fixture = Fixture::new().await;
     let execution = fixture.read_from_disk();
-    let paths = fixture
-        .joined
-        .custody
-        .identity_paths
-        .clone()
-        .expect("the fixture reads custody from disk");
+    let paths = identity_paths(fixture.directory.path());
     std::fs::remove_file(&paths.device_privkey).unwrap();
     let refusal = execution
         .check(&fixture.joined)

@@ -1293,7 +1293,11 @@ fn joined_workspaces(
         device_signing_key: key.clone(),
         workspace_device_certs: std::collections::HashMap::new(),
         workspace_revocations: std::collections::HashMap::new(),
-        identity_paths: Some(tilo_identity_host::provisioning::collaboration_identity_paths()),
+        custody: Some(std::sync::Arc::new(
+            tilo_identity_host::custody::files::Files::new(
+                tilo_identity_host::provisioning::collaboration_identity_paths(),
+            ),
+        )),
     };
     let endpoint = listen_endpoint(&key, listen)?;
     let mut refused = joined::desktop_enrolled(profile)?;

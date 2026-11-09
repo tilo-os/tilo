@@ -42,8 +42,6 @@ use crate::fabric::{Continuity, SessionFabric};
 #[cfg(target_os = "linux")]
 use crate::sync::Enrolling;
 #[cfg(target_os = "linux")]
-use std::collections::HashMap;
-#[cfg(target_os = "linux")]
 use tilo_action_broker::record_content::ContentSources;
 #[cfg(target_os = "linux")]
 use tilo_device_fabric::DeviceId;
@@ -1757,27 +1755,13 @@ impl Client {
     }
 }
 
-#[cfg(target_os = "linux")]
 /// This device's collaboration identity: the key and certificate this session's endpoint runs on,
-/// when this machine has been provisioned.
-/// A session on a machine without one takes part in no workspace as anybody: it binds a fresh key
+/// when this host holds one.
+/// A session on a host without one takes part in no workspace as anybody: it binds a fresh key
 /// and stays anonymous until the person sets a device up.
 #[must_use]
 pub fn device_identity() -> Option<HostIdentity> {
-    let paths = tilo_identity_host::provisioning::collaboration_identity_paths();
-    let key = tilo_user_identity::persist::load_device_key(&paths).ok()?;
-    let cert = tilo_user_identity::persist::read_device_cert(&paths.device_cert).ok()?;
-    if cert.device_public_key != key.verifying_key().to_bytes() {
-        tracing::warn!("the collaboration device key and its certificate differ");
-        return None;
-    }
-    Some(HostIdentity {
-        device_cert: cert,
-        device_signing_key: key,
-        workspace_device_certs: HashMap::new(),
-        workspace_revocations: HashMap::new(),
-        identity_paths: Some(paths),
-    })
+    HostIdentity::open(crate::platform::identity::custody()?)
 }
 
 #[cfg(target_os = "linux")]

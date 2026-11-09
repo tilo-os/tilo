@@ -77,7 +77,7 @@ pub(crate) async fn spawn_ticking(
         device_signing_key: key.clone(),
         workspace_device_certs: std::collections::HashMap::new(),
         workspace_revocations: std::collections::HashMap::new(),
-        identity_paths: None,
+        custody: None,
     };
     let (cmd, task) = Actor::spawn_with_heartbeat(
         endpoint.clone(),

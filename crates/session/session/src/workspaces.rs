@@ -1794,7 +1794,7 @@ mod tests {
             device_signing_key: this,
             workspace_device_certs: std::collections::HashMap::new(),
             workspace_revocations: std::collections::HashMap::new(),
-            identity_paths: None,
+            custody: None,
         }
     }
 

@@ -44,7 +44,9 @@ impl Custody {
                 device_signing_key: key,
                 workspace_device_certs: std::collections::HashMap::new(),
                 workspace_revocations: std::collections::HashMap::new(),
-                identity_paths: Some(paths),
+                custody: Some(std::sync::Arc::new(
+                    tilo_identity_host::custody::files::Files::new(paths),
+                )),
             },
             principal,
             device,

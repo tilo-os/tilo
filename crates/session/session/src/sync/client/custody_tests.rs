@@ -186,7 +186,7 @@ impl Device {
             device_signing_key: key,
             workspace_device_certs: HashMap::new(),
             workspace_revocations: HashMap::new(),
-            identity_paths: None,
+            custody: None,
         };
         let state = tempfile::tempdir().expect("the session's directory");
         let engine = std::sync::Arc::new(

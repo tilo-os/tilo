@@ -140,7 +140,7 @@ pub fn certified_person_fixture_for_seeds(
             device_signing_key: device,
             workspace_device_certs: HashMap::new(),
             workspace_revocations: HashMap::new(),
-            identity_paths: None,
+            custody: None,
         },
     }
 }

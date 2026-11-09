@@ -61,7 +61,7 @@ fn custody(cert: &DeviceCert, key: &SigningKey) -> HostIdentity {
         device_signing_key: key.clone(),
         workspace_device_certs: HashMap::default(),
         workspace_revocations: HashMap::default(),
-        identity_paths: None,
+        custody: None,
     }
 }
 

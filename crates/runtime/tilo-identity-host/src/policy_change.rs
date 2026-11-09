@@ -460,6 +460,10 @@ mod platform {
 mod platform {
     //! Without timerfd: wait on the wall clock in steps of at most a second
     //! while an instant is registered, and report the timer unreliable.
+    #![allow(
+        clippy::unused_self,
+        reason = "the calls are the timerfd clock's, whose methods read the timer they hold"
+    )]
 
     use std::sync::{Condvar, Mutex, PoisonError};
     use std::time::Duration;

@@ -128,7 +128,7 @@ fn device(person: &ed25519_dalek::SigningKey, seed: u8, label: &str) -> Client {
                 device_signing_key: key,
                 workspace_device_certs: HashMap::new(),
                 workspace_revocations: HashMap::new(),
-                identity_paths: None,
+                custody: None,
             }),
             own: OwnPresence::default(),
             hosts: Vec::new(),

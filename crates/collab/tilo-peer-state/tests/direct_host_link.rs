@@ -387,7 +387,7 @@ async fn joins(
         device_signing_key: key.clone(),
         workspace_device_certs: std::collections::HashMap::new(),
         workspace_revocations: std::collections::HashMap::new(),
-        identity_paths: None,
+        custody: None,
     };
     let topic = tilo_peer_state::join::room_workspace_id(WORKSPACE).expect("a workspace topic");
     let enrollment = tilo_peer_state::owner::enroll::prepare_and_complete(

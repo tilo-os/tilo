@@ -2368,7 +2368,7 @@ mod transfers_between_devices {
                     device_signing_key: key,
                     workspace_device_certs: HashMap::new(),
                     workspace_revocations: HashMap::new(),
-                    identity_paths: None,
+                    custody: None,
                 }),
                 own: OwnPresence::default(),
                 hosts: Vec::new(),

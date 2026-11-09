@@ -23,6 +23,9 @@ pub(crate) mod plane;
 /// What a host lists as apps.
 pub mod apps;
 
+/// The identity this device signs with, as its host keeps it.
+pub mod identity;
+
 /// What apps hold and what the person's files say, as this host indexes them.
 pub mod indexes;
 

@@ -250,7 +250,7 @@ impl Member {
             workspace_revocations: std::collections::HashMap::new(),
             // Nothing here renews sealed writes: the member holds its
             // workspaces as it enrolled in them.
-            identity_paths: None,
+            custody: None,
         };
         let joined = Joined::from_profile(profile, custody, endpoint.clone())?;
         let plane = plane(profile, &joined, relay, None)?;
