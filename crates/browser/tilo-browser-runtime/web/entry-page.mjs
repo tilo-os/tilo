@@ -26,7 +26,8 @@ import {connectPeer, httpsPost, identityProfile, inspectInvitation, joinWorkspac
 import {readBrowserAccounts} from './browser-accounts.mjs';
 import {CustodyError, idbStorage, openDeviceCustody} from './device-custody.mjs';
 import {createIdentityActions, SIGN_IN, syncProfile} from './identity-actions.mjs';
-import {firstRun} from './first-run.mjs';
+import {firstRun, SEEN} from './first-run.mjs';
+import {loginCodes} from './login-code.mjs';
 import {pickImageFile, squarePhoto} from './profile-photos.mjs';
 import {deviceLabel, pairingFailure, pairSecret, whenRequested} from './pairing.mjs';
 import {readInstallSecret, SET_UP, SETUP_PHASES, setUpFailure, setUpMachine} from './machine-setup.mjs';
@@ -1188,7 +1189,7 @@ export async function startEntryPage({mode}) {
       page.mount?.setOwnPerson?.({user: own, label: displayName});
     }
     const attachIdentity = () => keepIdentity({peer: page.peer, mount: hostActions?.('identity') ?? page.mount, home: page.entry?.home,
-      name: () => displayName, runtime, link: page.link, photos, onAgent: ({label}) => firstRun?.connected(label), naming: {
+      name: () => displayName, runtime, link: page.link, photos, naming: {
         ask: (current, save) => askName(current, save),
         set: chosen => {
           displayName = chooseDisplayName(pagePerson(page), chosen);
@@ -1199,16 +1200,15 @@ export async function startEntryPage({mode}) {
       }});
     identityActions = attachIdentity();
     // The first screen (first-run.mjs) sets an agent up through this tab's
-    // root, and signs in with a passkey, once the page can.
-    if (firstRun && identityActions) {
-      firstRun.offerSetup(() => identityActions.connectAgent());
-      firstRun.offerSignIn(() => identityActions.perform(SIGN_IN.id));
-    } else firstRun?.unavailable({code: 'no-workspace'});
-    // Skip for now opens the person's own workspace, where the site gives
-    // them one: the home workspace let them in already (they stay in it,
-    // and find it in the workspace menu), but their own comes first.
+    // root and signs in with an agent, both through a login code its host
+    // makes, and signs in with a passkey, once the page can.
+    if (firstRun) offerFirstRun({page, identityActions});
+    // Leaving the first screen (skipped, or the agent is in) opens the
+    // person's own workspace, where the site gives them one: the home
+    // workspace let them in already (they stay in it, and find it in the
+    // workspace menu), but their own comes first.
     if (firstRun && !embed && here.kind !== 'own') {
-      firstRun.whenSkipped(() => void ownDesktopAllowed(page.entry?.home).then(open => {
+      firstRun.whenDone(() => void ownDesktopAllowed(page.entry?.home).then(open => {
         if (open) void openWorkspace({choice: {id: `${OPEN_WORKSPACE}own`, name: 'Your desktop', own: true}, page, status});
       }));
     }
@@ -1778,7 +1778,7 @@ function joinOnFirstGesture(status) {
  * browser holds them (`browserIdentity`): shown in the desktop, offered once
  * the person has done enough in the workspace to be worth keeping, at a pause.
  */
-function keepIdentity({peer, mount, home, name, runtime, link, naming, photos, onAgent}) {
+function keepIdentity({peer, mount, home, name, runtime, link, naming, photos}) {
   const identity = currentIdentity();
   if (!identity?.keepWithPasskey || !mount?.setHostActions) return null;
   // A device paired to a person whose root is elsewhere has nothing to keep.
@@ -1792,7 +1792,8 @@ function keepIdentity({peer, mount, home, name, runtime, link, naming, photos, o
     photos: !peer || peer.setDisplayName ? photos : null,
     hosts: () => membershipOrigins(identity.userPublicKey),
     lookups: () => [...membershipOrigins(), ...listedWorkspaces({home}).map(workspace => workspace.host.origin)],
-    pause: inputPause(), searchChord: mac ? '⌘K' : 'Ctrl+K', showPairLink: pairLinkSheet, askPairing: pairingAsk, onAgent,
+    pause: inputPause(), searchChord: mac ? '⌘K' : 'Ctrl+K', showPairLink: pairLinkSheet, askPairing: pairingAsk,
+    standIn: standInOf({peer, identity, runtime}), standInStore: globalThis.localStorage,
   });
   void actions.attach(mount);
   if (peer?.authoredChanges) {
@@ -1828,6 +1829,55 @@ function inputPause() {
   }
   for (const type of ['keydown', 'wheel', 'pointermove']) addEventListener(type, touch, {capture: true, passive: true});
   return () => held === 0 && Date.now() - last >= PAUSE_MS;
+}
+
+/**
+ * What the first screen asks of this page: login codes from the host it
+ * joined (for an agent to set Tilo up through this tab's root, or to sign
+ * this tab in as a person who has been here), and a passkey sign-in.
+ */
+function offerFirstRun({page, identityActions}) {
+  const peer = page.peer;
+  if (!peer?.origin || !peer.workspace) {
+    firstRun.unavailable({code: 'no-workspace'});
+    return;
+  }
+  const codes = loginCodes(peer.origin);
+  if (identityActions) {
+    firstRun.offerSetup(async () => {
+      const {link} = await identityActions.connectAgent();
+      const made = await codes.create(link);
+      // While the person's root is in this tab alone, a stand-in on the
+      // host keeps them from being lost with it.
+      void identityActions.keepStandIn().catch(error => console.warn('first run: stand-in', error));
+      return made;
+    });
+    firstRun.offerSignIn(() => identityActions.perform(SIGN_IN.id));
+  } else firstRun.unavailable({code: 'no-workspace'});
+  // Claimed by a device of the person: this tab asks to be certified as a
+  // device of theirs with the invite the claim named, as a pairing link
+  // does, and their stand-in on the host approves exactly that request.
+  firstRun.offerAgentSignIn(async () => ({...await codes.create(null), signIn: ({user, invite}) => {
+    const url = page.link.format({mode: 'desktop', target: {scope: {kind: 'room', host: peer.origin, room: peer.workspace}}});
+    try { globalThis.localStorage?.setItem(SEEN, '1'); } catch { /* The pairing link skips the first screen anyway. */ }
+    globalThis.location.assign(`${url}${new URL(url).hash.includes('?') ? '&' : '?'}pair=${pairSecret(user, invite)}`);
+    globalThis.location.reload();
+  }}));
+}
+
+/**
+ * The person's stand-in on the host `peer` is in, where the runtime can
+ * certify one with the root this tab holds and revoke it again.
+ */
+function standInOf({peer, identity, runtime}) {
+  if (!peer?.origin || typeof runtime?.certifyStandIn !== 'function' || typeof runtime?.revokeDevice !== 'function') return null;
+  const codes = loginCodes(peer.origin);
+  const post = httpsPost(peer.origin);
+  return {
+    ask: body => codes.standIn(body),
+    certify: key => runtime.certifyStandIn(identity, key),
+    revoke: key => runtime.revokeDevice(post, identity, key),
+  };
 }
 
 /**
