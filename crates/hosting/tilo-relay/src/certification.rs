@@ -149,6 +149,7 @@ impl CertificationProtocol {
 
     /// Name what approves for people's stand-ins here. Named once; a later
     /// call keeps the first.
+    #[cfg(feature = "web")]
     pub(crate) fn set_stand_in(&self, approver: Arc<dyn StandInApprover>) {
         let _ = self.stand_in.set(approver);
     }
