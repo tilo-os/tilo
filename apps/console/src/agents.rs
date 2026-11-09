@@ -135,21 +135,11 @@ impl Seen {
 }
 
 /// The place's content and its header's commands: every run, or the run
-/// chosen with the way back to every run.
+/// chosen, whose way back is the shell's.
 pub(crate) fn view(cx: &ViewCx<Console>, nav: &Nav, reads: &Reads) -> (Element, Vec<Element>) {
     let runs = &reads.runs;
     let door_state = reads.door.answer().state();
     let chosen = nav.run.get();
-    let mut actions: Vec<Element> = Vec::new();
-    if chosen.is_some() {
-        let back = nav.clone();
-        actions.push(Box::new(
-            Button::new("console-run-back", "console-run-back")
-                .with_icon(Icon::ArrowLeft)
-                .role(ButtonRole::Plain)
-                .on_view(move || back.close_run()),
-        ));
-    }
     let nav = nav.clone();
     let content = Box::new(cx.arriving(&runs.answer(), move |cx, runs| {
         let (nav, runs, chosen) = (nav.clone(), runs.clone(), chosen.clone());
@@ -168,7 +158,7 @@ pub(crate) fn view(cx: &ViewCx<Console>, nav: &Nav, reads: &Reads) -> (Element, 
             }
         })
     })) as Element;
-    (content, actions)
+    (content, Vec::new())
 }
 
 /// The door as far as it answered: nothing connected until it does, and
@@ -202,7 +192,7 @@ fn list(cx: &ViewCx<Console>, nav: &Nav, seen: &Seen) -> Element {
         .runs
         .runs
         .iter()
-        .filter(|run| filter.shows(&run.agent.name, run.workspace.as_deref()))
+        .filter(|run| filter.shows(run))
         .collect();
     if shown.is_empty() {
         let state = if seen.runs.pending {
@@ -261,12 +251,13 @@ fn run_row(nav: &Nav, seen: &Seen, run: &wire::AgentRun, selected: bool) -> Elem
     Box::new(row.on_view(move || chosen.open_run(&id)))
 }
 
-/// A dropdown of `options` (value, label) bound to `field` of the record.
+/// A dropdown of `options` (value, label) bound to `field` of the record,
+/// each option under the heading its group carries in the open list.
 fn picker(
     cx: &ViewCx<Console>,
     id: &'static str,
     name: &str,
-    options: Vec<(String, String)>,
+    options: Vec<(String, Vec<(String, String)>)>,
     field: Path<Console, String>,
 ) -> Element {
     let name = tr(name);
@@ -275,48 +266,87 @@ fn picker(
             let mut picker = Dropdown::from_state(Vec::new(), state)
                 .with_id(id)
                 .with_accessible_name(name);
-            picker.set_value_options(options);
+            picker.set_grouped_value_options(options);
             picker
         },
         field,
     ))
 }
 
+/// The agent picker's options: every agent, then each client with all of its
+/// runs under it, so a person narrows to one run or to the client behind
+/// every one of them.
+fn agent_options(seen: &Seen) -> Vec<(String, Vec<(String, String)>)> {
+    let mut groups: Vec<(String, Vec<(String, String)>)> = vec![(
+        String::new(),
+        vec![(String::new(), tr("console-every-agent"))],
+    )];
+    for run in &seen.runs.runs {
+        let client = crate::client::of(&run.agent.name);
+        // Past the unheaded "every agent", so a client with no name of its
+        // own gets a group of its own rather than joining it.
+        let known = groups
+            .iter()
+            .skip(1)
+            .position(|(heading, _)| heading == client.name());
+        let at = known.map_or_else(
+            || {
+                groups.push((
+                    client.name().to_owned(),
+                    vec![(
+                        client.name().to_owned(),
+                        trf(
+                            "console-client-every-run",
+                            &[("client", client.name().to_owned().into())],
+                        ),
+                    )],
+                ));
+                groups.len().saturating_sub(1)
+            },
+            |found| found.saturating_add(1),
+        );
+        if let Some((_, runs)) = groups.get_mut(at)
+            && !runs.iter().any(|(value, _)| value == &run.agent.name)
+        {
+            runs.push((run.agent.name.clone(), run.agent.name.clone()));
+        }
+    }
+    groups
+}
+
+/// The workspace picker's options: every workspace, with no heading over
+/// them, and then each workspace by name.
+fn workspace_options(seen: &Seen) -> Vec<(String, Vec<(String, String)>)> {
+    let mut workspaces: Vec<(String, String)> =
+        vec![(String::new(), tr("console-every-workspace"))];
+    for run in &seen.runs.runs {
+        if let Some(workspace) = &run.workspace
+            && !workspaces.iter().any(|(value, _)| value == workspace)
+        {
+            workspaces.push((workspace.clone(), workspace.clone()));
+        }
+    }
+    vec![(String::new(), workspaces)]
+}
+
 /// The row narrowing the runs by agent and workspace, with a way back to
 /// all of them while it narrows them, and only then.
 fn filters(cx: &ViewCx<Console>, seen: &Seen, filter: &Console) -> Element {
     let paths = Console::paths();
-    let mut agents: Vec<String> = Vec::new();
-    let mut workspaces: Vec<String> = Vec::new();
-    for run in &seen.runs.runs {
-        if !agents.contains(&run.agent.name) {
-            agents.push(run.agent.name.clone());
-        }
-        if let Some(workspace) = &run.workspace
-            && !workspaces.contains(workspace)
-        {
-            workspaces.push(workspace.clone());
-        }
-    }
-    let options = |every: &str, names: Vec<String>| {
-        std::iter::once((String::new(), tr(every)))
-            .chain(names.into_iter().map(|name| (name.clone(), name)))
-            .collect::<Vec<_>>()
-    };
     let mut row = Row::new()
         .with_rhythm(Rhythm::Related)
         .push(picker(
             cx,
             "console-filter-agent",
             "console-filter-agent",
-            options("console-every-agent", agents),
+            agent_options(seen),
             paths.agent,
         ))
         .push(picker(
             cx,
             "console-filter-workspace",
             "console-filter-workspace",
-            options("console-every-workspace", workspaces),
+            workspace_options(seen),
             paths.workspace,
         ));
     if filter.narrows() {

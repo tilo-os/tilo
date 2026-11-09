@@ -32,6 +32,7 @@ pub const APP_ID: &str = "so.tilo.console";
 pub const APP_TITLE: &str = "Console";
 
 mod agents;
+mod client;
 mod connect;
 mod effects;
 pub mod locales;
@@ -264,11 +265,18 @@ pub(crate) fn who(author: &wire::Author) -> String {
 }
 
 /// A row led by `author`'s face: a person's round avatar, or an agent's
-/// square one with the agent mark, so the two are never mistaken.
+/// square one with the agent mark, so the two are never mistaken, tinted by
+/// the client it is an agent of.
 pub(crate) fn faced(row: ListRow, author: &wire::Author) -> ListRow {
     let row = row.avatar(author.name.clone(), author.identity.clone());
     match author.relation {
-        wire::Relation::Software => row.square().avatar_glyph(ui::icons::Icon::Bot),
+        wire::Relation::Software => {
+            let row = row.square().avatar_glyph(ui::icons::Icon::Bot);
+            match client::of(&author.name).hue() {
+                Some(hue) => row.avatar_hue(hue),
+                None => row,
+            }
+        }
         wire::Relation::Reader | wire::Relation::Person => row,
     }
 }
@@ -346,10 +354,17 @@ impl ResourceApp for App {
             Ok(ui::framework::Effected::done())
         });
         let (listed, named) = (reads.clone(), reads.clone());
-        let shown = nav.clone();
-        let content = cx.switch(&nav.place, move |cx, _| {
-            let (nav, reads) = (shown.clone(), reads.clone());
-            cx.switch(&shown.run, move |cx, _| window(cx, &nav, &reads))
+        // The window is built once for each record the person narrows with:
+        // which runs show is the record's, and a place's switch keeps the
+        // part it built, so the record keys the build itself.
+        let filter = cx.value(Console::clone);
+        let content = cx.switch(&filter, move |cx, _| {
+            let (nav, reads) = (nav.clone(), reads.clone());
+            let (place, run) = (nav.place.clone(), nav.run.clone());
+            cx.switch(&place, move |cx, _| {
+                let (nav, reads) = (nav.clone(), reads.clone());
+                cx.switch(&run, move |cx, _| window(cx, &nav, &reads))
+            })
         });
         cx.publishing(
             Publishes::new()
@@ -383,13 +398,18 @@ fn window(cx: &ViewCx<Console>, nav: &Nav, reads: &Reads) -> Element {
     });
 
     let place = nav.place();
+    // The run shown in place of the list has one way back to it, the shell's:
+    // leading the header at every width, and the narrow window's own Back
+    // where the places push under it.
+    let (open, close) = (nav.clone(), nav.clone());
     let shell = ui::widget::NavShell::new()
         .content_kind(ui::widget::ContentKind::Page)
         .with_id("console.shell")
         .mode(ui::widget::NavMode::Push)
         .with_pane_state(&nav.pane)
         .sidebar(Box::new(sidebar))
-        .sidebar_header(tr("console-title"), Vec::new());
+        .sidebar_header(tr("console-title"), Vec::new())
+        .on_back(move || open.run.get().is_some(), move || close.close_run());
     Box::new(match place {
         Place::Agents => {
             let (content, actions) = agents::view(cx, nav, reads);

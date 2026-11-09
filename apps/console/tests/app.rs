@@ -40,7 +40,7 @@ fn every_scenario_shows_its_place_built_from_components() {
         (
             "run",
             &[
-                "console-run-back",
+                "nav-shell-back",
                 "console-run-stop",
                 "console-run-take-over",
                 "console-run-undo",
@@ -74,6 +74,65 @@ fn every_scenario_shows_its_place_built_from_components() {
             assert!(shows(&mut app, target), "{scenario} shows {target}");
         }
     }
+}
+
+#[test]
+fn the_agent_picker_offers_each_client_over_all_of_its_runs() {
+    english();
+    let mut app = TestApp::<App>::capture(Some("agents")).expect("capture");
+    app.harness().click_named("console-filter-agent").unwrap();
+    app.frame();
+    let labels: Vec<String> = app
+        .harness()
+        .a11y_nodes()
+        .into_iter()
+        .filter_map(|(_, node)| node.label().map(str::to_owned))
+        .collect();
+    let at = |label: &str| {
+        labels
+            .iter()
+            .position(|seen| seen == label)
+            .unwrap_or_else(|| panic!("{label} stands among {labels:?}"))
+    };
+    let (claude, codex) = (at("Every Claude Code run"), at("Every Codex run"));
+    assert!(
+        claude < at("Claude Code #3") && at("Claude Code #1") < codex,
+        "each client's own runs stand under it, before the next client: {labels:?}"
+    );
+    assert!(claude < codex, "the clients keep one group each");
+}
+
+#[test]
+fn picking_a_client_shows_every_run_of_it() {
+    english();
+    let mut app = TestApp::<App>::capture(Some("agents")).expect("capture");
+    assert!(shows(&mut app, "console-run-run:release-notes"));
+    app.harness()
+        .perform_named(
+            "console-filter-agent",
+            &ui::a11y::Action::SetValue("Claude Code".into()),
+        )
+        .unwrap();
+    app.frame();
+    assert!(shows(&mut app, "console-run-run:fix-signup"));
+    assert!(shows(&mut app, "console-run-run:budget"));
+    assert!(
+        !shows(&mut app, "console-run-run:release-notes"),
+        "Codex's run is another client's"
+    );
+}
+
+#[test]
+fn the_runs_back_shows_every_run_again() {
+    english();
+    let mut app = TestApp::<App>::capture(Some("run")).expect("capture");
+    assert!(shows(&mut app, "console-run-undo"), "the run's own page");
+    app.harness()
+        .perform_named("nav-shell-back", &ui::a11y::Action::Activate)
+        .unwrap();
+    app.frame();
+    assert!(shows(&mut app, "console-run-run:fix-signup"), "the runs");
+    assert!(!shows(&mut app, "console-run-undo"));
 }
 
 #[test]

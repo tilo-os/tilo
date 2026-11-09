@@ -294,7 +294,7 @@ fn opening_a_runs_view_shows_that_runs_page() {
     app.call_on(RUN, &view.open_action, json!({}))
         .expect("open the run");
     assert!(
-        shows(&mut app, "console-run-back"),
+        shows(&mut app, "nav-shell-back"),
         "the run's page stands in place of every run"
     );
     assert!(
@@ -369,7 +369,7 @@ fn a_runs_address_is_answered_before_the_history_read_lands() {
     // The read lands: the page fills in, without the person navigating again.
     answer_reads(&mut app, &requests, vec![run()]);
     assert!(
-        shows(&mut app, "console-run-back"),
+        shows(&mut app, "nav-shell-back"),
         "the run's page shows the run once the history answers"
     );
 }
@@ -386,7 +386,7 @@ fn a_run_the_history_does_not_list_says_so() {
         "a run that is not here says so rather than falling back to the list"
     );
     assert!(
-        shows(&mut app, "console-run-back"),
+        shows(&mut app, "nav-shell-back"),
         "the way back to every run stays in the header"
     );
 }

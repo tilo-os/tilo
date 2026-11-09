@@ -7,6 +7,7 @@
 //! part of them.
 
 use ui::prelude::*;
+use ui::tilo_actions::remote::workspace_activity as wire;
 
 /// Which runs Agents shows. Each part is picked whole from a list, so each
 /// is written whole.
@@ -14,8 +15,8 @@ use ui::prelude::*;
 pub struct Console {
     /// Agent
     ///
-    /// Only this agent's runs, by the name its runs show; empty for every
-    /// agent.
+    /// One run, by the name it shows, or one client, by its own name, for
+    /// every run it has; empty for every agent.
     pub agent: String,
     /// Workspace
     ///
@@ -30,10 +31,15 @@ impl Console {
         self != &Self::default()
     }
 
-    /// Whether a run by `agent` in `workspace` shows.
-    pub fn shows(&self, agent: &str, workspace: Option<&str>) -> bool {
-        (self.agent.is_empty() || self.agent == agent)
-            && (self.workspace.is_empty() || Some(self.workspace.as_str()) == workspace)
+    /// Whether `run` shows: its own name picks it, and the name of the
+    /// client it comes from picks every run of that client.
+    pub fn shows(&self, run: &wire::AgentRun) -> bool {
+        let named = self.agent.is_empty()
+            || self.agent == run.agent.name
+            || self.agent == crate::client::of(&run.agent.name).name();
+        named
+            && (self.workspace.is_empty()
+                || Some(self.workspace.as_str()) == run.workspace.as_deref())
     }
 }
 

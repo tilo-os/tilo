@@ -55,6 +55,7 @@ console-connect-heading = Connect an agent
 console-client-claude-code = Claude Code
 console-client-codex = Codex
 console-client-other = Any MCP client
+console-client-every-run = Every { $client } run
 console-grants-heading = Connected agents
 console-grants-empty = No agent connected yet
 console-grants-empty-message = Run one of the lines above where your agent runs, then let it in.
@@ -70,4 +71,3 @@ console-grant-revoke = Revoke
 
 console-usage-empty = No Linux machine time yet
 console-usage-empty-message = An agent that needs Linux runs it on a machine of its own, and that time is counted.
-console-run-back = All runs

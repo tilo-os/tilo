@@ -25,7 +25,7 @@ pub(crate) fn view(cx: &ViewCx<Console>, reads: &Reads) -> Element {
             .into_iter()
             .map(|client| {
                 Property::new(tr(client_label(client)), client.command(&door.endpoint))
-                    .with_kind(ui::text_render::TextKind::Identifier)
+                    .with_kind(ui::text_render::TextKind::Code)
                     .copyable()
             })
             .collect();
@@ -104,11 +104,15 @@ fn grant_row(doors: &Doors, index: usize, grant: &door::Grant) -> Element {
             doors.door(door::REVOKE, &door::GrantRef { grant: id.clone() });
         })
     };
+    // What the agent may reach says on a line of its own that wraps: it is
+    // the whole of what the person let in, and a narrow window must not cut
+    // it short.
     let mut row = faced(
         ListRow::new(format!("console-grant-{index}"), grant.agent.clone()),
         &agent,
     )
-    .subtitle(reach(&grant.reach))
+    .secondary(reach(&grant.reach))
+    .secondary_lines(2)
     .meta(status)
     .trailing(Box::new(revoke));
     if !grant.runs.is_empty() {
