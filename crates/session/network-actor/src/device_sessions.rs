@@ -162,7 +162,7 @@ impl ActorState {
     /// root, with every revocation that comes with them.
     pub(super) fn own_hello(&self) -> Option<Hello> {
         let identity = self.host_identity.as_ref()?;
-        let (cert, mut revocations) = identity.material_for(DEFAULT_WS_TOPIC);
+        let (cert, revocations) = identity.material_for(DEFAULT_WS_TOPIC);
         Some(Hello {
             protocol: neighbour_wire::PEER_PROTOCOL_VERSION,
             certs: vec![cert],
