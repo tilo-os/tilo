@@ -145,10 +145,20 @@ pub(crate) fn catalog_roots() -> Vec<PathBuf> {
 /// [`bundled_font_system`] tries, checked for a manifest this build pins. A
 /// run whose answer is `None` would render every frame in the host's faces,
 /// which is not the product, so a capture asks this before it draws anything.
+///
+/// A program that starts another build's binary and has it draw — a test
+/// running the app beside it, which was built beside a different build
+/// directory — names this as [`OVERRIDE_ENV`] in the child, so the child sets
+/// text in the catalog this process verified rather than the one its own build
+/// path names.
 #[cfg(feature = "native")]
-pub(crate) fn catalog_root() -> Option<PathBuf> {
+pub fn catalog_root() -> Option<PathBuf> {
     tilo_font_catalog::find_root(catalog_roots())
 }
+
+/// `TILO_FONT_CATALOG`: the variable that names the catalog a build reads
+/// instead of the one its compiled-in path names.
+pub use tilo_font_catalog::OVERRIDE_ENV;
 
 /// Why no root holds this build's catalog, naming the places that were
 /// tried: the message a capture fails with, so the answer is one line away
