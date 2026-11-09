@@ -138,6 +138,18 @@ try {
         .then(() => 'opened', error => error.code);
     `), 'rejected');
 
+    // A person made on a first visit is kept from the start: the next load
+    // opens the same root, and it still signs.
+    assert.deepEqual(await run(`
+      const kept = new Map();
+      const storage = {get: async key => kept.get(key), put: async (key, value) => { kept.set(key, value); }, delete: async key => { kept.delete(key); }};
+      const made = await id.browserIdentity({storage, persist: null});
+      const again = await id.browserIdentity({storage, create: false, persist: null});
+      const message = new TextEncoder().encode('again');
+      const key = await crypto.subtle.importKey('raw', id.unhex(made.userPublicKey), {name: 'Ed25519'}, false, ['verify']);
+      return {same: again?.userPublicKey === made.userPublicKey, signs: await crypto.subtle.verify({name: 'Ed25519'}, key, await again.sign(message), message)};
+    `), {same: true, signs: true}, 'a person made on a first visit is the same person on the next load');
+
     // A person this browser kept while the page held the root: the record
     // its IndexedDB holds (the root wrapped under the page's own AES-GCM
     // key) still opens, and its envelope still opens with its recovery key.

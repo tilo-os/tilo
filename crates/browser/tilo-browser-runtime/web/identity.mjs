@@ -315,6 +315,9 @@ export async function browserIdentity({storage, create = true, persist = globalT
     if (!create) return null;
     const identity = await runtime.rootNew();
     record = {rootPublicKey: identity.userPublicKey, held: identity.held, envelope: documentOf(runtime.rootEnvelopeEmpty(identity.publicKey))};
+    // Kept from the start: the same person on the next load, and in every
+    // other tab of this site.
+    await storage.put(BROWSER_RECORD, record);
   }
   const identity = await openKept(storage, record, persist);
   current = identity;
