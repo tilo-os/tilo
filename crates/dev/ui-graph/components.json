@@ -5436,12 +5436,12 @@
         },
         {
           "name": "follow_end",
-          "doc": "The list is read to its end: it opens at its last row and stays there as rows arrive and settle, unless the person scrolled away ([`VirtualList::following_end`]). Its rows stand in the page column, filling it, a section's gap under each, and each run one author wrote under that author's name and the time ([`ListItemProps::author`], [`ListItemProps::time`]).",
+          "doc": "The list is read to its end: it opens at its last row and stays there as rows arrive and settle, unless the person scrolled away ([`VirtualList::following_end`]). Its rows stand in the page column, filling it, a section's gap under each, and each run one author wrote under that author's name and the time ([`ListItemProps::author`], [`ListItemProps::time`]). They are read, not chosen: a press gives a row the keyboard and chooses nothing.",
           "type": "bool"
         },
         {
           "name": "page_column",
-          "doc": "Each row stands in the page column, at the readable measure every page sets its blocks on, a section's gap under the row before it. A list read from its first row to its last (a conversation's messages, a document's replies) keeps the measure without following its end (`follow_end`).",
+          "doc": "Each row stands in the page column, at the readable measure every page sets its blocks on, a section's gap under the row before it. A list read from its first row to its last (a conversation's messages, a document's replies) keeps the measure without following its end (`follow_end`). Its rows are read, not chosen, as a transcript's are.",
           "type": "bool"
         },
         {
