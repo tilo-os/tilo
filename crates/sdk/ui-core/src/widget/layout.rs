@@ -187,6 +187,17 @@ pub fn device_scale() -> f32 {
     DEVICE_SCALE.with(std::cell::Cell::get)
 }
 
+/// `value` on the device pixels of the display a layout is for
+/// ([`device_scale`]): where a widget's own arithmetic — a scroll offset, a
+/// camera, a measured gap — must land, since the solver rounds only the trees
+/// it solves itself. A length that is no whole number of device pixels is the
+/// nearest one, so what is drawn from it stands crisp rather than across two.
+#[must_use]
+pub fn snap_to_device_pixels(value: f64) -> f64 {
+    let grid = f64::from(device_scale());
+    (value * grid).round() / grid
+}
+
 /// Lay out at `scale` device pixels per logical pixel until the guard is
 /// dropped: a host enters it around its whole layout pass (solving and
 /// placing, with every tree a widget solves of its own), with its display's

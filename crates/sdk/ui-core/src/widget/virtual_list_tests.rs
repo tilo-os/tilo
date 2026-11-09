@@ -2131,3 +2131,96 @@ fn a_transcript_offers_the_way_to_what_is_unread_or_to_what_is_now() {
     assert!(reading.is_at_end(), "it went back to the newest row");
     assert_eq!(reading.jump(), None);
 }
+
+/// A transcript's page column: rows of a page, each as tall as its words, and a long enough
+/// column to stand at its end rather than its start.
+fn page_column() -> VirtualList<VecListModel<u32, u32>> {
+    use crate::tokens::Rhythm;
+    use crate::widget::Text;
+    use crate::widget::arrange::{Page, Slot, Stack};
+    VirtualList::from_items(
+        (0..40_u32).collect(),
+        64.0,
+        |item| *item,
+        |item, _, _| {
+            let said = Stack::stack()
+                .gap(Rhythm::Tight)
+                .push(Box::new(Text::new(&format!("message {item}"))))
+                .push(Box::new(Text::new(
+                    "A longer line of what somebody said, wrapping over a couple of lines in a \
+                     narrow window so the rows differ in height",
+                )));
+            let row = Page::full().row_after(Rhythm::Section);
+            Box::new(row.push_slot(Slot::new(Box::new(said) as Element))) as Element
+        },
+    )
+    .unwrap()
+    .filling()
+    .following_end()
+}
+
+/// Every box of the window, outermost first.
+fn boxes(widget: &dyn Widget, out: &mut Vec<(String, vello::kurbo::Rect)>) {
+    out.push((widget.name().to_owned(), widget.get_rect()));
+    for child in widget.children() {
+        boxes(child, out);
+    }
+}
+
+/// The edges of the window's boxes that stand between `scale`'s device pixels, said one by one.
+fn off_device_pixels(widget: &dyn Widget, scale: f64) -> Vec<String> {
+    let mut laid = Vec::new();
+    boxes(widget, &mut laid);
+    assert!(laid.len() > 10, "the window has boxes: {laid:?}");
+    laid.iter()
+        .flat_map(|(name, rect)| {
+            [rect.x0, rect.y0, rect.x1, rect.y1]
+                .into_iter()
+                .filter(|edge| (edge * scale - (edge * scale).round()).abs() > 1e-3)
+                .map(move |edge| format!("{name} {rect:?}: {edge} at {scale}x"))
+        })
+        .collect()
+}
+
+/// Every edge of every box in the window stands on a device pixel at `scale`, whatever the
+/// window's history: the scale a person's display runs at when the window is opened at it,
+/// and the scale it changes to under a window already laid out.
+#[test]
+fn a_window_laid_out_at_a_scale_stands_on_its_device_pixels() {
+    for scale in [1.25_f64, 1.5, 2.0] {
+        let mut harness = crate::headless::FrameHarness::for_root(
+            crate::State::new(),
+            page_column(),
+            (390, 844),
+            Theme::light(),
+        );
+        harness.set_input_scale(scale).expect("a display scale");
+        harness.relayout();
+        let off = off_device_pixels(harness.root_widget(), scale);
+        assert!(
+            off.is_empty(),
+            "laid out at {scale}x, {} edges off: {}",
+            off.len(),
+            off.iter().take(4).cloned().collect::<Vec<_>>().join(", ")
+        );
+
+        // A display the window moves to: the rows were measured on the grid it came from.
+        let to = if scale == 1.5 { 2.0 } else { 1.5 };
+        harness.set_input_scale(to).expect("a display scale");
+        // Scrolled where a gesture, a glide to a match or a restore left it: a scroll offset
+        // is a length in logical pixels, and not every one of them is a device pixel.
+        {
+            let mut list = harness.root_mut::<VirtualList<VecListModel<u32, u32>>>();
+            let offset = list.scroll_offset();
+            list.set_scroll_offset(offset - 17.0);
+        }
+        harness.relayout();
+        let off = off_device_pixels(harness.root_widget(), to);
+        assert!(
+            off.is_empty(),
+            "moved from {scale}x to {to}x, {} edges off: {}",
+            off.len(),
+            off.iter().take(4).cloned().collect::<Vec<_>>().join(", ")
+        );
+    }
+}

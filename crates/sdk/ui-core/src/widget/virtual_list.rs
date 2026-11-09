@@ -1941,12 +1941,15 @@ impl<M: ListModel + 'static> Widget for VirtualList<M> {
             self.keep_end();
             self.visible_window_changed();
         }
-        // Rows stand where the layout was built, moved by the scroll since.
+        // Rows stand where the layout was built, moved by the scroll since: on the display's
+        // device pixels, as the scroll itself moves them (a wheel's delta is whole device
+        // pixels), so a list that follows its end — whose slack is the rest of a viewport — and
+        // one whose rows were measured on another display's grid still draws crisp rows.
         let slack = self.end_slack();
-        let child_origin = Point::new(
-            self.rect.x0,
-            self.rect.y0 + slack + self.layout_offset - self.viewport.offset(),
+        let content = crate::widget::layout::snap_to_device_pixels(
+            slack + self.layout_offset - self.viewport.offset(),
         );
+        let child_origin = Point::new(self.rect.x0, self.rect.y0 + content);
         // Placed again from an unchanged layout (a scroll, a glide), only
         // the rows near the list's box are placed, and those that were
         // near it before, as they leave; the others measure as they did.
