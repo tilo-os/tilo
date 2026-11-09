@@ -25,7 +25,8 @@ import {loadRuntime, mountDesktop, prefetchApplication, prepareGpu} from './host
 import {connectPeer, httpsPost, identityProfile, inspectInvitation, joinWorkspace, openInvitation, profileDevice, withCustody} from './peer.mjs';
 import {readBrowserAccounts} from './browser-accounts.mjs';
 import {CustodyError, idbStorage, openDeviceCustody} from './device-custody.mjs';
-import {createIdentityActions, syncProfile} from './identity-actions.mjs';
+import {createIdentityActions, SIGN_IN, syncProfile} from './identity-actions.mjs';
+import {firstRun} from './first-run.mjs';
 import {pickImageFile, squarePhoto} from './profile-photos.mjs';
 import {deviceLabel, pairingFailure, pairSecret, whenRequested} from './pairing.mjs';
 import {readInstallSecret, SET_UP, SETUP_PHASES, setUpFailure, setUpMachine} from './machine-setup.mjs';
@@ -727,6 +728,9 @@ export async function startEntryPage({mode}) {
     // compile threads. Under a software rasteriser that is a minute of CPU
     // and held the next page's first frame past 45 s.
     if (step === 'open' && root.arrival !== 'open') prepareGpu();
+    // A page that cannot go on has no workspace to set an agent up in: the
+    // first screen says so rather than wait.
+    if (step === 'stopped') firstRun?.unavailable({code: 'refused'});
     root.arrival = step;
     if (notes[step] && [loading, opening, drawing].includes(status.textContent)) status.textContent = notes[step];
   };
@@ -1168,7 +1172,7 @@ export async function startEntryPage({mode}) {
       page.mount?.setOwnPerson?.({user: own, label: displayName});
     }
     const attachIdentity = () => keepIdentity({peer: page.peer, mount: hostActions?.('identity') ?? page.mount, home: page.entry?.home,
-      name: () => displayName, runtime, link: page.link, photos, naming: {
+      name: () => displayName, runtime, link: page.link, photos, onAgent: ({label}) => firstRun?.connected(label), naming: {
         ask: (current, save) => askName(current, save),
         set: chosen => {
           displayName = chooseDisplayName(pagePerson(page), chosen);
@@ -1178,6 +1182,20 @@ export async function startEntryPage({mode}) {
         },
       }});
     identityActions = attachIdentity();
+    // The first screen (first-run.mjs) sets an agent up through this tab's
+    // root, and signs in with a passkey, once the page can.
+    if (firstRun && identityActions) {
+      firstRun.offerSetup(() => identityActions.connectAgent());
+      firstRun.offerSignIn(() => identityActions.perform(SIGN_IN.id));
+    } else firstRun?.unavailable({code: 'no-workspace'});
+    // Skip for now opens the person's own workspace, where the site gives
+    // them one: the home workspace let them in already (they stay in it,
+    // and find it in the workspace menu), but their own comes first.
+    if (firstRun && !embed && here.kind !== 'own') {
+      firstRun.whenSkipped(() => void ownDesktopAllowed(page.entry?.home).then(open => {
+        if (open) void openWorkspace({choice: {id: `${OPEN_WORKSPACE}own`, name: 'Your desktop', own: true}, page, status});
+      }));
+    }
     // What the kept profile says of linked accounts, or that none is kept:
     // either way a linked account's picture may be worn now, and never
     // over one the person uploaded.
@@ -1742,7 +1760,7 @@ function joinOnFirstGesture(status) {
  * browser holds them (`browserIdentity`): shown in the desktop, offered once
  * the person has done enough in the workspace to be worth keeping, at a pause.
  */
-function keepIdentity({peer, mount, home, name, runtime, link, naming, photos}) {
+function keepIdentity({peer, mount, home, name, runtime, link, naming, photos, onAgent}) {
   const identity = currentIdentity();
   if (!identity?.keepWithPasskey || !mount?.setHostActions) return null;
   // A device paired to a person whose root is elsewhere has nothing to keep.
@@ -1756,7 +1774,7 @@ function keepIdentity({peer, mount, home, name, runtime, link, naming, photos}) 
     photos: !peer || peer.setDisplayName ? photos : null,
     hosts: () => membershipOrigins(identity.userPublicKey),
     lookups: () => [...membershipOrigins(), ...listedWorkspaces({home}).map(workspace => workspace.host.origin)],
-    pause: inputPause(), searchChord: mac ? '⌘K' : 'Ctrl+K', showPairLink: pairLinkSheet, askPairing: pairingAsk,
+    pause: inputPause(), searchChord: mac ? '⌘K' : 'Ctrl+K', showPairLink: pairLinkSheet, askPairing: pairingAsk, onAgent,
   });
   void actions.attach(mount);
   if (peer?.authoredChanges) {

@@ -384,12 +384,12 @@ async function pairingFixture({invites = [INVITE_A, INVITE_B]} = {}) {
   const sheets = [];
   const asks = [];
   const errors = [];
-  const fixture = {identity, mount, host, sheets, asks, errors, clock: 0, poll: null};
+  const fixture = {identity, mount, host, sheets, asks, errors, agents: [], clock: 0, poll: null};
   const ids = [...invites];
   const random = bytes => bytes.fill(Number.parseInt(ids.shift().slice(0, 2), 16));
   fixture.actions = createIdentityActions({passkeys: withPasskeys, identity, onError: error => errors.push(error),
     now: () => fixture.clock, invites: openInvites({now: () => fixture.clock, random}),
-    copy: async () => {},
+    copy: async () => {}, onAgent: agent => fixture.agents.push(agent),
     every: run => { fixture.poll = run; return () => { fixture.poll = null; }; },
     pairing: {
       link: invite => `https://tilo.example/#/@rooms.example/w/WORKSPACE?pair=${identity.userPublicKey}${invite}`,
@@ -488,4 +488,69 @@ test('an ask still open when its link expires closes', async () => {
   await pairing.tick();
   assert.ok(pairing.asks[0].closed);
   assert.equal(pairing.poll, null);
+});
+
+test('an agent’s link is a pairing link to this tab with a fresh invite, open for ten minutes', async () => {
+  const pairing = await pairingFixture();
+  const made = await pairing.actions.connectAgent();
+  assert.deepEqual(made, {
+    link: `https://tilo.example/#/@rooms.example/w/WORKSPACE?pair=${pairing.identity.userPublicKey}${INVITE_A}`,
+    expiresAt: 10 * 60 * 1000,
+  });
+  assert.equal(typeof pairing.poll, 'function', 'the tab looks for the agent while the link is open');
+  assert.deepEqual(pairing.sheets, [], 'no sheet: the first screen shows the prompt');
+});
+
+test('the agent that answers its link is approved without asking, once, and said to have signed in', async () => {
+  const pairing = await pairingFixture();
+  await pairing.actions.connectAgent();
+  pairing.host.pending = [request('d1', INVITE_A, {label: 'Claude Code on laptop'})];
+  await pairing.tick();
+  assert.deepEqual(pairing.host.answers, [['d1', true]]);
+  assert.deepEqual(pairing.asks, [], 'the person is not asked: they copied the link here');
+  assert.deepEqual(pairing.agents, [{label: 'Claude Code on laptop'}]);
+  // A second device with the same link: the invite is spent.
+  pairing.host.pending = [request('d2', INVITE_A, {label: 'Someone else'})];
+  await pairing.tick();
+  assert.deepEqual(pairing.host.answers, [['d1', true]], 'the link works once');
+  assert.equal(pairing.agents.length, 1);
+  assert.equal(pairing.poll, null);
+  assert.deepEqual(pairing.errors, []);
+});
+
+test('an agent’s link that expired approves nobody', async () => {
+  const pairing = await pairingFixture();
+  await pairing.actions.connectAgent();
+  pairing.clock = 10 * 60 * 1000;
+  pairing.host.pending = [request('d1', INVITE_A)];
+  await pairing.tick();
+  assert.deepEqual(pairing.host.answers, []);
+  assert.deepEqual(pairing.agents, []);
+  assert.equal(pairing.poll, null);
+});
+
+test('a request naming another tab’s invite is not this tab’s to approve', async () => {
+  const pairing = await pairingFixture();
+  await pairing.actions.connectAgent();
+  pairing.host.pending = [request('d1', '0c'.repeat(16)), request('d2', null)];
+  await pairing.tick();
+  assert.deepEqual(pairing.host.answers, []);
+  assert.deepEqual(pairing.asks, [], 'nor asked about');
+  assert.deepEqual(pairing.agents, []);
+});
+
+test('a pairing link the person makes for a device of theirs is still asked about', async () => {
+  const pairing = await pairingFixture();
+  await pairing.actions.connectAgent();
+  await pairing.actions.perform(PAIR.id);
+  pairing.host.pending = [request('d2', INVITE_B)];
+  await pairing.tick();
+  assert.deepEqual(pairing.asks.map(ask => ask.request.digest), ['d2']);
+  assert.deepEqual(pairing.host.answers, [], 'only the agent’s link is approved without the person');
+});
+
+test('without a workspace to pair through, an agent cannot be set up', async () => {
+  const identity = fakeIdentity();
+  const actions = createIdentityActions({passkeys: withPasskeys, identity, pairing: null});
+  await assert.rejects(actions.connectAgent(), error => error.code === 'no-workspace');
 });

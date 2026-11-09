@@ -75,6 +75,26 @@ addEventListener('click',function(event){if(event.target&&event.target.id==='arr
 })();
 </script>
 <script>
+(()=>{
+// Whether the entry page opens on its first screen (first-run.mjs), inlined
+// verbatim after the link scrubber so the screen is there at the first
+// paint, before any module loads. Only a browser new here sees it: one that
+// keeps nothing from an earlier visit (no first screen seen, no host that
+// let it in, no workspace entered), opening the site itself rather than a
+// link (no secrets, no route, no workspace named) and not inside another
+// site. Without storage the page opens as it always did.
+var root=document.documentElement,secrets=globalThis.__tiloLinkSecrets||{};
+if(Object.keys(secrets).length)return;
+if(location.hash.length>1&&location.hash!=='#/')return;
+if(/[?&](embed|workspace|room|invite)(=|&|$)/.test(location.search))return;
+try{
+ var kept=['tilo-first-run','tilo-host-memberships','tilo-entered-workspaces'];
+ for(var i=0;i<kept.length;i++)if(localStorage.getItem(kept[i]))return;
+}catch(e){return;}
+root.setAttribute('data-first-run','');
+})();
+</script>
+<script>
 // The page's first graphics adapter request starts the browser's GPU
 // process, which takes seconds. It is asked for here, while the modules
 // load, and the renderer check (webgpu-safety.mjs) takes the answer.
@@ -301,9 +321,127 @@ if(navigator.gpu&&!/[?&]unsafeWebKitGPU=0(&|$)/.test(location.search))globalThis
       #arrival > p, #arrival-bar > span { transition: none; }
       .tilo-pair-done, .tilo-pair-check { animation: none; }
     }
+    /* The first screen of a first visit (first-run.mjs, first-run.inline.js):
+       setting Tilo up with an agent, skipping it, or signing in again. Plain
+       page markup over everything while Tilo loads behind it, in the
+       person's light or dark; it fades and leaves once done. */
+    #first-run { display: none; }
+    [data-first-run] #first-run {
+      --fr-ground: #121214; --fr-ink: #ececf0; --fr-muted: #a8a8b2; --fr-faint: #7f7f89; --fr-line: #26282e;
+      --fr-well: #17181c; --fr-primary: #f2f2f4; --fr-primary-ink: #121214; --fr-primary-hover: #ffffff;
+      --fr-quiet-hover: #1e1f24; --fr-focus: #9ab4ff; --fr-side: #3b4376; --fr-core: #6f82ff; --fr-on: #3fae6c; --fr-problem: #ff8a80;
+      position: fixed; inset: 0; z-index: 20; display: flex; box-sizing: border-box; overflow-y: auto;
+      padding: max(24px, env(safe-area-inset-top)) max(20px, env(safe-area-inset-right)) max(24px, env(safe-area-inset-bottom)) max(20px, env(safe-area-inset-left));
+      background: var(--fr-ground); color: var(--fr-ink); font: 15px/1.5 system-ui, -apple-system, 'Segoe UI', sans-serif;
+      transition: opacity 260ms ease-out;
+    }
+    @media (prefers-color-scheme: light) {
+      [data-first-run] #first-run {
+        --fr-ground: #f7f7f9; --fr-ink: #17181c; --fr-muted: #55565f; --fr-faint: #73747d; --fr-line: #e1e2e7;
+        --fr-well: #ffffff; --fr-primary: #17181c; --fr-primary-ink: #ffffff; --fr-primary-hover: #000000;
+        --fr-quiet-hover: #ebebef; --fr-focus: #2a3fd1; --fr-side: #9fa6e0; --fr-core: #2a3fd1; --fr-on: #2f8f5b; --fr-problem: #b3261e;
+      }
+    }
+    [data-first-run=closing] #first-run { opacity: 0; pointer-events: none; }
+    html[data-first-run]:not([data-first-run=closing]) #bar { visibility: hidden; }
+    .fr-page { display: grid; gap: 40px; width: min(880px, 100%); margin: auto; }
+    .fr-main, .fr-aside { display: flex; flex-direction: column; align-items: flex-start; min-width: 0; }
+    .fr-mark { display: block; margin-bottom: 28px; }
+    .fr-mark .side { fill: var(--fr-side); } .fr-mark .core { fill: var(--fr-core); }
+    #first-run h1 { margin: 0 0 12px; font-size: 26px; font-weight: 650; line-height: 1.2; letter-spacing: -0.018em; text-wrap: balance; }
+    #first-run h1:focus { outline: none; }
+    .fr-lead { margin: 0 0 28px; max-width: 32em; color: var(--fr-muted); text-wrap: pretty; }
+    #first-run button { font: inherit; color: inherit; cursor: pointer; -webkit-tap-highlight-color: transparent; }
+    #first-run button:focus-visible { outline: 2px solid var(--fr-focus); outline-offset: 2px; }
+    #first-run .fr-primary { display: inline-flex; align-items: center; justify-content: center; gap: 10px; box-sizing: border-box; width: min(360px, 100%); min-height: 52px; padding: 0 22px; border: 0; border-radius: 12px; background: var(--fr-primary); color: var(--fr-primary-ink); font-size: 16px; font-weight: 600; }
+    #first-run .fr-primary:hover { background: var(--fr-primary-hover); }
+    #first-run .fr-primary svg { flex: none; }
+    .fr-caption { margin: 10px 0 0; font-size: 13px; color: var(--fr-faint); }
+    #first-run .fr-quiet { min-height: 44px; margin: 12px 0 0 -12px; padding: 0 12px; border: 0; border-radius: 8px; background: none; color: var(--fr-muted); font-size: 15px; }
+    #first-run .fr-quiet:hover { background: var(--fr-quiet-hover); color: var(--fr-ink); }
+    #first-run .fr-secondary { box-sizing: border-box; width: 100%; min-height: 44px; padding: 0 16px; border: 1px solid var(--fr-line); border-radius: 10px; background: var(--fr-well); font-weight: 500; }
+    #first-run .fr-secondary:hover:not(:disabled) { border-color: var(--fr-faint); }
+    #first-run .fr-secondary:disabled { cursor: default; color: var(--fr-faint); }
+    .fr-aside { padding-top: 28px; border-top: 1px solid var(--fr-line); }
+    .fr-eyebrow { margin: 0 0 4px; font-size: 13px; color: var(--fr-faint); }
+    #first-run h2 { margin: 0 0 16px; font-size: 17px; font-weight: 600; }
+    .fr-note { margin: 12px 0 0; font-size: 13px; color: var(--fr-faint); text-wrap: pretty; }
+    /* After the copy: the prompt, and the wait for the agent. */
+    .fr-wait { display: none; width: 100%; }
+    [data-first-run=waiting] .fr-start, [data-first-run=expired] .fr-start, [data-first-run=failed] .fr-start, [data-first-run=connected] .fr-start { display: none; }
+    [data-first-run=waiting] .fr-wait, [data-first-run=expired] .fr-wait, [data-first-run=failed] .fr-wait { display: flex; flex-direction: column; align-items: flex-start; }
+    .fr-well { position: relative; box-sizing: border-box; width: 100%; margin: 0 0 16px; border: 1px solid var(--fr-line); border-radius: 12px; background: var(--fr-well); }
+    #first-run-prompt { box-sizing: border-box; max-height: 168px; min-height: 64px; margin: 0; padding: 14px 16px; overflow: auto; font: 12.5px/1.6 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; color: var(--fr-muted); white-space: pre-wrap; overflow-wrap: anywhere; user-select: all; -webkit-user-select: all; }
+    #first-run-prompt:empty::before { content: 'Preparing…'; color: var(--fr-faint); }
+    .fr-well-bar { display: flex; justify-content: flex-end; padding: 6px; border-top: 1px solid var(--fr-line); }
+    #first-run-again { min-height: 32px; padding: 0 12px; border: 0; border-radius: 8px; background: none; font-size: 13px; font-weight: 500; }
+    #first-run-again:hover { background: var(--fr-quiet-hover); }
+    .fr-waiting { display: flex; align-items: center; gap: 10px; margin: 0; font-size: 14px; }
+    .fr-spinner { flex: none; width: 14px; height: 14px; border-radius: 50%; border: 2px solid var(--fr-line); border-top-color: var(--fr-ink); animation: tilo-spin 900ms linear infinite; }
+    #first-run-left { margin: 4px 0 0 24px; font-size: 13px; color: var(--fr-faint); font-variant-numeric: tabular-nums; }
+    #first-run-left:empty { display: none; }
+    #first-run-problem { margin: 0 0 12px; font-size: 14px; color: var(--fr-problem); }
+    #first-run-problem:empty { display: none; }
+    #first-run #first-run-retry { display: none; margin-top: 20px; }
+    [data-first-run=expired] #first-run #first-run-retry, [data-first-run=failed] #first-run #first-run-retry { display: inline-flex; }
+    [data-first-run=expired] .fr-waiting, [data-first-run=failed] .fr-waiting, [data-first-run=expired] #first-run-left, [data-first-run=failed] .fr-well { display: none; }
+    .fr-expired { display: none; margin: 0; font-size: 14px; color: var(--fr-muted); }
+    [data-first-run=expired] .fr-expired { display: block; }
+    /* The agent signed in: a check, its name, and the workspace next. */
+    .fr-done { display: none; flex-direction: column; align-items: flex-start; }
+    [data-first-run=connected] .fr-done, [data-first-run=closing] .fr-done { display: flex; }
+    [data-first-run=connected] .fr-aside, [data-first-run=closing] .fr-aside, [data-first-run=closing] .fr-start { display: none; }
+    .fr-check { position: relative; width: 44px; height: 44px; margin-bottom: 20px; border-radius: 50%; background: var(--fr-on); animation: tilo-pair-pop 480ms cubic-bezier(.2, 1.4, .4, 1) both; }
+    .fr-check::after { content: ''; position: absolute; left: 16px; top: 10px; width: 9px; height: 18px; border: solid #fff; border-width: 0 3px 3px 0; transform: rotate(45deg); }
+    .fr-said { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+    @media (min-width: 760px) {
+      [data-first-run] #first-run { padding: 48px; }
+      .fr-page { grid-template-columns: minmax(0, 1fr) 260px; gap: 72px; align-items: start; }
+      .fr-aside { padding: 0 0 0 40px; border-top: 0; border-left: 1px solid var(--fr-line); margin-top: 72px; }
+      #first-run h1 { font-size: 32px; }
+      .fr-lead { font-size: 16px; }
+    }
+    @media (prefers-reduced-motion: reduce) {
+      [data-first-run] #first-run { transition: none; }
+      .fr-spinner, .fr-check { animation: none; }
+    }
   </style>
 </head>
 <body>
+  <main id="first-run" aria-labelledby="first-run-heading"><div class="fr-page">
+    <div class="fr-main">
+      <svg class="fr-mark" aria-hidden="true" viewBox="0 0 100 100" width="40" height="40"><path class="side" d="M10.98 31.85Q10.98 27.97 14.4 26.12L20.26 22.97Q24.84 20.51 24.84 25.71L24.84 74.29Q24.84 79.49 20.26 77.03L14.4 73.88Q10.98 72.03 10.98 68.15Z"/><path class="side" d="M89.02 31.85Q89.02 27.97 85.6 26.12L79.74 22.97Q75.16 20.51 75.16 25.71L75.16 74.29Q75.16 79.49 79.74 77.03L85.6 73.88Q89.02 72.03 89.02 68.15Z"/><rect class="core" x="29" y="16" width="42" height="68" rx="6"/></svg>
+      <div class="fr-start">
+        <h1 id="first-run-heading">Let your agent set up Tilo</h1>
+        <p class="fr-lead">Paste one prompt into Claude Code, Codex or any agent. It installs Tilo, signs in as you and connects, and this tab becomes your workspace.</p>
+        <button id="first-run-agent" class="fr-primary" type="button"><svg aria-hidden="true" viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="12" height="12" rx="2"/><path d="M5 15V5a2 2 0 0 1 2-2h10"/></svg>Set up with your agent</button>
+        <p class="fr-caption">Copies a prompt that works once, only for this tab.</p>
+        <button id="first-run-skip" class="fr-quiet" type="button">Skip for now</button>
+      </div>
+      <div class="fr-wait">
+        <h1 id="first-run-heading-wait" tabindex="-1">Paste it into your agent</h1>
+        <p class="fr-lead">The prompt is on your clipboard. Your agent does the rest; this tab follows along.</p>
+        <div class="fr-well"><pre id="first-run-prompt" aria-label="The prompt"></pre><div class="fr-well-bar"><button id="first-run-again" type="button">Copy again</button></div></div>
+        <p id="first-run-problem"></p>
+        <p class="fr-waiting"><span class="fr-spinner" aria-hidden="true"></span>Waiting for your agent to sign in…</p>
+        <p id="first-run-left"></p>
+        <p class="fr-expired">This prompt expired before an agent used it.</p>
+        <button id="first-run-retry" class="fr-primary" type="button">Copy a new prompt</button>
+        <button id="first-run-skip-wait" class="fr-quiet" type="button">Skip for now</button>
+      </div>
+      <div class="fr-done"><span class="fr-check" aria-hidden="true"></span><h1 id="first-run-connected">Your agent is connected</h1><p class="fr-lead">Opening your workspace…</p></div>
+    </div>
+    <aside class="fr-aside" aria-labelledby="first-run-sign-in">
+      <p class="fr-eyebrow">Returning?</p>
+      <h2 id="first-run-sign-in">Sign in</h2>
+      <button id="first-run-passkey" class="fr-secondary" type="button" disabled>Use a passkey</button>
+      <p class="fr-note">Or open a pairing link from a device where you’re signed in.</p>
+    </aside>
+    <p id="first-run-status" class="fr-said" role="status"></p>
+  </div></main>
+  <!-- The first screen works as soon as this small module is in, not after
+       the entry page's modules: `async` runs it the moment it arrives. -->
+  <script type="module" async src="./first-run.mjs"></script>
   <div id="surface"></div>
   <div id="arrival" aria-hidden="true"><svg viewBox="0 0 100 100" width="44" height="44"><path d="M10.98 31.85 Q10.979892448752274 27.96648782251284 14.4 26.12 L20.26 22.97 Q24.843373493975903 20.50602409638554 24.84 25.71 L24.84 74.29 Q24.843373493975903 79.49397590361446 20.26 77.03 L14.4 73.88 Q10.979892448752274 72.03351217748715 10.98 68.15 Z" fill="#3b4376"/><path d="M89.02 31.85 Q89.02010755124772 27.96648782251284 85.6 26.12 L79.74 22.97 Q75.1566265060241 20.50602409638554 75.16 25.71 L75.16 74.29 Q75.1566265060241 79.49397590361446 79.74 77.03 L85.6 73.88 Q89.02010755124772 72.03351217748715 89.02 68.15 Z" fill="#3b4376"/><rect x="29" y="16" width="42" height="68" rx="6" fill="#6f82ff"/></svg><p id="arrival-line"></p><span id="arrival-bar" hidden><span></span></span></div>
   <p id="arrival-note" role="status" hidden></p>
