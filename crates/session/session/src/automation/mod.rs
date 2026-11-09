@@ -392,7 +392,13 @@ impl Automation {
                 // does not hold is a workspace on the desk whose records live elsewhere: nothing of
                 // it is known here, and the run it starts is refused by the broker unless the
                 // workspace it holds says otherwise.
-                |workspace| Some(revocations(&workspace.id().to_string()).unwrap_or_default()),
+                |workspace| {
+                    Some(
+                        revocations
+                            .of(&workspace.id().to_string())
+                            .unwrap_or_default(),
+                    )
+                },
                 now_ns,
             )
         })

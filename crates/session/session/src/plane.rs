@@ -627,7 +627,7 @@ impl WorkspaceAuthority for DeskAuthority {
     fn workspace_revocations(&self, workspace: &str) -> Option<tilo_user_identity::RevocationList> {
         let tree = self.tree.lock_recover();
         tilo_action_broker::services::workspace_in(&tree, workspace)?;
-        Some((self.revocations)(workspace).unwrap_or_default())
+        Some(self.revocations.of(workspace).unwrap_or_default())
     }
 
     /// Where the broker keeps what it admitted on this device's behalf: a

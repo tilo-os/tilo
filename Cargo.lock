@@ -21420,6 +21420,7 @@ dependencies = [
  "tilo-broker-core",
  "tilo-browser-peer",
  "tilo-capture-studio",
+ "tilo-channels",
  "tilo-cli-kit",
  "tilo-clock",
  "tilo-color-pipeline",

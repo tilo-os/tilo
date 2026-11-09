@@ -111,6 +111,10 @@ pub enum Event {
 /// How the plane numbers one workspace's topic.
 pub type Topic = u64;
 
+/// A device on a workspace's roster, and when its certificate expires (Unix nanoseconds; `None` when
+/// it never does).
+pub type RosterDevice = (EndpointId, Option<u64>);
+
 /// The topic a workspace's plane numbers itself by, from the workspace's id: number 0 for a desk
 /// that shows no workspace.
 #[must_use]
@@ -163,7 +167,7 @@ pub enum Cmd {
     /// Say which devices workspace `ws` admits, and until when each of their certificates holds.
     Roster {
         ws: Topic,
-        devices: Vec<(EndpointId, Option<u64>)>,
+        devices: Vec<RosterDevice>,
     },
     /// The session is going: stop the plane.
     Stop,

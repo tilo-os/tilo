@@ -10,35 +10,42 @@
 //! Nothing here decides who may read what: the workspace's governance does, and
 //! this device only follows it.
 
-mod vault;
-
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::Duration;
+use tilo_clock::{SystemTime, UNIX_EPOCH};
 
+use crate::platform::plane::{Cmd, RosterDevice, Topic, topic_of};
 use collab_types::{ChannelId, ChannelRoute, Ed25519PublicKey};
 use neighbour_wire::NeighbourMsg;
-use tilo_action_broker::channel_encryption::{
-    ChannelDirectory, ChannelEncryption, ChannelEncryptionConfig, ChannelGates, ChannelKeyAccess,
-    GovernancePark, GovernancePump, GovernanceTransport, InboundChannelGovernance,
-};
+#[cfg(target_os = "linux")]
 use tilo_action_broker::collab_core::{BrokerChannels, BrokerGates};
+use tilo_channels::{
+    ChannelDirectory, GovernancePark, GovernanceTransport, InboundChannelGovernance,
+};
+#[cfg(target_os = "linux")]
+use tilo_channels::{
+    ChannelEncryption, ChannelEncryptionConfig, ChannelGates, ChannelKeyAccess, GovernancePump,
+};
 use tilo_desktop_model::WorkspaceId as ModelWorkspaceId;
 use tilo_identity_host::policy_change;
 use tilo_lock::MutexRecover as _;
-use tilo_network_actor::{RosterDevice, WorkspaceId, workspace_topic_id};
 
 use crate::engine::Engine;
-use crate::platform::plane::Cmd;
 
+#[cfg(target_os = "linux")]
+mod vault;
+#[cfg(target_os = "linux")]
 pub(crate) use vault::MlsVault;
 
 /// The running channel service: this device's keys, and the thread that keeps their groups in step
 /// with the workspaces' governance. Stops when dropped.
+#[cfg(target_os = "linux")]
 pub(crate) struct Channels {
     _pump: GovernancePump,
 }
 
+#[cfg(target_os = "linux")]
 impl Channels {
     /// Open this device's channel service over the workspaces `engine` holds:
     /// its sealed channel state under the platform secret store, and its
@@ -124,7 +131,7 @@ pub struct ChannelLink {
     changed: Mutex<BTreeSet<ModelWorkspaceId>>,
     /// The records this device asked a workspace's hosts for, by workspace topic and channel: a
     /// read asks once, and the plane asks a host session that starts later itself.
-    asked: Mutex<BTreeSet<(WorkspaceId, [u8; 32])>>,
+    asked: Mutex<BTreeSet<(Topic, [u8; 32])>>,
     /// What this session says on the collaboration plane, once it is running.
     outgoing: Mutex<Option<tokio::sync::mpsc::UnboundedSender<Cmd>>>,
     park: Arc<GovernancePark>,
@@ -211,7 +218,7 @@ impl ChannelLink {
     /// (an on-demand record, or a part of a chain behind its head): its history then arrives as the
     /// workspace's other documents do, and later reads ask nobody.
     pub(crate) fn ask_record(&self, workspace: ModelWorkspaceId, channel: [u8; 32]) {
-        let ws = workspace_topic_id(workspace);
+        let ws = topic_of(workspace);
         let outgoing = self.outgoing.lock_recover().clone();
         let Some(outgoing) = outgoing else {
             return;
@@ -232,7 +239,7 @@ impl ChannelLink {
     pub(crate) fn ask_replay(&self, workspace: ModelWorkspaceId) {
         let outgoing = self.outgoing.lock_recover().clone();
         if let Some(outgoing) = outgoing {
-            let _ = outgoing.send(Cmd::Replay(workspace_topic_id(workspace)));
+            let _ = outgoing.send(Cmd::Replay(topic_of(workspace)));
         }
     }
 
@@ -242,13 +249,13 @@ impl ChannelLink {
     pub(crate) fn publish_custody(&self, workspace: ModelWorkspaceId) {
         let outgoing = self.outgoing.lock_recover().clone();
         if let Some(outgoing) = outgoing {
-            let _ = outgoing.send(Cmd::PublishCustody(workspace_topic_id(workspace)));
+            let _ = outgoing.send(Cmd::PublishCustody(topic_of(workspace)));
         }
     }
 
     /// Tell the plane which devices workspace `ws` admits; `false` when the plane is gone, and the
     /// roster is told again when a later pass finds it changed.
-    fn tell_roster(&self, ws: WorkspaceId, devices: Roster) -> bool {
+    fn tell_roster(&self, ws: Topic, devices: Roster) -> bool {
         let outgoing = self.outgoing.lock_recover().clone();
         outgoing.is_some_and(|outgoing| outgoing.send(Cmd::Roster { ws, devices }).is_ok())
     }
@@ -271,7 +278,7 @@ impl GovernanceTransport for ChannelLink {
         outgoing.is_some_and(|outgoing| {
             outgoing
                 .send(Cmd::Publish {
-                    ws: workspace_topic_id(workspace),
+                    ws: topic_of(workspace),
                     msg: Box::new(message),
                 })
                 .is_ok()
@@ -287,12 +294,12 @@ impl GovernanceTransport for ChannelLink {
 /// told when the workspace it is of changed, and only then.
 #[derive(Default)]
 struct Rosters {
-    told: HashMap<WorkspaceId, Roster>,
+    told: HashMap<Topic, Roster>,
 }
 
 impl Rosters {
     /// Whether the plane is not holding `roster` as workspace `ws` 's yet.
-    fn moved(&self, ws: WorkspaceId, roster: &Roster) -> bool {
+    fn moved(&self, ws: Topic, roster: &Roster) -> bool {
         self.told.get(&ws) != Some(roster)
     }
 
@@ -309,7 +316,7 @@ impl Rosters {
         for workspace in link.take_changed() {
             if !engine.holds(workspace) {
                 // The workspace is gone here, and what the plane held of it went with the leave.
-                self.told.remove(&workspace_topic_id(workspace));
+                self.told.remove(&topic_of(workspace));
                 continue;
             }
             if let Ok(roster) = roster_of(engine, workspace) {
@@ -326,7 +333,7 @@ impl Rosters {
     /// Tell the plane the workspace's `roster` , and remember it as told only when the plane took
     /// it: one it did not take is read again on a later pass.
     fn tell(&mut self, link: &ChannelLink, workspace: ModelWorkspaceId, roster: Roster) {
-        let ws = workspace_topic_id(workspace);
+        let ws = topic_of(workspace);
         if !self.moved(ws, &roster) {
             return;
         }
@@ -401,7 +408,7 @@ impl ChannelDirectory for Directory {
     /// The first second after `now` at which the workspace's channels can answer differently with
     /// nothing written: a capability or a device certificate expiring.
     fn next_policy_change(&self, workspace: ModelWorkspaceId, now: u64) -> Option<u64> {
-        let second = tilo_action_broker::policy_schedule::second_at_or_after;
+        let second = tilo_channels::schedule::second_at_or_after;
         let (certificates, capabilities) = self
             .engine
             .owner()
@@ -561,7 +568,7 @@ mod tests {
     /// is told nothing.
     #[test]
     fn a_roster_moves_only_when_its_devices_do() {
-        let workspace = workspace_topic_id(ModelWorkspaceId::new());
+        let workspace = topic_of(ModelWorkspaceId::new());
         let device = iroh::SecretKey::from_bytes(&[7; 32]).public();
         let other = iroh::SecretKey::from_bytes(&[9; 32]).public();
         let mut rosters = Rosters::default();

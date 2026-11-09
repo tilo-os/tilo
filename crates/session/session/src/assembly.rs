@@ -283,7 +283,6 @@ pub(crate) struct Shared {
     /// takes part in the collaboration plane.
     pub(crate) sync: Option<Rc<crate::sync::Client>>,
     /// This device's workspaces: what the desk shows of them, and what a join takes in.
-    #[cfg(target_os = "linux")]
     pub(crate) engine: Option<std::sync::Arc<crate::engine::Engine>>,
     /// The workspaces' shared desktops, as their records hold them: what each
     /// device that shows a workspace puts on its own desk, and what this one
@@ -297,7 +296,6 @@ pub(crate) struct Shared {
     /// The engine revision the desk's copy of each workspace's people was
     /// last taken from: what nothing new of a workspace's governance has
     /// passed since.
-    #[cfg(target_os = "linux")]
     pub(crate) membership_fed: Cell<Option<u64>>,
     /// This device's channels of those workspaces' sealed records, and the
     /// devices each one admits: kept for as long as the session runs.

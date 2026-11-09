@@ -107,6 +107,10 @@ tilo-content = { path = "../../system/content" }
 # macOS, or the store a headless machine names with `TILO_SECRETS_DIR`.
 # A fresh vault master key is drawn from getrandom's `SysRng`.
 getrandom.workspace = true
+# This device's channels: the groups its records are sealed in, and the keys an endpoint reads one
+# with. Every host runs the engine; where its state is kept is the host's.
+tilo-channels = { path = "../../collab/channels" }
+channel-crypto = { path = "../../collab/channel-crypto" }
 rand_core.workspace = true
 # A schedule's fire time is claimed by one of the person's devices, ranked by
 # the same hash everywhere, and the vault derives its channel state key.
@@ -222,9 +226,6 @@ tilo-action-broker = { path = "../../collab/tilo-action-broker" }
 # The shortcuts a person saved and the triggers that start them without
 # anyone invoking them.
 tilo-automation = { path = "../../collab/automation" }
-# The sealed channel state the channel encryption service keeps on this
-# device, and the key it is sealed with.
-channel-crypto = { path = "../../collab/channel-crypto" }
 # A branch of a workspace takes an app's own copy of a record into the
 # workspace's, as every incoming change is taken in.
 tilo-automerge = { path = "../../doc/tilo-automerge" }

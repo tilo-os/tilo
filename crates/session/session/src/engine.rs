@@ -11,23 +11,28 @@
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::time::SystemTime;
+use tilo_clock::SystemTime;
 
-use tilo_action_broker::channel_encryption::{ChannelAccess, ChannelKeyProvider};
 use tilo_action_policy::WorkspacePolicy;
+use tilo_channels::{ChannelAccess, ChannelKeyProvider};
 use tilo_desktop_model::{WorkspaceId, WorkspaceSlot};
 use tilo_identity_host::custody::HostIdentity;
 use tilo_lock::MutexRecover as _;
 use tilo_peer_state::join::MemberRole;
+#[cfg(target_os = "linux")]
 use tilo_peer_state::join::invitations::{
     CancelInvitationRequest, IssueInvitationRequest, PendingInvitation,
 };
-use tilo_peer_state::owner::{
-    Change, DocumentRead, FileHost, NativeWorkspaceOwner, open_file_with, owner_file_of,
-};
+#[cfg(target_os = "linux")]
+use tilo_peer_state::owner::Change;
+use tilo_peer_state::owner::DocumentRead;
+use tilo_peer_state::owner::NativeWorkspaceOwner;
+#[cfg(not(target_arch = "wasm32"))]
+use tilo_peer_state::owner::{FileHost, open_file_with, owner_file_of};
 use tilo_user_identity::RevocationList;
 
 use crate::channels;
+#[cfg(target_os = "linux")]
 use crate::sync;
 
 /// The engine's record, under this device's state directory: the name an earlier build kept it
@@ -95,6 +100,7 @@ impl Slots {
     }
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 impl FileHost for Slots {
     fn slot_workspace(&self, slot: WorkspaceSlot) -> Option<WorkspaceId> {
         self.0.lock_recover().get(&slot).copied()
@@ -170,6 +176,7 @@ pub struct Engine {
 
 /// How much of the workspaces' sealed history this device keeps to hand their other devices: every
 /// frame that passes through it, oldest retired first once it holds this much.
+#[cfg(not(target_arch = "wasm32"))]
 const FRAMES_KEPT: tilo_peer_state::store::Appetite = tilo_peer_state::store::Appetite::Bounded {
     max_bytes: 512 * 1024 * 1024,
 };
@@ -248,6 +255,7 @@ impl Engine {
 
     /// This device's engine, when this computer has an identity and a state directory to keep its
     /// workspaces in.
+    #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn for_this_device(
         state: Option<&Path>,
         workspaces: impl IntoIterator<Item = (WorkspaceSlot, WorkspaceId)>,
@@ -379,6 +387,7 @@ impl Engine {
     /// device commits. What a branch of a workspace writes for each record it brings.
     /// # Errors
     /// The workspace is not held here, it holds the record already, or it refused the write.
+    #[cfg(target_os = "linux")]
     pub(crate) fn found_record(
         &self,
         workspace: WorkspaceId,
@@ -644,6 +653,7 @@ impl Engine {
     /// redeemable: a link is answered by the device that signed it.
     /// # Errors
     /// The workspace is not held here, or its join ledger cannot be read now.
+    #[cfg(target_os = "linux")]
     pub(crate) fn invitations(
         &self,
         workspace: &str,
@@ -658,6 +668,7 @@ impl Engine {
     /// # Errors
     /// The workspace is not held here, the invitation was not issued from this device's
     /// person, or the workspace cannot be published.
+    #[cfg(target_os = "linux")]
     pub(crate) fn cancel_invitation(
         &self,
         workspace: &str,
@@ -785,6 +796,7 @@ impl Engine {
     /// # Errors
     /// The workspace is not held here, this device's person may not invite into it or
     /// hand out that part, or the workspace cannot be published.
+    #[cfg(target_os = "linux")]
     pub(crate) fn issue_invitation(
         &self,
         workspace: &str,
@@ -801,7 +813,7 @@ impl Engine {
         // host of its own workspace.
         let hint = self.own_host_hint(workspace, endpoint)?;
         let now_ns: u64 = now
-            .duration_since(std::time::UNIX_EPOCH)
+            .duration_since(tilo_clock::UNIX_EPOCH)
             .map_err(|error| error.to_string())?
             .as_nanos()
             .try_into()
@@ -929,6 +941,7 @@ impl Engine {
 
     /// Where `workspace` 's host is reached and the device its enrollment pins: the address its
     /// live plane is dialled at.
+    #[cfg(target_os = "linux")]
     pub(crate) fn workspace_host(
         &self,
         workspace: WorkspaceId,
@@ -991,6 +1004,7 @@ impl Engine {
     /// Where this device's own host of `workspace` is reached at `endpoint`,
     /// signed by this device: what an invitation names for the joiner, and
     /// what a workspace founded here records of its own host.
+    #[cfg(target_os = "linux")]
     fn own_host_hint(
         &self,
         workspace: &str,
@@ -1022,6 +1036,7 @@ impl Engine {
     /// the workspace's own, hosted here. `endpoint` is where other devices reach this one, which
     /// the workspace's record keeps as its host's address. A workspace this device may not own, or
     /// one that could not be published, stays the desk's own.
+    #[cfg(target_os = "linux")]
     pub(crate) fn found(
         &self,
         slot: WorkspaceSlot,
@@ -1072,6 +1087,7 @@ impl Engine {
     /// Name where this device's own host of each workspace it holds is reached at `endpoint` , for
     /// one founded before its record said: a workspace founded here is reached at its own host, and
     /// a record that does not say so leaves its records where no device reaches them.
+    #[cfg(target_os = "linux")]
     pub(crate) fn name_own_hosts(&self, endpoint: &iroh::EndpointAddr) {
         for workspace in self.owner.hosts_unnamed() {
             let hint = match self.own_host_hint(&workspace.to_string(), endpoint) {
@@ -1109,6 +1125,7 @@ impl Engine {
 /// What the broker's owner commits ask of this device's workspaces: the engine's owner is the
 /// canonical copy of every workspace it holds, and what it commits leaves on the plane's session
 /// with the workspace's host.
+#[cfg(target_os = "linux")]
 impl tilo_action_broker::owner_commits::OwnerCustody for Engine {
     /// A held workspace whose host takes part in no channels: its records are documents the owner
     /// commits, never sealed channels.
@@ -1185,17 +1202,28 @@ fn cancellation_id(invite_id: [u8; 32]) -> [u8; 32] {
 /// A workspace's revocations, as the threads beside the session's loop ask for them: the broker
 /// decides on its own thread and the automation host arms shortcuts on the loop, and both refuse a
 /// device the workspace revoked.
-pub(crate) type Revocations = Arc<dyn Fn(&str) -> Option<RevocationList> + Send + Sync>;
+pub(crate) type Revocations = Arc<dyn RevocationsOf>;
+
+/// What a workspace of this device's engine revokes, asked from a thread of the session's own or
+/// from the session's loop: `Send + Sync` where the host has threads.
+pub(crate) trait RevocationsOf: collab_types::signer::MaybeSendSync {
+    fn of(&self, workspace: &str) -> Option<RevocationList>;
+}
 
 /// What a workspace of this device's engine revokes, for the callers that ask from another thread.
 /// A session that holds no workspace knows of none.
 pub(crate) fn revocations_of(engine: Option<&Arc<Engine>>) -> Revocations {
-    let engine = engine.cloned();
-    Arc::new(move |workspace: &str| {
-        engine
-            .as_ref()
-            .and_then(|engine| engine.revocations(workspace))
-    })
+    struct Held(Option<Arc<Engine>>);
+
+    impl RevocationsOf for Held {
+        fn of(&self, workspace: &str) -> Option<RevocationList> {
+            self.0
+                .as_ref()
+                .and_then(|engine| engine.revocations(workspace))
+        }
+    }
+
+    Arc::new(Held(engine.cloned()))
 }
 
 /// Where this device's workspaces are kept under `state` .
