@@ -9,9 +9,11 @@
     reason = "test fixtures: a failed step is the assertion"
 )]
 
+use std::time::Duration;
 use tilo_compositor::{
     Compositor, LayoutRect, OutputConfig, SurfaceHost as _, WindowInfo, WindowPolicy as _,
 };
+
 use tilo_desktop_model::TileContent;
 use tilo_desktop_policy::DesktopPolicy;
 use tilo_surface_host::{DesktopHost, desktop};
@@ -373,4 +375,69 @@ fn an_x11_window_is_a_tab_of_its_class_that_retitles_and_reopens() {
         host.take_launches().is_empty(),
         "one reopen asks for it once"
     );
+}
+
+/// A window opened where the strip is fuller than the display stands on that display in the frame
+/// that maps it: the strip takes the slots its windows are going to and pans to the new one in the
+/// same pass, so the place the compositor is given is one it can draw — and the window stays there,
+/// rather than sliding onto the screen a few frames later.
+#[test]
+fn a_window_opened_beyond_the_visible_strip_stands_on_the_output_at_once() {
+    // The springs a person's frame shows are the point: a slot still on its way to its width would
+    // lay the opening window out past its neighbour's old one, off the display.
+    let (host, mut policy) = desktop(7, 1.0);
+    let outputs = output();
+    let apps = [
+        "org.gnome.Terminal",
+        "org.mozilla.firefox",
+        "so.tilo.notes",
+        "so.tilo.chat",
+        "so.tilo.maps",
+        "so.tilo.sheets",
+    ];
+    let mut mapped: Vec<(WindowInfo, LayoutRect)> = Vec::new();
+    let mut now = ui::time::now();
+    let on_output = |placed: &tilo_compositor::Arrangement, app: &str, when: &str| {
+        let width = placed.size.unwrap_or_default().0;
+        assert!(
+            placed.location.x >= 0 && placed.location.x + width <= 1280,
+            "{app}: opened off the output at {:?} ({width} wide) {when}; the strip's slots and its \
+             pan are not in the frame that opens it",
+            placed.location
+        );
+    };
+    for (i, app) in apps.iter().enumerate() {
+        let id = u64::try_from(i).expect("a few windows") + 1;
+        let opened = window(id, app);
+        let size = policy
+            .initial_size(&opened, &outputs)
+            .expect("the desk holds a place for the window");
+        let at = policy.place(&opened, size, &outputs);
+        mapped.push((opened, LayoutRect::new(at, size.into())));
+        // What the compositor asks once the buffer that maps the window arrived.
+        let arranged = policy
+            .arrange(&mapped, &outputs)
+            .expect("the desk places windows");
+        let placed = arranged.iter().find(|a| a.id == id).expect("its place");
+        on_output(placed, app, "in the frame that maps it");
+        let at = placed.location;
+        // Two frames on: the window is where it was put, not sliding onto the screen.
+        for _ in 0..2 {
+            now = now
+                .checked_add(Duration::from_millis(16))
+                .expect("a moment");
+            ui::time::testing::with_monotonic_time(now, || {
+                host.with_widgets(tilo_surface_host::WidgetHost::relayout);
+            });
+        }
+        let arranged = policy
+            .arrange(&mapped, &outputs)
+            .expect("the desk places windows");
+        let placed = arranged.iter().find(|a| a.id == id).expect("its place");
+        on_output(placed, app, "two frames on");
+        assert_eq!(
+            placed.location, at,
+            "{app}: the window was placed where it was still moving to"
+        );
+    }
 }

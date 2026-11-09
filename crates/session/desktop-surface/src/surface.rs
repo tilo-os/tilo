@@ -1984,6 +1984,12 @@ impl DesktopSurface {
             if let Some(display) = shared.tree.outputs.focused_display() {
                 row.set_group_display(group, display);
             }
+            // The strip lands where the window opens, in the pass that opens it: its slots take the
+            // widths they are going to and its windows the places, so the frame that maps the
+            // window shows it in place — the place the compositor is given is one on screen. Eased,
+            // the window would be laid out past a neighbour still on its way to its width, often
+            // off the display, and no frame would show it until it arrived there.
+            row.set_motion_source(ui::tokens::MotionSource::Action);
             row.share_with_neighbour(group);
         }
         self.reveal = Some((strip, group));
@@ -2470,22 +2476,23 @@ impl Widget for DesktopSurface {
                 continue;
             };
             row.apply_layout(taffy, child, inner);
-            // The launch frame itself shows the new window: move the strip to it, then place the
-            // groups again where the move has them.
-            if Some(*strip) != shown {
+            let Some((_, group)) = reveal.filter(|(reveal_strip, _)| reveal_strip == strip) else {
+                continue;
+            };
+            if !row.group_is_laid_out(group) {
+                pending = reveal;
                 continue;
             }
-            if let Some((reveal_strip, group)) = reveal
-                && reveal_strip == *strip
-            {
-                if !row.group_is_laid_out(group) {
-                    pending = reveal;
-                } else if row.scroll_group_into_view(group) {
-                    // The window is on screen in the frame that opens it,
-                    // not sliding in after it: the frame the person sees
-                    // their new window must show it.
-                    row.apply_layout(taffy, child, inner);
-                }
+            // The strip has laid its windows out where the window opens, in this pass: from here on
+            // they follow the hand again.
+            row.set_motion_source(ui::tokens::MotionSource::Pointer);
+            // The launch frame itself shows the new window: move the strip to it, then place the
+            // groups again where the move has them.
+            if Some(*strip) == shown && row.scroll_group_into_view(group) {
+                // The window is on screen in the frame that opens it,
+                // not sliding in after it: the frame the person sees
+                // their new window must show it.
+                row.apply_layout(taffy, child, inner);
             }
         }
         self.reveal = pending;
