@@ -4,3 +4,8 @@
 kind = "model-providers.root"
 label = "Model providers"
 version = 1
+
+[[resources.verbs]]
+id = "list-presets"
+kind = "read"
+
