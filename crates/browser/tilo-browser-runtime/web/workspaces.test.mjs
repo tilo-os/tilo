@@ -166,23 +166,26 @@ test('a page that leaves while reconnecting stops asking', async () => {
   assert.equal(calls.posted.length, 2);
 });
 
-test('the own desktop opens where the home lets people in by itself, and for a browser some host let in', async () => {
-  const asked = [];
-  const presence = body => async url => { asked.push(String(url)); return body === null ? Promise.reject(new Error('down')) : reply({body}); };
-  const none = {getItem: () => null};
-  const kept = {getItem: () => JSON.stringify({'https://elsewhere.example': {origin: 'https://elsewhere.example', room: 'R', userPublicKey: '11'.repeat(32)}})};
-  assert.equal(await ownDesktopOpen(null, {memberships: none, fetch: presence({admission: 'invite'})}), true, 'no home: nothing to gate');
-  assert.equal(await ownDesktopOpen({...commons, admission: undefined}, {memberships: none, fetch: presence({admission: 'invite'})}), true);
-  assert.equal(asked.length, 0);
-  assert.equal(await ownDesktopOpen(commons, {memberships: none, fetch: presence({open: true, admission: 'open'})}), true);
-  assert.equal(await ownDesktopOpen(commons, {memberships: none, fetch: presence({open: true, admission: 'invite'})}), false, 'invitation only: a stranger has nothing');
-  assert.equal(await ownDesktopOpen(commons, {memberships: none, fetch: presence({open: true})}), false, 'a door that does not say');
-  assert.equal(await ownDesktopOpen(commons, {memberships: none, fetch: presence(null)}), false, 'a door that does not answer');
-  assert.equal(asked[0], 'https://rooms.example/presence');
-  asked.length = 0;
-  assert.equal(await ownDesktopOpen(commons, {memberships: kept, fetch: presence({admission: 'invite'})}), true, 'a member keeps theirs');
-  assert.equal(asked.length, 0, 'without asking the door');
-  assert.equal(await ownDesktopOpen(commons, {memberships: {getItem: () => { throw new Error('no storage'); }}, fetch: presence({admission: 'invite'})}), false);
+test('the own desktop opens for a browser some host let in, and asks no door', async () => {
+  // The door's join is the answer to who it lets in (admission.mjs): the
+  // check reads only what this browser kept, and makes no request of its
+  // own (it once read the door's `presence`, a route the host does not
+  // serve, which answered 405).
+  const requests = [];
+  const fetched = globalThis.fetch;
+  globalThis.fetch = async url => { requests.push(String(url)); return new Response(null, {status: 405}); };
+  try {
+    const none = {getItem: () => null};
+    const kept = {getItem: () => JSON.stringify({'https://elsewhere.example': {origin: 'https://elsewhere.example', room: 'R', userPublicKey: '11'.repeat(32)}})};
+    assert.equal(await ownDesktopOpen(null, {memberships: none}), true, 'no home: nothing to gate');
+    assert.equal(await ownDesktopOpen({...commons, admission: undefined}, {memberships: none}), true);
+    assert.equal(await ownDesktopOpen(commons, {memberships: none}), false, 'no host let it in yet: the door first');
+    assert.equal(await ownDesktopOpen(commons, {memberships: kept}), true, 'a member keeps theirs');
+    assert.equal(await ownDesktopOpen(commons, {memberships: {getItem: () => { throw new Error('no storage'); }}}), false);
+  } finally {
+    globalThis.fetch = fetched;
+  }
+  assert.deepEqual(requests, [], 'no request of its own');
 });
 
 test('a person joins at once under a random adjective-animal name when none is given', async () => {

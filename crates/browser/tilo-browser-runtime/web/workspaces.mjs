@@ -742,28 +742,17 @@ export async function pairViaHost({
 
 /**
  * Whether this browser opens the person's own desktop under an entry whose
- * home workspace is `home`. Whom the home's door lets in by itself gets a
- * desktop of their own too; while it takes people by invitation only
- * (`admission` in its presence), or does not say, only a browser some host
- * let in (a membership it keeps: joined, paired or set up) does. Anyone
- * else has nothing here until invited.
+ * home workspace is `home`: only a browser some host let in (a membership
+ * it keeps: joined, paired or set up) does. One that none did is first sent
+ * through the home's door (`admission.mjs`), whose join is the answer: an
+ * open door lets it in, and one taking people by invitation only refuses
+ * it, so anyone else has nothing here until invited.
  */
-export async function ownDesktopOpen(home, {memberships = globalThis.localStorage, fetch = globalThis.fetch} = {}) {
+export async function ownDesktopOpen(home, {memberships = globalThis.localStorage} = {}) {
   if (!home?.admission) return true;
-  let kept = [];
-  try { kept = membershipOrigins(undefined, memberships); } catch { /* No storage: nothing kept. */ }
-  if (kept.length) return true;
-  const admission = await doorAdmission(home, fetch);
-  return typeof admission === 'string' && admission !== 'invite';
-}
-
-/** Who `home`'s door admits now, as its presence says it (`open` or
- * `invite`), or `null` when it does not say. */
-async function doorAdmission(home, fetch) {
   try {
-    const response = await fetch(new URL('presence', home.admission), {credentials: 'omit'});
-    return response.ok ? (await response.json())?.admission ?? null : null;
+    return membershipOrigins(undefined, memberships).length > 0;
   } catch {
-    return null;
+    return false; // No storage: nothing kept.
   }
 }

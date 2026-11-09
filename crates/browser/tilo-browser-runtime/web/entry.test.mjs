@@ -367,7 +367,7 @@ test('a sealed link admits through the site’s shelf and opens the workspace it
   page.router.stop();
 });
 
-test('a workspace mount keeps its invite sheet alongside host, About, presence and title forwarding', async () => {
+test('a workspace mount keeps its invite sheet alongside host, About and title forwarding', async () => {
   const home = {name: 'Commons', host: {origin: 'https://rooms.example'}, admission: 'https://rooms.example/'};
   const about = {source: 'https://example.org/source'};
   const navigation = {getSnapshot: () => ({generation: 'g', active: null, entries: []}), subscribe: () => () => {}, dispatch: async () => {}};
@@ -392,7 +392,7 @@ test('a workspace mount keeps its invite sheet alongside host, About, presence a
     workspace: 'WORKSPACE', name: 'Reader', user: 'ab'.repeat(32)});
   assert.equal(mounted.host, 'rooms.example');
   assert.deepEqual(mounted.about, about);
-  assert.equal(mounted.presenceUrl, 'https://rooms.example/presence');
+  assert.equal(mounted.presenceUrl, undefined, 'presence travels over the session, not a door route');
   mounted.onStatus({workspaceName: 'Commons'});
   assert.equal(window.document.title, 'Tilo · Commons');
   assert.deepEqual(statuses, [{workspaceName: 'Commons'}]);

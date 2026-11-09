@@ -215,7 +215,7 @@ export async function mountDesktop(target,options={}) {
   if(options.models)config.models={endpoint:options.models.endpoint,sessionToken:options.models.sessionToken,profileId:options.models.profileId,modelId:options.models.modelId};
   // Administration is opt-in and never borrows the inference session token.
   if(options.providerManagement)config.providerManagement={endpoint:options.providerManagement.endpoint,sessionToken:options.providerManagement.sessionToken};
-  delete config.peer;if(options.peer?.runtimeId!==undefined)config.peer=options.peer.runtimeId;delete config.settings;delete config.onNavigation;delete config.onStatus;delete config.signal;delete config.loadAsset;delete config.actionsV1;delete config.subscribeDesktopCommits;delete config.live;delete config.liveMembers;delete config.restartOnCrash;delete config.presenceUrl;delete config.dom;delete config.onDomFrame;
+  delete config.peer;if(options.peer?.runtimeId!==undefined)config.peer=options.peer.runtimeId;delete config.settings;delete config.onNavigation;delete config.onStatus;delete config.signal;delete config.loadAsset;delete config.actionsV1;delete config.subscribeDesktopCommits;delete config.live;delete config.liveMembers;delete config.restartOnCrash;delete config.dom;delete config.onDomFrame;
   // The desktop shows its invite sheet when the page configures one: what it
   // makes links through, as `mountDesktop({invite})` hands it over.
   delete config.onInvite;
@@ -366,7 +366,7 @@ export async function mountDesktop(target,options={}) {
     lastState=retainStatus(lastState,state);report(state);
     if(state.phase==='suspended'){surface.inert=true;editor.disabled=true;}
 
-    if(state.phase==='presented'){surface.inert=false;editor.disabled=false;const layer=liveLayer();if(!livePointer&&layer){livePointer=followOwnPointer(layer,()=>id,surface,active);if(livePlace)layer.publishPresence({focus:livePlace.focus,place:livePlace.place,layout:livePlace.layout??null});}if(!here&&!config.app&&options.peer&&runtime.desktop_here_tick)here=createHere({runtime,mountId:()=>id,active,layer:liveLayer,peer:options.peer,presenceUrl:options.presenceUrl,photos:options.peer.origin?photos:null,onError:error=>report({hereError:String(error)})});}
+    if(state.phase==='presented'){surface.inert=false;editor.disabled=false;const layer=liveLayer();if(!livePointer&&layer){livePointer=followOwnPointer(layer,()=>id,surface,active);if(livePlace)layer.publishPresence({focus:livePlace.focus,place:livePlace.place,layout:livePlace.layout??null});}if(!here&&!config.app&&options.peer&&runtime.desktop_here_tick)here=createHere({runtime,mountId:()=>id,active,layer:liveLayer,peer:options.peer,photos:options.peer.origin?photos:null,onError:error=>report({hereError:String(error)})});}
     surface.dataset.phase=state.phase;surface.dataset.frames=String(state.frames??0);
     if(state.phase==='failed'){readyReject(Error(state.error));for(const waiter of presentationWaiters)waiter.reject(Error(state.error));presentationWaiters.clear();}
     if(state.phase==='presented'){for(const waiter of [...presentationWaiters])if((state.frames??0)>waiter.after){presentationWaiters.delete(waiter);waiter.resolve();}}

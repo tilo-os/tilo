@@ -385,8 +385,6 @@ export async function boot({mode, window = globalThis, surface, status, deps, di
       ...(entry.about ? {about: entry.about} : {}),
       ...(entry.layout ? {layout: entry.layout} : {}),
       ...(linkOffer ? {linkOffer} : {}),
-      // The workspace service's watching count, for the desktop's people panel.
-      ...(listed?.admission ? {presenceUrl: new URL('presence', listed.admission).href} : {}),
       ...(invite ? {invite} : {}), ...diagnostics},
     onStatus: titled(window, diagnostics.onStatus)});
   if (shown.redirect) {

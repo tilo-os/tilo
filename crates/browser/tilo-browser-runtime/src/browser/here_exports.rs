@@ -172,26 +172,6 @@ pub fn desktop_set_here(id: u64, lines: &str) -> Result<(), JsValue> {
     })
 }
 
-/// How many pages are reading the workspace right now.
-///
-/// # Errors
-///
-/// Rejects a mount without a desktop.
-#[wasm_bindgen]
-pub fn desktop_set_watching(id: u64, watching: u32) -> Result<(), JsValue> {
-    with_mount(id, |m| {
-        let desktop = m
-            .desktop
-            .as_ref()
-            .ok_or_else(|| error("Desktop unavailable"))?;
-        if desktop.here.borrow_mut().set_watching(watching) {
-            m.pending = true;
-            m.window.request_redraw();
-        }
-        Ok(())
-    })
-}
-
 /// What the person's profile says they are doing (`status`, empty for
 /// nothing) and how they share it (`automatic`, `manual` or `off`; anything
 /// else leaves it as it is): what they set on another of their devices.

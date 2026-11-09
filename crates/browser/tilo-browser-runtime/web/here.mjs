@@ -5,8 +5,8 @@
 // doing (`desktop_here_tick`: the window they focus and the titles of their
 // own recent steps, never content) and posts it to the host's `/here`
 // (`peer.here`), which answers with everyone's one-line status and recent
-// summary. A host's workspace service also counts the people watching. All of it goes
-// to the runtime as ambient presence; none of it is a notification.
+// summary. All of it goes to the runtime as ambient presence; none of it is a
+// notification.
 
 /** How often the page checks what its person is doing. */
 export const TICK_MS = 4_000;
@@ -14,8 +14,6 @@ export const TICK_MS = 4_000;
 export const POST_EVERY_MS = 20_000;
 /** How far back a person's own steps count as what they are doing. */
 export const RECENT_MS = 10 * 60_000;
-/** How often the watching count is read; the service caches it 5 s. */
-export const WATCHING_EVERY_MS = 15_000;
 /**
  * How long after someone arrives the page keeps asking the host, every
  * tick, for the line that says whose device theirs is: until it has it,
@@ -32,18 +30,16 @@ export const PAIR_WAIT_MS = 30_000;
  * @param options.layer        the workspace's live layer, or undefined
  * @param options.peer         the certified peer: `here(window, actions)`, `participant`,
  *                             `liveNote()`, why this page shows no live presence
- * @param options.presenceUrl  the workspace service's watching count, if any
  * @param options.photos       follows people's profile pictures (`profile-photos.mjs` `followPhotos`), if any
  */
-export function createHere({runtime, mountId, active, layer, peer, presenceUrl, photos = null,
-  fetch = globalThis.fetch, now = () => Date.now(), setTimer = setTimeout, clearTimer = clearTimeout,
+export function createHere({runtime, mountId, active, layer, peer, photos = null,
+  now = () => Date.now(), setTimer = setTimeout, clearTimer = clearTimeout,
   visible = () => globalThis.document?.visibilityState !== 'hidden', onError = () => {}}) {
   let stopped = false;
   let timer;
   let postedKey;
   let postedAt = -Infinity;
   let posting = false;
-  let watchedAt = -Infinity;
   let saidStatus = null; // the own words last put on the person's presence
   let saidNote = null; // the live note last logged, so a change is said once
   let lines = [];
@@ -97,13 +93,6 @@ export function createHere({runtime, mountId, active, layer, peer, presenceUrl, 
       posting = false;
     }
   }
-  async function watch(at) {
-    watchedAt = at;
-    const response = await fetch(presenceUrl, {credentials: 'omit'});
-    if (!response.ok) return;
-    const {watching} = await response.json();
-    if (!stopped && active() && Number.isInteger(watching) && watching >= 0) runtime.desktop_set_watching(mountId(), watching);
-  }
   async function tick() {
     timer = undefined;
     if (stopped) return;
@@ -124,7 +113,6 @@ export function createHere({runtime, mountId, active, layer, peer, presenceUrl, 
           postedKey = key;
           await post(state, at);
         }
-        if (presenceUrl && at - watchedAt >= WATCHING_EVERY_MS) await watch(at);
       }
     } catch (error) {
       onError(error);
