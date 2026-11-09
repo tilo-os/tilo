@@ -612,15 +612,15 @@ def person_note(ctx, env: dict, title: str) -> None:
     there, as its window offers it."""
     select_workspace(ctx, env["workspace"])
 
+    # The desk lists the apps of the workspace in front: its Notes is the one Notes listed.
     def offered():
         rows = [r for r in ctx.vm.actions(NOTES, programmatic=True)
-                if r.get("application") == NOTES and r.get("operation") == "new-note"
-                and env["tilo_workspace"] in json.dumps(r)]
-        return rows or None
+                if r.get("application") == NOTES and r.get("operation") == "new-note"]
+        return rows if len(rows) == 1 else None
 
     rows = wait_until(offered, 30, interval=1.0)
     if not rows:
-        raise Unobservable(f"{env['name']}: Notes there offers no new-note")
+        raise Unobservable(f"{env['name']}: its Notes offers no single new-note in front")
     try:
         invoke(ctx, rows[0]["provider"], rows[0]["id"], {"title": title}, name=f"{env['name']}-person-note")
     except CheckFailed as exc:
