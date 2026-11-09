@@ -432,12 +432,12 @@ view note_editor(n: Note) {
 ```
 
 `f.name`, `f.media`, `f.size` and `f.url` read on it, `url` being where its bytes are
-(`tilo-blob://<hash>`), which is what a picture takes (`ui.Image(f.url, alt: f.name)`). `f.text()`
-reads a
-text file's content as a `Result<Text, Text>` — `.ok` the text, `.err` why it is not read (not
-text, more than 1 MiB, or the content is not on this device) — which is how an importer reads a
-document. Reading it is a read and not an effect: the bytes are what the address names and never
-change, so a replay reads the same ones, and a device that does not hold them says so.
+(`tilo-blob://<hash>`), which is what a picture takes (`ui.Image(f.url, alt: f.name)`).
+`f.text()` reads a text file's content as a `Result<Text, Text>` — `.ok` the text, `.err` why it
+is not read (not text, more than 256 KiB, or the content is not on this device) — which is how
+an importer reads a document. Reading it is a read and not an effect: the bytes are what the
+address names and never change, so a replay reads the same ones, and a device that does not hold
+them says so.
 
 A person chooses a file in their own chooser, on the platform's terms: a control applies
 `file.choose(a, accept: [...])`, which asks them for a file of those media types and runs the
