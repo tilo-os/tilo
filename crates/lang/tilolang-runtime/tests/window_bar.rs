@@ -95,6 +95,23 @@ mod cases {
             window.set_lazy_rows(false).unwrap();
             window
         }
+
+        /// The window of `view` on `resource` with the place `place` chosen in its sidebar, as
+        /// a person chooses it: a task that names no day waits in no day's list, so the checks
+        /// of a row stand in the Inbox where it is.
+        fn window_at(&self, view: &str, resource: &ResourceRef, place: &str) -> ViewInstance {
+            let mut window = self.window(view, resource);
+            let item = of_kind(window.tree(), "ui.NavItem")
+                .into_iter()
+                .find(|item| item.props.get("key") == Some(&Value::text(place)))
+                .unwrap_or_else(|| panic!("no place {place}:\n{}", dump(window.tree())))
+                .key
+                .clone();
+            window.fire(&item, "select").unwrap();
+            window.poll_patches().unwrap();
+            window.set_lazy_rows(false).unwrap();
+            window
+        }
     }
 
     /// The nodes of a tree of the given kind whose property `prop` is the text `value`.
@@ -169,7 +186,7 @@ mod cases {
         let w = tasks();
         let root = w.root("Tasks");
         w.task(&root, "milk");
-        let window = w.window("home", &root);
+        let window = w.window_at("home", &root, "is:inbox");
         let tree = window.tree();
         one_bar(tree);
         let new_task = nodes_with(tree, "ui.Button", "label", "New task");
@@ -185,10 +202,10 @@ mod cases {
             "it is the window's primary"
         );
         // The bar the host filled is the one over the window's columns, not a row of the
-        // view's: the shell holds the button, in the slot its overview's actions go in.
+        // view's: the shell holds the button, in the slot its content's actions go in.
         let shell = of_kind(tree, "ui.NavShell")[0];
         assert!(
-            slot(shell, "overview_actions")
+            slot(shell, "actions")
                 .iter()
                 .any(|node| node.key == new_task[0].key),
             "the primary stands in the window's bar:\n{}",
@@ -230,26 +247,45 @@ mod cases {
     }
 
     /// A row shows the actions its view places, in the order it placed them, and keeps what it
-    /// left over behind its "More": the board's placement is not on every row, and every
-    /// command a task takes stays in the row's menu.
+    /// left over behind its "More": the view's own command leads the menu, the placement is not
+    /// on every row, and every command a task takes stays in the row's menu.
     #[test]
     fn a_tasks_row_offers_the_actions_its_view_places_first() {
         let w = tasks();
         let root = w.root("Tasks");
         w.task(&root, "milk");
-        let window = w.window("home", &root);
+        w.task(&root, "bread");
+        let window = w.window_at("home", &root, "is:inbox");
         let tree = window.tree();
-        let row = of_kind(tree, "ui.ListItem")[0];
+        let rows = of_kind(tree, "ui.ListItem");
+        let first: Vec<String> = slot(rows[0], "menu")
+            .iter()
+            .map(|item| text_of(item, "label"))
+            .collect();
+        assert!(
+            !first.contains(&"Indent".to_owned()),
+            "nothing stands over the first row, so it takes no indent: {first:?}\n{}",
+            dump(tree)
+        );
+        // The row with one over it: the actions its view placed, after the command the view
+        // puts on every row itself.
+        let row = rows[1];
         let menu = slot(row, "menu");
         let labels: Vec<String> = menu.iter().map(|item| text_of(item, "label")).collect();
         assert_eq!(
-            labels.get(..4).unwrap_or_default(),
-            ["Complete", "Pick date…", "Assign…", "Delete"],
+            labels.first().map(String::as_str),
+            Some("Open as page"),
+            "the view's own command leads the row's menu, whole menu {labels:?}:\n{}",
+            dump(tree)
+        );
+        assert_eq!(
+            labels.get(1..6).unwrap_or_default(),
+            ["Complete", "Pick date…", "Assign…", "Indent", "Delete"],
             "the row opens with the actions its view placed, whole menu {labels:?}:\n{}",
             dump(tree)
         );
         assert!(
-            menu[4..]
+            menu[6..]
                 .iter()
                 .all(|item| item.props.get("group") == Some(&Value::text("More"))),
             "what the view left over stands behind its \"More\", whole menu {labels:?}:\n{}",
@@ -257,7 +293,7 @@ mod cases {
         );
         assert!(
             labels
-                .get(4..)
+                .get(6..)
                 .is_some_and(|held| held.contains(&"Duplicate".to_owned())),
             "every other action a task takes stays in the row's menu, whole menu \
              {labels:?}:\n{}",
@@ -290,7 +326,7 @@ mod cases {
         let window = w.window("home", &root);
         let tree = window.tree();
         let shell = of_kind(tree, "ui.NavShell")[0];
-        let bar = slot(shell, "overview_actions");
+        let bar = slot(shell, "actions");
         let buttons: Vec<String> = bar
             .iter()
             .filter(|node| node.kind == "ui.Button")
@@ -377,7 +413,7 @@ mod cases {
         let w = tasks();
         let root = w.root("Tasks");
         w.task(&root, "milk");
-        let window = w.window("home", &root);
+        let window = w.window_at("home", &root, "is:inbox");
         let tree = window.tree();
         assert_eq!(
             nodes_with(tree, "ui.Button", "label", "Delete finished tasks").len(),

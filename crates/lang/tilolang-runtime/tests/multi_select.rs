@@ -128,7 +128,7 @@ mod cases {
 
     /// The buttons the window's bar offers, by the words on them.
     fn offered(tree: &UiNode) -> Vec<String> {
-        slot(bar(tree), "overview_actions")
+        slot(bar(tree), "actions")
             .iter()
             .filter(|node| node.kind == "ui.Button")
             .map(|node| text_of(node, "label"))
@@ -137,17 +137,29 @@ mod cases {
 
     /// The button the window's bar offers with the label `label`, as the person presses it.
     fn button(tree: &UiNode, label: &str) -> String {
-        slot(bar(tree), "overview_actions")
+        slot(bar(tree), "actions")
             .iter()
             .find(|node| node.kind == "ui.Button" && text_of(node, "label") == label)
             .unwrap_or_else(|| {
                 panic!(
                     "the bar offers no {label}: {:?}",
-                    slot(bar(tree), "overview_actions")
+                    slot(bar(tree), "actions")
                 )
             })
             .key
             .clone()
+    }
+
+    /// Pick the place `key` in the window's sidebar, as a person choosing a place does.
+    fn pick(window: &mut ViewInstance, key: &str) {
+        let item = of_kind(window.tree(), "ui.NavItem")
+            .into_iter()
+            .find(|node| node.props.get("key") == Some(&Value::text(key)))
+            .unwrap_or_else(|| panic!("the window offers no place {key}"))
+            .key
+            .clone();
+        window.fire(&item, "select").unwrap();
+        window.poll_patches().unwrap();
     }
 
     /// Choose `items` in the window's list, as a person choosing rows reports them.
@@ -174,10 +186,13 @@ mod cases {
             .map(|n| w.task(&root, &format!("Task {n}")))
             .collect();
         let mut window = w.window("home", &root);
+        // The window opens on today, and these tasks are undated: the person picks the inbox,
+        // where what waits to be sorted stands.
+        pick(&mut window, "is:inbox");
         let chosen: Vec<&ResourceRef> = six.iter().collect();
         choose(&mut window, &chosen);
         let tree = window.tree();
-        let badge = slot(bar(tree), "overview_actions")
+        let badge = slot(bar(tree), "actions")
             .into_iter()
             .find(|node| node.kind == "ui.Badge")
             .unwrap_or_else(|| panic!("the bar says what is chosen"));
@@ -238,6 +253,7 @@ mod cases {
             .collect();
         w.call("check", vec![Value::resource(&six[3])]);
         let mut window = w.window("home", &root);
+        pick(&mut window, "is:inbox");
         let chosen: Vec<&ResourceRef> = six.iter().collect();
         choose(&mut window, &chosen);
         let offered = offered(window.tree());
