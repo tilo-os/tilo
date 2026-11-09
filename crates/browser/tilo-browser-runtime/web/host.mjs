@@ -553,9 +553,16 @@ export async function mountDesktop(target,options={}) {
     const clearModifiers=()=>{if(inputScope.capture())runtime.modifiers(id,false,false,false,false);};
     for(const type of ['pointerdown','focusin','keydown'])on(document,type,event=>{if(!surface.contains(event.target))externalFocusEpoch++;},{capture:true});
     // Desktop search's chord is the desktop's wherever focus is on the page:
-    // the browser must not take it (Ctrl+K focuses its address bar).
+    // the browser must not take it (Ctrl+K focuses its address bar). This page
+    // owns it for the mount's whole life: a mount with a desktop takes it even
+    // before its first status told the page what the desk holds (the toggle
+    // needs the mount, not the navigation), and one showing a single app has
+    // no desk search to open. Answering it here, and only here, is what keeps
+    // one press one toggle: a press the page declined used to fall through to
+    // the desk's own chord, and a press it forwarded came back as a second
+    // sighting of the same key.
     on(document,'keydown',event=>{
-      if(!active()||!navigation||!isDesktopSearchShortcut(event,config.mac))return;
+      if(!active()||config.app||!isDesktopSearchShortcut(event,config.mac))return;
       event.preventDefault();event.stopImmediatePropagation();
       runtime.desktop_search_toggle(id);canvas.focus({preventScroll:true});report({lastInput:'search'});
     },{capture:true});
@@ -608,7 +615,13 @@ export async function mountDesktop(target,options={}) {
         report({lastInput:'drop',drop:`${handed} of ${files.length} files handed over`});
       }).catch(error=>report({drop:'failed',error:String(error)}));
     });
-    const dispatchKey=(type,event)=>canvas.dispatchEvent(new KeyboardEvent(type,event));
+    // A key forwarded into the surface is the runtime's alone: it must not
+    // bubble back up to this page's own listeners, where the desktop's chord
+    // would see the same press a second time and toggle the search shut.
+    const dispatchKey=(type,event)=>canvas.dispatchEvent(new KeyboardEvent(type,{
+      key:event.key,code:event.code,keyCode:event.keyCode,
+      ctrlKey:event.ctrlKey,altKey:event.altKey,shiftKey:event.shiftKey,metaKey:event.metaKey,
+      repeat:event.repeat,isComposing:event.isComposing,text:event.text,bubbles:false,cancelable:true}));
     hiddenKeys=createKeyboardForwarder({route:keyboardRoute,mac:config.mac,dispatch:dispatchKey,clearModifiers,report:()=>report({lastInput:'keyboard'})});
     semanticKeys=createKeyboardForwarder({route:(...args)=>overlayKeyboardRoute(retainedWidget(lastState),...args),mac:config.mac,dispatch:dispatchKey,publishModifiers,clearModifiers,report:()=>report({lastInput:'keyboard'})});
 

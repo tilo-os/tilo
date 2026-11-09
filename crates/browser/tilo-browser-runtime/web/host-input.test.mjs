@@ -251,6 +251,32 @@ test('the desktop search chord opens search from anywhere on the page and the br
  const plain=new DomEvent('keydown',{key:'k',code:'KeyK',ctrlKey:true});outside.dispatchEvent(plain);
  assert.equal(f.runtime.searchToggles,2,'Ctrl+K stays the app\'s on a Mac');assert.equal(plain.defaultPrevented,false);
 });
+test('the search chord opens the search once, from inside the surface and before the first status',async()=>{
+ // A press made before the desk's first status (no navigation yet) still opens search: the page
+ // owns the chord for the mount's whole life.
+ const fresh=await fixture();const outsideBefore=new Node('input');fresh.document.body.append(outsideBefore);outsideBefore.focus();
+ const early=new DomEvent('keydown',{key:'k',code:'KeyK',metaKey:true});outsideBefore.dispatchEvent(early);
+ assert.equal(fresh.runtime.searchToggles,1,'a chord before the first status opened nothing');
+ assert.equal(early.defaultPrevented,true);
+ // A press with the keyboard in the surface's own field is the page's too: the desk never sees
+ // it, so one press is one toggle, never open-then-close.
+ const f=await fixture();const ctrl=new DomEvent('keydown',{key:'k',code:'KeyK',ctrlKey:true});
+ const seen=[];f.host.canvas.addEventListener('keydown',event=>seen.push({key:event.key,ctrl:event.ctrlKey}));
+ f.host.editor.focus();f.host.editor.dispatchEvent(ctrl);
+ assert.equal(f.runtime.searchToggles,1,'one press toggled the search once');
+ assert.deepEqual(seen,[],'the desk never saw the chord, so it cannot toggle it a second time');
+});
+test('a key forwarded into the surface does not bubble back to the page',async()=>{
+ const f=await fixture();
+ // The desk asks the surface to act on a key the page's capture listener would answer too (the
+ // search chord): a forwarded copy must stay the surface's, or the page sees one press twice.
+ let pageSightings=0;
+ f.document.addEventListener('keydown',event=>{if(event.ctrlKey&&String(event.key).toLowerCase()==='k')pageSightings++;},true);
+ f.host.editor.focus();
+ f.host.editor.dispatchEvent(new DomEvent('keydown',{key:'k',code:'KeyK',ctrlKey:true}));
+ await tick();
+ assert.equal(pageSightings,0,'a forwarded key reached the page as a second press of the same key');
+});
 test('search opened from page chrome moves the keyboard to the surface',async()=>{
  const f=await fixture();const button=new Node('button');f.document.body.append(button);button.focus();
  f.update({phase:'presented',frames:2,searchOpen:true});await tick();assert.ok([f.host.canvas,f.host.editor].includes(f.document.activeElement),'the surface (or its text editor) has the keyboard');
