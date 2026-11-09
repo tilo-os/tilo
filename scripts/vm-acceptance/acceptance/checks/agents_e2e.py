@@ -369,6 +369,13 @@ def is_error(reply) -> bool | None:
         return None
 
 
+def finds(reply, title: str) -> bool:
+    """Whether a `tilo_find` reply names `title` among what it found: its "nothing matches"
+    answer repeats the query, which is no finding."""
+    text = text_of(reply)
+    return is_error(reply) is False and not text.startswith("nothing matches") and title in text
+
+
 def tool_until(agent: Agent, name: str, arguments: dict, ready, timeout: float = 30) -> dict:
     deadline = time.monotonic() + timeout
     while True:
@@ -656,15 +663,23 @@ def own_workspace(ctx, res):
         e["apps"] = text_of(apps)[:600]
         want(is_error(apps) is False and "running" in text_of(apps),
              f"{e['name']}: the agent's tilo_ls does not list Notes running in its workspace: {text_of(apps)[:300]}")
-        found = tool_until(agent, "tilo_find", {"query": titles[e["name"]]}, lambda t: titles[e["name"]] in t)
-        want(titles[e["name"]] in text_of(found),
+        found = tool_until(agent, "tilo_find", {"query": titles[e["name"]]},
+                           lambda t: not t.startswith("nothing matches") and titles[e["name"]] in t)
+        want(finds(found, titles[e["name"]]),
              f"{e['name']}: the agent does not find its workspace's note: {text_of(found)[:300]}")
         theirs = agent.tool("tilo_find", {"query": titles[other["name"]]})
-        want(titles[other["name"]] not in text_of(theirs),
+        want(not finds(theirs, titles[other["name"]]),
              f"{e['name']}: the agent finds {other['name']}'s note: {text_of(theirs)[:300]}")
         e["found"] = text_of(found)[:300]
+        # What the desk shows the agent of itself: none of it may name the other workspace's note.
+        desk = agent.tool("tilo_ls", {"path": "session"})
+        windows = agent.tool("tilo_ls", {"path": "session/Windows"})
+        e["desk"] = (text_of(desk) + "\n" + text_of(windows))[:2000]
+        want(titles[other["name"]] not in e["desk"],
+             f"{e['name']}: the desk shows the agent {other['name']}'s note: {e['desk'][:300]}")
         agent.keep()
     res.metrics["found"] = {e["name"]: e["found"] for e in envs}
+    res.metrics["desk"] = {e["name"]: e["desk"][:600] for e in envs}
     if problems:
         raise CheckFailed("; ".join(problems))
 
@@ -708,10 +723,11 @@ def own_change(ctx, res):
         if is_error(e["new_note"]) is not False:
             problems.append(f"{e['name']}: new-note was refused: {text_of(e['new_note'])[:300]}")
         else:
-            found = tool_until(agent, "tilo_find", {"query": titles[e["name"]]}, lambda t: titles[e["name"]] in t)
-            if titles[e["name"]] not in text_of(found):
+            found = tool_until(agent, "tilo_find", {"query": titles[e["name"]]},
+                               lambda t: not t.startswith("nothing matches") and titles[e["name"]] in t)
+            if not finds(found, titles[e["name"]]):
                 problems.append(f"{e['name']}: the agent does not find its own note")
-            if titles[e["name"]] in text_of(agents[other["name"]].tool("tilo_find", {"query": titles[e["name"]]})):
+            if finds(agents[other["name"]].tool("tilo_find", {"query": titles[e["name"]]}), titles[e["name"]]):
                 problems.append(f"{other['name']}'s agent finds {e['name']}'s note")
         if is_error(e["new_file"]) is not False:
             problems.append(f"{e['name']}: terminal#run was refused: {text_of(e['new_file'])[:300]}")
