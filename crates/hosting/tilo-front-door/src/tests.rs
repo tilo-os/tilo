@@ -218,6 +218,7 @@ impl Person {
             issued_at_ns: 1,
             expires_at_ns: None,
             signature: [0; 64],
+            issuer: None,
         };
         tilo_user_identity::sign_device_cert(&mut cert, &root).unwrap();
         Self { root, device, cert }
@@ -239,6 +240,7 @@ impl Person {
             issued_at_ns: now.saturating_sub(1_000).saturating_mul(1_000_000),
             expires_at_ns: Some(expires_ms.saturating_mul(1_000_000)),
             signature: [0; 64],
+            issuer: None,
         };
         tilo_user_identity::sign_device_cert(&mut cert, &self.root).unwrap();
         cert

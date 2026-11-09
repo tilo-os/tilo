@@ -569,7 +569,7 @@ impl StatePeer {
             .chain([VerifiedCertificate::new(owner_device, now)])
         {
             let certificate = certificate?;
-            if revocations.is_revoked(&certificate.device_public_key) {
+            if revocations.refuses(&certificate) {
                 return Err("device revoked".into());
             }
             certificates.insert(certificate.device_public_key, certificate);
@@ -614,7 +614,7 @@ impl StatePeer {
             return Err("enrollment root mismatch".into());
         }
         tilo_user_identity::verify_device_cert_at(&cert, now_ns(now)).map_err(err)?;
-        if self.core.revocations.is_revoked(&cert.device_public_key) {
+        if self.core.revocations.refuses(&cert) {
             return Err("device revoked".into());
         }
         if let Some(old) = self.core.certificates.get(&cert.device_public_key)

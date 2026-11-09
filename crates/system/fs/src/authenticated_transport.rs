@@ -371,6 +371,7 @@ mod tests {
             issued_at_ns: NOW - 1,
             expires_at_ns: None,
             signature: [0; 64],
+            issuer: None,
         };
         sign_device_cert(&mut cert, &root).unwrap();
 

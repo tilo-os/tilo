@@ -611,6 +611,7 @@ fn self_certify(
             .expires_at_ns
             .map(|expires| now_ns.saturating_add(expires.saturating_sub(source.issued_at_ns))),
         signature: [0; 64],
+        issuer: None,
     };
     sign_device_cert(&mut cert, &root).map_err(|error| invalid(&error.to_string()))?;
     verify_device_cert_at(&cert, now_ns).map_err(|error| invalid(&error.to_string()))?;

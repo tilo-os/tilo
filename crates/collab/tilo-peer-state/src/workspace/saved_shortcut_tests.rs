@@ -38,6 +38,7 @@ pub(crate) fn device(root: u8, device: u8) -> Device {
         issued_at_ns: 1,
         expires_at_ns: None,
         signature: [0; 64],
+        issuer: None,
     };
     tilo_user_identity::sign_device_cert(&mut cert, &root).unwrap();
     Device { root, cert, key }

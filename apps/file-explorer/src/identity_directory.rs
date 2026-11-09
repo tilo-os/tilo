@@ -402,6 +402,7 @@ mod tests {
                 issued_at_ns: 7,
                 expires_at_ns: None,
                 signature: [0; 64],
+                issuer: None,
             };
             tilo_user_identity::sign_device_cert(&mut certificate, &root).unwrap();
             let directory = TrustedHumanDirectory::from_projection_v2(
@@ -450,6 +451,7 @@ mod tests {
                 issued_at_ns: 1,
                 expires_at_ns: None,
                 signature: [0; 64],
+                issuer: None,
             };
             tilo_user_identity::sign_device_cert(&mut certificate, &root).unwrap();
             certificate

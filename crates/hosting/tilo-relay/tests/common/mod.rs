@@ -58,6 +58,7 @@ impl TestUser {
             issued_at_ns: 200,
             expires_at_ns: None,
             signature: [0u8; 64],
+            issuer: None,
         };
         sign_device_cert(&mut cert, &self.user_sk).unwrap();
         TestDevice { sk: dev_sk, cert }

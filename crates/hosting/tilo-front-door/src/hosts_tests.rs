@@ -32,6 +32,7 @@ fn enrol(root: &ed25519_dalek::SigningKey, seed: u8, label: &str) -> Device {
         issued_at_ns: 200,
         expires_at_ns: None,
         signature: [0; 64],
+        issuer: None,
     };
     sign_device_cert(&mut cert, root).unwrap();
     Device { key, cert }

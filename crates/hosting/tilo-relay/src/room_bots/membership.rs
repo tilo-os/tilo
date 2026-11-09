@@ -95,6 +95,7 @@ impl HostRootCertifier {
                 foreign: false,
                 can_administer_devices: false,
                 agent: None,
+                stand_in: false,
             },
             issued_at_ns: u64::try_from(bot.installed_at_ms)
                 .unwrap_or(0)
@@ -102,6 +103,7 @@ impl HostRootCertifier {
                 .max(1),
             expires_at_ns: None,
             signature: [0; 64],
+            issuer: None,
         };
         sign_device_cert(&mut cert, &self.root).map_err(|error| error.to_string())?;
         let hash = blake3::hash(bot.installation.as_bytes());

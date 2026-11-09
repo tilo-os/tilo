@@ -75,6 +75,7 @@ fn this_computer(env: &mut tilo_test_env::ScopedEnv) -> tempfile::TempDir {
         issued_at_ns: tilo_clock::unix_now_ns(),
         expires_at_ns: None,
         signature: [0; 64],
+        issuer: None,
     };
     tilo_user_identity::sign_device_cert(&mut cert, &person).expect("a certified device");
     tilo_user_identity::persist::write_device_cert(&paths.device_cert, &cert)

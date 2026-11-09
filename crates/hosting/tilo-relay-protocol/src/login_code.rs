@@ -345,6 +345,16 @@ pub enum StandInReply {
 mod tests {
     use super::*;
 
+    /// The bound the host and page announce is the one a stand-in's
+    /// certificate is held to.
+    #[test]
+    fn the_stand_in_lifetime_is_the_certificates_bound() {
+        assert_eq!(
+            u128::from(STAND_IN_LIFETIME_MS) * 1_000_000,
+            u128::from(tilo_user_identity::STAND_IN_LIFETIME_NS)
+        );
+    }
+
     #[test]
     fn a_code_reads_back_however_it_is_typed() {
         let code = code_from([0, 1, 2, 3, 4, 5, 29]);

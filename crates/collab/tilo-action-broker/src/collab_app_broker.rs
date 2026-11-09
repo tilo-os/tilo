@@ -13099,6 +13099,7 @@ pub mod tests {
             issued_at_ns: 1,
             expires_at_ns: None,
             signature: [0; 64],
+            issuer: None,
         };
         tilo_user_identity::sign_device_cert(&mut cert, root).expect("root signs device cert");
         runtime_collab::CertifiedJoinIdentity {
@@ -13392,6 +13393,7 @@ pub mod tests {
             issued_at_ns: 1,
             expires_at_ns: None,
             signature: [0; 64],
+            issuer: None,
         };
         let admin = |cert: &tilo_user_identity::DeviceCert| {
             let identity = VerifiedJoinIdentity::of(cert, state.capped_in(&workspace_id, cert));
@@ -15650,6 +15652,7 @@ mod host_worker_capacity_tests {
             issued_at_ns: 1,
             expires_at_ns: None,
             signature: [0; 64],
+            issuer: None,
         };
         tilo_user_identity::sign_device_cert(&mut certificate, &root).unwrap();
         AdmittedJoinIdentity {

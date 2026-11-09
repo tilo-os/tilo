@@ -837,6 +837,7 @@ async fn an_agent_never_governs_and_reaches_no_room_outside_its_delegation() {
             foreign: false,
             can_administer_devices: false,
             agent: None,
+            stand_in: false,
         },
     );
     let issued = tilo_clock::unix_now_ns();

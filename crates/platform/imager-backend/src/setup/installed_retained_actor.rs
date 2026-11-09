@@ -518,7 +518,7 @@ impl InstalledRetainedLaunchInput {
         self.revalidate(cancel)?;
         let (certificate, revocations) = self.reviewed.anchor.current()?;
         if certificate.user_public_key != self.person_public_key()
-            || revocations.is_revoked(&certificate.device_public_key)
+            || revocations.refuses(&certificate)
         {
             return Err(refused());
         }

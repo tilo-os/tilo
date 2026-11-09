@@ -65,11 +65,7 @@ impl PeerGovernance<'_> {
             }
             let cert = identity.device_cert;
             if tilo_user_identity::verify_device_cert_at(&cert, now_ns(now)).is_err()
-                || self
-                    .peer
-                    .core
-                    .revocations
-                    .is_revoked(&cert.device_public_key)
+                || self.peer.core.revocations.refuses(&cert)
             {
                 continue;
             }
@@ -319,11 +315,7 @@ impl PeerGovernance<'_> {
                 row.removed = false;
                 let cert = &identity.device_cert;
                 if tilo_user_identity::verify_device_cert_at(cert, now_ns(now)).is_ok()
-                    && !self
-                        .peer
-                        .core
-                        .revocations
-                        .is_revoked(&cert.device_public_key)
+                    && !self.peer.core.revocations.refuses(&cert)
                 {
                     row.active_device_keys.push(cert.device_public_key);
                 }
@@ -494,12 +486,7 @@ impl PeerGovernanceMut<'_> {
         }
         self.peer.require_inviter(key, now)?;
         let cert = redemption.certificate();
-        if self
-            .peer
-            .core
-            .revocations
-            .is_revoked(&cert.device_public_key)
-        {
+        if self.peer.core.revocations.refuses(&cert) {
             return Err("device revoked".into());
         }
         if let Some(old) = self.peer.core.certificates.get(&cert.device_public_key)
@@ -542,12 +529,7 @@ impl PeerGovernanceMut<'_> {
     ) -> Result<bool, String> {
         self.peer.require_member_writer(key, now)?;
         tilo_user_identity::verify_device_cert_at(device, now_ns(now)).map_err(err)?;
-        if self
-            .peer
-            .core
-            .revocations
-            .is_revoked(&device.device_public_key)
-        {
+        if self.peer.core.revocations.refuses(&device) {
             return Err("device revoked".into());
         }
         match self.peer.core.certificates.get(&device.device_public_key) {

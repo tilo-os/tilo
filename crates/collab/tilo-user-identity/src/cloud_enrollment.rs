@@ -12,5 +12,6 @@ pub fn host_capabilities() -> DeviceCapabilities {
         foreign: false,
         can_administer_devices: false,
         agent: None,
+        stand_in: false,
     }
 }

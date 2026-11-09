@@ -313,6 +313,7 @@ mod tests {
             issued_at_ns: 1,
             expires_at_ns: None,
             signature: [0; 64],
+            issuer: None,
         };
         crate::sign_device_cert(&mut certificate, root).unwrap();
         certificate
@@ -399,6 +400,7 @@ mod tests {
             issued_at_ns: 1,
             expires_at_ns: None,
             signature: [0; 64],
+            issuer: None,
         };
         crate::sign_device_cert(&mut agent_certificate, &root).unwrap();
         let agent = GovernedAgentIdentityV2 {

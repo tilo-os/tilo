@@ -107,6 +107,7 @@ fn proposal(person: [u8; 32], label: &str) -> DeviceCert {
         issued_at_ns: NOW,
         expires_at_ns: None,
         signature: [0; 64],
+        issuer: None,
     }
 }
 
@@ -322,6 +323,7 @@ fn member_cert(
         issued_at_ns: issued,
         expires_at_ns: Some(issued.saturating_add(24 * 60 * 60 * 1_000_000_000)),
         signature: [0; 64],
+        issuer: None,
     }
 }
 

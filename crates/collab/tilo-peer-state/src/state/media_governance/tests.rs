@@ -24,6 +24,7 @@ fn fixture(revision: u64) -> (StatePeer, SigningKey, SigningKey, SystemTime) {
         issued_at_ns: 1,
         expires_at_ns: None,
         signature: [0; 64],
+        issuer: None,
     };
     sign_device_cert(&mut cert, &root).unwrap();
     let workspace = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";

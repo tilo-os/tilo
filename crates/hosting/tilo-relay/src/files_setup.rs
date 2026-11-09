@@ -42,7 +42,7 @@ fn existing_person(paths: &IdentityPaths) -> Result<[u8; 32]> {
     );
     let revocations = fs::load_revocation_list(paths)?;
     anyhow::ensure!(
-        !revocations.is_revoked_at(&cert.device_public_key, tilo_clock::unix_now_ns()),
+        !revocations.refuses_at(&cert, tilo_clock::unix_now_ns()),
         "existing device is revoked"
     );
     Ok(person)
@@ -356,6 +356,7 @@ mod tests {
             issued_at_ns: 1,
             expires_at_ns: None,
             signature: [0; 64],
+            issuer: None,
         };
         sign_device_cert(&mut cert, &root).unwrap();
         persist::write_device_cert(&paths.device_cert, &cert).unwrap();

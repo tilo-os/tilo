@@ -223,7 +223,7 @@ impl SignedRetainedPersonProof {
         for entry in entries {
             merged.insert(entry).map_err(io::Error::other)?;
         }
-        if merged.is_revoked(&installed.device_public_key) {
+        if merged.refuses(&installed) {
             return Err(refused());
         }
         Ok(VerifiedRetainedPersonEpoch {
@@ -256,7 +256,7 @@ impl SignedRetainedPersonProof {
         for entry in entries {
             merged.insert(entry).map_err(io::Error::other)?;
         }
-        if merged.is_revoked(&installed.device_public_key) {
+        if merged.refuses(&installed) {
             return Err(refused());
         }
         helper.check_current()?;
@@ -349,7 +349,7 @@ impl SignedRetainedPersonProof {
         tilo_user_identity::verify_device_cert_at(&cert, now_ns).map_err(io::Error::other)?;
         if self.claims.certificate != serde_json::to_vec(installed).map_err(io::Error::other)?
             || cert.capabilities.foreign
-            || revocations.is_revoked(&cert.device_public_key)
+            || revocations.refuses(&cert)
             || self.claims.binding.room != personal_cluster(&cert.user_public_key)
         {
             return Err(refused());

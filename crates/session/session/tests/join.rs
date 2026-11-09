@@ -503,6 +503,7 @@ fn apps(socket: &PathBuf, person: &Keys) -> Joined {
             issued_at_ns: tilo_clock::unix_now_ns(),
             expires_at_ns: None,
             signature: [0; 64],
+            issuer: None,
         };
         tilo_user_identity::sign_device_cert(&mut stranger, &stranger_root)
             .expect("their device is certified by their own root");

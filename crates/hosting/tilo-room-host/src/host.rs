@@ -966,10 +966,7 @@ pub fn validate_host_device_identity(identity: &HostIdentity) -> Result<(), Host
             "device certificate does not match the configured device signing key".into(),
         ));
     }
-    if identity
-        .revocations
-        .is_revoked(&identity.device_cert.device_public_key)
-    {
+    if identity.revocations.refuses(&identity.device_cert) {
         return Err(HostError::Identity("device certificate is revoked".into()));
     }
     Ok(())

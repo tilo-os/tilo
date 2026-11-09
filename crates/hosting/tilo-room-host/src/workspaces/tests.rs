@@ -53,6 +53,7 @@ pub(crate) fn guest_device() -> (SigningKey, DeviceCert) {
         issued_at_ns: 1,
         expires_at_ns: None,
         signature: [0; 64],
+        issuer: None,
     };
     sign_device_cert(&mut cert, &root).unwrap();
     (key, cert)
@@ -740,6 +741,7 @@ async fn legacy_window_write_respects_current_member_grants() {
         issued_at_ns: 1,
         expires_at_ns: None,
         signature: [0; 64],
+        issuer: None,
     };
     sign_device_cert(&mut foreign, &owner_root).unwrap();
     let state = workspaces.workspace(&created.workspace).await.unwrap();
@@ -1298,6 +1300,7 @@ async fn the_owner_bans_and_unbans_and_a_stranger_cannot() {
         issued_at_ns: 1,
         expires_at_ns: None,
         signature: [0; 64],
+        issuer: None,
     };
     sign_device_cert(&mut stranger, &stranger_root).unwrap();
     assert!(
@@ -2469,6 +2472,7 @@ async fn a_member_with_a_renewed_certificate_stays_the_same_member() {
             issued_at_ns,
             expires_at_ns,
             signature: [0; 64],
+            issuer: None,
         };
         sign_device_cert(&mut cert, &root).unwrap();
         cert
@@ -2653,6 +2657,7 @@ async fn a_host_serves_the_workspaces_its_renamed_certificate_governs() {
         issued_at_ns: 1,
         expires_at_ns: None,
         signature: [0; 64],
+        issuer: None,
     };
     tilo_user_identity::sign_device_cert(&mut other_cert, &other_root).unwrap();
     let refused = WorkspaceHost::open(

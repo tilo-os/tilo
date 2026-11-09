@@ -1073,6 +1073,7 @@ impl Person {
             issued_at_ns: tilo_clock::unix_now_ns(),
             expires_at_ns: None,
             signature: [0; 64],
+            issuer: None,
         };
         let digest = tilo_user_identity::device_cert_signing_digest(&cert)
             .expect("a device certificate digest");

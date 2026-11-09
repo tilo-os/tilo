@@ -147,6 +147,7 @@ mod tests {
             issued_at_ns: 1,
             expires_at_ns: Some(2),
             signature: [0; 64],
+            issuer: None,
         }
     }
 

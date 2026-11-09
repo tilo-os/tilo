@@ -160,6 +160,7 @@ fn project<'a, R: WorkspaceRead, D: Decode>(
                 issued_at_ns: row.device_cert.issued_at_ns,
                 expires_at_ns: row.device_cert.expires_at_ns,
                 signature: row.device_cert.signature,
+                issuer: None,
             };
             work.tree_entry::<[u8; 32], (DeviceCert, BTreeSet<Vec<u8>>, BTreeSet<Vec<u8>>)>()?;
             rows.insert(device, (cert, admissions, delegations));

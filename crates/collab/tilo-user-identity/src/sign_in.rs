@@ -142,7 +142,7 @@ impl SignInProof {
         }
         verify_device_cert_at(&self.cert, now_ns)
             .map_err(|error| SignInError::Certificate(error.to_string()))?;
-        if revocations.is_revoked_at(&self.cert.device_public_key, now_ns) {
+        if revocations.refuses_at(&self.cert, now_ns) {
             return Err(SignInError::Revoked);
         }
         let key = ed25519_dalek::VerifyingKey::from_bytes(&self.cert.device_public_key)
@@ -171,6 +171,7 @@ mod tests {
             issued_at_ns: 1,
             expires_at_ns: None,
             signature: [0; 64],
+            issuer: None,
         };
         sign_device_cert(&mut cert, root).unwrap();
         cert

@@ -21,6 +21,7 @@ fn cert(root: &SigningKey, device: &SigningKey, now: u64, label: &str) -> Device
         issued_at_ns: now.saturating_sub(1),
         expires_at_ns: None,
         signature: [0; 64],
+        issuer: None,
     };
     sign_device_cert(&mut cert, root).unwrap();
     cert

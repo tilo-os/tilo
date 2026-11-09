@@ -618,6 +618,7 @@ mod tests {
             issued_at_ns: 0,
             expires_at_ns: None,
             signature: [0; 64],
+            issuer: None,
         }
     }
 }

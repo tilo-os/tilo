@@ -21,6 +21,7 @@ fn certificate(issued_at_ns: u64, expires_at_ns: Option<u64>, foreign: bool) -> 
         issued_at_ns,
         expires_at_ns,
         signature: [0; 64],
+        issuer: None,
     }
 }
 
@@ -346,6 +347,7 @@ fn joined_device(tmp: &Path, issued_at_ns: u64) -> (PathBuf, IdentityPaths, Devi
         issued_at_ns,
         expires_at_ns: Some(issued_at_ns.saturating_add(24 * HOUR)),
         signature: [0; 64],
+        issuer: None,
     };
     let digest = tilo_user_identity::device_cert_signing_digest(&cert).unwrap();
     cert.signature = {

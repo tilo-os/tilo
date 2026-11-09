@@ -188,7 +188,7 @@ impl PendingDaemonEnrollment {
             let (certificate, revocations) = input.current_history_material(&cancel)?;
             if challenge.certificate
                 != serde_json::to_vec(&certificate).map_err(io::Error::other)?
-                || revocations.is_revoked(&certificate.device_public_key)
+                || revocations.refuses(&certificate)
             {
                 return Err(refused());
             }
@@ -264,7 +264,7 @@ impl PendingDaemonEnrollment {
                 .ok_or_else(refused)?;
             let enrolled = EnrolledVerifier::decode(&bytes)?;
             let (certificate, revocations) = input.current_history_material(&cancel)?;
-            if revocations.is_revoked(&certificate.device_public_key) {
+            if revocations.refuses(&certificate) {
                 return Err(refused());
             }
             enrolled.verify(&context, &challenge, &certificate.device_public_key)?;
@@ -323,7 +323,7 @@ impl CertifiedNativeHistoryDaemon {
                     != self.input.native_owner_sha256(&self.cancel)?
                 || self.context.verifier.source_operation != self.input.binding().operation_id
                 || self.context.verifier.personal_room != self.input.binding().room
-                || revocations.is_revoked(&certificate.device_public_key)
+                || revocations.refuses(&certificate)
             {
                 return Err(refused());
             }

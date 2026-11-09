@@ -964,6 +964,7 @@ mod tests {
             issued_at_ns: now,
             expires_at_ns: None,
             signature: [0; 64],
+            issuer: None,
         };
         tilo_user_identity::sign_device_cert(&mut issuer, &host).expect("a certified host");
         let grant = tilo_workspace_join::InviteGrant {

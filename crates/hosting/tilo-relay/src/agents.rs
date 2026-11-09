@@ -119,6 +119,7 @@ impl AgentHostLink for RelayAgentLink {
                 foreign: false,
                 can_administer_devices: false,
                 agent: None,
+                stand_in: false,
             },
             nonce,
             invite: [0; 16],

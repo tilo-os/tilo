@@ -319,6 +319,7 @@ pub(crate) fn certify(
         issued_at_ns: request.valid_from_ns,
         expires_at_ns: None,
         signature: [0; 64],
+        issuer: None,
     };
     match certifier {
         Certifier::Root(sign) => {
@@ -620,6 +621,7 @@ mod tests {
             issued_at_ns: now,
             expires_at_ns: None,
             signature: [0; 64],
+            issuer: None,
         });
         let redemption = |device_public_key, label| Redemption {
             token: &token,

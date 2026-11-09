@@ -40,6 +40,7 @@ fn certified(
         issued_at_ns: tilo_clock::unix_now_ns(),
         expires_at_ns: None,
         signature: [0; 64],
+        issuer: None,
     };
     tilo_user_identity::sign_device_cert(&mut cert, root).expect("a certified device");
     cert

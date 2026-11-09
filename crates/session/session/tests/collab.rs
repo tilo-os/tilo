@@ -129,10 +129,12 @@ fn hello_of(person: u8, at: u8, label: &str) -> NetEvent {
             foreign: false,
             can_administer_devices: false,
             agent: None,
+            stand_in: false,
         },
         issued_at_ns: 0,
         expires_at_ns: None,
         signature: [0; 64],
+        issuer: None,
     };
     tilo_user_identity::sign_device_cert(&mut cert, &root).expect("a certified device");
     said(

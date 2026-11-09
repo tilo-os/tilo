@@ -294,6 +294,7 @@ mod tests {
             issued_at_ns: 3,
             expires_at_ns: None,
             signature: [0; 64],
+            issuer: None,
         };
         sign_device_cert(&mut cert, &user_sk).unwrap();
 

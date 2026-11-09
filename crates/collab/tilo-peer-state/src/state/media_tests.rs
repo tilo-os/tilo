@@ -18,6 +18,7 @@ fn fixture() -> (StatePeer, SigningKey, SystemTime) {
         issued_at_ns: 1,
         expires_at_ns: None,
         signature: [0; 64],
+        issuer: None,
     };
     sign_device_cert(&mut certificate, &root).unwrap();
     let now = SystemTime::UNIX_EPOCH
@@ -291,6 +292,7 @@ fn member(root_seed: u8, device_seed: u8) -> (SigningKey, DeviceCert) {
         issued_at_ns: 1,
         expires_at_ns: None,
         signature: [0; 64],
+        issuer: None,
     };
     sign_device_cert(&mut cert, &root).unwrap();
     (key, cert)

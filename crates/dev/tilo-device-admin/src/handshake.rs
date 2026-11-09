@@ -213,7 +213,7 @@ pub fn admit(
     if &cert.user_public_key != own_user_public_key {
         return Err(Refusal::OtherIdentity);
     }
-    if revocations.is_revoked_at(&cert.device_public_key, now_ns) {
+    if revocations.refuses_at(&cert, now_ns) {
         return Err(Refusal::Revoked);
     }
     if !cert.capabilities.can_administer_devices {
@@ -358,6 +358,7 @@ mod tests {
                 issued_at_ns: 10,
                 expires_at_ns: Some(1_000),
                 signature: [0; 64],
+                issuer: None,
             };
             sign_device_cert(&mut cert, &self.root).unwrap();
             cert

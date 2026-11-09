@@ -20,6 +20,7 @@ pub(super) fn certified_device(
         issued_at_ns: 1,
         expires_at_ns: None,
         signature: [0; 64],
+        issuer: None,
     };
     sign_device_cert(&mut cert, root).unwrap();
     // Exercise certificate signature and nonce proof, matching the relay

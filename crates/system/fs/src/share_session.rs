@@ -319,6 +319,7 @@ mod tests {
                 issued_at_ns: 1_000_000_000,
                 expires_at_ns: Some(10_000_000_000),
                 signature: [0; 64],
+                issuer: None,
             };
             sign_device_cert(&mut cert, &person).unwrap();
             let peer = AuthenticatedFsPeer {

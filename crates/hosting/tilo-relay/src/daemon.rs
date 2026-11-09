@@ -1420,6 +1420,7 @@ mod tests {
             issued_at_ns: 3,
             expires_at_ns: None,
             signature: [0; 64],
+            issuer: None,
         };
         sign_device_cert(&mut device_cert, &root).unwrap();
         RelayIdentity {
@@ -1641,6 +1642,7 @@ mod tests {
                 issued_at_ns: 4,
                 expires_at_ns: None,
                 signature: [0; 64],
+                issuer: None,
             };
             let mut client_cert = DeviceCert {
                 user_public_key: user.public_key,
@@ -1650,6 +1652,7 @@ mod tests {
                 issued_at_ns: 4,
                 expires_at_ns: None,
                 signature: [0; 64],
+                issuer: None,
             };
             let mut admin_cert = DeviceCert {
                 user_public_key: user.public_key,
@@ -1659,6 +1662,7 @@ mod tests {
                 issued_at_ns: 4,
                 expires_at_ns: None,
                 signature: [0; 64],
+                issuer: None,
             };
             sign_device_cert(&mut host_cert, &root).unwrap();
             sign_device_cert(&mut client_cert, &root).unwrap();

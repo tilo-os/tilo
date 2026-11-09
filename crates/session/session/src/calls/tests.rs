@@ -117,6 +117,7 @@ fn device(person: &ed25519_dalek::SigningKey, seed: u8, label: &str) -> Client {
         issued_at_ns: tilo_clock::unix_now_ns(),
         expires_at_ns: None,
         signature: [0; 64],
+        issuer: None,
     };
     tilo_user_identity::sign_device_cert(&mut cert, person).expect("the person signs their device");
     Client::start(
@@ -281,10 +282,12 @@ fn hello(from: u8, label: &str) -> NetEvent {
             foreign: false,
             can_administer_devices: false,
             agent: None,
+            stand_in: false,
         },
         issued_at_ns: 0,
         expires_at_ns: None,
         signature: [0; 64],
+        issuer: None,
     };
     tilo_user_identity::sign_device_cert(&mut cert, &root).expect("a certified device");
     said(

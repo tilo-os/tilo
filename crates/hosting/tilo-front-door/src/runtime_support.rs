@@ -86,6 +86,7 @@ impl PersonsDevices for Devices {
             issued_at_ns: 1,
             expires_at_ns: None,
             signature: [0; 64],
+            issuer: None,
         }
     }
 

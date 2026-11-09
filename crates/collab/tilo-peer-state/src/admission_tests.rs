@@ -19,6 +19,7 @@ fn fixtures() -> (SigningKey, DeviceCert, SigningKey, DeviceCert, SystemTime) {
             issued_at_ns: 1,
             expires_at_ns: None,
             signature: [0; 64],
+            issuer: None,
         };
         sign_device_cert(&mut cert, &root).unwrap();
         (key, cert)
@@ -430,6 +431,7 @@ pub(crate) fn add_member_with(
         issued_at_ns: 1,
         expires_at_ns: None,
         signature: [0; 64],
+        issuer: None,
     };
     sign_device_cert(&mut cert, &root).unwrap();
     let now_ns = u64::try_from(
@@ -547,6 +549,7 @@ fn independent_invite_redemption_is_durable_single_use_and_removal_closes_access
         issued_at_ns: 1,
         expires_at_ns: None,
         signature: [0; 64],
+        issuer: None,
     };
     sign_device_cert(&mut guest_cert, &guest_root).unwrap();
     let signed = issue_invitation(
@@ -702,6 +705,7 @@ fn independent_invite_redemption_is_durable_single_use_and_removal_closes_access
         issued_at_ns: 1,
         expires_at_ns: None,
         signature: [0; 64],
+        issuer: None,
     };
     sign_device_cert(&mut replay_cert, &guest_root).unwrap();
     let replay_join = crate::join::decode_and_verify_invitation(
@@ -876,6 +880,7 @@ fn concurrent_redeemers_cannot_merge_two_receipts_for_one_invitation() {
             issued_at_ns: 1,
             expires_at_ns: None,
             signature: [0; 64],
+            issuer: None,
         };
         sign_device_cert(&mut cert, &root).unwrap();
         let join = decode_and_verify_invitation(
@@ -993,6 +998,7 @@ fn concurrent_distinct_invites_for_one_device_preserve_both_spends_after_restore
         issued_at_ns: 1,
         expires_at_ns: None,
         signature: [0; 64],
+        issuer: None,
     };
     sign_device_cert(&mut guest, &guest_root).unwrap();
     let grant = |nonce, issuer| InviteGrant {
@@ -1658,6 +1664,7 @@ fn self_issued_identity_presence_cannot_expand_the_admitted_roster() {
         issued_at_ns: 1,
         expires_at_ns: None,
         signature: [0; 64],
+        issuer: None,
     };
     sign_device_cert(&mut cert, &rogue_root).unwrap();
     assert!(
@@ -2229,6 +2236,7 @@ fn restore_validates_fresh_roster_not_before_and_interval_while_retaining_histor
             issued_at_ns,
             expires_at_ns,
             signature: [0; 64],
+            issuer: None,
         };
         if expires_at_ns.is_some_and(|expiry| expiry <= issued_at_ns) {
             let digest = tilo_user_identity::device_cert_signing_digest(&cert).unwrap();
@@ -2286,6 +2294,7 @@ fn expired_pinned_authority_restores_as_history_but_cannot_authorize() {
                 .unwrap(),
         ),
         signature: [0; 64],
+        issuer: None,
     };
     sign_device_cert(&mut authority, &root).unwrap();
     let workspace = "dddddddd-dddd-4ddd-8ddd-dddddddddddd";
@@ -2623,6 +2632,7 @@ fn a_banned_person_cannot_redeem_an_invitation_until_unbanned() {
         issued_at_ns: 1,
         expires_at_ns: None,
         signature: [0; 64],
+        issuer: None,
     };
     sign_device_cert(&mut guest_cert, &guest_root).unwrap();
     let first = guest_redemption(&peer, &authority_key, &guest_key, &guest_cert, 70, now);
@@ -2825,6 +2835,7 @@ fn admitted_guest(
         issued_at_ns: 1,
         expires_at_ns: None,
         signature: [0; 64],
+        issuer: None,
     };
     sign_device_cert(&mut cert, &root).unwrap();
     let signed = issue_invitation(
@@ -2928,6 +2939,7 @@ fn a_removed_members_device_writes_nothing_after_its_removal() {
         issued_at_ns: 1,
         expires_at_ns: None,
         signature: [0; 64],
+        issuer: None,
     };
     sign_device_cert(&mut newcomer_cert, &newcomer).unwrap();
     let NeighbourMsg::SyncResp { changes, room } = peer.workspace_message() else {

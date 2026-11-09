@@ -239,6 +239,7 @@ pub fn proposed_certificate(
             issued_at_ns: now_ns.saturating_sub(60 * 1_000_000_000),
             expires_at_ns: None,
             signature: [0; 64],
+            issuer: None,
         },
         key(&candidate.relay_service_node_id)?,
     ))
@@ -338,7 +339,7 @@ pub fn trusted_devices(
             key_hex: hex::encode(cert.device_public_key),
             fingerprint: fingerprint(&cert.device_public_key),
             current: current == Some(cert.device_public_key),
-            revoked: fleet.is_revoked(&cert.device_public_key),
+            revoked: fleet.refuses(&cert),
             can_host: cert.capabilities.can_act_as_host,
         })
         .collect())

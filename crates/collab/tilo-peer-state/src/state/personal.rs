@@ -327,7 +327,7 @@ impl PersonalStore {
         certificate: &DeviceCert,
         now: SystemTime,
     ) -> Result<bool, String> {
-        if self.revocations.is_revoked(&certificate.device_public_key) {
+        if self.revocations.refuses(&certificate) {
             return Err("device revoked".into());
         }
         let verified = admitted(self.root, certificate, now)?;
@@ -364,7 +364,7 @@ impl PersonalStore {
     /// Whether the identity root revoked this device: it is no longer one of
     /// the person's devices, and holds none of their documents.
     fn revoked_here(&self) -> bool {
-        self.revocations.is_revoked(&self.device.device_public_key)
+        self.revocations.refuses(&self.device)
     }
 
     /// Let go of every document and every decided write: a device the person
@@ -1135,6 +1135,7 @@ mod tests {
             issued_at_ns: 1,
             expires_at_ns: None,
             signature: [0; 64],
+            issuer: None,
         };
         sign_device_cert(&mut cert, root).unwrap();
         (key, cert)
@@ -1564,6 +1565,7 @@ mod tests {
             issued_at_ns: 1,
             expires_at_ns: None,
             signature: [0; 64],
+            issuer: None,
         };
         sign_device_cert(&mut cert, root).unwrap();
         cert

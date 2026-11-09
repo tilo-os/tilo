@@ -22,6 +22,7 @@ fn certificate(
         issued_at_ns,
         expires_at_ns: None,
         signature: [0; 64],
+        issuer: None,
     };
     sign_device_cert(&mut cert, root).unwrap();
     cert

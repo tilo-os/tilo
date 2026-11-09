@@ -841,6 +841,7 @@ mod tests {
             issued_at_ns: 200,
             expires_at_ns: None,
             signature: [0u8; 64],
+            issuer: None,
         };
         sign_device_cert(&mut cert, user_sk).unwrap();
         (dev_sk, dev.public_key, cert)

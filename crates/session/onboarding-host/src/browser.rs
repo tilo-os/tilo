@@ -69,7 +69,7 @@ fn authorized_device(identity: &Path, certificate: &[u8]) -> io::Result<([u8; 32
     }
     let fleet = tilo_identity_host::device_fleet::DeviceFleetStore::at(identity, paths)
         .load(&hex::encode(metadata.group_public_key))?;
-    if fleet.is_revoked(&cert.device_public_key) {
+    if fleet.refuses(&cert) {
         return Err(failure());
     }
     Ok((metadata.group_public_key, cert.device_public_key))

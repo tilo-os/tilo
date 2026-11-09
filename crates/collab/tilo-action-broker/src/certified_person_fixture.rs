@@ -72,6 +72,7 @@ pub fn certified_person_fixture_for_seeds(
         issued_at_ns: clock.now_ns().unwrap(),
         expires_at_ns: None,
         signature: [0; 64],
+        issuer: None,
     };
     tilo_user_identity::sign_device_cert(&mut certificate, &root).unwrap();
     let workspace_id = collab_types::personal_cluster(&certificate.user_public_key);

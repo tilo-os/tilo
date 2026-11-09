@@ -4241,6 +4241,7 @@ mod command_path_tests {
             issued_at_ns: 1,
             expires_at_ns: None,
             signature: [0; 64],
+            issuer: None,
         };
         tilo_user_identity::sign_device_cert(&mut certificate, &root).unwrap();
         let device = certificate.device_public_key;
@@ -4369,6 +4370,7 @@ mod command_path_tests {
                         issued_at_ns: 1,
                         expires_at_ns: *expires_at_ns,
                         signature: [0; 64],
+                        issuer: None,
                     };
                     tilo_user_identity::sign_device_cert(&mut certificate, root).unwrap();
                     tilo_user_identity::GovernedDeviceIdentityV2 {

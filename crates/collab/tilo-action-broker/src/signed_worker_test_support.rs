@@ -317,6 +317,7 @@ pub fn signed_device(
         issued_at_ns: 1,
         expires_at_ns,
         signature: [0; 64],
+        issuer: None,
     };
     tilo_user_identity::sign_device_cert(&mut cert, root).unwrap();
     cert

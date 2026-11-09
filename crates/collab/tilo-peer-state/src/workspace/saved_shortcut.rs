@@ -61,7 +61,7 @@ pub fn proven_saver(
         return None;
     }
     tilo_user_identity::verify_device_cert_at(&device, now_ns).ok()?;
-    if revocations.is_revoked(&device.device_public_key) {
+    if revocations.refuses(&device) {
         return None;
     }
     let signature: [u8; 64] = hex::decode(&proof.signature).ok()?.try_into().ok()?;

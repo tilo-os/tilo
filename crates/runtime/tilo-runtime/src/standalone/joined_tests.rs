@@ -132,6 +132,7 @@ impl Joined {
             issued_at_ns: 1,
             expires_at_ns: None,
             signature: [0; 64],
+            issuer: None,
         };
         sign_device_cert(&mut cert, &root).unwrap();
         let joined = Self::open(
@@ -554,6 +555,7 @@ async fn a_foreign_runtime_joins_a_hosted_workspace_as_an_editor_and_syncs_both_
         issued_at_ns: 1,
         expires_at_ns: None,
         signature: [0; 64],
+        issuer: None,
     };
     sign_device_cert(&mut device, &root_key).unwrap();
     let invitation = governing.invite(device.user_public_key);
@@ -1132,6 +1134,7 @@ async fn a_joined_workspace_s_record_content_crosses_the_host_both_ways() {
         issued_at_ns: 1,
         expires_at_ns: None,
         signature: [0; 64],
+        issuer: None,
     };
     sign_device_cert(&mut device, &root_key).unwrap();
     let invitation = governing.invite(device.user_public_key);
@@ -1283,6 +1286,7 @@ async fn a_want_through_the_host_waits_for_its_offline_holder_and_arrives_when_i
         issued_at_ns: 1,
         expires_at_ns: None,
         signature: [0; 64],
+        issuer: None,
     };
     sign_device_cert(&mut device, &root_key).unwrap();
     let invitation = governing.invite(device.user_public_key);

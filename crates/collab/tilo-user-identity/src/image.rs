@@ -335,7 +335,7 @@ pub fn verify_image_endorsement_with_revocations_at(
     now_ns: u64,
 ) -> Result<(), ImageEndorsementError> {
     verify_image_endorsement_at(endorsement, trusted_user_root, now_ns)?;
-    if revocations.is_revoked(&endorsement.device_certificate.device_public_key) {
+    if revocations.refuses(&endorsement.device_certificate) {
         return Err(ImageEndorsementError::DeviceRevoked);
     }
     Ok(())
@@ -360,6 +360,7 @@ mod tests {
             issued_at_ns: 12,
             expires_at_ns: Some(100),
             signature: [0; 64],
+            issuer: None,
         };
         sign_device_cert(&mut certificate, &root).unwrap();
         let mut authorization = ImageSigningAuthorization {
@@ -477,6 +478,7 @@ mod tests {
                 issued_at_ns: 3,
                 expires_at_ns: Some(100),
                 signature: [0; 64],
+                issuer: None,
             };
             crate::sign_device_cert(&mut cert, &root_key).unwrap();
             let mut authorization = ImageSigningAuthorization {

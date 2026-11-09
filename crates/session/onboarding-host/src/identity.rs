@@ -629,6 +629,7 @@ mod tests {
             issued_at_ns: 1_000,
             expires_at_ns: None,
             signature: [0; 64],
+            issuer: None,
         };
         tilo_user_identity::sign_device_cert(&mut cert, &root).unwrap();
         persist::install_device_cert(&system, &cert, 2_000).unwrap();

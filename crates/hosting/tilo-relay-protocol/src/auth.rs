@@ -334,7 +334,7 @@ fn admit_cert(
     now_ns: u64,
 ) -> Result<AuthenticatedPeer, AuthError> {
     verify_device_cert_at(cert, now_ns)?;
-    if revocations.is_revoked_at(&cert.device_public_key, now_ns) {
+    if revocations.refuses_at(&cert, now_ns) {
         return Err(AuthError::Revoked);
     }
     if !trust.admits(cert, own_user_public_key) {
@@ -552,7 +552,7 @@ fn verify_hello_ack_cryptographic(
     challenge_client_nonce: &[u8; 32],
 ) -> Result<(), AuthError> {
     verify_device_cert_at(&ack.cert, now_ns)?;
-    if revocations.is_revoked_at(&ack.cert.device_public_key, now_ns) {
+    if revocations.refuses_at(&ack.cert, now_ns) {
         return Err(AuthError::Revoked);
     }
     let vk = ed25519_dalek::VerifyingKey::from_bytes(&ack.cert.device_public_key)
@@ -627,6 +627,7 @@ mod tests {
             issued_at_ns: 200,
             expires_at_ns: None,
             signature: [0u8; 64],
+            issuer: None,
         };
         sign_device_cert(&mut cert, root_sk).unwrap();
         Party { cert, sk: dev_sk }

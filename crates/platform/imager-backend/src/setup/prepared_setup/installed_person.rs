@@ -49,7 +49,7 @@ fn validate(r: &Record) -> io::Result<RevocationList> {
         }
         list.insert(e.clone()).map_err(|_| invalid())?;
     }
-    if list.is_revoked(&r.certificate.device_public_key) {
+    if list.refuses(&r.certificate) {
         return Err(invalid());
     }
     Ok(list)

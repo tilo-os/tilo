@@ -1914,10 +1914,12 @@ fn heard(viewer: &Member, seed: u8, label: &str) {
             foreign: false,
             can_administer_devices: false,
             agent: None,
+            stand_in: false,
         },
         issued_at_ns: 0,
         expires_at_ns: None,
         signature: [0; 64],
+        issuer: None,
     };
     tilo_user_identity::sign_device_cert(&mut cert, &root).expect("a certified device");
     let ws = viewer

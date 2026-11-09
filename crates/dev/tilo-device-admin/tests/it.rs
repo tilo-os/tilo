@@ -35,6 +35,7 @@ async fn the_route_admits_the_owners_administrator_alone() {
             issued_at_ns: 1,
             expires_at_ns: None,
             signature: [0; 64],
+            issuer: None,
         };
         sign_device_cert(&mut cert, person).unwrap();
         let paths = IdentityPaths::under(root);

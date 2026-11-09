@@ -137,6 +137,7 @@ fn install_identity(root: &Path, person_seed: [u8; 32], device_seed: [u8; 32], p
             .saturating_sub(1_000_000_000),
         expires_at_ns: None,
         signature: [0; 64],
+        issuer: None,
     };
     sign_device_cert(&mut cert, &person).unwrap();
     write_device_cert(&paths.device_cert, &cert).unwrap();

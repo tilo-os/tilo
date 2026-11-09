@@ -269,7 +269,7 @@ impl RelayTrust<'_> {
         if !self
             .revocations
             .read()
-            .is_ok_and(|list| !list.is_revoked(&peer.device_public_key))
+            .is_ok_and(|list| !list.refuses(&peer.cert))
         {
             return Err(DenyReason::Revoked);
         }

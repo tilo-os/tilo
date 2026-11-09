@@ -24,6 +24,7 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 use crate::canonical::{CanonicalError, signing_digest};
+use crate::cert::DeviceCert;
 
 /// Signing-domain tag for `RevocationEntry`. Frozen wire ABI:
 /// `tilo-revocation-v1` + NUL.
@@ -152,6 +153,27 @@ pub fn verify_revocation_entry(entry: &RevocationEntry) -> Result<(), Revocation
     Ok(())
 }
 
+/// Whether revocations refuse `cert`, given when each key was first revoked
+/// (`revoked_at`): its device's revocation counts from its time when `at_ns`
+/// names the moment asked about, and at any time otherwise; its stand-in
+/// issuer's (see [`DeviceCert::issuer`]) counts when the stand-in was
+/// revoked at or before it issued `cert`. The rule
+/// [`RevocationList::refuses`] applies, for stores that keep revocations
+/// their own way.
+#[must_use]
+pub fn cert_refused(
+    cert: &DeviceCert,
+    at_ns: Option<u64>,
+    revoked_at: impl Fn(&[u8; 32]) -> Option<u64>,
+) -> bool {
+    let device = revoked_at(&cert.device_public_key)
+        .is_some_and(|revoked| at_ns.is_none_or(|at| at >= revoked));
+    let issuer = cert.issuer.as_ref().is_some_and(|issuer| {
+        revoked_at(&issuer.device_public_key).is_some_and(|revoked| cert.issued_at_ns >= revoked)
+    });
+    device || issuer
+}
+
 /// In-memory, verified revocation list for one user identity.
 ///
 /// Populated by merging every [`RevocationEntry`] the user's
@@ -202,6 +224,30 @@ impl RevocationList {
         self.entries
             .get(device_public_key)
             .is_some_and(|e| at_ns >= e.revoked_at_ns)
+    }
+
+    /// Whether this list refuses `cert` at any time: its device was revoked,
+    /// or it was issued by a person's stand-in (see [`DeviceCert::issuer`])
+    /// at or after the stand-in was revoked. A revoked stand-in approves
+    /// nothing from its revocation on, while every device it certified
+    /// before stays valid. This is the one check of a certificate against
+    /// revocations; prefer it to asking about its device key alone.
+    #[must_use]
+    pub fn refuses(&self, cert: &DeviceCert) -> bool {
+        cert_refused(cert, None, |key| self.revoked_at(key))
+    }
+
+    /// [`Self::refuses`] with the device's own revocation counted only from
+    /// its time: whether `cert` is refused for something its device signed
+    /// at `at_ns`.
+    #[must_use]
+    pub fn refuses_at(&self, cert: &DeviceCert, at_ns: u64) -> bool {
+        cert_refused(cert, Some(at_ns), |key| self.revoked_at(key))
+    }
+
+    /// When `key` was revoked, if it was.
+    fn revoked_at(&self, key: &[u8; 32]) -> Option<u64> {
+        self.entries.get(key).map(|entry| entry.revoked_at_ns)
     }
 
     /// Iterate over the revocation entries currently held.

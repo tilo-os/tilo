@@ -1172,10 +1172,12 @@ pub fn provision_joined_device(
             foreign: false,
             can_administer_devices: false,
             agent: None,
+            stand_in: false,
         },
         issued_at_ns: now_ns,
         expires_at_ns: None,
         signature: [0; 64],
+        issuer: None,
     };
     let digest = device_cert_signing_digest(&cert).map_err(|error| {
         PersistError::Io(io::Error::new(
@@ -1536,6 +1538,7 @@ mod tests {
                 issued_at_ns: 1_000,
                 expires_at_ns: Some(10_000),
                 signature: [0; 64],
+                issuer: None,
             };
             crate::sign_device_cert(&mut cert, root).unwrap();
             cert
@@ -1609,6 +1612,7 @@ mod tests {
             issued_at_ns: 1_000,
             expires_at_ns: Some(10_000),
             signature: [0; 64],
+            issuer: None,
         };
         crate::sign_device_cert(&mut cert, &root).unwrap();
         install_device_cert(&paths, &cert, 2_000).unwrap();
@@ -1638,6 +1642,7 @@ mod tests {
             issued_at_ns: 1_000,
             expires_at_ns: Some(10_000),
             signature: [0; 64],
+            issuer: None,
         };
         crate::sign_device_cert(&mut cert, &root).unwrap();
         install_device_cert(&paths, &cert, 2_000).unwrap();
@@ -1931,6 +1936,7 @@ mod tests {
                 issued_at_ns: 3,
                 expires_at_ns: None,
                 signature: [0u8; 64],
+                issuer: None,
             };
             sign_device_cert(&mut cert, &root_sk).unwrap();
             write_device_cert(&path, &cert).unwrap();
@@ -2173,6 +2179,7 @@ mod tests {
             issued_at_ns: 1,
             expires_at_ns: None,
             signature: [0; 64],
+            issuer: None,
         };
         crate::sign_device_cert(&mut cert, &root).unwrap();
         let cert_path = paths.device_cert_for_user(&cert.user_public_key);
@@ -2203,6 +2210,7 @@ mod tests {
             issued_at_ns: 1,
             expires_at_ns: None,
             signature: [0; 64],
+            issuer: None,
         };
         crate::sign_device_cert(&mut cert, &root).unwrap();
         let cert_path = dir.path().join("device/certs/one.bin");

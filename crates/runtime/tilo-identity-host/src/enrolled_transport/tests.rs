@@ -41,6 +41,7 @@ fn fixture() -> Fixture {
         issued_at_ns: 1,
         expires_at_ns: None,
         signature: [0; 64],
+        issuer: None,
     };
     cert.signature = root_signer
         .sign(&tilo_user_identity::device_cert_signing_digest(&cert).unwrap())
