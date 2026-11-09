@@ -876,25 +876,34 @@ fn row_of(
     }
 }
 
-/// A row of a tree that is a view of the app's own: its content stands `depth` steps in, one
-/// disclosure gutter each, and how far its branch got follows it.
+/// A row of a tree that is a view of the app's own: the view stands in the box a list gives a
+/// row's content — one disclosure gutter in for each depth it stands in — so its leading control
+/// and its title stand on the column a [`ListRow`]'s do at that depth, and how far its branch got
+/// follows it.
 fn indent_view(view: Element, depth: u32, progress: Option<String>) -> Element {
-    let mut line = Row::row().fill_width().align(Align::Center);
-    {
-        // The row's own depth, and the step its chevron takes in front of it: a row with
-        // nothing to fold stands there all the same, on the column of its depth.
+    // The line packs what it holds, so the view starts on the row's column and not one gap
+    // further: the row's own depth and the step its chevron takes in front of it are the whole
+    // of the room before it, and a row with nothing to fold stands there all the same.
+    let mut line = Row::row()
+        .fill_width()
+        .align(Align::Center)
+        .gap(Rhythm::None);
+    if depth > 0 {
         #[allow(
             clippy::cast_possible_truncation,
             reason = "logical pixels are bounded far below f32::MAX"
         )]
-        let indent = ((f64::from(depth) + 1.0) * TREE_INDENT) as f32;
+        let indent = (f64::from(depth) * TREE_INDENT) as f32;
         line = line.push(Box::new(Spacer::fixed(indent)));
     }
     let mut slot = Slot::new(view);
     slot.fit = Fit::hug().width(crate::widget::arrange::Sizing::fill(1.0));
     line = line.push_slot(slot);
     if let Some(progress) = progress {
-        line = line.push(Box::new(Text::new(&progress).with_role(TextRole::Caption)));
+        // The figure stands a related gap after the row, as the rest of the line does.
+        line = line
+            .push(Box::new(Spacer::token(crate::tokens::SpacingStep::S2)))
+            .push(Box::new(Text::new(&progress).with_role(TextRole::Caption)));
     }
     Box::new(line)
 }
@@ -1573,7 +1582,7 @@ impl Decorator for DescribedList {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::component::{Event, Fired, Intent};
+    use crate::component::{BoundValue, Event, Fired, Intent};
     use crate::widget::MenuItemProps;
 
     /// The rows of a list given its items whole: a row a title each.
@@ -2151,5 +2160,296 @@ mod tests {
         let menu = vec![command("Complete", "Ctrl+Enter", &queue)];
         let attached = vec![command("Reopen", "control+enter", &queue)];
         assert_eq!(declared_shortcuts(&menu, &attached).len(), 1);
+    }
+
+    // --- an item opened where it stands ---------------------------------------------------------
+
+    /// One item of a list a test renders row by row: its key, and the item it stands under.
+    struct ViewItem {
+        key: String,
+        parent: Option<String>,
+    }
+
+    /// The items a test renders as the views an app builds: a list of a collection of any length
+    /// holds its rows that way.
+    struct ViewRows {
+        items: Vec<ViewItem>,
+    }
+
+    impl ViewRows {
+        fn new(items: &[(&str, Option<&str>)]) -> Self {
+            Self {
+                items: items
+                    .iter()
+                    .map(|(key, parent)| ViewItem {
+                        key: (*key).to_owned(),
+                        parent: parent.map(str::to_owned),
+                    })
+                    .collect(),
+            }
+        }
+
+        /// The resource the item of the row `key` is.
+        fn item_of(key: &str) -> String {
+            key.replace("row-", "item-")
+        }
+    }
+
+    impl crate::component::RowSource for ViewRows {
+        fn len(&self) -> usize {
+            self.items.len()
+        }
+
+        fn key_at(&self, index: usize) -> Option<String> {
+            self.items.get(index).map(|item| item.key.clone())
+        }
+
+        fn index_of(&self, key: &str) -> Option<usize> {
+            self.items.iter().position(|item| item.key == key)
+        }
+
+        fn request_range(&mut self, _range: Range<usize>) {}
+
+        fn read(
+            &mut self,
+            key: &str,
+            read: &mut dyn FnMut(&mut dyn Source) -> Result<(), String>,
+        ) -> Result<bool, String> {
+            let Some(item) = self.items.iter().find(|item| item.key == key) else {
+                return Ok(false);
+            };
+            read(&mut ViewItemSource { item })?;
+            Ok(true)
+        }
+
+        fn key_presenting(&self, id: &str) -> Option<String> {
+            self.items
+                .iter()
+                .find(|item| ViewRows::item_of(&item.key) == id)
+                .map(|item| item.key.clone())
+        }
+
+        fn take_changes(&mut self) -> Vec<ListModelChange<String>> {
+            Vec::new()
+        }
+
+        fn has_changes(&self) -> bool {
+            false
+        }
+    }
+
+    /// One item as the host renders it: its row, and the document it opens into.
+    struct ViewItemSource<'a> {
+        item: &'a ViewItem,
+    }
+
+    impl Source for ViewItemSource<'_> {
+        fn key(&self) -> &str {
+            &self.item.key
+        }
+
+        fn prop(&mut self, name: &str) -> Option<Value> {
+            match name {
+                "item" => Some(Value::Resource(ViewRows::item_of(&self.item.key))),
+                "parent" => self
+                    .item
+                    .parent
+                    .as_deref()
+                    .map(|parent| Value::Resource(ViewRows::item_of(parent))),
+                _ => None,
+            }
+        }
+
+        fn event(&mut self, _name: &str) -> Event {
+            Event::None
+        }
+
+        fn binding(&mut self, _name: &str) -> Option<BoundValue> {
+            None
+        }
+
+        fn children(&mut self, slot: &str) -> Vec<Element> {
+            match slot {
+                "detail" => vec![document(&self.item.key)],
+                _ => Vec::new(),
+            }
+        }
+
+        fn slot_kinds(&mut self, slot: &str) -> Vec<Option<String>> {
+            match slot {
+                "row" => vec![Some(ListRowProps::NAME.to_owned())],
+                _ => Vec::new(),
+            }
+        }
+
+        fn components(
+            &mut self,
+            slot: &str,
+            read: &mut dyn FnMut(&mut dyn Source) -> Result<(), String>,
+        ) -> Result<usize, String> {
+            if slot != "row" {
+                return Ok(0);
+            }
+            read(&mut ViewRowSource {
+                key: &self.item.key,
+            })?;
+            Ok(1)
+        }
+    }
+
+    /// The row of one item, as the app describes it: a list row led by its checkbox.
+    struct ViewRowSource<'a> {
+        key: &'a str,
+    }
+
+    impl Source for ViewRowSource<'_> {
+        fn key(&self) -> &str {
+            self.key
+        }
+
+        fn prop(&mut self, name: &str) -> Option<Value> {
+            match name {
+                "title" => Some(Value::Text(format!("{}'s words", self.key))),
+                _ => None,
+            }
+        }
+
+        fn event(&mut self, _name: &str) -> Event {
+            Event::None
+        }
+
+        fn binding(&mut self, name: &str) -> Option<BoundValue> {
+            (name == "checkbox").then(|| BoundValue::Bool(crate::component::Bound::default()))
+        }
+
+        fn children(&mut self, _slot: &str) -> Vec<Element> {
+            Vec::new()
+        }
+
+        fn components(
+            &mut self,
+            _slot: &str,
+            _read: &mut dyn FnMut(&mut dyn Source) -> Result<(), String>,
+        ) -> Result<usize, String> {
+            Ok(0)
+        }
+    }
+
+    /// What an item holds, shown where its row stands: the item's own line, and what is written
+    /// about it under that line. Its line leads with the room a row's leading control takes, so
+    /// its title stands where the rows beside it start theirs.
+    fn document(key: &str) -> Element {
+        Box::new(
+            Stack::stack()
+                .fill_width()
+                .gap(Rhythm::Related)
+                .with_id(format!("document-{key}"))
+                .push(Box::new(
+                    Row::row()
+                        .fill_width()
+                        .gap(Rhythm::Sibling)
+                        .align(Align::Center)
+                        .push(Box::new(
+                            Spacer::fixed(
+                                f64::from(crate::tokens::Metrics::BASE.icon_control) as f32
+                            )
+                            .with_id(format!("leading-{key}")),
+                        ))
+                        .push(Box::new(
+                            Text::new(&format!("{}'s words", key)).with_id(format!("title-{key}")),
+                        )),
+                ))
+                .push(Box::new(Text::new("what is written about it"))),
+        )
+    }
+
+    /// Where the widget `id` stands, in `node`.
+    fn rect_of_id(node: &crate::headless::InspectionNode, id: &str) -> Option<[f64; 4]> {
+        if node.test_id.as_deref() == Some(id) {
+            return Some(node.rect);
+        }
+        node.children.iter().find_map(|child| rect_of_id(child, id))
+    }
+
+    /// Where the row of the item `key` lays its own content out, as it published it.
+    fn row_grid(
+        node: &crate::headless::InspectionNode,
+        key: &str,
+    ) -> Option<crate::widget::RowLayout> {
+        let grid = match node.layout {
+            Some(crate::widget::LayoutInfo::Row(grid)) => Some(grid),
+            _ => None,
+        };
+        if let Some(grid) = grid
+            && node.test_id.as_deref().is_none_or(|id| id == key)
+        {
+            return Some(grid);
+        }
+        node.children.iter().find_map(|child| row_grid(child, key))
+    }
+
+    /// An item that opens where it stands is the item: the document stands in the row's content
+    /// box, so its leading control and its title stand on the column the rows at its depth stand
+    /// on, and only what the item holds grows.
+    #[test]
+    fn an_item_standing_open_keeps_the_column_of_the_rows_at_its_depth() {
+        // row-0 stands at the top with row-2 and row-3 under it, and row-1 beside it at the top:
+        // opening one row reads the column of the rows that stay closed at its depth.
+        let list = |open: &str| {
+            let rendered: SharedRows = Rc::new(RefCell::new(ViewRows::new(&[
+                ("row-0", None),
+                ("row-2", Some("row-0")),
+                ("row-3", Some("row-0")),
+                ("row-1", None),
+            ])));
+            DescribedList::from_props(
+                "list",
+                VirtualListProps {
+                    tree: true,
+                    open: Some(ResourceId(ViewRows::item_of(open))),
+                    rows: DescribedRows {
+                        held: Held::Rendered(rendered),
+                        ..DescribedRows::default()
+                    },
+                    ..VirtualListProps::default()
+                },
+            )
+        };
+        for (open, depth, beside) in [("row-0", 0, "row-1"), ("row-3", 1, "row-2")] {
+            let node = laid_out(list(open));
+            let at = |id: &str| {
+                rect_of_id(&node, id)
+                    .unwrap_or_else(|| panic!("the widget {id} shows with {open} standing open"))
+            };
+            let grid = row_grid(&node, beside)
+                .unwrap_or_else(|| panic!("the row {beside} lays its content out"));
+            assert_eq!(
+                grid.depth, depth,
+                "the row {beside} stands as deep as the item the person opened"
+            );
+            let content = f64::from(grid.content_left);
+            let document = at(&format!("document-{open}"));
+            assert!(
+                (document[0] - content).abs() < 0.5,
+                "the item standing open starts its document at x {:.0}, where the row {beside} \
+                 starts its content at x {content:.0}",
+                document[0]
+            );
+            let leading = at(&format!("leading-{open}"));
+            assert!(
+                (leading[0] - content).abs() < 0.5,
+                "its leading control stands at x {:.0}, where the row {beside} stands its own at \
+                 x {content:.0}",
+                leading[0]
+            );
+            let words = at(&format!("title-{open}"));
+            let said = f64::from(grid.text_x);
+            assert!(
+                (words[0] - said).abs() < 0.5,
+                "its title starts at x {:.0}, where the row {beside} starts its title at x \
+                 {said:.0}",
+                words[0]
+            );
+        }
     }
 }
