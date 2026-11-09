@@ -543,7 +543,7 @@ impl Core {
     pub(crate) fn coll_counted(&self, coll: &Rc<CollRef>) -> HResult<Option<usize>> {
         let listing = self.coll_listing(coll)?;
         let len = listing.len();
-        if !listing.len_is_exact() && len > crate::reads::READ_PAGE {
+        if !listing.len_is_exact() && len > crate::marks::WINDOW_PAGE {
             self.saw(coll, Read::Len(len), len);
             return Ok(None);
         }
@@ -557,14 +557,22 @@ impl Core {
         self.store.borrow().settled()
     }
 
-    /// Whether `coll` holds nothing: whether it shows no first item. A listing read page by
-    /// page answers that by reading the page its first item is on, never by reading its run to
-    /// the end, which is what counting it costs ([`Self::coll_count`]).
+    /// Whether `coll` holds nothing: whether the store knows its length, which no read costs,
+    /// or where a listing it reads page by page does not, whether it shows no first item. An
+    /// empty listing answers that by reading the page its first item is on, never by reading its
+    /// run to the end, which is what counting it costs ([`Self::coll_count`]); a listing it
+    /// filters as it reads has no such page: where its first kept item is depends on every entry
+    /// checked before it, which for one holding none is its run whole.
     ///
     /// What it depends on is where its first item is: the listing shows another one, or none,
     /// when that changes.
     pub(crate) fn coll_empty(&self, coll: &Rc<CollRef>) -> HResult<bool> {
         let listing = self.coll_listing(coll)?;
+        if listing.len_is_exact() {
+            let count = listing.count();
+            self.saw(coll, Read::Count(count), listing.len());
+            return Ok(count == 0);
+        }
         let first = listing.first();
         let empty = first.is_none();
         self.saw(coll, Read::First(first), listing.len());

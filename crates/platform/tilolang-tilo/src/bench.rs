@@ -1015,6 +1015,10 @@ fn prepare_index(doc: &Doc, packages: &[Compiled]) -> Result<(IndexDir, f64), St
             || None,
         )
         .map_err(|e| e.to_string())?;
+        // The index is derived at the clock every window opened over it reads: derived at the
+        // wall clock instead, the first read of it catches it up from one day to another, which
+        // reads every item dated between them -- the workspace's size, once.
+        host.set_clock(|| BENCH_TIME.to_owned());
         for compiled in packages {
             host.load_wasm(&compiled.wasm).map_err(|e| e.to_string())?;
         }
@@ -2070,6 +2074,9 @@ fn first_frame(sized: &Sized<'_>, saved: &[u8]) -> Result<Vec<Record>, String> {
             || None,
         )
         .map_err(|e| e.to_string())?;
+        // What a session does before its first frame: its clock is set to the one the index was
+        // derived at, so the frame reads what it shows of it.
+        host.set_clock(|| BENCH_TIME.to_owned());
         let held = Rc::clone(&loading);
         host.set_record_loader(Box::new(move || {
             held.borrow_mut().wait().ok().map(|doc| doc.clone())

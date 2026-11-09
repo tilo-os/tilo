@@ -125,6 +125,96 @@ fn choose(schema: &TypeSchema, conj: &[&Pred], whole_type: bool) -> Option<(usiz
     found
 }
 
+/// The conjuncts of `pred`, or the one filter it names: a named filter keeps a column holding
+/// whether its predicate does, and the column answers the predicate whole, so its run is read
+/// rather than a conjunct of it, which names every item that conjunct holds of and leaves the
+/// rest to be checked one by one. A query in an order reads the order's own run instead, and
+/// checks the conjuncts the filter is made of as its pages fill: the filter's run is in its id's
+/// order, not the order asked, so it cannot fill a page of it.
+fn named_conj<'a>(
+    schema: &TypeSchema,
+    pred: Option<&'a Pred>,
+    conj: Vec<&'a Pred>,
+    id: &dyn Fn(&FieldRead) -> String,
+) -> Vec<&'a Pred> {
+    match pred.filter(|whole| columns::named(schema, whole, id).is_some()) {
+        Some(whole) => vec![whole],
+        None => conj,
+    }
+}
+
+/// Whether every item `conj` holds has the same value in `order`'s one key: the query's order
+/// is then the collection's own, the items standing in it by the key they are read in, and a
+/// listing of the query's run reads the items in it without the order's column.
+///
+/// A filter a query names is one column, and pins what it declares: the order's key is pinned
+/// where that declares a value of it, as the inbox's items are the tasks with no day, which in
+/// the day's column stand after every task with one.
+fn single_value(schema: &TypeSchema, conj: &[&Pred], order: &Order) -> bool {
+    let Order { then, .. } = order;
+    if then.is_some() {
+        return false;
+    }
+    let id = |f: &FieldRead| f.spec.id.clone();
+    // One run that holds one value: a range holds many, and the items in it stand in order.
+    let pins = |access: &[Access]| {
+        access.iter().any(|a| match a.runs.as_slice() {
+            [one] => a.column == order.field && a.exact && columns::is_value_run(one),
+            _ => false,
+        })
+    };
+    conj.iter().any(|c| {
+        c.conjuncts().iter().any(|part| {
+            columns::access(schema, part, &id, false).is_some_and(|access| pins(&access))
+        })
+    })
+}
+
+/// The runs a query can be read page by page from, in the order they are tried: the ones a
+/// conjunct names in the order's own column, one value and no further key, first; then the
+/// narrowest's and [`choose`]'s, one exact run each.
+fn paged_runs(
+    schema: &TypeSchema,
+    conj: &[&Pred],
+    order: Option<&Order>,
+    narrow: Option<&(usize, Vec<Access>)>,
+    chosen: Option<&(usize, Vec<Access>)>,
+    id: &dyn Fn(&FieldRead) -> String,
+) -> Vec<(usize, Access, (String, String))> {
+    let mut runs: Vec<(usize, Access, (String, String))> = Vec::new();
+    if let Some(order) = order.filter(|order| order.then.is_none()) {
+        for (at, c) in conj.iter().enumerate() {
+            let Some(access) = columns::access(schema, c, id, false) else {
+                continue;
+            };
+            for a in access {
+                let (Some(one), true) = (a.runs.first().cloned(), a.runs.len() == 1) else {
+                    continue;
+                };
+                if a.column != order.field || !a.exact || (a.repeats && !membership(c)) {
+                    continue;
+                }
+                runs.push((at, a, one));
+            }
+        }
+    }
+    runs.extend(
+        narrow
+            .iter()
+            .chain(chosen.iter())
+            .filter_map(|(at, access)| {
+                let [a] = access.as_slice() else {
+                    return None;
+                };
+                let [one] = a.runs.as_slice() else {
+                    return None;
+                };
+                Some((*at, a.clone(), one.clone()))
+            }),
+    );
+    runs
+}
+
 /// Whether `pred` is `f.contains(v)` of a set: the one shape whose run of a value names the
 /// items holding it and nothing else, though a set's items may stand in several runs.
 fn membership(pred: &Pred) -> bool {
@@ -174,8 +264,9 @@ fn bounds(pages: &Pages<Snapshot>, (from, to): &(String, String)) -> (usize, usi
 }
 
 /// Where the run `run` starts and ends in the list `list` (read as `pages`) of the column
-/// `column`: from the counts of its values when it is one value of a counted column, which
-/// reads none of the list's pages; else from the pages.
+/// `column`: from the counts of its values when the index counts them -- every value of a counted
+/// column, and the empty value of every column -- which reads none of the list's pages; else from
+/// the pages.
 fn run_bounds(
     snapshot: &Snapshot,
     (list, pages): (&str, &Pages<Snapshot>),
@@ -201,7 +292,36 @@ fn run_bounds(
             start.saturating_add(usize::try_from(count).unwrap_or(usize::MAX)),
         ));
     }
+    // The items without a value come first, and how many of them the column holds is counted: how
+    // many it has of the empty value, which is the one entry the counts of a column that counts no
+    // values carry. Every item that holds one runs from there to the list's end, which the
+    // directory counts. Both read no page, where ranking the run at its ends reads a page at each
+    // -- and a list short enough for one page to hold both ends reads one, so what a plan costs
+    // would still grow with the collection.
+    if columns::is_absent_run(run) || columns::is_present_run(run) {
+        let absent = absent_end(snapshot, list, pages)?;
+        return Ok(if columns::is_absent_run(run) {
+            (0, absent)
+        } else {
+            (absent, pages.len())
+        });
+    }
     Ok(bounds(pages, run))
+}
+
+/// How many of the list `list`'s first entries hold no value: the count of the empty value, which
+/// reads no page, or where the first page with a value starts when the column's counts do not say.
+fn absent_end(
+    snapshot: &Snapshot,
+    list: &str,
+    pages: &Pages<Snapshot>,
+) -> Result<usize, IndexError> {
+    for (held, n) in snapshot.counts(list)? {
+        if held.is_empty() {
+            return Ok(usize::try_from(n).unwrap_or(usize::MAX));
+        }
+    }
+    Ok(pages.absent_run())
 }
 
 impl View<'_> {
@@ -217,15 +337,13 @@ impl View<'_> {
         let Some(conj) = conjuncts(pred)? else {
             return Ok(Answer::shown(Listing::default()));
         };
-        // A named filter keeps a column holding whether its predicate does: the column answers
-        // the predicate whole, so its run is read rather than a conjunct of it, which names
-        // every item that conjunct holds of and leaves the rest to be checked one by one.
         let id = |f: &FieldRead| f.spec.id.clone();
-        let conj: Vec<&Pred> =
-            match pred.filter(|whole| columns::named(schema, whole, &id).is_some()) {
-                Some(whole) => vec![whole],
-                None => conj,
-            };
+        let conj = named_conj(schema, pred, conj, &id);
+        // An order of one value every item the query holds shares is the collection's own: its
+        // run reads the items page by page, where the order's column reads every entry holding
+        // a value before the run of the one they share -- the workspace, for a place of the
+        // undated.
+        let order = order.filter(|order| !single_value(schema, &conj, order));
         let member = member_list(resource, field);
         let read = read_fields(&conj, order);
         let named = self.overlay.touched_reading(
@@ -275,34 +393,33 @@ impl View<'_> {
         )? {
             return Ok(answer);
         }
-        // The runs a query may be read page by page from: the one the narrowest conjunct names
-        // first, then the one [`choose`] found. A run read page by page is one exact run, in the
-        // collection's order or the order of the column it runs over; the conjuncts it leaves
-        // are checked as its pages fill ([`Filtered`]), so a filter of several conjuncts costs
-        // the entries its first page reads, not the run's length. A narrowest run that cannot be
+        // The runs a query may be read page by page from: one a conjunct names in the order's
+        // own column first, then the one the narrowest conjunct names, then the one [`choose`]
+        // found. A run read page by page is one exact run, in the collection's order or the
+        // order of the column it runs over; the conjuncts it leaves are checked as its pages
+        // fill ([`Filtered`]), so a filter of several conjuncts costs the entries its first page
+        // reads, not the run's length. A run of the order's column is in the order itself,
+        // whichever value it holds: reading the order whole instead costs every entry before the
+        // page shown, which is the workspace's size for a place that holds the items of one
+        // value -- those a day is not set on, which stand last. A narrowest run that cannot be
         // read that way (a range, whose entries run by value when the collection's own order is
-        // asked) leaves the listing to the run that can: reading it whole reads every item it
-        // names, which is the workspace's size for a place that holds half of it. The narrowest
-        // still sizes the listing, before its pages are read.
+        // asked) leaves the listing to the run that can. The narrowest still sizes the listing,
+        // before its pages are read.
         let narrow = narrow.map(|(at, access, _)| (at, access));
         let order_column = order.and_then(|o| schema.column(&o.field));
+        let runs = paged_runs(schema, &conj, order, narrow.as_ref(), chosen.as_ref(), &id);
         let mut run = None;
-        for (at, access) in narrow.iter().chain(chosen.iter()) {
-            let [a] = access.as_slice() else {
-                continue;
-            };
-            let [one] = a.runs.as_slice() else {
-                continue;
-            };
+        for (at, a, one) in &runs {
+            let at = *at;
             if !a.exact
-                || (a.repeats && !membership(conj.get(*at).copied().unwrap_or(&Pred::Const(false))))
+                || (a.repeats && !membership(conj.get(at).copied().unwrap_or(&Pred::Const(false))))
             {
                 continue;
             }
             run = self.paged_run(
                 (resource, field),
                 schema,
-                (&conj, *at, a, one),
+                (&conj, at, a, one),
                 (order, order_column),
                 (Some(bound).flatten(), &touched, carried, evaluated),
             )?;
@@ -508,9 +625,11 @@ impl View<'_> {
     ) -> Result<Option<Answer>, StoreError> {
         let column = schema.column(&a.column);
         let descending = order.is_some_and(|o| o.descending);
-        // A run is read in one order; an order over another one, or one with the items without
-        // a value last, is not that order: [`Self::ordered_listing`] reads it instead.
-        if order.is_some_and(|o| o.then.is_some() || o.absent_last) {
+        // A run is read in one order; an order over another one is not that order:
+        // [`Self::ordered_listing`] reads it instead. An order putting the items without a value
+        // last is that order still, for a run of one value: its entries all have the value or
+        // all are without one, so where they stand in the order is where the run holds them.
+        if order.is_some_and(|o| o.then.is_some()) {
             return Ok(None);
         }
         let in_order = match (order, order_column) {
@@ -790,7 +909,7 @@ impl View<'_> {
         let list = scope_list(resource, field, &column.name);
         let pages = self.snapshot.pages(&list).map_err(index_error)?;
         if absent_last {
-            let absent = pages.absent_run();
+            let absent = absent_end(self.snapshot, &list, &pages).map_err(index_error)?;
             return Ok(Base::Presence { pages, absent });
         }
         let end = pages.len();

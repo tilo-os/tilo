@@ -50,8 +50,9 @@ const VIRTUAL_LIST: &str = "ui.VirtualList";
 const LIST_ROW: &str = "ui.ListRow";
 /// How many resources of a window's document a window's mark reads changes of: one page of
 /// them, so a window of a workspace of any size costs the same to open, and says when the
-/// document holds more.
-const WINDOW_PAGE: usize = 128;
+/// document holds more. It is the page a window reads of a place as well: what it shows, and
+/// the most a number it reads is allowed to cost.
+pub(crate) const WINDOW_PAGE: usize = 128;
 
 /// The pseudo-field a mark reads versions through: of a resource, every version of it, and of
 /// a document, every version of every resource in it. A mark reads what a step made, not only

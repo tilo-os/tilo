@@ -282,10 +282,32 @@ pub fn counted(column: &ColumnSchema) -> bool {
     matches!(column.kind, ColumnKind::Bool | ColumnKind::Enum) && !column.many
 }
 
+/// Whether the index counts the entries of the value `value` of the column: every value of a
+/// counted column, and the empty value of every column, which is where the items without a value
+/// stand and how many they are.
+#[must_use]
+pub fn counted_value(column: &ColumnSchema, value: &str) -> bool {
+    counted(column) || value.is_empty()
+}
+
 /// The value a run of one value is of.
 #[must_use]
 pub fn run_value((from, _): &(String, String)) -> Option<&str> {
     from.strip_suffix(SEP)
+}
+
+/// Whether `run` is the items without a value: the empty value, which comes before every other,
+/// so their run starts the list and ends where the first item with a value stands.
+#[must_use]
+pub fn is_absent_run(run: &(String, String)) -> bool {
+    is_value_run(run) && run_value(run) == Some("")
+}
+
+/// Whether `run` is every item that holds a value: from after the items without one to the last.
+#[must_use]
+pub fn is_present_run((from, to): &(String, String)) -> bool {
+    let one = |text: &str, of: char| text.len() == of.len_utf8() && text.starts_with(of);
+    one(from, AFTER) && one(to, LAST)
 }
 
 /// Whether the column reads the field `field`.
