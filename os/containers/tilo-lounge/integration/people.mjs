@@ -1004,19 +1004,19 @@ try {
   await search(a.tab, a.command, 'notes', 'Notes');
   await settle(a.tab, 2);
   // The person's fingers are on the window they are looking at, not on
-  // whatever else the strip's centre happens to be over: the open window is
-  // brought into view, and its own body is what the gesture is given to. Its
-  // title row is where the tree publishes it; below it is the app's content.
-  const titleRow = JSON.parse(await find(a.tab, 'Close Notes'));
-  if (titleRow?.bounds) {
+  // whatever else the strip's centre happens to be over: the window in front
+  // is brought into view by opening it, and its own body is what a gesture is
+  // given to. Its title bar is where the tree publishes it ("Close <name>");
+  // the body begins below it.
+  const overTheWindow = async name => {
+    const titleRow = JSON.parse(await find(a.tab, `Close ${name}`));
+    if (!titleRow?.bounds) return {...centre};
     const b = titleRow.bounds;
     const [x0, y0, x1, y1] = Array.isArray(b)
       ? b : [b.x0 ?? b.x, b.y0 ?? b.y, b.x1 ?? b.x + b.width, b.y1 ?? b.y + b.height];
-    // The row is the window's title bar: its body begins below it, and the
-    // body is roomy enough that a point a few rows down is still inside.
-    centre.x = Math.round(centre.corner.x + (x0 + x1) / 2);
-    centre.y = Math.round(centre.corner.y + y1 + 200);
-  }
+    return {x: Math.round(centre.corner.x + (x0 + x1) / 2), y: Math.round(centre.corner.y + y1 + 200)};
+  };
+  const overNotes = await overTheWindow('Notes');
   const windowsBefore = (await snapshot(a.tab)).windows;
   const startPan = await panOf(a.tab);
   if (!startPan) failed('the strip does not overflow, so nothing can pan');
@@ -1026,7 +1026,7 @@ try {
   // taken inside the gesture the gate judges, so the two are one swipe.
   const panBefore = await restPanOf(a.tab);
   const frameBefore = await picture(a.tab);
-  await sidewaysSwipe(a.tab, centre.x, centre.y, forward, 'strip-mid-scroll.png');
+  await sidewaysSwipe(a.tab, overNotes.x, overNotes.y, forward, 'strip-mid-scroll.png');
   const panAfter = await restPanOf(a.tab);
   const moved = panAfter.offset - panBefore.offset;
   report.sideways = {forward, before: panBefore, after: panAfter};
@@ -1043,7 +1043,9 @@ try {
   await settle(a.tab, 2);
   const keptPan = await panOf(a.tab);
   const sheetBefore = await picture(a.tab);
-  await sidewaysSwipe(a.tab, centre.x, centre.y, forward);
+  // The fingers are on Sheets, the window now in front: a person's are.
+  const overSheets = await overTheWindow('Sheets');
+  await sidewaysSwipe(a.tab, overSheets.x, overSheets.y, forward);
   const sheetPan = await panOf(a.tab);
   report.sheets = {before: keptPan, after: sheetPan};
   if ((sheetPan?.offset ?? 0) !== (keptPan?.offset ?? 0)) {
