@@ -84,6 +84,24 @@ Mounts of one profile, device, workspace and app share a record: another mount
 passing the same `record` edits the same document and shows the other's
 changes live, each under its own `author`.
 
+## Links opened full tab
+
+Every resource with a view has a link (`tilo_reference::link`), and the one
+an app's Share hands out opens it full tab: `<entry>app/#/@<host>/w/<workspace>/<app>/<record>/<resource>`.
+`web/app/index.html` gets into the workspace as any link does (its door, an
+invitation the link carries, or signing in), mounts that one app with no
+desktop, and shows the resource through its view. Over it, `web/app-bar.mjs`
+draws a thin bar: the workspace and the app, the people here from the
+workspace's presence board (those in this document first; the page publishes
+its own focus as a desktop window does), Share, and Open in Tilo. Share copies
+the link as it stands, which opens for the workspace's people, or makes one
+for anyone who has it: the same link with an invitation of the person's own in
+its `invite` secret, written by the runtime (`formatInviteLink`). Open in Tilo
+opens the same place on the desktop; a document of its own opens as its app
+there. At phone width the bar keeps the same four things with the names cut
+short. `os/containers/tilo-lounge/integration/share-link.mjs` drives it with
+two people's browsers against the Lounge image.
+
 ## Fonts
 
 `build.sh` copies the product fonts of `crates/sdk/ui-core/assets/fonts`
