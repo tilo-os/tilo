@@ -17,6 +17,10 @@ mod serve;
 
 pub(super) use replica::{ReplicaHost, Replicas};
 
+/// The joined workspaces' files, once they are held: a member taking a
+/// workspace's work is set up before the broker their records travel on runs.
+pub(super) type ReplicaSlot = Arc<std::sync::OnceLock<Arc<Replicas>>>;
+
 use std::{
     io,
     path::{Path, PathBuf},

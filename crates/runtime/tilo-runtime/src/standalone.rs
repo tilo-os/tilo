@@ -176,7 +176,10 @@ impl Standalone {
             stage("placing the workspace on this device's workspace host");
             place_own_workspace(root, &workspace, &joined, &channel_keys.keys, (&apps, dev))?;
         }
-        let take_work = take_work_plane(root, &joined, take_work, stage)?;
+        // The joined workspaces' files, once the broker that carries their
+        // records runs: where a member taking a workspace's work runs it.
+        let replica_slot = files::ReplicaSlot::default();
+        let take_work = take_work_plane(root, &joined, take_work, &replica_slot, stage)?;
         stage("opening the person's store to their other devices");
         let personal = serve_personally(PersonalServing {
             root,
@@ -234,6 +237,9 @@ impl Standalone {
         };
         let files = workspace_files(&parts, stage);
         let replicas = joined_files(&parts, stage);
+        if let Some(replicas) = &replicas {
+            let _ = replica_slot.set(Arc::clone(replicas));
+        }
         Ok(Self {
             policy_origin,
             broker,
@@ -295,13 +301,14 @@ fn take_work_plane(
     root: &Path,
     joined: &Arc<Joined>,
     relay: Option<take_work::Relay>,
+    replicas: &files::ReplicaSlot,
     stage: &mut dyn FnMut(&str),
 ) -> io::Result<Option<ActionPlane>> {
     let Some(relay) = relay else {
         return Ok(None);
     };
     stage("taking the work of the workspaces relayed here");
-    take_work::plane(root, joined, relay).map(Some)
+    take_work::plane(root, joined, relay, Some(Arc::clone(replicas))).map(Some)
 }
 
 /// What the broker's services are opened from: this profile's workspace, apps
@@ -489,7 +496,7 @@ impl RuntimeServices for Standalone {
             // The workspace's files are held from the join on: the folder
             // fills as the workspace's tree arrives.
             if let Some(replicas) = &replicas {
-                hold_files(replicas, &joined, workspace);
+                let _ = hold_files(replicas, &joined, workspace);
             }
             Ok(workspace.to_string())
         }))
@@ -1154,20 +1161,27 @@ fn joined_files(
         stage("syncing the joined workspaces' files");
     }
     for workspace in workspaces {
-        hold_files(&replicas, parts.joined, workspace);
+        let _ = hold_files(&replicas, parts.joined, workspace);
     }
     Some(replicas)
 }
 
 /// Hold `workspace`'s files in `replicas`, under the name its governance gives
-/// it.
-fn hold_files(replicas: &files::Replicas, joined: &Joined, workspace: WorkspaceId) {
+/// it: the folder that mirrors them, unless they cannot be held.
+fn hold_files(
+    replicas: &files::Replicas,
+    joined: &Joined,
+    workspace: WorkspaceId,
+) -> Option<PathBuf> {
     let name = joined
         .workspace(workspace)
         .map_or_else(|| "Workspace".to_owned(), |workspace| workspace.name);
-    if let Err(error) = replicas.hold(&workspace.to_string(), &name) {
-        tracing::warn!(%error, %workspace, "a joined workspace's files are not held here");
-    }
+    replicas
+        .hold(&workspace.to_string(), &name)
+        .inspect_err(|error| {
+            tracing::warn!(%error, %workspace, "a joined workspace's files are not held here");
+        })
+        .ok()
 }
 
 impl Standalone {

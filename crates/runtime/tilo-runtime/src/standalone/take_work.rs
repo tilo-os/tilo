@@ -10,9 +10,10 @@
 //! [`EnvironmentRuns`](ush::environment_runs::EnvironmentRuns) dispatcher over
 //! the workspace's shells ([`ush::workspace_shell::WorkspaceShells`]):
 //!
-//! - ush's own commands run in process on the member's own copy of the
-//!   workspace's files (a directory of the profile per workspace, which a
-//!   synced replica takes over later);
+//! - ush's own commands run in process on the workspace's files: the folder
+//!   of the synced replica the member holds of them
+//!   ([`super::files::Replicas`]), or, for a member that holds no replicas, a
+//!   directory of the profile per workspace;
 //! - a Linux program runs in the workspace's VM, which is the local hosted-VM
 //!   service the member's environment names (`TILO_HOSTED_VM_SOCKET`,
 //!   `TILO_HOSTED_PLANS`, `TILO_HOSTED_ACCOUNT`, `TILO_HOSTED_VM_SIZE`), with
@@ -125,8 +126,8 @@ impl Relay {
     }
 }
 
-/// Where `workspace`'s files are on this member: its own copy of them, which
-/// a synced replica takes over later.
+/// Where `workspace`'s files are on a member that holds no synced replica of
+/// them: its own copy.
 #[must_use]
 pub fn files(profile: &Path, workspace: &str) -> PathBuf {
     profile.join(FILES).join(named(workspace))
@@ -156,8 +157,9 @@ pub(in crate::standalone) fn plane(
     profile: &Path,
     joined: &Arc<Joined>,
     relay: Relay,
+    replicas: Option<super::files::ReplicaSlot>,
 ) -> std::io::Result<ActionPlane> {
-    let dispatcher = shell_runs(profile, joined).ok_or_else(|| {
+    let dispatcher = shell_runs(profile, joined, replicas).ok_or_else(|| {
         std::io::Error::new(
             std::io::ErrorKind::Unsupported,
             "a member that takes work runs the workspace's shell on Linux",
@@ -172,19 +174,34 @@ pub(in crate::standalone) fn plane(
 }
 
 /// The runs this member answers with: the workspace's shell, asked by the
-/// devices of the person this member belongs to. `None` on a host whose
-/// shell, ush, is not built for it.
+/// devices of the person this member belongs to, in the folder of the synced
+/// replica of the workspace's files once `replicas` holds them. `None` on a
+/// host whose shell, ush, is not built for it.
 #[cfg(target_os = "linux")]
 #[allow(
     clippy::unnecessary_wraps,
     reason = "the variant for a host ush is not built for answers no dispatcher"
 )]
-fn shell_runs(profile: &Path, joined: &Joined) -> Option<Arc<dyn ActionHost + Send + Sync>> {
+fn shell_runs(
+    profile: &Path,
+    joined: &Arc<Joined>,
+    replicas: Option<super::files::ReplicaSlot>,
+) -> Option<Arc<dyn ActionHost + Send + Sync>> {
     use ush::environment_runs::EnvironmentRuns;
     use ush::workspace_shell::WorkspaceShells;
     let member = profile.to_path_buf();
-    let shells = WorkspaceShells::from_env(profile.join(STATE))
-        .with_files(move |workspace| files(&member, workspace));
+    let holder = Arc::downgrade(joined);
+    let shells = WorkspaceShells::from_env(profile.join(STATE)).with_files(move |workspace| {
+        // The workspace's files are held from its first run on, a workspace
+        // entered for the run included.
+        replicas
+            .as_ref()
+            .and_then(|slot| slot.get())
+            .zip(holder.upgrade())
+            .zip(tilo_desktop_model::WorkspaceId::parse(workspace))
+            .and_then(|((replicas, joined), id)| super::hold_files(replicas, &joined, id))
+            .unwrap_or_else(|| files(&member, workspace))
+    });
     Some(Arc::new(EnvironmentRuns::new(shells, joined.operator())))
 }
 
@@ -193,7 +210,11 @@ fn shell_runs(profile: &Path, joined: &Joined) -> Option<Arc<dyn ActionHost + Se
     clippy::unnecessary_wraps,
     reason = "the same shape as the variant that serves ush's shell"
 )]
-fn shell_runs(_profile: &Path, _joined: &Joined) -> Option<Arc<dyn ActionHost + Send + Sync>> {
+fn shell_runs(
+    _profile: &Path,
+    _joined: &Arc<Joined>,
+    _replicas: Option<super::files::ReplicaSlot>,
+) -> Option<Arc<dyn ActionHost + Send + Sync>> {
     None
 }
 
@@ -232,7 +253,7 @@ impl Member {
             identity_paths: None,
         };
         let joined = Joined::from_profile(profile, custody, endpoint.clone())?;
-        let plane = plane(profile, &joined, relay)?;
+        let plane = plane(profile, &joined, relay, None)?;
         // The plane holds the workspaces it serves; this member answers them
         // through the router.
         drop(joined);
