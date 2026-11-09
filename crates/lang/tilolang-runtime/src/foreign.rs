@@ -97,8 +97,17 @@ impl Foreign {
 
     /// The type of the resource of another app whose id is `id`, as its reading came in:
     /// `None` until one did.
+    ///
+    /// The id is read as the reference it names ([`ResourceRef::parse_id`]) and compared in the
+    /// one canonical form a reading's key holds ([`ResourceRef::id_string`], which
+    /// [`Foreign::key`] writes): a place names its resource by the path the session publishes it
+    /// at (`chat.workspace/channels/<id>`), whose canonical id is that path's document and item
+    /// (`chat.workspace/<id>`), so matching the raw text would find no reading and a place would
+    /// draw nothing.
     pub(crate) fn type_of(&self, id: &str) -> Option<String> {
-        let suffix = format!("@{id}");
+        let at = ResourceRef::parse_id(id, String::new())
+            .map_or_else(|| id.to_owned(), |at| at.id_string());
+        let suffix = format!("@{at}");
         self.readings
             .keys()
             .find_map(|key| key.strip_suffix(&suffix).map(str::to_owned))
@@ -804,4 +813,41 @@ fn referred(id: &str, key: &TypeKey, author: Option<&ModuleHash>) -> Result<Valu
         target: Rc::new(target),
         author: author.cloned(),
     }))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A resource a place names by the path the session publishes it at
+    /// (`chat.workspace/channels/<id>`) is the same resource its reading's key holds in the one
+    /// canonical form (`chat.workspace/<id>`): `type_of` finds it, so `resource(id)` names the
+    /// reading and a place draws it rather than showing nothing.
+    #[test]
+    fn a_resource_named_by_its_published_path_is_found_by_its_canonical_id() {
+        let mut foreign = Foreign::default();
+        let published = ResourceRef::parse_id("chat.workspace/channels/c_1", "chat#Channel")
+            .expect("the published path is an id");
+        let reading = serde_json::json!({"name": "general"});
+        assert!(foreign.set_reading(&published, reading));
+        // The key holds the canonical id, the path's document and its last item.
+        assert_eq!(published.id_string(), "chat.workspace/c_1");
+        // A view asks for the type by the path it was handed (`resource(p.record)`), not the
+        // canonical form: both find the one reading.
+        assert_eq!(
+            foreign.type_of("chat.workspace/channels/c_1"),
+            Some("chat#Channel".to_owned()),
+            "the path a place names finds the reading its canonical id holds"
+        );
+        assert_eq!(
+            foreign.type_of("chat.workspace/c_1"),
+            Some("chat#Channel".to_owned()),
+            "the canonical id finds it too"
+        );
+        assert_eq!(
+            foreign.type_of("chat.workspace/channels/none"),
+            None,
+            "a resource with no reading finds none"
+        );
+    }
 }
