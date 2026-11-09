@@ -15,4 +15,13 @@ try{
  for(var i=0;i<kept.length;i++)if(localStorage.getItem(kept[i]))return;
 }catch(e){return;}
 root.setAttribute('data-first-run','');
+// The screen is here before its module is: a press on one of its buttons
+// before then is kept, and the module presses it again once it can answer,
+// so a person who clicks at once is not ignored.
+var early=globalThis.__tiloFirstRunEarly=[];
+document.addEventListener('click',function(e){
+ if(globalThis.__tiloFirstRunReady)return;
+ var b=e.target&&e.target.closest&&e.target.closest('#first-run button[id]');
+ if(b)early.push(b.id);
+},true);
 })();

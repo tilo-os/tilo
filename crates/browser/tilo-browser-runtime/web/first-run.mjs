@@ -419,7 +419,19 @@ export function startFirstRun(document = globalThis.document, {storage} = {}) {
   on('first-run-back', () => run.back());
   for (const id of ['first-run-skip', 'first-run-skip-wait']) on(id, () => run.skip());
   on('first-run-passkey', () => run.passkey());
+  pressEarly(document);
   return run;
+}
+
+/** The button a person pressed before this module could answer
+ * (`first-run.inline.js` kept it), pressed again now: the last one only,
+ * since each press replaces what the one before asked for. */
+export function pressEarly(document, scope = globalThis) {
+  scope.__tiloFirstRunReady = true;
+  const early = scope.__tiloFirstRunEarly ?? [];
+  const last = early.at(-1);
+  early.length = 0;
+  if (last) document.getElementById(last)?.click?.();
 }
 
 /** This page's screen, started once on first import. */

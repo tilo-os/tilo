@@ -260,7 +260,7 @@ function shows(href, {stored = {}, secrets = {}, storage = true} = {}) {
   const url = new URL(href);
   const attributes = new Map();
   const page = {
-    document: {documentElement: {setAttribute: (name, value) => attributes.set(name, value)}},
+    document: {documentElement: {setAttribute: (name, value) => attributes.set(name, value)}, addEventListener() {}},
     location: {hash: url.hash, search: url.search, pathname: url.pathname},
     localStorage: storage ? {getItem: key => stored[key] ?? null} : undefined,
   };
@@ -311,4 +311,18 @@ test('skip for now opens what the page names, also when the person skipped befor
   closed.run.close();
   closed.run.whenDone(() => { opened += 1; });
   assert.equal(opened, 2, 'a screen closed otherwise opens nothing else');
+});
+
+test('a press before the module could answer is pressed again once it can, the last one only', async () => {
+  const {pressEarly} = await import('./first-run.mjs');
+  const pressed = [];
+  const document = {getElementById: id => ({click: () => pressed.push(id)})};
+  const scope = {__tiloFirstRunEarly: ['first-run-manual-toggle', 'first-run-agent']};
+  pressEarly(document, scope);
+  assert.deepEqual(pressed, ['first-run-agent']);
+  assert.equal(scope.__tiloFirstRunReady, true, 'later presses reach the buttons themselves');
+  pressEarly(document, scope);
+  assert.deepEqual(pressed, ['first-run-agent'], 'a press is replayed once');
+  pressEarly(document, {});
+  assert.deepEqual(pressed, ['first-run-agent'], 'nothing pressed early, nothing pressed');
 });
