@@ -62,7 +62,11 @@ export function loginCodes(origin, fetcher = (...args) => globalThis.fetch(...ar
     } catch (error) {
       throw new LoginCodeError(0, `The host could not be reached: ${error?.message ?? error}`);
     }
-    if (!response.ok) throw new LoginCodeError(response.status, `The host answered ${response.status}`);
+    if (!response.ok) {
+      // The host says why in `{"error": "…"}`: that sentence is the reason.
+      const said = await Promise.resolve().then(() => response.json()).then(answer => (typeof answer?.error === 'string' ? answer.error : ''), () => '');
+      throw new LoginCodeError(response.status, said ? `The host answered ${response.status}: ${said}` : `The host answered ${response.status}`);
+    }
     return response.status === 204 ? null : response.json();
   };
   return {
