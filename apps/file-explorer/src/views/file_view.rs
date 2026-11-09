@@ -2725,8 +2725,8 @@ mod tests {
         assert!(zoomed.row_h() > base.row_h(), "zoom grows list row height");
     }
 
-    /// A folder and a pinned, replicated file: every fact the accessibility
-    /// description carries.
+    /// A folder and a pinned, replicated file with an open version conflict:
+    /// every fact the accessibility description carries.
     fn accessible_entries() -> Vec<Entry> {
         let mut entries = vec![ent("folder", true), ent("report.pdf", false)];
         entries[1].size = 4_000;
@@ -2737,8 +2737,55 @@ mod tests {
             &serde_json::json!({"state": "known", "reachable": 2, "durable": 1}),
             false,
         ));
+        entries[1].history = Some(conflicted_history());
 
         entries
+    }
+
+    /// The record's history with one conflict still open: two versions that
+    /// are both heads, which is what the mount projects while nobody has
+    /// resolved them.
+    fn conflicted_history() -> fs_protocol::HistoryProjectionV1 {
+        let current = "a0d4e23f-c7cb-4ded-a427-b32cf9da9344";
+        let other = "a0d4e23f-c7cb-4ded-a427-b32cf9da9342";
+        fs_protocol::HistoryProjectionV1::parse_xattr(
+            &serde_json::to_vec(&serde_json::json!({
+                "schema_version": 1,
+                "record_id": "b0d4e23f-c7cb-4ded-a427-b32cf9da9341",
+                "total_versions": 2,
+                "versions_truncated": false,
+                "heads": [current, other],
+                "versions": [{
+                    "id": other,
+                    "record_id": "b0d4e23f-c7cb-4ded-a427-b32cf9da9341",
+                    "parents": [],
+                    "actor": {"person": vec![1; 32], "device": vec![2; 32]},
+                    "timestamp_ms": 9,
+                    "content_hash": vec![3; 32],
+                    "metadata_hash": vec![4; 32],
+                    "provenance": "Edit"
+                }, {
+                    "id": current,
+                    "record_id": "b0d4e23f-c7cb-4ded-a427-b32cf9da9341",
+                    "parents": [other],
+                    "actor": {"person": vec![6; 32], "device": vec![7; 32]},
+                    "timestamp_ms": 10,
+                    "content_hash": vec![5; 32],
+                    "metadata_hash": vec![8; 32],
+                    "provenance": "Edit"
+                }],
+                "conflicts_truncated": false,
+                "conflicts": [{
+                    "id": "c0d4e23f-c7cb-4ded-a427-b32cf9da9343",
+                    "record_id": "b0d4e23f-c7cb-4ded-a427-b32cf9da9341",
+                    "versions": [other, current],
+                    "status": "Open",
+                    "resolution": null
+                }]
+            }))
+            .unwrap(),
+        )
+        .expect("the projected history is well formed")
     }
 
     fn assert_description_has_every_fact(description: Option<&str>) {
@@ -2748,7 +2795,7 @@ mod tests {
             "Available offline",
             "Kept offline",
             "Kept on other devices",
-            "Shared with 1 recipient",
+            "Has a version conflict",
         ] {
             assert!(
                 description.contains(fact),
