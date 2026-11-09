@@ -186,7 +186,8 @@ if(navigator.gpu&&!/[?&]unsafeWebKitGPU=0(&|$)/.test(location.search))globalThis
     #arrival > svg { display: block; margin-bottom: 16px; animation: tilo-breathe 5s ease-in-out infinite; }
     @keyframes tilo-breathe { 0%, 100% { opacity: 1; } 50% { opacity: .7; } }
     [data-arrival=stopped] #arrival > svg { visibility: hidden; }
-    [data-arrival=done] #arrival { opacity: 0; visibility: hidden; }
+    /* Fading out, it no longer takes the pointer: a click on the app as it shows reaches it. */
+    [data-arrival=done] #arrival { opacity: 0; visibility: hidden; pointer-events: none; }
     #arrival > p, #arrival-note, html:not([data-arrival=done]) #status { position: fixed; z-index: 2; left: 50%; top: calc(50% + 22px); transform: translateX(-50%); width: min(36em, calc(100% - 48px)); margin: 0; text-align: center; line-height: 1.5; color: #c4c4cc; }
     #arrival > p { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; opacity: 0; transition: opacity 240ms ease-out; }
     #arrival > p.shown { opacity: 1; }
