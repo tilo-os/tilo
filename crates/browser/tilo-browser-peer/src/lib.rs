@@ -40,6 +40,13 @@ pub mod document;
 pub mod health;
 mod held_live;
 pub mod invite;
+/// Logging a computer in as one of the person's devices (native only).
+#[cfg(not(target_arch = "wasm32"))]
+pub mod login;
+/// The login code a page hands a computer, read (native only: a page writes
+/// it, never reads it).
+#[cfg(not(target_arch = "wasm32"))]
+pub mod pairing_link;
 #[cfg(feature = "toolkit")]
 pub mod presence_anchors;
 mod previews;
