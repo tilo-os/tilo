@@ -3371,8 +3371,8 @@ pub use chrome_body::paint_bar_body;
 pub use primitives::{
     ActivityCardFace, BarChip, BarChipFace, BarChipLayout, BarChipProps, BarControlFace,
     DeclaredModal, DeclaredPanel, DeclaredPopover, DeclaredPopoverButton, DensityRegion,
-    DisclosureGroup, DisclosureRow, DisclosureRowProps, DisclosureState, Fact, FactProps, Facts,
-    FactsFace, FactsProps, FloatingPanel, FloatingPanelFace, FloatingPanelLayout,
+    DisclosureGroup, DisclosureRow, DisclosureRowProps, DisclosureState, Fact, FactMark, FactProps,
+    Facts, FactsFace, FactsProps, FloatingPanel, FloatingPanelFace, FloatingPanelLayout,
     FloatingPanelProps, IconButton, KeyHint, KeyHintProps, KeyHints, KeyHintsFace, KeyHintsProps,
     LinkKind, LinkStatus, ModalProps, NotificationListControl, NotificationListLayout,
     NotificationListRow, NotificationListView, NotificationRowControls, PopoverProps,

@@ -1137,11 +1137,15 @@ overview-tilo-host-self = Dein eigener Host
 overview-tilo-host-provider = Hosting-Anbieter
 overview-tilo-manage-billing = Abrechnung verwalten
 overview-tilo-agent-everywhere = Alle deine Workspaces
-overview-tilo-agent-running = { $runs ->
-        [one] arbeitet gerade
+overview-tilo-agent-everywhere-lower = alle deine Workspaces
+overview-tilo-agent-working = { $runs ->
+        [one] Arbeitet gerade
        *[other] { $runs } Läufe gerade
     }
 overview-tilo-revoke = Widerrufen
+overview-tilo-revoke-question = { $agent } verliert den Zugriff auf { $reach } und hört sofort auf
+overview-tilo-revoke-access = Zugriff entziehen
+overview-tilo-keep = Behalten
 overview-windows-title = Fenster in diesem Arbeitsbereich
 overview-windows-description = Jede Leiste dieses Arbeitsbereichs von oben nach unten, mit ihren Fenstern der Reihe nach. Die Pfeiltasten wechseln zwischen ihnen, Enter öffnet eines. F2 benennt die Leiste eines Fensters um, Alt mit Oben oder Unten verschiebt diese Leiste. Klicke oder tippe auf ein Fenster, um dorthin zu wechseln, klicke eines mit der mittleren Taste an, um es zu schließen, oder ziehe es auf einen anderen Arbeitsbereich oder eine andere Leiste, um es dorthin zu verschieben.
 overview-strips-title = Leisten in diesem Arbeitsbereich

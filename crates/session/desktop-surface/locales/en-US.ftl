@@ -1118,11 +1118,15 @@ overview-tilo-host-self = Your own host
 overview-tilo-host-provider = Hosting provider
 overview-tilo-manage-billing = Manage billing
 overview-tilo-agent-everywhere = All your workspaces
-overview-tilo-agent-running = { $runs ->
-        [one] working now
+overview-tilo-agent-everywhere-lower = all your workspaces
+overview-tilo-agent-working = { $runs ->
+        [one] Working now
        *[other] { $runs } runs now
     }
 overview-tilo-revoke = Revoke
+overview-tilo-revoke-question = { $agent } loses access to { $reach } and stops now
+overview-tilo-revoke-access = Revoke access
+overview-tilo-keep = Keep
 overview-windows-title = Windows in this workspace
 overview-windows-description = Each strip of this workspace, top to bottom, with its windows in order. The arrow keys move between them and Enter goes to one. F2 renames the strip a window is on, and Alt with Up or Down moves that strip. Click or tap a window to go there, middle-click one to close it, or drag it onto another workspace or strip to move it there.
 overview-strips-title = Strips in this workspace

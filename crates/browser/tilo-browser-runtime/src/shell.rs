@@ -1241,6 +1241,16 @@ impl BrowserShell {
                         &grant,
                     );
                 }
+                // An agent's card, opened by the agent's own face in the overview: the same ask
+                // its face makes anywhere else, which brings the card forward beside the work.
+                DesktopAsk::OpenAgent(client) => {
+                    self.chrome.shared.ask_app_action(
+                        tilo_desktop::launchpad::LaunchpadAppAction::ask_agent(
+                            &client,
+                            tilo_desktop::profile_card::AgentAsk::Card,
+                        ),
+                    );
+                }
                 DesktopAsk::Shortcut(ui::shortcut_table::ShortcutAction::QuickSettings) => {
                     let _ = self.page_intent(ChromeIntent::ToggleQuickSettings);
                 }

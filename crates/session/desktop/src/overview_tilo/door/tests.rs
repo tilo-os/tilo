@@ -160,7 +160,7 @@ fn the_doors_answer_becomes_the_overviews_agents_rows() {
     assert_eq!(agent.title, "Claude Code", "whose grant it is");
     assert_eq!(
         facts(agent),
-        ["All your workspaces", "working now"],
+        ["All your workspaces", "Working now"],
         "what it may reach, and that it works"
     );
     assert_eq!(

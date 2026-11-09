@@ -1870,9 +1870,11 @@ impl<'a> ButtonFace<'a> {
         self
     }
     /// The confirmation step of a destructive action, the one place a
-    /// destructive face is filled.
+    /// destructive face is filled: the button that goes ahead with what
+    /// cannot be undone, in the dialog's decision or at the control that
+    /// asked.
     #[must_use]
-    pub(crate) fn confirming(mut self) -> Self {
+    pub fn confirming(mut self) -> Self {
         self.confirms = true;
         self
     }

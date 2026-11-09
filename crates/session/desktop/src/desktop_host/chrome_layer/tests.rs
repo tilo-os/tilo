@@ -97,19 +97,45 @@ fn chrome_with_an_agent() -> DesktopChrome {
 
 /// The overview's Revoke on an agent's own row reaches the host, which is
 /// where the card's Revoke goes too: the person's root signs the device's
-/// revocation from there.
+/// revocation from there. It asks first, and only the answer revokes.
 #[test]
 fn an_agents_row_revokes_through_the_doors_own_path() {
     en();
     let mut chrome = chrome_with_an_agent();
+    assert!(
+        chrome.overview.activate("overview-agent:g1:action"),
+        "the agent's row offers to take its grant back"
+    );
+    assert_eq!(
+        chrome.overview.take_pick(),
+        None,
+        "the press that asks takes nothing back"
+    );
+    assert!(chrome.overview.activate("overview-agent:g1:action"));
     let pick = chrome
         .overview
-        .tilo_target("overview-agent:g1:action")
-        .expect("the agent's row offers to take its grant back");
+        .take_pick()
+        .expect("the answer to its question is the grant's");
     assert_eq!(pick, OverviewPick::RevokeGrant("g1".into()));
     chrome.apply_pick(&pick);
     assert_eq!(
         chrome.take_asks(),
         [DesktopAsk::RevokeAgentGrant("g1".into())]
+    );
+}
+
+/// The agent's row is the agent, not only its Revoke: a press on it opens the card its face opens
+/// anywhere else, in Console, beside the work.
+#[test]
+fn an_agents_row_opens_the_agents_card() {
+    en();
+    let mut chrome = chrome_with_an_agent();
+    assert!(chrome.overview.activate("overview-agent:g1"));
+    let pick = chrome.overview.take_pick().expect("the row opens the card");
+    assert_eq!(pick, OverviewPick::OpenAgent("Claude Code".into()));
+    chrome.apply_pick(&pick);
+    assert_eq!(
+        chrome.take_asks(),
+        [DesktopAsk::OpenAgent("Claude Code".into())]
     );
 }

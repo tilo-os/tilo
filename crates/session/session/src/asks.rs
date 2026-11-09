@@ -111,6 +111,14 @@ impl Shared {
                 // whatever this session offers it on answers, and without one the person hears
                 // that it did not happen.
                 DesktopAsk::RevokeAgentGrant(grant) => self.revoke_agent_grant(grant),
+                // An agent's card, opened by the agent's own face in the overview: the same ask
+                // its face makes anywhere else, which brings the card forward beside the work.
+                DesktopAsk::OpenAgent(client) => {
+                    self.invoke_app_action(LaunchpadAppAction::ask_agent(
+                        &client,
+                        tilo_desktop::profile_card::AgentAsk::Card,
+                    ));
+                }
             }
         }
         // What the press asked is carried out: what it closed may be raised again, though the press

@@ -323,7 +323,7 @@ content, never geometry or colour (`ui::widget::primitives`).
 | `Surface(level)`, `paint_surface` | one of the five levels with its edge and shadow; children ask `SurfaceLevel::inner_radius` for a concentric radius |
 | `FloatingPanel`, `FloatingPanelFace` | header slot, body, footer slot; a field in the header renders embedded; a hairline under the header only while the body holds something |
 | `TextStack` | title (Body or Label, medium), secondary (Caption, secondary ink), tertiary; fixed gaps |
-| `Facts` | separate facts (icon and text) with space between, dropping the lowest priority first; never a joined string |
+| `Facts` | separate facts (an icon naming a kind of thing, or a dot in a tone marking something happening now, and text) with space between, dropping the lowest priority first; never a joined string |
 | `PropertyList` | label and value pairs |
 | `KeyHintsFace` | drawn keycaps and what they do |
 | `Breadcrumb` | drawn chevrons between segments |

@@ -1053,6 +1053,12 @@ impl DesktopChrome {
                     .push(DesktopAsk::RevokeAgentGrant(grant.clone()));
                 None
             }
+            OverviewPick::OpenAgent(client) => {
+                self.asks
+                    .borrow_mut()
+                    .push(DesktopAsk::OpenAgent(client.clone()));
+                None
+            }
             OverviewPick::AccountSettings => {
                 self.asks.borrow_mut().push(DesktopAsk::AccountSettings);
                 None
