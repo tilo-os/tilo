@@ -123,6 +123,8 @@ impl SegmentedFace<'_> {
             PickerText::new(&self.folded_label(), ink),
             strip,
             lift,
+            // A strip in a view paints its own words: the bar reads them where it draws it.
+            None,
         );
         true
     }

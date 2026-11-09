@@ -1224,7 +1224,11 @@ fn control(
 }
 
 fn bar(controls: Vec<ui::window_toolbar::BarControl>, spare: f64) -> ui::window_toolbar::BarLayout {
-    ui::window_toolbar::BarLayout { spare, controls }
+    ui::window_toolbar::BarLayout {
+        spare,
+        controls,
+        labels: Vec::new(),
+    }
 }
 
 fn kinds(layout: &ui::window_toolbar::BarLayout) -> Vec<Kind> {
@@ -1534,4 +1538,101 @@ fn a_bar_keeps_its_main_action_as_the_primary_button() {
     assert_eq!(super::bar_primary(Some(&main), &absent).len(), 1);
     // A window that declares no main action has none drawn as one.
     assert!(super::bar_primary(None, &shown).is_empty());
+}
+
+/// The bar's words are the bar's, painted where no widget lays them out: two of them drawn in
+/// one place are two words a person reads as one string of letters. A pill naming the window
+/// where its location already does paints its words on the location's, and the check reads the
+/// two labels as one place.
+#[test]
+fn a_bar_word_painted_where_another_stands_is_two_words_in_one_place() {
+    let window = node("TilolangWindow", "window", [0.0, 0.0, 900.0, 600.0], None);
+    let title =
+        ui::window_toolbar::BarLabel::new("TabTitle", "Täoday", Rect::new(42.0, 14.0, 98.0, 30.0));
+    let location = ui::window_toolbar::BarLabel::new(
+        "BarLocation",
+        "Täoday",
+        Rect::new(42.0, 14.0, 132.0, 30.0),
+    );
+    let found = text_on_text(
+        &window,
+        (900, 600),
+        &[title.clone(), location.clone()],
+        44.0,
+    );
+    assert_eq!(found.len(), 1, "the two words are one finding: {found:?}");
+    assert_eq!(found[0].kind, Kind::TextOnText);
+    assert_eq!(
+        found[0].widget, "BarLocation",
+        "the row's location paints over the pill beside it"
+    );
+    assert!(
+        found[0].detail.contains("Täoday"),
+        "the finding says which words: {}",
+        found[0].detail
+    );
+    // A window whose only tab shows its icon alone says the name once.
+    assert!(
+        text_on_text(&window, (900, 600), &[location], 44.0).is_empty(),
+        "one word in one place is read"
+    );
+    // Two words beside each other, each in its own place, are no finding.
+    let beside = ui::window_toolbar::BarLabel::new(
+        "TabTitle",
+        "Täoday",
+        Rect::new(140.0, 14.0, 196.0, 30.0),
+    );
+    assert!(
+        text_on_text(&window, (900, 600), &[beside, title], 44.0).is_empty(),
+        "a word drawn where another word ends covers nothing"
+    );
+}
+
+/// The frame's words are read where the window shows them, under the bar: a word at the top of
+/// the frame stands below the bar's own words, never over them.
+#[test]
+fn a_frames_words_stand_under_the_bars() {
+    let mut root = node("TilolangWindow", "window", [0.0, 0.0, 900.0, 600.0], None);
+    root.children.push(node(
+        "Text",
+        "page ~title",
+        [8.0, 0.0, 180.0, 22.0],
+        Some(Role::StaticText),
+    ));
+    let location =
+        ui::window_toolbar::BarLabel::new("BarLocation", "Today", Rect::new(8.0, 4.0, 100.0, 20.0));
+    assert!(
+        text_on_text(&root, (900, 600), std::slice::from_ref(&location), 44.0).is_empty(),
+        "the frame's first line stands at y 44 in the window, below the bar"
+    );
+    assert!(
+        !text_on_text(&root, (900, 600), &[location], 0.0).is_empty(),
+        "read at the window's top edge, the two words meet"
+    );
+}
+
+/// Two words on one card stand apart from the page under it: the card is a ground of its own,
+/// and what it covers is behind it — so only words sharing one ground are found.
+#[test]
+fn words_on_a_ground_of_their_own_stand_apart() {
+    let mut root = node("TilolangWindow", "window", [0.0, 0.0, 900.0, 600.0], None);
+    root.children.push(node(
+        "Text",
+        "page ~heading",
+        [8.0, 44.0, 200.0, 22.0],
+        Some(Role::StaticText),
+    ));
+    let mut card = node("Card", "page ~card", [8.0, 40.0, 300.0, 120.0], None);
+    // A card's own line, over the page's heading behind it.
+    card.children.push(node(
+        "Text",
+        "page ~card ~title",
+        [20.0, 44.0, 200.0, 22.0],
+        Some(Role::StaticText),
+    ));
+    root.children.push(card);
+    assert!(
+        text_on_text(&root, (900, 600), &[], 0.0).is_empty(),
+        "the card's ground holds its words away from the page's"
+    );
 }

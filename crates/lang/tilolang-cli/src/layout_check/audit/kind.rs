@@ -115,10 +115,14 @@ pub enum Kind {
     /// primary button: the thing a person is most likely to do looks like every other control,
     /// or is not in the row at all.
     UnmarkedBarPrimary,
+    /// Two words painted in one place: labels whose ink stands on each other, neither on a
+    /// surface of its own. Whatever draws them — a widget or the bar itself — a person reads one
+    /// string of letters, not two.
+    TextOnText,
 }
 
 impl Kind {
-    pub const ALL: [Self; 37] = [
+    pub const ALL: [Self; 38] = [
         Self::Overflow,
         Self::ClippedText,
         Self::Overlap,
@@ -156,6 +160,7 @@ impl Kind {
         Self::RepeatedRowTitle,
         Self::PageInPage,
         Self::UnmarkedBarPrimary,
+        Self::TextOnText,
     ];
 
     pub fn name(self) -> &'static str {
@@ -197,6 +202,7 @@ impl Kind {
             Self::RepeatedRowTitle => "repeated-row-title",
             Self::PageInPage => "page-in-page",
             Self::UnmarkedBarPrimary => "unmarked-bar-primary",
+            Self::TextOnText => "text-on-text",
         }
     }
 }

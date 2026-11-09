@@ -544,6 +544,7 @@ impl FrameHarness {
             return crate::window_toolbar::BarLayout {
                 spare: 0.0,
                 controls: Vec::new(),
+                labels: Vec::new(),
             };
         }
         // A row holding the bar is the app's own: its slots are read in the frame, and the window's
@@ -553,11 +554,15 @@ impl FrameHarness {
                 return crate::window_toolbar::BarLayout {
                     spare: 0.0,
                     controls: Vec::new(),
+                    labels: Vec::new(),
                 };
             };
             return crate::window_toolbar::BarLayout {
                 spare: 0.0,
                 controls: self.row_furniture_layout(slot),
+                // The app's own row stands in the frame, where its words are read as the
+                // widgets that paint them: the bar paints no words of its own.
+                labels: Vec::new(),
             };
         }
         self.painted_window_bar(width).bar_layout()

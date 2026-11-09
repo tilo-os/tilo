@@ -86,6 +86,25 @@ impl LocationLabel {
             );
         }
     }
+
+    /// The words as whoever reads the bar reads them ([`crate::window_toolbar::BarLabel`]): the
+    /// line drawn at `x`, `y`, and the edited word that follows it.
+    pub(super) fn bar_label(
+        &self,
+        widget: &'static str,
+        x: f64,
+        y: f64,
+    ) -> crate::window_toolbar::BarLabel {
+        let text = match &self.edited {
+            Some((word, _)) => format!("{} {word}", self.line),
+            None => self.line.clone(),
+        };
+        crate::window_toolbar::BarLabel::new(
+            widget,
+            text,
+            crate::kurbo::Rect::new(x, y, x + self.width, y + self.height),
+        )
+    }
 }
 
 /// The word that follows an edited document's label.

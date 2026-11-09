@@ -1694,6 +1694,32 @@ impl BarControl {
     }
 }
 
+/// A word the bar paints itself, at the place its ink stands: no widget lays it out, so whoever
+/// reads the bar reports it — a layout check reads these as text, and finds two labels drawn on
+/// top of each other that no widget tree would show.
+#[derive(Clone, Debug, PartialEq, Serialize)]
+pub struct BarLabel {
+    /// What paints it, as a layout finding names a widget: `TabTitle`, `BarLocation`,
+    /// `BarPicker`, `BarNotice`, `BarStripNotice`.
+    pub widget: &'static str,
+    /// The words, as painted.
+    pub text: String,
+    /// `[x, y, width, height]` of its ink, in logical pixels in the bar's own coordinates.
+    pub rect: [f64; 4],
+}
+
+impl BarLabel {
+    /// The words `widget` paints as `text`, standing at `rect`.
+    #[must_use]
+    pub fn new(widget: &'static str, text: impl Into<String>, rect: crate::kurbo::Rect) -> Self {
+        Self {
+            widget,
+            text: text.into(),
+            rect: [rect.x0, rect.y0, rect.width(), rect.height()],
+        }
+    }
+}
+
 /// One window's bar, as it lays itself out across the window: what a person sees in it, and what
 /// room it leaves empty.
 #[derive(Clone, Debug, PartialEq, Serialize)]
@@ -1703,6 +1729,8 @@ pub struct BarLayout {
     pub spare: f64,
     /// Its controls, in reading order.
     pub controls: Vec<BarControl>,
+    /// The words it painted itself, each at the place its ink stands.
+    pub labels: Vec<BarLabel>,
 }
 
 #[cfg(test)]

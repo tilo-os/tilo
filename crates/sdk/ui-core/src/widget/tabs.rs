@@ -525,6 +525,9 @@ pub struct TabBar {
     rename: Option<rename::TabRename>,
     /// A name committed in place, drained by [`TabBar::take_rename`].
     pending_rename: Option<(u64, String)>,
+    /// The words the bar painted in its last drawing, each at the place its ink stands
+    /// ([`TabBar::painted_labels`]).
+    painted_labels: std::cell::RefCell<Vec<crate::window_toolbar::BarLabel>>,
 }
 
 /// Geometry shared by the tab handle and the window-content preview attached to it while the
@@ -699,6 +702,7 @@ impl TabBar {
             motion: EffectiveMotion::default(),
             rename: None,
             pending_rename: None,
+            painted_labels: std::cell::RefCell::new(Vec::new()),
         }
     }
 
@@ -1320,6 +1324,7 @@ impl TabBar {
         BarLayout {
             spare,
             controls: out,
+            labels: self.painted_labels(),
         }
     }
 
@@ -1744,6 +1749,8 @@ impl TabBar {
         let Some(label) = self.pill_label(i) else {
             return;
         };
+        let style = text_style.with_weight(title_weight);
+        let (label_w, _) = tr.measure_style(label, None, &style);
         scene.push_layer(
             vello::peniko::Fill::NonZero,
             vello::peniko::BlendMode::default(),
@@ -1757,9 +1764,20 @@ impl TabBar {
             text_color,
             compose(transform, Affine::translate((title_x, title_y))),
             None,
-            &text_style.clone().with_weight(title_weight),
+            &style,
         );
         scene.pop_layer();
+        self.record_label(
+            "TabTitle",
+            label,
+            Rect::new(
+                title_x,
+                title_y,
+                title_x + f64::from(label_w),
+                title_y + f64::from(th),
+            )
+            .intersect(clip_r),
+        );
     }
 
     /// A pinned pill's marker: an app icon, else its accent dot, else an empty bubble. Split out of

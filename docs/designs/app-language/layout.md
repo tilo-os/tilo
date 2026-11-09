@@ -89,6 +89,11 @@ selected once, a list offers one add entry, a name a screen reader announces is 
 code identifier, a destructive control says "Delete", a surface holds no surface of its own kind,
 and a narrow window keeps a 16 px gutter.
 
+It reads the words a window shows where their ink stands, the bar's own painted labels among
+them — the words of its tabs, its location, its pickers and its notices: two words drawn in one
+place are a `text-on-text` finding unless a surface of one's own stands between them, since
+whatever a person reads there is one run of letters, not two.
+
 It also reads the language a screen speaks: a window has one, so every word it says must resolve in
 that language, and a word only another language's catalogue holds is a `mixed-language` finding
 (i18n.md §4). `--locale de-DE` stages the person's language for the check, whose default is `en-US`

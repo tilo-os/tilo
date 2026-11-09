@@ -1844,8 +1844,16 @@ impl AppCheck<'_> {
         ));
         problems.extend(mixed_language());
         problems.extend(audit::bar(&bar));
-        // A window shows one bar: a header row under it is a second one.
         let (bar_height, _) = staged.harness().frame_extent(viewport);
+        // The words the bar paints itself stand over the frame's own, which is laid out under
+        // the bar: both are read where the window shows them.
+        problems.extend(audit::text_on_text(
+            &inspection.root,
+            viewport,
+            &bar.labels,
+            bar_height,
+        ));
+        // A window shows one bar: a header row under it is a second one.
         problems.extend(audit::stacked_header_rows(
             bar_height,
             staged.harness().window_header_row_height(),

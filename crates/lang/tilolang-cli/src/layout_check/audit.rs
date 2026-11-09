@@ -6,6 +6,7 @@
 mod bar;
 mod kind;
 mod text;
+mod words;
 
 pub use bar::{bar, bar_primary, stacked_header_rows};
 pub use kind::Kind;
@@ -13,6 +14,7 @@ pub use text::clipped_text;
 use text::header_row_problem;
 #[cfg(test)]
 use text::{reach_past, title_cut_with_room};
+pub use words::text_on_text;
 
 #[cfg(test)]
 mod tests;

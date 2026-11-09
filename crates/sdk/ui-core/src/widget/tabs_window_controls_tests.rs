@@ -346,3 +346,92 @@ fn a_windows_only_tab_says_nothing_beside_the_bars_location() {
     plain.visible_titles = vec![Some("DuckDuckGo".to_owned())];
     assert_eq!(plain.pill_label(0), Some("DuckDuckGo"));
 }
+
+/// The words the bar paints itself are reported where their ink stands: no widget lays them
+/// out, so nothing else would tell a reader where the window's name is drawn.
+#[test]
+fn the_bar_reports_the_words_it_paints_where_they_stand() {
+    let _settled = crate::motion::testing::settled();
+    let theme = crate::theme::Theme::light().with_reduce_motion(true);
+    let mut b = solo_bar_with_slots();
+    lay_out_at_width_with(&mut b, 900.0, &theme);
+    let mut scene = Scene::new();
+    b.draw(
+        &mut scene,
+        Affine::IDENTITY,
+        &mut TextRenderer::new(),
+        &theme,
+        &PresenceCtx::default(),
+    );
+    let labels = b.bar_layout().labels;
+    let location = labels
+        .iter()
+        .find(|label| label.widget == "BarLocation")
+        .unwrap_or_else(|| panic!("the bar reports where it is: {labels:?}"));
+    assert_eq!(location.text, "duckduckgo.com");
+    let ink = Rect::new(
+        location.rect[0],
+        location.rect[1],
+        location.rect[0] + location.rect[2],
+        location.rect[1] + location.rect[3],
+    );
+    let slot = b.location_rect();
+    assert!(
+        ink.width() > 0.0
+            && ink.height() > 0.0
+            && ink.x0 >= slot.x0 - 0.5
+            && ink.x1 <= slot.x1 + 0.5,
+        "its words stand in the location's slot {slot:?}: {ink:?}"
+    );
+    assert!(
+        labels.iter().all(|label| label.widget != "TabTitle"),
+        "a window's only tab, its slots in the title's row, shows its icon alone: {labels:?}"
+    );
+}
+
+/// A window's only tab draws its icon alone where the bar's location names the window, so the
+/// bar reports one word there. The words the pill drew before [`TabBar::pill_label`] took them
+/// from the decision that measured them are reported too, at the title's line beside the icon —
+/// past the pill's own box, on the bar's ground where the location's words stand: what a layout
+/// check reads as two words with nothing of their own between them.
+#[test]
+fn the_words_the_old_pill_painted_beside_its_mark_are_reported_where_they_stood() {
+    let _settled = crate::motion::testing::settled();
+    let theme = crate::theme::Theme::light().with_reduce_motion(true);
+    let mut b = solo_bar_with_slots();
+    lay_out_at_width_with(&mut b, 900.0, &theme);
+    let mut text = TextRenderer::new();
+    b.draw(
+        &mut Scene::new(),
+        Affine::IDENTITY,
+        &mut text,
+        &theme,
+        &PresenceCtx::default(),
+    );
+    let pill = b.tab_rects[0];
+    let style = tab_title_style(&theme).with_weight(TextWeight::Semibold);
+    let (width, height) = text.measure_style("DuckDuckGo", None, &style);
+    let x = title_x0(pill, ICON_W + ICON_GAP);
+    let y = pill.center().y - f64::from(height) / 2.0;
+    b.record_label(
+        "TabTitle",
+        "DuckDuckGo",
+        Rect::new(x, y, x + f64::from(width), y + f64::from(height)),
+    );
+    let labels = b.painted_labels();
+    let title = labels
+        .iter()
+        .find(|label| label.widget == "TabTitle")
+        .unwrap_or_else(|| panic!("the pill's words are reported: {labels:?}"));
+    let box_ = Rect::new(
+        title.rect[0],
+        title.rect[1],
+        title.rect[0] + title.rect[2],
+        title.rect[1] + title.rect[3],
+    );
+    assert_eq!(title.text, "DuckDuckGo");
+    assert!(
+        box_.area() > 0.0 && box_.x0 >= pill.x1,
+        "the words stand at the title's line past the pill's own {pill:?}: {box_:?}"
+    );
+}

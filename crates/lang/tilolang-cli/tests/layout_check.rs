@@ -43,6 +43,9 @@ fn every_kind_of_broken_layout_is_caught_at_the_view_that_breaks_it() {
     for (kind, view) in [
         (Kind::Overflow, "overflowing"),
         (Kind::Overlap, "overlapping"),
+        // Two words drawn in one place are unreadable however their boxes stand: the view that
+        // lays one over the other breaks in both ways.
+        (Kind::TextOnText, "overlapping"),
         (Kind::ScrollsSideways, "sideways"),
     ] {
         assert!(
@@ -56,7 +59,9 @@ fn every_kind_of_broken_layout_is_caught_at_the_view_that_breaks_it() {
     for finding in &report.findings {
         let expected = match finding.kind {
             Kind::Overflow => "overflowing",
-            Kind::Overlap => "overlapping",
+            // Two words drawn in one place are unreadable however their boxes stand: the view
+            // that lays one over the other breaks in both ways.
+            Kind::Overlap | Kind::TextOnText => "overlapping",
             // A word wider than its column breaks (`clipped` is laid out right), and the chip
             // takes a finger's room on touch (`small_target` is laid out right). A view in
             // this fixture has no scroll view given no room: `a_board_lane_draws_every_card_it_

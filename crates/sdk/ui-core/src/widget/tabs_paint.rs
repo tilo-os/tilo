@@ -44,6 +44,38 @@ impl PersonSeen {
 }
 
 impl TabBar {
+    /// Remember that `widget` painted `text` as its ink stands at `rect`
+    /// ([`TabBar::painted_labels`]).
+    pub(super) fn record_label(&self, widget: &'static str, text: &str, rect: Rect) {
+        if text.is_empty() || rect.area() <= 0.0 {
+            return;
+        }
+        self.painted_labels
+            .borrow_mut()
+            .push(crate::window_toolbar::BarLabel::new(widget, text, rect));
+    }
+
+    /// The words the bar painted in its last drawing, each at the place its ink stands: the
+    /// window's name in its tab, its location, a notice, the words its row's pickers show. No
+    /// widget lays them out, so nothing else reports them, and two of them drawn in one place
+    /// are two words a person cannot read.
+    #[must_use]
+    pub fn painted_labels(&self) -> Vec<crate::window_toolbar::BarLabel> {
+        let mut labels = self.painted_labels.borrow().clone();
+        labels.extend_from_slice(self.toolbar_row.painted_labels());
+        // The same words at the same place are one label: a bar crossing between two rows of
+        // slots paints the pair that leaves and the pair that comes in.
+        let mut seen = std::collections::HashSet::new();
+        labels.retain(|label| {
+            seen.insert((
+                label.widget,
+                label.text.clone(),
+                label.rect.map(f64::to_bits),
+            ))
+        });
+        labels
+    }
+
     /// [`Widget::draw`] of everything the bar shows, at `transform`.
     pub(super) fn draw_fresh(
         &mut self,
@@ -54,6 +86,8 @@ impl TabBar {
         presence: &PresenceCtx,
     ) {
         self.drag_lift_duration = theme.tokens.motion.durations.fast();
+        // The words of the drawing about to be made replace the ones it replaces.
+        self.painted_labels.borrow_mut().clear();
         self.busy_drawn =
             (!self.busy_since.is_empty()).then(|| self.busy_pose_at(crate::motion::frame_now()));
         // Guards one stale frame after a detach/insert mutates `tabs` outside the

@@ -205,6 +205,9 @@ pub(crate) struct ToolbarRow {
     /// Where a press on the location went down, while it waits for its
     /// release on a carriable bar.
     location_press: Option<Point>,
+    /// The words the row painted in its last paint, each at the place its
+    /// ink stands ([`Self::painted_labels`]).
+    labels: Vec<crate::window_toolbar::BarLabel>,
 }
 
 impl Default for ToolbarRow {
@@ -247,7 +250,15 @@ impl ToolbarRow {
             reactions: reactions::RowReactions::default(),
             carriable: false,
             location_press: None,
+            labels: Vec::new(),
         }
+    }
+
+    /// The words the row painted in its last paint, each at the place its
+    /// ink stands: its location's label, its pickers', a notice's. No widget
+    /// lays them out, so nothing else reports them.
+    pub(crate) fn painted_labels(&self) -> &[crate::window_toolbar::BarLabel] {
+        &self.labels
     }
 
     /// Whether the window can be carried by its bar (it stands on a canvas).
