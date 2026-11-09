@@ -7,7 +7,6 @@
 
 use std::sync::Arc;
 
-use tilo_desktop_search::model::{Hit, Source};
 use tilo_desktop_search::providers::AppEntry;
 use tilo_desktop_search::providers::host_apps::HostAppEntry;
 use tilo_desktop_search::{Held, SearchPreferences};
@@ -59,30 +58,12 @@ impl Reading for Shipped {
 
     /// The machine's own apps: a page runs none, so its search offers none beyond the bundle's own
     /// list ([`Apps::applications`]).
-    fn host_apps(&self, _preferences: &SearchPreferences) -> Held {
-        Held::new(Nothing)
+    fn host_apps(&self, _preferences: &SearchPreferences) -> Option<Held> {
+        None
     }
 
     /// The store a person gets apps from: a page has none of its own.
-    fn catalogue(&self, _workspace: &str) -> Held {
-        Held::new(Nothing)
-    }
-}
-
-/// What this page has none of as a source: the machine's own apps, and a store to get apps from. A
-/// session's search asks either way, and a source that answers nothing says so.
-struct Nothing;
-
-impl Source for Nothing {
-    fn id(&self) -> &'static str {
-        "page-nothing"
-    }
-
-    fn name(&self) -> String {
-        String::new()
-    }
-
-    fn query(&self, _needle: &str) -> Vec<Hit> {
-        Vec::new()
+    fn catalogue(&self, _workspace: &str) -> Option<Held> {
+        None
     }
 }

@@ -31,10 +31,12 @@ pub trait Apps: Send + Sync {
 pub trait Reading: Send + Sync {
     /// What tells this reading from another one: when it changes, the host read its lists again.
     fn generation(&self) -> usize;
-    /// The machine's own apps as a source, less the sources the person switched off.
-    fn host_apps(&self, preferences: &SearchPreferences) -> Held;
-    /// The apps a person can get, in `workspace`.
-    fn catalogue(&self, workspace: &str) -> Held;
+    /// The machine's own apps as a source, less the sources the person switched off; `None` where
+    /// this host has none of its own.
+    fn host_apps(&self, preferences: &SearchPreferences) -> Option<Held>;
+    /// The apps a person can get, in `workspace`; `None` where this host has no store to get one
+    /// from.
+    fn catalogue(&self, workspace: &str) -> Option<Held>;
 }
 
 /// The settings this host offers search, as the pages the person's own settings are on.

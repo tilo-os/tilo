@@ -467,12 +467,18 @@ impl crate::platform::apps::Reading for Listed {
     fn host_apps(
         &self,
         preferences: &tilo_desktop_search::SearchPreferences,
-    ) -> tilo_desktop_search::Held {
-        tilo_desktop_search::Held::new(HostApps::new(self.0.host_apps.clone(), preferences))
+    ) -> Option<tilo_desktop_search::Held> {
+        Some(tilo_desktop_search::Held::new(HostApps::new(
+            self.0.host_apps.clone(),
+            preferences,
+        )))
     }
 
-    fn catalogue(&self, workspace: &str) -> tilo_desktop_search::Held {
-        tilo_desktop_search::Held::new(StoreCatalogue::new(self.0.catalogue.clone(), workspace))
+    fn catalogue(&self, workspace: &str) -> Option<tilo_desktop_search::Held> {
+        Some(tilo_desktop_search::Held::new(StoreCatalogue::new(
+            self.0.catalogue.clone(),
+            workspace,
+        )))
     }
 }
 

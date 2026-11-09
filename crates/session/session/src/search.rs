@@ -234,7 +234,9 @@ impl SessionSearch {
         let reading = lists.as_ref().map(|lists| lists.reading());
         let indexed = indexes.as_ref().map(|indexes| indexes.of(person));
         let kept = Kept {
-            host_apps: reading.as_ref().map(|read| read.host_apps(&preferences)),
+            host_apps: reading
+                .as_ref()
+                .and_then(|read| read.host_apps(&preferences)),
             reading,
             content: indexed.as_ref().map(|index| index.content()),
             files: indexed.as_ref().and_then(|index| index.files()),
@@ -344,7 +346,7 @@ impl SessionSearch {
         // The machine's apps leave out what is switched off as they are built, so the search after
         // this one reads that list again.
         let reading = self.apps_lists.as_ref().map(|lists| lists.reading());
-        let host_apps = reading.as_ref().map(|read| read.host_apps(&next));
+        let host_apps = reading.as_ref().and_then(|read| read.host_apps(&next));
         {
             let mut kept = self.kept.borrow_mut();
             kept.host_apps = host_apps;
@@ -553,7 +555,7 @@ impl SessionSearch {
         if !same {
             kept.host_apps = latest
                 .as_ref()
-                .map(|read| read.host_apps(&self.preferences.borrow()));
+                .and_then(|read| read.host_apps(&self.preferences.borrow()));
             kept.workspace = None;
             kept.reading.clone_from(&latest);
         }
@@ -574,7 +576,7 @@ impl SessionSearch {
             .settings
             .as_ref()
             .map(|settings| settings.source(workspace, &self.own.borrow()));
-        let catalogue = reading.as_ref().map(|read| read.catalogue(workspace));
+        let catalogue = reading.as_ref().and_then(|read| read.catalogue(workspace));
         if let (Some(settings), Some(catalogue)) = (&settings, &catalogue) {
             kept.workspace = Some((workspace.to_owned(), settings.clone(), catalogue.clone()));
         }
