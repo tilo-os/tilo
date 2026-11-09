@@ -285,6 +285,14 @@ fn every_mutable_entry_point_invalidates_local_state() {
     const JUDGE_THEMSELVES: &[(&str, &str)] = &[
         ("poll_frame", "the frame itself"),
         (
+            "follow_view",
+            "moves the view through `relayout`, and opens one through `invoke_action`, each of which invalidates; a frame where it finds nothing new changes nothing",
+        ),
+        (
+            "set_interaction_environment",
+            "takes the environment through `take_interaction_environment`, which invalidates, then lays the window out",
+        ),
+        (
             "embedded_targets",
             "reads the embedded app's widget rects; borrows it mutably only to reach its tree",
         ),
