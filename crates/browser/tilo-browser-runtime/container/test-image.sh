@@ -109,9 +109,12 @@ start() {
   fail "the server did not start"
 }
 # get PATH [curl args…]: the body; head_of …: the headers, lowercased names. No -f: a body
-# read here is compared byte for byte, and curl keeps none of an answer it fails.
-get() { curl -sS --max-time 20 "${@:2}" "http://127.0.0.1:8080$1"; }
-head_of() { curl -sS --max-time 20 -o /dev/null -D - "${@:2}" "http://127.0.0.1:8080$1" | tr -d '\r' | lower_names; }
+# read here is compared byte for byte, and curl keeps none of an answer it fails. Both ask as a
+# browser does: curl's own User-Agent at / is answered with the installer, which a check passes
+# `-A curl/…` for (a later -A wins).
+browser='Mozilla/5.0 (X11; Linux x86_64) test-image'
+get() { curl -sS --max-time 20 -A "$browser" "${@:2}" "http://127.0.0.1:8080$1"; }
+head_of() { curl -sS --max-time 20 -A "$browser" -o /dev/null -D - "${@:2}" "http://127.0.0.1:8080$1" | tr -d '\r' | lower_names; }
 # Portable (BSD sed has no \L): lowercase each header's name, not the status line.
 lower_names() { awk '{ i = index($0, ":"); if (i) $0 = tolower(substr($0, 1, i)) substr($0, i + 1); print }'; }
 
