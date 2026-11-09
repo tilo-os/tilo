@@ -1794,6 +1794,7 @@ impl Client {
 /// when this host holds one.
 /// A session on a host without one takes part in no workspace as anybody: it binds a fresh key
 /// and stays anonymous until the person sets a device up.
+#[cfg(target_os = "linux")]
 #[must_use]
 pub fn device_identity() -> Option<HostIdentity> {
     HostIdentity::open(crate::platform::identity::custody()?)

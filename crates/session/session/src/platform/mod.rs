@@ -24,6 +24,7 @@ pub(crate) mod plane;
 pub mod apps;
 
 /// The identity this device signs with, as its host keeps it.
+#[cfg(target_os = "linux")]
 pub mod identity;
 
 /// What apps hold and what the person's files say, as this host indexes them.
