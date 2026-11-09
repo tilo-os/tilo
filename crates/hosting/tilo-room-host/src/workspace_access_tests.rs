@@ -189,6 +189,17 @@ fn decide_matrix() {
             expected: ["NNNNNNNNdNN", "ENNAAEANdNN", "NNNNNNNNdNN"],
         },
         Case {
+            name: "an agent's grant of the owner, even listed",
+            peer: {
+                let mut grant = peer(owner, [13; 32], false, Some(NOW + 1));
+                grant.cert.capabilities =
+                    DeviceCapabilities::agent_grant(tilo_user_identity::AgentScope::AllWorkspaces);
+                grant
+            },
+            setup: listed([13; 32]),
+            expected: ["NNNNNNNNNNN", "NNNNNNNNNNN", "NNNNNNNNNNN"],
+        },
+        Case {
             name: "owner's device a pending replacement removed",
             peer: peer(owner, [12; 32], false, None),
             setup: Box::new(|runtime, _| {

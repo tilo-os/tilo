@@ -22,7 +22,7 @@ use tilo_peer_state::join::MemberRole;
 use tilo_relay_session::workspaces::{
     ATTACH_HOST, ActionInvitation, CREATE_ROOM, CreatedWorkspace, DETACH_HOST, ENTER_ROOM,
     EnteredWorkspace, HOST_ACTIONS_PROVIDER, HOST_ROOM, HOST_ROOMS_RESOURCE, HostedWorkspace,
-    LIST_ROOMS, UNHOST_ROOM, WorkspaceListing,
+    LIST_REVOCATIONS, LIST_ROOMS, UNHOST_ROOM, WorkspaceListing,
 };
 use tilo_user_identity::DeviceCert;
 
@@ -49,7 +49,7 @@ const OWN_INVITATION_SECONDS: u64 = 600;
 
 /// The host's operations in catalogue order, each with the
 /// [`HostOperation`] it is.
-const HOST_VERBS: [(Verb, HostOperation); 7] = [
+const HOST_VERBS: [(Verb, HostOperation); 8] = [
     (
         Verb {
             id: CREATE_ROOM,
@@ -69,6 +69,16 @@ const HOST_VERBS: [(Verb, HostOperation); 7] = [
             params: Vec::new,
         },
         HostOperation::ListWorkspaces,
+    ),
+    (
+        Verb {
+            id: LIST_REVOCATIONS,
+            label: "List revoked devices",
+            gate: LIST_REVOCATIONS,
+            kind: ActionKind::Read,
+            params: Vec::new,
+        },
+        HostOperation::ListRevocations,
     ),
     (
         Verb {
@@ -323,34 +333,32 @@ impl Workspaces {
         let request_id = request_id(&device.user_public_key, request.invocation);
         match operation {
             HostOperation::CreateWorkspace => {
-                let name = args.required_text("name")?;
-                let workspace = args.text("room")?;
-                let first = first_invitation(&args, request_id, now)?;
                 self.authorize(device, None, WorkspaceOp::Host(operation), now)
                     .map_err(|error| refused(&error))?;
-                let summary = self
-                    .create_workspace(name, workspace)
-                    .await
-                    .map_err(|error| refused(&error))?;
-                let invitation = match first {
-                    Some(terms) => Some(ActionInvitation::of(
-                        &self
-                            .issue(&summary.workspace, device, terms)
-                            .await
-                            .map_err(|error| refused(&error))?,
-                    )),
-                    None => None,
-                };
-                answer(&CreatedWorkspace {
-                    workspace: listing(&summary),
-                    invitation,
-                })
+                self.create_invoke(device, &args, request_id, now).await
             }
             HostOperation::ListWorkspaces => {
                 self.authorize(device, None, WorkspaceOp::Host(operation), now)
                     .map_err(|error| refused(&error))?;
                 let workspaces = self.list().await;
-                answer(&workspaces.iter().map(listing).collect::<Vec<_>>())
+                // An agent's grant is shown only the workspaces it reaches.
+                answer(
+                    &workspaces
+                        .iter()
+                        .filter(|summary| {
+                            device
+                                .capabilities
+                                .agent
+                                .is_none_or(|scope| scope.reaches(&summary.workspace))
+                        })
+                        .map(listing)
+                        .collect::<Vec<_>>(),
+                )
+            }
+            HostOperation::ListRevocations => {
+                self.authorize(device, None, WorkspaceOp::Host(operation), now)
+                    .map_err(|error| refused(&error))?;
+                answer(&self.revocations().iter().cloned().collect::<Vec<_>>())
             }
             HostOperation::EnterWorkspace => {
                 let workspace = args.required_text("room")?;
@@ -386,6 +394,53 @@ impl Workspaces {
             }
             _ => Err(ActionHostError::UnknownAction),
         }
+    }
+
+    /// Make the workspace `args` names, as `device`, already permitted to,
+    /// with its first invitation when asked.
+    async fn create_invoke(
+        &self,
+        device: &DeviceCert,
+        args: &Args,
+        request_id: [u8; 32],
+        now: u64,
+    ) -> Result<Value, ActionHostError> {
+        let name = args.required_text("name")?;
+        let workspace = args.text("room")?;
+        let first = first_invitation(args, request_id, now)?;
+        // An agent's grant governs nothing, so it invites nobody: the
+        // first invitation of a workspace it makes is for its own
+        // person (their runtime joins with it), and the host issues
+        // it, as the workspace's governor.
+        let inviter = if device.capabilities.agent.is_some() {
+            if first.as_ref().is_some_and(|terms| {
+                terms.recipient_user_public_key != Some(device.user_public_key)
+            }) {
+                return Err(refused(
+                    &"an agent's grant invites only its own person to a workspace it makes",
+                ));
+            }
+            &self.inner.host.cert
+        } else {
+            device
+        };
+        let summary = self
+            .create_workspace(name, workspace)
+            .await
+            .map_err(|error| refused(&error))?;
+        let invitation = match first {
+            Some(terms) => Some(ActionInvitation::of(
+                &self
+                    .issue(&summary.workspace, inviter, terms)
+                    .await
+                    .map_err(|error| refused(&error))?,
+            )),
+            None => None,
+        };
+        answer(&CreatedWorkspace {
+            workspace: listing(&summary),
+            invitation,
+        })
     }
 
     /// The host operations that have one host of the person serve a workspace
