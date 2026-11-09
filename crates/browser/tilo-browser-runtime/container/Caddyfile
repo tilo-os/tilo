@@ -34,6 +34,30 @@
 		respond "ok" 200
 	}
 
+	# The tilo command's installer (dist/install/tilo.sh), for
+	# `curl -fsSL https://<site> | sh`: at /install.sh, and at / for curl and
+	# Wget, whose requests a browser never sends. Revalidated, so a new
+	# image's installer takes effect at once.
+	@installer path /install.sh
+	@fetcher {
+		path /
+		header_regexp User-Agent ^(curl|Wget)/
+	}
+	handle @fetcher {
+		rewrite * /install.sh
+		root * /srv/tilo-install
+		header Content-Type "text/x-shellscript; charset=utf-8"
+		header Cache-Control "no-cache"
+		header Vary User-Agent
+		file_server
+	}
+	handle @installer {
+		root * /srv/tilo-install
+		header Content-Type "text/x-shellscript; charset=utf-8"
+		header Cache-Control "no-cache"
+		file_server
+	}
+
 	# Written at start from the environment (entrypoint.sh).
 	handle /entry.json {
 		root * /tmp/tilo-web

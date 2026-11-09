@@ -22,6 +22,7 @@ LABEL org.opencontainers.image.title="Tilo web entry" \
       org.opencontainers.image.revision="${SOURCE_REVISION}"
 COPY --from=compress /site/ /srv/tilo-web/
 COPY Caddyfile /etc/caddy/Caddyfile
+COPY --chmod=0644 install.sh /srv/tilo-install/install.sh
 COPY --chmod=0755 entrypoint.sh /usr/local/bin/tilo-web-entry
 # The base image's binary carries cap_net_bind_service as a file capability,
 # which execve refuses outright once every capability is dropped under
