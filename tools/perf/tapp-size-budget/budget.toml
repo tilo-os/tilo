@@ -113,6 +113,10 @@ aarch64 = 2490368
 x86_64 = 1638400
 aarch64 = 1638400
 
+[apps."so.tilo.console"]
+x86_64 = 6000000
+aarch64 = 6000000
+
 [apps."so.tilo.containers"]
 x86_64 = 1245184
 aarch64 = 1245184
