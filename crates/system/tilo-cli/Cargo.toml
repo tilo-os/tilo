@@ -40,6 +40,8 @@ tilo-browser-peer = { path = "../../browser/tilo-browser-peer" }
 tilo-relay-protocol = { path = "../../hosting/tilo-relay-protocol" }
 tilo-user-identity = { path = "../../collab/tilo-user-identity" }
 tilo-net = { path = "../../platform/tilo-net", features = ["http"] }
+# Reads the PEM certificates a test names for HTTPS to trust (`tilo login`).
+rustls.workspace = true
 ed25519-dalek.workspace = true
 postcard.workspace = true
 hex.workspace = true

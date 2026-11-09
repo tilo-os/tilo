@@ -168,19 +168,23 @@ enum Cmd {
         cmd: DeviceCmd,
     },
     /// Log this computer in as one of your devices, with the code your Tilo
-    /// tab copied.
-    #[command(
-        after_help = "Example:\n  tilo login 'https://tilo.sh/#/@eu1.tilo.sh/w/<workspace>?pair=<code>' --agent \"Claude Code\"\n\n\
-                      In Tilo in your browser, choose \"Set up with your agent\" for the code. It works once, for 10 minutes, \
-                      and only for the tab that copied it. Your identity stays in your browser: this computer gets a device \
-                      key of its own, which that tab certifies."
-    )]
+    /// tab shows.
+    #[command(after_help = "Example:\n  tilo login K7Q-MX2P\n\n\
+                      In Tilo in your browser, choose \"Set up with your agent\": it copies a prompt with the code \
+                      for your agent. A code works once, for 10 minutes, while that tab is open. Your identity stays in \
+                      your browser: this computer gets a device key of its own, which that tab certifies. On a \
+                      computer already set up, a sign-in code (\"Sign in with your agent\") signs that tab in as you.")]
     Login {
-        /// The code your Tilo tab copied.
+        /// The code your Tilo tab shows, like K7Q-MX2P.
         code: String,
-        /// The agent that runs here, as your workspace shows it.
-        #[arg(long, default_value = "Tilo CLI")]
-        agent: String,
+        /// The agent that runs here, as your workspace shows it; found by
+        /// itself when not given (Claude Code, Codex, Gemini CLI, ...).
+        #[arg(long)]
+        agent: Option<String>,
+        /// The site whose tab made the code, when not tilo.sh (also
+        /// `TILO_SITE`).
+        #[arg(long)]
+        site: Option<String>,
     },
     /// Tilo's MCP server over stdio, for the agent on this computer
     /// (`tilo agent connect` adds it).
@@ -717,7 +721,7 @@ fn run(cli: Cli) -> Result<ExitCode> {
         }
         Cmd::Device { cmd } => run_system_command(cmd),
         Cmd::Agent { cmd } => agent::run(cmd),
-        Cmd::Login { code, agent } => login::login(&code, &agent),
+        Cmd::Login { code, agent, site } => login::login(&code, agent.as_deref(), site.as_deref()),
         Cmd::Mcp => login::mcp(),
         Cmd::Settings { cmd } => settings::run(cmd).map(|()| ExitCode::SUCCESS),
         Cmd::Package => bail!("package needs a verb; `tilo package --help` lists them"),

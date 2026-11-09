@@ -17963,6 +17963,7 @@ dependencies = [
  "postcard",
  "rand 0.10.3",
  "rustix 1.1.4",
+ "rustls",
  "serde",
  "serde_json",
  "settings-store",

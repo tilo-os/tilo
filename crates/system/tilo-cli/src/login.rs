@@ -1,31 +1,42 @@
 //! `tilo login <code>` and `tilo mcp`: this computer as one of the person's
 //! devices, for the agent that runs here.
 //!
-//! The code is what the person's browser tab copied ("Set up with your
-//! agent"): a pairing link to that tab. Logging in makes a device key here,
-//! asks the workspace's host to have the person's root (which only the tab
-//! holds) certify it, and keeps the key and its certificate in this
-//! account's state directory. No root is ever here. The device then enters
-//! the workspace the code names, as the person, and the tab shows the agent
-//! present there with what it does.
+//! The code is the short one the person's browser tab shows (`K7Q-MX2P`),
+//! in the prompt it copies for their agent. `tilo login` resolves it at the
+//! site's home host (`tilo_relay_protocol::login_code`), and tells that tab
+//! each step as it does it:
+//!
+//! - **Setting up**: the code names the tab's pairing link. Logging in makes
+//!   a device key here, asks the workspace's host to have the person's root
+//!   (which only the tab holds) certify it, and keeps the key and its
+//!   certificate in this account's state directory. No root is ever here.
+//!   It adds Tilo's tools to the agent running it, and enters the workspace
+//!   the link names, as the person: the tab shows the agent present there.
+//! - **Signing in**: a tab with no identity yet asks a computer that is
+//!   already a device of the person to vouch for it. This device claims the
+//!   code for the person, and the person's stand-in on the host approves
+//!   that tab.
 //!
 //! `tilo mcp` is the agent's MCP server over stdio, under the name `tilo`:
 //! it acts as that device, keeps the agent present in the workspace while it
 //! runs, and shows every tool call there as one of the agent's actions.
 
 use std::io::{BufRead as _, Write as _};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::ExitCode;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 
 use anyhow::{Context as _, Result, anyhow, bail};
-use ed25519_dalek::SigningKey;
+use ed25519_dalek::{Signer as _, SigningKey};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use tilo_browser_peer::login::{self as peer_login, Door, SignIn, action, say_here};
 use tilo_browser_peer::pairing_link::PairingLink;
 use tilo_browser_peer::{HttpClient, HttpFuture, PeerHandle};
-use tilo_relay_protocol::web::HereAction;
+use tilo_relay_protocol::login_code::{self, Claim, Claimed, Report, Resolve, Resolved, Step};
+use tilo_relay_protocol::web::{API_PREFIX, HereAction};
+
+use crate::agent::{self, Agent, Registered, Tool};
 
 /// The longest body read from a host or a site.
 const MAX_BODY: usize = 4 * 1024 * 1024;
@@ -33,6 +44,58 @@ const MAX_BODY: usize = 4 * 1024 * 1024;
 const SHOWN_ACTIONS: usize = 8;
 /// The MCP protocol version this server speaks.
 const PROTOCOL: &str = "2025-06-18";
+/// The site `tilo login` resolves codes at, unless `--site` or
+/// [`SITE_ENV`] names another.
+pub const DEFAULT_SITE: &str = "https://tilo.sh";
+/// Names the site to resolve codes at, like `--site`.
+pub const SITE_ENV: &str = "TILO_SITE";
+/// For tests only: PEM files (separated as `PATH` is) whose certificates
+/// HTTPS also trusts, each as a CA and as that exact server certificate.
+/// Verification stays on; production trust is the system's alone.
+pub const TEST_CA_ENV: &str = "TILO_TEST_CA_FILE";
+/// What Tilo's tools let the agent do, as it tells the person.
+const WHAT_TILO_DOES: &str = "you are in their Tilo workspace as them, where they see you by \
+     name, and tilo_show puts what you are working on beside your name there";
+
+/// The HTTPS client every request here goes through.
+static CLIENT: OnceLock<tilo_net::Client> = OnceLock::new();
+
+fn http() -> tilo_net::Client {
+    CLIENT.get_or_init(tilo_net::Client::new).clone()
+}
+
+/// Trust what [`TEST_CA_ENV`] names besides the system's roots, saying so
+/// on stderr, when it is set.
+fn trust_test_certificates() -> Result<()> {
+    use rustls::pki_types::CertificateDer;
+    use rustls::pki_types::pem::PemObject as _;
+    let Some(files) = std::env::var_os(TEST_CA_ENV).filter(|files| !files.is_empty()) else {
+        return Ok(());
+    };
+    let mut trusted = Vec::new();
+    for path in std::env::split_paths(&files) {
+        let pem = std::fs::read(&path).with_context(|| format!("reading {}", path.display()))?;
+        let found = CertificateDer::pem_slice_iter(&pem)
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|error| anyhow!("{} is not PEM certificates: {error}", path.display()))?;
+        if found.is_empty() {
+            bail!("{} holds no PEM certificate", path.display());
+        }
+        eprintln!(
+            "WARNING: {TEST_CA_ENV} is set, so HTTPS here also trusts {} as a test's own. \
+             Never set it outside a test.",
+            path.display()
+        );
+        trusted.extend(found);
+    }
+    let client = tilo_net::Client::builder()
+        .tls(tilo_net::client_config_also_trusting(trusted)?)
+        .build()?;
+    CLIENT
+        .set(client)
+        .map_err(|_| anyhow!("HTTPS was set up before {TEST_CA_ENV} was read"))?;
+    Ok(())
+}
 
 /// Where this account keeps the device: `$XDG_STATE_HOME/tilo/device`.
 fn device_dir() -> Result<PathBuf> {
@@ -54,6 +117,9 @@ pub struct Device {
     pub host_origin: String,
     /// The workspace the device entered.
     pub workspace: String,
+    /// Its name, when its host lists it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workspace_name: Option<String>,
     /// The person, hex user root.
     pub user: String,
     /// The agent that runs here.
@@ -72,6 +138,7 @@ impl Device {
             site: signed.link.site.clone(),
             host_origin: signed.link.host_origin.clone(),
             workspace: signed.link.workspace_id(),
+            workspace_name: None,
             user: hex::encode(signed.link.user_public_key),
             agent: signed.agent.clone(),
             label: signed.label.clone(),
@@ -151,7 +218,7 @@ struct Web {
 impl Web {
     fn new(origin: &str) -> Self {
         Self {
-            client: tilo_net::Client::new(),
+            client: http(),
             origin: origin.trim_end_matches('/').to_owned(),
         }
     }
@@ -275,61 +342,361 @@ async fn connect(key: &SigningKey, device: &Device) -> Result<(PeerHandle, u64)>
     Ok((peer, workspace_id))
 }
 
-/// `tilo login <code> [--agent NAME]`.
-pub fn login(code: &str, agent: &str) -> Result<ExitCode> {
-    let link = PairingLink::parse(code.trim()).map_err(|error| anyhow!(error))?;
-    let agent = agent.trim();
-    if agent.is_empty() {
-        bail!("--agent needs your name, like --agent \"Claude Code\"");
+/// The site `--site` or [`SITE_ENV`] names, else [`DEFAULT_SITE`], as an
+/// HTTPS origin.
+fn site_origin(flag: Option<&str>) -> Result<String> {
+    let named = flag
+        .map(str::to_owned)
+        .or_else(|| std::env::var(SITE_ENV).ok())
+        .filter(|site| !site.trim().is_empty())
+        .unwrap_or_else(|| DEFAULT_SITE.to_owned());
+    let url = tilo_net::Url::parse(named.trim())
+        .with_context(|| format!("{named} is not a site's address"))?;
+    if url.scheme() != "https" {
+        bail!("{named} is not an https:// site");
     }
-    let label = label(agent, &hostname());
+    Ok(url.origin().ascii_serialization())
+}
+
+/// The site's home host, as its `entry.json` names it (`home.host.origin`).
+async fn home_host(site: &Web) -> Result<String> {
+    let unreachable = || format!("{} names no Tilo host to log in at", site.origin);
+    let (status, body) = site
+        .get("/entry.json")
+        .await
+        .with_context(|| format!("{} was not reached", site.origin))?;
+    if status != 200 {
+        bail!("{} (HTTP {status})", unreachable());
+    }
+    let entry: Value = serde_json::from_slice(&body).with_context(unreachable)?;
+    let origin = entry
+        .pointer("/home/host/origin")
+        .and_then(Value::as_str)
+        .with_context(unreachable)?;
+    let url = tilo_net::Url::parse(origin).with_context(unreachable)?;
+    if url.scheme() != "https" {
+        bail!("{}: its host {origin} is not https", unreachable());
+    }
+    Ok(url.origin().ascii_serialization())
+}
+
+/// POST `body` as JSON to `route` below the host's API.
+async fn post_json(
+    host: &dyn HttpClient,
+    route: &str,
+    body: &(impl Serialize + Sync),
+) -> Result<(u16, Vec<u8>)> {
+    host.post(&format!("{API_PREFIX}{route}"), serde_json::to_vec(body)?)
+        .await
+        .map_err(|error| anyhow!("the host was not reached: {error}"))
+}
+
+/// What the code names, spending it.
+async fn resolve(host: &dyn HttpClient, code: &str) -> Result<Resolved> {
+    let (status, body) = post_json(
+        host,
+        login_code::RESOLVE_ROUTE,
+        &Resolve {
+            code: code.to_owned(),
+        },
+    )
+    .await?;
+    match status {
+        200 => serde_json::from_slice(&body).context("the host answered something else"),
+        404 => bail!(
+            "the code {code} is unknown, used or expired: a code works once, for 10 minutes. \
+             Ask the person to copy the prompt from their Tilo tab again."
+        ),
+        429 => bail!("too many wrong codes from here: wait a minute, then check the code"),
+        other => bail!(
+            "the host refused the code (HTTP {other}): {}",
+            String::from_utf8_lossy(&body)
+                .chars()
+                .take(200)
+                .collect::<String>()
+        ),
+    }
+}
+
+/// Tells the tab what this computer did with its code.
+struct Reporter<'a> {
+    host: &'a dyn HttpClient,
+    report: String,
+    agent: String,
+}
+
+impl Reporter<'_> {
+    async fn step(&self, step: Step) {
+        self.send(step, None).await;
+    }
+
+    /// The tab shows `detail`, one sentence, as what failed.
+    async fn failed(&self, detail: &str) {
+        let sentence = detail.lines().next().unwrap_or(detail);
+        self.send(Step::Failed, Some(sentence.chars().take(300).collect()))
+            .await;
+    }
+
+    async fn send(&self, step: Step, detail: Option<String>) {
+        let report = Report {
+            report: self.report.clone(),
+            step,
+            agent: Some(
+                self.agent
+                    .chars()
+                    .take(login_code::MAX_AGENT_CHARS)
+                    .collect(),
+            ),
+            detail,
+        };
+        match post_json(self.host, login_code::STEP_ROUTE, &report).await {
+            Ok((200 | 204, _)) => {}
+            Ok((status, _)) => {
+                eprintln!("The person's tab was not told this step (HTTP {status}).");
+            }
+            Err(error) => eprintln!("The person's tab was not told this step: {error:#}"),
+        }
+    }
+}
+
+/// Claim a sign-in code for the person this device is a device of.
+async fn claim(
+    host: &dyn HttpClient,
+    report: &str,
+    key: &SigningKey,
+    device: &Device,
+) -> Result<Claimed> {
+    let signed_at_ns = u64::try_from(
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)?
+            .as_nanos(),
+    )?;
+    let signature = key.sign(&login_code::claim_message(report, signed_at_ns));
+    let (status, body) = post_json(
+        host,
+        login_code::CLAIM_ROUTE,
+        &Claim {
+            report: report.to_owned(),
+            cert: device.cert.clone(),
+            signed_at_ns,
+            signature: hex::encode(signature.to_bytes()),
+        },
+    )
+    .await?;
+    match status {
+        200 => serde_json::from_slice(&body).context("the host answered something else"),
+        403 => bail!(
+            "this host signs nobody in for the person this computer is a device of: \
+             sign in on the host where you set Tilo up"
+        ),
+        other => bail!(
+            "the host refused the claim (HTTP {other}): {}",
+            String::from_utf8_lossy(&body)
+                .chars()
+                .take(200)
+                .collect::<String>()
+        ),
+    }
+}
+
+/// The name the host lists `workspace` under, when it lists it.
+async fn workspace_name(host: &dyn HttpClient, workspace: &str) -> Option<String> {
+    let path = format!(
+        "{API_PREFIX}{}",
+        tilo_relay_protocol::directory::DIRECTORY_PATH
+    );
+    let (status, body) = host.post(&path, Vec::new()).await.ok()?;
+    if status != 200 {
+        return None;
+    }
+    let page: tilo_relay_protocol::directory::DirectoryPage = serde_json::from_slice(&body).ok()?;
+    page.workspaces
+        .into_iter()
+        .find(|listed| listed.workspace.eq_ignore_ascii_case(workspace))
+        .map(|listed| listed.name)
+        .filter(|name| !name.trim().is_empty())
+}
+
+/// What became of Tilo's tools for the agent.
+#[derive(Debug, PartialEq, Eq)]
+enum Tools {
+    /// `tool` has them, from its next start on.
+    Added(Tool),
+    /// The agent adds them itself.
+    Yours,
+}
+
+/// What `tilo login` prints last: what the agent does next.
+fn next_steps(agent: &Agent, tools: &Tools, tilo: &Path) -> String {
+    let first = match tools {
+        Tools::Added(tool) => format!(
+            "1. Your Tilo tools load only after a restart: tell the person to restart you \
+             (in {}: {}).",
+            agent.name,
+            tool.restart()
+        ),
+        Tools::Yours => format!(
+            "1. Add Tilo's tools to yourself: the stdio MCP server named tilo, with the command \
+             {} mcp",
+            tilo.display()
+        ),
+    };
+    format!(
+        "Next:\n{first}\n2. Then call the tilo_status tool, and tell the person what you can do \
+         in Tilo: {WHAT_TILO_DOES}."
+    )
+}
+
+/// Add Tilo's tools to `agent`, saying what became of them.
+fn add_tools(agent: &Agent, tilo: &Path, runner: &dyn agent::Runner) -> Tools {
+    let Some(tool) = agent.tool else {
+        return Tools::Yours;
+    };
+    match agent::register(tool, tilo, runner) {
+        Registered::Added | Registered::Already => {
+            println!("Added Tilo's tools to {}: the MCP server tilo.", agent.name);
+            Tools::Added(tool)
+        }
+        Registered::Missing => {
+            println!(
+                "{}'s own command is not on this PATH, so Tilo's tools are not added to it.",
+                agent.name
+            );
+            Tools::Yours
+        }
+        Registered::Failed(said) => {
+            println!(
+                "Adding Tilo's tools to {} failed: {}",
+                agent.name,
+                said.lines().next().unwrap_or_default()
+            );
+            Tools::Yours
+        }
+    }
+}
+
+/// `tilo login <code> [--agent NAME] [--site ORIGIN]`.
+pub fn login(code: &str, agent: Option<&str>, site: Option<&str>) -> Result<ExitCode> {
+    let Some(code) = login_code::normalize_code(code) else {
+        bail!(
+            "{} is not a login code; one looks like K7Q-MX2P. Ask the person to copy the prompt \
+             from their Tilo tab again.",
+            code.trim()
+        );
+    };
+    trust_test_certificates()?;
+    let agent = agent
+        .filter(|name| !name.trim().is_empty())
+        .map_or_else(agent::detect_here, agent::named);
+    let site = site_origin(site)?;
+    let runtime = runtime()?;
+    runtime.block_on(async {
+        let host_origin = home_host(&Web::new(&site)).await?;
+        let host = Web::new(&host_origin);
+        let resolved = resolve(&host, &code).await?;
+        let reporter = Reporter {
+            host: &host,
+            report: resolved.report.clone(),
+            agent: agent.name.clone(),
+        };
+        reporter.step(Step::Resolved).await;
+        let done = match (&resolved.link, resolved.sign_in) {
+            (Some(link), _) => set_up(&reporter, link, &agent).await,
+            (None, true) => vouch(&reporter, &host).await,
+            (None, false) => Err(anyhow!("the code names nothing this computer can do")),
+        };
+        if let Err(error) = &done {
+            reporter.failed(&upper_first(&format!("{error:#}"))).await;
+        }
+        done
+    })
+}
+
+fn upper_first(text: &str) -> String {
+    let mut chars = text.chars();
+    chars.next().map_or_else(String::new, |first| {
+        first.to_uppercase().chain(chars).collect()
+    })
+}
+
+/// Setting up: become a device of the person the link names, add Tilo's
+/// tools to the agent, and enter the workspace.
+async fn set_up(reporter: &Reporter<'_>, link: &str, agent: &Agent) -> Result<ExitCode> {
+    let link = PairingLink::parse(link).map_err(|error| anyhow!(error))?;
+    let label = label(&agent.name, &hostname());
     let dir = device_dir()?;
     let key = SigningKey::from_bytes(&rand::random());
-    eprintln!("Logging in as a device of the person whose tab copied this code…");
-    let runtime = runtime()?;
-    let signed = runtime.block_on(async {
-        let host_web = Web::new(&link.host_origin);
-        let signed = peer_login::sign_in(&host_web, &link, agent, &label, &key, |code| {
-            eprintln!("Pairing code {code}. The tab that copied the code approves it by itself; nothing to do there.");
-        })
+    let host_web = Web::new(&link.host_origin);
+    eprintln!("Waiting for the person's tab to approve this computer…");
+    let signed = peer_login::sign_in(&host_web, &link, &agent.name, &label, &key, |_| {})
         .await
         .map_err(|error| match error {
             tilo_browser_peer::CertifyError::Expired => anyhow!(
-                "the tab did not approve this computer in time: the code works once, for 10 minutes, and only while that tab is open. Copy a new one there."
+                "the tab did not approve this computer in time: it approves only while it is open"
             ),
             tilo_browser_peer::CertifyError::Denied(reason) if reason.contains("declined") => {
-                anyhow!("the tab declined this computer. Copy a new code there to try again.")
+                anyhow!("the tab declined this computer")
             }
             other => anyhow!("logging in failed: {other}"),
         })?;
-        anyhow::Ok(signed)
-    })?;
-    let device = Device::of(&signed)?;
+    let mut device = Device::of(&signed)?;
+    device.workspace_name = workspace_name(&host_web, &device.workspace).await;
     store(&dir, &key, &device)?;
+    reporter.step(Step::LoggedIn).await;
     let days = signed.cert.expires_at_ns.map_or(0, |end| {
         end.saturating_sub(signed.cert.issued_at_ns) / (24 * 3600 * 1_000_000_000)
     });
     println!(
-        "Logged in: this computer is \"{label}\", a device of yours for {days} days. Your browser keeps your identity; nothing secret of yours is stored here but this device's own key."
+        "Logged in: this computer is now \"{label}\", one of the person's devices for {days} days. \
+         Their identity stays in their browser; only this device's own key is kept here."
     );
-    match runtime.block_on(connect(&key, &device)) {
-        Ok((peer, _)) => {
-            println!(
-                "Entered your workspace on {}: your tab shows {agent} there.",
+    let tilo = std::env::current_exe().context("finding this program")?;
+    let tools = add_tools(agent, &tilo, &agent::System);
+    if matches!(tools, Tools::Added(_)) {
+        reporter.step(Step::ToolsAdded).await;
+        reporter.step(Step::Restart).await;
+    }
+    let place = device.workspace_name.as_ref().map_or_else(
+        || format!("the person's workspace on {}", host_of(&device.host_origin)),
+        |name| {
+            format!(
+                "the person's workspace {name} on {}",
                 host_of(&device.host_origin)
-            );
+            )
+        },
+    );
+    match connect(&key, &device).await {
+        Ok((peer, _)) => {
+            reporter.step(Step::Entered).await;
+            println!("Entered {place}: their tab shows you there.");
             peer.close();
         }
-        Err(error) => println!(
-            "Logged in, but entering your workspace failed for now ({error:#}); `tilo mcp` tries again."
-        ),
+        Err(error) => {
+            reporter
+                .failed(&format!(
+                    "Logged in, but entering the workspace failed: {error:#}"
+                ))
+                .await;
+            println!("Entering {place} failed for now ({error:#}); tilo_status tries again.");
+        }
     }
     println!();
-    println!("Next, give your agent Tilo's tools, the MCP server named tilo:");
-    println!("  Claude Code:   tilo agent connect claude");
-    println!("  Codex:         tilo agent connect codex");
-    println!("  Other agents:  add the stdio MCP server `tilo mcp`, named tilo");
-    println!("Then call its tilo_status tool to check that you can act.");
+    println!("{}", next_steps(agent, &tools, &tilo));
+    Ok(ExitCode::SUCCESS)
+}
+
+/// Signing in: this computer, a device of the person, vouches for the tab
+/// that asks, and the person's stand-in on the host approves it.
+async fn vouch(reporter: &Reporter<'_>, host: &dyn HttpClient) -> Result<ExitCode> {
+    let Some((key, device)) = load(&device_dir()?)? else {
+        bail!(
+            "this is a sign-in code, for a computer already set up with Tilo, and this one is \
+             not; on a new account, choose \"Set up with your agent\" in Tilo instead"
+        );
+    };
+    claim(host, &reporter.report, &key, &device).await?;
+    reporter.step(Step::Approved).await;
+    println!("Approved: your tab is signing in as you.");
     Ok(ExitCode::SUCCESS)
 }
 
@@ -396,7 +763,7 @@ pub fn mcp() -> Result<ExitCode> {
     Ok(ExitCode::SUCCESS)
 }
 
-const NOT_LOGGED_IN: &str = "This computer is not logged in to Tilo. Ask the person to open Tilo in their browser, choose \"Set up with your agent\" and give you the code it copies; then run: tilo login '<code>' --agent \"<your name>\"";
+const NOT_LOGGED_IN: &str = "This computer is not logged in to Tilo. Ask the person to open tilo.sh, choose \"Set up with your agent\" and paste you the prompt it copies; it has you run tilo login with their code, like: tilo login K7Q-MX2P";
 
 fn tools() -> Value {
     json!([
@@ -473,10 +840,13 @@ async fn call(serving: &Mutex<Serving>, params: Value) -> Value {
             let user: Vec<char> = device.user.chars().collect();
             let first: String = user.iter().take(8).collect();
             let last: String = user.iter().skip(user.len().saturating_sub(8)).collect();
+            let workspace = device
+                .workspace_name
+                .as_ref()
+                .map_or_else(|| device.workspace.clone(), |name| format!("\"{name}\""));
             let text = format!(
-                "You act in Tilo as the person {first}…{last} on the device \"{}\", in workspace {} on {}: {state}. The person sees you there as {} with what you do.",
+                "You act in Tilo as the person {first}…{last} on the device \"{}\", in their workspace {workspace} on {}: {state}. The person sees you there, as {}, with each Tilo tool you call.",
                 device.label,
-                device.workspace,
                 host_of(&device.host_origin),
                 device.agent,
             );
@@ -541,6 +911,7 @@ mod tests {
             site: "https://tilo.sh/".into(),
             host_origin: "https://eu1.tilo.sh".into(),
             workspace: "0f1e2d3c-4b5a-6978-8796-a5b4c3d2e1f0".into(),
+            workspace_name: Some("Studio".into()),
             user: "ab".repeat(32),
             agent: "Claude Code".into(),
             label: "Claude Code on build-box".into(),
@@ -671,5 +1042,186 @@ mod tests {
                 && text.contains("offline"),
             "{text}"
         );
+    }
+
+    /// How a test's host answers a route and its body.
+    type Answer = Box<dyn Fn(&str, &Value) -> (u16, Value) + Send + Sync>;
+
+    /// A host that answers each route as a test says, and keeps what it
+    /// was sent.
+    struct FakeHost {
+        answer: Answer,
+        sent: Mutex<Vec<(String, Value)>>,
+    }
+
+    impl FakeHost {
+        fn new(answer: impl Fn(&str, &Value) -> (u16, Value) + Send + Sync + 'static) -> Self {
+            Self {
+                answer: Box::new(answer),
+                sent: Mutex::new(Vec::new()),
+            }
+        }
+
+        fn sent(&self) -> Vec<(String, Value)> {
+            self.sent.lock().unwrap().clone()
+        }
+    }
+
+    impl HttpClient for FakeHost {
+        fn post(&self, path: &str, body: Vec<u8>) -> HttpFuture<'_> {
+            let body: Value = serde_json::from_slice(&body).unwrap_or(Value::Null);
+            let route = path.strip_prefix(API_PREFIX).unwrap_or(path).to_owned();
+            let (status, answer) = (self.answer)(&route, &body);
+            self.sent.lock().unwrap().push((route, body));
+            Box::pin(async move { Ok((status, serde_json::to_vec(&answer).unwrap())) })
+        }
+    }
+
+    #[tokio::test]
+    async fn a_code_resolves_at_its_host_and_every_step_reaches_the_tab() {
+        let host = FakeHost::new(|route, _| match route {
+            login_code::RESOLVE_ROUTE => (
+                200,
+                json!({"link": "https://tilo.sh/#/@eu1.tilo.sh/w/x?pair=ab", "report": "aa"}),
+            ),
+            _ => (204, Value::Null),
+        });
+        let resolved = resolve(&host, "K7Q-MX2P").await.unwrap();
+        assert!(!resolved.sign_in);
+        assert_eq!(resolved.report, "aa");
+        let reporter = Reporter {
+            host: &host,
+            report: resolved.report,
+            agent: "Claude Code".into(),
+        };
+        reporter.step(Step::Resolved).await;
+        reporter.step(Step::LoggedIn).await;
+        reporter
+            .failed("Entering the workspace failed: offline.\nmore detail")
+            .await;
+        let sent = host.sent();
+        assert_eq!(
+            sent[0],
+            (
+                login_code::RESOLVE_ROUTE.to_owned(),
+                json!({"code": "K7Q-MX2P"})
+            )
+        );
+        assert_eq!(
+            sent[1..],
+            [
+                (
+                    login_code::STEP_ROUTE.to_owned(),
+                    json!({"report": "aa", "step": "resolved", "agent": "Claude Code"})
+                ),
+                (
+                    login_code::STEP_ROUTE.to_owned(),
+                    json!({"report": "aa", "step": "logged-in", "agent": "Claude Code"})
+                ),
+                (
+                    login_code::STEP_ROUTE.to_owned(),
+                    json!({"report": "aa", "step": "failed", "agent": "Claude Code",
+                           "detail": "Entering the workspace failed: offline."})
+                ),
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn a_spent_or_guessed_code_says_what_to_do() {
+        let spent = FakeHost::new(|_, _| (404, Value::Null));
+        let said = resolve(&spent, "K7Q-MX2P").await.unwrap_err().to_string();
+        assert!(said.contains("works once, for 10 minutes"), "{said}");
+        let guessed = FakeHost::new(|_, _| (429, Value::Null));
+        let said = resolve(&guessed, "K7Q-MX2P").await.unwrap_err().to_string();
+        assert!(said.contains("too many wrong codes"), "{said}");
+    }
+
+    #[tokio::test]
+    async fn a_device_claims_a_sign_in_code_with_its_own_signature() {
+        let key = SigningKey::from_bytes(&[9; 32]);
+        let public = key.verifying_key();
+        let host = FakeHost::new(move |route, body| {
+            assert_eq!(route, login_code::CLAIM_ROUTE);
+            let claim: Claim = serde_json::from_value(body.clone()).unwrap();
+            let signature = ed25519_dalek::Signature::from_bytes(
+                &hex::decode(&claim.signature).unwrap().try_into().unwrap(),
+            );
+            let message = login_code::claim_message(&claim.report, claim.signed_at_ns);
+            if public.verify_strict(&message, &signature).is_ok() && claim.cert == "00" {
+                (200, json!({"expires_at_ms": 5}))
+            } else {
+                (403, Value::Null)
+            }
+        });
+        let claimed = claim(&host, "bb", &key, &device()).await.unwrap();
+        assert_eq!(claimed.expires_at_ms, 5);
+        let stranger = SigningKey::from_bytes(&[3; 32]);
+        let said = claim(&host, "bb", &stranger, &device())
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(said.contains("signs nobody in"), "{said}");
+    }
+
+    #[tokio::test]
+    async fn a_listed_workspace_is_named() {
+        let host = FakeHost::new(|_, _| {
+            (
+                200,
+                json!({"workspaces": [{"room": "0F1E2D3C-4B5A-6978-8796-A5B4C3D2E1F0", "name": "Lounge",
+                    "defaultRole": "Editor", "door": "lounge/"}]}),
+            )
+        });
+        assert_eq!(
+            workspace_name(&host, "0f1e2d3c-4b5a-6978-8796-a5b4c3d2e1f0")
+                .await
+                .as_deref(),
+            Some("Lounge")
+        );
+        assert_eq!(workspace_name(&host, "other").await, None);
+    }
+
+    #[test]
+    fn the_agent_is_told_what_to_do_next_in_its_own_terms() {
+        let tilo = Path::new("/home/me/.local/bin/tilo");
+        let claude = agent::named("claude");
+        assert_eq!(
+            next_steps(&claude, &Tools::Added(Tool::Claude), tilo),
+            "Next:\n1. Your Tilo tools load only after a restart: tell the person to restart you \
+             (in Claude Code: /exit, then `claude --continue`).\n2. Then call the tilo_status \
+             tool, and tell the person what you can do in Tilo: you are in their Tilo workspace \
+             as them, where they see you by name, and tilo_show puts what you are working on \
+             beside your name there."
+        );
+        let other = agent::named("Your agent");
+        let next = next_steps(&other, &Tools::Yours, tilo);
+        assert!(
+            next.starts_with(
+                "Next:\n1. Add Tilo's tools to yourself: the stdio MCP server named tilo, with \
+                 the command /home/me/.local/bin/tilo mcp\n2. Then call the tilo_status tool"
+            ),
+            "{next}"
+        );
+        assert!(!next.contains("restart"), "{next}");
+    }
+
+    #[test]
+    fn codes_resolve_at_tilo_sh_unless_another_https_site_is_named() {
+        assert_eq!(
+            site_origin(Some("https://lounge.example/x")).unwrap(),
+            "https://lounge.example"
+        );
+        assert!(site_origin(Some("http://lounge.example")).is_err());
+        assert_eq!(DEFAULT_SITE, "https://tilo.sh");
+    }
+
+    #[test]
+    fn a_login_code_reads_however_it_is_typed() {
+        assert_eq!(
+            login_code::normalize_code("k7q mx2p").as_deref(),
+            Some("K7Q-MX2P")
+        );
+        assert!(login("https://tilo.sh/#/@eu1.tilo.sh/w/x?pair=ab", None, None).is_err());
     }
 }
