@@ -180,12 +180,18 @@ fn wait_for_kept(dir: &Path, bytes: u64, what: &str) {
     }
 }
 
-/// Bytes no two calls with different `seed`s share, `length` of them.
+/// Bytes no two calls with different `seed`s share, `length` of them, with no
+/// stretch of them repeating: content is kept by its hash, so a file whose
+/// chunks repeat takes less room than its length wherever it is kept.
 fn content(seed: u32, length: usize) -> Vec<u8> {
     (0..length)
         .map(|at| {
-            let at = u32::try_from(at).unwrap();
-            (at.wrapping_add(seed).wrapping_mul(2_654_435_761) >> 13).to_le_bytes()[0]
+            // SplitMix64 over the seed and the position.
+            let at = u64::try_from(at).unwrap();
+            let mut mixed = (u64::from(seed) << 40 | at).wrapping_add(0x9e37_79b9_7f4a_7c15);
+            mixed = (mixed ^ (mixed >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
+            mixed = (mixed ^ (mixed >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
+            (mixed ^ (mixed >> 31)).to_le_bytes()[0]
         })
         .collect()
 }
@@ -314,15 +320,10 @@ fn a_file_made_on_the_vm_host_reaches_a_persons_device_and_their_edit_reaches_th
 /// The files a relay keeps reach a device that joins after the member that
 /// wrote them left.
 ///
-/// Ignored: the relay cannot open the tree a workspace's members write sealed
-/// yet. The channel that seals a Files record is opened by the member that
-/// writes it first, and this host's device is never admitted to it — it asks
-/// (`Workspaces::ask_to_open`), waits, and reads "the channel's keys are not
-/// ready" however often it asks, so the tree stays shut and no file's content
-/// is asked for. Run this test once a host is let into the channels of the
-/// records its workspaces' members write sealed: it is the whole gap.
+/// The relay reads the tree only once the member that opened its channel let
+/// the relay's device in: the member is linked to the relay directly, and
+/// hears the relay's access request on that link.
 #[test]
-#[ignore = "a host is not admitted to the channel a member opened for a record it sealed"]
 fn a_file_the_relay_kept_reaches_a_device_that_joins_after_its_writer_left() {
     // The device that joins last: a runtime of its own that joins the
     // workspace and holds its files until the test stops it.
