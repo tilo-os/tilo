@@ -713,7 +713,8 @@ impl Runtime {
 
     /// Fills the parameters `given` leaves out of `action` from `text`, the one line a person
     /// typed for it: the entry parameter with the words nothing else took, and the parameters
-    /// their types read (a day, a moment, a person, a record). A parameter given is kept.
+    /// their types read (a day, a moment, a person, a record). The words name a parameter over
+    /// the value the call gave it; that value stands where they say nothing.
     /// [`crate::Runtime::complete_args`] then defaults the rest. Returns the arguments as the
     /// call carries them — as long as the action's parameters, what the call left out
     /// [`None`] — and `None` when the line names nothing, as an entry's text that is only

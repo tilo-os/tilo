@@ -190,6 +190,10 @@ struct FnState {
     /// The locals holding a scalar an event carries (`at` of `on drop(moved: T, at: Int)`),
     /// boxed until the event puts the value there.
     event_scalars: std::collections::HashSet<LocalId>,
+    /// Whether the code being checked computes one argument of an action a view applies, which
+    /// runs when that action is invoked (`Self::at_event`): it may read the clock, as the
+    /// invocation it belongs to does, and what it reads is recorded there.
+    press: bool,
 }
 
 /// Where the UI being lowered stands, saved and restored around each block.

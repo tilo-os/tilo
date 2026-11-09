@@ -94,10 +94,13 @@ template view places<T>(
 /// item of it, through `create`, an action whose one `Text` parameter takes the words nothing
 /// else does. What the words say of the action's other parameters ("Call the landlord fri 10am
 /// @Bo") fills them: the entry shows each as a chip under what is typed, and removing a chip
-/// takes its words away. With no words of its own — nothing typed, space, or only what the
-/// other parameters take — the entry makes nothing: Enter does nothing and leaves the text
-/// there, and Escape leaves none. The host gives it the window's primary action's key, so the
-/// key and the bar's button come here.
+/// takes its words away. A parameter the call gave is the default there: it stands where the
+/// words say nothing of it, and the words win where they do, so a list in a place that starts
+/// its items one way (`new_task(tasks, due: if in_today { today } else { .none })`) reads
+/// "fri" as the day the person said. With no words of its own — nothing typed, space, or only
+/// what the other parameters take — the entry makes nothing: Enter does nothing and leaves the
+/// text there, and Escape leaves none. The host gives it the window's primary action's key, so
+/// the key and the bar's button come here.
 template view add_entry(placeholder: Text, create: Action) {
     state typed: Text = ""
     let parts = entry_parts(create, typed)

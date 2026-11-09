@@ -317,7 +317,7 @@ impl Checker<'_> {
             return Ex::error();
         }
         if name == "now" {
-            if matches!(self.st.ctx, Ctx::Action | Ctx::Program) {
+            if matches!(self.st.ctx, Ctx::Action | Ctx::Program) || self.st.press {
                 self.reads(crate::effects::Effect::Time, span, "`now`");
                 return Ex::host(Imp::Now, vec![], Ty::Time);
             }
@@ -331,7 +331,7 @@ impl Checker<'_> {
         // `today`: the day this invocation falls on for the person, read in their zone as the
         // filter's `today` reads it.
         if name == "today" {
-            if self.st.ctx == Ctx::Action {
+            if self.st.ctx == Ctx::Action || self.st.press {
                 self.reads(crate::effects::Effect::Time, span, "`today`");
                 return Ex::host(Imp::Today, vec![], Ty::Date);
             }
@@ -692,6 +692,11 @@ impl Checker<'_> {
 
     /// `list_push_*` of one item.
     pub(super) fn push_item(list: Ex, item: Ex) -> Ex {
+        // An argument a call left out is no value of its type: it goes on the list as the hole
+        // it is, for the invocation to fill.
+        if matches!(item.kind, Ek::Host(Imp::MissingV, _)) {
+            return Ex::host(Imp::ListPushH, vec![list, item], Ty::Unit);
+        }
         let (imp, c) = store_op(&item.ty, Imp::ListPushI, Imp::ListPushF, Imp::ListPushH);
         Ex::host(imp, vec![list, conv(c, item, Ty::Int)], Ty::Unit)
     }

@@ -370,16 +370,15 @@ impl Core {
             ListAvg, ListEnd, ListGetF, ListGetH, ListGetI, ListIndexOf, ListLen, ListNew,
             ListPrevious, ListPushF, ListPushH, ListPushI, ListReverse, ListSortByKey, ListSumF,
             ListSumI, MapGetH, MapGetValue, MapKeys, MapKeysValue, MapPut, MapRemove, MapSetAdd,
-            MapSetRemove, MatchGroup, Me, Members, Mentions, MetaOf, ModelCall, NoneV, Notify, Now,
-            OfType, Outside, OutsideAt, Phrase, PrincipalEq, PrincipalKind, PrincipalName,
-            PrincipalNamed, PrincipalRole, Print, PrintRows, ProposalNote, Query, QueueBlock,
-            RandomChoice, RandomFloat, RandomId, RandomInt, RandomShuffle, ReadText, ReadWith,
-            RecNew, RecSetF, RecSetH, RecSetI, RefEq, RefId, RefIs, RefLit, ResAddF, ResAddI,
-            ResGetF, ResGetH, ResGetI, ResSetF, ResSetH, ResSetI, ResTextSet, ResourceRef,
+            MapSetRemove, MatchGroup, Me, Members, Mentions, MetaOf, MissingV, ModelCall, NoneV,
+            Notify, Now, OfType, Outside, OutsideAt, Phrase, PrincipalEq, PrincipalKind,
+            PrincipalName, PrincipalNamed, PrincipalRole, Print, PrintRows, ProposalNote, Query,
+            QueueBlock, RandomChoice, RandomFloat, RandomId, RandomInt, RandomShuffle, ReadText,
+            ReadWith, RecNew, RecSetF, RecSetH, RecSetI, RefEq, RefId, RefIs, RefLit, ResAddF,
+            ResAddI, ResGetF, ResGetH, ResGetI, ResSetF, ResSetH, ResSetI, ResTextSet, ResourceRef,
             RichEmpty, RichNew, RichPart, RichTime, RunChanges, SetAdd, SetRemove, Single, SomeF,
             SomeH, SomeI, SortLit, SpaceF, SpaceI, Speakers, StateAt, StateGet, Steps, StrCmp,
-            StrConcat,
-            StrContains, StrEndsWith, StrEq, StrFind, StrJoin, StrLen, StrLit, StrLower,
+            StrConcat, StrContains, StrEndsWith, StrEq, StrFind, StrJoin, StrLen, StrLit, StrLower,
             StrMatches, StrReplace, StrSlice, StrSplit, StrStartsWith, StrToInt, StrTrim, StrUpper,
             Suggest, Take, TimeDay, TimeOfDay, TimeParse, TimeShift, TimeSpan, Today, TryInvoke,
             TupleGetF, TupleGetH, TupleGetI, TupleNew, TupleSetF, TupleSetH, TupleSetI, UiAction,
@@ -402,6 +401,9 @@ impl Core {
             | ListEnd | ListIndexOf | ListPrevious | TupleNew | TupleSetI | TupleSetF
             | TupleSetH | TupleGetI | TupleGetF | TupleGetH | SomeH | SomeI | SomeF | NoneV
             | IsSome | UnwrapI | UnwrapF | UnwrapH => self.aggregate_import(imp, a),
+            // An argument a call left out before one it gives: it is no value, and the
+            // invocation has the default in its place before anything reads it.
+            MissingV => self.ret_h(Value::Missing),
             CollWhere => self.ret_h(self.coll_where(a.h(0)?, a.h(1)?)?),
             CollWhereWith => self.ret_h(self.coll_where_with(a.h(0)?, a.h(1)?, a.h(2)?)?),
             CollRelatives => {

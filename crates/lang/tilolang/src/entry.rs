@@ -12,6 +12,12 @@
 //! - a parameter of a record type takes `#title`, matched against the records the workspace's
 //!   collection of that type holds, by the type's title field.
 //!
+//! A parameter the call already gave is a default: the words say what the item is, so what they
+//! name fills it. A view whose place starts an item one way and whose words may say otherwise
+//! gives the parameter the place's value (`new_task(tasks, due: if in_today { today } else
+//! { .none })`), and a person typing "fri" there gets Friday. Where the words say nothing of it,
+//! the value the call gave stands.
+//!
 //! Everything the parse is not sure of stays in the title: two members of one name, a title two
 //! records share, a word that only looks like a date. Nothing is guessed.
 
@@ -41,8 +47,6 @@ pub enum Takes {
 pub struct Param {
     /// What the parameter takes out of the text.
     pub takes: Takes,
-    /// Whether the call that made the action already gave it: the entry leaves it alone.
-    pub given: bool,
 }
 
 /// A value the text gives a parameter.
@@ -117,12 +121,8 @@ pub fn read(
 
     // When: a day to the day parameter, a time to the time one; a time alone fills the day too
     // when the action has one, as "at 9" means the next nine.
-    let mut day_slot = params
-        .iter()
-        .position(|p| !p.given && p.takes == Takes::Day);
-    let mut time_slot = params
-        .iter()
-        .position(|p| !p.given && p.takes == Takes::Time);
+    let mut day_slot = params.iter().position(|p| p.takes == Takes::Day);
+    let mut time_slot = params.iter().position(|p| p.takes == Takes::Time);
     // The day the text said last: a time after it ("fri 10am") is at that day.
     let mut said: Option<i64> = None;
     for phrase in scan(&words, today, lang) {
@@ -188,10 +188,7 @@ pub fn read(
     }
 
     // Who: "@name" once for each principal, by the name they go by or their id.
-    if let Some(slot) = params
-        .iter()
-        .position(|p| !p.given && p.takes == Takes::Who)
-    {
+    if let Some(slot) = params.iter().position(|p| p.takes == Takes::Who) {
         let people = look.people();
         for (i, word) in words.iter().enumerate() {
             if used[i] {
@@ -234,7 +231,7 @@ pub fn read(
     let record_params: Vec<usize> = params
         .iter()
         .enumerate()
-        .filter(|(_, p)| !p.given && matches!(p.takes, Takes::What { .. }))
+        .filter(|(_, p)| matches!(p.takes, Takes::What { .. }))
         .map(|(i, _)| i)
         .collect();
     if !record_params.is_empty() {
@@ -377,30 +374,18 @@ mod tests {
         vec![
             Param {
                 takes: Takes::Other,
-                given: true,
             },
-            Param {
-                takes: Takes::Day,
-                given: false,
-            },
-            Param {
-                takes: Takes::Time,
-                given: false,
-            },
-            Param {
-                takes: Takes::Who,
-                given: false,
-            },
+            Param { takes: Takes::Day },
+            Param { takes: Takes::Time },
+            Param { takes: Takes::Who },
             Param {
                 takes: Takes::What {
                     app: "tasks".into(),
                     ty: "Project".into(),
                 },
-                given: false,
             },
             Param {
                 takes: Takes::Entry,
-                given: false,
             },
         ]
     }
@@ -467,15 +452,6 @@ mod tests {
         let parsed = story("read 3 chapters", &tasks(), &look());
         assert_eq!(parsed.title, "read 3 chapters");
         assert!(parsed.parts.is_empty());
-    }
-
-    #[test]
-    fn a_parameter_the_call_gave_is_left_alone() {
-        let mut params = tasks();
-        params[1].given = true;
-        let parsed = story("call landlord fri", &params, &look());
-        assert_eq!(parsed.title, "call landlord fri");
-        assert!(parsed.fills.is_empty());
     }
 
     #[test]

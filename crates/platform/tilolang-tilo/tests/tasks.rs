@@ -66,7 +66,7 @@ pub(crate) fn target(v: &Value) -> Option<String> {
 /// assignee, and what was typed.
 pub(crate) fn create(root: &Value, title: &str) -> Vec<Value> {
     let mut args = vec![root.clone()];
-    args.resize(7, Value::none());
+    args.resize(6, Value::none());
     args.push(Value::text(title));
     args
 }

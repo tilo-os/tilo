@@ -2147,7 +2147,12 @@ impl Core {
         // item that opens a dialog does. What it asks is what this offer left unbound — the
         // parameters after the ones it gave, the subject and its places among them — so a
         // command the view or the host answers every question of runs, and reads, as it is.
-        if action.unbound(shown.args.len()).next().is_some() && !label.ends_with('…') {
+        let bound = shown
+            .args
+            .iter()
+            .position(|arg| *arg == Value::Missing)
+            .unwrap_or(shown.args.len());
+        if action.unbound(bound).next().is_some() && !label.ends_with('…') {
             label.push('…');
         }
         let role = action.role.clone().unwrap_or_default();

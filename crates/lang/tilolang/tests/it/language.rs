@@ -249,6 +249,35 @@ fn an_item_block_names_the_other_slots_beside_the_row() {
 }
 
 #[test]
+fn an_action_a_view_applies_reads_the_clock_as_it_is_at_the_press() {
+    // An argument that names a day or a moment is read when the action is invoked, as its
+    // view state is: a list in a place that starts its items today says so in the argument.
+    let starts_today = "type Note {\n    title: Text\n    due: Option<Date> = .none\n}\ntype Book {\n    notes: Collection<Note>\n}\nroot book: Book\ndefault view book for Book\naction add(b: Book, due: Option<Date> = .none, title: Text = \"\") -> Note (icon: .plus) {\n    b.notes.insert(Note(title: title, due: due))\n}\nview book(b: Book) {\n    let in_today = true\n    stack {\n        button(add(b, due: if in_today { .some(today) } else { .none }))\n    }\n}\n";
+    let src = format!("app t.x \"X\"\n{starts_today}");
+    let compiled = crate::common::compile_with(&src, &[]).unwrap_or_else(|d| panic!("{d:#?}"));
+    validate(&compiled.wasm);
+    let at_event: Vec<(Vec<&str>, &str)> = compiled
+        .meta
+        .at_event
+        .iter()
+        .map(|f| {
+            let params = f.params.iter().map(|p| p.name.as_str()).collect();
+            (params, f.result.as_str())
+        })
+        .collect();
+    assert_eq!(
+        at_event,
+        [(vec!["in_today"], "Option<Date>")],
+        "the day is computed when the action is invoked, from what the view drew the rest \
+         with: {at_event:?}"
+    );
+    // A view's body itself still reads no clock: it is drawn again from what it is shown.
+    let drawn = "type Note {\n    title: Text\n    due: Option<Date> = .none\n}\ntype Book {\n    notes: Collection<Note>\n}\nroot book: Book\ndefault view book for Book\nview book(b: Book) {\n    let d = today\n    stack {\n        text(\"{d}\")\n    }\n}\n";
+    let got = codes(drawn);
+    assert!(got.iter().any(|c| c == "E049"), "{got:?}");
+}
+
+#[test]
 fn an_action_a_view_applies_takes_its_view_state_as_it_is_at_the_press() {
     // Given as itself, view state is read when the event fires.
     let pressed = format!(

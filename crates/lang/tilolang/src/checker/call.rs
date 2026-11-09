@@ -464,18 +464,32 @@ impl Checker<'_> {
         let mut names = std::collections::BTreeSet::new();
         super::boundary::names_in(e, &mut names);
         // An action value computes nothing from view state itself: the applications in it
-        // take their own arguments at the press.
-        let reads_state = names.iter().any(|n| self.state_named(n).is_some());
+        // take their own arguments at the press. The clock is read then too: an argument that
+        // says "today" is the day of the invocation, not the day the view last drew.
+        let reads_state = names
+            .iter()
+            .any(|n| self.state_named(n).is_some() || self.clock_named(n));
         if reads_state && !matches!(want, Ty::Action) {
             return self.at_event(e, want, &names);
         }
         self.expr_as(e, want)
     }
 
+    /// Whether `name` in an action's argument is the clock (`today`, `now`) rather than a value
+    /// the view drew with: it is read when the action is invoked.
+    fn clock_named(&self, name: &str) -> bool {
+        matches!(name, "today" | "now")
+            && self.lookup(name).is_none()
+            && self.state_named(name).is_none()
+    }
+
     /// The argument `e` of type `want`, which reads view state among `names`, as a function
     /// of its own the runtime runs when the event fires ([`ir::AtEventFn`]): it takes each view
     /// state `e` reads, read then, and each value from around it, as the view drew it. It is
-    /// checked in the discipline of a `fn`, as a parameter default is.
+    /// checked in the discipline of a `fn`, as a parameter default is, but for the clock: a `fn`
+    /// computes from the values it is given, and this one runs as the action it is an argument
+    /// of is invoked, so it reads `today` and `now` then, and they are recorded with the
+    /// invocation's arguments.
     fn at_event(
         &mut self,
         e: &ast::Expr,
@@ -508,6 +522,7 @@ impl Checker<'_> {
         self.begin(Ctx::Fn, &params, want.clone(), "");
         self.st.ns.clone_from(&outer.ns);
         self.st.types.clone_from(&outer.types);
+        self.st.press = true;
         let value = self.expr_as(e, want);
         self.emit(Stmt::Return(Some(value)));
         let name = format!("{} at the event", outer.view_id);
@@ -584,11 +599,11 @@ impl Checker<'_> {
                 // authority decides it, and the caller suspends around it and goes on from
                 // its journaled result. `suggest act(args)` is the same call, recorded as a
                 // proposal instead of applied.
-                let bound = self.applied_args(c, bound, span);
+                let bound = Self::applied_args(c, bound);
                 self.invoke(c, bound)
             }
             (CKind::Action, Ctx::View | Ctx::Block) => {
-                let bound = self.applied_args(c, bound, span);
+                let bound = Self::applied_args(c, bound);
                 self.action_value(c, bound)
             }
             (CKind::View, _) => {

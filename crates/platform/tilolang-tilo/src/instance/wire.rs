@@ -156,7 +156,8 @@ impl Convert<'_> {
             | Value::Bytes(_)
             | Value::Response(_)
             | Value::Json(_)
-            | Value::AtEvent { .. } => wire::Value::Unit,
+            | Value::AtEvent { .. }
+            | Value::Missing => wire::Value::Unit,
         }
     }
 }

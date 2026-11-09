@@ -137,18 +137,34 @@ fn a_call_may_leave_out_a_defaulted_argument() {
 }
 
 #[test]
-fn a_call_leaves_out_only_its_last_parameters() {
+fn a_call_may_leave_out_a_parameter_before_one_it_gives() {
     let decl = "action change(item: Todo, done: Bool = not item.done, title: Text = item.title) {\n    item.done = done\n    item.title = title\n}\n";
     let applied = body(&format!(
         "{decl}view v(item: Todo) {{\n    button(change(item, title: \"x\"))\n}}"
     ));
-    assert_eq!(codes_of(&applied), vec!["E028"]);
-    // A call of another action leaves them out the same way: what is left out at the end is
-    // computed when it runs, and one given after a gap has nowhere to go.
+    assert!(codes_of(&applied).is_empty(), "{:?}", codes_of(&applied));
+    validate(&compile(&applied).wasm);
+    // A call of another action leaves them out the same way: `done` is the item's then.
     let called = body(&format!(
         "{decl}action a(item: Todo) {{\n    change(item, title: \"x\")\n}}"
     ));
-    assert_eq!(codes_of(&called), vec!["E028"]);
+    assert!(codes_of(&called).is_empty(), "{:?}", codes_of(&called));
+    validate(&compile(&called).wasm);
+}
+
+#[test]
+fn a_call_leaves_out_a_defaulted_bool_by_name() {
+    let decl = "action file(item: Todo, done: Bool = false, title: Text) {\n    item.done = done\n    item.title = title\n}\n";
+    let applied = body(&format!(
+        "{decl}view v(item: Todo) {{\n    button(file(item, title: \"x\"))\n}}"
+    ));
+    assert!(codes_of(&applied).is_empty(), "{:?}", codes_of(&applied));
+    validate(&compile(&applied).wasm);
+    // A parameter with no default still cannot be passed over: its value is nobody's default.
+    let given = body(
+        "action file(item: Todo, title: Text, done: Bool = false) {\n    item.done = done\n    item.title = title\n}\naction f(item: Todo) {\n    file(item, done: true)\n}",
+    );
+    assert_eq!(codes_of(&given), vec!["E022"], "{:?}", codes_of(&given));
 }
 
 #[test]
@@ -247,9 +263,9 @@ fn codes_of(src: &str) -> Vec<String> {
 }
 
 #[test]
-fn a_parameter_whose_default_is_none_is_left_out_wherever_it_stands() {
-    // `.none` is a constant: it needs no parameter before it, so leaving it out before one that
-    // is given is no gap.
+fn a_parameter_with_a_default_is_left_out_wherever_it_stands() {
+    // `.none` is a constant: it needs no parameter before it, nor code to compute it, so an app
+    // published without a module can leave it out too.
     let decl = "action file(item: Todo, under: Option<Text> = .none, title: Text) {\n    item.title = title\n}\n";
     for applied in [
         "view v(item: Todo) {\n    button(file(item, title: \"x\"))\n}",
@@ -259,11 +275,12 @@ fn a_parameter_whose_default_is_none_is_left_out_wherever_it_stands() {
         assert!(codes_of(&src).is_empty(), "{applied}: {:?}", codes_of(&src));
         validate(&compile(&src).wasm);
     }
-    // A default that is computed still reads the parameters before it.
+    // A default that is computed is the item's too: it is worked out when the action runs.
     let computed = body(
         "action change(item: Todo, done: Bool = not item.done, title: Text) {\n    item.done = done\n    item.title = title\n}\naction f(item: Todo) {\n    change(item, title: \"x\")\n}",
     );
-    assert_eq!(codes_of(&computed), vec!["E028"]);
+    assert!(codes_of(&computed).is_empty(), "{:?}", codes_of(&computed));
+    validate(&compile(&computed).wasm);
 }
 
 /// An action of a package published without a module (a native app's, the session's), as the

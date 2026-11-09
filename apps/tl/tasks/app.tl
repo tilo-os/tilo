@@ -111,24 +111,20 @@ row view task_summary for Task
 /// entry at the end of a list, to the inbox or to `p`, in the lane `s` of its board. The entry
 /// fills `title` with the words nothing else takes, and what they say of the task's other
 /// fields fills those: "Call the landlord fri 10am @Bo" is a task due Friday at ten, for Bo.
-/// A task typed in Today (`in_today`) that names no day is due today, so it stands in the list
-/// the person typed it in; one that names a day is due then. The place is optional: a call that
-/// does not know the window it is made from says nothing of it. An entry with nothing but space
-/// in it makes no task: it never runs this. It is the entry's, not a command: the entry is how
-/// a task is added there, and the task joins the list in place rather than opening.
+/// An entry with nothing but space in it makes no task: it never runs this. It is the entry's,
+/// not a command: the entry is how a task is added there, and the task joins the list in place
+/// rather than opening.
 primary action new_task(
     tasks: Tasks,
     p: Option<Project> = .none,
     s: Option<Section> = .none,
-    in_today: Option<Bool> = .none,
     due: Option<Date> = .none,
     at: Option<Time> = .none,
     assignee: Option<Principal> = .none,
     title: Text = "",
-) -> Task uses time (icon: .plus, label: "New task", key: "Ctrl+N") {
-    let day: Option<Date> = if (in_today ?? false) and due == .none { .some(today) } else { due }
+) -> Task (icon: .plus, label: "New task", key: "Ctrl+N") {
     tasks.items.insert(
-        Task(title: title, due: day, at: at, assignee: assignee, project: p, section: s),
+        Task(title: title, due: due, at: at, assignee: assignee, project: p, section: s),
     )
 }
 
@@ -675,15 +671,20 @@ view home(t: Tasks) {
         // under the row the window shows, rather than in a window of its own.
         content: {
             page(fill) {
-                // The entry at the list's end adds where the place says; the tasks done with
-                // fold under it.
+                // The entry at the list's end adds where the place says: a task typed in
+                // Today that names no day is due today, so it stands where it was typed.
+                // The tasks done with fold under it.
                 ui.Docked {
                     foot: {
                         stack {
                             if all_done {
                                 task_list(shown, kids, by_day, done_place, folds, opened, .day)
                             }
-                            let add = new_task(t, p: project, in_today: .some(in_today))
+                            let add = new_task(
+                                t,
+                                p: project,
+                                due: if in_today { .some(today) } else { .none },
+                            )
                             std.add_entry(entry_placeholder, add)
                         }
                     }

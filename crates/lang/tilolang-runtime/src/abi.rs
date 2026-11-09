@@ -276,6 +276,7 @@ imports! {
     (SpaceF, "space_f", "i", "f"),
 
     (Abort, "abort", "i", ""),
+    (MissingV, "missing", "", "i"),
 }
 
 /// The import with this table index.
