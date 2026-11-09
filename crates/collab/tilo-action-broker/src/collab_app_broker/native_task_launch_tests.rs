@@ -1142,3 +1142,62 @@ async fn a_retained_action_that_asks_first_pauses_at_a_draft_before_launching() 
         }))
         .await;
 }
+
+/// An agent door connection's `open` of an app (the workspace's host action, what `notes#open`
+/// is) is read back by the connection as it went: the launch is kept under the activation's own
+/// identity, and the run that asked for it answers for it.
+#[tokio::test(flavor = "current_thread")]
+async fn a_door_connections_open_of_an_app_is_read_back_as_it_went() {
+    use tilo_actions::remote::ActionHost as _;
+    tokio::task::LocalSet::new()
+        .run_until(Box::pin(async {
+            let (f, mut launches) = fixture();
+            let agent = super::task_run_host::admit(&f);
+            let host = f.state.task_run_host(&agent.presentation()).unwrap();
+            let caller = super::task_run_host::connection(&host);
+            let request = tilo_actions::remote::InvokeRequest {
+                on_behalf_of: None,
+                invocation: tilo_actions::InvocationId::new(),
+                target: tilo_actions::remote::RemoteActionTarget {
+                    provider: tilo_actions::remote::workspace_provider(&workspace_id().to_string()),
+                    address: tilo_actions::ActionAddress::new(format!("app.{WRITER}"), "open"),
+                },
+                argument: tilo_actions::remote::InvokeArgument::Json(serde_json::Map::new()),
+                context: None,
+                confirmation: None,
+                revision: None,
+                appearance: None,
+                wait_ms: None,
+            };
+            let id = request.invocation;
+            let open = host.invoke(&caller, request);
+            tokio::pin!(open);
+            tokio::select! {
+                app = launches.recv() => assert_eq!(app.unwrap(), WRITER),
+                answer = &mut open => panic!("the open answered before the launch: {answer:?}"),
+            }
+            let writer = Box::pin(Writer::mount(&f, false)).await;
+            let receipt = open.await.expect("answered").unwrap();
+            assert!(
+                !matches!(
+                    receipt.status,
+                    tilo_actions::remote::ReceiptStatus::Rejected { .. }
+                ),
+                "{receipt:?}"
+            );
+            let state = host
+                .observe(&caller, &id)
+                .expect("the connection reads its open back");
+            assert!(
+                matches!(
+                    state.update,
+                    tilo_actions::InvocationUpdate::Succeeded { .. }
+                ),
+                "{:?}",
+                state.update
+            );
+            drop(writer);
+            drop(f);
+        }))
+        .await;
+}

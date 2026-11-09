@@ -79,7 +79,7 @@ impl crate::services::HostStepServices for Desktop {
 /// The door's connection, as the desktop makes it when the person admits a
 /// client: a task agent minted for the issue, delegated by the person's
 /// own (not foreign) device, the one at the desktop.
-struct DoorAgent {
+pub(super) struct DoorAgent {
     key: SigningKey,
     delegation: TaskDelegation,
     device: tilo_user_identity::DeviceCert,
@@ -108,7 +108,7 @@ fn door_agent(f: &Fixture) -> DoorAgent {
 }
 
 impl DoorAgent {
-    fn presentation(&self) -> Vec<u8> {
+    pub(super) fn presentation(&self) -> Vec<u8> {
         let workspace = workspace_id().to_string();
         runtime_collab::TaskAgentJoinIdentity {
             workspace_id: workspace.clone(),
@@ -129,7 +129,7 @@ impl DoorAgent {
 
 /// The person admitted the client: Tasks holds the issue, assigned to the
 /// door's task agent, with its run going and carrying its delegation.
-fn admit(f: &Fixture) -> DoorAgent {
+pub(super) fn admit(f: &Fixture) -> DoorAgent {
     let agent = door_agent(f);
     f.native.runs.lock().unwrap().push(TrackerRun {
         issue: DOOR_ISSUE.into(),
@@ -180,7 +180,7 @@ fn list_windows_request(invocation: u128) -> InvokeRequest {
 }
 
 /// The connection's own caller, as the door's MCP server makes it.
-fn connection(host: &TaskRunHost) -> Caller {
+pub(super) fn connection(host: &TaskRunHost) -> Caller {
     Caller::local_agent(host.agent())
         .in_workspace(host.workspace())
         .acting_for(host.person())

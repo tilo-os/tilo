@@ -45,8 +45,12 @@ pub const TASK_AGENT_APP: &str = "so.tilo.agent";
 /// How an invocation of this connection is read back.
 #[derive(Clone)]
 enum Started {
-    /// A child of the run: owned by the run.
-    Child { wire: u64, owner: InvocationOwner },
+    /// A child of the run: owned by the run, asked of `asked`.
+    Child {
+        wire: u64,
+        owner: InvocationOwner,
+        asked: Box<Asked>,
+    },
     /// A host step, admitted by the run and taken by the task agent.
     HostStep,
     /// A child the run is still admitting (an app it launches for it):
@@ -55,6 +59,17 @@ enum Started {
     /// A child the run refused, and why: what a caller that stopped
     /// waiting for the admission reads when it looks again.
     Refused(String),
+}
+
+/// What a child of the run was asked of: where its outcome is read back when the broker keeps it
+/// under an identity of its own (an application's launch, a host activation).
+#[derive(Clone)]
+struct Asked {
+    peer_id: u64,
+    provider: String,
+    resource: String,
+    action: String,
+    argument: Option<String>,
 }
 
 /// The run a host works in, as the broker delivered it.
@@ -496,12 +511,30 @@ impl tilo_actions::remote::ActionHost for TaskRunHost {
     fn observe(&self, caller: &Caller, id: &tilo_actions::InvocationId) -> Option<InvocationState> {
         self.check(caller).ok()?;
         match self.started(id)? {
-            Started::Child { wire, owner } => {
-                let update = self.0.state.invocation_status_for_owner(wire, &owner)?;
-                Some(
-                    InvocationState::new(*id, update)
-                        .with_untrusted(self.0.state.untrusted_job(wire)),
-                )
+            Started::Child { wire, owner, asked } => {
+                if let Some(update) = self.0.state.invocation_status_for_owner(wire, &owner) {
+                    return Some(
+                        InvocationState::new(*id, update)
+                            .with_untrusted(self.0.state.untrusted_job(wire)),
+                    );
+                }
+                // An application's launch is kept under the activation's own identity, not the
+                // child's: read back as the run reads its children, as a launched agent does.
+                let (run, _) = self.pending_run().ok()?;
+                let caller = self.local_caller().ok()?;
+                let target = runtime_collab::TaskAction {
+                    peer_id: asked.peer_id,
+                    provider: &asked.provider,
+                    resource: &asked.resource,
+                    action: &asked.action,
+                    argument: asked.argument.as_deref(),
+                };
+                let (_, update) = self
+                    .0
+                    .state
+                    .native_task_observation(&run, *id, target, &caller)
+                    .ok()??;
+                Some(InvocationState::new(*id, update))
             }
             Started::HostStep => self.0.state.action_observe(&self.0.caller, id),
             Started::Starting => Some(InvocationState::new(
@@ -557,7 +590,7 @@ impl tilo_actions::remote::ActionHost for TaskRunHost {
             return Pending::ready(Err(error));
         }
         match self.started(id) {
-            Some(Started::Child { wire, owner }) => super::action_host::answered_when_durable(
+            Some(Started::Child { wire, owner, .. }) => super::action_host::answered_when_durable(
                 self.0
                     .state
                     .request_cancellation_for_owner(wire, &owner)
@@ -690,6 +723,13 @@ impl TaskRunHost {
                     task: run.task_id.clone(),
                     epoch: run.native.epoch,
                 },
+                asked: Box::new(Asked {
+                    peer_id,
+                    provider: launch.to_owned(),
+                    resource: request.target.address.resource.clone(),
+                    action: request.target.address.action.clone(),
+                    argument: argument.clone(),
+                }),
             },
         );
         Ok(InvocationState::new(request.invocation, update).receipt())
