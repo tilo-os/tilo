@@ -113,6 +113,7 @@ pub enum Reply {
         load: HostLoad,
     },
     Usage {
+        #[serde(with = "usage_on_the_wire")]
         records: Vec<UsageRecord>,
         by_size: Vec<SizeUsage>,
     },
@@ -124,6 +125,56 @@ pub enum Reply {
     Placed {
         host: String,
     },
+}
+
+/// The socket's frames are postcard, which encodes neither the ledger's
+/// flattened identity nor its skipped empty fields: on the socket a record
+/// travels field by field, every field always present.
+mod usage_on_the_wire {
+    use serde::{Deserialize, Deserializer, Serialize, Serializer};
+
+    use super::super::meter::{RunEnd, UsageKind, UsageRecord, VmIdentity};
+
+    #[derive(Serialize, Deserialize)]
+    struct Wire {
+        kind: UsageKind,
+        identity: VmIdentity,
+        start_ms: u64,
+        end_ms: u64,
+        millis: u64,
+        seconds: u64,
+        ended: Option<RunEnd>,
+        snapshot_bytes: Option<u64>,
+    }
+
+    pub fn serialize<S: Serializer>(records: &[UsageRecord], to: S) -> Result<S::Ok, S::Error> {
+        to.collect_seq(records.iter().map(|record| Wire {
+            kind: record.kind,
+            identity: record.identity.clone(),
+            start_ms: record.start_ms,
+            end_ms: record.end_ms,
+            millis: record.millis,
+            seconds: record.seconds,
+            ended: record.ended,
+            snapshot_bytes: record.snapshot_bytes,
+        }))
+    }
+
+    pub fn deserialize<'de, D: Deserializer<'de>>(from: D) -> Result<Vec<UsageRecord>, D::Error> {
+        Ok(Vec::<Wire>::deserialize(from)?
+            .into_iter()
+            .map(|wire| UsageRecord {
+                kind: wire.kind,
+                identity: wire.identity,
+                start_ms: wire.start_ms,
+                end_ms: wire.end_ms,
+                millis: wire.millis,
+                seconds: wire.seconds,
+                ended: wire.ended,
+                snapshot_bytes: wire.snapshot_bytes,
+            })
+            .collect())
+    }
 }
 
 /// One request, one reply. `None` when no service listens at `socket`.
@@ -145,4 +196,57 @@ pub fn ask(socket: &Path, request: &Request, patience: Duration) -> io::Result<O
         .write_value(&mut stream, request)
         .map_err(io::Error::other)?;
     FRAMING.read_value(&mut stream).map_err(io::Error::other)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::super::meter::{RunEnd, UsageKind, VmIdentity};
+    use super::*;
+
+    fn over_the_socket(reply: &Reply) -> Reply {
+        let mut frame = Vec::new();
+        FRAMING.write_value(&mut frame, reply).unwrap();
+        FRAMING.read_value(&mut frame.as_slice()).unwrap().unwrap()
+    }
+
+    #[test]
+    fn usage_crosses_the_socket_whole() {
+        let identity = VmIdentity {
+            vm: "ws/default".into(),
+            workspace: "ws".into(),
+            environment: "default".into(),
+            account: "acct-1".into(),
+            size: VmSize::Small,
+        };
+        let reply = Reply::Usage {
+            records: vec![
+                UsageRecord {
+                    kind: UsageKind::Running,
+                    identity: identity.clone(),
+                    start_ms: 1_000,
+                    end_ms: 4_500,
+                    millis: 3_500,
+                    seconds: 3,
+                    ended: Some(RunEnd::Suspended),
+                    snapshot_bytes: None,
+                },
+                UsageRecord {
+                    kind: UsageKind::Snapshot,
+                    identity,
+                    start_ms: 4_500,
+                    end_ms: 9_000,
+                    millis: 4_500,
+                    seconds: 4,
+                    ended: None,
+                    snapshot_bytes: Some(1 << 20),
+                },
+            ],
+            by_size: vec![SizeUsage {
+                size: VmSize::Small,
+                running_seconds: 3,
+                snapshot_byte_seconds: 4 << 20,
+            }],
+        };
+        assert_eq!(over_the_socket(&reply), reply);
+    }
 }
