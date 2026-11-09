@@ -719,6 +719,131 @@ fn a_header_row_that_holds_a_popover_is_the_window_bar() {
     );
 }
 
+/// A row that is the window's bar keeps every function the bar has: the window's search and its
+/// new-tab door stand at the row's trailing end beside its close/restore controls (History is the
+/// row's own, the tab row being hidden: `nav_shell::tests::the_window_bar_merges_into_the_header_row`
+/// proves it stands there), and a press on the row's own ground moves the window, as one on the
+/// bar's does.
+#[test]
+fn a_row_that_holds_the_bar_keeps_the_windows_functions() {
+    let _settled = crate::motion::testing::settled();
+    let mut frame = shell_window(
+        crate::widget::NavShell::new()
+            .content(Box::new(crate::widget::Text::new("Body")))
+            .content_header(
+                "Design",
+                vec![Box::new(
+                    crate::widget::Button::new("catch-up", "Mia changed 3 messages")
+                        .with_popover(crate::widget::Text::new("What changed")),
+                )],
+            ),
+    );
+    let (row, kept, controls, search, new_tab, window, grab_ground) = {
+        let g = frame.root_mut::<WindowGroup>();
+        let slot = g
+            .held_bar_for_tests()
+            .expect("the app's row is the window's bar");
+        let search = g.window_search().anchor();
+        let grab = Point::new(slot.row.x0 + 40.0, slot.row.center().y);
+        (
+            slot.row,
+            slot.controls,
+            crate::widget::window_controls::WindowControls::lay_out(slot.controls),
+            search,
+            g.new_tab_rect(),
+            g.get_rect(),
+            grab,
+        )
+    };
+    assert!(
+        window.contains(row.center()) && row.height() > 0.0,
+        "{row:?} in {window:?}"
+    );
+    assert!(
+        controls.pill.width() > 0.0 && controls.pill.x1 <= kept.x1 && kept.x1 <= row.x1,
+        "the window's controls end the row: {controls:?} in {kept:?} of {row:?}"
+    );
+    assert!(
+        search.area() > 0.0 && row.contains(search.center()),
+        "the window's search stands in the row: {search:?}"
+    );
+    assert!(
+        new_tab.area() > 0.0 && row.contains(new_tab.center()),
+        "so does its new-tab door: {new_tab:?}"
+    );
+    assert!(
+        new_tab.x1 <= search.x0 && search.x1 <= controls.pill.x0,
+        "the door, the search, then the window's controls, as the bar shows them: {new_tab:?}          {search:?} {controls:?}"
+    );
+    for (name, rect) in [("search", search), ("new tab", new_tab)] {
+        assert!(
+            (rect.center().y - row.center().y).abs() < 0.5,
+            "the {name} stands on the row's centre line: {rect:?} in {row:?}"
+        );
+    }
+    // The window's controls are the window's, and a press on the row's own ground is the
+    // window's to move it by — the drag the bar's pill gives.
+    let g = frame.root_mut::<WindowGroup>();
+    assert!(g.bar_grab_hit(grab_ground), "the row moves the window");
+    assert!(
+        !g.bar_grab_hit(new_tab.center()),
+        "the new-tab door is a control, not a handle"
+    );
+    assert!(
+        !g.bar_grab_hit(search.center()),
+        "the search is a control, not a handle"
+    );
+    assert!(
+        !g.bar_grab_hit(controls.close.center()),
+        "close is a control, not a handle"
+    );
+}
+
+/// A window whose row stands as the bar's slots keeps the same functions, so a person gets one
+/// answer either way: the search and the window's controls stand at the bar's trailing end, and
+/// the bar's ground moves the window.
+#[test]
+fn a_row_standing_as_slots_keeps_the_windows_functions() {
+    let _settled = crate::motion::testing::settled();
+    let mut frame = shell_window(
+        crate::widget::NavShell::new()
+            .content(Box::new(crate::widget::Text::new("Body")))
+            .content_header(
+                "Design",
+                vec![Box::new(
+                    crate::widget::Button::icon_only("new", icons::Icon::Plus, "New")
+                        .on_effect(|| {}),
+                )],
+            ),
+    );
+    let (bar, search, controls) = {
+        let g = frame.root_mut::<WindowGroup>();
+        assert!(g.draws_its_bar_for_tests(), "the window draws its own bar");
+        (
+            g.bar_rect(),
+            g.window_search().anchor(),
+            g.bar.window_controls().pill,
+        )
+    };
+    assert!(
+        search.area() > 0.0 && bar.contains(search.center()),
+        "the window's search stands in the bar: {search:?} in {bar:?}"
+    );
+    assert!(
+        controls.area() > 0.0 && bar.contains(controls.center()),
+        "the window's controls end the bar: {controls:?} in {bar:?}"
+    );
+    // The bar's own ground — anywhere on it that is not one of its controls — moves the window.
+    let g = frame.root_mut::<WindowGroup>();
+    assert!(
+        (0..u32_of(bar.width())).any(|x| {
+            let at = Point::new(bar.x0 + f64::from(x), bar.center().y);
+            g.bar_grab_hit(at)
+        }),
+        "the bar moves the window"
+    );
+}
+
 /// `v` as a logical pixel count: the fixtures' sizes are small.
 fn u32_of(v: f64) -> u32 {
     #[allow(

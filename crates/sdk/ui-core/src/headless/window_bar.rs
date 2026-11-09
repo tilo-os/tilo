@@ -16,8 +16,6 @@ use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
 
 use super::FrameHarness;
-use crate::widget::tabs::TAB_BAR_HEIGHT;
-use crate::widget::window_controls::{ControlsState, WindowControls};
 use crate::widget::{TabBar, TabDescriptor, Widget, WindowBar, WindowSearchRequest};
 
 /// The one tab the stand-in window shows.
@@ -84,12 +82,11 @@ impl FrameHarness {
     }
 
     /// The window's bar as the frame offers it to the content's header row: the room the
-    /// window's controls take at its trailing end, shown now, listing nothing else.
+    /// window's furniture takes at its trailing end ([`crate::widget::merged_row_width`]), shown
+    /// now, listing nothing else.
     fn window_bar_offer(&self) -> WindowBar {
-        let width = f64::from(self.viewport.0);
-        let row = Rect::new(0.0, 0.0, width, TAB_BAR_HEIGHT);
         WindowBar {
-            controls_width: WindowControls::lay_out(row).pill.width(),
+            controls_width: crate::widget::merged_row_width(),
             revealed: true,
             top_inset: 0.0,
             lists_actions: false,
@@ -543,60 +540,69 @@ impl FrameHarness {
                 controls: Vec::new(),
             };
         }
-        // A row holding the bar is the app's own: its slots are read in the frame, and the bar
-        // shows the window's controls at the row's trailing end.
+        // A row holding the bar is the app's own: its slots are read in the frame, and the window's
+        // furniture stands at the row's trailing end.
         if self.row_holds {
+            let Some(slot) = self.row_bar_slot() else {
+                return crate::window_toolbar::BarLayout {
+                    spare: 0.0,
+                    controls: Vec::new(),
+                };
+            };
             return crate::window_toolbar::BarLayout {
                 spare: 0.0,
-                controls: self
-                    .row_bar_slot()
-                    .map(|slot| {
-                        self.row_controls(slot)
-                            .iter()
-                            .map(|(control, rect)| {
-                                let icon = match control {
-                                    crate::widget::window_controls::WindowControl::Minimize => {
-                                        crate::icons::Icon::Minus
-                                    }
-                                    crate::widget::window_controls::WindowControl::Maximize => {
-                                        crate::icons::Icon::Maximize2
-                                    }
-                                    crate::widget::window_controls::WindowControl::Close => {
-                                        crate::icons::Icon::X
-                                    }
-                                };
-                                crate::window_toolbar::BarControl::new(
-                                    match control {
-                                        crate::widget::window_controls::WindowControl::Minimize => {
-                                            "minimize"
-                                        }
-                                        crate::widget::window_controls::WindowControl::Maximize => {
-                                            "maximize"
-                                        }
-                                        crate::widget::window_controls::WindowControl::Close => {
-                                            "close"
-                                        }
-                                    },
-                                    control.target(),
-                                    rect,
-                                )
-                                .named(crate::i18n::I18nManager::lookup_plain(
-                                    control.name_key(false),
-                                ))
-                                .icon(Some(icon.name().to_owned()))
-                            })
-                            .collect()
-                    })
-                    .unwrap_or_default(),
+                controls: self.row_furniture_layout(slot),
             };
         }
         self.painted_window_bar(width).bar_layout()
     }
 
-    /// The window's controls where they stand while the app's header row holds the bar: laid
-    /// out at the row's trailing end, as a window's frame puts them there.
-    fn row_controls(&self, slot: crate::widget::WindowBarSlot) -> WindowControls {
-        WindowControls::lay_out(slot.controls)
+    /// The window's furniture in a row holding the bar, as the layout check reads the bar's
+    /// controls: the new-tab door and the window's own close/restore.
+    fn row_furniture_layout(
+        &self,
+        slot: crate::widget::WindowBarSlot,
+    ) -> Vec<crate::window_toolbar::BarControl> {
+        use crate::widget::window_controls::WindowControl;
+        use crate::window_toolbar::BarControl;
+        let lookup = crate::i18n::I18nManager::lookup_plain;
+        let furniture = crate::widget::window_header::RowFurniture::of(slot);
+        let mut out = Vec::new();
+        if furniture.new_tab.area() > 0.0 {
+            out.push(
+                BarControl::new("new-tab", "tab-new", furniture.new_tab)
+                    .named(crate::widget::tabs::NEW_TAB.to_owned())
+                    .icon(Some(crate::icons::Icon::Plus.name().to_owned())),
+            );
+        }
+        for (slot, control, rect) in [
+            (
+                "minimize",
+                WindowControl::Minimize,
+                furniture.controls.minimize,
+            ),
+            (
+                "maximize",
+                WindowControl::Maximize,
+                furniture.controls.maximize,
+            ),
+            ("close", WindowControl::Close, furniture.controls.close),
+        ] {
+            if rect.area() <= 0.0 {
+                continue;
+            }
+            let icon = match control {
+                WindowControl::Minimize => crate::icons::Icon::Minus,
+                WindowControl::Maximize => crate::icons::Icon::Maximize2,
+                WindowControl::Close => crate::icons::Icon::X,
+            };
+            out.push(
+                BarControl::new(slot, control.target(), rect)
+                    .named(lookup(control.name_key(false)))
+                    .icon(Some(icon.name().to_owned())),
+            );
+        }
+        out
     }
 
     /// How the window's bar, as the desktop draws it across a window
@@ -738,22 +744,30 @@ impl FrameHarness {
             "a hosted window's bar wears its app's icon, as every desktop window's does: \
              mount the app with FrameHarness::for_app"
         );
-        // The app's header row is the bar: it draws itself, and only the window's controls stand
-        // over its trailing end.
+        let title = self.window_tab().title;
+        let frame_top = self.frame_top();
+        // The app's header row is the bar: it draws itself, and the window's furniture stands at
+        // its trailing end.
         if self.row_holds {
             if let Some(slot) = self.row_bar_slot() {
-                self.row_controls(slot).paint(
+                let furniture = crate::widget::window_header::RowFurniture::of(slot);
+                let search = &mut self.window_search;
+                search.set_app_name(&title);
+                furniture.place_search(search);
+                search.set_frame_origin(Point::new(0.0, frame_top));
+                furniture.paint(
                     scene,
                     transform,
+                    &mut self.text,
                     &self.theme,
-                    ControlsState::default(),
+                    &self.presence,
+                    search,
+                    crate::widget::window_header::RowFurnitureState::default(),
                 );
             }
             return;
         }
         let mut bar = self.window_bar(width);
-        let title = self.window_tab().title;
-        let frame_top = self.frame_top();
         let search = &mut self.window_search;
         search.set_app_name(&title);
         crate::widget::place_window_search(&bar, search);
@@ -842,7 +856,7 @@ fn bar_height_px() -> u32 {
         clippy::cast_sign_loss,
         reason = "TAB_BAR_HEIGHT is a small positive layout constant"
     )]
-    let px = TAB_BAR_HEIGHT.ceil() as u32;
+    let px = crate::widget::tabs::TAB_BAR_HEIGHT.ceil() as u32;
     px
 }
 
@@ -930,7 +944,7 @@ mod tests {
             ..crate::window_toolbar::WindowToolbar::default()
         }));
         let bar = harness.window_bar(800.0);
-        assert!((bar.bar_height() - TAB_BAR_HEIGHT).abs() < f64::EPSILON);
+        assert!((bar.bar_height() - crate::widget::tabs::TAB_BAR_HEIGHT).abs() < f64::EPSILON);
         let rects = bar.test_rects();
         let sidebar = rects
             .iter()
@@ -1330,7 +1344,8 @@ mod tests {
             );
         }
         assert!(
-            (strip.y0 - TAB_BAR_HEIGHT).abs() < 0.5 && (shown.bar_height - strip.y1).abs() < 0.5,
+            (strip.y0 - crate::widget::tabs::TAB_BAR_HEIGHT).abs() < 0.5
+                && (shown.bar_height - strip.y1).abs() < 0.5,
             "the strip stands under the row, in the bar: {shown:?}"
         );
         let bar = harness.window_bar(420.0);

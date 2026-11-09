@@ -3215,6 +3215,7 @@ pub use nav_shell::{
 pub use window_header::{
     HISTORY_CONTROL_ID, HeaderStatus, HistoryControl, HistoryOpener, STATUS_ACTION_ID,
     StatusAction, WindowBar, WindowBarSlot, WindowHeader, WindowHistory, WindowStatus,
+    merged_row_width,
 };
 mod nav_list;
 pub use nav_list::{
@@ -3415,8 +3416,7 @@ pub(crate) use window_group::place_search as place_window_search;
 pub use window_group::{
     DEFAULT_STRIP_USABLE_PX, RESIZE_HANDLE_PX, WIDTH_FLOOR_PX, WIDTH_MAX_PERMILLE,
     WIDTH_MIN_PERMILLE, WIDTH_NARROW_PERMILLE, WIDTH_NORMAL_PERMILLE, WIDTH_WIDE_PERMILLE,
-    WindowGroup, WindowGroupBounds, WindowWidth, max_group_px, merged_controls_width, min_group_px,
-    permille_for_px,
+    WindowGroup, WindowGroupBounds, WindowWidth, max_group_px, min_group_px, permille_for_px,
 };
 pub mod cursor;
 pub mod edge_resize;

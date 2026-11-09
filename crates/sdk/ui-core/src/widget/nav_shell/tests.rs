@@ -1890,7 +1890,7 @@ fn present_shell(
 #[test]
 fn the_window_bar_merges_into_the_header_row() {
     let theme = Theme::dark();
-    let width = crate::widget::merged_controls_width(&theme);
+    let width = crate::widget::merged_row_width();
     let mut h = harness(mail_shell(), 1280, 800, theme);
     h.root_mut::<NavShell>()
         .set_history_control(Some(HistoryControl::Closed));
@@ -1949,7 +1949,7 @@ fn the_window_bar_merges_into_the_header_row() {
 #[test]
 fn a_header_in_the_window_bar_hides_until_reached_for() {
     let theme = Theme::dark();
-    let width = crate::widget::merged_controls_width(&theme);
+    let width = crate::widget::merged_row_width();
     let (content, content_events) = Probe::boxed("content");
     let shell = NavShell::new()
         .sidebar(Probe::boxed("sidebar").0)

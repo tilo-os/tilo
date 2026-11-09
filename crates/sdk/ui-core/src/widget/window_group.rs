@@ -7,7 +7,7 @@ use crate::time::{Duration, Instant};
 use crate::widget::TaffyTreeExt;
 use crate::widget::edge_resize::{WidthLimits, WindowEdge};
 use crate::widget::tabs::close_fade;
-use crate::widget::window_controls::{ControlsState, WindowControl, WindowControls};
+use crate::widget::window_controls::WindowControl;
 use crate::widget::{AppModel, ModelPath};
 use crate::widget::{
     FloatingSurfaceProvider, TabBar, TabDescriptor, TileContent, TileHost, Widget,
@@ -167,17 +167,20 @@ pub struct WindowGroup {
     close_reports: Vec<crate::application::ComponentCloseReport>,
     pub id: u64,
     bar: TabBar,
-    /// Where the app's own header row stands while it holds the window's bar, and where the
-    /// window's controls go: the row is the window's bar then — the app draws it at the window's
-    /// top and the window draws no bar of its own above it
-    /// ([`crate::widget::window_header::content_bar`]).
+    /// Where the app's own header row stands while it holds the window's bar: the row is the
+    /// window's bar then — the app draws it at the window's top and the window draws no bar of its
+    /// own above it ([`crate::widget::window_header::content_bar`]).
     held_bar: Option<crate::widget::WindowBarSlot>,
-    /// The window's controls in a held bar's row, and which of them the pointer is on and has
-    /// pressed: a row that is the bar carries the window's controls at its trailing end.
-    held_controls: WindowControls,
+    /// The window's furniture in that row: its close/restore controls, its search and its
+    /// new-tab door at the row's trailing end, as the bar shows them.
+    held: crate::widget::window_header::RowFurniture,
+    /// Which control of the held row's furniture the pointer is on and has pressed.
     held_hover: Option<WindowControl>,
     held_pressed: Option<WindowControl>,
-    /// The controls in the held row changed what they show: the window paints again.
+    /// The pointer on the held row's new-tab door, and pressing it.
+    held_new_tab_hover: bool,
+    held_new_tab_pressed: bool,
+    /// The furniture in the held row changed what it shows: the window paints again.
     held_dirty: bool,
     /// Each tab's host, boxed so it keeps its address while it stays in the
     /// window: the frame's layout pointer map names the shown host by
@@ -335,13 +338,6 @@ pub struct WindowGroup {
     motion_source: crate::tokens::MotionSource,
 }
 
-/// Room the window's controls (Full screen, Restore, close) take at the
-/// trailing end of an app's header row that holds the window's bar: three
-/// of the row's icon buttons, a row gap apart.
-pub fn merged_controls_width(theme: &Theme) -> f64 {
-    let m = crate::chrome::HeaderRowMetrics::resolve(theme);
-    3.0 * m.chip + 2.0 * m.gap
-}
 /// How long the pointer rests on a window edge before the edge lights up:
 /// passing over one on the way elsewhere changes nothing but the cursor.
 const EDGE_HOVER_DWELL: Duration = Duration::from_millis(120);
@@ -367,7 +363,7 @@ impl WindowGroup {
             f64::from(theme.tokens.radii.tile),
             &theme.tokens.elevation.floating,
         );
-        if !self.maximized {
+        if !self.maximized && self.navigation_bar_visible() {
             scene.push_layer(
                 vello::peniko::Fill::NonZero,
                 vello::peniko::BlendMode::default(),
@@ -439,9 +435,11 @@ impl WindowGroup {
             close_reports: vec![],
             bar,
             held_bar: None,
-            held_controls: WindowControls::default(),
+            held: crate::widget::window_header::RowFurniture::default(),
             held_hover: None,
             held_pressed: None,
+            held_new_tab_hover: false,
+            held_new_tab_pressed: false,
             held_dirty: false,
             hosts,
             width,
@@ -503,12 +501,16 @@ impl WindowGroup {
         self.width
     }
 
+    /// The window shows its bar: its own band above the content, or the row its app draws at its
+    /// top ([`crate::widget::window_header::content_bar`]). One bar per window, never two.
+    fn shows_its_bar(&self) -> bool {
+        !self.external_navigation && (!self.fullscreen_presentation || self.fullscreen_bar_drawn())
+    }
+
+    /// The window draws its bar as a band of its own above the content. A window whose app's own
+    /// header row holds the bar draws none: the row is that bar.
     fn navigation_bar_visible(&self) -> bool {
-        // A window shows one bar: while its app's own header row holds it, the row is that bar and
-        // the window draws none above it.
-        self.held_bar.is_none()
-            && !self.external_navigation
-            && (!self.fullscreen_presentation || self.fullscreen_bar_drawn())
+        self.held_bar.is_none() && self.shows_its_bar()
     }
 
     pub(crate) fn set_fullscreen_presentation(&mut self, fullscreen: bool) {
@@ -1362,7 +1364,12 @@ impl WindowGroup {
         std::mem::take(&mut self.pending_close_commit)
     }
 
+    /// The new-tab door: in the bar's own band, or in the row the app draws while it holds the
+    /// bar.
     pub fn new_tab_rect(&self) -> Rect {
+        if self.held_bar.is_some() {
+            return self.held.new_tab;
+        }
         self.bar.new_tab_rect()
     }
 
@@ -1818,12 +1825,24 @@ impl WindowGroup {
         self.hosts.len()
     }
 
+    /// The bar's row: the band the window draws above its content, or the row its app draws at
+    /// the window's top while it holds the bar. A person moves the window by either.
     pub fn bar_rect(&self) -> Rect {
-        // A window whose app's row is its bar draws none: nothing of the bar is there to hit.
-        if self.held_bar.is_some() {
-            return Rect::ZERO;
-        }
-        self.bar.bar_rect()
+        self.held_bar
+            .map_or_else(|| self.bar.bar_rect(), |slot| slot.row)
+    }
+
+    /// Whether `p` is on the held row's new-tab door: the app's own controls under it never hear
+    /// the press.
+    fn held_new_tab_hit(&self, p: Point) -> bool {
+        let plus = self.held.new_tab;
+        plus.area() > 0.0 && plus.contains(p)
+    }
+
+    /// Whether `p` is in the part of the row that holds the bar which the window keeps for its own
+    /// furniture: a press there is the window's controls', never the window's to move by.
+    fn held_furniture_hit(&self, p: Point) -> bool {
+        self.held_bar.is_some() && self.held.trailing.contains(p)
     }
 
     /// Where the app's own header row stands while it holds the window's bar, and where the
@@ -1847,20 +1866,22 @@ impl WindowGroup {
     /// right-edge resize band. Used by [`GroupRow`](crate::widget::group_row::GroupRow) to arbitrate a press
     /// into a group-reorder drag vs. a tab/resize gesture.
     pub fn bar_grab_hit(&self, p: Point) -> bool {
-        if !self.navigation_bar_visible() {
+        if !self.shows_its_bar() || !self.bar_rect().contains(p) {
             return false;
         }
-        if !self.bar_rect().contains(p) {
+        if self.resize_grab_hit(p) || self.held_furniture_hit(p) {
             return false;
         }
-        if self.resize_grab_hit(p) {
-            return false;
+        // A row that holds the bar is the window's bar whole, its app's own drawing included: a
+        // press anywhere but on the window's furniture moves the window, as one on the bar does.
+        if self.held_bar.is_some() {
+            return true;
         }
         let plus = self.bar.new_tab_rect();
         if plus.area() > 0.0 && plus.contains(p) {
             return false;
         }
-        if self.bar.toolbar_hit(p) || self.search.hit(p) {
+        if self.bar.toolbar_hit(p) || self.search.hit(p) || self.window_control_hit(p) {
             return false;
         }
         !self.tab_rects().iter().any(|r| r.contains(p))
@@ -1870,10 +1891,12 @@ impl WindowGroup {
     /// canvas: anywhere on the bar that is not a control, its title and
     /// location included. The resize edge and the search control are not.
     pub fn carry_grab_hit(&self, p: Point) -> bool {
-        self.navigation_bar_visible()
+        self.shows_its_bar()
             && self.bar_rect().contains(p)
             && !self.resize_grab_hit(p)
+            && !self.held_furniture_hit(p)
             && !self.search.hit(p)
+            && !self.window_control_hit(p)
             && !self.bar.control_hit(p)
     }
 
@@ -1892,18 +1915,28 @@ impl WindowGroup {
     /// (maximize or restore, and close) or on the glass pill they stand in,
     /// whose padding is the window's too — never the app's underneath.
     pub(crate) fn window_control_hit(&self, p: Point) -> bool {
-        self.navigation_bar_visible()
-            && (self.bar.window_controls().hit(p).is_some() || self.bar.control_pill_hit(p))
+        if !self.shows_its_bar() {
+            return false;
+        }
+        let controls = if self.held_bar.is_some() {
+            self.held.controls
+        } else {
+            *self.bar.window_controls()
+        };
+        controls.hit(p).is_some() || controls.on_pill(p)
     }
 
     /// Where a finger can grab the whole group: anywhere on its tab bar,
     /// tabs included, except the new-tab button and the resize edge.
     pub fn touch_grab_hit(&self, p: Point) -> bool {
-        if !self.navigation_bar_visible() || !self.bar_rect().contains(p) {
+        if !self.shows_its_bar() || !self.bar_rect().contains(p) {
             return false;
         }
-        if self.resize_grab_hit(p) {
+        if self.resize_grab_hit(p) || self.held_furniture_hit(p) {
             return false;
+        }
+        if self.held_bar.is_some() {
+            return true;
         }
         let plus = self.bar.new_tab_rect();
         (plus.area() <= 0.0 || !plus.contains(p)) && !self.bar.toolbar_hit(p) && !self.search.hit(p)
@@ -2047,6 +2080,12 @@ impl WindowGroup {
     /// What the button of the window's bar at `p` does, for its tooltip.
     #[must_use]
     pub fn bar_tooltip_at(&self, p: Point) -> Option<(Rect, String)> {
+        if self.held_bar.is_some() {
+            // The row's own controls name themselves; the window's furniture names what it does.
+            return self
+                .held_new_tab_hit(p)
+                .then(|| (self.held.new_tab, crate::widget::tabs::NEW_TAB.to_owned()));
+        }
         if !self.navigation_bar_visible() {
             return None;
         }
@@ -2067,6 +2106,8 @@ impl WindowGroup {
         if self.navigation_bar_visible() {
             self.bar
                 .draw_overlay(scene, transform, text_renderer, theme, presence);
+        }
+        if self.shows_its_bar() {
             self.search
                 .draw_overlay(scene, transform, text_renderer, theme, presence);
         }
@@ -3158,6 +3199,8 @@ impl Widget for WindowGroup {
         // redraw) the same way.
         if self.navigation_bar_visible() {
             children.push(&self.bar);
+        }
+        if self.shows_its_bar() {
             children.push(&self.search);
         }
         let active = self.bar.active_id();
@@ -3186,9 +3229,13 @@ impl Widget for WindowGroup {
 
     fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
         let active = self.bar.active_id();
+        let band = self.navigation_bar_visible();
+        let shows = self.shows_its_bar();
         let mut children: Vec<&mut dyn Widget> = Vec::new();
-        if self.navigation_bar_visible() {
+        if band {
             children.push(&mut self.bar);
+        }
+        if shows {
             children.push(&mut self.search);
         }
         if let Some((id, host)) = self.hosts.iter_mut().find(|(id, _)| *id == active) {
@@ -3269,7 +3316,7 @@ impl Widget for WindowGroup {
         self.prepare_layout(theme);
         // One bar per window: the app's own header row holds it where it cannot stand as the
         // bar's slots, and the window draws none above it then.
-        self.held_bar = self.offer_bar_to_app(theme);
+        self.held_bar = self.offer_bar_to_app();
         let bar_node = self
             .navigation_bar_visible()
             .then(|| self.bar.build_layout(taffy, theme, node_map));
@@ -3312,7 +3359,6 @@ impl Widget for WindowGroup {
                 self.bar.apply_layout(taffy, bar_child, new_origin);
             }
         }
-        self.place_search();
         let active_id = self.bar.active_id();
         let tile_index = usize::from(self.navigation_bar_visible());
         if let (Some((_, h)), Some(&tile_child)) = (
@@ -3328,7 +3374,11 @@ impl Widget for WindowGroup {
             self.held_bar = held;
             self.style_dirty = true;
         }
-        self.lay_out_held_controls();
+        self.held = held.map_or_else(
+            crate::widget::window_header::RowFurniture::default,
+            crate::widget::window_header::RowFurniture::of,
+        );
+        self.place_search();
     }
     fn draw(
         &mut self,
@@ -3473,28 +3523,9 @@ impl Widget for WindowGroup {
                 scene.pop_layer();
             }
         }
-        // While the app's header row is the window's bar, its controls stand at the row's
-        // trailing end, over the app's own drawing, as they do in the bar.
-        if self.held_bar.is_some() && self.held_controls.pill.area() > 0.0 {
-            self.held_controls.paint(
-                scene,
-                transform,
-                theme,
-                ControlsState {
-                    maximized: self.maximized,
-                    hovered: self.held_hover,
-                    pressed: self.held_pressed,
-                    lifts: self
-                        .held_hover
-                        .or(self.held_pressed)
-                        .map_or([0.0; 3], |control| {
-                            let mut lifts = [0.0; 3];
-                            lifts[control.index()] = 1.0;
-                            lifts
-                        }),
-                },
-            );
-        }
+        // While the app's header row is the window's bar, the window's furniture stands at the
+        // row's trailing end, over the app's own drawing, as it does in the bar.
+        self.draw_held_furniture(scene, transform, tr, theme, presence);
         self.draw_closing_hosts(scene, transform, tr, theme, presence);
         self.draw_bar_over_content(bar_over, scene, transform, tr, theme, presence);
         if self.navigation_bar_visible() {
@@ -3540,8 +3571,8 @@ impl Widget for WindowGroup {
             *ctx.handled = true;
             return;
         }
-        // The window's controls in its app's row are the window's, not the app's under them.
-        if self.held_control_input(event, ctx.scale_factor) {
+        // The window's furniture in its app's row is the window's, not the app's under it.
+        if self.held_row_input(event, ctx.scale_factor) {
             *ctx.handled = true;
             return;
         }
@@ -3549,7 +3580,7 @@ impl Widget for WindowGroup {
         // is typed into its field before the bar or the app sees it.
         let found = self.takes_find(event, *ctx.modifiers);
         let routed = !found
-            && self.navigation_bar_visible()
+            && self.shows_its_bar()
             && self
                 .search
                 .route(event, &mut ctx.reborrow(ctx.path, ctx.node_id));
@@ -3694,8 +3725,9 @@ impl Widget for WindowGroup {
             || self.held_dirty
             || edge_due
             || (self.navigation_bar_visible()
-                && ((self.bar.needs_redraw() || self.bar.needs_animation_frame())
-                    || (self.search.needs_redraw() || self.search.needs_animation_frame())))
+                && (self.bar.needs_redraw() || self.bar.needs_animation_frame()))
+            || (self.shows_its_bar()
+                && (self.search.needs_redraw() || self.search.needs_animation_frame()))
             || self.active_host().is_some_and(Widget::needs_redraw)
             || self.card_hosts().any(Widget::needs_redraw)
     }
@@ -3706,9 +3738,10 @@ impl Widget for WindowGroup {
         // The bar, its search and the active host: what the group draws. A
         // host drawing a card over the desk draws that card here too, so what
         // it recorded is this frame's.
-        let shows_bar = self.navigation_bar_visible();
-        if shows_bar {
+        if self.navigation_bar_visible() {
             self.bar.mark_drawn();
+        }
+        if self.shows_its_bar() {
             self.search.mark_drawn();
         }
         let active = self.bar.active_id();

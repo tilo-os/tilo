@@ -3366,6 +3366,14 @@ impl TabBar {
         self.pending_context_menu.take()
     }
 
+    /// Open the window's menu at `at`, for the tab the bar belongs to: a window whose own header
+    /// row holds the bar has no band to right-click, so the row asks here for the menu the bar
+    /// opens.
+    pub fn open_context_menu(&mut self, at: Point) {
+        self.touch();
+        self.pending_context_menu = Some((self.active_id, at));
+    }
+
     /// The tab a right-click (or long press) at `p` opens the window menu for: the pill under it,
     /// else the active tab, since the menu is the window's; the active tab's own slots keep their
     /// gestures.
@@ -3836,7 +3844,24 @@ pub const NEW_TAB_CHIP_PX: f64 = TAB_BAR_HEIGHT - 2.0 * TAB_PILL_INSET_Y;
 
 /// What the strip's new-tab control says for itself: its words where the bar has room for
 /// them, and what it is called to assistive technology everywhere.
-const NEW_TAB: &str = "New tab";
+pub(crate) const NEW_TAB: &str = "New tab";
+
+/// Paint the new-tab door at `rect`: the shared small button, bare at rest so it never competes
+/// with a tab, a lift of the ground under the pointer. A bar and the row of a window that holds
+/// its bar draw the door through here, so it looks the same in either.
+pub(crate) fn paint_new_tab(
+    scene: &mut Scene,
+    transform: Affine,
+    tr: &mut TextRenderer,
+    theme: &Theme,
+    rect: Rect,
+    hovered: bool,
+) {
+    let face = super::ButtonFace::icon_only(rect, icons::Icon::Plus, NEW_TAB)
+        .control_size(super::ControlSize::Small)
+        .hovered(hovered);
+    super::Button::paint(scene, transform, tr, theme, &face);
+}
 
 const PILL_GAP: f64 = 6.0;
 /// Text inset on either end of a pill; the leading glyph starts here too.
@@ -5227,9 +5252,15 @@ impl TabBar {
             super::window_toolbar_row::labelled_face(self.new_tab_rect, NEW_TAB, false)
                 .hovered(self.hover_new_tab)
         } else {
-            crate::widget::ButtonFace::icon_only(self.new_tab_rect, icons::Icon::Plus, NEW_TAB)
-                .control_size(crate::widget::ControlSize::Small)
-                .hovered(self.hover_new_tab)
+            paint_new_tab(
+                scene,
+                transform,
+                tr,
+                theme,
+                self.new_tab_rect,
+                self.hover_new_tab,
+            );
+            return;
         };
         crate::widget::Button::paint(scene, transform, tr, theme, &face);
     }
