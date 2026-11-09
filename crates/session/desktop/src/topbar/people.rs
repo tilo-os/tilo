@@ -165,8 +165,8 @@ impl TopBarChrome {
     }
 
     /// The others' faces in reading order, then the "+N" badge last, the whole stack ending at
-    /// `stack_right_x` . Returns how many faces were drawn (the people's and the badge, if any).
-    /// Every face is the shared [`ui::presence::FaceStack`]: an agent wears its client's hue as a
+    /// `stack_right_x` . Returns where the stack stands (zero when nobody else is here). Every
+    /// face is the shared [`ui::presence::FaceStack`]: an agent wears its client's hue as a
     /// rounded square and a person a circle, at every scale the desktop shows people.
     pub(super) fn draw_avatar_chips(
         &mut self,
@@ -176,7 +176,7 @@ impl TopBarChrome {
         text_renderer: &mut TextRenderer,
         center_y: f64,
         stack_right_x: f64,
-    ) -> usize {
+    ) -> Rect {
         let colors = &theme.tokens.colors;
         let faces: Vec<ui::presence::Face<'_>> = self
             .collaborator_names
@@ -209,7 +209,16 @@ impl TopBarChrome {
             colors.surfaces.base,
         );
         self.face_rects = rects;
-        faces.len().saturating_add(usize::from(badge.is_some()))
+        if faces.is_empty() && badge.is_none() {
+            return Rect::ZERO;
+        }
+        let width = ui::presence::FaceStack::BAR.width_of(faces.len(), self.collaborator_overflow);
+        Rect::new(
+            stack_right_x - width,
+            center_y - BAR_CONTROL_PX / 2.0,
+            stack_right_x,
+            center_y + BAR_CONTROL_PX / 2.0,
+        )
     }
 
     /// A quiet "+N watching" label for pages reading this workspace, left of the invite button,
@@ -252,24 +261,6 @@ impl TopBarChrome {
         pill
     }
 
-    /// Sets [`Self::avatar_stack_rect`] to the drawn faces' bounds, zero when nobody else is here.
-    /// `pos` is `(center_y, stack_right_x)` .
-    pub(super) fn set_avatar_stack_bounds(&mut self, pos: (f64, f64), slot_count: usize) {
-        let (center_y, stack_right_x) = pos;
-        if slot_count == 0 {
-            self.avatar_stack_rect = Rect::ZERO;
-            return;
-        }
-        let width = ui::presence::FaceStack::BAR
-            .width_of(self.collaborator_initials.len(), self.collaborator_overflow);
-        self.avatar_stack_rect = Rect::new(
-            stack_right_x - width,
-            center_y - BAR_CONTROL_PX / 2.0,
-            stack_right_x,
-            center_y + BAR_CONTROL_PX / 2.0,
-        );
-    }
-
     /// The people cluster, right to left from `right_x` : the invite button, the watching count,
     /// the people button, then the faces. Returns its left edge, where the controls before it end.
     pub(super) fn draw_people_cluster(
@@ -301,9 +292,8 @@ impl TopBarChrome {
             self.people_button_rect = Rect::ZERO;
             right_x
         };
-        let slot_count =
+        self.avatar_stack_rect =
             self.draw_avatar_chips(scene, transform, theme, text_renderer, center_y, right_x);
-        self.set_avatar_stack_bounds((center_y, right_x), slot_count);
         // The watching count is part of the people button: it opens who is here too.
         if !watching.is_zero_area() && !self.people_button_rect.is_zero_area() {
             self.people_button_rect = self.people_button_rect.union(watching);

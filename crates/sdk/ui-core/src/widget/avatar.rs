@@ -570,7 +570,7 @@ impl<'a> AvatarFace<'a> {
             &RoundedRect::from_rect(disc, side / 2.0),
         );
         let label = format!("+{count}");
-        let style = overflow_style(ctx.theme, side);
+        let style = initials_style(ctx.theme, side);
         let (width, height) = ctx.text.measure_style(&label, None, &style);
         let centre = disc.center();
         // As readable as the initials beside it.
@@ -665,14 +665,6 @@ pub fn initial_ink(fill: Color, theme: &Theme) -> Color {
 /// Initials are sized by the disc they sit in, not by the reader's text
 /// scale: the theme's emphasised label face at 40 % of the side.
 pub(crate) fn initials_style(theme: &Theme, side: f64) -> TextStyle {
-    theme
-        .text(TextRole::Label)
-        .strong()
-        .with_content_size(crate::num::f32_of_f64(side * 0.4))
-}
-
-/// "+12" is up to three glyphs, so it sits a little smaller than initials.
-fn overflow_style(theme: &Theme, side: f64) -> TextStyle {
     theme
         .text(TextRole::Label)
         .strong()

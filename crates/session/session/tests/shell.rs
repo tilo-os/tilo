@@ -1216,28 +1216,26 @@ fn a_persons_presence_shows_their_face_and_opens_the_roster() {
         "the face has no control of its own beside a chip: {:?}",
         session.accessible_labels()
     );
-    // Three here: three faces. And a fourth: three faces and a count, which is narrower than one
-    // face more.
+    // Three here stand three faces, a face's step wider each; the fourth takes the face at the
+    // group's end that counts the rest, and everyone past it is counted there, so a crowd takes no
+    // more of the bar than four here.
     let mut widths = vec![one.2];
     for (count, label) in [
         (2, "Mia Clayton and Sam Okafor are here"),
         (3, "Mia Clayton and 2 others are here"),
         (4, "Mia Clayton and 3 others are here"),
+        (5, "Mia Clayton and 4 others are here"),
     ] {
         set_here(&session, count);
-        until(&mut session, |session| says(session, label));
-        widths.push(bar_control(&session, label).map_or_else(
-            || panic!("{count} here: {:?}", session.accessible_labels()),
-            |rect| rect.2,
-        ));
+        widths.push(common::wait_for(&mut session, label, |session| bar_control(session, label)).2);
     }
     assert!(
-        widths[3] - widths[2] < widths[1] - widths[0],
-        "the fourth here is a count, not a face: {widths:?}"
+        widths[2] - widths[1] > 1.0 && widths[3] - widths[2] > 1.0,
+        "a face joins the group, then the count's own face: {widths:?}"
     );
     assert!(
-        widths[2] - widths[1] > 1.0,
-        "a face joins the group: {widths:?}"
+        (widths[4] - widths[3]).abs() <= 1.0,
+        "a crowd is counted, not drawn: {widths:?}"
     );
     assert!(
         door.2 < 40.0,
@@ -1253,11 +1251,10 @@ fn a_persons_presence_shows_their_face_and_opens_the_roster() {
         "nobody's name stands anywhere while the roster is closed: {:?}",
         session.accessible_labels()
     );
-    press(&mut session, "Mia Clayton and 3 others are here");
+    press(&mut session, "Mia Clayton and 4 others are here");
     until(&mut session, |session| {
         let labels = session.accessible_labels();
-        ["Mia Clayton", "Sam Okafor", "Jo Park", "Ada Byron"]
-            .into_iter()
+        HERE.into_iter()
             .all(|name| labels.iter().any(|label| label == name))
     });
     keep(&mut session, "shell-people-roster");
@@ -2211,7 +2208,13 @@ fn creating_a_named_workspace_from_the_workspaces_surface_makes_it() {
 // ---- the bar's trailing group, its material and a compact bar ---------------------------
 
 /// The people who come here in these tests, in the order they arrive.
-const HERE: [&str; 4] = ["Mia Clayton", "Sam Okafor", "Jo Park", "Ada Byron"];
+const HERE: [&str; 5] = [
+    "Mia Clayton",
+    "Sam Okafor",
+    "Jo Park",
+    "Ada Byron",
+    "Nils Berg",
+];
 
 /// Who is here, as the collaboration plane lists them: the first `count` of [`HERE`].
 fn set_here(session: &Session, count: usize) {
