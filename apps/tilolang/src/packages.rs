@@ -9,6 +9,15 @@ macro_rules! embedded {
         Embedded {
             dir: $dir,
             source: include_str!(concat!("../../tl/", $dir, "/app.tl")),
+            scenarios: "",
+            ids: include_str!(concat!("../../tl/", $dir, "/app.ids")),
+        }
+    };
+    ($dir:literal, $scenarios:literal) => {
+        Embedded {
+            dir: $dir,
+            source: include_str!(concat!("../../tl/", $dir, "/app.tl")),
+            scenarios: include_str!(concat!("../../tl/", $dir, "/", $scenarios)),
             ids: include_str!(concat!("../../tl/", $dir, "/app.ids")),
         }
     };
@@ -18,8 +27,26 @@ macro_rules! embedded {
 pub struct Embedded {
     /// The package's directory under `apps/tl`.
     pub dir: &'static str,
+    /// Its app's source, `app.tl`.
     pub source: &'static str,
+    /// The scenarios the package stages beside it (`scenarios.tl`), where it keeps them in a
+    /// file of their own: what a capture stages and the tests open a window at, and what an
+    /// installed app leaves out.
+    pub scenarios: &'static str,
     pub ids: &'static str,
+}
+
+impl Embedded {
+    /// The package as the compiler reads it: its app, and the scenarios staged beside it.
+    #[must_use]
+    pub fn package(&self) -> tilolang_tilo::tilolang::PackageSource {
+        tilolang_tilo::tilolang::PackageSource::new(
+            [("app.tl", self.source), ("scenarios.tl", self.scenarios)]
+                .into_iter()
+                .filter(|(_, text)| !text.is_empty())
+                .map(|(path, text)| (path.to_owned(), text.to_owned())),
+        )
+    }
 }
 
 /// Every built-in package, in the order they load: a package comes after those it imports.
@@ -29,12 +56,15 @@ pub const EMBEDDED: &[Embedded] = &[
     embedded!("counter"),
     // Tasks is made of tasks and the comments on them.
     embedded!("discussion"),
-    embedded!("tasks"),
+    // Tasks stages its scenarios beside the app, as `tilolang layout-check` and the gallery
+    // stage them.
+    embedded!("tasks", "scenarios.tl"),
     embedded!("notes"),
     // A desk of letters, the shape the outbox and suggestion tests were written against.
     Embedded {
         dir: "letters",
         source: include_str!("../../../crates/lang/tilolang/tests/fixtures/letters/app.tl"),
+        scenarios: "",
         ids: include_str!("../../../crates/lang/tilolang/tests/fixtures/letters/app.ids"),
     },
     embedded!("chat"),
@@ -43,6 +73,7 @@ pub const EMBEDDED: &[Embedded] = &[
     Embedded {
         dir: "handmade",
         source: include_str!("../tests/handmade/app.tl"),
+        scenarios: "",
         ids: "",
     },
 ];

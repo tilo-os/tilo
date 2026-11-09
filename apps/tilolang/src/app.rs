@@ -276,14 +276,15 @@ pub mod builtin {
                 let lock = IdsLock::parse(package.ids).expect("a built-in ids lock parses");
                 let imports: Vec<PackageMeta> =
                     out.iter().map(|done| done.compiled.meta.clone()).collect();
-                let compiled = tilolang::compile_package(package.source, &lock, &imports)
-                    .unwrap_or_else(|diagnostics| {
-                        let rendered: Vec<String> = diagnostics
-                            .iter()
-                            .map(|diagnostic| diagnostic.render("app.tl"))
-                            .collect();
-                        panic!("{} does not compile:\n{}", package.dir, rendered.join("\n"))
-                    });
+                let compiled =
+                    tilolang::compile_package_source(&package.package(), &lock, &imports)
+                        .unwrap_or_else(|diagnostics| {
+                            let rendered: Vec<String> = diagnostics
+                                .iter()
+                                .map(|diagnostic| diagnostic.render("app.tl"))
+                                .collect();
+                            panic!("{} does not compile:\n{}", package.dir, rendered.join("\n"))
+                        });
                 out.push(Built {
                     dir: package.dir,
                     compiled,
