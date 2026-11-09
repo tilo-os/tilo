@@ -22,6 +22,10 @@ reason = "it is the toolkit's CPU fallback renderer, and a UI draws through ui-c
   package = "tilo-ui-kms"
   why = "the toolkit's KMS host keeps one rasterizer across frames and copies only the damaged regions into dumb buffers, which ui-core's offscreen renderer does not expose"
 
+  [[rule.allow]]
+  package = "tilo-browser-runtime"
+  why = "the page's DOM presenter shows a mount as HTML by encoding each frame's scene with the toolkit's scene-to-DOM encoder, the second output of the same scene walk the rasterizer makes; ui-core draws to pixels only and exposes no DOM presenter"
+
 
   [[rule.allow]]
   package = "ebook"
