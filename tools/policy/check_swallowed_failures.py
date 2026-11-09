@@ -48,9 +48,11 @@ import re
 import sys
 import tomllib
 from collections import Counter
+from dataclasses import replace
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+from judged import STAGED_FLAG, Judged, judged  # noqa: E402
 from rust_source import blank_test_items, is_test_file, lex, matching  # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -295,22 +297,30 @@ def arm_body(body: str, at: int) -> str:
     return body[at:]
 
 
-def fallible_names(root: Path) -> set[str]:
+def fallible_names(files: Judged) -> set[str]:
     """The functions these crates define that hand back a `Result`."""
     names: set[str] = set()
     for top in SCANNED:
-        base = root / top
-        if not base.is_dir():
-            continue
-        for path in sorted(base.rglob("*.rs")):
-            relative = path.relative_to(root)
+        for relative, text in files.sources(top, errors="strict"):
             if "target" in relative.parts or "examples" in relative.parts or is_test_file(relative):
                 continue
-            code, _ = lex(path.read_text(encoding="utf-8"))
+            if "Result" not in text:
+                continue
+            code, _ = lex(text)
             for signature in re.finditer(r"\bfn\s+([A-Za-z_]\w*)", code):
                 end = re.compile(r"[;{]", re.DOTALL).search(code, signature.end())
                 if end and "Result" in code[signature.end() : end.start()]:
                     names.add(signature.group(1))
+    return names
+
+
+def judged_names(files: Judged) -> set[str]:
+    """Every name the judged files call, used to narrow which files define one."""
+    names: set[str] = set()
+    for top in SCANNED + DECODE_ONLY:
+        for _, text in files.sources(top, errors="strict"):
+            names.update(match.group(1) for match in CALL.finditer(text))
+            names.update(match.group(1) for match in METHOD_CALL.finditer(text))
     return names
 
 
@@ -471,20 +481,48 @@ def findings_in(text: str, fallible: set[str], failure_shapes: bool = True) -> l
     return list(dict.fromkeys(found))
 
 
-def violations(root: Path) -> list[str]:
-    fallible = fallible_names(root)
+def definitions_of(files: Judged) -> Judged:
+    """The crates' files that may define a name the judged files call.
+
+    A name the judged files never call cannot change their verdict, so only the
+    files that can define one of the names they do call are read. The
+    expression is a loose one -- every file holding ``fn <name>``, whatever
+    surrounds it -- because it only narrows what is read: the files it keeps are
+    parsed by the same rules as ever.
+    """
+    names = judged_names(files)
+    if not names:
+        return replace(files, _only=set())
+    pattern = "fn[[:space:]]+(" + "|".join(sorted(names)) + ")"
+    return files.holding(pattern, *SCANNED)
+
+
+def findings_of_file(
+    relative: Path, text: str, fallible: set[str], failure_shapes: bool
+) -> list[str]:
+    if "target" in relative.parts or "examples" in relative.parts or is_test_file(relative):
+        return []
+    return [
+        f"{relative.as_posix()}:{line}: swallowed failure ({message})"
+        for line, message in findings_in(text, fallible, failure_shapes)
+    ]
+
+
+def audit(root: Path = ROOT, staged: bool = False) -> tuple[list[str], set[Path]]:
+    """Every swallowed failure, and the files it was found by judging."""
+    files = judged(root, staged)
+    scoped = [(top, files.files(top)) for top in SCANNED + DECODE_ONLY]
+    judged_here = {relative for _, paths in scoped for relative in paths}
+    if not judged_here:
+        return [], judged_here
+    fallible = fallible_names(files if not staged else definitions_of(files))
     found: list[str] = []
-    for top in SCANNED + DECODE_ONLY:
-        base = root / top
-        if not base.is_dir():
-            continue
-        for path in sorted(base.rglob("*.rs")):
-            relative = path.relative_to(root)
-            if "target" in relative.parts or "examples" in relative.parts or is_test_file(relative):
-                continue
-            for line, message in findings_in(path.read_text(encoding="utf-8"), fallible, top in SCANNED):
-                found.append(f"{relative.as_posix()}:{line}: swallowed failure ({message})")
-    return found
+    for top, paths in scoped:
+        for relative in paths:
+            found += findings_of_file(
+                relative, files.read(relative, "strict"), fallible, top in SCANNED
+            )
+    return found, judged_here
 
 
 def load_baseline(root: Path) -> dict[str, int]:
@@ -508,9 +546,13 @@ def write_baseline(root: Path, counts: Counter[str]) -> None:
 
 def main(argv: list[str]) -> int:
     root = ROOT
-    found = violations(root)
+    # Recording the baseline counts the whole tree; a commit's files say
+    # nothing about the counts of the rest.
+    update = "--update" in argv
+    staged = STAGED_FLAG in argv and not update
+    found, judged_here = audit(root, staged=staged)
     counts = Counter(entry.split(":", 1)[0] for entry in found)
-    if "--update" in argv:
+    if update:
         write_baseline(root, counts)
         print(f"recorded {sum(counts.values())} swallowed failure(s)", file=sys.stderr)
         return 0
@@ -519,7 +561,13 @@ def main(argv: list[str]) -> int:
         return 0
     baseline = load_baseline(root)
     grown = [entry for entry in found if counts[entry.split(":", 1)[0]] > baseline.get(entry.split(":", 1)[0], 0)]
-    shed = sorted(name for name, count in baseline.items() if counts.get(name, 0) < count)
+    # A count can only fall in a file whose code changed, so a baseline entry
+    # the judged files do not include keeps the count it was recorded with.
+    shed = sorted(
+        name
+        for name, count in baseline.items()
+        if (not staged or Path(name) in judged_here) and counts.get(name, 0) < count
+    )
     if grown:
         print("\n".join(grown))
         print(

@@ -30,6 +30,7 @@ launcher or an own-process test.
 
 from __future__ import annotations
 
+import argparse
 import re
 import sys
 import tomllib
@@ -37,6 +38,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+from judged import Judged, add_staged_argument, judged  # noqa: E402
 from rust_source import is_test_file, line_number, production_source  # noqa: E402
 
 
@@ -78,14 +80,12 @@ class Violation:
         return f"{location}: {self.reason}"
 
 
-def audit_sources(root: Path, crate: Path) -> list[Violation]:
+def audit_sources(files: Judged, crate: Path) -> list[Violation]:
     violations: list[Violation] = []
-    src = root / crate / "src"
-    for path in sorted(src.rglob("*.rs")):
-        relative = path.relative_to(root)
+    for relative, source in files.sources(crate / "src", errors="strict"):
         if relative == CLOCK_MODULE or is_test_file(relative.relative_to(crate / "src")):
             continue
-        text = production_source(path.read_text(encoding="utf-8"))
+        text = production_source(source)
         offsets = [m.start() for m in DIRECT_PATH.finditer(text)]
         offsets += [m.start() for m in BRACED_PATH.finditer(text)]
         for grouped in GROUPED_USE.finditer(text):
@@ -102,37 +102,36 @@ def audit_sources(root: Path, crate: Path) -> list[Violation]:
     return violations
 
 
-def audit_pins(root: Path) -> list[Violation]:
+def audit_pins(files: Judged) -> list[Violation]:
     """Every wall-clock pin in the tree sits where only its caller can reach it."""
     violations: list[Violation] = []
-    for path in sorted((root / "crates").rglob("*.rs")) + sorted(
-        (root / "apps").rglob("*.rs")
-    ):
-        relative = path.relative_to(root)
-        text = path.read_text(encoding="utf-8")
-        hits = list(CAPTURE_PIN.finditer(text)) + list(PROCESS_PIN.finditer(text))
-        if not hits:
-            continue
-        if relative == CAPTURE_LAUNCHER:
-            continue
-        for hit in hits:
-            if PROCESS_PIN.match(hit.group(0)):
-                if OWN_PROCESS_TEST in text:
-                    continue
-                reason = (
-                    "holds the wall clock of the whole process without "
-                    "`tilo_test_env::in_own_process`; the other tests of the "
-                    "process read the time it holds"
+    for scope in (Path("crates"), Path("apps")):
+        for relative, text in files.sources(scope, errors="strict"):
+            hits = list(CAPTURE_PIN.finditer(text)) + list(PROCESS_PIN.finditer(text))
+            if not hits:
+                continue
+            if relative == CAPTURE_LAUNCHER:
+                continue
+            for hit in hits:
+                if PROCESS_PIN.match(hit.group(0)):
+                    if OWN_PROCESS_TEST in text:
+                        continue
+                    reason = (
+                        "holds the wall clock of the whole process without "
+                        "`tilo_test_env::in_own_process`; the other tests of the "
+                        "process read the time it holds"
+                    )
+                else:
+                    if CAPTURE_ASKS in text:
+                        continue
+                    reason = (
+                        "pins the wall clock of the whole process; only a capture "
+                        "may (`ui::clock::freeze_for_capture`), because every "
+                        "thread reads the time it pins"
+                    )
+                violations.append(
+                    Violation(str(relative), line_number(text, hit.start()), reason)
                 )
-            else:
-                if CAPTURE_ASKS in text:
-                    continue
-                reason = (
-                    "pins the wall clock of the whole process; only a capture "
-                    "may (`ui::clock::freeze_for_capture`), because every "
-                    "thread reads the time it pins"
-                )
-            violations.append(Violation(str(relative), line_number(text, hit.start()), reason))
     return violations
 
 
@@ -145,12 +144,12 @@ def extends(crate_value: object, root_value: object) -> bool:
     )
 
 
-def audit_clippy_config(root: Path, crate: Path) -> list[Violation]:
-    crate_config_path = root / crate / "clippy.toml"
-    root_config = tomllib.loads((root / "clippy.toml").read_text(encoding="utf-8"))
-    if not crate_config_path.is_file():
-        return [Violation(str(crate / "clippy.toml"), 0, "missing")]
-    crate_config = tomllib.loads(crate_config_path.read_text(encoding="utf-8"))
+def audit_clippy_config(files: Judged, crate: Path) -> list[Violation]:
+    crate_config_path = crate / "clippy.toml"
+    root_config = tomllib.loads(files.read("clippy.toml", errors="strict"))
+    if not (files.root / crate_config_path).is_file():
+        return [Violation(str(crate_config_path), 0, "missing")]
+    crate_config = tomllib.loads(files.read(crate_config_path, errors="strict"))
     violations = []
     for key, value in root_config.items():
         if key not in crate_config:
@@ -159,21 +158,29 @@ def audit_clippy_config(root: Path, crate: Path) -> list[Violation]:
             reason = f"sets {key!r} differently from the root clippy.toml"
         else:
             continue
-        violations.append(Violation(str(crate / "clippy.toml"), 0, reason))
+        violations.append(Violation(str(crate_config_path), 0, reason))
     return violations
 
 
-def audit(root: Path = ROOT) -> list[Violation]:
-    """Audit every toolkit crate present under ``root``."""
+def audit(root: Path = ROOT, staged: bool = False) -> list[Violation]:
+    """Audit every toolkit crate present under ``root``.
+
+    The clippy configuration of each crate is judged every time: it is a
+    handful of files, and a change to the root ``clippy.toml`` alone can leave
+    a crate's own file wrong.
+    """
+    files = judged(root, staged)
     violations: list[Violation] = []
     for crate in CRATES:
         if (root / crate).is_dir():
-            violations += audit_clippy_config(root, crate) + audit_sources(root, crate)
-    return violations + audit_pins(root)
+            violations += audit_clippy_config(files, crate) + audit_sources(files, crate)
+    return violations + audit_pins(files)
 
 
-def main() -> int:
-    violations = audit()
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    add_staged_argument(parser)
+    violations = audit(staged=parser.parse_args(argv).staged)
     if violations:
         print("UI clock contract FAILED", file=sys.stderr)
         for violation in violations:

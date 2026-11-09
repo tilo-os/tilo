@@ -24,12 +24,14 @@ exempt.
 
 from __future__ import annotations
 
+import argparse
 import re
 import sys
 from dataclasses import dataclass
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+from judged import add_staged_argument, judged  # noqa: E402
 from rust_source import is_test_file, line_number, production_source  # noqa: E402
 
 
@@ -114,27 +116,25 @@ def audit_text(relative: str, text: str) -> list[Violation]:
     return [unique[key] for key in sorted(unique)]
 
 
-def audit(root: Path = ROOT) -> list[Violation]:
+def audit(root: Path = ROOT, staged: bool = False) -> list[Violation]:
     violations: list[Violation] = []
+    files = judged(root, staged)
     for scope in SCOPES:
-        base = root / scope
-        if not base.is_dir():
-            continue
-        for path in sorted(base.rglob("*.rs")):
-            relative = path.relative_to(root)
+        for relative, text in files.sources(scope):
             parts = relative.parts
             if "target" in parts or "src" not in parts:
                 continue
             within_src = Path(*parts[parts.index("src") + 1 :])
             if is_test_file(within_src) or in_formatter(relative):
                 continue
-            text = path.read_text(encoding="utf-8", errors="replace")
             violations += audit_text(relative.as_posix(), text)
     return violations
 
 
-def main() -> int:
-    violations = audit()
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    add_staged_argument(parser)
+    violations = audit(staged=parser.parse_args(argv).staged)
     if violations:
         print("Formats contract FAILED: format through ui::format", file=sys.stderr)
         for violation in violations:

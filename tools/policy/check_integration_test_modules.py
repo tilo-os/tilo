@@ -14,6 +14,9 @@ import sys
 import tomllib
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from judged import add_staged_argument, judged  # noqa: E402
+
 MOD_DECL = re.compile(
     r"^[ \t]*(?:#\[cfg[^\n]*\][ \t]*\n[ \t]*)*"
     r"(?:#\[path[ \t]*=[ \t]*\"(?P<path>[^\"]+)\"\][ \t]*\n?[ \t]*)?"
@@ -68,9 +71,21 @@ def declared_modules(root_file: Path) -> set[Path]:
     return found
 
 
-def orphans(root: Path) -> list[str]:
+def orphans(root: Path = Path("."), staged: bool = False) -> list[str]:
+    """The `tests/*.rs` files no test target compiles.
+
+    With ``staged``, only the crates the commit touches are judged: a crate no
+    staged file belongs to has the verdict it already had. A staged root
+    manifest can change the workspace itself, so it judges every crate.
+    """
+    changed = judged(root, staged=True).changed() if staged else None
+    whole_workspace = changed is None or Path("Cargo.toml") in changed
     errors: list[str] = []
     for crate in workspace_members(root):
+        if not whole_workspace:
+            member = crate.relative_to(root)
+            if not any(member == path or member in path.parents for path in changed):
+                continue
         tests = crate / "tests"
         if not tests.is_dir():
             continue
@@ -94,13 +109,14 @@ def orphans(root: Path) -> list[str]:
     return errors
 
 
-def main() -> int:
+def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "--root", type=Path, default=Path(__file__).resolve().parents[2]
     )
-    args = parser.parse_args()
-    errors = orphans(args.root)
+    add_staged_argument(parser)
+    args = parser.parse_args(argv)
+    errors = orphans(args.root, args.staged)
     for error in errors:
         print(error)
     if errors:

@@ -17,12 +17,14 @@ Test modules and test files are exempt: a test seeds the document it reads.
 
 from __future__ import annotations
 
+import argparse
 import re
 import sys
 from dataclasses import dataclass
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+from judged import add_staged_argument, judged  # noqa: E402
 from rust_source import is_test_file, line_number, production_source, skip_string  # noqa: E402
 
 
@@ -84,9 +86,7 @@ def arguments(text: str, open_paren: int) -> list[str]:
     return [arg.strip() for arg in args]
 
 
-def audit_file(root: Path, path: Path) -> list[Violation]:
-    relative = path.relative_to(root)
-    text = path.read_text(encoding="utf-8")
+def audit_file(relative: Path, text: str) -> list[Violation]:
     if not CALL.search(text):
         return []
     text = production_source(text)
@@ -102,24 +102,23 @@ def audit_file(root: Path, path: Path) -> list[Violation]:
     return violations
 
 
-def audit(root: Path = ROOT) -> list[Violation]:
+def audit(root: Path = ROOT, staged: bool = False) -> list[Violation]:
     violations: list[Violation] = []
+    files = judged(root, staged)
     for top in SCANNED:
-        base = root / top
-        if not base.is_dir():
-            continue
-        for path in sorted(base.rglob("*.rs")):
-            relative = path.relative_to(root)
+        for relative, text in files.sources(top, errors="strict"):
             if any(relative.is_relative_to(allowed) for allowed in ALLOWED):
                 continue
             if "target" in relative.parts or is_test_file(relative):
                 continue
-            violations += audit_file(root, path)
+            violations += audit_file(relative, text)
     return violations
 
 
-def main() -> int:
-    violations = audit()
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    add_staged_argument(parser)
+    violations = audit(staged=parser.parse_args(argv).staged)
     if violations:
         print("Settings write contract FAILED", file=sys.stderr)
         for violation in violations:

@@ -64,15 +64,21 @@ note() { printf '  %s\n' "$*" >&2; }
 
 # Every crate on disk must be a workspace member.
 "$root/scripts/check-workspace-complete.sh"
-python3 "$root/tools/policy/check_app_text_contract.py"
+# These judge a file by its own text, so a commit can only introduce a
+# violation in a file it stages: `--staged` judges the commit's files, read
+# from the index, instead of reading the ten thousand of the tree on every
+# commit. That is what keeps the hook to a few seconds. Nothing slips through:
+# tools/policy/run.sh and CI run each of these over the whole tree, and this
+# hook is the fast answer, not the only one.
+python3 "$root/tools/policy/check_app_text_contract.py" --staged
 python3 "$root/tools/policy/check_session_copy_contract.py"
-python3 "$root/tools/policy/check_ui_host_inputs_contract.py"
-python3 "$root/tools/policy/check_ui_clock_contract.py"
-python3 "$root/tools/policy/check_formats.py" || fail=1
-python3 "$root/tools/policy/check_settings_writes.py" || fail=1
-python3 "$root/tools/policy/check_swallowed_failures.py" || fail=1
-python3 "$root/tools/policy/check_integration_test_modules.py" || fail=1
-GIT_INDEX_FILE="$full_index" python3 "$root/tools/policy/check_too_many_arguments.py" || fail=1
+python3 "$root/tools/policy/check_ui_host_inputs_contract.py" --staged
+python3 "$root/tools/policy/check_ui_clock_contract.py" --staged
+python3 "$root/tools/policy/check_formats.py" --staged || fail=1
+python3 "$root/tools/policy/check_settings_writes.py" --staged || fail=1
+python3 "$root/tools/policy/check_swallowed_failures.py" --staged || fail=1
+python3 "$root/tools/policy/check_integration_test_modules.py" --staged || fail=1
+python3 "$root/tools/policy/check_too_many_arguments.py" --staged || fail=1
 python3 "$root/tools/policy/check_source_file_size.py" --staged || fail=1
 # A wire enum keeps every variant it had, in its place: bytes already written
 # keep meaning what they meant (docs/policies.md). Judged against HEAD, so a

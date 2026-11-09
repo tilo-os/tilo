@@ -25,22 +25,24 @@ reported so it is removed.
 
 from __future__ import annotations
 
+import argparse
 import re
 import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+from judged import add_staged_argument, judged  # noqa: E402
 from rust_source import blank_test_items  # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[2]
-SRC = ROOT / "crates/sdk/ui-core/src"
-HOST_SRC = ROOT / "crates/sdk/tilo-host/src"
-# Code below the toolkit that reads host inputs as the toolkit does: each root
-# with the files of it that are checked (all, or one module and its children).
+# The toolkit's sources, and the code below it that reads host inputs as the
+# toolkit does: each root with the files of it that are checked (all, or one
+# module and its children).
+SRC = Path("crates/sdk/ui-core/src")
 BELOW_TOOLKIT = (
-    (HOST_SRC, None),
-    (ROOT / "crates/collab/collaboration/src", None),
-    (ROOT / "crates/platform/tilo-process/src", "environment"),
+    (Path("crates/sdk/tilo-host/src"), None),
+    (Path("crates/collab/collaboration/src"), None),
+    (Path("crates/platform/tilo-process/src"), "environment"),
 )
 
 NATIVE_PREFIXES = ("native/",)
@@ -88,66 +90,80 @@ def is_exempt(relative: str) -> bool:
     )
 
 
-def host_audit() -> list[str]:
+def host_audit(files) -> list[str]:
     """Host services, the collab client and the host inputs read the process
     only in their native backends (`native/`, `<module>/native.rs`)."""
     violations: list[str] = []
-    for root, module in BELOW_TOOLKIT:
-        for path in sorted(root.rglob("*.rs")):
-            relative = path.relative_to(root).as_posix()
-            if module is not None and relative != f"{module}.rs" and not relative.startswith(f"{module}/"):
+    for scope, module in BELOW_TOOLKIT:
+        for relative, source in files.sources(scope):
+            within = relative.relative_to(scope).as_posix()
+            if module is not None and within != f"{module}.rs" and not within.startswith(f"{module}/"):
                 continue
             if (
-                relative.startswith(NATIVE_PREFIXES)
-                or relative.endswith("/native.rs")
-                or relative.endswith("tests.rs")
+                within.startswith(NATIVE_PREFIXES)
+                or within.endswith("/native.rs")
+                or within.endswith("tests.rs")
             ):
                 continue
-            text = production_source(path.read_text(encoding="utf-8"))
+            text = production_source(source)
             for hit in ENV_READ.finditer(text):
                 line = text.count("\n", 0, hit.start()) + 1
                 violations.append(
-                    f"{root.relative_to(ROOT).as_posix()}/{relative}:{line}: reads the process "
+                    f"{scope.as_posix()}/{within}:{line}: reads the process "
                     "environment outside the native backends"
                 )
     return violations
 
 
-def audit() -> list[str]:
-    violations: list[str] = host_audit()
+def audit(root: Path = ROOT, staged: bool = False) -> list[str]:
+    files = judged(root, staged)
+    violations: list[str] = host_audit(files)
     readers: set[str] = set()
-    for path in sorted(SRC.rglob("*.rs")):
-        relative = path.relative_to(SRC).as_posix()
-        if is_exempt(relative):
+    scope = SRC
+
+    def hits(within: str, text: str) -> list:
+        if is_exempt(within):
+            return []
+        return list(ENV_READ.finditer(production_source(text)))
+
+    for relative, text in files.sources(scope):
+        within = relative.relative_to(scope).as_posix()
+        if is_exempt(within):
             continue
-        text = production_source(path.read_text(encoding="utf-8"))
-        hits = [m for m in ENV_READ.finditer(text)]
-        if not hits:
+        code = production_source(text)
+        reads = list(ENV_READ.finditer(code))
+        if not reads:
             continue
-        readers.add(relative)
-        if relative in PENDING:
+        readers.add(within)
+        if within in PENDING:
             continue
-        for hit in hits:
-            line = text.count("\n", 0, hit.start()) + 1
+        for hit in reads:
+            line = code.count("\n", 0, hit.start()) + 1
             violations.append(
-                f"crates/sdk/ui-core/src/{relative}:{line}: reads the process environment; "
+                f"{scope.as_posix()}/{within}:{line}: reads the process environment; "
                 "take the value from ui::host::HostEnvironment or the runner inputs"
             )
-    for relative in sorted(PENDING - readers):
-        violations.append(
-            f"crates/sdk/ui-core/src/{relative}: no longer reads the process environment; "
-            "remove it from PENDING in tools/policy/check_ui_host_inputs_contract.py"
-        )
-    for relative in sorted(NATIVE_RUNNER_FILES):
-        if not (SRC / relative).is_file():
+    # `PENDING` may only shrink, which a file the commit stages says nothing
+    # about: each entry is read whether or not the commit touched it.
+    for within in sorted(PENDING - readers):
+        path = scope / within
+        if not (root / path).is_file() or hits(within, files.read(path)):
             violations.append(
-                f"crates/sdk/ui-core/src/{relative}: listed as a native runner file but missing"
+                f"{scope.as_posix()}/{within}: no longer reads the process environment; "
+                "remove it from PENDING in tools/policy/check_ui_host_inputs_contract.py"
+            )
+    for within in sorted(NATIVE_RUNNER_FILES):
+        if not (root / SRC / within).is_file():
+            violations.append(
+                f"{scope.as_posix()}/{within}: listed as a native runner file but missing"
             )
     return violations
 
 
-def main() -> int:
-    violations = audit()
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    add_staged_argument(parser)
+    violations = audit(staged=parser.parse_args(argv).staged)
     if violations:
         print("ui host-inputs contract FAILED", file=sys.stderr)
         for violation in violations:
