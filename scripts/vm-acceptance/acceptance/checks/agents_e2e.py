@@ -685,8 +685,20 @@ def own_workspace(ctx, res):
         raise CheckFailed("; ".join(problems))
 
 
-@check("E08", AREA, "An agent's change lands in its own workspace, not the other's: its open of Notes "
-                    "answers ok, and the note it makes there is found there and not from the other")
+def closed_app(agent: Agent) -> str | None:
+    """An app installed in the agent's workspace that is not running, as its `tilo_ls` lists the
+    apps (`name  Label  installed`), the plainest first; None when every one runs."""
+    listed = text_of(agent.tool("tilo_ls", {}))
+    closed = [line.split()[0] for line in listed.splitlines()[1:]
+              if line.split() and line.rstrip().endswith("  installed")]
+    for plain in ("sheets", "calculator", "calendar", "contacts", "mail"):
+        if plain in closed:
+            return plain
+    return closed[0] if closed else None
+
+
+@check("E08", AREA, "An agent's change lands in its own workspace, not the other's: its open of an "
+                    "app answers ok, and the note it makes there is found there and not from the other")
 def own_change(ctx, res):
     scene = _scene(ctx)
     agents = _need(scene, "agents", "E02")
@@ -695,9 +707,16 @@ def own_change(ctx, res):
     titles = {e["name"]: f"E2E {e['name']} agent note {scene['run']}" for e in envs}
     for e in envs:
         agent = agents[e["name"]]
-        # Opening the app is a host action of the agent's run: its answer is what the agent
-        # reads back, and it must say how the open went, not only put up a window.
-        opened, _ = tool_answering(ctx, agent, "tilo_do", {"path": "notes#open"}, f"{e['name']}-open")
+        # Opening an app that is not running yet is a host action of the agent's run (the
+        # workspace launching it): its answer is what the agent reads back, and it must say how
+        # the open went, not only put up a window. A running app's `#open` is its own action.
+        closed = closed_app(agent)
+        if closed is None:
+            raise Unobservable(f"{e['name']}: the agent's workspace lists no installed app that is "
+                               "not running, to open")
+        opened, _ = tool_answering(ctx, agent, "tilo_do", {"path": f"{closed}#open"},
+                                   f"{e['name']}-open")
+        e["opened_app"] = closed
         made, asked = tool_answering(
             ctx, agent, "tilo_do", {"path": "notes#new-note", "args": {"title": titles[e["name"]]}},
             f"{e['name']}-new-note")
@@ -709,7 +728,8 @@ def own_change(ctx, res):
     for e, other in ((one, two), (two, one)):
         agent = agents[e["name"]]
         if is_error(e["opened"]) is not False or not text_of(e["opened"]).startswith("ok"):
-            problems.append(f"{e['name']}: notes#open did not answer ok: {text_of(e['opened'])[:300]}")
+            problems.append(f"{e['name']}: {e['opened_app']}#open did not answer ok: "
+                            f"{text_of(e['opened'])[:300]}")
         if is_error(e["new_note"]) is not False:
             problems.append(f"{e['name']}: new-note was refused: {text_of(e['new_note'])[:300]}")
             continue
