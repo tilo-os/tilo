@@ -48,11 +48,7 @@ fn filesystem(directory: BorrowedFd<'_>) -> io::Result<Filesystem> {
 
 fn kernel_file(file: File) -> io::Result<File> {
     let metadata = file.metadata()?;
-    let mut status = std::mem::MaybeUninit::<libc::statfs>::uninit();
-    // SAFETY: the descriptor is held and the output has the native statfs size.
-    sys::cvt(unsafe { libc::fstatfs(file.as_raw_fd(), status.as_mut_ptr()) })?;
-    // SAFETY: successful fstatfs initialized the output.
-    if unsafe { status.assume_init() }.f_type != libc::SYSFS_MAGIC || metadata.uid() != 0 {
+    if rustix::fs::fstatfs(&file)?.f_type != libc::SYSFS_MAGIC || metadata.uid() != 0 {
         return Err(refused("Btrfs member observation requires kernel sysfs"));
     }
     Ok(file)

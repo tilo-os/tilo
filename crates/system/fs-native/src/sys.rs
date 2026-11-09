@@ -45,29 +45,43 @@ pub(crate) fn fd_path(fd: BorrowedFd<'_>) -> io::Result<PathBuf> {
     std::fs::read_link(format!("/proc/self/fd/{}", fd.as_raw_fd()))
 }
 
+/// An ioctl request as the C library takes it: glibc's `unsigned long`, musl's
+/// `int`. A request code with the top bit of its `int` set is the same 32 bits
+/// either way, which is what the kernel reads.
+fn request(code: u32) -> libc::Ioctl {
+    #[cfg(not(target_env = "musl"))]
+    {
+        libc::Ioctl::from(code)
+    }
+    #[cfg(target_env = "musl")]
+    {
+        libc::Ioctl::from_ne_bytes(code.to_ne_bytes())
+    }
+}
+
 /// Issues an ioctl whose argument is a pointer to `arg`.
 ///
 /// # Safety
 ///
-/// `request` must be an ioctl whose argument is a pointer to a value with the
+/// `code` must be an ioctl whose argument is a pointer to a value with the
 /// exact layout of `T`.
 pub(crate) unsafe fn ioctl_ptr<T>(
     fd: BorrowedFd<'_>,
-    request: libc::Ioctl,
+    code: u32,
     arg: *mut T,
 ) -> io::Result<libc::c_int> {
-    // SAFETY: the caller guarantees that `request` takes a `*mut T`.
-    cvt(unsafe { libc::ioctl(fd.as_raw_fd(), request, arg) })
+    // SAFETY: the caller guarantees that `code` takes a `*mut T`.
+    cvt(unsafe { libc::ioctl(fd.as_raw_fd(), request(code), arg) })
 }
 
 /// Issues an ioctl whose argument is a plain integer.
 pub(crate) fn ioctl_int(
     fd: BorrowedFd<'_>,
-    request: libc::Ioctl,
+    code: u32,
     arg: libc::c_int,
 ) -> io::Result<libc::c_int> {
     // SAFETY: integer-argument ioctls read nothing through the argument.
-    cvt(unsafe { libc::ioctl(fd.as_raw_fd(), request, arg) })
+    cvt(unsafe { libc::ioctl(fd.as_raw_fd(), request(code), arg) })
 }
 
 /// An opaque kernel file handle (`struct file_handle`), as produced by
@@ -165,12 +179,9 @@ impl FileHandle {
 pub(crate) const BTRFS_SUPER_MAGIC: libc::c_long = 0x9123_683E;
 
 pub(crate) fn statfs_type(path: &Path) -> io::Result<libc::c_long> {
-    let c = cstring(path)?;
-    // SAFETY: an all-zero `statfs` is a valid value for the kernel to fill.
-    let mut st: libc::statfs = unsafe { std::mem::zeroed() };
-    // SAFETY: `c` is NUL-terminated and `st` is writable.
-    cvt(unsafe { libc::statfs(c.as_ptr(), &raw mut st) })?;
-    Ok(st.f_type)
+    // rustix types `f_type` as the kernel's signed word on every C library;
+    // musl's own `statfs` types it unsigned.
+    Ok(rustix::fs::statfs(path)?.f_type)
 }
 
 /// Reads an extended attribute without following symlinks. `Ok(None)` when

@@ -1667,7 +1667,9 @@ impl ParentObservedNamespaces {
     }
 }
 fn mount_namespace(file: &File) -> io::Result<()> {
-    const NS_GET_NSTYPE: libc::c_ulong = 0xb703;
+    // `_IO(0xb7, 3)`: musl types ioctl's request as `int`, glibc as
+    // `unsigned long`; `libc::Ioctl` is each one's.
+    const NS_GET_NSTYPE: libc::Ioctl = 0xb703;
     if unsafe { libc::ioctl(file.as_raw_fd(), NS_GET_NSTYPE) } != libc::CLONE_NEWNS {
         return Err(denied());
     }

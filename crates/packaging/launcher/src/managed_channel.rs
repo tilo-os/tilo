@@ -381,6 +381,17 @@ fn receive_credential_chunk(
     answer: &mut [u8],
 ) -> Result<CredentialChunk, String> {
     const WIDTH: usize = std::mem::size_of::<libc::c_int>();
+    // glibc types the control-message lengths as `size_t`, musl as 32-bit
+    // `socklen_t`; a message that fits is under both, so they are read as
+    // `usize` and handed back in the field's own type.
+    fn platform_length<T: TryInto<usize>>(value: T) -> usize {
+        value.try_into().ok().unwrap_or(usize::MAX)
+    }
+    fn field<T: TryFrom<usize>>(value: usize) -> Result<T, String> {
+        value
+            .try_into()
+            .map_err(|_| "control buffer exceeds the platform's control length".to_string())
+    }
     let mut iov = libc::iovec {
         iov_base: answer.as_mut_ptr().cast(),
         iov_len: answer.len(),
@@ -390,7 +401,7 @@ fn receive_credential_chunk(
     msg.msg_iov = &raw mut iov;
     msg.msg_iovlen = 1;
     msg.msg_control = control.as_mut_ptr().cast();
-    msg.msg_controllen = std::mem::size_of_val(&control);
+    msg.msg_controllen = field(std::mem::size_of_val(&control))?;
     let count = unsafe { libc::recvmsg(socket.as_raw_fd(), &raw mut msg, libc::MSG_CMSG_CLOEXEC) };
     if count < 0 {
         return Err(format!(
@@ -407,17 +418,17 @@ fn receive_credential_chunk(
     };
     // recvmsg supplies kernel-validated headers. Bound each payload defensively;
     // never stop after a rejected credential before owning later rights headers.
-    let used = msg.msg_controllen.min(std::mem::size_of_val(&control));
+    let used = platform_length(msg.msg_controllen).min(std::mem::size_of_val(&control));
     unsafe {
         let mut header = libc::CMSG_FIRSTHDR(&raw const msg);
         while !header.is_null() {
             let offset = (header as usize).saturating_sub(msg.msg_control as usize);
-            let base = libc::CMSG_LEN(0) as usize;
+            let base = platform_length(libc::CMSG_LEN(0));
             if offset.checked_add(base).is_none_or(|end| end > used) {
                 received.invalid = true;
                 break;
             }
-            let length = (*header).cmsg_len;
+            let length = platform_length((*header).cmsg_len);
             if length < base {
                 received.invalid = true;
                 break;

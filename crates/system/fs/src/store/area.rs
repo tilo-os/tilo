@@ -1455,8 +1455,8 @@ pub fn hash_file(path: &Path) -> io::Result<[u8; 32]> {
 #[cfg(all(target_os = "linux", feature = "filesystem"))]
 fn reflink(source: &File, target: &File) -> io::Result<()> {
     use std::os::fd::AsRawFd as _;
-    /// `_IOW(0x94, 9, int)`.
-    const FICLONE: libc::c_ulong = 0x4004_9409;
+    /// `_IOW(0x94, 9, int)`, typed as each C library takes ioctl's request.
+    const FICLONE: libc::Ioctl = 0x4004_9409;
     // SAFETY: both descriptors are open files; FICLONE takes the source fd
     // as its argument and touches no memory of ours.
     let rc = unsafe { libc::ioctl(target.as_raw_fd(), FICLONE, source.as_raw_fd()) };

@@ -75,10 +75,9 @@ pub(super) fn measure(file: &File) -> io::Result<Facts> {
         rustix::fs::AtFlags::STATX_DONT_SYNC,
         "Target observation mount identity unavailable",
     )?;
-    let mut fs: libc::statfs = unsafe { std::mem::zeroed() };
-    if unsafe { libc::fstatfs(file.as_raw_fd(), &raw mut fs) } != 0 {
-        return Err(io::Error::last_os_error());
-    }
+    // rustix types `f_type` as the kernel's signed word on every C library;
+    // musl's own `statfs` types it unsigned.
+    let fs = rustix::fs::fstatfs(file)?;
     let mut mount: libc::statvfs = unsafe { std::mem::zeroed() };
     if unsafe { libc::fstatvfs(file.as_raw_fd(), &raw mut mount) } != 0 {
         return Err(io::Error::last_os_error());
