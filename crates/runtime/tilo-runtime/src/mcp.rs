@@ -129,6 +129,17 @@ pub enum Surface {
     Agent,
 }
 
+/// What an agent is told as it connects: what the tools reach, and the one
+/// step that runs a shell command in the workspace.
+const AGENT_INSTRUCTIONS: &str = "These tools act in the person's Tilo workspace, as them, and \
+     History keeps what you do as your run. tilo_ls lists the workspace's apps and what is in \
+     them; tilo_read reads a resource; tilo_do runs an action. To run a shell command in the \
+     workspace (ls, git, cargo build, npm test), call tilo_do with path \"terminal#run\" and \
+     args {command: \"...\"}: it answers with the command line, the directory it ran in, its \
+     exit status and its output, and the next command runs in the same shell. If a command \
+     answers with a refusal, tell the person what it says, then run the command again once they \
+     did it.";
+
 /// A session's requests that work at once; more wait for a turn. One agent
 /// cannot occupy the host with every call it can send.
 pub(crate) const MAX_WORKING: usize = 16;
@@ -1515,9 +1526,13 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
         {
             fields.insert("agent".into(), json!(agent));
         }
-        Ok(
-            json!({"protocolVersion":selected,"capabilities":{"tools":{},"resources":{},"experimental":{SURFACE:{"version":3,"run":run,"execution_id":self.caller.execution_id()}}},"serverInfo":server}),
-        )
+        let mut answer = json!({"protocolVersion":selected,"capabilities":{"tools":{},"resources":{},"experimental":{SURFACE:{"version":3,"run":run,"execution_id":self.caller.execution_id()}}},"serverInfo":server});
+        if self.surface == Surface::Agent
+            && let Some(fields) = answer.as_object_mut()
+        {
+            fields.insert("instructions".into(), json!(AGENT_INSTRUCTIONS));
+        }
+        Ok(answer)
     }
     /// One catalogue page from the action host, as this bridge's caller.
     async fn ask(&self, query: CatalogueQuery) -> Result<CataloguePage, BridgeError> {

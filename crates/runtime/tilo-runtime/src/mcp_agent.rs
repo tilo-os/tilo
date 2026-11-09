@@ -108,7 +108,7 @@ fn tools() -> Vec<Value> {
         ),
         (
             "tilo_do",
-            "Run an action and get its result: `{path: \"notes/Todo#append-paragraph\", args: {text: \"Buy milk\"}}`. Several in order, stopping at the first failure: `calls: [{path, args}, …]`. Start an app: `{path: \"notes#open\"}`. Answers `ok` with the result, or `failed: why`; still running after wait_ms (default 5000) it says `pending <id>` for tilo_status. Same invocation_id never runs twice.",
+            "Run an action and get its result: `{path: \"notes/Todo#append-paragraph\", args: {text: \"Buy milk\"}}`. Several in order, stopping at the first failure: `calls: [{path, args}, …]`. Start an app: `{path: \"notes#open\"}`. Answers `ok` with the result, or `failed: why`; still running after wait_ms (default 5000) it says `pending <id>` for tilo_status. Same invocation_id never runs twice. A shell command in the workspace: `{path: \"terminal#run\", args: {command: \"cargo build\"}}` answers with its output; give a build wait_ms of a few minutes.",
             json!({"path":string,"args":{"type":"object"},"calls":{"type":"array","minItems":1,"maxItems":MAX_CALLS,"items":call},"wait_ms":integer,"invocation_id":string}),
             json!([]),
             json!({"readOnlyHint":false,"destructiveHint":true,"idempotentHint":false,"openWorldHint":true}),
@@ -2022,7 +2022,7 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
     fn not_running_note(name: &str, opens: bool) -> String {
         if opens {
             format!(
-                "{name} is installed but not running; start it with tilo_do {{path: \"{}#open\"}}",
+                "{name} is installed but not running; start it with tilo_do {{path: \"{}#open\"}}, or run one of its actions and it starts first",
                 path_name(name)
             )
         } else {
@@ -2498,6 +2498,39 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
         }
     }
 
+    /// The app `parsed` names and the provider its `action` runs in, and
+    /// whether the path pinned it; `None` for starting the app itself
+    /// ([`Self::launch`]). One of an installed app's own actions
+    /// (`terminal#run`) starts the app first and runs in what it opened, so
+    /// the caller asks once.
+    async fn acting_in(
+        &self,
+        parsed: &ParsedPath,
+        action: &str,
+        wait_ms: Option<u64>,
+    ) -> Result<Option<(String, String, bool)>, String> {
+        match self.app_ref(&parsed.app).await? {
+            AppRef::Installed { opens: false, .. } => {
+                Err(Self::not_running_note(&parsed.app, false))
+            }
+            AppRef::Installed { .. }
+                if action == tilo_actions::remote::APPLICATION_OPEN_ACTION
+                    || !parsed.segments.is_empty() =>
+            {
+                Ok(None)
+            }
+            AppRef::Installed { app_id, .. } => {
+                let provider = self.opened_provider(&app_id, wait_ms).await?;
+                Ok(Some((app_id, provider, true)))
+            }
+            AppRef::Running {
+                app_id,
+                provider,
+                pinned,
+            } => Ok(Some((app_id, provider, pinned))),
+        }
+    }
+
     /// Run the one action `path` names, answering what the host answered as it is.
     async fn do_one_value(
         &self,
@@ -2512,21 +2545,15 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
         })?;
         // The app is looked up once: resolving the path in it does not ask
         // again which apps run.
-        let (app_id, provider, pinned) = match self.app_ref(&parsed.app).await? {
-            AppRef::Installed { app_id, opens } => {
-                if !opens {
-                    return Err(Self::not_running_note(&parsed.app, false));
-                }
-                return self
-                    .launch(&parsed, &app_id, &action, arguments, invocation, wait_ms)
-                    .await
-                    .map(Done::Launched);
-            }
-            AppRef::Running {
-                app_id,
-                provider,
-                pinned,
-            } => (app_id, provider, pinned),
+        let Some((app_id, provider, pinned)) = self.acting_in(&parsed, &action, wait_ms).await?
+        else {
+            let AppRef::Installed { app_id, .. } = self.app_ref(&parsed.app).await? else {
+                return Err(format!("{} started while it was asked to", parsed.app));
+            };
+            return self
+                .launch(&parsed, &app_id, &action, arguments, invocation, wait_ms)
+                .await
+                .map(Done::Launched);
         };
         // A path names a type the way a listing does (`tasks.Task`), so an action is found on
         // the resource a listing showed: such a segment is read by the program form first, and
@@ -2792,6 +2819,15 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
                 // lets the caller find it among the running ones.
                 if let Some(peer) = value.pointer(super::OPENED_PEER).and_then(Value::as_u64) {
                     return Ok(peer.to_string());
+                }
+                // A host serving the workspace's records names the record it
+                // opened the app on.
+                if let Some(provider) = value
+                    .pointer("/update/output/value/provider")
+                    .and_then(Value::as_str)
+                    .filter(|provider| tilo_actions::remote::is_record_provider(provider))
+                {
+                    return Ok(provider.to_owned());
                 }
                 let (_, running) = self.providers().await?;
                 running
