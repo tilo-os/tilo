@@ -2123,8 +2123,12 @@ mod tests {
             // A phone keeps one thing on screen: the list comes back at rest, its rows closed.
             if width <= 390 {
                 assert!(
-                    row_named(root, label).is_some() && !shows_open(root, label),
-                    "the place's rows come back at rest at {width}×{height}"
+                    row_named(root, label).is_some(),
+                    "the place's list comes back with its rows at {width}×{height}"
+                );
+                assert!(
+                    !shown_named(root, "Subtasks"),
+                    "no row holds the task's document at {width}×{height}"
                 );
             } else {
                 assert!(
