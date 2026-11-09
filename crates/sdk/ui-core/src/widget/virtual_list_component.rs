@@ -1844,7 +1844,12 @@ mod tests {
             ..column_of(rows_offering(4, true))
         };
         let mut front = DescribedList::from_props("list", props);
-        right_press(&mut front, 1, 400.0);
+        press_row(
+            &mut front,
+            1,
+            crate::winit::event::MouseButton::Right,
+            400.0,
+        );
         let fired = queue.take();
         assert_eq!(
             fired.len(),
