@@ -349,8 +349,8 @@ pub async fn issue_agent_grant(
 }
 
 /// Have `root` (the user root the page holds) make `stand_in_public_key`,
-/// a key the page's host holds, the person's stand-in approver until
-/// `expires_at_ns`: while the root lives in this page only, the stand-in can
+/// a key the page's host holds, the person's stand-in approver for
+/// `lifetime_ns` from now: while the root lives in this page only, the stand-in can
 /// certify a new member device of the person (a browser, for 30 days) when a
 /// device of theirs asks for exactly that, and nothing else. It is no device
 /// of the person and reaches nothing of theirs. The root revokes it once the
@@ -360,15 +360,14 @@ pub async fn issue_agent_grant(
 ///
 /// # Errors
 ///
-/// Returns [`CertifyError::Request`] for the root's own key, an expiry that
-/// is not in the future or is beyond
-/// [`tilo_user_identity::STAND_IN_LIFETIME_NS`], a label a certificate does
+/// Returns [`CertifyError::Request`] for the root's own key, a lifetime of
+/// zero or beyond [`STAND_IN_LIFETIME_NS`], a label a certificate does
 /// not carry, or when signing fails or does not verify.
 pub async fn issue_stand_in(
     root: &dyn DeviceSigner,
     stand_in_public_key: [u8; 32],
     label: &str,
-    expires_at_ns: u64,
+    lifetime_ns: u64,
 ) -> Result<DeviceCert, CertifyError> {
     let request = |error: &dyn std::fmt::Display| CertifyError::Request(error.to_string());
     let user_public_key = root.device_public_key();
@@ -386,18 +385,18 @@ pub async fn issue_stand_in(
             "a stand-in's label names who holds it".into(),
         ));
     }
-    let now = tilo_clock::unix_now_ns();
-    if expires_at_ns <= now || expires_at_ns.saturating_sub(now) > STAND_IN_LIFETIME_NS {
+    if lifetime_ns == 0 || lifetime_ns > STAND_IN_LIFETIME_NS {
         return Err(CertifyError::Request(
-            "a stand-in expires after now, and within 30 days".into(),
+            "a stand-in lasts for a while, and at most 30 days".into(),
         ));
     }
+    let now = tilo_clock::unix_now_ns();
     let mut cert = tilo_user_identity::prepare_stand_in_cert(
         user_public_key,
         stand_in_public_key,
         label,
         now,
-        expires_at_ns,
+        now.saturating_add(lifetime_ns),
     );
     let digest = tilo_user_identity::device_cert_signing_digest(&cert).map_err(|e| request(&e))?;
     cert.signature = root
@@ -761,7 +760,7 @@ mod tests {
             &root,
             stand_in.verifying_key().to_bytes(),
             "Stand-in on tilo.example",
-            now + 30 * day,
+            30 * day,
         )
         .await
         .unwrap();
@@ -809,26 +808,22 @@ mod tests {
         )
         .unwrap();
 
-        for expiry in [now - 1, now + 31 * day] {
+        assert_eq!(cert.expires_at_ns, Some(cert.issued_at_ns + 30 * day));
+        assert!(cert.issued_at_ns >= now);
+        for lifetime in [0, 30 * day + 1] {
             assert!(matches!(
                 issue_stand_in(
                     &root,
                     stand_in.verifying_key().to_bytes(),
                     "Stand-in",
-                    expiry
+                    lifetime
                 )
                 .await,
                 Err(CertifyError::Request(_))
             ));
         }
         assert!(matches!(
-            issue_stand_in(
-                &root,
-                root.verifying_key().to_bytes(),
-                "Stand-in",
-                now + day
-            )
-            .await,
+            issue_stand_in(&root, root.verifying_key().to_bytes(), "Stand-in", day).await,
             Err(CertifyError::Request(_))
         ));
     }

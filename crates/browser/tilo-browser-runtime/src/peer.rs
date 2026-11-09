@@ -761,6 +761,33 @@ pub async fn certify_with_root(
     .map_err(js_error)
 }
 
+/// Have the root the page holds (`root`, the identity handle
+/// `pendingPairings` takes) make `key_hex`, a key the page's host holds, the
+/// person's stand-in approver for as long as a stand-in may last: while the
+/// root is in this page only, the host can then certify a new member device
+/// of the person that a device of theirs asked for, and nothing else.
+/// Resolves to the certificate's canonical bytes (postcard) as hex, as the
+/// host's stand-in `certify` request carries it.
+///
+/// # Errors
+///
+/// Rejects for a malformed key, the root's own key, or a failed signature.
+#[wasm_bindgen(js_name = certifyStandIn)]
+pub async fn certify_stand_in(root: JsValue, key_hex: String) -> Result<String, JsError> {
+    let root = PageSigner::from_js(&root)?;
+    let cert = tilo_browser_peer::issue_stand_in(
+        &root,
+        device_key(&key_hex)?,
+        "Stand-in approver",
+        tilo_user_identity::STAND_IN_LIFETIME_NS,
+    )
+    .await
+    .map_err(js_error)?;
+    tilo_user_identity::canonical::canonical_bytes(&cert)
+        .map(hex::encode)
+        .map_err(js_error)
+}
+
 /// The new devices waiting at the host at `post` for the member root the
 /// page holds (`root`) to pair them: `[{digest, pairingCode, label, device,
 /// invite, requestedAtMs}]` JSON, keys, digest and invite as hex (`invite`
