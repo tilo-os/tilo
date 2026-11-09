@@ -160,6 +160,18 @@ impl<'a> Walk<'a> {
     }
 }
 
+/// The `fragment` node a call of another package's view stands for: the node it replaces, the
+/// key it takes, and the events it keeps. A call that can be shown fills it with the callee's
+/// boundary; one that cannot draws a failed or waiting state in it instead.
+struct Fragment<'a> {
+    /// The node the call compiled to, whose props and anchor the fragment takes.
+    n: &'a NodeBuild,
+    /// The key the fragment stands at in the tree, the call's own.
+    key: String,
+    /// The retained events of the call, wired to the fragment.
+    events: std::collections::BTreeMap<String, Retained>,
+}
+
 /// A view call met while building a tree: the boundary the host renders.
 pub(crate) struct Stub<'a> {
     /// The key the call's node has in the tree.
@@ -652,7 +664,8 @@ impl Core {
         if let Some(boundaries) = hook.as_deref_mut()
             && let Some(call) = self.view_call(&n.kind, &n.props, cx.offer, acc)
         {
-            return self.view_call_node(cx, n, key, events, walk, acc, boundaries, call);
+            let fragment = Fragment { n, key, events };
+            return self.view_call_node(cx, fragment, walk, acc, boundaries, call);
         }
         let below = Walk::below(walk, n, key.as_str());
         let (mut children, rows_total) = self.build_children(cx, (n, &key), below, acc, hook)?;
@@ -714,13 +727,12 @@ impl Core {
     /// arguments passed, and the tree its boundary renders for it.
     fn foreign_view(
         cx: &Build<'_>,
-        n: &NodeBuild,
-        key: String,
-        events: std::collections::BTreeMap<String, Retained>,
+        fragment: Fragment<'_>,
         (vt, args): (ViewTarget, Vec<Value>),
         walk: Walk<'_>,
         boundaries: &mut dyn Boundaries,
     ) -> Result<UiNode, RuntimeError> {
+        let Fragment { n, key, events } = fragment;
         let mut props = n.props.clone();
         props.retain(|name, _| !name.starts_with(ARG_PREFIX) && name != SHOWN);
         let children = boundaries.boundary(Stub {
@@ -745,13 +757,8 @@ impl Core {
     /// the arguments passed, and the toolkit's waiting state where its tree would go. The call
     /// runs again when the package arrives ([`crate::foreign::packages_key`]), which the
     /// waiting state notes as read.
-    fn waiting_view(
-        n: &NodeBuild,
-        key: String,
-        events: std::collections::BTreeMap<String, Retained>,
-        acc: &mut Acc,
-        waiting: Rendered,
-    ) -> UiNode {
+    fn waiting_view(fragment: Fragment<'_>, acc: &mut Acc, waiting: Rendered) -> UiNode {
+        let Fragment { n, key, events } = fragment;
         let mut props = n.props.clone();
         props.retain(|name, _| !name.starts_with(ARG_PREFIX) && name != SHOWN);
         UiNode {
@@ -770,47 +777,46 @@ impl Core {
     /// out"): a package the runtime does not hold yet waits for the session to publish it, a
     /// package that failed to load or a view that failed draws the failed state and its host is
     /// told once.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "a fragment the caller was building: the node, where it stands, and the builders it was passed"
-    )]
     fn view_call_node(
         &self,
         cx: &Build<'_>,
-        n: &NodeBuild,
-        key: String,
-        events: std::collections::BTreeMap<String, Retained>,
+        fragment: Fragment<'_>,
         walk: Walk<'_>,
         acc: &mut Acc,
         boundaries: &mut dyn Boundaries,
         call: Result<(ViewTarget, Vec<Value>), RuntimeError>,
     ) -> Result<UiNode, RuntimeError> {
+        let key = fragment.key.clone();
         match call {
             Ok(call) => {
                 // The call runs after all: a failure that stood for it here is over, and the
                 // host is told the view is back (`shell.md` §6).
                 self.failed_views.borrow_mut().cleared(&key);
-                Self::foreign_view(cx, n, key, events, call, walk, boundaries)
+                Self::foreign_view(cx, fragment, call, walk, boundaries)
             }
             // A call of an app whose package this runtime does not hold: the session publishes
             // it, and until it comes the call waits where it stands, so the rest of the view
             // draws. A call that failed for anything else is the caller's to report.
             Err(error) if self.read_waited(&error) => {
                 let waiting = self.waiting_rendered();
-                Ok(Self::waiting_view(n, key, events, acc, waiting))
+                Ok(Self::waiting_view(fragment, acc, waiting))
             }
             Err(RuntimeError::ViewFailed(failure)) => {
                 self.failed_views
                     .borrow_mut()
                     .note(&key, (*failure).clone());
                 let failed = self.failed_rendered(&key, &failure);
-                Ok(Self::waiting_view(n, key, events, acc, failed))
+                Ok(Self::waiting_view(fragment, acc, failed))
             }
             // The call names a view the runtime cannot reach (its package is here but does not
             // declare it, or the node is malformed): it draws a failed state where it stands, as
             // one whose package failed to load does, and the host is told once.
             Err(error) => {
-                let named = n.kind.strip_prefix(FOREIGN_VIEW).unwrap_or_default();
+                let named = fragment
+                    .n
+                    .kind
+                    .strip_prefix(FOREIGN_VIEW)
+                    .unwrap_or_default();
                 let (app, view) = match named.split_once(':') {
                     Some((app, view)) => (app.to_owned(), view.to_owned()),
                     None => (String::new(), named.to_owned()),
@@ -822,7 +828,7 @@ impl Core {
                 };
                 self.failed_views.borrow_mut().note(&key, failure.clone());
                 let failed = self.failed_rendered(&key, &failure);
-                Ok(Self::waiting_view(n, key, events, acc, failed))
+                Ok(Self::waiting_view(fragment, acc, failed))
             }
         }
     }
