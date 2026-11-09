@@ -210,6 +210,16 @@ struct RemindersBasis {
     hour: i64,
 }
 
+/// The calendar window.
+///
+/// The widgets that carry bulk — the notes editor, the editor's text fields
+/// and dropdowns, the quick add and the sidebar's task list — sit behind
+/// [`Box`]. A window is made by value: `build` fills a literal, and every
+/// constructor on the way out (`new`, `new_detached`, `new_demo`) hands the
+/// whole thing on. Measured by value, those widgets would make a window a
+/// fifth of a megabyte, so one construction would spend most of a stack on
+/// copies of it. Behind boxes a window is a handful of kilobytes, and making
+/// one costs what its widgets' own construction costs.
 #[allow(
     clippy::struct_excessive_bools,
     reason = "each bool is an independent, unrelated flag (demo mode, sidebar state, sync status, form scratch state); grouping them into enums would not express any real invariant between them and would touch every read/write site across this file"
@@ -246,16 +256,16 @@ pub struct CalendarApp {
     /// Where those choices are kept, following the person across devices.
     display_setting: Option<ui::framework::Setting<crate::display::CalendarDisplay>>,
 
-    notes_editor: NotesEditor,
+    notes_editor: Box<NotesEditor>,
     bound: Option<Sel>,
     seeded: bool,
 
     // --- event form (live only while an Event detail is open) -----------
     /// Editable title field (local text, mirrored into the event on change).
-    title_input: TextInput,
+    title_input: Box<TextInput>,
     /// Editable location field.
-    location_input: TextInput,
-    invite_input: TextInput,
+    location_input: Box<TextInput>,
+    invite_input: Box<TextInput>,
     /// Which event the form widgets are currently seeded from — so a new
     /// selection reseeds the inputs and edits land on the right event.
     form_event: Option<Id>,
@@ -267,7 +277,7 @@ pub struct CalendarApp {
     task_due_picker: DatePicker,
     /// The editor's dropdowns (calendar, repeat, alert, time zone, colour;
     /// a task's priority and project).
-    choices: Choices,
+    choices: Box<Choices>,
     /// Cached form field geometry (see [`FormRects`]).
     form: FormRects,
     /// The modal sheet the editor is presented in, laid out against the
@@ -275,7 +285,7 @@ pub struct CalendarApp {
     modal: Option<ModalLayout>,
     /// The one-line quick add, and this window's keys, as cards over the
     /// calendar.
-    quick_add: sheets::QuickAdd,
+    quick_add: Box<sheets::QuickAdd>,
     shortcuts: sheets::ShortcutSheet,
     /// Height of the notes editor's content at its last layout, so the sheet
     /// grows with the notes.
@@ -283,7 +293,7 @@ pub struct CalendarApp {
     /// The sidebar's overflow menu (export, import).
     /// "Only this event / All future events", asked after a drag on an
     /// occurrence of a repeating event.
-    repeat_scope_menu: Popover,
+    repeat_scope_menu: Box<Popover>,
     /// The drag that question is about, until it is answered or dismissed.
     pending_repeat: Option<repeat_scope::PendingRepeatChange>,
     /// Opens the platform search scoped to contacts when the Guests field
@@ -385,7 +395,7 @@ pub struct CalendarApp {
     /// actions live together instead of leaking into the root widget.
     agenda: AgendaView,
     /// The Tasks screen: the selected list in full, with its entry field.
-    tasks: TasksView,
+    tasks: Box<TasksView>,
     /// Receiver for an in-flight background `CalDAV` pull. The live sync runs on a
     /// worker thread (the `ui` event loop is synchronous and must never block on
     /// the network); its result is drained here on the next `sync` pass.
@@ -441,7 +451,7 @@ impl CalendarApp {
     pub(crate) fn new_detached() -> Self {
         let mut app = Self::build();
         let dispatcher = ui::framework::Dispatcher::detached("so.tilo.calendar", "test-author");
-        app.notes_editor = Self::new_notes_editor(None, Some(&dispatcher));
+        app.notes_editor = Box::new(Self::new_notes_editor(None, Some(&dispatcher)));
         app.dispatcher = Some(dispatcher);
         app
     }
@@ -485,16 +495,11 @@ impl CalendarApp {
             configured: accounts,
             display: crate::display::CalendarDisplay::default(),
             display_setting: None,
-            notes_editor: Self::new_notes_editor(None, None),
+            notes_editor: Box::new(Self::new_notes_editor(None, None)),
             bound: None,
             seeded: false,
-            title_input: TextInput::local()
-                .with_placeholder(TITLE_PLACEHOLDER)
-                .with_text_role(ui::tokens::TextRole::Heading)
-                .with_id("event_title"),
-            location_input: TextInput::local()
-                .with_placeholder("Add location")
-                .with_id("event_location"),
+            title_input: title_field(),
+            location_input: location_field(),
             invite_input: invite_input(&contacts_requested),
             form_event: None,
             event_popovers: EventPopovers::new(today),
@@ -502,15 +507,13 @@ impl CalendarApp {
             task_due_picker: DatePicker::new(today)
                 .with_today(today)
                 .with_accessible_name("Task due date"),
-            choices: Choices::new(),
+            choices: Box::new(Choices::new()),
             form: FormRects::default(),
             modal: None,
-            quick_add: sheets::QuickAdd::new(),
+            quick_add: Box::new(sheets::QuickAdd::new()),
             shortcuts: sheets::ShortcutSheet::new(),
             notes_content_h: 0.0,
-            repeat_scope_menu: Popover::new()
-                .with_items(repeat_scope::choices())
-                .with_label(repeat_scope::label()),
+            repeat_scope_menu: repeat_scope_menu(),
             pending_repeat: None,
             places: ui::widget::NavFeed::new(),
             month: ui::widget::DateFeed::new(),
@@ -547,7 +550,7 @@ impl CalendarApp {
             faces: ui::widget::FaceMotions::default(),
             timeline: TimelineInteraction::new(),
             agenda: AgendaView::new(),
-            tasks: TasksView::new(),
+            tasks: Box::new(TasksView::new()),
             sync_rx: None,
             store: std::rc::Rc::new(std::cell::RefCell::new(store)),
             live: None,
@@ -595,7 +598,7 @@ impl CalendarApp {
         accounts: Option<AccountStore>,
         sample: bool,
     ) {
-        self.notes_editor = Self::new_notes_editor(self.bound, Some(&dispatcher));
+        *self.notes_editor = Self::new_notes_editor(self.bound, Some(&dispatcher));
         self.dispatcher = Some(dispatcher);
         if let Some(accounts) = accounts {
             self.configured = accounts;
@@ -1254,7 +1257,7 @@ impl CalendarApp {
             Some(s) if self.detail_open => s,
             _ => {
                 if self.bound.is_some() {
-                    self.notes_editor = Self::new_notes_editor(None, self.dispatcher.as_ref());
+                    *self.notes_editor = Self::new_notes_editor(None, self.dispatcher.as_ref());
                     self.bound = None;
                 }
                 return;
@@ -1266,7 +1269,7 @@ impl CalendarApp {
         // Every action that creates an event or a task starts its notes.
         let (Sel::Event(id) | Sel::Task(id)) = sel;
         if crate::resource::notes_path(id).object(doc).is_some() {
-            self.notes_editor = Self::new_notes_editor(Some(sel), self.dispatcher.as_ref());
+            *self.notes_editor = Self::new_notes_editor(Some(sel), self.dispatcher.as_ref());
             self.bound = Some(sel);
             self.dirty = true;
         }
@@ -4096,7 +4099,7 @@ impl Widget for CalendarApp {
         if self.repeat_scope_menu.is_open() {
             self.repeat_scope_menu.set_viewport(self.rect);
             Widget::draw_overlay(
-                &mut self.repeat_scope_menu,
+                &mut *self.repeat_scope_menu,
                 scene,
                 transform,
                 text_renderer,
@@ -4263,7 +4266,7 @@ impl Widget for CalendarApp {
     /// The notes editor is laid out for the detail pane's notes, also while
     /// the calendar paints over it.
     fn for_each_layout_child(&self, visitor: &mut dyn FnMut(&dyn Widget)) -> bool {
-        visitor(&self.notes_editor);
+        visitor(&*self.notes_editor);
         true
     }
 
@@ -4723,16 +4726,47 @@ impl CalendarApp {
 
 /// The Guests field: an address typed in, or its Contacts button, which
 /// sets `requested` for the next frame to open the picker.
-fn invite_input(requested: &std::rc::Rc<std::cell::Cell<bool>>) -> TextInput {
+fn invite_input(requested: &std::rc::Rc<std::cell::Cell<bool>>) -> Box<TextInput> {
     let requested = std::rc::Rc::clone(requested);
-    TextInput::local()
-        .with_placeholder("Invite by email")
-        .with_id("event_invite")
-        .with_trailing_accessory(
-            ui::icons::Icon::Users,
-            &crate::resource::t("calendar-contact-attendees"),
-            ui::widget::AccessoryAction::Run(Box::new(move || requested.set(true))),
-        )
+    Box::new(
+        TextInput::local()
+            .with_placeholder("Invite by email")
+            .with_id("event_invite")
+            .with_trailing_accessory(
+                ui::icons::Icon::Users,
+                &crate::resource::t("calendar-contact-attendees"),
+                ui::widget::AccessoryAction::Run(Box::new(move || requested.set(true))),
+            ),
+    )
+}
+
+/// The event form's title field.
+fn title_field() -> Box<TextInput> {
+    Box::new(
+        TextInput::local()
+            .with_placeholder(TITLE_PLACEHOLDER)
+            .with_text_role(ui::tokens::TextRole::Heading)
+            .with_id("event_title"),
+    )
+}
+
+/// The event form's location field.
+fn location_field() -> Box<TextInput> {
+    Box::new(
+        TextInput::local()
+            .with_placeholder("Add location")
+            .with_id("event_location"),
+    )
+}
+
+/// The question a dragged occurrence of a repeating event asks: this event
+/// alone, or this one and those after it.
+fn repeat_scope_menu() -> Box<Popover> {
+    Box::new(
+        Popover::new()
+            .with_items(repeat_scope::choices())
+            .with_label(repeat_scope::label()),
+    )
 }
 
 /// A minute-of-day (0..=1439) as a wall-clock time.

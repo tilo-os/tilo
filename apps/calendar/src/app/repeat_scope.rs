@@ -121,7 +121,7 @@ impl CalendarApp {
         if !self.repeat_scope_menu.is_open() {
             return false;
         }
-        ui::Widget::handle_event(&mut self.repeat_scope_menu, event, ctx);
+        ui::Widget::handle_event(&mut *self.repeat_scope_menu, event, ctx);
         let choice = self.repeat_scope_menu.take_selection();
         if !self.repeat_scope_menu.is_open() {
             // Answered, or dismissed: a dismissed drag changes nothing.
