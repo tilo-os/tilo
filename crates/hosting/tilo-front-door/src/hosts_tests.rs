@@ -163,7 +163,8 @@ async fn call(door: &Arc<Door>, token: &str, session: &str, name: &str, argument
         door,
         token,
         Some(session),
-        json!({"jsonrpc":"2.0","id":7,"method":"tools/call","params":{"name":name,"arguments":arguments}}),
+        json!({"jsonrpc":"2.0","id":7,"method":"tools/call","params":{
+            "name":name,"arguments":arguments,"_meta":{"so.tilo.mcp":{"structured":true}}}}),
     )
     .await;
     assert_eq!(reply.status(), StatusCode::OK);
@@ -277,12 +278,12 @@ async fn an_agent_connects_signs_its_person_in_makes_a_workspace_acts_and_is_rev
         &door,
         &token,
         &session,
-        session::CREATE_WORKSPACE,
-        json!({"name":"Studio"}),
+        "tilo_do",
+        json!({"path": "account/workspaces#create", "args": {"name": "Studio"}}),
     )
     .await;
     assert_eq!(created["result"]["isError"], false, "{created}");
-    let studio = created["result"]["structuredContent"]["workspace"]["id"]
+    let studio = created["result"]["structuredContent"]["result"]["workspace"]["id"]
         .as_str()
         .unwrap()
         .to_owned();

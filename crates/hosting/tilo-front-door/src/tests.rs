@@ -520,6 +520,34 @@ pub(crate) async fn call(
     serde_json::from_slice(&bytes).unwrap()
 }
 
+/// [`call`], asking for the typed answer as the SDK does.
+pub(crate) async fn call_typed(
+    door: &Arc<Door>,
+    path: &str,
+    token: &str,
+    session: &str,
+    name: &str,
+    arguments: Value,
+) -> Value {
+    let reply = mcp(
+        door,
+        path,
+        token,
+        Some(session),
+        json!({"jsonrpc":"2.0","id":7,"method":"tools/call","params":{
+            "name":name,"arguments":arguments,"_meta":{"so.tilo.mcp":{"structured":true}}}}),
+    )
+    .await;
+    assert_eq!(reply.status(), StatusCode::OK);
+    let text = String::from_utf8(body(reply).await).unwrap();
+    let last = text
+        .lines()
+        .filter_map(|line| line.strip_prefix("data: "))
+        .next_back()
+        .unwrap_or(&text);
+    serde_json::from_str(last).unwrap()
+}
+
 pub(crate) async fn tool_names(
     door: &Arc<Door>,
     path: &str,
@@ -984,18 +1012,14 @@ async fn a_pinned_session_never_reaches_another_workspace() {
         tools.iter().any(|tool| tool == "tilo_list_apps"),
         "{tools:?}"
     );
-    assert!(
-        !tools
-            .iter()
-            .any(|tool| tool == session::LIST_WORKSPACES || tool == session::CREATE_WORKSPACE)
-    );
+    // The account is not reached from one workspace.
     let refused = call(
         &door,
         &pinned_path,
         &token,
         &session,
-        session::LIST_WORKSPACES,
-        json!({}),
+        "tilo_do",
+        json!({"path": "account/workspaces#list"}),
     )
     .await;
     assert!(
@@ -1028,11 +1052,18 @@ async fn a_pinned_session_never_reaches_another_workspace() {
     // The same grant at the door's root is still pinned.
     let (root_session, _) = initialize(&door, "/", &token).await;
     let tools = tool_names(&door, "/", &token, &root_session).await;
-    assert!(!tools.iter().any(|tool| tool == session::LIST_WORKSPACES));
+    assert!(
+        tools.iter().any(|tool| tool == "tilo_list_apps"),
+        "{tools:?}"
+    );
     assert!(!acted_in(&hosted.callers_of(&alice.id()).await, &garden.id));
 }
 
 #[tokio::test(flavor = "multi_thread")]
+#[expect(
+    clippy::too_many_lines,
+    reason = "one session's story, from no workspace to acting in the one it made"
+)]
 async fn an_account_session_creates_a_workspace_and_acts_in_it() {
     let hosted = Arc::new(Hosted::default());
     hosted.quota.store(1, Ordering::SeqCst);
@@ -1047,34 +1078,50 @@ async fn an_account_session_creates_a_workspace_and_acts_in_it() {
         true
     );
 
-    // No workspace yet: only the account's own tools.
+    // No workspace yet: only the tools the account answers.
     let tools = tool_names(&door, "/", &token, &session).await;
-    assert_eq!(tools, [session::LIST_WORKSPACES, session::CREATE_WORKSPACE]);
-    let listed = call(
+    assert_eq!(tools, ["tilo_ls", "tilo_read", "tilo_do", "tilo_status"]);
+    let listed = call_typed(
         &door,
         "/",
         &token,
         &session,
-        session::LIST_WORKSPACES,
-        json!({}),
+        "tilo_do",
+        json!({"path": "account/workspaces#list"}),
     )
     .await;
     assert_eq!(
-        listed["result"]["structuredContent"]["workspaces"],
+        listed["result"]["structuredContent"]["result"]["workspaces"],
         json!([])
     );
-
-    let created = call(
+    let ls = call(
         &door,
         "/",
         &token,
         &session,
-        session::CREATE_WORKSPACE,
-        json!({"name":"Studio"}),
+        "tilo_ls",
+        json!({"path": "account"}),
+    )
+    .await;
+    assert!(
+        ls["result"]["content"][0]["text"]
+            .as_str()
+            .unwrap()
+            .contains("#mint(workspace, name?, expires_in?)"),
+        "{ls}"
+    );
+
+    let created = call_typed(
+        &door,
+        "/",
+        &token,
+        &session,
+        "tilo_do",
+        json!({"path": "account/workspaces#create", "args": {"name": "Studio"}}),
     )
     .await;
     assert_eq!(created["result"]["isError"], false, "{created}");
-    let studio = created["result"]["structuredContent"]["workspace"]["id"]
+    let studio = created["result"]["structuredContent"]["result"]["workspace"]["id"]
         .as_str()
         .unwrap()
         .to_owned();
@@ -1084,8 +1131,8 @@ async fn an_account_session_creates_a_workspace_and_acts_in_it() {
         "/",
         &token,
         &session,
-        session::CREATE_WORKSPACE,
-        json!({"name":"More"}),
+        "tilo_do",
+        json!({"path": "account/workspaces#create", "args": {"name": "More"}}),
     )
     .await;
     assert_eq!(refused["result"]["isError"], true);
@@ -1112,10 +1159,7 @@ async fn an_account_session_creates_a_workspace_and_acts_in_it() {
         .iter()
         .find(|tool| tool["name"] == "tilo_list_apps")
         .unwrap();
-    assert_eq!(
-        ls["inputSchema"]["required"][0],
-        session::WORKSPACE_ARGUMENT
-    );
+    assert!(ls["inputSchema"]["properties"][session::WORKSPACE_ARGUMENT].is_object());
 
     let missing = call(&door, "/", &token, &session, "tilo_list_apps", json!({})).await;
     assert_eq!(missing["error"]["code"], -32602);
@@ -1252,4 +1296,168 @@ fn the_run_is_named_for_the_person() {
         "claude-code #3"
     );
     assert_eq!(session::run_label("", &json!({}), 2), "Agent #2");
+}
+
+/// A key asked for from a terminal, approved by the person, collected by
+/// polling: then it mints a key for one workspace, which reaches that one
+/// alone and ends when the key that minted it is revoked.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_key_mints_a_key_for_one_workspace_that_ends_with_it() {
+    let hosted = Arc::new(Hosted::default());
+    let alice = Person::new(1);
+    let studio = hosted.add(&alice.id(), "Studio").await;
+    let garden = hosted.add(&alice.id(), "Garden").await;
+    let door = door(&hosted);
+    let post = |path: &'static str, body: Value| {
+        let door = Arc::clone(&door);
+        async move {
+            door.dispatch(
+                &Method::POST,
+                path,
+                "",
+                &hyper::HeaderMap::new(),
+                body.to_string().as_bytes(),
+            )
+            .await
+        }
+    };
+
+    // The terminal asks; nothing is there to collect until the person answers.
+    let asked = post(keys::NEW_PATH, json!({"name": "Visa backend"})).await;
+    assert_eq!(asked.status(), StatusCode::CREATED);
+    let asked = json_body(asked).await;
+    let poll = asked["poll"].as_str().unwrap().to_owned();
+    let waiting = post(keys::POLL_PATH, json!({"poll": poll})).await;
+    assert_eq!(waiting.status(), StatusCode::ACCEPTED);
+
+    // The link sends the person to their Tilo, which approves the key.
+    let approve = asked["approve_url"].as_str().unwrap();
+    let path = approve.strip_prefix(ISSUER).unwrap();
+    let reply = door
+        .dispatch(&Method::GET, path, "", &hyper::HeaderMap::new(), b"")
+        .await;
+    assert_eq!(reply.status(), StatusCode::SEE_OTHER);
+    let sign_in = Asked::of(&location(&reply));
+    assert_eq!(sign_in.scope, AgentScope::AllWorkspaces);
+    assert!(
+        sign_in.client.contains("Visa backend"),
+        "{}",
+        sign_in.client
+    );
+    let page = answer(&door, &alice.allow(&sign_in)).await;
+    assert_eq!(page.status(), StatusCode::OK);
+    let page = String::from_utf8(body(page).await).unwrap();
+    assert!(
+        !page.contains("tilo_sk_"),
+        "the browser never sees a key it did not ask for"
+    );
+
+    // Collected once.
+    let collected = post(keys::POLL_PATH, json!({"poll": poll})).await;
+    assert_eq!(collected.status(), StatusCode::OK);
+    let collected = json_body(collected).await;
+    let key = collected["key"].as_str().unwrap().to_owned();
+    let key_grant = collected["grant"].as_str().unwrap().to_owned();
+    assert!(key.starts_with("tilo_sk_"));
+    assert_eq!(collected["scope"], "all");
+    let again = post(keys::POLL_PATH, json!({"poll": poll})).await;
+    assert_eq!(again.status(), StatusCode::NOT_FOUND);
+
+    // The key reaches the account: it mints a key for the studio alone.
+    let (session, answer) = initialize(&door, "/", &key).await;
+    assert!(
+        answer["result"]["instructions"]
+            .as_str()
+            .unwrap()
+            .contains("account/keys#mint"),
+        "{answer}"
+    );
+    let minted = call_typed(
+        &door,
+        "/",
+        &key,
+        &session,
+        "tilo_do",
+        json!({"path": "account/keys#mint", "args": {"workspace": studio.id, "name": "Jane Doe's agent"}}),
+    )
+    .await;
+    let minted = &minted["result"]["structuredContent"]["result"];
+    let token = minted["token"].as_str().unwrap().to_owned();
+    let minted_grant = minted["grant"].as_str().unwrap().to_owned();
+    assert_eq!(minted["mcp_url"], format!("{ISSUER}/w/{}/mcp", studio.id));
+    assert!(
+        minted["expires_at_ms"].as_u64().unwrap()
+            <= door.store.grant(&key_grant).unwrap().expires_ms
+    );
+    let listed = call(
+        &door,
+        "/",
+        &key,
+        &session,
+        "tilo_read",
+        json!({"path": "account/keys"}),
+    )
+    .await;
+    assert!(
+        listed["result"]["content"][0]["text"]
+            .as_str()
+            .unwrap()
+            .contains("Jane Doe's agent"),
+        "{listed}"
+    );
+
+    // The minted key acts in the studio: the runtime takes its certificate,
+    // which the key's own key signed.
+    let studio_path = format!("/w/{}/mcp", studio.id);
+    let (pinned, _) = initialize(&door, &studio_path, &token).await;
+    let acted = call(
+        &door,
+        &studio_path,
+        &token,
+        &pinned,
+        "tilo_list_apps",
+        json!({}),
+    )
+    .await;
+    assert!(acted.get("result").is_some(), "{acted}");
+    assert!(acted_in(&hosted.callers_of(&alice.id()).await, &studio.id));
+    // Nowhere else, and not the account.
+    let garden_path = format!("/w/{}/mcp", garden.id);
+    let elsewhere = mcp(
+        &door,
+        &garden_path,
+        &token,
+        None,
+        json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}),
+    )
+    .await;
+    assert_eq!(elsewhere.status(), StatusCode::FORBIDDEN);
+    let account = call(
+        &door,
+        &studio_path,
+        &token,
+        &pinned,
+        "tilo_do",
+        json!({"path": "account/keys#mint", "args": {"workspace": garden.id}}),
+    )
+    .await;
+    assert!(
+        account.get("error").is_some() || account["result"]["isError"] == true,
+        "{account}"
+    );
+    assert!(!acted_in(&hosted.callers_of(&alice.id()).await, &garden.id));
+    assert!(door.store.minted_by(&minted_grant).is_empty());
+
+    // Revoking the key ends what it minted: its token and its session.
+    assert!(door.revoke_grant(&alice.id(), &key_grant).await.unwrap());
+    assert!(door.store.grant(&minted_grant).is_none());
+    let ended = mcp(
+        &door,
+        &studio_path,
+        &token,
+        Some(&pinned),
+        json!({"jsonrpc":"2.0","id":9,"method":"tools/list"}),
+    )
+    .await;
+    assert_eq!(ended.status(), StatusCode::UNAUTHORIZED);
 }

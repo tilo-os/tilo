@@ -107,7 +107,7 @@ impl PersonsDevices for Devices {
             .revoked
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .is_revoked(&certificate.user_public_key, &dialer)
+            .refuses(certificate)
         {
             return Err(Refusal::Revoked);
         }

@@ -5,12 +5,13 @@
 //!   workspace's endpoint, unchanged but for the run's name. The session
 //!   cannot name another workspace: the endpoint it reaches serves only its
 //!   own, and the door offers no tool that lists or makes workspaces.
-//! - **Account** (an all-workspaces grant): the door answers
-//!   `list_workspaces` and `create_workspace` itself, and offers the
-//!   workspace endpoint's tools with one more required argument,
-//!   `workspace`. A call is carried to that workspace's endpoint, opening a
+//! - **Account** (an all-workspaces grant): the session offers the
+//!   workspace endpoint's tools with one more argument, `workspace`. A call
+//!   naming a workspace is carried to that workspace's endpoint, opening a
 //!   session there the first time, so each workspace attributes what the run
-//!   did to the run.
+//!   did to the run. A call naming none acts on the account itself, which the
+//!   door answers: `account/workspaces#create`, `account/keys#mint` and the
+//!   rest ([`crate::account`]).
 //!
 //! The run's name is the person's: the client's name and a number of their
 //! own runs ("Claude Code #2"), which the door hands the endpoint as the
@@ -29,14 +30,11 @@ use crate::store::Scope;
 use serde_json::{Map, Value, json};
 use std::{
     collections::HashMap,
-    fmt::Write as _,
     sync::{Arc, Mutex},
     time::Instant,
 };
 
 pub use crate::endpoint::SESSION_HEADER;
-pub const LIST_WORKSPACES: &str = "list_workspaces";
-pub const CREATE_WORKSPACE: &str = "create_workspace";
 /// The argument naming the workspace an account session's call acts in.
 pub const WORKSPACE_ARGUMENT: &str = "workspace";
 const PROTOCOL_VERSIONS: [&str; 3] = ["2024-11-05", "2025-03-26", "2025-06-18"];
@@ -85,6 +83,8 @@ pub struct Session {
     /// The client's `initialize` params, with the run's name.
     initialize: Value,
     directory: Arc<dyn Directory>,
+    /// The door, which answers the account's own actions.
+    door: std::sync::Weak<crate::Door>,
     http: tilo_net::Client,
     upstreams: tokio::sync::Mutex<HashMap<String, Upstream>>,
     /// The workspace endpoint's tools, once one answered.
@@ -100,14 +100,6 @@ pub fn error(id: &Value, code: i64, message: &str) -> Value {
 
 fn result(id: &Value, value: &Value) -> Value {
     json!({"jsonrpc":"2.0","id":id,"result":value})
-}
-
-fn tool_text(text: &str, structured: &Value, is_error: bool) -> Value {
-    json!({
-        "content": [{"type":"text","text":text}],
-        "structuredContent": structured,
-        "isError": is_error,
-    })
 }
 
 /// The run's name: the name the client registered under (or declared), and
@@ -140,6 +132,7 @@ impl Session {
         label: String,
         mut initialize: Value,
         directory: Arc<dyn Directory>,
+        door: std::sync::Weak<crate::Door>,
         http: tilo_net::Client,
     ) -> Self {
         if let Some(params) = initialize.as_object_mut() {
@@ -157,6 +150,7 @@ impl Session {
             label,
             initialize,
             directory,
+            door,
             http,
             upstreams: tokio::sync::Mutex::default(),
             tools: Mutex::default(),
@@ -201,9 +195,7 @@ impl Session {
                 "protocolVersion": version,
                 "capabilities": {"tools": {"listChanged": true}},
                 "serverInfo": {"name": "tilo", "title": "Tilo", "version": env!("CARGO_PKG_VERSION")},
-                "instructions": "You act in the person's Tilo workspaces. `list_workspaces` names them; \
-                    `create_workspace` makes one. Every other tool acts in one workspace, which its \
-                    `workspace` argument names by id.",
+                "instructions": ACCOUNT_INSTRUCTIONS,
             }),
         ))
     }
@@ -236,13 +228,13 @@ impl Session {
         }
     }
 
-    /// The account tools, then the workspace tools each with `workspace`.
+    /// The workspace tools, each with `workspace`; before the person has a
+    /// workspace, the ones the account answers.
     async fn account_tools(&self) -> Vec<Value> {
-        let mut tools = account_tool_definitions();
-        if let Some(known) = self.workspace_tools().await {
-            tools.extend(known.iter().map(with_workspace_argument));
+        match self.workspace_tools().await {
+            Some(known) => known.iter().map(with_workspace_argument).collect(),
+            None => account_tool_definitions(),
         }
-        tools
     }
 
     /// The workspace endpoint's tools: as one of the person's workspaces
@@ -298,20 +290,23 @@ impl Session {
             .pointer("/params/arguments")
             .cloned()
             .unwrap_or_else(|| json!({}));
-        match name.as_str() {
-            LIST_WORKSPACES => return Reply::one(result(id, &self.list().await)),
-            CREATE_WORKSPACE => return self.create(id, &arguments).await,
-            _ => {}
-        }
         let Some(workspace) = arguments
             .get(WORKSPACE_ARGUMENT)
             .and_then(Value::as_str)
             .map(str::to_owned)
         else {
+            if crate::account::addresses(&name, &arguments) {
+                let structured = request
+                    .pointer("/params/_meta/so.tilo.mcp/structured")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false);
+                return self.account(id, &name, &arguments, structured).await;
+            }
             return Reply::one(error(
                 id,
                 -32602,
-                "name the workspace this acts in: `workspace`, an id as list_workspaces answers it",
+                "name the workspace this acts in: `workspace`, an id as account/workspaces#list \
+                 answers it; only paths under `account` need none",
             ));
         };
         if let Some(arguments) = request
@@ -323,76 +318,26 @@ impl Session {
         self.forward(&workspace, &request).await
     }
 
-    async fn list(&self) -> Value {
-        let (workspaces, hosts) = match (
-            self.directory.workspaces(&self.key).await,
-            self.directory.hosts(&self.key).await,
-        ) {
-            (Ok(workspaces), Ok(hosts)) => (workspaces, hosts),
-            (Err(error), _) | (_, Err(error)) => {
-                return tool_text(
-                    &format!("Could not list workspaces: {error}"),
-                    &json!({}),
-                    true,
-                );
-            }
+    /// Answer a call on the account. The first workspace made is where the
+    /// workspace tools come from: the client is told its tools changed, so
+    /// it lists them again.
+    async fn account(&self, id: &Value, name: &str, arguments: &Value, structured: bool) -> Reply {
+        let Some(door) = self.door.upgrade() else {
+            return Reply::one(error(id, -32000, "the door is shutting down"));
         };
-        let mut text = if workspaces.is_empty() {
-            "You have no workspaces yet; create_workspace makes one.".to_owned()
-        } else {
-            let mut text = String::from("Your workspaces:");
-            for workspace in &workspaces {
-                let _ = write!(
-                    text,
-                    "\n- {} (id {}, on {})",
-                    workspace.name, workspace.id, workspace.host
-                );
-            }
-            text
-        };
-        if !hosts.is_empty() {
-            let names: Vec<&str> = hosts.iter().map(|host| host.name.as_str()).collect();
-            let _ = write!(text, "\nHosts you can create on: {}", names.join(", "));
-        }
-        tool_text(
-            &text,
-            &json!({"workspaces": workspaces, "hosts": hosts}),
-            false,
-        )
-    }
-
-    async fn create(&self, id: &Value, arguments: &Value) -> Reply {
-        let Some(name) = arguments.get("name").and_then(Value::as_str) else {
-            return Reply::one(error(id, -32602, "`name` is required"));
-        };
-        let host = arguments.get("host").and_then(Value::as_str);
-        let created = match self.directory.create(&self.key, name, host).await {
-            Ok(created) => created,
-            Err(error) => {
-                return Reply::one(result(
-                    id,
-                    &tool_text(
-                        &format!("The workspace was not created: {error}"),
-                        &json!({}),
-                        true,
-                    ),
-                ));
-            }
-        };
-        let answer = result(
-            id,
-            &tool_text(
-                &format!(
-                    "Created {} (id {}) on {}. Name it as `workspace` to act in it.",
-                    created.name, created.id, created.host
-                ),
-                &json!({"workspace": created}),
-                false,
-            ),
-        );
-        // The first workspace is where the workspace tools come from: tell the
-        // client its tools changed, so it lists them again.
-        if self.known_tools().is_none() && self.learn_tools(&created.id).await.is_some() {
+        let answered = door
+            .account_call(&self.grant, &self.key, name, arguments, structured)
+            .await;
+        let created = answered
+            .pointer("/structuredContent/result/workspace/id")
+            .and_then(Value::as_str)
+            .filter(|_| name == "tilo_do")
+            .map(str::to_owned);
+        let answer = result(id, &answered);
+        if let Some(created) = created
+            && self.known_tools().is_none()
+            && self.learn_tools(&created).await.is_some()
+        {
             return Reply {
                 messages: vec![
                     json!({"jsonrpc":"2.0","method":"notifications/tools/list_changed"}),
@@ -402,6 +347,39 @@ impl Session {
             };
         }
         Reply::one(answer)
+    }
+
+    /// Call the workspace runtime's tool `name` with `arguments` in
+    /// `workspace`, in this run: the tool's result, or why there is none.
+    pub(crate) async fn call_in(
+        &self,
+        workspace: &str,
+        name: &str,
+        arguments: Value,
+    ) -> Result<Value, String> {
+        *self
+            .last_used
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Instant::now();
+        let reply = self
+            .forward(
+                workspace,
+                &json!({"jsonrpc":"2.0","id":"tilo-door-call","method":"tools/call",
+                        "params":{"name":name,"arguments":arguments}}),
+            )
+            .await;
+        let message = reply
+            .messages
+            .last()
+            .ok_or("the workspace answered nothing")?;
+        if let Some(error) = message.get("error") {
+            return Err(error
+                .get("message")
+                .and_then(Value::as_str)
+                .unwrap_or("the workspace refused")
+                .to_owned());
+        }
+        Ok(message.get("result").cloned().unwrap_or_default())
     }
 
     /// Carry `request` to `workspace`'s endpoint, opening the session there
@@ -546,35 +524,50 @@ impl Session {
     }
 }
 
-/// The tools only an account session has.
+/// What an account session is told first: how to reach the account and its
+/// workspaces, and how a product gives each customer's agent a workspace of
+/// its own.
+pub const ACCOUNT_INSTRUCTIONS: &str = "You act in the person's Tilo workspaces. \
+Paths under `account` manage them and need no `workspace`: `tilo_ls account` lists its actions; \
+`tilo_do {path: \"account/workspaces#list\"}` names the workspaces, \
+`account/workspaces#create {name}` makes one. Every other call acts in one workspace, \
+named by id in its `workspace` argument. To give another agent one workspace and nothing else \
+(one workspace per customer), `tilo_do {path: \"account/keys#mint\", args: {workspace}}` answers \
+an `mcp_url` and a `token` for it; revoking this key ends every key it minted.";
+
+/// The tools an account session offers before the person has a workspace
+/// whose endpoint names them: the ones the account itself answers.
 #[must_use]
 pub fn account_tool_definitions() -> Vec<Value> {
+    let path = json!({"type":"string","description":"A path under `account`, like account/workspaces#create."});
     vec![
         json!({
-            "name": LIST_WORKSPACES,
-            "title": "List workspaces",
-            "description": "Your Tilo workspaces, each with its id and the host serving it, and the hosts you can create a workspace on.",
-            "inputSchema": {"type":"object","properties":{},"additionalProperties":false},
+            "name": "tilo_ls",
+            "description": "List what is under a path: `account` lists the account's actions.",
+            "inputSchema": {"type":"object","properties":{"path":path},"additionalProperties":false},
             "annotations": {"readOnlyHint": true},
         }),
         json!({
-            "name": CREATE_WORKSPACE,
-            "title": "Create workspace",
-            "description": "Create a workspace. The host may refuse (quota, payment, policy). Answers the new workspace's id, which other tools take as `workspace`.",
-            "inputSchema": {
-                "type":"object",
-                "properties": {
-                    "name": {"type":"string","description":"The workspace's name, 1 to 80 printable characters."},
-                    "host": {"type":"string","description":"The host to create it on, as list_workspaces names hosts. The default host when omitted."},
-                },
-                "required": ["name"],
-                "additionalProperties": false,
-            },
+            "name": "tilo_read",
+            "description": "Read `account/workspaces` or `account/keys`.",
+            "inputSchema": {"type":"object","properties":{"path":path},"required":["path"],"additionalProperties":false},
+            "annotations": {"readOnlyHint": true},
+        }),
+        json!({
+            "name": "tilo_do",
+            "description": "Run an account action: `{path: \"account/workspaces#create\", args: {name: \"Applicant: Jane Doe\"}}`. Answers `ok` with the result, `failed: why`, or `pending <id>` for tilo_status.",
+            "inputSchema": {"type":"object","properties":{"path":path,"args":{"type":"object"}},"required":["path"],"additionalProperties":false},
+        }),
+        json!({
+            "name": "tilo_status",
+            "description": "How a pending invocation went.",
+            "inputSchema": {"type":"object","properties":{"invocation_id":{"type":"string"}},"required":["invocation_id"],"additionalProperties":false},
         }),
     ]
 }
 
-/// `tool` with the required `workspace` argument an account session adds.
+/// `tool` with the `workspace` argument an account session adds: required
+/// but for paths under `account`.
 fn with_workspace_argument(tool: &Value) -> Value {
     let mut tool = tool.clone();
     let Some(schema) = tool.get_mut("inputSchema").and_then(Value::as_object_mut) else {
@@ -586,16 +579,8 @@ fn with_workspace_argument(tool: &Value) -> Value {
     if let Some(properties) = properties.as_object_mut() {
         properties.insert(
             WORKSPACE_ARGUMENT.into(),
-            json!({"type":"string","description":"The workspace this acts in: its id, as list_workspaces answers it."}),
+            json!({"type":"string","description":"The workspace this acts in: its id, as account/workspaces#list answers it. Omit it for paths under `account`."}),
         );
-    }
-    let required = schema
-        .entry("required")
-        .or_insert_with(|| Value::Array(Vec::new()));
-    if let Some(required) = required.as_array_mut()
-        && !required.iter().any(|name| name == WORKSPACE_ARGUMENT)
-    {
-        required.insert(0, json!(WORKSPACE_ARGUMENT));
     }
     tool
 }

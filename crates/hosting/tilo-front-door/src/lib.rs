@@ -26,10 +26,13 @@
 //! the person ("Claude Code #1", [`session`]). The person revokes a grant at
 //! `/grants`; its tokens and sessions end at once and its key is forgotten.
 
+pub mod account;
+pub mod content;
 pub mod directory;
 pub mod endpoint;
 pub mod grant_key;
 pub mod hosts;
+pub mod keys;
 pub mod oauth;
 pub mod pages;
 pub mod session;
@@ -74,10 +77,20 @@ pub struct Config {
     pub web_entry: String,
 }
 
-/// An authorization in progress: the agent's request, waiting for the
-/// person's Tilo to answer it.
+/// What a sign-in in progress is for.
+enum Purpose {
+    /// An OAuth client's authorization request.
+    Agent(oauth::AuthorizeRequest),
+    /// An API key called `name`. With a poll secret's digest, the key goes
+    /// to whoever polls with that secret ([`keys`]); without one, the page
+    /// the person returns to shows it once.
+    Key { name: String, poll: Option<String> },
+}
+
+/// An authorization in progress: the agent's request or an API key,
+/// waiting for the person's Tilo to answer it.
 struct Pending {
-    request: oauth::AuthorizeRequest,
+    purpose: Purpose,
     challenge: [u8; 32],
     /// The key made for the grant, waiting for the person's certificate.
     key: ed25519_dalek::SigningKey,
@@ -86,6 +99,8 @@ struct Pending {
     /// narrower — one of their workspaces where all were asked for.
     scope: AgentScope,
     expires_ms: u64,
+    /// Where the person's Tilo answers it.
+    location: String,
 }
 
 /// The front door.
@@ -100,6 +115,8 @@ pub struct Door {
     sessions: Mutex<HashMap<String, Arc<Session>>>,
     /// Per signed-in browser, the token its grants page forms carry.
     page_tokens: Mutex<HashMap<String, String>>,
+    /// The keys approved for a poller, by the poll secret's digest.
+    approved_keys: Mutex<HashMap<String, keys::Approval>>,
     http: tilo_net::Client,
 }
 
@@ -134,6 +151,7 @@ impl Door {
             pending: Mutex::default(),
             sessions: Mutex::default(),
             page_tokens: Mutex::default(),
+            approved_keys: Mutex::default(),
             http,
         }))
     }
@@ -147,8 +165,15 @@ impl Door {
     /// Answer one HTTP request.
     pub async fn respond(self: &Arc<Self>, request: Request<Incoming>) -> Reply {
         let (parts, body) = request.into_parts();
-        let body = match Limited::new(body, MAX_BODY_BYTES).collect().await {
+        let uploading = content::upload_target(&parts.method, parts.uri.path()).is_some();
+        let limit = if uploading {
+            content::MAX_CONTENT_BYTES
+        } else {
+            MAX_BODY_BYTES
+        };
+        let body = match Limited::new(body, limit).collect().await {
             Ok(collected) => collected.to_bytes(),
+            Err(_) if uploading => return content::too_large(),
             Err(_) => return text(StatusCode::PAYLOAD_TOO_LARGE, "request body exceeds 1 MiB"),
         };
         self.dispatch(
@@ -192,6 +217,15 @@ impl Door {
             (&Method::POST, "/sign-in") => self.signed_in(body).await,
             (&Method::POST, oauth::TOKEN_PATH) => self.token(body),
             (&Method::POST, oauth::REVOKE_PATH) => self.revoke(body).await,
+            (method, path) if let Some(workspace) = content::upload_target(method, path) => {
+                self.upload(&workspace, headers, body).await
+            }
+            (&Method::POST, keys::NEW_PATH) => self.new_key(body),
+            (&Method::POST, keys::POLL_PATH) => self.poll_key(body),
+            (&Method::GET, path) if let Some(id) = path.strip_prefix(keys::APPROVE_PREFIX) => {
+                self.approve_key(id)
+            }
+            (&Method::POST, "/grants/keys") => self.new_key_from_page(headers, body),
             (&Method::GET, "/grants") => self.grants_page(headers).await,
             (&Method::POST, path)
                 if let Some(grant) = path
@@ -280,37 +314,57 @@ impl Door {
             return no_randomness();
         };
         let client_name = client.map(|client| client.name).unwrap_or_default();
+        match self.begin(
+            Purpose::Agent(request),
+            &client_name,
+            scope,
+            (id, challenge, key),
+            now,
+        ) {
+            Ok(location) => redirect(&location),
+            Err(why) => text(StatusCode::SERVICE_UNAVAILABLE, why),
+        }
+    }
+
+    /// Ask the person's Tilo to approve `purpose` reaching `scope`, shown as
+    /// `client`: the sign-in in progress `id`, with its `challenge` and the
+    /// grant's `key`. Answers where the person's Tilo answers it.
+    fn begin(
+        &self,
+        purpose: Purpose,
+        client: &str,
+        scope: AgentScope,
+        (id, challenge, key): (String, [u8; 32], ed25519_dalek::SigningKey),
+        now: u64,
+    ) -> Result<String, &'static str> {
         let grant_expires_ms =
             now.saturating_add(u64::try_from(grant_key::GRANT_LIFETIME.as_millis()).unwrap_or(0));
         let location = self.sign_in_url(&SignInAsk {
             pending: &id,
             challenge: &challenge,
-            client: &client_name,
+            client,
             key: &key,
             scope,
             expires_ms: grant_expires_ms,
         });
-        {
-            let mut pending = lock(&self.pending);
-            pending.retain(|_, pending| pending.expires_ms > now);
-            if pending.len() >= MAX_PENDING {
-                return text(
-                    StatusCode::SERVICE_UNAVAILABLE,
-                    "too many sign-ins in progress",
-                );
-            }
-            pending.insert(
-                id,
-                Pending {
-                    request,
-                    challenge,
-                    key,
-                    scope,
-                    expires_ms: now.saturating_add(PENDING_LIFETIME_MS),
-                },
-            );
+        let mut pending = lock(&self.pending);
+        pending.retain(|_, pending| pending.expires_ms > now);
+        if pending.len() >= MAX_PENDING {
+            return Err("too many sign-ins in progress");
         }
-        redirect(&location)
+        pending.insert(
+            id,
+            Pending {
+                purpose,
+                challenge,
+                key,
+                scope,
+                expires_ms: now.saturating_add(PENDING_LIFETIME_MS),
+                location: location.clone(),
+            },
+        );
+        drop(pending);
+        Ok(location)
     }
 
     /// Where the person's Tilo answers the authorization `ask`.
@@ -348,7 +402,14 @@ impl Door {
                 &pages::message("Sign-in expired", "Start connecting the agent again."),
             );
         };
-        let request = &pending.request;
+        let request = match &pending.purpose {
+            Purpose::Agent(request) => request,
+            Purpose::Key { name, poll } => {
+                return self
+                    .key_signed_in(&pending, name, poll.as_deref(), &form, now)
+                    .await;
+            }
+        };
         let back = |params: &[(&str, &str)]| {
             let mut params = params.to_vec();
             if let Some(state) = request.state.as_deref() {
@@ -374,18 +435,8 @@ impl Door {
             Ok(key) => key,
             Err(reply) => return reply,
         };
-        if let AgentScope::Workspace(_) = key.scope() {
-            // The host shows the grant only that workspace, if it is theirs:
-            // whoever narrowed the grant, it names one this person holds.
-            let workspace = key.scope().name();
-            let has = self
-                .directory
-                .workspaces(&key)
-                .await
-                .is_ok_and(|listed| listed.iter().any(|candidate| candidate.id == workspace));
-            if !has {
-                return back(&[("error", "invalid_target")]);
-            }
+        if !self.names_own_workspace(&key).await {
+            return back(&[("error", "invalid_target")]);
         }
         let Some(client) = self.store.client(&request.client_id) else {
             return back(&[("error", "unauthorized_client")]);
@@ -407,6 +458,21 @@ impl Door {
             response.headers_mut().insert(header::SET_COOKIE, value);
         }
         response
+    }
+
+    /// Whether a one-workspace grant names a workspace its person holds: the
+    /// host shows the grant only that workspace, if it is theirs, so whoever
+    /// narrowed the grant, it names one this person holds. Always for a grant
+    /// reaching all of them.
+    async fn names_own_workspace(&self, key: &GrantKey) -> bool {
+        let AgentScope::Workspace(_) = key.scope() else {
+            return true;
+        };
+        let workspace = key.scope().name();
+        self.directory
+            .workspaces(key)
+            .await
+            .is_ok_and(|listed| listed.iter().any(|candidate| candidate.id == workspace))
     }
 
     /// Check the person's Tilo's answer to `pending`: the sign-in proof, and
@@ -551,9 +617,11 @@ impl Door {
     async fn revoke(&self, body: &[u8]) -> Reply {
         let form = oauth::form(body).unwrap_or_default();
         if let (Some(token), Some(client)) = (form.get("token"), form.get("client_id"))
-            && let Ok(Some(grant)) = self.store.revoke_token(token, client, now_ms())
+            && let Ok(revoked) = self.store.revoke_token(token, client, now_ms())
         {
-            self.end_sessions_of(&grant).await;
+            for grant in revoked {
+                self.end_sessions_of(&grant).await;
+            }
         }
         text(StatusCode::OK, "")
     }
@@ -581,6 +649,19 @@ impl Door {
             return no_randomness();
         };
         html(StatusCode::OK, &pages::grants(&grants, &workspaces, &csrf))
+    }
+
+    /// Whether `form` was posted from the grants page of the browser that
+    /// sent `headers`.
+    fn posted_from_grants_page(
+        &self,
+        headers: &hyper::HeaderMap,
+        form: &HashMap<String, String>,
+    ) -> bool {
+        self.page_token(headers).is_ok_and(|expected| {
+            form.get("csrf")
+                .is_some_and(|csrf| constant_time_eq(csrf.as_bytes(), expected.as_bytes()))
+        })
     }
 
     /// The token this browser's grants page forms carry.
@@ -616,13 +697,7 @@ impl Door {
             );
         };
         let form = oauth::form(body).unwrap_or_default();
-        let Ok(expected) = self.page_token(headers) else {
-            return no_randomness();
-        };
-        if !form
-            .get("csrf")
-            .is_some_and(|csrf| constant_time_eq(csrf.as_bytes(), expected.as_bytes()))
-        {
+        if !self.posted_from_grants_page(headers, &form) {
             return html(
                 StatusCode::FORBIDDEN,
                 &pages::message("Not allowed", "This did not come from your grants page."),
@@ -634,17 +709,18 @@ impl Door {
         }
     }
 
-    /// Revoke `person`'s grant `grant`: its tokens stop working and its
-    /// sessions end now.
+    /// Revoke `person`'s grant `grant` and every grant it minted: their
+    /// tokens stop working and their sessions end now. Answers whether it
+    /// was theirs and live.
     ///
     /// # Errors
     /// The store could not be written.
     pub async fn revoke_grant(&self, person: &str, grant: &str) -> io::Result<bool> {
         let revoked = self.store.revoke_grant(person, grant, now_ms())?;
-        if revoked {
-            self.end_sessions_of(grant).await;
+        for each in &revoked {
+            self.end_sessions_of(each).await;
         }
-        Ok(revoked)
+        Ok(!revoked.is_empty())
     }
 
     async fn end_sessions_of(&self, grant: &str) {
@@ -817,6 +893,7 @@ impl Door {
             label,
             params,
             Arc::clone(&self.directory),
+            Arc::downgrade(self),
             self.http.clone(),
         ));
         let answer = match session.initialize(request).await {
