@@ -48,6 +48,7 @@ const opened = [];
 const failed = async (message, tab) => {
   report.error = message;
   if (tab) report.shown = await snapshot(tab).catch(() => null);
+  if (tab && !opened.some(page => page.tab === tab)) writeFileSync(`${out}/failed-page.log`, (tab.log ?? []).join('\n'));
   for (const page of opened) {
     writeFileSync(`${out}/${page.name}.log`, (page.tab.log ?? []).join('\n'));
     await dump(page.tab, page.name).catch(() => {});
@@ -439,7 +440,30 @@ const anotherBrowser = async () => {
   await tab.send('Emulation.setDeviceMetricsOverride',
     {width: 1280, height: 800, deviceScaleFactor: 1, mobile: false}).catch(() => {});
   await returning(tab);
+  await recordLoading(launched, tab);
   return tab;
+};
+// What a page's loading said beside its console's errors: requests that
+// failed and the browser's own log (a resource that did not load is said
+// there, not in the console), and the page's console in full, so a page that
+// stops while it loads leaves why.
+const recordLoading = async (launched, tab) => {
+  const asked = new Map();
+  launched.on(({sessionId, method, params}) => {
+    if (sessionId !== tab.sessionId) return;
+    if (method === 'Network.requestWillBeSent') asked.set(params.requestId, params.request.url);
+    else if (method === 'Network.loadingFailed') {
+      tab.log.push(`NET ${asked.get(params.requestId) ?? params.requestId}: ${params.errorText}${params.canceled ? ' (canceled)' : ''}`);
+    } else if (method === 'Network.responseReceived' && params.response.status >= 400) {
+      tab.log.push(`HTTP ${params.response.status} ${params.response.url}`);
+    } else if (method === 'Log.entryAdded') {
+      tab.log.push(`LOG ${params.entry.level} ${params.entry.text}${params.entry.url ? ` (${params.entry.url})` : ''}`.slice(0, 600));
+    } else if (method === 'Runtime.consoleAPICalled' && !['error', 'warning'].includes(params.type)) {
+      tab.log.push(`${params.type.toUpperCase()} ${params.args.map(a => a.value ?? a.description ?? '').join(' ')}`.slice(0, 600));
+    }
+  });
+  await tab.send('Network.enable', {}).catch(() => {});
+  await tab.send('Log.enable', {}).catch(() => {});
 };
 // What a browser that reached the desktop leaves with the run: its arrival,
 // the keys reaching it, and its canvas.
