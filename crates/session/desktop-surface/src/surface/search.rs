@@ -1140,7 +1140,22 @@ impl DesktopSurface {
         if search.is_open() {
             let closed = search.observe();
             let refreshed = search.refresh();
-            self.structure_dirty |= closed || refreshed;
+            // The rows the palette found, and the card they stand in, are drawn by the host above
+            // the windows (`DesktopHandle::search_palette`), never in this desk's own tree: the
+            // card is not a child of the surface. A row that came or went is that card's paint,
+            // and a frame reaching it (`DesktopSurface::needs_redraw`, by `search_revision`) shows
+            // it. Rebuilding this desk's composition for it would re-encode every open window —
+            // each window's whole scene, measured and drawn again — for a change none of them
+            // holds, the cost growing with every window open: on a page drawing in software, a
+            // typed key then answered seconds late. Only the desk's own search *state* — one being
+            // open or closed, which moves where the card stands and what a choice opens into — is
+            // structure here.
+            self.structure_dirty |= closed;
+            // A refresh changed what the card shows: the frame that draws it is due, and the card
+            // is laid out again for the room its rows now take.
+            if refreshed {
+                self.note_search_activity();
+            }
         }
         let choice = search.take_choice();
         let usage = if choice.is_some() {

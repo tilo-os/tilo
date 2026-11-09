@@ -39,6 +39,12 @@ pub struct SearchOverlay {
     /// What the last drawn frame showed: whether the palette was up and what the desk had published
     /// then.
     shown: (bool, u64),
+    /// The palette's own layout node, while it is built: the leaf the in-place resize gives its new
+    /// size ([`Self::adjust_layout_style`]).
+    palette_node: Option<NodeId>,
+    /// The theme the card was last built and drawn with: what an in-place resize places the card
+    /// by, as the solve reaches here without one.
+    theme: Theme,
 }
 
 impl SearchOverlay {
@@ -54,6 +60,8 @@ impl SearchOverlay {
             seen,
             built: (false, None, seen),
             shown: (false, seen),
+            palette_node: None,
+            theme: Theme::default(),
         }
     }
 
@@ -104,10 +112,85 @@ impl Widget for SearchOverlay {
     }
 
     fn take_structure_dirty(&mut self) -> bool {
-        // The card is mounted when the palette opens and gone when it closes,
-        // and it grows and shrinks with the rows the desk published and the
-        // pace it stands on: the composition is built again for any of them.
+        self.take_structure_change().rebuilds()
+    }
+
+    /// The card is mounted when the palette opens and gone when it closes, and
+    /// it stands where the search says: those are the composition's changes,
+    /// and the tree is built again for them. The rows the card shows — a
+    /// keystroke's results, an answer arriving — are not: the card is one leaf,
+    /// the same node, and its rows only change its own size. Telling them apart
+    /// matters because a rebuild discards the whole page's layout and re-encodes
+    /// every window's scene for a change in the card alone, the cost growing
+    /// with every window open. A row that changed re-solves the card's size in
+    /// place instead ([`Widget::layout_needs_measure`], the palette's own
+    /// [`Widget::adjust_layout_style`]), and the frame repaints only the card
+    /// ([`Self::draw`]'s own damage part).
+    fn take_structure_change(&mut self) -> ui::widget::StructureChange {
+        // Open or closed, or standing over another area: the composition. The
+        // revision alone (the rows, the query, the scope) is the card's paint
+        // and its size, never the tree's shape. A card that is up with no node
+        // yet — its code arrived after it was opened, and the palette had
+        // nothing to build then — is built now, once.
+        let missing = self.is_open() && self.palette_node.is_none();
+        let structural =
+            (self.is_open(), self.handle.search_area()) != (self.built.0, self.built.1) || missing;
+        ui::widget::StructureChange::of(structural)
+    }
+
+    /// The card resizes in place when its rows or the room it stands in changed,
+    /// without rebuilding the tree ([`Self::take_structure_change`]).
+    fn layout_needs_measure(&self) -> bool {
         self.built != self.pace()
+    }
+
+    /// The card's own leaf is the overlay's child: what it shows changed, so
+    /// it is given its new size here and the tree solves around it, without a
+    /// rebuild. The overlay node itself keeps the whole chrome, absolute, and
+    /// its own style never changes.
+    fn adjust_layout_style(
+        &mut self,
+        taffy: &mut TaffyTree<()>,
+        _node: NodeId,
+        _text: &mut ui::TextRenderer,
+    ) -> bool {
+        let Some(palette) = self.palette_node else {
+            return false;
+        };
+        if !self.is_open() || self.rect.width() <= 0.0 {
+            return false;
+        }
+        let area = self.handle.search_area().unwrap_or(self.rect);
+        let theme = self.theme.clone();
+        let (origin, width) = ui::action_palette::placement(area, &theme);
+        let search = self.handle.search_palette();
+        let mut search = search.borrow_mut();
+        search.set_room(width, ui::action_palette::list_cap(area, &theme));
+        let (card_width, card_height) = search.desired_size();
+        let Ok(current) = taffy.style(palette) else {
+            return false;
+        };
+        let mut style = current.clone();
+        style.size = taffy::Size::from_lengths(card_width as f32, card_height as f32);
+        #[allow(
+            clippy::cast_possible_truncation,
+            reason = "a place on the desk is a few thousand logical pixels"
+        )]
+        let at = |value: f64| taffy::LengthPercentageAuto::length(value as f32);
+        let x0 = origin.x.clamp(
+            self.rect.x0 + PALETTE_EDGE,
+            (self.rect.x1 - card_width - PALETTE_EDGE).max(self.rect.x0 + PALETTE_EDGE),
+        );
+        style.inset.left = at(x0 - self.rect.x0);
+        style.inset.top = at(origin.y - self.rect.y0);
+        if style == *current {
+            // Nothing moved: still this frame laid the card out for this pace.
+            self.built = self.pace();
+            return false;
+        }
+        let changed = taffy.set_style(palette, style).is_ok();
+        self.built = self.pace();
+        changed
     }
 
     fn build_layout(
@@ -152,8 +235,14 @@ impl Widget for SearchOverlay {
                 };
                 let _ = taffy.set_style(node, style);
                 kids.push(node);
+                self.palette_node = Some(node);
+            } else {
+                self.palette_node = None;
             }
+        } else {
+            self.palette_node = None;
         }
+        self.theme = theme.clone();
         // Over the whole chrome, out of its flow: the card sits where it was placed and dims what
         // stands under it.
         let style = Style {

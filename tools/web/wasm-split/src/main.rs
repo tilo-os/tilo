@@ -238,10 +238,13 @@ function loader(file, needs) {
     console.error(`could not load ${file}`, error);
     throw error;
   });
+  // Fetch and compile this module and what it needs now. Answers when the
+  // compile settled (`true`) or failed (`false`), so a caller prefetching
+  // many modules a few at a time can wait for one before starting the next.
+  // A failure is the load's to report: it compiles again.
   const prefetch = () => {
-    for (const need of needs) need.prefetch();
-    // A failure is the load's to report: it compiles again.
-    compile().catch(() => {});
+    const asked = needs.map(need => need.prefetch());
+    return Promise.all(asked).then(() => compile().then(() => true, () => false));
   };
   const exported = (callback, data) => {
     load().then(() => true, () => false).then(loaded => {
@@ -253,8 +256,9 @@ function loader(file, needs) {
 
 /** Fetch and compile split module `module` and the shared code it needs
  * now, so that its first load only instantiates them. An unknown name is
- * ignored. */
+ * ignored. Answers when the compile settled, so a caller fetching many a
+ * few at a time can wait for one before starting the next. */
 export function prefetch(module) {
-  if (Object.hasOwn(modules, module)) modules[module].prefetch();
+  return Object.hasOwn(modules, module) ? modules[module].prefetch() : Promise.resolve(false);
 }
 "#;

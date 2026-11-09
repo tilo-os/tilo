@@ -586,3 +586,122 @@ fn a_search_still_filling_in_asks_for_frames_before_the_bar_ticks() {
          bar's next minute to finish the search"
     );
 }
+
+/// A desk whose shown strip holds `n` windows, all at rest.
+fn desk_tree_with(n: u64) -> DesktopTree {
+    let groups: Vec<WindowGroup> = (0..n)
+        .map(|i| {
+            let tab = window(20 + i, &format!("Window {i}"), "so.tilo.notes");
+            WindowGroup {
+                id: 3 + i,
+                active_tab: tab.id,
+                tabs: vec![tab],
+                width: WindowWidth::Normal,
+                maximized: false,
+                focus_history: Vec::new(),
+            }
+        })
+        .collect();
+    let mut workspace = Workspace::new(WorkspaceSlot(1), "Work");
+    workspace.strips = vec![Strip {
+        id: StripId(2),
+        name: "Main".into(),
+        window_groups: groups,
+    }];
+    let mut tree = DesktopTree {
+        active: workspace.slot,
+        workspaces: vec![workspace],
+        ..Default::default()
+    };
+    tree.active_strip.insert(WorkspaceSlot(1), StripId(2));
+    tree.active_group.insert(StripId(2), 3);
+    tree
+}
+
+/// A keystroke in the open palette must not rebuild the page's composition, however many windows
+/// are open. The page is one composition — the desk with its windows under the chrome that draws
+/// the card over them, as the browser's shell stands the two in one tree. The card a person types
+/// into is a leaf whose rows are painted, not widgets mounted into that tree: a row that came or
+/// went is the card's paint, and the card's own size is re-solved in place. A frame that discarded
+/// the composition instead would re-encode and re-measure every window's whole scene for a change
+/// none of them holds — the cost growing with every window open, so a key typed into the palette is
+/// answered later the more the person has open, seconds late on a page drawing in software.
+///
+/// The measure is the frame's own accounting (`RelayoutStats::rebuilt`): a rebuild discards the
+/// taffy tree and re-solves every widget, a frame that keeps it re-solves only what it marked.
+#[test]
+fn a_keystroke_in_the_palette_does_not_rebuild_the_page_with_many_windows() {
+    use std::cell::RefCell;
+    use ui::widget::Stack;
+
+    for windows in [1u64, 6, 12, 24] {
+        let tree = desk_tree_with(windows);
+        let (surface, handle) = DesktopSurface::new(tree.clone(), 7, Box::new(NoticeTiles));
+        handle.set_search_host(Rc::new(Many));
+        let chrome = DesktopChrome::new(
+            handle.clone(),
+            "g".into(),
+            Rc::new(PermissiveRules::new(handle.clone())),
+            TopBarChrome::from_tree(&tree),
+            TiloMenu::new(AboutVariant::Native, &AboutLinks::default()),
+            false,
+        );
+        // The page's own composition: the desk under the chrome over it, one tree, so a rebuild of
+        // either discards the whole.
+        let root = Stack::new().push(Box::new(surface)).push(Box::new(chrome));
+        let mut page = FrameHarness::for_root(
+            ui::state::State::new(),
+            root,
+            (1280, 800),
+            ui::Theme::dark(),
+        );
+        page.track_scene_parts(true);
+        page.relayout();
+        assert!(!handle.search_open());
+        handle.open_search(Scope::Workspace, None);
+        {
+            let background = ui::background::Background::current();
+            let start = ui::time::now();
+            let deadline = start.checked_add(Duration::from_secs(5)).unwrap_or(start);
+            loop {
+                page.relayout();
+                if !handle.search_searching() {
+                    break;
+                }
+                assert!(ui::time::now() < deadline, "the search never finished");
+                let now = ui::time::now();
+                background.park(now.checked_add(Duration::from_millis(2)).unwrap_or(now));
+            }
+        }
+        assert!(handle.search_open(), "the palette is up");
+        // A frame at rest with the card's rows in: this one laid the card out.
+        page.relayout();
+        // One key into the card: its rows change, and nothing a window holds does. Every frame
+        // from the key on is drawn, and none may rebuild: the card's rows are its own paint and
+        // size, and a rebuild re-encodes every open window's scene for a change none of them holds.
+        page.send_host_event(&char_key("x"));
+        {
+            let background = ui::background::Background::current();
+            let start = ui::time::now();
+            let deadline = start.checked_add(Duration::from_secs(5)).unwrap_or(start);
+            let mut drawn = 0;
+            loop {
+                page.relayout();
+                drawn += 1;
+                assert!(
+                    !page.last_relayout().rebuilt,
+                    "frame {drawn} after a keystroke in the open palette rebuilt the page's \
+                     composition with {windows} windows open: every window's scene is measured and \
+                     drawn again for a change in the card alone"
+                );
+                if !handle.search_searching() && drawn > 2 {
+                    break;
+                }
+                assert!(ui::time::now() < deadline, "the search never finished");
+                let now = ui::time::now();
+                background.park(now.checked_add(Duration::from_millis(2)).unwrap_or(now));
+            }
+        }
+        let _ = RefCell::new(());
+    }
+}
