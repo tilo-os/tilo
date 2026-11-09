@@ -64,6 +64,8 @@ mod program_steps;
 mod resume;
 
 mod compaction;
+mod failure;
+pub(crate) use failure::Failure;
 mod progress;
 
 /// After this many turns that only looked things up, every discovery answer
@@ -206,7 +208,10 @@ pub(super) struct ActiveTurn {
     rx: Receiver<TurnEvent>,
     /// Calls whose `tool_call` frame arrived and that are not handled yet.
     ready: VecDeque<StreamedCall>,
-    finished: Option<Result<String, String>>,
+    /// The turn's end, once it has one: the model's complete body, or the
+    /// failure it ended in, split into the sentence a person reads and the
+    /// record kept for debugging.
+    finished: Option<Result<String, Failure>>,
     presentation: agent_provider_config::protocol::StreamState,
     presentation_run: String,
     published_presentation: Option<runtime_collab::TaskPresentation>,
@@ -219,7 +224,7 @@ pub(super) struct ActiveTurn {
     /// The body as the model sent it and why the loop refused its calls for
     /// their shape or arguments, kept whole so the loop answers them with
     /// what was wrong rather than ending the run on the model's own slip.
-    refused: Option<(String, String)>,
+    refused: Option<(String, Failure)>,
     /// Stops the turn when the loop lets go of it.
     #[allow(
         dead_code,
@@ -254,9 +259,7 @@ impl ActiveTurn {
             TurnEvent::Neutral(event) => {
                 self.presentation.apply(&event);
                 if let Some(error) = &self.presentation.error {
-                    self.finished = Some(Err(
-                        self.retained_failure(&format!("{error} {}", error.recovery().guidance()))
-                    ));
+                    self.finished = Some(Err(self.retained_failure(&Failure::model(error))));
                 }
             }
             TurnEvent::Frame { event, output } => {
@@ -278,24 +281,18 @@ impl ActiveTurn {
                 }
             }
             TurnEvent::Finished(result) => {
-                self.finished = Some(result.map_err(|error| self.retained_failure(&error)));
+                self.finished = Some(
+                    result.map_err(|error| self.retained_failure(&Failure::unreachable(error))),
+                );
             }
         }
     }
 
-    /// Failure reports are saved in task history; retain incomplete output
-    /// explicitly labelled rather than discarding it with the transport.
-    fn retained_failure(&self, error: &str) -> String {
-        let mut detail = error.to_owned();
-        if !self.presentation.text.is_empty() {
-            detail.push_str("\nPartial answer (not completed):\n");
-            detail.push_str(&self.presentation.text);
-        }
-        if !self.presentation.reasoning.is_empty() {
-            detail.push_str("\nProvider-exposed summary:\n");
-            detail.push_str(&self.presentation.reasoning);
-        }
-        detail
+    /// The failure, with what the turn streamed before it ended kept under
+    /// labels in the run's record: the partial answer and the provider's own
+    /// exposed reasoning are for debugging, never the person's reply.
+    fn retained_failure(&self, failure: &Failure) -> Failure {
+        failure.retained(&self.presentation.text, &self.presentation.reasoning)
     }
 }
 
@@ -689,7 +686,7 @@ pub(super) enum LoopEnd {
     /// The model finished with `plan`, after this many successful steps.
     Finished(tools::Finish, usize),
     /// The loop stopped without finishing.
-    Failed(String),
+    Failed(Failure),
     /// Cancelled from Task Center, or a step was cancelled.
     Cancelled(String),
 }
@@ -962,7 +959,8 @@ impl Session {
                 Err(TryRecvError::Empty) => break,
                 Err(TryRecvError::Disconnected) => {
                     if turn.finished.is_none() {
-                        turn.finished = Some(Err("the model turn ended without an answer".into()));
+                        turn.finished =
+                            Some(Err(Failure::said("the model turn ended without an answer")));
                     }
                     break;
                 }
@@ -989,7 +987,8 @@ impl Session {
                 Ok(event) => turn.absorb(event),
                 Err(RecvTimeoutError::Timeout) => {}
                 Err(RecvTimeoutError::Disconnected) => {
-                    turn.finished = Some(Err("the model turn ended without an answer".into()));
+                    turn.finished =
+                        Some(Err(Failure::said("the model turn ended without an answer")));
                 }
             }
         }
@@ -1062,14 +1061,14 @@ impl Session {
         // A model that cannot call tools cannot carry out a task: the run
         // says which model it is rather than failing on its first answer.
         if let Some(refusal) = self.chooser.refuses_tasks() {
-            return Ok(LoopEnd::Failed(refusal));
+            return Ok(LoopEnd::Failed(Failure::said(refusal)));
         }
         let (total_budget, turn_budget) = match self.run_budget(run) {
             Ok(RunBudget { turns, total, turn }) => {
                 state.turns = turns;
                 (total, turn)
             }
-            Err(error) => return Ok(LoopEnd::Failed(error)),
+            Err(error) => return Ok(LoopEnd::Failed(Failure::said(error))),
         };
         let mut context = compaction::Context::of(self.chooser.context_tokens());
         self.await_companions();
@@ -1143,17 +1142,17 @@ impl Session {
         let mut turn = 0;
         loop {
             if state.turns.is_some_and(|turns| turn >= turns) {
-                return Ok(LoopEnd::Failed(format!(
+                return Ok(LoopEnd::Failed(Failure::said(format!(
                     "The task used all {turn} model turns of its budget before it finished \
                      ({} action(s) completed). Raise its turns and run it again.",
                     state.completed
-                )));
+                ))));
             }
             let left = total_budget.map(|total| total.saturating_sub(began.elapsed()));
             if left.is_some_and(|left| left.is_zero()) {
-                return Ok(LoopEnd::Failed(
-                    "The task ran out of time before it finished".into(),
-                ));
+                return Ok(LoopEnd::Failed(Failure::said(
+                    "The task ran out of time before it finished",
+                )));
             }
             // This explicit caller budget comes only from the broker-minted
             // owner policy; the gateway still enforces its selected-model ceiling.
@@ -1218,7 +1217,7 @@ impl Session {
                 .presentation
                 .error
                 .as_ref()
-                .map_or_else(String::new, |e| format!("{e} {}", e.recovery().guidance())),
+                .map_or_else(String::new, |e| e.message.clone()),
         }
         .bounded()
         .map_err(anyhow::Error::msg)?;
@@ -1236,17 +1235,18 @@ impl Session {
             return Ok(());
         }
         // Old hosts receive the same readable, bounded progress lane, without
-        // an unknown JSON field their strict decoder would reject.
-        let readable = if !presentation.text.is_empty() {
+        // an unknown JSON field their strict decoder would reject. Only the
+        // model's own prose is readable here: exposed reasoning is a provider
+        // summary, never the reply a person reads, so it is never what the
+        // lane says.
+        let said = if !presentation.text.is_empty() {
             presentation.text.as_str()
-        } else if !presentation.reasoning.is_empty() {
-            presentation.reasoning.as_str()
         } else if !presentation.detail.is_empty() {
             presentation.detail.as_str()
         } else {
             "Model turn completed"
         };
-        let message: String = readable.chars().take(280).collect();
+        let message: String = said.chars().take(280).collect();
         turn.published_presentation = Some(presentation.clone());
         turn.published_at = ui::time::now();
         self.report_task(
@@ -1258,12 +1258,16 @@ impl Session {
         )
     }
 
+    /// Stop the turn in flight, keeping what it streamed in the record: `said`
+    /// is what a person reads, in their own terms, and `reason` — a timeout,
+    /// the task's time running out, a person's Stop — is kept in the record.
     fn interrupt_turn_presentation(
         &mut self,
         run: &runtime_collab::TaskRunEnvelope,
         reason: &str,
+        said: &str,
         cancelled: bool,
-    ) -> Result<String> {
+    ) -> Result<Failure> {
         if let Some(turn) = &mut self.turn {
             use agent_provider_config::protocol::{ErrorKind, ModelError};
             turn.presentation.fail(ModelError {
@@ -1274,13 +1278,16 @@ impl Session {
                 },
                 message: reason.into(),
             });
-            turn.finished = Some(Err(reason.into()));
+            turn.finished = Some(Err(Failure::spoken(said, reason)));
         }
         self.publish_turn_presentation(run)?;
-        Ok(self
-            .turn
-            .take()
-            .map_or_else(|| reason.to_owned(), |turn| turn.retained_failure(reason)))
+        // The person reads what happened, in their terms; the reason the loop
+        // stopped the turn is the record kept beside it.
+        let failure = Failure::spoken(said, reason);
+        Ok(match self.turn.take() {
+            Some(turn) => turn.retained_failure(&failure),
+            None => failure,
+        })
     }
 
     /// One model turn: stream it, validate its complete batch, execute and record
@@ -1317,7 +1324,7 @@ impl Session {
             return Ok(Some(LoopEnd::Cancelled("Cancelled before planning".into())));
         }
         if let Some(message) = self.spend_exhausted() {
-            return Ok(Some(LoopEnd::Failed(message)));
+            return Ok(Some(LoopEnd::Failed(Failure::said(message))));
         }
         self.incorporate_native_directions(run, conversation)?;
         let body = conversation.body(&tools::typed_loop_definitions());
@@ -1358,6 +1365,7 @@ impl Session {
                 let message = self.interrupt_turn_presentation(
                     run,
                     "The explicit task time budget expired",
+                    "The task ran out of time before it finished",
                     false,
                 )?;
                 return Ok(Some(LoopEnd::Failed(message)));
@@ -1366,9 +1374,15 @@ impl Session {
             self.publish_turn_presentation(run)?;
             self.absorb_catalogue_updates();
             if self.cancellation_known()? {
-                let message =
-                    self.interrupt_turn_presentation(run, "Cancelled while thinking", true)?;
-                return Ok(Some(LoopEnd::Cancelled(message)));
+                // The person stopped it: the record needs no sentence beside
+                // the one their own Stop gave it.
+                let reason = self.interrupt_turn_presentation(
+                    run,
+                    "Cancelled while thinking",
+                    "The model call was stopped.",
+                    true,
+                )?;
+                return Ok(Some(LoopEnd::Cancelled(reason.detail().to_owned())));
             }
             if self
                 .native_task
@@ -1377,7 +1391,12 @@ impl Session {
             {
                 // New directions take the next turn. Steps already running
                 // settle first, as a step in progress always has.
-                self.interrupt_turn_presentation(run, "Superseded by new directions", true)?;
+                self.interrupt_turn_presentation(
+                    run,
+                    "Superseded by new directions",
+                    "The model call was stopped.",
+                    true,
+                )?;
                 if let Some(message) = self.drain_in_flight(run, state, &mut failed)? {
                     return Ok(Some(LoopEnd::Cancelled(message)));
                 }
@@ -1408,10 +1427,18 @@ impl Session {
                         // so the loop can answer its calls with what was wrong
                         // instead of ending the run. Retaining the text as a
                         // failure stays for a turn that cannot be answered,
-                        // which the loop judges below.
+                        // which the loop judges below. The person's sentence is
+                        // the catalogue's, never the parser's own words ("invoke:
+                        // missing operation"): those are the record kept beside
+                        // it, for whoever debugs the run.
                         Err(error) => {
-                            active.refused = Some((body.clone(), active.retained_failure(&error)));
-                            active.finished = Some(Err(active.retained_failure(&error)));
+                            let failure = Failure::spoken(
+                                &crate::i18n::t("agent-failure-invalid-response"),
+                                &error,
+                            )
+                            .retained(&active.presentation.text, &active.presentation.reasoning);
+                            active.refused = Some((body.clone(), failure.clone()));
+                            active.finished = Some(Err(failure));
                         }
                     }
                 }
@@ -1419,9 +1446,9 @@ impl Session {
             while let Some(call) = self.turn.as_mut().and_then(|turn| turn.ready.pop_front()) {
                 if self.task_budget_expired() {
                     self.turn = None;
-                    return Ok(Some(LoopEnd::Failed(
-                        "The explicit task time budget expired".into(),
-                    )));
+                    return Ok(Some(LoopEnd::Failed(Failure::said(
+                        "The explicit task time budget expired",
+                    ))));
                 }
                 let handling = ui::time::now();
                 let handled = self.handle_call(run, state, &call, &mut failed)?;
@@ -1430,7 +1457,12 @@ impl Session {
                 if let Some(message) =
                     cancelled.or_else(|| settle(handled, &call.id, &mut results, &mut finish))
                 {
-                    self.interrupt_turn_presentation(run, &message, true)?;
+                    self.interrupt_turn_presentation(
+                        run,
+                        &message,
+                        "The model call was stopped.",
+                        true,
+                    )?;
                     return Ok(Some(LoopEnd::Cancelled(message)));
                 }
             }
@@ -1447,6 +1479,7 @@ impl Session {
                 let message = self.interrupt_turn_presentation(
                     run,
                     "The model turn did not finish in time",
+                    "The model didn't answer in time.",
                     false,
                 )?;
                 return Ok(Some(LoopEnd::Failed(message)));
@@ -1471,7 +1504,7 @@ impl Session {
             Err(error) => {
                 self.chooser
                     .mark(tilo_model_client::TraceEvent::PlanFailed, turn);
-                if let Some(end) = state.finished_despite_failed_plan(&error) {
+                if let Some(end) = state.finished_despite_failed_plan(error.detail()) {
                     return Ok(Some(end));
                 }
                 // The model's own calls were refused for their shape or
@@ -1499,10 +1532,9 @@ impl Session {
                     // as after any turn that dispatched no finish.
                     return Ok(None);
                 }
-                return Ok(Some(LoopEnd::Failed(format!(
-                    "The model call failed: {error}. Check the model in Settings, under Agent \
-                     models, then run this again."
-                ))));
+                // `error` is the failure's record: its sentence is what a
+                // person reads, and what the turn kept goes beside it.
+                return Ok(Some(LoopEnd::Failed(error)));
             }
         };
         self.charge_turn(run, &body)?;
@@ -1526,8 +1558,13 @@ impl Session {
                 if let Some(end) = state.finished_despite_failed_plan(&error) {
                     return Ok(Some(end));
                 }
-                return Ok(Some(LoopEnd::Failed(format!(
-                    "The model's answer couldn't be used: {error}. Run this again."
+                // The person reads one clean sentence of what happened; the
+                // parser's own reason ("the model called no tool", a call the
+                // loop cannot read) is the record kept beside it, never the
+                // reply's words.
+                return Ok(Some(LoopEnd::Failed(Failure::spoken(
+                    &crate::i18n::t("agent-failure-invalid-response"),
+                    &error,
                 ))));
             }
         };

@@ -409,6 +409,14 @@ impl Shell {
                     packages.insert(app.to_owned(), module);
                 }
             }
+            // A placed app's views call the `fn`s of the apps it uses (`discussion.said_about`):
+            // those run as their own app's code here, so their packages are loaded with it, as
+            // an app's own window loads them (`RecordService::service_record`).
+            let packages = tilo_surface_host::shell_part::readings::with_uses(packages, |app| {
+                services
+                    .module(app)
+                    .or_else(|| crate::desk_styles::module_from_store(app))
+            });
             // A resource of an app no package is published of any more is followed no more, and
             // neither is one of an app whose views draw it as a Rust app when none of its views is
             // linked here any more.

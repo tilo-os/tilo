@@ -726,6 +726,11 @@ impl ChatPart {
         }
         // Each update says why, or that no reason is on record now.
         record.reasoning = reasoning;
+        // The run's working record of a failure, kept beside the words the
+        // reply shows; a later update without one leaves it as it was.
+        if work.detail.is_some() {
+            record.failure_detail.clone_from(&work.detail);
+        }
         for step in trace {
             let id = Id::from_raw(step.id.clone());
             let row = Step {

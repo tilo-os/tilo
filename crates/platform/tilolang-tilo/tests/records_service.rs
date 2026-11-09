@@ -102,6 +102,64 @@ fn texts(node: &UiNode) -> Vec<String> {
     out
 }
 
+/// A published resource's own `open` is answered, never refused: opening is the system's
+/// (`docs/designs/app-language/one-app-model.md` §3; shell.md §8, "The canvas composes views; it
+/// opens nothing"). The record publishes the `open` so an agent reading the catalogue finds it,
+/// and invoking it changes nothing of the record — the place it asks for waits for the session to
+/// stand through its arrangement, beside the place the asking step was in.
+#[test]
+fn a_resources_own_open_is_answered_and_changes_no_record() {
+    let (mut service, meta) = service();
+    let note = new_note(&mut service, &meta);
+    // The note publishes its own `open`: the effect a search hit and an agent invoke.
+    let published = service
+        .resources()
+        .into_iter()
+        .flat_map(|resource| std::iter::once(resource.clone()).chain(resource.children))
+        .find(|resource| resource.id.as_str() == note)
+        .expect("the note is published");
+    let open = published
+        .actions
+        .iter()
+        .find(|action| action.id == "open")
+        .expect("the note publishes its own open");
+    assert!(open.encode_immediate().is_some(), "its open takes no input");
+
+    let before = service.record().clone().get_heads();
+    // Invoked as an agent answering in a conversation, the open is answered with nothing done to
+    // the record: the session places the note beside that conversation.
+    let agent =
+        tilo_actions::ActionInvoker::actor("agent:tide").with_kind(tilo_actions::ActorKind::Agent);
+    service.note_beside("chat.workspace/channels/c_tide");
+    let started = service
+        .invoke_as(&agent, &note, "open", &Map::new())
+        .unwrap_or_else(|error| panic!("the resource's open is answered: {error}"));
+    assert_eq!(
+        started,
+        Started::Done(tilo_actions::ActionOutput::default()),
+        "it changed nothing of the record"
+    );
+    assert_eq!(
+        service.record().clone().get_heads(),
+        before,
+        "the record did not change"
+    );
+    // What it asked stands for the session to place: the note, beside the conversation that asked,
+    // and the actor that asked is the agent's.
+    let opened = service.take_open();
+    assert_eq!(opened.len(), 1, "one place asked for");
+    let (invoker, place) = &opened[0];
+    assert_eq!(invoker.actor, "agent:tide", "asked as the agent");
+    assert_eq!(place.resource, note, "the note the invocation addressed");
+    assert_eq!(place.view, "", "its primary view: its own default `open`");
+    assert_eq!(
+        place.beside, "chat.workspace/channels/c_tide",
+        "beside the conversation of the turn that asked"
+    );
+    // Nothing is left to take: the place asked for once.
+    assert!(service.take_open().is_empty(), "the ask is taken once");
+}
+
 #[test]
 fn a_note_made_through_its_action_is_a_session_resource_with_its_fields() {
     let (mut service, meta) = service();

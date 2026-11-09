@@ -326,3 +326,11 @@ cp -p "$(rustc --print target-libdir)/$needed_std" "$out/thin-app/"
 "$out/bin/nested-session-bus" --version >/dev/null \
     || { echo "nested-session-bus carries no working dbus-daemon: build where dbus-daemon is installed" >&2; exit 1; }
 printf 'staged the nested session in %s\n' "$out"
+# Which tree made this build: a run that uses it without rebuilding checks this record before
+# it starts, so another tree's build is refused by name rather than run as this tree's code
+# (dist/dev/build-provenance.sh). The staged session directory and the staged `thin-app` copy a
+# session runs apps from are recorded, and so are the build directories they came from, which a
+# session of the same tree also reads directly (`shell-run.sh` runs `target/thin-app` beside
+# `target/debug`).
+"$repo_root/dist/dev/build-provenance.sh" write \
+    "$out" "$out/thin-app" "$target/$thin_profile" "$target/$host_profile"

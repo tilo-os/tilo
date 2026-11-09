@@ -114,7 +114,6 @@ chat-agent-work-step-refused = Abgelehnt: { $target }
 chat-agent-work-step-refused-why = Abgelehnt: { $target }: { $why }
 chat-agent-work-show-details = Aktivität anzeigen
 chat-agent-work-hide-details = Aktivität ausblenden
-chat-agent-recovery = Prüfe die teilweise Antwort, bevor du es erneut versuchst oder um Fortsetzung bittest. Prüfe die Verbindung und die Einstellungen des Anbieters; wiederhole nie Schritte, die schon erledigt oder unbestätigt sind.
 chat-agent-provider-reasoning = Begründung des Anbieters
 chat-agent-show-reasoning = Begründung anzeigen
 chat-agent-hide-reasoning = Begründung ausblenden

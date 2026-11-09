@@ -1,7 +1,10 @@
 //! The part as the compositor's surface host: the layers it lays out, the pixels it shows of
 //! the windows over it, and the material it records for the compositor to fill in below.
 
-use super::*;
+use super::{
+    CursorIcon, HostIme, HostKey, HostLayer, HostTextInput, KeyClaim, Origin as _, ShellPart,
+    SurfaceHost, SurfaceKey,
+};
 
 impl SurfaceHost for ShellPart {
     fn layers(&self) -> Vec<HostLayer> {

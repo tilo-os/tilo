@@ -700,7 +700,7 @@ impl Session {
             person: options.person.clone(),
             signals: Rc::clone(&notice_signals),
             activities: Rc::clone(&activities),
-            surfaces: surfaces.clone(),
+            surfaces,
             sync: sync.clone(),
             notes: std::sync::Arc::clone(&notes),
             notices: notices.clone(),

@@ -39,7 +39,6 @@ use tilolang_tilo::instance::{Config, Instance, Mode, Platform};
 use tilolang_tilo::publish::{COMMIT, HOST_RESOURCE};
 use tilolang_tilo::runtime::delegate::{Invocation, Invoked, Invoker};
 use tilolang_tilo::runtime::{Meta, NameHost, Principal, ResourceRef, Value};
-use ui::tilo_actions::Action as _;
 
 use crate::{Placement, WidgetHost};
 
@@ -298,7 +297,7 @@ impl Open {
                 .ok_or_else(|| format!("no committed action {ticket}"))
                 .and_then(|action| {
                     action
-                        .apply(&mut self.record)
+                        .apply_as_step(&mut self.record)
                         .map_err(|error| error.to_string())
                 });
             if let Err(why) = &applied {

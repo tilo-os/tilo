@@ -503,3 +503,51 @@ view trapping(a: shell.Arrangement) {
     ui.Text("A working style, {a.places.count()} places")
 }
 "#;
+
+/// A style chosen by an assistive technology's named press — the route `Session::press_action`,
+/// `tilo-control click` and a screen reader's activation take — draws within a frame or two, not
+/// at whatever next wakes the shell.
+///
+/// This fails without the fix: the named press set no input on the shell's part, so the part took
+/// the change into its record but never ran its turn for it, and the desk kept drawing the style
+/// the person left until the clock's minute woke it (25 s to a minute of wall time in a live
+/// session). A press of the pointer sets the part's input and always drew at once, which is why
+/// only the named route was slow.
+#[test]
+fn a_style_chosen_by_a_named_press_draws_within_a_frame_or_two() {
+    use ui::window_targets::TargetAction;
+    let _settled = ui::motion::testing::settled();
+    common::app_store();
+    let mut session = session();
+    until(&mut session, |session| {
+        session
+            .accessible_labels()
+            .iter()
+            .any(|label| label == "Showing Strips")
+    });
+    // Let the desk rest, so the press is the only thing that may wake it.
+    for _ in 0..30 {
+        session.step(Duration::from_millis(16)).expect("step");
+    }
+    // Open the bar's style menu by name, as an assistive technology's user does.
+    session
+        .press_action("Showing Strips", TargetAction::Activate)
+        .expect("the style menu opens");
+    for _ in 0..4 {
+        session.step(Duration::from_millis(16)).expect("step");
+    }
+    // Press the Frames row by name, and see what the next frames draw.
+    session
+        .press_action("Frames", TargetAction::Activate)
+        .expect("the Frames row is pressed");
+    let mut frames = 0;
+    for _ in 0..3 {
+        session.step(Duration::from_millis(16)).expect("step");
+        frames += 1;
+    }
+    let labels = session.accessible_labels();
+    assert!(
+        labels.iter().any(|label| label == "Showing Frames"),
+        "the desk shows the style a named press chose, within {frames} frames: {labels:?}"
+    );
+}

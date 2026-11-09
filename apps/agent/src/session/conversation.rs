@@ -140,7 +140,17 @@ impl Session {
                 self.record_state(run, "provider_complete", json!({}), Some(message))
             }
             TaskRunUpdate::Failed { message } => {
-                self.record_state(run, "refused", json!({}), Some(message))
+                // What the host heard is the failure's sentence for a person —
+                // what happened, and at most what to do — and the run keeps the
+                // failure's record beside it for whoever debugs it later.
+                let detail = self.failure_detail.clone();
+                self.record_state_with_detail(
+                    run,
+                    "refused",
+                    json!({}),
+                    Some(message),
+                    detail.as_deref(),
+                )
             }
             TaskRunUpdate::Cancelled { message } => {
                 self.record_state(run, "provider_cancelled", json!({}), Some(message))
@@ -233,6 +243,21 @@ impl Session {
         fields: Value,
         say: Option<&str>,
     ) -> Result<()> {
+        self.record_state_with_detail(run, state, fields, say, None)
+    }
+
+    /// [`Self::record_state`], with the run's working record of a failure kept
+    /// on the reply's work beside the words a person reads: the transport's
+    /// error, the partial answer, the provider's exposed reasoning — for
+    /// whoever debugs it later, never the reply's own sentence.
+    fn record_state_with_detail(
+        &mut self,
+        run: &runtime_collab::TaskRunEnvelope,
+        state: &str,
+        fields: Value,
+        say: Option<&str>,
+        detail: Option<&str>,
+    ) -> Result<()> {
         let Some(record) = self.record.as_ref() else {
             return Ok(());
         };
@@ -244,6 +269,9 @@ impl Session {
         work.insert("route".into(), json!(record.route));
         work.insert("why".into(), json!(record.why));
         work.insert("trace".into(), Value::Array(record.steps.clone()));
+        if let Some(detail) = detail.map(str::trim).filter(|detail| !detail.is_empty()) {
+            work.insert("detail".into(), json!(detail));
+        }
         let mut arguments = Map::new();
         arguments.insert("message".into(), json!(record.cause.message.clone()));
         arguments.insert("work".into(), Value::Object(work.clone()));

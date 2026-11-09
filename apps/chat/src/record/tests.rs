@@ -813,6 +813,7 @@ fn an_agent_records_its_work_on_its_own_reply_to_the_summons() {
                     outcome: outcome.into(),
                     why: None,
                 }],
+                detail: None,
             },
             say: Some("On it.".into()),
         })
@@ -855,6 +856,7 @@ fn an_agent_records_its_work_on_its_own_reply_to_the_summons() {
                     route: None,
                     why: None,
                     trace: Vec::new(),
+                    detail: None,
                 },
                 say: None,
             }))
@@ -1873,6 +1875,7 @@ fn a_retry_moves_the_question_to_its_next_attempt_and_a_stale_press_asks_nothing
                     route: None,
                     why: None,
                     trace: Vec::new(),
+                    detail: None,
                 },
                 say: Some("The model connection closed".into()),
             }),

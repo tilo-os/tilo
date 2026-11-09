@@ -46,6 +46,8 @@
 #[cfg(test)]
 extern crate self as tilo_agent;
 
+/// The agent's catalogue of the sentences it writes into a conversation.
+pub mod i18n;
 pub mod model;
 pub mod pages;
 pub mod plan;

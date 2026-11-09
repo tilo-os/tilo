@@ -37,7 +37,6 @@ use tilolang_tilo::publish::{COMMIT, HOST_RESOURCE};
 use tilolang_tilo::runtime::origin::OriginWrite;
 use tilolang_tilo::runtime::{Delivery, NameHost, Principal, ResourceRef, Value};
 use tilolang_tilo::tilolang::Compiled;
-use ui::tilo_actions::Action as _;
 
 use crate::{Placement, WidgetHost};
 
@@ -2504,7 +2503,7 @@ impl ShellPart {
                 .ok_or_else(|| format!("no committed action {ticket}"))
                 .and_then(|action| {
                     action
-                        .apply(&mut self.record.borrow_mut())
+                        .apply_as_step(&mut self.record.borrow_mut())
                         .map_err(|error| error.to_string())
                 });
             if let Err(why) = &applied {
@@ -2759,6 +2758,12 @@ impl crate::Published for ShellPart {
     }
 
     fn press(&mut self, name: &str) -> Result<(), String> {
+        // A press takes the part into its turn, as a press of the pointer does: a named press
+        // (an assistive technology's activation, `tilo-control click`) changes the shell's
+        // record, and the change is drawn by the turn that takes it in. The part wakes for
+        // input alone, so a press that did not say so waited for the next deadline — the
+        // clock — the desk drawing the style the person left until then.
+        self.input = true;
         crate::Published::press(&mut self.widgets, name)
     }
 

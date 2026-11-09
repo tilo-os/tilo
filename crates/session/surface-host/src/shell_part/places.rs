@@ -209,7 +209,10 @@ fn serve(link: &SessionLink, service: &mut RecordService) {
     });
 }
 
-/// The shell's spaces canvas over the arrangement the part holds now.
+/// The `spaces` desk style over the arrangement the part holds now. A desk style is a view of
+/// the arrangement any installed package offers (`so.tilo.shell:spaces`, shell.md §6), and the
+/// desk draws the person's choice through `show(a, view: <style>)`; this is the style the places
+/// below are read through, opened over the arrangement the part holds.
 fn canvas(part: &ShellPart) -> tilolang_tilo::runtime::ViewInstance {
     let host = part.instance.host().expect("the shell runs");
     let app = host
@@ -232,7 +235,7 @@ fn canvas(part: &ShellPart) -> tilolang_tilo::runtime::ViewInstance {
         .meta
         .views
         .iter()
-        .find(|view| view.name == "spaces_canvas")
+        .find(|view| view.name == "spaces")
         .unwrap()
         .id
         .clone();

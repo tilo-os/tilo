@@ -102,6 +102,11 @@ if ((build)); then
     # whose agent answers needs one at the session's own service socket.
     (cd "$repo_root" && cargo build --locked -p tilo-model-gateway --bin tilo-model-gateway \
         --features server,host-backend,local-models,runtime-client)
+    # Which tree these programs are: only the binaries built here are recorded. The thin-app
+    # build they bake their runtimes of is `nested-session-build.sh`'s and is checked, never
+    # recorded here, so a run can never vouch for a build it did not make
+    # (dist/dev/build-provenance.sh).
+    "$repo_root/dist/dev/build-provenance.sh" write "$bin"
 fi
 for tool in tilo-session tilolang tilo-control tilo-launcher tilo-install tilo-app-package nested-session-bus tilo-runtime-bundle fs tilo-model-gateway; do
     [[ -x $bin/$tool ]] || die "no $bin/$tool (run without --no-build)"
@@ -125,6 +130,18 @@ fi
 needed_std=$(readelf -dW "$thin/libruntime_dylib.so" | sed -n 's/.*Shared library: \[\(libstd-[^]]*\)\].*/\1/p')
 [[ -n $needed_std ]] || die "$thin/libruntime_dylib.so links no libstd"
 [[ -f $thin/$needed_std ]] || cp -p "$(rustc --print target-libdir)/$needed_std" "$thin/$needed_std"
+# The programs the session runs and the thin-app build it bakes its runtimes of are this
+# tree's, or the run stops here: a `target/` from another tree, a build handed over through
+# TILO_NESTED_SESSION_BUILD, or a copy someone made at another commit would otherwise run
+# that tree's code and read as this tree's — the failure this check exists for
+# (dist/dev/build-provenance.sh). `--no-build` takes the build as it is, so it must be this
+# tree's: the binaries `shell-run.sh` built just now were recorded above, and the thin-app
+# build `dist/dev/nested-session-build.sh` or `dist/dev/tilolang-runtime-build.sh` made was
+# recorded by them. A thin-app build without a record predates this check: the run says so
+# and stops rather than bake a build whose tree is unknown.
+builds=("$bin" "$thin")
+[[ -d $repo_root/target/tilolang-runtime ]] && builds+=("$repo_root/target/tilolang-runtime")
+"$repo_root/dist/dev/build-provenance.sh" verify "${builds[@]}"
 
 # Lavapipe's loader manifest: the session, and everything it starts, loads this
 # driver alone, and an empty TILO_DMABUF_DEVICE advertises no render node, so

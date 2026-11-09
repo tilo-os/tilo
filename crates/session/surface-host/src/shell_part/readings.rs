@@ -203,6 +203,112 @@ pub fn app_of(ty: &str) -> Option<&str> {
     ty.split_once('#').map(|(app, _)| app)
 }
 
+/// Each app of `packages`, the apps a place shows and the session serves, with the apps whose
+/// packages they use (`use app.id as x`), closed over uses to any depth: a view of a placed app
+/// that calls another app's `fn` (`discussion.said_about(t)`) runs that app's code, so its
+/// package has to stand loaded here as the placed app's does. An app `module` answers nothing
+/// for is left out, and the place waits for it as it waits for any package the session has not
+/// served.
+#[must_use]
+pub fn with_uses(
+    packages: impl IntoIterator<Item = (String, std::sync::Arc<[u8]>)>,
+    module: impl Fn(&str) -> Option<std::sync::Arc<[u8]>>,
+) -> BTreeMap<String, std::sync::Arc<[u8]>> {
+    let mut out: BTreeMap<String, std::sync::Arc<[u8]>> = BTreeMap::new();
+    let mut queue: Vec<String> = Vec::new();
+    for (app, wasm) in packages {
+        if out.insert(app.clone(), wasm).is_none() {
+            queue.push(app);
+        }
+    }
+    while let Some(app) = queue.pop() {
+        let Some(wasm) = out.get(&app).cloned() else {
+            continue;
+        };
+        let Some(meta) = tilolang_tilo::runtime::Meta::from_wasm(&wasm) else {
+            continue;
+        };
+        for used in meta.uses {
+            if used == app || out.contains_key(&used) {
+                continue;
+            }
+            if let Some(module) = module(&used)
+                && out.insert(used.clone(), module).is_none()
+            {
+                queue.push(used);
+            }
+        }
+    }
+    out
+}
+
+#[cfg(test)]
+mod with_uses_tests {
+    use std::sync::Arc;
+
+    use super::with_uses;
+
+    /// A compiled app, its module carrying its metadata as an installed app's does, made against
+    /// the packages it uses as a build is: each app here declares one root type and a view of it,
+    /// and `uses` names the apps it imports.
+    fn package(
+        app: &str,
+        uses: &[&str],
+        imports: &[tilolang_tilo::tilolang::PackageMeta],
+    ) -> tilolang_tilo::tilolang::Compiled {
+        let used = uses
+            .iter()
+            .map(|used| format!("use {used} as u{}\n", used.replace('.', "_")))
+            .collect::<String>();
+        let source = format!(
+            "app {app} \"Test\"\n\n{used}\ntype Bag {{\n    n: Int\n}}\n\nroot Bag\n\ndefault view card for Bag\n\nview card(b: Bag) {{\n    text(\"{app}\")\n}}\n"
+        );
+        tilolang_tilo::tilolang::compile_package(
+            &source,
+            &tilolang_tilo::tilolang::IdsLock::default(),
+            imports,
+        )
+        .unwrap_or_else(|diagnostics| panic!("{app} compiles: {diagnostics:?}"))
+    }
+
+    fn wasm(of: &tilolang_tilo::tilolang::Compiled) -> Arc<[u8]> {
+        Arc::from(of.wasm.clone())
+    }
+
+    /// A placed app's own package stands with the packages of the apps it uses, to any depth:
+    /// its views call their `fn`s (`discussion.said_about(t)`), so their code runs here, and a
+    /// place that drew the app without them drew a failed state in every row.
+    #[test]
+    fn the_apps_a_placed_app_uses_are_loaded_with_it() {
+        let lib = package("me.lib", &[], &[]);
+        let mid = package("me.mid", &["me.lib"], std::slice::from_ref(&lib.meta));
+        let top = package("me.top", &["me.mid"], &[lib.meta.clone(), mid.meta.clone()]);
+        let modules = std::collections::BTreeMap::from([
+            ("me.top".to_owned(), wasm(&top)),
+            ("me.mid".to_owned(), wasm(&mid)),
+            ("me.lib".to_owned(), wasm(&lib)),
+        ]);
+        let loaded = with_uses([("me.top".to_owned(), wasm(&top))], |app| {
+            modules.get(app).cloned()
+        });
+        assert_eq!(
+            loaded.keys().cloned().collect::<Vec<_>>(),
+            ["me.lib", "me.mid", "me.top"],
+            "every app used, to any depth, is published beside the app that uses it"
+        );
+    }
+
+    /// An app whose package the session serves none of is left out: the place waits for it as it
+    /// waits for any package a view read and the session has not served.
+    #[test]
+    fn a_used_app_the_session_serves_nothing_of_is_left_out() {
+        let mid = package("me.mid", &[], &[]);
+        let top = package("me.top", &["me.mid"], std::slice::from_ref(&mid.meta));
+        let loaded = with_uses([("me.top".to_owned(), wasm(&top))], |_| None);
+        assert_eq!(loaded.len(), 1, "only the app the place shows stands");
+    }
+}
+
 /// The verbs each resource of `resources`, the session's catalogue, publishes that no loaded
 /// package of `loaded` declares ([`tilolang_tilo::runtime::published`]): the resource's id, the verb's
 /// id, the app that runs it, and the arguments it takes after the resource (`channel`, `text`).

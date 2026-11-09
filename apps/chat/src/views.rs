@@ -57,6 +57,11 @@ pub struct Channel {
     /// Its messages, oldest first, each with its body, reactions and what it answers.
     #[serde(default)]
     pub messages: Vec<Message>,
+    /// What the person has put on the draft they are writing, that they did not type: the
+    /// resource a drop on the composer attached. It is the composer's, not a message's, so it
+    /// stands before the messages and is never part of them until Send posts it.
+    #[serde(default)]
+    pub draft: Option<Attachment>,
 }
 
 /// Someone who speaks in a channel, as their name shows them.
@@ -146,9 +151,15 @@ pub struct Work {
     /// `provider_*` end.
     #[serde(default)]
     pub state: String,
-    /// What is under way, in the agent's words (`doing`), or why it ended.
+    /// What the run said of the work: what is under way (`doing`), or what
+    /// happened when it ended. What a person reads, never the run's record.
     #[serde(default)]
     pub detail: String,
+    /// The run's working record of a failure, for whoever debugs it later: the
+    /// transport's error, the partial answer, the provider's exposed reasoning.
+    /// Shown only behind a disclosure, never as the row's own words.
+    #[serde(default)]
+    pub failure_detail: String,
 }
 
 impl Work {
@@ -393,6 +404,7 @@ impl Channel {
                 .is_some_and(|c| c.kind == crate::model::ChannelKind::Voice),
             people,
             messages,
+            draft: None,
         }
     }
 
@@ -458,7 +470,11 @@ fn work_of(work: &crate::model::AgentWork) -> Work {
         .stream
         .as_ref()
         .map_or_else(String::new, |stream| stream.detail.clone());
-    Work { state, detail }
+    Work {
+        state,
+        detail,
+        failure_detail: work.failure_detail.clone().unwrap_or_default(),
+    }
 }
 
 /// The state a provider's finish is, spelled as [record-work](crate::messages) spells it.
@@ -980,6 +996,11 @@ fn writing_row(message: &Message, work: &Work, cx: &ViewCx) -> Node {
 /// and its Retry is the conversation's own `retry` action — the same verb the REPL calls — with
 /// the reply it retries. The row stays where it happened: the turn's place in the transcript is
 /// the evidence that the person was not ignored.
+///
+/// What the row says is the run's sentence for a person — one line of what happened, and at most
+/// what to do next. The run's working record (the transport's error, the partial answer, the
+/// provider's exposed reasoning) is for whoever debugs the failure later, so it sits behind a
+/// disclosure: a person who just wants to read the conversation never meets it.
 fn failed_row(message: &Message, work: &Work, cx: &ViewCx) -> Node {
     let mut banner =
         ui::BannerBuilder::new(&cx.key(format!("failed-{}", message.id)), work.happened())
@@ -1004,7 +1025,32 @@ fn failed_row(message: &Message, work: &Work, cx: &ViewCx) -> Node {
     } else {
         banner
     };
-    banner
+    let record = work.failure_detail.trim();
+    if record.is_empty() {
+        return banner;
+    }
+    // The technical record closes behind its own row: a disclosure a person opens only when they
+    // want to know what went wrong under the hood, never the row's own words.
+    let details: Node =
+        ui::DisclosureRowBuilder::new(&cx.key(format!("failed-record-{}", message.id)), "Details")
+            .into();
+    let details = node::with(
+        details,
+        vec![
+            ui::TextBuilder::new(
+                &cx.key(format!("failed-record-text-{}", message.id)),
+                record,
+            )
+            .role(ui::TextRole::Caption)
+            .secondary(true)
+            .into(),
+        ],
+    );
+    ui::stack(
+        &cx.key(format!("failed-stack-{}", message.id)),
+        Gap::Tight,
+        vec![banner, details],
+    )
 }
 
 /// What a message offers while the pointer is over it or it holds focus, over its trailing
@@ -1034,10 +1080,10 @@ fn hover_actions(_c: &Channel, message: &Message, cx: &ViewCx) -> Node {
 /// the reply (`ui.Quote`), naming who it answers and what they said. A reply to a span quotes
 /// the words the person chose, not the answered message's start.
 ///
-/// Pressing the quote brings the answered message into view, and — when the reply answers a run
-/// of it — opens on those very words: it is Chat's own reveal, the one the reply's own message
-/// carries, so pressing a quote and opening the message from a link land the reader in the same
-/// place.
+/// Pressing the quote brings the answered message into view: it is the same press a message row
+/// takes, the system's own open of the message's resource (`shell.md` §3), so a quote and the
+/// row it names land the reader in the same place. The run the reply quotes is kept in the
+/// view's `span`, which is where a window that reveals a range says where the words stand.
 fn reply_quote(c: &Channel, quote: &Quote, key: &str, cx: &ViewCx) -> Node {
     let author = c.person(&quote.author);
     let excerpt = if quote.excerpt.trim().is_empty() {
@@ -1051,31 +1097,15 @@ fn reply_quote(c: &Channel, quote: &Quote, key: &str, cx: &ViewCx) -> Node {
         .caption("In reply to")
         .author(principal(author, &quote.author))
         .into();
-    // A quote of a message the page holds names it: pressing the quote shows the message, on the
-    // run it quotes when the reply answers a span rather than the whole message.
-    if quote.id.is_empty() {
-        return shown;
+    // A quote of a message the page holds names it: pressing the quote shows the message. A
+    // quote of one the page does not hold (an earlier part of the chat) is read, not pressed.
+    match Channel::message_resource(&quote.id) {
+        Some(target) => {
+            let opened = cx.open(&shown, "activate", target, None);
+            node::on(shown, "activate", opened)
+        }
+        None => shown,
     }
-    let revealed = match &quote.span {
-        Some(span) => cx.action_with(
-            &shown,
-            "activate",
-            "reveal-message-range",
-            vec![
-                Arg::text(quote.id.clone()),
-                Arg::Value(Value::Int(i64::try_from(span.start).unwrap_or_default())),
-                Arg::Value(Value::Int(i64::try_from(span.end).unwrap_or_default())),
-                Arg::text("Bytes"),
-            ],
-        ),
-        None => cx.action_with(
-            &shown,
-            "activate",
-            "reveal-message",
-            vec![Arg::text(quote.id.clone())],
-        ),
-    };
-    node::on(shown, "activate", revealed)
 }
 
 /// One thing a message carries: a record it was shared from (a row that places it), the words
@@ -1091,7 +1121,16 @@ fn attachment_row(attachment: &Attachment, key: &str, cx: &ViewCx) -> Node {
             .dense(true)
             .into();
         let opened = cx.open(&row, "activate", target.clone(), None);
-        return node::on(row, "activate", opened);
+        let row = node::on(row, "activate", opened);
+        // The chip is also a source: dragging it to the canvas places the resource there (a
+        // `ui.DropTarget` that takes it runs the system's placement), and dragging it to a
+        // composer attaches it to another draft.
+        return drag_source(
+            &cx.key(format!("source-{key}")),
+            row,
+            target,
+            &attachment.label,
+        );
     }
     match attachment.kind.as_str() {
         "image" if !attachment.src.is_empty() => {
@@ -1172,11 +1211,64 @@ fn composer(c: &Channel, cx: &ViewCx) -> Node {
         .icon_only(true)
         .into();
     let send = post(cx, send, "press", &c.id, Arg::state(DRAFT));
-    ui::row(&cx.key("composer"), Gap::Tight, vec![attach, input, send])
+    let row = ui::row(&cx.key("composer"), Gap::Tight, vec![attach, input, send]);
+    // What a drop on the composer takes: a resource dragged from the canvas, a search hit, a
+    // row of another view or a message's attachment. The drop runs Chat's `attach` on the
+    // channel with the resource the drag carried, which appends it to the draft: the chip
+    // `draft_attachment` draws stands over the row, and Send posts it with the words.
+    let body: Node = ui::column(&cx.key("composer-column"), Gap::Tight, {
+        let mut parts = Vec::new();
+        if let Some(held) = draft_attachment(c, cx) {
+            parts.push(held);
+        }
+        parts.push(row);
+        parts
+    });
+    let target: Node = ui::DropTargetBuilder::new(&cx.key("composer-drop")).into();
+    let attached = cx.action_with(
+        &target,
+        "drop",
+        "attach",
+        vec![Arg::text(&c.id), Arg::Event],
+    );
+    let target = node::on(target, "drop", attached);
+    node::slot(target, "content", vec![body])
+}
+
+/// What a drop on the composer attached to the draft, as the chip that shows it: the resource's
+/// name, and a button that takes it off the draft again.
+///
+/// The draft is the reading's, not the view's: a drop runs the channel's own `attach`, the
+/// reading carries what it attached, and the next read draws the chip. Send posts it with the
+/// words, and the reading that follows has none of it — the chip goes as the message arrives.
+fn draft_attachment(c: &Channel, cx: &ViewCx) -> Option<Node> {
+    let attached = c.draft.as_ref()?;
+    let chip: Node = ui::ChipBuilder::new(&cx.key("draft-attachment"), &attached.label)
+        .icon("paperclip")
+        .into();
+    let removed = cx.action(&chip, "remove", "detach");
+    Some(node::on(chip, "remove", removed))
 }
 
 /// The name the composer's draft is held under in the view's own state.
 const DRAFT: &str = "Composer";
+
+/// `node` wrapped so the person can drag it out: what it carries is `target`, and its ghost
+/// reads `title`. A press that does not travel is still `node`'s own, so the row opens and the
+/// chip presses exactly as they did before.
+fn drag_source(key: &str, node: Node, target: &ResourceRef, title: &str) -> Node {
+    let source: Node = ui::DragSourceBuilder::new(key, target.id.clone()).into();
+    let source = ui::put(
+        source,
+        "title",
+        Value::Text(if title.trim().is_empty() {
+            target.id.clone()
+        } else {
+            title.to_owned()
+        }),
+    );
+    node::slot(source, "content", vec![node])
+}
 
 /// The name the message being answered is held under in the view's own state: a message's Reply
 /// button sets it, and the composer reads it as the next message's parent.
@@ -1715,6 +1807,112 @@ mod tests {
     }
 
     #[test]
+    fn a_dropped_resource_becomes_a_draft_attachment() {
+        // The composer is a drop target, and what a drop on it runs is the channel's `attach`
+        // with the resource the drag carried. The chip that shows the draft's attachment stands
+        // over the row, drawing the resource's label, with a button that takes it away.
+        let mut channel = demo_channel();
+        // The draft the composer draws is the reading's: a drop on the composer runs the
+        // channel's `attach`, and the next read carries what it attached here.
+        channel.draft = Some(Attachment {
+            kind: "resource".to_owned(),
+            label: "Q3 plan".to_owned(),
+            resource: Some(ResourceRef {
+                id: "notes.pages/page_1".to_owned(),
+                ty: "notes.page".to_owned(),
+            }),
+            ..Attachment::default()
+        });
+        let cx = view_cx(&channel);
+        let tree = page(&channel, &cx);
+        passes(&tree);
+        // The composer's drop target is there, and what it runs on a drop is `attach` with the
+        // channel the composer posts to.
+        let target = keyed(&tree, "ui.DropTarget", "@composer-drop")
+            .into_iter()
+            .next()
+            .expect("the composer is a drop target");
+        assert_eq!(
+            cx.effect(&target.key, "drop"),
+            Some(tilo_view::Effect::Action {
+                action: "attach".to_owned(),
+                args: vec![tilo_view::Arg::text(&channel.id), tilo_view::Arg::Event,],
+            }),
+            "a drop on the composer attaches the resource it carried to the draft"
+        );
+        // The draft's attachment draws as its chip, by the label the drag gave it.
+        let chip = keyed(&tree, "ui.Chip", "@draft-attachment")
+            .into_iter()
+            .next()
+            .expect("the draft's attachment stands as a chip");
+        assert_eq!(
+            chip.props.get("label"),
+            Some(&Value::Text("Q3 plan".to_owned())),
+            "the chip draws the attachment's label"
+        );
+        assert_eq!(
+            cx.effect(&chip.key, "remove"),
+            Some(tilo_view::Effect::Action {
+                action: "detach".to_owned(),
+                args: Vec::new(),
+            }),
+            "the chip's remove takes the attachment off the draft"
+        );
+        // The composer is still the one row: attach, the field and send, under the chip.
+        assert!(
+            walk(&tree).into_iter().any(|node| node.kind == "ui.Button"
+                && node.props.get("label") == Some(&Value::Text("Send".to_owned()))),
+            "the composer still sends"
+        );
+    }
+
+    #[test]
+    fn a_messages_attachment_chip_can_be_dragged_out() {
+        // A record an attachment holds is a drag source as well as a row: dragging it carries
+        // the resource's address, so a drop target elsewhere — the canvas, a composer — takes
+        // it.
+        let mut channel = demo_channel();
+        let shared = ResourceRef {
+            id: "tube.video:vid_rust_async".to_owned(),
+            ty: "tube.video".to_owned(),
+        };
+        channel.messages.push(Message {
+            id: "m_shared".to_owned(),
+            author: channel.people[0].id.clone(),
+            ts: 1_782_470_400,
+            attachments: vec![Attachment {
+                kind: "resource".to_owned(),
+                label: "Async Rust".to_owned(),
+                resource: Some(shared.clone()),
+                ..Attachment::default()
+            }],
+            ..Message::default()
+        });
+        let cx = view_cx(&channel);
+        let tree = page(&channel, &cx);
+        passes(&tree);
+        let source = keyed(&tree, "ui.DragSource", "source-page@attachment-m_shared-0")
+            .into_iter()
+            .next()
+            .unwrap_or_else(|| {
+                panic!(
+                    "the attachment is a drag source: {:?}",
+                    keyed(&tree, "ui.DragSource", "")
+                )
+            });
+        assert_eq!(
+            source.props.get("resource"),
+            Some(&Value::Text(shared.id.clone())),
+            "the drag carries the resource the attachment holds"
+        );
+        assert_eq!(
+            source.props.get("title"),
+            Some(&Value::Text("Async Rust".to_owned())),
+            "the ghost under the pointer says the resource's name"
+        );
+    }
+
+    #[test]
     fn the_composer_is_full_width_with_attach_and_send() {
         let channel = demo_channel();
         let cx = view_cx(&channel);
@@ -1725,9 +1923,8 @@ mod tests {
             .find(|node| node.key.contains("@composer"))
             .expect("the composer's row");
         // The composer's row holds an attach button, the field and its send button, in order.
-        let buttons: Vec<&Node> = composer
-            .children
-            .iter()
+        let buttons: Vec<&Node> = walk(composer)
+            .into_iter()
             .filter(|node| node.kind == "ui.Button")
             .collect();
         let labels: Vec<String> = buttons
@@ -1746,9 +1943,8 @@ mod tests {
             "the composer offers send: {labels:?}"
         );
         // The field is full width: a `fill` argument asks for the room the buttons leave.
-        let field = composer
-            .children
-            .iter()
+        let field = walk(composer)
+            .into_iter()
             .find(|node| node.kind == "ui.TextInput")
             .expect("the composer's field");
         assert_eq!(
@@ -2011,6 +2207,17 @@ mod tests {
                 .any(|text| text == "The revenue curve is flat from April to June."),
             "the whole answered message is not what the quote shows"
         );
+        // Pressing the quote brings the answered message into view: the same press a message row
+        // takes, the system's own open of that message's resource, so a quote and the row it
+        // names land the reader on one message.
+        assert_eq!(
+            cx.effect(&quote.key, "activate"),
+            Some(tilo_view::Effect::Open {
+                target: Channel::message_resource("m_asked").expect("a message has a resource"),
+                view: None,
+            }),
+            "pressing the quote shows the message it quotes"
+        );
     }
 
     #[test]
@@ -2218,6 +2425,7 @@ mod tests {
             work: Some(Work {
                 state: state.to_owned(),
                 detail: String::new(),
+                failure_detail: String::new(),
             }),
             ..Message::default()
         });
@@ -2275,6 +2483,7 @@ mod tests {
                 reply.work = Some(Work {
                     state: state.to_owned(),
                     detail: "The provider connection closed".to_owned(),
+                    failure_detail: String::new(),
                 });
             }
             let cx = view_cx(&channel);
@@ -2327,6 +2536,69 @@ mod tests {
     }
 
     #[test]
+    fn a_failed_row_says_what_happened_and_keeps_the_runs_record_behind_a_disclosure() {
+        // A failed turn's row says the run's own sentence for a person — one line of what
+        // happened — never the working record a person would read as the model's reasoning or
+        // a recovery instruction written for the agent. The record is there, for whoever debugs
+        // the failure, behind a disclosure the row offers.
+        let mut channel = writing_channel("provider_failed", "");
+        if let Some(reply) = channel.messages.last_mut() {
+            reply.retry = true;
+            reply.retry_summons = Some("m_asked".to_owned());
+            reply.work = Some(Work {
+                state: "provider_failed".to_owned(),
+                detail: "The model didn't answer in time.".to_owned(),
+                failure_detail: "Model request timed out Retry inference from saved history; \
+                                 do not replay completed actions. Provider-exposed summary: \
+                                 Let me read r4, r9.."
+                    .to_owned(),
+            });
+        }
+        let cx = view_cx(&channel);
+        let tree = page(&channel, &cx);
+        passes(&tree);
+        let rows = keyed(&tree, "ui.Banner", "@failed-");
+        assert_eq!(rows.len(), 1);
+        assert_eq!(
+            rows[0].props.get("message"),
+            Some(&Value::Text("The model didn't answer in time.".to_owned())),
+            "the row says what happened in the run's sentence"
+        );
+        // The row's own visible words — the banner, not the disclosure it offers — carry nothing
+        // of the record. The disclosure's body is the one place it lives.
+        let shown = texts(rows[0]);
+        for line in &shown {
+            assert!(
+                !line.contains("Retry inference from saved history"),
+                "the record's recovery instruction is not the row's words: {line:?}"
+            );
+            assert!(
+                !line.contains("Provider-exposed summary"),
+                "the provider's reasoning is not the row's words: {line:?}"
+            );
+            assert!(
+                !line.contains("Let me read"),
+                "model reasoning is not the row's words: {line:?}"
+            );
+        }
+        // The record is behind a disclosure on the row, so it can be opened when a person wants
+        // to know what went wrong under the hood.
+        let details = keyed(&tree, "ui.DisclosureRow", "@failed-record-");
+        assert_eq!(details.len(), 1, "the record has a disclosure");
+        assert_eq!(
+            details[0].props.get("title"),
+            Some(&Value::Text("Details".to_owned())),
+            "the disclosure says what it holds"
+        );
+        assert!(
+            texts(&details[0])
+                .iter()
+                .any(|line| line.contains("Provider-exposed summary")),
+            "the record is inside the disclosure"
+        );
+    }
+
+    #[test]
     fn a_reply_of_an_earlier_attempt_offers_no_retry() {
         // A retry moves the question to its next attempt, and the answer is a reply of its own:
         // the reply that failed stands as history, and a Retry there would ask a third time.
@@ -2347,6 +2619,7 @@ mod tests {
             work: Some(Work {
                 state: "provider_complete".to_owned(),
                 detail: String::new(),
+                failure_detail: String::new(),
             }),
             ..Message::default()
         });
@@ -2420,6 +2693,7 @@ mod tests {
             Some(Work {
                 state: "provider_failed".to_owned(),
                 detail: "The model connection closed".to_owned(),
+                failure_detail: String::new(),
             }),
             "the page projects the record's failed end and its reason"
         );

@@ -96,10 +96,20 @@ impl HostStepServices for SessionActions {
     fn start(&self, request: &HostStepRequest<'_>) -> Result<Pending<HostStepOutcome>, String> {
         let argument = request.argument.map(str::to_owned);
         let (done, asked) = pending();
+        // The place the ask is in: an agent's turn is the conversation the person wrote in, and
+        // a place it opens stands beside that conversation
+        // (`docs/designs/app-language/one-app-model.md` §3). The person's own step stands beside
+        // the place in front.
+        let beside = request
+            .actor
+            .turn()
+            .map(|turn| turn.conversation.clone())
+            .unwrap_or_default();
         self.doors.invoke_step(
             request.actor.id().to_owned(),
             request.address.clone(),
             argument,
+            beside,
             done,
         );
         Ok(asked.map(|ran| {

@@ -350,6 +350,11 @@ pub struct AgentWork {
     /// given.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reasoning: Option<AgentReasoning>,
+    /// The run's working record of a failure, for whoever debugs it later: the
+    /// transport's error, the partial answer, the provider's exposed reasoning.
+    /// Never the reply's words, and shown only behind a disclosure.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub failure_detail: Option<String>,
     /// One row per operation the agent **dispatched**, in the order it
     /// dispatched them.
     ///
@@ -549,6 +554,7 @@ impl AgentWork {
             state,
             since: 0,
             reasoning,
+            failure_detail: update.detail.clone(),
             trace,
             stream: None,
         })
@@ -565,6 +571,7 @@ impl AgentWork {
             state,
             since,
             reasoning: None,
+            failure_detail: None,
             trace: Vec::new(),
             stream: None,
         }

@@ -37,6 +37,10 @@ const CHAT_APP: (&str, &str) = ("chat", "Chat");
 const RECORD_WORK: &str = "record-work";
 /// The chat action that asks an agent again for a turn it could not answer.
 const RETRY: &str = "retry";
+/// The channel's verb a drop on the composer runs: attach the resource it carried to the draft.
+const ATTACH: &str = "attach";
+/// The channel's verb a draft attachment's chip's remove runs: take the attachment away.
+const DETACH: &str = "detach";
 
 /// One workspace's conversations as the pass read them, and the runs they give.
 #[derive(Clone, Default)]
@@ -278,6 +282,10 @@ pub(crate) struct Conversations {
     wake: ui::WakeScope,
     /// Each workspace's records, opened here and followed change by change.
     open: RefCell<BTreeMap<String, Opened>>,
+    /// What the composer for each channel carries that its draft did not type: the resource a
+    /// drop on the composer attached, by channel. It lives here, never in Chat's record, as a
+    /// draft is not part of the conversation, and `post` takes it into the message it sends.
+    drafts: RefCell<BTreeMap<String, String>>,
 }
 
 /// A workspace's records as they are open here, and what was read of them.
@@ -305,6 +313,7 @@ impl Conversations {
             owners: RecordOwners::new(root),
             wake: scope,
             open: RefCell::default(),
+            drafts: RefCell::default(),
         }
     }
 
@@ -390,12 +399,28 @@ impl Conversations {
             let messages = chat::messages::Messages::new(vec![(*index, std::rc::Rc::new(held))]);
             let rows = chat.message_rows(&messages, channel);
             let me = opened.records.author().0.clone();
-            let names = self.channel_names(opened, &me);
-            return Some(chat::views::Channel::read(
-                &chat, &rows, channel, &me, &names,
-            ));
+            let names = Self::channel_names(opened, &me);
+            // The draft the composer holds (a drop on it attached one) rides with the page:
+            // the same reading every other field comes in, never a second one at the view.
+            drop(opened);
+            let reading = chat::views::Channel::read(&chat, &rows, channel, &me, &names);
+            return Some(self.with_draft(reading, channel));
         }
         None
+    }
+
+    /// Give `reading` the draft the composer for `channel` holds: the resource a drop on the
+    /// composer attached, drawn as the chip over the row and posted with the next message.
+    /// The draft is the session's (it lives here, never in Chat's record), so it reaches the
+    /// page the same way every other field does — in the reading the page is drawn from.
+    fn with_draft(&self, mut reading: chat::views::Channel, channel: &str) -> chat::views::Channel {
+        let Some(resource) = self.draft_attachment(channel) else {
+            return reading;
+        };
+        // The attachment a message would carry: the chip `Attachment::of` gives it, so the
+        // draft's chip and the message's are the same one drawn in two places.
+        reading.draft = Some(chat::views::Attachment::of(&attached_resource(&resource)));
+        reading
     }
 
     /// The names a conversation's page completes its people with, beyond what Chat's own record
@@ -406,7 +431,7 @@ impl Conversations {
     /// conversation and posts, and Chat's `introduce` is another app's act), nor which agents the
     /// workspace keeps: those records are here, so the page is read with them and nobody is
     /// shown a routing id.
-    fn channel_names(&self, opened: &Opened, me: &str) -> chat::views::Names {
+    fn channel_names(opened: &Opened, me: &str) -> chat::views::Names {
         let mut names = chat::views::Names {
             me: crate::directory::desk_person_name(
                 ui::local_identity::load().map(|identity| identity.display_name),
@@ -414,7 +439,7 @@ impl Conversations {
             ),
             agents: BTreeMap::new(),
         };
-        let record = self.workspace_agents(opened);
+        let record = Self::workspace_agents(opened);
         if let Some(record) = record {
             let state = record.get();
             for agent in state.active() {
@@ -431,7 +456,6 @@ impl Conversations {
     /// conversation's agents go by. `None` where the workspace keeps none — reading an app's
     /// record creates none, as [`Self::opened_with`] reads Chat's.
     fn workspace_agents(
-        &self,
         opened: &Opened,
     ) -> Option<WorkspaceRecord<tilo_app::tilo_workspace_agent::WorkspaceAgents>> {
         use tilo_app::tilo_workspace_agent::{KIND as AGENTS_KIND, OWNER as AGENTS_OWNER};
@@ -458,10 +482,72 @@ impl Conversations {
         )
     }
 
+    /// Attach `resource` to the draft the composer for `channel` writes: the resource a drop on
+    /// the composer carried, as the drag published it. One draft holds one attachment at a
+    /// time (a second drop replaces the first), and `post` gives it to the message the person
+    /// sends next.
+    ///
+    /// # Errors
+    /// No open workspace holds the channel.
+    pub fn attach(&self, channel: &str, resource: &str) -> Result<(), String> {
+        let open = self.open.borrow();
+        for opened in open.values() {
+            let Some(chat_record) = &opened.chat else {
+                continue;
+            };
+            if !chat_record
+                .get()
+                .channels
+                .iter()
+                .any(|(id, _)| id.as_str() == channel)
+            {
+                continue;
+            }
+            self.drafts
+                .borrow_mut()
+                .insert(channel.to_owned(), resource.to_owned());
+            return Ok(());
+        }
+        Err(format!("no open workspace holds the channel {channel}"))
+    }
+
+    /// Take the draft attachment for `channel` away: what the chip's remove runs.
+    ///
+    /// # Errors
+    /// No open workspace holds the channel.
+    pub fn detach(&self, channel: &str) -> Result<(), String> {
+        let open = self.open.borrow();
+        for opened in open.values() {
+            let Some(chat_record) = &opened.chat else {
+                continue;
+            };
+            if !chat_record
+                .get()
+                .channels
+                .iter()
+                .any(|(id, _)| id.as_str() == channel)
+            {
+                continue;
+            }
+            self.drafts.borrow_mut().remove(channel);
+            return Ok(());
+        }
+        Err(format!("no open workspace holds the channel {channel}"))
+    }
+
+    /// The resource the composer's draft for `channel` carries, when it carries one.
+    #[must_use]
+    pub fn draft_attachment(&self, channel: &str) -> Option<String> {
+        self.drafts.borrow().get(channel).cloned()
+    }
+
     /// Post `text` in `channel`, as the person seated here, through Chat's own `post`: a message
     /// in the workspace whose open record holds the channel, written to the head part as Chat's
     /// composer writes it. This is the verb a place's composer runs, so the page Chat's window
     /// shows and the page a place draws post to one record.
+    ///
+    /// A resource the person attached to the draft by dropping it on the composer rides with
+    /// the message, as Chat's own composer gives it; the draft lets go of it once sent.
     ///
     /// # Errors
     /// No open workspace holds the channel, or Chat refused the post.
@@ -477,6 +563,9 @@ impl Conversations {
     /// Chat's own `post` writes the message, so a reply from a place and one from Chat's window
     /// land in one record, and a span reply is an ordinary reply that carries a quote.
     ///
+    /// A resource the person attached to the draft by dropping it on the composer rides with
+    /// the message, as Chat's own composer gives it; the draft lets go of it once sent.
+    ///
     /// # Errors
     /// No open workspace holds the channel, the run is not one of the answered message, or Chat
     /// refused the post.
@@ -487,6 +576,7 @@ impl Conversations {
         parent: Option<&str>,
         span: Option<(usize, usize)>,
     ) -> Result<(), String> {
+        let attached = self.drafts.borrow_mut().remove(channel);
         let open = self.open.borrow();
         for opened in open.values() {
             let Some(chat_record) = &opened.chat else {
@@ -534,7 +624,10 @@ impl Conversations {
                             parent: parent.filter(|parent| !parent.is_empty()).map(Id::from_raw),
                             quoted,
                             body: None,
-                            attachments: Vec::new(),
+                            attachments: attached
+                                .as_deref()
+                                .map(|resource| vec![attached_resource(resource)])
+                                .unwrap_or_default(),
                             mentions: None,
                             written: None,
                         },
@@ -1004,7 +1097,102 @@ pub(crate) fn channel_resource(
         root: false,
     });
     spec.app_id = Some("chat".to_owned());
-    spec.with_action(retry_action()).with_action(post_action())
+    spec.with_action(retry_action())
+        .with_action(post_action())
+        .with_action(attach_action())
+        .with_action(detach_action())
+}
+
+/// The channel's `attach` action: what a drop on the composer runs. It takes the resource the
+/// drag carried and appends it to the composer's draft, which `post` then carries into the
+/// message the person sends.
+///
+/// Like `post`, it is `ClientLocal` with an inert encoded action: `ChatViewService::invoke`
+/// runs the verb itself ([`Conversations::attach`]), and the draft lives in the session's own
+/// state, never in Chat's record (a draft is not part of the conversation).
+#[must_use]
+pub(crate) fn attach_action() -> tilo_actions::ActionSpec {
+    use tilo_actions::{ActionArgs, EncodedAction, ExecutionLocus, ParamType};
+    tilo_actions::ActionSpec::typed(
+        "attach",
+        "Attach a resource to the draft",
+        "a resource",
+        ExecutionLocus::ClientLocal,
+        vec![
+            tilo_actions::ActionParam::required("channel", ParamType::Text, "The channel"),
+            tilo_actions::ActionParam::required(
+                "resource",
+                ParamType::Resource,
+                "The resource to attach",
+            ),
+        ],
+        |_: &ActionArgs| EncodedAction::written("chat.attach".to_owned(), Vec::new()),
+    )
+}
+
+/// The channel's `detach` action: what the draft attachment chip's remove runs. It clears the
+/// attachment the person put on the draft, so `post` sends the words alone.
+#[must_use]
+pub(crate) fn detach_action() -> tilo_actions::ActionSpec {
+    use tilo_actions::{ActionArgs, EncodedAction, ExecutionLocus, ParamType};
+    tilo_actions::ActionSpec::typed(
+        "detach",
+        "Take the draft's attachment away",
+        "a draft",
+        ExecutionLocus::ClientLocal,
+        vec![tilo_actions::ActionParam::required(
+            "channel",
+            ParamType::Text,
+            "The channel",
+        )],
+        |_: &ActionArgs| EncodedAction::written("chat.detach".to_owned(), Vec::new()),
+    )
+}
+
+/// The message attachment `resource` becomes: a record's reference, as Chat's own composer
+/// sends a shared record. The address a drag carries is a resource's (`app.record/item/<id>`,
+/// `kind:id`, and the plain `chat.workspace/channels/<id>` item spelling), so the app and the
+/// record it is in are read from it and its kind and id are what it keeps after the last step.
+pub(crate) fn attached_resource(resource: &str) -> tilo_reference::Attached {
+    let (kind, id) = split_resource_address(resource);
+    let mut segments = kind.split('.');
+    let app = segments
+        .next()
+        .filter(|app| !app.is_empty())
+        .unwrap_or("chat");
+    let record = segments.next().filter(|record| !record.is_empty());
+    tilo_reference::Attached::resource(
+        tilo_reference::ResourceAt {
+            app: app.to_owned(),
+            record: record.map(str::to_owned),
+            reference: tilo_reference::ResourceRef::whole(kind, resource, &id),
+        },
+        None,
+        id,
+    )
+}
+
+/// A resource's address, split into its kind and its id: `tube.video:vid_1` is the kind and
+/// id it spells, and a path (`chat.workspace/channels/c_general`, `notes.pages/page_1`) is its
+/// document's kind with each step after it as the kind's tail and the id.
+fn split_resource_address(resource: &str) -> (String, String) {
+    if let Some((kind, id)) = resource.rsplit_once(':')
+        && !id.contains('/')
+        && !kind.contains('/')
+        && !kind.is_empty()
+        && !id.is_empty()
+    {
+        return (kind.to_owned(), id.to_owned());
+    }
+    let steps: Vec<&str> = resource
+        .split('/')
+        .filter(|step| !step.is_empty())
+        .collect();
+    match steps.as_slice() {
+        [] => (String::new(), String::new()),
+        [one] => (one.to_string(), one.to_string()),
+        [rest @ .., last] => (rest.join("."), (*last).to_owned()),
+    }
 }
 
 /// The channel's `retry` action, as the service publishes it on a channel's item: ask the agent
@@ -1183,6 +1371,46 @@ impl tilo_service::Service for ChatViewService {
                 tilo_actions::ActionOutput::default(),
             ));
         }
+        // The composer's attach: a resource a drop on it carried, appended to the draft the
+        // person is writing, which `post` gives to the message they send. Like `post`, the
+        // session runs it itself; the draft is the session's, not the conversation's.
+        if action == ATTACH {
+            let channel = arguments
+                .get("channel")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or_default();
+            let resource = arguments
+                .get("resource")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or_default();
+            if channel.is_empty() || resource.trim().is_empty() {
+                return Err(tilo_actions::DoorError::InvalidArguments(
+                    "a drop names the channel and the resource it carried".to_owned(),
+                ));
+            }
+            return self
+                .conversations
+                .attach(channel, resource)
+                .map(|()| tilo_service::Started::Done(tilo_actions::ActionOutput::default()))
+                .map_err(tilo_actions::DoorError::Failed);
+        }
+        // The draft chip's remove: the next message sends its words alone.
+        if action == DETACH {
+            let channel = arguments
+                .get("channel")
+                .and_then(serde_json::Value::as_str)
+                .or_else(|| {
+                    resource
+                        .strip_prefix("chat.workspace/channels/")
+                        .or_else(|| resource.strip_prefix("chat.workspace.channels:"))
+                })
+                .unwrap_or_default();
+            return self
+                .conversations
+                .detach(channel)
+                .map(|()| tilo_service::Started::Done(tilo_actions::ActionOutput::default()))
+                .map_err(tilo_actions::DoorError::Failed);
+        }
         // A turn's reply records its work in Chat's own words: the item is Chat's own, and the
         // verb is run by Chat on Chat's record, attributed as the person here.
         if action == RECORD_WORK {
@@ -1244,23 +1472,6 @@ fn span_of(text: &str) -> Option<(usize, usize)> {
     let (start, end) = text.split_once(':')?;
     let (start, end) = (start.parse::<usize>().ok()?, end.parse::<usize>().ok()?);
     (start < end).then_some((start, end))
-}
-
-/// What a turn's agent is asked: the person's words and, when the message answers a run of
-/// another, the words it quotes above them. The reply's own quote is the conversation's record
-/// of what it means; this puts it where the agent reads its turn, so an answer to "yes, that
-/// one" names what "that one" is without making the agent open the record it is acting in.
-///
-/// A message that answers no span is its own words, exactly as before.
-fn instruction_of(message: &chat::record::Message) -> String {
-    let Some(quoted) = message
-        .quoted
-        .as_ref()
-        .filter(|quoted| !quoted.text.trim().is_empty())
-    else {
-        return message.text.clone();
-    };
-    format!("> {}\n\n{}", quoted.text.trim(), message.text)
 }
 
 /// The message `resource` names when it is a message's item or its id: `chat.workspace/messages/
@@ -1383,6 +1594,40 @@ fn summons_item(id: &Id) -> tilo_actions::ResourceSpec {
         spec = spec.with_action(tilo_resource::declaration_spec(&declaration));
     }
     spec
+}
+
+/// What a turn's agent is asked: the person's words and, above them when the message answers a
+/// run of another, the words it quotes; under them, each on its own line, the resources the
+/// message carries.
+///
+/// The reply's own quote is the conversation's record of what it means; this puts it where the
+/// agent reads its turn, so an answer to "yes, that one" names what "that one" is without
+/// making the agent open the record it is acting in. An attachment says what was attached as a
+/// resource reference, the same address its attachment chip opens, so an agent taking the turn
+/// knows what the person handed it without reading the record a second way. A message that
+/// answers no span and attaches nothing is its words alone, exactly.
+pub fn instruction_of(message: &chat::record::Message) -> String {
+    let mut instruction = message
+        .quoted
+        .as_ref()
+        .filter(|quoted| !quoted.text.trim().is_empty())
+        .map_or_else(
+            || message.text.clone(),
+            |quoted| format!("> {}\n\n{}", quoted.text.trim(), message.text),
+        );
+    for attached in &message.attachments {
+        let tilo_reference::Attached::Resource { at, label, .. } = attached else {
+            continue;
+        };
+        let label = label.trim();
+        let address = &at.reference.id;
+        if label.is_empty() || label == address {
+            instruction.push_str(&format!("\n\nAttached: {address}"));
+        } else {
+            instruction.push_str(&format!("\n\nAttached: {label} ({address})"));
+        }
+    }
+    instruction
 }
 
 /// The person a message's author names, when it names one: the participant key (`person:<root>`,
@@ -1539,7 +1784,8 @@ impl crate::Session {
         self.shared.conversations.person_messages(channel)
     }
 
-    /// A step an address no surface door publishes, as the session's own `DoorAsk::Step` runs it:    /// a service's action, invoked through [`crate::agent_door::invoke_service_step`], on the
+    /// A step an address no surface door publishes, as the session's own `DoorAsk::Step` runs it:
+    /// a service's action, invoked through [`crate::agent_door::invoke_service_step`], on the
     /// record the service keeps. This is the exact call an agent's `record-work` on a turn's
     /// summons goes through at its broker step; a test drives it here rather than through the
     /// broker so it proves the seam without the agent.
@@ -1553,11 +1799,30 @@ impl crate::Session {
         action: &str,
         arguments: &serde_json::Map<String, serde_json::Value>,
     ) -> Result<Option<tilo_actions::ActionOutput>, String> {
+        self.invoke_service_step_beside_as(actor, resource, action, arguments, "")
+    }
+
+    /// [`Self::invoke_service_step_as`] with the place the ask is in named: the resource the
+    /// place shows — the conversation of the turn an agent asks in — or empty for the place in
+    /// front. A resource the step opens stands beside it
+    /// (`docs/designs/app-language/one-app-model.md` §3).
+    ///
+    /// # Errors
+    /// The service's refusal, or that no service publishes the address.
+    pub fn invoke_service_step_beside_as(
+        &self,
+        actor: &str,
+        resource: &str,
+        action: &str,
+        arguments: &serde_json::Map<String, serde_json::Value>,
+        beside: &str,
+    ) -> Result<Option<tilo_actions::ActionOutput>, String> {
         crate::agent_door::invoke_service_step(
             &self.shared.services,
             actor,
             &tilo_actions::ActionAddress::new(resource, action),
             arguments,
+            beside,
         )
     }
 }

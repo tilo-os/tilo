@@ -399,6 +399,7 @@ fn work_row(work: &crate::record::Work) -> Option<AgentWork> {
             ),
         since: transition.since,
         reasoning: work.reasoning.clone(),
+        failure_detail: work.failure_detail.clone(),
         trace,
     })
 }

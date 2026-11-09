@@ -116,7 +116,6 @@ chat-agent-work-step-refused = Refused: { $target }
 chat-agent-work-step-refused-why = Refused: { $target }: { $why }
 chat-agent-work-show-details = Show activity
 chat-agent-work-hide-details = Hide activity
-chat-agent-recovery = Review the partial answer before retrying or asking to continue. Check connectivity and provider settings; never repeat completed or unconfirmed operations.
 chat-agent-provider-reasoning = Reasoning shared by the provider
 chat-agent-show-reasoning = Show reasoning
 chat-agent-hide-reasoning = Hide reasoning

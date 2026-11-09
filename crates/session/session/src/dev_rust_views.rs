@@ -28,6 +28,10 @@ pub struct RustApps {
     /// Chat's demo workspace, read and written as its window does: the channel's messages and
     /// what its composer posts.
     chat: chat::demo::Workspace,
+    /// What the composer holds that the person did not type: the resource a drop on it
+    /// attached, by channel. The session's own `Conversations` keeps the same state for a
+    /// person's session; a development session keeps it here.
+    drafts: std::cell::RefCell<std::collections::BTreeMap<String, String>>,
 }
 
 impl RustApps {
@@ -37,6 +41,7 @@ impl RustApps {
         let mut apps = Self {
             model: tube::sample::model(),
             chat: chat::demo::Workspace::demo().expect("the demo chat"),
+            drafts: std::cell::RefCell::default(),
         };
         apps.share_a_record();
         apps
@@ -159,7 +164,10 @@ impl Service for RustApps {
                 // What the page's composer runs: the chat's own post, the one verb the session's
                 // `ChatViewService` publishes on a channel, so the fixture and a person's
                 // session offer the same composer.
-                chat = chat.with_action(crate::conversations::post_action());
+                chat = chat
+                    .with_action(crate::conversations::post_action())
+                    .with_action(crate::conversations::attach_action())
+                    .with_action(crate::conversations::detach_action());
                 chat.app_id = Some("chat".to_owned());
                 chat
             })
@@ -185,9 +193,29 @@ impl Service for RustApps {
             .or_else(|| resource.strip_prefix("chat.workspace.channels:"))
         {
             let id = rest.to_owned();
-            let conversation = [self.chat_channel(), self.chat_short_channel()]
+            let mut conversation = [self.chat_channel(), self.chat_short_channel()]
                 .into_iter()
                 .find(|channel| channel.id == id)?;
+            // The drop a person made on the composer shows as its chip: the same field a
+            // person's session fills from its own draft.
+            if let Some(held) = self.drafts.borrow().get(&id) {
+                let at = tilo_reference::ResourceAt {
+                    app: held
+                        .split(['.', '/', ':'])
+                        .next()
+                        .unwrap_or("chat")
+                        .to_owned(),
+                    record: None,
+                    reference: tilo_reference::ResourceRef::whole(
+                        held.split_once(':').map_or(held.as_str(), |(kind, _)| kind),
+                        held.clone(),
+                        held.clone(),
+                    ),
+                };
+                conversation.draft = Some(chat::views::Attachment::of(
+                    &tilo_reference::Attached::resource(at, None, held.clone()),
+                ));
+            }
             return serde_json::to_value(&conversation).ok();
         }
         None
@@ -214,14 +242,93 @@ impl Service for RustApps {
                 .and_then(Json::as_str)
                 .unwrap_or_default();
             if !text.trim().is_empty() {
+                // A message, with the draft's attachment when a drop put one there: the same
+                // `NewMessage` a person's session posts, so what the fixture draws and what
+                // the session's turn reads are the one shape.
+                let held = self.drafts.borrow_mut().remove(channel);
+                let attachments: Vec<tilo_reference::Attached> = held
+                    .as_deref()
+                    .map(|resource| vec![crate::conversations::attached_resource(resource)])
+                    .unwrap_or_default();
+                let channel_id = tilo_resource::Id::from_raw(channel);
+                // The message the reply answers, and the run of it it quotes: what a place's
+                // composer sends, read from the answered message here as the session's own
+                // `post_span` reads it, so the fixture and a person's session quote alike.
+                let parent = arguments
+                    .get("parent")
+                    .and_then(Json::as_str)
+                    .filter(|parent| !parent.is_empty())
+                    .map(tilo_resource::Id::from_raw);
+                let quoted = arguments
+                    .get("span")
+                    .and_then(Json::as_str)
+                    .and_then(quoted_span)
+                    .zip(parent.clone())
+                    .and_then(|((start, end), parent)| {
+                        let answered = self.chat.messages().get(&parent)?.text.clone();
+                        let words = answered.get(start..end)?;
+                        Some(chat::record::Quote {
+                            text: words.to_owned(),
+                            start: u64::try_from(start).ok()?,
+                            end: u64::try_from(end).ok()?,
+                        })
+                    });
                 self.chat
-                    .say(chat::model::ME, channel, text)
+                    .apply_part_as(
+                        chat::model::ME,
+                        chat::parts::ChatPart::POST.with(chat::messages::chat_part::Post {
+                            message: chat::messages::NewMessage {
+                                channel: channel_id,
+                                text: text.to_owned(),
+                                parent,
+                                quoted,
+                                body: None,
+                                attachments,
+                                mentions: None,
+                                written: None,
+                            },
+                        }),
+                    )
                     .map_err(|error| DoorError::Failed(format!("{error:?}")))?;
             }
             return Ok(Started::Done(tilo_actions::ActionOutput::default()));
         }
+        // A drop on the composer attaches the resource it carried to the draft; the chip's
+        // remove takes it away again.
+        if action == "attach" {
+            let channel = arguments
+                .get("channel")
+                .and_then(Json::as_str)
+                .unwrap_or_default();
+            let held = arguments
+                .get("resource")
+                .and_then(Json::as_str)
+                .unwrap_or_default();
+            if !held.trim().is_empty() {
+                self.drafts
+                    .borrow_mut()
+                    .insert(channel.to_owned(), held.to_owned());
+            }
+            return Ok(Started::Done(tilo_actions::ActionOutput::default()));
+        }
+        if action == "detach" {
+            let channel = arguments
+                .get("channel")
+                .and_then(Json::as_str)
+                .unwrap_or_default();
+            self.drafts.borrow_mut().remove(channel);
+            return Ok(Started::Done(tilo_actions::ActionOutput::default()));
+        }
         Ok(Started::Done(tilo_actions::ActionOutput::default()))
     }
+}
+
+/// The run `<start>:<end>` names, in UTF-8 bytes: how a message's selection reports the words a
+/// reply answers. `None` when it is not two ordered numbers.
+fn quoted_span(text: &str) -> Option<(usize, usize)> {
+    let (start, end) = text.split_once(':')?;
+    let (start, end) = (start.parse::<usize>().ok()?, end.parse::<usize>().ok()?);
+    (start < end).then_some((start, end))
 }
 
 #[cfg(test)]

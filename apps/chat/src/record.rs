@@ -970,6 +970,10 @@ pub struct Work {
     pub reasoning: Option<crate::model::AgentReasoning>,
     /// One row per operation it dispatched, rewritten when the app answers.
     pub trace: Keyed<Step>,
+    /// The run's working record of a failure, for whoever debugs it later: the
+    /// transport's error, the partial answer, the provider's exposed reasoning.
+    /// Never the reply's words, and shown only behind a disclosure.
+    pub failure_detail: Option<String>,
 }
 
 /// Received provider output, stored as fields and CRDT text, not a JSON snapshot.
@@ -1080,6 +1084,10 @@ pub struct WorkUpdate {
     /// The operations dispatched so far, each by the id minted when it was.
     #[serde(default)]
     pub trace: Vec<StepUpdate>,
+    /// The run's working record of a failure, for whoever debugs it later;
+    /// never the reply's words. Absent when nothing failed.
+    #[serde(default)]
+    pub detail: Option<String>,
 }
 
 /// One dispatched operation, as an agent reports it.
