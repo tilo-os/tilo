@@ -143,6 +143,8 @@ mod over_page;
 #[cfg(target_arch = "wasm32")]
 mod page_apps;
 #[cfg(target_arch = "wasm32")]
+mod page_search;
+#[cfg(target_arch = "wasm32")]
 pub use feedback_code::{
     FEEDBACK, FeedbackCode, builtin_feedback, code_arrived as feedback_arrived,
 };

@@ -1287,24 +1287,6 @@ impl TileSource for Tiles {
     fn embed(&mut self, view: &ResourceView) -> Result<TileHost, String> {
         self.embedded(view)
     }
-
-    fn search_applications(&self) -> Vec<tilo_desktop_search::providers::AppEntry> {
-        web_applications().collect()
-    }
-}
-
-/// The applications this page offers to open itself: those of the bundle
-/// that run on the web.
-fn web_applications() -> impl Iterator<Item = tilo_desktop_search::providers::AppEntry> {
-    known_applications()
-        .into_iter()
-        .filter(|(id, _)| tilo_desktop_search::availability::runs_on(id, &["web"]))
-        .map(|(id, title)| tilo_desktop_search::providers::AppEntry {
-            id: id.into(),
-            title: title.into(),
-            category: None,
-            description: None,
-        })
 }
 
 fn app_tab(id: TabId, app: &str, title: &str) -> Tab {

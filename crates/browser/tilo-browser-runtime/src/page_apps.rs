@@ -2,14 +2,11 @@
 //! window here can show. A session role that offers an app by name — the roster's card offering to
 //! write to a person in Chat — asks this and never the bundle.
 //!
-//! The lists a palette searches are the page's own desk to answer; these say what stands here, and
-//! offer the bundle's apps as one source, as a host's own apps are offered on a desktop.
+//! The apps a palette offers to open are these, as a host's installed apps are its own: the bundle
+//! is what this page has, and it has no machine apps or store catalogue beside them.
 
 use std::sync::Arc;
 
-use tilo_desktop_search::ResourceKind;
-use tilo_desktop_search::Target;
-use tilo_desktop_search::model::LaunchPlace;
 use tilo_desktop_search::model::{Hit, Source};
 use tilo_desktop_search::providers::AppEntry;
 use tilo_desktop_search::providers::host_apps::HostAppEntry;
@@ -28,8 +25,19 @@ impl Apps for PageApps {
         crate::desktop::known_application(id).map_or_else(String::new, str::to_owned)
     }
 
+    /// The bundle's apps, each a launch here: what a palette or a new tab offers to open, and the
+    /// apps installed on this host's own terms.
     fn applications(&self) -> Vec<AppEntry> {
-        Vec::new()
+        crate::desktop::known_applications()
+            .into_iter()
+            .filter(|(id, _)| tilo_desktop_search::availability::runs_on(id, &["web"]))
+            .map(|(id, title)| AppEntry {
+                id: id.into(),
+                title: title.into(),
+                category: None,
+                description: None,
+            })
+            .collect()
     }
 
     fn host_apps(&self) -> Vec<HostAppEntry> {
@@ -49,50 +57,32 @@ impl Reading for Shipped {
         0
     }
 
+    /// The machine's own apps: a page runs none, so its search offers none beyond the bundle's own
+    /// list ([`Apps::applications`]).
     fn host_apps(&self, _preferences: &SearchPreferences) -> Held {
-        Held::new(Bundle)
+        Held::new(Nothing)
     }
 
+    /// The store a person gets apps from: a page has none of its own.
     fn catalogue(&self, _workspace: &str) -> Held {
-        Held::new(Bundle)
+        Held::new(Nothing)
     }
 }
 
-/// The bundle's apps, as search offers them: each by the title it shows.
-struct Bundle;
+/// What this page has none of as a source: the machine's own apps, and a store to get apps from. A
+/// session's search asks either way, and a source that answers nothing says so.
+struct Nothing;
 
-impl Source for Bundle {
+impl Source for Nothing {
     fn id(&self) -> &'static str {
-        "page-apps"
+        "page-nothing"
     }
 
     fn name(&self) -> String {
         String::new()
     }
 
-    fn query(&self, needle: &str) -> Vec<Hit> {
-        let needle = needle.to_lowercase();
-        crate::desktop::known_applications()
-            .into_iter()
-            .filter(|(_, title)| needle.is_empty() || title.to_lowercase().contains(&needle))
-            .map(|(id, title)| Hit {
-                row: None,
-                preview: None,
-                faces: Vec::new(),
-                outcome: None,
-                kind: ResourceKind::Application,
-                provider: "page-apps".to_owned(),
-                id: id.to_owned(),
-                title: title.to_owned(),
-                subtitle: None,
-                facts: Vec::new(),
-                score: 0,
-                icon: None,
-                target: Target::Launch {
-                    app: id.to_owned(),
-                    place: LaunchPlace::Focus,
-                },
-            })
-            .collect()
+    fn query(&self, _needle: &str) -> Vec<Hit> {
+        Vec::new()
     }
 }

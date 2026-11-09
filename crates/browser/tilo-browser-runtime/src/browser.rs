@@ -566,6 +566,11 @@ struct Desktop {
     revoked: crate::agent_door::Revoked,
     /// What the session asked of the page for its windows, still open.
     asks: session_asks::Asks,
+    /// The session's search, which the desk's palette asks beyond the desk's own windows and
+    /// commands: the bundle's apps and what the arrangement publishes.
+    search: Rc<tilo_session::search::SessionSearch>,
+    /// The desk's revision search last read what it publishes at.
+    search_seen: Cell<Option<u64>>,
     /// Mentions of this person in the workspace's records, and what was told.
     mentions: RefCell<mention_notices::Mentions>,
     /// What this person may do here, which decides what the session opens
@@ -678,6 +683,44 @@ impl Desktop {
         for rename in renames {
             if let Some(notice) = rename.notice_for(&self.author, |user| self.person_name(user)) {
                 self.post(notice);
+            }
+        }
+    }
+
+    /// Serve the desk's search from the session's: what stands over the desk as published actions,
+    /// the workspaces it shows, and the rows the person chose, carried out here.
+    fn follow_search(&self) {
+        // What search reads of the desk is what the desk publishes, so it is read when the desk
+        // changed and not on a frame that only drew.
+        let revision = self.handle.revision();
+        if self.search_seen.replace(Some(revision)) != Some(revision) {
+            let resources = self.arrangement.resources();
+            let (tabs, workspaces) = self.handle.read(|tree| {
+                let workspaces = tree
+                    .workspaces
+                    .iter()
+                    .map(|held| (held.id().to_string(), held.name.clone()))
+                    .collect();
+                (
+                    tree.tabs().map(|tab| tab.id).collect::<Vec<_>>(),
+                    workspaces,
+                )
+            });
+            self.search.set_workspaces(workspaces);
+            // A page bundles no programs and serves no notification centre of its own: the palette
+            // lists neither.
+            self.search.observe(&resources, tabs, None, Vec::new());
+        }
+        let refusals =
+            crate::page_search::chosen(&self.handle, &self.search, &self.workspace, &mut |own| {
+                self.arrangement
+                    .invoke(&own.address, &own.arguments)
+                    .map(drop)
+            });
+        for (chosen, why) in refusals {
+            // A row that could not be carried out opens the palette again, saying why on it.
+            if !self.handle.answer_search(&chosen, why.to_string()) {
+                web_sys::console::warn_1(&format!("search: {why}").into());
             }
         }
     }
@@ -1144,84 +1187,6 @@ enum Root {
     Desktop(Box<crate::shell::BrowserShell>),
 }
 
-/// What the page's desktop mounts with: its stores, identity and settings.
-fn desktop_inputs(
-    config: &Config,
-    dyn_store: &Rc<dyn durable_store::DurableStore>,
-    permissions: SharedPermissions,
-) -> Result<crate::desktop::Inputs, JsValue> {
-    let views = Rc::new(
-        InstanceViewStore::with_store(Rc::clone(dyn_store), &config.device, &config.workspace)
-            .map_err(error)?,
-    );
-    Ok(crate::desktop::Inputs {
-        feedback: config.peer.and_then(crate::feedback_code::take_startup),
-        owners: RecordOwners::with_store(Rc::clone(dyn_store)),
-        store: Rc::clone(dyn_store),
-        views,
-        device: config.device.clone(),
-        salt: config
-            .peer
-            .and_then(crate::replication::device_of)
-            .unwrap_or_else(|| config.device.clone()),
-        workspace: config.workspace.clone(),
-        author: config.author(),
-        permissions,
-        models: config.models()?,
-        model_name: config
-            .models
-            .as_ref()
-            .map(crate::host_services::ModelConfig::name)
-            .unwrap_or_default(),
-        provider_admin: config.provider_admin()?,
-        peer: config.peer,
-    })
-}
-
-/// What the page offers its desktop beyond the workspace: inviting, its
-/// host and build, the About sheet's links and the layout it opens in.
-fn host_offers(config: &Config) -> crate::shell::HostOffers {
-    crate::shell::HostOffers {
-        invite: config.invite.clone(),
-        mac: config.mac,
-        host: config.host.clone(),
-        about: config.about.clone(),
-        build: config.build.clone(),
-        link_offer: config.link_offer.clone(),
-        directory: config.directory.clone(),
-        layout: config.layout,
-    }
-}
-
-/// What the page's desk asks its history: the workspace's own records, the
-/// model this page may ask, and who the people its places name are.
-///
-/// The model is the host's, else a provider the person set up here: without
-/// one nothing is asked and the history keeps its deterministic digest.
-fn serve_history(
-    surface: &mut tilo_desktop_surface::DesktopSurface,
-    config: &Config,
-    store: Rc<dyn durable_store::DurableStore>,
-    shared: &crate::desktop::Shared,
-    persistence: &Rc<crate::desktop::Persistence>,
-    here: &tilo_desktop::here::Here,
-    people: &Rc<RefCell<HashMap<String, crate::desktop::PersonIdentity>>>,
-) {
-    let models = (config.models.is_some() || crate::host_services::page_models_set_up())
-        .then(|| config.models().ok())
-        .flatten();
-    surface.set_history_source(Box::new(crate::history::PageHistory::new(
-        &config.workspace,
-        config.peer,
-        config.author(),
-        store,
-        shared.clone(),
-        crate::history::person_of(here, people, config.author()),
-        Rc::clone(persistence),
-        models,
-    )));
-}
-
 fn present_desktop(
     id: u64,
     config: &Config,
@@ -1253,14 +1218,7 @@ fn present_desktop(
         &here,
         &people,
     );
-    let (session, openings) =
-        tilo_desktop_surface::session::serve(config.workspace.clone(), Arc::clone(&shared.woken));
-    surface.serve_activity(openings.activity());
-    let revoked = config.agent_door(&session, &shared.woken);
-    surface.set_notifications(persistence.notifications.clone());
-    if let Some(inbox) = crate::host_services::notification_inbox() {
-        surface.set_app_notifications(inbox);
-    }
+    let (session, openings, revoked) = serve_session(&mut surface, config, &shared, &persistence);
     DESKTOPS.with_borrow_mut(|desktops| desktops.insert(id));
     let generation = format!("mount-{id}");
     let requests = Rc::clone(&shared.requests);
@@ -1289,6 +1247,14 @@ fn present_desktop(
             }),
         },
     );
+    let search_wake = proxy()?;
+    let search = crate::page_search::mount(
+        &handle,
+        &config.author(),
+        Arc::new(move || {
+            let _ = search_wake.send_event(id);
+        }),
+    );
     Ok(Presentation {
         root: Root::Desktop(Box::new(shell)),
         stores: Rc::clone(&shared.stores),
@@ -1313,6 +1279,8 @@ fn present_desktop(
             openings,
             revoked,
             asks: session_asks::Asks::new(config.peer),
+            search,
+            search_seen: Cell::default(),
             mentions: RefCell::new(mention_notices::Mentions::new(
                 &config.workspace,
                 &config.author(),
@@ -2341,6 +2309,7 @@ impl Mount {
             desktop.announce_agents_finished();
             desktop.follow_notice_choices();
             desktop.tell_mentions();
+            desktop.follow_search();
             desktop.refresh_holders(self.peer.is_some())
         });
         // Desktop commands and peer changes need an update even when the
@@ -2986,6 +2955,7 @@ impl Mount {
 mod agent_notices;
 mod desktop_exports;
 mod dom;
+mod prepare;
 pub(crate) use dom::draw_dom_frame;
 mod fonts;
 mod frame_loop;
@@ -2999,6 +2969,7 @@ mod session_asks;
 use crate::first_frame::{self, GpuStep};
 pub(crate) use frame_loop::sleep_ms;
 use frame_loop::watch_first_frame;
+use prepare::{desktop_inputs, host_offers, serve_history, serve_session};
 use publication::{FrameChange, SemanticPresentationTarget, emit_text};
 mod retained;
 use retained::Retained;

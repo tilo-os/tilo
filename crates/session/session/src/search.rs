@@ -1,6 +1,6 @@
-//! The desktop's search in the native session: the shared desktop search ([`tilo_desktop_search`])
-//! the desk opens, over what is published and what the session's services answer, each row run by
-//! its address.
+//! The desktop's search in a session: the shared desktop search ([`tilo_desktop_search`]) the desk
+//! opens, over what is published and what the session's services answer, each row run by its
+//! address. A native desktop and the page both host this one role.
 //! The desk lists the windows, the people and the desktop's own commands. The session adds what
 //! only a device has: the apps installed here and the machine's own (with the person's switch),
 //! Settings' pages, the store's catalogue, what apps hold (the content index), the person's files,
@@ -13,7 +13,7 @@
     target_arch = "wasm32",
     allow(
         dead_code,
-        reason = "the page hosts this search over the desk it runs next"
+        reason = "the page hosts this search with no record index, action host or model gateway, so what those reach stays unread there"
     )
 )]
 
@@ -142,8 +142,9 @@ struct DownloadedRows {
     published: Vec<tilo_actions::ActionDescriptor>,
 }
 
-/// The session's part in the desk's search.
-pub(crate) struct SessionSearch {
+/// The session's part in the desk's search, mounted by every host that runs a desk: the sources
+/// only a session has, and the rows a host carries out ([`tilo_desktop_surface::SearchHost`]).
+pub struct SessionSearch {
     /// The apps this host lists, where it lists any.
     apps_lists: Option<Arc<dyn Apps>>,
     /// The model gateway this session's own questions run on, where it runs one.
@@ -211,7 +212,11 @@ fn set_field(field: &str, value: &serde_json::Value) -> serde_json::Map<String, 
 }
 
 impl SessionSearch {
-    pub(crate) fn new(
+    /// The session's search over what `options` names the host offers it, as `person` —
+    /// answering a question the person types through `wake` and `models`, where the host runs a
+    /// gateway.
+    #[must_use]
+    pub fn new(
         options: SearchOptions,
         lists: Option<Arc<dyn Apps>>,
         person: &str,
@@ -261,7 +266,7 @@ impl SessionSearch {
 
     /// What the session publishes now, the windows open and the downloaded programs as the registry
     /// reads them: read after each frame, outside the desktop's trees.
-    pub(crate) fn observe(
+    pub fn observe(
         &self,
         own: &[tilo_actions::ResourceSpec],
         open_tabs: Vec<u64>,
@@ -313,13 +318,13 @@ impl SessionSearch {
 
     /// Who is in the person's workspaces now, as their presence and the desk's collaborators say
     /// it: the empty palette's first group.
-    pub(crate) fn set_here(&self, workspaces: Vec<WorkspaceHere>) {
+    pub fn set_here(&self, workspaces: Vec<WorkspaceHere>) {
         *self.here.borrow_mut() = workspaces;
     }
 
     /// The workspaces this device shows, by id and the name the desk gives it: what a row says of a
     /// record the workspace in front does not hold.
-    pub(crate) fn set_workspaces(&self, workspaces: Vec<(String, String)>) {
+    pub fn set_workspaces(&self, workspaces: Vec<(String, String)>) {
         if let Some(records) = &self.records {
             records.set_workspaces(workspaces.clone());
         }
@@ -468,7 +473,7 @@ impl SessionSearch {
     }
 
     /// A window was at `place` .
-    pub(crate) fn record_place(&self, place: Place) {
+    pub fn record_place(&self, place: Place) {
         let mut places = self.places.borrow_mut();
         let before = places.places().first().cloned();
         places.record(place);
@@ -479,7 +484,7 @@ impl SessionSearch {
     }
 
     /// Take up the history as the search history section ([`HISTORY`]) keeps it.
-    pub(crate) fn restore(&self, kept: &serde_json::Value) {
+    pub fn restore(&self, kept: &serde_json::Value) {
         let text = |field: &str| kept.get(field).and_then(serde_json::Value::as_str);
         if let (Some(chosen), Some(for_text)) = (text("chosen"), text("chosen_for_text"))
             && !(chosen.is_empty() && for_text.is_empty())
@@ -503,7 +508,7 @@ impl SessionSearch {
 
     /// The field edits that keep what changed of the history since it was last kept, for the search
     /// history section's `field-edit` .
-    pub(crate) fn take_unkept(&self) -> Vec<serde_json::Map<String, serde_json::Value>> {
+    pub fn take_unkept(&self) -> Vec<serde_json::Map<String, serde_json::Value>> {
         let (chosen, places) = self.unkept.replace((false, false));
         let mut edits = Vec::new();
         if chosen && let Some(usage) = self.usage.borrow().as_ref() {
@@ -578,7 +583,7 @@ impl SessionSearch {
 
     /// Carry out `target` , chosen in search in `workspace` : through the action host, or for the
     /// session's own actions through `own` , the session's published surface.
-    pub(crate) fn perform(
+    pub fn perform(
         &self,
         workspace: &str,
         target: Target,
@@ -748,13 +753,16 @@ impl SearchHost for SessionSearch {
     fn feed(&self, workspace: &str, scope: &Scope) -> SearchHostFeed {
         let (mut sources, published) = self.sources(workspace, scope);
         // A question typed by the person is answered here, by the model their AI settings choose:
-        // never by a tool that searches.
-        sources.push(Held::new(crate::search_ask::Ask::new(
-            Arc::clone(&self.ask),
-            workspace,
-            self.wake.clone(),
-            self.models.clone(),
-        )));
+        // never by a tool that searches. A host that runs no gateway asks nothing, and its palette
+        // offers no question.
+        if self.models.is_some() {
+            sources.push(Held::new(crate::search_ask::Ask::new(
+                Arc::clone(&self.ask),
+                workspace,
+                self.wake.clone(),
+                self.models.clone(),
+            )));
+        }
         SearchHostFeed {
             // The apps installed here, which the palette offers as an app's row of its own: the
             // machine's own apps are one of the sources below instead.
@@ -837,7 +845,7 @@ pub(crate) struct SearchThrough(
 pub(crate) type FoundSearch = tilo_actions::remote::Completer<Vec<Found>>;
 
 impl SearchThrough {
-    pub(crate) fn new(
+    pub fn new(
         ask: std::sync::Arc<dyn Fn(String, Option<String>, FoundSearch) + Send + Sync>,
     ) -> Self {
         Self(ask)
