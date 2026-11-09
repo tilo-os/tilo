@@ -470,7 +470,7 @@ pub enum WorkspaceControlRoute {
 
 #[derive(Debug, Clone)]
 pub enum NetEvent {
-    NativeInput(native_ingress::Input),
+    NativeInput(Box<native_ingress::Input>),
     /// One of the person's devices proved itself on the session between the
     /// two ([`device_sessions`]), or proved itself anew there (a renewed
     /// certificate, a new revocation): `certs` are its certificates of the
@@ -2141,14 +2141,14 @@ impl ActorState {
     /// native session holds. Only a workspace host's is news to the
     /// shell: this device's own host and the person's devices are no
     /// durable hosts it seeds.
-    fn host_ready(&self, ws: WorkspaceId, peer: EndpointId) -> Option<NetEvent> {
+    fn host_ready(&self, ws: WorkspaceId, peer: EndpointId) -> NetEvent {
         // The workspace's own host caught this device up: the workspace holds what it
         // holds. Another host on the topic (a personal relay, a peer) says
         // nothing about the workspace's host, whose link has its own word.
         if !self.native_routes.contains(ws) {
             crate::workspace_sync::synced(ws);
         }
-        Some(NetEvent::HostReady { ws, peer })
+        NetEvent::HostReady { ws, peer }
     }
 
     fn publish_record_content(&mut self, delivery: RecordContentDelivery) {
@@ -2733,7 +2733,7 @@ impl ActorState {
         event: HostEvent,
     ) -> Option<NetEvent> {
         match event {
-            HostEvent::Ready => self.host_ready(ws, peer),
+            HostEvent::Ready => Some(self.host_ready(ws, peer)),
             HostEvent::Member { device, active } => self.host_member(ws, peer, device, active),
             HostEvent::RecordOpened { channel, frames } => Some(NetEvent::RecordOpened {
                 ws,
@@ -2760,22 +2760,22 @@ impl ActorState {
                 replayed,
                 msg,
             } => self.host_message(ws, peer, author, fingerprint, replayed, msg),
-            HostEvent::Closed => self.host_session_closed(ws, peer),
+            HostEvent::Closed => Some(self.host_session_closed(ws, peer)),
         }
     }
 
     /// The session of `ws` with the host at `peer` ended.
-    fn host_session_closed(&mut self, ws: WorkspaceId, peer: EndpointId) -> Option<NetEvent> {
+    fn host_session_closed(&mut self, ws: WorkspaceId, peer: EndpointId) -> NetEvent {
         tracing::info!(ws, host = %peer, "workspace host session ended; the next heartbeat dials it again");
         if let Some(runtime) = self.host_sessions.remove(&(ws, peer)) {
             runtime.pump.abort();
         }
-        Some(NetEvent::PeerLeft {
+        NetEvent::PeerLeft {
             ws,
             peer,
             cause: PeerDepartureCause::HostSessionClosed,
             membership_epoch: None,
-        })
+        }
     }
 
     /// Hand `event` to the workspace's subscriber and wake the loop for the
@@ -4084,14 +4084,13 @@ fn host_event(
             HostEvent::Ready
         }
         HostInbound::Member { device, active } => HostEvent::Member { device, active },
-        // A call's audio is the session's, carried by the relay session the
-        // call itself holds.
-        HostInbound::Voice(_) => return None,
+        // Nothing here holds either: a call's audio is the session's, carried
+        // by the relay session the call itself holds, and a host keeps what a
+        // link's store kept.
+        HostInbound::Voice(_) | HostInbound::Committed { .. } => return None,
         HostInbound::RecordOpened { channel, frames } => {
             HostEvent::RecordOpened { channel, frames }
         }
-        // A host keeps what a link's store kept: nothing here is held for one.
-        HostInbound::Committed { .. } => return None,
         HostInbound::CommitRefused { reason, .. } => {
             tracing::warn!(ws, host = %host, %reason, "the host did not keep a sealed write");
             return None;

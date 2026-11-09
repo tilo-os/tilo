@@ -166,7 +166,7 @@ impl ActorState {
     /// Send `msg`, a member's own write, to the workspace's host as its link
     /// carries it: the link keeps it at its store, and the next link the
     /// workspace has sends it again.
-    pub(super) fn publish_sealed_native(&mut self, ws: u64, msg: &NeighbourMsg) {
+    pub(super) fn publish_sealed_native(&self, ws: u64, msg: &NeighbourMsg) {
         if let Some(link) = self.native_links.get(&ws)
             && let Err(error) = link.link.send(msg.clone())
         {
@@ -199,19 +199,19 @@ impl ActorState {
 
     /// A frame the workspace on topic `ws`'s link admitted: the workspace's
     /// state is in, and this device's apps take their part of it.
-    pub(super) async fn native_heard(&mut self, ws: u64, heard: tilo_peer_state::direct::Heard) {
+    pub(super) async fn native_heard(&self, ws: u64, heard: tilo_peer_state::direct::Heard) {
         let Some(link) = self.native_links.get(&ws) else {
             return;
         };
         let input = Input::heard(Arc::clone(&link.scope), heard);
         self.tally.note(super::heard_kind(&input));
-        self.publish_to_subscriber(ws, super::NetEvent::NativeInput(input))
+        self.publish_to_subscriber(ws, super::NetEvent::NativeInput(Box::new(input)))
             .await;
     }
 
     /// The workspace on topic `ws`'s link has its host's retained history in
     /// hand: the workspace holds what its host holds.
-    pub(super) async fn native_ready(&mut self, ws: u64) {
+    pub(super) async fn native_ready(&self, ws: u64) {
         crate::workspace_sync::synced(ws);
         let Some(link) = self.native_links.get(&ws) else {
             return;

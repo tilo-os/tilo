@@ -2255,7 +2255,7 @@ fn heard(
     let carrying = tokio::spawn(async move {
         while let Some(event) = heard.recv().await {
             if let (NetEvent::NativeInput(input), Some(say)) = (&event, admissions.as_ref()) {
-                let _ = say.send(input.clone());
+                let _ = say.send(input.as_ref().clone());
             }
             if arrivals.send(event).is_err() {
                 break;

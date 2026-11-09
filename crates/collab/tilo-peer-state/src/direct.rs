@@ -331,10 +331,9 @@ impl DirectSync {
             .map_err(|error| error.to_string())?;
         let workspace = self.workspace_number()?;
         crate::frames::write_link(&mut send, &LinkFrame::Workspace(workspace)).await?;
-        let remote = *connection.remote_id().as_bytes();
-        if let Err(reason) = self.admits(remote) {
-            return Err(refuse(&connection, &reason));
-        }
+        // Who the dialled device is, this one learns from what it sends: its
+        // certificate is in the frames it opens with, and a device that has
+        // not synced yet holds no roster to refuse by.
         self.certificate()?;
         // Subscribed before the dial returns: the caller may send at once.
         let live = self.0.outgoing.subscribe();
@@ -452,7 +451,10 @@ impl DirectSync {
         live: broadcast::Receiver<Authored>,
     ) -> Result<(), String> {
         let remote = *connection.remote_id().as_bytes();
-        if let Err(reason) = self.admits(remote) {
+        // The device that accepted a dial refuses one of the workspace's
+        // roster it does not know before a frame is read; the one that
+        // dialled cannot judge, and takes only what its roster verifies.
+        if !dialing && let Err(reason) = self.admits(remote) {
             return Err(refuse(connection, &reason));
         }
         let certificate = self.certificate()?;
@@ -472,10 +474,16 @@ impl DirectSync {
             } else {
                 self.answer_store(control).await
             };
-            if done.is_ok() {
-                self.0.caught_up.send_replace(true);
+            match done {
+                // The history is in hand: the control stream has nothing more
+                // to carry, and the frames from here on are the live ones the
+                // link brings.
+                Ok(()) => {
+                    self.0.caught_up.send_replace(true);
+                    std::future::pending().await
+                }
+                Err(error) => Err(error),
             }
-            done
         };
         tokio::select! {
             result = receiving => result,
@@ -485,7 +493,8 @@ impl DirectSync {
     }
 
     /// Ask the other device's store for the frames this device lacks, round
-    /// by round while it says more are left.
+    /// by round while it says more are left, and return once it says no more
+    /// are: the history is in hand.
     async fn ask_store(&self, mut control: Control) -> Result<(), String> {
         let mut cursors = self.cursors();
         crate::frames::write_link(&mut control.send, &LinkFrame::Cursors(cursors.clone())).await?;
@@ -500,12 +509,13 @@ impl DirectSync {
                 self.admit(author, None, message.clone(), true)?;
             }
             store::advance(&mut cursors, &frames);
-            if more {
-                crate::frames::write_link(&mut control.send, &LinkFrame::Cursors(cursors.clone()))
-                    .await?;
+            if !more {
+                return Ok(());
             }
+            crate::frames::write_link(&mut control.send, &LinkFrame::Cursors(cursors.clone()))
+                .await?;
         }
-        Ok(())
+        Err("the device's store ended the history before the last frame".into())
     }
 
     /// Answer the dialling device's cursors from this device's store.
