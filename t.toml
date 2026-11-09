@@ -2492,6 +2492,53 @@ id_token = ["registry.tilo.so"]
 pointers = { legacy-guest = "/target/publish/legacy-guest/image/pins.env" }
 
 [[check]]
+name = "hosted-guest-kernel"
+run = "bash tools/ci/publish/hosted-guest.sh kernel /target/publish/hosted-guest/kernel"
+needs = ["os-assets"]
+requires = ["arch=x86_64", "disk-100g"]
+isolation = "vm"
+outputs = ["/target/publish/hosted-guest/kernel/vmlinux", "/target/publish/hosted-guest/kernel/kver"]
+timeout_secs = 5400
+default = false
+
+[[check]]
+name = "hosted-guest-agent"
+run = "bash tools/ci/publish/hosted-guest.sh agent /target/publish/hosted-guest/agent"
+requires = ["arch=x86_64"]
+outputs = ["/target/publish/hosted-guest/agent/tilo-legacy-agent"]
+default = false
+
+[[check]]
+name = "image-hosted-guest"
+run = "bash tools/ci/publish/hosted-guest.sh build /target/publish/hosted-guest/agent /target/publish/hosted-guest/kernel /target/publish/hosted-guest/image"
+needs = ["hosted-guest-agent", "hosted-guest-kernel", "os-assets"]
+requires = ["arch=x86_64", "disk-100g"]
+isolation = "vm"
+outputs = ["/target/publish/hosted-guest/image/image.oci.tar", "/target/publish/hosted-guest/image/digest"]
+timeout_secs = 5400
+default = false
+
+[[check]]
+name = "sign-hosted-guest"
+run = "bash tools/ci/publish/oci-sign.sh registry.tilo.so/tilo/hosted-guest /target/publish/hosted-guest/image"
+needs = ["image-hosted-guest", "signing-tools"]
+image = "registry.tilo.so/tilo/skopeo@sha256:7e735527d9d64c7456fc82d7f954c380b4a5dd1a8173115ce2ed7b3442ef36e0"
+env = { COSIGN_KEY_REF = "awskms:///arn:aws:kms:us-east-1:125650147312:alias/tilo-release-signing", AWS_SIGNING_ROLE_ARN = "arn:aws:iam::125650147312:role/TiloTReleaseSigner", TILO_SIGNING_AUDIENCE = "sts.amazonaws.com", TILO_SIGN_TLOG = "1" }
+outputs = ["/target/publish/hosted-guest/image/payload.json", "/target/publish/hosted-guest/image/signature", "/target/publish/hosted-guest/image/dry-run.pub", "/target/publish/hosted-guest/image/bundle.json", "/target/publish/hosted-guest/image/certified/**"]
+on = ["stable"]
+id_token = ["sts.amazonaws.com"]
+
+[[check]]
+name = "publish-hosted-guest"
+run = "bash tools/ci/publish/oci-publish.sh release registry.tilo.so/tilo/hosted-guest /target/publish/hosted-guest/image 'x86_64-{commit}'\nbash tools/ci/publish/hosted-guest.sh pins /target/publish/hosted-guest/image\n"
+needs = ["image-hosted-guest", "sign-hosted-guest", "signing-tools"]
+image = "registry.tilo.so/tilo/skopeo@sha256:7e735527d9d64c7456fc82d7f954c380b4a5dd1a8173115ce2ed7b3442ef36e0"
+outputs = ["/target/publish/hosted-guest/image/receipt.json", "/target/publish/hosted-guest/image/pins.env"]
+on = ["stable"]
+id_token = ["registry.tilo.so"]
+pointers = { hosted-guest = "/target/publish/hosted-guest/image/pins.env" }
+
+[[check]]
 name = "image-env-runtime-tree-{arch}"
 run = "bash tools/ci/publish/env-runtime.sh tree {arch} /target/publish/rpm-snapshot /target/publish/rpms/{arch} /target/publish/env-runtime/trees"
 needs = ["rpm-snapshot", "image-rpms-{arch}"]
@@ -2769,6 +2816,14 @@ needs = ["signing-tools"]
 on = ["main"]
 reads_pointers = ["stable:legacy-guest"]
 pushes = ["os/legacy-guest-snapshot.env"]
+
+[[check]]
+name = "pin-hosted-guest"
+run = "bash tools/ci/publish/hosted-guest.sh pin"
+needs = ["signing-tools"]
+on = ["main"]
+reads_pointers = ["stable:hosted-guest"]
+pushes = ["os/hosted-guest-snapshot.env"]
 
 [[check]]
 name = "development-signing-context-{arch}"

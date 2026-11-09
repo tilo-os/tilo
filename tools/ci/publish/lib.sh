@@ -284,7 +284,7 @@ signing_payload() {
 # OUT/certified/N.{sig,bundle,crt,epoch}, oci-publish.sh attaches and verifies them.
 device_verified() {
   case $1 in
-    registry.tilo.so/tilo/tilo | code.tilo.so/tilo/tilo | registry.tilo.so/tilo/legacy-guest) return 0 ;;
+    registry.tilo.so/tilo/tilo | code.tilo.so/tilo/tilo | registry.tilo.so/tilo/legacy-guest | registry.tilo.so/tilo/hosted-guest) return 0 ;;
     *) return 1 ;;
   esac
 }

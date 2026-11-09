@@ -1185,6 +1185,7 @@ case("tilo-scope-remapped-identity", field(tilo, "signedIdentity", {
 case("tilo-scope-extra-key-data", field(tilo, "keyData", "a2V5"))
 case("tilo-tag-accepts-anything", scope(tilo + ":latest", accept))
 case("legacy-guest-accepts-anything", scope("registry.tilo.so/tilo/legacy-guest", accept))
+case("hosted-guest-accepts-anything", scope("registry.tilo.so/tilo/hosted-guest", accept))
 # A namespace scope governs every Tilo repository without one of its own.
 case("tilo-namespace-accepts-anything", scope("registry.tilo.so/tilo", accept))
 # Only the listed public registries and local transports may accept anything,
@@ -1224,8 +1225,8 @@ for weakened in "$policy_cases"/*.json "$policy_cases/missing.json"; do
     bad "image signature policy check accepts weakened policy $(basename "$weakened")"
   fi
 done
-[ "$weakened_policies" -eq 19 ] \
-  || bad "expected 19 weakened image signature policies, exercised $weakened_policies"
+[ "$weakened_policies" -eq 20 ] \
+  || bad "expected 20 weakened image signature policies, exercised $weakened_policies"
 # The guarded repositories are judged by their effective rule: with no scope of
 # their own, the default reject covers them.
 if ! python3 - "$image_policy" "$policy_cases/guarded-by-default-reject.policy" <<'PY'
@@ -1235,7 +1236,7 @@ policy = json.loads(pathlib.Path(sys.argv[1]).read_text(encoding="utf-8"))
 policy["default"] = [{"type": "reject"}]
 docker = policy["transports"]["docker"]
 for name in list(docker):
-    if name.rsplit("/", 1)[-1] in ("legacy-guest", "tilo-vm", "tilo-ci", "tilo-dev"):
+    if name.rsplit("/", 1)[-1] in ("legacy-guest", "hosted-guest", "tilo-vm", "tilo-ci", "tilo-dev"):
         del docker[name]
 pathlib.Path(sys.argv[2]).write_text(json.dumps(policy, indent=2), encoding="utf-8")
 PY

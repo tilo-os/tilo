@@ -30,6 +30,7 @@ fn binary() -> std::path::PathBuf {
 const TILO: &str = "registry.tilo.so/tilo/tilo";
 const CODE: &str = "code.tilo.so/tilo/tilo";
 const GUEST: &str = "registry.tilo.so/tilo/legacy-guest";
+const HOSTED_GUEST: &str = "registry.tilo.so/tilo/hosted-guest";
 const TRUST_ENV: &str = "\
 # a comment
 TILO_RELEASE_EPOCH=3
@@ -234,6 +235,12 @@ fn weakened_cases() -> Vec<(&'static str, String)> {
             }),
         ),
         (
+            "hosted-guest-accepts-anything",
+            weakened(|d| {
+                d.insert(HOSTED_GUEST.into(), accept());
+            }),
+        ),
+        (
             "tilo-namespace-accepts-anything",
             weakened(|d| {
                 d.insert("registry.tilo.so/tilo".into(), accept());
@@ -399,8 +406,14 @@ fn guarded_repositories_are_judged_by_their_effective_rule() {
     let mut policy = key_policy();
     let docker = policy["transports"]["docker"].as_object_mut().unwrap();
     docker.retain(|name, _| {
-        !["legacy-guest", "tilo-vm", "tilo-ci", "tilo-dev"]
-            .contains(&name.rsplit('/').next().unwrap())
+        ![
+            "legacy-guest",
+            "hosted-guest",
+            "tilo-vm",
+            "tilo-ci",
+            "tilo-dev",
+        ]
+        .contains(&name.rsplit('/').next().unwrap())
     });
     check(&policy.to_string(), &key_trust()).unwrap();
     // A namespace scope that rejects covers them too; one that accepts does not.

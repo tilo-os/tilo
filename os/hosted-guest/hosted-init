@@ -23,17 +23,21 @@ say() { printf 'hosted-init: %s\n' "$*"; }
 mount -o remount,rw / 2>/dev/null || say 'left / as the kernel mounted it'
 
 # /proc and /sys first: the rest of this reads them, and apt, rustup and node
-# all read them later.
-mountpoint -q /proc || mount -t proc -o nosuid,nodev,noexec proc /proc
-mountpoint -q /sys || mount -t sysfs -o nosuid,nodev,noexec sysfs /sys
+# all read them later. What is mounted is decided from /proc/self/mounts, so
+# nothing here needs a tool the image might not carry.
+[ -e /proc/self/mounts ] || mount -t proc -o nosuid,nodev,noexec proc /proc
+mounted() { awk -v path="$1" '$2 == path { found = 1 } END { exit !found }' /proc/self/mounts; }
+mounted /sys || mount -t sysfs -o nosuid,nodev,noexec sysfs /sys
+mounted /dev || mount -t devtmpfs -o nosuid,strictatime,mode=0755 devtmpfs /dev
+# Under devtmpfs, which carries the device nodes but no directories of its own.
 mkdir -p /dev/pts /dev/shm
-mountpoint -q /dev || mount -t devtmpfs -o nosuid,strictatime,mode=0755 devtmpfs /dev
 # A pty relay runs in the guest, as user tilo: the pts nodes must be its.
-mountpoint -q /dev/pts \
+mounted /dev/pts \
   || mount -t devpts -o nosuid,noexec,gid=5,mode=620,ptmxmode=666 devpts /dev/pts
-mountpoint -q /dev/shm || mount -t tmpfs -o nosuid,nodev,mode=1777 tmpfs /dev/shm
-mountpoint -q /run || mount -t tmpfs -o nosuid,nodev,mode=0755 tmpfs /run
-mountpoint -q /tmp || mount -t tmpfs -o nosuid,nodev,mode=1777 tmpfs /tmp
+mounted /dev/shm || mount -t tmpfs -o nosuid,nodev,mode=1777 tmpfs /dev/shm
+mkdir -p /run /tmp
+mounted /run || mount -t tmpfs -o nosuid,nodev,mode=0755 tmpfs /run
+mounted /tmp || mount -t tmpfs -o nosuid,nodev,mode=1777 tmpfs /tmp
 
 # The disk the host grew for this VM: the filesystem grows to fill it. Online,
 # on the mounted root, and only when there is something to grow into.
@@ -44,7 +48,7 @@ fi
 
 # cgroup v2, with the controllers a tenant's containers ask for delegated.
 mkdir -p /sys/fs/cgroup
-mountpoint -q /sys/fs/cgroup || mount -t cgroup2 -o nosuid,nodev,noexec cgroup2 /sys/fs/cgroup
+mounted /sys/fs/cgroup || mount -t cgroup2 -o nosuid,nodev,noexec cgroup2 /sys/fs/cgroup
 if [ -w /sys/fs/cgroup/cgroup.subtree_control ]; then
   for controller in cpu cpuset io memory pids; do
     printf '+%s ' "$controller"
@@ -58,8 +62,8 @@ printf 'tilo' > /proc/sys/kernel/hostname 2>/dev/null || true
 # glibc reads /etc/resolv.conf, so write what the kernel was given, or the
 # host's own forwarder when it was given none.
 {
-  if [ -r /proc/net/pnp ] && grep -q '^nameserver ' /proc/net/pnp 2>/dev/null; then
-    sed -n 's/^nameserver /nameserver /p' /proc/net/pnp
+  if grep -qs '^nameserver ' /proc/net/pnp; then
+    grep '^nameserver ' /proc/net/pnp
   else
     printf 'nameserver 10.0.2.3\n'
   fi

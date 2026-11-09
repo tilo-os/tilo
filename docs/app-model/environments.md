@@ -364,6 +364,20 @@ that workspace environment's own, never in a guest sharing the host's kernel
   relayed, when the host names its hosted-VM service (`TILO_HOSTED_VM_SOCKET`,
   `TILO_HOSTED_ACCOUNT`, `TILO_HOSTED_VM_SIZE`). Run records are the shell's,
   unchanged.
+- **The guest image** is one signed OCI image holding two files: an
+  uncompressed x86-64 kernel built from a pinned kernel.org longterm release
+  with everything a VM needs built in (virtio-mmio, blk, net, vsock, FUSE,
+  ext4, cgroups, namespaces, overlayfs) and no modules, and `rootfs.ext4`, a
+  raw ext4 of Debian 13 with the tenant account (`tilo`, uid 1000, passwordless
+  sudo), git, a compiler, python, node and rust on `PATH` for every shell, and
+  the same guest agent the legacy VM runs. It has no systemd: PID 1 is
+  `hosted-init`, which mounts what a guest needs, grows the filesystem to the
+  disk it was given, points DNS at the host's forwarder and hands over to the
+  agent. Each VM's disk is a reflinked copy of `rootfs.ext4`. Hosts do not
+  build it: CI publishes it, signs it with the release key and pins the digest
+  in `os/hosted-guest-snapshot.env`, and `tilo-legacy hosted fetch-guest`
+  fetches only that digest under `/etc/containers/policy.json`'s
+  `sigstoreSigned` scope for `registry.tilo.so/tilo/hosted-guest`.
 
 ## Members that take work
 

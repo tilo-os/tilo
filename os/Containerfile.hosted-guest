@@ -16,11 +16,17 @@
 # works, and so does everything else they would do on their own machine.
 ARG BASE_REF
 # The build context holding the guest agent, built by this repository's CI
-# (hosted-guest.sh agent). The two names below are also what
-# os/external-assets/github-assets.tsv pins.
+# (hosted-guest.sh agent). The three names below are also what
+# os/external-assets/github-assets.tsv pins, and the cache
+# hosted-guest.sh passes as the github-assets context is verified against it
+# before this build starts.
 ARG NODE_ASSET=node-v26.13.0-linux-x64.tar.xz
 ARG FNM_ASSET=fnm-1.39.0-linux.zip
 ARG RUSTUP_INIT_ASSET=rustup-init-x86_64-unknown-linux-gnu
+
+FROM scratch AS external-assets
+COPY --from=github-assets / /
+
 # Debian's own useradd, chfn and passwd; the toolchain versions this image
 # puts in the tenant's hands, and the sizes the checks in
 # tools/ci/publish/hosted-guest.sh assert.
@@ -66,20 +72,22 @@ RUN useradd --create-home --uid 1000 --user-group --shell /bin/bash tilo \
 
 # node: fnm manages the versions, this build places the one that ships. The
 # tarball is checksum-pinned in os/external-assets/github-assets.tsv and put
-# where fnm keeps a version's installation, so `fnm install 24` and
-# `fnm use 24` work for the tenant and the shipped LTS is just version one.
+# where fnm keeps a version's installation (node-versions/v<version>/installation),
+# so `fnm install` and `fnm use` work for the tenant and the shipped LTS is
+# just the version it comes with.
 ARG NODE_ASSET
 ARG FNM_ASSET
-COPY --from=github-assets /${FNM_ASSET} /var/tmp/fnm.zip
-COPY --from=github-assets /${NODE_ASSET} /var/tmp/node.tar.xz
+COPY --from=external-assets /${FNM_ASSET} /var/tmp/fnm.zip
+COPY --from=external-assets /${NODE_ASSET} /var/tmp/node.tar.xz
 ENV FNM_DIR=/home/tilo/.local/share/fnm
 RUN set -eu; \
-    version=${NODE_ASSET%-linux-x64.tar.xz}; \
+    v=${NODE_ASSET#node-}; \
+    v=${v%-linux-x64.tar.xz}; \
     install -d -o tilo -g tilo /var/tmp/fnm \
-      "$FNM_DIR/node-versions/$version/installation"; \
+      "$FNM_DIR/node-versions/v$v/installation"; \
     unzip -q -o /var/tmp/fnm.zip -d /var/tmp/fnm; \
     install -o tilo -g tilo -m 0755 /var/tmp/fnm/fnm /home/tilo/.local/bin/fnm; \
-    tar -xJf /var/tmp/node.tar.xz -C "$FNM_DIR/node-versions/$version/installation" \
+    tar -xJf /var/tmp/node.tar.xz -C "$FNM_DIR/node-versions/v$v/installation" \
       --strip-components=1; \
     chown -R tilo:tilo "$FNM_DIR"; \
     rm -rf /var/tmp/fnm /var/tmp/fnm.zip /var/tmp/node.tar.xz
@@ -89,7 +97,8 @@ RUN set -eu; \
 # /usr/local/bin:/usr/bin:/bin (crates/runtime/legacy-agent/src/launch.rs).
 ARG NODE_ASSET
 RUN set -eu; \
-    node_bin="$FNM_DIR/node-versions/${NODE_ASSET%-linux-x64.tar.xz}/installation/bin"; \
+    v=${NODE_ASSET#node-}; \
+    node_bin="$FNM_DIR/node-versions/v${v%-linux-x64.tar.xz}/installation/bin"; \
     ln -sf /home/tilo/.local/bin/fnm /usr/local/bin/fnm; \
     for program in node npm npx corepack; do \
       if [ -e "$node_bin/$program" ]; then ln -sf "$node_bin/$program" "/usr/local/bin/$program"; fi; \
@@ -99,7 +108,7 @@ RUN set -eu; \
 # cargo, rustc, rustup and rustdoc, and no documentation or clippy the tenant
 # did not ask for. `rustup component add` and `rustup toolchain install` work.
 ARG RUSTUP_INIT_ASSET
-COPY --from=github-assets /${RUSTUP_INIT_ASSET} /var/tmp/rustup-init
+COPY --from=external-assets /${RUSTUP_INIT_ASSET} /var/tmp/rustup-init
 RUN set -eu; \
     install -d -o tilo -g tilo /home/tilo/.cargo /home/tilo/.rustup; \
     chmod 0755 /var/tmp/rustup-init; \
@@ -118,14 +127,16 @@ COPY os/hosted-guest/hosted-init /usr/libexec/tilo/hosted-init
 RUN chmod 0755 /usr/libexec/tilo/hosted-init /usr/libexec/tilo/tilo-legacy-agent
 
 # What this image says it has, in the build log: a guest whose node, rust or
-# agent went missing fails here rather than in somebody's workspace.
+# agent went missing fails here rather than in somebody's workspace. node and
+# rust are asked as the tenant asks them — through the PATH the agent gives a
+# program and with HOME set to the tenant's — so a toolchain that only works
+# for root fails this build.
 RUN set -eu; \
     du -shx / 2>/dev/null | sed 's/^/rootfs: /'; \
     node --version | sed 's/^/node: /'; \
     npm --version | sed 's/^/npm: /'; \
     fnm --version | sed 's/^/fnm: /'; \
-    cargo --version | sed 's/^/cargo: /'; \
-    rustc --version | sed 's/^/rustc: /'; \
+    su -s /bin/bash tilo -c 'cargo --version; rustc --version' | sed 's/^/rust: /'; \
     python3 --version | sed 's/^/python: /'; \
     /usr/libexec/tilo/tilo-legacy-agent --help 2>&1 | head -1 | sed 's/^/agent: /'; \
     bash -n /usr/libexec/tilo/hosted-init

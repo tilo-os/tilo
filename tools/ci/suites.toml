@@ -1295,8 +1295,11 @@ readers = ["crates/system/os-actions/src/windows_compat.rs"]
 
 [[cargo]]
 package = "legacy-vm"
-inputs = ["os/legacy-guest-snapshot.env"]
-readers = ["crates/runtime/legacy-vm/src/image.rs"]
+inputs = ["os/legacy-guest-snapshot.env", "os/hosted-guest-snapshot.env"]
+readers = [
+  "crates/runtime/legacy-vm/src/image.rs",
+  "crates/runtime/legacy-vm/src/hosted/guest.rs",
+]
 
 [[cargo]]
 package = "imager"

@@ -2,8 +2,8 @@
 """The canonical snapshot pin files, and the protected-branch PR that can land one.
 
 `open-snapshot-pr.py pins KIND ...` prints the canonical pin file; t's pin-kernel,
-pin-kernel-buildroot and pin-legacy-guest checks write it with this and push it to
-main. Without `pins`, it lands a pin committed to an automation branch named after
+pin-kernel-buildroot, pin-legacy-guest and pin-hosted-guest checks write it with
+this and push it to main. Without `pins`, it lands a pin committed to an automation branch named after
 the file's SHA-256 through a pull request instead, checking that branch, digest and
 references agree before opening (or re-finding) it.
 
@@ -33,6 +33,7 @@ REVISION = re.compile(r"^[0-9a-f]{40}$")
 KERNEL_BUILDROOT_REF = re.compile(
     r"^registry\.tilo\.so/tilo/tilo-kernel-buildroot@sha256:([0-9a-f]{64})$")
 LEGACY_GUEST_REF = re.compile(r"^registry\.tilo\.so/tilo/legacy-guest@sha256:([0-9a-f]{64})$")
+HOSTED_GUEST_REF = re.compile(r"^registry\.tilo\.so/tilo/hosted-guest@sha256:([0-9a-f]{64})$")
 # Forgejo reports a repository the token cannot see as 404, not 403.
 ACCESS_DENIED = (401, 403, 404)
 TOKEN_HINT = ("set the workflow's FORGEJO_TOKEN to secrets.RELEASE_TOKEN, a token "
@@ -127,6 +128,33 @@ def legacy_guest_snapshot(args, parser) -> tuple[str, dict]:
     }
 
 
+def hosted_guest_contents(x86_ref: str) -> str:
+    """Return the canonical os/hosted-guest-snapshot.env."""
+    return "\n".join((
+        "# The hosted workspace VM guest image (a Firecracker kernel and the root",
+        "# filesystem its VMs start from), pinned by digest and signed with the release",
+        "# key. Written by the pin-hosted-guest check; `tilo-legacy hosted fetch-guest`",
+        "# compiles it in and fetches nothing else.",
+        f"HOSTED_GUEST_X86_64_REF={x86_ref}",
+        "",
+    ))
+
+
+def hosted_guest_snapshot(args, parser) -> tuple[str, dict]:
+    if HOSTED_GUEST_REF.fullmatch(args.x86_ref) is None:
+        parser.error("hosted guest ref must be an immutable hosted-guest sha256 reference")
+    return hosted_guest_contents(args.x86_ref), {
+        "label": "Hosted guest",
+        "branch_prefix": "automation/hosted-guest-snapshot-",
+        "title": "build(os): pin the hosted workspace VM guest image",
+        "summary": ("Automated promotion of the signed hosted workspace VM guest image, "
+                    "which holds the kernel each VM boots and the root filesystem its "
+                    "disk starts from.\n\n"
+                    "After this merges, hosts fetch new guest images from it and start "
+                    "workspace VMs from them."),
+    }
+
+
 def request(server: str, repository: str, token: str, path: str,
             method: str = "GET", payload: dict | None = None):
     url = f"{server.rstrip('/')}/api/v1/repos/{repository}{path}"
@@ -178,6 +206,11 @@ def add_kinds(parser) -> None:
     kind = kinds.add_parser("legacy-guest", help="the x86-64 Linux legacy VM guest disk")
     kind.add_argument("--x86-ref", required=True)
     kind.set_defaults(snapshot=legacy_guest_snapshot)
+    # So is the hosted workspace VMs' guest, which holds a kernel and a root
+    # filesystem under one digest.
+    kind = kinds.add_parser("hosted-guest", help="the x86-64 hosted workspace VM guest image")
+    kind.add_argument("--x86-ref", required=True)
+    kind.set_defaults(snapshot=hosted_guest_snapshot)
 
 
 def pins(argv: list[str]) -> int:
