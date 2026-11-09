@@ -1,11 +1,9 @@
 //! The page's collaboration plane: the session's own sync, over this page's endpoint.
 //!
-//! A started page runs the session's client the way a desktop does. The client keeps a board of who
-//! is here in each workspace the page shows, says this page's word on the workspace's presence
-//! track, and merges what the members say. What this page brings is the transport: the certified
-//! peer's live plane, which every device of the workspace already joins. Nothing here draws, and
-//! nothing here keeps a second copy of the driving: this module names the page's own values and
-//! hands the board's members to JavaScript as the `Shown` record every surface reads.
+//! A started page runs the session's client as a desktop does — the board of who is here in each
+//! workspace it shows, its own word on each presence track — and supplies the transport: the
+//! certified peer's live plane. This module names the page's own values and hands the board's
+//! members to JavaScript as the `Shown` record every surface reads.
 
 use std::cell::RefCell;
 use std::collections::HashMap;
