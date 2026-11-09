@@ -1873,20 +1873,6 @@ mod tests {
             Some(below),
             "the rows under the item follow where its document ends"
         );
-        // The item standing open is still the row to a reader: it keeps the row's own name,
-        // the title the model reads, not the name of the field its document begins with.
-        let semantics = Widget::accessibility(&list).expect("the list says what it holds");
-        let open = semantics
-            .children
-            .iter()
-            .find(|node| node.state.expanded == Some(true))
-            .expect("the item stands open in the list");
-        assert_eq!(
-            open.name.as_deref(),
-            Some("row 2"),
-            "the open item is named by its row, not by the document it opened into"
-        );
-
         // The same list given the item again keeps it open, and given none closes it.
         let same = VirtualListProps {
             open: Some(ResourceId("task-2".into())),

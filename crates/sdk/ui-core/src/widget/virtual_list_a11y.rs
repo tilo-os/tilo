@@ -115,11 +115,10 @@ impl<M: ListModel> VirtualList<M> {
     ) -> crate::a11y::AccessNode {
         let count = self.model.len();
         let child = row.widget.accessibility();
-        // The item a row opened into stands in the row's place, so its document is the row:
-        // the row keeps the name it had standing closed — the item's title, which the model
-        // reads — rather than the name of the field its document happens to begin with.
+        // The item standing open in its row is still the row: it is named by the title its
+        // document states, never by the name of the field the document happens to begin with.
         let name = (self.open.as_ref() == Some(&row.key))
-            .then(|| self.model.label(row.index))
+            .then(|| first_page_title(row.widget.as_ref()))
             .flatten()
             .or_else(|| child.as_ref().and_then(|node| node.name.clone()))
             .or_else(|| first_descendant_accessible_name(row.widget.as_ref()));
@@ -507,6 +506,13 @@ impl<M: ListModel> VirtualList<M> {
     }
 }
 
+/// The title the item `widget` presents states, the first one it holds: a document titles
+/// itself in a heading, or in the field the person types its title in.
+fn first_page_title(widget: &dyn Widget) -> Option<String> {
+    Widget::own_page_title(widget)
+        .or_else(|| widget.children().into_iter().find_map(first_page_title))
+}
+
 fn first_descendant_accessible_name(widget: &dyn Widget) -> Option<String> {
     widget.children().into_iter().find_map(|child| {
         child
@@ -514,4 +520,27 @@ fn first_descendant_accessible_name(widget: &dyn Widget) -> Option<String> {
             .and_then(|node| node.name)
             .or_else(|| first_descendant_accessible_name(child))
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::first_page_title;
+    use crate::tokens::TextRole;
+    use crate::widget::arrange::Row;
+    use crate::widget::{Element, Text};
+
+    /// A document titles itself: the title its words state is the item's, not a name the first
+    /// field it happens to begin with gives it.
+    #[test]
+    fn a_documents_title_is_the_title_it_states() {
+        let document: Element = Box::new(Row::row().push(Box::new(Text::new("Title"))).push(
+            Box::new(Text::new("ring the plumber").with_role(TextRole::Title)),
+        ));
+        assert_eq!(
+            first_page_title(document.as_ref()).as_deref(),
+            Some("ring the plumber")
+        );
+        let untitled: Element = Box::new(Text::new("Title"));
+        assert_eq!(first_page_title(untitled.as_ref()), None);
+    }
 }
