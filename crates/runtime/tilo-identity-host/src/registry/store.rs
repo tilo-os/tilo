@@ -87,16 +87,6 @@ impl IdentityRegistry {
         self.register_record(&destination)
     }
 
-    /// The identity this device presents in `workspace`: the person its own
-    /// certificate was issued by (person root plus device subkey), whom the
-    /// workspace's roster has as a member. Nothing chooses it, and nothing
-    /// has to be selected first: a device whose certificate names a person
-    /// presents that person in every workspace they are in.
-    ///
-    /// A personal cluster ([`collab_types::personal_cluster`]) is derived
-    /// from its person's root key, so it names that person by itself. A
-    /// device with no certificate of its own presents the identity this
-    /// login marked active.
     /// The person this device's certificate was issued by, with the record that key keeps here:
     /// registered in this registry, or found among the record files this login has (a
     /// launcher-bound record, or one a setup wrote after this registry's last read).

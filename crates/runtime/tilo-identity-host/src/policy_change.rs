@@ -1,39 +1,10 @@
-//! Change notification for what this host's authorization decisions read.
-//!
-//! The collaboration broker re-checks what it already admitted (native
-//! context subscribers, membership surfaces, the devices a channel participant
-//! lets read) when something those decisions read may have changed, instead
-//! of on a fixed clock: the workspace tree, the device fleet and
-//! identity registry, the native owner's task store, the devices the network
-//! authenticated. Every writer of those calls [`announce`]. A consumer holds a
-//! [`Watch`], which wakes it once on the next announcement after it armed it,
-//! and compares [`epoch`] with the epoch its last check read: a change made
-//! while it was busy with that check is never missed.
-//!
-//! Time changes decisions as well: a grant, a certificate or a revocation
-//! takes effect at an instant known in advance, which no writer announces. A
-//! consumer registers the earliest such instant its last check read with
-//! [`wake_at`], and is announced to when the wall clock reaches it. On Linux
-//! the timer is an absolute `CLOCK_REALTIME` timerfd that is also cancelled by
-//! any discontinuous change of the clock (it being set, a step, resume from
-//! suspend), so an expiry that passed while the machine slept or the clock
-//! jumped is announced at once, not after the monotonic clock caught up.
-//!
-//! Other processes write some of the inputs: the identity directory (its
-//! registry, records and fleets) and the home-peer registry. On Linux they are
-//! watched for changes ([`identity_files_watched`],
-//! [`tilo_files::native::watch_changes`]); reads are not changes, so a check
-//! reading the files does not announce itself.
-//!
-//! Where a signal cannot be held (no timerfd or inotify, as on macOS
-//! development builds, or a directory that cannot be watched),
-//! [`timers_reliable`] or [`identity_files_watched`] says so, and the consumer
-//! keeps its one-second re-check for the inputs concerned while they exist.
-//!
-//! The epoch is process-wide rather than per broker, like the relay's
-//! `authority_epoch`: writers announce without a handle threaded to
-//! them. Two hosts in one process (only tests do that) wake each other; a
-//! spurious announcement costs one re-check and never grants anything.
+//! Change notification for what this host's authorization decisions read: the workspace tree, the
+//! device fleet and identity registry, the owner's task store and the devices the network
+//! authenticated. Every writer calls [`announce`]; a consumer holds a [`Watch`] and compares
+//! [`epoch`], so a change made during its own check is never missed. Instants known in advance
+//! (a grant's or a certificate's expiry) are registered with [`wake_at`]. Where a signal cannot be
+//! held, [`timers_reliable`] or [`identity_files_watched`] says so and the consumer re-checks
+//! every second meanwhile.
 
 use std::collections::BTreeSet;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
