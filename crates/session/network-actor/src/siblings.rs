@@ -72,13 +72,7 @@ pub(crate) async fn spawn_ticking(
         crate::loopback_endpoint(Some(iroh::SecretKey::from_bytes(&key.to_bytes()))).await;
     let addr = endpoint.addr();
     let (local, protocols) = LocalHost::deferred();
-    let identity = HostIdentity {
-        device_cert: cert.clone(),
-        device_signing_key: key.clone(),
-        workspace_device_certs: std::collections::HashMap::new(),
-        workspace_revocations: std::collections::HashMap::new(),
-        custody: None,
-    };
+    let identity = HostIdentity::kept(cert.clone(), key.clone());
     let (cmd, task) = Actor::spawn_with_heartbeat(
         endpoint.clone(),
         lookup.clone(),

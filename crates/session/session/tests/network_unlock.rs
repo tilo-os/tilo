@@ -213,13 +213,10 @@ impl Devices {
         let phone = Rc::new(
             Client::start(
                 Entry {
-                    identity: Some(HostIdentity {
-                        device_cert: person.phone_cert.clone(),
-                        device_signing_key: person.phone_key.clone(),
-                        workspace_device_certs: std::collections::HashMap::default(),
-                        workspace_revocations: std::collections::HashMap::default(),
-                        custody: None,
-                    }),
+                    identity: Some(HostIdentity::kept(
+                        person.phone_cert.clone(),
+                        person.phone_key.clone(),
+                    )),
                     own: OwnPresence::default(),
                     hosts: Vec::new(),
                     continuity: Continuity::default(),

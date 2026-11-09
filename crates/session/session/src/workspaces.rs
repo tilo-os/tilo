@@ -1789,13 +1789,7 @@ mod tests {
             issuer: None,
         };
         tilo_user_identity::sign_device_cert(&mut cert, &person).expect("a certified device");
-        tilo_network_actor::HostIdentity {
-            device_cert: cert,
-            device_signing_key: this,
-            workspace_device_certs: std::collections::HashMap::new(),
-            workspace_revocations: std::collections::HashMap::new(),
-            custody: None,
-        }
+        tilo_network_actor::HostIdentity::kept(cert, this)
     }
 
     /// The desk a fresh device starts from.

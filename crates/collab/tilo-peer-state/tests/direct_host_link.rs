@@ -382,13 +382,7 @@ async fn joins(
 ) {
     use tilo_identity_host::custody::HostIdentity;
     let owner = owner_at(state);
-    let identity = HostIdentity {
-        device_cert: cert.clone(),
-        device_signing_key: key.clone(),
-        workspace_device_certs: std::collections::HashMap::new(),
-        workspace_revocations: std::collections::HashMap::new(),
-        custody: None,
-    };
+    let identity = HostIdentity::kept(cert.clone(), key.clone());
     let topic = tilo_peer_state::join::room_workspace_id(WORKSPACE).expect("a workspace topic");
     let enrollment = tilo_peer_state::owner::enroll::prepare_and_complete(
         tilo_peer_state::join_transport::WorkspaceJoinClient::local(

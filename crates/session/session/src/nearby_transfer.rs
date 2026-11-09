@@ -2225,7 +2225,6 @@ mod transfers_between_devices {
                   sessions live until the whole transfer is over"
     )]
 
-    use std::collections::HashMap;
     use std::os::unix::ffi::OsStrExt as _;
     use std::path::Path;
     use std::sync::Arc;
@@ -2363,13 +2362,7 @@ mod transfers_between_devices {
         sign_device_cert(&mut cert, person).expect("the person signs their own device");
         let client = Client::start(
             Entry {
-                identity: Some(HostIdentity {
-                    device_cert: cert,
-                    device_signing_key: key,
-                    workspace_device_certs: HashMap::new(),
-                    workspace_revocations: HashMap::new(),
-                    custody: None,
-                }),
+                identity: Some(HostIdentity::kept(cert, key)),
                 own: OwnPresence::default(),
                 hosts: Vec::new(),
                 continuity: permitted(),

@@ -1124,13 +1124,7 @@ mod tests {
             issuer: None,
         };
         tilo_user_identity::sign_device_cert(&mut cert, &person).expect("a certified device");
-        let identity = HostIdentity {
-            device_cert: cert,
-            device_signing_key: device,
-            workspace_device_certs: std::collections::HashMap::new(),
-            workspace_revocations: std::collections::HashMap::new(),
-            custody: None,
-        };
+        let identity = HostIdentity::kept(cert, device);
         (identity, root)
     }
 

@@ -30,7 +30,11 @@ impl Custody for Files {
         Ok((cert, key))
     }
 
-    fn read(&self, device: &VerifyingKey) -> Result<(DeviceCert, Vec<RevocationEntry>), String> {
+    fn read(
+        &self,
+        _workspace: super::WorkspaceId,
+        device: &VerifyingKey,
+    ) -> Result<(DeviceCert, Vec<RevocationEntry>), String> {
         let stored_key =
             tilo_user_identity::persist::load_device_key(&self.paths).map_err(|e| e.to_string())?;
         if stored_key.verifying_key() != *device {

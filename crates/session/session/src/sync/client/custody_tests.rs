@@ -12,7 +12,6 @@
 
 tilo_automerge_isolate::test_worker!();
 
-use std::collections::HashMap;
 use std::time::Duration;
 
 use ed25519_dalek::SigningKey;
@@ -181,13 +180,7 @@ impl Device {
     /// person.
     fn of(root: &SigningKey, key: SigningKey, label: &str) -> Self {
         let cert = certified(root, &key, label, DeviceCapabilities::member());
-        let identity = tilo_network_actor::HostIdentity {
-            device_cert: cert,
-            device_signing_key: key,
-            workspace_device_certs: HashMap::new(),
-            workspace_revocations: HashMap::new(),
-            custody: None,
-        };
+        let identity = tilo_network_actor::HostIdentity::kept(cert, key);
         let state = tempfile::tempdir().expect("the session's directory");
         let engine = std::sync::Arc::new(
             Engine::open(identity.clone(), Some(state.path()), std::iter::empty())

@@ -17,7 +17,6 @@
               outlives every call made into it"
 )]
 
-use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -83,13 +82,7 @@ fn device(person: &ed25519_dalek::SigningKey, seed: u8, label: &str) -> Device {
     sign_device_cert(&mut cert, person).expect("the person signs their own device");
     let client = Client::start(
         Entry {
-            identity: Some(HostIdentity {
-                device_cert: cert,
-                device_signing_key: key,
-                workspace_device_certs: HashMap::new(),
-                workspace_revocations: HashMap::new(),
-                custody: None,
-            }),
+            identity: Some(HostIdentity::kept(cert, key)),
             own: OwnPresence::default(),
             hosts: Vec::new(),
             continuity: permitted(),

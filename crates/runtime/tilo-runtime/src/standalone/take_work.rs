@@ -268,15 +268,7 @@ impl Member {
         endpoint: Endpoint,
         relay: Relay,
     ) -> std::io::Result<Self> {
-        let custody = tilo_identity_host::custody::HostIdentity {
-            device_cert: cert,
-            device_signing_key: key,
-            workspace_device_certs: std::collections::HashMap::new(),
-            workspace_revocations: std::collections::HashMap::new(),
-            // Nothing here renews sealed writes: the member holds its
-            // workspaces as it enrolled in them.
-            custody: None,
-        };
+        let custody = tilo_identity_host::custody::HostIdentity::kept(cert, key);
         let joined = Joined::from_profile(profile, custody, endpoint.clone())?;
         let plane = plane(profile, &joined, relay, None)?;
         // The plane holds the workspaces it serves; this member answers them

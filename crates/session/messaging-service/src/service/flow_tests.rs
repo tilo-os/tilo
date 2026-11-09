@@ -68,13 +68,7 @@ fn rig() -> Rig {
     tilo_user_identity::sign_device_cert(&mut certificate, &root).unwrap();
     let principal = hex::encode(certificate.user_public_key);
     let custody = Custody::with_host(
-        tilo_identity_host::custody::HostIdentity {
-            device_cert: certificate,
-            device_signing_key: device,
-            workspace_device_certs: std::collections::HashMap::new(),
-            workspace_revocations: std::collections::HashMap::new(),
-            custody: None,
-        },
+        tilo_identity_host::custody::HostIdentity::kept(certificate, device),
         &principal,
         "device",
     )

@@ -813,9 +813,8 @@ impl Joined {
         // SAFETY: no run has been admitted yet, so nothing reads this store
         // concurrently; each admission afterwards pins what it reads.
         unsafe {
-            (*(custody.cast_mut())).custody = Some(std::sync::Arc::new(
-                tilo_identity_host::custody::files::Files::new(paths),
-            ));
+            (*(custody.cast_mut())).custody =
+                std::sync::Arc::new(tilo_identity_host::custody::files::Files::new(paths));
         }
     }
 }

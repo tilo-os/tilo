@@ -43,7 +43,7 @@ pub(super) async fn redeem(
     }
     // The workspace is joined as this computer's person: the device's own certificate signs the
     // enrollment, so there is nothing to pick here.
-    identity.current_material(Some(topic))?;
+    identity.current_material(topic)?;
     let owner = engine.owner().clone();
     let client = tilo_peer_state::join_transport::WorkspaceJoinClient::new(endpoint);
     let enrollment = tokio::time::timeout(
@@ -118,7 +118,7 @@ pub(super) async fn enter(
     link: Option<&ChannelLink>,
 ) -> Result<(), String> {
     let topic = workspace_topic_id(request.workspace_id);
-    identity.current_material(Some(topic))?;
+    identity.current_material(topic)?;
     let owner = engine.owner().clone();
     let client = tilo_peer_state::join_transport::WorkspaceJoinClient::new(endpoint);
     tokio::time::timeout(

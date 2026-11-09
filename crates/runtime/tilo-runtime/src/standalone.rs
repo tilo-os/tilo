@@ -1288,17 +1288,13 @@ fn joined_workspaces(
     broker: (Arc<Mutex<BrokerChannels>>, Arc<FanoutState>),
     listen: Option<u16>,
 ) -> io::Result<Arc<Joined>> {
-    let custody = tilo_identity_host::custody::HostIdentity {
-        device_cert: cert,
-        device_signing_key: key.clone(),
-        workspace_device_certs: std::collections::HashMap::new(),
-        workspace_revocations: std::collections::HashMap::new(),
-        custody: Some(std::sync::Arc::new(
-            tilo_identity_host::custody::files::Files::new(
-                tilo_identity_host::provisioning::collaboration_identity_paths(),
-            ),
+    let custody = tilo_identity_host::custody::HostIdentity::held(
+        cert,
+        key.clone(),
+        std::sync::Arc::new(tilo_identity_host::custody::files::Files::new(
+            tilo_identity_host::provisioning::collaboration_identity_paths(),
         )),
-    };
+    );
     let endpoint = listen_endpoint(&key, listen)?;
     let mut refused = joined::desktop_enrolled(profile)?;
     if !governs {

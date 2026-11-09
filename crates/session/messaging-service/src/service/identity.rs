@@ -39,15 +39,11 @@ impl Custody {
             tilo_user_identity::persist::read_device_cert(&paths.device_cert_for_user(&person))
                 .map_err(|e| e.to_string())?;
         Self::with_host(
-            HostIdentity {
-                device_cert: cert,
-                device_signing_key: key,
-                workspace_device_certs: std::collections::HashMap::new(),
-                workspace_revocations: std::collections::HashMap::new(),
-                custody: Some(std::sync::Arc::new(
-                    tilo_identity_host::custody::files::Files::new(paths),
-                )),
-            },
+            HostIdentity::held(
+                cert,
+                key,
+                std::sync::Arc::new(tilo_identity_host::custody::files::Files::new(paths)),
+            ),
             principal,
             device,
         )
@@ -150,7 +146,7 @@ impl Identity {
         let (certificate, _) = self
             .custody
             .host
-            .current_material(Some(self.custody.workspace))
+            .current_material(self.custody.workspace)
             .map_err(|_| SendError::Revoked)?;
         if self.owner.principal != self.custody.principal
             || self.owner.device != self.custody.device

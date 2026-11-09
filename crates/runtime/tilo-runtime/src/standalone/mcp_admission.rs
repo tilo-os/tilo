@@ -122,9 +122,7 @@ impl Joined {
     ) -> Result<(DeviceCert, (tilo_peer_state::join::TransportHint, u64)), String> {
         // Read apart, so a custody that no longer matches the enrollment is
         // a confirmed change rather than a read that failed.
-        let (certificate, _) = self
-            .custody
-            .current_material(Some(workspace_topic(workspace)?))?;
+        let (certificate, _) = self.custody.current_material(workspace_topic(workspace)?)?;
         let enrollment = self.owner.with_current(workspace, |view| {
             Ok((view.transport_hint()?.clone(), view.continuity()))
         })?;

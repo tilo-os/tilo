@@ -1,6 +1,5 @@
 //! The device custody a host authenticates with to Tilo workspace hosts,
 //! and the certificate it presents for each workspace it takes part in.
-use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -23,13 +22,23 @@ pub trait Custody: Send + Sync {
     /// This host has no identity, or its stored key and certificate differ.
     fn device(&self) -> Result<(DeviceCert, ed25519_dalek::SigningKey), String>;
 
-    /// The certificate this device presents and the revocations advertised beside it, as the
-    /// store holds them now: never an older snapshot than the last write.
+    /// The certificate this device presents in `workspace` and the revocations advertised beside
+    /// it, as the store holds them now: never an older snapshot than the last write. A workspace
+    /// this device presents the same certificate in answers that one.
     ///
     /// # Errors
     /// The stored device key is not `device`'s, the store cannot be read, or this login holds
     /// no record of the person the device signs as.
-    fn read(&self, device: &VerifyingKey) -> Result<(DeviceCert, Vec<RevocationEntry>), String>;
+    fn read(
+        &self,
+        workspace: WorkspaceId,
+        device: &VerifyingKey,
+    ) -> Result<(DeviceCert, Vec<RevocationEntry>), String>;
+
+    /// The workspaces this device presents a certificate of another root in.
+    fn workspaces(&self) -> Vec<WorkspaceId> {
+        Vec::new()
+    }
 
     /// The places [`Self::read`] reads, for a watcher of them: none when the custody is not
     /// files.
@@ -41,18 +50,80 @@ pub trait Custody: Send + Sync {
 /// Device certificate chain used to authenticate to a Tilo workspace host.
 #[derive(Clone)]
 pub struct HostIdentity {
+    /// The certificate this device was issued, as it was read.
     pub device_cert: DeviceCert,
+    /// The key that certificate names.
     pub device_signing_key: ed25519_dalek::SigningKey,
-    /// Workspace-specific user certificates for this same device key.
-    /// Missing entries deliberately fall back to `device_cert` for legacy and
-    /// unbound workspaces.
-    pub workspace_device_certs: HashMap<WorkspaceId, DeviceCert>,
-    /// Root-signed revocations advertised beside each workspace certificate.
-    pub workspace_revocations: HashMap<WorkspaceId, Vec<RevocationEntry>>,
-    /// Where this device reads its custody from when it changes. Production actors read
-    /// workspace identity material from it and announce it again when it changes; tests may use
-    /// the in-memory maps alone.
-    pub custody: Option<Arc<dyn Custody>>,
+    /// Where the custody above is read from when it changes: the identity files of this host, or
+    /// the material it keeps in memory.
+    pub custody: Arc<dyn Custody>,
+}
+
+/// Custody this host keeps in memory: the material a page was handed at start, and what tests
+/// hold. A certificate of another root this device presents in one workspace is kept beside the
+/// device's own, which answers for every workspace that has none.
+pub struct Kept {
+    device: DeviceCert,
+    key: ed25519_dalek::SigningKey,
+    workspaces: std::collections::HashMap<WorkspaceId, (DeviceCert, Vec<RevocationEntry>)>,
+}
+
+impl Kept {
+    /// Custody of `device` and the key it names.
+    #[must_use]
+    pub fn new(device: DeviceCert, key: ed25519_dalek::SigningKey) -> Self {
+        Self {
+            device,
+            key,
+            workspaces: std::collections::HashMap::new(),
+        }
+    }
+
+    /// The same custody, presenting `cert` in `workspace` with the revocations advertised beside
+    /// it.
+    #[must_use]
+    pub fn in_workspace(
+        mut self,
+        workspace: WorkspaceId,
+        cert: DeviceCert,
+        revocations: Vec<RevocationEntry>,
+    ) -> Self {
+        self.workspaces.insert(workspace, (cert, revocations));
+        self
+    }
+}
+
+impl Custody for Kept {
+    fn device(&self) -> Result<(DeviceCert, ed25519_dalek::SigningKey), String> {
+        Ok((self.device.clone(), self.key.clone()))
+    }
+
+    fn read(
+        &self,
+        workspace: WorkspaceId,
+        device: &VerifyingKey,
+    ) -> Result<(DeviceCert, Vec<RevocationEntry>), String> {
+        if self.key.verifying_key() != *device {
+            return Err("kept device custody changed".into());
+        }
+        Ok(self
+            .workspaces
+            .get(&workspace)
+            .cloned()
+            .unwrap_or_else(|| (self.device.clone(), Vec::new())))
+    }
+
+    fn workspaces(&self) -> Vec<WorkspaceId> {
+        self.workspaces.keys().copied().collect()
+    }
+}
+
+impl std::fmt::Debug for Kept {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Kept")
+            .field("device", &hex::encode(self.device.device_public_key))
+            .finish_non_exhaustive()
+    }
 }
 
 impl HostIdentity {
@@ -67,32 +138,45 @@ impl HostIdentity {
                 return None;
             }
         };
-        Some(Self {
-            device_cert,
-            device_signing_key,
-            workspace_device_certs: HashMap::new(),
-            workspace_revocations: HashMap::new(),
-            custody: Some(custody),
-        })
+        Some(Self::held(device_cert, device_signing_key, custody))
     }
 
-    /// Read this device's current custody for enrolled operations, with the workspace it acts in
-    /// when it falls back to what is kept beside the device's own.
-    /// A store that cannot be read never falls back to an old in-memory certificate or revocation
-    /// snapshot.
+    /// The identity `cert` and `key` are, with `custody` keeping it current: for a host that read
+    /// the certificate it means to present itself, which is not always the one every workspace
+    /// uses.
+    #[must_use]
+    pub fn held(
+        device_cert: DeviceCert,
+        device_signing_key: ed25519_dalek::SigningKey,
+        custody: Arc<dyn Custody>,
+    ) -> Self {
+        Self {
+            device_cert,
+            device_signing_key,
+            custody,
+        }
+    }
+
+    /// This device's identity kept in memory alone: the certificate and the key it was given.
+    #[must_use]
+    pub fn kept(device_cert: DeviceCert, device_signing_key: ed25519_dalek::SigningKey) -> Self {
+        let custody = Arc::new(Kept::new(device_cert.clone(), device_signing_key.clone()));
+        Self::held(device_cert, device_signing_key, custody)
+    }
+
+    /// This device's custody as its host keeps it now: what an enrolled operation signs and
+    /// presents with.
     ///
     /// # Errors
-    /// The stored device key or certificate changed, cannot be read or does
-    /// not verify, this login holds no record of the person the device signs
-    /// as, or the device is revoked.
+    /// The store cannot be read, the key or certificate it holds changed or does not verify, this
+    /// login holds no record of the person the device signs as, or the device is revoked.
     pub fn current_material(
         &self,
-        ws: Option<WorkspaceId>,
+        workspace: WorkspaceId,
     ) -> Result<(DeviceCert, Vec<RevocationEntry>), String> {
-        let Some(custody) = &self.custody else {
-            return Ok(self.workspace_material(ws));
-        };
-        let (cert, revocations) = custody.read(&self.device_signing_key.verifying_key())?;
+        let (cert, revocations) = self
+            .custody
+            .read(workspace, &self.device_signing_key.verifying_key())?;
         tilo_user_identity::verify_device_cert(&cert).map_err(|e| e.to_string())?;
         let mut checked = RevocationList::new();
         for entry in &revocations {
@@ -104,39 +188,25 @@ impl HostIdentity {
         Ok((cert, revocations))
     }
 
-    pub fn material_for(&self, ws: WorkspaceId) -> (DeviceCert, Vec<RevocationEntry>) {
-        let selected = self.custody.as_ref().and_then(|custody| {
-            let (cert, revocations) = custody
-                .read(&self.device_signing_key.verifying_key())
-                .ok()?;
-            let subject =
-                cert.device_public_key == self.device_signing_key.verifying_key().to_bytes();
-            (tilo_user_identity::verify_device_cert(&cert).is_ok() && subject)
-                .then_some((cert, revocations))
-        });
-        selected.unwrap_or_else(|| self.workspace_material(Some(ws)))
+    /// The certificate and revocations this device presents in `workspace`, falling back to the
+    /// device's own when the store cannot answer.
+    #[must_use]
+    pub fn material_for(&self, workspace: WorkspaceId) -> (DeviceCert, Vec<RevocationEntry>) {
+        let read = self
+            .custody
+            .read(workspace, &self.device_signing_key.verifying_key())
+            .ok()
+            .filter(|(cert, _)| {
+                tilo_user_identity::verify_device_cert(cert).is_ok()
+                    && cert.device_public_key == self.device_signing_key.verifying_key().to_bytes()
+            });
+        read.unwrap_or_else(|| (self.device_cert.clone(), Vec::new()))
     }
 
-    /// The directories [`Self::material_for`]
-    /// read: what this device announces changes only with them. None for an
-    /// identity kept in memory.
+    /// The directories [`Self::material_for`] reads: what this device announces changes only with
+    /// them. None for an identity kept in memory.
     #[must_use]
     pub fn material_directories(&self) -> Vec<PathBuf> {
-        self.custody
-            .as_ref()
-            .map_or_else(Vec::new, |custody| custody.directories())
-    }
-
-    /// The material kept beside the device's own: the workspace's certificate when it has one,
-    /// and the revocations recorded under it.
-    fn workspace_material(&self, ws: Option<WorkspaceId>) -> (DeviceCert, Vec<RevocationEntry>) {
-        (
-            ws.and_then(|ws| self.workspace_device_certs.get(&ws))
-                .unwrap_or(&self.device_cert)
-                .clone(),
-            ws.and_then(|ws| self.workspace_revocations.get(&ws))
-                .cloned()
-                .unwrap_or_default(),
-        )
+        self.custody.directories()
     }
 }

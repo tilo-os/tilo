@@ -137,13 +137,7 @@ impl Joined {
         sign_device_cert(&mut cert, &root).unwrap();
         let joined = Self::open(
             directory.path(),
-            HostIdentity {
-                device_cert: cert,
-                device_signing_key: key.clone(),
-                workspace_device_certs: std::collections::HashMap::default(),
-                workspace_revocations: std::collections::HashMap::default(),
-                custody: None,
-            },
+            HostIdentity::kept(cert, key.clone()),
             local_endpoint(&key).await,
             BTreeSet::new(),
             (
@@ -324,7 +318,10 @@ impl HostedWorkspace {
 fn assert_changed_custody_refused(joined: &Joined, workspace: WorkspaceId, actor: &str) {
     let mut custody = joined.custody.clone();
     // In memory only: this probe compares what it holds, never a disk.
-    custody.custody = None;
+    custody.custody = std::sync::Arc::new(tilo_identity_host::custody::Kept::new(
+        custody.device_cert.clone(),
+        custody.device_signing_key.clone(),
+    ));
     let workspace_cert = custody.device_cert.clone();
     let default_root = SigningKey::from_bytes(&[95; 32]);
     custody.device_cert.user_public_key = default_root.verifying_key().to_bytes();
@@ -332,9 +329,21 @@ fn assert_changed_custody_refused(joined: &Joined, workspace: WorkspaceId, actor
     let default_actor = tilo_action_broker::collab_app_broker::principal_id_for_root(
         custody.device_cert.user_public_key,
     );
-    custody
-        .workspace_device_certs
-        .insert(workspace_topic(workspace).unwrap(), workspace_cert);
+    custody = HostIdentity::held(
+        custody.device_cert.clone(),
+        custody.device_signing_key.clone(),
+        std::sync::Arc::new(
+            tilo_identity_host::custody::Kept::new(
+                custody.device_cert.clone(),
+                custody.device_signing_key.clone(),
+            )
+            .in_workspace(
+                workspace_topic(workspace).unwrap(),
+                workspace_cert,
+                Vec::new(),
+            ),
+        ),
+    );
     let mut probe = Joined {
         executions: super::super::execution::ExecutionPins::new(&joined.owner),
         owner: joined.owner.clone(),
@@ -374,10 +383,16 @@ fn assert_changed_custody_refused(joined: &Joined, workspace: WorkspaceId, actor
     let mut renewed = probe.custody.device_cert.clone();
     renewed.device_label = "a reissued certificate".into();
     sign_device_cert(&mut renewed, &default_root).unwrap();
-    probe
-        .custody
-        .workspace_device_certs
-        .insert(workspace_topic(workspace).unwrap(), renewed);
+    let kept = tilo_identity_host::custody::Kept::new(
+        probe.custody.device_cert.clone(),
+        probe.custody.device_signing_key.clone(),
+    )
+    .in_workspace(workspace_topic(workspace).unwrap(), renewed, Vec::new());
+    probe.custody = HostIdentity::held(
+        probe.custody.device_cert.clone(),
+        probe.custody.device_signing_key.clone(),
+        std::sync::Arc::new(kept),
+    );
     assert!(
         probe.recheck_mcp_executions(workspace).is_err(),
         "a custody the read confirms is not what the run was admitted with"
@@ -560,13 +575,7 @@ async fn a_foreign_runtime_joins_a_hosted_workspace_as_an_editor_and_syncs_both_
     sign_device_cert(&mut device, &root_key).unwrap();
     let invitation = governing.invite(device.user_public_key);
 
-    let custody = HostIdentity {
-        device_cert: device.clone(),
-        device_signing_key: device_key.clone(),
-        workspace_device_certs: std::collections::HashMap::default(),
-        workspace_revocations: std::collections::HashMap::default(),
-        custody: None,
-    };
+    let custody = HostIdentity::kept(device.clone(), device_key.clone());
     let own_workspace = WorkspaceId::parse("bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb").unwrap();
     let joined = Joined::open(
         directory.path(),
@@ -1140,13 +1149,7 @@ async fn a_joined_workspace_s_record_content_crosses_the_host_both_ways() {
     let invitation = governing.invite(device.user_public_key);
     let joined = Joined::open(
         directory.path(),
-        HostIdentity {
-            device_cert: device.clone(),
-            device_signing_key: device_key.clone(),
-            workspace_device_certs: std::collections::HashMap::default(),
-            workspace_revocations: std::collections::HashMap::default(),
-            custody: None,
-        },
+        HostIdentity::kept(device.clone(), device_key.clone()),
         local_endpoint(&device_key).await,
         BTreeSet::new(),
         (
@@ -1292,13 +1295,7 @@ async fn a_want_through_the_host_waits_for_its_offline_holder_and_arrives_when_i
     let invitation = governing.invite(device.user_public_key);
     let joined = Joined::open(
         directory.path(),
-        HostIdentity {
-            device_cert: device.clone(),
-            device_signing_key: device_key.clone(),
-            workspace_device_certs: std::collections::HashMap::default(),
-            workspace_revocations: std::collections::HashMap::default(),
-            custody: None,
-        },
+        HostIdentity::kept(device.clone(), device_key.clone()),
         local_endpoint(&device_key).await,
         BTreeSet::new(),
         (

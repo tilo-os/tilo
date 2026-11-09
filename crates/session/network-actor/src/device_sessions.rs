@@ -163,26 +163,9 @@ impl ActorState {
     pub(super) fn own_hello(&self) -> Option<Hello> {
         let identity = self.host_identity.as_ref()?;
         let (cert, mut revocations) = identity.material_for(DEFAULT_WS_TOPIC);
-        let mut certs = vec![cert];
-        let mut workspaces: Vec<_> = identity.workspace_device_certs.keys().copied().collect();
-        workspaces.sort_unstable();
-        for ws in workspaces {
-            let (cert, entries) = identity.material_for(ws);
-            if !certs
-                .iter()
-                .any(|known| known.user_public_key == cert.user_public_key)
-            {
-                certs.push(cert);
-            }
-            for entry in entries {
-                if !revocations.contains(&entry) {
-                    revocations.push(entry);
-                }
-            }
-        }
         Some(Hello {
             protocol: neighbour_wire::PEER_PROTOCOL_VERSION,
-            certs,
+            certs: vec![cert],
             revocations,
         })
     }

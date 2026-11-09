@@ -455,7 +455,6 @@ mod tests {
 
     tilo_automerge_isolate::test_worker!();
 
-    use std::collections::HashMap;
     use std::net::{Ipv4Addr, SocketAddr};
     use std::time::Duration;
 
@@ -499,13 +498,7 @@ mod tests {
     }
 
     fn identity(cert: DeviceCert, key: &SigningKey) -> HostIdentity {
-        HostIdentity {
-            device_cert: cert,
-            device_signing_key: key.clone(),
-            workspace_device_certs: HashMap::new(),
-            workspace_revocations: HashMap::new(),
-            custody: None,
-        }
+        HostIdentity::kept(cert, key.clone())
     }
 
     /// A loopback endpoint whose identity is the device `key` , as the session's own endpoint is.

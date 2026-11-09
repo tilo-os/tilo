@@ -80,13 +80,7 @@ fn this_computer(
 /// The identity of `cert` 's device, with no identity root of its own: what redeems a link is a
 /// device, and this one joins only what it is handed.
 fn identity(cert: &DeviceCert, key: &SigningKey) -> HostIdentity {
-    HostIdentity {
-        device_cert: cert.clone(),
-        device_signing_key: key.clone(),
-        workspace_device_certs: HashMap::new(),
-        workspace_revocations: HashMap::new(),
-        custody: None,
-    }
+    HostIdentity::kept(cert.clone(), key.clone())
 }
 
 /// This computer's copy of the workspace `workspace` under `state` , held as `cert` 's device in a

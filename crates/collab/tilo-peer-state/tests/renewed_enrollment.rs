@@ -19,7 +19,6 @@ mod common;
 
 use common::endpoint;
 
-use std::collections::HashMap;
 use std::time::SystemTime;
 
 use ed25519_dalek::SigningKey;
@@ -56,13 +55,7 @@ fn certificate(
 }
 
 fn custody(cert: &DeviceCert, key: &SigningKey) -> HostIdentity {
-    HostIdentity {
-        device_cert: cert.clone(),
-        device_signing_key: key.clone(),
-        workspace_device_certs: HashMap::default(),
-        workspace_revocations: HashMap::default(),
-        custody: None,
-    }
+    HostIdentity::kept(cert.clone(), key.clone())
 }
 
 /// A workspace on a relay with an invitation for Bob, which Bob's device proved

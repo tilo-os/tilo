@@ -372,8 +372,6 @@ mod tests {
 
     tilo_automerge_isolate::test_worker!();
 
-    use std::collections::HashMap;
-
     use ed25519_dalek::SigningKey;
     use tilo_action_policy::Role;
     use tilo_desktop_model::WorkspaceSlot;
@@ -387,13 +385,7 @@ mod tests {
 
     /// The identity of the device certified as `cert` , signing with `key` .
     fn identity(cert: &tilo_user_identity::DeviceCert, key: &SigningKey) -> HostIdentity {
-        HostIdentity {
-            device_cert: cert.clone(),
-            device_signing_key: key.clone(),
-            workspace_device_certs: HashMap::new(),
-            workspace_revocations: HashMap::new(),
-            custody: None,
-        }
+        HostIdentity::kept(cert.clone(), key.clone())
     }
 
     /// This device's engine, holding the workspace it governs, and the desk's own view of it with
