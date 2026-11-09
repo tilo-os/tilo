@@ -91,7 +91,7 @@ impl Workspaces {
             if crate::store::append_revocation(state_root, entry)
                 .map_err(|error| error.to_string())?
             {
-                room -= 1;
+                room = room.saturating_sub(1);
             }
             changed |= host
                 .revocations
