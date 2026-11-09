@@ -21,6 +21,7 @@ use crate::num::f32_of_f64;
 use crate::presence::PresenceCtx;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
+use crate::tokens::Spacing;
 use crate::widget::Widget as _;
 use crate::widget::floating_surface::card_radius;
 use crate::widget::primitives::{SurfaceLevel, paint_floating_window_card};
@@ -32,18 +33,21 @@ pub const FLOAT_SIZE: (f64, f64) = (640.0, 480.0);
 /// The pointer's room above a floating window's bar where it is let go: the
 /// window hangs below and right of the hand, as a carried window does.
 const FLOAT_GRAB: (f64, f64) = (80.0, 14.0);
-/// The band of floating material a floated window stands in, round its bar and
-/// body: the card's own ground showing between the window and its hairline, so
-/// a window over the desk reads as lifted on any ground under it — a shadow
-/// alone is invisible on the dark windows a float usually stands over.
-const FLOAT_FRAME: f64 = 6.0;
 /// The room a float's card keeps inside the desk on every side: the band of
 /// the card's own ground round the window and the focus ring drawn outside
 /// that. A float placed to the desk's edge stands this far in, and the strip
 /// makes room for it beside a neighbour, so the whole card it draws — ring and
 /// band — shows on the desk instead of under the bar above it, past the
-/// display, or over the window it opened beside.
-pub const FLOAT_CARD_ROOM: f64 = FLOAT_FRAME + FOCUSED_EDGE_STROKE_WIDTH;
+/// display, or over the window it opened beside. One step of the spacing
+/// scale, as a card's inset is everywhere else.
+pub const FLOAT_CARD_ROOM: f64 = Spacing::BASE.s2 as f64;
+/// The band of floating material a floated window stands in, round its bar and
+/// body: the card's own ground showing between the window and its hairline, so
+/// a window over the desk reads as lifted on any ground under it — a shadow
+/// alone is invisible on the dark windows a float usually stands over. What is
+/// left of the card's room once the focus ring outside it is taken off, so the
+/// whole card keeps to the spacing scale.
+const FLOAT_FRAME: f64 = FLOAT_CARD_ROOM - FOCUSED_EDGE_STROKE_WIDTH;
 
 /// Where a float the person moved or let go goes, for the host to keep in
 /// the workspace's record.
