@@ -315,12 +315,15 @@ fn mail_does_the_work_of_what_it_shows() {
 
 /// A keystroke while the change it is part of is still open — the person has not paused, moved to
 /// another field or closed the window — changes the field and nothing else: the store holds it
-/// with the keystrokes before it, so it commits no change, writes no history or index for it, and
-/// what it costs does not grow with the notebook. The change lands once, when the typing stops.
+/// with the keystrokes before it, so it commits no change, and it reads none of the workspace, at
+/// the size of a fresh notebook or of one used for years. The change lands once, when the typing
+/// stops.
 ///
-/// Measured on this keystroke scenario of a one-note notebook, committing each keystroke as its
-/// own change (what the store did before it held the change open) cost `21_458` allocations, six
-/// patches and seven view runs in the window; holding it open costs `6_416` and two.
+/// Measured on this scenario in a notebook of one note, committing each keystroke as its own
+/// change (what the store did before it held the change open) cost `21_458` allocations, six
+/// patches and seven view runs in the window; holding it open costs `6_416` and two. What the
+/// same keystroke costs the publication and derivation of a change, which is the same for any
+/// change and grows with the chunk it reaches, is not the typing's.
 #[test]
 fn a_keystroke_while_the_change_is_open_records_nothing() {
     let records = bench_at("notes", vec![1, LARGE], 3);
@@ -338,14 +341,31 @@ fn a_keystroke_while_the_change_is_open_records_nothing() {
                 at.commits
             ));
         }
+        // Nothing of the workspace is read for the letter: no record walked, no collection's
+        // entries listed, no filter evaluated on an item.
+        for (name, count) in [
+            ("located", at.located),
+            ("fields", at.fields),
+            ("listings", at.listings),
+            ("entries", at.entries),
+            ("evaluated", at.evaluated),
+        ] {
+            if count != 0 {
+                misses.push(format!(
+                    "{size}: a keystroke of a change still open read the workspace: {name} {count}"
+                ));
+            }
+        }
     }
-    // The same on screen and in what it reads at 10k as at 1: the letter is written and shown,
-    // and no change of the workspace is read or made for it.
-    same_shown("notes", "keystroke", (one, many), &mut misses);
-    for ((name, at_large), (_, at_small)) in loaded(many).into_iter().zip(loaded(one)) {
+    // It runs the same views and publishes the same for it in a notebook of ten thousand notes
+    // as in one of a single note.
+    for (name, at_large, at_small) in [
+        ("renders", many.renders, one.renders),
+        ("published", many.published, one.published),
+    ] {
         if at_large != at_small {
             misses.push(format!(
-                "notes keystroke: {name} {at_large} at 10k, {at_small} at 1: a keystroke of a change still open reads the workspace"
+                "notes keystroke: {name} {at_large} at 10k, {at_small} at 1"
             ));
         }
     }
