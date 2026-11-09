@@ -63,7 +63,7 @@ fn http() -> tilo_net::Client {
 
 /// Trust what [`TEST_CA_ENV`] names besides the system's roots, saying so
 /// on stderr, when it is set.
-fn trust_test_certificates() -> Result<()> {
+pub(crate) fn trust_test_certificates() -> Result<()> {
     use rustls::pki_types::CertificateDer;
     use rustls::pki_types::pem::PemObject as _;
     let Some(files) = std::env::var_os(TEST_CA_ENV).filter(|files| !files.is_empty()) else {

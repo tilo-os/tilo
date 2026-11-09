@@ -156,6 +156,9 @@ fn person(user: [u8; 32]) -> String {
 
 /// `tilo mcp`.
 pub fn serve() -> Result<ExitCode> {
+    // The agent's connection goes where `tilo login` went: a host whose
+    // certificate only a test trusts is reached the same way here.
+    crate::login::trust_test_certificates()?;
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()?;

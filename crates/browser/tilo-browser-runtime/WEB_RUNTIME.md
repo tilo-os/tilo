@@ -146,6 +146,35 @@ run: a locked screen presents no native window, so the script refuses to start
 on one. Each page's channel state (`peer.channelDiagnostics()`) is saved as
 `*-channels.txt`. macOS only.
 
+## The first visit, with a real agent
+
+`crates/browser/tilo-web-desktop/scripts/agent-shell.mjs` walks the first
+visit a person makes on a hosted Tilo, on this machine: a `tilo-relay room`
+host with a workspace of its own for each person, the site in front of it (the
+desktop bundle with a deployment's `entry.json`), and a first visit in headless
+Chrome. It presses "Set up with your agent", reads the code out of the prompt
+the tab copied, and logs in with the real CLI (`tilo login <code> --site
+<origin>`, on a scratch HOME, so this computer becomes a device of the person),
+then drives `tilo mcp` over stdio as an agent does: it lists the apps, makes a
+note and writes in it, sets a sheet cell, and runs a command in the Terminal
+where the workspace has one. It shoots the person's workspace just after the
+agent connected (the agent followed, its card open), who is here with the agent
+pinned on screen, and the follow while an edit lands, at a laptop's and a
+phone's width in light and dark, and records the follow through a few of the
+agent's actions. Everything lands under `--out` (`shots/`, `video/`, and the
+run's log), and it exits non-zero naming the step that broke.
+
+```sh
+rcargo --fetch look/agent-shell exec bash -lc \
+  'CHROME=/usr/lib64/chromium-browser/chromium-browser \
+   node crates/browser/tilo-web-desktop/scripts/agent-shell.mjs --build'
+```
+
+`--build` builds the relay (features `web,agents`), the CLI and the bundle;
+the shots then arrive in `target/look/agent-shell`. A recording needs ffmpeg or
+gst-launch-1.0 (the build container has the latter); without either, the
+screencast's frames are kept instead.
+
 ## Tests
 
 ```sh
