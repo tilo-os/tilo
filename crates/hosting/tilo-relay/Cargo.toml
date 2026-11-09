@@ -213,6 +213,9 @@ tilo-files = { path = "../../platform/tilo-files", features = ["watch"] }
 # Home-peer configuration is one signed filesystem bundle; the relay imports
 # its workspace tickets rather than asking the operator to duplicate ids.
 tilo-fs = { path = "../../system/fs" }
+# A workspace's files as the record that carries them: the relay reads a
+# governed workspace's tree to learn which content its files are made of.
+fs-protocol = { path = "../../system/fs-protocol" }
 # The scope of a room's document media, which an offloaded action's inputs
 # and outputs are.
 runtime-fs = { path = "../../runtime/runtime-fs" }
@@ -223,8 +226,10 @@ collab-types = { path = "../../collab/collab-types" }
 channel-crypto = { path = "../../collab/channel-crypto" }
 neighbour-wire = { path = "../../collab/neighbour-wire" }
 tilo-action-broker = { path = "../../collab/tilo-action-broker" }
-# The room host every device runs, which the relay embeds.
-tilo-room-host = { path = "../tilo-room-host" }
+# The room host every device runs, which the relay embeds. Every relay build
+# follows the sealed records of the workspaces it governs and opens them with
+# the channels' keys it holds there, whether or not it serves pages.
+tilo-room-host = { path = "../tilo-room-host", features = ["web"] }
 # Retained-store primitives the workspace store keeps its retained data with.
 # Owners pre-admit people by the SHA-256 of a token someone else hands them.
 sha2.workspace = true

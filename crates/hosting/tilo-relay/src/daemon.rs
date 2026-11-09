@@ -607,6 +607,27 @@ impl Relay {
             let mut tasks = lock_background_tasks(&background_tasks);
             tasks.extend(plane.tasks().into_iter().map(AbortOnDrop));
         }
+        // The files of the workspaces this host governs, kept in its blob
+        // store so a member that comes up after the one that wrote them left
+        // reads the same bytes from this host alone.
+        if let Some(governed) = &governed {
+            match crate::blobs::FsBlobs::new(cfg.state_root.join(crate::blobs::DIRECTORY), None) {
+                Ok(blobs) => {
+                    let files = crate::files_content::FilesContent::new(
+                        governed.clone(),
+                        identity.device_cert.device_public_key,
+                        Arc::new(blobs),
+                        crate::files_content::FilesLimits::default(),
+                    );
+                    push_background_task(&background_tasks, tokio::spawn(files.run()));
+                }
+                Err(error) => tracing::warn!(
+                    path = %cfg.state_root.join(crate::blobs::DIRECTORY).display(),
+                    %error,
+                    "the host's files are not kept: its blob store cannot be opened"
+                ),
+            }
+        }
         // The host is a member of every workspace it holds: its own device is on
         // those rosters, so it reads and serves them as any participant does.
         for workspace in workspaces.lock().await.values() {

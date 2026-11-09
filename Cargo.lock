@@ -20677,6 +20677,7 @@ dependencies = [
  "collab-types",
  "discord",
  "ed25519-dalek 3.0.0",
+ "fs-protocol",
  "getrandom 0.3.4",
  "getrandom 0.4.3",
  "hex",
