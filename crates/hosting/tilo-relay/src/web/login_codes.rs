@@ -571,7 +571,13 @@ pub(super) fn pairing_link(link: &str, host_origin: Option<&str>) -> Result<(), 
             .split_once("://")
             .map_or(origin, |(_, authority)| authority)
             .trim_end_matches('/');
+        // A loopback host is written with its scheme (`@https:127.0.0.1:9781`),
+        // as the link grammar writes one: the authority is what follows it.
         let theirs = named_host.unwrap_or(site_authority);
+        let theirs = theirs
+            .strip_prefix("https:")
+            .or_else(|| theirs.strip_prefix("http:"))
+            .unwrap_or(theirs);
         if !theirs.eq_ignore_ascii_case(ours) {
             return Err("a pairing link names another host");
         }
@@ -766,6 +772,16 @@ mod tests {
         assert!(pairing_link(&link(), Some("https://us1.tilo.sh")).is_err());
         let own = link().replace("tilo.sh/#/@eu1.tilo.sh/", "eu1.tilo.sh/#/");
         assert_eq!(pairing_link(&own, ours), Ok(()));
+        // A loopback host, written with its scheme as the link grammar writes it.
+        let loopback = link().replace(
+            "tilo.sh/#/@eu1.tilo.sh/",
+            "127.0.0.1:19782/#/@https:127.0.0.1:9781/",
+        );
+        assert_eq!(
+            pairing_link(&loopback, Some("https://127.0.0.1:9781")),
+            Ok(())
+        );
+        assert!(pairing_link(&loopback, Some("https://127.0.0.1:9782")).is_err());
         assert!(pairing_link(&link().replace("pair=", "invite="), ours).is_err());
         assert!(pairing_link(&link()[..link().len() - 2], ours).is_err());
         assert!(pairing_link("javascript:alert(1)", None).is_err());
