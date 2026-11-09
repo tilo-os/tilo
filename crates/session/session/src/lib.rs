@@ -25,10 +25,10 @@
 
 // The session's roles: the desk, the chrome, the records, the people and
 // the workspaces — what every host runs, the web page included.
-#[cfg(target_os = "linux")]
-mod host_actions;
+pub mod host_actions;
 pub mod overlays;
-mod workspace_gate;
+pub mod records;
+pub mod workspace_gate;
 
 // The Linux host's effects: the compositor, the services it starts, the
 // devices and the processes. A web host provides these through `platform`.
@@ -173,11 +173,11 @@ mod held;
 #[cfg(target_os = "linux")]
 mod here;
 #[cfg(target_os = "linux")]
+mod host_account;
+#[cfg(target_os = "linux")]
 mod i18n;
 #[cfg(target_os = "linux")]
 pub mod identity;
-#[cfg(target_os = "linux")]
-mod host_account;
 #[cfg(target_os = "linux")]
 mod identity_admin;
 #[cfg(target_os = "linux")]
@@ -250,8 +250,6 @@ mod questions;
 pub mod quick_settings;
 #[cfg(target_os = "linux")]
 mod record_index;
-#[cfg(target_os = "linux")]
-mod records;
 #[cfg(target_os = "linux")]
 pub mod recovery;
 #[cfg(target_os = "linux")]

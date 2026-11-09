@@ -28,11 +28,11 @@ use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::sync::Arc;
 
+use crate::platform::watched::Watched;
 use app_state::DocStore;
 use automerge::{AutoCommit, LoadOptions, OnPartialLoad};
 use durable_store::{DurableStore, StorageKey};
 use tilo_desktop_search::providers::records::HeldRecord;
-use tilo_files::native::Watched;
 use ui::record::RecordCheckout;
 
 /// Ceiling on an index document this session reads. Automerge cannot read a
@@ -77,6 +77,7 @@ enum Reading {
 impl Records {
     /// The records this device keeps, read now and followed from then on: the same documents the
     /// apps of its workspaces write, in the platform data directory.
+    #[cfg(target_os = "linux")]
     #[must_use]
     pub fn of_device() -> Self {
         Self::of(cli::data_home())
@@ -131,13 +132,13 @@ impl Records {
 
     /// Where this device keeps its record indexes, and where a record's document is.
     #[must_use]
-    pub(crate) fn root(&self) -> PathBuf {
+    pub fn root(&self) -> PathBuf {
         self.root.clone()
     }
 
     /// The workspaces this device shows, by id and the name the desk gives it: what a row says of a
     /// record no workspace in front holds.
-    pub(crate) fn set_workspaces(&self, workspaces: Vec<(String, String)>) {
+    pub fn set_workspaces(&self, workspaces: Vec<(String, String)>) {
         *self.names.borrow_mut() = workspaces;
     }
 
@@ -145,7 +146,7 @@ impl Records {
     /// `workspace` : one row per record, saying whether this workspace holds it and, when another
     /// one does, which.
     #[must_use]
-    pub(crate) fn held(&self, workspace: &str) -> Vec<HeldRecord> {
+    pub fn held(&self, workspace: &str) -> Vec<HeldRecord> {
         let held = self.latest();
         let names = self.names.borrow();
         held.iter()
@@ -173,7 +174,7 @@ impl Records {
     /// between: naming it here would hold a record no workspace has, so such a row is refused
     /// instead.
     #[must_use]
-    pub(crate) fn holds(&self, record: &str) -> bool {
+    pub fn holds(&self, record: &str) -> bool {
         self.latest().iter().any(|held| held.id == record)
     }
 
@@ -181,7 +182,7 @@ impl Records {
     /// holds from then on, and the whole of what bringing a record here does. Written away from the
     /// loop, since the workspace may be one whose index no app of this process has opened yet; the
     /// index directory changing is what makes search read the indexes again.
-    pub(crate) fn bring_here(&self, workspace: &str, package: &str, record: RecordCheckout) {
+    pub fn bring_here(&self, workspace: &str, package: &str, record: RecordCheckout) {
         let data_home = self.root.clone();
         let (workspace, package) = (workspace.to_owned(), package.to_owned());
         let named = std::thread::Builder::new()
