@@ -265,6 +265,47 @@ pub struct AgentFinished {
     pub last: Option<String>,
 }
 
+/// What an agent's newest run did, as its finished notice says it: how many of its actions
+/// changed a record (a command it ran or a page it read changed none), and the workspace it
+/// worked in, when the history names it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RunSummary {
+    pub changes: usize,
+    pub workspace: Option<String>,
+}
+
+impl AgentFinished {
+    /// What this agent's newest run in `runs` did: the history names a connection's run as the
+    /// connection named its agent ("Claude Code", or "Claude Code #2" for a numbered run of it).
+    /// `None` when the history lists no run of it.
+    #[must_use]
+    pub fn summary(
+        &self,
+        runs: &tilo_actions::remote::workspace_activity::Runs,
+    ) -> Option<RunSummary> {
+        use tilo_actions::remote::workspace_activity::ActionView;
+        let client = ui::presence::agent_client(&self.label);
+        let run = runs
+            .runs
+            .iter()
+            .filter(|run| ui::presence::agent_client(&run.agent.name) == client)
+            .max_by_key(|run| run.last_ms)?;
+        Some(RunSummary {
+            changes: run
+                .actions
+                .iter()
+                .filter(|action| {
+                    matches!(
+                        action.view,
+                        ActionView::File { .. } | ActionView::Record { .. }
+                    )
+                })
+                .count(),
+            workspace: run.workspace.clone().filter(|name| !name.trim().is_empty()),
+        })
+    }
+}
+
 pub type Here = std::rc::Rc<std::cell::RefCell<HereState>>;
 
 fn line(text: &str, source: crate::collaborators::LineSource) -> Option<Line> {
@@ -1302,6 +1343,104 @@ mod tests {
             "only this person's own agent is met"
         );
         assert!(here.take_own_agents_arrived().is_empty(), "met once");
+    }
+
+    /// A finished agent's notice counts what its newest run changed: its record and file edits,
+    /// not the commands it ran or pages it read, and names the workspace the history gives it.
+    #[test]
+    fn a_finished_agent_says_how_many_changes_its_run_made_and_where() {
+        use tilo_actions::remote::workspace_activity as wire;
+        let target = wire::Target {
+            app_id: Some("so.tilo.notes".into()),
+            app_label: Some("Notes".into()),
+            id: "note".into(),
+            kind: String::new(),
+            label: "Welcome".into(),
+        };
+        let action = |view: wire::ActionView| wire::RunAction {
+            range: wire::Range {
+                from: "aa".into(),
+                to: "ab".into(),
+            },
+            at_ms: 1,
+            summary: String::new(),
+            view,
+            app_id: "so.tilo.notes".into(),
+            record: "note".into(),
+            undo: None,
+        };
+        let record = || {
+            action(wire::ActionView::Record {
+                target: target.clone(),
+            })
+        };
+        let run = |name: &str, last_ms: i64, actions: Vec<wire::RunAction>| wire::AgentRun {
+            id: format!("mcp:{name}{last_ms}"),
+            agent: wire::Author {
+                name: name.into(),
+                ..wire::Author::default()
+            },
+            workspace: Some("Storefront".into()),
+            instruction: String::new(),
+            decision: None,
+            started_ms: 0,
+            last_ms,
+            range: wire::Range {
+                from: "aa".into(),
+                to: "ab".into(),
+            },
+            actions,
+            undo_blocked: None,
+            now: None,
+        };
+        let runs = wire::Runs {
+            runs: vec![
+                run("Claude Code", 5, vec![record()]),
+                run(
+                    "Claude Code #2",
+                    9,
+                    vec![
+                        record(),
+                        record(),
+                        action(wire::ActionView::Command {
+                            target: target.clone(),
+                            command: "cargo test".into(),
+                            cwd: String::new(),
+                            output: Vec::new(),
+                            more: false,
+                            exit: Some(0),
+                            started_ms: None,
+                            ended_ms: None,
+                            run: None,
+                        }),
+                        record(),
+                        record(),
+                    ],
+                ),
+                run("Codex", 12, vec![record()]),
+            ],
+            total: 3,
+            pending: false,
+            mutations: true,
+        };
+        let finished = AgentFinished {
+            publisher: "claude".into(),
+            label: "Claude Code".into(),
+            last: None,
+        };
+        assert_eq!(
+            finished.summary(&runs),
+            Some(RunSummary {
+                changes: 4,
+                workspace: Some("Storefront".into()),
+            }),
+            "its newest run, counting the four records it changed and not the command"
+        );
+        let unknown = AgentFinished {
+            label: "Cursor".into(),
+            ..finished
+        };
+        assert_eq!(unknown.summary(&runs), None);
     }
 
     /// An agent that leaves has finished, said once and only after a reconnect's grace: one back

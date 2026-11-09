@@ -1138,6 +1138,14 @@ browser-new-workspace-name = Workspace { $number }
 workspace-notice-joined = { $name } joined
 workspace-notice-agent-finished = { $agent } finished
 workspace-notice-agent-card = Open card
+workspace-notice-agent-finished-changes = { $agent } finished: { $count ->
+    [one] 1 change
+   *[other] { $count } changes
+}
+workspace-notice-agent-finished-in = { $agent } finished: { $count ->
+    [one] 1 change
+   *[other] { $count } changes
+} in { $workspace }
 workspace-notice-renamed = { $name } renamed the workspace to { $workspace }
 # What the desk says when something a person asked for did not happen: what
 # they asked for, why, and the button that tries it again.

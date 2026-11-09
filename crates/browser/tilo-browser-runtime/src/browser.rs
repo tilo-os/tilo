@@ -27,11 +27,6 @@ use crate::viewport::{SurfaceCaps, Viewport, ViewportState};
 use crate::workspace_records::in_page;
 use tilo_lock::MutexRecover as _;
 
-/// Console, where an agent's card is.
-const CONSOLE_APP: &str = "so.tilo.console";
-/// The action key of a notice's choice that opens the card of the agent of the client after it.
-const AGENT_CARD_ACTION: &str = "agent-card:";
-
 thread_local! {
     static LOOP: RefCell<Option<EventLoopProxy<u64>>> = const { RefCell::new(None) };
     static MOUNTS: RefCell<HashMap<u64, Mount>> = RefCell::new(HashMap::new());
@@ -560,6 +555,15 @@ struct Desktop {
     permissions: SharedPermissions,
     /// The workspace the session serves.
     workspace: String,
+    /// Agents that finished, waiting for the history's read of what their run did before their
+    /// notice: each with the read asked and when, Unix milliseconds.
+    finishing: RefCell<
+        Vec<(
+            tilo_desktop::here::AgentFinished,
+            tilo_actions::InvocationId,
+            u64,
+        )>,
+    >,
 }
 
 impl Desktop {
@@ -636,57 +640,6 @@ impl Desktop {
                 "workspace-notice-joined",
                 &[("name", name.into())],
             ));
-        }
-    }
-
-    /// An agent finishing is news this person did not cause: a notice says
-    /// so ("Claude Code finished", with what it last did), and choosing it
-    /// opens the agent's card ([`Self::follow_notice_choices`]).
-    fn announce_agents_finished(&self) {
-        let finished = self
-            .here
-            .borrow_mut()
-            .take_agents_finished(crate::shell::now_ms());
-        for agent in finished {
-            let client = ui::presence::agent_client(&agent.label).to_owned();
-            let notice = tilo_desktop_surface::notifications::Notification::new(
-                tilo_desktop_surface::i18n::t_args(
-                    "workspace-notice-agent-finished",
-                    &[("agent", agent.label.clone().into())],
-                ),
-                agent.last.unwrap_or_default(),
-            )
-            .with_from(agent.label.clone(), agent.publisher.clone())
-            .with_app_id(CONSOLE_APP)
-            .with_app_name("Console");
-            let mut notice = notice;
-            notice.actions = vec![(
-                format!("{AGENT_CARD_ACTION}{client}"),
-                tilo_desktop_surface::i18n::t("workspace-notice-agent-card"),
-            )];
-            self.post(notice);
-        }
-    }
-
-    /// Carry out what the person chose on a notice the page posted itself:
-    /// an agent's notice opens its card in Console.
-    fn follow_notice_choices(&self) {
-        use tilo_desktop_surface::NotificationOutcome;
-        for outcome in self.persistence.notifications.take_outcomes() {
-            let NotificationOutcome::Activated {
-                action: Some(action),
-                ..
-            } = outcome
-            else {
-                continue;
-            };
-            if let Some(client) = action.strip_prefix(AGENT_CARD_ACTION) {
-                self.shared
-                    .ask_app_action(tilo_desktop::launchpad::LaunchpadAppAction::ask_agent(
-                        client,
-                        tilo_desktop::profile_card::AgentAsk::Card,
-                    ));
-            }
         }
     }
 
@@ -1310,6 +1263,7 @@ fn present_desktop(
             )),
             permissions: opening_permissions,
             workspace: config.workspace.clone(),
+            finishing: RefCell::default(),
         }),
     })
 }
@@ -2955,6 +2909,7 @@ impl Mount {
 /// # Errors
 ///
 /// Rejects an unknown kind or a closed mount.
+mod agent_notices;
 mod desktop_exports;
 mod fonts;
 mod frame_loop;
