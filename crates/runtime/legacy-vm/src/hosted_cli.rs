@@ -19,7 +19,8 @@ usage: tilo-legacy hosted <command>
 
   serve --state DIR --run DIR --kernel VMLINUX [--initramfs FILE] [--cmdline TEXT]
         [--disk-image RAW] [--firecracker PATH] [--plans FILE] [--idle-suspend SECONDS]
-        [--evict-notice FILE] (--jail-helper PATH [--jail-config FILE] | --unjailed)
+        [--evict-notice FILE] [--memory-mib MIB]
+        (--jail-helper PATH [--jail-config FILE] | --unjailed)
                          own this host's workspace VMs; listens on RUN/hosted.sock.
                          Each VM runs jailed, with a network, through the
                          privileged tilo-hosted-jail helper and its root-owned
@@ -27,7 +28,9 @@ usage: tilo-legacy hosted <command>
                          --unjailed is for development only: no network.
                          When FILE appears (written by whatever watches the
                          cloud's notice that it takes this host back), every
-                         VM is suspended onto STATE and no more are woken
+                         VM is suspended onto STATE and no more are woken.
+                         --memory-mib bounds what the VMs awake at once take
+                         together, by their sizes
   status --run DIR       every VM, its phase and its last wake
   fetch-guest --images DIR [--ref REF]
                          fetch the pinned guest image into DIR and print the
@@ -212,7 +215,14 @@ fn serve(flags: &Flags) -> Result<ExitCode, String> {
         libc::signal(libc::SIGTERM, handler);
         libc::signal(libc::SIGINT, handler);
     }
-    let service = Arc::new(Service::open(config, system_clock()).map_err(|e| e.to_string())?);
+    let mut service = Service::open(config, system_clock()).map_err(|e| e.to_string())?;
+    if let Some(mib) = flags.get("--memory-mib") {
+        let mib = mib
+            .parse::<u64>()
+            .map_err(|_| "--memory-mib takes mebibytes".to_string())?;
+        service = service.with_memory_budget(mib);
+    }
+    let service = Arc::new(service);
     eprintln!(
         "tilo-legacy hosted: serving {}",
         service.config().socket().display()

@@ -102,6 +102,9 @@ pub struct Service {
     admission: Mutex<()>,
     /// The host is being taken back: no more wakes.
     evicting: AtomicBool,
+    /// The most memory the VMs awake on this host may take together, by
+    /// their sizes; `None` bounds them by the slots alone.
+    memory_budget_mib: Option<u64>,
 }
 
 /// Why a wake did not happen.
@@ -112,6 +115,11 @@ pub enum EnsureError {
     Vm(VmError),
     /// The host is being taken back; the VM continues on another one.
     Moving,
+    /// Waking it would take the host's VMs past its memory budget.
+    HostFull {
+        awake_mib: u64,
+        budget_mib: u64,
+    },
 }
 
 impl std::fmt::Display for EnsureError {
@@ -123,6 +131,16 @@ impl std::fmt::Display for EnsureError {
             Self::Moving => f.write_str(
                 "the workspace's Linux VM is moving to another host, saved as it was; \
                  run the command again in a minute",
+            ),
+            Self::HostFull {
+                awake_mib,
+                budget_mib,
+            } => write!(
+                f,
+                "the host's Linux VMs are using {} of its {} GiB, so it has no room for this one \
+                 right now; run the command again in a few minutes",
+                awake_mib / 1024,
+                budget_mib / 1024
             ),
         }
     }
@@ -145,6 +163,7 @@ impl Service {
             vms: Mutex::new(BTreeMap::new()),
             admission: Mutex::new(()),
             evicting: AtomicBool::new(false),
+            memory_budget_mib: None,
             config,
         };
         let vms_dir = service.config.state.join("vms");
@@ -158,6 +177,15 @@ impl Service {
             }
         }
         Ok(service)
+    }
+
+    /// Bound the VMs awake at once by the memory their sizes take
+    /// together: a wake beyond it is refused in plain words, so a small
+    /// host never runs out of memory under its VMs.
+    #[must_use]
+    pub const fn with_memory_budget(mut self, mib: u64) -> Self {
+        self.memory_budget_mib = Some(mib);
+        self
     }
 
     #[must_use]
@@ -241,6 +269,19 @@ impl Service {
         let id = format!("{}/{}", request.workspace, request.environment);
         let (existing_entry, awake, existing) = {
             let vms = lock(&self.vms);
+            if let Some(budget_mib) = self.memory_budget_mib {
+                let awake_mib: u64 = vms
+                    .values()
+                    .filter(|entry| entry.id() != id && entry.awake.load(Ordering::SeqCst))
+                    .map(|entry| lock(&entry.size).memory_mib())
+                    .sum();
+                if awake_mib.saturating_add(request.size.memory_mib()) > budget_mib {
+                    return Err(EnsureError::HostFull {
+                        awake_mib,
+                        budget_mib,
+                    });
+                }
+            }
             let mine: Vec<&Arc<Entry>> = vms
                 .values()
                 .filter(|entry| entry.account == request.account)
@@ -650,6 +691,38 @@ mod tests {
                 .collect::<Vec<_>>(),
             [("ws1/default", "acct-1")]
         );
+    }
+
+    #[test]
+    fn a_host_wakes_no_more_than_its_memory_budget_holds() {
+        let dir = tempfile::tempdir().unwrap();
+        let config = config(dir.path());
+        let service = Service::open(config, clock(0))
+            .unwrap()
+            .with_memory_budget(12 * 1024);
+        let admitted = |workspace: &str, size: VmSize| {
+            service
+                .admit(&request(workspace, &format!("acct-{workspace}"), size))
+                .map(|_| ())
+        };
+        admitted("ws1", VmSize::Default).unwrap();
+        admitted("ws2", VmSize::Small).unwrap();
+        // phase: a VM already awake is not counted twice
+        admitted("ws1", VmSize::Default).unwrap();
+        // phase: one more would pass the budget, whoever asks
+        let full = admitted("ws3", VmSize::Small).unwrap_err();
+        assert_eq!(
+            full.to_string(),
+            "the host's Linux VMs are using 12 of its 12 GiB, so it has no room for this one \
+             right now; run the command again in a few minutes"
+        );
+        // phase: once one sleeps there is room again
+        service
+            .entry("ws2", "default")
+            .unwrap()
+            .awake
+            .store(false, Ordering::SeqCst);
+        admitted("ws3", VmSize::Small).unwrap();
     }
 
     #[test]
