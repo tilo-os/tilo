@@ -947,7 +947,7 @@ fn notice_shown(r: &Replica, key: &str, body: &str, origin: &str) {
                         ("body".to_owned(), Value::text(body)),
                         ("origin_app".to_owned(), Value::text(origin)),
                         ("kind".to_owned(), Value::text("info")),
-                        ("read".to_owned(), Value::Bool(false)),
+                        ("seen".to_owned(), Value::Bool(false)),
                     ],
                 },
                 OriginWrite::Set {
