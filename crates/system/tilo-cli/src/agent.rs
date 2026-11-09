@@ -274,7 +274,7 @@ fn connect_login(tool: Tool) -> Result<ExitCode> {
         Registered::Added | Registered::Already => {
             println!(
                 "{} now has Tilo's tools (MCP server tilo). They load when it starts: restart it \
-                 ({}); then its tilo_status tool says whom it acts as.",
+                 ({}); then its tilo_ls tool lists your workspace's apps.",
                 tool.title(),
                 tool.restart()
             );

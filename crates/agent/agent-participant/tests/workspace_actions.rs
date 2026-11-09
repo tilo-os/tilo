@@ -28,6 +28,9 @@ mod participant;
 #[path = "../../../browser/tilo-browser-peer/tests/support/mod.rs"]
 pub(crate) mod support;
 
+#[cfg(test)]
+#[path = "workspace_actions/agent_mcp.rs"]
+mod agent_mcp;
 mod common;
 #[cfg(test)]
 #[path = "workspace_actions/encrypted_resource.rs"]

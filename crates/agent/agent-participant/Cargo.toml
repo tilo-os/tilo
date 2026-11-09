@@ -152,6 +152,8 @@ tempfile.workspace = true
 tilo-paths.workspace = true
 tilo-relay = { path = "../../hosting/tilo-relay", features = ["agents", "test-support"] }
 tilo-relay-client = { path = "../../hosting/tilo-relay-client" }
+# The MCP projection `tilo mcp` serves, driven over a device's session.
+tilo-runtime = { path = "../../runtime/tilo-runtime" }
 iroh.workspace = true
 # tilo-browser-peer's test support (its host fixture), included by path.
 tilo-net = { path = "../../platform/tilo-net" }

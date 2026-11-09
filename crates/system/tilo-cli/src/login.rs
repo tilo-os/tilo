@@ -17,33 +17,28 @@
 //!   code for the person, and the person's stand-in on the host approves
 //!   that tab.
 //!
-//! `tilo mcp` is the agent's MCP server over stdio, under the name `tilo`:
-//! it acts as that device, keeps the agent present in the workspace while it
-//! runs, and shows every tool call there as one of the agent's actions.
+//! `tilo mcp` ([`crate::mcp`]) is the agent's MCP server over stdio, under
+//! the name `tilo`, acting as that device.
 
-use std::io::{BufRead as _, Write as _};
+use std::io::Write as _;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Arc, OnceLock};
 
 use anyhow::{Context as _, Result, anyhow, bail};
 use ed25519_dalek::{Signer as _, SigningKey};
 use serde::{Deserialize, Serialize};
-use serde_json::{Value, json};
-use tilo_browser_peer::login::{self as peer_login, Door, SignIn, action, say_here};
+use serde_json::Value;
+use tilo_browser_peer::login::{self as peer_login, Door, SignIn};
 use tilo_browser_peer::pairing_link::PairingLink;
 use tilo_browser_peer::{HttpClient, HttpFuture, PeerHandle};
 use tilo_relay_protocol::login_code::{self, Claim, Claimed, Report, Resolve, Resolved, Step};
-use tilo_relay_protocol::web::{API_PREFIX, HereAction};
+use tilo_relay_protocol::web::API_PREFIX;
 
 use crate::agent::{self, Agent, Registered, Tool};
 
 /// The longest body read from a host or a site.
 const MAX_BODY: usize = 4 * 1024 * 1024;
-/// How many of the agent's actions the workspace shows at once.
-const SHOWN_ACTIONS: usize = 8;
-/// The MCP protocol version this server speaks.
-const PROTOCOL: &str = "2025-06-18";
 /// The site `tilo login` resolves codes at, unless `--site` or
 /// [`SITE_ENV`] names another.
 pub const DEFAULT_SITE: &str = "https://tilo.sh";
@@ -55,7 +50,8 @@ pub const SITE_ENV: &str = "TILO_SITE";
 pub const TEST_CA_ENV: &str = "TILO_TEST_CA_FILE";
 /// What Tilo's tools let the agent do, as it tells the person.
 const WHAT_TILO_DOES: &str = "you are in their Tilo workspace as them, where they see you by \
-     name, and tilo_show puts what you are working on beside your name there";
+     name with what you do: tilo_ls lists its apps and documents, tilo_read reads one, and \
+     tilo_do runs their actions, which History keeps as your run";
 
 /// The HTTPS client every request here goes through.
 static CLIENT: OnceLock<tilo_net::Client> = OnceLock::new();
@@ -98,7 +94,7 @@ fn trust_test_certificates() -> Result<()> {
 }
 
 /// Where this account keeps the device: `$XDG_STATE_HOME/tilo/device`.
-fn device_dir() -> Result<PathBuf> {
+pub(crate) fn device_dir() -> Result<PathBuf> {
     if let Some(dir) = std::env::var_os("TILO_DEVICE_DIR") {
         return Ok(PathBuf::from(dir));
     }
@@ -147,7 +143,7 @@ impl Device {
         })
     }
 
-    fn certs(
+    pub(crate) fn certs(
         &self,
     ) -> Result<(
         tilo_user_identity::DeviceCert,
@@ -301,7 +297,7 @@ fn runtime() -> Result<tokio::runtime::Runtime> {
 }
 
 /// Enter the workspace `device` names, as that device.
-async fn connect(key: &SigningKey, device: &Device) -> Result<(PeerHandle, u64)> {
+pub(crate) async fn connect(key: &SigningKey, device: &Device) -> Result<(PeerHandle, u64)> {
     let link = PairingLink::parse(&format!(
         "{}#/@{}/w/{}?pair={}",
         device.site,
@@ -542,7 +538,7 @@ fn next_steps(agent: &Agent, tools: &Tools, tilo: &Path) -> String {
         ),
     };
     format!(
-        "Next:\n{first}\n2. Then call the tilo_status tool, and tell the person what you can do \
+        "Next:\n{first}\n2. Then call the tilo_ls tool, and tell the person what you can do \
          in Tilo: {WHAT_TILO_DOES}."
     )
 }
@@ -677,7 +673,7 @@ async fn set_up(reporter: &Reporter<'_>, link: &str, agent: &Agent) -> Result<Ex
                     "Logged in, but entering the workspace failed: {error:#}"
                 ))
                 .await;
-            println!("Entering {place} failed for now ({error:#}); tilo_status tries again.");
+            println!("Entering {place} failed for now ({error:#}); tilo mcp tries again.");
         }
     }
     println!();
@@ -700,211 +696,17 @@ async fn vouch(reporter: &Reporter<'_>, host: &dyn HttpClient) -> Result<ExitCod
     Ok(ExitCode::SUCCESS)
 }
 
-fn host_of(origin: &str) -> &str {
+pub(crate) fn host_of(origin: &str) -> &str {
     origin.trim_start_matches("https://").trim_end_matches('/')
 }
 
-/// What the MCP server holds while it runs.
-struct Serving {
-    device: Option<Device>,
-    peer: Option<(PeerHandle, u64)>,
-    problem: Option<String>,
-    shown: Vec<HereAction>,
-}
-
-/// `tilo mcp`: the MCP server over stdio.
-pub fn mcp() -> Result<ExitCode> {
-    let runtime = runtime()?;
-    let stored = load(&device_dir()?)?;
-    let serving = Arc::new(Mutex::new(Serving {
-        device: None,
-        peer: None,
-        problem: None,
-        shown: Vec::new(),
-    }));
-    if let Some((key, device)) = stored {
-        serving
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .device = Some(device.clone());
-        let held = serving.clone();
-        runtime.spawn(async move {
-            let connected = connect(&key, &device).await;
-            let mut serving = held
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
-            match connected {
-                Ok(peer) => serving.peer = Some(peer),
-                Err(error) => serving.problem = Some(format!("{error:#}")),
-            }
-        });
-    }
-    let stdin = std::io::stdin();
-    let mut stdout = std::io::stdout();
-    for line in stdin.lock().lines() {
-        let line = line?;
-        if line.trim().is_empty() {
-            continue;
-        }
-        let Some(answer) = runtime.block_on(answer(&serving, &line)) else {
-            continue;
-        };
-        writeln!(stdout, "{answer}")?;
-        stdout.flush()?;
-    }
-    let held = serving
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .peer
-        .take();
-    if let Some((peer, _)) = held {
-        peer.close();
-    }
-    Ok(ExitCode::SUCCESS)
-}
-
-const NOT_LOGGED_IN: &str = "This computer is not logged in to Tilo. Ask the person to open tilo.sh, choose \"Set up with your agent\" and paste you the prompt it copies; it has you run tilo login with their code, like: tilo login K7Q-MX2P";
-
-fn tools() -> Value {
-    json!([
-        {"name": "tilo_status", "description": "Who you act as in Tilo: the person, this device, the workspace and whether you are in it.",
-         "inputSchema": {"type": "object", "properties": {}, "additionalProperties": false}},
-        {"name": "tilo_show", "description": "Tell the person what you are working on. It appears beside your name in their Tilo workspace.",
-         "inputSchema": {"type": "object", "properties": {"doing": {"type": "string", "description": "What you are doing, in a few words"}},
-                         "required": ["doing"], "additionalProperties": false}},
-    ])
-}
-
-/// The answer to one JSON-RPC line, or `None` for a notification.
-async fn answer(serving: &Mutex<Serving>, line: &str) -> Option<String> {
-    let request: Value = match serde_json::from_str(line) {
-        Ok(request) => request,
-        Err(error) => return Some(json!({"jsonrpc": "2.0", "id": null, "error": {"code": -32700, "message": error.to_string()}}).to_string()),
-    };
-    let id = request.get("id").cloned()?;
-    let method = request
-        .get("method")
-        .and_then(Value::as_str)
-        .unwrap_or_default();
-    let result = match method {
-        "initialize" => Ok(
-            json!({"protocolVersion": PROTOCOL, "capabilities": {"tools": {}},
-            "serverInfo": {"name": "tilo", "version": env!("CARGO_PKG_VERSION")},
-            "instructions": "Tilo is the person's workspace. Call tilo_status first; use tilo_show to tell the person what you are doing."}),
-        ),
-        "ping" => Ok(json!({})),
-        "tools/list" => Ok(json!({"tools": tools()})),
-        "tools/call" => Ok(call(serving, request.get("params").cloned().unwrap_or_default()).await),
-        _ => Err(json!({"code": -32601, "message": format!("no method {method}")})),
-    };
-    Some(
-        match result {
-            Ok(result) => json!({"jsonrpc": "2.0", "id": id, "result": result}),
-            Err(error) => json!({"jsonrpc": "2.0", "id": id, "error": error}),
-        }
-        .to_string(),
-    )
-}
-
-fn said(text: &str, error: bool) -> Value {
-    json!({"content": [{"type": "text", "text": text}], "isError": error})
-}
-
-async fn call(serving: &Mutex<Serving>, params: Value) -> Value {
-    let name = params
-        .get("name")
-        .and_then(Value::as_str)
-        .unwrap_or_default()
-        .to_owned();
-    let arguments = params.get("arguments").cloned().unwrap_or_default();
-    let (device, peer, problem) = {
-        let serving = serving
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        (
-            serving.device.clone(),
-            serving.peer.clone(),
-            serving.problem.clone(),
-        )
-    };
-    let Some(device) = device else {
-        return said(NOT_LOGGED_IN, true);
-    };
-    let (title, resource, reply) = match name.as_str() {
-        "tilo_status" => {
-            let state = match (&peer, &problem) {
-                (Some(_), _) => "in the workspace now".to_owned(),
-                (None, Some(problem)) => format!("not in the workspace: {problem}"),
-                (None, None) => "entering the workspace…".to_owned(),
-            };
-            let user: Vec<char> = device.user.chars().collect();
-            let first: String = user.iter().take(8).collect();
-            let last: String = user.iter().skip(user.len().saturating_sub(8)).collect();
-            let workspace = device
-                .workspace_name
-                .as_ref()
-                .map_or_else(|| device.workspace.clone(), |name| format!("\"{name}\""));
-            let text = format!(
-                "You act in Tilo as the person {first}…{last} on the device \"{}\", in their workspace {workspace} on {}: {state}. The person sees you there, as {}, with each Tilo tool you call.",
-                device.label,
-                host_of(&device.host_origin),
-                device.agent,
-            );
-            (
-                "Checked it can act".to_owned(),
-                String::new(),
-                said(&text, false),
-            )
-        }
-        "tilo_show" => {
-            let doing = arguments
-                .get("doing")
-                .and_then(Value::as_str)
-                .unwrap_or_default()
-                .trim()
-                .to_owned();
-            if doing.is_empty() {
-                return said(
-                    "tilo_show needs `doing`: what you are working on, in a few words.",
-                    true,
-                );
-            }
-            let text = if peer.is_some() {
-                format!("The person now sees: {} — {doing}", device.agent)
-            } else {
-                "Not in the workspace yet; call tilo_status.".to_owned()
-            };
-            (
-                doing.as_str().chars().take(80).collect::<String>(),
-                String::new(),
-                said(&text, peer.is_none()),
-            )
-        }
-        other => {
-            return said(
-                &format!("Tilo has no tool {other}; tools/list names them."),
-                true,
-            );
-        }
-    };
-    if let Some((peer, workspace_id)) = peer {
-        let actions = {
-            let mut serving = serving
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
-            serving.shown.push(action(&title, &resource, "Tilo MCP"));
-            let excess = serving.shown.len().saturating_sub(SHOWN_ACTIONS);
-            serving.shown.drain(..excess);
-            serving.shown.clone()
-        };
-        let _ = say_here(&peer, workspace_id, &device.agent, actions).await;
-    }
-    reply
-}
+pub(crate) const NOT_LOGGED_IN: &str = "This computer is not logged in to Tilo. Ask the person to open tilo.sh, choose \"Set up with your agent\" and paste you the prompt it copies; it has you run tilo login with their code, like: tilo login K7Q-MX2P";
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::json;
+    use std::sync::Mutex;
 
     fn device() -> Device {
         Device {
@@ -956,92 +758,6 @@ mod tests {
             "Claude Code on build-box"
         );
         assert_eq!(label(&"a".repeat(100), "x").chars().count(), 64);
-    }
-
-    #[tokio::test]
-    async fn the_mcp_server_lists_its_tools_and_says_how_to_log_in_without_a_device() {
-        let serving = Mutex::new(Serving {
-            device: None,
-            peer: None,
-            problem: None,
-            shown: Vec::new(),
-        });
-        let init: Value = serde_json::from_str(
-            &answer(
-                &serving,
-                r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}"#,
-            )
-            .await
-            .unwrap(),
-        )
-        .unwrap();
-        assert_eq!(init["result"]["serverInfo"]["name"], "tilo");
-        assert!(
-            answer(
-                &serving,
-                r#"{"jsonrpc":"2.0","method":"notifications/initialized"}"#
-            )
-            .await
-            .is_none()
-        );
-        let listed: Value = serde_json::from_str(
-            &answer(
-                &serving,
-                r#"{"jsonrpc":"2.0","id":2,"method":"tools/list"}"#,
-            )
-            .await
-            .unwrap(),
-        )
-        .unwrap();
-        let names: Vec<_> = listed["result"]["tools"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .map(|tool| tool["name"].as_str().unwrap().to_owned())
-            .collect();
-        assert_eq!(names, ["tilo_status", "tilo_show"]);
-        let called: Value = serde_json::from_str(
-            &answer(
-                &serving,
-                r#"{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"tilo_status"}}"#,
-            )
-            .await
-            .unwrap(),
-        )
-        .unwrap();
-        assert_eq!(called["result"]["isError"], true);
-        assert!(
-            called["result"]["content"][0]["text"]
-                .as_str()
-                .unwrap()
-                .contains("tilo login")
-        );
-    }
-
-    #[tokio::test]
-    async fn status_says_who_the_agent_acts_as() {
-        let serving = Mutex::new(Serving {
-            device: Some(device()),
-            peer: None,
-            problem: Some("offline".into()),
-            shown: Vec::new(),
-        });
-        let called: Value = serde_json::from_str(
-            &answer(
-                &serving,
-                r#"{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"tilo_status"}}"#,
-            )
-            .await
-            .unwrap(),
-        )
-        .unwrap();
-        let text = called["result"]["content"][0]["text"].as_str().unwrap();
-        assert!(
-            text.contains("Claude Code on build-box")
-                && text.contains("eu1.tilo.sh")
-                && text.contains("offline"),
-            "{text}"
-        );
     }
 
     /// How a test's host answers a route and its body.
@@ -1189,17 +905,18 @@ mod tests {
         assert_eq!(
             next_steps(&claude, &Tools::Added(Tool::Claude), tilo),
             "Next:\n1. Your Tilo tools load only after a restart: tell the person to restart you \
-             (in Claude Code: /exit, then `claude --continue`).\n2. Then call the tilo_status \
+             (in Claude Code: /exit, then `claude --continue`).\n2. Then call the tilo_ls \
              tool, and tell the person what you can do in Tilo: you are in their Tilo workspace \
-             as them, where they see you by name, and tilo_show puts what you are working on \
-             beside your name there."
+             as them, where they see you by name with what you do: tilo_ls lists its apps and \
+             documents, tilo_read reads one, and tilo_do runs their actions, which History keeps \
+             as your run."
         );
         let other = agent::named("Your agent");
         let next = next_steps(&other, &Tools::Yours, tilo);
         assert!(
             next.starts_with(
                 "Next:\n1. Add Tilo's tools to yourself: the stdio MCP server named tilo, with \
-                 the command /home/me/.local/bin/tilo mcp\n2. Then call the tilo_status tool"
+                 the command /home/me/.local/bin/tilo mcp\n2. Then call the tilo_ls tool"
             ),
             "{next}"
         );

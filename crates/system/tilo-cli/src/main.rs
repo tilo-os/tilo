@@ -44,6 +44,7 @@ mod cleanup;
 mod desktop;
 mod health;
 mod login;
+mod mcp;
 mod nouns;
 mod os;
 mod settings;
@@ -722,7 +723,7 @@ fn run(cli: Cli) -> Result<ExitCode> {
         Cmd::Device { cmd } => run_system_command(cmd),
         Cmd::Agent { cmd } => agent::run(cmd),
         Cmd::Login { code, agent, site } => login::login(&code, agent.as_deref(), site.as_deref()),
-        Cmd::Mcp => login::mcp(),
+        Cmd::Mcp => mcp::serve(),
         Cmd::Settings { cmd } => settings::run(cmd).map(|()| ExitCode::SUCCESS),
         Cmd::Package => bail!("package needs a verb; `tilo package --help` lists them"),
         Cmd::App { args } if args.first().is_some_and(|verb| verb == "open") => {
