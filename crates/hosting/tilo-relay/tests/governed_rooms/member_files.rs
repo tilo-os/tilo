@@ -4,8 +4,8 @@
 //! smaller than the largest file the host keeps.
 use super::*;
 use std::sync::Arc;
+use tilo_relay::blobs::FsBlobs;
 use tilo_relay::room_bots::attachments::{AttachmentLimits, Referenced, WorkspaceAttachments};
-use tilo_relay::room_bots::installed::FsBlobs;
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_visitors_file_as_large_as_the_host_keeps_reaches_it() {

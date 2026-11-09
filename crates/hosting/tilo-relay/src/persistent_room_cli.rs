@@ -1516,8 +1516,14 @@ pub(crate) async fn run(
     };
     let connector_host = tilo_relay::room_bots::installed::ConnectorHost::new(
         workers,
-        tilo_relay::room_bots::installed::FsBlobs::new(state.join("blobs"), public)
-            .context("prepare the blob store")?,
+        // The relay's own blob store, where it keeps its workspaces' files
+        // beside these: one store for everything this host keeps.
+        tilo_relay::blobs::FsBlobs::new(
+            tilo_relay_protocol::metrics::room_relay_root(&state)
+                .join(tilo_relay::blobs::DIRECTORY),
+            public,
+        )
+        .context("prepare the blob store")?,
         tilo_relay::room_bots::discord::Served {
             avatars_url: persistent.public_avatars_url.clone(),
             web_entry: args.web.web_entry.clone(),

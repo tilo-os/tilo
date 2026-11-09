@@ -35,6 +35,7 @@ use tilo_connector::ConnectorProcess;
 use tilo_peer_state::document_frame::DocumentRoute;
 use tilo_user_identity::DeviceCert;
 
+use crate::blobs::FsBlobs;
 use crate::workspaces::{MemberMark, Workspaces};
 
 // The field a connector's records keep their outbox under, which the bot's
@@ -1207,83 +1208,19 @@ pub fn put_connector_secret(
         .map_err(|error| error.to_string())
 }
 
-/// The bytes connector workers download and upload, kept under one
-/// directory by their BLAKE3 hash; a published blob is an avatar served at
-/// the host's public avatar URL.
-pub struct FsBlobs {
-    dir: PathBuf,
-    public: Option<crate::public_avatars::PublicAvatars>,
-}
-
-impl FsBlobs {
-    /// Blobs under `dir`, published through `public` when the host serves
-    /// avatars.
-    ///
-    /// # Errors
-    /// `dir` cannot be created.
-    pub fn new(
-        dir: PathBuf,
-        public: Option<crate::public_avatars::PublicAvatars>,
-    ) -> std::io::Result<Self> {
-        std::fs::create_dir_all(&dir)?;
-        Ok(Self { dir, public })
-    }
-
-    fn path(&self, blake3: &str) -> Option<PathBuf> {
-        (!blake3.is_empty() && blake3.bytes().all(|byte| byte.is_ascii_hexdigit()))
-            .then(|| self.dir.join(blake3))
-    }
-
-    /// Whether the blob `blake3` is kept here.
-    #[must_use]
-    pub fn contains(&self, blake3: &str) -> bool {
-        self.path(blake3).is_some_and(|path| path.is_file())
-    }
-
-    /// Let go of the blob `blake3`; nothing when it is not kept.
-    ///
-    /// # Errors
-    /// The file is there and cannot be removed.
-    pub fn remove(&self, blake3: &str) -> std::io::Result<()> {
-        let Some(path) = self.path(blake3) else {
-            return Ok(());
-        };
-        match std::fs::remove_file(path) {
-            Err(error) if error.kind() != std::io::ErrorKind::NotFound => Err(error),
-            _ => Ok(()),
-        }
-    }
-}
-
-/// Members of the workspaces this host's bots act in get what the bots fetched
-/// (a bridged person's avatar). The apps' surfaces are the host's own
-/// ([`crate::workspaces::Workspaces::content_answer`]).
-impl crate::workspaces::WorkspaceContent for FsBlobs {
-    fn read(&self, _room: &str, _app: &str, hash: &str) -> Option<Vec<u8>> {
-        tilo_connector::BlobAccess::read(self, hash)
-    }
-}
-
+/// The blobs connector workers download and upload are the host's own
+/// ([`crate::blobs::FsBlobs`]): a blob a bridge publishes is an avatar served
+/// at the host's public avatar URL.
 impl tilo_connector::BlobAccess for FsBlobs {
     fn read(&self, blake3: &str) -> Option<Vec<u8>> {
-        std::fs::read(self.path(blake3)?).ok()
+        FsBlobs::read(self, blake3)
     }
 
     fn store(&self, bytes: &[u8]) -> Result<String, String> {
-        let hash = blake3::hash(bytes).to_hex().to_string();
-        let path = self.path(&hash).ok_or("not a hash")?;
-        if !path.is_file() {
-            tilo_files::native::atomic::write(&path, bytes).map_err(|error| error.to_string())?;
-        }
-        Ok(hash)
+        self.keep(bytes)
     }
 
     fn publish(&self, blake3: &str) -> Result<(), String> {
-        let public = self.public.as_ref().ok_or("this host publishes no blobs")?;
-        let bytes = self.read(blake3).ok_or("no such blob")?;
-        public
-            .publish(&bytes)
-            .map(drop)
-            .map_err(|error| error.to_string())
+        FsBlobs::publish(self, blake3)
     }
 }

@@ -10,7 +10,7 @@
 //! member asks. A report's receipt waits for the host to keep them. The pieces members answer it with are
 //! assembled and verified as a page assembles them
 //! ([`tilo_browser_peer::content::ContentWants`]) and kept in the host's one
-//! blob store, beside what its bots fetched ([`super::installed::FsBlobs`]),
+//! blob store, beside what its bots fetched ([`crate::blobs::FsBlobs`]),
 //! which already answers members' requests for content the host keeps
 //! ([`crate::workspaces::WorkspaceContent`]).
 //!
@@ -37,7 +37,7 @@ use tilo_browser_peer::content::ContentWants;
 use tilo_lock::MutexRecover as _;
 
 use super::CHAT;
-use super::installed::FsBlobs;
+use crate::blobs::FsBlobs;
 use crate::workspaces::{ContentKeeper, RecordWrite, Workspaces};
 
 /// How long the host waits before it asks again for files nobody answered.
