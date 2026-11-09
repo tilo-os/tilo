@@ -28,7 +28,8 @@ import time
 import uuid
 from pathlib import Path
 
-from ..action_jobs import invoke as invoke_job
+from .. import core
+from ..action_jobs import PendingJob
 from ..core import CheckFailed, Unobservable, check, expect
 from ..vm import VmError, wait_until
 
@@ -54,6 +55,31 @@ SHEET_S = 60
 REPLY_S = 45
 # The guest's files root and the trees in it (tilo_paths::workspace_tree).
 GUEST_TREES = "/var/workspace/.workspaces"
+# The desk's own actions: an action's id is `resource\x1faction`.
+SESSION = "so.tilo.session"
+NEW_WORKSPACE = "desktop:chrome\x1fnew-workspace"
+SWITCH_WORKSPACE = "desktop:chrome\x1fswitch-workspace"
+
+
+def invoke(ctx, provider: str, action_id: str, args: dict | None = None, *, confirmed: bool = False,
+           name: str = "invoke", timeout: float = 60):
+    """Invoke an action as the person does, `confirmed` when they confirm it as they ask (the
+    request's own `confirmed`, which `tilo-control actions invoke` does not say), and follow it
+    to its end: its output's value."""
+    request = {"op": "actions_invoke", "provider": provider, "id": action_id, "args": args or {}}
+    if confirmed:
+        request["confirmed"] = True
+    reply = ctx.vm.raw(request)
+    if isinstance(reply, dict) and reply.get("err"):
+        raise CheckFailed(f"{name}: {action_id.split(chr(31))[-1]} was refused: {reply['err']}")
+    answer = reply.get("answer", reply) if isinstance(reply, dict) else {}
+    receipt = answer.get("receipt") or {}
+    update = receipt.get("update") or {}
+    if receipt.get("broker_invocation_id") is None:
+        if update.get("state") == "succeeded":
+            return (update.get("output") or {}).get("value")
+        raise CheckFailed(f"{name}: no job for {action_id.split(chr(31))[-1]}: {str(reply)[:300]}")
+    return PendingJob(ctx.vm, answer, ctx.out / "data", name).finish(timeout)
 
 
 # -- the desk ---------------------------------------------------------------------------
@@ -69,7 +95,7 @@ def held_here(state: dict, workspace_id) -> bool:
 
 def create_workspace(ctx, name: str) -> dict:
     before = {w["id"] for w in workspaces(ctx)}
-    ctx.vm.invoke("actions", "workspace.create", {"name": name})
+    invoke(ctx, SESSION, NEW_WORKSPACE, {"name": name}, name=f"new-workspace-{name.split()[0].lower()}")
     st = ctx.wait_state(lambda s: [w for w in s["workspace_tree"]["workspaces"] if w["id"] not in before],
                         15, f"the workspace {name}")
     made = next(w for w in st["workspace_tree"]["workspaces"] if w["id"] not in before)
@@ -79,9 +105,10 @@ def create_workspace(ctx, name: str) -> dict:
 
 
 def select_workspace(ctx, workspace: dict) -> None:
+    core.keep_awake(ctx)
     if ctx.state()["workspace_tree"]["active"] == workspace["id"]:
         return
-    ctx.vm.invoke("actions", f"workspace.select.{workspace['room']}")
+    invoke(ctx, SESSION, SWITCH_WORKSPACE, {"workspace": str(workspace["id"])}, name="switch-workspace")
     ctx.wait_state(lambda s: s["workspace_tree"]["active"] == workspace["id"], 10,
                    f"workspace {workspace.get('name', workspace['id'])} in front")
 
@@ -120,8 +147,11 @@ class Terminal:
         select_workspace(self.ctx, self.workspace)
         self.calls += 1
         name = f"{self.name}-{self.calls:02d}-{operations[0]}"
-        return invoke_job(self.ctx.vm, self.row(*operations), args, self.ctx.out / "data", name,
-                          timeout=timeout)
+        args = dict(args or {})
+        confirmed = bool(args.pop("confirm", False))
+        row = self.row(*operations)
+        return invoke(self.ctx, row["provider"], row["id"], args, confirmed=confirmed, name=name,
+                      timeout=timeout)
 
     def inspect(self) -> dict:
         return self.call("inspect-session") or {}
@@ -130,7 +160,12 @@ class Terminal:
         return (self.call(("read", "read-screen")) or {}).get("output", "")
 
     def run(self, command: str) -> None:
+        """Type `command` at the environment's shell (Tilo's own, `ush-sh`) and press Enter."""
         self.call("run", {"command": command, "confirm": True})
+
+    def bash(self, script: str) -> None:
+        """Run `script` in the guest's bash: what a person's script or an agent's tools run."""
+        self.run("bash -c " + shlex.quote(script))
 
     def ask(self, command: str, timeout: float = 30) -> list[str]:
         """Run `command` and return the lines it printed starting with `{M}` (without it),
@@ -138,12 +173,12 @@ class Terminal:
         the shell joins (`E2E''<nonce>`), so the command's own echo never matches."""
         nonce = uuid.uuid4().hex[:8]
         marker = f"E2E{nonce}"
-        self.run(command.replace("{M}", f"E2E''{nonce}"))
+        self.bash(command.replace("{M}", f"E2E''{nonce}"))
         deadline = time.monotonic() + timeout
         while True:
             lines = self.screen().splitlines()
             hits = [i for i, line in enumerate(lines) if line.startswith(marker)]
-            if hits and any(re.search(r"\]\$\s*$", line) for line in lines[hits[-1] + 1:]):
+            if hits and any(re.search(r"\$\s*$", line) for line in lines[hits[-1] + 1:]):
                 return [lines[i][len(marker):] for i in hits]
             if time.monotonic() > deadline:
                 self.ctx.write(f"{self.name}-screen.txt", "\n".join(lines))
@@ -242,8 +277,9 @@ class Agent:
         self.next_id = 0
 
     def start(self) -> None:
-        self.env["terminal"].run(f"bash ~/{AGENTS_DIR}/mcp_agent.sh {self.guest_dir} {self.server}"
-                                 " >/dev/null 2>&1 &")
+        # Started from the shell, as a person starts Claude Code, and left running beside it.
+        self.env["terminal"].bash(f"(bash ~/{AGENTS_DIR}/mcp_agent.sh {self.guest_dir} {self.server}"
+                                  " </dev/null >/dev/null 2>&1 &)")
         hello = wait_until(lambda: slot_read(self.ctx, f"{self.host_dir}/hello"), 30, interval=0.5)
         if hello is None:
             raise CheckFailed(f"{self.name}: the client did not start in {self.env['name']}")
@@ -288,8 +324,11 @@ class Agent:
     def tool(self, name: str, arguments: dict) -> dict:
         return self.call("tools/call", {"name": name, "arguments": arguments})
 
-    def initialize(self) -> int:
-        return self.send("initialize", {"protocolVersion": PROTOCOL, "capabilities": {},
+    def initialize(self, workspace: str | None = None) -> int:
+        """`initialize`, asking to work in `workspace` (by id) where given, as
+        `tilo-runtime --connect --workspace ID` asks on the host."""
+        capabilities = ({"experimental": {"so.tilo": {"workspace": workspace}}} if workspace else {})
+        return self.send("initialize", {"protocolVersion": PROTOCOL, "capabilities": capabilities,
                                         "clientInfo": {"name": CLIENT, "version": "1"}})
 
     def quit(self) -> None:
@@ -483,7 +522,7 @@ def environments(ctx, res):
     want(one["tilo_workspace"] != two["tilo_workspace"], "both environments name one workspace")
     # Each shell writes in its `~`; each sees its own file alone, and not the other's tree.
     for e in envs:
-        e["terminal"].run(f"echo {e['name']} > ~/{e['probe']}")
+        e["terminal"].bash(f"echo {e['name']} > ~/{e['probe']}")
     for e, other in ((one, two), (two, one)):
         lines = e["terminal"].ask(
             "for f in $(ls -a ~); do printf '%s %s\\n' {M}-LS \"$f\"; done; "
@@ -604,10 +643,9 @@ def other_workspace(ctx, res):
     scene = _scene(ctx)
     _need(scene, "agents", "E02")
     one, two = scene["envs"]
-    agent = Agent(ctx, one, "studio-asks-garden",
-                  server=f"tilo-runtime --connect --workspace {two['workspace']['id']}")
+    agent = Agent(ctx, one, "studio-asks-garden")
     agent.start()
-    reply = agent.reply(agent.initialize(), REPLY_S)
+    reply = agent.reply(agent.initialize(workspace=two["tilo_workspace"]), REPLY_S)
     asked = no_sheet(ctx, 3)
     agent.keep()
     res.metrics["reply"] = reply
