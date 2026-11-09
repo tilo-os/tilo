@@ -1,16 +1,16 @@
 //! An item of a record as JSON, read straight from the Automerge document
 //! at given heads.
 //!
-//! The host process never runs app code beside its keys, so it cannot read
-//! an item through the app's model. Records keep their items in maps keyed
+//! A host process (a bot's door, the session serving History) never runs app
+//! code beside its keys, so it cannot read an item through the app's model. Records keep their items in maps keyed
 //! by item id, so the item is the first map entry with that key, searched
 //! breadth first, and its subtree is read by [`tilo_automerge::json`], the one
-//! JSON mapping every Tilo document stores by. What a bot reads is therefore
+//! JSON mapping every Tilo document stores by. What a host reads is therefore
 //! the stored shape, not the app's typed one.
 
+use crate::json;
 use automerge::{ChangeHash, ObjId, ObjType, ReadDoc, Value as Am};
 use serde_json::Value;
-use tilo_automerge::json;
 
 /// How deep the search for an item goes.
 const MAX_DEPTH: usize = 6;
@@ -24,7 +24,26 @@ pub fn item_json(doc: &impl ReadDoc, heads: &[ChangeHash], item: &str) -> Option
     let object = find(doc, heads, item)?;
     let object = collection_value(doc, heads, &object).unwrap_or(object);
     // What JSON cannot hold, or a subtree past the budget, still reports the
-    // item: the bot reads what the document could answer.
+    // item: the host reads what the document could answer.
+    Some(json::read_at(doc, &object, heads, Some(MAX_ENTRIES)).unwrap_or(Value::Null))
+}
+
+/// The item `item` of the collection stored under the field `field`, as it
+/// was at `heads`: what [`item_json`] reads when another map of the record
+/// may hold the same key (an outbox entry and the item it became can share
+/// an id).
+#[must_use]
+pub fn collection_item_json(
+    doc: &impl ReadDoc,
+    heads: &[ChangeHash],
+    field: &str,
+    item: &str,
+) -> Option<Value> {
+    let collection = find(doc, heads, field)?;
+    let Ok(Some((Am::Object(_), object))) = doc.get_at(&collection, item, heads) else {
+        return None;
+    };
+    let object = collection_value(doc, heads, &object).unwrap_or(object);
     Some(json::read_at(doc, &object, heads, Some(MAX_ENTRIES)).unwrap_or(Value::Null))
 }
 
@@ -150,6 +169,25 @@ mod tests {
         );
         assert_eq!(item_json(&doc, &after, "m1").unwrap()["text"], "hi there");
         assert!(item_json(&doc, &after, "missing").is_none());
+    }
+
+    #[test]
+    fn a_collection_item_is_read_in_its_own_collection() {
+        let mut doc = AutoCommit::new();
+        for (field, text) in [("requests", "asked"), ("runs", "ran")] {
+            let collection = doc.put_object(ROOT, field, ObjType::Map).unwrap();
+            let entry = doc.put_object(&collection, "r1", ObjType::Map).unwrap();
+            doc.put(&entry, "k", "a0").unwrap();
+            let value = doc.put_object(&entry, "v", ObjType::Map).unwrap();
+            doc.put(&value, "text", text).unwrap();
+        }
+        doc.commit();
+        let heads = doc.get_heads();
+        assert_eq!(
+            collection_item_json(&doc, &heads, "runs", "r1").unwrap()["text"],
+            "ran"
+        );
+        assert!(collection_item_json(&doc, &heads, "runs", "r2").is_none());
     }
 
     #[test]

@@ -151,6 +151,7 @@ pub mod selection;
 pub mod selectors;
 pub mod surface;
 pub mod task_step;
+pub mod terminal_text;
 
 pub use action::{
     Action, ActionError, ActionId, Doc, EncodedAction, ExecutionLocus, OperationKind, asks_first,
