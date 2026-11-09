@@ -204,20 +204,8 @@ pub(super) fn isolated_root(test: &str) -> Option<PathBuf> {
     // Identity storage refuses symlinked paths, and a platform temp dir may
     // sit behind one (macOS `/var`).
     let root = std::fs::canonicalize(temp.path()).unwrap();
-    let environment = root.join("environment");
     let log = root.join("child.stdout");
-    let status = std::process::Command::new(std::env::current_exe().unwrap())
-        .args(["--exact", test, "--nocapture"])
-        .env(PROCESS_ROOT, root.join("profile"))
-        .env("HOME", environment.join("home"))
-        .env("XDG_CONFIG_HOME", environment.join("config"))
-        .env("XDG_DATA_HOME", environment.join("data"))
-        .env("XDG_CACHE_HOME", environment.join("cache"))
-        .env("XDG_STATE_HOME", environment.join("state"))
-        .env("TILO_IDENTITY_ROOT", environment.join("identity"))
-        .env(tilo_identity_host::provisioning::FILE_SECRETS_ENV, "1")
-        .env_remove("TILO_SVC_COLLAB_FD")
-        .env_remove("TILO_SVC_IDENTITY_FD")
+    let status = isolated_command(test, &root)
         .stdout(std::fs::File::create(&log).unwrap())
         .status_locked()
         .unwrap();
@@ -229,6 +217,32 @@ pub(super) fn isolated_root(test: &str) -> Option<PathBuf> {
         "the isolated child ran no test: {stdout}"
     );
     None
+}
+
+/// This test binary running only `test`, as a process of its own whose home,
+/// identity and profile are under `root`: the profile at `root/profile`,
+/// which [`isolated_root`] answers there.
+pub(super) fn isolated_command(test: &str, root: &Path) -> std::process::Command {
+    let environment = root.join("environment");
+    let mut command = std::process::Command::new(std::env::current_exe().unwrap());
+    command
+        .args(["--exact", test, "--nocapture"])
+        .env(PROCESS_ROOT, root.join("profile"))
+        .env("HOME", environment.join("home"))
+        .env("XDG_CONFIG_HOME", environment.join("config"))
+        .env("XDG_DATA_HOME", environment.join("data"))
+        .env("XDG_CACHE_HOME", environment.join("cache"))
+        .env("XDG_STATE_HOME", environment.join("state"))
+        .env("TILO_IDENTITY_ROOT", environment.join("identity"))
+        .env(tilo_identity_host::provisioning::FILE_SECRETS_ENV, "1")
+        .env_remove("TILO_SVC_COLLAB_FD")
+        .env_remove("TILO_SVC_IDENTITY_FD");
+    command
+}
+
+/// The home of the process [`isolated_command`] runs under `root`.
+pub(super) fn isolated_home(root: &Path) -> PathBuf {
+    root.join("environment").join("home")
 }
 
 /// Provision only the receipt signer's host custody in an isolated process.

@@ -155,6 +155,11 @@ pub(super) fn record_content_on(
 }
 
 impl Joined {
+    /// The profile's record-content service, once the broker runs.
+    pub(in crate::standalone) fn record_content_service(&self) -> Option<Arc<RouteContent>> {
+        self.content.get().cloned()
+    }
+
     fn own_handle(&self) -> ContentPeer {
         peer_handle(&self.custody.device_signing_key.verifying_key().to_bytes())
     }

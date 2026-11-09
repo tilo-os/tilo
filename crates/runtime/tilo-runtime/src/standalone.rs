@@ -85,6 +85,10 @@ pub struct Standalone {
     actor: String,
     identity_socket: PathBuf,
     blob_socket: PathBuf,
+    /// The files of the workspaces this profile joined, each a replica of
+    /// the workspace's Files record mirrored at a folder. Before the media
+    /// host, whose content store they use.
+    replicas: Option<Arc<files::Replicas>>,
     /// Before the media host, whose content store it uses.
     _files: Option<files::WorkspaceFiles>,
     _media: profile::MediaHost,
@@ -136,6 +140,10 @@ impl Standalone {
         personal
     }
 
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one start, each service opened in the order the next ones need it"
+    )]
     fn start(root: &Path, stage: &mut dyn FnMut(&str), serving: Serving) -> io::Result<Self> {
         let take_work = taking_work(serving)?;
         stage("locking the profile");
@@ -213,11 +221,19 @@ impl Standalone {
         // Elsewhere nobody here answers, and such an action is refused.
         #[cfg(target_os = "macos")]
         confirm::ask_the_person(&broker, &actor, &apps);
-        let author = files::Author {
-            person: identity.user_public_key,
-            device,
+        let parts = JoinedFiles {
+            root,
+            own: &workspace,
+            joined: &joined,
+            media: &media,
+            apps: &apps,
+            author: files::Author {
+                person: identity.user_public_key,
+                device,
+            },
         };
-        let files = workspace_files(root, &workspace, &media, joined.endpoint(), &author, stage);
+        let files = workspace_files(&parts, stage);
+        let replicas = joined_files(&parts, stage);
         Ok(Self {
             policy_origin,
             broker,
@@ -230,6 +246,7 @@ impl Standalone {
             actor,
             identity_socket,
             blob_socket: root.join(BLOB_SOCKET),
+            replicas,
             _files: files,
             _media: media,
             _personal: personal.sync.store(),
@@ -459,14 +476,22 @@ impl RuntimeServices for Standalone {
 
     fn joiner(&self) -> Option<Joiner> {
         let joined = Arc::clone(&self.joined);
+        let replicas = self.replicas.clone();
         Some(Arc::new(move |invitation: &str| {
-            let joined = Arc::clone(&joined);
             let invitation = invitation.to_owned();
-            tilo_rt::app()
+            let workspace = tilo_rt::app()
                 .handle()
-                .block_on(async move { joined.join(&invitation).await })
-                .map(|workspace| workspace.to_string())
-                .map_err(io::Error::other)
+                .block_on({
+                    let joined = Arc::clone(&joined);
+                    async move { joined.join(&invitation).await }
+                })
+                .map_err(io::Error::other)?;
+            // The workspace's files are held from the join on: the folder
+            // fills as the workspace's tree arrives.
+            if let Some(replicas) = &replicas {
+                hold_files(replicas, &joined, workspace);
+            }
+            Ok(workspace.to_string())
         }))
     }
 
@@ -1049,31 +1074,110 @@ fn admit_device(owner_uid: u32, stage: &mut dyn FnMut(&str)) -> io::Result<[u8; 
 /// documents, only the folder view of the files is missing. A profile the
 /// desktop session serves has none: that host projects its files itself.
 fn workspace_files(
-    profile: &Path,
-    workspace: &ProfileWorkspace,
-    media: &profile::MediaHost,
-    endpoint: iroh::Endpoint,
-    author: &files::Author,
+    parts: &JoinedFiles<'_>,
     stage: &mut dyn FnMut(&str),
 ) -> Option<files::WorkspaceFiles> {
-    if !workspace.governs() {
+    if !parts.own.governs() {
         return None;
     }
     stage("showing the workspace files");
-    let started = files::folder(&workspace.name()).and_then(|folder| {
+    let started = files::folder(&parts.own.name()).and_then(|folder| {
         let projection = files::Projection::for_host();
         files::WorkspaceFiles::start(
-            profile,
+            parts.root,
             &folder,
-            media.store(),
-            endpoint,
-            author,
+            parts.media.store(),
+            parts.joined.endpoint(),
+            &parts.author,
             projection,
         )
     });
     started
         .inspect_err(|error| tracing::warn!(%error, "the workspace folder is unavailable"))
         .ok()
+}
+
+/// What the profile's own workspace files and the joined workspaces' files
+/// are held with.
+struct JoinedFiles<'a> {
+    root: &'a Path,
+    /// The profile's own workspace, whose files [`workspace_files`] shows.
+    own: &'a ProfileWorkspace,
+    joined: &'a Arc<Joined>,
+    media: &'a profile::MediaHost,
+    apps: &'a Arc<apps::Apps>,
+    author: files::Author,
+}
+
+/// The files of every workspace this profile joined, each mirrored at a
+/// folder in this user's home beside the profile's own. Without a home, or
+/// before the broker serves record content, none are held: the workspaces
+/// still sync, only their files are missing here.
+fn joined_files(
+    parts: &JoinedFiles<'_>,
+    stage: &mut dyn FnMut(&str),
+) -> Option<Arc<files::Replicas>> {
+    let home = tilo_paths::home()?;
+    let content = parts.joined.record_content_service()?;
+    let own = parts.own.workspace();
+    let own_folder = parts
+        .own
+        .governs()
+        .then(|| files::folder_in(&home, &parts.own.name()));
+    let joined = Arc::downgrade(parts.joined);
+    let replicas = Arc::new(files::Replicas::new(files::ReplicaHost {
+        profile: parts.root.to_path_buf(),
+        home,
+        own_folder,
+        store: parts.media.store(),
+        endpoint: parts.joined.endpoint(),
+        author: parts.author,
+        credentials: Box::new(move |workspace| {
+            joined
+                .upgrade()
+                .ok_or_else(|| io::Error::other("the joined workspaces closed"))?
+                .files_credentials(workspace)
+        }),
+        collab: parts.root.join(COLLAB_SOCKET),
+        identity: parts.root.join(IDENTITY_SOCKET),
+        content,
+        apps: Arc::clone(parts.apps),
+    }));
+    let workspaces: Vec<WorkspaceId> = parts
+        .joined
+        .workspaces()
+        .iter()
+        .map(tilo_desktop_model::Workspace::id)
+        .filter(|workspace| workspace.to_string() != own)
+        .collect();
+    if !workspaces.is_empty() {
+        stage("syncing the joined workspaces' files");
+    }
+    for workspace in workspaces {
+        hold_files(&replicas, parts.joined, workspace);
+    }
+    Some(replicas)
+}
+
+/// Hold `workspace`'s files in `replicas`, under the name its governance gives
+/// it.
+fn hold_files(replicas: &files::Replicas, joined: &Joined, workspace: WorkspaceId) {
+    let name = joined
+        .workspace(workspace)
+        .map_or_else(|| "Workspace".to_owned(), |workspace| workspace.name);
+    if let Err(error) = replicas.hold(&workspace.to_string(), &name) {
+        tracing::warn!(%error, %workspace, "a joined workspace's files are not held here");
+    }
+}
+
+impl Standalone {
+    /// The folder mirroring the files of `workspace`, a workspace this profile
+    /// joined, while they are held: what a member taking the workspace's work
+    /// maps the workspace's files to.
+    #[must_use]
+    pub fn joined_files_folder(&self, workspace: &str) -> Option<PathBuf> {
+        self.replicas.as_ref()?.folder(workspace)
+    }
 }
 
 /// Place the profile's own workspace, called `name`, on the workspace host

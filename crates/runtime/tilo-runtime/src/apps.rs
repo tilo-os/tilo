@@ -8,7 +8,10 @@
 //! launch is refused; nothing here starts an app unconfined.
 //!
 //! Only a process this runtime launched, for exactly that app and workspace and
-//! still the same process, is attested to the broker.
+//! still the same process, is attested to the broker, and the endpoints the
+//! runtime serves from its own process: the Files app of each workspace whose
+//! files it holds, with no window, as the desktop session attests its files
+//! daemon.
 
 use crate::{BLOB_SOCKET, COLLAB_SOCKET, IDENTITY_SOCKET};
 
@@ -54,6 +57,9 @@ pub struct Apps {
     #[cfg(target_os = "linux")]
     launcher_candidates: Vec<PathBuf>,
     launched: Arc<Launched>,
+    /// The apps this runtime's own process is the windowless endpoint of,
+    /// by app and workspace.
+    own: Mutex<std::collections::BTreeSet<(String, String)>>,
     /// Who may capture from which device, in `state/device-grants` of the
     /// profile; opened on the first macOS launch.
     #[cfg(target_os = "macos")]
@@ -98,9 +104,35 @@ impl Apps {
             #[cfg(target_os = "linux")]
             launcher_candidates,
             launched: Arc::default(),
+            own: Mutex::default(),
             #[cfg(target_os = "macos")]
             device_grants: std::sync::OnceLock::new(),
         }
+    }
+
+    /// Attest this runtime's own process as the windowless endpoint of `app`
+    /// in `workspace` from now on, until [`Self::stop_serving`].
+    pub(crate) fn serve_endpoint(&self, app: &str, workspace: &str) {
+        self.own
+            .lock_recover()
+            .insert((app.to_owned(), workspace.to_owned()));
+    }
+
+    /// No longer attest this process as `app`'s endpoint in `workspace`.
+    pub(crate) fn stop_serving(&self, app: &str, workspace: &str) {
+        self.own
+            .lock_recover()
+            .remove(&(app.to_owned(), workspace.to_owned()));
+    }
+
+    /// Whether `pid` is this runtime's own process serving `app` in
+    /// `workspace`.
+    fn serves(&self, pid: u32, app: &str, workspace: &str) -> bool {
+        pid == std::process::id()
+            && self
+                .own
+                .lock_recover()
+                .contains(&(app.to_owned(), workspace.to_owned()))
     }
 
     /// This profile's device grants.
@@ -336,7 +368,7 @@ impl LauncherServices for Apps {
     }
 
     fn attest_process(&self, pid: u32, app: &str, workspace: &str) -> bool {
-        self.launched.attest(pid, app, workspace)
+        self.launched.attest(pid, app, workspace) || self.serves(pid, app, workspace)
     }
     fn authenticated_launch(
         &self,
@@ -345,6 +377,14 @@ impl LauncherServices for Apps {
         workspace: &str,
         _window_instance: Option<u64>,
     ) -> Result<Option<AuthenticatedApplicationLaunch>, String> {
+        if self.serves(pid, app, workspace) {
+            return Ok(Some(AuthenticatedApplicationLaunch {
+                creation: None,
+                continuation_instance: None,
+                launch_ticket: None,
+                windowless: true,
+            }));
+        }
         if !self.launched.attest(pid, app, workspace) {
             return Ok(None);
         }

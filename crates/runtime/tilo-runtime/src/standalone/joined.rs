@@ -283,6 +283,28 @@ impl Joined {
             .map(|(workspace, _)| workspace)
     }
 
+    /// This device as `workspace` knows it, for the workspace's Files
+    /// endpoint: the certificate the workspace holds for this device's key.
+    ///
+    /// # Errors
+    /// `workspace` is no workspace id, or the certificate is not valid now.
+    pub(super) fn files_credentials(
+        &self,
+        workspace: &str,
+    ) -> io::Result<tilo_fs::identity::PeerCredentials> {
+        let workspace =
+            WorkspaceId::parse(workspace).ok_or_else(|| io::Error::other("not a workspace id"))?;
+        let (cert, _) = self
+            .custody
+            .material_for(workspace_topic(workspace).map_err(io::Error::other)?);
+        tilo_fs::identity::PeerCredentials::certified(
+            cert,
+            self.custody.device_signing_key.clone(),
+            tilo_clock::unix_now_ns(),
+        )
+        .map_err(io::Error::other)
+    }
+
     /// Whether this profile has joined any workspace.
     pub(super) fn is_empty(&self) -> bool {
         self.owner.workspaces().is_empty()
