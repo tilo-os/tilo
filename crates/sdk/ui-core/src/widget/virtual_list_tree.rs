@@ -20,8 +20,6 @@ use crate::theme::Theme;
 /// the one step its chevron takes in from the list's own leading edge.
 pub const TREE_INDENT: f64 =
     (crate::tokens::Metrics::BASE.icon_sm + crate::tokens::Spacing::BASE.rhythm.related) as f64;
-/// The room a tree row's disclosure marker takes at its leading edge.
-pub const TREE_DISCLOSURE: f64 = crate::tokens::Metrics::BASE.icon_sm as f64;
 /// How far up a row's chain of parents the list follows it: deeper than anyone nests a row, so
 /// a chain that loops still ends.
 const TREE_DEPTH_GUARD: u32 = 64;
@@ -453,42 +451,18 @@ impl<M: ListModel> VirtualList<M> {
         }
     }
 
-    /// Whether the pointer is over the disclosure at the leading edge of the row at `index`:
-    /// the room the row indents by, then the column that folds its subtasks.
-    fn disclosure_at(&self, index: usize, key: &M::Key) -> bool {
-        let Some(cursor) = self.last_cursor else {
-            return false;
-        };
-        let Some(marks) = self.tree.as_ref() else {
-            return false;
-        };
-        if !marks.is_branch(key) {
-            return false;
-        }
-        // The chevron hangs in the gutter the row's own depth keeps free in front of its
-        // content: the rows stand `lead` in, and step one disclosure gutter per depth.
-        let chevrons = self.chevrons();
-        let Some((x0, _)) = chevrons.gutter(marks, key) else {
-            return false;
-        };
-        // The row's own box, below the band of a heading it starts a group under, where the
-        // chevron is drawn.
-        let Some(row) = self.row_box(index) else {
-            return false;
-        };
-        let rect = Rect::new(x0, row.y0, x0 + self.disclosure, row.y1);
-        rect.contains(cursor)
+    /// Whether the pointer is over the disclosure the list shows for the row `key`.
+    fn disclosure_at(&self, key: &M::Key) -> bool {
+        self.last_cursor.is_some_and(|cursor| {
+            self.disclosure_rect(key)
+                .is_some_and(|rect| rect.contains(cursor))
+        })
     }
 
-    /// A completed click on the row of `key` at `index`: its disclosure folds what is under
-    /// it, and anywhere else the click is the row's.
-    pub(super) fn press_row_at(
-        &mut self,
-        index: usize,
-        key: M::Key,
-        modifiers: winit::event::Modifiers,
-    ) {
-        if self.disclosure_at(index, &key) {
+    /// A completed click on the row of `key`: its disclosure folds what is under it, and
+    /// anywhere else the click is the row's.
+    pub(super) fn press_row(&mut self, key: M::Key, modifiers: winit::event::Modifiers) {
+        if self.disclosure_at(&key) {
             let folded = self.row_folded(&key);
             self.fold_row(&key, !folded);
             return;
@@ -500,13 +474,6 @@ impl<M: ListModel> VirtualList<M> {
             return;
         }
         self.click_row(key, modifiers);
-    }
-
-    /// As [`Self::press_row_at`], for a row found by its key.
-    pub(super) fn press_row(&mut self, key: M::Key, modifiers: winit::event::Modifiers) {
-        if let Some(index) = self.model.index_of(&key) {
-            self.press_row_at(index, key, modifiers);
-        }
     }
 
     /// Bind `Tab` / `Shift+Tab` to indent and outdent the focused row of a tree, as an

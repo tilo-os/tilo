@@ -53,7 +53,7 @@ mod shown;
 use shown::ListShown;
 #[path = "virtual_list_tree.rs"]
 mod tree;
-pub use tree::{TREE_DISCLOSURE, TREE_INDENT, TreeMarks, TreeMove, TreeRow};
+pub use tree::{TREE_INDENT, TreeMarks, TreeMove, TreeRow};
 #[path = "virtual_list_menu.rs"]
 mod menu;
 use menu::RowMenus;
@@ -2213,20 +2213,20 @@ impl<M: ListModel + 'static> Widget for VirtualList<M> {
                             self.scroll.momentum.fling(drag.velocity);
                             self.last_tick = Some(crate::time::now());
                         }
-                    } else if let Some((index, key)) = self.row_at_cursor() {
-                        self.press_row_at(index, key, *ctx.modifiers);
+                    } else if let Some((_, key)) = self.row_at_cursor() {
+                        self.press_row(key, *ctx.modifiers);
                     } else {
                         // A press where no row stands, beside a row opened into its item: the
                         // person pressed outside it, and it closes.
                         self.close_open();
                     }
                     *ctx.handled = true;
-                } else if let Some((index, key)) = pressed
+                } else if let Some((_, key)) = pressed
                     && self.row_at_cursor().is_some_and(|(_, at)| at == key)
                 {
                     // The press went to a row's own gesture and came back without one: the
                     // tap's click is the list's.
-                    self.press_row_at(index, key, *ctx.modifiers);
+                    self.press_row(key, *ctx.modifiers);
                     *ctx.handled = true;
                 }
             }
