@@ -140,7 +140,8 @@ impl ResourceApp for ReadingApp {
                 what: String::new(),
             })),
             ReadEffect::ZoomIn => Ok(Effected::done()),
-        })
+        });
+        Box::new(cx.button("bump", Counter::BUMP.invoke()))
     }
 }
 
