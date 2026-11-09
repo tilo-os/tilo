@@ -4347,7 +4347,7 @@ run = "bash tools/ci/publish/oci-build.sh /target/publish/web-entry/context /tar
 needs = ["image-web-entry-context"]
 outputs = ["/target/publish/web-entry/image.oci.tar", "/target/publish/web-entry/digest"]
 requires = ["arch=x86_64"]
-isolation = "nested"
+isolation = "vm"
 git = true
 default = false
 
@@ -4358,7 +4358,7 @@ run = "bash tools/ci/publish/web-entry-carry.sh /target/publish/web-entry /targe
 needs = ["image-web-entry"]
 outputs = ["/target/publish/web-entry/release/image.oci.tar", "/target/publish/web-entry/release/digest", "/target/publish/web-entry/release/receipt-extra.json"]
 requires = ["arch=x86_64"]
-isolation = "nested"
+isolation = "vm"
 on = ["dispatch"]
 cache = false
 
