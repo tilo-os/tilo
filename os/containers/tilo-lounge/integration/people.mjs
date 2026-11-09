@@ -325,6 +325,12 @@ const armOpen = (tab, app) => tab.evaluate(`(() => {
     }
   };
   new MutationObserver(read).observe(host, {attributes: true, attributeFilter: ['data-frames', 'data-phase']});
+  // The window's entry can be published after the desk's last frame, with no
+  // frame after it: read again as the navigation changes too, and once more
+  // as the marks are taken. Shown is then never earlier than both a frame
+  // after the key and the entry, so an open is never measured faster than it was.
+  mount.navigation?.subscribe?.(read);
+  watch.read = read;
   return true;
 })()`);
 // What the open cost, in the desk's own unit: the window is drawn on the frame
@@ -339,6 +345,7 @@ const armOpen = (tab, app) => tab.evaluate(`(() => {
 // on it rather than counting `0` as fast.
 const openMarks = tab => tab.evaluate(`(() => {
   const watch = globalThis.__tiloOpen;
+  watch?.read?.();
   globalThis.__tiloOpen = undefined;
   if (!watch || watch.pressedAt === null || watch.shownAt === null) {
     return JSON.stringify({ok: false, pressed: watch?.pressedAt != null, shown: watch?.shownAt != null});
