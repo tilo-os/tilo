@@ -2955,7 +2955,7 @@ mod tests {
             // These authenticated fixture weights deliberately have the wrong
             // pinned size. Both feature configurations must reject them before
             // configuring a session or entering any native model parser.
-            let mut input = std::io::empty();
+            let mut input = std::fs::File::open("/dev/null").unwrap();
             let mut output = Vec::new();
             assert_eq!(
                 crate::speech::worker::serve(root, verified, &mut input, &mut output),
