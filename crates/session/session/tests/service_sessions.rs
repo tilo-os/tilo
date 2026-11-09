@@ -31,7 +31,7 @@ use tilo_identity_host::provisioning::{FILE_SECRETS_ENV, IdentityStorage};
 use tilo_peer_state::TransportOrigin;
 use tilo_peer_state::owner::{self, testing};
 use tilo_service::LoopWake;
-use tilo_session::{ActionPlane, Launches, Lists, Options, SearchOptions, Session};
+use tilo_session::{ActionPlane, Launches, Lists, Options, Session};
 use tilo_user_identity::{DeviceCert, IdentityPaths};
 
 // A host admits its members' records through an Automerge worker: this binary is that worker, as it
@@ -318,10 +318,7 @@ fn session(socket: &Path, fixture: &Fixture, app: &str) -> Session {
         person: "Ada".to_owned(),
         launches,
         state: Some(fixture.state.clone()),
-        search: SearchOptions {
-            apps: Some(std::sync::Arc::new(Lists::default())),
-            ..SearchOptions::default()
-        },
+        lists: Lists::default(),
         ..Options::default()
     });
     session.handle().replace_tree(desk(&fixture.keys));

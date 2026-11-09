@@ -25,7 +25,7 @@ use tilo_desktop_model::{DesktopTree, Workspace, WorkspaceId, WorkspaceSlot};
 use tilo_identity_host::device_fleet::DeviceFleetStore;
 use tilo_identity_host::provisioning::{FILE_SECRETS_ENV, IdentityStorage};
 use tilo_service::LoopWake;
-use tilo_session::{ActionPlane, AppLists, Launches, Lists, Options, SearchOptions, Session};
+use tilo_session::{ActionPlane, AppLists, Launches, Lists, Options, Session};
 use tilo_user_identity::{DeviceCert, IdentityPaths};
 
 /// The app whose record the channel carries.
@@ -189,10 +189,7 @@ fn serving(
         person: "Ada".to_owned(),
         launches,
         state: state.map(Path::to_path_buf),
-        search: SearchOptions {
-            apps: Some(std::sync::Arc::new(lists)),
-            ..SearchOptions::default()
-        },
+        lists,
         ..Options::default()
     });
     session.handle().replace_tree(desk(person));

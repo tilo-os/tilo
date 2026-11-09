@@ -135,18 +135,22 @@ fn hold(content: &AppContentIndex, workspace: &str) {
     );
 }
 
-/// The session's search over the one app this example opens, and the index Chat publishes into.
+/// The one app this example opens, as this session's lists hold it.
+fn chat_lists() -> Lists {
+    Lists::fixed(AppLists {
+        applications: vec![AppEntry {
+            id: CHAT.to_owned(),
+            title: "Chat".to_owned(),
+            category: None,
+            description: None,
+        }],
+        ..AppLists::default()
+    })
+}
+
+/// The session's search, over the index Chat publishes into.
 fn chat_search(content: &Arc<AppContentIndex>) -> SearchOptions {
     SearchOptions {
-        apps: Some(Arc::new(Lists::fixed(AppLists {
-            applications: vec![AppEntry {
-                id: CHAT.to_owned(),
-                title: "Chat".to_owned(),
-                category: None,
-                description: None,
-            }],
-            ..AppLists::default()
-        }))),
         indexes: Some(Arc::new(SessionIndexes::new(Arc::clone(content), None))),
         ..SearchOptions::default()
     }
@@ -176,6 +180,7 @@ fn main() -> std::process::ExitCode {
         Options {
             presentation: ui::headless::fixture_runner_inputs,
             search: chat_search(&content),
+            lists: chat_lists(),
             person: "Ada".to_owned(),
             collab: false,
             ..Options::default()

@@ -35,7 +35,7 @@ use tilo_desktop_search::providers::host_apps::HostAppEntry;
 use tilo_session::desktop_services::{Bus, Buses, DesktopServices};
 use tilo_session::mount::app_tabs::ServiceLinks;
 use tilo_session::mount::apps::Apps;
-use tilo_session::{AppActions, AppLists, Launches, Lists, Options, SearchOptions, Session};
+use tilo_session::{AppActions, AppLists, Launches, Lists, Options, Session};
 use ui::floating_surface::{FLOATING_SURFACE_PROTOCOL_VERSION, FloatingSurfaceClientMessage};
 
 /// A home of its own with `body` as the desktop entry `desktop_id` starts,
@@ -81,20 +81,17 @@ fn host_app(home: &tilo_test_env::TestHome, desktop_id: &str, body: &str) -> Pat
     host_app_claiming(home, desktop_id, body, None)
 }
 
-/// The desk's search as these tests find apps in it: the fixture's own host app, resolved through
+/// This device's lists as these tests find apps in it: the fixture's own host app, resolved through
 /// the entry the session's scan reads.
-fn host_search() -> SearchOptions {
-    SearchOptions {
-        apps: Some(std::sync::Arc::new(Lists::fixed(AppLists {
-            host_apps: vec![HostAppEntry {
-                desktop_id: "org.example.Probe".into(),
-                name: "Probe".into(),
-                ..HostAppEntry::default()
-            }],
-            ..AppLists::default()
-        }))),
-        ..SearchOptions::default()
-    }
+fn host_lists() -> Lists {
+    Lists::fixed(AppLists {
+        host_apps: vec![HostAppEntry {
+            desktop_id: "org.example.Probe".into(),
+            name: "Probe".into(),
+            ..HostAppEntry::default()
+        }],
+        ..AppLists::default()
+    })
 }
 
 /// Run frames until `done` holds.
@@ -525,7 +522,7 @@ fn session_through(
         .as_ref()
         .map_or_else(Vec::new, |desktop| desktop.services());
     let session = crate::common::headless(Options {
-        search: host_search(),
+        lists: host_lists(),
         apps: Some(Rc::clone(&apps) as Rc<dyn AppActions>),
         launch: Some(Rc::clone(&apps)),
         launches: Arc::clone(&started),

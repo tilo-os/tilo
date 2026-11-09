@@ -1003,12 +1003,11 @@ fn device_options(
     let owned = machine.is_owned();
     // This device's apps, as search and the surfaces that name an app read them, and the index
     // apps publish what they hold into.
-    let lists = tilo_session::Lists::of_device();
     let content = tilo_desktop_search::content_index::session();
     Options {
         config,
-        search: search_options(&lists, std::sync::Arc::clone(&content)),
-        lists,
+        search: search_options(std::sync::Arc::clone(&content)),
+        lists: tilo_session::Lists::of_device(),
         content,
         // The apps this session starts reach its services over the socket the launcher hands them;
         // a session inside another desktop's window serves them on a socket of its own, leaving
@@ -1195,7 +1194,6 @@ fn audio_helper() -> Option<std::path::PathBuf> {
 /// records the workspaces hold, and the search sources they switched off.
 #[cfg(target_os = "linux")]
 fn search_options(
-    lists: &tilo_session::Lists,
     content: std::sync::Arc<tilo_desktop_search::content_index::AppContentIndex>,
 ) -> tilo_session::SearchOptions {
     use std::sync::Arc;
@@ -1228,7 +1226,6 @@ fn search_options(
         Err(error) => eprintln!("tilo-session: installed app surfaces: {error}"),
     }
     tilo_session::SearchOptions {
-        apps: Some(std::sync::Arc::new(lists.clone())),
         indexes: Some(std::sync::Arc::new(
             tilo_session::mount::indexes::SessionIndexes::new(content, files),
         )),

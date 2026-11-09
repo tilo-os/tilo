@@ -33,7 +33,7 @@ use tilo_desktop_policy::Window;
 use tilo_notifications_service::Notifications;
 use tilo_session::mount::apps::Apps;
 use tilo_session::mount::drives::{Drives, Media, Medium};
-use tilo_session::{AppActions, AppLists, Launches, Lists, Options, SearchOptions, Session};
+use tilo_session::{AppActions, AppLists, Launches, Lists, Options, Session};
 
 /// The notes app, as its package names it: what an agent asks for.
 const NOTES: &str = "so.tilo.notes";
@@ -135,11 +135,8 @@ fn session(
         launch: Some(Rc::clone(&apps)),
         launches: Arc::clone(&opened),
         // The person's lists as the device reads them, read once: what the tools service serves
-        // Files is that same list.
-        search: SearchOptions {
-            apps: Some(std::sync::Arc::new(Lists::fixed(AppLists::read()))),
-            ..SearchOptions::default()
-        },
+        // Files and what search lists is that same list.
+        lists: Lists::fixed(AppLists::read()),
         drives,
         wake: tilo_service::LoopWake::default(),
         ..Options::default()

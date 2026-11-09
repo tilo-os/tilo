@@ -102,16 +102,16 @@ fn session_over(
     content: Option<Arc<AppContentIndex>>,
 ) -> Session {
     crate::common::headless(Options {
+        lists: Lists::fixed(AppLists {
+            applications: vec![AppEntry {
+                id: "so.tilo.sheets".into(),
+                title: "Sheets".into(),
+                category: None,
+                description: None,
+            }],
+            ..AppLists::default()
+        }),
         search: SearchOptions {
-            apps: Some(std::sync::Arc::new(Lists::fixed(AppLists {
-                applications: vec![AppEntry {
-                    id: "so.tilo.sheets".into(),
-                    title: "Sheets".into(),
-                    category: None,
-                    description: None,
-                }],
-                ..AppLists::default()
-            }))),
             indexes: content.map(|content| {
                 std::sync::Arc::new(tilo_session::mount::indexes::SessionIndexes::new(
                     content, None,
@@ -1381,10 +1381,7 @@ fn the_palette_the_host_search_opens_takes_the_keys() {
 /// person's `Notes` — with `host` taking the launches.
 fn host_session(host: Rc<Host>) -> Session {
     let mut session = crate::common::headless(Options {
-        search: SearchOptions {
-            apps: Some(std::sync::Arc::new(Lists::fixed(host_app_lists()))),
-            ..SearchOptions::default()
-        },
+        lists: Lists::fixed(host_app_lists()),
         apps: Some(host as Rc<dyn AppActions>),
         collab: false,
         ..Options::default()
@@ -1590,18 +1587,15 @@ fn a_search_row_for_an_app_starts_it_through_the_sessions_own_host() {
         Some(launcher.path().to_owned()),
     ));
     let mut session = crate::common::headless(Options {
-        search: SearchOptions {
-            apps: Some(std::sync::Arc::new(Lists::fixed(AppLists {
-                applications: vec![AppEntry {
-                    id: "so.tilo.lang.notes".into(),
-                    title: "Notebook".into(),
-                    category: None,
-                    description: None,
-                }],
-                ..AppLists::default()
-            }))),
-            ..SearchOptions::default()
-        },
+        lists: Lists::fixed(AppLists {
+            applications: vec![AppEntry {
+                id: "so.tilo.lang.notes".into(),
+                title: "Notebook".into(),
+                category: None,
+                description: None,
+            }],
+            ..AppLists::default()
+        }),
         apps: Some(Rc::clone(&apps) as Rc<dyn AppActions>),
         launch: Some(Rc::clone(&apps)),
         collab: false,

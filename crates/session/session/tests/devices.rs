@@ -476,18 +476,15 @@ fn session_with(
                 playing: Rc::clone(&playing),
                 moved: Rc::clone(&moved),
             })],
-            search: tilo_session::SearchOptions {
-                apps: Some(std::sync::Arc::new(Lists::fixed(AppLists {
-                    applications: vec![AppEntry {
-                        id: "so.tilo.settings".into(),
-                        title: "Settings".into(),
-                        category: None,
-                        description: None,
-                    }],
-                    ..AppLists::default()
-                }))),
-                ..tilo_session::SearchOptions::default()
-            },
+            lists: Lists::fixed(AppLists {
+                applications: vec![AppEntry {
+                    id: "so.tilo.settings".into(),
+                    title: "Settings".into(),
+                    category: None,
+                    description: None,
+                }],
+                ..AppLists::default()
+            }),
             apps: Some(host),
             fabric: Some(fabric),
             wake_seams: WakeSeams {

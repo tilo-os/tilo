@@ -108,9 +108,6 @@ pub trait AppActions {
 /// What the session's search reaches beyond the desktop.
 #[derive(Default)]
 pub struct SearchOptions {
-    /// The apps this host lists — the ones installed here, the machine's own and the ones a person
-    /// can get — as they are now; `None` where the host lists none.
-    pub apps: Option<Arc<dyn Apps>>,
     /// What apps hold and what the person's files say, as this host indexes them; `None` where the
     /// host keeps no index.
     pub indexes: Option<Arc<dyn Indexes>>,
@@ -216,13 +213,13 @@ fn set_field(field: &str, value: &serde_json::Value) -> serde_json::Map<String, 
 impl SessionSearch {
     pub(crate) fn new(
         options: SearchOptions,
+        lists: Option<Arc<dyn Apps>>,
         person: &str,
         apps: Option<Rc<dyn AppActions>>,
         wake: Option<tilo_service::Wake>,
         models: Option<Arc<dyn crate::platform::Models>>,
     ) -> Self {
         let SearchOptions {
-            apps: lists,
             indexes,
             settings,
             preferences,
@@ -1073,10 +1070,8 @@ mod tests {
         )
         .expect("lists followed");
         let search = SessionSearch::new(
-            SearchOptions {
-                apps: Some(Arc::new(lists)),
-                ..SearchOptions::default()
-            },
+            SearchOptions::default(),
+            Some(Arc::new(lists)),
             "",
             None,
             None,
@@ -1135,6 +1130,7 @@ mod tests {
                 records: Some(crate::records::Records::of(home.data().to_path_buf())),
                 ..SearchOptions::default()
             },
+            None,
             "",
             None,
             None,
@@ -1189,6 +1185,7 @@ mod tests {
                 records: Some(crate::records::Records::of(home.data().to_path_buf())),
                 ..SearchOptions::default()
             },
+            None,
             "",
             Some(Rc::new(Opening(Rc::clone(&opened)))),
             None,
@@ -1273,7 +1270,7 @@ mod tests {
     /// person's search finds them, and an agent's, confined to one workspace, never does.
     #[test]
     fn an_agents_search_finds_nothing_of_the_desks_own_rows() {
-        let search = SessionSearch::new(SearchOptions::default(), "", None, None, None);
+        let search = SessionSearch::new(SearchOptions::default(), None, "", None, None, None);
         let window =
             tilo_actions::ResourceSpec::new("window:7", "desktop.window", "Quarterly plan — Notes")
                 .with_action(tilo_actions::ActionSpec::immediate_encoded(
@@ -1311,6 +1308,7 @@ mod tests {
                 places: recent,
                 ..SearchOptions::default()
             },
+            None,
             "",
             None,
             None,
@@ -1351,10 +1349,8 @@ mod tests {
     fn fixed_lists_keep_what_search_built_from_them() {
         let lists = crate::lists::Lists::fixed(crate::lists::AppLists::default());
         let search = SessionSearch::new(
-            SearchOptions {
-                apps: Some(Arc::new(lists)),
-                ..SearchOptions::default()
-            },
+            SearchOptions::default(),
+            Some(Arc::new(lists)),
             "",
             None,
             None,

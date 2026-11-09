@@ -1182,8 +1182,11 @@ impl Session {
         if search_options.settings.is_none() {
             search_options.settings = Some(Arc::new(crate::lists::DesktopSettings));
         }
+        // The apps search lists are this device's lists, the same ones the action door lists and
+        // names apps from: an app a person sees is one app, whoever reads it.
         let search = Rc::new(SessionSearch::new(
             search_options,
+            Some(Arc::new(options.lists.clone()) as Arc<dyn crate::platform::apps::Apps>),
             &options.person,
             options.apps,
             Some(options.wake.handle()),
