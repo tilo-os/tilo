@@ -29,6 +29,7 @@ on:
       - "crates/collab/action-policy/**"
       - "crates/collab/actions/**"
       - "crates/collab/automation/**"
+      - "crates/collab/broker-core/**"
       - "crates/collab/channel-crypto/**"
       - "crates/collab/collab-types/**"
       - "crates/collab/collaboration/**"

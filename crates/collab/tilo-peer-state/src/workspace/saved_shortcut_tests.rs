@@ -38,6 +38,7 @@ pub(crate) fn device(root: u8, device: u8) -> Device {
         issued_at_ns: 1,
         expires_at_ns: None,
         signature: [0; 64],
+        issuer: None,
     };
     tilo_user_identity::sign_device_cert(&mut cert, &root).unwrap();
     Device { root, cert, key }
@@ -157,6 +158,6 @@ fn the_workspaces_revocations_are_those_its_identity_rows_carry() {
         .unwrap();
     }
     let revocations = workspace_revocations(&doc);
-    assert!(revocations.is_revoked(&ada.cert.device_public_key));
+    assert!(revocations.is_revoked(&ada.cert.user_public_key, &ada.cert.device_public_key));
     assert_eq!(revocations.len(), 1);
 }

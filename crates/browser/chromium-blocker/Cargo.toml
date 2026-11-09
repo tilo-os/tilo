@@ -12,4 +12,7 @@ crate-type = ["staticlib", "rlib"]
 adblock = { version = "0.12", default-features = false, features = ["embedded-domain-resolver", "full-regex-handling"] }
 serde_json.workspace = true
 url.workspace = true
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+# The workspace-hack's native feature set does not build for wasm32.
 workspace-hack = { version = "0.1" }

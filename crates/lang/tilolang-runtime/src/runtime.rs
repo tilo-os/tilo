@@ -680,6 +680,33 @@ impl Runtime {
             .map_err(RuntimeError::Package)
     }
 
+    /// What `at` is called, the way every surface that names it shows it: its title while it
+    /// has one, else the words its type declares for it while untitled, else the package's
+    /// title for a root, else its type's name.
+    ///
+    /// # Errors
+    ///
+    /// `NotFound` for a type this runtime does not run; a store failure, or a reading that
+    /// does not fit the type the app declares.
+    pub fn title(&self, at: &ResourceRef) -> Result<String, RuntimeError> {
+        let (pkg, info) = self
+            .core
+            .type_of_ref(&at.ty)
+            .map_err(RuntimeError::NotFound)?;
+        let declared = pkg
+            .meta
+            .types
+            .iter()
+            .find(|ty| ty.id == info.id)
+            .ok_or_else(|| RuntimeError::NotFound(format!("type {}", at.ty)))?;
+        self.core
+            .title_of(at, &pkg.meta, declared)
+            .map_err(|fail| match fail {
+                crate::engine::HostFail::Trap(message) => RuntimeError::Package(message),
+                crate::engine::HostFail::Suspend => RuntimeError::Package("suspended".to_owned()),
+            })
+    }
+
     /// Invoke an action as `principal`. The action is an [`ActionRef`], or an
     /// `(action id, args)` pair for a call made straight by the principal.
     pub fn invoke_action(
@@ -743,7 +770,8 @@ impl Runtime {
 
     /// Fills the parameters `given` leaves out of `action` from `text`, the one line a person
     /// typed for it: the entry parameter with the words nothing else took, and the parameters
-    /// their types read (a day, a moment, a person, a record). A parameter given is kept.
+    /// their types read (a day, a moment, a person, a record). The words name a parameter over
+    /// the value the call gave it; that value stands where they say nothing.
     /// [`crate::Runtime::complete_args`] then defaults the rest. Returns the arguments as the
     /// call carries them — as long as the action's parameters, what the call left out
     /// [`None`] — and `None` when the line names nothing, as an entry's text that is only
@@ -1111,13 +1139,13 @@ impl Runtime {
         self.core.mark_seen(person, at)
     }
 
-    /// The task runs `person` reviewed, as their own record keeps them: every version of one is
+    /// The runs `person` reviewed, as their own record keeps them: every version of one is
     /// seen. A view that read what is unseen runs again when they move.
     pub fn set_seen_runs(&self, person: &str, runs: &[String]) {
         self.core.set_seen_runs(person, runs);
     }
 
-    /// `person` reviewed the task run `run` (its group, *Mark all seen*): every version it made
+    /// `person` reviewed the run `run` (its group, *Mark all seen*): every version it made
     /// is seen, in every app, and the host is handed it to keep ([`Self::take_seen`]). Whether
     /// it was not reviewed already.
     pub fn mark_run_seen(&self, person: &str, run: &str) -> bool {

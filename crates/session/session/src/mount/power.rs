@@ -22,7 +22,8 @@ use tilo_power_mgmt::PowerSignal;
 use tilo_session_power::PowerLink;
 
 use crate::i18n::t;
-use crate::{Error, Options, Session, SessionConfig, a11y_settings};
+use crate::{Options, Session, SessionConfig, a11y_settings};
+use tilo_compositor::Error;
 
 /// What the session keeps of its power between frames.
 pub(crate) struct PowerRun {

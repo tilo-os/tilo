@@ -911,7 +911,7 @@ fn validate_certificate(
 ) -> Result<(), String> {
     tilo_user_identity::verify_device_cert_at(certificate, now_ns)
         .map_err(|error| error.to_string())?;
-    if revocations.is_revoked(&certificate.device_public_key) {
+    if revocations.refuses(certificate) {
         return Err("device certificate is revoked".into());
     }
     Ok(())
@@ -947,6 +947,19 @@ pub fn room_workspace_id(workspace: &str) -> Result<u64, uuid::Error> {
     first8.copy_from_slice(&hash[..8]);
     let id = u64::from_le_bytes(first8);
     Ok(if id == 0 { 1 } else { id })
+}
+
+/// The topic a workspace's plane numbers itself by, from its id: number 0 for a desk that shows no
+/// workspace.
+#[must_use]
+pub fn workspace_topic(workspace: &str) -> u64 {
+    let Ok(id) = uuid::Uuid::parse_str(workspace) else {
+        return 0;
+    };
+    if id.is_nil() {
+        return 0;
+    }
+    room_workspace_id(workspace).unwrap_or(0)
 }
 
 #[cfg(test)]

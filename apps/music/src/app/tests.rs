@@ -192,12 +192,9 @@ fn legacy_spotify_queue_resolves_canonical_ids_without_inventing_metadata() {
 )]
 fn track_context_menu_stays_in_bounds_and_dispatches_its_actions() {
     // Phase `track_context_menu_stays_inside_the_app_rect_from_every_corner`.
-    // 2026-09-16 alignment review: the track context menu used a hand-rolled
-    // "nudge to stay in the app rect" that guessed the menu as
-    // 220 × (rows·28 + 24) and laid it out against `Theme::dark()`. It now opens through the
-    // shared `ContextMenu::open_anchored`, whose geometry is measured with the
-    // frame's renderer and theme and clamped to the viewport — including when
-    // the pointer is in the bottom-right corner.
+    // The menu opens through the shared `ContextMenu::open_anchored`, whose
+    // geometry is measured with the frame's renderer and theme and clamped to
+    // the viewport, including from the bottom-right corner.
     {
         let (mut app, _doc) = app_with_doc();
         app.rect = Rect::new(0.0, 0.0, 900.0, 600.0);
@@ -265,19 +262,27 @@ fn track_context_menu_stays_in_bounds_and_dispatches_its_actions() {
         use ui::widget::Widget as _;
 
         let (mut app, _doc) = app_with_doc();
-        // A short, narrow 200%-scale viewport is the hostile case: the
-        // contextual action list cannot fit above or below its anchor. The
-        // shared menu must own one in-viewport, internally scrollable surface
-        // instead of Music's former guessed clamp.
+        // A short, narrow 200%-scale viewport is the hostile case: the menu must
+        // stand inside it, sized by its rows rather than by the window.
         app.rect = Rect::new(0.0, 0.0, 390.0, 320.0);
         app.context_text_scale = 2.0;
         app.mouse = Point::new(382.0, 304.0);
         app.open_track_menu("tk_g2".into(), None, None);
+        // Settle text metrics the way the paint pass does.
+        app.context
+            .layout_within(&mut TextRenderer::new(), &Theme::dark());
 
         let rect = app.context.get_rect();
-        assert!(rect.x0 >= app.rect.x0 && rect.x1 <= app.rect.x1);
-        assert!(rect.y0 >= app.rect.y0 && rect.y1 <= app.rect.y1);
-        assert_eq!(rect, app.rect, "oversized menu scrolls within the viewport");
+        assert!(
+            app.rect.contains(rect.origin())
+                && app.rect.contains(Point::new(rect.x1 - 0.5, rect.y1 - 0.5)),
+            "menu {rect:?} stays inside {:?}",
+            app.rect
+        );
+        assert!(
+            rect.width() < app.rect.width() && rect.height() < app.rect.height(),
+            "the menu is its rows, not the window: {rect:?}"
+        );
     }
 
     // Phase `menu_add_to_queue_grows_the_queue`.

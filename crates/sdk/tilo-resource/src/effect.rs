@@ -153,7 +153,9 @@ pub enum EffectDecodeError {
     #[error("the effect's payload does not decode: {0}")]
     Payload(#[source] serde_json::Error),
     /// One argument does not have its field's type, as the field's own type
-    /// says (`AbsolutePath`'s refusal of a relative path, say).
+    /// says (`AbsolutePath`'s refusal of a relative path, say). `name` is
+    /// its path in the invocation: a flattened struct's field by its own
+    /// name (`path`), a field of one with its parent's (`adjust.grayscale`).
     #[error("the effect's `{name}` argument does not decode: {source}")]
     Argument {
         name: String,
@@ -1013,6 +1015,34 @@ pub fn argument<T: serde::de::DeserializeOwned>(
         name: name.to_owned(),
         source: error,
     })
+}
+
+/// The effect's `#[param(flatten)]` struct, decoded from the invocation's
+/// whole object. A field that does not decode is named by its path within
+/// that object (`path`, or `adjust.grayscale` for one of a struct's
+/// fields), so the caller hears the argument to fix rather than the struct
+/// that carries it; `struct_name` names the field itself for a failure that
+/// is not one field's, such as an unknown one.
+#[doc(hidden)]
+pub fn flattened_argument<T: serde::de::DeserializeOwned>(
+    arguments: &serde_json::Map<String, serde_json::Value>,
+    struct_name: &str,
+) -> Result<T, EffectDecodeError> {
+    // The path and the message live here, not in every effect's generated
+    // decode.
+    serde_path_to_error::deserialize(serde_json::Value::Object(arguments.clone())).map_err(
+        |error| {
+            let path = error.path().to_string();
+            EffectDecodeError::Argument {
+                name: if path.is_empty() {
+                    struct_name.to_owned()
+                } else {
+                    path
+                },
+                source: error.into_inner(),
+            }
+        },
+    )
 }
 
 /// The identity argument `name`: canonical decimal text, as a record and a

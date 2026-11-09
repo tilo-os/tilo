@@ -414,6 +414,7 @@ mod tests {
             issued_at_ns,
             expires_at_ns,
             signature: [0; 64],
+            issuer: None,
         };
         sign_device_cert(&mut cert, &root).unwrap();
         cert

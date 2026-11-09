@@ -8,6 +8,14 @@
 //! on a thread of its own; nothing typed leaves the machine before the person asks, and nothing
 //! about a failure reaches anything but the row's own line.
 
+#![cfg_attr(
+    target_arch = "wasm32",
+    allow(
+        dead_code,
+        reason = "the page answers its own questions through this role next"
+    )
+)]
+
 use std::sync::mpsc::{self, Receiver, Sender, TryRecvError};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
@@ -20,6 +28,10 @@ use tilo_desktop_search::model::{Hit, InvokeTarget, Source, Target};
 use tilo_desktop_search::providers::ask_kind;
 use ui::search::SearchPreview;
 use ui::search::system::MAX_PROVIDER_SCORE;
+
+/// The package a question asks as: what the person's AI settings can choose a model for, and what
+/// the gateway authorizes for a plain completion. Activity describes the history as the same app.
+pub(crate) const PACKAGE: &str = "so.tilo.activity";
 
 /// The app that sets a provider up.
 const SETTINGS_APP: &str = "so.tilo.settings";
@@ -67,14 +79,22 @@ pub(crate) struct Ask {
     workspace: String,
     /// What wakes the session's loop as the answer is written, so the row shows it as it lands.
     wake: Option<tilo_service::Wake>,
+    /// Where this host's questions are answered.
+    models: Option<Arc<dyn crate::platform::Models>>,
 }
 
 impl Ask {
-    pub(crate) fn new(state: Shared, workspace: &str, wake: Option<tilo_service::Wake>) -> Self {
+    pub(crate) fn new(
+        state: Shared,
+        workspace: &str,
+        wake: Option<tilo_service::Wake>,
+        models: Option<Arc<dyn crate::platform::Models>>,
+    ) -> Self {
         Self {
             state,
             workspace: workspace.to_owned(),
             wake,
+            models,
         }
     }
 
@@ -103,7 +123,8 @@ impl Ask {
         drop(state);
         let needle = needle.to_owned();
         let wake = self.wake.clone();
-        std::thread::spawn(move || answer(needle, &sender, wake.as_ref()));
+        let models = self.models.clone();
+        std::thread::spawn(move || answer(needle, &sender, wake.as_ref(), models.as_deref()));
     }
 
     fn row(&self, needle: &str) -> Hit {
@@ -179,14 +200,19 @@ impl Ask {
 /// as they are called; `None` while no provider is set up.
 fn chosen() -> Option<(String, String)> {
     let config = ProviderConfig::load();
-    let (profile, model) = config.selection_for(crate::activity_models::PACKAGE)?;
+    let (profile, model) = config.selection_for(PACKAGE)?;
     Some((profile.label.clone(), model.label.clone()))
 }
 
 /// Ask `question` through the session's model gateway, on this thread (the ask is started on one of
 /// its own), sending what comes as it is written.
-fn answer(question: String, deltas: &Sender<Chunk>, wake: Option<&tilo_service::Wake>) {
-    let Some(models) = crate::activity_models::models() else {
+fn answer(
+    question: String,
+    deltas: &Sender<Chunk>,
+    wake: Option<&tilo_service::Wake>,
+    gateway: Option<&dyn crate::platform::Models>,
+) {
+    let Some(models) = gateway.and_then(crate::platform::Models::models) else {
         land(
             deltas,
             wake,
@@ -327,7 +353,7 @@ mod tests {
     use super::*;
 
     fn setup(workspace: &str) -> Ask {
-        Ask::new(Shared::default(), workspace, None)
+        Ask::new(Shared::default(), workspace, None, None)
     }
 
     /// A question with nothing set up leads to the place that sets it up: the row opens Settings at

@@ -18,8 +18,8 @@ use tilo_actions::remote::{
 use tilo_peer_state::join::{MemberRole, decode_and_verify_invitation};
 use tilo_relay_session::workspaces::{
     ATTACH_HOST, CREATE_ROOM, CreatedWorkspace, DETACH_HOST, ENTER_ROOM, EnteredWorkspace,
-    HOST_ACTIONS_PROVIDER, HOST_ROOM, HOST_ROOMS_RESOURCE, LIST_ROOMS, UNHOST_ROOM,
-    WorkspaceListing,
+    HOST_ACTIONS_PROVIDER, HOST_ROOM, HOST_ROOMS_RESOURCE, LIST_REVOCATIONS, LIST_ROOMS,
+    UNHOST_ROOM, WorkspaceListing,
 };
 use tilo_user_identity::{DeviceCapabilities, DeviceCert, RevocationList, sign_device_cert};
 
@@ -41,6 +41,7 @@ fn owners_laptop() -> DeviceCert {
         issued_at_ns: 1,
         expires_at_ns: None,
         signature: [0; 64],
+        issuer: None,
     };
     sign_device_cert(&mut cert, &root).unwrap();
     cert
@@ -99,6 +100,7 @@ async fn the_relays_person_creates_and_lists_rooms_as_actions() {
         [
             CREATE_ROOM,
             LIST_ROOMS,
+            LIST_REVOCATIONS,
             ENTER_ROOM,
             ATTACH_HOST,
             DETACH_HOST,

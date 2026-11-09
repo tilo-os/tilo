@@ -243,6 +243,7 @@ imports! {
     (Query, "query", "iiii", "i"),
     (Filters, "filters", "i", "i"),
     (FilterLit, "filter_lit", "iii", "i"),
+    (SortLit, "sort_lit", "ii", "i"),
     (IdentPart, "ident_part", "ii", "i"),
     (RichNew, "rich_new", "i", "i"),
     (RichPart, "rich_part", "ii", "i"),
@@ -275,6 +276,7 @@ imports! {
     (SpaceF, "space_f", "i", "f"),
 
     (Abort, "abort", "i", ""),
+    (MissingV, "missing", "", "i"),
 }
 
 /// The import with this table index.

@@ -31,7 +31,7 @@ use tilo_lock::MutexRecover as _;
 use tilo_network_actor::{RecordContentDelivery, WorkspaceId, workspace_topic_id};
 use tilo_runtime::offload::{BindError, BlobScope, MediaFuture, WorkspaceMedia};
 
-use crate::sync::Outgoing;
+use crate::platform::plane::Cmd;
 
 /// Where record content is kept under the session's state: beside the engine's records, apart from
 /// the blocks their history keeps.
@@ -118,6 +118,16 @@ impl Plane {
         Arc::new(Media(Arc::clone(&self.shelf)))
     }
 
+    /// The bytes this device keeps of `app` 's content in `workspace` under `hash` (lower-case
+    /// hex): never a fetch of what it lacks.
+    pub(crate) fn read(&self, workspace: &str, app: &str, hash: &str) -> Option<Vec<u8>> {
+        let scope = ContentScope {
+            workspace: workspace.to_owned(),
+            app: app.to_owned(),
+        };
+        ContentShelf::read(self.shelf.as_ref(), &scope, hash)
+    }
+
     /// Whether this device keeps `digest` of `app` 's content in `workspace` : what this session
     /// says of itself when another of the person's devices offers it work reading that content.
     pub(crate) fn holds(&self, workspace: &str, app: &str, digest: [u8; 32]) -> bool {
@@ -166,7 +176,7 @@ impl Plane {
     /// on, and this device's handle there.
     pub(crate) fn bind(
         &self,
-        outgoing: tokio::sync::mpsc::UnboundedSender<Outgoing>,
+        outgoing: tokio::sync::mpsc::UnboundedSender<Cmd>,
         publisher: EndpointId,
     ) {
         self.peers.bind(outgoing, publisher);
@@ -528,13 +538,13 @@ struct Peers {
 }
 
 struct Link {
-    outgoing: tokio::sync::mpsc::UnboundedSender<Outgoing>,
+    outgoing: tokio::sync::mpsc::UnboundedSender<Cmd>,
     /// This device's handle here, as the wire names it.
     own: ContentPeer,
 }
 
 impl Peers {
-    fn bind(&self, outgoing: tokio::sync::mpsc::UnboundedSender<Outgoing>, publisher: EndpointId) {
+    fn bind(&self, outgoing: tokio::sync::mpsc::UnboundedSender<Cmd>, publisher: EndpointId) {
         *self.link.lock_recover() = Some(Link {
             outgoing,
             own: peer_handle(publisher.as_bytes()),
@@ -565,7 +575,7 @@ impl Peers {
     /// Say `msg` on the topic of `ws` , when this device's plane runs.
     fn say(&self, ws: WorkspaceId, msg: NeighbourMsg) {
         if let Some(link) = self.link.lock_recover().as_ref() {
-            let _ = link.outgoing.send(Outgoing::Publish {
+            let _ = link.outgoing.send(Cmd::Publish {
                 ws,
                 msg: Box::new(msg),
             });
@@ -576,9 +586,9 @@ impl Peers {
     /// through the workspace's hosts, which hand it to that device alone.
     fn send(&self, ws: WorkspaceId, target: Option<EndpointId>, msg: NeighbourMsg) {
         if let Some(link) = self.link.lock_recover().as_ref() {
-            let _ =
-                link.outgoing
-                    .send(Outgoing::Content(RecordContentDelivery { ws, target, msg }));
+            let _ = link
+                .outgoing
+                .send(Cmd::Content(RecordContentDelivery { ws, target, msg }));
         }
     }
 }

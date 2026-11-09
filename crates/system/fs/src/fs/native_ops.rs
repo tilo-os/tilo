@@ -10,12 +10,12 @@
 //! path is indistinguishable to a peer.
 
 use std::path::{Component, Path};
+use std::sync::atomic::Ordering;
 
 use super::{EIO, EISDIR, ENOENT, ENOTDIR, FileType, Hash, QuickFS, document_codec_for, now_ms};
 use crate::namespace::{
     ContentAuthority, LeaseRequest, PosixAttrs, ROOT_INO, VersionFence, WriteLease,
 };
-use tilo_lock::MutexRecover as _;
 
 /// One file or directory of the workspace tree as the record plane sees it.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -119,13 +119,13 @@ impl QuickFS {
                 Some((ino, FileType::Directory)) => ino,
                 Some(_) => {
                     self.delete_named(cur, name, false)?;
-                    let (ino, delta) = self.create_empty_dir(cur, name)?;
-                    self.publish(delta);
+                    let ino = self.create_empty_dir(cur, name)?;
+                    self.publish();
                     ino
                 }
                 None => {
-                    let (ino, delta) = self.create_empty_dir(cur, name)?;
-                    self.publish(delta);
+                    let ino = self.create_empty_dir(cur, name)?;
+                    self.publish();
                     ino
                 }
             };
@@ -159,7 +159,7 @@ impl QuickFS {
     /// Publishes `attrs` for the record at `ino` when they differ from what
     /// it has.
     fn set_posix(&self, ino: u64, attrs: PosixAttrs, dir: bool) -> Result<(), i32> {
-        let delta = {
+        {
             let mut ns = self.ns();
             let record = ns.record_id_for(ino).ok_or(EIO)?;
             let current = ns
@@ -171,9 +171,9 @@ impl QuickFS {
             if !ns.put_posix_attrs(record, &attrs) {
                 return Err(EIO);
             }
-            ns.save_incremental()
-        };
-        self.publish(delta);
+            ns.note_change();
+        }
+        self.publish();
         Ok(())
     }
 
@@ -282,8 +282,8 @@ impl QuickFS {
         fence: Option<VersionFence>,
     ) -> Result<(), i32> {
         if fence.is_some() {
-            let (ino, delta) = self.create_empty_file_stamped(parent, name, mtime_ms)?;
-            self.publish(delta);
+            let ino = self.create_empty_file_stamped(parent, name, mtime_ms)?;
+            self.publish();
             self.set_posix(ino, attrs, false)?;
             return self
                 .commit_version_at(ino, source, mtime_ms, fence)
@@ -293,8 +293,8 @@ impl QuickFS {
             .store_version_blocking(source, None)
             .map_err(|e| to_errno(&e))?
             .map_or((None, 0), |(hash, len)| (Some(hash), len));
-        let (ino, delta) = self.create_file_stamped(parent, name, mtime_ms, hash, byte_len)?;
-        self.publish(delta);
+        let ino = self.create_file_stamped(parent, name, mtime_ms, hash, byte_len)?;
+        self.publish();
         self.set_posix(ino, attrs, false)
     }
 
@@ -352,8 +352,8 @@ impl QuickFS {
             return Err(ENOENT);
         }
         let new_parent = self.ensure_dir_components(new_parents)?;
-        let delta = self.rename_named(parent, name, new_parent, new_name)?;
-        self.publish(delta);
+        self.rename_named(parent, name, new_parent, new_name)?;
+        self.publish();
         Ok(())
     }
 
@@ -459,14 +459,14 @@ impl QuickFS {
     /// Publishes `device`'s changeset mark (see
     /// [`crate::namespace::ChangesetMark`]).
     pub fn put_changeset_mark(&self, device: [u8; 32], mark: &crate::namespace::ChangesetMark) {
-        let delta = {
+        {
             let mut ns = self.ns();
             if !ns.put_changeset_mark(device, mark) {
                 return;
             }
-            ns.save_incremental()
-        };
-        self.publish(delta);
+            ns.note_change();
+        }
+        self.publish();
     }
 
     /// Every device's latest changeset mark.
@@ -498,44 +498,33 @@ impl QuickFS {
     /// above) as one signed changeset, made durable at once:
     ///
     /// 1. the content of every file is synced once, not once per file;
-    /// 2. the history mutations are written in one log write;
-    /// 3. every record operation is signed once as a changeset and written
+    /// 2. every record operation is signed once as a changeset and written
     ///    with it in one log transaction: after a crash either all of the
     ///    changeset is there or none of it;
-    /// 4. the durability hook persists the namespace that places the
-    ///    changeset's records, so a crash cannot leave durable records
-    ///    without placements (which a restart would read as deletions).
+    /// 3. the durability hook persists the namespace that places the
+    ///    changeset's records and holds their history, so a crash cannot
+    ///    leave durable records without placements (which a restart would
+    ///    read as deletions).
     ///
     /// Until then peers see none of it: its records are served only once
-    /// durable, namespace exchanges wait on the publication gate, and its
-    /// namespace deltas are broadcast after the last step.
+    /// durable, namespace exchanges wait on the publication gate, and the
+    /// change is announced after the last step.
     pub fn changeset<T>(&self, apply: impl FnOnce() -> T) -> T {
         let publisher = self.record_publisher.as_ref();
         let gate = publisher.map(|p| p.repository().publication_gate().blocking_write());
-        let history = self.history.as_ref().map(|(history, _)| history);
-        let deferral = history.map(|history| history.defer_durability());
         if let Some(publisher) = publisher
             && let Err(error) = publisher.begin_changeset()
         {
             eprintln!("records are published one by one: {error}");
         }
-        *self.deferred_deltas.lock_recover() = Some(Vec::new());
-        self.ns().begin_incremental_batch();
+        self.changeset_open.store(true, Ordering::Release);
         let store = std::sync::Arc::clone(&self.hydrator.store);
         store.defer_sync();
         let value = apply();
         if let Err(error) = self.hydrator.block_on(store.end_deferred_sync()) {
             eprintln!("content stays pending: {error:#}");
         }
-        let mut durable = if let Some(deferral) = deferral
-            && let Err(error) = deferral.finish()
-        {
-            // The records wait for the history that describes them.
-            eprintln!("history stays pending: {error}");
-            false
-        } else {
-            true
-        };
+        let mut durable = true;
         if durable && let Some(publisher) = publisher {
             match publisher.commit_changeset() {
                 Ok(Some(changeset)) if std::env::var_os("TILO_FS_NATIVE_TRACE").is_some() => {
@@ -551,9 +540,6 @@ impl QuickFS {
                 }
             }
         }
-        // Taken before the namespace is persisted: a full save moves the
-        // incremental cursor past the batch.
-        let batch = self.ns().end_incremental_batch();
         if durable
             && let Some(hook) = self.durability_hook.get()
             && let Err(error) = hook()
@@ -561,35 +547,13 @@ impl QuickFS {
             eprintln!("the namespace placing the changeset stays pending: {error}");
         }
         drop(gate);
-        let mut deltas = self
-            .deferred_deltas
-            .lock_recover()
-            .take()
-            .unwrap_or_default();
-        deltas.push(batch);
+        self.changeset_open.store(false, Ordering::Release);
         if durable {
-            self.broadcast_deltas(&deltas);
-        } else {
-            // Not durable yet: the next changeset broadcasts these with its
-            // own, once both are on disk.
-            *self.deferred_deltas.lock_recover() = None;
-            self.held_deltas.lock_recover().extend(deltas);
+            self.announce();
         }
+        // Not durable yet: the next changeset announces these with its own,
+        // once both are on disk.
         value
-    }
-
-    fn broadcast_deltas(&self, deltas: &[Vec<u8>]) {
-        let held = std::mem::take(&mut *self.held_deltas.lock_recover());
-        let any = !held.is_empty() || !deltas.is_empty();
-        if any && self.enforcement.is_some() {
-            self.refresh_acl_visible_record_index();
-        }
-        if any && let Some(sync) = &self.sync {
-            sync.announce_change();
-        }
-        if any {
-            self.wake_pinned_hydration();
-        }
     }
 
     /// The current time as the record plane stamps it.
@@ -789,14 +753,15 @@ impl QuickFS {
         mtime_ms: u64,
     ) -> Result<(), i32> {
         let name = std::str::from_utf8(name).map_err(|_| libc::EINVAL)?;
-        let (ino, delta) = {
+        let ino = {
             let mut ns = self.ns();
             let ino = ns
                 .create_document(parent, name, codec, mtime_ms)
                 .ok_or(ENOENT)?;
-            (ino, ns.save_incremental())
+            ns.note_change();
+            ino
         };
-        self.publish(delta);
+        self.publish();
         self.record_version(ino, fs_protocol::FileProvenance::Create, None);
         if data.is_empty() {
             return Ok(());
@@ -826,14 +791,14 @@ impl QuickFS {
 
     /// Makes `me` the workspace's lease authority, when it is not already.
     pub fn claim_lease_authority(&self, me: [u8; 32]) {
-        let delta = {
+        {
             let mut ns = self.ns();
             if ns.lease_authority() == Some(me) || !ns.put_lease_authority(me) {
                 return;
             }
-            ns.save_incremental()
-        };
-        self.publish(delta);
+            ns.note_change();
+        }
+        self.publish();
     }
 
     /// The workspace's lease authority, if one claimed it.
@@ -876,14 +841,14 @@ impl QuickFS {
                 .map(|l| (l, LeaseSource::Local));
         };
         let nonce = tilo_clock::unix_now_ns();
-        let delta = {
+        {
             let mut ns = self.ns();
             if !ns.put_lease_request(record, me, LeaseRequest { nonce }) {
                 return Err(None);
             }
-            ns.save_incremental()
-        };
-        self.publish(delta);
+            ns.note_change();
+        }
+        self.publish();
         let before = current.map_or(0, |l| l.epoch);
         let started = std::time::Instant::now();
         let answer = loop {
@@ -901,12 +866,12 @@ impl QuickFS {
                 break None;
             }
         };
-        let delta = {
+        {
             let mut ns = self.ns();
             ns.remove_lease_request(record, me);
-            ns.save_incremental()
-        };
-        self.publish(delta);
+            ns.note_change();
+        }
+        self.publish();
         match answer {
             Some(Ok(lease)) => Ok((lease, LeaseSource::Granted)),
             Some(Err(lease)) => Err(Some(lease)),
@@ -931,7 +896,7 @@ impl QuickFS {
     ) -> Vec<(std::path::PathBuf, WriteLease)> {
         let ttl_ms = u64::try_from(ttl.as_millis()).unwrap_or(u64::MAX);
         let mut granted = Vec::new();
-        let delta = {
+        let granted_any = {
             let mut ns = self.ns();
             for (record, device, request) in ns.lease_requests() {
                 if !answered.insert((record, device, request.nonce)) {
@@ -954,10 +919,14 @@ impl QuickFS {
                     granted.push((path, lease));
                 }
             }
-            (!granted.is_empty()).then(|| ns.save_incremental())
+            let any = !granted.is_empty();
+            if any {
+                ns.note_change();
+            }
+            any
         };
-        if let Some(delta) = delta {
-            self.publish(delta);
+        if granted_any {
+            self.publish();
         }
         granted
     }
@@ -970,7 +939,7 @@ impl QuickFS {
         granted: bool,
     ) -> Result<WriteLease, Option<WriteLease>> {
         let ttl_ms = u64::try_from(ttl.as_millis()).unwrap_or(u64::MAX);
-        let delta = {
+        let taken = {
             let mut ns = self.ns();
             let current = ns.write_lease(record);
             let mut lease = WriteLease::take(current, me, now_ms(), ttl_ms).map_err(Some)?;
@@ -983,10 +952,11 @@ impl QuickFS {
             if !ns.put_write_lease(record, &lease) {
                 return Err(None);
             }
-            (lease, ns.save_incremental())
+            ns.note_change();
+            lease
         };
-        self.publish(delta.1);
-        Ok(delta.0)
+        self.publish();
+        Ok(taken)
     }
 
     /// Takes or renews the write lease of the file at `rel` for device `me`
@@ -1001,7 +971,7 @@ impl QuickFS {
         let components = path_components(rel).map_err(|_| None)?;
         let ino = self.ino_at(&components).ok_or(None)?;
         let ttl_ms = u64::try_from(ttl.as_millis()).unwrap_or(u64::MAX);
-        let delta = {
+        let taken = {
             let mut ns = self.ns();
             let record = ns.record_id_for(ino).ok_or(None)?;
             let current = ns.write_lease(record);
@@ -1012,10 +982,11 @@ impl QuickFS {
             if !ns.put_write_lease(record, &lease) {
                 return Err(None);
             }
-            (lease, ns.save_incremental())
+            ns.note_change();
+            lease
         };
-        self.publish(delta.1);
-        Ok(delta.0)
+        self.publish();
+        Ok(taken)
     }
 
     /// Releases `me`'s lease of `rel`: it keeps its holder and epoch and
@@ -1027,7 +998,7 @@ impl QuickFS {
         let Some(ino) = self.ino_at(&components) else {
             return;
         };
-        let delta = {
+        {
             let mut ns = self.ns();
             let Some(record) = ns.record_id_for(ino) else {
                 return;
@@ -1041,12 +1012,12 @@ impl QuickFS {
                     if !ns.put_write_lease(record, &released) {
                         return;
                     }
-                    ns.save_incremental()
+                    ns.note_change();
                 }
                 _ => return,
             }
-        };
-        self.publish(delta);
+        }
+        self.publish();
     }
 
     /// Every write lease on a file this mount can see, by path.

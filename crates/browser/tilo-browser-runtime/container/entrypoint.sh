@@ -30,6 +30,13 @@
 # under the handle its link names. Unset, a link still opens the page, and the
 # page has no shelf to leave an invitation on or take one from.
 #   TILO_WEB_SHELF      a relay's host:port, as Caddy reaches it (unset: none)
+# Where the tilo command's releases are kept, which the site serves at
+# /releases/<latest|vX.Y.Z>/<file> for its installer (the Caddyfile): the base
+# URL the release tooling (tools/ci/publish/cli-release.sh) publishes under,
+# each release at <base>/<version>/<file>. https://, or http:// on this
+# machine's loopback for a mirror beside it.
+#   TILO_RELEASES_ORIGIN  (unset: the Tilo package registry,
+#                       https://code.tilo.so/api/packages/tilo/generic/tilo-cli)
 set -eu
 host=${TILO_WEB_HOME_HOST:-}
 name=${TILO_WEB_HOME_NAME:-}
@@ -95,7 +102,19 @@ if [ -n "$embedder" ]; then
   fields="$fields${fields:+,}\"embedder\":\"$embedder\""
   ancestors="$ancestors $embedder"
 fi
+releases=${TILO_RELEASES_ORIGIN:-https://code.tilo.so/api/packages/tilo/generic/tilo-cli}
+case "$releases" in
+  https://*/* | http://127.0.0.1:*/* | http://localhost:*/*) ;;
+  *) echo "TILO_RELEASES_ORIGIN must be an https:// URL with a path: $releases" >&2; exit 2 ;;
+esac
+case "$releases" in
+  */ | *[!A-Za-z0-9._~:/%-]*) echo "TILO_RELEASES_ORIGIN must be a plain URL not ending in /: $releases" >&2; exit 2 ;;
+esac
+# Caddy proxies to a scheme and host, and puts the path in front of the request's.
+rest=${releases#*://}
 # Read by the Caddyfile.
+export TILO_RELEASES_UPSTREAM="${releases%%://*}://${rest%%/*}"
+export TILO_RELEASES_PATH="/${rest#*/}"
 export TILO_WEB_FRAME_ANCESTORS="$ancestors"
 printf '{%s}\n' "$fields" > /tmp/tilo-web/entry.json
 exec caddy run --config /etc/caddy/Caddyfile --adapter caddyfile

@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import {boot, chosenRoute, configureFeedback, initialRoute, readEntry, scopeHost, shownLink} from './entry.mjs';
+import {WORKSPACE_DOCUMENT_WAIT_MS, boot, chosenRoute, configureFeedback, initialRoute, present, readEntry, scopeHost, shownLink} from './entry.mjs';
 import {UNAVAILABLE, openTarget, untilSnapshot, untilViewable, viewInvocation} from './open-target.mjs';
 
 const message = {kind: 'chat.message', id: 'chat.message:1'};
@@ -141,6 +141,15 @@ test('the entry names the embedding site only when it is exactly an https origin
   }
 });
 
+test('the entry lays the desktop out as the console only when it says so', async () => {
+  const served = layout => async () => ({ok: true, json: async () => ({layout})});
+  const read = layout => readEntry({mode: 'desktop', location: {href: 'https://app.example/'}, fetch: served(layout)});
+  assert.deepEqual(await read('console'), {base: 'https://app.example/', layout: 'console'});
+  for (const other of ['desktop', 'Console', '', null, 1]) {
+    assert.deepEqual(await read(other), {base: 'https://app.example/'}, String(other));
+  }
+});
+
 test('the catalogue is never read before admission', async () => {
   const order = [];
   const target = {scope: {kind: 'room', host: 'https://h.example', room: 'r'}, app: 'so.tilo.chat', record: '', resource: message};
@@ -249,14 +258,14 @@ test('the page hears the peer the host let in before its desktop mounts, so a fa
 
 test('a workspace on the site the page came from, or on its machines, is hosted by that site', () => {
   const room = host => ({kind: 'room', host, room: 'R'});
-  assert.equal(scopeHost(room('https://eu1.tilo.coffee'), 'tilo.coffee'), 'tilo.coffee');
-  assert.equal(scopeHost(room('https://tilo.coffee'), 'tilo.coffee'), 'tilo.coffee');
-  assert.equal(scopeHost(room('https://rooms.example'), 'tilo.coffee'), 'rooms.example');
-  assert.equal(scopeHost(room('https://notilo.coffee'), 'tilo.coffee'), 'notilo.coffee');
-  assert.equal(scopeHost({kind: 'own'}, 'tilo.coffee'), null);
+  assert.equal(scopeHost(room('https://eu1.tilo.sh'), 'tilo.sh'), 'tilo.sh');
+  assert.equal(scopeHost(room('https://tilo.sh'), 'tilo.sh'), 'tilo.sh');
+  assert.equal(scopeHost(room('https://rooms.example'), 'tilo.sh'), 'rooms.example');
+  assert.equal(scopeHost(room('https://notilo.sh'), 'tilo.sh'), 'notilo.sh');
+  assert.equal(scopeHost({kind: 'own'}, 'tilo.sh'), null);
   // A workspace on another port of the page's machine is the site, by its name.
   assert.equal(scopeHost(room('http://localhost:9764'), 'localhost:8411'), 'localhost');
-  assert.equal(scopeHost(room('https://rooms.example:8443'), 'tilo.coffee'), 'rooms.example:8443');
+  assert.equal(scopeHost(room('https://rooms.example:8443'), 'tilo.sh'), 'rooms.example:8443');
 });
 
 test('the entry offers only the web About links the host set', async () => {
@@ -305,13 +314,13 @@ test('a sealed link’s page is the site’s own, wherever the link reached it',
   const asked = [];
   const fetch = async url => { asked.push(String(url)); return {ok: false}; };
   assert.deepEqual(await readEntry({mode: 'desktop',
-    location: {pathname: '/i/abcdefghijklmnop', href: 'https://tilo.coffee/i/abcdefghijklmnop'}, fetch}),
-    {base: 'https://tilo.coffee/'});
-  assert.deepEqual(asked, ['https://tilo.coffee/entry.json']);
+    location: {pathname: '/i/abcdefghijklmnop', href: 'https://tilo.sh/i/abcdefghijklmnop'}, fetch}),
+    {base: 'https://tilo.sh/'});
+  assert.deepEqual(asked, ['https://tilo.sh/entry.json']);
 });
 
 test('a sealed link admits through the site’s shelf and opens the workspace it names, as that workspace’s own link', async () => {
-  const site = 'https://tilo.coffee';
+  const site = 'https://tilo.sh';
   const handle = 'abcdefghijklmnop';
   const key = 'A'.repeat(43);
   const opened = [];
@@ -332,7 +341,7 @@ test('a sealed link admits through the site’s shelf and opens the workspace it
     whenReady: async () => {}, mountDesktop: async () => ({navigation})};
   const window = {
     __tiloLinkSecrets: Object.freeze({invite: key}),
-    location: {pathname: `/i/${handle}`, href: `${site}/i/${handle}#${key}`, hash: `#${key}`, host: 'tilo.coffee'},
+    location: {pathname: `/i/${handle}`, href: `${site}/i/${handle}#${key}`, hash: `#${key}`, host: 'tilo.sh'},
     history: {state: null, replaceState: (state, title, url) => replaced.push(url), pushState() {}},
     addEventListener() {}, removeEventListener() {},
   };
@@ -718,4 +727,25 @@ test('a link opened inside the desktop names its view in the address, and focus 
   for (const listener of [...listeners]) listener(snapshot);
   assert.deepEqual(written.at(-1), {scope, app: 'so.tilo.notes'});
   page_.router.stop();
+});
+
+test('a link to an app’s workspace document nobody wrote yet opens the app; any other missing record is not there', async () => {
+  const scope = {kind: 'room', host: 'https://h.example', room: 'r'};
+  const asked = [];
+  const peer = {
+    whenRecord: async (app, record, options) => {
+      asked.push([app, record, options?.timeoutMs]);
+      throw Object.assign(new Error(`the workspace sent no ${app} record ${record}`), {code: 'no-record'});
+    },
+    mountDesktop: async (_surface, options) => ({options}),
+  };
+  const shown = await present({route: {mode: 'app', target: {scope, app: 'so.tilo.scratchpad', record: ''}}, peer});
+  assert.equal(shown.mount.options.app, 'so.tilo.scratchpad');
+  assert.deepEqual(asked, [['so.tilo.scratchpad', '', WORKSPACE_DOCUMENT_WAIT_MS]]);
+  await assert.rejects(present({route: {mode: 'app', target: {scope, app: 'so.tilo.word-processor', record: 'uuid:1'}}, peer}),
+    {message: UNAVAILABLE});
+  // A connection that went away is not a record that is missing.
+  const gone = {...peer, whenRecord: async () => { throw new Error('Shared resource connection closed'); }};
+  await assert.rejects(present({route: {mode: 'app', target: {scope, app: 'so.tilo.scratchpad', record: ''}}, peer: gone}),
+    /connection closed/);
 });

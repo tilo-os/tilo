@@ -72,9 +72,12 @@ control runs — and the same actions stay reachable everywhere a command is lis
 app needs but nobody chooses is a `fn`, which computes from what it is given; an action that
 writes gets a name that says what it does, because a person can choose it too.
 
-Where a surface draws an offered action is not a property of the action's role: `frequent: true`
-puts it in the header row as a button, every other offered action sits in the header's menu
-beside the same commands an item's menu lists.
+Where a surface draws an offered action is not a property of the action's role, and an action
+does not say where it stands: the platform reads that off what the action is. A command that
+toggles a state (`on:`) stands in the header row as the control that shows whether it is on; the
+primary action is the header's Primary button; every other offered action sits in the header's
+menu beside the same commands an item's menu lists. A view that places the actions of what it
+shows (`actions: [check(primary: true), …]`) says their order and which one leads.
 
 To start a package, make a directory next to the others with one file:
 
@@ -176,7 +179,10 @@ fn label(c: Channel) -> Text {
 ```
 
 `Option<T>` is the built-in `.none | .some(value)` and `Result<T, E>` the built-in
-`.ok(value) | .err(error)`. A `T` is accepted where an `Option<T>` is expected. Enums, options,
+`.ok(value) | .err(error)`. A `T` is accepted where an `Option<T>` is expected: the value it
+holds. One level only, so `label: title` is `label: .some(title)`, `.some(x)` written is one
+`some` and never two, and an Option of an Option — which nothing but a declaration usually
+needs — says which of its levels it means (`.some(.none)`). Enums, options,
 results and resources compare with `==`; options and results are taken apart with `match`
 (`.some(x) => ...`), `if let`, `?.` and `??`.
 
@@ -188,19 +194,30 @@ root names one such resource per room: `root notes: Notes` is `notes` in the pac
 `alias.notes` in a package that uses it.
 
 **`if` and blocks.** There is one `if`: `if cond { ... } else { ... }`. Used as a value its branches
-agree on a type and the value is each block's last expression; as a statement it needs no
-`else`. Any block is an expression (`let n = { let a = 2; a * 2 }`), and a body that ends with an
-expression returns it:
+agree on a type and the value is each block's last expression; with no `else` it is the Option of
+that value, `.none` where the condition does not hold, which is what `else { .none }` gives it.
+A branch that is an Option itself is that Option, so two conditions in a row need no nesting. As
+a statement it needs no `else`. Any block is an expression (`let n = { let a = 2; a * 2 }`), and
+a body that ends with an expression returns it:
 
 ```
 fn title_of(list: TodoList) -> Text {
     if list.name == "" { "Todo" } else { list.name }
 }
+
+fn finished_at(t: Task) -> Option<Time> {
+    if let v = changed(t, .done) { if t.done { v.at } }
+}
+
+fn title_or_none(list: TodoList) -> Option<Text> {
+    if list.name != "" { list.name }
+}
 ```
 
 **Options without `match`.** `if let` binds an Option's value, several at once, each seeing
 the names before it; `x?.f` reads a field (or calls a method) of an Option's value, giving an
-Option; `x ?? y` is the value or the fallback. They mean the same in actions, fns and views:
+Option; `x ?? y` is the value or the fallback. They mean the same in actions, fns and views, and
+an `if` or `if let` without an `else` is the Option of what its branch gives:
 
 ```
 fn last_said(c: Conversation) -> Text {
@@ -249,8 +266,8 @@ made `r` when none after it did. A store with an index keeps the last change of 
 a list groups or sorts by it at the cost of one value a row, never of a row's history:
 `group: t -> changed(t, .done)?.at.day()`. `v.is(edit)` asks whether the action `edit` made it, by the action itself, never
 its label: `history(m).any(v -> v.is(edit))`. An offered `host.Action` answers the same:
-`actions(m).any(a -> a.is(edit))`. A version also says which task run made it (`.task`, a
-`host.TaskRun`), what it did (`.kind`: `created`, `changed` or `removed`; a removed resource
+`actions(m).any(a -> a.is(edit))`. A version also says which run made it (`.run`, a
+`host.Run`), what it did (`.kind`: `created`, `changed` or `removed`; a removed resource
 keeps its versions) and which `.fields` it changed. A resource can be made from another one:
 an invocation carries the resource it is made from when the host or the invoker names one, the
 change records it, and the resource it created says so, `created(r)?.from` — an
@@ -294,14 +311,14 @@ where each person meant. The collection a move is called on is where the item go
 whichever collection of the document holds it: `done.cards.move(card, to: done.cards.len())`
 takes a card from its column to the foot of `done`, the same card, with its history and every
 reference to it. An item cannot go inside itself. A place may count only a run of the
-collection, the items a board's lane shows: `items.move(x, to: i, among: items.filter(t ->
-t.section == s))` puts `x` at the place `i` among that run's other items, beside the one it
-then comes before, or after the run's last. Where an item stands among them is
-`items.index_of(x)`, an `Option<Int>`: none when it is not one, and the item just before it is
-`items.previous(x)`, an `Option<T>`: the row over the one a list is drawing, which the host
-knows without reading the items before it. A board lane's drop says both
-what was dropped and where: `on drop(moved: Task, at: Int): place(moved, s, at)`. How moves,
-edits and removals made at the same time merge is convergence.md, "Storage and sync".
+collection, any part of it in its own order, such as the items one filter shows:
+`items.move(x, to: i, among: items.filter(t -> t.section == s))` puts `x` at the place `i`
+among that run's other items, beside the one it then comes before, or after the run's last.
+Where an item stands among them is `items.index_of(x)`, an `Option<Int>`: none when it is not
+one, and the item just before it is `items.previous(x)`, an `Option<T>`: the row over the one a
+list is drawing, which the host knows without reading the items before it. A drop that names a
+place says both what was dropped and where: `on drop(moved: Task, at: Int): place(moved, s, at)`.
+How moves, edits and removals made at the same time merge is convergence.md, "Storage and sync".
 
 **Counts of what is not all read.** A window answers rows from the index it opens over, which
 may still be reading the workspace: `items.len()` and `items.count(pred)` are then the part read
@@ -475,8 +492,8 @@ A register written from itself (`item.done = not item.done`, `c.n = c.n + 1`) is
 with a default, as above, or make the field a counter for a delta.
 
 **Views.** A view body is UI statements: primitive and view calls (with child blocks), `for`,
-`if`/`else if`/`else`, `match` (each arm one UI call or a block) and `let`, whose type is written
-where a branch leaves it open (`let heading: Option<Date> = if let g = group { g(x) } else { .none }`).
+`if`/`else if`/`else`, `match` (each arm one UI call or a block) and `let`, whose type is its
+value's; a `let` names the type only where the value does not say enough of it.
 Options of UI primitives are the primitives' own enums, written as dot literals; lengths keep
 their units and flags stay bare words. An anchor follows the call as `as name`:
 

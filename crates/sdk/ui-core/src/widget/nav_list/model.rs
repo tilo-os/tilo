@@ -69,6 +69,8 @@ pub(crate) struct NavItemSpec {
     pub presence: Vec<String>,
     pub person: Option<super::NavPerson>,
     pub unread: bool,
+    /// The resource the place shows, when it is one.
+    pub shows: Option<String>,
 }
 
 /// One row of the navigation list: its stable key and what it is.
@@ -212,10 +214,17 @@ impl NavModel {
         self.by_key.get(key).and_then(|index| self.rows.get(*index))
     }
 
-    /// The row whose place names the resource `id`: a place key ends with the
-    /// id of the resource it shows (`project:<id>`), or is the id itself. No
-    /// row for a resource no place names.
+    /// The row whose place shows the resource `id`: the place bound to it (a channel's place
+    /// shows the channel), or one whose key names it — a place key ends with the id of the
+    /// resource it shows (`project:<id>`) or is the id itself. No row for a resource no place
+    /// names.
     pub(crate) fn item_naming(&self, id: &str) -> Option<&str> {
+        let shows = |row: &NavRowData| matches!(&row.kind, NavRowKind::Item { spec, .. } if spec.shows.as_deref() == Some(id));
+        if let Some(row) = self.rows.iter().find(|row| shows(row))
+            && let NavRowKind::Item { id: item, .. } = &row.kind
+        {
+            return Some(item.as_str());
+        }
         self.rows.iter().find_map(|row| {
             let NavRowKind::Item { id: item, .. } = &row.kind else {
                 return None;
@@ -548,6 +557,7 @@ impl NavModel {
                 id: item.id.clone(),
                 label: item.label.clone(),
                 spec: Box::new(NavItemSpec {
+                    shows: item.resource.clone(),
                     under_section,
                     icon: item.icon,
                     count: item.count,

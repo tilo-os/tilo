@@ -21,7 +21,8 @@ pub mod policy_clock;
 pub mod policy_schedule;
 pub mod published_authorization;
 pub mod record_content;
-pub mod route;
+/// The route an app's traffic is addressed on, the same on every host.
+pub use tilo_broker_core::route;
 pub mod services;
 pub mod task_runs;
 

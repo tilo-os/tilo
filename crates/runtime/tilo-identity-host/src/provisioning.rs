@@ -1398,6 +1398,7 @@ fn issue_device_certificate_at(
         issued_at_ns,
         expires_at_ns,
         signature: [0; 64],
+        issuer: None,
     };
     let digest = tilo_user_identity::device_cert_signing_digest(&cert)
         .map_err(|e| io::Error::other(e.to_string()))?;
@@ -1585,6 +1586,7 @@ mod tests {
             issued_at_ns: 1_000,
             expires_at_ns: None,
             signature: [0; 64],
+            issuer: None,
         };
         tilo_user_identity::sign_device_cert(&mut cert, &root).unwrap();
         persist::write_device_cert(&paths.device_cert, &cert).unwrap();
@@ -1742,6 +1744,7 @@ mod tests {
             issued_at_ns: 1_000,
             expires_at_ns: None,
             signature: [0; 64],
+            issuer: None,
         };
         tilo_user_identity::sign_device_cert(&mut cert, &root).unwrap();
         persist::install_device_cert(&paths, &cert, 2_000).unwrap();
@@ -1793,6 +1796,7 @@ mod tests {
             issued_at_ns: 1_000,
             expires_at_ns: None,
             signature: [0; 64],
+            issuer: None,
         };
         tilo_user_identity::sign_device_cert(&mut cert, &root).unwrap();
         persist::write_device_cert(&paths.device_cert, &cert).unwrap();
@@ -1839,10 +1843,13 @@ mod tests {
                 can_read_all_workspaces: true,
                 foreign: false,
                 can_administer_devices: false,
+                agent: None,
+                stand_in: false,
             },
             issued_at_ns: 1_000,
             expires_at_ns: None,
             signature: [0; 64],
+            issuer: None,
         };
         tilo_user_identity::sign_device_cert(&mut local_cert, &root).unwrap();
         persist::write_device_cert(&local_system.device_cert, &local_cert).unwrap();

@@ -632,7 +632,6 @@ fn build_meta(
                     toggles: None,
                     key: None,
                     group: None,
-                    frequent: false,
                     guard: false,
                     applies: false,
                 });
@@ -677,6 +676,8 @@ fn build_meta(
                     fields,
                     search: info.search.clone(),
                     origin: info.origin.clone(),
+                    title: info.title.clone(),
+                    untitled: info.untitled.clone(),
                 });
             }
             Item::Action(a) => {
@@ -716,7 +717,6 @@ fn build_meta(
                     toggles: toggled_field(env, a, &c.params),
                     key: c.present.key.clone(),
                     group: c.present.group.clone(),
-                    frequent: c.present.frequent,
                     guard: a
                         .requires
                         .iter()
@@ -1002,7 +1002,6 @@ pub fn compile_program_reading(
             toggles: None,
             key: None,
             group: None,
-            frequent: false,
             uses: Vec::new(),
             guard: false,
             applies: false,

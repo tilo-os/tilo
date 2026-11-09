@@ -1,9 +1,9 @@
-//! Holding an enrolled workspace's session for as long as the workspace is held:
+//! Holding an enrolled workspace's link for as long as the workspace is held:
 //! dialling the governor its enrollment pins, standing in with another
 //! host its governance names while the governor is out of reach, renewing
 //! this device's membership once custody renewed its certificate, and
 //! dialling again after each loss.
-use super::{Connect, DialError, Reach, Scope, UNANSWERED_BEFORE_PROBE};
+use super::{Connect, Linked, Reach, Scope};
 use crate::join::TransportHint;
 use std::{
     future::Future,
@@ -15,7 +15,6 @@ use std::{
     time::Duration,
 };
 use tilo_identity_host::custody::HostIdentity;
-use tilo_relay_session::RelayCoeditSession;
 use tokio::sync::Notify;
 
 /// The first pause before dialling again; each failure doubles it.
@@ -23,7 +22,7 @@ const FIRST_PAUSE: Duration = Duration::from_secs(1);
 /// The longest pause between dials.
 const LONGEST_PAUSE: Duration = Duration::from_secs(60);
 
-/// Whoever holds a workspace's session: what [`hold`] asks of it.
+/// Whoever holds a workspace's link: what [`hold`] asks of it.
 pub trait Holder: Send + Sync {
     /// How the workspace's host is reached now.
     fn reach(&self) -> Reach;
@@ -33,18 +32,18 @@ pub trait Holder: Send + Sync {
         true
     }
     /// Dialling `via`, the workspace's `governor` or a host standing in for it,
-    /// failed with `error`. The hold no longer counts as establishing a
-    /// session unless it goes on to another host.
+    /// failed with `reason`. The hold no longer counts as establishing a
+    /// link unless it goes on to another host.
     fn dial_failed(
         &self,
         via: TransportHint,
         governor: bool,
-        error: DialError,
+        reason: String,
     ) -> Pin<Box<dyn Future<Output = ()> + Send + '_>>;
-    /// Run `session`, pinned by `scope`, until it ends.
+    /// Run `linked`, the workspace's link, pinned by `scope`, until it ends.
     fn run(
         &self,
-        session: RelayCoeditSession,
+        linked: Linked,
         scope: Arc<Scope>,
     ) -> Pin<Box<dyn Future<Output = ()> + Send + '_>>;
 }
@@ -58,12 +57,12 @@ pub struct Link {
 
 impl Link {
     /// Note that a dial is under way before the hold's first one: what the
-    /// hold dials for a session, so a link between starting a hold and its
-    /// first dial is not taken for one with no session to come.
+    /// hold dials for a link, so a link between starting a hold and its
+    /// first dial is not taken for one with no link to come.
     pub fn dialling(&self) {
         self.establishing.store(true, Ordering::Release);
     }
-    /// No dial will follow: nothing here is establishing a session.
+    /// No dial will follow: nothing here is establishing a link.
     pub fn settled(&self) {
         self.establishing.store(false, Ordering::Release);
     }
@@ -81,7 +80,7 @@ impl Link {
 }
 
 enum Outcome {
-    /// A session ran, or the material moved on: dial again soon.
+    /// A link ran, or the material moved on: dial again soon.
     Again,
     /// Nothing reached the host: dial again after a growing pause.
     Failed,
@@ -89,7 +88,7 @@ enum Outcome {
     Wait,
 }
 
-/// Hold `connect`'s workspace's session for `holder`, as `identity`, until the
+/// Hold `connect`'s workspace's link for `holder`, as `identity`, until the
 /// workspace is no longer held here. Without custody there is nothing to dial.
 pub async fn hold(
     connect: Connect,
@@ -104,9 +103,8 @@ pub async fn hold(
     };
     let paced = holder.paces_itself();
     let mut pause = FIRST_PAUSE;
-    let mut unanswered = 0;
     while Connect::new(connect.owner().clone(), connect.workspace()).is_ok() {
-        let outcome = Box::pin(once(&connect, holder, link, &identity, &mut unanswered)).await;
+        let outcome = Box::pin(once(&connect, holder, link, &identity)).await;
         link.settled();
         match outcome {
             Outcome::Again => {
@@ -135,9 +133,9 @@ async fn wait(link: &Link, pause: Option<Duration>) {
     }
 }
 
-/// The session `once` dials, and the pins it is checked against.
+/// The link `once` dials, and the pin it is checked against.
 struct Dialled {
-    session: RelayCoeditSession,
+    linked: Linked,
     via: TransportHint,
 }
 
@@ -146,10 +144,8 @@ async fn once(
     holder: &dyn Holder,
     link: &Link,
     identity: &HostIdentity,
-    unanswered: &mut u32,
 ) -> Outcome {
-    let workspace = connect.workspace();
-    let Ok((hint, cert, revocations, _)) = connect.material(identity) else {
+    let Ok((hint, cert, _)) = connect.material(identity) else {
         return renew(connect, holder, link, identity).await;
     };
     let reach = holder.reach();
@@ -158,50 +154,27 @@ async fn once(
     if super::hosted_by(&hint, &own) && reach.own_host.is_none() {
         return Outcome::Wait;
     }
-    let Ok(ws) = connect
-        .owner()
-        .with_current(workspace, |view| Ok(view.workspace_id()))
-    else {
-        return Outcome::Wait;
-    };
-    let dial = |via: TransportHint, reach: Reach, probe: bool| {
-        let (cert, key, revocations) = (
-            cert.clone(),
-            identity.device_signing_key.clone(),
-            revocations.clone(),
-        );
+    let dial = |via: TransportHint, reach: Reach| {
+        let key = identity.device_signing_key.clone();
         async move {
             reach
-                .session(ws, &via, cert, key, revocations, probe)
+                .session(connect, &via, key)
                 .await
-                .map(|session| Dialled { session, via })
+                .map(|linked| Dialled { linked, via })
         }
     };
     link.establishing.store(true, Ordering::Release);
-    // A host from before versioned handshakes closes the stream on this
-    // device's hello without a word, as a refusal does: after a few, ask it
-    // the way such a host reads.
-    let probe = *unanswered >= UNANSWERED_BEFORE_PROBE;
-    let governor = dial(hint.clone(), reach.clone(), probe).await;
-    *unanswered = match &governor {
-        Err(DialError::NoAnswer(_)) => unanswered.saturating_add(1),
-        _ => 0,
-    };
+    let governor = dial(hint.clone(), reach.clone()).await;
     let dialled = match governor {
         Ok(dialled) => dialled,
-        Err(error) => {
+        Err(reason) => {
             // A host that did not answer stands for one out of reach: the
             // workspace goes on through the next host its governance names.
-            let next = match error {
-                DialError::NoAnswer(_) | DialError::Failed(_) => {
-                    connect.next_host(&own, None).ok().flatten()
-                }
-                DialError::PeerVersion { .. } => None,
-            };
+            let next = connect.next_host(&own, None).ok().flatten();
             link.establishing.store(next.is_some(), Ordering::Release);
-            holder.dial_failed(hint.clone(), true, error).await;
+            holder.dial_failed(hint.clone(), true, reason).await;
             let Some(dialled) = fail_over(connect, holder, link, (own, next), |via| {
-                dial(via, reach.clone(), false)
+                dial(via, reach.clone())
             })
             .await
             else {
@@ -213,20 +186,20 @@ async fn once(
     let mut current = dialled;
     loop {
         // The workspace's security may have moved on while dialling (another
-        // member joined): the session is still this device's as long as
+        // member joined): the link is still this device's as long as
         // its host and certificate are, and its standing checks out now.
         let Some(continuity) =
             connect
                 .material(identity)
                 .ok()
-                .and_then(|(current_hint, device, _, continuity)| {
+                .and_then(|(current_hint, device, continuity)| {
                     (current_hint == hint && device == cert).then_some(continuity)
                 })
         else {
             return Outcome::Again;
         };
         link.establishing.store(false, Ordering::Release);
-        let Dialled { session, via } = current;
+        let Dialled { linked, via } = current;
         let reaches_governor = via == hint;
         let scope = Arc::new(Scope::via(
             connect.clone(),
@@ -236,20 +209,20 @@ async fn once(
             continuity,
         ));
         if reaches_governor {
-            holder.run(session, scope).await;
+            holder.run(linked, scope).await;
             return Outcome::Again;
         }
         // A host stands in for the governor until the governor's own
-        // session is up again.
-        let mut run = holder.run(session, scope);
+        // link is up again.
+        let mut run = holder.run(linked, scope);
         current = loop {
             tokio::select! {
                 () = &mut run => return Outcome::Again,
                 () = wait(link, holder.paces_itself().then_some(LONGEST_PAUSE)) => {}
             }
-            match dial(hint.clone(), reach.clone(), false).await {
+            match dial(hint.clone(), reach.clone()).await {
                 Ok(back) => break back,
-                Err(error) => holder.dial_failed(hint.clone(), true, error).await,
+                Err(reason) => holder.dial_failed(hint.clone(), true, reason).await,
             }
         };
     }
@@ -290,7 +263,7 @@ async fn fail_over<F, D>(
 ) -> Option<Dialled>
 where
     D: Fn(TransportHint) -> F,
-    F: Future<Output = Result<Dialled, DialError>>,
+    F: Future<Output = Result<Dialled, String>>,
 {
     loop {
         let via = next?;
@@ -301,10 +274,10 @@ where
         );
         match dial(via.clone()).await {
             Ok(dialled) => return Some(dialled),
-            Err(error) => {
+            Err(reason) => {
                 next = connect.next_host(&own, Some(&via)).ok().flatten();
                 link.establishing.store(next.is_some(), Ordering::Release);
-                holder.dial_failed(via, false, error).await;
+                holder.dial_failed(via, false, reason).await;
             }
         }
     }

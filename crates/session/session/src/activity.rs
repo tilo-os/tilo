@@ -155,6 +155,7 @@ impl Activity {
                 lists,
                 engine: RefCell::default(),
                 door: RefCell::default(),
+                content: RefCell::default(),
                 undos: crate::task_undo::Undos::default(),
                 woken: Arc::clone(&woken),
                 wake: wake.clone(),
@@ -218,7 +219,7 @@ impl Activity {
     pub(crate) fn open_engine(
         &self,
         options: &crate::Options,
-        handle: &crate::DesktopHandle,
+        handle: &tilo_desktop_surface::DesktopHandle,
     ) -> Option<Arc<crate::engine::Engine>> {
         let engine = crate::options::open_engine(options, handle)?;
         self.attach_engine(Arc::clone(&engine));
@@ -246,6 +247,12 @@ impl Activity {
     /// it changed, as the person at the screen.
     pub(crate) fn attach_door(&self, door: Arc<dyn crate::task_undo::UndoDoor>) {
         *self.0.host.door.borrow_mut() = Some(door);
+    }
+
+    /// Read the output of the command runs History shows from `content` , the records' content
+    /// this device keeps.
+    pub(crate) fn attach_content(&self, content: Arc<crate::content::Plane>) {
+        *self.0.host.content.borrow_mut() = Some(content);
     }
 
     /// Take part in `link` 's fabric: what the person's devices answer each other about unlocking a
@@ -302,49 +309,9 @@ impl Activity {
         self.0.desk.record_now(tree, time, shows)
     }
 
-    /// Record `tree` as `asked` 's arranging action: one change of the desk whose own entry names
-    /// who asked and what they did. Whether the desk changed at all.
-    pub(crate) fn record_action(
-        &self,
-        tree: &DesktopTree,
-        time: i64,
-        asked: &tilo_actions::ActionContext,
-        shows: &[(tilo_desktop_model::TabId, String)],
-    ) -> bool {
-        self.0.desk.record_action(tree, time, asked, shows)
-    }
-
-    /// The record each window of the desk shows, by tab, as the desk keeps it.
-    pub(crate) fn records(&self) -> Vec<(tilo_desktop_model::TabId, String)> {
-        self.0.desk.records()
-    }
-
-    /// Take back `person` 's last step of the desk, and put the desk it leaves where the session
-    /// takes it up ([`Self::take_restored`]). Whether there was a step.
-    pub(crate) fn undo_desk(&self, person: &str) -> bool {
-        self.rewind(person, false)
-    }
-
-    /// Bring back the last step of the desk `person` took back.
-    pub(crate) fn redo_desk(&self, person: &str) -> bool {
-        self.rewind(person, true)
-    }
-
-    fn rewind(&self, person: &str, redo: bool) -> bool {
-        let stepped = if redo {
-            self.0.desk.redo(person)
-        } else {
-            self.0.desk.undo(person)
-        };
-        if stepped && let Some(tree) = self.0.desk.tree() {
-            *self.0.restored.borrow_mut() = Some(tree);
-        }
-        stepped
-    }
-
-    /// The last step of the desk's history, as who made it and what it did.
-    pub(crate) fn last_step(&self, person: &str) -> Option<(String, String)> {
-        self.0.desk.last_step(person)
+    /// The desk document, which the arrangement reads and changes too.
+    pub(crate) fn desk(&self) -> std::rc::Rc<tilo_session_core::desk::Desk> {
+        self.0.desk.desk()
     }
 
     /// The workspace a change the model wrote back leaves the desk at, if one is waiting.
@@ -706,6 +673,8 @@ struct NativeActivityHost {
     engine: RefCell<Option<Arc<crate::engine::Engine>>>,
     /// The session's action door, once its apps run here: the records an agent's run is undone in.
     door: RefCell<Option<Arc<dyn crate::task_undo::UndoDoor>>>,
+    /// The records' content this device keeps: what a command an agent ran printed.
+    content: RefCell<Option<Arc<crate::content::Plane>>>,
     undos: crate::task_undo::Undos,
     /// What asks the desk for the frame that shows how an undo ended.
     woken: Arc<AtomicBool>,
@@ -757,6 +726,10 @@ impl ActivityHost for NativeActivityHost {
     /// for one.
     fn writable(&self, origin: &HistoryOrigin) -> bool {
         matches!(origin, HistoryOrigin::DesktopTree)
+    }
+
+    fn record_content(&self, workspace: &str, app: &str, hash: &str) -> Option<Vec<u8>> {
+        self.content.borrow().as_ref()?.read(workspace, app, hash)
     }
 
     fn app_display_name(&self, app: &str) -> Option<String> {
@@ -1114,24 +1087,21 @@ mod tests {
             ))),
             ..tilo_actions::ActionContext::default()
         };
+        let document = desk.activity.desk();
         assert!(
-            desk.activity
-                .record_action(&tree, now_seconds(), &asked, &[]),
+            document.record_action(&tree, now_seconds(), &asked, &[]),
             "the desk keeps the move"
         );
         assert_eq!(
-            desk.activity.last_step("ada"),
+            document.last_step("ada"),
             Some(("agent-task:reading".to_owned(), "move".to_owned())),
             "the step names who asked and what they did"
         );
 
         // The person takes it back: the move is undone, and the rename before it is still there —
         // the two are separate steps.
-        assert!(desk.activity.undo_desk("ada"), "the person takes it back");
-        let restored = desk
-            .activity
-            .take_restored()
-            .expect("the desk to take the step back is staged for the pass");
+        assert!(document.undo("ada"), "the person takes it back");
+        let restored = document.tree().expect("the desk the step took it back to");
         assert_eq!(
             restored
                 .active_workspace()
@@ -1139,14 +1109,10 @@ mod tests {
             Some("Plans"),
             "exactly the move is undone"
         );
-        assert!(
-            desk.activity.undo_desk("ada"),
-            "the rename before it is its own step"
-        );
-        let restored = desk
-            .activity
-            .take_restored()
-            .expect("and the desk before it is staged too");
+        assert!(document.undo("ada"), "the rename before it is its own step");
+        let restored = document
+            .tree()
+            .expect("and the desk before it is there too");
         assert_eq!(
             restored
                 .active_workspace()

@@ -345,6 +345,7 @@ fn a_device(
         issued_at_ns: tilo_clock::unix_now_ns(),
         expires_at_ns: None,
         signature: [0; 64],
+        issuer: None,
     };
     tilo_user_identity::sign_device_cert(&mut cert, person).expect("a certified device");
     tilo_user_identity::persist::write_device_cert(&paths.device_cert, &cert)
@@ -375,6 +376,7 @@ fn invitation_for(workspace: &str, person: [u8; 32]) -> String {
         issued_at_ns: now,
         expires_at_ns: None,
         signature: [0; 64],
+        issuer: None,
     };
     tilo_user_identity::sign_device_cert(&mut issuer, &host).expect("a certified host");
     let grant = tilo_workspace_join::InviteGrant {
@@ -917,6 +919,7 @@ fn expired_throwaway_identity(
         issued_at_ns: tilo_clock::unix_now_ns().saturating_sub(A_DAY_AND_A_HALF_NS),
         expires_at_ns: Some(tilo_clock::unix_now_ns().saturating_sub(TWELVE_HOURS_NS)),
         signature: [0; 64],
+        issuer: None,
     };
     let digest = tilo_user_identity::device_cert_signing_digest(&aged).expect("a digest to sign");
     aged.signature = identity
@@ -1056,6 +1059,7 @@ fn certified(
         issued_at_ns: tilo_clock::unix_now_ns(),
         expires_at_ns: None,
         signature: [0; 64],
+        issuer: None,
     };
     tilo_user_identity::sign_device_cert(&mut cert, root).expect("a certified device");
     cert

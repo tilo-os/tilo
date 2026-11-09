@@ -581,18 +581,6 @@ ush_vm_probe="$repo/os/tests/ush-systemd-terminal-vm.sh"
 grep -Fq 'systemctl --user start tilo-ush.socket' "$ush_vm_probe"
 grep -Fq 'ush-systemd-terminal-probe.py' "$ush_vm_probe"
 grep -Fq 'TILO_USH_SYSTEMD_OK-root' "$repo/os/tests/ush-systemd-terminal-probe.py"
-
-if grep -Fq 'systemctl --global enable tilo-fs-recipient.service' "$repo/os/Containerfile"; then
-  echo 'received-files daemon still starts eagerly in every graphical session' >&2
-  exit 1
-fi
-grep -Fq 'systemctl --global enable tilo-fs-recipient.socket' "$repo/os/Containerfile"
-recipient_socket="$repo/os/usr/lib/systemd/user/tilo-fs-recipient.socket"
-grep -Fqx 'ListenStream=%t/tilo/services/tilo-fs.sock' "$recipient_socket"
-grep -Fqx 'SocketMode=0600' "$recipient_socket"
-grep -Fqx 'Backlog=16' "$recipient_socket"
-recipient_src="$repo/crates/system/fs/src/main.rs"
-grep -Fq 'activated_socket(socket)' "$recipient_src"
 # Activation may omit a pathname; an explicit path must still be the socket.
 activation_src="$repo/crates/platform/tilo-files/src/native/private.rs"
 grep -Fq 'std::env::var("LISTEN_PID")' "$activation_src"

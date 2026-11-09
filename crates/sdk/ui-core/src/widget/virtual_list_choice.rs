@@ -52,6 +52,16 @@ impl<M: ListModel> VirtualList<M> {
         self
     }
 
+    /// Whether a row with an item opens into it where it stands, or the item opens in front of
+    /// the list. A window too narrow to hold the item under the row shows one thing at a time:
+    /// the row's press then opens the item in front, where the window's back leads to the list
+    /// again, and a row the host held open closes as the window narrows. Default `true`.
+    #[must_use]
+    pub fn in_place(mut self, in_place: bool) -> Self {
+        self.in_place = in_place;
+        self
+    }
+
     /// The row the keyboard is on: the mounted row holding the focus — a control inside it
     /// counts, as `Tab` leaves it there — else the row this list's own keys last took. The
     /// row a key that acts on one row acts on.

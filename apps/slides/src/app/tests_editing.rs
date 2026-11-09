@@ -934,7 +934,7 @@ fn words_menu(bench: &mut Bench) -> (Vec<(String, Rect)>, Rect, Rect) {
             .modal_capture()
             .expect("the editor reports its open menu");
         let offset = shown.origin() - own.origin();
-        let rows = menu
+        let rows: Vec<(String, Rect)> = menu
             .items()
             .iter()
             .enumerate()
@@ -956,6 +956,10 @@ fn row(rows: &[(String, Rect)], label: &str) -> Point {
 
 #[test]
 fn right_click_or_a_held_finger_opens_the_words_menu() {
+    // A menu arrives from the press that opened it, drawn smaller and nearer
+    // that point until it settles: a test that reads its rows and clicks one
+    // reads them where they rest, as the person sees them once it has arrived.
+    let _arrived = ui::motion::testing::settled();
     // Case `right_click_selects_the_word_and_formats_it`.
     {
         let (mut bench, id) = editing("Hello world");

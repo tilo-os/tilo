@@ -322,6 +322,13 @@ impl MetaExt for Meta {
             .map(|ty| {
                 let mut schema = TypeSchema::new(&ty.id, &self.app, &ty.name);
                 schema.origin.clone_from(&ty.origin);
+                schema.title = ty.title.as_ref().and_then(|name| {
+                    ty.fields
+                        .iter()
+                        .find(|field| &field.name == name)
+                        .map(|field| field.id.clone())
+                });
+                schema.untitled.clone_from(&ty.untitled);
                 for field in &ty.fields {
                     schema.fields.push(field_schema(self, field));
                 }

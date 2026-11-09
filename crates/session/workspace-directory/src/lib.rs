@@ -47,7 +47,7 @@ pub struct Listed {
     /// The site whose own workspace it is: joining it joins that site's
     /// home.
     pub site: Option<url::Url>,
-    /// The host name it is listed by ("tilo.coffee").
+    /// The host name it is listed by ("tilo.sh").
     pub host: String,
 }
 
@@ -180,7 +180,7 @@ mod tests {
     }
 
     fn directory() -> url::Url {
-        url::Url::parse("https://eu1.tilo.coffee/peer/v1/directory").unwrap()
+        url::Url::parse("https://eu1.tilo.sh/peer/v1/directory").unwrap()
     }
 
     #[test]
@@ -190,12 +190,12 @@ mod tests {
         };
         let listed = listings_of(page, &directory(), None);
         assert_eq!(listed.len(), 1);
-        assert_eq!(listed[0].host, "eu1.tilo.coffee");
+        assert_eq!(listed[0].host, "eu1.tilo.sh");
         assert_eq!(
             listed[0].door.as_ref().map(url::Url::as_str),
             Some(
                 format!(
-                    "https://eu1.tilo.coffee/peer/v1/directory/{}/",
+                    "https://eu1.tilo.sh/peer/v1/directory/{}/",
                     listed[0].entry.workspace
                 )
                 .as_str()
@@ -241,7 +241,7 @@ mod tests {
         let mut recent = entry("Atelier");
         workspace(&mut recent, 4);
         recent.last_active_ms = Some(now - 60_000);
-        let mut community = entry("tilo.coffee");
+        let mut community = entry("tilo.sh");
         workspace(&mut community, 5);
         community.community = true;
         let page = DirectoryPage {
@@ -251,7 +251,7 @@ mod tests {
             .into_iter()
             .map(|listing| listing.entry.name)
             .collect();
-        assert_eq!(shown, ["tilo.coffee", "Zoo", "Garden", "Atelier", "Bakery"]);
+        assert_eq!(shown, ["tilo.sh", "Zoo", "Garden", "Atelier", "Bakery"]);
     }
 
     #[test]
@@ -280,18 +280,18 @@ mod tests {
 
     #[test]
     fn a_site_without_a_directory_still_lists_its_home() {
-        let site = url::Url::parse("https://tilo.coffee/").unwrap();
+        let site = url::Url::parse("https://tilo.sh/").unwrap();
         let home = SiteWorkspace {
             entry: site.clone(),
-            name: "tilo.coffee".into(),
-            admission: Some(url::Url::parse("https://rooms.tilo.coffee/").unwrap()),
+            name: "tilo.sh".into(),
+            admission: Some(url::Url::parse("https://rooms.tilo.sh/").unwrap()),
         };
         let listed = home_listing(&site, &home);
         assert!(listed.entry.community);
-        assert_eq!(listed.host, "tilo.coffee");
+        assert_eq!(listed.host, "tilo.sh");
         assert_eq!(listed.site, Some(site));
         assert_eq!(listed.door, home.admission);
-        assert_eq!(listed.key(), "https://tilo.coffee/");
+        assert_eq!(listed.key(), "https://tilo.sh/");
     }
 
     #[test]

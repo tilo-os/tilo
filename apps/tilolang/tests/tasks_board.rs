@@ -317,6 +317,8 @@ fn what_a_run_did_in_tasks_is_marked_on_its_rows() {
     let mut app =
         ui::framework::testing::HostedApp::open(support::installed("tasks"), "ada").unwrap();
     settle(&mut app);
+    // What a person adds in the list's entry waits in the inbox, and the window shows it there.
+    change_marks::choose(&mut app, "Inbox");
     let root = app
         .read(|doc| tilolang_tilo::action::resource_ids(doc, "so.tilo.lang.tasks"))
         .remove(0);
@@ -369,8 +371,8 @@ fn what_a_run_did_in_tasks_is_marked_on_its_rows() {
     settle(&mut app);
     let ground = chroma_in(&mut app, [0.0, 0.0, 8.0, 8.0]);
     // Every row the run touched that the inbox still holds is marked: the one it removed
-    // stays as a struck row, all at the row's own height, with the agent's face on its
-    // trailing edge. The one it checked off left the inbox for Done.
+    // stays as a struck row, all at the row's own height, with the agent's face leading the
+    // line it says under the title. The one it checked off left the inbox for Done.
     let listed = change_marks::rows(&mut app);
     assert!(
         listed.len() == 2 && listed.iter().all(|(_, _, marked)| *marked),
@@ -386,10 +388,17 @@ fn what_a_run_did_in_tasks_is_marked_on_its_rows() {
             (rect[3] - listed[0].1[3]).abs() < 0.5,
             "{name} keeps the row's height"
         );
-        let face = [rect[0] + rect[2] - 24.0, rect[1], 24.0, rect[3]];
+        // What it says leads the line under the title: the face stands at the row's left, where
+        // the words start, and not on the trailing edge.
+        let leading = [rect[0], rect[1], rect[2] / 2.0, rect[3]];
         assert!(
-            chroma_in(&mut app, face) > ground.saturating_add(24),
-            "{name} shows the agent's face"
+            chroma_in(&mut app, leading) > ground.saturating_add(24),
+            "{name} shows the agent's face where its words start"
+        );
+        let trailing = [rect[0] + rect[2] - 24.0, rect[1], 24.0, rect[3]];
+        assert!(
+            chroma_in(&mut app, trailing) <= ground.saturating_add(24),
+            "{name} keeps its trailing edge for the row's own controls"
         );
     }
     // The header counts them, once.
@@ -420,12 +429,14 @@ fn what_a_run_did_in_tasks_is_marked_on_its_rows() {
 /// open.
 #[test]
 fn a_tasks_history_shows_its_due_day_before_and_after_and_who_set_it() {
-    use change_marks::{action_id, named, published_with, run, settle};
+    use change_marks::{action_id, choose, named, published_with, run, settle};
     use history_window::{after, shoot, times};
     let _settled = ui::motion::testing::settled();
     let mut app =
         ui::framework::testing::HostedApp::open(support::installed("tasks"), "ada").unwrap();
     settle(&mut app);
+    // The task a person adds waits in the inbox, which the window shows it in.
+    choose(&mut app, "Inbox");
     let root = app
         .read(|doc| tilolang_tilo::action::resource_ids(doc, "so.tilo.lang.tasks"))
         .remove(0);
@@ -436,11 +447,11 @@ fn a_tasks_history_shows_its_due_day_before_and_after_and_who_set_it() {
     app.invoke(None, None, &tasks, &add, &titled, false)
         .unwrap();
     settle(&mut app);
-    // The row opens the task's page, which stays open while the days it waits at move it out
-    // of the inbox, into Today and on to Upcoming.
+    // The row opens where it stands, and stays open while the days the task waits at move it
+    // out of the inbox, into Today and on to Upcoming.
     let row = named(&mut app, "SwipeRow", "Call the landlord");
     app.harness()
-        .click_at(row[0] + row[2] / 4.0, row[1] + row[3] / 2.0);
+        .click_at(row[0] + row[2] / 2.0, row[1] + row[3] / 2.0);
     settle(&mut app);
     let task = published_with(&mut app, &tasks, "Pick date…");
     let schedule = action_id(&mut app, &task, "Pick date…");
@@ -451,6 +462,7 @@ fn a_tasks_history_shows_its_due_day_before_and_after_and_who_set_it() {
     };
     app.invoke(None, None, &task, &schedule, &due("2026-11-02"), false)
         .unwrap();
+    settle(&mut app);
     // The agent's run puts it off twice: one entry of two changes.
     let (agent, ambient) = run();
     for day in ["2026-11-04", "2026-11-05"] {
@@ -573,6 +585,7 @@ fn the_home_list_shows_the_inbox_tasks_of_a_busy_week() {
         let mut app = TestApp::<TlApp>::capture_at(Some("a busy week"), DESKTOP)
             .expect("the scenario stages");
         settle(&mut app);
+        click_item(&mut app, "Inbox");
         let names: Vec<Option<String>> = accessible(&mut app)
             .into_iter()
             .map(|node| node.name)
@@ -634,7 +647,8 @@ fn the_home_list_shows_the_inbox_tasks_of_a_busy_week() {
     });
 }
 
-/// The row the keyboard is on, as the list publishes it, and the open menu's box.
+/// The box of the row the keyboard is on: moving through a list focuses a row without
+/// choosing it, so the row the keyboard is on is the focused one.
 fn keyboard_row(app: &mut TestApp<TlApp>) -> Option<[f64; 4]> {
     let snapshot = app.harness().inspection();
     let mut all = Vec::new();
@@ -644,7 +658,7 @@ fn keyboard_row(app: &mut TestApp<TlApp>) -> Option<[f64; 4]> {
         .find(|node| {
             node.semantics
                 .as_ref()
-                .is_some_and(|semantics| semantics.state.selected)
+                .is_some_and(|semantics| semantics.state.focused)
         })
         .map(|node| node.rect)
 }
@@ -672,6 +686,8 @@ fn a_row_menu_opened_from_the_keyboard_stands_under_that_row() {
     let mut app =
         TestApp::<TlApp>::capture_at(Some("a busy week"), DESKTOP).expect("the scenario stages");
     settle(&mut app);
+    // Choosing a place leaves the task the scenario showed open, as a person does.
+    click_item(&mut app, "Today");
     // The list takes the keyboard, and Down puts it on a row.
     app.harness().key("Tab");
     settle(&mut app);
@@ -715,8 +731,10 @@ fn the_today_list_takes_in_tomorrows_task_when_the_persons_midnight_passes() {
         let mut app = TestApp::<TlApp>::capture_at(Some("a busy week"), DESKTOP)
             .expect("the scenario stages");
         settle(&mut app);
+        // Choosing a place leaves the task the scenario showed open.
         click_item(&mut app, "Today");
-        settle(&mut app);
+        // The task the day is about, opened where it stands: its history reads its age.
+        click_item(&mut app, "Call the landlord");
         assert!(
             shows(&mut app, "Call the landlord"),
             "today's task is listed"

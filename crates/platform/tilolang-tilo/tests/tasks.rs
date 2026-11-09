@@ -10,7 +10,7 @@ use crate::fixtures::Replica;
 
 pub(crate) const DISCUSSION: &str = include_str!("../../../../apps/tl/discussion/app.tl");
 pub(crate) const DISCUSSION_IDS: &str = include_str!("../../../../apps/tl/discussion/app.ids");
-pub(crate) const TASKS: &str = include_str!("../../../../apps/tl/tasks/app.tl");
+pub(crate) const TASKS: &str = crate::fixtures::TASKS_SOURCE;
 pub(crate) const TASKS_IDS: &str = include_str!("../../../../apps/tl/tasks/app.ids");
 /// What a task's page is drawn from: the tasks and the discussion under them.
 pub(crate) const PACKAGES: &[(&str, &str)] = &[(DISCUSSION, DISCUSSION_IDS), (TASKS, TASKS_IDS)];
@@ -62,7 +62,8 @@ pub(crate) fn target(v: &Value) -> Option<String> {
 }
 
 /// The arguments `new_task` takes for a task added with only its title: the list it is added
-/// to, nothing for the project, section, day, time and assignee, and what was typed.
+/// to, nothing for the project, section and place it is typed in, nothing for the day, time and
+/// assignee, and what was typed.
 pub(crate) fn create(root: &Value, title: &str) -> Vec<Value> {
     let mut args = vec![root.clone()];
     args.resize(6, Value::none());
@@ -173,6 +174,9 @@ fn an_entry_reads_when_it_is_due_in_the_persons_zone() {
     ada.host.set_clock(|| "2026-10-29T20:00:00Z".to_owned());
     ada.host.set_zone(|| 9 * 3600);
     let mut view = ada.view(APP);
+    // The inbox's entry reads what is typed: what a task says of when it is due is the app's
+    // reading of the words, and today's entry is the day's, typed in as it stands.
+    go_to(&mut view, "Inbox");
     for text in [
         "Call the landlord tomorrow 9am",
         "Pay rent fri",
@@ -251,6 +255,63 @@ fn an_entry_reads_when_it_is_due_in_the_persons_zone() {
             "Pay rent"
         ],
         "every dated entry after today, soonest first"
+    );
+}
+
+#[test]
+fn an_entry_in_today_reads_the_same_words_as_the_inbox() {
+    let (mut ada, _) = workspace();
+    ada.host.runtime().set_members(
+        vec![
+            tilolang_runtime::members::Member::person("ada", "owner"),
+            tilolang_runtime::members::Member::person("bo", "editor"),
+        ],
+        None,
+    );
+    // Thursday 2026-10-29: Friday is the next day. Today's entry takes the same words the
+    // inbox's does, a day, a moment and who it is for, and a task that names no day is today's.
+    let mut view = ada.view(APP);
+    go_to(&mut view, "Today");
+    enter(&mut view, "Call the bank fri 10am @bo");
+    enter(&mut view, "Water the plants");
+    ada.commit();
+    let day = |d: &str| Value::some(Value::text(d));
+    let made: Vec<(Value, Value, Value, Value)> = items(&ada)
+        .iter()
+        .map(|t| {
+            (
+                read(&ada, t, "title"),
+                read(&ada, t, "due"),
+                read(&ada, t, "at"),
+                read(&ada, t, "assignee"),
+            )
+        })
+        .collect();
+    assert_eq!(
+        made,
+        vec![
+            (
+                Value::text("Call the bank"),
+                day("2026-10-30"),
+                day("2026-10-30T10:00:00Z"),
+                Value::some(Value::Principal(Principal::new("bo"))),
+            ),
+            (
+                Value::text("Water the plants"),
+                day("2026-10-29"),
+                Value::none(),
+                Value::none(),
+            ),
+        ],
+        "the words fill the task the same way here: fri 10am is Friday at ten, and no day is today"
+    );
+    let mut view = ada.view(APP);
+    assert_eq!(count(&view, "Today"), Some(1), "{:?}", places(&view));
+    go_to(&mut view, "Today");
+    assert_eq!(
+        home_list_titles(&ada, &mut view),
+        ["Water the plants"],
+        "the task that named no day stands in Today; the one for Friday waits"
     );
 }
 
@@ -370,13 +431,17 @@ fn the_home_list_counts_the_inbox_that_was_just_written() {
     for title in ["Buy oat milk and eggs", "Book a haircut"] {
         call(&ada, "new_task", create(&root, title));
     }
+    let mut view = ada.view(APP);
+    go_to(&mut view, "Inbox");
     assert_eq!(
-        list_count(&ada.view(APP)),
+        list_count(&view),
         Some(2),
         "both unsorted tasks count before they are indexed"
     );
     ada.commit();
-    assert_eq!(list_count(&ada.view(APP)), Some(2), "and after");
+    let mut after = ada.view(APP);
+    go_to(&mut after, "Inbox");
+    assert_eq!(list_count(&after), Some(2), "and after");
 }
 
 #[test]
@@ -1087,6 +1152,7 @@ fn a_task_filed_out_of_the_inbox_keeps_its_row_until_the_view_is_left() {
     call(&ada, "new_task", create(&root, "Buy oat milk"));
     ada.commit();
     let mut view = ada.view(APP);
+    go_to(&mut view, "Inbox");
     let of = target(&packed).expect("a task");
     let (place, _, _) = home_row_of(&mut view, &of);
     call(&ada, "file", vec![packed.clone(), project]);
@@ -1153,6 +1219,7 @@ fn a_rows_checkbox_checks_the_tasks_under_it() {
         "the task is in the inbox, so the home list shows it"
     );
     let mut view = ada.view(APP);
+    go_to(&mut view, "Inbox");
     // Every row, not only the ones the window has room for.
     view.set_lazy_rows(false).unwrap();
     let key = key_of(&view, "ui.ListRow", &|node| {
@@ -1823,6 +1890,7 @@ fn home_rows(view: &mut ViewInstance) -> Vec<(String, Option<String>, Option<Str
 fn the_home_list_nests_a_tasks_subtasks_under_its_row() {
     let (ada, parent) = launch_post();
     let mut view = ada.view(APP);
+    go_to(&mut view, "Inbox");
     assert_eq!(
         all(view.tree(), "ui.VirtualList")
             .first()
@@ -2122,10 +2190,16 @@ pub(crate) fn page_commands(view: &ViewInstance) -> Vec<Command> {
         .collect()
 }
 
-/// The commands a task's row places before any other: the view's own order, what a person
-/// opens the row for.
+/// The commands a task's row places before any other: the row's own way to the task's page,
+/// which no other surface offers, then the view's own order of what a person opens the row for.
 fn placed_commands() -> Vec<&'static str> {
-    vec!["Complete", "Pick date…", "Assign…", "Delete"]
+    vec![
+        "Open as page",
+        "Complete",
+        "Pick date…",
+        "Assign…",
+        "Delete",
+    ]
 }
 
 /// A task's row opens with the commands its view places for it — checking it off, when it is
@@ -2137,6 +2211,7 @@ fn a_tasks_row_opens_with_the_commands_its_view_places() {
     let booked = call(&ada, "new_task", create(&root, "Book a haircut"));
     ada.commit();
     let mut view = ada.view(APP);
+    go_to(&mut view, "Inbox");
     let commands = row_commands(&mut view, &booked);
     let placed = placed_commands();
     let rest: Vec<&str> = spec_commands()
@@ -2147,16 +2222,16 @@ fn a_tasks_row_opens_with_the_commands_its_view_places() {
     expected.extend(rest.iter().copied());
     assert_eq!(labels(&commands), expected, "as a person reads them");
     assert_eq!(
-        commands[0].key.as_deref(),
+        commands[1].key.as_deref(),
         Some("Ctrl+enter"),
         "the keys the app declares show as the keyboard spells them"
     );
     assert_eq!(
-        commands[0].group, None,
+        commands[1].group, None,
         "a command its view places on its own stands on its own"
     );
     assert_eq!(
-        commands[1].group.as_deref(),
+        commands[2].group.as_deref(),
         Some("Plan"),
         "the view puts the date picker in a run of its own"
     );
@@ -2424,6 +2499,7 @@ fn a_typing_control_is_named_by_a_word_a_person_says() {
     let task = call(&ada, "new_task", create(&root, "Book the van"));
     ada.commit();
     let mut home = ada.view(APP);
+    go_to(&mut home, "Inbox");
     let mut page = task_page(&ada, &task);
     let mut said: Vec<String> = Vec::new();
     for (where_, view) in [("the list", &mut home), ("a task", &mut page)] {
@@ -2460,13 +2536,19 @@ fn a_tasks_page_menu_offers_what_its_row_does() {
     let booked = call(&ada, "new_task", create(&root, "Book a haircut"));
     ada.commit();
     let mut home = ada.view(APP);
+    go_to(&mut home, "Inbox");
     let row = row_commands(&mut home, &booked);
     let page = task_page(&ada, &booked);
     let behind_the_door = page_commands(&page);
     assert_eq!(labels(&behind_the_door), spec_commands());
     let mut offered = labels(&behind_the_door);
     offered.sort_unstable();
-    let mut placed = labels(&row);
+    // The row also offers its own way to the page, which a page has no need of: what the two
+    // surfaces are held to is the commands the task takes.
+    let mut placed: Vec<&str> = labels(&row)
+        .into_iter()
+        .filter(|label| spec_commands().contains(label))
+        .collect();
     placed.sort_unstable();
     assert_eq!(
         offered, placed,
@@ -2488,6 +2570,7 @@ fn adding_a_subtask_from_a_menu_asks_for_its_title_and_names_it_under_its_row() 
     ada.commit();
     // The menu reads as asking for the title the task is made under.
     let mut view = ada.view(APP);
+    go_to(&mut view, "Inbox");
     let add = row_commands(&mut view, &parent)
         .into_iter()
         .find(|command| command.label.starts_with("Add subtask"))
@@ -2618,7 +2701,6 @@ fn every_declared_action_is_offered() {
         "indent",
         "outdent",
         "remove",
-        "new_task_today",
         "place",
         "move_to",
     ] {

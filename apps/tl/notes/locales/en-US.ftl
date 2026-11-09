@@ -9,6 +9,7 @@ d-mavvhka7 = Note
         [one] note
        *[other] notes
     }
+    .untitled = Untitled
 
 d-dpj7scfe = Title
 
@@ -31,13 +32,6 @@ d-v7cub7aw = Notes
     }
 
 d-tmqqtkeb = Notes
-
-d-qef5yqkq = Note order
-    .doc = The order a notebook lists its notes in.
-
-d-spdco6z2 = Date created
-
-d-vs3pg7vu = Title
 
 d-qymo5lg2 = New note
     .doc = Starts a note.
@@ -62,8 +56,6 @@ d-m6rqg3kf = Pin~present
 d-akcqjax3 = Notebook
 
 d-xqxkoqbj = Note row
-    .w-untitled = Untitled
 
 d-6wqou47w = Note editor
-    .w-untitled = Untitled
     .w-write-something = Write something

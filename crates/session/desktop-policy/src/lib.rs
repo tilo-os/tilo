@@ -21,9 +21,7 @@ use tilo_desktop_model::commands::move_tab_to_workspace;
 use tilo_desktop_model::{
     DesktopTree, Display, GroupId, IdMinter, Tab, TabId, TileContent, Workspace, WorkspaceSlot,
 };
-use tilo_desktop_surface::navigation::{
-    ChromeEffect, DeskEffect, RouteIds, Standing, active_route,
-};
+use tilo_desktop_surface::navigation::{ChromeEffect, DeskEffect, RouteIds, active_route};
 use tilo_desktop_surface::outcome::{Closed, Outcome};
 use tilo_desktop_surface::{DesktopHandle, DesktopSurface, TileSource, seed_tree};
 use ui::kurbo::Rect;
@@ -39,6 +37,19 @@ const CRASHED_PREFIX: &str = "crashed:";
 /// front and behind.
 const HELD_PREFIX: &str = "held:";
 const HELD_BEHIND_PREFIX: &str = "held-behind:";
+
+/// The name of a launch whose place the desk holds for a window the session
+/// starts itself.
+fn held_name(app: &str, background: bool) -> String {
+    format!(
+        "{}{app}",
+        if background {
+            HELD_BEHIND_PREFIX
+        } else {
+            HELD_PREFIX
+        }
+    )
+}
 
 /// What the policy learns about a window.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -73,6 +84,10 @@ pub struct Layout {
     /// fills that display's whole area, the bar's room included, and the
     /// bar steps aside while it does.
     pub fullscreen: Option<u64>,
+    /// Each window floating over the desk, and what the desk covers the
+    /// windows under it with for that window: its bar and body, the whole
+    /// rect they fill, in surface coordinates ([`DesktopPolicy::float_covers`]).
+    pub covers: Vec<(u64, Rect)>,
 }
 
 /// Windows waiting for their tab, shared with the surface's tile source.
@@ -92,6 +107,22 @@ pub struct LaunchAsk {
 /// The launches the desktop asked for and no window is behind: the session
 /// starts each one ([`DesktopPolicy::take_launches`]).
 type Launches = Rc<RefCell<Vec<LaunchAsk>>>;
+
+/// A tab the desk made for a window whose app asked for it: the session starts
+/// that window beside it, so the window takes the tab as its instance.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct HeldLaunch {
+    /// The app whose window the tab waits for.
+    pub app: String,
+    /// The tab the window takes when it maps.
+    pub tab: TabId,
+    /// The workspace the tab stands in, where the window's process belongs.
+    pub workspace: String,
+}
+
+/// The tabs the desk made for the windows apps asked it for, oldest first: the
+/// session starts each one ([`DesktopPolicy::take_held_launches`]).
+type HeldLaunches = Rc<RefCell<Vec<HeldLaunch>>>;
 
 /// What each window on this desk shows, as its app holds the record: the
 /// record it is on and the kind of resource that record keeps.
@@ -177,6 +208,8 @@ struct Windows {
     names: AppNames,
     /// The tabs held for the apps' coming windows.
     held: Held,
+    /// The tabs the desk made for the windows apps asked it for.
+    held_launches: HeldLaunches,
     /// The tabs the person carried to another workspace, which only the
     /// session can move.
     carried: Carried,
@@ -225,7 +258,7 @@ impl TileSource for Windows {
         )))
     }
 
-    fn launch(&mut self, _: &Workspace, id: TabId, app: &str) -> Option<Tab> {
+    fn launch(&mut self, workspace: &Workspace, id: TabId, app: &str) -> Option<Tab> {
         let held = app
             .strip_prefix(HELD_BEHIND_PREFIX)
             .map(|app| (app, true))
@@ -243,6 +276,14 @@ impl TileSource for Windows {
                 .iter_mut()
                 .find(|record| record.tab.is_none() && record.background == background)?;
             record.tab = Some(id);
+            drop(held);
+            // The tab is the window's instance: the session starts it now
+            // that the desk holds the place it takes.
+            self.held_launches.borrow_mut().push(HeldLaunch {
+                app: app.to_owned(),
+                tab: id,
+                workspace: workspace.id().to_string(),
+            });
             let tab = self.place(id, app);
             self.titles
                 .borrow_mut()
@@ -368,6 +409,9 @@ pub struct DesktopPolicy {
     names: AppNames,
     /// The tabs held for the apps' coming windows.
     held: Held,
+    /// The tabs the desk made for the windows apps asked it for, waiting for
+    /// the session.
+    held_launches: HeldLaunches,
     /// The tabs the person carried to another workspace, waiting for the
     /// session.
     carried: Carried,
@@ -411,6 +455,7 @@ impl DesktopPolicy {
         let titles = Titles::default();
         let names = AppNames::default();
         let held = Held::default();
+        let held_launches = HeldLaunches::default();
         let carried = Carried::default();
         let notes = Notes::default();
         let (surface, handle) = DesktopSurface::new(
@@ -424,6 +469,7 @@ impl DesktopPolicy {
                 titles: Rc::clone(&titles),
                 names: Rc::clone(&names),
                 held: Rc::clone(&held),
+                held_launches: Rc::clone(&held_launches),
                 carried: Rc::clone(&carried),
                 notes: Rc::clone(&notes),
             }),
@@ -437,6 +483,7 @@ impl DesktopPolicy {
             titles,
             names,
             held,
+            held_launches,
             carried,
             notes,
             places: BTreeMap::new(),
@@ -454,6 +501,13 @@ impl DesktopPolicy {
     /// a repeated notice tab.
     pub fn take_launches(&mut self) -> Vec<LaunchAsk> {
         std::mem::take(&mut *self.launches.borrow_mut())
+    }
+
+    /// The tabs the desk made for windows apps asked for, oldest first: the
+    /// session starts each window beside the tab it takes, so the window is
+    /// that tab's instance.
+    pub fn take_held_launches(&mut self) -> Vec<HeldLaunch> {
+        std::mem::take(&mut *self.held_launches.borrow_mut())
     }
 
     /// Read what each window shows from `notes`, the session's: the desk asks
@@ -713,6 +767,22 @@ impl DesktopPolicy {
         self.handle.read(|tree| anchor_for(tree, app))
     }
 
+    /// The tab of `app` the window `instance` runs in, when the desk shows it:
+    /// the tab a window is given is the window's instance
+    /// ([`HeldLaunch`], [`LaunchAsk::tab`]).
+    #[must_use]
+    pub fn tab_of_instance(&self, app: &str, instance: u64) -> Option<TabId> {
+        self.handle.read(|tree| {
+            tabs(tree)
+                .find(|tab| {
+                    tab.id == instance
+                        && tilo_desktop_model::apps::canonical_app_id(&tab.tile)
+                            .is_some_and(|id| app_ids_match(&id, app))
+                })
+                .map(|tab| tab.id)
+        })
+    }
+
     /// Where the window of `tab` shows its content, in the desk's own
     /// pixels, as of the surface's last layout: where a box a window drew
     /// stands on the desk.
@@ -802,25 +872,37 @@ impl DesktopPolicy {
         let Some(beside) = self.handle.read(|tree| route_of(tree, tab)) else {
             return false;
         };
-        let launch = format!(
-            "{}{app}",
-            if background {
-                HELD_BEHIND_PREFIX
-            } else {
-                HELD_PREFIX
-            }
-        );
         let command = ChromeEffect::OpenApp {
-            app: launch,
+            app: held_name(app, background),
             beside: Some(beside.tab.to_string()),
             background: Some(background),
             float: None,
         };
+        self.hold_launch(app, command, background)
+    }
+
+    /// Hold a tab for the next window of `app` in a window of its own, right
+    /// after the one in front and standing over the desk beside it: the window
+    /// a send landed in, which the desk gives the strip's room to so the card
+    /// it draws at stands beside the window that sent rather than over it.
+    /// Taking focus there unless `background`.
+    pub fn hold_window(&mut self, app: &str, background: bool) -> bool {
+        let command = ChromeEffect::OpenApp {
+            app: held_name(app, background),
+            beside: None,
+            background: Some(background),
+            float: Some(true),
+        };
+        self.hold_launch(app, command, background)
+    }
+
+    /// Ask the desk for `command`'s window and keep the place it makes for
+    /// `app`. The desktop makes the tab on its next pass: the place is asked
+    /// for here, so one that never comes can be given up before then.
+    fn hold_launch(&self, app: &str, command: ChromeEffect, background: bool) -> bool {
         if self.handle.dispatch(command).is_err() {
             return false;
         }
-        // The desktop makes the tab on its next pass: the place is asked for
-        // here, so one that never comes can be given up before then.
         self.held
             .borrow_mut()
             .entry(app.to_owned())
@@ -828,38 +910,6 @@ impl DesktopPolicy {
             .push(HeldTab {
                 tab: None,
                 background,
-            });
-        true
-    }
-
-    /// Open a window of `app` standing over the desk at `at` — the corner of
-    /// its rect is where the window's corner goes, in the desk's own pixels
-    /// — as the tab held for the launch that follows: a conversation a send
-    /// landed in stands where the box that sent it stood. Whether the desk
-    /// took it.
-    pub fn open_floated(&mut self, app: &str, at: [f64; 4]) -> bool {
-        let standing = Standing {
-            x: at[0],
-            y: at[1],
-            width: at[2] - at[0],
-            height: at[3] - at[1],
-        };
-        let command = ChromeEffect::OpenApp {
-            app: format!("{HELD_PREFIX}{app}"),
-            beside: None,
-            background: None,
-            float: Some(standing),
-        };
-        if self.handle.dispatch(command).is_err() {
-            return false;
-        }
-        self.held
-            .borrow_mut()
-            .entry(app.to_owned())
-            .or_default()
-            .push(HeldTab {
-                tab: None,
-                background: false,
             });
         true
     }
@@ -1388,10 +1438,25 @@ impl DesktopPolicy {
         }
         Layout {
             fullscreen: self.handle.read(covering_window),
+            covers: self.float_covers(),
             shown,
             hidden,
             floating,
         }
+    }
+
+    /// Each window floating over the desk, and the rect the desk draws over the windows under
+    /// it for that window: the whole of its bar and body, which it paints opaque, in surface
+    /// coordinates. What lies under it there is drawn around it.
+    #[must_use]
+    pub fn float_covers(&self) -> Vec<(u64, Rect)> {
+        self.handle.read(|tree| {
+            self.handle
+                .float_covers()
+                .into_iter()
+                .filter_map(|(tab, cover)| Some((window_of(tree, tab)?, cover)))
+                .collect()
+        })
     }
 
     /// The windows whose tabs the person closed since the last call: the

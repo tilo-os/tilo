@@ -2,9 +2,13 @@
 //! another device of that person, stops at the relay: it is admitted to no
 //! room the relay governs, administers none of them, and every member's
 //! replica refuses it from the room's governance.
+use ed25519_dalek::SigningKey;
 use governance_actions::{admitted, connected, host_action};
 use tilo_relay::workspaces::ENTER_ROOM;
-use tilo_user_identity::{RevocationEntry, RevocationReason, sign_revocation_entry};
+use tilo_user_identity::{
+    CERTIFICATION_SCHEMA_VERSION, CertificationRequest, RevocationEntry, RevocationReason,
+    issue_device_cert_as_stand_in, sign_revocation_entry,
+};
 
 use super::*;
 
@@ -191,5 +195,124 @@ async fn a_revocation_announced_in_one_room_reaches_the_relay_and_every_room_it_
     assert!(!admitted(&relay, &laptop, other.workspace_id).await);
     assert!(!admitted(&relay, &bob_laptop, plans.workspace_id).await);
     assert!(admitted(&relay, &phone, plans.workspace_id).await);
+    relay.shutdown().await;
+}
+
+/// A person's root revokes the stand-in approver the relay's host holds for
+/// them: a key no room lists, because a stand-in is no device. The relay keeps
+/// the entry in its own revocation log — the list its approvals read — and what
+/// the stand-in signed after the revocation is refused there while what it
+/// signed before stays valid.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[allow(
+    clippy::too_many_lines,
+    reason = "one scenario: the stand-in approves, is revoked, and is refused from then on"
+)]
+async fn a_stand_in_revoked_in_a_room_is_refused_by_what_it_signs_after() {
+    let alice = TestUser::fresh("Alice");
+    let bob = TestUser::fresh("Bob");
+    let host = alice.enrol("alice-home", DeviceCapabilities::host());
+    let laptop = alice.enrol("alice-laptop", DeviceCapabilities::primary());
+    let tablet = bob.enrol("bob-tablet", DeviceCapabilities::member());
+    let state = tempfile::tempdir().unwrap();
+    let relay = start(state.path(), &alice, &host).await;
+    let plans = create_and_enter(&relay, &laptop, "Plans").await;
+    join(&relay, &laptop, &plans.workspace, &bob, &tablet).await;
+
+    // Bob set Tilo up through an agent: this host holds a stand-in approver for
+    // him, and it certified a browser of his while his root lived in one tab.
+    let day = 24 * 60 * 60 * 1_000_000_000;
+    let stand_in_key = SigningKey::from_bytes(&[0x5a; 32]);
+    let made_at = tilo_clock::unix_now_ns();
+    let mut stand_in = tilo_user_identity::prepare_stand_in_cert(
+        bob.user_pk,
+        stand_in_key.verifying_key().to_bytes(),
+        "Stand-in on the host",
+        made_at,
+        made_at + 30 * day,
+    );
+    tilo_user_identity::sign_device_cert(&mut stand_in, &bob.user_sk).unwrap();
+    let request = |key: u8, at: u64| {
+        let device = SigningKey::from_bytes(&[key; 32]);
+        CertificationRequest {
+            version: CERTIFICATION_SCHEMA_VERSION,
+            user_public_key: bob.user_pk,
+            device_public_key: device.verifying_key().to_bytes(),
+            device_label: "Browser".into(),
+            requested: DeviceCapabilities::member(),
+            nonce: [key; 16],
+            invite: [0; 16],
+            issued_at_ns: at,
+            expires_at_ns: at + 60_000_000_000,
+            signature: [0; 64],
+        }
+        .sign(&device)
+        .unwrap()
+    };
+    let before = request(7, stand_in.issued_at_ns + 1);
+    let approved = issue_device_cert_as_stand_in(
+        &before,
+        &stand_in_key,
+        &stand_in,
+        &RevocationList::new(),
+        before.issued_at_ns,
+    )
+    .unwrap();
+
+    // He keeps the root with a passkey: his tablet announces the revocation his
+    // root signed in the room it shares with the relay.
+    let revoked_at = stand_in.issued_at_ns + 2;
+    let mut revocation = RevocationEntry {
+        user_public_key: bob.user_pk,
+        revoked_device_public_key: stand_in.device_public_key,
+        revoked_at_ns: revoked_at,
+        reason: RevocationReason::Retired,
+        signature: [0; 64],
+    };
+    sign_revocation_entry(&mut revocation, &bob.user_sk).unwrap();
+    let tablet_session = session(&relay, &tablet, plans.workspace_id).await;
+    publish(&tablet_session, &hello(&tablet, vec![revocation.clone()]));
+
+    // The relay's revocation log holds it: the list every handshake and every
+    // approval this host makes reads, and a restart reads again.
+    let logged = tilo_test_env::within("the relay keeps the revocation", async {
+        loop {
+            if let Ok(entries) = tilo_relay::store::load_revocations(state.path())
+                && entries.iter().any(|known| known == &revocation)
+            {
+                return entries;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await;
+    let mut revocations = RevocationList::new();
+    for entry in logged {
+        revocations.insert(entry).unwrap();
+    }
+    assert!(
+        !revocations.refuses(&approved),
+        "the browser the stand-in approved before stays a device of Bob's"
+    );
+    assert!(
+        revocations.refuses(&stand_in),
+        "the stand-in itself is refused"
+    );
+    // A stand-in that answers anyway, as a host still holding its key would.
+    let later_request = request(8, revoked_at);
+    let later = issue_device_cert_as_stand_in(
+        &later_request,
+        &stand_in_key,
+        &stand_in,
+        &RevocationList::new(),
+        revoked_at,
+    )
+    .unwrap();
+    assert!(
+        revocations.refuses(&later),
+        "and so is a device it signs after the revocation"
+    );
+
+    tablet_session.close().await;
     relay.shutdown().await;
 }

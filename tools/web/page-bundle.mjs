@@ -36,7 +36,9 @@ export function pageBundle({profile = 'quick'} = {}) {
   const result = spawnSync(
     'bash',
     [join(repo, 'crates/browser/tilo-browser-runtime/scripts/build.sh'), dir, '--profile', profile, '--module-only'],
-    {cwd: repo, stdio: 'inherit'},
+    // The build's progress goes to stderr: a page driver's stdout is the
+    // channel its test reads answers from.
+    {cwd: repo, stdio: ['ignore', process.stderr, 'inherit']},
   );
   if (result.status !== 0) {
     rmSync(dir, {recursive: true, force: true});

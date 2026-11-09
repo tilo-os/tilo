@@ -162,7 +162,16 @@ pub struct Engine {
     /// The desk's workspaces this device could not found here: founding one is asked for again only
     /// by a later session, not by every pass over the desk.
     unfounded: std::sync::Mutex<std::collections::BTreeSet<WorkspaceId>>,
+    /// This device's workspaces as its other devices reach them, when it keeps a state directory to
+    /// hold their frames in.
+    directed: Option<tilo_peer_state::direct::Owning>,
 }
+
+/// How much of the workspaces' sealed history this device keeps to hand their other devices: every
+/// frame that passes through it, oldest retired first once it holds this much.
+const FRAMES_KEPT: tilo_peer_state::store::Appetite = tilo_peer_state::store::Appetite::Bounded {
+    max_bytes: 512 * 1024 * 1024,
+};
 
 /// A record's bytes, with the heads they were last saved at: what [`Engine::record_since`] answers
 /// when the record changed since the caller last read it.
@@ -197,6 +206,19 @@ impl Engine {
             &owner_file_of(&path),
             Arc::clone(&slots) as Arc<dyn FileHost>,
         )?;
+        // What the workspaces' other devices reach this one at, keeping the frames each brings: a
+        // device that holds a workspace is a store device of it.
+        let directed = match tilo_peer_state::store::Store::open(frames_path(state), FRAMES_KEPT) {
+            Ok(store) => Some(tilo_peer_state::direct::Owning::new(
+                owner.clone(),
+                identity.device_signing_key.clone(),
+                Arc::new(store),
+            )),
+            Err(error) => {
+                tracing::warn!(%error, "this device serves no workspace to its other devices");
+                None
+            }
+        };
         Ok(Self {
             owner,
             slots,
@@ -204,6 +226,7 @@ impl Engine {
             keys: ChannelKeyProvider::default(),
             link: std::sync::Mutex::new(None),
             unfounded: std::sync::Mutex::new(std::collections::BTreeSet::new()),
+            directed,
         })
     }
 
@@ -760,6 +783,20 @@ impl Engine {
         &self.owner
     }
 
+    /// What this device answers for the workspaces it holds, beside the planes its endpoint already
+    /// serves: the direct link their other devices sync on, and catch up from the frames this one
+    /// kept.
+    pub(crate) fn direct_protocols(
+        &self,
+    ) -> Vec<(Vec<u8>, Box<dyn iroh::protocol::DynProtocolHandler>)> {
+        self.directed.as_ref().map_or_else(Vec::new, |directed| {
+            vec![(
+                tilo_peer_state::direct::DIRECT_ALPN.to_vec(),
+                Box::<dyn iroh::protocol::DynProtocolHandler>::from(directed.clone()),
+            )]
+        })
+    }
+
     /// Where `workspace` 's host is reached and the device its enrollment pins: the address its
     /// live plane is dialled at.
     pub(crate) fn workspace_host(
@@ -997,32 +1034,6 @@ impl tilo_action_broker::owner_commits::OwnerCustody for Engine {
             link.publish_custody(workspace_id);
         }
     }
-
-    /// Start the record empty as this device, from the kind the app's join
-    /// named and the declarations its installed package carries: what lets a
-    /// device that does not hold a record yet write the first change of it,
-    /// as the workspace's host starts it for an app there.
-    fn prepare_record(
-        &self,
-        owner: &NativeWorkspaceOwner,
-        workspace_id: WorkspaceId,
-        app: &str,
-        record: &str,
-        kind: &str,
-    ) -> Result<(), String> {
-        self.check_custody(owner, workspace_id)?;
-        let declared = crate::mount::apps::declared_resource_kinds(app)
-            .ok_or_else(|| format!("{app} is not installed on this device"))?;
-        let route =
-            tilo_peer_state::owner::ApplicationRecord::declared(app, record, kind, &declared)?;
-        let (cert, _, _) =
-            tilo_network_actor::native_ingress::Connect::new(owner.clone(), workspace_id)?
-                .custody(&self.identity)?;
-        let key = self.identity.device_signing_key.clone();
-        owner
-            .prepare_application_record(workspace_id, &cert, &key, &route, SystemTime::now())
-            .map(drop)
-    }
 }
 
 /// The id a listing reports for an invitation, as its 32 bytes: 64 hex characters.
@@ -1062,6 +1073,12 @@ fn record_path(state: &Path) -> PathBuf {
     state.join("tilo").join(FILE)
 }
 
+/// Where this device keeps the frames of the workspaces it holds, for the devices of theirs that
+/// catch up from it: beside the record that holds the workspaces themselves.
+fn frames_path(state: &Path) -> PathBuf {
+    state.join("tilo").join("frames")
+}
+
 #[cfg(test)]
 mod tests {
     #![allow(
@@ -1087,6 +1104,7 @@ mod tests {
             issued_at_ns: tilo_clock::unix_now_ns(),
             expires_at_ns: None,
             signature: [0; 64],
+            issuer: None,
         };
         tilo_user_identity::sign_device_cert(&mut cert, &person).expect("a certified device");
         let identity = HostIdentity {

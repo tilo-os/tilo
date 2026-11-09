@@ -19,7 +19,6 @@ from qualify_apk import digest, pinned, verify_runtime
 from execution_host import add_architecture, native_architecture
 from run_arity_journey import REPO, Journey, wait_for, require_ok, checked_output
 from run_integration_journey import stop, stop_bus_helpers
-from hydration_support import ColdDocumentMount
 
 
 def probe_notification_ownership(output, bus_address):
@@ -49,10 +48,8 @@ def probe_notification_ownership(output, bus_address):
         raise RuntimeError('unrelated bus sender could replace the foreground notification')
 
 
-def exercise_work(journey, output, profile, package, args, documents, grants, cold=None):
+def exercise_work(journey, output, profile, package, args, documents, grants):
     source, destination = documents
-    if cold:
-        cold.require_projected()
     frame = journey.launch()
     private = profile / 'data/tilo-rooms' / journey.workspace()['room'] / package
     def recorded(marker):
@@ -65,10 +62,6 @@ def exercise_work(journey, output, profile, package, args, documents, grants, co
     (record.parent / 'scope-inputs').write_text(str(source) + '\n' + str(destination) + '\n')
     wait_for(lambda: recorded('scoped-descriptors=open'), 'actual scoped descriptors')
     wait_for(lambda: len(destination.read_text().splitlines()) >= 3, 'actual worker writes')
-    if cold:
-        # No harness read may hydrate the received file before this observation.
-        cold.state(b'local')
-        cold.steps.append({'phase': 'actual-foreground-descriptor-read', 'local': True})
     if args.expect_incompatibility:
         if ('zero-id-rejected=false' not in record.read_text()
                 or 'null-notification-rejected=false' not in record.read_text()):
@@ -191,17 +184,12 @@ def main(work_driver=None):
     for name in ('apk', 'signer', 'runtime-receipt'):
         parser.add_argument('--' + name + '-sha256', required=True)
     parser.add_argument('--fixture-grants', action='store_true', required=True)
-    parser.add_argument('--cold-hydration', action='store_true',
-                        help='require an actual cold FUSE source before foreground descriptor reads')
     expectation = parser.add_mutually_exclusive_group()
     expectation.add_argument('--expect-incompatibility', action='store_true')
     expectation.add_argument('--expect-notification-denial', action='store_true')
     if work_driver is not None:
         expectation.add_argument('--expect-sticky-incompatibility', action='store_true')
     args = parser.parse_args()
-    if args.cold_hydration and (work_driver is not None or args.expect_incompatibility
-                               or args.expect_notification_denial):
-        parser.error('cold foreground interruption requires the compatible work journey')
     native_architecture(args.architecture)
     output = checked_output(args.output)
     payload = args.payload.resolve(strict=True)
@@ -228,12 +216,8 @@ def main(work_driver=None):
     source.write_text('Tilo disposable scoped source\n')
     destination.write_text('')
     grants, journey = [], None
-    prefix = 'tah-' if args.cold_hydration else 'tilo-android-foreground-'
+    prefix = 'tilo-android-foreground-'
     with tempfile.TemporaryDirectory(prefix=prefix, dir=parent) as runtime, ExitStack() as stack:
-        cold = None
-        if args.cold_hydration:
-            cold = stack.enter_context(ColdDocumentMount(Path(runtime) / 'f', source, output))
-            source = cold.document
         socket, bus_socket = Path(runtime) / 'control.sock', Path(runtime) / 'bus.sock'
         env = {**os.environ, 'XDG_RUNTIME_DIR': runtime, 'TILO_HEADLESS_PROFILE': str(profile),
             'TILO_APPS_DATA_DIR': str(catalogue), 'TILO_LAUNCHER_BIN': str(REPO / 'target/debug/tilo-launcher'),
@@ -264,10 +248,7 @@ def main(work_driver=None):
                 elif work_driver is not None:
                     result = work_driver(journey, output, profile, package, args, (source, destination), grants)
                 else:
-                    result = exercise_work(journey, output, profile, package, args, (source, destination), grants, cold)
-                if cold:
-                    cold.verify_restored(phase='interrupted-foreground-source-verified')
-                    result['cold_hydration'] = cold.report()
+                    result = exercise_work(journey, output, profile, package, args, (source, destination), grants)
                 log.flush()
                 text = (output / 'compositor.log').read_text()
                 if 'landlock: fully enforced' not in text or 'no_new_privs: true' not in text:

@@ -1,8 +1,7 @@
 use super::{CheckpointCapture, CheckpointRoute};
 use crate::owner::application_record::tests::{Fixture, fixture};
 use crate::owner::{
-    ApplicationRecord, DocumentRead, NativeWorkspaceOwner, WorkspaceId, open_file, testing,
-    testing::record_on_disk,
+    DocumentRead, NativeWorkspaceOwner, WorkspaceId, open_file, testing, testing::record_on_disk,
 };
 use automerge::transaction::Transactable as _;
 use collab_types::CommitNamed as _;
@@ -26,24 +25,13 @@ fn routes() -> Vec<CheckpointRoute> {
 
 fn prepare(fixture: &Fixture) {
     for route in routes() {
-        let declared = ApplicationRecord::declared(
+        testing::start_record(
+            &fixture.owner,
+            workspace(),
             &route.app,
             &route.record,
-            "chat.workspace",
-            &["chat.workspace".into()],
-        )
-        .unwrap();
-        assert!(
-            fixture
-                .owner
-                .prepare_application_record(
-                    workspace(),
-                    &fixture.certificate,
-                    &fixture.key,
-                    &declared,
-                    fixture.now,
-                )
-                .unwrap()
+            &fixture.key,
+            fixture.now,
         );
         mutate(fixture, &route, &route.record);
     }
@@ -489,24 +477,13 @@ fn checkpoint_reader_fixture() -> (
     let mut fixture = fixture();
     let member = checkpoint_member(&mut fixture);
     prepare(&fixture);
-    let declared = ApplicationRecord::declared(
+    testing::start_record(
+        &fixture.owner,
+        workspace(),
         "so.tilo.chat",
         "first",
-        "chat.workspace",
-        &["chat.workspace".into()],
-    )
-    .unwrap();
-    assert!(
-        fixture
-            .owner
-            .prepare_application_record(
-                workspace(),
-                &fixture.certificate,
-                &fixture.key,
-                &declared,
-                fixture.now,
-            )
-            .unwrap()
+        &fixture.key,
+        fixture.now,
     );
     mutate(&fixture, &member_routes()[0], "first captured route");
     let subject = Subject::person(

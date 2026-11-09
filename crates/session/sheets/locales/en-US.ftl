@@ -178,7 +178,7 @@ directory-search = Search public workspaces, or paste a link or code
 directory-link-or-code = Join with a link or code
 directory-loading = Looking for public workspaces…
 directory-empty-title = No public workspaces yet
-directory-empty = Type a site like tilo.coffee and press Enter to see its workspaces.
+directory-empty = Type a site like tilo.sh and press Enter to see its workspaces.
 directory-no-match-title = Nothing matches “{ $query }”
 directory-no-match = Press Enter to look it up as a site.
 directory-failed-title = Couldn't read the workspaces
@@ -578,6 +578,7 @@ workspace-delete-lens = Delete workspace
 # Inviting people: the link into the workspace in front, and the links that
 # still work.
 invite-title = Invite people
+invite-title-workspace = Invite people to “{ $workspace }”
 invite-description = Make a link that brings someone into this workspace. Each link works for one hour, and you can take it back here.
 invite-close = Close
 invite-refusal = Only someone whose part in this workspace allows inviting can make a link.

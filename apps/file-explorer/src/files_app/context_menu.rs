@@ -1,6 +1,6 @@
 use super::{
-    FilesState, conflict_strategy_label, merge_supported_path, share_expiry_label,
-    share_permission_label, short_fingerprint, short_uuid, tidy_menu,
+    FilesState, conflict_strategy_label, merge_supported_path, short_fingerprint, short_uuid,
+    tidy_menu,
 };
 use crate::command::FileCommand;
 use crate::i18n::{arg, t, t_args};
@@ -235,152 +235,24 @@ impl FilesState {
                     .primary()
                     .and_then(|index| displayed.get(index))
             {
+                if self.offers_sharing(entry) {
+                    // What Files shows is shared by the workspace it is in: the
+                    // row opens the desk's own invite sheet, where the link and
+                    // the part it brings people in at are picked, and where the
+                    // people the directory knows are offered. Sharing leads a
+                    // group of its own, directly above the file's properties.
+                    spec.push((String::new(), None));
+                    spec.push((t("files-share"), Some(FileCommand::Share)));
+                }
                 spec.push((
                     t("files-menu-properties"),
                     Some(FileCommand::ShowProperties),
                 ));
-                if !entry.is_dir
-                    && entry.record_id.is_some()
-                    && crate::model::share_control_socket(&entry.path, &self.workspace_roots)
-                        .is_some()
-                {
-                    for human in self
-                        .trusted_humans
-                        .humans()
-                        .iter()
-                        .filter(|human| !human.devices.is_empty())
-                        .take(16)
-                    {
-                        // Keep the concise default, then expose every named
-                        // permission/expiry choice without ever placing the
-                        // display label into the authority command.
-                        spec.push((
-                            t_args(
-                                "files-share-with",
-                                &[arg("person", human.display_name.clone())],
-                            ),
-                            Some(FileCommand::ShareWithPerson {
-                                person: human.person,
-                            }),
-                        ));
-                        for permission in [
-                            fs_protocol::FilePermission::View,
-                            fs_protocol::FilePermission::Edit,
-                        ] {
-                            for expiry in [
-                                crate::sharing::ShareExpiryChoice::Day,
-                                crate::sharing::ShareExpiryChoice::Week,
-                                crate::sharing::ShareExpiryChoice::Month,
-                                crate::sharing::ShareExpiryChoice::Never,
-                            ] {
-                                spec.push((
-                                    t_args(
-                                        "files-share-composer-named",
-                                        &[
-                                            arg("person", human.display_name.clone()),
-                                            arg("permission", share_permission_label(permission)),
-                                            arg("expiry", share_expiry_label(expiry)),
-                                        ],
-                                    ),
-                                    Some(FileCommand::CreateShare(
-                                        crate::sharing::ShareComposerRequest {
-                                            subject: crate::sharing::ShareSubjectChoice::Named(
-                                                human.person,
-                                            ),
-                                            permission,
-                                            expiry,
-                                            link_uses: None,
-                                            recipient_devices: human
-                                                .devices
-                                                .iter()
-                                                .map(|device| device.device)
-                                                .collect(),
-                                        },
-                                    )),
-                                ));
-                            }
-                        }
-                    }
-                    spec.push((
-                        t("files-copy-one-time-link"),
-                        Some(FileCommand::CreateOneTimeShareLink),
-                    ));
-                    for permission in [
-                        fs_protocol::FilePermission::View,
-                        fs_protocol::FilePermission::Edit,
-                    ] {
-                        for expiry in [
-                            crate::sharing::ShareExpiryChoice::Day,
-                            crate::sharing::ShareExpiryChoice::Week,
-                            crate::sharing::ShareExpiryChoice::Month,
-                        ] {
-                            for link_uses in [
-                                crate::sharing::LinkUseChoice::OneUse,
-                                crate::sharing::LinkUseChoice::Bounded(10),
-                            ] {
-                                let uses = match link_uses {
-                                    crate::sharing::LinkUseChoice::OneUse => {
-                                        t("files-share-choice-one-use")
-                                    }
-                                    crate::sharing::LinkUseChoice::Bounded(count) => t_args(
-                                        "files-share-choice-bounded-uses",
-                                        &[arg("count", i64::from(count))],
-                                    ),
-                                };
-                                spec.push((
-                                    t_args(
-                                        "files-share-composer-link",
-                                        &[
-                                            arg("permission", share_permission_label(permission)),
-                                            arg("expiry", share_expiry_label(expiry)),
-                                            arg("uses", uses),
-                                        ],
-                                    ),
-                                    Some(FileCommand::CreateShare(
-                                        crate::sharing::ShareComposerRequest {
-                                            subject: crate::sharing::ShareSubjectChoice::Link,
-                                            permission,
-                                            expiry,
-                                            link_uses: Some(link_uses),
-                                            recipient_devices: Vec::new(),
-                                        },
-                                    )),
-                                ));
-                            }
-                        }
-                    }
-                }
-                if entry.share.is_some() {
-                    spec.push((t("files-sharing-access"), Some(FileCommand::ShowSharing)));
-                }
                 if entry.availability.is_some() {
                     spec.push((
                         t("files-availability-title-short"),
                         Some(FileCommand::ShowAvailability),
                     ));
-                }
-                if crate::model::share_control_socket(&entry.path, &self.workspace_roots).is_some()
-                    && let Some(share) = &entry.share
-                {
-                    for grant in share
-                        .grants
-                        .iter()
-                        .filter(|grant| grant.status == fs_protocol::ShareGrantStatus::Active)
-                    {
-                        let grant_id = grant.grant_id;
-                        let subject = match grant.subject {
-                            fs_protocol::ShareSubjectProjection::Person { person } => {
-                                self.trusted_humans.display_name_or_fingerprint(&person)
-                            }
-                            fs_protocol::ShareSubjectProjection::BearerLink => {
-                                t("files-shared-link")
-                            }
-                        };
-                        spec.push((
-                            t_args("files-revoke-subject", &[arg("subject", subject)]),
-                            Some(FileCommand::RevokeShare { grant_id }),
-                        ));
-                    }
                 }
                 if entry.history.is_some() {
                     spec.push((t("files-version-history"), Some(FileCommand::ShowHistory)));

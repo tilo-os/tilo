@@ -17,6 +17,7 @@ mod cases {
 type Todo {
     title: Text
     done: Bool = false
+    archived: Bool = false
 }
 
 /// Checks or unchecks an item.
@@ -33,10 +34,20 @@ action tick(item: Todo) {
     check(item)
 }
 
+action file(item: Todo, archived: Bool = not item.archived, title: Text) {
+    item.archived = archived
+    item.title = title
+}
+
+action mark(item: Todo) {
+    file(item, title: "marked")
+}
+
 view item(item: Todo) {
     stack {
         button(check(item)) as tick
         button(check(item, done: false)) as clear
+        button(file(item, title: "from the view")) as file_it
     }
 }
 "#;
@@ -162,6 +173,43 @@ view item(item: Todo) {
             dones,
             [Some(json!(true)), Some(json!(false))],
             "the last press changed nothing, so it left no change behind"
+        );
+    }
+
+    #[test]
+    fn a_call_that_leaves_out_a_parameter_before_one_it_gives_fills_it() {
+        let w = World::new();
+        let mark = w.app.action("mark");
+        let out =
+            w.rt.invoke_action(&me(), (mark.as_str(), vec![Value::resource(&w.item)]))
+                .unwrap();
+        assert!(matches!(out, InvokeOutcome::Done(_)), "{out:?}");
+        assert_eq!(
+            w.rt.read(&w.item, "archived").unwrap(),
+            Value::Bool(true),
+            "`archived` is the item's then"
+        );
+        assert_eq!(w.rt.read(&w.item, "title").unwrap(), Value::text("marked"));
+        let recorded = w.recorded("file");
+        assert_eq!(
+            recorded[0],
+            json!([{"ref": w.item.id_string(), "ty": w.item.ty}, true, "marked"]),
+            "the invocation recorded the argument its default made"
+        );
+        // A view applies the same call, its arguments made when the button is pressed.
+        let v =
+            w.rt.open_view(&me(), &w.app.view("item"), vec![Value::resource(&w.item)])
+                .unwrap();
+        let file_it = w.app.anchor("item", "file_it");
+        assert!(matches!(v.press(&file_it).unwrap(), InvokeOutcome::Done(_)));
+        assert_eq!(
+            w.rt.read(&w.item, "title").unwrap(),
+            Value::text("from the view")
+        );
+        assert_eq!(
+            w.rt.read(&w.item, "archived").unwrap(),
+            Value::Bool(false),
+            "flipped from what it was"
         );
     }
 

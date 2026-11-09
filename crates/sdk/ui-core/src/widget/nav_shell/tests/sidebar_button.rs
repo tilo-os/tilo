@@ -22,11 +22,11 @@ fn the_bars_sidebar_button_flips_a_docked_sidebar() {
     assert!(three_clicks(mail_shell(), 1280, SidebarPlacement::Docked));
 }
 
-/// A narrow window shows one screen at a time: the screen the person left has its way back
-/// alone, and the sidebar's own screen, behind it, holds the bar's button that puts it away
-/// for the screen in front.
+/// A narrow window shows one screen at a time: the list the window opened on is a place, with
+/// no way back, and holds the bar's button that brings the places over it; the sidebar's own
+/// screen, in front then, holds the button that puts it away for the screen it left.
 #[test]
-fn a_sidebar_screen_holds_the_bar_button_and_the_screen_before_it_its_way_back() {
+fn a_sidebar_screen_holds_the_bar_button_and_the_place_before_it_its_way_to_the_places() {
     let mut h = harness(
         NavShell::new()
             .content_kind(ContentKind::List)
@@ -40,15 +40,21 @@ fn a_sidebar_screen_holds_the_bar_button_and_the_screen_before_it_its_way_back()
     settle(&mut h, 400, 800);
     assert_eq!(geometry(&h).sidebar, SidebarPlacement::Screen);
     let toolbar = h.root::<NavShell>().window_toolbar();
-    assert!(
-        toolbar.sidebar.is_none(),
-        "the screen the person left keeps Back alone: {toolbar:?}"
+    assert_eq!(
+        toolbar.sidebar,
+        Some(false),
+        "the place the window opened on holds the way to the places: {toolbar:?}"
     );
     assert!(
-        h.window_sidebar_shown().is_err(),
-        "and the bar holds no sidebar button there"
+        toolbar.leading.is_empty(),
+        "and no Back, having nowhere to go back to: {toolbar:?}"
     );
-    assert!(h.root_mut::<NavShell>().back());
+    assert!(
+        !h.root_mut::<NavShell>().back(),
+        "Back leads nowhere from a place"
+    );
+    h.click_window_sidebar_button()
+        .expect("the place's sidebar button");
     settle(&mut h, 400, 800);
     assert_eq!(h.root::<NavShell>().front_pane(), NavPane::Sidebar);
     let toolbar = h.root::<NavShell>().window_toolbar();

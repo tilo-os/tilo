@@ -1,4 +1,4 @@
-//! The way back a transcript's reader is offered: to the first unread row while it stands
+//! The way back a list that follows its end offers: to the first unseen row while it stands
 //! above the view, else to what is new, as a pill at the foot of the list.
 
 use vello::kurbo::Rect;
@@ -6,9 +6,9 @@ use vello::kurbo::Rect;
 use super::{ListModel, VirtualList};
 
 impl<M: ListModel> VirtualList<M> {
-    /// Follow the list's end, as a transcript does: it opens at its last row, and while it
-    /// shows its end it stays there as rows arrive and settle their heights. A scroll away
-    /// lets go; a scroll back to the end takes it up again.
+    /// Follow the list's end (`VirtualListProps::follow_end`): it opens at its last row, and
+    /// while it shows its end it stays there as rows arrive and settle their heights. A scroll
+    /// away lets go; a scroll back to the end takes it up again.
     #[must_use]
     pub fn following_end(mut self) -> Self {
         self.follow_end = true;
@@ -17,17 +17,17 @@ impl<M: ListModel> VirtualList<M> {
         self
     }
 
-    /// Where a transcript's first unread row is: the "New messages" divider stands over it, and
-    /// while it is out of view a pill at the foot offers to take the reader there
-    /// ([`crate::widget::conversation::Jump`]). `None` draws neither. A list that is not a
-    /// transcript does not mark one.
+    /// Where the row the person has not seen begins (`VirtualListProps::unseen_from`): the
+    /// divider stands over it, and while it is out of view a pill at the foot offers the way
+    /// back to it ([`crate::widget::conversation::Jump`]), for a list that follows its end.
+    /// `None` draws neither.
     #[must_use]
     pub fn unread_from(mut self, item: Option<String>) -> Self {
-        self.unread = item.filter(|_| self.follow_end);
+        self.unread = item;
         self
     }
 
-    /// The item the transcript's reader has not seen, as the list was told.
+    /// The item where the person's unseen part begins, as the list was told.
     #[must_use]
     pub fn unread_item(&self) -> Option<&str> {
         self.unread.as_deref()
@@ -52,7 +52,6 @@ impl<M: ListModel> VirtualList<M> {
     /// Move the divider to the row `key`: the rows the old and the new one are on build again,
     /// so each shows the divider over it (or not) at once, without the list's items changing.
     pub fn set_unread(&mut self, item: Option<String>) {
-        let item = item.filter(|_| self.follow_end);
         if self.unread == item {
             return;
         }
@@ -74,7 +73,7 @@ impl<M: ListModel> VirtualList<M> {
 
     /// Which way back the pill offers, when it offers one: to the first unread row while it is
     /// above the view, else to the newest row while the reader is away from its end. A
-    /// transcript with nothing unread offers only the way to what is now.
+    /// list with nothing unseen offers only the way to what is now.
     #[must_use]
     pub(super) fn jump(&self) -> Option<crate::widget::conversation::Jump> {
         use crate::widget::conversation::Jump;

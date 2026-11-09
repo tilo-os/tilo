@@ -62,58 +62,7 @@ pub fn items(command: &str, output: &[u8]) -> Vec<RunItem> {
     items
 }
 
-/// `text` without its escape sequences (CSI, OSC and the other strings,
-/// charset designations, other `ESC x`), carriage returns resolved to the
-/// last overwrite of each line.
-#[must_use]
-pub fn strip_ansi(text: &str) -> String {
-    let mut out = String::with_capacity(text.len());
-    let mut chars = text.chars().peekable();
-    while let Some(c) = chars.next() {
-        match c {
-            '\u{1b}' => match chars.next() {
-                Some('[') => {
-                    for next in chars.by_ref() {
-                        if ('\u{40}'..='\u{7e}').contains(&next) {
-                            break;
-                        }
-                    }
-                }
-                // OSC, and DCS, SOS, PM and APC: a string up to BEL or ST.
-                Some(']' | 'P' | 'X' | '^' | '_') => {
-                    while let Some(next) = chars.next() {
-                        if next == '\u{7}' {
-                            break;
-                        }
-                        if next == '\u{1b}' && chars.peek() == Some(&'\\') {
-                            chars.next();
-                            break;
-                        }
-                    }
-                }
-                // Intermediates, then one final byte: the charset
-                // designations `ESC ( B` (which `tput sgr0` prints),
-                // `ESC ) 0`, `ESC $ ( B` and the like.
-                Some(' '..='/') => {
-                    while chars.next_if(|next| (' '..='/').contains(next)).is_some() {}
-                    chars.next_if(|next| ('0'..='~').contains(next));
-                }
-                // Any other `ESC x`, such as `ESC 7` or `ESC =`.
-                _ => {}
-            },
-            '\r' => {
-                if chars.peek() == Some(&'\n') {
-                    continue;
-                }
-                let start = out.rfind('\n').map_or(0, |at| at + 1);
-                out.truncate(start);
-            }
-            c if c.is_control() && c != '\n' && c != '\t' => {}
-            c => out.push(c),
-        }
-    }
-    out
-}
+pub use ui::tilo_actions::terminal_text::plain as strip_ansi;
 
 fn clip(text: &str) -> String {
     let text = text.trim();

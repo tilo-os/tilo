@@ -20,8 +20,11 @@ import sys
 import tomllib
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from judged import judged  # noqa: E402
+
 ROOT = Path(__file__).resolve().parents[2]
-BASELINE = Path(__file__).with_name("source_file_size_baseline.toml")
+BASELINE = Path("tools/policy/source_file_size_baseline.toml")
 LIMIT = 3000
 SLACK = 500
 
@@ -45,6 +48,32 @@ def tracked_sources(root: Path) -> dict[str, int]:
             continue
         sizes[name] = text.count("\n")
     return sizes
+
+
+def staged_sources(root: Path) -> dict[str, int]:
+    """The length of each staged Rust source, read from the index."""
+    sizes: dict[str, int] = {}
+    for relative, text in judged(root, staged=True).sources(".", suffixes=(".rs",)):
+        name = relative.as_posix()
+        if name.startswith("vendor/"):
+            continue
+        if "@generated" in "\n".join(text.splitlines()[:20]):
+            continue
+        sizes[name] = text.count("\n")
+    return sizes
+
+
+def problems(root: Path, staged: bool = False) -> list[str]:
+    """Every file over its ceiling, and every ceiling that is too high.
+
+    ``staged`` judges the files the commit stages: an unstaged file's length
+    and its ceiling's relation to it are what the whole-tree run already said.
+    """
+    ceilings = load_baseline(root / BASELINE)
+    sizes = staged_sources(root) if staged else tracked_sources(root)
+    if staged:
+        ceilings = {name: ceiling for name, ceiling in ceilings.items() if name in sizes}
+    return audit(sizes, ceilings)
 
 
 def ceiling_for(lines: int) -> int:
@@ -106,29 +135,15 @@ def main() -> int:
         help="drop files back under the limit and lower ceilings to fit; never raises or adds one",
     )
     args = parser.parse_args()
-    sizes = tracked_sources(ROOT)
-    ceilings = load_baseline(BASELINE)
     if args.write_baseline:
-        write_baseline(sizes, ceilings, BASELINE)
-        ceilings = load_baseline(BASELINE)
-    problems = audit(sizes, ceilings)
-    if args.staged:
-        staged = set(
-            subprocess.run(
-                ["git", "diff", "--cached", "--name-only", "-z"],
-                cwd=ROOT,
-                check=True,
-                capture_output=True,
-            )
-            .stdout.decode()
-            .split("\0")
-        )
-        problems = [problem for problem in problems if problem.split(":", 1)[0] in staged]
-    for problem in problems:
+        sizes = tracked_sources(ROOT)
+        write_baseline(sizes, load_baseline(ROOT / BASELINE), ROOT / BASELINE)
+    found = problems(ROOT, args.staged)
+    for problem in found:
         print(problem)
-    if problems:
+    if found:
         print(
-            f"source file size: {len(problems)} problem(s); see tools/policy/check_source_file_size.py",
+            f"source file size: {len(found)} problem(s); see tools/policy/check_source_file_size.py",
             file=sys.stderr,
         )
         return 1

@@ -78,6 +78,7 @@ async fn a_later_certificate_of_a_device_replaces_it_and_an_escalating_or_older_
             issued_at_ns,
             expires_at_ns: None,
             signature: [0; 64],
+            issuer: None,
         };
         sign_device_cert(&mut device_cert, &root).unwrap();
         device_cert

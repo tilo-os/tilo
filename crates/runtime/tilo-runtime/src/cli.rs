@@ -30,7 +30,7 @@ pub const CHOOSER_HELPER_ARG: &str = "--file-chooser";
 /// first captures from a camera or microphone (macOS).
 pub const CONSENT_HELPER_ARG: &str = "--device-consent";
 
-fn run<S: RuntimeServices>() -> io::Result<()> {
+fn run<S: RuntimeServices + Send + Sync + 'static>() -> io::Result<()> {
     // The app surfaces changes are decided against live in the content store
     // the apps this runtime hosts keep their content in.
     let content = tilo_content_device::for_app();
@@ -179,7 +179,7 @@ pub(crate) fn owner_action<S: RuntimeServices>(
 /// Automerge isolation workers that re-enter it on their way. Call it from
 /// `main`, before starting any thread.
 #[must_use]
-pub fn host<S: RuntimeServices>(program: &str) -> std::process::ExitCode {
+pub fn host<S: RuntimeServices + Send + Sync + 'static>(program: &str) -> std::process::ExitCode {
     // Untrusted Automerge bytes are decoded in worker processes started from
     // this executable; each of them is served here and exits.
     if let Some(code) = tilo_automerge_isolate::dispatch_early() {

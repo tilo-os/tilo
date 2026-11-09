@@ -51,6 +51,7 @@ fn certified(root: &SigningKey, key: &SigningKey, label: &str) -> DeviceCert {
         issued_at_ns: tilo_clock::unix_now_ns(),
         expires_at_ns: None,
         signature: [0; 64],
+        issuer: None,
     };
     tilo_user_identity::sign_device_cert(&mut cert, root).expect("a certified device");
     cert
@@ -526,6 +527,44 @@ fn a_link_the_sheet_makes_admits_a_second_persons_device() {
         Some(MemberRole::Editor),
         "in the part the sheet asked for: {people:?}"
     );
+
+    // The session that made the link serves the workspace on the direct lane as well: her device
+    // dials it there, names the workspace, and is admitted as one of its devices — the same link
+    // every workspace's devices sync on.
+    let (_, host_addr) = hers
+        .host_addr(workspace)
+        .expect("the workspace's host is named");
+    let her_link = tilo_peer_state::direct::DirectSync::over(
+        hers.replica(workspace).expect("her copy of the workspace"),
+        her_key.clone(),
+    );
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(2)
+        .enable_all()
+        .build()
+        .expect("a runtime for the link");
+    let endpoint = runtime
+        .block_on(async {
+            iroh::Endpoint::builder(iroh::endpoint::presets::Minimal)
+                .relay_mode(iroh::RelayMode::Disabled)
+                .secret_key(iroh::SecretKey::from_bytes(&her_key.to_bytes()))
+                .bind()
+                .await
+        })
+        .expect("her endpoint");
+    let dialed = runtime.block_on(async {
+        tokio::time::timeout(
+            Duration::from_secs(5),
+            her_link.connect(&endpoint, host_addr),
+        )
+        .await
+    });
+    assert!(
+        dialed.is_err(),
+        "the session keeps the workspace's direct link up, rather than refusing it or serving no \
+         such lane: {dialed:?}"
+    );
+    runtime.block_on(endpoint.close());
 }
 
 /// A community site's shelf on this machine: it keeps the sealed invitations it is left, under the

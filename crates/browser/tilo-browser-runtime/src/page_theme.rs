@@ -12,11 +12,92 @@ pub(crate) const REDUCED_MOTION: &str = "(prefers-reduced-motion: reduce)";
 /// The media query the browser answers for a person who asked for more
 /// contrast.
 pub(crate) const MORE_CONTRAST: &str = "(prefers-contrast: more)";
+/// The media query the browser answers for a person whose browser and
+/// system are dark.
+#[cfg(target_arch = "wasm32")]
+pub(crate) const DARK_SCHEME: &str = "(prefers-color-scheme: dark)";
 
 thread_local! {
     /// Bumped whenever what the theme is built from changes; a mount that
     /// drew at another generation takes the theme again.
     static GENERATION: Cell<u64> = const { Cell::new(0) };
+    /// Whether light or dark follows the browser's colour scheme while the
+    /// person has not chosen one ([`follow_browser_scheme`]).
+    #[cfg(target_arch = "wasm32")]
+    static FOLLOW_SCHEME: Cell<bool> = const { Cell::new(false) };
+}
+
+/// Have light or dark follow the browser's colour scheme (the person's
+/// system setting, as every page sees it) for as long as the person has
+/// not chosen one in their settings. A page shown as HTML does: its text,
+/// fields and scrollbars are the browser's, which follow that scheme too.
+#[cfg(target_arch = "wasm32")]
+pub(crate) fn follow_browser_scheme() {
+    if !FOLLOW_SCHEME.with(|follow| follow.replace(true)) {
+        changed();
+    }
+}
+
+/// `settings` with light or dark from the browser (`dark`) when they name
+/// neither: no mode and no theme for one.
+pub(crate) fn with_browser_scheme(
+    mut settings: serde_json::Map<String, serde_json::Value>,
+    dark: bool,
+) -> serde_json::Map<String, serde_json::Value> {
+    let appearance = settings
+        .entry("appearance")
+        .or_insert_with(|| serde_json::Value::Object(serde_json::Map::new()));
+    if let Some(appearance) = appearance.as_object_mut()
+        && !["mode", "dark_theme", "light_theme"]
+            .iter()
+            .any(|key| appearance.contains_key(*key))
+    {
+        appearance.insert(
+            "mode".into(),
+            serde_json::Value::from(if dark { "dark" } else { "light" }),
+        );
+    }
+    settings
+}
+
+/// The theme as custom properties for the page (`--tilo-*`), with the
+/// `color-scheme` the browser draws its own parts in: what a page shown as
+/// HTML styles its native fields, scrollbars and selection with.
+pub(crate) fn css_variables(theme: &ui::Theme) -> Vec<(&'static str, String)> {
+    let colors = &theme.tokens.colors;
+    let css = |color: ui::peniko::Color| {
+        let rgba = color.to_rgba8();
+        format!(
+            "rgba({},{},{},{:.3})",
+            rgba.r,
+            rgba.g,
+            rgba.b,
+            f32::from(rgba.a) / 255.0
+        )
+    };
+    vec![
+        (
+            "color-scheme",
+            if theme.document.is_dark() {
+                "dark"
+            } else {
+                "light"
+            }
+            .to_owned(),
+        ),
+        ("--tilo-ground", css(colors.surfaces.content)),
+        ("--tilo-sidebar", css(colors.surfaces.sidebar)),
+        ("--tilo-raised", css(colors.surfaces.raised)),
+        ("--tilo-overlay", css(colors.surfaces.overlay)),
+        ("--tilo-text", css(theme.text_primary)),
+        ("--tilo-text-dim", css(theme.text_dim)),
+        ("--tilo-text-tertiary", css(theme.text_tertiary)),
+        ("--tilo-border", css(theme.border_standard)),
+        ("--tilo-focus", css(theme.border_focus)),
+        ("--tilo-accent", css(colors.intent.accent)),
+        ("--tilo-on-accent", css(colors.intent.on_accent)),
+        ("--tilo-radius", format!("{:.1}px", theme.radius_standard)),
+    ]
 }
 
 /// The page's accessibility inputs, from which media queries `matches`
@@ -46,10 +127,15 @@ pub(crate) fn themed(base: ui::Theme, accessibility: ui::host::AccessibilityInpu
 /// The theme a mount draws in now.
 #[cfg(target_arch = "wasm32")]
 pub(crate) fn current() -> ui::Theme {
-    themed(
-        ui::Theme::configured(),
-        ui::host::environment().accessibility,
-    )
+    let base = if FOLLOW_SCHEME.with(Cell::get) {
+        ui::Theme::configured_from(&with_browser_scheme(
+            settings_store::load(),
+            browser_matches(DARK_SCHEME),
+        ))
+    } else {
+        ui::Theme::configured()
+    };
+    themed(base, ui::host::environment().accessibility)
 }
 
 /// Which change of what the theme is built from the page is at.
@@ -80,7 +166,7 @@ pub(crate) fn install(wake: std::sync::Arc<dyn Fn() + Send + Sync>) {
         apply();
         wake();
     });
-    for query in [REDUCED_MOTION, MORE_CONTRAST] {
+    for query in [REDUCED_MOTION, MORE_CONTRAST, DARK_SCHEME] {
         let Some(list) = media_query(query) else {
             continue;
         };
@@ -133,5 +219,44 @@ mod tests {
         let before = generation();
         changed();
         assert_ne!(generation(), before, "a change draws the mounts again");
+    }
+
+    #[test]
+    fn the_browser_scheme_decides_only_what_the_person_left_open() {
+        let mode = |settings: serde_json::Value, dark| {
+            with_browser_scheme(settings.as_object().cloned().unwrap_or_default(), dark)["appearance"]["mode"].clone()
+        };
+        assert_eq!(mode(serde_json::json!({}), true), "dark");
+        assert_eq!(mode(serde_json::json!({}), false), "light");
+        assert_eq!(
+            mode(
+                serde_json::json!({"appearance": {"accent": "violet"}}),
+                false
+            ),
+            "light"
+        );
+        assert_eq!(
+            mode(serde_json::json!({"appearance": {"mode": "dark"}}), false),
+            "dark",
+            "the person's own choice stands"
+        );
+        assert_eq!(
+            mode(
+                serde_json::json!({"appearance": {"light_theme": "nord"}}),
+                true
+            ),
+            serde_json::Value::Null,
+            "a theme chosen for one mode is a choice too"
+        );
+        let light = ui::Theme::configured_from(&with_browser_scheme(serde_json::Map::new(), false));
+        let dark = ui::Theme::configured_from(&with_browser_scheme(serde_json::Map::new(), true));
+        assert!(!light.document.is_dark() && dark.document.is_dark());
+        let variables = css_variables(&light);
+        assert!(variables.contains(&("color-scheme", "light".to_owned())));
+        assert!(
+            variables
+                .iter()
+                .any(|(name, value)| *name == "--tilo-text" && value.starts_with("rgba("))
+        );
     }
 }

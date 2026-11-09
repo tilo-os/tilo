@@ -9,7 +9,7 @@ use std::sync::Arc;
 use tilo_actions::ResourceSpec;
 use ui::{ActionPalette, CommandEntry};
 
-use crate::model::{Hit, LaunchPlace, SearchStream, Source, Target};
+use crate::model::{Held, Hit, LaunchPlace, SearchStream, Source, Target};
 use crate::providers::{
     Actions, Answers, AppEntry, Applications, Captures, CommandSpec, Commands, Content, Published,
     PublishedActions, Recents, Switches, WebSearch, WindowEntry, Windows,
@@ -24,6 +24,9 @@ use ui::search::system::{KindGroup, ResourceKind};
 const MORE_PREFIX: &str = "more:";
 
 mod rows;
+
+#[cfg(test)]
+mod ready_rows_tests;
 
 use rows::{
     all_results_entry, always_shown, entries_for, everywhere, kind_facets, narrowed, stands_tall,
@@ -74,8 +77,10 @@ pub struct SearchData {
     /// What the host searches beyond these (Settings' pages, the store's
     /// catalogue, files, what apps hold), each over what is published or a
     /// service answers. The search over everything asks them, off the frame
-    /// when their query can move ([`Source::shared`]).
-    pub sources: Vec<Arc<dyn Source>>,
+    /// when their query can move ([`Source::shared`]). A host's source is
+    /// `Send + Sync` so that it can move: the palette hands a worker the
+    /// handle it holds it by ([`Held`]).
+    pub sources: Vec<Held>,
     /// The sources the person switched off, left out whatever they find.
     pub preferences: crate::preferences::SearchPreferences,
 }
@@ -103,7 +108,7 @@ struct Sources {
     answers: Option<(Arc<Answers>, Arc<WebSearch>)>,
     /// The one window searched, when the search is a window's.
     window: Option<WindowSearch>,
-    host: Vec<Arc<dyn Source>>,
+    host: Vec<Held>,
     preferences: crate::preferences::SearchPreferences,
     /// Now, in Unix seconds, as the host said when search opened.
     now: u64,
@@ -168,7 +173,7 @@ impl Sources {
         let host = self
             .host
             .iter()
-            .map(|source| source.poll())
+            .map(super::model::Source::poll)
             .fold(false, |any, one| any | one);
         self.content.poll() || window || host
     }
@@ -203,6 +208,13 @@ impl RowRoom {
         RowRoom::Room(self.cut())
     }
 }
+
+/// How soon a host looks again while an application's answer to the query is
+/// still coming: the answer arrives on the host's clock, so the host asks
+/// [`DesktopSearch::refresh`] until it does. A host that draws only what asks
+/// for a frame schedules one at this pace for as long as
+/// [`DesktopSearch::waiting`] holds.
+pub const ANSWER_POLL: ui::time::Duration = ui::time::Duration::from_millis(50);
 
 pub struct DesktopSearch {
     palette: ActionPalette,
@@ -327,6 +339,12 @@ impl DesktopSearch {
 
     /// Open over `data` with an empty query.
     pub fn open(&mut self, mut data: SearchData) {
+        // The search's engine is fetched now, as the palette opens, so its code is in by the first
+        // keystroke rather than being fetched on the query that needed it: on a page the engine is
+        // a module of its own, and a search that fetches it has no rows to show until it lands,
+        // and says it is still searching that whole time. Linked in, this is nothing. The rows
+        // built meanwhile are rebuilt when it arrives, which a palette's refresh already asks for.
+        ui::search::prepare_engine();
         self.scope = data.scope.clone();
         let placeholder = data.placeholder.take().unwrap_or_else(placeholder);
         self.palette.set_query_placeholder(placeholder.as_str());
@@ -462,15 +480,38 @@ impl DesktopSearch {
                 || !self.rows_placed())
     }
 
-    /// Whether the search is over: every source has answered for the query,
-    /// no application's answer is still coming, and the rows are cut to the
-    /// room the card gave them. While this is false the search is still
-    /// filling in and its rows will change — what the desk publishes as a
-    /// search still searching.
+    /// Whether the search is over: the rows that are ready are cut to the
+    /// card's room, and no source that is still out holds them back. What
+    /// the desk publishes as a search still searching.
+    ///
+    /// A source still out — a window opened a moment ago whose content
+    /// index is being built, an app's own server still looking — does not
+    /// make the search "still searching" once the apps, actions and places
+    /// that were ready are shown: the person reads those at once, and the
+    /// late rows join them when they come ([`Self::expecting`], which a
+    /// host polls for). Holding the ready rows behind the slowest source is
+    /// what kept a fresh window's search saying "Searching…" for the 14–57 s
+    /// its content index took on a page, measured on the page desk.
     #[must_use]
     pub fn settled(&self) -> bool {
-        // With nothing open there is nothing to wait for.
-        self.sources.is_none() || (self.rows_placed() && !self.waiting() && !self.answering())
+        // With nothing open there is nothing to wait for. Rows that are ready
+        // are the search's answer, so a source still out does not make it
+        // searching. With nothing ready yet, it is still searching while a
+        // source owes a row; a query that found nothing at all, with no
+        // source left to answer, is settled too.
+        self.sources.is_none()
+            || (self.rows_placed() && (!self.rows.is_empty() || !self.expecting()))
+    }
+
+    /// Whether rows are still expected to join the ones shown: a source has
+    /// yet to answer, or an application's answer is still coming, or a
+    /// source that holds the frame's state still owes its share. What a
+    /// host looks again for, so a late row is drawn when it arrives, even
+    /// though the rows already shown are the search's answer
+    /// ([`Self::settled`]).
+    #[must_use]
+    pub fn expecting(&self) -> bool {
+        self.sources.is_some() && (self.waiting() || self.answering())
     }
 
     /// Run the query again when the palette's text changed since the rows
@@ -648,6 +689,20 @@ impl DesktopSearch {
         let mut rows = Vec::new();
         let mut more_rows = Vec::new();
         let entries = self.fitted(groups, browsing, &mut rows, &mut more_rows);
+        // A source that answered re-ranks the same query, and a card not yet
+        // given its room lists nothing: for that frame the plan has no row,
+        // while the card on screen still shows the rows of the plan before.
+        // Keeping them is what the person sees, and what their Enter acts
+        // on; an empty plan would leave the key naming nothing, and the
+        // press would go nowhere. The search says it is still filling in.
+        let refilling = rows.is_empty()
+            && !self.rows.is_empty()
+            && self.shown_query.as_deref() == Some(query)
+            && (pending || self.waiting() || self.answering());
+        if refilling {
+            self.palette.set_searching(true);
+            return;
+        }
         // What is selected on screen is named by the rows of the frame the
         // person sees, before this frame replaces them.
         let on_screen = self
@@ -1023,7 +1078,7 @@ mod tests {
     use ui::shortcut_table::{ShortcutAction, ShortcutConfig};
     use ui::winit::keyboard::ModifiersState;
 
-    fn data() -> SearchData {
+    pub(super) fn data() -> SearchData {
         SearchData {
             applications: vec![
                 AppEntry {
@@ -1109,7 +1164,7 @@ mod tests {
         };
         let mut data = data();
         data.sources
-            .push(Arc::new(Happening::new(false, vec![here])));
+            .push(Held::new(Happening::new(false, vec![here])));
         let mut search = DesktopSearch::new();
         search.open(data);
         settled(&mut search);
@@ -1245,8 +1300,8 @@ mod tests {
             unasked: false,
         });
         data.sources
-            .push(Arc::new(Happening::new(false, vec![here])));
-        data.sources.push(Arc::new(People::new(
+            .push(Held::new(Happening::new(false, vec![here])));
+        data.sources.push(Held::new(People::new(
             "workspace",
             vec![PersonEntry {
                 id: "mara".into(),
@@ -1314,7 +1369,7 @@ mod tests {
             device: None,
         });
         let mut data = data();
-        data.sources.push(Arc::new(continue_source(&recent)));
+        data.sources.push(Held::new(continue_source(&recent)));
         let mut search = DesktopSearch::new();
         search.open(data);
         settled(&mut search);
@@ -1848,7 +1903,7 @@ mod tests {
     /// A search over the desktop and what one host adds.
     fn with_notes(scope: Scope) -> SearchData {
         SearchData {
-            sources: vec![Arc::new(Notes)],
+            sources: vec![Held::new(Notes)],
             scope,
             ..data()
         }
@@ -2372,6 +2427,56 @@ mod tests {
         assert_eq!(group(&search).as_deref(), Some(chosen.as_str()));
     }
 
+    /// An answer to a query re-ranks it, and the frame it re-ranks in has no
+    /// row yet: the card on screen still shows the rows of the frame before.
+    /// They stay what the palette presses name, so a key pressed in that
+    /// frame opens the row the person saw rather than nothing.
+    #[test]
+    fn the_frame_a_query_is_reranked_in_keeps_the_rows_it_shows() {
+        let (mut search, arrived) = with_a_late_app(data());
+        search.set_query("notes");
+        settled(&mut search);
+        let shown = search.results().len();
+        let named = search
+            .palette()
+            .selected_id()
+            .expect("a row is chosen")
+            .to_owned();
+        assert!(shown >= 2, "{:?}", search.results());
+        assert!(search.waiting(), "the app's answer is still coming");
+
+        arrived.set(true);
+        assert!(search.refresh(), "the answer re-ranks the rows");
+        assert_eq!(
+            search.results().len(),
+            shown,
+            "the rows the card shows stay for the frame the query is re-ranked in"
+        );
+        assert_eq!(
+            search.palette().selected_id(),
+            Some(named.as_str()),
+            "the row the person presses Enter on is still named"
+        );
+        assert!(
+            search
+                .palette()
+                .visible_entries()
+                .iter()
+                .any(|entry| entry.id == named),
+            "the card lists the row it shows"
+        );
+
+        settled(&mut search);
+        assert!(
+            search
+                .results()
+                .iter()
+                .any(|hit| hit.title == "notes from the meeting"),
+            "the late answer is listed once the query is ranked again: {:?}",
+            search.results()
+        );
+    }
+
     /// Nobody moved the selection: it is the best result, and follows the
     /// best result when an answer arrives.
     #[test]
@@ -2738,5 +2843,56 @@ mod tests {
             })
             .expect("windows are listed");
         assert_eq!(window.icon, notes.1.icon);
+    }
+}
+
+#[cfg(all(test, feature = "lazy-engine"))]
+mod engine_fetch_tests {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    use super::*;
+
+    static FETCHES: AtomicUsize = AtomicUsize::new(0);
+
+    /// The engine's code is fetched as the palette opens, not on the first query that needs it.
+    ///
+    /// Where the engine is not linked in — the browser desktop fetches it as a module of its own —
+    /// a search that fetches it on its query has nothing to show until the module lands, and says
+    /// it is still searching for that whole time: on a cold page that is the tens of seconds
+    /// between typing and the first row. The palette opening is the moment the person asked for
+    /// search, and the time before their first key is theirs to spend fetching it.
+    ///
+    /// Its own process: the engine's once-only state is global, so the fetch count here is the
+    /// process's.
+    #[test]
+    fn opening_the_palette_fetches_the_search_engine() {
+        ui::search::defer_engine(|| {
+            FETCHES.fetch_add(1, Ordering::SeqCst);
+        });
+        assert_eq!(FETCHES.load(Ordering::SeqCst), 0, "nothing asked yet");
+        assert!(
+            ui::search::engine_ready(),
+            "no fetch was asked for, so nothing waits on the engine"
+        );
+
+        let mut search = DesktopSearch::new();
+        search.open(super::tests::data());
+        assert_eq!(
+            FETCHES.load(Ordering::SeqCst),
+            1,
+            "opening the palette fetches the engine, before a key is typed"
+        );
+        assert!(
+            !ui::search::engine_ready(),
+            "the palette opening waits on the engine's code, so the first key is answered with it"
+        );
+
+        // A second open does not fetch again: the loader runs once until the engine is installed.
+        search.open(super::tests::data());
+        assert_eq!(
+            FETCHES.load(Ordering::SeqCst),
+            1,
+            "the engine is asked for once"
+        );
     }
 }

@@ -4,7 +4,7 @@ use super::{
     MetadataExt, NativeIdentity, NativeLocator, OFlags, io_error, lock,
 };
 #[cfg(target_os = "linux")]
-use std::os::fd::AsRawFd;
+use std::os::fd::{AsFd, AsRawFd};
 use std::os::unix::ffi::OsStringExt;
 use std::os::unix::fs::MetadataExt as StdMetadataExt;
 
@@ -26,25 +26,18 @@ fn host_identity(metadata: &std::fs::Metadata) -> NativeIdentity {
     }
 }
 #[cfg(target_os = "linux")]
-fn mount(fd: i32) -> Result<u64, FsError> {
-    let mut value = std::mem::MaybeUninit::<libc::statx>::uninit();
-    if unsafe {
-        libc::statx(
-            fd,
-            c"".as_ptr(),
-            libc::AT_EMPTY_PATH | libc::AT_SYMLINK_NOFOLLOW,
-            libc::STATX_MNT_ID,
-            value.as_mut_ptr(),
-        )
-    } != 0
-    {
-        return Err(io_error(std::io::Error::last_os_error()));
-    }
-    let value = unsafe { value.assume_init() };
-    if value.stx_mask & libc::STATX_MNT_ID == 0 {
+fn mount(object: std::os::fd::BorrowedFd<'_>) -> Result<u64, FsError> {
+    let facts = rustix::fs::statx(
+        object,
+        c"",
+        rustix::fs::AtFlags::EMPTY_PATH | rustix::fs::AtFlags::SYMLINK_NOFOLLOW,
+        rustix::fs::StatxFlags::MNT_ID,
+    )
+    .map_err(|error| io_error(error.into()))?;
+    if facts.stx_mask & rustix::fs::StatxFlags::MNT_ID.bits() == 0 {
         return Err(FsError::Unsupported("native mount identity unavailable"));
     }
-    Ok(value.stx_mnt_id)
+    Ok(facts.stx_mnt_id)
 }
 fn parent(directory: &Dir) -> Result<std::fs::File, FsError> {
     #[cfg(target_os = "linux")]
@@ -97,7 +90,7 @@ impl FsSession {
             ));
         }
         #[cfg(target_os = "linux")]
-        if mount(directory.as_raw_fd())? != mount(source.as_raw_fd())? {
+        if mount(directory.as_fd())? != mount(source.as_fd())? {
             return Err(FsError::Unsupported(
                 "removal custody must share source VFS mount",
             ));
@@ -449,7 +442,7 @@ impl FsSession {
             return Err(FsError::Denied);
         }
         #[cfg(target_os = "linux")]
-        if mount(journal.as_raw_fd())? != mount(Self::directory(&root.lease)?.as_raw_fd())? {
+        if mount(journal.as_fd())? != mount(Self::directory(&root.lease)?.as_fd())? {
             return Err(FsError::Denied);
         }
         Ok((home, custody.identity))

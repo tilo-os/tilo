@@ -51,12 +51,13 @@ impl FrameHarness {
         self.deliver_bar_events(&mut bar)
     }
 
-    /// Where the window's sidebar stands now: what the bar's button shows,
-    /// what the window's shell holds and what its frame lays out.
+    /// Where the window's sidebar stands now: what the bar's button shows
+    /// (hidden where the bar shows the way back in its place), what the
+    /// window's shell holds and what its frame lays out.
     ///
     /// # Errors
-    /// While the bar has no sidebar button or no shell with a sidebar is
-    /// laid out.
+    /// While the bar has neither a sidebar button nor the way back, or no
+    /// shell with a sidebar is laid out.
     pub fn window_sidebar_shown(&mut self) -> Result<SidebarShown, String> {
         let width = f64::from(self.viewport.0);
         let toolbar = self
@@ -65,9 +66,21 @@ impl FrameHarness {
             .toolbar()
             .cloned()
             .ok_or("the window bar shows none of the app's slots")?;
-        let bar = toolbar
-            .sidebar
-            .ok_or_else(|| format!("the window bar shows no sidebar button: {toolbar:?}"))?;
+        // A narrow window's bar puts the button aside for the way back once a
+        // screen in front covers the sidebar's own: that bar shows it hidden.
+        let back = toolbar
+            .leading
+            .iter()
+            .any(|action| action.id == crate::widget::WINDOW_BACK);
+        let bar = match toolbar.sidebar {
+            Some(shown) => shown,
+            None if back => false,
+            None => {
+                return Err(format!(
+                    "the window bar shows no sidebar button: {toolbar:?}"
+                ));
+            }
+        };
         let shell = window_sidebar_shell(self.root.as_ref()).ok_or_else(|| {
             format!(
                 "no nav shell with a sidebar is laid out under the bar: {}",
@@ -91,7 +104,10 @@ impl FrameHarness {
 
     /// Click the window bar's sidebar button `presses` times, each followed
     /// by the frames the window draws until its motion has landed, and
-    /// return where the sidebar stood before and after each.
+    /// return where the sidebar stood before and after each. A narrow window
+    /// whose button lives on the sidebar's own screen stops after the click
+    /// that puts the sidebar away: the screen in front has its way back
+    /// alone.
     ///
     /// # Errors
     /// When a click fails ([`Self::click_window_sidebar_button`]) or the
@@ -102,9 +118,13 @@ impl FrameHarness {
     ) -> Result<Vec<SidebarShown>, String> {
         let _landed = crate::motion::testing::settled();
         self.relayout_until_still()?;
+        self.reach_the_bars_sidebar_button()?;
         let read = |harness: &mut Self| harness.window_sidebar_shown();
         let mut states = vec![read(self)?];
         for _ in 0..presses {
+            if !self.window_bar_controls().0 {
+                break;
+            }
             self.click_window_sidebar_button()?;
             self.relayout_until_still()
                 .map_err(|error| format!("after click {}: {error}", states.len()))?;
@@ -113,15 +133,71 @@ impl FrameHarness {
         Ok(states)
     }
 
-    /// Click the window bar's sidebar button three times and check that
-    /// each click flipped the sidebar, with the bar, the window's shell and
-    /// its frame agreeing every time, whatever opened it. Returns whether
-    /// the sidebar was shown before the first click.
+    /// Whether the window's bar shows its sidebar button, and whether it
+    /// shows its way back to the screen that holds one.
+    fn window_bar_controls(&mut self) -> (bool, bool) {
+        let width = f64::from(self.viewport.0);
+        let toolbar = self
+            .painted_window_bar(width)
+            .toolbar_row()
+            .toolbar()
+            .cloned()
+            .unwrap_or_default();
+        let back = toolbar
+            .leading
+            .iter()
+            .any(|action| action.id == crate::widget::WINDOW_BACK);
+        (toolbar.sidebar.is_some(), back)
+    }
+
+    /// Get to the screen whose bar holds the sidebar button: a narrow window
+    /// puts the button aside for the way back on a screen that went
+    /// somewhere deeper, and the sidebar's own screen holds it.
+    ///
+    /// # Errors
+    /// When the bar shows no sidebar button and no way back to the screen
+    /// that holds one.
+    fn reach_the_bars_sidebar_button(&mut self) -> Result<(), String> {
+        let width = f64::from(self.viewport.0);
+        let (sidebar, back) = self.window_bar_controls();
+        if sidebar {
+            return Ok(());
+        }
+        if !back {
+            return Err(format!(
+                "the bar shows no sidebar button at {width} px and no way back to the screen that \
+                 holds it; the shell now: {}",
+                self.sidebar_diagnosis()
+            ));
+        }
+        self.press_window_slot(crate::window_toolbar::ToolbarEvent::Back);
+        self.relayout_until_still()?;
+        if !self.window_bar_controls().0 {
+            return Err(format!(
+                "the screen the bar's way back leads to shows no sidebar button at {width} px; \
+                 the shell now: {}",
+                self.sidebar_diagnosis()
+            ));
+        }
+        Ok(())
+    }
+
+    /// Click the window bar's sidebar button up to three times and check
+    /// that each click flipped the sidebar, with the bar, the window's shell
+    /// and its frame agreeing every time, whatever opened it. Returns
+    /// whether the sidebar was shown before the first click.
     ///
     /// # Errors
     /// What the clicks did instead, as a sentence naming each state.
     pub fn check_window_sidebar_button(&mut self) -> Result<bool, String> {
         let states = self.press_window_sidebar_button(3)?;
+        if states.len() < 2 {
+            return Err(format!(
+                "the bar's sidebar button took no click at {} px; the shell now: {}",
+                self.viewport.0,
+                self.sidebar_diagnosis()
+            ));
+        }
         let mut expected = None;
         for (presses, state) in states.iter().enumerate() {
             let Some(shown) = state.agreed() else {

@@ -24,6 +24,7 @@ use std::os::fd::AsFd as _;
 use std::rc::Rc;
 use std::time::{Duration, Instant};
 
+use crate::platform::plane::Event;
 use iroh::EndpointId;
 use neighbour_wire::NeighbourMsg;
 use serde_json::Value;
@@ -37,8 +38,7 @@ use tilo_desktop_model::{
     DesktopTree, GroupId, Strip, StripId, Tab, TabId, TileContent, WindowGroup, WindowWidth,
     Workspace, WorkspaceId, WorkspaceSlot,
 };
-use tilo_endpoint_reachability::Reachability;
-use tilo_network_actor::{NetEvent, WorkspaceId as Topic};
+use tilo_network_actor::WorkspaceId as Topic;
 use tilo_window_share::streaming::InputEvent as SharedInput;
 use tokio::sync::mpsc::UnboundedReceiver;
 use wayland_client::protocol::{
@@ -61,7 +61,8 @@ use wayland_protocols_misc::zwp_input_method_v2::client::{
 };
 
 use super::SHARES_RESOURCE;
-use crate::sync::{Client, Outgoing, OwnPresence};
+use crate::platform::plane::Cmd;
+use crate::sync::{Client, OwnPresence};
 use crate::{Options, Session};
 
 type Arguments = serde_json::Map<String, Value>;
@@ -180,7 +181,7 @@ fn governed(mut desk: DesktopTree, owner: &str, members: &[(String, Role)]) -> D
 struct Member {
     session: Session,
     sync: Rc<Client>,
-    said: UnboundedReceiver<Outgoing>,
+    said: UnboundedReceiver<Cmd>,
 }
 
 fn member(seed: u8, desk: DesktopTree) -> Member {
@@ -226,7 +227,6 @@ fn member_on(
             ..OwnPresence::default()
         },
         Vec::new(),
-        Reachability::default(),
     );
     let sync = Rc::new(match person {
         Some(person) => sync.taking_part_as(&person),
@@ -264,13 +264,11 @@ fn tell(to: &Member, from: &Member, msg: NeighbourMsg) {
 }
 
 /// One message `from` said, as the workspace's topic would have carried it.
-fn said(from: &Member, ws: Topic, msg: NeighbourMsg) -> NetEvent {
-    NetEvent::Msg {
+fn said(from: &Member, ws: Topic, msg: NeighbourMsg) -> Event {
+    Event::Msg {
         ws,
         peer: from.sync.publisher(),
-        membership_epoch: None,
-        replayed: false,
-        msg,
+        msg: Box::new(msg),
     }
 }
 
@@ -280,12 +278,12 @@ fn said(from: &Member, ws: Topic, msg: NeighbourMsg) -> NetEvent {
 fn carry(from: &mut Member, to: &Member) {
     while let Ok(outgoing) = from.said.try_recv() {
         match outgoing {
-            Outgoing::PublishSurfaceTo { ws, msg, viewers } => {
+            Cmd::PublishSurfaceTo { ws, msg, viewers } => {
                 if viewers.contains(&to.sync.peer()) {
                     to.sync.hear(said(from, ws, *msg));
                 }
             }
-            Outgoing::SendControl { ws, msg, target } if target == to.sync.publisher() => {
+            Cmd::SendControl { ws, msg, target } if target == to.sync.publisher() => {
                 to.sync.hear(said(from, ws, *msg));
             }
             _ => {}
@@ -447,16 +445,14 @@ fn send_input(viewer: &Member, host: &Member, surface: u64, event: &SharedInput)
         .sync
         .workspace_topic(WORKSPACE)
         .expect("the workspace's topic");
-    host.sync.hear(NetEvent::Msg {
+    host.sync.hear(Event::Msg {
         ws,
         peer: viewer.sync.publisher(),
-        membership_epoch: None,
-        replayed: false,
-        msg: NeighbourMsg::RemoteInput {
+        msg: Box::new(NeighbourMsg::RemoteInput {
             peer: viewer.sync.peer(),
             surface,
             event,
-        },
+        }),
     });
 }
 
@@ -1913,25 +1909,26 @@ fn heard(viewer: &Member, seed: u8, label: &str) {
             can_read_all_workspaces: false,
             foreign: false,
             can_administer_devices: false,
+            agent: None,
+            stand_in: false,
         },
         issued_at_ns: 0,
         expires_at_ns: None,
         signature: [0; 64],
+        issuer: None,
     };
     tilo_user_identity::sign_device_cert(&mut cert, &root).expect("a certified device");
     let ws = viewer
         .sync
         .workspace_topic(WORKSPACE)
         .expect("the workspace's topic");
-    viewer.sync.hear(NetEvent::Msg {
+    viewer.sync.hear(Event::Msg {
         ws,
         peer: device(seed),
-        membership_epoch: None,
-        replayed: false,
-        msg: NeighbourMsg::IdentityHello {
+        msg: Box::new(NeighbourMsg::IdentityHello {
             protocol: neighbour_wire::PEER_PROTOCOL_VERSION,
             cert: Box::new(cert),
             revocations: Vec::new(),
-        },
+        }),
     });
 }

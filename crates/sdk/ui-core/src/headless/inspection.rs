@@ -284,6 +284,7 @@ pub(super) fn collect_inspection(
             child_clip: None,
             page_title: None,
             layout: None,
+            paint_key: None,
             semantics: None,
             children: vec![],
         };
@@ -306,6 +307,7 @@ pub(super) fn collect_inspection(
             .map(|r| [r.x0, r.y0, r.width(), r.height()]),
         page_title: widget.own_page_title(),
         layout: widget.layout_info(),
+        paint_key: crate::scene_parts::painted_key(widget),
         semantics: widget
             .accessibility()
             .map(|access| crate::a11y::with_synthetic_bounds(access, widget)),

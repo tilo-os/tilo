@@ -8,12 +8,13 @@ use tilo_compositor::Compositor;
 use tilo_desktop::overlays::Overlays;
 
 use crate::controls::ControlsReading;
-use crate::keys::{
-    ControllerKeys, DeskKeys, GuideKeys, Invocations, PressedChords, Presses, SessionKeys,
-};
+use tilo_sheets::shortcut_guide::State as GuideState;
+
+use crate::keys::{ControllerKeys, DeskKeys, Invocations, PressedChords, Presses, SessionKeys};
 use crate::panels::{ActivityLayer, Held, Readout, ReadoutPlace, ReadoutPlaces, Reserved};
 use crate::setup::Setup;
-use crate::{BeforeDesk, Doors, SessionCommand};
+use crate::{BeforeDesk, SessionCommand};
+use tilo_surface_host::Doors;
 
 /// What stands before the desk, when it stands there at all: above everything, first to the
 /// keyboard, and while it is up the only surface offering actions.
@@ -76,7 +77,7 @@ pub(crate) fn mount_controls(
     doors: &mut Doors,
     shortcuts: Shortcuts,
     portal: Option<tilo_portal::global_shortcuts::Shortcuts>,
-    guide: GuideKeys,
+    guide: Rc<GuideState>,
     KeyContext {
         controller,
         controller_keys,

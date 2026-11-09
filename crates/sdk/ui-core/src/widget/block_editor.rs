@@ -9530,7 +9530,16 @@ impl Widget for BlockEditor {
                     (track_paragraphs && matches!(b.kind, BlockKind::Table { .. })).then(Vec::new);
                 // A code run's ground too.
                 ctx.collect_code_ground = track_paragraphs;
+                // Each block is an element of its own on a page shown as
+                // HTML, kept by the block's id as blocks come and go.
+                let block_origin = b.line.get_rect().origin();
+                let begun = crate::scene_parts::begin_item(
+                    ctx.scene,
+                    crate::scene_parts::item_key("ui.block", &b.id),
+                    ctx.transform * Affine::translate((block_origin.x, block_origin.y)),
+                );
                 draw_block(b, idx, &mut ctx, &mut formulas);
+                crate::scene_parts::end_widget(ctx.scene, begun);
                 ctx.collect_code_ground = false;
                 // The window's search: every match in this block, washed
                 // over its glyphs, the current one stronger.

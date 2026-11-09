@@ -11,54 +11,18 @@ use std::rc::Rc;
 use std::time::Duration;
 
 use tilo_desktop::about::{AboutLinks, AboutVariant, TiloMenu};
-use tilo_desktop::desktop_host::{DesktopChrome, DesktopRules};
+use tilo_desktop::desktop_host::{DesktopChrome, NoticeTiles, PermissiveRules};
 use tilo_desktop::topbar::TopBarChrome;
-use tilo_desktop_model::commands::DesktopCommand;
 use tilo_desktop_model::{
     DesktopTree, Strip, StripId, Tab, TileContent, WindowGroup, WindowWidth, Workspace,
     WorkspaceSlot,
 };
-use tilo_desktop_surface::{DesktopHandle, DesktopSurface, SearchHost, SearchHostFeed, TileSource};
+use tilo_desktop_surface::{DesktopHandle, DesktopSurface, SearchHost, SearchHostFeed};
 use ui::headless::FrameHarness;
 use ui::search::Scope;
 use ui::synthetic_input::{char_key, key_press, named_key};
-use ui::widget::TileHost;
 use winit::event::{Modifiers, WindowEvent};
 use winit::keyboard::{Key, ModifiersState, NamedKey};
-
-/// The windows of the test desk, with their content as plain notices.
-struct Notices;
-
-impl TileSource for Notices {
-    fn tile(&mut self, _: &Workspace, tab: &Tab) -> TileHost {
-        TileHost::new(ui::widget::TileContent::Notice {
-            title: tab.title.clone(),
-            detail: String::new(),
-        })
-    }
-}
-
-struct Rules {
-    handle: DesktopHandle,
-}
-
-impl DesktopRules for Rules {
-    fn tree(&self) -> DesktopTree {
-        self.handle.read(Clone::clone)
-    }
-
-    fn author(&self) -> String {
-        "Ada".into()
-    }
-
-    fn may(&self, _: &DesktopCommand) -> Result<(), String> {
-        Ok(())
-    }
-
-    fn may_create_workspace(&self) -> Result<(), String> {
-        Ok(())
-    }
-}
 
 fn window(id: u64, title: &str, app: &str) -> Tab {
     Tab {
@@ -122,7 +86,7 @@ fn session_parts(
     host: Option<Rc<dyn SearchHost>>,
     track_parts: bool,
 ) -> Session {
-    let (surface, handle) = DesktopSurface::new(tree.clone(), 7, Box::new(Notices));
+    let (surface, handle) = DesktopSurface::new(tree.clone(), 7, Box::new(NoticeTiles));
     let mut desk = FrameHarness::new(ui::state::State::new(), Box::new(surface), size);
     desk.relayout();
     if let Some(host) = host {
@@ -131,9 +95,7 @@ fn session_parts(
     let chrome = DesktopChrome::new(
         handle.clone(),
         "g".into(),
-        Rc::new(Rules {
-            handle: handle.clone(),
-        }),
+        Rc::new(PermissiveRules::new(handle.clone())),
         TopBarChrome::from_tree(tree),
         TiloMenu::new(AboutVariant::Native, &AboutLinks::default()),
         false,
@@ -184,7 +146,9 @@ impl Session {
         let deadline = now.checked_add(Duration::from_secs(5)).unwrap_or(now);
         loop {
             self.frame();
-            if !self.handle.search_searching() {
+            // A source still out does not make the search "still searching"
+            // once its ready rows are shown, so wait on the sources.
+            if !self.handle.search_expecting() {
                 return;
             }
             assert!(ui::time::now() < deadline, "the search never finished");
@@ -367,7 +331,7 @@ impl tilo_desktop_search::Source for Plenty {
 impl SearchHost for Many {
     fn feed(&self, _: &str, _: &ui::search::Scope) -> SearchHostFeed {
         SearchHostFeed {
-            sources: vec![std::sync::Arc::new(Plenty)],
+            sources: vec![tilo_desktop_search::Held::new(Plenty)],
             ..SearchHostFeed::default()
         }
     }
@@ -426,7 +390,7 @@ impl SearchHost for Everywhere {
     fn feed(&self, _: &str, scope: &Scope) -> SearchHostFeed {
         self.scopes.borrow_mut().push(scope.clone());
         SearchHostFeed {
-            sources: vec![std::sync::Arc::new(Elsewhere {
+            sources: vec![tilo_desktop_search::Held::new(Elsewhere {
                 every_workspace: scope.everywhere(),
             })],
             ..SearchHostFeed::default()
@@ -545,4 +509,205 @@ fn closing_search_repaints_the_whole_scrim() {
         repainted >= scrim.area() * 0.99,
         "closing search repainted {repainted} of the {scrim:?} it dimmed: {repaint:?}"
     );
+}
+
+/// Typing into the open palette damages the card, not the display under it: the palette's own
+/// paint is one bounded part of the chrome's scene, so a key (and the caret it moves) repaints the
+/// card and the scrim stays as it was. A palette whose commands fall outside every part cannot be
+/// proven sparse, and then every frame of a search repaints the whole dimmed display — on a page
+/// drawing in software that is seconds a frame, and the bar the person typed into answers after
+/// seconds instead of at the pace of a key.
+#[test]
+fn typing_in_the_palette_repaints_the_card_not_the_display() {
+    use ui::retained_raster::Repaint;
+    let tree = desk_tree();
+    let mut session = session_parts(&tree, (1280, 800), Some(Rc::new(Many)), true);
+    session.frame();
+    session.handle.open_search(Scope::Workspace, None);
+    session.frame();
+    session.frame();
+    let card = session.card().expect("the palette is up");
+    let painted = ui::widget::floating_surface::painted_bounds(card, &ui::Theme::dark());
+    let mut shown = Presented::new(&session, (1280, 800));
+    // The frame that opens search draws the scrim and the card: everything changes.
+    shown.next(&mut session);
+    for _ in 0..2 {
+        shown.next(&mut session);
+    }
+    // No key typed yet: the settled card damages only what its own caret or a result changes,
+    // never the display it dims.
+    session.type_text("n");
+    let repaint = shown.next(&mut session);
+    let regions = match repaint {
+        Repaint::Regions(regions) => regions,
+        Repaint::Full(unknown) => panic!(
+            "a key in the open palette repaints the whole display ({unknown:?}), not the card \
+             it was typed into, {painted:?}"
+        ),
+    };
+    for region in &regions {
+        assert!(
+            painted
+                .union(painted.inflate(2.0, 2.0))
+                .contains_rect(*region),
+            "{region:?} is beyond the card's paint {painted:?}: a keystroke in the palette \
+             repaints the page around it"
+        );
+    }
+}
+
+/// A search the desk is still waiting on asks for the frames that finish it, from the chrome that
+/// draws it. The palette's own rows and an application's answer arrive off the frame (a worker's
+/// answer wakes the desk; a provider's answer comes on the host's clock), and a desk with nothing
+/// else to draw presents none — so the answer is looked for on a deadline, the same one the desk
+/// keeps for its own pass. Without it the palette shows the rows it had when the person stopped
+/// typing, and Enter on an app's row comes long after the person pressed it.
+#[test]
+fn a_search_still_filling_in_asks_for_frames_before_the_bar_ticks() {
+    let tree = desk_tree();
+    let mut session = session_parts(&tree, (1280, 800), Some(Rc::new(Many)), true);
+    session.frame();
+    session.search_chord();
+    session.frame();
+    assert!(session.handle.search_open(), "the chord opened the palette");
+    session.type_text("note");
+    // No frame drawn since the query: the search still owes its rows.
+    let now = ui::time::now();
+    assert!(
+        session.handle.search_searching(),
+        "the search is still filling in"
+    );
+    let wake = session
+        .chrome
+        .frame_schedule()
+        .next_wake_deadline
+        .expect("a search still filling in asks to be looked at again");
+    assert!(
+        wake <= now.checked_add(ui::time::Duration::from_secs(1)).unwrap(),
+        "the wake is at {wake:?}, not within a second of {now:?}: the page would wait for the \
+         bar's next minute to finish the search"
+    );
+}
+
+/// A desk whose shown strip holds `n` windows, all at rest.
+fn desk_tree_with(n: u64) -> DesktopTree {
+    let groups: Vec<WindowGroup> = (0..n)
+        .map(|i| {
+            let tab = window(
+                i.saturating_add(20),
+                &format!("Window {i}"),
+                "so.tilo.notes",
+            );
+            WindowGroup {
+                id: i.saturating_add(3),
+                active_tab: tab.id,
+                tabs: vec![tab],
+                width: WindowWidth::Normal,
+                maximized: false,
+                focus_history: Vec::new(),
+            }
+        })
+        .collect();
+    let mut workspace = Workspace::new(WorkspaceSlot(1), "Work");
+    workspace.strips = vec![Strip {
+        id: StripId(2),
+        name: "Main".into(),
+        window_groups: groups,
+    }];
+    let mut tree = DesktopTree {
+        active: workspace.slot,
+        workspaces: vec![workspace],
+        ..Default::default()
+    };
+    tree.active_strip.insert(WorkspaceSlot(1), StripId(2));
+    tree.active_group.insert(StripId(2), 3);
+    tree
+}
+
+/// A keystroke in the open palette must not rebuild the page's composition, however many windows
+/// are open. The page is one composition — the desk with its windows under the chrome that draws
+/// the card over them, as the browser's shell stands the two in one tree. The card a person types
+/// into is a leaf whose rows are painted, not widgets mounted into that tree: a row that came or
+/// went is the card's paint, and the card's own size is re-solved in place. A frame that discarded
+/// the composition instead would re-encode and re-measure every window's whole scene for a change
+/// none of them holds — the cost growing with every window open, so a key typed into the palette is
+/// answered later the more the person has open, seconds late on a page drawing in software.
+///
+/// The measure is the frame's own accounting (`RelayoutStats::rebuilt`): a rebuild discards the
+/// taffy tree and re-solves every widget, a frame that keeps it re-solves only what it marked.
+#[test]
+fn a_keystroke_in_the_palette_does_not_rebuild_the_page_with_many_windows() {
+    use std::cell::RefCell;
+    use ui::widget::Stack;
+
+    for windows in [1u64, 6, 12, 24] {
+        let tree = desk_tree_with(windows);
+        let (surface, handle) = DesktopSurface::new(tree.clone(), 7, Box::new(NoticeTiles));
+        handle.set_search_host(Rc::new(Many));
+        let chrome = DesktopChrome::new(
+            handle.clone(),
+            "g".into(),
+            Rc::new(PermissiveRules::new(handle.clone())),
+            TopBarChrome::from_tree(&tree),
+            TiloMenu::new(AboutVariant::Native, &AboutLinks::default()),
+            false,
+        );
+        // The page's own composition: the desk under the chrome over it, one tree, so a rebuild of
+        // either discards the whole.
+        let root = Stack::new().push(Box::new(surface)).push(Box::new(chrome));
+        let mut page = FrameHarness::for_root(
+            ui::state::State::new(),
+            root,
+            (1280, 800),
+            ui::Theme::dark(),
+        );
+        page.track_scene_parts(true);
+        page.relayout();
+        assert!(!handle.search_open());
+        handle.open_search(Scope::Workspace, None);
+        {
+            let background = ui::background::Background::current();
+            let start = ui::time::now();
+            let deadline = start.checked_add(Duration::from_secs(5)).unwrap_or(start);
+            loop {
+                page.relayout();
+                if !handle.search_expecting() {
+                    break;
+                }
+                assert!(ui::time::now() < deadline, "the search never finished");
+                let now = ui::time::now();
+                background.park(now.checked_add(Duration::from_millis(2)).unwrap_or(now));
+            }
+        }
+        assert!(handle.search_open(), "the palette is up");
+        // A frame at rest with the card's rows in: this one laid the card out.
+        page.relayout();
+        // One key into the card: its rows change, and nothing a window holds does. Every frame
+        // from the key on is drawn, and none may rebuild: the card's rows are its own paint and
+        // size, and a rebuild re-encodes every open window's scene for a change none of them holds.
+        page.send_host_event(&char_key("x"));
+        {
+            let background = ui::background::Background::current();
+            let start = ui::time::now();
+            let deadline = start.checked_add(Duration::from_secs(5)).unwrap_or(start);
+            let mut drawn = 0;
+            loop {
+                page.relayout();
+                drawn += 1;
+                assert!(
+                    !page.last_relayout().rebuilt,
+                    "frame {drawn} after a keystroke in the open palette rebuilt the page's \
+                     composition with {windows} windows open: every window's scene is measured and \
+                     drawn again for a change in the card alone"
+                );
+                if !handle.search_expecting() && drawn > 2 {
+                    break;
+                }
+                assert!(ui::time::now() < deadline, "the search never finished");
+                let now = ui::time::now();
+                background.park(now.checked_add(Duration::from_millis(2)).unwrap_or(now));
+            }
+        }
+        let _ = RefCell::new(());
+    }
 }

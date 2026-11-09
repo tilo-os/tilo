@@ -77,6 +77,10 @@ pub struct SessionOptions {
     /// [`tilo_paths::login::GUEST_AGENT_SOCKET`] ([`crate::agent_door`]): set
     /// while the session holds its lease. `None` binds none.
     pub agent_door: Option<PathBuf>,
+    /// On a host that serves other people's workspaces: the workspace's
+    /// own VM runs the session's programs, not a guest on this kernel
+    /// ([`crate::hosted_vm`]). Set from the host's environment.
+    pub hosted_vm: Option<crate::hosted_vm::HostedTarget>,
 }
 
 impl Default for SessionOptions {
@@ -93,6 +97,7 @@ impl Default for SessionOptions {
             editor: None,
             terminal: None,
             agent_door: None,
+            hosted_vm: crate::hosted_vm::HostedTarget::from_env(),
         }
     }
 }

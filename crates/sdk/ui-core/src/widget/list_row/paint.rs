@@ -382,6 +382,19 @@ impl ListRowFace<'_> {
                     None,
                 );
             }
+        } else if !self.facts.is_empty() {
+            // Facts are separate components on the line under the title: each says itself, and
+            // the one that no longer fits elides rather than the row joining them into one string.
+            let secondary_line = RowMetrics::line(ctx.text, &m.secondary);
+            let right = if self.subtitle.is_some() {
+                geo.text_right
+            } else {
+                geo.second_right
+            };
+            crate::widget::FactsFace::new(self.facts).paint(
+                ctx,
+                Rect::new(text_x, y, right.max(text_x), y + secondary_line),
+            );
         }
         if let (Some(change), Some(face)) = (self.change, geo.change)
             && !change.said.is_empty()
@@ -389,7 +402,7 @@ impl ListRowFace<'_> {
             // What someone else did stands under the title in the quietest ink, led by their
             // face: who did it, then what they did, then the row's other lines.
             let secondary_line = RowMetrics::line(ctx.text, &m.secondary);
-            let y = if self.secondary.is_some() {
+            let y = if self.has_secondary_line() {
                 y + f64::from(self.secondary_lines) * secondary_line
             } else {
                 y
@@ -414,7 +427,7 @@ impl ListRowFace<'_> {
             // What waits on the item stands under its text, in the quieter ink: a proposal is
             // not the item's own content.
             let secondary_line = RowMetrics::line(ctx.text, &m.secondary);
-            let y = if self.secondary.is_some() {
+            let y = if self.has_secondary_line() {
                 y + f64::from(self.secondary_lines) * secondary_line
             } else {
                 y

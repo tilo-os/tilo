@@ -28,6 +28,7 @@ fn invitation_for(workspace: &str, person: [u8; 32]) -> String {
         issued_at_ns: now,
         expires_at_ns: None,
         signature: [0; 64],
+        issuer: None,
     };
     tilo_user_identity::sign_device_cert(&mut issuer, &host).expect("a certified host");
     let grant = tilo_workspace_join::InviteGrant {
@@ -71,7 +72,7 @@ fn a_door_round_trip_carries_the_invitation_it_granted() {
     let answer = serde_json::json!({
         "invitation": invitation,
         "admissionToken": "one-time-token",
-        "origin": "https://rooms.tilo.coffee/",
+        "origin": "https://rooms.tilo.sh/",
     })
     .to_string();
     let responder = Responder::start(vec![
@@ -134,9 +135,9 @@ fn a_site_says_its_home_workspace_and_its_directory() {
         let reply = if request.target.ends_with("entry.json") {
             serde_json::json!({
                 "home": {
-                    "name": "tilo.coffee",
-                    "host": { "origin": "https://rooms.tilo.coffee/" },
-                    "admission": "https://rooms.tilo.coffee/",
+                    "name": "tilo.sh",
+                    "host": { "origin": "https://rooms.tilo.sh/" },
+                    "admission": "https://rooms.tilo.sh/",
                 },
                 "directory": "directory",
             })
@@ -159,10 +160,10 @@ fn a_site_says_its_home_workspace_and_its_directory() {
         .expect("the app runtime")
         .expect("a site read");
     let home = read.home.expect("the site's home workspace");
-    assert_eq!(home.name, "tilo.coffee");
+    assert_eq!(home.name, "tilo.sh");
     assert_eq!(
         home.admission.as_ref().map(url::Url::as_str),
-        Some("https://rooms.tilo.coffee/")
+        Some("https://rooms.tilo.sh/")
     );
     let directory = read.directory.expect("the site's directory");
     let page = tilo_rt::block_on(fetch_directory(&client, &directory))

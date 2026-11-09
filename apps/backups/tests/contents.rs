@@ -47,7 +47,10 @@ fn the_snapshot_lists_its_files_under_their_folders_and_folds_them_away() {
         .find(|(name, _)| name.ends_with("/VirtualList[0]/ListRow[0]"))
         .unwrap_or_else(|| panic!("the contents list has a first row"))
         .1;
-    let disclosure = (f64::midpoint(list.x0, row.x0), f64::midpoint(row.y0, row.y1));
+    let disclosure = (
+        f64::midpoint(list.x0, row.x0),
+        f64::midpoint(row.y0, row.y1),
+    );
     let shown = listed.len();
     app.harness().click_at(disclosure.0, disclosure.1);
     let folded = rows(&mut app);

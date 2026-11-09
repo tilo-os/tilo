@@ -105,6 +105,7 @@ pub fn enrol(root: &SigningKey, label: &str, capabilities: DeviceCapabilities) -
         issued_at_ns: 1,
         expires_at_ns: None,
         signature: [0; 64],
+        issuer: None,
     };
     sign_device_cert(&mut cert, root).unwrap();
     Device { key, cert }
@@ -236,6 +237,15 @@ pub async fn start_host_serving(
         ..Default::default()
     };
     if let Some(iroh_listen) = iroh_listen {
+        // A stopped host's connection tasks let go of its socket shortly
+        // after its shutdown returns; a restart on the same address waits
+        // for that, as a restarted process waits for the old one to exit.
+        if iroh_listen.port() != 0 {
+            wait_for("the stopped host's iroh address to be free", || async {
+                std::net::UdpSocket::bind(iroh_listen).ok().map(drop)
+            })
+            .await;
+        }
         cfg.iroh_listen = iroh_listen;
     }
     if !guests.is_empty() {
@@ -322,6 +332,13 @@ impl TestHost {
     /// The host as a session reaches it: its iroh endpoint.
     pub fn iroh(&self) -> Host {
         Host::at(self.relay.node_addr())
+    }
+
+    /// The address its iroh endpoint listens on, for a restart that keeps
+    /// it: a page dials the address it was given, so a host restarted
+    /// elsewhere is one it never finds again.
+    pub fn iroh_listen(&self) -> SocketAddr {
+        *self.relay.node_addr().ip_addrs().next().unwrap()
     }
 }
 

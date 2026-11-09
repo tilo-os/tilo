@@ -42,9 +42,12 @@ class Layout(unittest.TestCase):
         """A bundle: the real entry pages, and a module graph as deep as the shipped one."""
         bundle = root / 'bundle'
         (bundle / 'pkg').mkdir(parents=True)
-        for page in ('index.html', 'app/index.html'):
+        for page in ('index.html', 'app/index.html', 'sign-in.html'):
             (bundle / page).parent.mkdir(parents=True, exist_ok=True)
             shutil.copy(WEB / page, bundle / page)
+        # The sign-in page's own module, and the modules it imports: a page
+        # whose graph is four modules, not the desktop's.
+        shutil.copy(WEB / 'sign-in.mjs', bundle / 'sign-in.mjs')
         # entry-page.mjs imports two modules, each of them two more, and one of
         # those a fourth; the rest is what a module may mention without
         # importing.
@@ -66,6 +69,13 @@ class Layout(unittest.TestCase):
             'never-preloaded.mjs': "export const never = 1;\n",
             'in-a-comment.mjs': "export const no = 1;\n",
             'in-a-string.mjs': "export const no = 1;\n",
+            'identity.mjs': "export const keptIdentity = () => null;\n",
+            'device-custody.mjs': "export const openDeviceCustody = () => null;\n",
+            'identity-profile.mjs': "export const identityProfile = () => '';\n",
+            'entered-workspaces.mjs': "export const enteredWorkspaces = () => [];\n",
+            # The first screen's module, which the entry page loads by a script
+            # of its own as well as through the entry module.
+            'first-run.mjs': "export const firstRun = null;\n",
         }
         for name, text in modules.items():
             module = bundle / name
@@ -91,6 +101,10 @@ class Layout(unittest.TestCase):
     def page(self, site, name):
         return (site / name).read_text()
 
+    # The sign-in page's module and what it statically imports, in the order a
+    # browser meets them.
+    SIGN_IN = ('sign-in.mjs', 'device-custody.mjs', 'entered-workspaces.mjs', 'identity.mjs', 'identity-profile.mjs')
+
     def hints(self, site, page):
         return re.findall(r'<link rel="modulepreload" href="([^"]+)">', self.page(site, page))
 
@@ -109,6 +123,17 @@ class Layout(unittest.TestCase):
             version = result.stdout.strip()
             self.assertEqual(self.hints(site, 'index.html'),
                              [f'./v/{version}/{name}' for name in self.EXPECTED])
+
+    def test_every_script_a_page_loads_is_a_file_of_the_site(self):
+        with tempfile.TemporaryDirectory() as directory:
+            result, site = self.lay_out(pathlib.Path(directory))
+            self.assertEqual(result.returncode, 0, result.stderr)
+            version = result.stdout.strip()
+            for page in ('index.html', 'app/index.html', 'sign-in.html'):
+                for src in re.findall(r'<script\b[^>]*\bsrc="([^"]+)"', self.page(site, page)):
+                    self.assertIn(f'v/{version}/', src, f'{page} loads {src} outside the versioned directory')
+                    self.assertTrue((site / page).parent.joinpath(src).resolve().is_file(), f'{page}: {src}')
+            self.assertIn(f'src="./v/{version}/first-run.mjs"', self.page(site, 'index.html'))
 
     def test_the_app_entry_page_points_one_level_up(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -149,6 +174,34 @@ class Layout(unittest.TestCase):
             for hint in self.hints(site, 'index.html'):
                 self.assertLess(wasm, text.index(hint))
             self.assertEqual(len(set(self.hints(site, 'index.html'))), len(self.EXPECTED))
+
+    def test_the_sign_in_page_starts_its_own_module_and_loads_no_desktop(self):
+        with tempfile.TemporaryDirectory() as directory:
+            result, site = self.lay_out(pathlib.Path(directory))
+            self.assertEqual(result.returncode, 0, result.stderr)
+            version = result.stdout.strip()
+            self.assertEqual(self.hints(site, 'sign-in.html'),
+                             [f'./v/{version}/{name}' for name in self.SIGN_IN])
+            text = self.page(site, 'sign-in.html')
+            self.assertIn(f"from './v/{version}/sign-in.mjs';", text)
+            for href in re.findall(r'href="([^"]+)"', text):
+                if href.startswith('data:'):
+                    continue
+                self.assertTrue((site / href).is_file(), href)
+            self.assertFalse((site / 'v' / version / 'sign-in.html').exists(),
+                             'a page under v/ would be served with that directory\'s own entry.json')
+
+    def test_a_bundle_without_a_sign_in_page_lays_out_without_one(self):
+        # An app's own bundle serves no sign-in route: it carries no page.
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            bundle = self.bundle(root)
+            (bundle / 'sign-in.html').unlink()
+            result = subprocess.run([sys.executable, '-I', str(LAYOUT), str(bundle),
+                                     str(root / 'site')], capture_output=True, text=True)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertFalse((root / 'site' / 'sign-in.html').exists())
+            self.assertTrue((root / 'site' / 'index.html').is_file())
 
     def test_the_layout_is_deterministic(self):
         with tempfile.TemporaryDirectory() as directory:

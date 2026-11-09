@@ -562,6 +562,16 @@ impl crate::Published for WidgetHost {
         for (name, rect) in self.host.targets() {
             shown.insert(name, self.logical(rect));
         }
+        // The controls of an app the tree shows as its own (setup's steps),
+        // by the ids the app names them with: the tree's targets stop at it.
+        let mut embedded = Vec::new();
+        each_embedded_app(self.host.root_widget_mut(), &mut |app| {
+            embedded.extend(app.named_controls());
+        });
+        for (name, rect) in embedded {
+            let logical = self.logical(rect);
+            shown.entry(name).or_insert(logical);
+        }
         for (_, node) in self.host.a11y_nodes() {
             // A hidden node stands nowhere the person can reach.
             if node.is_hidden() {
@@ -583,9 +593,14 @@ impl crate::Published for WidgetHost {
     /// name or test id, else an element of the accessibility tree — a chip, a
     /// window bar's pill — activated as assistive technology activates it.
     fn press(&mut self, name: &str) -> Result<(), String> {
-        match self.host.perform_named(name, &ui::a11y::Action::Activate) {
-            Ok(()) => {}
-            Err(named) => {
+        if let Err(named) = self.host.perform_named(name, &ui::a11y::Action::Activate) {
+            // A control of an app the tree shows as its own, by the id it
+            // names it with, else an element of the accessibility tree.
+            let mut pressed = false;
+            each_embedded_app(self.host.root_widget_mut(), &mut |app| {
+                pressed = pressed || app.press_named(name);
+            });
+            if !pressed {
                 let node = self
                     .host
                     .a11y_nodes()
@@ -899,6 +914,20 @@ impl SurfaceHost for WidgetHost {
         self.frames.present(&self.scene, damage.as_deref());
         self.cadence.drawn(now);
         true
+    }
+}
+
+/// Hand `each` every app `widget`'s tree shows as its own ([`ui::app::EmbeddedApp`]).
+fn each_embedded_app(widget: &mut dyn ui::Widget, each: &mut dyn FnMut(&mut ui::app::EmbeddedApp)) {
+    if let Some(app) = widget
+        .as_any_mut()
+        .and_then(|any| any.downcast_mut::<ui::app::EmbeddedApp>())
+    {
+        each(app);
+        return;
+    }
+    for child in widget.children_mut() {
+        each_embedded_app(child, each);
     }
 }
 

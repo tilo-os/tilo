@@ -14,6 +14,8 @@ use crate::prims::{self, Prim};
 use crate::resolve::{CKind, Callable, EnumInfo};
 use crate::types::Ty;
 
+use std::collections::HashSet;
+
 /// The named arguments a list row takes, for messages.
 const ROW_ARGS_TEXT: &str =
     "secondary:, note:, meta:, mark:, icon:, avatar:, badge:, value:, checkbox: and check:";
@@ -473,7 +475,7 @@ impl Checker<'_> {
                 Some("avatar") => avatar = Some(value),
                 Some("checkbox") => {
                     if self
-                        .bind_typed(&node, value, &[Ty::Bool], false, false)
+                        .bind_typed(&node, value, &[Ty::Bool], false, false, false)
                         .is_some()
                     {
                         self.emit(host(
@@ -909,8 +911,11 @@ impl Checker<'_> {
         };
         let key = concat(self.node_key(c), Ex::str("#person"));
         let n = self.new_node(&crate::toolkit::kind(&d.name), key);
+        // `field(...)`: the form's own arguments were given to the holder, so the control
+        // takes no placeholder from them.
+        let given: HashSet<String> = HashSet::new();
         for a in args.iter().filter(|a| is_bind(a)) {
-            self.binding_prop(n, d, &a.value, &d.bindings);
+            self.binding_prop(n, d, &a.value, &given);
         }
         // Who may be picked, and which of them is "Me": the workspace's, never a copy the app
         // keeps.

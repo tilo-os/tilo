@@ -42,6 +42,7 @@ fn context(app: &str, live: Arc<AtomicBool>) -> BrowserServiceSessionRequestCont
         issued_at_ns: 1,
         expires_at_ns: None,
         signature: [0; 64],
+        issuer: None,
     };
     tilo_user_identity::sign_device_cert(&mut certificate, &root).unwrap();
     let read = NativeDocumentReadContext {

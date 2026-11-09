@@ -20,7 +20,7 @@ mod history;
 pub mod host_media;
 mod keys;
 
-pub use controls::{CONTROL_RESOURCE_PREFIX, Control, ControlInput};
+pub use controls::{CONTROL_RESOURCE_PREFIX, Control, ControlInput, FollowedView};
 use tilo_sort::CompactSort as _;
 
 use std::collections::{HashMap, HashSet};
@@ -110,6 +110,12 @@ pub struct InspectionNode {
     /// Effective policy and authoring origins, when supplied by the widget.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub layout: Option<crate::widget::LayoutInfo>,
+    /// The key the widget's draws carried in the last frame, while a host
+    /// keys them ([`crate::scene_parts::key_widgets`]): a page shown as HTML
+    /// finds the widget's element by it and makes it the semantic node's
+    /// home, so the drawn and the accessible tree are one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub paint_key: Option<String>,
     pub semantics: Option<AccessNode>,
     pub children: Vec<InspectionNode>,
 }
@@ -404,6 +410,10 @@ pub struct FrameHarness {
     /// The harness stands in for the desktop's window bar, hosting the app's slots, search and
     /// History and painting it over every capture.
     window_bar: bool,
+    /// The app's frame holds the window's bar in a header row of its own, as a window's frame
+    /// hosts one: the row fills the window and the window's controls stand at its trailing end,
+    /// so the window shows one bar.
+    row_holds: bool,
     /// The window bar's search over the app's widgets, painted in the bar
     /// ([`Self::search_in_window`]).
     window_search: Box<crate::widget::WindowSearch>,
@@ -1523,6 +1533,7 @@ impl FrameHarness {
             drawn_permissions: crate::permissions::shared_revision(),
             child_node: NodeId::from(0usize),
             window_bar: false,
+            row_holds: false,
             window_search: Box::new(crate::widget::WindowSearch::new()),
             slot_row: None,
             window_app: None,
@@ -5154,6 +5165,7 @@ impl FrameHarness {
             child_clip: None,
             page_title: None,
             layout: None,
+            paint_key: None,
             semantics: Some(
                 crate::a11y::AccessNode::new(crate::a11y::Role::Tooltip).with_name(text.to_owned()),
             ),

@@ -283,7 +283,16 @@ mod qualification {
             .and_then(std::path::Path::parent)
             .ok_or("worker directory")?
             .join("tilo-speech-worker");
-        for cancel in [false, true, false] {
+        let mut alone = 0;
+        let mut during_draft = 0;
+        let mut after_draft = 0;
+        for journey in [
+            Journey::Alone,
+            Journey::DuringDraft,
+            Journey::AfterDraft,
+            Journey::Canceled,
+            Journey::Interrupted,
+        ] {
             let mut command = Command::new(if core { &current } else { &executable });
             command.env_clear();
             if core {
@@ -300,19 +309,45 @@ mod qualification {
             command
                 .stdin(Stdio::piped())
                 .stdout(Stdio::piped())
-                .stderr(Stdio::null());
+                // The child reports only its numeric peak on stderr.
+                .stderr(Stdio::inherit());
             let mut child = OwnedChild(command.spawn()?);
-            worker_stream(&mut child.0, samples, cancel, vocabulary)?;
+            let readings = worker_stream(&mut child.0, samples, journey, vocabulary)?;
+            match journey {
+                Journey::Alone => alone = readings,
+                Journey::DuringDraft => during_draft = readings,
+                Journey::AfterDraft => after_draft = readings,
+                Journey::Canceled | Journey::Interrupted => {}
+            }
         }
+        println!(
+            "worker finish latency: alone_ms={alone} during_draft_ms={during_draft} \
+             after_draft_ms={after_draft}"
+        );
         Ok(())
+    }
+
+    /// One worker session: the final with and without a provisional decode in
+    /// flight, a client-side cancel, or the production Finish that abandons an
+    /// in-flight draft.
+    #[derive(Clone, Copy, PartialEq, Eq)]
+    enum Journey {
+        /// Finish with no provisional decode to replace.
+        Alone,
+        /// Finish while the worker is still decoding a draft.
+        DuringDraft,
+        /// Finish once the draft's own reply has arrived.
+        AfterDraft,
+        Canceled,
+        Interrupted,
     }
 
     fn worker_stream(
         child: &mut Child,
         samples: &[i16],
-        cancel: bool,
+        journey: Journey,
         vocabulary: bool,
-    ) -> Result<(), Box<dyn std::error::Error>> {
+    ) -> Result<u128, Box<dyn std::error::Error>> {
         let mut input = child.stdin.take().ok_or("worker input")?;
         let mut output = child.stdout.take().ok_or("worker output")?;
         let (sender, receiver) = std::sync::mpsc::channel();
@@ -326,28 +361,68 @@ mod qualification {
                 }
             }
         });
-        let next = || {
+        let readings = worker_session(&mut input, child, samples, journey, vocabulary, &receiver)?;
+        drop(input);
+        reader.join().map_err(|_| "worker reader failed")?;
+        Ok(readings)
+    }
+
+    type Replies = std::sync::mpsc::Receiver<Result<SpeechReply, serde_json::Error>>;
+
+    /// Abandon a draft the client is waiting for, as the session's Finish does
+    /// while the worker decodes. The hint arrives mid-run, the case the engine
+    /// must end as an abandoned draft and not as a recognition failure. A draft
+    /// that already replied reports itself as uninterrupted.
+    fn interrupt(child: &Child, receiver: &Replies) -> Result<bool, Box<dyn std::error::Error>> {
+        let pid = i32::try_from(child.id()).map_err(|_| "worker identity")?;
+        // Mel preprocessing alone is shorter than this on every supported CPU.
+        std::thread::sleep(Duration::from_millis(100));
+        if receiver.try_recv().is_ok() {
+            return Ok(false);
+        }
+        // SAFETY: this client owns the unreaped child, so its PID cannot be
+        // reused, and only its advertised handler gets the hint.
+        if unsafe { libc::kill(pid, libc::SIGUSR1) } != 0 {
+            return Err("worker interrupt delivery failed".into());
+        }
+        Ok(true)
+    }
+
+    fn worker_session(
+        input: &mut impl std::io::Write,
+        child: &mut Child,
+        samples: &[i16],
+        journey: Journey,
+        vocabulary: bool,
+        receiver: &Replies,
+    ) -> Result<u128, Box<dyn std::error::Error>> {
+        let next = || -> Result<SpeechReply, Box<dyn std::error::Error>> {
             receiver
                 .recv_timeout(Duration::from_secs(20))
-                .map_err(|_| "worker reply deadline")
-                .and_then(|message| message.map_err(|_| "worker reply schema"))
+                .map_err(|_| "worker reply deadline")?
+                .map_err(|_| "worker reply schema".into())
+        };
+        let spoken = |text: &str| {
+            text.to_lowercase().contains("country")
+                && (!vocabulary || !text.to_lowercase().contains("tilo"))
         };
         let configuration = if vocabulary {
             br#"{"language":"en","vocabulary":["TiLo","Americans"]}"#.as_slice()
         } else {
             br#"{"language":"en"}"#.as_slice()
         };
-        FRAME.write(
-            &mut input,
-            &request(RequestKind::Configure, 1, configuration),
-        )?;
+        FRAME.write(input, &request(RequestKind::Configure, 1, configuration))?;
         input.flush()?;
         match next()? {
-            SpeechReply::Ready { sequence: 1, .. } => {}
+            SpeechReply::Ready {
+                sequence: 1,
+                finish_interrupts_draft,
+                ..
+            } if finish_interrupts_draft => {}
             SpeechReply::Error { error, .. } => {
                 return Err(format!("worker readiness: {error:?}").into());
             }
-            _ => return Err("worker did not become ready".into()),
+            _ => return Err("worker did not advertise an interruptible draft".into()),
         }
         let pcm: Vec<_> = samples
             .iter()
@@ -356,46 +431,77 @@ mod qualification {
         let mut sequence = 1_u64;
         for chunk in pcm.chunks(64 * 1024) {
             sequence = sequence.checked_add(1).ok_or("sequence")?;
-            FRAME.write(&mut input, &request(RequestKind::Audio, sequence, chunk))?;
+            FRAME.write(input, &request(RequestKind::Audio, sequence, chunk))?;
+        }
+        if journey == Journey::Alone {
+            return finish_now(input, &next, sequence, spoken);
         }
         sequence = sequence.checked_add(1).ok_or("sequence")?;
-        FRAME.write(&mut input, &request(RequestKind::Draft, sequence, &[]))?;
+        FRAME.write(input, &request(RequestKind::Draft, sequence, &[]))?;
+        if journey == Journey::DuringDraft {
+            // The whole point: the client does not wait for the draft it can
+            // already replace, so the worker starts the final at once.
+            return finish_now(input, &next, sequence, spoken);
+        }
         input.flush()?;
-        if cancel {
+        if journey == Journey::Canceled {
             child.kill()?;
             let status = child.wait()?;
             if status.success() {
                 return Err("canceled worker succeeded".into());
             }
-        } else {
+            return Ok(0);
+        }
+        let interrupted = journey == Journey::Interrupted && interrupt(child, receiver)?;
+        let started = Instant::now();
+        let reply = next()?;
+        let abort_ms = started.elapsed().as_millis();
+        let text = match reply {
+            SpeechReply::Draft {
+                sequence: reply,
+                text,
+            } if reply == sequence => text,
+            _ => return Err("worker draft journey failed".into()),
+        };
+        if interrupted {
+            if !text.is_empty() {
+                return Err("interrupted draft still produced text".into());
+            }
+            println!("interrupted draft: abort_ms={abort_ms}");
+        } else if !text.to_lowercase().contains("ask not")
+            || (vocabulary && text.to_lowercase().contains("tilo"))
+        {
+            return Err("worker draft journey failed".into());
+        }
+        finish_now(input, &next, sequence, spoken)
+    }
+
+    /// Send Finish for the audio already delivered and time it to Done. A draft
+    /// reply may still arrive first; the final supersedes it either way.
+    fn finish_now(
+        input: &mut impl std::io::Write,
+        next: &impl Fn() -> Result<SpeechReply, Box<dyn std::error::Error>>,
+        draft_sequence: u64,
+        spoken: impl Fn(&str) -> bool,
+    ) -> Result<u128, Box<dyn std::error::Error>> {
+        let finish = draft_sequence.checked_add(1).ok_or("sequence")?;
+        let started = Instant::now();
+        FRAME.write(input, &request(RequestKind::Finish, finish, &[]))?;
+        input.flush()?;
+        loop {
             match next()? {
                 SpeechReply::Draft {
-                    sequence: reply,
-                    text,
-                } if reply == sequence
-                    && text.to_lowercase().contains("ask not")
-                    && (!vocabulary || !text.to_lowercase().contains("tilo")) => {}
-                _ => return Err("worker draft journey failed".into()),
-            }
-            sequence = sequence.checked_add(1).ok_or("sequence")?;
-            FRAME.write(&mut input, &request(RequestKind::Finish, sequence, &[]))?;
-            input.flush()?;
-            match next()? {
+                    sequence: reply, ..
+                } if reply < finish => {}
                 SpeechReply::Done {
                     sequence: reply,
                     text,
-                } if reply == sequence
-                    && text.to_lowercase().contains("country")
-                    && (!vocabulary || !text.to_lowercase().contains("tilo")) => {}
+                } if reply == finish && spoken(&text) => {
+                    return Ok(started.elapsed().as_millis());
+                }
                 _ => return Err("worker final journey failed".into()),
             }
-            if !child.wait()?.success() {
-                return Err("worker final exit failed".into());
-            }
         }
-        drop(input);
-        reader.join().map_err(|_| "worker reader failed")?;
-        Ok(())
     }
 
     fn child_fixture(paths: &[String]) -> Result<(), Box<dyn std::error::Error>> {
@@ -407,13 +513,25 @@ mod qualification {
         let catalog = std::path::Path::new(paths.get(1).ok_or("fixture catalogue")?);
         let keys = std::path::Path::new(paths.get(2).ok_or("fixture keys")?);
         let verified = local_model_service::catalog::VerifiedCatalog::load(catalog, keys)?;
-        local_model_service::speech::worker::serve(
+        let served = local_model_service::speech::worker::serve(
             root,
             &verified,
-            &mut std::io::stdin().lock(),
+            &mut local_model_service::speech::worker::request_pipe(),
             &mut std::io::stdout().lock(),
         )
-        .map_err(|_| "production worker handler failed")?;
+        .map_err(|_| "production worker handler failed");
+        // Each child's own peak, so the operator sees what a provisional decode
+        // costs beside the final it was replaced by.
+        let mut usage = std::mem::MaybeUninit::<libc::rusage>::uninit();
+        // SAFETY: RUSAGE_SELF fills the structure and the pointer is valid.
+        if unsafe { libc::getrusage(libc::RUSAGE_SELF, usage.as_mut_ptr()) } == 0 {
+            // SAFETY: the successful call above initialized the structure.
+            eprintln!(
+                "worker peak rss_kb={}",
+                unsafe { usage.assume_init() }.ru_maxrss
+            );
+        }
+        served?;
         Ok(())
     }
 
@@ -509,7 +627,7 @@ mod qualification {
             .set_vocabulary(&["TiLo".into(), "Americans".into()])
             .map_err(|_| "public vocabulary configuration failed")?;
         let biased = engine
-            .transcribe(samples, language)
+            .transcribe(samples, language, false)
             .map_err(|_| "public vocabulary decode failed")?;
         if !biased.to_lowercase().contains("ask not") || biased.to_lowercase().contains("tilo") {
             return Err("public vocabulary hallucinated an unspoken hint".into());
@@ -518,7 +636,7 @@ mod qualification {
             return Err("decoder accepted a special-token hint".into());
         }
         let cleared = engine
-            .transcribe(samples, language)
+            .transcribe(samples, language, false)
             .map_err(|_| "cleared vocabulary decode failed")?;
         if cleared != baseline {
             return Err("failed vocabulary replacement retained prior bias".into());
@@ -548,7 +666,7 @@ mod qualification {
             return Ok(());
         }
         let small = arguments == ["--worker-small"] || arguments == ["--worker-core-small"];
-        let mut model = if small {
+        let model = if small {
             fetch(
                 "https://huggingface.co/ggerganov/whisper.cpp/resolve/5359861c739e955e79d9a303bcbc70fb988958b1/ggml-small-q5_1.bin",
                 190_085_487,
@@ -589,7 +707,7 @@ mod qualification {
         drop(pcm);
         local_model_service::speech::confine_worker().map_err(|_| "worker confinement failed")?;
         let start = Instant::now();
-        let mut engine = SpeechEngine::load(&mut model).map_err(|_| "model load failed")?;
+        let mut engine = SpeechEngine::load(&model).map_err(|_| "model load failed")?;
         drop(model);
         engine.prepare().map_err(|_| "decoder allocation failed")?;
         let load_ms = start.elapsed().as_millis();
@@ -597,12 +715,12 @@ mod qualification {
         let prefix = samples.get(..5 * SAMPLE_RATE).ok_or("short fixture")?;
         let start = Instant::now();
         let draft = engine
-            .transcribe(prefix, &en)
+            .transcribe(prefix, &en, false)
             .map_err(|_| "partial decode failed")?;
         let draft_ms = start.elapsed().as_millis();
         let start = Instant::now();
         let text = engine
-            .transcribe(&samples, &en)
+            .transcribe(&samples, &en, false)
             .map_err(|_| "final decode failed")?;
         let final_ms = start.elapsed().as_millis();
         let lower = text.to_lowercase();
@@ -617,20 +735,20 @@ mod qualification {
             qualify_vocabulary(&mut engine, &samples, &en, &text)?;
         }
         let detected = engine
-            .transcribe(&samples, &auto)
+            .transcribe(&samples, &auto, false)
             .map_err(|_| "auto language decode failed")?;
         if !detected.to_lowercase().contains("ask not") {
             return Err("automatic English recognition failed".into());
         }
         if !engine
-            .transcribe(&vec![0.0; SAMPLE_RATE], &en)
+            .transcribe(&vec![0.0; SAMPLE_RATE], &en, false)
             .map_err(|_| "silence decode failed")?
             .is_empty()
         {
             return Err("silence produced text".into());
         }
         if engine
-            .transcribe(&samples, &en)
+            .transcribe(&samples, &en, false)
             .map_err(|_| "repeat decode failed")?
             != text
         {

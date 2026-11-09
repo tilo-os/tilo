@@ -605,7 +605,7 @@ fn a_compact_row_never_folds_one_action_alone_into_the_menu() {
         &file_toolbar(1),
         compact,
         None,
-        (&LocationForms::default(), &[]),
+        (&LocationForms::default(), &[], &[]),
     );
     assert_eq!(one.actions.len(), 1, "the action stands in the row");
     assert_eq!(one.overflow, Rect::ZERO, "no menu for one action");
@@ -615,7 +615,7 @@ fn a_compact_row_never_folds_one_action_alone_into_the_menu() {
             &file_toolbar(declared),
             compact,
             None,
-            (&LocationForms::default(), &[]),
+            (&LocationForms::default(), &[], &[]),
         );
         let folded = declared - slots.actions.len();
         assert!(
@@ -629,7 +629,7 @@ fn a_compact_row_never_folds_one_action_alone_into_the_menu() {
         &file_toolbar(1),
         Rect::new(0.0, 0.0, 900.0, 40.0),
         None,
-        (&LocationForms::default(), &[]),
+        (&LocationForms::default(), &[], &[]),
     );
     assert_eq!(wide.actions.len(), 1);
     assert_eq!(wide.overflow, Rect::ZERO);

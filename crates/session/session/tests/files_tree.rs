@@ -297,6 +297,18 @@ fn a_shared_workspaces_tree_reaches_each_member() {
         );
         std::thread::sleep(std::time::Duration::from_millis(100));
     }
+
+    // A sealed workspace's record never leaves a device in the clear: no
+    // session refused an op of the tree's channel, not even the first write
+    // that founded it.
+    for device in [&ada_laptop, &bob_laptop, &cyd_laptop] {
+        let warnings = device.warnings();
+        assert!(
+            !warnings.contains("a document op its channel's gate does not take"),
+            "{} refused a plaintext op of the sealed tree:\n{warnings}",
+            device.label,
+        );
+    }
 }
 
 /// What a mount changes in the tree it holds — a file added, moved into

@@ -9,7 +9,7 @@ struct Fixture {
     fs: QuickFS,
     ino: u64,
     original: fs_protocol::FileVersionId,
-    history: Arc<crate::history::FileHistoryStore>,
+    history: Arc<crate::history_fixture::History>,
     journal: Arc<Mutex<crate::record_transaction::RecordTransactionJournal>>,
     /// Last, so the stores above close before their files are deleted.
     directory: tempfile::TempDir,
@@ -35,9 +35,7 @@ impl Fixture {
             person: Ed25519PublicKey::from_bytes(person.verifying_key().to_bytes()),
             device: Ed25519PublicKey::from_bytes(signer.verifying_key().to_bytes()),
         };
-        let history = Arc::new(
-            crate::history::FileHistoryStore::open(directory.path().join("history.json")).unwrap(),
-        );
+        let history = Arc::new(crate::history_fixture::History::new(Arc::clone(&namespace)));
         let repository = Arc::new(
             crate::record_repository::RecordRepository::open(directory.path().join("records"))
                 .unwrap(),
@@ -58,7 +56,7 @@ impl Fixture {
             .unwrap(),
         ));
         let fs = QuickFS::new(namespace, hydrator, heuristics)
-            .with_history(history.clone(), actor)
+            .with_history(actor)
             .unwrap()
             .with_checked_history_workspace(publisher.workspace_id())
             .with_record_publisher(publisher)
@@ -89,14 +87,12 @@ impl Fixture {
         ));
         let hydrator = self.fs.hydrator.clone();
         let heuristics = Arc::new(Heuristics::new(hydrator.clone()));
-        let actor = self.fs.history.as_ref().unwrap().1;
+        let actor = self.fs.history.expect("the mount keeps history");
         let workspace = self.fs.restore_workspace().unwrap();
-        let history =
-            Arc::new(crate::history::FileHistoryStore::open(path.join("history.json")).unwrap());
         let fs = QuickFS::new(namespace, hydrator, heuristics)
             .without_legacy_record_migration()
             .with_checked_history_workspace(workspace)
-            .with_history(history, actor)
+            .with_history(actor)
             .unwrap();
         let repository = Arc::new(
             crate::record_repository::RecordRepository::open(path.join("records")).unwrap(),
@@ -338,7 +334,6 @@ async fn checked_restore_prepared_recovery_preserves_later_edits_and_fences_writ
         publisher
             .recover_replacement_transactions(
                 &mut runtime.journal.lock().unwrap(),
-                &fixture.history,
                 &fixture.fs.namespace,
                 &runtime.namespace_path,
                 |_| Ok(()),
@@ -376,7 +371,7 @@ async fn checked_restore_prepared_recovery_preserves_later_edits_and_fences_writ
         let second = crate::record_publisher::RecordPublisher::new(
             original.repository().clone(),
             original.workspace_id(),
-            fixture.fs.history.as_ref().unwrap().1,
+            fixture.fs.history.expect("the mount keeps history"),
             ed25519_dalek::SigningKey::from_bytes(&[31; 32]),
         )
         .unwrap();
@@ -689,7 +684,7 @@ async fn checked_restore_late_acl_replacement_buffer_aba_and_rebinding_are_zero_
                         let second = crate::record_publisher::RecordPublisher::new(
                             original.repository().clone(),
                             original.workspace_id(),
-                            fixture.fs.history.as_ref().unwrap().1,
+                            fixture.fs.history.expect("the mount keeps history"),
                             ed25519_dalek::SigningKey::from_bytes(&[31; 32]),
                         )
                         .unwrap();
@@ -909,11 +904,8 @@ async fn checked_restore_durable_phases_reopen_exactly_and_frontiers_parent_all_
                 }
             );
             let count = reopened
-                .history
-                .as_ref()
-                .unwrap()
-                .0
-                .snapshot(request.review.record_id)
+                .ns()
+                .record_history(request.review.record_id)
                 .unwrap()
                 .versions
                 .len();
@@ -935,11 +927,8 @@ async fn checked_restore_durable_phases_reopen_exactly_and_frontiers_parent_all_
             );
             assert_eq!(
                 reopened
-                    .history
-                    .as_ref()
-                    .unwrap()
-                    .0
-                    .snapshot(request.review.record_id)
+                    .ns()
+                    .record_history(request.review.record_id)
                     .unwrap()
                     .versions
                     .len(),
@@ -1254,17 +1243,7 @@ async fn checked_restore_remote_transactions_and_fault_startup_clear_exact_fence
                 std::fs::write(target, bytes).unwrap();
             }
         }
-        // The history store is a snapshot plus its append-only log.
-        for name in ["history.json", "history.json.log"] {
-            let source = fixture.directory.path().join(name);
-            if source.exists() {
-                std::fs::copy(source, remote.path().join(name)).unwrap();
-            }
-        }
         let namespace = Arc::new(Mutex::new(fixture.fs.ns().clone()));
-        let history = Arc::new(
-            crate::history::FileHistoryStore::open(remote.path().join("history.json")).unwrap(),
-        );
         let repository =
             crate::record_repository::RecordRepository::open(remote.path().join("records"))
                 .unwrap();
@@ -1277,7 +1256,7 @@ async fn checked_restore_remote_transactions_and_fault_startup_clear_exact_fence
         let materializer = crate::record_materializer::RecordMaterializer::new(
             request.review.workspace_id,
             namespace.clone(),
-            Some(history.clone()),
+            true,
         )
         .with_transaction_recovery(journal.clone(), remote.path().join("namespace.am"));
         let Outcome::Applied { receipt } = fixture.fs.checked_history_restore(fixture.ino, request)
@@ -1317,7 +1296,7 @@ async fn checked_restore_remote_transactions_and_fault_startup_clear_exact_fence
             .commit_content(fixture.ino, b"ordinary after remote transaction")
             .unwrap();
         let later = fixture.fs.ns().content_revision_for(fixture.ino).unwrap();
-        let actor = fixture.fs.history.as_ref().unwrap().1;
+        let actor = fixture.fs.history.expect("the mount keeps history");
         let sequence = repository.highest_sequence(key, &actor).unwrap();
         let batch = publisher.repository().reconciliation_batch(key).unwrap();
         let new = batch
@@ -1407,10 +1386,6 @@ async fn checked_restore_remote_transactions_and_fault_startup_clear_exact_fence
                     )
                     .unwrap(),
                 ));
-                let history = Arc::new(
-                    crate::history::FileHistoryStore::open(directory.path().join("history.json"))
-                        .unwrap(),
-                );
                 let repository = Arc::new(
                     crate::record_repository::RecordRepository::open(
                         directory.path().join("records"),
@@ -1458,7 +1433,7 @@ async fn checked_restore_remote_transactions_and_fault_startup_clear_exact_fence
                 let materializer = crate::record_materializer::RecordMaterializer::new(
                     request.review.workspace_id,
                     namespace.clone(),
-                    Some(history.clone()),
+                    true,
                 )
                 .with_transaction_recovery(journal.clone(), namespace_path.clone());
                 materializer.reconcile_repository(&repository).unwrap();
@@ -1492,7 +1467,7 @@ async fn checked_restore_remote_transactions_and_fault_startup_clear_exact_fence
                 let reopened = QuickFS::new(namespace.clone(), hydrator, heuristics)
                     .without_legacy_record_migration()
                     .with_checked_history_workspace(request.review.workspace_id)
-                    .with_history(history.clone(), actor)
+                    .with_history(actor)
                     .unwrap()
                     .with_record_publisher(publisher)
                     .unwrap()
@@ -1509,8 +1484,9 @@ async fn checked_restore_remote_transactions_and_fault_startup_clear_exact_fence
                     }
                 );
                 assert_eq!(
-                    history
-                        .snapshot(request.review.record_id)
+                    reopened
+                        .ns()
+                        .record_history(request.review.record_id)
                         .unwrap()
                         .versions
                         .iter()
@@ -1747,7 +1723,6 @@ async fn checked_restore_startup_completion_rejects_bad_batches_and_retries_io_f
             let outcome = crate::transaction_coordinator::complete_checked_restore_after_repository(
                 &repository,
                 &mut fixture.journal.lock().unwrap(),
-                &fixture.history,
                 &fixture.fs.namespace,
                 &fixture.directory.path().join("namespace.am"),
                 &proposed,
@@ -1804,7 +1779,7 @@ async fn checked_restore_startup_completion_rejects_bad_batches_and_retries_io_f
         let materializer = crate::record_materializer::RecordMaterializer::new(
             request.review.workspace_id,
             fixture.fs.namespace.clone(),
-            Some(fixture.history.clone()),
+            true,
         )
         .with_transaction_recovery(
             fixture.journal.clone(),
@@ -1857,7 +1832,7 @@ async fn checked_restore_startup_completion_rejects_bad_batches_and_retries_io_f
         let publisher = crate::record_publisher::RecordPublisher::new(
             repository.clone(),
             request.review.workspace_id,
-            fixture.fs.history.as_ref().unwrap().1,
+            fixture.fs.history.expect("the mount keeps history"),
             ed25519_dalek::SigningKey::from_bytes(&[31; 32]),
         )
         .unwrap();
@@ -2203,7 +2178,7 @@ async fn history_reads_keep_exact_bytes_separate_from_current_visibility() {
                     version.id = fs_protocol::FileVersionId::new();
                     version.record_id = record_id;
                     version.parents.clear();
-                    fixture.history.append(version).unwrap();
+                    replacement.append_version(version).unwrap();
                     *fixture.fs.namespace.lock().unwrap() = replacement;
                     Ok(b"first".to_vec())
                 }
@@ -2573,9 +2548,10 @@ async fn original_only_on_a_peer(
     iroh::protocol::Router,
     crate::store::ContentStore,
 ) {
+    let record = fixture.fs.ns().record_id_for(fixture.ino).unwrap();
     let first = fixture
         .history
-        .snapshot(fixture.fs.ns().record_id_for(fixture.ino).unwrap())
+        .snapshot(record)
         .unwrap()
         .versions
         .iter()

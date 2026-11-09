@@ -7,16 +7,23 @@
 //! desk takes them, so a write and a read of the same change cannot cross.
 //! What this device has seen is the person's own: an agent asking for it is refused here, before
 //! anything reaches the model.
+#![cfg_attr(
+    target_arch = "wasm32",
+    allow(
+        dead_code,
+        reason = "the page serves its own activity over this door next"
+    )
+)]
 
 use std::sync::Arc;
 
-use tilo_action_broker::services::{HostStepOutcome, HostStepRequest, HostStepServices, LiveView};
 use tilo_actions::remote::workspace_activity as wire;
 use tilo_actions::remote::{Caller, Pending};
 use tilo_actions::{
     ActionAddress, ActionContract, ActionDescriptor, ActionFailure, ActionKind, ExecutionLocus,
     IRREVERSIBLE_TAG, InputSpec, InvocationId, OperationKind, RiskLevel,
 };
+use tilo_broker_core::steps::{HostStepOutcome, HostStepRequest, HostStepServices, LiveView};
 use tilo_desktop_surface::activity::{is_read, refused_to_agent};
 use tilo_desktop_surface::i18n::t;
 use tilo_desktop_surface::session::ActivityRequests;

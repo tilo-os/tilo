@@ -48,6 +48,7 @@ fn action_row() -> ActionDirectoryRow {
             label: "Contents".into(),
             description: None,
             open_action: "erase".into(),
+            desktop: false,
             primary: true,
             mount: None,
             range: Some(ResourceViewRangeSpec {

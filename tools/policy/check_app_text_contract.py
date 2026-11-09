@@ -9,6 +9,7 @@ caret geometry cannot fork between applications.
 
 from __future__ import annotations
 
+import argparse
 import re
 import sys
 import tomllib
@@ -17,6 +18,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from check_app_resource_action_contract import is_compute_package  # noqa: E402
+from judged import add_staged_argument, judged  # noqa: E402
 from rust_source import line_number  # noqa: E402
 
 
@@ -78,11 +80,12 @@ def dependency_tables(manifest: dict) -> list[dict]:
     return tables
 
 
-def audit(root: Path = ROOT) -> tuple[list[Violation], int, int]:
+def audit(root: Path = ROOT, staged: bool = False) -> tuple[list[Violation], int, int]:
+    files = judged(root, staged)
     apps = root / "apps"
     manifests = sorted(apps.glob("*/Cargo.toml"))
     violations: list[Violation] = []
-    shared_users: set[Path] = set()
+    shared_apps: set[str] = set()
 
     for manifest_path in manifests:
         with manifest_path.open("rb") as handle:
@@ -108,28 +111,28 @@ def audit(root: Path = ROOT) -> tuple[list[Violation], int, int]:
                 Violation(manifest_path, 1, "app does not depend on the shared `ui` crate")
             )
 
-        app_dir = manifest_path.parent
-        for source in sorted(app_dir.rglob("*.rs")):
-            if any(part in {"target", "vendor"} for part in source.parts):
-                continue
-            text = source.read_text(encoding="utf-8")
-            if SHARED_TEXT_SURFACES.search(text):
-                shared_users.add(app_dir)
-            for reason, pattern in PRIVATE_SOURCE_PATTERNS.items():
-                for match in pattern.finditer(text):
-                    violations.append(
-                        Violation(
-                            source,
-                            line_number(text, match.start()),
-                            f"uses {reason}; use a public `ui` text surface",
-                        )
+    for relative, text in files.sources("apps"):
+        if any(part in {"target", "vendor"} for part in relative.parts):
+            continue
+        if SHARED_TEXT_SURFACES.search(text):
+            shared_apps.add(relative.relative_to("apps").parts[0])
+        for reason, pattern in PRIVATE_SOURCE_PATTERNS.items():
+            for match in pattern.finditer(text):
+                violations.append(
+                    Violation(
+                        root / relative,
+                        line_number(text, match.start()),
+                        f"uses {reason}; use a public `ui` text surface",
                     )
+                )
 
-    return violations, len(manifests), len(shared_users)
+    return violations, len(manifests), len(shared_apps)
 
 
-def main() -> int:
-    violations, app_count, shared_users = audit()
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    add_staged_argument(parser)
+    violations, app_count, shared_apps = audit(staged=parser.parse_args(argv).staged)
     if violations:
         print("application text contract FAILED", file=sys.stderr)
         for violation in violations:
@@ -137,7 +140,7 @@ def main() -> int:
         return 1
     print(
         "application text contract OK "
-        f"({app_count} app crates use ui; {shared_users} contain text surfaces; "
+        f"({app_count} app crates use ui; {shared_apps} contain text surfaces; "
         "0 private shapers or raw glyph painters)",
         file=sys.stderr,
     )

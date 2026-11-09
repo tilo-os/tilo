@@ -1426,7 +1426,7 @@ impl NotesApp {
             }
         }
         if self.bound_page == Some(sel) && self.naming_page.take_if(|page| *page == sel).is_some() {
-            self.main.begin_new_title_edit();
+            self.main.begin_title_edit(true);
         }
     }
 
@@ -3003,12 +3003,28 @@ impl Widget for NotesApp {
         self.main.suppress_tooltips(main_covered);
         self.sidebar.suppress_tooltips(covered);
         // The note first; the shell over it (its drawer and scrim cover the
-        // note), then the page tree on the sidebar the shell painted.
-        self.main
-            .draw(scene, transform, text_renderer, theme, presence);
+        // note), then the page tree on the sidebar the shell painted. Each
+        // is drawn as a child at its place, so a page shown as HTML keeps
+        // an element for it from frame to frame.
+        ui::widget::draw_child_at(
+            &mut *self.main,
+            Some(0),
+            scene,
+            transform,
+            text_renderer,
+            theme,
+            presence,
+        );
         let main_scene = std::mem::take(scene);
-        self.shell
-            .draw(scene, transform, text_renderer, theme, presence);
+        ui::widget::draw_child_at(
+            &mut *self.shell,
+            Some(1),
+            scene,
+            transform,
+            text_renderer,
+            theme,
+            presence,
+        );
         let shell_scene = std::mem::take(scene);
         if self.sidebar_node.is_some() {
             let geometry = self.shell.geometry();
@@ -3022,8 +3038,15 @@ impl Widget for NotesApp {
             self.sidebar
                 .draw(scene, transform, text_renderer, &sidebar_theme, presence);
             if self.outline_node.is_some() {
-                self.outline
-                    .draw(scene, transform, text_renderer, &sidebar_theme, presence);
+                ui::widget::draw_child_at(
+                    &mut *self.outline,
+                    Some(3),
+                    scene,
+                    transform,
+                    text_renderer,
+                    &sidebar_theme,
+                    presence,
+                );
             }
         }
         let sidebar_scene = std::mem::take(scene);
@@ -3725,7 +3748,7 @@ impl NotesApp {
     fn apply_note_action_on(&mut self, row: usize, page: PageId) {
         match row {
             crate::sidebar::menu_row::NEW_CHILD => self.sidebar.new_note(Some(page), false),
-            crate::sidebar::menu_row::RENAME => self.main.begin_title_edit(),
+            crate::sidebar::menu_row::RENAME => self.main.begin_title_edit(false),
             crate::sidebar::menu_row::DUPLICATE => self.sidebar.duplicate(page),
             crate::sidebar::menu_row::COPY_LINK => {
                 self.sidebar.request(&NotesEffect::CopyLink { page });

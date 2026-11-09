@@ -1,8 +1,8 @@
 //! The send-to box: where a context menu's sentence goes.
 //!
-//! A context menu opened on something ([`ContextMenu::set_about`]) docks this
-//! box beside it — on its trailing side, or its leading side where the window
-//! leaves no room — with the same top. The box says whom the message goes to
+//! The row that sends what a context menu is about ([`ContextMenu::set_about`])
+//! opens this box in the menu's place, with the sentence the person typed into
+//! it, so one field takes the typing. The box says whom the message goes to
 //! (the agent it makes by default, else an agent, a person or a conversation
 //! the host's one search finds), what it is about (the chips, starting with
 //! what the menu was opened on) and its words. Send hands one
@@ -10,9 +10,8 @@
 //! runner, which gives it to the session: the session makes the agent, opens
 //! or makes the one conversation and posts the message, as the person.
 //!
-//! It is one focus group of its own set beside the menu's: Tab moves between
-//! them, and within the box from the recipient field to the message and the
-//! Send button.
+//! It is one focus group: Tab steps from the recipient field to the message
+//! and the Send button, and round again.
 //!
 //! [`ContextMenu::set_about`]: super::ContextMenu::set_about
 
@@ -35,7 +34,7 @@ use crate::tokens::TextRole;
 use crate::widget::floating_surface as panel;
 
 /// The rows of the search shown at once: more than a person reads while
-/// typing, and few enough that the box stays beside its menu.
+/// typing, and few enough that the box stays where it was opened.
 const MAX_ROWS: usize = 6;
 /// The rows the message field is tall while the words fit on one line: air
 /// enough to look like somewhere to write.
@@ -71,10 +70,10 @@ struct Layout {
     send: Rect,
 }
 
-/// The box beside a context menu.
+/// The box a context menu's send row opens.
 pub struct SendToBox {
     open: bool,
-    /// What the menu acts on: the subject the box starts with.
+    /// What was acted on: the subject the box starts with.
     about: Option<SharedSelection>,
     /// The subjects, chips in the order they show.
     subjects: Vec<SharedSelection>,
@@ -96,7 +95,7 @@ pub struct SendToBox {
     text_selection: Selection,
     text_composition: QueryComposition,
     focus: SendToFocus,
-    /// The keyboard stays in the box: Tab leaves it for the menu.
+    /// Whether the keyboard is in the box: it takes the typing while open.
     focused: bool,
     /// The search answered nothing yet for what is typed.
     answered: bool,
@@ -106,14 +105,14 @@ pub struct SendToBox {
     theme: Theme,
     platform: PlatformConventions,
     text_scale: f64,
-    /// Set when the person sent: drained by the menu, which closes with it.
+    /// Set when the person sent: drained by the menu, which goes with it.
     sent: bool,
-    /// Whether it is drawn as it is (`motion::Appearing`): it arrives with
-    /// its menu and leaves with it.
+    /// Whether it is drawn as it is (`motion::Appearing`): it arrives on what
+    /// it is about and leaves with it.
     dirty: bool,
-    /// How it comes and goes: from the menu it stands beside.
+    /// How it comes and goes: from what it is about.
     appear: Appearing,
-    /// The point it comes from and returns to, on its menu.
+    /// The point it comes from and returns to, on what it is about.
     anchor: Point,
 }
 
@@ -162,8 +161,7 @@ impl SendToBox {
         self.open
     }
 
-    /// Whether any of it is on screen: open, arriving with its menu, or
-    /// leaving with it.
+    /// Whether any of it is on screen: open, arriving, or leaving.
     #[must_use]
     pub fn is_drawn(&self) -> bool {
         self.appear.is_drawn()
@@ -246,6 +244,9 @@ impl SendToBox {
     /// goes — else to the agent a message makes, which the person may change.
     pub fn open(&mut self, draft: Option<&str>, to: &[Recipient]) {
         self.open = true;
+        // It arrives on its own: a box whose host stops drawing it once open
+        // (a menu that goes as it arrives) still shows from this moment.
+        self.appear.show(true);
         crate::shared_selection::set_box_open(true);
         self.focused = true;
         self.sent = false;
@@ -281,16 +282,8 @@ impl SendToBox {
         }
     }
 
-    /// Open without the keyboard: a menu opened on something carries the box
-    /// beside it, and the person's typing still narrows the menu's rows until
-    /// they send or Tab into it.
-    pub fn unfocus(&mut self) {
-        self.focused = false;
-        self.dirty = true;
-    }
-
-    /// Put it away with its menu: it leaves as it stood, so what it showed
-    /// is kept until the next [`Self::open`] clears it.
+    /// Put it away: it leaves as it stood, so what it showed is kept until
+    /// the next [`Self::open`] clears it.
     pub fn close(&mut self) {
         if !self.open {
             return;
@@ -298,6 +291,7 @@ impl SendToBox {
         self.open = false;
         self.focused = false;
         self.hovered = None;
+        self.appear.show(false);
         crate::shared_selection::set_box_open(false);
         self.dirty = true;
     }
@@ -309,11 +303,11 @@ impl SendToBox {
         }
     }
 
-    /// Stand the box beside `menu`: on its trailing side with the same top,
-    /// or its leading side where the window leaves no room, or under it where
-    /// neither side holds it, inside the window.
-    pub fn place(&mut self, menu: Rect, viewport: Option<Rect>) {
-        self.anchor = menu.center();
+    /// Stand the box beside `beside` — what it is about — on its trailing
+    /// side with the same top, or its leading side where the window leaves no
+    /// room, or under it where neither side holds it, inside the window.
+    pub fn place(&mut self, beside: Rect, viewport: Option<Rect>) {
+        self.anchor = beside.center();
         if !self.open && !self.appear.is_drawn() {
             self.rect = Rect::ZERO;
             self.layout = Layout::default();
@@ -325,19 +319,19 @@ impl SendToBox {
         let width = self.width();
         let height = self.height();
         let gap = self.gap();
-        // Its menu's own reach stands in when nothing knows the window: the
-        // box still lands beside the menu rather than anywhere.
+        // What it is about stands in when nothing knows the window: the box
+        // still lands beside it rather than anywhere.
         let viewport = self.viewport.unwrap_or(Rect::new(
-            menu.x0,
-            menu.y0,
-            menu.x1 + gap + width,
-            menu.y1.max(menu.y0 + height),
+            beside.x0,
+            beside.y0,
+            beside.x1 + gap + width,
+            beside.y1.max(beside.y0 + height),
         ));
-        let trailing = menu.x1 + gap;
-        let leading = menu.x0 - gap - width;
+        let trailing = beside.x1 + gap;
+        let leading = beside.x0 - gap - width;
         // Kept inside the window, whatever the window leaves.
         let inside = |x: f64| x.clamp(viewport.x0, (viewport.x1 - width).max(viewport.x0));
-        let top = menu
+        let top = beside
             .y0
             .min((viewport.y1 - height).max(viewport.y0))
             .max(viewport.y0);
@@ -345,13 +339,13 @@ impl SendToBox {
             (trailing, top)
         } else if leading >= viewport.x0 {
             (leading, top)
-        } else if menu.y1 + gap + height <= viewport.y1 {
-            // Neither side holds it: it stands under the menu, clear of it,
-            // rather than over what the menu is about.
-            (inside(menu.x0), menu.y1 + gap)
+        } else if beside.y1 + gap + height <= viewport.y1 {
+            // Neither side holds it: it stands under what it is about, clear
+            // of it, rather than over it.
+            (inside(beside.x0), beside.y1 + gap)
         } else {
             // The window is too small even for that: it takes the roomier side
-            // and stays inside, over the menu where it must.
+            // and stays inside, over what it is about where it must.
             let x = if viewport.x1 - trailing >= leading - viewport.x0 {
                 trailing
             } else {
@@ -376,13 +370,33 @@ impl SendToBox {
         pad * 2.0
             + self.header_height() // the quiet line naming the box
             + row // the recipients and the search, on one line
+            + if self.recipients_wrap() { row } else { 0.0 } // or the search under them
             + if results > 0.0 { gap + results } else { 0.0 }
             + gap
-            + row // the subjects
-            + gap
+            + if self.says_what() { row + gap } else { 0.0 } // the subjects
             + self.message_height() // the message, as tall as it wraps
             + gap
             + row // Send
+    }
+
+    /// Whether the box has a line saying what the message is about: its
+    /// subjects, or the button that adds one. Nothing to say leaves no line.
+    fn says_what(&self) -> bool {
+        !self.subjects.is_empty() || self.addable_subject().is_some()
+    }
+
+    /// Whether the field that finds a recipient takes the line under the chips:
+    /// one line does not hold both at the widths they ask for, and a chip with
+    /// its name cut reads worse than a field of its own.
+    fn recipients_wrap(&self) -> bool {
+        if self.addressed {
+            return false;
+        }
+        let room = self.width() - self.padding() * 2.0;
+        let gap = self.gap() / 2.0;
+        let (_, asks) = self.recipient_asks();
+        let chips: f64 = asks.iter().sum::<f64>() + gap * asks.len() as f64;
+        chips + gap + self.search_ask() > room
     }
 
     /// How tall the message stands: two rows while its words fit on one line,
@@ -455,6 +469,13 @@ impl SendToBox {
         self.mark_lead() + self.mark_size() / 2.0 + self.row_height() * 0.15
     }
 
+    /// How far a pill's content stands from its leading edge: where a chip's
+    /// mark begins, and where a field's own words begin, so the chips and the
+    /// field beside them line up.
+    fn mark_inset(&self) -> f64 {
+        self.mark_lead() - self.mark_size() / 2.0
+    }
+
     /// How wide `label` sets in the box's own text: a chip is as wide as what
     /// it says, so a name neither runs past its pill nor leaves it half empty.
     fn text_width(&self, label: &str) -> f64 {
@@ -466,6 +487,28 @@ impl SendToBox {
         ))
     }
 
+    /// The recipients' chips: whether each carries the × that takes it off, and
+    /// how wide each asks to be.
+    fn recipient_asks(&self) -> (Vec<bool>, Vec<f64>) {
+        let removable: Vec<bool> = self
+            .to
+            .iter()
+            .map(|recipient| {
+                !(self.addressed
+                    || recipient.kind == RecipientKind::NewAgent
+                        && recipient.name
+                            == crate::i18n::I18nManager::lookup_plain("send-to-new-agent"))
+            })
+            .collect();
+        let asks = self
+            .to
+            .iter()
+            .zip(&removable)
+            .map(|(recipient, remove)| self.chip_ask(&recipient.name, *remove))
+            .collect();
+        (removable, asks)
+    }
+
     /// What a chip asks for: the mark it leads with, its label, and the × that
     /// takes it off.
     fn chip_ask(&self, label: &str, remove: bool) -> f64 {
@@ -474,6 +517,38 @@ impl SendToBox {
             + self.text_width(label)
             + row * 0.45
             + if remove { row * 0.55 } else { 0.0 }
+    }
+
+    /// What the field that searches for a recipient asks for: its hint whole,
+    /// set in from its edge as a chip's mark is, and never less than the five
+    /// rows it held. A hint longer than the box is a hint the box is too narrow
+    /// for, not one the person reads half of.
+    fn search_ask(&self) -> f64 {
+        let hint = crate::i18n::I18nManager::lookup_plain("send-to-search-placeholder");
+        (self.row_height() * 5.0).max(self.text_width(&hint) + self.mark_inset())
+    }
+
+    /// The button that adds what is selected now to what the message is about,
+    /// as it names itself.
+    fn add_label(&self) -> String {
+        crate::i18n::I18nManager::lookup_plain("send-to-add-subject")
+    }
+
+    /// What the button would add: what the person has selected now, when the
+    /// message is not about it already. Nothing to add leaves no button.
+    fn addable_subject(&self) -> Option<SharedSelection> {
+        crate::shared_selection::focused_selection().filter(|focused| {
+            !focused.is_empty() && !self.subjects.iter().any(|subject| subject == focused)
+        })
+    }
+
+    /// Add what is selected now to what the message is about.
+    fn add_subject(&mut self) {
+        if let Some(subject) = self.addable_subject() {
+            self.subjects.push(subject);
+            self.changed();
+            self.layout = self.build_layout();
+        }
     }
 
     /// Place chips asking for `asks` from the box's leading edge on line `y`,
@@ -519,30 +594,24 @@ impl SendToBox {
         // The recipients' chips, from the leading edge, each with room for the
         // mark it leads with and the × that takes it off; the search keeps the
         // rest of the line, enough for what it says when nothing is typed.
-        let removable: Vec<bool> = self
-            .to
-            .iter()
-            .map(|recipient| {
-                !(self.addressed
-                    || recipient.kind == RecipientKind::NewAgent
-                        && recipient.name
-                            == crate::i18n::I18nManager::lookup_plain("send-to-new-agent"))
-            })
-            .collect();
-        let asks: Vec<f64> = self
-            .to
-            .iter()
-            .zip(&removable)
-            .map(|(recipient, remove)| self.chip_ask(&recipient.name, *remove))
-            .collect();
+        let (removable, asks) = self.recipient_asks();
         // A box opened to whom it sends to has no field to search in: its
         // chips take the line.
         let search_room = if self.addressed {
             0.0
         } else {
-            (row * 5.0).min(room * 0.4)
+            self.search_ask().min(room)
         };
-        let (chips, x) = self.lay_chips(&asks, y, (room - search_room).max(0.0));
+        // The chips and the field that finds one share a line while it holds
+        // both at the widths they ask for; when it does not, the chips keep
+        // theirs and the field takes the line under them, the width of the
+        // box, so neither a name nor the field's hint is cut.
+        let wrapped = self.recipients_wrap();
+        let (chips, x) = self.lay_chips(
+            &asks,
+            y,
+            (room - if wrapped { 0.0 } else { search_room }).max(0.0),
+        );
         let removes: Vec<Option<Rect>> = chips
             .iter()
             .zip(&removable)
@@ -553,6 +622,8 @@ impl SendToBox {
         let start = (x + gap).max(rect.x0 + pad);
         let search = if self.addressed {
             Rect::new(start, y, start, y + row)
+        } else if wrapped {
+            Rect::new(rect.x0 + pad, y + row, rect.x1 - pad, y + 2.0 * row)
         } else {
             Rect::new(
                 start.min(rect.x1 - pad - search_room).max(rect.x0 + pad),
@@ -561,7 +632,7 @@ impl SendToBox {
                 y + row,
             )
         };
-        y += row + if self.rows.is_empty() { 0.0 } else { gap };
+        y = search.y1 + if self.rows.is_empty() { 0.0 } else { gap };
         let mut rows = Vec::with_capacity(self.rows.len().min(MAX_ROWS));
         for _ in self.rows.iter().take(MAX_ROWS) {
             rows.push(Rect::new(rect.x0 + pad, y, rect.x1 - pad, y + row));
@@ -569,20 +640,34 @@ impl SendToBox {
         }
         y += gap;
         // The subjects share their line with the button that adds one, so both
-        // stay inside the box whatever they hold.
-        let asks: Vec<f64> = self
-            .subjects
-            .iter()
-            .map(|subject| self.chip_ask(&subject_label(subject), false))
-            .collect();
-        let (subjects, x) = self.lay_chips(&asks, y, (room - row).max(0.0));
-        let plus = Rect::new(
-            x.min(rect.x1 - pad - row),
-            y,
-            x.min(rect.x1 - pad - row) + row,
-            y + row,
-        );
-        y += row + gap;
+        // stay inside the box whatever they hold. The button carries its own
+        // words, so it asks for the width a chip does. A box that says nothing
+        // about what it sends keeps no line for them: its fields stand at its
+        // own spacing, with no band held open between.
+        let adds = self.addable_subject().is_some();
+        let (subjects, plus) = if self.says_what() {
+            let asks: Vec<f64> = self
+                .subjects
+                .iter()
+                .map(|subject| self.chip_ask(&subject_label(subject), false))
+                .collect();
+            let add_ask = if adds {
+                self.chip_ask(&self.add_label(), false)
+            } else {
+                0.0
+            };
+            let (subjects, x) = self.lay_chips(&asks, y, (room - add_ask).max(0.0));
+            let plus = if adds {
+                let x0 = x.min((rect.x1 - pad - add_ask).max(rect.x0 + pad));
+                Rect::new(x0, y, x0 + add_ask, y + row)
+            } else {
+                Rect::ZERO
+            };
+            y += row + gap;
+            (subjects, plus)
+        } else {
+            (Vec::new(), Rect::ZERO)
+        };
         let message_height = self.message_height();
         let message = Rect::new(rect.x0 + pad, y, rect.x1 - pad, y + message_height);
         y += message_height + gap;
@@ -748,15 +833,8 @@ impl SendToBox {
             self.send();
             return true;
         }
-        if self.layout.plus.contains(at) {
-            if let Some(focused) = crate::shared_selection::focused_selection()
-                && !focused.is_empty()
-                && !self.subjects.iter().any(|subject| subject == &focused)
-            {
-                self.subjects.push(focused);
-                self.changed();
-                self.layout = self.build_layout();
-            }
+        if self.layout.plus.width() > 0.0 && self.layout.plus.contains(at) {
+            self.add_subject();
             return true;
         }
         if let Some(index) = self.layout.chips.iter().position(|chip| chip.contains(at)) {
@@ -940,13 +1018,10 @@ impl SendToBox {
             .chars()
             .take(crate::shared_selection::MAX_SEND_CHARS)
             .collect();
-        let bounds = (self.rect.width() > 0.0 && self.rect.height() > 0.0)
-            .then(|| crate::floating_surface::protocol_rect_array(self.rect));
         crate::shared_selection::send_to(SendToRequest {
             to: self.to.clone(),
             about: self.subjects.clone(),
             text,
-            bounds,
         });
         self.sent = true;
         self.dirty = true;
@@ -1018,7 +1093,7 @@ impl SendToBox {
     }
 
     /// Its panel and what stands on it, drawn in the pose [`Self::paint`]
-    /// gives: it comes and goes with its menu.
+    /// gives: it arrives on what it is about and leaves alone.
     fn paint_body(
         &mut self,
         scene: &mut Scene,
@@ -1154,7 +1229,14 @@ impl SendToBox {
                     placeholder: &placeholder,
                     show_caret: self.open && self.focused && self.focus == SendToFocus::Recipients,
                 },
-                self.layout.search,
+                // Its words stand in from its edge as the chips' marks do, so
+                // the field and the chips beside it read as one row.
+                Rect::new(
+                    self.layout.search.x0 + self.mark_inset(),
+                    self.layout.search.y0,
+                    self.layout.search.x1,
+                    self.layout.search.y1,
+                ),
                 &style,
                 QueryInk::of(&tokens.colors),
             );
@@ -1216,7 +1298,6 @@ impl SendToBox {
         }
         if self.answered && self.rows.is_empty() && !self.search.trim().is_empty() {
             let none = crate::i18n::I18nManager::lookup_plain("send-to-no-results");
-            let (_, height) = text_renderer.measure_style(&none, None, &style);
             text_renderer.draw_style(
                 scene,
                 &none,
@@ -1228,7 +1309,6 @@ impl SendToBox {
                 None,
                 &style,
             );
-            let _ = height;
         }
 
         // The subjects: what the message is about, each led by the glyph of the
@@ -1274,19 +1354,47 @@ impl SendToBox {
                 );
             }
         }
+        // The button that adds what is selected now, drawn as the chip it
+        // makes: its mark and its words, so it is read as what it adds rather
+        // than a lone sign, and never drawn while it has nothing to add.
         let plus = self.layout.plus;
-        let size = f64::from(tokens.metrics.icon_sm);
-        crate::icons::draw_icon(
-            scene,
-            transform,
-            Rect::from_origin_size(
-                (plus.center().x - size / 2.0, plus.center().y - size / 2.0),
-                (size, size),
-            ),
-            crate::icons::Icon::Plus,
-            dim,
-            crate::icons::LUCIDE_DEFAULT_STROKE_PX,
-        );
+        if plus.width() > 0.0 {
+            scene.fill(
+                vello::peniko::Fill::NonZero,
+                transform,
+                tokens.colors.surfaces.raised,
+                None,
+                &RoundedRect::from_rect(plus, radius.min(plus.height() / 2.0)),
+            );
+            crate::icons::draw_icon(
+                scene,
+                transform,
+                Rect::from_center_size(
+                    (plus.x0 + self.mark_lead(), plus.center().y),
+                    (self.mark_size(), self.mark_size()),
+                ),
+                crate::icons::Icon::Plus,
+                dim,
+                crate::icons::LUCIDE_DEFAULT_STROKE_PX,
+            );
+            let shown = text_renderer.elide_to_width_style(
+                &self.add_label(),
+                (plus.width() - self.text_lead() - self.row_height() * 0.2).max(1.0) as f32,
+                &style,
+            );
+            let (_, height) = text_renderer.measure_style(&shown, None, &style);
+            text_renderer.draw_style(
+                scene,
+                &shown,
+                dim,
+                transform.pre_translate(Vec2::new(
+                    plus.x0 + self.text_lead(),
+                    plus.y0 + (plus.height() - f64::from(height)) / 2.0,
+                )),
+                None,
+                &style,
+            );
+        }
 
         // The message: air enough to write in, its words wrapped inside it and
         // room made for them as they wrap.
@@ -1416,20 +1524,19 @@ impl SendToBox {
             );
         }
         // Subjects are read where they stand; adding one is the keyboard's
-        // too, and stands next to them.
-        children.push(action(
-            AccessNode::new(Role::Button)
-                .with_name(crate::i18n::I18nManager::lookup_plain(
-                    "send-to-add-subject",
-                ))
-                .with_action_target("send-to:add-subject".to_owned())
-                .with_bounds(self.layout.plus)
-                .with_state(AccessState {
-                    focusable: true,
-                    disabled: crate::shared_selection::focused_selection().is_none(),
-                    ..Default::default()
-                }),
-        ));
+        // too, and stands next to them while it has something to add.
+        if self.layout.plus.width() > 0.0 {
+            children.push(action(
+                AccessNode::new(Role::Button)
+                    .with_name(self.add_label())
+                    .with_action_target("send-to:add-subject".to_owned())
+                    .with_bounds(self.layout.plus)
+                    .with_state(AccessState {
+                        focusable: true,
+                        ..Default::default()
+                    }),
+            ));
+        }
         children.push(action(
             AccessNode::new(Role::TextInput)
                 .with_name(crate::i18n::I18nManager::lookup_plain(
@@ -1490,14 +1597,7 @@ impl SendToBox {
             }
             "send-to:add-subject" => {
                 if matches!(action, crate::a11y::Action::Activate) {
-                    if let Some(focused) = crate::shared_selection::focused_selection()
-                        && !focused.is_empty()
-                        && !self.subjects.iter().any(|subject| subject == &focused)
-                    {
-                        self.subjects.push(focused);
-                        self.changed();
-                        self.layout = self.build_layout();
-                    }
+                    self.add_subject();
                     return true;
                 }
                 false

@@ -768,10 +768,10 @@ fn a_menu_is_as_wide_as_its_longest_label_and_longest_trailing_text_together() {
 }
 
 /// A row near the window's trailing edge opens its menu where the pointer
-/// is, and the box beside it is placed in the window the menu stands in —
+/// is, and the box its send row opens stands in the window the menu stood in —
 /// not past its edge, where a person cannot reach it.
 #[test]
-fn a_menu_near_the_trailing_edge_keeps_its_send_to_box_in_the_window() {
+fn a_menu_near_the_trailing_edge_opens_its_send_to_box_in_the_window() {
     // Motion reads at its end: this test checks the resting frame.
     let _settled = crate::motion::testing::settled();
     crate::shared_selection::set_send_host_available(true);
@@ -790,23 +790,32 @@ fn a_menu_near_the_trailing_edge_keeps_its_send_to_box_in_the_window() {
         .in_kind("tasks.tracker"),
     ));
     // Right-click on a row whose right end is well inside the window.
+    note_input(&crate::synthetic_input::mouse_input(
+        ElementState::Pressed,
+        MouseButton::Right,
+    ));
     menu.open_at([560.0, 178.0]);
+    menu.set_viewport(Some(window));
+    assert!(
+        !menu.send_to().is_open(),
+        "the menu is one surface: the box opens when its send row is chosen"
+    );
+    // The row that sends what the menu is about, which the menu adds itself.
+    let send_at = menu.items().len() - 1;
+    menu.click_item(send_at);
+    assert!(!menu.is_open(), "the box takes the menu's place");
     let presence = PresenceCtx::default();
     presence.viewport.set(Some(window));
     let mut scene = Scene::new();
     menu.draw_overlay(&mut scene, Affine::IDENTITY, &mut text, &theme, &presence);
-    let menu_rect = menu.get_rect();
     let box_rect = menu.send_to().rect();
-    assert!(
-        menu.send_to().is_open(),
-        "a menu about something carries the box"
-    );
+    assert!(menu.send_to().is_open(), "the send row opened the box");
     assert!(
         box_rect.x0 >= window.x0
             && box_rect.x1 <= window.x1
             && box_rect.y0 >= window.y0
             && box_rect.y1 <= window.y1,
-        "the box {box_rect:?} stands past the window {window:?} beside the menu {menu_rect:?}"
+        "the box {box_rect:?} stands past the window {window:?} where the menu stood at 560"
     );
     // What a screen reader reads is what is drawn: the box and each of its
     // parts where the person sees them, so the session's own targets reach
@@ -816,22 +825,17 @@ fn a_menu_near_the_trailing_edge_keeps_its_send_to_box_in_the_window() {
         .children
         .iter()
         .find(|child| child.role == crate::a11y::Role::Dialog)
-        .expect("the box is read beside the menu");
+        .expect("the box is read where the menu stood");
     assert_eq!(
         dialog.bounds.map(crate::a11y::AccessBounds::to_rect),
         Some(box_rect),
         "the box is read where it stands"
     );
-    // Each part of the box — who it goes to, the subjects, adding one, the
-    // words, Send — is read where it is drawn, inside the box the person
-    // sees, so the keyboard, a screen reader and the session's own targets
-    // all reach the same control in the same place.
-    for target in [
-        "send-to:recipients",
-        "send-to:add-subject",
-        "send-to:message",
-        "send-to:send",
-    ] {
+    // Each part of the box — who it goes to, the words, Send — is read where
+    // it is drawn, inside the box the person sees, so the keyboard, a screen
+    // reader and the session's own targets all reach the same control in the
+    // same place.
+    for target in ["send-to:recipients", "send-to:message", "send-to:send"] {
         let part = dialog
             .children
             .iter()
@@ -852,4 +856,77 @@ fn a_menu_near_the_trailing_edge_keeps_its_send_to_box_in_the_window() {
         );
     }
     crate::shared_selection::set_send_host_available(false);
+}
+
+/// A header's menu is the window bar's too: its button stands in the bar's row, listing the rows
+/// the menu holds, and the row the person chose comes back by its id and runs.
+#[test]
+fn a_menu_button_lists_its_rows_in_the_window_bar() {
+    let chosen = std::rc::Rc::new(std::cell::Cell::new(0u8));
+    let picked = std::rc::Rc::clone(&chosen);
+    let mut button =
+        crate::widget::Button::icon_only("sort", Icon::ArrowUpDown, "Sort").with_menu(vec![
+            MenuItem::selection("Date").with_checked(false),
+            MenuItem::action("Title", move || picked.set(2)),
+        ]);
+    let slot = Widget::window_slot(&button, "sort".to_owned()).expect("the bar lists the menu");
+    assert!(
+        slot.labelled && !slot.menu,
+        "the bar's row says what the menu is, and the row's own door is not the only one"
+    );
+    let rows: Vec<&str> = slot.items.iter().map(|row| row.name.as_str()).collect();
+    assert_eq!(rows, ["Date", "Title"], "the bar lists each row once");
+    assert!(slot.items[1].enabled, "a row that acts is enabled");
+    assert!(
+        Widget::window_choose(&mut button, &slot.items[1].id),
+        "the row the bar names is the row choose runs"
+    );
+    assert_eq!(chosen.get(), 2, "the row ran what it says");
+    assert!(
+        !Widget::window_slot_barrier(&button),
+        "a bar can list this menu's rows"
+    );
+
+    let nested =
+        crate::widget::Button::icon_only("more", Icon::MoreHorizontal, "More").with_menu(vec![
+            MenuItem::submenu("Move to", vec![MenuItem::action("Done", || {})]),
+        ]);
+    assert!(
+        Widget::window_slot_barrier(&nested),
+        "a menu deeper than the bar lists keeps its header's row"
+    );
+    let empty = crate::widget::Button::icon_only("note", Icon::MoreHorizontal, "More")
+        .with_menu(Vec::new());
+    assert!(
+        Widget::window_slot_barrier(&empty),
+        "a menu with nothing to list is not a button the bar offers"
+    );
+}
+
+/// A menu that takes typing shows its hint whole: the field is drawn as wide
+/// as the hint plus its own inset on both sides, so a hint longer than every
+/// row widens the panel rather than running out of the field mid-word.
+#[test]
+fn the_field_that_takes_typing_shows_its_hint_whole() {
+    // Motion reads at its end: this test checks the resting frame.
+    let _settled = crate::motion::testing::settled();
+    let theme = Theme::dark();
+    let mut text = TextRenderer::new();
+    let mut menu = ContextMenu::new();
+    menu.push(MenuItem::action("Kopieren", || {}));
+    menu.set_owner_asks(true);
+    menu.open_at([100.0, 100.0]);
+    assert!(menu.can_ask(), "fixture: the menu can send what is typed");
+    assert!(menu.query.is_some(), "fixture: the menu takes typing");
+    menu.layout_within(&mut text, &theme);
+    let hint = crate::i18n::I18nManager::lookup_plain("menu-query-placeholder-ask");
+    let (hint_width, _) = text.measure_style(&hint, None, &theme.text(TextRole::Body));
+    let field = menu
+        .query_rect()
+        .expect("fixture: the field stands on the menu");
+    let shown = field.width() - 2.0 * (label_inset(&theme) - PADDING);
+    assert!(
+        shown + 0.5 >= f64::from(hint_width),
+        "the field shows {shown} px of the {hint_width} px hint {hint:?}"
+    );
 }

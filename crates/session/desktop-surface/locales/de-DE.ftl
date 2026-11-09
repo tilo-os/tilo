@@ -306,6 +306,7 @@ activity-detail-open-app = App öffnen
 activity-detail-compare = Vergleichen
 activity-detail-undo = Rückgängig
 activity-detail-undo-task = Ganze Aufgabe rückgängig
+activity-detail-undo-run = Diesen ganzen Lauf rückgängig
 activity-detail-split = Teilen
 activity-detail-merge = Zusammenführen
 activity-detail-action-count = { $count } { $count ->
@@ -361,6 +362,9 @@ activity-why-this-work = Warum diese Arbeit
 activity-no-decision = Es wurde kein Entscheidungsweg aufgezeichnet.
 activity-affected-records = Betroffene Einträge
 activity-undo-task-needs-open = Öffne alle betroffenen Dokumente, um diese Aufgabe gemeinsam rückgängig zu machen.
+activity-undo-run-needs-open = Öffne jedes Dokument, das dieser Lauf geändert hat, um ihn gemeinsam rückgängig zu machen.
+activity-undo-run-in-progress = Das Rückgängigmachen dieses Laufs läuft noch.
+activity-undo-run-nothing-to-undo = Dieser Lauf hat kein Dokument geändert, das einen eigenen Verlauf führt.
 activity-undo-task-needs-documents = Nichts geändert. Öffne zuerst alle betroffenen Dokumente.
 activity-undo-task-partial = Aufgabe teilweise rückgängig gemacht; spätere Bearbeitungen anderer wurden behalten.
 activity-undo-task-partial-records = Aufgabe rückgängig gemacht, außer den unten genannten Einträgen.
@@ -516,30 +520,8 @@ desktop-view-explore-activity = Arbeitsbereich-Aktivität erkunden
 desktop-view-replay-activity = Arbeitsbereich-Aktivität wiedergeben
 
 ## Desktop window search
-search-provider-desktop-windows = Fenster auf dem Desktop
-search-window-move-tab = Tab „{ $tab }“ in den Arbeitsbereich „{ $workspace }“ verschieben
-search-window-move-tab-detail = Aus dem Arbeitsbereich „{ $workspace }“
-search-window-copy-tab = Tab „{ $tab }“ in den Arbeitsbereich „{ $workspace }“ kopieren
-search-window-move-tab-to = „{ $tab }“ in einen anderen Arbeitsbereich verschieben
-search-window-copy-tab-to = „{ $tab }“ in einen anderen Arbeitsbereich kopieren
-search-window-group-untitled = Unbenanntes Fenster
 search-window-nth = { $nth } von { $count }
 search-window-placeholder = { $searched } durchsuchen…
-search-window-close-group = Fenstergruppe „{ $group }“ schließen
-search-window-close-group-detail = Arbeitsbereich „{ $workspace }“ · Leiste „{ $strip }“ · { $count ->
-    [one] 1 Tab
-   *[other] { $count } Tabs
-}
-search-window-close-tab = Tab „{ $tab }“ schließen
-search-window-close-tab-detail = Arbeitsbereich „{ $workspace }“ · Leiste „{ $strip }“
-search-window-share-tab = „{ $tab }“ mit dem Arbeitsbereich teilen
-search-window-unshare-tab = „{ $tab }“ nicht mehr teilen
-search-window-focus-place-strip = Leiste „{ $strip }“
-# Wörter, die nach Schließen- bzw. Verschieben/Kopieren-Zeilen fragen;
-# Englisch bleibt als Rückfall erhalten. Leerzeichengetrennt, klein.
-search-window-verb-close = schließen beenden close quit
-search-window-verb-relocate = verschieben kopieren senden move copy send
-search-window-verb-share = teilen zeigen beenden share show unshare stop
 
 # Notifications: banner stack and notification centre
 drill-in-back = Zurück
@@ -1099,8 +1081,7 @@ window-switcher-hint-stay = Bleiben
 # Workspace overview
 overview-empty-window = Leeres Fenster
 overview-untitled = Ohne Titel
-overview-access-nobody = Niemand hat Zugriff
-overview-access-private = Nur für dich
+overview-access-only-you = Nur du
 overview-access-one = Geteilt mit { $name }
 overview-access-two = Geteilt mit { $name } und { $other }
 overview-access-many = Geteilt mit { $name } und { $count } weiteren
@@ -1139,6 +1120,28 @@ overview-join-workspace = Einem Arbeitsbereich beitreten…
 overview-leave-workspace = Verlassen
 overview-a11y-leave = { $name } verlassen
 overview-two-facts = { $first }, { $second }
+overview-tilo-more-workspaces = Weitere Workspaces
+overview-tilo-hours = { $hours } Std.
+overview-tilo-hosts = Hosts & Rechenleistung
+overview-tilo-agents = Agenten
+overview-tilo-account = Konto
+overview-tilo-about = Über Tilo
+overview-tilo-workspace-usage = { $host }, { $time } diesen Monat
+overview-tilo-plan-used-of = { $used } von { $included } Std.
+overview-tilo-plan-used = { $used }
+overview-tilo-credit = { $amount } Guthaben
+overview-tilo-no-card = Noch keine Karte: wird erst gebraucht, wenn etwas eine Linux-Maschine braucht
+overview-tilo-no-plan = Kein Tarif gewählt
+overview-tilo-host-device = Dieses Gerät
+overview-tilo-host-self = Dein eigener Host
+overview-tilo-host-provider = Hosting-Anbieter
+overview-tilo-manage-billing = Abrechnung verwalten
+overview-tilo-agent-everywhere = Alle deine Workspaces
+overview-tilo-agent-running = { $runs ->
+        [one] arbeitet gerade
+       *[other] { $runs } Läufe gerade
+    }
+overview-tilo-revoke = Widerrufen
 overview-windows-title = Fenster in diesem Arbeitsbereich
 overview-windows-description = Jede Leiste dieses Arbeitsbereichs von oben nach unten, mit ihren Fenstern der Reihe nach. Die Pfeiltasten wechseln zwischen ihnen, Enter öffnet eines. F2 benennt die Leiste eines Fensters um, Alt mit Oben oder Unten verschiebt diese Leiste. Klicke oder tippe auf ein Fenster, um dorthin zu wechseln, klicke eines mit der mittleren Taste an, um es zu schließen, oder ziehe es auf einen anderen Arbeitsbereich oder eine andere Leiste, um es dorthin zu verschieben.
 overview-strips-title = Leisten in diesem Arbeitsbereich
@@ -1147,6 +1150,16 @@ overview-strip-move-up = Nach oben
 overview-strip-move-down = Nach unten
 browser-new-workspace-name = Arbeitsbereich { $number }
 workspace-notice-joined = { $name } ist dazugekommen
+workspace-notice-agent-finished = { $agent } ist fertig
+workspace-notice-agent-card = Karte öffnen
+workspace-notice-agent-finished-changes = { $agent } ist fertig: { $count ->
+    [one] 1 Änderung
+   *[other] { $count } Änderungen
+}
+workspace-notice-agent-finished-in = { $agent } ist fertig: { $count ->
+    [one] 1 Änderung
+   *[other] { $count } Änderungen
+} in { $workspace }
 workspace-notice-renamed = { $name } hat den Arbeitsbereich in { $workspace } umbenannt
 # Was der Schreibtisch sagt, wenn etwas nicht geschehen ist, worum jemand
 # gebeten hat: wonach gefragt wurde, warum, und die Taste, die es erneut versucht.
@@ -1165,8 +1178,6 @@ answer-why-cannot-start = Apps können gerade nicht gestartet werden.
 # sagt das, statt nichts zu tun.
 answer-capture-not-in-browser = Bildschirmfotos und Aufnahmen gibt es in Tilo auf einem Computer
 answer-why-capture-not-in-browser = Dafür braucht es den ganzen Bildschirm, den eine Browserseite nicht hat.
-answer-guide-not-in-browser = Die Tastenkürzel-Übersicht gibt es in Tilo auf einem Computer
-answer-why-guide-not-in-browser = Sie öffnet sich über dem ganzen System, das eine Browserseite nicht ist.
 answer-remote-not-in-browser = Fernsteuerung gibt es in Tilo auf einem Computer
 answer-why-remote-not-in-browser = Hier steht nichts unter der Kontrolle von jemand anderem.
 
@@ -1491,3 +1502,9 @@ activities-layer = Aktivitäten
 activity-collapse = Weglegen
 activity-close = Schließen
 
+profile-agent-card = Karte öffnen
+profile-agent-stop = Anhalten
+profile-agent-undo-run = Lauf rückgängig machen
+profile-agent-take-over = Übernehmen
+profile-agent-revoke = Zugriff entziehen
+profile-agent-now = Gerade

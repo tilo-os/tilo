@@ -53,7 +53,7 @@ trigger    = "trigger" Ident params ( "every" duration
                                    | "at" ident "." ident ) ":" expr ;   (* the action it runs *)
 params     = "(" [ param { "," param } ] ")" ;
 param      = ident ":" type [ "=" expr ] ;                         (* defaults: action parameters only *)
-opts       = "(" ident ":" expr { "," ident ":" expr } ")" ;       (* icon:, label:, on:, key:, did: *)
+opts       = "(" ident ":" expr { "," ident ":" expr } ")" ;       (* icon:, label:, on:, key:, group:, did: *)
 
 block      = "{" { stmt NL } "}" ;
 stmt       = "let" ident [ ":" type ] "=" expr

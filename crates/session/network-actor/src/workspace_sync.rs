@@ -104,21 +104,6 @@ pub(crate) fn unsynced(ws: u64, count: usize) -> bool {
     before.unwrap_or(0) != count
 }
 
-/// This device cannot keep its writes to the workspace on topic `ws` on
-/// disk now (`true`; its disk is full, say), or can again: until it can,
-/// they are held in memory and the workspace's apps say it cannot sync.
-/// Whether that changed what they are told.
-pub(crate) fn cannot_keep(ws: u64, cannot: bool) -> bool {
-    let mut states = CANNOT_KEEP.lock_recover();
-    let changed = if cannot {
-        states.insert(ws)
-    } else {
-        states.remove(&ws)
-    };
-    drop(states);
-    changed
-}
-
 /// Whether this device cannot keep its writes to the workspace on topic
 /// `ws` on disk now.
 pub fn cannot_keep_writes(ws: u64) -> bool {

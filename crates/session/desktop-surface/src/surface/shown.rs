@@ -29,6 +29,14 @@ impl DesktopHandle {
         self.shared.borrow().shown_tabs.content_top()
     }
 
+    /// Each window floating over the desk, and the rect the desk draws over the windows under it
+    /// for that window — its bar, its body and the shadow that lifts it, whole and opaque — in the
+    /// surface's coordinates, as of the last draw. A window that has not finished fading in is
+    /// absent: what the desk draws of it yet lets the windows it covers show through.
+    pub fn float_covers(&self) -> Vec<(TabId, Rect)> {
+        self.shared.borrow().float_covers.clone()
+    }
+
     /// Where the whole window of `tab` stands — its bar, and the tab's content in it — in the
     /// surface's coordinates, as of the last layout: where a menu for it hangs from.
     #[must_use]

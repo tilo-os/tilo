@@ -15,6 +15,7 @@ fn certificate(root: &SigningKey, device: &SigningKey, expires_at_ns: Option<u64
         issued_at_ns: 1,
         expires_at_ns,
         signature: [0; 64],
+        issuer: None,
     };
     sign_device_cert(&mut certificate, root).unwrap();
     certificate

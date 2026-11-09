@@ -18,13 +18,13 @@ draws it.
 
 ## 2. The record
 
-A version names the task run that made it:
+A version names the run that made it:
 
 ```
-type Version { by: Person | Agent, at: Time, action: Text, task: TaskRun?, kind: .created | .changed | .removed, fields: Set<Text> }
+type Version { by: Person | Agent, at: Time, action: Text, run: Run?, kind: .created | .changed | .removed, fields: Set<Text> }
 ```
 
-`task` comes from the change's group stamp; the runtime fills it, nothing new is stored.
+`run` comes from the change's group stamp; the runtime fills it, nothing new is stored.
 Removals are versions too, so a removed record stays answerable (`history(r)` of a removed `r`
 says who removed it, in which run).
 
@@ -42,7 +42,7 @@ version they have seen. Showing a resource on screen does not set it; the person
 ## 3. Marks in place, with no app code
 
 The UI host already knows which resource each part of a view is bound to: a list's rows are
-`ui.ListItem(item:)` references to items, `ui.TextInput(value: n.title)` binds a field, every
+`ui.ListItem(item:)` references to items, `ui.TextInput(bind: n.title)` binds a field, every
 window shows a resource. The host draws marks from `unseen(r)` at those points:
 
 | Where | Mark |
@@ -50,10 +50,16 @@ window shows a resource. The host draws marks from `unseen(r)` at those points:
 | a list or table row | new / changed, with who: the agent's face, "Agent · run 3" |
 | a removed item | a struck row in its old place, "removed by Agent", with Undo |
 | a bound field | the field tinted, the previous value on hover |
-| a window | its title carries the count of unseen changes and who made them |
+| a window | its title carries how many items of what it shows are unseen, and who changed them |
 
 Apps write nothing for this. A view may place the mark itself (`ui.ChangeMark(r)`) when the
 default spot is wrong; the host then skips its own.
+
+A list told where the person stopped reading (`unseen_from: first_unseen(c)`) stands a divider
+there, and the rows under it take no mark of their own: the divider already says they are new,
+and a mark on each of them would read as something else (who read it, in a conversation). A
+change to a row above the divider keeps its mark, since the divider says nothing of it. A reply
+counts as neither: writing an item reads nothing above it, so the divider stays where it was.
 
 A mark reads the index's newest version of what it marks, never the resource's log, so a row or
 a field of any workspace costs the same to mark. A window's count reads one page of its
@@ -103,7 +109,7 @@ On a phone, watching is a notification per finished step whose activation shows 
 
 ## 6. Order
 
-1. `Version.task` and `kind`, `changes(of:)`, `unseen(r)`, seen marks in the own record.
+1. `Version.run` and `kind`, `changes(of:)`, `unseen(r)`, seen marks in the own record.
    Tested with a run that creates, changes and removes records in two apps.
 2. Host-drawn marks on list rows, bound fields and windows; activation opens the step. Pixel
    tests on Notes and Tasks with a scripted run.

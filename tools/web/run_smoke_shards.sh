@@ -49,7 +49,8 @@ trap 'exit 130' INT
 trap 'exit 143' TERM
 for ((shard=0; shard<shards; shard++)); do
   browser_port=$((port + shard))
-  python3 tools/web/owned_browser.py "$CHROME" --headless=new --no-sandbox --enable-unsafe-webgpu \
+  TILO_OWNED_BROWSER_PARENT=$$ TILO_OWNED_BROWSER_PROFILE="$profiles/$shard" \
+    python3 tools/web/owned_browser.py "$CHROME" --headless=new --no-sandbox --enable-unsafe-webgpu \
     --enable-features=Vulkan --use-vulkan=swiftshader --use-angle=swiftshader \
     --disable-background-timer-throttling --disable-renderer-backgrounding \
     --disable-backgrounding-occluded-windows \

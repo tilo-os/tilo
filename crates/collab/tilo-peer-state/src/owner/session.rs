@@ -1,28 +1,24 @@
-//! One relay co-edit session for an enrolled workspace: dialing the host its
-//! enrollment pins and holding the session ([`hold`]), admitting what
-//! arrives with closed relay provenance, and sending what the owner holds
-//! in outgoing custody.
+//! One link per enrolled workspace: dialling the host its enrollment pins,
+//! holding the link ([`hold`]) over the direct lane, admitting what arrives
+//! into this device's owner, and publishing what the owner holds.
 mod cursor;
 mod hold;
 mod reach;
 
 pub use hold::{Holder, Link, hold};
-pub use reach::{OwnHost, Reach};
+pub use reach::{Linked, OwnHost, Reach};
 
 use super::publication::SealRecord;
+use crate::direct::DirectSync;
 use crate::owner::{NativeWorkspaceOwner, WorkspaceId};
-use crate::{Reseal, TransportOrigin, join::TransportHint};
+use crate::{Reseal, join::TransportHint};
 use ed25519_dalek::SigningKey;
 use neighbour_wire::NeighbourMsg;
-use std::{
-    sync::{Arc, Mutex},
-    time::Duration,
-};
+use std::sync::{Arc, Mutex};
 use tilo_identity_host::custody::HostIdentity;
-use tilo_relay_session::RelayCoeditSession;
-use tilo_user_identity::{DeviceCert, RevocationList};
+use tilo_user_identity::{DeviceCert, RevocationEntry};
 
-/// An enrolled workspace to hold a session for.
+/// An enrolled workspace to hold a link for.
 #[derive(Clone)]
 pub struct Connect {
     owner: NativeWorkspaceOwner,
@@ -38,7 +34,7 @@ impl std::fmt::Debug for Connect {
 
 impl NativeWorkspaceOwner {
     /// Where `workspace`'s host is reached, with the device its enrollment
-    /// pins: the address a plane of the workspace dials that host's relay at,
+    /// pins: the address a plane of the workspace dials that host at,
     /// decoded from the hint the host signed. `None` while the workspace is
     /// not held here or its enrollment names no iroh address.
     #[must_use]
@@ -66,33 +62,28 @@ impl Connect {
     pub fn workspace(&self) -> WorkspaceId {
         self.workspace
     }
-    /// What a session for this workspace must be pinned to now: the host hint,
-    /// this device's certificate, the revocations to dial with and the
-    /// owner's continuity.
-    pub fn material(
-        &self,
-        identity: &HostIdentity,
-    ) -> Result<(TransportHint, DeviceCert, RevocationList, u64), String> {
-        let (cert, revocations, continuity) = self.custody(identity)?;
-        let hint = self
-            .owner
-            .with_current(self.workspace, |view| Ok(view.transport_hint()?.clone()))?;
-        Ok((hint, cert, revocations, continuity))
-    }
     /// What this device must be, now, to act as `workspace`'s own member: the
     /// certificate it holds for the workspace is the one the workspace's
     /// record names, admitted in the workspace's roster, and neither it nor
-    /// the workspace's host is revoked. What a workspace this device hosts
-    /// needs to commit there: its host is in this process, so there is no
-    /// address to reach it at.
-    pub fn custody(
+    /// the workspace's host is revoked. Along with it, the hint the enrollment
+    /// pins and the owner's continuity.
+    pub fn material(
         &self,
         identity: &HostIdentity,
-    ) -> Result<(DeviceCert, RevocationList, u64), String> {
+    ) -> Result<(TransportHint, DeviceCert, u64), String> {
+        let (cert, continuity) = self.custody(identity)?;
+        let hint = self
+            .owner
+            .with_current(self.workspace, |view| Ok(view.transport_hint()?.clone()))?;
+        Ok((hint, cert, continuity))
+    }
+    /// Whether this device may act as `workspace`'s own member now, and the
+    /// continuity its record is at ([`Self::material`]).
+    pub fn custody(&self, identity: &HostIdentity) -> Result<(DeviceCert, u64), String> {
         self.owner.with_current(self.workspace, |view| {
             let (cert, entries) = identity.current_native_material(view.workspace_id())?;
             if &cert != view.device() {
-                return Err("native relay custody differs from enrollment".into());
+                return Err("native custody differs from enrollment".into());
             }
             view.peer()
                 .permissions(cert.device_public_key, std::time::SystemTime::now())
@@ -100,19 +91,18 @@ impl Connect {
             if !view.peer().certificates().contains(&cert) {
                 return Err("selected certificate differs from current admitted roster".into());
             }
-            let mut revocations = RevocationList::new();
-            for entry in entries.into_iter().chain(view.peer().revocations()) {
-                revocations.insert(entry).map_err(|e| e.to_string())?;
+            if its_root_revoked(
+                entries.into_iter().chain(view.peer().revocations()),
+                view.workspace_host(),
+            ) {
+                return Err("native host is revoked".into());
             }
-            if revocations.is_revoked(&view.workspace_host().device_public_key) {
-                return Err("native relay host is revoked".into());
-            }
-            Ok((cert, revocations, view.continuity()))
+            Ok((cert, view.continuity()))
         })
     }
     /// The hosts the workspace's governor named besides itself
     /// ([`crate::workspace_hosts_of`]), in the order governance holds
-    /// them: where a member's session goes while the governor is out of
+    /// them: where a member's link goes while the governor is out of
     /// reach. A host the workspace revoked, or one naming this device, is left
     /// out.
     pub fn hosts(&self, own: &[u8; 32]) -> Result<Vec<TransportHint>, String> {
@@ -128,16 +118,14 @@ impl Connect {
                     let device = hint.host.device_public_key;
                     device != governor
                         && &device != own
-                        && !revocations
-                            .iter()
-                            .any(|entry| entry.revoked_device_public_key == device)
+                        && !its_root_revoked(revocations.iter().cloned(), &hint.host)
                 })
                 .collect())
         })
     }
 
     /// The host to dial after `after` (the first when `None`)
-    /// among [`Self::hosts`]: where the workspace's session goes next while its
+    /// among [`Self::hosts`]: where the workspace's link goes next while its
     /// governor is out of reach. `None` once every host was tried.
     pub fn next_host(
         &self,
@@ -152,9 +140,8 @@ impl Connect {
     }
 
     /// Whether this device is the workspace's host itself: the host its
-    /// enrollment pins is this very device. Such a workspace is never dialled.
-    /// This device holds the host's copy, so there is nothing to catch up on
-    /// and nobody else to reach.
+    /// enrollment pins is this very device. Such a workspace is never dialled:
+    /// its link pairs with the host in this process.
     #[must_use]
     pub fn hosted_here(&self, identity: &HostIdentity) -> bool {
         self.owner
@@ -166,7 +153,7 @@ impl Connect {
     }
     /// The renewal of the certificate the workspace's record holds, when this
     /// device's custody holds one: the device proves its membership with it
-    /// ([`crate::owner::enroll::renew_membership`]) before its sessions dial again,
+    /// ([`crate::owner::enroll::renew_membership`]) before its links dial again,
     /// as [`Self::material`] refuses custody that differs from the record.
     pub fn renewal(&self, identity: &HostIdentity) -> Result<Option<DeviceCert>, String> {
         self.owner.with_current(self.workspace, |view| {
@@ -174,38 +161,47 @@ impl Connect {
             Ok(crate::owner::renewal::renews(&cert, view.device()).then_some(cert))
         })
     }
+    /// This device's end of the workspace's link, syncing the replica its
+    /// owner decides on: what a link brings is durable as it lands.
+    ///
+    /// # Errors
+    /// The workspace is not held here.
+    pub fn link(&self, key: SigningKey) -> Result<DirectSync, String> {
+        DirectSync::over(self.owner.replica(self.workspace)?, key)
+            .owning(self.owner.clone(), self.workspace)
+    }
     /// The owner of the workspace's record.
     #[must_use]
     pub fn owner(&self) -> &NativeWorkspaceOwner {
         &self.owner
     }
 }
-/// A live session's pin; closed when the session ends.
+
+/// A live link's pin; closed when the link ends.
 ///
-/// The pin is the host it reached and the certificate it authenticated
-/// with. The owner's continuity moves with any security change of the workspace,
-/// another member joining included; the session follows it in place once
-/// this device's own standing was checked again ([`Connect::material`]),
-/// rather than ending and redialling every member for one person's join.
+/// The pin is the host it reached and the certificate it signs as. The owner's
+/// continuity moves with any security change of the workspace, another member
+/// joining included; the link follows it in place once this device's own
+/// standing was checked again ([`Connect::material`]), rather than ending and
+/// redialling every member for one person's join.
 pub struct Scope {
     connect: Connect,
     hint: TransportHint,
-    /// The host the session reached: the governor `hint` names, or a host
-    /// the workspace's governance names while the governor is out of reach.
+    /// The host the link reached: the governor `hint` names, or a host the
+    /// workspace's governance names while the governor is out of reach.
     via: TransportHint,
     device: DeviceCert,
-    /// The owner continuity the session last validated against.
+    /// The owner continuity the link last validated against.
     continuity: std::sync::atomic::AtomicU64,
     live: Mutex<bool>,
     cursor: Mutex<cursor::Cursor>,
-    refresh_sent: Mutex<Option<std::time::Instant>>,
 }
 impl Scope {
     #[must_use]
     pub fn new(connect: Connect, hint: TransportHint, device: DeviceCert, continuity: u64) -> Self {
         Self::via(connect, hint.clone(), hint, device, continuity)
     }
-    /// A session pinned to the workspace's governor `hint` that reached the host
+    /// A link pinned to the workspace's governor `hint` that reached the host
     /// `via` instead.
     #[must_use]
     pub fn via(
@@ -223,18 +219,17 @@ impl Scope {
             continuity: std::sync::atomic::AtomicU64::new(continuity),
             live: Mutex::new(true),
             cursor: Mutex::new(cursor::Cursor::default()),
-            refresh_sent: Mutex::new(None),
         }
     }
     #[must_use]
     pub fn workspace(&self) -> WorkspaceId {
         self.connect.workspace
     }
-    /// Whether this session is still pinned to this material: the same host
+    /// Whether this link is still pinned to this material: the same host
     /// and certificate. `continuity` is the owner's current one, which the
     /// caller read with the material that re-validated this device's standing
     /// ([`Connect::material`] refuses a device no longer admitted, permitted
-    /// or behind an unrevoked host); the session adopts it.
+    /// or behind an unrevoked host); the link adopts it.
     #[must_use]
     pub fn pinned_to(&self, hint: &TransportHint, device: &DeviceCert, continuity: u64) -> bool {
         let pinned = hint == &self.hint && device == &self.device;
@@ -244,17 +239,17 @@ impl Scope {
         }
         pinned
     }
-    /// The host this session reached.
+    /// The host this link reached.
     #[must_use]
     pub fn host(&self) -> &TransportHint {
         &self.via
     }
-    /// Whether this session reached the workspace's governor itself.
+    /// Whether this link reached the workspace's governor itself.
     #[must_use]
     pub fn reaches_governor(&self) -> bool {
         self.via == self.hint
     }
-    /// The owner continuity this session last validated against.
+    /// The owner continuity this link last validated against.
     fn continuity(&self) -> u64 {
         self.continuity.load(std::sync::atomic::Ordering::SeqCst)
     }
@@ -262,70 +257,6 @@ impl Scope {
         if let Ok(mut live) = self.live.lock() {
             *live = false;
         }
-    }
-}
-impl Scope {
-    /// A delta the authenticated relay pump received on this session.
-    #[must_use]
-    pub fn input(self: &Arc<Self>, author: [u8; 32], retained: bool, msg: NeighbourMsg) -> Input {
-        Input {
-            scope: self.clone(),
-            author,
-            retained,
-            msg,
-        }
-    }
-    /// Ask the pinned host to run its own checkpoint barrier, at most every
-    /// 30 seconds. It grants no local admission and retires no outbox.
-    #[allow(
-        clippy::significant_drop_tightening,
-        reason = "the live flag and refresh cadence stay locked through the request so a close \
-                  or a concurrent refresh cannot interleave"
-    )]
-    pub fn refresh(
-        &self,
-        session: &RelayCoeditSession,
-        identity: &HostIdentity,
-    ) -> Result<(), String> {
-        let live = self
-            .live
-            .lock()
-            .map_err(|_| "native refresh session poisoned")?;
-        if !*live {
-            return Err("native refresh session closed".into());
-        }
-        let (hint, device, _, continuity) = self.connect.material(identity)?;
-        if !self.pinned_to(&hint, &device, continuity) {
-            return Err("native refresh scope changed".into());
-        }
-        self.connect
-            .owner
-            .with_current(self.connect.workspace, |view| {
-                if view.device() != &self.device
-                    || view.transport_hint()? != &self.hint
-                    || view.continuity() != self.continuity()
-                {
-                    return Err("native refresh current owner changed".into());
-                }
-                view.peer()
-                    .permissions(self.device.device_public_key, std::time::SystemTime::now())
-                    .map_err(|error| error.to_string())?;
-                let mut last = self
-                    .refresh_sent
-                    .lock()
-                    .map_err(|_| "native refresh cadence poisoned")?;
-                let now = std::time::Instant::now();
-                if last.is_some_and(|sent| {
-                    now.saturating_duration_since(sent) < Duration::from_secs(30)
-                }) {
-                    return Ok(());
-                }
-                session
-                    .request_checkpoint_refresh()
-                    .map_err(|error| error.to_string())?;
-                *last = Some(now);
-                Ok(())
-            })
     }
     /// Compact the sealed record histories of this workspace that have used most
     /// of their bound into one checkpoint each, through `open` and `seal`,
@@ -339,7 +270,7 @@ impl Scope {
         open: &mut dyn FnMut(&collab_types::SignedOp) -> Result<Vec<u8>, String>,
         seal: &mut SealRecord<'_>,
     ) -> Result<usize, String> {
-        let (hint, device, _, continuity) = self.connect.material(identity)?;
+        let (hint, device, continuity) = self.connect.material(identity)?;
         if !self.pinned_to(&hint, &device, continuity) {
             return Err("native compaction scope changed".into());
         }
@@ -351,15 +282,11 @@ impl Scope {
             std::time::SystemTime::now(),
         )
     }
-    /// Reconcile the owner's outgoing custody and send, once per session,
-    /// every entry it may send now. Sealed writes that expired in custody
-    /// are not renewed: see [`Self::publish_renewing`].
-    pub fn publish(
-        &self,
-        session: &RelayCoeditSession,
-        identity: &HostIdentity,
-    ) -> Result<(), String> {
-        self.send(session, identity, None)
+    /// Reconcile the owner's outgoing custody and send, once per link, every
+    /// entry it may send now. Sealed writes that expired in custody are not
+    /// renewed: see [`Self::publish_renewing`].
+    pub fn publish(&self, link: &DirectSync, identity: &HostIdentity) -> Result<(), String> {
+        self.send(link, identity, None)
     }
     /// [`Self::publish`], first renewing this device's sealed writes that
     /// expired in custody through `reseal`, the channels' key holder (see
@@ -369,11 +296,11 @@ impl Scope {
     /// As [`Self::publish`].
     pub fn publish_renewing(
         &self,
-        session: &RelayCoeditSession,
+        link: &DirectSync,
         identity: &HostIdentity,
         reseal: &mut Reseal<'_>,
     ) -> Result<(), String> {
-        self.send(session, identity, Some(reseal))
+        self.send(link, identity, Some(reseal))
     }
     #[allow(
         clippy::significant_drop_tightening,
@@ -381,7 +308,7 @@ impl Scope {
     )]
     fn send(
         &self,
-        session: &RelayCoeditSession,
+        link: &DirectSync,
         identity: &HostIdentity,
         reseal: Option<&mut Reseal<'_>>,
     ) -> Result<(), String> {
@@ -392,7 +319,7 @@ impl Scope {
         if !*live {
             return Err("native publication session closed".into());
         }
-        let (hint, device, _, continuity) = self.connect.material(identity)?;
+        let (hint, device, continuity) = self.connect.material(identity)?;
         if !self.pinned_to(&hint, &device, continuity) {
             return Err("native publication session changed".into());
         }
@@ -443,231 +370,19 @@ impl Scope {
                             entry.retention(),
                         )
                     }),
-                    |bytes, channel, retention| {
-                        match retention {
-                            neighbour_wire::Retention::Delta => {
-                                session.publish_retained_delta(channel, bytes.to_vec())
-                            }
-                            // A checkpoint leaves as one: this device's sealed
-                            // compaction of a record, which covers the writes
-                            // before it, and the workspace's own governance
-                            // checkpoint. The store then keeps it as the whole
-                            // of what this author retained there. A cleartext
-                            // snapshot never reaches here: the governor's
-                            // baseline stays the governor's to send.
-                            neighbour_wire::Retention::Checkpoint => {
-                                session.publish_checkpoint(channel, bytes.to_vec())
-                            }
-                        }
-                        .map_err(|e| e.to_string())
+                    |bytes, _channel, _retention| {
+                        let message: NeighbourMsg =
+                            postcard::from_bytes(bytes).map_err(|error| error.to_string())?;
+                        link.send(message)
                     },
                 )
             },
         )
     }
 }
-/// Only the authenticated relay pump can construct this. A message from any
-/// other path cannot become `RelayDelta` evidence through a host's event
-/// dispatcher.
+
+/// Another device's app write the owner took in for this device's apps.
 #[derive(Clone)]
-pub struct Input {
-    scope: Arc<Scope>,
-    author: [u8; 32],
-    retained: bool,
-    msg: NeighbourMsg,
-}
-impl std::fmt::Debug for Input {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("NativeRelayInput")
-            .field("workspace", &self.scope.connect.workspace)
-            .field("retained", &self.retained)
-            .finish_non_exhaustive()
-    }
-}
-impl Input {
-    #[must_use]
-    pub fn workspace(&self) -> WorkspaceId {
-        self.scope.connect.workspace
-    }
-    #[must_use]
-    pub fn author(&self) -> [u8; 32] {
-        self.author
-    }
-    #[must_use]
-    pub fn message(&self) -> &NeighbourMsg {
-        &self.msg
-    }
-    /// Whether the host sent it as part of its retained replay, before
-    /// answering the subscription.
-    #[must_use]
-    pub fn retained(&self) -> bool {
-        self.retained
-    }
-    /// Observe the actual committed owner generation, without granting admission.
-    pub fn generation(&self) -> Result<u64, String> {
-        self.scope
-            .connect
-            .owner
-            .with_current(self.workspace(), |view| Ok(view.generation()))
-    }
-    /// Admit the delta into the owner while the session is still live and
-    /// pinned to the owner's current material.
-    pub fn admit(&self, identity: &HostIdentity) -> Result<crate::AdmissionReport, String> {
-        Self::admit_batch(vec![self.clone()], identity)
-            .inputs
-            .pop()
-            .ok_or_else(|| "native owner admitted no input".to_owned())?
-            .1
-    }
-    /// Whether `other` came over the same relay session as this one: what
-    /// [`Self::admit_batch`] admits together.
-    #[must_use]
-    pub fn same_session(&self, other: &Self) -> bool {
-        Arc::ptr_eq(&self.scope, &other.scope)
-    }
-    /// Admit `inputs`, all of one relay session, in the order they came, in
-    /// one commit of the owner, while the session is still live and pinned
-    /// to the owner's current material: each is authorized as one alone is,
-    /// and a burst of them persists once. Each input comes back with its
-    /// report; inputs that span sessions, a closed session, a changed pin
-    /// or a failed commit refuse them all.
-    #[must_use]
-    pub fn admit_batch(inputs: Vec<Self>, identity: &HostIdentity) -> Admitted {
-        let Some(first) = inputs.first() else {
-            return Admitted {
-                inputs: Vec::new(),
-                changed: false,
-            };
-        };
-        let before = first.generation().ok();
-        let reports = Self::admit_pinned(&inputs, identity);
-        let changed = before != first.generation().ok();
-        let inputs = match reports {
-            Ok(reports) => inputs.into_iter().zip(reports).collect(),
-            Err(error) => inputs
-                .into_iter()
-                .map(|input| (input, Err(error.clone())))
-                .collect(),
-        };
-        Admitted { inputs, changed }
-    }
-    #[allow(
-        clippy::significant_drop_tightening,
-        reason = "the live flag stays locked through admission so a close cannot interleave"
-    )]
-    fn admit_pinned(
-        inputs: &[Self],
-        identity: &HostIdentity,
-    ) -> Result<Vec<Result<crate::AdmissionReport, String>>, String> {
-        let Some(first) = inputs.first() else {
-            return Ok(Vec::new());
-        };
-        if !inputs.iter().all(|input| first.same_session(input)) {
-            return Err("native relay inputs of different sessions".into());
-        }
-        let live = first
-            .scope
-            .live
-            .lock()
-            .map_err(|_| "native relay continuity poisoned")?;
-        if !*live {
-            return Err("native relay session closed".into());
-        }
-        let (hint, device, _, continuity) = first.scope.connect.material(identity)?;
-        if !first.scope.pinned_to(&hint, &device, continuity) {
-            return Err("native relay pin changed".into());
-        }
-        let batch = inputs
-            .iter()
-            .map(|input| {
-                let origin = if input.retained {
-                    TransportOrigin::RetainedRelayDelta(input.author)
-                } else {
-                    TransportOrigin::RelayDelta(input.author)
-                };
-                (origin, input.msg.clone())
-            })
-            .collect();
-        first.scope.connect.owner.receive_batch(
-            first.workspace(),
-            batch,
-            Some(&identity.device_signing_key),
-            std::time::SystemTime::now(),
-        )
-    }
-    /// The app write `report` took in from another device, for this
-    /// device's apps: `None` for anything else, a write the owner neither
-    /// accepted nor already held, this device's own write, a write naming
-    /// another workspace, or an author without standing.
-    #[must_use]
-    pub fn app_write(&self, report: &crate::AdmissionReport) -> Option<AppWrite> {
-        let taken_in = match report.primary() {
-            crate::InputDisposition::Accepted(_) | crate::InputDisposition::Duplicate(_) => true,
-            // A host's replay of a frame this device took in before: its
-            // exact evidence is gone (a legacy state, or one folded by a
-            // compaction), so admission reports it as history it already
-            // holds. This device's apps may be new — a restarted session
-            // keeps the workspace and starts its apps empty — and the frame
-            // is part of their record: it goes to them as any other replayed
-            // frame does, and their CRDT drops what they already hold.
-            crate::InputDisposition::RetryLater(
-                crate::MissingPrerequisite::ExactHistoricalEvidence,
-            ) => self.retained && report.duplicate,
-            _ => false,
-        };
-        if !taken_in || self.author == self.scope.device.device_public_key {
-            return None;
-        }
-        let NeighbourMsg::AppDocument {
-            peer,
-            app_id,
-            cluster_id,
-            record_id,
-            envelope,
-        } = &self.msg
-        else {
-            return None;
-        };
-        if cluster_id != &self.workspace().to_string() {
-            return None;
-        }
-        Some(AppWrite {
-            peer: *peer,
-            app_id: app_id.clone(),
-            cluster_id: cluster_id.clone(),
-            record_id: record_id.clone(),
-            author: match self.standing() {
-                Ok(standing) => standing,
-                Err(_) => return None,
-            },
-            replayed: self.retained,
-            envelope: (**envelope).clone(),
-        })
-    }
-    /// The author's current standing in the workspace: the workspace's policy, and
-    /// the bound on a device not theirs.
-    pub fn standing(&self) -> Result<tilo_action_policy::Standing, String> {
-        self.scope
-            .connect
-            .owner
-            .with_current(self.workspace(), |view| {
-                view.peer()
-                    .permissions(self.author, std::time::SystemTime::now())
-                    .map(crate::MemberAuthority::standing)
-                    .map_err(|error| error.to_string())
-            })
-    }
-}
-
-/// What [`Input::admit_batch`] decided.
-pub struct Admitted {
-    /// Each input, in the order it came, with what its admission decided.
-    pub inputs: Vec<(Input, Result<crate::AdmissionReport, String>)>,
-    /// Whether the admission committed a new owner generation.
-    pub changed: bool,
-}
-
-/// Another device's app write the owner took in ([`Input::app_write`]).
 pub struct AppWrite {
     /// The writer's peer handle, as the write names it.
     pub peer: u64,
@@ -681,123 +396,206 @@ pub struct AppWrite {
     pub envelope: collab_types::SignedOp,
 }
 
-/// Why dialing a workspace's host did not give a session.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum DialError {
-    /// The host speaks peer protocol `theirs`, not this device's: they do
-    /// not sync until the one behind has updated, which the person is told
-    /// (docs/architecture/compatibility.md). Dialing again changes nothing
-    /// until then.
-    PeerVersion {
-        /// The host's version.
-        theirs: u32,
-    },
-    /// The host closed the stream without answering this device's hello:
-    /// it refused this device, or it predates versioned handshakes. After
-    /// [`UNANSWERED_BEFORE_PROBE`] of these in a row, a probe tells which.
-    NoAnswer(String),
-    /// Anything else, in words for the log; dialing again may succeed.
-    Failed(String),
-}
-
-impl std::fmt::Display for DialError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::PeerVersion { theirs } => write!(
-                f,
-                "the host speaks peer protocol {theirs}, this device {}",
-                neighbour_wire::PEER_PROTOCOL_VERSION
-            ),
-            Self::NoAnswer(reason) => {
-                write!(f, "the host closed the stream without answering: {reason}")
-            }
-            Self::Failed(reason) => f.write_str(reason),
-        }
+/// Whether the workspace took a frame in, as a device's apps read it: a write
+/// it accepted or holds already, this device's own included.
+#[must_use]
+pub fn took_in(report: &crate::AdmissionReport, retained: bool) -> bool {
+    match report.primary() {
+        crate::InputDisposition::Accepted(_) | crate::InputDisposition::Duplicate(_) => true,
+        // A host's replay of a frame this device took in before: its exact
+        // evidence is gone (a legacy state, or one folded by a compaction),
+        // so admission reports it as history it already holds. This device's
+        // apps may be new — a restarted session keeps the workspace and
+        // starts its apps empty — and the frame is part of their record: it
+        // goes to them as any other replayed frame does, and their CRDT drops
+        // what they already hold.
+        crate::InputDisposition::RetryLater(
+            crate::MissingPrerequisite::ExactHistoricalEvidence,
+        ) => retained && report.duplicate,
+        _ => false,
     }
 }
 
-impl std::error::Error for DialError {}
-
-impl From<String> for DialError {
-    fn from(reason: String) -> Self {
-        Self::Failed(reason)
+/// The app write a frame carries, for this device's apps: `None` for anything
+/// else, a write the owner neither accepted nor already held, this device's own
+/// write, a write naming another workspace, or an author without standing.
+#[must_use]
+pub fn app_write(
+    owner: &NativeWorkspaceOwner,
+    workspace: WorkspaceId,
+    device: [u8; 32],
+    author: [u8; 32],
+    msg: &NeighbourMsg,
+    replayed: bool,
+    taken_in: bool,
+) -> Option<AppWrite> {
+    if !taken_in || author == device {
+        return None;
     }
-}
-
-impl From<&str> for DialError {
-    fn from(reason: &str) -> Self {
-        Self::Failed(reason.to_owned())
-    }
-}
-
-impl From<DialError> for String {
-    fn from(error: DialError) -> Self {
-        error.to_string()
-    }
-}
-
-impl From<tilo_relay_session::ClientError> for DialError {
-    fn from(error: tilo_relay_session::ClientError) -> Self {
-        if let tilo_relay_session::ClientError::NoHandshakeAnswer(reason) = &error {
-            return Self::NoAnswer(reason.clone());
-        }
-        match error.peer_version() {
-            Some(theirs) => Self::PeerVersion { theirs },
-            None => Self::Failed(error.to_string()),
-        }
-    }
-}
-
-/// How many dials in a row the workspace's host may close without answering
-/// before a dial asks whether it predates versioned handshakes.
-pub const UNANSWERED_BEFORE_PROBE: u32 = 3;
-
-/// Dial the host `hint` pins for workspace `ws` and join its co-edit
-/// session as `cert`.
-///
-/// # Errors
-/// As [`Reach::session`].
-pub async fn dial(
-    endpoint: iroh::Endpoint,
-    ws: u64,
-    hint: &TransportHint,
-    cert: DeviceCert,
-    key: SigningKey,
-    revocations: RevocationList,
-) -> Result<RelayCoeditSession, DialError> {
-    let reach = Reach {
-        endpoint,
-        own_host: None,
+    let NeighbourMsg::AppDocument {
+        peer,
+        app_id,
+        cluster_id,
+        record_id,
+        envelope,
+    } = msg
+    else {
+        return None;
     };
-    reach.session(ws, hint, cert, key, revocations, false).await
+    if cluster_id != &workspace.to_string() {
+        return None;
+    }
+    let standing = owner
+        .with_current(workspace, |view| {
+            view.peer()
+                .permissions(author, std::time::SystemTime::now())
+                .map(crate::MemberAuthority::standing)
+                .map_err(|error| error.to_string())
+        })
+        .ok()?;
+    Some(AppWrite {
+        peer: *peer,
+        app_id: app_id.clone(),
+        cluster_id: cluster_id.clone(),
+        record_id: record_id.clone(),
+        author: standing,
+        replayed,
+        envelope: (**envelope).clone(),
+    })
 }
 
 pub use crate::owner::hosted_by;
 
-#[cfg(test)]
-mod dial_error_tests {
-    use super::DialError;
-    use tilo_relay_session::ClientError;
+/// A frame a workspace's link brought in, as the session hands it on: the
+/// link already admitted it into the workspace, so what is left is to see
+/// what it did and give this device's apps what it carries.
+#[derive(Clone)]
+pub struct Input {
+    scope: Arc<Scope>,
+    heard: crate::direct::Heard,
+}
 
-    #[test]
-    fn a_host_at_another_version_stays_a_version_mismatch_through_the_dial() {
-        let behind = neighbour_wire::PEER_PROTOCOL_VERSION - 1;
-        assert_eq!(
-            DialError::from(ClientError::PeerVersion { theirs: behind }),
-            DialError::PeerVersion { theirs: behind }
-        );
-        let unversioned = tilo_relay_protocol::auth::UNVERSIONED_PEER_PROTOCOL;
-        assert_eq!(
-            DialError::from(ClientError::PeerVersion {
-                theirs: unversioned
-            }),
-            DialError::PeerVersion {
-                theirs: unversioned
-            }
-        );
-        assert!(matches!(
-            DialError::from(ClientError::Iroh("status 503".into())),
-            DialError::Failed(_)
-        ));
+impl std::fmt::Debug for Input {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("NativeInput")
+            .field("workspace", &self.scope.connect.workspace)
+            .field("retained", &self.heard.retained)
+            .finish_non_exhaustive()
     }
+}
+
+impl Input {
+    /// The input a link's [`Heard`](crate::direct::Heard) frame is, for the
+    /// workspace `scope` pins.
+    #[must_use]
+    pub fn heard(scope: Arc<Scope>, heard: crate::direct::Heard) -> Self {
+        Self { scope, heard }
+    }
+    #[must_use]
+    pub fn workspace(&self) -> WorkspaceId {
+        self.scope.connect.workspace
+    }
+    #[must_use]
+    pub fn author(&self) -> [u8; 32] {
+        self.heard.author
+    }
+    #[must_use]
+    pub fn message(&self) -> &NeighbourMsg {
+        &self.heard.message
+    }
+    /// Whether it came as part of what the other device retains, rather than
+    /// as live traffic.
+    #[must_use]
+    pub fn retained(&self) -> bool {
+        self.heard.retained
+    }
+    /// Whether the workspace's state moved with it.
+    #[must_use]
+    pub fn landed(&self) -> bool {
+        self.heard.landed
+    }
+    /// Observe the committed owner generation.
+    pub fn generation(&self) -> Result<u64, String> {
+        self.scope
+            .connect
+            .owner
+            .with_current(self.workspace(), |view| Ok(view.generation()))
+    }
+    /// What the workspace's admission decided for this frame, as the link
+    /// found it.
+    pub fn admit(&self) -> Result<crate::AdmissionReport, String> {
+        self.heard.report.clone()
+    }
+    /// Whether `other` came over the same link as this one: what
+    /// [`Self::admit_batch`] keeps together.
+    #[must_use]
+    pub fn same_session(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.scope, &other.scope)
+    }
+    /// What taking `inputs` in, all of one link, decided: each with the
+    /// report its admission gave, and whether the workspace's state moved.
+    #[must_use]
+    pub fn admit_batch(inputs: Vec<Self>) -> Admitted {
+        let changed = inputs
+            .first()
+            .is_some_and(|first| inputs.iter().all(|input| first.same_session(input)))
+            && inputs.iter().any(|input| input.heard.landed);
+        Admitted {
+            inputs: inputs
+                .into_iter()
+                .map(|input| {
+                    let report = input.admit();
+                    (input, report)
+                })
+                .collect(),
+            changed,
+        }
+    }
+    /// The app write `report` took in from another device, for this device's
+    /// apps: `None` for anything else, a write the owner neither accepted nor
+    /// already held, this device's own write, a write naming another
+    /// workspace, or an author without standing.
+    #[must_use]
+    pub fn app_write(&self, report: &crate::AdmissionReport) -> Option<AppWrite> {
+        app_write(
+            &self.scope.connect.owner,
+            self.workspace(),
+            self.scope.device.device_public_key,
+            self.heard.author,
+            &self.heard.message,
+            self.heard.retained,
+            took_in(report, self.heard.retained),
+        )
+    }
+    /// The author's current standing in the workspace: the workspace's policy, and
+    /// the bound on a device not theirs.
+    pub fn standing(&self) -> Result<tilo_action_policy::Standing, String> {
+        self.scope
+            .connect
+            .owner
+            .with_current(self.workspace(), |view| {
+                view.peer()
+                    .permissions(self.heard.author, std::time::SystemTime::now())
+                    .map(crate::MemberAuthority::standing)
+                    .map_err(|error| error.to_string())
+            })
+    }
+}
+
+/// What [`Input::admit_batch`] decided.
+pub struct Admitted {
+    /// Each input, in the order it came, with what its admission decided.
+    pub inputs: Vec<(Input, Result<crate::AdmissionReport, String>)>,
+    /// Whether the admission moved the workspace's state.
+    pub changed: bool,
+}
+
+/// Whether one of `entries` is the revocation `cert`'s own root signed of the
+/// device it names. A root speaks only for the keys it made: another person's
+/// entry naming that device key refuses nothing of this certificate's.
+fn its_root_revoked(entries: impl IntoIterator<Item = RevocationEntry>, cert: &DeviceCert) -> bool {
+    entries.into_iter().any(|entry| {
+        (entry.user_public_key, entry.revoked_device_public_key)
+            == (cert.user_public_key, cert.device_public_key)
+    })
 }

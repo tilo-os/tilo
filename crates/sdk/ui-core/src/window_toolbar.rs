@@ -1586,6 +1586,96 @@ pub fn set_hosted(hosted: bool) -> bool {
     HOSTED.with(|cell| cell.replace(hosted) != hosted)
 }
 
+/// One control a window's bar lays out, as the desktop draws it: what it is, what it does and
+/// where it stands. The bar's own controls (its navigation, its overflow, the window's) and the
+/// app's slots are all controls of one bar, and a screen shows each of them once.
+#[derive(Clone, Debug, PartialEq, Serialize)]
+pub struct BarControl {
+    /// The slot it stands in: `sidebar`, `back`, `forward`, `leading`, `views`, `views-menu`,
+    /// `action`, `overflow`, `notice`, `reaction`, `search`, `history`, `minimize`, `maximize`,
+    /// `close`.
+    pub slot: &'static str,
+    /// What pressing it names: the action's id, or the control's own target
+    /// ([`crate::widget::window_toolbar_row::SIDEBAR_TARGET`] and its siblings).
+    pub id: String,
+    /// What it says for itself, where the bar shows it with words.
+    pub name: String,
+    /// Its icon, by the icon set's name (none: it shows words only).
+    pub icon: Option<String>,
+    /// It opens a menu: the bar's own overflow, an app's menu button, a views menu.
+    pub menu: bool,
+    /// The bar shows it with its name beside its icon.
+    pub labelled: bool,
+    /// The width its words need, where it has words the bar shows only when it has room for
+    /// them (`0.0`: it asks for no words, or has none).
+    pub words: f64,
+    /// Where it stands, `[x, y, width, height]` in the window, its bar included.
+    pub rect: [f64; 4],
+}
+
+impl BarControl {
+    /// The control as one of `slot`, at `rect`.
+    #[must_use]
+    pub fn new(slot: &'static str, id: impl Into<String>, rect: crate::kurbo::Rect) -> Self {
+        Self {
+            slot,
+            id: id.into(),
+            name: String::new(),
+            icon: None,
+            menu: false,
+            labelled: false,
+            words: 0.0,
+            rect: [rect.x0, rect.y0, rect.width(), rect.height()],
+        }
+    }
+
+    /// It says `name` for itself.
+    #[must_use]
+    pub fn named(mut self, name: impl Into<String>) -> Self {
+        self.name = name.into();
+        self
+    }
+
+    /// Its icon is `icon`.
+    #[must_use]
+    pub fn icon(mut self, icon: Option<String>) -> Self {
+        self.icon = icon;
+        self
+    }
+
+    /// It opens a menu.
+    #[must_use]
+    pub fn menu(mut self) -> Self {
+        self.menu = true;
+        self
+    }
+
+    /// The bar shows it with its name beside its icon.
+    #[must_use]
+    pub fn labelled(mut self) -> Self {
+        self.labelled = true;
+        self
+    }
+
+    /// Its words need `words` wide, where the bar shows them only when it has room for them.
+    #[must_use]
+    pub fn words(mut self, words: f64) -> Self {
+        self.words = words;
+        self
+    }
+}
+
+/// One window's bar, as it lays itself out across the window: what a person sees in it, and what
+/// room it leaves empty.
+#[derive(Clone, Debug, PartialEq, Serialize)]
+pub struct BarLayout {
+    /// The room the bar's location leaves empty beside its own label: the room a label of one of
+    /// its actions could stand in.
+    pub spare: f64,
+    /// Its controls, in reading order.
+    pub controls: Vec<BarControl>,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

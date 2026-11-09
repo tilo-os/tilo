@@ -1,9 +1,6 @@
 //! Native governance transactions. Public policy data is never an authority proof.
 use super::facades::{PeerMediaGovernance, PeerMediaGovernanceMut};
-use super::{
-    BTreeMap, GovernedIdentity, NeighbourMsg, ROOT, ReadDoc, RevocationList, Route, SigningKey,
-    SystemTime, Transactable, TransportOrigin, err, workspace,
-};
+use super::{ROOT, RevocationList, Route, SigningKey, SystemTime, Transactable, err, workspace};
 use workspace::media::{self, WorkspaceMediaV1};
 
 impl PeerMediaGovernance<'_> {
@@ -133,35 +130,23 @@ impl PeerMediaGovernanceMut<'_> {
             .clone()
             .ok_or("missing workspace")?;
         let before = doc.get_heads();
-        let identities = doc
-            .get(ROOT, "peer_identities_v1")
-            .map_err(err)?
-            .ok_or("missing identities")?
-            .1;
-        let mut rows = workspace::governance_of(Some(&doc))
-            .identities
-            .into_iter()
-            .map(|(id, bytes)| {
-                serde_json::from_slice::<GovernedIdentity>(&bytes)
-                    .map(|row| (id, (bytes, row)))
-                    .map_err(err)
-            })
-            .collect::<Result<BTreeMap<_, _>, _>>()?;
+        let mut rows = super::governed_rows::identity_rows(&doc).map_err(err)?;
         for entry in self.peer.core.revocations.iter() {
             let target = hex::encode(entry.revoked_device_public_key);
-            let id = rows
-                .get(&target)
-                .filter(|(_, row)| row.device_cert.user_public_key == entry.user_public_key)
-                .map(|_| target)
+            let index = rows
+                .iter()
+                .position(|(id, _, row)| {
+                    *id == target && row.device_cert.user_public_key == entry.user_public_key
+                })
                 .or_else(|| {
-                    rows.iter()
-                        .find(|(_, (_, row))| {
-                            row.device_cert.user_public_key == entry.user_public_key
-                        })
-                        .map(|(id, _)| id.clone())
+                    rows.iter().position(|(_, _, row)| {
+                        row.device_cert.user_public_key == entry.user_public_key
+                    })
                 })
                 .ok_or("revocation root has no admitted identity")?;
-            let (_, row) = rows.get_mut(&id).ok_or("missing identity")?;
+            let (_, _, row) = rows
+                .get_mut(index)
+                .ok_or("revocation root has no admitted identity")?;
             let mut union = RevocationList::new();
             for revocation in row.revocations.iter().chain([entry]) {
                 union.insert(revocation.clone()).map_err(err)?;
@@ -171,13 +156,7 @@ impl PeerMediaGovernanceMut<'_> {
                 .sort_by_key(|revocation| revocation.revoked_device_public_key);
         }
         doc.set_actor(self.peer.workspace_actor_of(key));
-        for (id, (old, row)) in rows {
-            let bytes = serde_json::to_vec(&row).map_err(err)?;
-            if bytes != old {
-                doc.put(&identities, id, automerge::ScalarValue::Bytes(bytes))
-                    .map_err(err)?;
-            }
-        }
+        super::governed_rows::put_identity_rows(&mut doc, &rows).map_err(err)?;
         doc.commit();
         // write_governance stages its receive; failed refresh cannot mutate self.
         let mut candidate = self.peer.clone();
@@ -223,19 +202,7 @@ impl PeerMediaGovernanceMut<'_> {
             media::TransitionMode::Authoring,
         )
         .map_err(err)?;
-        let changes = doc
-            .get_changes(&before)
-            .into_iter()
-            .map(|c| c.raw_bytes().to_vec())
-            .collect();
-        self.peer.receive_from(
-            TransportOrigin::RelayDelta(key.verifying_key().to_bytes()),
-            NeighbourMsg::SyncResp {
-                room: self.peer.core.workspace.clone(),
-                changes,
-            },
-            now,
-        )?;
+        self.peer.write_governance(doc, &before, key, now)?;
         Ok(())
     }
 }

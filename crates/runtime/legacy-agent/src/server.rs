@@ -17,6 +17,7 @@ use legacy_agent_protocol::{
 use crate::launch::{self, GuestView, X_DISPLAY};
 use crate::mounts;
 use crate::system;
+use crate::terminal::Pty;
 use crate::user::GuestUser;
 use tilo_lock::MutexRecover as _;
 
@@ -29,6 +30,8 @@ pub struct Agent {
     boot_id: String,
     running: Mutex<BTreeMap<u32, RunningApp>>,
     shares: Mutex<Vec<GuestShare>>,
+    #[cfg(target_os = "linux")]
+    files: Mutex<crate::remote_fs::Mounts>,
     xwayland: Mutex<Option<Child>>,
 }
 
@@ -42,6 +45,8 @@ impl Agent {
             boot_id,
             running: Mutex::new(BTreeMap::new()),
             shares: Mutex::new(Vec::new()),
+            #[cfg(target_os = "linux")]
+            files: Mutex::new(crate::remote_fs::Mounts::default()),
             xwayland: Mutex::new(None),
         }
     }
@@ -81,6 +86,7 @@ impl Agent {
                 GuestMessage::Running(self.running.lock_recover().values().cloned().collect())
             }
             HostMessage::Mount { shares } => self.mount(&shares),
+            HostMessage::MountFiles { shares } => self.mount_files(&shares),
             HostMessage::InstalledApps => GuestMessage::InstalledApps(crate::apps::installed(
                 &crate::apps::export_dirs(&self.user.home),
             )),
@@ -88,6 +94,7 @@ impl Agent {
             HostMessage::Hello { .. }
             | HostMessage::Stdin(_)
             | HostMessage::CloseStdin
+            | HostMessage::Resize(_)
             | HostMessage::Signal(_) => GuestMessage::Error {
                 message: "unexpected message".to_string(),
             },
@@ -131,6 +138,39 @@ impl Agent {
         }
     }
 
+    /// Mount the host's directories over vsock, as the guest user's files.
+    fn mount_files(&self, desired: &[legacy_agent_protocol::files::FileShare]) -> GuestMessage {
+        if let Err(error) = legacy_agent_protocol::files::FileShare::validate_set(desired) {
+            return GuestMessage::Error {
+                message: error.to_string(),
+            };
+        }
+        #[cfg(target_os = "linux")]
+        {
+            let connect = |port| {
+                legacy_agent_protocol::vsock::VsockStream::connect(
+                    legacy_agent_protocol::HOST_CID,
+                    port,
+                )
+            };
+            let (paths, failures) =
+                self.files
+                    .lock_recover()
+                    .apply(desired, connect, self.user.uid, self.user.gid);
+            if failures.is_empty() {
+                GuestMessage::FilesMounted { paths }
+            } else {
+                GuestMessage::Error {
+                    message: failures.join("; "),
+                }
+            }
+        }
+        #[cfg(not(target_os = "linux"))]
+        GuestMessage::Error {
+            message: "shares over vsock need a Linux guest".to_string(),
+        }
+    }
+
     /// Start the forwarded Xwayland once; later launches reuse it.
     #[allow(
         clippy::significant_drop_tightening,
@@ -158,7 +198,11 @@ impl Agent {
             },
             &view,
         );
-        let child = self.command(&spec).stdin(Stdio::null()).spawn().ok()?;
+        let child = self
+            .command(&spec, true)
+            .stdin(Stdio::null())
+            .spawn()
+            .ok()?;
         *xwayland = Some(child);
         Some(X_DISPLAY)
     }
@@ -176,7 +220,9 @@ impl Agent {
         }
     }
 
-    fn command(&self, spec: &launch::Spec) -> Command {
+    /// The process for `spec`, in a process group of its own when
+    /// `own_group` (a terminal launch gets its own session instead).
+    fn command(&self, spec: &launch::Spec, own_group: bool) -> Command {
         let (program, args) = spec
             .argv
             .split_first()
@@ -190,8 +236,10 @@ impl Agent {
             .envs(spec.env.iter().map(|(k, v)| (k, v)))
             .current_dir(&spec.cwd)
             .uid(self.user.uid)
-            .gid(self.user.gid)
-            .process_group(0);
+            .gid(self.user.gid);
+        if own_group {
+            command.process_group(0);
+        }
         command
     }
 
@@ -207,7 +255,26 @@ impl Agent {
         if let Some(note) = note {
             reply(&GuestMessage::Stderr(note.into_bytes()))?;
         }
-        let mut child = match command.spawn() {
+        let terminal = match request.stdio {
+            legacy_agent_protocol::Stdio::Terminal(size) => {
+                match Pty::open(size).and_then(|pty| pty.attach(&mut command).map(|()| pty)) {
+                    Ok(pty) => Some(pty),
+                    Err(error) => {
+                        return reply(&GuestMessage::Error {
+                            message: format!("a terminal for {}: {error}", request.argv.join(" ")),
+                        });
+                    }
+                }
+            }
+            _ => None,
+        };
+        let spawned = command.spawn();
+        // The app holds the terminal's slave now; the agent keeps only the
+        // master (the command's copies of the slave go with it), so reading
+        // it ends once the app and its children are gone.
+        drop(command);
+        let terminal = terminal.map(|pty| pty.master);
+        let mut child = match spawned {
             Ok(child) => child,
             Err(error) => {
                 return reply(&GuestMessage::Error {
@@ -247,9 +314,22 @@ impl Agent {
             );
             pumps = pumps.saturating_add(1);
         }
-        drop(drained);
         let windowed = request.display == Display::Forwarded;
-        host_input(stream, child.stdin.take(), pid, windowed);
+        match terminal {
+            Some(master) => {
+                let output = master.try_clone()?;
+                pump(
+                    output,
+                    Arc::clone(&writer),
+                    GuestMessage::Stdout,
+                    drained.clone(),
+                );
+                pumps = pumps.saturating_add(1);
+                host_input(stream, Input::Terminal(master), pid, windowed);
+            }
+            None => host_input(stream, Input::Pipe(child.stdin.take()), pid, windowed),
+        }
+        drop(drained);
 
         let status = child.wait();
         for _ in 0..pumps {
@@ -281,10 +361,14 @@ impl Agent {
         let mut view = self.view(x_display, &is_dir);
         view.session_bus = bus.exists().then_some(bus.as_path());
         let spec = launch::spec(request, &view);
-        let mut command = self.command(&spec);
+        let terminal = matches!(request.stdio, legacy_agent_protocol::Stdio::Terminal(_));
+        let mut command = self.command(&spec, !terminal);
         let stdio = || match request.stdio {
             legacy_agent_protocol::Stdio::Relay => Stdio::piped(),
-            legacy_agent_protocol::Stdio::Null => Stdio::null(),
+            // Attached to its terminal by the caller.
+            legacy_agent_protocol::Stdio::Null | legacy_agent_protocol::Stdio::Terminal(_) => {
+                Stdio::null()
+            }
         };
         command.stdin(stdio()).stdout(stdio()).stderr(stdio());
         (command, spec.note)
@@ -332,26 +416,51 @@ fn pump<S: Duplex, R: Read + Send + 'static>(
     });
 }
 
-/// Feed the host's stdin, close and signals to the app. When the host goes
-/// away, a tool is hung up on like a closed terminal would; a windowed app
-/// keeps running, the way a desktop app outlives the terminal that opened it.
-fn host_input<S: Duplex>(mut stream: S, stdin: Option<ChildStdin>, pid: u32, windowed: bool) {
+/// Where the host's input goes: the app's stdin pipe, or the master of
+/// its terminal.
+enum Input {
+    Pipe(Option<ChildStdin>),
+    Terminal(std::fs::File),
+}
+
+/// Feed the host's stdin, close, resizes and signals to the app. When the
+/// host goes away, a tool is hung up on like a closed terminal would; a
+/// windowed app keeps running, the way a desktop app outlives the terminal
+/// that opened it.
+fn host_input<S: Duplex>(mut stream: S, input: Input, pid: u32, windowed: bool) {
     std::thread::spawn(move || {
-        let mut stdin = stdin;
+        let mut input = input;
         let group = 0_i32.saturating_sub(i32::try_from(pid).unwrap_or(i32::MAX));
         loop {
             match recv::<_, HostMessage>(&mut stream) {
-                Ok(Some(HostMessage::Stdin(bytes))) => {
-                    if let Some(input) = stdin.as_mut()
-                        && input.write_all(&bytes).is_err()
-                    {
-                        stdin = None;
+                Ok(Some(HostMessage::Stdin(bytes))) => match &mut input {
+                    Input::Pipe(stdin) => {
+                        if let Some(pipe) = stdin.as_mut()
+                            && pipe.write_all(&bytes).is_err()
+                        {
+                            *stdin = None;
+                        }
+                    }
+                    Input::Terminal(master) => {
+                        let _ = master.write_all(&bytes);
+                    }
+                },
+                // A terminal's input never ends while it is open: the keys
+                // say when (Ctrl-D).
+                Ok(Some(HostMessage::CloseStdin)) => {
+                    if let Input::Pipe(stdin) = &mut input {
+                        *stdin = None;
                     }
                 }
-                Ok(Some(HostMessage::CloseStdin)) => stdin = None,
+                Ok(Some(HostMessage::Resize(size))) => {
+                    if let Input::Terminal(master) = &input {
+                        let _ = crate::terminal::resize(master, size);
+                    }
+                }
                 Ok(Some(HostMessage::Signal(signal))) => {
                     // SAFETY: `kill` has no memory preconditions; the group
-                    // is the one this launch created with `process_group(0)`.
+                    // is the one this launch created (`process_group(0)`,
+                    // or the session a terminal launch leads).
                     unsafe { libc::kill(group, signal.number()) };
                 }
                 Ok(Some(_)) => {}
@@ -469,6 +578,91 @@ mod tests {
             );
             server.join().unwrap().unwrap();
             assert!(matches!(refused, Err(ProtocolError::Refused(_))));
+        }
+    }
+
+    #[test]
+    fn a_terminal_launch_reads_keys_follows_resizes_and_prints_on_one_stream() {
+        let agent = Arc::new(Agent::new(me(), "boot-1".into()));
+        let (host, guest) = UnixStream::pair().unwrap();
+        let serving = Arc::clone(&agent);
+        let server = std::thread::spawn(move || serving.serve(guest));
+        let request = Launch {
+            argv: vec![
+                "/bin/sh".into(),
+                "-c".into(),
+                "test -t 0 && stty size; read first; stty size; echo \"got $first\" >&2".into(),
+            ],
+            cwd: Some("/".into()),
+            env: Vec::new(),
+            stdio: legacy_agent_protocol::Stdio::Terminal(legacy_agent_protocol::TerminalSize {
+                cols: 90,
+                rows: 20,
+            }),
+            display: Display::None,
+        };
+        // The resize waits for the first size to be printed, however slow
+        // the machine.
+        let (printed, first_size) = mpsc::channel();
+        let mut out = Watched {
+            seen: Vec::new(),
+            printed: Some(printed),
+        };
+        let mut err = Vec::new();
+        let status = client::launch(
+            host,
+            &request,
+            client::LaunchIo {
+                stdin: None,
+                stdout: &mut out,
+                stderr: &mut err,
+                started: &mut |_| {},
+            },
+            |signals| {
+                std::thread::spawn(move || {
+                    first_size.recv().unwrap();
+                    signals
+                        .resize(legacy_agent_protocol::TerminalSize {
+                            cols: 132,
+                            rows: 43,
+                        })
+                        .unwrap();
+                    signals.input(b"typed\n").unwrap();
+                });
+            },
+        )
+        .unwrap();
+        server.join().unwrap().unwrap();
+        assert_eq!(status.code, Some(0));
+        let out = String::from_utf8_lossy(&out.seen);
+        assert!(out.contains("20 90"), "{out}");
+        assert!(out.contains("43 132"), "{out}");
+        assert!(
+            out.contains("got typed"),
+            "standard error comes on the terminal: {out}"
+        );
+        assert!(err.is_empty());
+    }
+
+    /// Output, kept, saying once when the first line is complete.
+    struct Watched {
+        seen: Vec<u8>,
+        printed: Option<mpsc::Sender<()>>,
+    }
+
+    impl std::io::Write for Watched {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            self.seen.extend_from_slice(buf);
+            if self.seen.contains(&b'\n')
+                && let Some(printed) = self.printed.take()
+            {
+                let _ = printed.send(());
+            }
+            Ok(buf.len())
+        }
+
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
         }
     }
 }

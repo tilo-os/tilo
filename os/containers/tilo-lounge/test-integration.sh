@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # The Lounge, run and used: the image starts on a fresh volume, reaches Ready,
 # lists itself in its public directory, and two people's browsers join it
-# through the web entry, chat, share a desk, and see each other present.
+# through the web entry, chat, share a desk, and see each other present; then
+# one shares a document's link and the other opens it full tab.
 #
 # Everything the deployment does around the image is here, on this machine:
 # the entrypoint reads production-shaped TILO_ROOMS_* (this test's own ports
@@ -317,6 +318,14 @@ node "$here/integration/people.mjs" "$site_url" "$relay_origin" "$relay_origin" 
   || fail 'two people did not meet in the Lounge'
 echo 'ok: two people joined, chatted, shared a desk and saw each other present'
 echo 'ok: a person invited from the page arrived from the link as the role it named'
+
+# A shared link: one person opens a document full tab and copies its link
+# from the bar's Share; another opens it on a phone-sized page and gets that
+# document alone, live, with the first shown present. A run's link opens
+# Console on that run.
+node "$here/integration/share-link.mjs" "$site_url" "$relay_origin" "$minted" "$work/share-link" \
+  || fail 'a shared link did not open the same document live for the second person'
+echo 'ok: a shared link opened the one document full tab, live, for the second person'
 
 # The pages that wrote the chat are gone: the image starts again on the same
 # volume, and a person who was not here reads what they wrote and writes in it.

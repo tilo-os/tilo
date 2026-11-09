@@ -101,6 +101,7 @@ impl Fixture {
             issued_at_ns: NOW.saturating_sub(1_000),
             expires_at_ns: None,
             signature: [0; 64],
+            issuer: None,
         };
         sign_device_cert(&mut cert, root).unwrap();
         persist::write_public_key(&paths.user_pubkey, &public(root)).unwrap();

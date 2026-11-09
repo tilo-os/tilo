@@ -51,6 +51,7 @@ pub mod action_authority;
 pub mod canonical;
 pub mod caps;
 pub mod channel;
+pub mod channel_key;
 pub mod claim;
 pub mod commit;
 pub mod compaction;

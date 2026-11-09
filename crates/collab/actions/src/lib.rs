@@ -143,6 +143,7 @@ pub mod offload;
 pub mod outcome;
 pub mod params;
 pub mod protocol;
+pub mod published;
 pub mod registry;
 pub mod remote;
 pub mod resource;
@@ -151,6 +152,7 @@ pub mod selection;
 pub mod selectors;
 pub mod surface;
 pub mod task_step;
+pub mod terminal_text;
 
 pub use action::{
     Action, ActionError, ActionId, Doc, EncodedAction, ExecutionLocus, OperationKind, asks_first,

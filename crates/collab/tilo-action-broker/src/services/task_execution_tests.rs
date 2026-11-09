@@ -18,6 +18,7 @@ fn certificate(root: u8, device: u8) -> DeviceCert {
         issued_at_ns: 1,
         expires_at_ns: None,
         signature: [0; 64],
+        issuer: None,
     };
     sign_device_cert(&mut cert, &root).unwrap();
     cert

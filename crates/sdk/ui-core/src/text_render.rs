@@ -1677,6 +1677,43 @@ struct GlyphRun {
     size: f32,
     glyphs: Vec<vello::Glyph>,
     normalized_coords: Vec<vello::NormalizedCoord>,
+    /// The characters the run sets, kept only while [`present_text`] is on.
+    text: Option<std::sync::Arc<str>>,
+}
+
+static PRESENT_TEXT: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Have every glyph run this renderer paints carry the characters it sets
+/// (`vello::DrawGlyphs::text`), for a host that presents text as text — a
+/// page that builds DOM from the scene — instead of as outlines. Off by
+/// default: a GPU host never reads them.
+pub fn present_text(on: bool) {
+    PRESENT_TEXT.store(on, std::sync::atomic::Ordering::Relaxed);
+}
+
+fn presents_text() -> bool {
+    PRESENT_TEXT.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+/// The characters glyphs `start..end` (byte offsets into `line`) set.
+fn glyph_text<'g>(
+    line: &str,
+    glyphs: impl Iterator<Item = &'g cosmic_text::LayoutGlyph>,
+) -> Option<std::sync::Arc<str>> {
+    if !presents_text() {
+        return None;
+    }
+    let (mut start, mut end) = (usize::MAX, 0);
+    for glyph in glyphs {
+        start = start.min(glyph.start);
+        end = end.max(glyph.end);
+    }
+    let text = line.get(start..end)?;
+    Some(if text == "\u{ad}" {
+        "-".into()
+    } else {
+        text.into()
+    })
 }
 
 fn glyph_run_bytes(runs: &Vec<GlyphRun>) -> usize {
@@ -1707,6 +1744,8 @@ fn glyph_run_bytes(runs: &Vec<GlyphRun>) -> usize {
 /// baseline, flushed as one `draw_glyphs` call.
 struct GlyphBatch<'a> {
     face_id: cosmic_text::fontdb::ID,
+    /// The text of the line the glyphs' byte offsets index.
+    line_text: &'a str,
     glyphs: &'a [cosmic_text::LayoutGlyph],
     size: f32,
     color: Color,
@@ -3069,6 +3108,14 @@ impl TextRenderer {
                 .filter(|glyph| run.text.get(glyph.start..glyph.end) == Some("\u{ad}"));
             let mut current: Option<(cosmic_text::fontdb::ID, Weight, u32)> = None;
             let mut glyphs: Vec<vello::Glyph> = Vec::new();
+            // The byte span of the glyphs gathered so far, for the run's text.
+            let mut span = (usize::MAX, 0usize);
+            let span_text = |span: (usize, usize)| -> Option<std::sync::Arc<str>> {
+                if !presents_text() {
+                    return None;
+                }
+                run.text.get(span.0..span.1).map(Into::into)
+            };
             for g in run.glyphs {
                 if run.text.get(g.start..g.end) == Some("\u{ad}") {
                     continue;
@@ -3089,8 +3136,10 @@ impl TextRenderer {
                             &variations,
                             font_weight,
                         ),
+                        text: span_text(std::mem::replace(&mut span, (usize::MAX, 0))),
                     });
                 }
+                span = (span.0.min(g.start), span.1.max(g.end));
                 current = Some(key);
                 let (x, y) = glyph_paint_origin(
                     g,
@@ -3112,6 +3161,7 @@ impl TextRenderer {
                     size: f32::from_bits(size),
                     glyphs,
                     normalized_coords: self.normalized_coords(face_id, &variations, font_weight),
+                    text: span_text(span),
                 });
             }
             if let Some(marker) = exercised_hyphen
@@ -3131,6 +3181,7 @@ impl TextRenderer {
                         &variations,
                         hyphen.font_weight,
                     ),
+                    text: presents_text().then(|| "-".into()),
                 });
             }
         }
@@ -3231,6 +3282,7 @@ impl TextRenderer {
             };
             scene
                 .draw_glyphs(&font)
+                .text(run.text.clone())
                 .font_size(run.size)
                 .normalized_coords(&run.normalized_coords)
                 .brush(color)
@@ -3555,6 +3607,7 @@ impl TextRenderer {
         }
         let batch = GlyphBatch {
             face_id: first.font_id,
+            line_text: run.text,
             glyphs: run.glyphs,
             size: first.font_size,
             color: first_color,
@@ -3613,6 +3666,7 @@ impl TextRenderer {
                 let dy = cur_shift.offset(batch_size);
                 let glyphs = GlyphBatch {
                     face_id,
+                    line_text: run.text,
                     glyphs: &batch,
                     size: batch_size,
                     color: cur_color.unwrap_or(color),
@@ -3638,6 +3692,7 @@ impl TextRenderer {
             let dy = cur_shift.offset(batch_size);
             let glyphs = GlyphBatch {
                 face_id: f,
+                line_text: run.text,
                 glyphs: &batch,
                 size,
                 color: cur_color.unwrap_or(color),
@@ -3653,6 +3708,7 @@ impl TextRenderer {
             let shift = layout.baseline_at(global_byte);
             let glyphs = GlyphBatch {
                 face_id: hyphen.font_id,
+                line_text: run.text,
                 glyphs: std::slice::from_ref(&hyphen),
                 size: hyphen.font_size,
                 color: resolve_rich_color(color, hyphen.color_opt),
@@ -3703,6 +3759,7 @@ impl TextRenderer {
 
         scene
             .draw_glyphs(&vello_font)
+            .text(glyph_text(batch.line_text, batch.glyphs.iter()))
             .font_size(batch.size)
             .normalized_coords(&normalized_coords)
             .brush(batch.color)

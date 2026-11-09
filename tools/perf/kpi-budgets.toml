@@ -1424,7 +1424,7 @@ source = "navigation to the desktop's first presented frame, fresh browser conte
 # so their rule is the default one: a regression is a rise over the median of
 # the stored runs, not a night's noise.
 #
-# Two series measure it. The live entry (tilo.coffee, 2026-10-27: 1 HTML page,
+# Two series measure it. The live entry (tilo.sh, 2026-10-27: 1 HTML page,
 # the start module 23,078,266 B raw / 5,715,416 B brotli, 67 entry-page
 # modules and the startup fonts, about 8.4 MB over the wire) sets the request
 # ceiling with a tenth of headroom. t's perf-browser check serves the same

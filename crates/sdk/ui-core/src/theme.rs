@@ -393,8 +393,20 @@ impl Theme {
     /// assumed admitted; values outside a role's usable band are clamped and
     /// a missed contrast floor is repaired.
     fn built(document: ThemeDocument, you: PresenceHue) -> Self {
-        let mut tokens = tokens_of(&document, you);
+        let tokens = Self::derived(&document, you);
+        Self::assembled(document, tokens)
+    }
+
+    /// Every token `document` produces for `you`, palettes included: the
+    /// expensive half of [`Self::built`], a pure function of its inputs.
+    fn derived(document: &ThemeDocument, you: PresenceHue) -> Tokens {
+        let mut tokens = tokens_of(document, you);
         Self::derive_palettes(&mut tokens);
+        tokens
+    }
+
+    /// The theme around `tokens` already derived from `document`.
+    fn assembled(document: ThemeDocument, tokens: Tokens) -> Self {
         let c = &tokens.colors;
         Self {
             name: document.name.clone(),
@@ -457,9 +469,28 @@ impl Theme {
     }
 
     /// A shipped theme.
+    ///
+    /// Widgets build a preset as their look until a host hands them the
+    /// configured one, so a single layout builds it hundreds of times.
+    /// Deriving the tokens runs the contrast repair and every palette, so
+    /// each preset derives them once and a build after that is a copy.
     #[must_use]
     pub fn preset(preset: Preset) -> Self {
-        Self::built(preset.document(), PresenceHue::Blue)
+        static DERIVED: [std::sync::OnceLock<(ThemeDocument, Tokens)>; Preset::ALL.len()] =
+            [const { std::sync::OnceLock::new() }; Preset::ALL.len()];
+        let Some(slot) = Preset::ALL
+            .iter()
+            .position(|shipped| *shipped == preset)
+            .and_then(|index| DERIVED.get(index))
+        else {
+            return Self::built(preset.document(), PresenceHue::Blue);
+        };
+        let (document, tokens) = slot.get_or_init(|| {
+            let document = preset.document();
+            let tokens = Self::derived(&document, PresenceHue::Blue);
+            (document, tokens)
+        });
+        Self::assembled(document.clone(), tokens.clone())
     }
 
     /// The default: pure neutral dark.
@@ -1265,6 +1296,17 @@ pub fn workspace_hue(wallpaper_rgba: &[u8]) -> Option<f32> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A preset built from what an earlier build derived is the theme its
+    /// document builds afresh, every time it is asked for.
+    #[test]
+    fn a_preset_is_the_theme_its_document_builds() {
+        for preset in Preset::ALL {
+            let fresh = Theme::built(preset.document(), PresenceHue::Blue);
+            assert_eq!(Theme::preset(preset), fresh, "{}", preset.id());
+            assert_eq!(Theme::preset(preset), fresh, "{} again", preset.id());
+        }
+    }
 
     /// Every control fill in every shipped theme, on every ground a control
     /// stands on, clears the non-text contrast floor there and is never the

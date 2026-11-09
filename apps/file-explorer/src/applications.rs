@@ -95,7 +95,6 @@ pub fn app_entry(app: &AppEntry) -> Entry {
         content_hash: None,
         record_id: None,
         availability: None,
-        share: None,
         history: None,
         rich_metadata: None,
         observed: None,

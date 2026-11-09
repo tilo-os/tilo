@@ -596,7 +596,7 @@ fn accept_loop(listener: &UnixListener, requests: &mpsc::Sender<(ControlRequest,
 
 /// The socket lives in the user's private runtime directory; checking the
 /// peer anyway costs nothing.
-fn same_user(stream: &UnixStream) -> bool {
+pub(crate) fn same_user(stream: &UnixStream) -> bool {
     use std::os::fd::AsRawFd as _;
     let mut credentials = libc::ucred {
         pid: 0,

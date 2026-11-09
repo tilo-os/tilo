@@ -33,12 +33,12 @@ d-fbioszhs = Project
     .doc = The project it belongs to; none while it waits in the inbox.
 
 d-v56iknh2 = Section
-    .doc = The section of its project it is in, a lane of the project's board; none for the project's first lane.
+    .doc = The lane of its project's board it is in; none for the first lane.
 
 d-4sriymst = Priority
 
 d-3pf74ifm = Parent
-    .doc = The task it is a subtask of; none for a task of its own.
+    .doc = The task it is a subtask of, to any depth; none for a task of its own.
 
 d-75ojxgs3-filter-inbox = Inbox
 
@@ -99,7 +99,7 @@ d-lg5gedbh = Items
 d-mdhllpbo = Projects
 
 d-nk5542m7 = Sections
-    .doc = The sections of every project, each naming its project, in the order its board shows them.
+    .doc = The sections of every project, in the order its board shows them.
 
 d-q6rs4dka = Priority
     .doc = How much a task matters, most urgent last.
@@ -124,10 +124,7 @@ d-ifftrju4 = Its project, as a project's list is of one
     .doc = Its project, as a project's list is of one.
 
 d-rs3ubifz = New task
-    .doc = Adds a task: under the title a program or an agent gives it, or the words typed in the entry at the end of a list, to the inbox or to `p`, in the lane `s` of its board.
-
-d-boggc6yt = New task due today
-    .doc = Adds a task that is due today: what the entry of the Today place runs, so a task typed there stands in Today.
+    .doc = Adds a task to the inbox or to `p`, in the lane `s` of its board: the entry at a list's end fills `title` with the words nothing else there takes, and the day, moment and person they name, so "Call the landlord fri 10am @Bo" is a task due Friday at ten, for Bo.
 
 d-zjuy7y7f = New project
     .doc = Starts a project.
@@ -136,11 +133,11 @@ d-vwgro4iv = Complete
     .doc = Checks a task off with every task under it, or opens it again with the tasks it is under.
 
 d-fykojijd = Add subtask
-    .doc = Adds a subtask under a task: a task of its own, in its project and section, under the title given.
+    .doc = Adds a subtask under a task, in its project and section, and opens a done one: there is work under it now.
     .did = added a subtask
 
 d-tmwdrpev = Today
-    .doc = Sets the day a task is due by, or clears it: the presets take the day, and one entry asks for any day.
+    .doc = Sets the day a task is due by, from the presets or a day the person picks.
 
 d-wclcgiyt = Tomorrow
     .doc = Makes a task due tomorrow.
@@ -161,7 +158,7 @@ d-vjsjvx7u = No reminder
     .doc = Clears a task's reminder: it is not told of again.
 
 d-7vjyuy7c = Remind
-    .doc = Tells whoever is doing a task, or the one who made it, what the task is and when it is due or which project it is in, and opens the task when they choose the notice.
+    .doc = Tells whoever is doing a task, or the one who made it, what it is and when it is due: once, and not of a task already done.
     .w-due = Due { $d }
 
 d-w43ij7uu = No priority
@@ -189,10 +186,10 @@ d-c6y4cxdd = Assign
     .doc = Gives a task to someone, or to nobody.
 
 d-berwb3de = Move to
-    .doc = Moves a task to a place in the outline: at the end of `parent`'s subtasks (the top level for none), where `before` stands when it is given, or at the end of the top level.
+    .doc = Moves a task to a place in the outline: at the end of `parent`'s subtasks (the top level for none), or where `before` stands.
 
 d-he6qkhh4 = Indent
-    .doc = Moves a task under the task the view shows just over it in its group, as `Ctrl+]` does: the row over it names the task of its own level it ends up under.
+    .doc = Moves a task under the task the view shows just over it in its group, as `Ctrl+]` does.
 
 d-khy6tj7s = Outdent
     .doc = Moves a task out from under its parent, just after it, as `Ctrl+[` does in an outline.
@@ -204,7 +201,7 @@ d-ojzyzzxu = Delete
     .doc = Deletes a task and its subtasks.
 
 d-rjpcv6es = Delete finished tasks
-    .doc = Deletes every finished task, and answers how many went: a task is finished when everything under it is done too, so deleting takes whole finished branches and never unfinished work with it, and a task done with a step still open under it stays.
+    .doc = Deletes every finished task and answers how many went: a finished branch goes whole, and a done task with a step still open under it stays.
 
 d-2xixz4sk = Delete project
     .doc = Deletes a project and its sections; its tasks go back to the inbox.
@@ -219,10 +216,10 @@ d-vi6srojh = Delete section
     .doc = Deletes a section; its tasks go to the project's first lane.
 
 d-pcn3xgni = New task
-    .doc = Adds a task to a project, at the end of the lane `s` of its board (none for the first), under a title a program or an agent gives it.
+    .doc = Adds a task to a project, at the end of the lane `s` of its board (none for the first).
 
 d-scjlkb6d = Place in board
-    .doc = Puts a task into a lane of its project's board, `s` (none for the first lane), at the place `at` among the tasks already there.
+    .doc = Puts a task into the lane `s` of its project's board (none for the first) at the place `at` among the tasks already there: what a card's drag names.
 
 d-kjbukd2o = Rename
     .doc = Renames a project.

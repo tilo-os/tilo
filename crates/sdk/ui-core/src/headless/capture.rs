@@ -105,11 +105,18 @@ impl FrameHarness {
         let device_bar = bar.saturating_mul(scale);
         let transform = self.capture_draw_transform();
         let mut scene = Scene::new();
-        self.paint_window_bar(&mut scene, transform, f64::from(self.viewport.0));
-        scene.append(
-            &self.scene,
-            Some(Affine::translate((0.0, f64::from(device_bar)))),
-        );
+        if self.row_holds_bar() {
+            // The app's header row is the bar: the frame stands at the window's top, and the
+            // window's controls stand over its row.
+            scene.append(&self.scene, None);
+            self.paint_window_bar(&mut scene, transform, f64::from(self.viewport.0));
+        } else {
+            self.paint_window_bar(&mut scene, transform, f64::from(self.viewport.0));
+            scene.append(
+                &self.scene,
+                Some(Affine::translate((0.0, f64::from(device_bar)))),
+            );
+        }
         self.paint_window_bar_top_layer(&mut scene, transform);
         self.write_scene_png(
             &scene,

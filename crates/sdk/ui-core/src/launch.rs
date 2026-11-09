@@ -882,6 +882,13 @@ fn run_parsed(
     // Threads may start from here on; startup marks are written from their
     // own, never by the thread that marks.
     tilo_startup_metrics::start_writer();
+    // The shell asks a process whose app says it opens windows for them, and
+    // takes a window that maps before it says so as proof it cannot: the
+    // launch's own window is made early, below, so the app answers the door
+    // first.
+    if opens_native_window(&args) {
+        crate::window_door::announce();
+    }
     // The font database is built on its own thread, so the app's first text
     // renderer finds the catalog verified and the fonts read. It starts
     // first: the renderer preparation below also opens the early window on

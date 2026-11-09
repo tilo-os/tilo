@@ -71,6 +71,7 @@ fn this_computer(env: &mut tilo_test_env::ScopedEnv, display_name: &str) -> temp
         capabilities: tilo_user_identity::DeviceCapabilities::member(),
         issued_at_ns: tilo_clock::unix_now_ns(),
         expires_at_ns: None,
+        issuer: None,
         signature: [0; 64],
     };
     tilo_user_identity::sign_device_cert(&mut cert, &person).expect("a certified device");

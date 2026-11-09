@@ -1241,6 +1241,7 @@ mod tests {
                 issued_at_ns: 12,
                 expires_at_ns: Some(100),
                 signature: [0; 64],
+                issuer: None,
             };
             sign_device_cert(&mut cert, &root).expect("sign device cert");
             write_device_cert(&cert_path, &cert).expect("write device cert");
@@ -1375,6 +1376,7 @@ mod tests {
             issued_at_ns: 12,
             expires_at_ns: Some(100),
             signature: [0; 64],
+            issuer: None,
         };
         sign_device_cert(&mut cert, &root).expect("sign device cert");
         write_device_cert(&cert_path, &cert).expect("write cert");

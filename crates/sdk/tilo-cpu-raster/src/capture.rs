@@ -490,6 +490,7 @@ pub fn read(input: impl Read) -> io::Result<Encoding> {
             style,
             glyphs,
             stream_offsets,
+            text: None,
         });
     }
 

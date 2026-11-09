@@ -58,11 +58,7 @@ impl DesktopSurface {
             let shared = self.shared.borrow();
             shared
                 .tree
-                .workspaces
-                .iter()
-                .flat_map(|workspace| &workspace.strips)
-                .flat_map(|strip| &strip.window_groups)
-                .flat_map(|group| &group.tabs)
+                .tabs()
                 .filter_map(|tab| {
                     let app = tilo_desktop_model::apps::canonical_app_id(&tab.tile)?;
                     let (record, kind) = self.tiles.window_record(tab.id)?;

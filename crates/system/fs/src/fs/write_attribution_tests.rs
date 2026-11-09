@@ -34,8 +34,6 @@ async fn session_leased_writes_carry_their_agent_in_signed_history() {
     let endpoint = Endpoint::bind(presets::Minimal).await.unwrap();
     let store = Arc::new(crate::store::ContentStore::memory());
     let namespace = Arc::new(Mutex::new(Namespace::new("host").unwrap()));
-    let history =
-        Arc::new(crate::history::FileHistoryStore::open(dir.path().join("history.json")).unwrap());
     let repository = Arc::new(
         crate::record_repository::RecordRepository::open(dir.path().join("records")).unwrap(),
     );
@@ -49,7 +47,7 @@ async fn session_leased_writes_carry_their_agent_in_signed_history() {
     let heuristics = Arc::new(Heuristics::new(hydrator.clone()));
     let fs = QuickFS::new(namespace, hydrator, heuristics)
         .with_checked_history_workspace(workspace_id)
-        .with_history(history, actor)
+        .with_history(actor)
         .unwrap()
         .with_record_publisher(publisher)
         .unwrap()
@@ -67,14 +65,14 @@ async fn session_leased_writes_carry_their_agent_in_signed_history() {
         )
         .unwrap();
 
-    let (folder, _) = fs
+    let folder = fs
         .create_empty_dir(crate::namespace::ROOT_INO, "Reports")
         .unwrap();
-    let (report, _) = fs.create_empty_file(folder, "q3.txt").unwrap();
+    let report = fs.create_empty_file(folder, "q3.txt").unwrap();
     fs.commit_content(report, b"written for Ada").unwrap();
     // A rename inside the leased folder is Scribe's too.
     fs.rename_named(folder, "q3.txt", folder, "q4.txt").unwrap();
-    let (notes, _) = fs
+    let notes = fs
         .create_empty_file(crate::namespace::ROOT_INO, "notes.txt")
         .unwrap();
 

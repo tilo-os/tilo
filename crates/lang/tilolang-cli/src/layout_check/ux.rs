@@ -99,11 +99,13 @@ pub fn inspect(
     columns(root, &mut out);
     first_level(root, None, step, &mut Vec::new(), &mut out);
     selections(root, &mut Vec::new(), false, &mut out);
+    chosen(root, &[], &mut Vec::new(), &mut out);
     adds(root, &mut Vec::new(), false, &mut out);
     names(root, &mut Vec::new(), &mut out);
     verbs(root, declared, &mut Vec::new(), &mut out);
     cards(root, &mut Vec::new(), false, &mut out);
     opens(root, None, &mut BTreeSet::new(), &mut Vec::new(), &mut out);
+    repeated_row_titles(root, &mut Vec::new(), &mut out);
     gutter(root, f64::from(viewport.0), &mut Vec::new(), &mut out);
     out
 }
@@ -437,6 +439,85 @@ fn selections(
     }
 }
 
+// --- the place the window shows stands chosen -------------------------------------------------
+
+/// The shell of a window and the list of its places: what it is made of
+/// ([`ui::widget::NavShell`], [`ui::widget::NavList`]).
+const NAV_SHELL: &str = "NavShell";
+const NAV_TITLE: &str = "NavShellTitle";
+const NAV_LIST: &str = "NavList";
+
+/// A window's header names what it shows, and the sidebar beside it offers the places: the place
+/// the header names stands chosen in the sidebar, lit as the one the person reads.
+fn chosen(node: &InspectionNode, shown: &[String], keys: &mut Vec<String>, out: &mut Vec<Problem>) {
+    let titled = (node.widget == NAV_SHELL).then(|| titles(node));
+    let shown = titled.as_deref().unwrap_or(shown);
+    if node.widget == NAV_LIST
+        && let Some(why) = unchosen(node, shown)
+    {
+        push(out, Kind::UnchosenPlace, node, keys, why);
+    }
+    let pushed = node.test_id.clone().map(|id| keys.push(id)).is_some();
+    for child in &node.children {
+        chosen(child, shown, keys, out);
+    }
+    if pushed {
+        keys.pop();
+    }
+}
+
+/// What a window's headers call what they show: the title of its content, and its sidebar's.
+fn titles(node: &InspectionNode) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut pending = vec![node];
+    while let Some(node) = pending.pop() {
+        if node.widget == NAV_TITLE
+            && node
+                .semantics
+                .as_ref()
+                .is_some_and(|semantics| matches!(semantics.role, Role::Heading { .. }))
+            && let Some(name) = semantics_name(node)
+        {
+            out.push(name.split_whitespace().collect::<Vec<_>>().join(" "));
+        }
+        pending.extend(node.children.iter());
+    }
+    out
+}
+
+/// What is wrong with `list` where the window shows one of its places and no place there stands
+/// chosen: the place it offers, said for the person reading it.
+fn unchosen(list: &InspectionNode, shown: &[String]) -> Option<String> {
+    let places = places(list);
+    if places.iter().any(|(_, chosen)| *chosen) {
+        return None;
+    }
+    let (opened, _) = places
+        .into_iter()
+        .find(|(place, _)| shown.iter().any(|title| title == place))?;
+    Some(format!(
+        "the window shows \"{opened}\" and its sidebar offers it, yet no place there stands \
+         chosen: the row of what the window shows is the one the person reads"
+    ))
+}
+
+/// The places a navigation list offers, each as its name and whether it stands chosen.
+fn places(list: &InspectionNode) -> Vec<(String, bool)> {
+    let mut out = Vec::new();
+    let mut pending = vec![list];
+    while let Some(node) = pending.pop() {
+        if let Some(semantics) = &node.semantics
+            && matches!(semantics.role, Role::TreeItem)
+            && let Some(name) = semantics_name(node)
+        {
+            let name = name.split_whitespace().collect::<Vec<_>>().join(" ");
+            out.push((name, semantics.state.selected));
+        }
+        pending.extend(node.children.iter());
+    }
+    out
+}
+
 // --- one way to add ----------------------------------------------------------------------------
 
 /// A control that offers to add something: what it says, and whether it is a press or an entry to
@@ -541,7 +622,7 @@ fn collect_adders<'a>(
 }
 
 /// Whether the box holds rows as a list: what it says to a screen reader, or what it is.
-fn is_list(node: &InspectionNode) -> bool {
+pub(super) fn is_list(node: &InspectionNode) -> bool {
     matches!(role(node), Some(Role::List | Role::Tree | Role::Table))
         || node.widget.to_ascii_lowercase().ends_with("list")
         || node.widget.to_ascii_lowercase().ends_with("lane")
@@ -776,6 +857,84 @@ fn outside_list(list: Option<&InspectionNode>, row: Rect) -> Option<String> {
 /// Whether this is the second item standing open in `list`.
 fn second_open(list: Option<&InspectionNode>, shown: &mut BTreeSet<String>) -> bool {
     !shown.insert(list.map_or_else(String::new, |list| list.path.clone()))
+}
+
+// --- a row's title, written once ----------------------------------------------------------------
+
+/// A row that opened into its item is the item: its title stands once, in the field that edits it,
+/// and what the item holds follows under it. The row's title left standing over the document says
+/// the same words twice in one place.
+fn repeated_row_titles(node: &InspectionNode, keys: &mut Vec<String>, out: &mut Vec<Problem>) {
+    if is_list(node) {
+        let open: Vec<(String, Rect)> = node
+            .semantics
+            .as_ref()
+            .map(|semantics| {
+                semantics
+                    .children
+                    .iter()
+                    .filter(|item| {
+                        matches!(item.role, Role::ListItem | Role::TreeItem)
+                            && item.state.expanded == Some(true)
+                    })
+                    .filter_map(|item| {
+                        let name = item.name.as_deref()?;
+                        let at = item.bounds.map(ui::a11y::AccessBounds::to_rect)?;
+                        Some((one_line(name), at))
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        for (title, at) in open {
+            let shown = titled_within(node, &title, at);
+            if shown > 1 {
+                push(
+                    out,
+                    Kind::RepeatedRowTitle,
+                    node,
+                    keys,
+                    format!(
+                        "\"{title}\" stands {shown} times in the item its row opened into: the \
+                         row became the item, its title written once"
+                    ),
+                );
+                break;
+            }
+        }
+    }
+    let pushed = node.test_id.clone().map(|id| keys.push(id)).is_some();
+    for child in &node.children {
+        repeated_row_titles(child, keys, out);
+    }
+    if pushed {
+        keys.pop();
+    }
+}
+
+/// How many widgets standing within `at` say `title`: a row's own label, the value of the field
+/// that edits it, a heading.
+fn titled_within(node: &InspectionNode, title: &str, at: Rect) -> usize {
+    let own = rect(node);
+    let mut count = usize::from(
+        at.contains(own.center())
+            && node.semantics.as_ref().is_some_and(|semantics| {
+                semantics
+                    .name
+                    .as_deref()
+                    .into_iter()
+                    .chain(semantics.value.as_deref())
+                    .any(|written| one_line(written) == title)
+            }),
+    );
+    for child in &node.children {
+        count = count.saturating_add(titled_within(child, title, at));
+    }
+    count
+}
+
+/// `text` as one line of words: whitespace collapsed, ends trimmed.
+fn one_line(text: &str) -> String {
+    text.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
 // --- the gutter a narrow window keeps -----------------------------------------------------------
@@ -1063,6 +1222,85 @@ mod tests {
         let problems = found(Kind::DoubleSelection, &boxed, (1280, 800));
         assert_eq!(problems.len(), 1, "{problems:?}");
         assert_eq!(problems[0].widget, "ListRow");
+    }
+
+    /// A place in a list is lit while it stands chosen.
+    fn lit(widget: &str, id: &str, rect: [f64; 4], name: &str) -> InspectionNode {
+        let mut node = named(widget, id, rect, Role::TreeItem, name);
+        node.semantics = Some(
+            AccessNode::new(Role::TreeItem)
+                .with_name(name)
+                .with_state(ui::a11y::AccessState::new().selected(true)),
+        );
+        node
+    }
+
+    /// The place a window shows is lit in its sidebar: the header naming a place the sidebar
+    /// offers while no place there stands chosen leaves the person unable to see where they are,
+    /// and a chosen place says it.
+    #[test]
+    fn the_place_a_window_shows_stands_chosen() {
+        let shell = |chosen: bool| {
+            let design = if chosen {
+                lit("NavRow", "design", [0.0, 64.0, 200.0, 28.0], "design")
+            } else {
+                named(
+                    "NavRow",
+                    "design",
+                    [0.0, 64.0, 200.0, 28.0],
+                    Role::TreeItem,
+                    "design",
+                )
+            };
+            holding(
+                "NavShell",
+                "shell",
+                None,
+                vec![
+                    holding(
+                        "NavContent",
+                        "content",
+                        None,
+                        vec![named(
+                            "NavShellTitle",
+                            "title",
+                            [260.0, 0.0, 200.0, 24.0],
+                            Role::Heading { level: 1 },
+                            "design",
+                        )],
+                    ),
+                    holding(
+                        "NavList",
+                        "places",
+                        Some(Role::Tree),
+                        vec![
+                            named(
+                                "NavRow",
+                                "general",
+                                [0.0, 36.0, 200.0, 28.0],
+                                Role::TreeItem,
+                                "general",
+                            ),
+                            design,
+                        ],
+                    ),
+                    named(
+                        "NavShellTitle",
+                        "sidebar-title",
+                        [8.0, 0.0, 120.0, 24.0],
+                        Role::Heading { level: 2 },
+                        "Channels",
+                    ),
+                ],
+            )
+        };
+        let problems = found(Kind::UnchosenPlace, &shell(false), (1280, 800));
+        assert_eq!(problems.len(), 1, "{problems:?}");
+        assert!(problems[0].detail.contains("design"), "{problems:?}");
+        assert!(
+            found(Kind::UnchosenPlace, &shell(true), (1280, 800)).is_empty(),
+            "a chosen place says where the person is"
+        );
     }
 
     /// A window too narrow for a page's gutters keeps one at its edge: content eight pixels from
@@ -1461,5 +1699,55 @@ mod tests {
             row(Role::TreeItem, [16.0, 160.0, 584.0, 36.0]),
         ]);
         assert!(found(Kind::OpenOutsideList, &branch, (1280, 800)).is_empty());
+    }
+
+    /// A row that opened into its item writes its title once: in the field that edits it, not
+    /// again over the document the row became.
+    #[test]
+    fn an_open_item_writes_its_title_once() {
+        fn field() -> InspectionNode {
+            let at = [16.0, 130.0, 300.0, 32.0];
+            let mut field = node("TextInput", "title", at, Some(Role::MultilineTextInput));
+            field.semantics = Some(
+                AccessNode::new(Role::MultilineTextInput)
+                    .with_name("Title")
+                    .with_value("Call the landlord about the boiler"),
+            );
+            field
+        }
+        fn list(title_nodes: Vec<InspectionNode>) -> InspectionNode {
+            let mut list = list_of(title_nodes);
+            list.semantics = Some(AccessNode::new(Role::List).with_children(vec![
+                AccessNode::new(Role::ListItem)
+                    .with_name("Call the landlord about the boiler")
+                    .with_state(ui::a11y::AccessState::new().expanded(true))
+                    .with_bounds(Rect::new(0.0, 100.0, 400.0, 500.0)),
+            ]));
+            list
+        }
+
+        assert!(
+            found(Kind::RepeatedRowTitle, &list(vec![field()]), (1280, 800)).is_empty(),
+            "the item's own title, in the field that edits it"
+        );
+
+        // The row's label left standing over the document: the same words twice.
+        let label = named(
+            "ListRow",
+            "row",
+            [16.0, 100.0, 300.0, 36.0],
+            Role::ListItem,
+            "Call the landlord about the boiler",
+        );
+        let problems = found(
+            Kind::RepeatedRowTitle,
+            &list(vec![label, field()]),
+            (1280, 800),
+        );
+        assert_eq!(problems.len(), 1, "{problems:?}");
+        assert!(
+            problems[0].detail.contains("stands 2 times"),
+            "{problems:?}"
+        );
     }
 }

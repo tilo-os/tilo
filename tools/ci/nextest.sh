@@ -8,7 +8,11 @@
 # (the ci profile's setup scripts, .config/nextest.toml), wherever cargo runs
 # it; any other command runs under tools/test-env.sh. Without an -E of its
 # own, the run leaves out the visual goldens (they run alone, on their image),
-# as .config/nextest-filters.toml says. With one the filter is left as given.
+# as .config/nextest-filters.toml says. With one the filter is left as given,
+# but for the tests whose capability this machine lacks
+# (.config/nextest-capabilities.toml): those are left out of every run, the
+# probe of them taken here, where the tests run, so a workflow's run and a job
+# t shards leave them out alike.
 # Other cargo commands pass through unchanged.
 #
 # A whole run records each package's test time (tools/ci/ci_test_timings.py): it
@@ -152,6 +156,30 @@ for name, value in nextest_filters.filters().items():
 PY
 )
     arguments+=(-E "not (${GOLDEN_FILTER:-})")
+fi
+# A test whose capability the ci profile's setup promises (tools/test-env-setup.sh sets every
+# mapped capability's TILO_REQUIRE_*) fails where this machine lacks it, so the run leaves that
+# group out by the manifest's probe, taken here, where the tests run. It joins the filter the run
+# already has (nextest takes one), so a job given none of its own keeps the goldens out too. Only
+# a run that tests a package the manifest names probes: an ordinary job pays nothing for a probe
+# whose leave-out it could not meet.
+if (( nextest )) && [[ ${3:-} == run ]]; then
+    runtime_packages=$tested
+    [[ $runtime_packages != " " ]] || runtime_packages=${T_NEXTEST_PACKAGES:-}
+    # shellcheck disable=SC2086 # one package per word, as the runners name them
+    left_out=$(python3 "$root/tools/ci/capability_filter.py" --packages $runtime_packages)
+    if [[ -n $left_out ]]; then
+        merged=0
+        for (( index = 0; index < ${#arguments[@]}; index++ )); do
+            case ${arguments[index]} in
+                -E|--filterset|--filter-expr)
+                    arguments[index + 1]="(${arguments[index + 1]}) & ($left_out)"
+                    merged=1
+                    ;;
+            esac
+        done
+        (( merged )) || arguments+=(-E "$left_out")
+    fi
 fi
 # A package whose sources declare no test at all (a load generator, a bin-only
 # tool) passes with none run: run alone, nextest would answer "no tests to run",

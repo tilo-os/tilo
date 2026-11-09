@@ -83,7 +83,17 @@ impl Shared {
             .targets()
             .borrow_mut()
             .take(&resources);
-        self.search.observe(&resources, open_tabs, downloaded);
+        // The notification centre's rows, as the session publishes them: the palette's empty field
+        // lists what waits there, and search never reads a service's own resource.
+        let waiting = resources
+            .iter()
+            .filter(|resource| {
+                resource.id.as_str() == tilo_notifications_service::NOTIFICATIONS_RESOURCE
+            })
+            .flat_map(|resource| resource.children.clone())
+            .collect();
+        self.search
+            .observe(&resources, open_tabs, downloaded, waiting);
         self.keep_history();
     }
 

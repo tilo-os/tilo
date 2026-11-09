@@ -281,6 +281,7 @@ fn inspection_own_eq(a: &InspectionNode, b: &InspectionNode) -> bool {
         child_clip,
         page_title,
         layout,
+        paint_key,
         semantics: _,
         children: _,
     } = a;
@@ -292,6 +293,7 @@ fn inspection_own_eq(a: &InspectionNode, b: &InspectionNode) -> bool {
         && *child_clip == b.child_clip
         && *page_title == b.page_title
         && *layout == b.layout
+        && *paint_key == b.paint_key
 }
 
 #[cfg(test)]
@@ -321,6 +323,7 @@ mod tests {
             child_clip: None,
             page_title: None,
             layout: None,
+            paint_key: None,
             semantics,
             children,
         };

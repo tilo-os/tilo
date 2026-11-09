@@ -8,7 +8,7 @@
 use std::sync::Arc;
 
 use automerge::AutoCommit;
-use tilolang_runtime::Principal;
+use tilolang_runtime::{Principal, ResourceRef, Value};
 use tilolang_tilo::publish::{PlanRequest, Planner, Publications};
 
 use crate::fixtures::Replica;
@@ -122,4 +122,146 @@ fn no_container_is_named_by_a_message_it_holds() {
             row.id
         );
     }
+}
+
+const NOTES_APP: &str = "so.tilo.lang.notes";
+
+/// Ada's notebook, with a note she has not named yet: a new note's title starts empty.
+fn a_new_note() -> (Replica, String, ResourceRef) {
+    let (mut ada, _) = Replica::new(
+        "ada",
+        AutoCommit::new(),
+        &[
+            (
+                include_str!("../../../../apps/tl/discussion/app.tl"),
+                include_str!("../../../../apps/tl/discussion/app.ids"),
+            ),
+            (
+                include_str!("../../../../apps/tl/notes/app.tl"),
+                include_str!("../../../../apps/tl/notes/app.ids"),
+            ),
+        ],
+    );
+    let root = ada.host.root_of(NOTES_APP).unwrap();
+    let made = crate::legibility::call(
+        &ada,
+        "ada",
+        NOTES_APP,
+        "new_note",
+        vec![Value::resource(&root)],
+    );
+    let Value::Ref(note) = made else {
+        panic!("a note: {made:?}")
+    };
+    let note = (*note.target).clone();
+    ada.commit();
+    (ada, root.doc, note)
+}
+
+/// The published tree of the notebook, as rows.
+fn published_notes(ada: &Replica, root: &str) -> Vec<Row> {
+    let planner: Arc<dyn Planner> = Arc::new(Refusing);
+    let mut published = Publications::new(&ada.host);
+    published.settle(&ada.host, &planner);
+    let mut rows = Vec::new();
+    collect(&published.trees()[root], &mut rows);
+    rows
+}
+
+#[test]
+fn a_note_with_no_title_is_called_the_words_its_type_declares() {
+    let (mut ada, root, note) = a_new_note();
+    let rows = published_notes(&ada, &root);
+    let notes: Vec<&Row> = rows
+        .iter()
+        .filter(|row| row.kind.ends_with(".Note"))
+        .collect();
+    assert_eq!(notes.len(), 1, "{rows:#?}");
+    assert_eq!(
+        notes[0].label, "Untitled",
+        "the note reads as what its type says it is called while its title is empty"
+    );
+    assert_eq!(
+        ada.host.label_at(&note),
+        "Untitled",
+        "every surface that names it reads the same words"
+    );
+    assert_eq!(
+        ada.host.label_of(&root),
+        "Notes",
+        "its notebook reads as the app's title"
+    );
+
+    crate::legibility::call(
+        &ada,
+        "ada",
+        NOTES_APP,
+        "retitle",
+        vec![Value::resource(&note), Value::text("Q3 plan")],
+    );
+    ada.commit();
+    let rows = published_notes(&ada, &root);
+    assert!(
+        rows.iter()
+            .any(|row| row.kind.ends_with(".Note") && row.label == "Q3 plan"),
+        "typed first, its title names it instead: {rows:#?}"
+    );
+}
+
+const MAIL: (&str, &str) = (
+    include_str!("../../../../apps/tl/mail/app.tl"),
+    include_str!("../../../../apps/tl/mail/app.ids"),
+);
+const MAIL_APP: &str = "so.tilo.lang.mail";
+
+/// A mail workspace staged from the scenario `name`, and the resource it made.
+fn mail_staged(name: &str) -> (Replica, Option<ResourceRef>) {
+    let (mut ada, loaded) = Replica::new("ada", AutoCommit::new(), &[MAIL]);
+    let meta = loaded.last().unwrap().meta.clone();
+    ada.host.root_of(MAIL_APP).unwrap();
+    ada.commit();
+    let scenario = meta
+        .scenarios
+        .iter()
+        .find(|scenario| scenario.name == name)
+        .unwrap_or_else(|| panic!("Mail stages {name}"));
+    let made = ada
+        .host
+        .runtime()
+        .invoke_action(&Principal::new("ada"), (scenario.action.as_str(), vec![]))
+        .unwrap();
+    ada.commit();
+    let made = match made {
+        tilolang_runtime::InvokeOutcome::Done(Value::Ref(made)) => Some((*made.target).clone()),
+        _ => None,
+    };
+    (ada, made)
+}
+
+#[test]
+fn a_draft_is_named_by_its_subject_not_the_address_it_goes_from() {
+    let (ada, draft) = mail_staged("a reply being written");
+    let draft = draft.expect("the scenario writes a draft");
+    assert_eq!(
+        ada.host.label_at(&draft),
+        "Re: Launch plan for the autumn release",
+        "the field its type says names it, not the address it goes from"
+    );
+}
+
+#[test]
+fn a_draft_with_no_subject_is_called_the_words_its_type_declares() {
+    let (ada, _) = mail_staged("a busy inbox");
+    let root = ada.host.root_of(MAIL_APP).unwrap();
+    let Value::Ref(draft) = crate::legibility::call(
+        &ada,
+        "ada",
+        MAIL_APP,
+        "new_draft",
+        vec![Value::resource(&root)],
+    ) else {
+        panic!("a new draft");
+    };
+    let draft = (*draft.target).clone();
+    assert_eq!(ada.host.label_at(&draft), "New message");
 }

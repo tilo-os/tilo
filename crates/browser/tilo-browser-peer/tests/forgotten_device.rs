@@ -18,7 +18,7 @@ mod support;
 use tilo_browser_peer::{PeerSnapshot, TransportPhase};
 use tilo_user_identity::{DeviceCapabilities, UserIdentity};
 
-use support::{enrol, start_host_admitting, start_peer, wait_for};
+use support::{HostSettings, enrol, start_host_serving, start_peer, wait_for};
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_reset_host_refuses_its_forgotten_guest() {
@@ -27,16 +27,20 @@ async fn a_reset_host_refuses_its_forgotten_guest() {
     let (guest_root, _) = UserIdentity::generate("Guest", 1);
     let guest = enrol(&guest_root, "browser", DeviceCapabilities::member());
     let state = tempfile::tempdir().unwrap();
-    let host = start_host_admitting(
+    let host = start_host_serving(
         &root,
         &host_device,
         state.path(),
         "127.0.0.1:0".parse().unwrap(),
-        None,
-        &[guest.cert.user_public_key],
+        HostSettings {
+            iroh_listen: Some("127.0.0.1:0".parse().unwrap()),
+            guests: &[guest.cert.user_public_key],
+            ..HostSettings::default()
+        },
     )
     .await;
     let listen = host.web.addr;
+    let iroh_listen = host.iroh_listen();
     let peer = start_peer(
         host.iroh(),
         guest.cert.clone(),
@@ -59,7 +63,17 @@ async fn a_reset_host_refuses_its_forgotten_guest() {
         reset.path().join("web-dev-identity"),
     )
     .unwrap();
-    let host = start_host_admitting(&root, &host_device, reset.path(), listen, None, &[]).await;
+    let host = start_host_serving(
+        &root,
+        &host_device,
+        reset.path(),
+        listen,
+        HostSettings {
+            iroh_listen: Some(iroh_listen),
+            ..HostSettings::default()
+        },
+    )
+    .await;
     let failed = wait_for("the reset host to refuse the guest", || {
         let snapshot = PeerSnapshot::from_status(&peer.status());
         async move { (snapshot.phase == "failed").then_some(snapshot) }

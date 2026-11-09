@@ -18,12 +18,16 @@ Both working-tree files and indexed blobs are checked.
 
 from __future__ import annotations
 
+import argparse
 import os
 import re
 import subprocess
 import sys
 import tomllib
 from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from judged import add_staged_argument, judged  # noqa: E402
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -118,9 +122,16 @@ def audit_manifest(relative: Path, text: str) -> list[str]:
     return violations
 
 
-def audit(root: Path) -> list[str]:
+def commit_sources(root: Path):
+    """The staged sources and manifests, read from the index: the commit's own tree."""
+    for relative, text in judged(root, staged=True).sources(".", suffixes=(".rs", ".toml")):
+        if own_source(relative):
+            yield relative, text
+
+
+def audit(root: Path = ROOT, staged: bool = False) -> list[str]:
     violations: list[str] = []
-    for relative, text in repository_sources(root):
+    for relative, text in commit_sources(root) if staged else repository_sources(root):
         if relative.suffix == ".rs":
             violations.extend(audit_source(relative, text))
         else:
@@ -128,8 +139,10 @@ def audit(root: Path) -> list[str]:
     return sorted(set(violations))
 
 
-def main() -> int:
-    violations = audit(ROOT)
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    add_staged_argument(parser)
+    violations = audit(staged=parser.parse_args(argv).staged)
     for violation in violations:
         print(violation)
     if violations:

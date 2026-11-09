@@ -70,6 +70,7 @@ members = [
     "crates/platform/tilo-handoff",
     "apps/canvas",
     "crates/collab/tilo-action-broker",
+    "crates/collab/broker-core",
     "crates/collab/feedback-transport",
     "crates/session/identity-authority",
     "crates/collab/tilo-identity-ceremony",
@@ -90,6 +91,7 @@ members = [
 
     # Applications
     "apps/activity",
+    "apps/console",
     "apps/agent",
     "apps/api-tester",
     "apps/backups",
@@ -252,6 +254,8 @@ members = [
 
     # Hosting
     "crates/hosting/tilo-delivery-protocol",
+    "crates/hosting/tilo-front-door",
+    "crates/hosting/tilo-host-account",
     "crates/hosting/tilo-relay",
     "crates/hosting/tilo-relay-client",
     "crates/hosting/tilo-relay-protocol",
@@ -413,6 +417,7 @@ members = [
     "crates/session/crash-records",
     "crates/session/onboarding-walk",
     "crates/session/control-cli",
+    "crates/session/core",
     "crates/session/desktop-model",
     "crates/session/desktop-policy",
     "crates/session/desktop-search",
@@ -717,6 +722,9 @@ form_urlencoded = "1"
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0"
 serde_bytes = "0.11"
+# The field path a value that does not decode failed at, which an effect's
+# flattened arguments report by.
+serde_path_to_error = "0.1.20"
 postcard = "1.1.3"
 toml = "1.0"
 quick-xml = "0.41.0"

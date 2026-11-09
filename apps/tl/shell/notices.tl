@@ -18,7 +18,7 @@ view notices(d: Desk) {
     let shown = all.matching(query)
     row(fill, distribute: .end, padding: .related) {
         ui.FloatingPanel(
-            width: if space.compact { .none } else { .some(360.0) },
+            width: if not space.compact { 360.0 },
             fill: if space.compact { 1.0 } else { 0.0 },
         ) {
             header: {
@@ -41,7 +41,7 @@ view notices(d: Desk) {
                         icon: .bell,
                     )
                 } else {
-                    ui.TextInput(value: query, placeholder: "Search notifications")
+                    ui.TextInput(bind: query, placeholder: "Search notifications")
                     if shown.is_empty() {
                         ui.EmptyState(
                             "Nothing matches that",
@@ -53,7 +53,7 @@ view notices(d: Desk) {
                     scroll {
                         for g in groups_of(shown) {
                             ui.DisclosureBand {
-                                notice_group(d, g, shown.filter(n -> n.group == g))
+                                notice_group(d, g, shown.filter(n -> n.origin_app == g))
                             }
                         }
                     }
@@ -63,13 +63,42 @@ view notices(d: Desk) {
     }
 }
 
-/// What the centre says of the person's unread notices: how many are waiting, or that none is.
-/// The count is the desk's own (`Desk.unread`), so the centre and the bar's bell never
-/// disagree.
+/// How many of the notices the person was told they have not seen: the count the bar's bell and
+/// the centre's header both read, each from the notices it shows.
+fn unread(d: Desk) -> Int {
+    return d.notices.count(n -> not n.seen)
+}
+
+/// Two notices a sender left and the person has not seen: what the shell stages on a desk it
+/// shows before the person has caught up, so the bar's bell has something to count.
+action seed_waiting(d: Desk) -> Int {
+    d.notices.insert(
+        Notice(
+            key: "n1",
+            title: "Mia mentioned you in Release planning",
+            body: "Can you check the launch date?",
+            origin_app: "Notes",
+            kind: "info",
+            seen: false,
+        ),
+    )
+    d.notices.insert(
+        Notice(
+            key: "n2",
+            title: "Three threads filed",
+            body: "Fieldwork filed 3 threads into Receipts.",
+            origin_app: "Fieldwork",
+            kind: "success",
+            seen: false,
+        ),
+    )
+    return d.notices.len()
+}
+
+/// What the centre says of them: how many are waiting, or that none is.
 fn unread_line(d: Desk) -> Text {
-    if d.unread == 0 {
-        "All read"
-    } else if d.unread == 1 { "1 unread" } else { "{d.unread} unread" }
+    let waiting = unread(d)
+    if waiting == 0 { "All read" } else if waiting == 1 { "1 unread" } else { "{waiting} unread" }
 }
 
 /// One sender's notices, under its name: each with its title, what it says and its actions.
@@ -85,16 +114,16 @@ view notice_group(d: Desk, sender: Text, notices: List<Notice>) {
 /// unread one is lifted and bears a dot in the person's colour, toned by its kind, so a failure
 /// reads as one at a glance.
 view notice_row(d: Desk, n: Notice) {
-    ui.ListRow(n.title, secondary: .some(n.body), meta: .some(n.origin_app), selected: not n.read) {
+    ui.ListRow(n.title, secondary: n.body, meta: n.origin_app, selected: not n.seen) {
         trailing: {
             if n.kind == "error" {
-                ui.Badge(dot: not n.read, tone: .danger)
+                ui.Badge(dot: not n.seen, tone: .danger)
             } else if n.kind == "warning" {
-                ui.Badge(dot: not n.read, tone: .warning)
+                ui.Badge(dot: not n.seen, tone: .warning)
             } else if n.kind == "success" {
-                ui.Badge(dot: not n.read, tone: .success)
+                ui.Badge(dot: not n.seen, tone: .success)
             } else {
-                ui.Badge(dot: not n.read)
+                ui.Badge(dot: not n.seen)
             }
         }
     }
@@ -113,12 +142,13 @@ view notice_row(d: Desk, n: Notice) {
 /// A banner: the newest notice, risen over the desk, with its first action and a dismiss. The
 /// session takes it away when it is dismissed or its sender closes it, and names the one it has
 /// up (`Desk.banner`), so the banner and the centre never disagree about what just arrived.
+/// What the person was told is held back while the desk is quiet.
 ///
 /// A desk with room shows the toolkit's banner; a narrow one shows the notice as a row with its
 /// actions under it, so nothing is cut at any text size.
 view banner(d: Desk) {
     if let n = d.notices.find(n -> n.key == d.banner) {
-        if not (d.quiet and not n.wants_reply) {
+        if not d.quiet {
             if space.compact or space.width < 44.0 {
                 banner_row(d, n)
             } else {
@@ -133,13 +163,13 @@ view banner_full(d: Desk, n: Notice) {
     let actions = actions_of(d, n)
     ui.Banner(
         n.title,
-        message: .some(banner_line(n)),
+        message: banner_line(n),
         kind: if n.kind == "error" {
             .error
         } else if n.kind == "warning" {
             .warning
         } else if n.kind == "success" { .success } else { .info },
-        action: if actions.is_empty() { .none } else { .some(actions.first()?.label ?? "Open") },
+        action: if not actions.is_empty() { actions.first()?.label ?? "Open" },
     ) {
         on act: device.act_on_notice(device.desk, notice: n.key, action: actions.first()?.key ?? "")
         on dismiss: device.dismiss_notice(device.desk, notice: n.key)
@@ -149,7 +179,7 @@ view banner_full(d: Desk, n: Notice) {
 /// A banner on a narrow desk: the notice as a row, its actions under it.
 view banner_row(d: Desk, n: Notice) {
     stack(gap: .related) {
-        ui.ListRow(n.title, secondary: .some(banner_line(n))) {
+        ui.ListRow(n.title, secondary: banner_line(n)) {
             trailing: {
                 ui.Badge(
                     dot: true,
@@ -186,5 +216,5 @@ fn actions_of(d: Desk, n: Notice) -> List<NoticeAction> {
 
 /// What a list of notices was sent by, each once, in the order the notices came.
 fn groups_of(notices: List<Notice>) -> List<Text> {
-    return notices.map(n -> n.group).group(g -> g).map(p -> p.key)
+    return notices.map(n -> n.origin_app).group(g -> g).map(p -> p.key)
 }

@@ -84,6 +84,26 @@ Mounts of one profile, device, workspace and app share a record: another mount
 passing the same `record` edits the same document and shows the other's
 changes live, each under its own `author`.
 
+## Links opened full tab
+
+Every resource with a view has a link (`tilo_reference::link`), and the one
+an app's Share hands out opens it full tab: `<entry>app/#/@<host>/w/<workspace>/<app>/<record>/<resource>`.
+`web/app/index.html` gets into the workspace as any link does (its door, an
+invitation the link carries, or signing in), mounts that one app with no
+desktop, and shows the resource through its view. Over it, `web/app-bar.mjs`
+draws a thin bar: the workspace and the app, the people here from the
+workspace's presence board (those in this document first; the page publishes
+its own focus as a desktop window does), Share, and Open in Tilo. Share copies
+the link as it stands, which opens for the workspace's people, or makes one
+for anyone who has it: the same link with an invitation of the person's own in
+its `invite` secret, written by the runtime (`formatInviteLink`). Open in Tilo
+opens the same place on the desktop; a document of its own opens as its app
+there. At phone width the bar keeps the same four things with the names cut
+short. A view whose content the desktop's session serves (a run, read from
+the workspace's history) is declared `on_desktop`, and its link opens the
+desktop at that view instead. `os/containers/tilo-lounge/integration/share-link.mjs`
+drives it with two people's browsers against the Lounge image.
+
 ## Fonts
 
 `build.sh` copies the product fonts of `crates/sdk/ui-core/assets/fonts`
@@ -127,6 +147,35 @@ read from the runtime daemon's log. The screen must stay unlocked for the whole
 run: a locked screen presents no native window, so the script refuses to start
 on one. Each page's channel state (`peer.channelDiagnostics()`) is saved as
 `*-channels.txt`. macOS only.
+
+## The first visit, with a real agent
+
+`crates/browser/tilo-web-desktop/scripts/agent-shell.mjs` walks the first
+visit a person makes on a hosted Tilo, on this machine: a `tilo-relay room`
+host with a workspace of its own for each person, the site in front of it (the
+desktop bundle with a deployment's `entry.json`), and a first visit in headless
+Chrome. It presses "Set up with your agent", reads the code out of the prompt
+the tab copied, and logs in with the real CLI (`tilo login <code> --site
+<origin>`, on a scratch HOME, so this computer becomes a device of the person),
+then drives `tilo mcp` over stdio as an agent does: it lists the apps, makes a
+note and writes in it, sets a sheet cell, and runs a command in the Terminal
+where the workspace has one. It shoots the person's workspace just after the
+agent connected (the agent followed, its card open), who is here with the agent
+pinned on screen, and the follow while an edit lands, at a laptop's and a
+phone's width in light and dark, and records the follow through a few of the
+agent's actions. Everything lands under `--out` (`shots/`, `video/`, and the
+run's log), and it exits non-zero naming the step that broke.
+
+```sh
+rcargo --fetch look/agent-shell exec bash -lc \
+  'CHROME=/usr/lib64/chromium-browser/chromium-browser \
+   node crates/browser/tilo-web-desktop/scripts/agent-shell.mjs --build'
+```
+
+`--build` builds the relay (features `web,agents`), the CLI and the bundle;
+the shots then arrive in `target/look/agent-shell`. A recording needs ffmpeg or
+gst-launch-1.0 (the build container has the latter); without either, the
+screencast's frames are kept instead.
 
 ## Tests
 

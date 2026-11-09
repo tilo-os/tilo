@@ -89,6 +89,9 @@ pub struct WorkspaceRuntime {
     /// `None` until a governor projects one; the relay then decides changes
     /// against their app surface alone.
     pub(crate) standings: Option<Arc<Standings>>,
+    /// Woken each time [`Self::standings`] is replaced, for a change held
+    /// until its author's standing is projected ([`standings_deciding`]).
+    pub(crate) standings_changed: Arc<tokio::sync::Notify>,
     /// On-disk state.
     pub store: WorkspaceStore,
     /// Initial pinned document. Transferred to `persistence` on first live
@@ -390,6 +393,7 @@ impl WorkspaceRuntime {
             workspace_authority: None,
             hosted_replica: None,
             standings: None,
+            standings_changed: Arc::default(),
             last_seq: 0,
             commits,
             commit_claims: Arc::default(),
@@ -604,6 +608,13 @@ impl WorkspaceRuntime {
     /// Remember an authenticated device before sharing this runtime, so deltas
     /// received while it is offline are queued across daemon restarts. Live
     /// sessions use the serialized async admission in `workspace_io`.
+    /// Decide this workspace's changes against `standings` from now on, and
+    /// wake each change held until its author's standing was projected.
+    pub(crate) fn project_standings(&mut self, standings: Standings) {
+        self.standings = Some(Arc::new(standings));
+        self.standings_changed.notify_waiters();
+    }
+
     pub fn admit_device(&mut self, device: [u8; 32]) -> Result<(), crate::store::StoreError> {
         if !self.membership.contains(&device) {
             let mut devices = self.membership.devices.clone();
@@ -1017,6 +1028,58 @@ impl WorkspaceRuntime {
 
 /// Shorthand: a workspace runtime held under an async mutex.
 pub type SharedWorkspace = Arc<AsyncMutex<WorkspaceRuntime>>;
+
+/// Longest a change waits for its author's standing to be projected: the
+/// time a device's admission takes to settle in the workspace's governance
+/// when the workspace is busy, not the time any check may take.
+pub(crate) const STANDING_WAIT: std::time::Duration = std::time::Duration::from_secs(10);
+
+/// The standings to decide `author`'s change in `ws` against, and the
+/// workspace's payload adapter.
+///
+/// A device can hold a record's keys, and write, before the host has settled
+/// its own admission of that device: the keys come from another participant,
+/// and a page counts itself in once its person is a member, while its device's
+/// row is still on its way into the workspace's governance. Decided against
+/// the projection of that moment, such a change would be refused for a grant
+/// the host is about to record. So a change the projection of the moment
+/// `refuses`, while the workspace projects standings and none is `author`'s,
+/// waits for the next projection, up to [`STANDING_WAIT`], and is decided
+/// against that one. Every other change, the author's presence and
+/// governance among them, is decided at once. Nothing is decided without a
+/// standing: an author that has none when the wait ends is decided against
+/// the projection as it is, and refused as before.
+pub(crate) async fn standings_deciding(
+    ws: &SharedWorkspace,
+    author: [u8; 32],
+    refuses: impl Fn(Option<&Standings>, &dyn crate::payloads::ShellPayloads) -> bool,
+) -> (
+    Option<Arc<Standings>>,
+    Arc<dyn crate::payloads::ShellPayloads>,
+) {
+    let deadline = tokio::time::Instant::now()
+        .checked_add(STANDING_WAIT)
+        .unwrap_or_else(tokio::time::Instant::now);
+    loop {
+        let changed = Arc::clone(&ws.lock().await.standings_changed);
+        let next = changed.notified();
+        tokio::pin!(next);
+        // Registered before the standings are read, so a projection that
+        // lands between the read and the wait still wakes it.
+        next.as_mut().enable();
+        let (standings, payloads) = {
+            let runtime = ws.lock().await;
+            (runtime.standings.clone(), runtime.store.payloads().clone())
+        };
+        let waiting = standings
+            .as_ref()
+            .is_some_and(|standings| !standings.contains_key(&author))
+            && refuses(standings.as_deref(), &*payloads);
+        if !waiting || tokio::time::timeout_at(deadline, next).await.is_err() {
+            return (standings, payloads);
+        }
+    }
+}
 
 #[cfg(test)]
 #[allow(
@@ -1949,5 +2012,121 @@ impl Extensions {
             .downcast_mut()
             .expect("an extension is kept under its own type");
         value
+    }
+}
+
+/// How a change whose author's standing is not projected yet is decided
+/// ([`standings_deciding`]).
+#[cfg(test)]
+mod standing_wait_tests {
+    #![allow(
+        clippy::unwrap_used,
+        clippy::expect_used,
+        clippy::significant_drop_tightening,
+        reason = "in a test these are the assertion, not a hazard; each projection is one step"
+    )]
+
+    use super::*;
+    fn standing() -> tilo_action_policy::Standing {
+        tilo_action_policy::Standing::person(
+            tilo_action_policy::WorkspacePolicy::new("workspace", "ada"),
+            "ada",
+        )
+    }
+
+    fn shared(tmp: &tempfile::TempDir) -> SharedWorkspace {
+        Arc::new(AsyncMutex::new(
+            WorkspaceRuntime::open(tmp.path(), 9, false, Membership::default()).unwrap(),
+        ))
+    }
+
+    const LAPTOP: [u8; 32] = [1; 32];
+    const PAGE: [u8; 32] = [2; 32];
+
+    /// A page's change that reaches the host before the host has projected
+    /// the page's standing (its keys came from another participant, its
+    /// admission is still settling) waits, and is decided against the
+    /// projection that admits the page, not refused against the one before.
+    #[tokio::test]
+    async fn a_change_before_its_authors_standing_waits_and_is_decided_against_it() {
+        let tmp = tempfile::tempdir().unwrap();
+        let ws = shared(&tmp);
+        ws.lock()
+            .await
+            .project_standings(Standings::from([(LAPTOP, standing())]));
+
+        let deciding = standings_deciding(&ws, PAGE, |_, _| true);
+        tokio::pin!(deciding);
+        // Polled once: the change arrived, and is held, not decided.
+        assert!(
+            tokio::time::timeout(std::time::Duration::ZERO, &mut deciding)
+                .await
+                .is_err(),
+            "a change whose author has no standing yet is not decided"
+        );
+        // A projection that still leaves the page out keeps it waiting.
+        ws.lock()
+            .await
+            .project_standings(Standings::from([(LAPTOP, standing())]));
+        assert!(
+            tokio::time::timeout(std::time::Duration::ZERO, &mut deciding)
+                .await
+                .is_err()
+        );
+        // The page's admission settles.
+        ws.lock()
+            .await
+            .project_standings(Standings::from([(LAPTOP, standing()), (PAGE, standing())]));
+        let (standings, _) = deciding.await;
+        assert!(standings.unwrap().contains_key(&PAGE));
+    }
+
+    /// A change whose author already has a standing, or of a workspace that
+    /// projects none, is decided at once.
+    #[tokio::test]
+    async fn a_change_whose_author_has_a_standing_is_decided_at_once() {
+        let tmp = tempfile::tempdir().unwrap();
+        let ws = shared(&tmp);
+        let unprojected = standings_deciding(&ws, PAGE, |_, _| true);
+        tokio::pin!(unprojected);
+        let (standings, _) = tokio::time::timeout(std::time::Duration::ZERO, &mut unprojected)
+            .await
+            .expect("no projection: decided at once");
+        assert!(standings.is_none());
+
+        ws.lock()
+            .await
+            .project_standings(Standings::from([(PAGE, standing())]));
+        let projected = standings_deciding(&ws, PAGE, |_, _| true);
+        tokio::pin!(projected);
+        let (standings, _) = tokio::time::timeout(std::time::Duration::ZERO, &mut projected)
+            .await
+            .expect("a standing already projected: decided at once");
+        assert!(standings.unwrap().contains_key(&PAGE));
+        // A change the projection does not refuse, the author's presence or
+        // governance among them, is decided at once, standing or not.
+        let unrefused = standings_deciding(&ws, LAPTOP, |_, _| false);
+        tokio::pin!(unrefused);
+        tokio::time::timeout(std::time::Duration::ZERO, &mut unrefused)
+            .await
+            .expect("a change nothing refuses: decided at once");
+    }
+
+    /// An author whose standing never arrives is decided, after the wait,
+    /// against the projection that leaves it out: refused as before, never
+    /// let through for having waited.
+    #[tokio::test(start_paused = true)]
+    async fn an_author_never_granted_is_decided_without_a_standing_after_the_wait() {
+        let tmp = tempfile::tempdir().unwrap();
+        let ws = shared(&tmp);
+        ws.lock()
+            .await
+            .project_standings(Standings::from([(LAPTOP, standing())]));
+        let started = tokio::time::Instant::now();
+        let (standings, _) = standings_deciding(&ws, PAGE, |_, _| true).await;
+        assert!(started.elapsed() >= STANDING_WAIT);
+        let standings = standings.unwrap();
+        assert!(standings.contains_key(&LAPTOP));
+        assert!(!standings.contains_key(&PAGE));
     }
 }

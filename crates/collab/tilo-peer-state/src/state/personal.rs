@@ -214,7 +214,7 @@ impl PersonalStore {
         // A device the person revoked is told once why its writes stop, not
         // once per write: what it already learned of its own revocation is
         // not repeated by every write it sends.
-        if self.revocations.is_revoked(&author) {
+        if self.revocations.is_revoked(&self.root, &author) {
             self.refusals.retain(|held| {
                 !(held.by == self.device.device_public_key && held.author == author)
             });
@@ -327,7 +327,7 @@ impl PersonalStore {
         certificate: &DeviceCert,
         now: SystemTime,
     ) -> Result<bool, String> {
-        if self.revocations.is_revoked(&certificate.device_public_key) {
+        if self.revocations.refuses(certificate) {
             return Err("device revoked".into());
         }
         let verified = admitted(self.root, certificate, now)?;
@@ -364,7 +364,7 @@ impl PersonalStore {
     /// Whether the identity root revoked this device: it is no longer one of
     /// the person's devices, and holds none of their documents.
     fn revoked_here(&self) -> bool {
-        self.revocations.is_revoked(&self.device.device_public_key)
+        self.revocations.refuses(&self.device)
     }
 
     /// Let go of every document and every decided write: a device the person
@@ -383,7 +383,7 @@ impl PersonalStore {
     /// is admitted to the connection alone; nothing it sends is admitted
     /// before the certificate its first frame carries checks out.
     pub fn admits_device(&self, device: &[u8; 32], now: SystemTime) -> Result<(), String> {
-        if self.revocations.is_revoked(device) {
+        if self.revocations.is_revoked(&self.root, device) {
             return Err("device revoked".into());
         }
         if let Some(certificate) = self.certificates.get(device) {
@@ -596,7 +596,7 @@ impl PersonalStore {
         // A device the person revoked is admitted to nothing it says, and
         // told what it was refused instead of being dropped at the door: a
         // person whose device was taken away learns why their writes stop.
-        if !self.revocations.is_revoked(&source) {
+        if !self.revocations.is_revoked(&self.root, &source) {
             let held = self
                 .certificates
                 .get(&source)
@@ -1135,6 +1135,7 @@ mod tests {
             issued_at_ns: 1,
             expires_at_ns: None,
             signature: [0; 64],
+            issuer: None,
         };
         sign_device_cert(&mut cert, root).unwrap();
         (key, cert)
@@ -1564,6 +1565,7 @@ mod tests {
             issued_at_ns: 1,
             expires_at_ns: None,
             signature: [0; 64],
+            issuer: None,
         };
         sign_device_cert(&mut cert, root).unwrap();
         cert

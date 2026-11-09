@@ -13,6 +13,9 @@ tilo-startup-metrics = { version = "0.1.0", path = "../../system/tilo-startup-me
 tilo-crash-records = { path = "../crash-records" }
 # The filter `RUST_LOG` sets, written to stderr.
 tracing-subscriber = { workspace = true, features = ["env-filter"] }
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+# The workspace-hack's native feature set does not build for wasm32.
 workspace-hack = { version = "0.1" }
 
 [dev-dependencies]

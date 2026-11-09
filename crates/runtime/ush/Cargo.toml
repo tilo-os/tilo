@@ -15,6 +15,11 @@ path = "src/lib.rs"
 name = "tilo-ush"
 path = "src/main.rs"
 
+[features]
+# `hosted_vm::test_host`: a host selling Linux VMs, with no hypervisor and
+# no payment provider, for other crates' tests.
+test-host = []
+
 [dependencies]
 getrandom.workspace = true
 tilo-clock = { path = "../../platform/tilo-clock" }
@@ -63,8 +68,10 @@ tilo-sandbox-core = { path = "../../system/sandbox-core" }
 # The guest's own network namespace: a DNS stub that answers only the
 # record's NetHost grants, and nftables that admit only what it answered.
 tilo-egress = { path = "../egress" }
-# Installed legacy apps become commands in every guest (`LegacyLaunch`).
+# Installed legacy apps become commands in every guest (`LegacyLaunch`);
+# a hosted workspace's programs run in its own VM (`hosted_vm`).
 legacy-vm = { path = "../legacy-vm" }
+legacy-agent-protocol = { path = "../legacy-agent-protocol" }
 
 anyhow.workspace = true
 tilo-paths.workspace = true
@@ -78,19 +85,26 @@ thiserror.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
 uuid.workspace = true
+# A hosted VM's typed refusal, carried in a Terminal mark as base64 JSON.
+base64.workspace = true
+tilo-actions = { path = "../../collab/actions" }
+# A held command follows the host's plans file as its account answer does.
+tilo-host-account = { path = "../../hosting/tilo-host-account" }
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+# The workspace-hack's native feature set does not build for wasm32.
 workspace-hack = { version = "0.1" }
 
 [dev-dependencies]
-base64.workspace = true
+# The real guest agent behind a fake VM link: a hosted program's terminal
+# relay is tested against what serves it in the VM.
+legacy-agent = { path = "../legacy-agent" }
 ed25519-dalek.workspace = true
 serde_json.workspace = true
 tempfile.workspace = true
 tilo-test-env = { path = "../../dev/test-env" }
 # Terminal's own client of the native editor capability, driving the prompt.
 tilo-process = { path = "../../platform/tilo-process", features = ["native-editor"] }
-# History entries read as the history view reads them, in the file actions'
-# tests.
-tilo-actions = { path = "../../collab/actions" }
 
 [[test]]
 name = "it"

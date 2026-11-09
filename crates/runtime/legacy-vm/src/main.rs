@@ -19,6 +19,9 @@ use legacy_vm::grants::Grants;
 use legacy_vm::supervisor::Supervisor;
 use legacy_vm::{confine, image, virtiofs};
 
+#[cfg(target_os = "linux")]
+mod hosted_cli;
+
 const USAGE: &str = "\
 usage: tilo-legacy [--guest linux] [--image QCOW2] [--idle-suspend SECONDS] <command>
 
@@ -37,6 +40,7 @@ usage: tilo-legacy [--guest linux] [--image QCOW2] [--idle-suspend SECONDS] <com
   suspend                save the VM to disk now
   stop                   shut the VM down
   image fetch            fetch the pinned guest image
+  hosted …               the hosted-workspace VM service (`tilo-legacy hosted help`)
 ";
 
 struct Options {
@@ -83,10 +87,14 @@ fn main() -> ExitCode {
     };
     let rest = args.split_off(1);
     if command == "confine-fs" {
-        let Some((ro, rw, program)) = virtiofs::parse_confined(&rest) else {
-            return fail("confine-fs: --ro DIR… --rw DIR… -- PROGRAM…");
+        let Some(confinement) = virtiofs::parse_confined(&rest) else {
+            return fail("confine-fs: --ro DIR… --rw DIR… [--isolate [--hide DIR…]] -- PROGRAM…");
         };
-        return fail(&confine::exec_confined(&ro, &rw, &program));
+        return fail(&confine::exec_confined(&confinement));
+    }
+    #[cfg(target_os = "linux")]
+    if command == "hosted" {
+        return hosted_cli::main(&rest).unwrap_or_else(|message| fail(&message));
     }
     let Some(paths) = Paths::for_user(options.guest) else {
         return fail("no XDG runtime directory; a legacy VM belongs to a login session");

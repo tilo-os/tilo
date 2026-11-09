@@ -536,6 +536,22 @@ impl Arrangement {
     }
 }
 
+impl crate::workspace::Workspace {
+    /// Every place stands for a window on the desk: one that left it takes its place and its float
+    /// with it, so the next window stands in the room it left instead of beside a hole. Called
+    /// wherever a group can go — a close, a command, a desk read back from its record.
+    pub fn forget_gone_places(&mut self) {
+        let live: std::collections::BTreeSet<GroupId> = self
+            .strips
+            .iter()
+            .flat_map(|strip| &strip.window_groups)
+            .map(|group| group.id)
+            .collect();
+        self.arrangement
+            .retain_groups(|group| live.contains(&group));
+    }
+}
+
 /// A canvas coordinate as a place keeps it.
 fn clamp_point(value: i64) -> i32 {
     i32::try_from(value).unwrap_or(if value < 0 { i32::MIN } else { i32::MAX })

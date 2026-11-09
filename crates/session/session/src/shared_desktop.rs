@@ -18,7 +18,7 @@ use std::collections::{BTreeMap, BTreeSet, HashMap};
 use automerge::ChangeHash;
 use tilo_desktop_model::ownership::{DESKTOP_APP, DESKTOP_RECORD};
 use tilo_desktop_model::shared_record::{self, device};
-use tilo_desktop_model::{DesktopTree, WorkspaceId, peer_salt_of};
+use tilo_desktop_model::{DesktopTree, Workspace, WorkspaceId, peer_salt_of};
 
 use tilo_action_broker::owner_commits::OwnerCustody as _;
 
@@ -60,6 +60,11 @@ pub(crate) struct SharedDesktops {
     /// nothing would found the record again and number its writer's sequence from the start, which
     /// the workspace refuses as a sequence it already holds.
     based: RefCell<HashMap<WorkspaceId, [u8; 32]>>,
+    /// The windows each workspace's record holds of this device's desk, as it last wrote them: a
+    /// window there that this desk no longer holds is one this device closed, and its entry goes
+    /// when the device writes again rather than the fold laying it back into the desk, where no
+    /// window fills it.
+    written_windows: RefCell<HashMap<WorkspaceId, BTreeSet<u64>>>,
     /// The windows this device's desk shows that the workspace's record does not hold yet: what it
     /// opened since the last write, and what the next write adds.
     unrecorded: RefCell<BTreeSet<u64>>,
@@ -85,6 +90,41 @@ impl SharedDesktops {
             notes,
             ..Self::default()
         }
+    }
+
+    /// The windows this device's desk has that the record of `room` holds and this desk no longer
+    /// does: the close it made since it last wrote the record.
+    fn closed_since_written(&self, room: WorkspaceId, workspace: &Workspace) -> BTreeSet<u64> {
+        let here = windows_of(workspace);
+        self.written_windows
+            .borrow()
+            .get(&room)
+            .map(|written| written.difference(&here).copied().collect())
+            .unwrap_or_default()
+    }
+
+    /// The record `held` laid into this device's desk, with the windows it closed since its last
+    /// write left out: what this device's write holds and what the record takes from it.
+    fn laid_into(
+        &self,
+        room: WorkspaceId,
+        held: &automerge::AutoCommit,
+        workspace: &Workspace,
+    ) -> Workspace {
+        let closed = self.closed_since_written(room, workspace);
+        let mut laid_out = workspace.clone();
+        device::fold(
+            held,
+            &mut laid_out,
+            "",
+            &device::Kept {
+                mine: &|_| true,
+                private: &|_| true,
+                closed: &|id| closed.contains(&id),
+                writing: true,
+            },
+        );
+        laid_out
     }
 
     /// Whether every workspace `tree` holds has had its record read here, and neither the engine at
@@ -159,12 +199,16 @@ impl SharedDesktops {
                 continue;
             }
             let mine = |id: u64| local != 0 && peer_salt_of(id) == local;
+            let closed = self.closed_since_written(room, workspace);
             let kept = device::Kept {
                 // A strip this device made and left empty stays on its own desk: the record never
                 // holds an empty strip it made, and an empty row arriving here is nobody else's to
                 // see.
                 mine: &mine,
                 private: &|_: u64| false,
+                // A window this device closed is not laid back into its desk from the record: the
+                // write that follows takes its entry out instead.
+                closed: &|id| closed.contains(&id),
                 writing: false,
             };
             changed |= device::fold(&doc, workspace, device, &kept);
@@ -265,8 +309,7 @@ impl SharedDesktops {
         // the record holds and what this device's desk holds are then one change, and nothing
         // anyone else moved is undone by it. This device's own layout stays: it is what the write
         // adds, and a fold that dropped it would write nothing at all.
-        let mut laid_out = workspace.clone();
-        device::fold(&held, &mut laid_out, "", &device::Kept::OWN);
+        let laid_out = self.laid_into(room, &held, workspace);
         let mine = |id: u64| peer_salt_of(id) == local || self.is_unrecorded(id);
         let by_tab: BTreeMap<u64, String> = notes.iter().cloned().collect();
         let records = |id: u64| by_tab.get(&id).cloned();
@@ -283,6 +326,12 @@ impl SharedDesktops {
                 records: &records,
             },
         );
+        if wrote.is_ok() {
+            // What the record now holds of this desk: the windows a later fold may lay back into it.
+            self.written_windows
+                .borrow_mut()
+                .insert(room, windows_of(&laid_out));
+        }
         match wrote {
             Ok(false) => {
                 self.written.borrow_mut().insert(room, (heads, own, notes));
@@ -525,6 +574,17 @@ impl SharedDesktops {
     pub(crate) fn is_unrecorded(&self, tab: u64) -> bool {
         self.unrecorded.borrow().contains(&tab)
     }
+}
+
+/// Every window the desk of `workspace` shows.
+fn windows_of(workspace: &Workspace) -> BTreeSet<u64> {
+    workspace
+        .strips
+        .iter()
+        .flat_map(|strip| &strip.window_groups)
+        .flat_map(|group| &group.tabs)
+        .map(|tab| tab.id)
+        .collect()
 }
 
 /// `changes` to the desk published into `peer` as this device's own write,

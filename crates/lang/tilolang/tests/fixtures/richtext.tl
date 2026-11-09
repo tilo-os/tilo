@@ -99,13 +99,12 @@ action people_count(p: Post) -> Int {
 
 /// The board: its posts.
 view board(b: Board) {
-    state opened: Option<Post> = .none
     ui.NavShell(content_kind: .list) {
         content: {
             if b.posts.is_empty() {
                 ui.EmptyState("No posts yet", icon: .file_text)
             } else {
-                std.list(b.posts, opened) { (p, at) ->
+                std.list(b.posts) { (p, at) ->
                     ui.ListItem(item: p, presence: at) {
                         post_row(p)
                     }

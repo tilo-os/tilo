@@ -67,6 +67,7 @@ impl Desktop {
     /// open what they chose from a notice.
     pub(super) fn tell_mentions(&self) {
         self.open_chosen_mentions();
+        self.show_asked_in_apps();
         let Some(peer) = self.asks.peer() else {
             return;
         };
@@ -126,6 +127,41 @@ impl Desktop {
         }
         if changed {
             storage_set(&mentions.key, &mentions.inbox.told_state());
+        }
+    }
+
+    /// Show, as this person, what the desktop asked to see in an app's window
+    /// ([`crate::shell::HostRequest::ShowInApp`]): the app's `open` of the
+    /// resource, through the session, which opens the window and shows it there.
+    fn show_asked_in_apps(&self) {
+        let mut asked = Vec::new();
+        self.requests.borrow_mut().retain(|request| match request {
+            crate::shell::HostRequest::ShowInApp { app, resource } => {
+                asked.push((app.clone(), resource.clone()));
+                false
+            }
+            _ => true,
+        });
+        for (app, resource) in asked {
+            let request = InvokeRequest {
+                invocation: tilo_actions::InvocationId::new(),
+                target: tilo_actions::remote::application_action_target(
+                    &self.workspace,
+                    &app,
+                    resource,
+                    tilo_actions::remote::APPLICATION_OPEN_ACTION,
+                ),
+                argument: InvokeArgument::None,
+                context: None,
+                confirmation: None,
+                revision: None,
+                on_behalf_of: None,
+                wait_ms: None,
+                appearance: None,
+            };
+            // A refused open is the session's to report.
+            drop(self.session.invoke(&self.caller(), request));
+            self.shared.wake();
         }
     }
 

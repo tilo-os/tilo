@@ -76,10 +76,10 @@ mod tests {
             assert_eq!(
                 t_args_for(
                     "de-DE",
-                    "files-share-created",
-                    &[arg("person", "Zoë <Admin>")]
+                    "files-share-failed",
+                    &[arg("reason", "Zoë <Admin>")]
                 ),
-                "Für Zoë <Admin> freigegeben; heruntergeladene Kopien können nicht zurückgerufen werden"
+                "Das Einladungsfenster wurde nicht geöffnet: Zoë <Admin>"
             );
         }
     }
@@ -89,38 +89,30 @@ mod tests {
     fn localised_formatting_plurals_and_pseudolocale() {
         // --- phase: pseudolocale_expands_copy_and_preserves_nonlinguistic_data ---
         {
-            let rendered = t_args_for(
-                "qps-ploc",
-                "files-share-created",
-                &[arg("person", "Zoë 🔗")],
-            );
+            let rendered = t_args_for("qps-ploc", "files-share-failed", &[arg("reason", "Zoë 🔗")]);
             assert!(rendered.starts_with('⟦'));
             assert!(rendered.ends_with('⟧'));
             assert!(
                 rendered.contains('🔗'),
                 "non-letter data survives: {rendered}"
             );
-            assert!(!rendered.contains("Shared with"));
+            assert!(!rendered.contains("Making"));
         }
 
         // --- phase: plural_messages_are_grammatical_and_interpolation_is_not_executable ---
         {
             assert_eq!(
-                t_args_for("en-US", "files-sharing-summary", &[arg("count", 1)]),
-                "1 active grant; copied bytes cannot be recalled"
+                t_args_for("en-US", "files-item-count", &[arg("count", 1)]),
+                "1 item"
             );
             assert_eq!(
-                t_args_for("en-US", "files-sharing-summary", &[arg("count", 3)]),
-                "3 active grants; copied bytes cannot be recalled"
+                t_args_for("en-US", "files-item-count", &[arg("count", 3)]),
+                "3 items"
             );
             let hostile = "{ $count } <b>not markup</b>";
             assert_eq!(
-                t_args_for(
-                    "en-US",
-                    "files-share-with-progress",
-                    &[arg("person", hostile)]
-                ),
-                format!("Sharing with {hostile}…")
+                t_args_for("en-US", "files-share-failed", &[arg("reason", hostile)]),
+                format!("The invite sheet did not open: {hostile}")
             );
         }
 
@@ -157,8 +149,6 @@ mod tests {
                 include_str!("files_app.rs"),
                 include_str!("views/file_view.rs"),
                 include_str!("history_control.rs"),
-                include_str!("sharing.rs"),
-                include_str!("received_shares.rs"),
                 include_str!("main.rs"),
                 include_str!("model.rs"),
             ];

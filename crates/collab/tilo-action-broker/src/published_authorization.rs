@@ -1,28 +1,5 @@
-//! The route record a published operation acts on. The admission itself is
-//! `BrokerActor::admit_published_in`.
-
-/// Spelling of the package-primary record (route record `""`).
-const PRIMARY_RECORD_ALIAS: &str = "@tilo:package-primary";
-const MAX_RECORD_ID_BYTES: usize = 128;
-
-/// The one canonical spelling of a live route record: `""` is the
-/// package-primary record, reserved spellings are never literal record ids,
-/// and everything else must be bounded, trimmed, printable ASCII.
-pub(crate) fn canonical_record(route_record: &str) -> Result<String, String> {
-    if route_record.is_empty() {
-        return Ok(PRIMARY_RECORD_ALIAS.into());
-    }
-    let reserved = route_record.starts_with("@tilo:") || route_record.starts_with('*');
-    if reserved
-        || route_record.len() > MAX_RECORD_ID_BYTES
-        || !route_record.is_ascii()
-        || route_record.trim() != route_record
-        || route_record.bytes().any(|b| b.is_ascii_control())
-    {
-        return Err("reserved or invalid route record".into());
-    }
-    Ok(route_record.into())
-}
+//! The route record a published operation acts on: [`canonical_record`] is the one spelling of a
+//! live one, beside the admission `BrokerActor::admit_published_in` decides.
 
 #[cfg(test)]
 mod tests {

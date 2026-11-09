@@ -307,8 +307,11 @@ impl Pipe {
             return Err(RuntimeError::AudioDiscontinuity);
         }
         if kind != RequestKind::Audio {
-            if self.waiting.is_some() {
-                return Err(RuntimeError::Busy);
+            // The latest words supersede a provisional decode: the worker may
+            // still answer it, but nothing waits for that answer.
+            match (&self.waiting, kind) {
+                (None, _) | (Some((RequestKind::Draft, _)), RequestKind::Finish) => {}
+                _ => return Err(RuntimeError::Busy),
             }
             self.waiting = Some((kind, sequence));
         }
@@ -405,6 +408,23 @@ impl Pipe {
     }
     fn accept(&mut self, reply: &SpeechReply) -> Result<(), RuntimeError> {
         let (kind, sequence) = self.waiting.ok_or(RuntimeError::Protocol)?;
+        if let SpeechReply::Draft {
+            sequence: got,
+            text,
+        } = reply
+            && kind != RequestKind::Draft
+        {
+            // A finish already replaced this draft. Whatever the worker made
+            // of it is superseded, so drop it instead of failing the capture.
+            return if kind == RequestKind::Finish
+                && *got < sequence
+                && valid_text(text, self.multiline)
+            {
+                Ok(())
+            } else {
+                Err(RuntimeError::Protocol)
+            };
+        }
         let matches = match reply {
             SpeechReply::Ready {
                 sequence: got,
@@ -1201,5 +1221,39 @@ reply(dict(kind='done', sequence=s, text=repairs[sys.argv[1]] if sys.argv[1] in 
             }
             reaped(&mut runtime, &pid);
         }
+    }
+
+    // The worker keeps its provisional decode on its own decoder state, so it
+    // may answer it after the finish that replaced it already went out.
+    #[test]
+    fn a_finish_supersedes_an_outstanding_draft_and_drops_its_late_reply() {
+        let mut pipe = Pipe::new(false);
+        pipe.enqueue(RequestKind::Draft, &[]).unwrap();
+        pipe.enqueue(RequestKind::Finish, &[]).unwrap();
+        pipe.accept(&SpeechReply::Draft {
+            sequence: 1,
+            text: "provisional".to_owned(),
+        })
+        .unwrap();
+        pipe.accept(&SpeechReply::Done {
+            sequence: 2,
+            text: "final".to_owned(),
+        })
+        .unwrap();
+        assert!(pipe.waiting.is_none());
+        // Only that superseded draft is tolerated, and only while finishing.
+        pipe.enqueue(RequestKind::Draft, &[]).unwrap();
+        pipe.enqueue(RequestKind::Finish, &[]).unwrap();
+        assert!(matches!(
+            pipe.accept(&SpeechReply::Draft {
+                sequence: 4,
+                text: "newer".to_owned(),
+            }),
+            Err(RuntimeError::Protocol)
+        ));
+        assert!(matches!(
+            pipe.enqueue(RequestKind::Draft, &[]),
+            Err(RuntimeError::Busy)
+        ));
     }
 }

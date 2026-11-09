@@ -285,6 +285,18 @@ impl<L: Layout> Arranged<L> {
         self.slots.len()
     }
 
+    /// The box the children take, as far as they have been laid out: what a layout keeps around
+    /// its content — the gutters a page centres its column in, the room a lane keeps for the
+    /// column beside it — is not part of it.
+    #[must_use]
+    pub fn content_box(&self) -> Option<Rect> {
+        self.slots
+            .iter()
+            .map(|slot| slot.element.get_rect())
+            .filter(|rect| rect.width() > 0.0 && rect.height() > 0.0)
+            .reduce(|whole, box_| whole.union(box_))
+    }
+
     #[must_use]
     pub fn is_empty(&self) -> bool {
         self.slots.is_empty()
@@ -532,7 +544,15 @@ impl<L: Layout> Arranged<L> {
     }
 }
 
+impl<L: Layout> crate::widget::RowContentBox for Arranged<L> {
+    fn row_content_box(&self) -> Option<Rect> {
+        self.content_box()
+    }
+}
+
 impl<L: Layout + 'static> Widget for Arranged<L> {
+    crate::provides!(dyn crate::widget::RowContentBox);
+
     fn build_layout(
         &mut self,
         tree: &mut TaffyTree<()>,
@@ -794,6 +814,10 @@ impl<L: Layout + 'static> Widget for Arranged<L> {
 
     fn test_id(&self) -> Option<&str> {
         self.id.as_deref()
+    }
+
+    fn as_any(&self) -> Option<&dyn std::any::Any> {
+        Some(self)
     }
 
     fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {

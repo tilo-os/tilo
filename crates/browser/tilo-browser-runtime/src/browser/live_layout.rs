@@ -17,9 +17,18 @@ impl Mount {
     /// `{focus, place, layout}`, the focused window named by its app and the
     /// short digest of its record (the desktop's own record where no window
     /// is focused or it has none yet), the strip shown and where its windows
-    /// are ([`layout_value`]). `None` for a single application.
+    /// are ([`layout_value`]). A single application, full tab, is its one
+    /// window's focus alone: it has no strip and no layout.
     pub(super) fn live_place_value(&self) -> Option<serde_json::Value> {
-        let desktop = self.desktop.as_ref()?;
+        let Some(desktop) = self.desktop.as_ref() else {
+            let (app, checkout) = self.app.as_ref().zip(self.checkout.as_ref())?;
+            let record = tilo_desktop_surface::host::records::wire_record(&checkout.id);
+            return Some(serde_json::json!({
+                "focus": named(app.clone(), record.to_owned()),
+                "place": null,
+                "layout": null,
+            }));
+        };
         let shown = desktop.handle.shown_tabs();
         let area = desktop.handle.shown_strip().map(|(_, area, _)| area);
         let (focus, place, layout) = desktop.handle.read(|tree| {

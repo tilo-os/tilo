@@ -120,9 +120,33 @@ pub struct TypeDecl {
     /// `(origin: mail.message)`: the outside service whose resources the type holds
     /// (convergence.md, "Outside services"), as the dotted name of one of its kinds.
     pub origin: Option<Ident>,
+    /// `(title: subject)`: the field a record of the type is named by
+    /// ([`crate::resolve::TypeInfo::name_field`]).
+    pub title: Option<TitleDecl>,
+    /// `(untitled: "Untitled")`: what a record of the type is called while its title is empty
+    /// ([`crate::resolve::TypeInfo::name_field`]).
+    pub untitled: Option<UntitledDecl>,
     pub fields: Vec<FieldDecl>,
     /// `search { ... }`: what search, a list's filters and agents offer of the type.
     pub search: Option<SearchBlock>,
+    pub span: Span,
+}
+
+/// The field a record of a type is named by, as the app writes it: a field of the type that
+/// holds text, which every surface that names one of its records reads (a row, a window's title,
+/// a reference, history).
+#[derive(Clone, Debug, PartialEq)]
+pub struct TitleDecl {
+    pub field: Ident,
+    pub span: Span,
+}
+
+/// What a type is called while its title is empty, as the app writes it: the words every surface
+/// that names one of its records falls back to (a row, a window's title, a reference, history),
+/// and the placeholder its title field edits with.
+#[derive(Clone, Debug, PartialEq)]
+pub struct UntitledDecl {
+    pub words: String,
     pub span: Span,
 }
 
@@ -337,10 +361,12 @@ pub struct Proposal {
 /// `primary`, `destructive` or `migration` before `action`: how the action is, not where a
 /// surface shows it.
 ///
-/// A surface decides placement from what the action offers a person: `frequent: true` earns a
-/// button in the header, every other offered action goes in an item's menu, the header's menu or
-/// the palette. A role never moves an action between those lists — only a migration, which the
-/// platform runs itself, is left out of them.
+/// A surface decides placement from what the action offers a person: one that toggles a state
+/// (`on:`) stands as a control of the header where the person sees whether it is on, every other
+/// offered action goes in an item's menu, the header's menu or the palette, and a view that
+/// places the actions of what it shows says their order and which one leads
+/// (`actions: [check(primary: true), …]`). A role never moves an action between those lists —
+/// only a migration, which the platform runs itself, is left out of them.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ActionRole {
     /// The one main action on its subject: the header's Primary button and the empty state's

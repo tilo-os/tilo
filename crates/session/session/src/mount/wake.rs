@@ -464,10 +464,22 @@ pub(crate) fn ipv4_subnets() -> std::collections::BTreeMap<String, Ipv4Subnet> {
     subnets
 }
 
+/// An ioctl request code as the C library types it: glibc's `unsigned long`, musl's `int`, which
+/// carries the same 32 bits.
+#[cfg(all(target_os = "linux", not(target_env = "musl")))]
+fn ioctl_request(code: u32) -> libc::c_ulong {
+    libc::c_ulong::from(code)
+}
+
+#[cfg(all(target_os = "linux", target_env = "musl"))]
+fn ioctl_request(code: u32) -> libc::c_int {
+    libc::c_int::from_ne_bytes(code.to_ne_bytes())
+}
+
 /// Whether the driver reports magic-packet wake enabled (`ethtool` `g` ).
 #[cfg(target_os = "linux")]
 fn magic_packet_enabled(interface: &str) -> bool {
-    const SIOCETHTOOL: libc::c_ulong = 0x8946;
+    const SIOCETHTOOL: u32 = 0x8946;
     const ETHTOOL_GWOL: u32 = 0x0000_0005;
     const WAKE_MAGIC: u32 = 1 << 5;
     #[repr(C)]
@@ -508,7 +520,8 @@ fn magic_packet_enabled(interface: &str) -> bool {
     }
     // SAFETY: `request` is an `ifreq` whose data points at a live
     // `ethtool_wolinfo` for the duration of the call.
-    let answered = unsafe { libc::ioctl(socket, SIOCETHTOOL, &raw mut request) } == 0;
+    let answered =
+        unsafe { libc::ioctl(socket, ioctl_request(SIOCETHTOOL), &raw mut request) } == 0;
     // SAFETY: `socket` is ours and closed once.
     unsafe { libc::close(socket) };
     answered && wol.wolopts & WAKE_MAGIC != 0

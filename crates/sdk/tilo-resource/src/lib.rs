@@ -109,6 +109,8 @@ pub mod child;
 pub mod children;
 mod chunk_map;
 pub mod collection;
+#[cfg(test)]
+mod concurrent_text_tests;
 pub mod content;
 mod cow;
 #[cfg(feature = "chrono")]

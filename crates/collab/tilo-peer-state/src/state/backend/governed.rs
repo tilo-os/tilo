@@ -311,6 +311,7 @@ impl Work {
             issued_at_ns: value.issued_at_ns,
             expires_at_ns: value.expires_at_ns,
             signature: value.signature,
+            issuer: None,
         };
         match now {
             Some(now) => VerifiedCertificate::new_typed(value, now),

@@ -302,6 +302,7 @@ pub(crate) fn issue(
         issued_at_ns,
         expires_at_ns: None,
         signature: [0; 64],
+        issuer: None,
     };
     let digest = device_cert_signing_digest(&cert)
         .map_err(|_| invalid("The device certificate is invalid"))?;

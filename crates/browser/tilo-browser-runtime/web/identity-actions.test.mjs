@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
   ACTION_GAP_MS, ASK_AFTER_ACTIONS, createIdentityActions, KEEP, LINKED_ID, NAME, PAIR, passkeysUsable, PHOTO, RECOVERY, RESET_PHOTO,
-  SIGN_IN, syncProfile,
+  REVOKE_DEVICE, SIGN_IN, syncProfile,
 } from './identity-actions.mjs';
 import {openInvites} from './pairing.mjs';
 import {IdentityError} from './identity.mjs';
@@ -50,6 +50,17 @@ test('without passkeys the ask offers a recovery key, never a passkey it cannot 
   assert.equal(ask.title, 'Come back as “Ada” next time?');
   assert.equal(ask.action.title, 'Save key');
   assert.doesNotMatch(ask.body, /passkey/);
+});
+
+test('an agent grant taken back at the door is revoked by the root this tab holds', async () => {
+  const revoked = [];
+  const identity = {...fakeIdentity(), revokeDevice: async key => { revoked.push(key); return {key}; }};
+  const errors = [];
+  const actions = createIdentityActions({identity, session: memorySession(), passkeys: async () => false,
+    onError: error => errors.push(error)});
+  await actions.perform(REVOKE_DEVICE, 'ab'.repeat(32));
+  assert.deepEqual(revoked, ['ab'.repeat(32)]);
+  assert.deepEqual(errors, []);
 });
 
 function memorySession() {
@@ -384,15 +395,15 @@ async function pairingFixture({invites = [INVITE_A, INVITE_B]} = {}) {
   const sheets = [];
   const asks = [];
   const errors = [];
-  const fixture = {identity, mount, host, sheets, asks, errors, clock: 0, poll: null};
+  const fixture = {identity, mount, host, sheets, asks, errors, agents: [], clock: 0, poll: null};
   const ids = [...invites];
   const random = bytes => bytes.fill(Number.parseInt(ids.shift().slice(0, 2), 16));
   fixture.actions = createIdentityActions({passkeys: withPasskeys, identity, onError: error => errors.push(error),
     now: () => fixture.clock, invites: openInvites({now: () => fixture.clock, random}),
-    copy: async () => {},
+    copy: async () => {}, onAgent: agent => fixture.agents.push(agent),
     every: run => { fixture.poll = run; return () => { fixture.poll = null; }; },
     pairing: {
-      link: invite => `https://tilo.example/#/@rooms.example/w/WORKSPACE?pair=${identity.userPublicKey}${invite}`,
+      link: (invite, room = 'WORKSPACE') => `https://tilo.example/#/@rooms.example/w/${room}?pair=${identity.userPublicKey}${invite}`,
       pending: async () => host.pending,
       answer: async (digest, approved) => {
         if (host.fail) throw host.fail;
@@ -488,4 +499,165 @@ test('an ask still open when its link expires closes', async () => {
   await pairing.tick();
   assert.ok(pairing.asks[0].closed);
   assert.equal(pairing.poll, null);
+});
+
+test('an agent’s link is a pairing link to this tab with a fresh invite, open for ten minutes', async () => {
+  const pairing = await pairingFixture();
+  const made = await pairing.actions.connectAgent();
+  assert.deepEqual(made, {
+    link: `https://tilo.example/#/@rooms.example/w/WORKSPACE?pair=${pairing.identity.userPublicKey}${INVITE_A}`,
+    expiresAt: 10 * 60 * 1000,
+  });
+  assert.equal(typeof pairing.poll, 'function', 'the tab looks for the agent while the link is open');
+  assert.deepEqual(pairing.sheets, [], 'no sheet: the first screen shows the prompt');
+});
+
+test('an agent set up in the person’s own workspace gets a link that opens it', async () => {
+  const pairing = await pairingFixture();
+  const made = await pairing.actions.connectAgent({workspace: 'MINE'});
+  assert.equal(made.link, `https://tilo.example/#/@rooms.example/w/MINE?pair=${pairing.identity.userPublicKey}${INVITE_A}`);
+});
+
+test('the agent that answers its link is approved without asking, once, and said to have signed in', async () => {
+  const pairing = await pairingFixture();
+  await pairing.actions.connectAgent();
+  pairing.host.pending = [request('d1', INVITE_A, {label: 'Claude Code on laptop'})];
+  await pairing.tick();
+  assert.deepEqual(pairing.host.answers, [['d1', true]]);
+  assert.deepEqual(pairing.asks, [], 'the person is not asked: they copied the link here');
+  assert.deepEqual(pairing.agents, [{label: 'Claude Code on laptop'}]);
+  // A second device with the same link: the invite is spent.
+  pairing.host.pending = [request('d2', INVITE_A, {label: 'Someone else'})];
+  await pairing.tick();
+  assert.deepEqual(pairing.host.answers, [['d1', true]], 'the link works once');
+  assert.equal(pairing.agents.length, 1);
+  assert.equal(pairing.poll, null);
+  assert.deepEqual(pairing.errors, []);
+});
+
+test('an agent’s link that expired approves nobody', async () => {
+  const pairing = await pairingFixture();
+  await pairing.actions.connectAgent();
+  pairing.clock = 10 * 60 * 1000;
+  pairing.host.pending = [request('d1', INVITE_A)];
+  await pairing.tick();
+  assert.deepEqual(pairing.host.answers, []);
+  assert.deepEqual(pairing.agents, []);
+  assert.equal(pairing.poll, null);
+});
+
+test('a request naming another tab’s invite is not this tab’s to approve', async () => {
+  const pairing = await pairingFixture();
+  await pairing.actions.connectAgent();
+  pairing.host.pending = [request('d1', '0c'.repeat(16)), request('d2', null)];
+  await pairing.tick();
+  assert.deepEqual(pairing.host.answers, []);
+  assert.deepEqual(pairing.asks, [], 'nor asked about');
+  assert.deepEqual(pairing.agents, []);
+});
+
+test('a pairing link the person makes for a device of theirs is still asked about', async () => {
+  const pairing = await pairingFixture();
+  await pairing.actions.connectAgent();
+  await pairing.actions.perform(PAIR.id);
+  pairing.host.pending = [request('d2', INVITE_B)];
+  await pairing.tick();
+  assert.deepEqual(pairing.asks.map(ask => ask.request.digest), ['d2']);
+  assert.deepEqual(pairing.host.answers, [], 'only the agent’s link is approved without the person');
+});
+
+test('without a workspace to pair through, an agent cannot be set up', async () => {
+  const identity = fakeIdentity();
+  const actions = createIdentityActions({passkeys: withPasskeys, identity, pairing: null});
+  await assert.rejects(actions.connectAgent(), error => error.code === 'no-workspace');
+});
+
+/** A host's stand-in for one person, and the root's part in it, recording what was asked. */
+function fakeStandIn() {
+  const asked = [];
+  const stored = new Map();
+  return {
+    asked, stored,
+    standIn: {
+      ask: async body => {
+        const request = typeof body === 'string' ? JSON.parse(body.replace(/"signed_at_ns":(\d+)/, '"signed_at_ns":"$1"')) : body;
+        asked.push(request);
+        return request.op === 'key' ? {state: 'key', key: 'cd'.repeat(32)} : request.op === 'certify' ? {state: 'kept', expires_at_ms: 1} : {state: 'retired'};
+      },
+      certify: async key => { asked.push({certify: key}); return `cert-of-${key.slice(0, 4)}`; },
+      revoke: async key => { asked.push({revoke: key}); },
+    },
+    standInStore: {getItem: key => stored.get(key) ?? null, setItem: (key, value) => stored.set(key, value), removeItem: key => stored.delete(key)},
+  };
+}
+
+test('a person set up through an agent gets a stand-in: the host makes a key, the root certifies it, the host keeps it', async () => {
+  const identity = fakeIdentity();
+  const fake = fakeStandIn();
+  const actions = createIdentityActions({passkeys: withPasskeys, identity, now: () => 1_700_000_000_123, ...fake});
+  assert.equal(await actions.keepStandIn(), 'cd'.repeat(32));
+  assert.deepEqual(fake.asked.map(request => request.op ?? Object.keys(request)[0]), ['key', 'certify', 'certify']);
+  const [key] = fake.asked;
+  assert.equal(key.user, identity.userPublicKey);
+  assert.equal(key.signed_at_ns, '1700000000123000000', 'the exact nanoseconds, not a rounded number');
+  assert.equal(key.signature, '00'.repeat(64));
+  assert.deepEqual(fake.asked[1], {certify: 'cd'.repeat(32)});
+  assert.deepEqual(fake.asked[2], {op: 'certify', cert: 'cert-of-cdcd'});
+  assert.equal(await actions.keepStandIn(), 'cd'.repeat(32), 'made once');
+  assert.equal(fake.asked.length, 3);
+});
+
+test('keeping with a passkey revokes the stand-in and has the host forget it', async () => {
+  const identity = fakeIdentity();
+  const fake = fakeStandIn();
+  const errors = [];
+  const actions = createIdentityActions({passkeys: withPasskeys, identity, publish: async () => {}, onError: error => errors.push(error), ...fake});
+  await actions.keepStandIn();
+  fake.asked.length = 0;
+  await actions.attach(fakeMount());
+  await actions.perform(KEEP.id);
+  assert.deepEqual(errors, []);
+  assert.deepEqual(fake.asked.map(request => request.op ?? Object.keys(request)[0]), ['revoke', 'retire']);
+  assert.equal(fake.asked[1].user, identity.userPublicKey);
+  assert.equal(fake.stored.size, 0);
+  assert.equal(await actions.keepStandIn(), null, 'a kept root needs no stand-in');
+});
+
+test('the host is asked to forget the stand-in only once its revocation is signed and kept', async () => {
+  const identity = fakeIdentity();
+  const asked = [];
+  let revoked;
+  const settled = new Promise(resolve => { revoked = resolve; });
+  const actions = createIdentityActions({
+    passkeys: withPasskeys, identity, publish: async () => {},
+    standIn: {
+      ask: async body => { asked.push((typeof body === 'string' ? JSON.parse(body) : body).op); return {}; },
+      certify: async () => 'cert',
+      revoke: async key => {
+        asked.push(`revoke ${key}`);
+        await settled;
+        asked.push('revoke kept');
+      },
+    },
+    standInStore: {
+      getItem: () => 'cd'.repeat(32), setItem() {}, removeItem() {},
+    },
+  });
+  await actions.attach(fakeMount());
+  const kept = actions.perform(KEEP.id);
+  await new Promise(resolve => setImmediate(resolve));
+  assert.deepEqual(asked, [`revoke ${'cd'.repeat(32)}`], 'the host still holds the key while the revoke is being signed');
+  revoked();
+  await kept;
+  assert.deepEqual(asked, [`revoke ${'cd'.repeat(32)}`, 'revoke kept', 'retire'], 'retired after the revocation landed');
+});
+
+test('no stand-in where the person never had one, or there is no host to keep one', async () => {
+  const identity = fakeIdentity();
+  const fake = fakeStandIn();
+  const actions = createIdentityActions({passkeys: withPasskeys, identity, publish: async () => {}, ...fake});
+  await actions.attach(fakeMount());
+  await actions.perform(KEEP.id);
+  assert.deepEqual(fake.asked, [], 'nothing to retire');
+  assert.equal(await createIdentityActions({identity: fakeIdentity(), passkeys: withPasskeys}).keepStandIn(), null);
 });

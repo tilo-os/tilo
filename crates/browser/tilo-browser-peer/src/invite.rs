@@ -37,6 +37,7 @@ pub async fn guest_certificate(
         issued_at_ns,
         expires_at_ns: None,
         signature: [0; 64],
+        issuer: None,
     };
     let digest =
         device_cert_signing_digest(&cert).map_err(|error| LinkError::Sign(error.to_string()))?;

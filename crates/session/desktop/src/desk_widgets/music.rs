@@ -12,12 +12,7 @@ use std::rc::Rc;
 pub use tilo_desktop_surface::now_playing::NowPlaying;
 
 /// What the widget's controls do: play or pause, go back a track, skip to the next one.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum MusicAction {
-    PlayPause,
-    Previous,
-    Next,
-}
+pub use tilo_desktop_surface::host::contract::MusicAction;
 
 /// The reading the widget draws: the session writes it every frame, and the layer reads it as it
 /// paints.

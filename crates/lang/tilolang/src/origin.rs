@@ -105,7 +105,7 @@ pub const KINDS: &[OriginKind] = &[
     OriginKind {
         name: "session.desk",
         doc: "This device's desk as the session holds it, for the person at it: the time in their \
-              style, who they are, their notifications, the workspaces on this device and the \
+              style, who they are, what they were told, the workspaces on this device and the \
               tasks running for them. A shell's bar reads it; the session writes it.",
         derived: true,
         fields: &[
@@ -168,20 +168,10 @@ pub const KINDS: &[OriginKind] = &[
                 "Today's month and day, in the person's language.",
             ),
             field(
-                "unread",
-                "Int",
-                "How many of the person's notifications are unread.",
-            ),
-            field(
                 "quiet",
                 "Bool",
-                "Whether new notifications are held back (Do Not Disturb, presenting).",
-            ),
-            field(
-                "status_panel",
-                "Bool",
-                "Whether the device has quick settings; without them its status is its \
-                 notifications.",
+                "Whether what the person is told now is held back from showing (Do Not Disturb, \
+                 presenting).",
             ),
             field("workspace", "Text", "The name of the workspace in front."),
             field(
@@ -223,7 +213,7 @@ pub const KINDS: &[OriginKind] = &[
             field(
                 "notices",
                 "Collection<session.notice>",
-                "The notifications in the centre, newest first.",
+                "What the person was told, newest first.",
             ),
             field(
                 "banner",
@@ -462,14 +452,13 @@ pub const KINDS: &[OriginKind] = &[
     },
     OriginKind {
         name: "session.notice",
-        doc: "A notification in the centre, as its sender or its task named it.",
+        doc: "Something a sender told the person at this device: an app, whatever language it is \
+              written in, or the agent task that did. Every app's telling meets here, so the \
+              device shows them as one. How they are counted, grouped and shown is the shell's: \
+              what a notice is stays the sender's.",
         derived: true,
         fields: &[
-            field(
-                "key",
-                "Text",
-                "The notification's id, as acting on it names it.",
-            ),
+            field("key", "Text", "The notice's id, as acting on it names it."),
             field("title", "Text", "What happened, in a short sentence."),
             field("body", "Text", "What it says, under the title."),
             field(
@@ -477,28 +466,17 @@ pub const KINDS: &[OriginKind] = &[
                 "Text",
                 "The app that sent it, or the agent's task.",
             ),
-            field("icon", "Text", "Its glyph, as the icon set names it."),
             field(
                 "kind",
                 "Text",
                 "Its kind: `info`, `success`, `warning` or `error`.",
             ),
-            field("read", "Bool", "Whether the person has seen it."),
-            field(
-                "group",
-                "Text",
-                "What it is grouped under: its app or its task.",
-            ),
-            field(
-                "wants_reply",
-                "Bool",
-                "Whether it asks the person something directly: it is not shown while quiet.",
-            ),
+            field("seen", "Bool", "Whether the person has seen it."),
         ],
     },
     OriginKind {
         name: "session.notice_action",
-        doc: "One action a notification offers, as its sender named it: a message's Reply, an \
+        doc: "One action a notice offers, as its sender named it: a message's Reply, an \
               import's Open.",
         derived: true,
         fields: &[

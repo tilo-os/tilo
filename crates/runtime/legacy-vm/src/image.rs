@@ -131,7 +131,8 @@ pub fn single_layer(dir: &Path) -> Result<PathBuf, ImageError> {
     Ok(dir.join(digest))
 }
 
-fn run(argv: &[String]) -> Result<(), ImageError> {
+/// Run a command the fetch is made of, [`fetch_argv`] or another.
+pub(crate) fn run(argv: &[String]) -> Result<(), ImageError> {
     let (program, rest) = argv.split_first().ok_or(ImageError::Layout)?;
     let output = Command::new(program)
         .args(rest)

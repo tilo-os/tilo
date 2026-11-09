@@ -89,7 +89,7 @@ impl Widget for ActionPalette {
             // card (`set_rect`) and a laid-out one agree.
             let (width, height) = self.desired_size();
             let style = Style {
-                size: Size::from_lengths(width as f32, height as f32),
+                size: Size::from_lengths(width, height),
                 ..Style::default()
             };
             return tree.widget_leaf(style, nodes, self);

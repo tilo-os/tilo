@@ -47,7 +47,7 @@ const EDGE_STROKE_WIDTH: f64 = 1.0;
 /// The focused window's edge: two logical pixels, so which window takes the
 /// keyboard is seen at a glance rather than looked for. The edge sits outside
 /// the card, so the extra pixel is desktop, never the app's own.
-const FOCUSED_EDGE_STROKE_WIDTH: f64 = 2.0;
+pub(crate) const FOCUSED_EDGE_STROKE_WIDTH: f64 = 2.0;
 
 /// The widest edge any window draws, so one band repaints whichever weight
 /// the window beside it takes.
@@ -354,6 +354,11 @@ pub struct TileHost {
     /// window maximizing keeps its last layout until its frame rests): the
     /// frame's ground continues the tile, so no edge marks where it ends.
     inside_growing_frame: bool,
+    /// The window is drawn as a card of its own, and the card paints the
+    /// outline: the tile's own edge stays off, since a band along the tile
+    /// would be cut by the card's clip at every side the card's frame stands
+    /// outside it, leaving a stray arc under the bar.
+    edge_by_card: bool,
     /// The window fills its display ([`Widget::set_full_bleed`]): square,
     /// unclipped and without an edge.
     full_bleed: bool,
@@ -717,6 +722,7 @@ impl TileHost {
             pointer: None,
             flush_edges: false,
             inside_growing_frame: false,
+            edge_by_card: false,
             full_bleed: false,
             square_bottom: false,
             spawned_at: None,
@@ -885,6 +891,26 @@ impl TileHost {
 
     pub(crate) fn set_inside_growing_frame(&mut self, inside: bool) {
         self.inside_growing_frame = inside;
+    }
+
+    /// The window is drawn as a card whose outline the card paints over it.
+    pub(crate) fn set_edge_by_card(&mut self, by_card: bool) {
+        self.edge_by_card = by_card;
+    }
+
+    /// Stroke the window's edge along the card `rect` it is drawn at, out to
+    /// where the card stands: the silhouette and focus ring a window keeps
+    /// when it is drawn as one card off the desk. The tile's own edge is off
+    /// then ([`Self::set_edge_by_card`]), so this is its only outline.
+    pub fn draw_card_edge(
+        &self,
+        scene: &mut Scene,
+        transform: Affine,
+        theme: &Theme,
+        radius: f64,
+        rect: Rect,
+    ) {
+        self.draw_edge_at(scene, transform, theme, radius, rect);
     }
 
     /// Name `tab` to a panic hook while this tile's application runs: see
@@ -1360,7 +1386,7 @@ impl TileHost {
         if !painted {
             return None;
         }
-        if !self.inside_growing_frame {
+        if !self.inside_growing_frame && !self.edge_by_card {
             self.draw_edge_at(scene, transform, theme, radius, rect);
         }
         Some(rect)
@@ -2912,7 +2938,7 @@ impl TileHost {
             .into_iter()
             .map(|band| transform.transform_rect_bbox(band))
             .collect();
-        if !self.inside_growing_frame {
+        if !self.inside_growing_frame && !self.edge_by_card {
             crate::scene_parts::part(scene, edge, bounds, |scene| {
                 self.draw_edge(scene, transform, theme, radius);
             });

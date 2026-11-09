@@ -12,7 +12,7 @@ use so.tilo.settings as settings
 view quick_settings(d: Desk) {
     row(fill, distribute: .end, padding: .related) {
         ui.FloatingPanel(
-            width: if space.compact { .none } else { .some(360.0) },
+            width: if not space.compact { 360.0 },
             fill: if space.compact { 1.0 } else { 0.0 },
         ) {
             header: {
@@ -42,7 +42,7 @@ view wifi_tile() {
     let wifi = device.network.wifi
     let joined = wifi.networks.filter(n -> n.connected).first()
     let label = if let n = joined { n.name } else { "Wi-Fi" }
-    ui.Button(label, icon: .wifi, toggled: .some(wifi.on), enabled: wifi.available) {
+    ui.Button(label, icon: .wifi, toggled: wifi.on, enabled: wifi.available) {
         on press: device.set_wifi(device.network, not wifi.on)
     }
 }
@@ -50,7 +50,7 @@ view wifi_tile() {
 /// Bluetooth, on while it is on; it cannot be pressed on a device without it.
 view bluetooth_tile() {
     let b = device.bluetooth
-    ui.Button("Bluetooth", icon: .bluetooth, toggled: .some(b.on), enabled: b.available) {
+    ui.Button("Bluetooth", icon: .bluetooth, toggled: b.on, enabled: b.available) {
         on press: device.set_bluetooth(b, not b.on)
     }
 }
@@ -58,7 +58,7 @@ view bluetooth_tile() {
 /// Dark mode: on while every app draws dark, each with the theme the person chose for it.
 view dark_tile() {
     let a = settings.appearance
-    ui.Button("Dark mode", icon: .moon, toggled: .some(a.mode == "dark")) {
+    ui.Button("Dark mode", icon: .moon, toggled: a.mode == "dark") {
         on press: settings.set_dark_mode(a, a.mode != "dark")
     }
 }
@@ -66,7 +66,7 @@ view dark_tile() {
 /// Do not disturb: on while banners and sounds wait.
 view quiet_tile() {
     let n = settings.notifications
-    ui.Button("Do not disturb", icon: .bell_off, toggled: .some(n.do_not_disturb)) {
+    ui.Button("Do not disturb", icon: .bell_off, toggled: n.do_not_disturb) {
         on press: settings.set_do_not_disturb(n, not n.do_not_disturb)
     }
 }
@@ -77,7 +77,7 @@ view levels() {
     if let volume = device.sound.volume {
         row(gap: .related, align: .center) {
             ui.Icon(.speaker)
-            ui.Slider(value: volume, label: .some("Volume"), fill) {
+            ui.Slider(value: volume, label: "Volume", fill) {
                 on change(v): device.set_volume(device.sound, v)
             }
         }
@@ -85,7 +85,7 @@ view levels() {
     if let level = device.displays.level {
         row(gap: .related, align: .center) {
             ui.Icon(.sun)
-            ui.Slider(value: level, label: .some("Brightness"), fill) {
+            ui.Slider(value: level, label: "Brightness", fill) {
                 on change(v): device.set_brightness(device.displays, v)
             }
         }

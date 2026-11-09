@@ -24,6 +24,7 @@ use tilo_actions::remote::{
     RemoteActionTarget, application_action_target, application_open_target,
 };
 use tilo_actions::{DoorError, ResourceSpec};
+use tilo_app_launch::SessionEnvironment;
 use tilo_compositor::{InputEvent, KeyRepeat};
 use tilo_desktop::desk_verbs::{
     CHROME_RESOURCE, DESK_RESOURCE, SEARCH_RESOURCE, SEARCH_ROW_KIND, launchpad_card_id,
@@ -102,7 +103,7 @@ fn session_over(
 ) -> Session {
     crate::common::headless(Options {
         search: SearchOptions {
-            lists: Lists::fixed(AppLists {
+            apps: Some(std::sync::Arc::new(Lists::fixed(AppLists {
                 applications: vec![AppEntry {
                     id: "so.tilo.sheets".into(),
                     title: "Sheets".into(),
@@ -110,8 +111,12 @@ fn session_over(
                     description: None,
                 }],
                 ..AppLists::default()
+            }))),
+            indexes: content.map(|content| {
+                std::sync::Arc::new(tilo_session::mount::indexes::SessionIndexes::new(
+                    content, None,
+                )) as std::sync::Arc<dyn tilo_session::platform::indexes::Indexes>
             }),
-            content,
             records,
             ..SearchOptions::default()
         },
@@ -1067,10 +1072,7 @@ fn a_record_of_another_workspace_is_found_by_name_and_brought_here() {
     // a document by.
     assert_eq!(
         host.opened.borrow().clone(),
-        vec![(
-            here,
-            tilo_desktop_search::providers::files::file_uri(&document)
-        )],
+        vec![(here, tilo_desktop_search::file_uri(&document))],
         "the file the record is opens in this workspace"
     );
 }
@@ -1380,7 +1382,7 @@ fn the_palette_the_host_search_opens_takes_the_keys() {
 fn host_session(host: Rc<Host>) -> Session {
     let mut session = crate::common::headless(Options {
         search: SearchOptions {
-            lists: Lists::fixed(host_app_lists()),
+            apps: Some(std::sync::Arc::new(Lists::fixed(host_app_lists()))),
             ..SearchOptions::default()
         },
         apps: Some(host as Rc<dyn AppActions>),
@@ -1556,5 +1558,97 @@ fn a_line_typed_into_search_runs_the_workspace_s_capture_with_no_app_open() {
     assert_eq!(
         arguments["title"], line,
         "what was typed is the line itself, word for word"
+    );
+}
+
+/// Choosing an app's row in search starts the app through the session's own action host: the
+/// app is handed to the launcher, and no refusal stands on the row. A row is published as the
+/// workspace's `open` of an app (`workspace:<workspace>`), which the host reads as one of its
+/// two shapes — the other being an app's own action (`application:<workspace>:<app>`).
+///
+/// The failure this pins was silent: every app's row answered "Apps cannot be started right
+/// now." and search stayed open over the query, because the workspace provider was read with
+/// the application provider's parser and never matched.
+#[test]
+fn a_search_row_for_an_app_starts_it_through_the_sessions_own_host() {
+    let _settled = ui::motion::testing::settled();
+    let mut home = tilo_test_env::TestHome::new().expect("a home");
+    let store = home.data().join("tilo-apps");
+    common::install_apps_in(&store, &home.state().join("tilolang"));
+    home.env().set("TILO_APPS_DATA_DIR", &store);
+    let handed = home.home().join("handed");
+    let launcher = tilo_test_env::stand_in(
+        home.home().join("tilo-launcher"),
+        &format!("printf 'started\\n' >> '{}'\nhold\n", handed.display()),
+    )
+    .expect("a launcher");
+    let mut environment = SessionEnvironment::from_process();
+    environment.wayland_socket = Some(home.runtime().join("wayland-7"));
+    let apps = Rc::new(tilo_session::mount::apps::Apps::with_launcher(
+        environment,
+        None,
+        Some(launcher.path().to_owned()),
+    ));
+    let mut session = crate::common::headless(Options {
+        search: SearchOptions {
+            apps: Some(std::sync::Arc::new(Lists::fixed(AppLists {
+                applications: vec![AppEntry {
+                    id: "so.tilo.lang.notes".into(),
+                    title: "Notebook".into(),
+                    category: None,
+                    description: None,
+                }],
+                ..AppLists::default()
+            }))),
+            ..SearchOptions::default()
+        },
+        apps: Some(Rc::clone(&apps) as Rc<dyn AppActions>),
+        launch: Some(Rc::clone(&apps)),
+        collab: false,
+        ..Options::default()
+    });
+    session.step(Duration::from_millis(1)).expect("step");
+
+    search_for(&mut session, "notebook");
+    let row = titled(&session, "Notebook")
+        .unwrap_or_else(|| panic!("the app's row: {:?}", labels(&session)));
+    assert!(
+        !row.presentation
+            .as_ref()
+            .and_then(|presentation| presentation.detail.as_deref())
+            .is_some_and(|detail| detail.contains("cannot be started")),
+        "the row does not say the app cannot start: {}",
+        row.label
+    );
+    invoke(
+        &mut session,
+        row.id.as_str(),
+        "choose-search-row",
+        serde_json::json!({}),
+    );
+    let started = common::wait_maybe_past(&mut session, Duration::from_secs(2), |_| {
+        std::fs::read_to_string(&handed)
+            .is_ok_and(|said| said.contains("started"))
+            .then_some(())
+    })
+    .is_some();
+    assert!(
+        started,
+        "choosing the app's row starts it: the launcher was handed nothing; the row says {:?}",
+        titled(&session, "Notebook").map(|row| {
+            row.presentation
+                .map(|presentation| presentation.detail)
+                .unwrap_or_default()
+        })
+    );
+    assert!(
+        titled(&session, "Notebook").is_none_or(|row| {
+            !row.presentation
+                .as_ref()
+                .and_then(|presentation| presentation.detail.as_deref())
+                .is_some_and(|detail| detail.contains("cannot be started"))
+        }),
+        "no refusal stands on the row after choosing it: {:?}",
+        labels(&session)
     );
 }

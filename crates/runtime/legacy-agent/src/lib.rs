@@ -3,8 +3,9 @@
 //! Runs as root in the guest (a systemd system service) and listens on
 //! vsock [`AGENT_PORT`](legacy_agent_protocol::AGENT_PORT). It starts apps as
 //! the guest's one ordinary user, relays their stdio, mounts the host's
-//! virtio-fs shares at the paths the host names, and reports what runs and
-//! what is installed. It decides nothing about the host: which directories
+//! shares at the paths the host names (virtio-fs, or FUSE over vsock in a
+//! VM without virtio-fs, see [`remote_fs`]), and reports what runs and what
+//! is installed. It decides nothing about the host: which directories
 //! are shared, and when the VM sleeps, are the host's decisions.
 
 #![allow(
@@ -15,6 +16,10 @@
 pub mod apps;
 pub mod launch;
 pub mod mounts;
+#[cfg(target_os = "linux")]
+pub mod remote_fs;
 pub mod server;
 pub mod system;
+#[cfg(unix)]
+pub mod terminal;
 pub mod user;

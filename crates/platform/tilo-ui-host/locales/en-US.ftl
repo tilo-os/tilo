@@ -94,6 +94,7 @@ tilolang-selected = { $count ->
 }
 tilolang-clear-selection = Clear selection
 tilolang-sort = Sort
+tilolang-order-default = Default
 tilolang-undo = Undo
 # Typed while the window was busy with a press that opened no field, and no field had the keyboard.
 tilolang-typing-unplaced = Nothing took what you typed: “{ $typed }”
@@ -122,4 +123,8 @@ tilolang-history-changes = { $count ->
 tilolang-history-show = Show changes
 tilolang-history-hide = Hide changes
 tilolang-history-undo-run = Undo run
+# A step of the history holds its revert in its own menu, named by what the menu undoes.
+tilolang-history-actions = Actions for this change
+# Taking an older change back, as a new change that reverses it.
+tilolang-history-revert = Revert this change
 

@@ -23,7 +23,8 @@ use std::time::Instant;
 
 use tilo_device_fabric::{DevicePresence, OWNER_SESSION_ACTIVE_STEP_MS, OwnerSession};
 
-use crate::{Error, Session};
+use crate::Session;
+use tilo_compositor::Error;
 
 /// What this device does to follow the person's other devices.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

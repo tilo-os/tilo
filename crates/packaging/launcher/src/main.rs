@@ -226,19 +226,6 @@ enum Cmd {
         #[arg(long)]
         allow_unsigned_runtime: bool,
     },
-    /// Admit a `tilo-file` bearer from stdin through the per-user filesystem
-    /// service, then open Files at the resulting non-secret mount path.
-    AdmitShare {
-        /// Host Wayland socket passed to Files.
-        #[arg(long)]
-        wayland_socket: Option<PathBuf>,
-        /// Allow a missing runtime bundle for local bring-up.
-        #[arg(long)]
-        allow_missing_runtime: bool,
-        /// Accept an unsigned runtime bundle for local bring-up.
-        #[arg(long)]
-        allow_unsigned_runtime: bool,
-    },
     /// Launch an application Tilo did **not** package: a `.desktop` entry
     /// already installed on the host, Flatpak or otherwise.
     ///
@@ -437,11 +424,7 @@ fn dispatch_command(
     // compositor: an app is always a candidate.
     if matches!(
         command,
-        Cmd::Run { .. }
-            | Cmd::RunInstalled { .. }
-            | Cmd::Exec { .. }
-            | Cmd::AdmitShare { .. }
-            | Cmd::RunHost(_)
+        Cmd::Run { .. } | Cmd::RunInstalled { .. } | Cmd::Exec { .. } | Cmd::RunHost(_)
     ) {
         launcher::priority::leave_session_protection();
     }
@@ -477,15 +460,6 @@ fn dispatch_command(
                 allow_unsigned_runtime,
                 capabilities_path: None,
             },
-        ),
-        Cmd::AdmitShare {
-            wayland_socket,
-            allow_missing_runtime,
-            allow_unsigned_runtime,
-        } => admit_share_and_open(
-            wayland_socket,
-            allow_missing_runtime,
-            allow_unsigned_runtime,
         ),
         Cmd::RunHost(args) => run_host(args),
         Cmd::SandboxView(command) => sandbox_view(command),
@@ -1024,177 +998,6 @@ fn enter_app_scope(app_id: &str) {
     tilo_startup_metrics::handoff_mark("scope-joined");
 }
 
-fn admit_share_and_open(
-    wayland_socket: Option<PathBuf>,
-    allow_missing_runtime: bool,
-    allow_unsigned_runtime: bool,
-) -> ExitCode {
-    match admit_share_from_stdin() {
-        Ok(path) => match received_file_capability(&path) {
-            Ok((capability_path, guard)) => {
-                let result = exec_installed(
-                    "so.tilo.file-explorer",
-                    ExecArgs {
-                        no_services: false,
-                        wayland_socket,
-                        workspace_id: None,
-                        open: Some(path),
-                        open_uri: None,
-                        allow_missing_runtime,
-                        allow_unsigned_runtime,
-                        capabilities_path: Some(capability_path),
-                    },
-                );
-                drop(guard);
-                result
-            }
-            Err(error) => {
-                eprintln!("tilo-launcher: {error}");
-                ExitCode::from(2)
-            }
-        },
-        Err(error) => {
-            eprintln!("tilo-launcher: {error}");
-            ExitCode::from(2)
-        }
-    }
-}
-
-fn admit_share_from_stdin() -> Result<PathBuf, String> {
-    use std::io::Read;
-    use std::os::unix::net::UnixStream;
-
-    const MAX_URI_BYTES: usize = 16 * 1024;
-    let mut uri = Vec::new();
-    std::io::stdin()
-        .take((MAX_URI_BYTES + 1) as u64)
-        .read_to_end(&mut uri)
-        .map_err(|_| "could not read shared-file link from stdin".to_string())?;
-    if uri.len() > MAX_URI_BYTES {
-        return Err("shared-file link exceeds its bound".into());
-    }
-    while matches!(uri.last(), Some(b'\r' | b'\n')) {
-        uri.pop();
-    }
-    let uri =
-        String::from_utf8(uri).map_err(|_| "shared-file link is not valid text".to_string())?;
-    if uri.is_empty() {
-        return Err("shared-file link is empty".into());
-    }
-
-    let socket = launcher::services::socket_for("tilo-fs");
-    let mut stream = UnixStream::connect(&socket)
-        .map_err(|_| "received-file service is unavailable".to_string())?;
-    request_received_mount(uri, &mut stream)
-}
-
-fn request_received_mount(
-    uri: String,
-    stream: &mut (impl std::io::Read + std::io::Write),
-) -> Result<PathBuf, String> {
-    let request = fs_protocol::RecipientControlRequestV1 {
-        protocol_version: fs_protocol::RECIPIENT_CONTROL_VERSION,
-        operation: fs_protocol::RecipientControlOperationV1::AdmitV2 { uri },
-    };
-    let request = collab_types::canonical_bytes(&request)
-        .map_err(|_| "could not encode received-file request".to_string())?;
-    let framing = fs_protocol::RECIPIENT_CONTROL_FRAMING;
-    let request = framing
-        .encode(&request)
-        .map_err(|_| "received-file request exceeds its bound".to_string())?;
-    stream
-        .write_all(&request)
-        .map_err(|_| "received-file service is unavailable".to_string())?;
-    let response = match framing.read(stream) {
-        Ok(Some(response)) => response,
-        Ok(None) => return Err("received-file service did not respond".into()),
-        Err(wire_frame::FrameError::TooLarge(_) | wire_frame::FrameError::EmptyFrame) => {
-            return Err("received-file service returned an oversized response".into());
-        }
-        Err(_) => return Err("received-file service response was truncated".into()),
-    };
-    let response: fs_protocol::RecipientControlResponseV1 =
-        collab_types::canonical::from_canonical_bytes(&response)
-            .map_err(|_| "received-file service returned an invalid response".to_string())?;
-    let status = match response.result {
-        fs_protocol::RecipientControlResultV1::Admitted { status, .. } => status,
-        fs_protocol::RecipientControlResultV1::Error { code } => {
-            return Err(format!("received-file service refused the link ({code:?})"));
-        }
-        fs_protocol::RecipientControlResultV1::Status(_) => {
-            return Err("received-file service returned the wrong response".into());
-        }
-    };
-    let mount = status
-        .mount
-        .ok_or_else(|| "received-file service did not provide a mount".to_string())?;
-    let path = PathBuf::from(mount.path);
-    if !path.is_absolute() {
-        return Err("received-file service returned a relative mount path".into());
-    }
-    Ok(path)
-}
-
-struct TemporaryCapability(PathBuf);
-
-impl Drop for TemporaryCapability {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_file(&self.0);
-    }
-}
-
-fn received_file_capability(
-    path: &std::path::Path,
-) -> Result<(PathBuf, TemporaryCapability), String> {
-    use std::io::Write;
-    use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
-
-    let metadata = std::fs::symlink_metadata(path)
-        .map_err(|_| "received-file mount is unavailable".to_string())?;
-    if !path.is_absolute() || metadata.file_type().is_symlink() || !metadata.is_dir() {
-        return Err("received-file mount is not a safe directory".into());
-    }
-
-    let root = launcher::services::services_root()
-        .parent()
-        .ok_or_else(|| "runtime directory is unavailable".to_string())?
-        .join("launcher-grants");
-    match std::fs::create_dir(&root) {
-        Ok(()) => {}
-        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
-        Err(_) => {
-            return Err("could not create the temporary capability directory".to_string());
-        }
-    }
-    let root_metadata = std::fs::symlink_metadata(&root)
-        .map_err(|_| "could not inspect the temporary capability directory".to_string())?;
-    if root_metadata.file_type().is_symlink() || !root_metadata.is_dir() {
-        return Err("temporary capability directory is not a safe directory".into());
-    }
-    std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o700))
-        .map_err(|_| "could not secure the temporary capability directory".to_string())?;
-    let capability = collab_types::CapOverride::new(
-        collab_types::Subject::app("so.tilo.file-explorer"),
-        collab_types::Scope::FsPath(path.display().to_string()),
-        collab_types::Effect::Grant,
-        collab_types::caps::Access::Read,
-    );
-    let bytes = serde_json::to_vec(&vec![capability])
-        .map_err(|_| "could not encode the received-file capability".to_string())?;
-    let destination = root.join(format!("received-{}.json", uuid::Uuid::new_v4().simple()));
-    let mut file = std::fs::OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .mode(0o600)
-        .open(&destination)
-        .map_err(|_| "could not create the received-file capability".to_string())?;
-    let guard = TemporaryCapability(destination.clone());
-    file.write_all(&bytes)
-        .and_then(|()| file.sync_all())
-        .map_err(|_| "could not persist the received-file capability".to_string())?;
-    Ok((destination, guard))
-}
-
 /// CLI arguments for [`Cmd::Exec`], grouped to keep [`exec_installed`] under
 /// clippy's argument-count limit — this is argv plumbing, not a sandbox
 /// policy struct.
@@ -1584,95 +1387,8 @@ fn init_tracing() {
 }
 
 #[cfg(test)]
-mod admit_share_tests {
+mod host_launch_tests {
     use super::*;
-    use std::io::{Cursor, Read, Write};
-    use std::os::fd::IntoRawFd;
-    use std::os::unix::net::UnixStream;
-
-    struct ScriptedStream {
-        written: Vec<u8>,
-        response: Cursor<Vec<u8>>,
-    }
-
-    #[test]
-    fn share_admission_and_registration_hand_over_only_what_is_owed() {
-        {
-            let (mut release, wait) = UnixStream::pair().unwrap();
-            let writer = std::thread::spawn(move || release.write_all(&[1]));
-            wait_for_registration_fd(wait.into_raw_fd()).unwrap();
-            writer.join().unwrap().unwrap();
-        }
-        {
-            let uri = "tilo-file://v2/payload#bearer-secret".to_string();
-            let mut stream = response("/home/alice/Shared/record");
-            let mount = request_received_mount(uri.clone(), &mut stream).unwrap();
-            assert_eq!(mount, PathBuf::from("/home/alice/Shared/record"));
-            // One frame: a big-endian `u32` length, then the canonical request.
-            let body_len = u32::try_from(stream.written.len() - 4).unwrap();
-            assert_eq!(stream.written[..4], body_len.to_be_bytes());
-            let length = u32::from_be_bytes(stream.written[..4].try_into().unwrap()) as usize;
-            let request: fs_protocol::RecipientControlRequestV1 =
-                collab_types::canonical::from_canonical_bytes(&stream.written[4..4 + length])
-                    .unwrap();
-            assert!(matches!(
-                request.operation,
-                fs_protocol::RecipientControlOperationV1::AdmitV2 { uri: got } if got == uri
-            ));
-        }
-        {
-            let mut stream = response("relative/path");
-            assert!(request_received_mount("redacted".into(), &mut stream).is_err());
-        }
-    }
-
-    impl Read for ScriptedStream {
-        fn read(&mut self, buffer: &mut [u8]) -> std::io::Result<usize> {
-            self.response.read(buffer)
-        }
-    }
-
-    impl Write for ScriptedStream {
-        fn write(&mut self, buffer: &[u8]) -> std::io::Result<usize> {
-            self.written.extend_from_slice(buffer);
-            Ok(buffer.len())
-        }
-
-        fn flush(&mut self) -> std::io::Result<()> {
-            Ok(())
-        }
-    }
-
-    fn response(path: &str) -> ScriptedStream {
-        let response = fs_protocol::RecipientControlResponseV1 {
-            protocol_version: fs_protocol::RECIPIENT_CONTROL_VERSION,
-            result: fs_protocol::RecipientControlResultV1::Admitted {
-                inserted: true,
-                status: fs_protocol::RecipientSubscriptionStatusV1 {
-                    key: fs_protocol::RecipientSubscriptionKeyV1 {
-                        workspace_id: uuid::Uuid::nil(),
-                        record_id: fs_protocol::FileRecordId(uuid::Uuid::from_u128(1)),
-                    },
-                    permission: fs_protocol::FilePermission::View,
-                    last_success_at_ms: None,
-                    last_error: None,
-                    mount: Some(fs_protocol::RecipientMountStatusV1 {
-                        path: path.into(),
-                        running: true,
-                    }),
-                },
-            },
-        };
-        let bytes = collab_types::canonical_bytes(&response).unwrap();
-        let mut framed = Vec::new();
-        let length = u32::try_from(bytes.len()).unwrap();
-        framed.extend_from_slice(&length.to_be_bytes());
-        framed.extend_from_slice(&bytes);
-        ScriptedStream {
-            written: Vec::new(),
-            response: Cursor::new(framed),
-        }
-    }
 
     #[test]
     fn host_launch_dry_run_redacts_one_shot_activation_values() {

@@ -43,8 +43,9 @@ use crate::{Placement, WidgetHost};
 
 /// The origin the session's resources come from: the first part of their kinds.
 pub const ORIGIN: &str = "session";
-/// The resource the session publishes its desk as, whose reading [`SessionOrigin`] writes.
-pub const DESK_RESOURCE: &str = "session:desk";
+/// The resource the session publishes its desk as, whose reading [`SessionOrigin`] writes: the
+/// door's own name for it, so the session, its broker and its views name one desk.
+pub const DESK_RESOURCE: &str = ui::tilo_actions::remote::session_actions::DESK_RESOURCE;
 /// The resource the session's chrome actions are published on.
 pub const CHROME_RESOURCE: &str = "desktop:chrome";
 /// The resource the person's arrangement is published on: what a composed view's open becomes a
@@ -377,22 +378,19 @@ pub struct RoomReading {
     pub activity: String,
 }
 
-/// A notification in the centre, as its sender or its task named it.
+/// Something a sender told the person here: an app, or the agent task that did.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct NoticeReading {
     pub key: String,
     pub title: String,
     pub body: String,
     pub origin_app: String,
-    pub icon: String,
     /// `info`, `success`, `warning` or `error`.
     pub kind: String,
-    pub read: bool,
-    pub group: String,
-    pub wants_reply: bool,
+    pub seen: bool,
 }
 
-/// One action a notification offers, as its sender named it.
+/// One action a notice offers, as its sender named it.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct NoticeActionReading {
     pub notice: String,
@@ -439,9 +437,7 @@ pub struct DeskReading {
     pub ask: Option<AskReading>,
     pub weekday: String,
     pub date: String,
-    pub unread: u32,
     pub quiet: bool,
-    pub status_panel: bool,
     pub workspace: String,
     pub strip: String,
     pub workspaces: Vec<WorkspaceReading>,
@@ -473,7 +469,7 @@ pub struct DeskReading {
     /// The workspaces the person is in, with who is in each and what it holds.
     #[serde(default)]
     pub rooms: Vec<RoomReading>,
-    /// The notifications in the centre, newest first.
+    /// What the person was told, newest first.
     #[serde(default)]
     pub notices: Vec<NoticeReading>,
     /// Each action a notice offers, naming the notice it is on, in its sender's order.
@@ -534,90 +530,12 @@ pub struct DeskStyleReading {
     pub reason: String,
 }
 
-/// A workspace the person's desk shows, as their arrangement names it.
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ArrangementWorkspaceReading {
-    pub key: String,
-    pub name: String,
-    /// Whether it is the workspace in front: a desk holds several and shows one, so a shell draws
-    /// the rows of this one and no other.
-    pub current: bool,
-}
-
-/// A row of the desk, as the person's arrangement names it.
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ArrangementRowReading {
-    pub key: String,
-    pub workspace: String,
-    pub name: String,
-    pub shell: String,
-}
-
-/// A strip of the desk, as the person's arrangement names it.
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ArrangementStripReading {
-    pub key: String,
-    pub workspace: String,
-    pub row: String,
-    /// Its width in per-mille of its row's usable width.
-    pub width: i64,
-    pub maximized: bool,
-    pub active: String,
-    pub placed: bool,
-    pub canvas_x: i64,
-    pub canvas_y: i64,
-    pub canvas_width: i64,
-    pub canvas_height: i64,
-    /// Whether the strip's window floats above the workspace's windows,
-    /// rather than standing among them in its row.
-    #[serde(default)]
-    pub floating: bool,
-    /// The corner of the work area a floating window keeps its distance from:
-    /// `top-left`, `top-right`, `bottom-right` or `bottom-left`.
-    #[serde(default, skip_serializing_if = "String::is_empty")]
-    pub float_corner: String,
-    /// Its distance from that corner's side edge, in canvas pixels.
-    #[serde(default)]
-    pub float_dx: i64,
-    /// Its distance from that corner's top or bottom edge, in canvas pixels.
-    #[serde(default)]
-    pub float_dy: i64,
-    /// Its floating width and height in canvas pixels.
-    #[serde(default)]
-    pub float_width: i64,
-    #[serde(default)]
-    pub float_height: i64,
-    pub shell: String,
-}
-
-/// A place of the desk, as the person's arrangement names it.
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ArrangementPlaceReading {
-    pub key: String,
-    pub strip: String,
-    pub shows: String,
-    pub shown_as: String,
-    pub record: String,
-    /// The title the place recorded when it was made, kept for the record's own bookkeeping:
-    /// what a surface shows a window by is [`Self::name`].
-    pub title: String,
-    /// What every surface calls this place: its window's title and the app's own name
-    /// (`Groceries — Notes`), or the app's name alone when the window has no title. Never an
-    /// app id.
-    pub name: String,
-    pub pinned: bool,
-    pub shell: String,
-}
-
-/// The reading of [`ARRANGEMENT_RESOURCE`]: the person's arrangement as the session holds it,
-/// as JSON on the door.
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ArrangementReading {
-    pub workspaces: Vec<ArrangementWorkspaceReading>,
-    pub rows: Vec<ArrangementRowReading>,
-    pub strips: Vec<ArrangementStripReading>,
-    pub places: Vec<ArrangementPlaceReading>,
-}
+/// The arrangement's readings are the session core's, which the page publishes through the same
+/// contract: what a shell reads from this door is what every host's arrangement holds.
+pub use tilo_session_core::arrangement::{
+    ArrangementPlaceReading, ArrangementReading, ArrangementRowReading, ArrangementStripReading,
+    ArrangementWorkspaceReading,
+};
 
 /// A running application's tray item, as the bar shows it.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -1012,19 +930,9 @@ impl SessionOrigin {
         );
         set("date", text(&reading.date), reading.date != was.date);
         set(
-            "unread",
-            Value::Int(i64::from(reading.unread)),
-            reading.unread != was.unread,
-        );
-        set(
             "quiet",
             Value::Bool(reading.quiet),
             reading.quiet != was.quiet,
-        );
-        set(
-            "status_panel",
-            Value::Bool(reading.status_panel),
-            reading.status_panel != was.status_panel,
         );
         set(
             "workspace",
@@ -1249,11 +1157,8 @@ impl SessionOrigin {
                         ("title", text(&n.title)),
                         ("body", text(&n.body)),
                         ("origin_app", text(&n.origin_app)),
-                        ("icon", text(&n.icon)),
                         ("kind", text(&n.kind)),
-                        ("read", Value::Bool(n.read)),
-                        ("group", text(&n.group)),
-                        ("wants_reply", Value::Bool(n.wants_reply)),
+                        ("seen", Value::Bool(n.seen)),
                     ]
                 },
             ));

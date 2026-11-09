@@ -66,37 +66,24 @@ impl Checker<'_> {
         f
     }
 
-    /// The arguments of an action call: those left out at the end are computed by the runtime
-    /// when it is invoked, on the invoker's state. A gap before a given argument is refused, unless the parameter's default is
-    /// `.none`: a constant, which needs nothing before it, so the call passes it there. An
-    /// optional parameter of a published action is left out wherever it stands.
-    pub(super) fn applied_args(
-        &mut self,
-        c: &Callable,
-        bound: Vec<Option<Ex>>,
-        span: Span,
-    ) -> Vec<Ex> {
+    /// The arguments of an action call: a parameter the call leaves out stands in its place as
+    /// what it is — [`crate::abi::Imp::MissingV`] — and the runtime computes its default when the
+    /// action is invoked, on the invoker's state, so a call leaves out any parameter, wherever
+    /// it stands. [`Checker::bind_args_or_default`] has already refused a parameter left out
+    /// that has no default.
+    pub(super) fn applied_args(c: &Callable, bound: Vec<Option<Ex>>) -> Vec<Ex> {
         let given = bound.iter().rposition(Option::is_some).map_or(0, |i| i + 1);
-        let mut out = Vec::new();
-        for (i, slot) in bound.into_iter().take(given).enumerate() {
-            let param = c.params.get(i);
-            match slot {
-                Some(v) => out.push(v),
-                None if param
-                    .and_then(|p| p.default.as_ref())
-                    .is_some_and(crate::resolve::ParamDefault::is_none) =>
-                {
-                    let ty = param.map_or(Ty::Error, |p| p.ty.clone());
-                    out.push(Ex::host(crate::abi::Imp::NoneV, Vec::new(), ty));
-                }
-                None => {
-                    let name = c.params.get(i).map_or("", |p| p.name.as_str());
-                    self.err("E028", span, format!("this leaves out `{name}` of `{}` but gives a parameter after it; a call leaves out only its last parameters, so give `{name}` too", c.name));
-                    out.push(Ex::error());
-                }
-            }
-        }
-        out
+        bound
+            .into_iter()
+            .take(given)
+            .enumerate()
+            .map(|(i, slot)| {
+                slot.unwrap_or_else(|| {
+                    let ty = c.params.get(i).map_or(Ty::Error, |p| p.ty.clone());
+                    Ex::host(crate::abi::Imp::MissingV, Vec::new(), ty)
+                })
+            })
+            .collect()
     }
 
     // ---- register writes ------------------------------------------------------------------

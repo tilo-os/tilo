@@ -64,11 +64,7 @@ impl DesktopHandle {
         }
         shared
             .tree
-            .workspaces
-            .iter()
-            .flat_map(|workspace| &workspace.strips)
-            .flat_map(|strip| &strip.window_groups)
-            .flat_map(|group| &group.tabs)
+            .tabs()
             .filter(|tab| {
                 matches!(
                     &tab.tile,
@@ -106,16 +102,9 @@ impl super::Shared {
     /// The compositor's window id for the window showing `tab` , when a window of an app this
     /// device runs fills it.
     pub(crate) fn window_of_tab(&self, tab: TabId) -> Option<u64> {
-        self.tree
-            .workspaces
-            .iter()
-            .flat_map(|workspace| &workspace.strips)
-            .flat_map(|strip| &strip.window_groups)
-            .flat_map(|group| &group.tabs)
-            .find(|held| held.id == tab)
-            .and_then(|held| match &held.tile {
-                tilo_desktop_model::TileContent::Foreign { surface_id, .. } => Some(*surface_id),
-                _ => None,
-            })
+        self.tree.tab(tab).and_then(|held| match &held.tile {
+            tilo_desktop_model::TileContent::Foreign { surface_id, .. } => Some(*surface_id),
+            _ => None,
+        })
     }
 }

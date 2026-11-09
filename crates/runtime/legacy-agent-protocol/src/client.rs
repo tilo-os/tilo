@@ -5,7 +5,7 @@ use std::sync::{Arc, Mutex};
 
 use crate::{
     AgentHello, Duplex, ExitStatus, GuestMessage, HostMessage, Launch, MAX_CHUNK_BYTES,
-    PROTOCOL_MAJOR, ProtocolError, Signal, recv, send,
+    PROTOCOL_MAJOR, ProtocolError, Signal, TerminalSize, recv, send,
 };
 
 /// Exchange hellos; refuses an agent speaking another protocol major.
@@ -50,16 +50,41 @@ pub struct LaunchIo<'a> {
     pub started: &'a mut dyn FnMut(u32),
 }
 
-/// A handle that can signal a running launch from another thread.
-#[derive(Clone)]
+/// A handle that can signal a running launch from another thread, and
+/// feed a terminal launch its keys and size.
 pub struct LaunchSignals<S> {
     writer: Arc<Mutex<S>>,
 }
 
+impl<S> Clone for LaunchSignals<S> {
+    fn clone(&self) -> Self {
+        Self {
+            writer: Arc::clone(&self.writer),
+        }
+    }
+}
+
 impl<S: Duplex> LaunchSignals<S> {
     pub fn send(&self, signal: Signal) -> Result<(), ProtocolError> {
+        self.message(&HostMessage::Signal(signal))
+    }
+
+    /// Input for the app, in chunks a frame carries.
+    pub fn input(&self, bytes: &[u8]) -> Result<(), ProtocolError> {
+        for chunk in bytes.chunks(MAX_CHUNK_BYTES) {
+            self.message(&HostMessage::Stdin(chunk.to_vec()))?;
+        }
+        Ok(())
+    }
+
+    /// The host terminal of a terminal launch is now `size`.
+    pub fn resize(&self, size: TerminalSize) -> Result<(), ProtocolError> {
+        self.message(&HostMessage::Resize(size))
+    }
+
+    fn message(&self, message: &HostMessage) -> Result<(), ProtocolError> {
         let mut writer = self.writer.lock().map_err(|_| ProtocolError::Closed)?;
-        send(&mut *writer, &HostMessage::Signal(signal))
+        send(&mut *writer, message)
     }
 }
 

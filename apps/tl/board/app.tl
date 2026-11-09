@@ -116,14 +116,14 @@ view card_tile(b: Board, col: Column, card: Card) {
 
 /// A card as its row, which the card shows as a card: its title, and the start of its notes.
 view card_row(card: Card) {
-    let notes: Option<Text> = if card.notes == "" { .none } else { .some(card.notes) }
+    let notes = if card.notes != "" { card.notes }
     row(card.title, secondary: notes)
 }
 
 /// A card's page: its title and its notes.
 view card_page(card: Card) {
     std.document(card) {
-        ui.TextInput(value: card.title, placeholder: "Title", title: true)
+        ui.TextInput(bind: card.title, placeholder: "Title", title: true)
         ui.BlockEditor(bind: card.notes, placeholder: "Notes")
     }
 }

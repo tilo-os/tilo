@@ -2,10 +2,10 @@
 //! anchors: how a presence frame carries a range the receiving editor can
 //! place on its own keys.
 
+use collab_types::presence::PresenceKey;
 use tilo_relay_protocol::live::{
     AnchorScope, LiveAnchor, read_selection_anchors, selection_anchors,
 };
-use ui::presence::PresenceKey;
 
 /// A caret (`start == end`) or selection in the editor `key` as the live
 /// plane's selection anchors. A key too long for the anchor (a framework

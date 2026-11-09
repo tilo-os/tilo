@@ -63,6 +63,7 @@ fn rig() -> Rig {
         .unwrap(),
         expires_at_ns: None,
         signature: [0; 64],
+        issuer: None,
     };
     tilo_user_identity::sign_device_cert(&mut certificate, &root).unwrap();
     let principal = hex::encode(certificate.user_public_key);

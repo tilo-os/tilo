@@ -124,7 +124,8 @@ idna = { version = "1" }
 image = { version = "0.25", default-features = false, features = ["bmp", "gif", "jpeg", "png", "webp"] }
 indexmap = { version = "2", features = ["rayon", "serde"] }
 ipnet = { version = "2", features = ["serde"] }
-itertools = { version = "0.14" }
+itertools-582f2526e08bb6a0 = { package = "itertools", version = "0.14" }
+itertools-594e8ee84c453af0 = { package = "itertools", version = "0.13" }
 kurbo = { version = "0.13" }
 lazy_static = { version = "1", default-features = false, features = ["spin_no_std"] }
 libc = { version = "0.2", features = ["extra_traits"] }
@@ -138,6 +139,7 @@ miniz_oxide = { version = "0.8", features = ["simd"] }
 mio = { version = "1", features = ["net", "os-ext"] }
 ml-kem = { version = "0.3", features = ["hazmat"] }
 naga = { version = "29", features = ["wgsl-in"] }
+nom = { version = "7" }
 num-bigint = { version = "0.4" }
 num-integer = { version = "0.1", features = ["i128"] }
 num-traits = { version = "0.2", features = ["i128", "libm"] }
@@ -161,6 +163,7 @@ portable-atomic = { version = "1", features = ["require-cas"] }
 postcard = { version = "1", features = ["experimental-derive", "use-std"] }
 potential_utf = { version = "0.1", default-features = false, features = ["alloc", "serde", "zerovec"] }
 ppv-lite86 = { version = "0.2", default-features = false, features = ["simd", "std"] }
+prettyplease = { version = "0.2", default-features = false, features = ["verbatim"] }
 proc-macro2 = { version = "1", features = ["span-locations"] }
 quick-xml = { version = "0.41", features = ["encoding", "serialize"] }
 quote = { version = "1" }
@@ -373,7 +376,8 @@ idna = { version = "1" }
 image = { version = "0.25", default-features = false, features = ["bmp", "gif", "jpeg", "png", "webp"] }
 indexmap = { version = "2", features = ["rayon", "serde"] }
 ipnet = { version = "2", features = ["serde"] }
-itertools = { version = "0.14" }
+itertools-582f2526e08bb6a0 = { package = "itertools", version = "0.14" }
+itertools-594e8ee84c453af0 = { package = "itertools", version = "0.13" }
 kurbo = { version = "0.13" }
 lazy_static = { version = "1", default-features = false, features = ["spin_no_std"] }
 libc = { version = "0.2", features = ["extra_traits"] }
@@ -387,6 +391,7 @@ miniz_oxide = { version = "0.8", features = ["simd"] }
 mio = { version = "1", features = ["net", "os-ext"] }
 ml-kem = { version = "0.3", features = ["hazmat"] }
 naga = { version = "29", features = ["wgsl-in"] }
+nom = { version = "7" }
 num-bigint = { version = "0.4" }
 num-integer = { version = "0.1", features = ["i128"] }
 num-traits = { version = "0.2", features = ["i128", "libm"] }
@@ -410,6 +415,7 @@ portable-atomic = { version = "1", features = ["require-cas"] }
 postcard = { version = "1", features = ["experimental-derive", "use-std"] }
 potential_utf = { version = "0.1", default-features = false, features = ["alloc", "serde", "zerovec"] }
 ppv-lite86 = { version = "0.2", default-features = false, features = ["simd", "std"] }
+prettyplease = { version = "0.2", default-features = false, features = ["verbatim"] }
 proc-macro2 = { version = "1", features = ["span-locations"] }
 quick-xml = { version = "0.41", features = ["encoding", "serialize"] }
 quote = { version = "1" }

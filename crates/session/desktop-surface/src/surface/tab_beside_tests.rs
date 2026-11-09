@@ -3,7 +3,7 @@
 
 use super::tests::desk_with;
 use super::*;
-use crate::navigation::{ChromeEffect, Route, Standing};
+use crate::navigation::{ChromeEffect, Route};
 use ui::widget::{TileContent, TileHost};
 
 /// The apps this desk runs, each opening a tab named by its id.
@@ -153,26 +153,25 @@ fn a_refused_launch_leaves_no_tab() {
     assert_eq!(handle.snapshot("g", vec![]).entries.len(), before.len());
 }
 
-/// A window an app opens floating stands over the desk where the app that
-/// asked for it said — the place the box a send was written in stood — and it
-/// is the window in front there: every member's record keeps the place.
+/// A window an app opens floating stands over the desk beside the window it opened next to, where
+/// the strip gives it room: the card the desk draws covers nothing the person was reading, and
+/// every member's record keeps its place.
 #[test]
-fn a_window_an_app_opens_floating_stands_where_it_was_asked_for() {
+fn a_window_an_app_opens_floating_stands_beside_the_window_it_opened_next_to() {
     let (mut frame, handle) = mount();
-    let asked = Standing {
-        x: 300.0,
-        y: 200.0,
-        width: 480.0,
-        height: 360.0,
-    };
+    let beside = handle
+        .snapshot("g", vec![])
+        .active
+        .expect("a window in front");
     handle
         .dispatch(ChromeEffect::OpenApp {
             app: "so.tilo.notes".into(),
             beside: None,
             background: None,
-            float: Some(asked),
+            float: Some(true),
         })
         .unwrap();
+    frame.relayout();
     frame.relayout();
     let area = frame
         .widget_mut::<ui::widget::GroupRow>()
@@ -195,10 +194,44 @@ fn a_window_an_app_opens_floating_stands_where_it_was_asked_for() {
         group.to_string(),
         "the conversation a send opened is the window the person works in"
     );
+    assert_ne!(
+        group.to_string(),
+        beside.group,
+        "it stands in a window of its own, not the one it opened next to"
+    );
+    let opener = beside
+        .group
+        .parse::<u64>()
+        .expect("a window group's id is a number");
+    let (card, sender) = {
+        let row = frame
+            .widget_mut::<ui::widget::GroupRow>()
+            .expect("the shown strip");
+        let card = *row
+            .floats()
+            .get(&group)
+            .expect("the row draws the card where the record keeps it");
+        let sender = row
+            .groups
+            .iter()
+            .find(|held| held.id == opener)
+            .map(Widget::get_rect)
+            .expect("the window it opened next to stands in the strip");
+        (card, sender)
+    };
+    assert_eq!(
+        card.size(),
+        ui::kurbo::Size::new(ui::widget::FLOAT_SIZE.0, ui::widget::FLOAT_SIZE.1),
+        "it stands at the size a floating window takes"
+    );
     assert_eq!(
         floats::rect_of(float.resolved(area)),
-        Rect::from_origin_size(ui::kurbo::Point::new(300.0, 200.0), ui::widget::FLOAT_SIZE),
-        "it stands where the app asked, at the size a floating window takes, so the \
-         message and the place it was written are one"
+        card,
+        "the place every member's record keeps is the place this desk draws it at"
+    );
+    assert!(
+        !card.overlaps(sender),
+        "it stands beside the window it opened next to, never over what the person was reading: \
+         card {card:?}, that window {sender:?}"
     );
 }

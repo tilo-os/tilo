@@ -1122,72 +1122,6 @@ mod availability_control_tests {
 }
 
 #[cfg(test)]
-mod share_projection_tests {
-    use super::*;
-    use crate::namespace::ROOT_INO;
-    use crate::share_authority::ShareAuthority;
-    use crate::store::ContentStore;
-    use collab_types::Ed25519PublicKey;
-    use fs_protocol::{FileInviteSpec, FileInviteSubject, FilePermission, mint_file_invite};
-    use fs_protocol::{ShareGrantStatus, ShareProjectionV1};
-    use iroh::endpoint::{Endpoint, presets};
-
-    #[tokio::test]
-    async fn quickfs_projects_authority_state_by_stable_record_id() {
-        let dir = tempfile::tempdir().unwrap();
-        let authority =
-            Arc::new(ShareAuthority::open(dir.path().join("share-authority.json")).unwrap());
-        let namespace = Arc::new(Mutex::new(Namespace::new("host").unwrap()));
-        let ino = namespace
-            .lock_recover()
-            .create_file(ROOT_INO, "shared.txt", None, 0, 1)
-            .unwrap();
-        let record_id = namespace.lock_recover().record_id_for(ino).unwrap();
-        let (issuer_key, issuer) = collab_types::generate_keypair();
-        let (_, recipient) = collab_types::generate_keypair();
-        let token = mint_file_invite(
-            FileInviteSpec {
-                workspace_id: uuid::Uuid::new_v4(),
-                record_id,
-                subject: FileInviteSubject::Person(recipient),
-                permission: FilePermission::View,
-                expires_at_ms: None,
-                max_redemptions: None,
-            },
-            &issuer_key,
-        )
-        .unwrap();
-        authority.register(&token, &[issuer], 1).unwrap();
-
-        let endpoint = Endpoint::bind(presets::Minimal).await.unwrap();
-        let store = Arc::new(ContentStore::memory());
-        let hydrator = Arc::new(Hydrator::new(endpoint, store));
-        let heuristics = Arc::new(Heuristics::new(hydrator.clone()));
-        let fs =
-            QuickFS::new(namespace, hydrator, heuristics).with_share_authority(authority.clone());
-
-        let projected =
-            ShareProjectionV1::parse_xattr(&fs.share_projection_for(ino, 2).expect("share xattr"))
-                .unwrap();
-        assert_eq!(projected.record_id, record_id);
-        assert_eq!(projected.grants.len(), 1);
-        assert_eq!(projected.grants[0].status, ShareGrantStatus::Active);
-        assert_eq!(
-            projected.grants[0].subject,
-            fs_protocol::ShareSubjectProjection::Person {
-                person: Ed25519PublicKey::from_bytes(*recipient.as_bytes())
-            }
-        );
-
-        authority.revoke(token.id).unwrap();
-        let revoked =
-            ShareProjectionV1::parse_xattr(&fs.share_projection_for(ino, 3).expect("share xattr"))
-                .unwrap();
-        assert_eq!(revoked.grants[0].status, ShareGrantStatus::Revoked);
-    }
-}
-
-#[cfg(test)]
 mod thumb_tests {
     //! The host-side thumbnail metadata path: `QuickFS::thumbnail_for` is
     //! the exact code `getxattr(user.tilo.thumb)` runs, so driving it
@@ -1322,12 +1256,9 @@ mod thumb_tests {
                 )
                 .unwrap(),
             );
-            let history = Arc::new(
-                crate::history::FileHistoryStore::open(dir.path().join("history.json")).unwrap(),
-            );
             let fs = QuickFS::new(namespace.clone(), hydrator, heuristics)
                 .with_thumbs(ThumbProvider::open(dir.path().join("thumbs")).unwrap())
-                .with_history(history, actor)
+                .with_history(actor)
                 .unwrap()
                 .with_record_publisher(publisher.clone())
                 .unwrap();
@@ -1981,7 +1912,6 @@ mod history_integration_tests {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn existing_record_edit_and_rename_append_durable_versions() {
-        let dir = tempfile::tempdir().unwrap();
         let endpoint = Endpoint::bind(presets::Minimal).await.unwrap();
         let store = Arc::new(crate::store::ContentStore::memory());
         let hydrator = Arc::new(Hydrator::new(endpoint, store));
@@ -1992,15 +1922,13 @@ mod history_integration_tests {
             .unwrap();
         let record_id = namespace.lock_recover().record_id_for(ino).unwrap();
         let heuristics = Arc::new(Heuristics::new(hydrator.clone()));
-        let history = Arc::new(
-            crate::history::FileHistoryStore::open(dir.path().join("history.json")).unwrap(),
-        );
+        let history = Arc::new(crate::history_fixture::History::new(Arc::clone(&namespace)));
         let actor = FileActor {
             person: Ed25519PublicKey([1; 32]),
             device: Ed25519PublicKey([2; 32]),
         };
         let fs = QuickFS::new(namespace.clone(), hydrator, heuristics)
-            .with_history(history.clone(), actor)
+            .with_history(actor)
             .unwrap();
 
         let baseline = history.snapshot(record_id).unwrap();
@@ -2026,16 +1954,13 @@ mod history_integration_tests {
             "flush/fsync/release of unchanged bytes must not invent versions"
         );
 
-        assert!(
-            !fs.rename_named(
-                crate::namespace::ROOT_INO,
-                "before.txt",
-                crate::namespace::ROOT_INO,
-                "after.txt",
-            )
-            .unwrap()
-            .is_empty()
-        );
+        fs.rename_named(
+            crate::namespace::ROOT_INO,
+            "before.txt",
+            crate::namespace::ROOT_INO,
+            "after.txt",
+        )
+        .unwrap();
         let after_rename = history.snapshot(record_id).unwrap();
         assert_eq!(after_rename.versions.len(), 3);
         assert_eq!(after_rename.versions[2].provenance, FileProvenance::Rename);
@@ -2043,44 +1968,45 @@ mod history_integration_tests {
 
         drop(fs);
         drop(history);
+        // The document carries the versions, so the bytes a restart reads do.
         let reopened =
-            crate::history::FileHistoryStore::open(dir.path().join("history.json")).unwrap();
-        assert_eq!(reopened.snapshot(record_id).unwrap().versions.len(), 3);
+            Namespace::from_bytes("reopened-history", &namespace.lock_recover().save()).unwrap();
+        assert_eq!(
+            reopened.record_history(record_id).unwrap().versions.len(),
+            3
+        );
     }
 
     fn history_fs(
-        dir: &tempfile::TempDir,
         endpoint: &Endpoint,
         namespace: Namespace,
-    ) -> (QuickFS, Arc<crate::history::FileHistoryStore>) {
+    ) -> (QuickFS, Arc<crate::history_fixture::History>) {
         let hydrator = Arc::new(Hydrator::new(
             endpoint.clone(),
             Arc::new(crate::store::ContentStore::memory()),
         ));
         let heuristics = Arc::new(Heuristics::new(hydrator.clone()));
-        let history = Arc::new(
-            crate::history::FileHistoryStore::open(dir.path().join("history.json")).unwrap(),
-        );
+        let namespace = Arc::new(Mutex::new(namespace));
+        let history = Arc::new(crate::history_fixture::History::new(Arc::clone(&namespace)));
         let actor = FileActor {
             person: Ed25519PublicKey([1; 32]),
             device: Ed25519PublicKey([2; 32]),
         };
-        let fs = QuickFS::new(Arc::new(Mutex::new(namespace)), hydrator, heuristics)
-            .with_history(history.clone(), actor)
+        let fs = QuickFS::new(namespace, hydrator, heuristics)
+            .with_history(actor)
             .unwrap();
         (fs, history)
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn document_versions_are_fetchable() {
-        let dir = tempfile::tempdir().unwrap();
         let endpoint = Endpoint::bind(presets::Minimal).await.unwrap();
         let mut namespace = Namespace::new("documents").unwrap();
         let doc = namespace
             .create_document(crate::namespace::ROOT_INO, "notes.md", "md", 1)
             .unwrap();
         let record_id = namespace.record_id_for(doc).unwrap();
-        let (fs, history) = history_fs(&dir, &endpoint, namespace);
+        let (fs, history) = history_fs(&endpoint, namespace);
         assert!(fs.is_document(doc));
 
         let edits: [&[u8]; 2] = [b"# One\n\nfirst\n", b"# Two\n\nsecond\n"];
@@ -2173,7 +2099,6 @@ mod record_publisher_integration_tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn publisher_attach_mutations_and_restart_preserve_exact_record_state() {
         let dir = tempfile::tempdir().unwrap();
-        let history_path = dir.path().join("history.json");
         let repository_path = dir.path().join("records");
         let workspace_id = Uuid::from_u128(0x51);
         let endpoint = Endpoint::bind(presets::Minimal).await.unwrap();
@@ -2194,7 +2119,7 @@ mod record_publisher_integration_tests {
         let record_id = namespace.lock_recover().record_id_for(ino).unwrap();
         let hydrator = Arc::new(Hydrator::new(endpoint.clone(), store.clone()));
         let heuristics = Arc::new(Heuristics::new(hydrator.clone()));
-        let history = Arc::new(crate::history::FileHistoryStore::open(&history_path).unwrap());
+        let history = Arc::new(crate::history_fixture::History::new(Arc::clone(&namespace)));
         let repository =
             Arc::new(crate::record_repository::RecordRepository::open(&repository_path).unwrap());
         let (actor, signer) = actor_and_signer();
@@ -2213,7 +2138,7 @@ mod record_publisher_integration_tests {
         };
 
         let fs = QuickFS::new(namespace.clone(), hydrator, heuristics)
-            .with_history(history.clone(), actor)
+            .with_history(actor)
             .unwrap();
         assert!(
             !repository.contains(key),
@@ -2293,16 +2218,13 @@ mod record_publisher_integration_tests {
             before_noop_sequence
         );
 
-        assert!(
-            !fs.rename_named(
-                crate::namespace::ROOT_INO,
-                "before.txt",
-                crate::namespace::ROOT_INO,
-                "after.txt",
-            )
-            .unwrap()
-            .is_empty()
-        );
+        fs.rename_named(
+            crate::namespace::ROOT_INO,
+            "before.txt",
+            crate::namespace::ROOT_INO,
+            "after.txt",
+        )
+        .unwrap();
         assert_eq!(namespace.lock_recover().record_id_for(ino), Some(record_id));
         let after_rename = published_snapshot(&repository, &publisher, record_id);
         assert_eq!(after_rename.binding.as_ref().unwrap().name, "after.txt");
@@ -2353,7 +2275,7 @@ mod record_publisher_integration_tests {
             namespace.lock_recover().record_id_for(restarted_ino),
             Some(record_id)
         );
-        let history = Arc::new(crate::history::FileHistoryStore::open(&history_path).unwrap());
+        let history = Arc::new(crate::history_fixture::History::new(Arc::clone(&namespace)));
         let repository =
             Arc::new(crate::record_repository::RecordRepository::open(&repository_path).unwrap());
         let (_, signer) = actor_and_signer();
@@ -2369,7 +2291,7 @@ mod record_publisher_integration_tests {
         let hydrator = Arc::new(Hydrator::new(endpoint, store));
         let heuristics = Arc::new(Heuristics::new(hydrator.clone()));
         let restarted = QuickFS::new(namespace, hydrator, heuristics)
-            .with_history(history.clone(), actor)
+            .with_history(actor)
             .unwrap()
             .with_record_publisher(publisher.clone())
             .unwrap();
@@ -2394,10 +2316,9 @@ mod record_publisher_integration_tests {
             "new operations must continue after the recovered actor watermark"
         );
 
-        let (created_ino, delta) = restarted
+        let created_ino = restarted
             .create_empty_file(crate::namespace::ROOT_INO, "signed-new.txt")
             .unwrap();
-        assert!(!delta.is_empty());
         let created_record = restarted
             .namespace
             .lock_recover()
@@ -2417,10 +2338,9 @@ mod record_publisher_integration_tests {
             "the empty signed baseline is visible only through its verified revision"
         );
 
-        let (created_dir_ino, dir_delta) = restarted
+        let created_dir_ino = restarted
             .create_empty_dir(crate::namespace::ROOT_INO, "signed-folder")
             .unwrap();
-        assert!(!dir_delta.is_empty());
         let created_dir_record = restarted
             .namespace
             .lock_recover()
@@ -2522,18 +2442,14 @@ mod record_publisher_integration_tests {
         let restarted = restarted
             .with_replacement_transactions(journal.clone(), namespace_path.clone())
             .unwrap();
-        assert!(
-            restarted
-                .rename_named(
-                    crate::namespace::ROOT_INO,
-                    "after.txt",
-                    crate::namespace::ROOT_INO,
-                    "signed-new.txt",
-                )
-                .unwrap()
-                .is_empty(),
-            "the coordinator broadcasts the staged delta itself"
-        );
+        restarted
+            .rename_named(
+                crate::namespace::ROOT_INO,
+                "after.txt",
+                crate::namespace::ROOT_INO,
+                "signed-new.txt",
+            )
+            .unwrap();
         let mut namespace = restarted.namespace.lock_recover();
         assert!(
             namespace
@@ -2601,9 +2517,7 @@ mod record_publisher_integration_tests {
         let record_id = namespace.lock_recover().record_id_for(ino).unwrap();
         let hydrator = Arc::new(Hydrator::new(endpoint.clone(), store.clone()));
         let heuristics = Arc::new(Heuristics::new(hydrator.clone()));
-        let history = Arc::new(
-            crate::history::FileHistoryStore::open(dir.path().join("history.json")).unwrap(),
-        );
+        let history = Arc::new(crate::history_fixture::History::new(Arc::clone(&namespace)));
         let repository = Arc::new(
             crate::record_repository::RecordRepository::open(dir.path().join("records")).unwrap(),
         );
@@ -2625,7 +2539,7 @@ mod record_publisher_integration_tests {
         ));
         let namespace_path = dir.path().join("namespace.automerge");
         let fs = QuickFS::new(namespace.clone(), hydrator.clone(), heuristics.clone())
-            .with_history(history.clone(), actor)
+            .with_history(actor)
             .unwrap()
             .with_record_publisher(publisher.clone())
             .unwrap()
@@ -2646,7 +2560,7 @@ mod record_publisher_integration_tests {
             status: fs_protocol::ConflictStatus::Open,
             resolution: None,
         };
-        history.record_conflict(first_conflict.clone()).unwrap();
+        history.record_conflict(&first_conflict).unwrap();
         let metadata = publisher
             .snapshot(record_id)
             .unwrap()
@@ -2701,7 +2615,7 @@ mod record_publisher_integration_tests {
             status: fs_protocol::ConflictStatus::Open,
             resolution: None,
         };
-        history.record_conflict(second_conflict.clone()).unwrap();
+        history.record_conflict(&second_conflict).unwrap();
         let metadata = publisher
             .snapshot(record_id)
             .unwrap()
@@ -2751,7 +2665,7 @@ mod record_publisher_integration_tests {
             status: fs_protocol::ConflictStatus::Open,
             resolution: None,
         };
-        history.record_conflict(keep_both_conflict.clone()).unwrap();
+        history.record_conflict(&keep_both_conflict).unwrap();
         let metadata = publisher
             .snapshot(record_id)
             .unwrap()
@@ -2815,9 +2729,7 @@ mod record_publisher_integration_tests {
         drop(publisher);
         drop(history);
         drop(journal);
-        let history = Arc::new(
-            crate::history::FileHistoryStore::open(dir.path().join("history.json")).unwrap(),
-        );
+        let history = Arc::new(crate::history_fixture::History::new(Arc::clone(&namespace)));
         let publisher = Arc::new(
             crate::record_publisher::RecordPublisher::new(
                 Arc::new(
@@ -2842,7 +2754,7 @@ mod record_publisher_integration_tests {
         );
         let staged_recovery = QuickFS::new(namespace.clone(), hydrator.clone(), heuristics.clone())
             .without_legacy_record_migration()
-            .with_history(history.clone(), actor)
+            .with_history(actor)
             .unwrap()
             .with_record_publisher(publisher.clone())
             .unwrap()
@@ -2869,9 +2781,7 @@ mod record_publisher_integration_tests {
         drop(publisher);
         drop(history);
         drop(journal);
-        let history = Arc::new(
-            crate::history::FileHistoryStore::open(dir.path().join("history.json")).unwrap(),
-        );
+        let history = Arc::new(crate::history_fixture::History::new(Arc::clone(&namespace)));
         let publisher = Arc::new(
             crate::record_publisher::RecordPublisher::new(
                 Arc::new(
@@ -2892,7 +2802,7 @@ mod record_publisher_integration_tests {
         ));
         let fs = QuickFS::new(namespace.clone(), hydrator, heuristics)
             .without_legacy_record_migration()
-            .with_history(history.clone(), actor)
+            .with_history(actor)
             .unwrap()
             .with_record_publisher(publisher.clone())
             .unwrap()
@@ -2943,7 +2853,7 @@ mod record_publisher_integration_tests {
             status: fs_protocol::ConflictStatus::Open,
             resolution: None,
         };
-        history.record_conflict(follow_on_conflict.clone()).unwrap();
+        history.record_conflict(&follow_on_conflict).unwrap();
         let metadata = publisher
             .snapshot(record_id)
             .unwrap()
@@ -2991,9 +2901,9 @@ mod record_publisher_integration_tests {
             Namespace::from_bytes("host-restart", &std::fs::read(&namespace_path).unwrap())
                 .unwrap(),
         ));
-        let restarted_history = Arc::new(
-            crate::history::FileHistoryStore::open(dir.path().join("history.json")).unwrap(),
-        );
+        let restarted_history = Arc::new(crate::history_fixture::History::new(Arc::clone(
+            &restarted_namespace,
+        )));
         let restarted_publisher = Arc::new(
             crate::record_publisher::RecordPublisher::new(
                 Arc::new(
@@ -3020,7 +2930,7 @@ mod record_publisher_integration_tests {
             restarted_heuristics,
         )
         .without_legacy_record_migration()
-        .with_history(restarted_history.clone(), actor)
+        .with_history(actor)
         .unwrap()
         .with_record_publisher(restarted_publisher)
         .unwrap()
@@ -3088,11 +2998,10 @@ mod record_publisher_integration_tests {
         let record_id = namespace.lock_recover().record_id_for(ino).unwrap();
         let hydrator = Arc::new(Hydrator::new(endpoint.clone(), store.clone()));
         let heuristics = Arc::new(Heuristics::new(hydrator.clone()));
-        let history_path = dir.path().join("history.json");
         let records_path = dir.path().join("records");
         let journal_path = dir.path().join("transactions");
         let namespace_path = dir.path().join("namespace.automerge");
-        let history = Arc::new(crate::history::FileHistoryStore::open(&history_path).unwrap());
+        let history = Arc::new(crate::history_fixture::History::new(Arc::clone(&namespace)));
         let repository =
             Arc::new(crate::record_repository::RecordRepository::open(&records_path).unwrap());
         let (actor, signer) = actor_and_signer();
@@ -3109,7 +3018,7 @@ mod record_publisher_integration_tests {
             crate::record_transaction::RecordTransactionJournal::open(&journal_path).unwrap(),
         ));
         let fs = QuickFS::new(namespace.clone(), hydrator.clone(), heuristics.clone())
-            .with_history(history.clone(), actor)
+            .with_history(actor)
             .unwrap()
             .with_record_publisher(publisher.clone())
             .unwrap()
@@ -3143,7 +3052,7 @@ mod record_publisher_integration_tests {
             status: fs_protocol::ConflictStatus::Open,
             resolution: None,
         };
-        history.record_conflict(conflict.clone()).unwrap();
+        history.record_conflict(&conflict).unwrap();
         let expected = crate::conflict_merge::merge_exact(
             crate::conflict_merge::ExactMergeInput {
                 version_id: current.id,
@@ -3217,7 +3126,7 @@ mod record_publisher_integration_tests {
         drop(history);
         drop(journal);
 
-        let history = Arc::new(crate::history::FileHistoryStore::open(&history_path).unwrap());
+        let history = Arc::new(crate::history_fixture::History::new(Arc::clone(&namespace)));
         let publisher = Arc::new(
             crate::record_publisher::RecordPublisher::new(
                 Arc::new(crate::record_repository::RecordRepository::open(&records_path).unwrap()),
@@ -3232,7 +3141,7 @@ mod record_publisher_integration_tests {
         ));
         let restarted = QuickFS::new(namespace.clone(), hydrator, heuristics)
             .without_legacy_record_migration()
-            .with_history(history.clone(), actor)
+            .with_history(actor)
             .unwrap()
             .with_record_publisher(publisher)
             .unwrap()
@@ -3604,10 +3513,10 @@ mod write_stage_tests {
         let heuristics = Arc::new(Heuristics::new(Arc::clone(&hydrator)));
         let fs = QuickFS::new(Arc::clone(&namespace), hydrator, heuristics)
             .with_write_stage_dir(dir.path().join("stage"));
-        let (large, delta) = fs.create_empty_file(ROOT_INO, "large.bin").unwrap();
-        fs.publish(delta);
-        let (small, delta) = fs.create_empty_file(ROOT_INO, "small.txt").unwrap();
-        fs.publish(delta);
+        let large = fs.create_empty_file(ROOT_INO, "large.bin").unwrap();
+        fs.publish();
+        let small = fs.create_empty_file(ROOT_INO, "small.txt").unwrap();
+        fs.publish();
         let payload = pseudo(16 * 1024 * 1024, 6);
         assert_eq!(
             fs.write_buffer(large, 0, &payload),

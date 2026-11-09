@@ -1,6 +1,6 @@
 //! History in views (`std.history`): each step says who made it and what it did; a change shows
 //! what each field held before and after as the field's type shows it (a title as text, a due
-//! day as a day), read from the change itself; consecutive changes by one person or one task run
+//! day as a day), read from the change itself; consecutive changes by one person or one run
 //! fold into one entry; and Undo on an entry takes back exactly that step, or the whole run,
 //! through the record's history verb.
 
@@ -15,7 +15,7 @@ const DISCUSSION: &str = include_str!("../../../../apps/tl/discussion/app.tl");
 const DISCUSSION_IDS: &str = include_str!("../../../../apps/tl/discussion/app.ids");
 const NOTES: &str = include_str!("../../../../apps/tl/notes/app.tl");
 const NOTES_IDS: &str = include_str!("../../../../apps/tl/notes/app.ids");
-const TASKS: &str = include_str!("../../../../apps/tl/tasks/app.tl");
+const TASKS: &str = crate::fixtures::TASKS_SOURCE;
 const TASKS_IDS: &str = include_str!("../../../../apps/tl/tasks/app.ids");
 const TASKS_APP: &str = "so.tilo.lang.tasks";
 
@@ -123,9 +123,9 @@ fn field(r: &Replica, app: &str, at: &ResourceRef, ty: &str, name: &str) -> Valu
     r.host.runtime().read(at, &id).unwrap()
 }
 
-/// Press `key` in `view` and carry out the undo it asks, as the window's host does.
-fn press_undo(r: &mut Replica, view: &mut ViewInstance, key: &str) -> UndoAsk {
-    view.press(key).unwrap();
+/// Fire `event` of `key` in `view` and carry out the undo it asks, as the window's host does.
+fn fire_undo(r: &mut Replica, view: &mut ViewInstance, key: &str, event: &str) -> UndoAsk {
+    view.fire(key, event).unwrap();
     let ask = view
         .poll_events()
         .into_iter()
@@ -133,13 +133,23 @@ fn press_undo(r: &mut Replica, view: &mut ViewInstance, key: &str) -> UndoAsk {
             ViewEvent::Undo(ask) => Some(ask),
             _ => None,
         })
-        .expect("pressing Undo asks the history to undo");
+        .expect("the control asks the history to undo");
     let asked = match &ask {
         UndoAsk::Step { change, .. } => HistoryAsk::UndoStep(change.clone()),
         UndoAsk::Run { run } => HistoryAsk::UndoRun(run.clone()),
     };
     r.history(&asked.edit());
     ask
+}
+
+/// Press `key` in `view` and carry out the undo it asks, as the window's host does.
+fn press_undo(r: &mut Replica, view: &mut ViewInstance, key: &str) -> UndoAsk {
+    fire_undo(r, view, key, "press")
+}
+
+/// Choose `key` in `view` — a command of a menu — and carry out the undo it asks.
+fn choose_undo(r: &mut Replica, view: &mut ViewInstance, key: &str) -> UndoAsk {
+    fire_undo(r, view, key, "choose")
 }
 
 fn two_people() -> (Replica, Value, Value) {
@@ -304,6 +314,153 @@ fn undo_on_an_older_step_takes_back_that_step_alone() {
         field(&ada, NOTES_APP, &at, "Note", "tags"),
         Value::List(vec![Value::text("food")]),
         "the later tag stays"
+    );
+}
+
+/// The row of the entry that says `said`, the innermost one holding it.
+fn entry_row(section: &UiNode, said: &str) -> UiNode {
+    narrowest(
+        nodes(section)
+            .into_iter()
+            .filter(|node| node.kind == "row")
+            .filter(|row| nodes(row).into_iter().any(|held| text(held) == Some(said)))
+            .collect(),
+    )
+    .cloned()
+    .unwrap_or_else(|| panic!("an entry saying {said}: {section:#?}"))
+}
+
+/// Whether the controls `node` holds offer anything to take a change back with.
+fn takes_back(node: &UiNode) -> bool {
+    nodes(node)
+        .iter()
+        .any(|n| matches!(n.kind.as_str(), "ui.Button" | "ui.MenuButton"))
+}
+
+/// What history offers a person: the entry that made the thing has nothing to take back — undoing
+/// it would remove the thing whose page it stands on — and a change of theirs older than the
+/// newest waits in that entry's menu, not in a button beside every row.
+#[test]
+fn a_history_entry_never_takes_back_the_making_and_keeps_older_changes_in_its_menu() {
+    let (mut ada, notes, _) = two_people();
+    let note = call(&ada, "ada", NOTES_APP, "new_note", vec![notes]);
+    ada.commit();
+    call(
+        &ada,
+        "bo",
+        NOTES_APP,
+        "retitle",
+        vec![note.clone(), Value::text("Shopping")],
+    );
+    ada.commit();
+    call(
+        &ada,
+        "ada",
+        NOTES_APP,
+        "pin",
+        vec![note.clone(), Value::Bool(true)],
+    );
+    ada.commit();
+    call(
+        &ada,
+        "bo",
+        NOTES_APP,
+        "tag",
+        vec![note.clone(), Value::text("food")],
+    );
+    ada.commit();
+    let at = target(&note);
+    let mut editor = ada.host.open_resource(&at, None).unwrap();
+    let section = history(&mut editor);
+    // Bo's tag, Ada's pin, Bo's rename and Ada's making the note: newest first.
+    assert_eq!(entries(&section), ["bo", "ada", "bo", "ada"]);
+
+    let making = entry_row(&section, "created it");
+    assert!(
+        !takes_back(&making),
+        "the making offers nothing to take back: {making:#?}"
+    );
+    let theirs = entry_row(&section, "changed title");
+    assert!(
+        !takes_back(&theirs),
+        "a change of someone else's is not taken back from here: {theirs:#?}"
+    );
+
+    // Ada's pin, older than Bo's tag: its row offers one quiet menu, holding its revert.
+    let older = entry_row(&section, "tilolang-history-actions");
+    assert!(
+        !nodes(&older).iter().any(|n| n.kind == "ui.Button"),
+        "an older change is no button of its row: {older:#?}"
+    );
+    let revert = nodes(&older)
+        .into_iter()
+        .find(|n| n.kind == "ui.MenuItem")
+        .expect("the menu holds the revert");
+    assert_eq!(text(revert), Some("tilolang-history-revert"));
+
+    let asked = choose_undo(&mut ada, &mut editor, &revert.key.clone());
+    assert!(matches!(asked, UndoAsk::Step { target, .. } if target == at));
+    assert_eq!(
+        field(&ada, NOTES_APP, &at, "Note", "pinned"),
+        Value::Bool(false),
+        "the revert took the pin back"
+    );
+    assert_eq!(
+        field(&ada, NOTES_APP, &at, "Note", "title"),
+        Value::text("Shopping"),
+        "Bo's later rename stays"
+    );
+}
+
+/// The change a page ends with is the one a person means by undo: it offers it where it stands,
+/// quietly, and taking it back asks the history to reverse that change.
+#[test]
+fn the_newest_history_entry_offers_the_persons_own_change_undone_on_the_row() {
+    let (mut ada, notes, _) = two_people();
+    let note = call(&ada, "ada", NOTES_APP, "new_note", vec![notes]);
+    ada.commit();
+    call(
+        &ada,
+        "bo",
+        NOTES_APP,
+        "retitle",
+        vec![note.clone(), Value::text("Groceries")],
+    );
+    ada.commit();
+    call(
+        &ada,
+        "ada",
+        NOTES_APP,
+        "pin",
+        vec![note.clone(), Value::Bool(true)],
+    );
+    ada.commit();
+    let at = target(&note);
+    let mut editor = ada.host.open_resource(&at, None).unwrap();
+    let section = history(&mut editor);
+    assert_eq!(entries(&section), ["ada", "bo", "ada"]);
+    let making = entry_row(&section, "created it");
+    assert!(
+        !takes_back(&making),
+        "the making offers nothing to take back: {making:#?}"
+    );
+    let newest = entry_row(&section, "tilolang-undo");
+    assert!(
+        !nodes(&newest).iter().any(|n| n.kind == "ui.MenuButton"),
+        "the newest change offers its undo, not a menu: {newest:#?}"
+    );
+
+    let asked = press_undo(&mut ada, &mut editor, &button(&newest, "tilolang-undo"));
+    assert!(matches!(asked, UndoAsk::Step { target, .. } if target == at));
+    assert_eq!(
+        field(&ada, NOTES_APP, &at, "Note", "pinned"),
+        Value::Bool(false),
+        "undo took the pin back"
+    );
+    assert_eq!(
+        field(&ada, NOTES_APP, &at, "Note", "title"),
+        Value::text("Groceries"),
+        "Bo's rename stays"
     );
 }
 
@@ -1183,6 +1340,8 @@ fn a_command_over_many_chosen_tasks_is_one_change_its_undo_takes_back() {
     ada.commit();
     let before = field(&ada, TASKS_APP, &six[0], "Task", "due");
     let mut window = ada.host.open_resource(&root, None).unwrap();
+    // The window opens on Today, where an undated task is not: the six wait in the Inbox.
+    crate::tasks::go_to(&mut window, "Inbox");
     let list = nodes(window.tree())
         .into_iter()
         .find(|node| node.kind == "ui.VirtualList")

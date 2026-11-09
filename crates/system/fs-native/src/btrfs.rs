@@ -18,24 +18,24 @@ mod single_device;
 pub use single_device::{SingleDeviceIdentity, single_device_identity};
 
 /// `BTRFS_IOC_SNAP_CREATE_V2`: `_IOW(0x94, 23, struct btrfs_ioctl_vol_args_v2)`.
-const SNAP_CREATE_V2: libc::Ioctl = 0x5000_9417;
+const SNAP_CREATE_V2: u32 = 0x5000_9417;
 /// `BTRFS_IOC_SUBVOL_CREATE_V2`: `_IOW(0x94, 24, struct btrfs_ioctl_vol_args_v2)`.
-const SUBVOL_CREATE_V2: libc::Ioctl = 0x5000_9418;
+const SUBVOL_CREATE_V2: u32 = 0x5000_9418;
 /// `BTRFS_IOC_SNAP_DESTROY`: `_IOW(0x94, 15, struct btrfs_ioctl_vol_args)`.
-const SNAP_DESTROY: libc::Ioctl = 0x5000_940f;
+const SNAP_DESTROY: u32 = 0x5000_940f;
 /// `BTRFS_IOC_FS_INFO`: `_IOR(0x94, 31, struct btrfs_ioctl_fs_info_args)`.
-const FS_INFO: libc::Ioctl = 0x8400_941f;
+const FS_INFO: u32 = 0x8400_941f;
 /// `BTRFS_IOC_SUBVOL_GETFLAGS`: `_IOR(0x94, 25, __u64)`.
-const SUBVOL_GETFLAGS: libc::Ioctl = 0x8008_9419;
+const SUBVOL_GETFLAGS: u32 = 0x8008_9419;
 /// `BTRFS_IOC_SUBVOL_SETFLAGS`: `_IOW(0x94, 26, __u64)`.
-const SUBVOL_SETFLAGS: libc::Ioctl = 0x4008_941a;
+const SUBVOL_SETFLAGS: u32 = 0x4008_941a;
 const SUBVOL_RDONLY: u64 = 0x2;
 /// `GET_SUBVOL_INFO` reports root-item flags, not the CREATE/GETFLAGS flags.
 const ROOT_SUBVOL_RDONLY: u64 = 1;
 /// Inode number of every subvolume root (`BTRFS_FIRST_FREE_OBJECTID`).
 const SUBVOL_ROOT_INO: u64 = 256;
-const GET_SUBVOL_INFO: libc::Ioctl = 0x81f8_943c;
-const SNAP_DESTROY_V2: libc::Ioctl = 0x5000_943f;
+const GET_SUBVOL_INFO: u32 = 0x81f8_943c;
+const SNAP_DESTROY_V2: u32 = 0x5000_943f;
 const SUBVOL_SPEC_BY_ID: u64 = 1 << 4;
 
 #[repr(C)]

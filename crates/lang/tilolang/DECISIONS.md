@@ -173,17 +173,21 @@ mirrors the ABI additions; `tilolang-runtime/tests/abi_parity.rs` checks that th
   itself; every other action is in `actions(r)`, in the host's bar and a window's menus, and in
   an agent's choices. An action is never hidden from people to reserve it for a gesture: a
   helper nobody chooses is a `fn`, and one that writes is a command like any other.
-- **A window's bar shows its primary action and the commands the app marks `frequent` as
-  buttons, and every other action behind the bar's one menu.** The host builds them that way
-  from the declarations of the type the window shows: a button per primary and per `frequent`
-  action, and the remaining actions in the menu, which the shell's own More button holds
-  whatever room the bar has. A view never reads the actions back to draw them: it says what
-  can be done by declaring actions on the type and by placing the typed affordances of the
-  thing itself (a checkbox that completes, an entry that adds, a drag). `actions(r)` is
-  therefore an error in a view (E047); it stays readable to the host, which places the
-  declarations, and to an agent, which chooses among them. Which commands earn a
-  place in the bar is the app's judgement (`frequent: true`), not the window's width, so a
-  narrow window gives way with the menu, never with the one main thing to do.
+- **A window's bar shows its primary action and the commands that toggle a state of what the
+  window shows as buttons, and every other action behind the bar's one menu.** The host builds
+  them that way from what the declarations are: the primary action is the Primary button, an
+  action with an `on:` stands as the control that shows whether it is on (`on: s.bar_shown`, a
+  toggle the person flips where they see it), and the remaining actions are in the menu, which
+  the shell's own More button holds whatever room the bar has. An app does not say where its
+  actions stand: an action declares what it is and does — label, icon, role, the state it
+  toggles, its key, its parameters — and placement follows from that, so no hint can drift from
+  the action, and every surface (menus, palette, agents, history) reads one description. A view
+  that places the actions of what it shows says their order and which one leads
+  (`actions: [check(primary: true), schedule(group: "Plan")]`). A view never reads the actions
+  back to draw them: it says what can be done by declaring actions on the type and by placing
+  the typed affordances of the thing itself (a checkbox that completes, an entry that adds, a
+  drag). `actions(r)` is therefore an error in a view (E047); it stays readable to the host,
+  which places the declarations, and to an agent, which chooses among them.
 - **A window switches only between the views its type declares.** `views project_list,
   project_board for Project` names them, in the order the bar shows them, its default view
   first: the host draws them as the bar's labelled switch and opens the one the person last
@@ -400,8 +404,13 @@ workspace-model.md. The grammar is [grammar.md](grammar.md); the README shows it
   is expected is E065 with the dot form; `space.width_class == wide` is now `== .wide`.
 - **One `if`.** `if c { a } else { b }` is an expression (`Ek::If` over two block values); `if ...
   then ... else` is gone. As an expression statement (and in a view body) the branches run as
-  statements and `else` is optional. An `if` used as a value needs `else` (E038). `else if`
-  chains in views too.
+  statements. Used as a value with no `else`, it is the Option of the branch (`or_none`): `.none`
+  where the condition does not hold, and the branch itself where the branch is already an Option,
+  so one Option never holds another. `else if` chains in views too.
+- **A value where an Option is expected is the Option of it.** `coerce` wraps a `T` in `.some`
+  for an `Option<T>`, in arguments, fields, comparisons, branch values and component props
+  alike. One level only: it does not apply where the Option's own inner type is an Option, so
+  `.some(x)` written is one `some` and an `Option<Option<T>>` says which level it means.
 - **Blocks are expressions.** `{ stmts; expr }` has the last expression's value; a block that
   returns on every path has any type (it lowers to `unreachable` after the return). A body whose
   last statement is an expression returns it, so `fn f() -> Int { 1 }` needs no `return`.
@@ -441,9 +450,9 @@ workspace-model.md. The grammar is [grammar.md](grammar.md); the README shows it
   `view main(root: T)` is no longer a convention: hosts open `roots[0]` through its default
   view.
 - **New error codes:** E018 package declarations, E035 non-exhaustive match, E036 unknown or
-  repeated variant, wrong binders, E037 a variant with no expected type, E038 an `if` value
-  without `else`, E065 a bare word where a dot literal is expected, E066 view state, E067
-  `open`.
+  repeated variant, wrong binders, E037 a variant with no expected type, E065 a bare word where a
+  dot literal is expected, E066 view state, E067 `open`. E038 (an `if` value without `else`) is
+  retired: one branch is the Option of its value now.
 - **Removed from the compiler's import table:** `is_error` (the runtime still provides it).
 
 ## Outcomes and deltas
@@ -619,13 +628,18 @@ search.md, "What a type declares" and "Types, references and paths".
   Places draw no badge: a count is a query of the app's own (`items.matching(p.query).len()`),
   which a view that counts writes.
 - **A window that is only a list is `std.browse`.** It writes that window from the inputs the app
-  names alone — `of` (the resource the window is of), `items`, `places`, `sort`, `everything`, the
-  `empty` state, the `entry` action — with its query state, the title and count that name the place
-  chosen, and the pane beside the list when rows open there. It scans nothing (`filters(T)`) and
-  reads no layout off a type; the one fact it takes from the type is `opens`, whether its rows have
-  a window of their own, and a window whose rows open in front of it states `opens: false`. An app
-  whose window needs a sidebar of counts, grouped rows or a bar action of its own composes
-  `std.list`, `std.places` and `std.header` itself.
+  names alone — `of`, `items`, `places`, `sorts`, `everything`, `empty`, `entry` — with its query
+  state in the place and order chosen, the title and count naming the place chosen, and the pane
+  beside the list when rows open there. It reads no layout off a type, scans nothing, and takes
+  `opens` from the type alone. An app whose window needs a sidebar of counts, grouped rows or a bar
+  action of its own composes `std.list`, `std.places` and `std.sorts` itself.
+- **A sort is the field the app names, not a string it writes.** `sorts: [Note.title]` is a field
+  reference the compiler checks (E105 for one that does not exist or has no order), held as
+  `Sort<T>`: the field's label, and the order it asks in a query (`sort:title`, `sort:-received`,
+  biggest first for a Date, a Time or a number, A to Z for text). `std.browse` owns the chosen
+  order and its menu, the list's own order first, so no app declares an enum, a state or a
+  mapping to offer "by title". The order reaches the store as that query token, through the
+  same index as a typed search; the app never writes it.
 - **A list groups by the key its caller gives.** `ui.ListItem(group:)` takes the item's own key and
   heads each run of items naming the same key with the key itself, as the platform presents a
   value of its kind — a day as Today, Tomorrow, a weekday; a word as it is written. Items that

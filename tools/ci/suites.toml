@@ -256,6 +256,13 @@ suites = [
 ]
 
 [[group]]
+name = "lounge-waits"
+# The Lounge gate's waits end on what the desk answers rather than on frames drawn; the
+# test drives them against a stand-in desk, so it needs no image and no browser.
+inputs = ["os/containers/tilo-lounge/integration/"]
+suites = ["os/containers/tilo-lounge/integration/waits.test.mjs"]
+
+[[group]]
 name = "native-store-autoclear"
 inputs = ["tools/ci/native-store-autoclear.py"]
 suites = ["tools/ci/test_native_store_autoclear.py"]
@@ -448,7 +455,7 @@ suites = ["crates/session/tilo-ntfs-helper/tests/test_build_native.py", "crates/
 
 [[group]]
 name = "dist"
-inputs = ["dist/", "os/registry-runtime-publisher.hex"]
+inputs = ["dist/", "os/registry-runtime-publisher.hex", "tools/ci/publish/cli-release.sh", "tools/ci/publish/lib.sh", "tools/ci/publish/build-lib.sh"]
 suites = [
   "dist/ci/tests/test_package_source_transfer.py",
   "dist/ci/tests/test_failed_rpm_retention.py",
@@ -467,6 +474,7 @@ suites = [
   "dist/rpm/test-rpmbuild-route.sh",
   "dist/rpm/test-rpmlint-config.py",
   "dist/rpm/test-ostree-package-conflicts.sh",
+  "dist/install/test_install.py",
 ]
 
 [[group]]
@@ -591,6 +599,9 @@ name = "browser-runtime-web"
 inputs = ["crates/browser/tilo-browser-runtime/", "tools/web/wasm-split/src/main.rs", "crates/collab/tilo-user-identity/tests/fixtures/root-envelope.json", "crates/collab/reference/tests/links.json"]
 suites = [
   "crates/browser/tilo-browser-runtime/web/actions.test.mjs",
+  "crates/browser/tilo-browser-runtime/web/app-bar.test.mjs",
+  "crates/browser/tilo-browser-runtime/web/first-run.test.mjs",
+  "crates/browser/tilo-browser-runtime/web/login-code.test.mjs",
   "crates/browser/tilo-browser-runtime/web/host-prefetch.test.mjs",
   "crates/browser/tilo-browser-runtime/web/agents.test.mjs",
   "crates/browser/tilo-browser-runtime/web/here.test.mjs",
@@ -613,10 +624,11 @@ suites = [
   "crates/browser/tilo-browser-runtime/web/host-core-screen.test.mjs",
   "crates/browser/tilo-browser-runtime/web/machine-setup.test.mjs",
   "crates/browser/tilo-browser-runtime/web/native-catalogue.test.mjs",
-  "crates/browser/tilo-browser-runtime/web/membership.test.mjs",
+  "crates/browser/tilo-browser-runtime/web/own-workspace.test.mjs",
   "crates/browser/tilo-browser-runtime/web/panorama.test.mjs",
   "crates/browser/tilo-browser-runtime/web/semantic-presentation.test.mjs",
   "crates/browser/tilo-browser-runtime/web/semantics.test.mjs",
+  "crates/browser/tilo-browser-runtime/web/dom-present.test.mjs",
   "crates/browser/tilo-browser-runtime/web/peer.test.mjs",
   "crates/browser/tilo-browser-runtime/web/resource-reference.test.mjs",
   "crates/browser/tilo-browser-runtime/web/scrub.test.mjs",
@@ -631,6 +643,7 @@ suites = [
   "crates/browser/tilo-browser-runtime/web/browser-accounts.test.mjs",
   "crates/browser/tilo-browser-runtime/web/browser-locale.test.mjs",
   "crates/browser/tilo-browser-runtime/web/identity.test.mjs",
+  "crates/browser/tilo-browser-runtime/web/sign-in.test.mjs",
   "crates/browser/tilo-browser-runtime/web/webgpu-safety.test.mjs",
   "crates/browser/tilo-browser-runtime/web/asset-recovery.test.mjs",
   "crates/browser/tilo-browser-runtime/web/bundle-update.test.mjs",
@@ -788,6 +801,7 @@ readers = [
   "crates/lang/tilolang-runtime/tests/window_bar.rs",
   "crates/lang/tilolang-runtime/tests/view_state_seed.rs",
   "crates/lang/tilolang-runtime/tests/written_views.rs",
+  "crates/lang/tilolang-runtime/tests/common/mod.rs",
 ]
 
 [[cargo]]
@@ -836,6 +850,7 @@ readers = [
   "crates/platform/tilolang-tilo/tests/tasks.rs",
   "crates/platform/tilolang-tilo/tests/undo_own.rs",
   "crates/platform/tilolang-tilo/tests/upgrade_fields.rs",
+  "crates/platform/tilolang-tilo/tests/sorting.rs",
   "crates/platform/tilolang-tilo/tests/views_migration.rs",
   "crates/platform/tilolang-tilo/tests/words.rs",
 ]
@@ -1263,7 +1278,6 @@ inputs = [
 ]
 readers = [
   "crates/system/fs/src/main.rs",
-  "crates/system/fs/tests/exact_share_process_fuse.rs",
   "crates/system/fs/tests/cloud_mount.rs",
   "crates/system/fs/tests/cloud_mount/import.rs",
 ]
@@ -1291,8 +1305,11 @@ readers = ["crates/system/os-actions/src/windows_compat.rs"]
 
 [[cargo]]
 package = "legacy-vm"
-inputs = ["os/legacy-guest-snapshot.env"]
-readers = ["crates/runtime/legacy-vm/src/image.rs"]
+inputs = ["os/legacy-guest-snapshot.env", "os/hosted-guest-snapshot.env"]
+readers = [
+  "crates/runtime/legacy-vm/src/image.rs",
+  "crates/runtime/legacy-vm/src/hosted/guest.rs",
+]
 
 [[cargo]]
 package = "imager"
@@ -1394,6 +1411,8 @@ inputs = [
   "crates/sdk/ui-core/assets/fonts/",
   "crates/browser/tilo-browser-peer/tests/support/",
   "tools/with-test-environment.sh",
+  # The workspace's MCP test [path]-includes the presence the CLI reports.
+  "crates/system/tilo-cli/src/mcp_presence.rs",
 ]
 readers = [
   "crates/agent/agent-participant/tests/asking_first.rs",
@@ -1403,6 +1422,7 @@ readers = [
   "crates/agent/agent-participant/tests/host_agents.rs",
   "crates/agent/agent-participant/tests/session_coverage.rs",
   "crates/agent/agent-participant/tests/shared_session.rs",
+  "crates/agent/agent-participant/tests/workspace_actions/agent_mcp.rs",
 ]
 
 [[cargo]]
@@ -1496,6 +1516,7 @@ readers = [
   "crates/session/session/tests/firstboot.rs",
   "crates/session/session/tests/session_package.rs",
   "crates/session/session/tests/app_side_records.rs",
+  "crates/session/session/tests/files_tree.rs",
 ]
 
 [[cargo]]
@@ -1585,6 +1606,10 @@ reason = "starts the built Lounge image and drives its web entry, so it needs bo
 [[unrequired]]
 suite = "crates/packaging/registry-server/container/test-image.sh"
 reason = "needs the built registry-server image"
+
+[[unrequired]]
+suite = "os/containers/tilo-vm-host/test-image.sh"
+reason = "inspects the built VM host image with buildah as root, so it needs the archive image-vm-host writes and a micro-VM step"
 
 [[unrequired]]
 suite = "crates/session/tilo-ntfs-helper/tests/test_stage_install.py"

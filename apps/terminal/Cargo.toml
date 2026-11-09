@@ -57,9 +57,14 @@ anyhow.workspace = true
 # Kitty graphics transmissions carry base64-encoded payloads.
 base64.workspace = true
 tilo-content = { path = "../../crates/system/content" }
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+# The workspace-hack's native feature set does not build for wasm32.
 workspace-hack = { version = "0.1" }
 
 [dev-dependencies]
+# The stored shape History reads a session's runs by.
+tilo-automerge.workspace = true
 # Tests see this package's samples. The key must not be the package name:
 # a dependency named `terminal` claims `--features terminal/thin` in the
 # collection build, and the app then links the whole runtime statically.

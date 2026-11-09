@@ -17,6 +17,9 @@ path = "src/main.rs"
 # a PAM system. This keeps the helper buildable on hosts without pam-devel
 # and keeps the OS image's compile-time deps unchanged.
 libc = "0.2"
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+# The workspace-hack's native feature set does not build for wasm32.
 workspace-hack = { version = "0.1" }
 
 [lints]

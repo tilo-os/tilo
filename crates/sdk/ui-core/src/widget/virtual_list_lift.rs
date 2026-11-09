@@ -8,6 +8,19 @@ use crate::widget::RowSelection;
 use crate::widget::row_selection::selection_sink;
 use vello::kurbo::Rect;
 
+/// The rect a row's selection lift takes: around what the row shows, grown by the bleed a
+/// [`ListRow`](crate::widget::ListRow) grows its own face by, and no further than the row's own
+/// box — so a list that paints its rows' selection reads as one whose rows paint it, instead of
+/// drawing the person's choice across the gutters the row's layout keeps.
+pub(super) fn selection_around(row: Rect, content: Rect, bleed: f64) -> Rect {
+    Rect::new(
+        (content.x0 - bleed).max(row.x0),
+        content.y0.clamp(row.y0, row.y1),
+        (content.x1 + bleed).min(row.x1),
+        content.y1.clamp(row.y0, row.y1),
+    )
+}
+
 impl<M: ListModel> VirtualList<M> {
     /// Where a row standing `top` down the view (its top less the scroll) stands on screen. A
     /// list that follows its end stands a short list's rows down at its foot
@@ -70,5 +83,44 @@ impl<M: ListModel> VirtualList<M> {
         if rebuild {
             self.reconcile_mounted();
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::selection_around;
+    use vello::kurbo::Rect;
+
+    /// The choice a list paints for a row stands around what the row shows, grown by the bleed
+    /// the row grows its own face by and no further: a row standing at a page's measure inside a
+    /// wider list paints its selection inset like the rows in every other list, never across the
+    /// gutters beside it.
+    #[test]
+    fn a_lift_stands_around_what_its_row_shows_and_no_wider_than_the_row() {
+        let row = Rect::new(624.0, 100.0, 1280.0, 148.0);
+        let content = Rect::new(672.0, 100.0, 1232.0, 148.0);
+        assert_eq!(
+            selection_around(row, content, 8.0),
+            Rect::new(664.0, 100.0, 1240.0, 148.0)
+        );
+        let whole = Rect::new(0.0, 0.0, 300.0, 40.0);
+        assert_eq!(
+            selection_around(whole, whole, 8.0),
+            whole,
+            "a row that shows everything it has keeps no inset"
+        );
+        let flush = Rect::new(10.0, 0.0, 300.0, 40.0);
+        assert_eq!(
+            selection_around(flush, flush, 8.0),
+            flush,
+            "a bleed reaches no further than the row's own box"
+        );
+        let past = Rect::new(20.0, 5.0, 280.0, 60.0);
+        let row = Rect::new(10.0, 0.0, 300.0, 40.0);
+        assert_eq!(
+            selection_around(row, past, 8.0),
+            Rect::new(12.0, 5.0, 288.0, 40.0),
+            "a row showing past its box is kept inside it"
+        );
     }
 }

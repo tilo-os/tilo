@@ -51,6 +51,14 @@ view contact_row(c: Contact) {
   the app names the cases it offers in the description's slot, and a pick is the case's name.
   A primitive that is a component (`text`, `input`, `checkbox`, ...)
   is its shorter name and nothing else.
+- `bind:` is the one way a control edits a place: the binding's own name is no argument, so
+  `ui.TextInput(value: n.title)` and `input(value: query)` are errors saying to write
+  `bind: n.title` and `bind: query`. What a control *shows* is `value:`: the value the view
+  gives it, which the control does not write back. A control that shows a value the view does
+  not hold declares a `change` event, and the person's change runs the view's own action:
+  `ui.Slider(value: volume, label: .some("Volume")) { on change(v): device.set_volume(sound, v) }`.
+  The same `value:` shows a read-only `ui.BlockEditor`'s text (`ui.BlockEditor(x.notes)`) and a
+  row's trailing figure (`ui.ListRow(title: c.name, value: "12")`).
 - A box bound to a value writes that field when it is pressed, unless the view names what a
   press means: `ui.Checkbox(bind: t.done) { on check: check(t) }` and
   `row(t.title, checkbox: t.done, check: check(t))` show the field and run the app's action,
@@ -103,13 +111,17 @@ pages, forms. It relies on general language features any author can use:
 An app that needs something `std` doesn't do composes `ui.*` directly and loses nothing native.
 
 A window that is only a list is `std.browse`: it takes the resource its window is of, the items,
-the places and the sort, and writes that window the standard way — the place a person chose as its
-state, the list that place finds, the title and count naming that place, the empty state, the entry
-that adds an item, and the pane beside the list when the rows open there. It draws what the caller
-named and never reads a shell off the type; `opens` is the one fact it takes from the type, whether
-its rows have a window of their own, and a window whose rows open in front of it states
-`opens: false`. An app whose window is more than this — a sidebar of its own, rows that group or
-nest — composes `std.list`, `std.places` and `std.header` itself.
+the places and the sorts — the fields the app names as orders, `sorts: [Note.title]` — and writes
+that window the standard way: the place and order chosen as its state, the list that one query
+finds, the title and count naming the place, the empty state, the entry that adds an item, and the
+pane beside the list when the rows open there — the list alone listing for the whole window until
+one is opened. The app names a field, never the order's spelling:
+the compiler checks the reference, and the order it asks (`sort:title`, `sort:-received`) is
+built from the field where the sort is declared, so the menu and the query cannot disagree. It
+draws what the caller named and never reads a shell off the type; `opens` is the one fact it takes
+from the type, and a window whose rows open in front of it states `opens: false`. An app whose
+window is more than this — a sidebar of its own, rows that group or nest — composes `std.list`,
+`std.places` and `std.sorts` itself.
 
 A list groups without a second widget: the row a list draws takes `group:`, naming the item's
 key, and the list draws a section band for each run of items that names the same key and holds
@@ -154,7 +166,8 @@ view keeps it as its own state — `std.list` does that for its person.
 A list that opens its rows elsewhere instead — in a pane beside it, a window of its own — leaves
 `detail:` out and answers its `on activate`. Which rows carry one is the list's: `std.list` sets
 it where the view gives one, and `std.browse` puts the pane beside the list when the caller says
-its rows have a window of their own.
+its rows have a window of their own: the pane stands there once a row is opened, and until then
+the list lists for the whole window.
 
 A window asked to show an item — a reference pressed, an agent's suggestion taken up, a capture
 staging what a scenario made — puts the question to its own view: `on show(x: Task): <action>`

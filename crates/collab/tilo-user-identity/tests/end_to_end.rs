@@ -43,6 +43,7 @@ fn enrollment_and_directory_sync_work_end_to_end_only_for_one_user() {
             issued_at_ns: 1_200_000,
             expires_at_ns: None,
             signature: [0u8; 64],
+            issuer: None,
         };
         sign_device_cert(&mut primary_cert, &root_sk).unwrap();
         verify_device_cert_at(&primary_cert, 1_300_000).unwrap();
@@ -75,6 +76,7 @@ fn enrollment_and_directory_sync_work_end_to_end_only_for_one_user() {
             issued_at_ns: 1_600_000,
             expires_at_ns: None,
             signature: [0u8; 64],
+            issuer: None,
         };
         sign_device_cert(&mut phone_cert, &root_sk).unwrap();
 
@@ -136,6 +138,7 @@ fn enrollment_and_directory_sync_work_end_to_end_only_for_one_user() {
             issued_at_ns: 200,
             expires_at_ns: None,
             signature: [0u8; 64],
+            issuer: None,
         };
         sign_device_cert(&mut a_cert, &alice_sk).unwrap();
 
@@ -148,6 +151,7 @@ fn enrollment_and_directory_sync_work_end_to_end_only_for_one_user() {
             issued_at_ns: 200,
             expires_at_ns: None,
             signature: [0u8; 64],
+            issuer: None,
         };
         sign_device_cert(&mut b_cert, &bob_sk).unwrap();
 

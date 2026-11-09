@@ -134,8 +134,12 @@ impl Resolver<'_> {
                 fields,
                 search: crate::meta::SearchMeta::default(),
                 origin: t.origin.as_ref().map(|o| o.name.clone()),
+                title: t.title.as_ref().map(|title| title.field.name.clone()),
+                untitled: t.untitled.as_ref().map(|u| u.words.clone()),
             });
         }
+        self.check_title(&decls);
+        self.check_untitled(&decls);
         self.check_origins(&decls);
         // Every type's fields are known: each one's search reads its own, and the enums.
         for t in decls {

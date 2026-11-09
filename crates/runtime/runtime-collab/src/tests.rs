@@ -283,6 +283,7 @@ fn action_directory_and_view_metadata_round_trip() {
             description: Some("Edit this note".into()),
             open_action: "show-editor".into(),
             primary: true,
+            desktop: false,
             range: Some(ExportedViewRange {
                 action: "show-range".into(),
                 start_param: "start".into(),

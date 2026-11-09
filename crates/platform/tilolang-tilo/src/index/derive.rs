@@ -738,16 +738,15 @@ impl Columns {
             && let Some(id) = id_of(path)
         {
             let list = scope_list(parent, coll, &column.name);
-            let counted = columns::counted(column);
             for value in before.iter().filter(|v| !now.contains(v)) {
                 sink.remove_entry(&list, &scope_entry(value, key, id))?;
-                if counted {
+                if columns::counted_value(column, value) {
                     sink.count(&list, value, -1)?;
                 }
             }
             for value in now.iter().filter(|v| !before.contains(v)) {
                 sink.insert(&list, scope_entry(value, key, id))?;
-                if counted {
+                if columns::counted_value(column, value) {
                     sink.count(&list, value, 1)?;
                 }
             }
@@ -1402,7 +1401,6 @@ impl<'d> Derive<'d> {
                 continue;
             };
             let list = scope_list(resource, field, &column.name);
-            let counted = columns::counted(column);
             for value in split_values(&held) {
                 let entry = scope_entry(&value, key, id);
                 if into {
@@ -1410,7 +1408,7 @@ impl<'d> Derive<'d> {
                 } else {
                     sink.remove_entry(&list, &entry)?;
                 }
-                if counted {
+                if columns::counted_value(column, &value) {
                     sink.count(&list, &value, if into { 1 } else { -1 })?;
                 }
             }
@@ -1507,10 +1505,9 @@ impl<'d> Derive<'d> {
             )?;
             for (column, values) in values {
                 let schema = item_schema.column(&column);
-                let counted = schema.is_some_and(columns::counted);
                 let name = scope_list(path, &field.id, &column);
                 for value in values {
-                    if counted {
+                    if schema.is_some_and(|column| columns::counted_value(column, &value)) {
                         let n = counts.entry((name.clone(), value.clone())).or_default();
                         *n = n.saturating_add(1);
                     }

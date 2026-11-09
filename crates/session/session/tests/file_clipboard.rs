@@ -185,7 +185,7 @@ fn session(socket: &Path, fixture: &Fixture) -> Session {
         launches,
         state: Some(fixture.state.clone()),
         search: SearchOptions {
-            lists: Lists::default(),
+            apps: Some(std::sync::Arc::new(Lists::default())),
             ..SearchOptions::default()
         },
         ..Options::default()

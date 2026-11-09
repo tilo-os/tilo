@@ -25,7 +25,7 @@
 //!
 //! 1. `verify_device_cert` — the author's cert chains to this
 //!    directory's user identity.
-//! 2. `!revocation_list.is_revoked_at(author, timestamp)` — the
+//! 2. `!revocation_list.is_revoked_at(root, author, timestamp)` — the
 //!    author was not already revoked.
 //! 3. Ed25519 signature check against `author_device_public_key`.
 //!
@@ -768,7 +768,11 @@ impl WorkspaceDirectory {
         // Cert must verify + not have expired.
         verify_device_cert_at(author_cert, now_ns)?;
         // Author must not have been revoked at the time of authoring.
-        if revocations.is_revoked_at(&update.author_device_public_key, update.authored_at_ns) {
+        if revocations.is_revoked_at(
+            &author_cert.user_public_key,
+            &update.author_device_public_key,
+            update.authored_at_ns,
+        ) {
             return Err(DirectoryError::Revoked);
         }
         // Signature must cover the delta bytes.
@@ -841,6 +845,7 @@ mod tests {
             issued_at_ns: 200,
             expires_at_ns: None,
             signature: [0u8; 64],
+            issuer: None,
         };
         sign_device_cert(&mut cert, user_sk).unwrap();
         (dev_sk, dev.public_key, cert)
@@ -1256,7 +1261,7 @@ mod tests {
         );
         let (_b_sk, b_pk, _) =
             enrol_device(&f.user_sk, f.user_pk, "board", DeviceCapabilities::member());
-        let site = "https://tilo.coffee/";
+        let site = "https://tilo.sh/";
         let mut laptop = WorkspaceDirectory::new(f.user_pk, a_pk);
         assert!(
             laptop.community(site).is_none(),

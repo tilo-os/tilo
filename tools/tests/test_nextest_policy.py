@@ -64,6 +64,16 @@ class NextestPolicyTests(unittest.TestCase):
         names = [line.split("=", 1)[0] for line in output.splitlines()]
         self.assertEqual(names, ["GOLDEN_FILTER", "PUSH_ONLY_FILTER", "MICRO_VM_FILTER"])
 
+    def test_a_run_leaves_out_the_tests_whose_capability_this_machine_lacks(self) -> None:
+        # The ci profile's setup promises every mapped capability, so a test of
+        # one must be left out where the probe says this machine has it not.
+        # The wrapper asks, and the run has its answer wherever it is started:
+        # a workflow's shard and a job t shards alike.
+        text = T_NEXTEST.read_text(encoding="utf-8")
+        self.assertIn("tools/ci/capability_filter.py", text)
+        # Into the filter the run was given, not beside it: nextest takes one.
+        self.assertIn('(${arguments[index + 1]}) & ($left_out)', text)
+
     def test_every_composed_filter_is_defined_by_the_shared_file(self) -> None:
         # A removed key must not leave a `$..._FILTER` reference behind:
         # nextest parses the composed expression, and an empty `not ()` is a
@@ -82,7 +92,7 @@ class NextestPolicyTests(unittest.TestCase):
             text = path.read_text(encoding="utf-8")
             # A consumer may also define a filter for one step of its own: a shell
             # or env assignment, or one a step hands to the steps after it
-            # (`echo "CAPABILITY_FILTER=$filter" >> "$GITHUB_ENV"`).
+            # (`echo "SOME_FILTER=$filter" >> "$GITHUB_ENV"`).
             defined.update(re.findall(r"(?m)^\s*([A-Z][A-Z0-9_]*_FILTER)\s*[:=]", text))
             defined.update(re.findall(r"\b([A-Z][A-Z0-9_]*_FILTER)=", text))
             referenced.update(re.findall(r"\b([A-Z][A-Z0-9_]*_FILTER)\b", text))

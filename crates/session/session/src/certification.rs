@@ -1054,6 +1054,7 @@ mod tests {
             issued_at_ns: 1,
             expires_at_ns: None,
             signature: [0; 64],
+            issuer: None,
         };
         let revoked = RevocationEntry {
             user_public_key: [0x72; 32],
@@ -1139,6 +1140,7 @@ mod tests {
             issued_at_ns: now.saturating_sub(48 * 60 * 60 * 1_000_000_000),
             expires_at_ns: Some(now.saturating_sub(24 * 60 * 60 * 1_000_000_000)),
             signature: [0; 64],
+            issuer: None,
         };
         let digest = tilo_user_identity::device_cert_signing_digest(&cert).expect("a digest");
         cert.signature = root.sign(&digest).expect("the person's key signs it");

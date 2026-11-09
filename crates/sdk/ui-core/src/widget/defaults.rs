@@ -112,10 +112,14 @@ pub(super) fn for_each_child(children: Vec<&dyn Widget>, visitor: &mut dyn FnMut
     }
 }
 
-pub(super) fn reveal_descendant(children: ChildrenMut<'_>, target: *const dyn Widget) -> bool {
+pub(super) fn reveal_descendant(
+    children: ChildrenMut<'_>,
+    target: *const dyn Widget,
+    rect: vello::kurbo::Rect,
+) -> bool {
     children.into_iter().any(|child| {
         std::ptr::addr_eq(std::ptr::from_ref::<dyn Widget>(child), target)
-            || child.reveal_descendant(target)
+            || child.reveal_descendant(target, rect)
     })
 }
 

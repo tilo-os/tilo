@@ -505,12 +505,23 @@ impl Compositor {
     /// # Errors
     /// The compositor's clients failed.
     pub fn await_frame(&mut self) -> Result<(), Error> {
+        self.await_frame_arrivals(|| {})
+    }
+
+    /// [`Self::await_frame`] that also runs `arrived` after each wait: what a host serves at once
+    /// rather than after the frame — an app someone is waiting on starts while the frame the desk
+    /// owes is still ahead, so its own start runs beside that frame.
+    ///
+    /// # Errors
+    /// The compositor's clients failed.
+    pub fn await_frame_arrivals(&mut self, mut arrived: impl FnMut()) -> Result<(), Error> {
         while let Some(due) = self.frame_deadline() {
             let wait = due.saturating_duration_since(std::time::Instant::now());
             if wait.is_zero() {
                 break;
             }
             self.dispatch(wait)?;
+            arrived();
         }
         Ok(())
     }
@@ -1842,6 +1853,19 @@ impl Compositor {
             drew |= host.prepare_frame();
         }
         if drew {
+            self.data.state.mark_redraw_all();
+        }
+        // What the surfaces draw over the windows, by the window each part is of: a floating window
+        // stands over the ones beneath it whole, so they are drawn around what the desk covers them
+        // with for it, and a press there is the desk's.
+        let mut covers = std::collections::BTreeMap::new();
+        for host in &self.data.state.hosts {
+            for (window, cover) in host.drawn_over_windows() {
+                covers.insert(window, cover);
+            }
+        }
+        if self.data.state.covers != covers {
+            self.data.state.covers = covers;
             self.data.state.mark_redraw_all();
         }
         // A frame can move windows (a strip panning, a group resizing): the policy places them

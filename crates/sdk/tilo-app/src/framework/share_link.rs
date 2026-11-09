@@ -5,15 +5,23 @@
 //! locator every time, so a link never names an entry or a workspace the host no
 //! longer serves, and is refused when the host serves no web page rather than
 //! guessing one.
+//!
+//! A link that invites is the other way round: what an app shows lives in the
+//! workspace, and what is shared is the invitation into it. The desk's own action
+//! makes it ([`session_actions::ISSUE_INVITATION`]), asked through the broker as the
+//! person using the app, so the link is the invitation the invite sheet makes, under
+//! the part the person asks for and the workspace's governance allows them to hand out.
 
-use tilo_actions::remote::{CatalogueQuery, ViewResourceQuery};
+use tilo_actions::InvocationUpdate;
+use tilo_actions::remote::session_actions;
+use tilo_actions::remote::{CatalogueQuery, InvokeArgument, RemoteActionTarget, ViewResourceQuery};
 use tilo_reference::link::{
     AppId, HostOrigin, Link, LinkSecrets, LinkTarget, Mode, RecordSegment, ResourceAddress, Scope,
     WebEntry,
 };
 use tilo_resource::share::{SHARE_INVITE_TYPE, SHARE_TYPE, ShareRequest};
 use ui_core::time::{Duration, Instant};
-use ui_core::{Arrival, CatalogueCall, RemoteActions};
+use ui_core::{Arrival, CatalogueCall, InvocationCall, RemoteActions};
 
 /// How long a minting waits for the host's locator.
 const LOOKUP_TIMEOUT: Duration = Duration::from_secs(30);
@@ -39,10 +47,19 @@ struct Minting {
     mode: Mode,
 }
 
+/// What a minting waits for: the host's locator for the resource, whose entry the link renders
+/// under, or the desk's answer to the invitation, whose link it is.
+enum Call {
+    Locator {
+        call: CatalogueCall,
+        minting: Minting,
+    },
+    Invitation(InvocationCall),
+}
+
 struct Pending {
     invocation: tilo_actions::InvocationId,
-    minting: Minting,
-    call: CatalogueCall,
+    call: Call,
     started: Instant,
     /// A person asked through a view: the URL goes to the clipboard their
     /// click claimed.
@@ -116,28 +133,35 @@ impl ShareLinks {
             .iter()
             .position(|(resource, _)| *resource == request.resource)
             .map(|at| self.copy_requested.remove(at).1);
-        if request.invite {
+        let call = if request.invite {
             if !may_invite {
                 return Err("You may not invite people to this workspace".into());
             }
-            // Invitations are created through the workspace's membership door,
-            // which only the shell reaches; an app cannot create one itself.
-            return Err(
-                "Invitations are created from the workspace's members list, not from an app".into(),
-            );
-        }
-        let minting = minting(&request, publisher)?;
-        let call = self.remote.catalogue_page(CatalogueQuery {
-            provider: Some(minting.provider.clone()),
-            view_resource: Some(ViewResourceQuery {
-                id: request.resource,
-                kind: request.kind,
-            }),
-            ..CatalogueQuery::default()
-        });
+            Call::Invitation(self.remote.invoke(
+                RemoteActionTarget {
+                    provider: session_actions::PROVIDER.into(),
+                    address: tilo_actions::ActionAddress::new(
+                        session_actions::DESK_RESOURCE,
+                        session_actions::ISSUE_INVITATION,
+                    ),
+                },
+                InvokeArgument::Json(invitation_arguments(&request.args)),
+                None,
+            ))
+        } else {
+            let minting = minting(&request, publisher)?;
+            let call = self.remote.catalogue_page(CatalogueQuery {
+                provider: Some(minting.provider.clone()),
+                view_resource: Some(ViewResourceQuery {
+                    id: request.resource,
+                    kind: request.kind,
+                }),
+                ..CatalogueQuery::default()
+            });
+            Call::Locator { call, minting }
+        };
         let mut pending = Pending {
             invocation,
-            minting,
             call,
             started: ui_core::time::now(),
             copy,
@@ -218,15 +242,59 @@ impl ShareLinks {
     }
 }
 
-/// The URL `pending`'s host answer makes, once it has answered.
+/// The URL `pending`'s answer makes, once it has one.
 fn settled(pending: &Pending) -> Option<Result<String, String>> {
-    pending.call.with(|call| match call {
-        Arrival::Pending { .. } => None,
-        Arrival::Failed(error) => Some(Err(format!(
-            "The workspace's host would not look the resource up: {error}"
-        ))),
-        Arrival::Ready(page) => Some(render(&pending.minting, page)),
-    })
+    match &pending.call {
+        Call::Locator { call, minting } => call.with(|call| match call {
+            Arrival::Pending { .. } => None,
+            Arrival::Failed(error) => Some(Err(format!(
+                "The workspace's host would not look the resource up: {error}"
+            ))),
+            Arrival::Ready(page) => Some(render(minting, page)),
+        }),
+        Call::Invitation(call) => call.with(|call| match call {
+            Arrival::Pending { .. } => None,
+            Arrival::Failed(error) => Some(Err(format!(
+                "The workspace would not make the invitation: {error}"
+            ))),
+            // The admission is not the answer: the desk makes the link on the session's own
+            // pass, and the link comes with the update that says it did.
+            Arrival::Ready(update) if !update.is_terminal() => None,
+            Arrival::Ready(update) => Some(invited_link(update)),
+        }),
+    }
+}
+
+/// The link the desk's invitation answered with, or why it made none.
+fn invited_link(update: &InvocationUpdate) -> Result<String, String> {
+    match update {
+        InvocationUpdate::Succeeded { output, .. } => output
+            .value
+            .as_ref()
+            .and_then(|value| value.get("link"))
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_owned)
+            .ok_or_else(|| "The workspace made no invitation".to_owned()),
+        InvocationUpdate::Failed { error, .. } => Err(error.message.clone()),
+        InvocationUpdate::Cancelled { message, .. } => Err(message
+            .clone()
+            .unwrap_or_else(|| "The invitation was stopped".to_owned())),
+        InvocationUpdate::Accepted { .. }
+        | InvocationUpdate::Progress { .. }
+        | InvocationUpdate::Item { .. } => Err("The invitation has not been made yet".to_owned()),
+    }
+}
+
+/// What the desk's invitation is asked for: the part the invitation brings someone in at, and
+/// for whom, exactly as the person's own sheet names them. Anything else an app passes is not
+/// the desk's to read.
+fn invitation_arguments(
+    args: &serde_json::Map<String, serde_json::Value>,
+) -> serde_json::Map<String, serde_json::Value> {
+    ["role", "invitee_name", "recipient", "expires_in_seconds"]
+        .into_iter()
+        .filter_map(|name| Some((name.to_owned(), args.get(name)?.clone())))
+        .collect()
 }
 
 fn succeeded(
@@ -310,7 +378,9 @@ fn minting(request: &ShareRequest, publisher: &Publisher<'_>) -> Result<Minting,
             id: request.resource.clone(),
             span,
         });
-    let mode = match text("mode").unwrap_or("app") {
+    // A view that opens on the whole desktop is linked there; any other
+    // opens its app alone full tab. The caller may ask for either.
+    let mode = match text("mode").unwrap_or(if view.desktop { "desktop" } else { "app" }) {
         "app" => Mode::App,
         "desktop" => Mode::Desktop,
         other => return Err(format!("Unknown mode `{other}`")),
@@ -344,9 +414,9 @@ pub fn host_link(
     locator: &tilo_actions::remote::ResourceViewLocator,
 ) -> Result<String, String> {
     if request.invite {
-        return Err(
-            "Invitations are created from the workspace's members list, not from an app".into(),
-        );
+        // A host answers for its records; the invitation into the workspace is the person's own
+        // device's to make, which is where the desk that makes it runs.
+        return Err("This host makes no invitation: the person's own device makes it".into());
     }
     // The host does not know which resource is the record's root, so its
     // links always name the resource, which opens the same place.
@@ -410,11 +480,13 @@ mod tests {
                     id: "message".into(),
                     primary: true,
                     range: true,
+                    desktop: false,
                 },
                 SharedView {
                     id: "thread".into(),
                     primary: false,
                     range: false,
+                    desktop: false,
                 },
             ],
             invite: false,
@@ -470,6 +542,30 @@ mod tests {
     }
 
     #[test]
+    fn a_view_read_from_the_desktop_is_linked_on_the_desktop() {
+        let mut desktop = request(&serde_json::json!({}));
+        desktop.views[0].desktop = true;
+        let link = |request: &ShareRequest| {
+            render(
+                &minting(request, &CHAT).unwrap(),
+                &page(Some("https://tilo.so/")),
+            )
+            .unwrap()
+        };
+        assert_eq!(
+            link(&desktop),
+            format!(
+                "https://tilo.so/#/@ada.tilo.cloud/w/{WORKSPACE}/so.tilo.chat/-/chat.message:01JA"
+            )
+        );
+        desktop.args = serde_json::json!({"mode": "app"})
+            .as_object()
+            .cloned()
+            .unwrap();
+        assert!(link(&desktop).starts_with("https://tilo.so/app/#/"));
+    }
+
+    #[test]
     fn what_cannot_be_linked_is_refused_with_its_reason() {
         assert!(url(&serde_json::json!({"view": "thread", "start": 1, "end": 2})).is_err());
         assert!(url(&serde_json::json!({"start": 1})).is_err());
@@ -492,5 +588,100 @@ mod tests {
             render(&minting, &page(Some("https://tilo.so/"))).unwrap(),
             format!("https://tilo.so/app/#/@ada.tilo.cloud/w/{WORKSPACE}/so.tilo.chat/-")
         );
+    }
+
+    /// A host answering with what the desk's `issue-invitation` answers.
+    fn desk(value: serde_json::Value) -> std::sync::Arc<tilo_actions::remote::TestHost> {
+        std::sync::Arc::new(tilo_actions::remote::TestHost::new().completing(move |_| {
+            tilo_actions::ActionOutput {
+                value: Some(value.clone()),
+                resources: Vec::new(),
+            }
+        }))
+    }
+
+    fn share_invite(args: &serde_json::Value) -> Vec<u8> {
+        let mut request = request(args);
+        request.invite = true;
+        serde_json::to_vec(&request).unwrap()
+    }
+
+    /// An app's invitation is the desk's: the same action the invite sheet drives, asked through
+    /// the broker with the part and the person it is for, and answered with the link it made.
+    #[test]
+    fn an_invitation_is_the_desks_and_answers_with_its_link() {
+        let host = desk(serde_json::json!({
+            "invite": "ab".repeat(32),
+            "link": "https://tilo.so/join#ab",
+            "role": "editor",
+            "expires_at_ns": 1,
+        }));
+        let _served = RemoteActions::enter(
+            host.clone(),
+            tilo_actions::remote::Caller::local_person("ada"),
+        );
+        let mut links = ShareLinks::default();
+        let minted = links
+            .start(
+                tilo_actions::InvocationId::new(),
+                &share_invite(&serde_json::json!({
+                    "role": "editor",
+                    "invitee_name": "Ada",
+                    "view": "message",
+                })),
+                &CHAT,
+                true,
+            )
+            .expect("the desk answers at once")
+            .expect("the invitation is made");
+        assert!(!minted.copied);
+        assert_eq!(
+            minted.output.value,
+            Some(serde_json::json!({"url": "https://tilo.so/join#ab"}))
+        );
+        let asked = host.asked();
+        assert_eq!(asked.len(), 1);
+        assert_eq!(asked[0].target.provider, session_actions::PROVIDER);
+        assert_eq!(
+            asked[0].target.address,
+            tilo_actions::ActionAddress::new(
+                session_actions::DESK_RESOURCE,
+                session_actions::ISSUE_INVITATION
+            )
+        );
+        assert_eq!(
+            asked[0].argument,
+            InvokeArgument::Json(
+                serde_json::json!({"role": "editor", "invitee_name": "Ada"})
+                    .as_object()
+                    .cloned()
+                    .expect("an object")
+            ),
+            "a view the resource links to is not the desk's to read"
+        );
+    }
+
+    /// Someone the workspace's governance lets hand out no invitation hears a reason, and the
+    /// desk is never asked.
+    #[test]
+    fn a_person_who_may_not_invite_asks_the_desk_nothing() {
+        let host = desk(serde_json::json!({"link": "https://tilo.so/join#ab"}));
+        let _served = RemoteActions::enter(
+            host.clone(),
+            tilo_actions::remote::Caller::local_person("ada"),
+        );
+        let mut links = ShareLinks::default();
+        assert_eq!(
+            links
+                .start(
+                    tilo_actions::InvocationId::new(),
+                    &share_invite(&serde_json::json!({"role": "editor"})),
+                    &CHAT,
+                    false,
+                )
+                .err(),
+            Some("You may not invite people to this workspace".to_owned())
+        );
+        assert!(host.asked().is_empty());
     }
 }

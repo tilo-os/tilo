@@ -195,6 +195,7 @@ elif [[ -s $out/signature ]]; then
     if [[ -d $out/certified ]]; then
       . "$repo_root/keys/release/trust.env"
       for sig in "$out"/certified/*.sig; do
+        [[ -e $sig ]] || continue
         n=${sig%.sig}
         cosign attach signature --payload "$out/payload.json" --signature "$sig" \
           --certificate "$n.crt" --certificate-chain "$repo_root/keys/release/root.crt" \

@@ -569,11 +569,12 @@ pub struct ContextMenu {
     /// A menu that has settled says so, and the window it floats in stops
     /// asking for frames.
     dirty: bool,
-    /// The send-to box beside it: a menu opened on something carries the
-    /// sentence typed into it there, and sends it ([`super::SendToBox`]).
+    /// The send-to box the menu's send row opens in its place, holding the
+    /// sentence typed into the menu and sending it ([`super::SendToBox`]).
     send_to: super::SendToBox,
     /// Where a box opened with no menu around it stands: beside this rect,
-    /// which is what the window pointed at or its pointer's place.
+    /// which is what the window pointed at, what the menu was opened over, or
+    /// its pointer's place.
     alone: Option<Rect>,
 }
 
@@ -759,26 +760,6 @@ impl ContextMenu {
         self.row_height = self.row_floor();
         self.list.set_row_height(Some(self.row_height));
         self.layout_at_position();
-        // A menu opened on something carries what is typed into it: the box
-        // stands beside it with that subject.
-        if self.about.is_some() && crate::shared_selection::send_host_available() {
-            self.send_to.open(None, &[]);
-            self.send_to.unfocus();
-            self.send_to.place(self.rect, self.viewport);
-            tracing::debug!(
-                menu = self as *const Self as usize,
-                subjects = ?self.send_to.subjects(),
-                box_rect = ?self.send_to.rect(),
-                "a menu about something opened its send-to box"
-            );
-        } else {
-            tracing::debug!(
-                menu = self as *const Self as usize,
-                about = self.about.is_some(),
-                host = crate::shared_selection::send_host_available(),
-                "a menu opened without its send-to box"
-            );
-        }
         self.dirty = true;
     }
 
@@ -931,6 +912,18 @@ impl ContextMenu {
         } else {
             0.0
         };
+        // The field that asks what is typed shows its hint whole or not at
+        // all: a menu narrower than the hint cuts it mid-word, so the hint is
+        // measured with the rows.
+        if self.query.is_some() {
+            let hint = crate::i18n::I18nManager::lookup_plain(if self.can_ask() {
+                "menu-query-placeholder-ask"
+            } else {
+                "menu-query-placeholder"
+            });
+            let (w, _) = text.measure_style(&hint, None, &style);
+            width = width.max(f64::from(w));
+        }
         // The content's inset on both sides; the row is the menu row height,
         // grown with `s2` of air round the line at large text.
         // However short its labels, a menu stays a menu's width.
@@ -1109,6 +1102,14 @@ impl ContextMenu {
 
     pub fn is_open(&self) -> bool {
         self.open
+    }
+
+    /// Whether it still has anything to show: its rows, or the send-to box
+    /// that took their place. A host keeps it while this holds and drops it
+    /// after, so choosing the send row outlives the menu it closed.
+    #[must_use]
+    pub fn is_showing(&self) -> bool {
+        self.open || self.send_to_alone_open()
     }
 
     /// Every pixel the open menu painted in its last
@@ -1687,11 +1688,6 @@ impl Widget for ContextMenu {
         if let Some((_, menu)) = self.submenu.as_mut() {
             menu.draw_overlay(scene, transform, text_renderer, theme, presence);
         }
-        if self.send_to.is_open() || self.send_to.is_drawn() {
-            self.send_to.drain_answer();
-            self.send_to.place(self.rect, self.viewport);
-            self.send_to.paint(scene, transform, text_renderer, theme);
-        }
     }
 
     fn needs_animation_frame(&self) -> bool {
@@ -1717,9 +1713,6 @@ impl Widget for ContextMenu {
             if self.send_to_alone_open() {
                 self.handle_alone(event, ctx);
             }
-            return;
-        }
-        if self.route_to_send_to(event, ctx) {
             return;
         }
         if self.route_to_submenu(event, ctx) {
@@ -1920,7 +1913,7 @@ impl Widget for ContextMenu {
     }
 
     fn traps_focus(&self) -> bool {
-        self.open
+        self.is_showing()
     }
 
     /// An open menu that takes typing is where typed text goes: its caret
@@ -1943,15 +1936,7 @@ impl Widget for ContextMenu {
         if self.send_to_alone_open() {
             return Some(self.send_to.rect());
         }
-        if !self.open {
-            return None;
-        }
-        let box_rect = self.send_to.rect();
-        Some(if self.send_to.is_open() {
-            self.rect.union(box_rect)
-        } else {
-            self.rect
-        })
+        self.open.then_some(self.rect)
     }
 
     fn get_rect(&self) -> Rect {
@@ -1959,7 +1944,8 @@ impl Widget for ContextMenu {
     }
 
     fn accessibility_hidden(&self) -> bool {
-        !self.open
+        // The box that took the menu's place is on screen with the menu gone.
+        !self.open && !self.send_to_alone_drawn()
     }
 
     fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
@@ -2068,7 +2054,7 @@ impl Widget for ContextMenu {
         _state: &mut crate::widget::Edits<'_>,
         _path: &ModelPath,
     ) -> bool {
-        if !self.open {
+        if !self.open && !self.send_to_alone_open() {
             return false;
         }
         if self.send_to.perform_semantic_action(target, action) {

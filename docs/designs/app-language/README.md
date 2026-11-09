@@ -45,7 +45,7 @@ From `apps/tl/notes/app.tl`:
 
 ```
 /// A note: a title, a body and the tags people gave it.
-type Note {
+type Note (untitled: "Untitled") {
     title: Text
     body: RichText
     pinned: Bool = false
@@ -64,14 +64,28 @@ type Notebook {
 
 root notebook: Notebook
 
-/// Starts a note.
+/// Starts a note. Its title starts empty: what is typed first names it.
 primary action new_note(nb: Notebook) -> Note (icon: .plus) {
-    nb.notes.insert(Note(title: "Untitled"))
+    nb.notes.insert(Note(title: ""))
 }
 
 /// Pins or unpins a note.
 action pin(n: Note, pinned: Bool = not n.pinned) (icon: .pin, on: n.pinned) {
     n.pinned = pinned
+}
+```
+
+`(untitled: "Untitled")` says once what a note is called while its title is empty: its row, its
+window's title, a reference to it, its history and its title field's placeholder all read those
+words, translated in the app's catalogue, so no view writes the fallback itself. A type's records
+are named by its first text field; `(title: subject)` names the one that does it instead, as a
+draft whose first field is the address it goes from is called by its subject:
+
+```
+type Draft (title: subject, untitled: "New message") {
+    from: Text
+    to: Text
+    subject: Text
 }
 ```
 

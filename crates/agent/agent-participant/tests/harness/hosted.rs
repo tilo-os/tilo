@@ -51,6 +51,8 @@ pub struct Options {
     pub allowed_origins: Vec<String>,
     /// The reviewer a host lends its workspaces' reporters.
     pub feedback_reviewer: Option<Arc<dyn FeedbackReviewer>>,
+    /// Where the host runs its workspaces' Terminal sessions.
+    pub shell: Option<Arc<tilo_relay::agents::HostShells>>,
 }
 
 impl Default for Options {
@@ -61,6 +63,7 @@ impl Default for Options {
             web_entry: None,
             allowed_origins: Vec::new(),
             feedback_reviewer: None,
+            shell: None,
         }
     }
 }
@@ -106,6 +109,7 @@ pub async fn start(root: &SigningKey, host: &Device, state: &Path, options: Opti
             model: options.model,
             catalogue: options.catalogue,
             feedback_reviewer: options.feedback_reviewer,
+            shell: options.shell,
         },
     )
     .await

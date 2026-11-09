@@ -2,6 +2,7 @@
 //! each workspace's shared desktop, the workspace's history, the windows left open, and what the
 //! sheets and settings asked for.
 
+use tilo_session_core::presence::{Place, Step, Target};
 use tilo_sheets::Seat as _;
 use tilo_surface_host::WidgetHost;
 
@@ -62,6 +63,65 @@ impl Shared {
         }
     }
 
+    /// Whom this device follows, as its own presence word says: the window of theirs shown here comes forward each
+    /// time the place they work in changes, and their app where no window here shows their record. Doing something of
+    /// their own takes their view back, and the workspace hears that they follow nobody.
+    pub(crate) fn follow_people(&self) {
+        let Some(sync) = &self.sync else {
+            return;
+        };
+        let followed = sync.own().following;
+        let mut follow = self.follow.borrow_mut();
+        if followed.is_none() && follow.followed().is_none() {
+            return;
+        }
+        // Their own gesture or typing is them, not the person they followed: the view is theirs
+        // again, and the workspace hears they follow nobody.
+        if self.underway.get().holds() {
+            follow.follow(None);
+            drop(follow);
+            self.say_following_nobody();
+            return;
+        }
+        follow.follow(followed);
+        let people = sync.people(
+            &self.handle.read(Clone::clone),
+            &self.notes.records(),
+            &|_: &str| None,
+        );
+        let places: Vec<Place<'_>> = people
+            .iter()
+            .map(|person| Place {
+                id: &person.id,
+                tab: person.tab,
+                app: person.followed_app(),
+            })
+            .collect();
+        let step = follow.step(&places);
+        drop(follow);
+        match step {
+            Step::Rest => {}
+            Step::Bring(Target::Window(tab)) => {
+                self.handle.focus_tab(tab);
+            }
+            Step::Bring(Target::App(app)) => {
+                self.handle.focus_app(&app);
+            }
+            Step::Gone => self.say_following_nobody(),
+        }
+    }
+
+    /// This device follows nobody from now on, and the workspace hears it once.
+    fn say_following_nobody(&self) {
+        let Some(sync) = &self.sync else {
+            return;
+        };
+        let mut own = sync.own();
+        if own.following.take().is_some() {
+            sync.set_own(own);
+        }
+    }
+
     /// The workspace in front, as its id: where a chosen notification's app opens.
     pub(crate) fn active_workspace_id(&self) -> String {
         self.handle.read(|tree| {
@@ -90,6 +150,29 @@ impl Shared {
             // A window asked the activity model something, or what the history reads moved: the
             // desk draws a frame, which serves it.
             self.desktop.with_widgets(WidgetHost::relayout);
+        }
+    }
+
+    /// The desktop's control hints: the person's record as their settings hold it, the reasons
+    /// this session knows (following someone, setup standing over the desktop), and what they
+    /// learned since.
+    pub(crate) fn follow_hints(&self, setup_up: bool) {
+        let settings = settings_store::stamp();
+        if settings != self.hints_stamp.get() {
+            self.hints_stamp.set(settings);
+            self.hints
+                .set_record(settings_store::control_hints::LEARNED.get());
+        }
+        let quiet = if self.follow.borrow().followed().is_some() {
+            Some(ui::control_hints::Quiet::Following)
+        } else {
+            setup_up.then_some(ui::control_hints::Quiet::Busy)
+        };
+        let search_keys = self.shortcut_guide.search_keys();
+        self.hints.set_context(quiet, !setup_up, search_keys);
+        if let Some(learned) = self.hints.take_learned() {
+            // Not kept, a hint at worst shows once more: nothing to tell.
+            settings_store::control_hints::LEARNED.set(learned).ok();
         }
     }
 

@@ -33,6 +33,7 @@
 import {mkdirSync, writeFileSync} from 'node:fs';
 import {request} from 'node:https';
 import {launch, sleep} from '../../../../tools/web/chrome.mjs';
+import * as waits from './waits.mjs';
 
 const [site, relay, origin, out, rolesFile, earlier] = process.argv.slice(2);
 if (!site || !relay || !origin || !out || !rolesFile) {
@@ -213,11 +214,24 @@ const paletteRows = async tab => {
 // waits on that, not on a stopwatch, however slow presenting is. A page
 // drawing a megapixel through a software rasteriser draws a few frames a
 // second, and every wait here is a number of frames for that reason.
-const settle = async (tab, by = 2) => {
-  const from = await tab.evaluate('globalThis.tiloMount?.state()?.frames ?? 0');
-  await until(tab, `(globalThis.tiloMount?.state()?.frames ?? 0) >= ${from + by}`,
-    `the desk stepping ${by} more frame(s)`, 120_000);
-};
+//
+// A desk with nothing to draw presents none — it waits for what changes —
+// so a frame count is progress only while the desk owes work. `owed` says
+// whether it still does: the wait ends when the frames came or the desk says
+// it has nothing left to draw, and never outlives the work it waits for.
+const settle = (tab, by = 2, owed = () => true) => waits.settle({
+  evaluate: tab.evaluate.bind(tab),
+  by,
+  owed,
+  sleep,
+  timeoutMs: 120_000,
+  pollMs: 100,
+  onTimeout: ({from, by}) => until(tab, `(globalThis.tiloMount?.state()?.frames ?? 0) >= ${from + by}`,
+    `the desk stepping ${by} more frame(s)`, 1),
+});
+// Whether the open search still owes rows: the desk's own answer, which a
+// settled frame would not carry, as a settled desk presents none.
+const searching = tab => waits.searching(tab);
 // A person's search: the chord, the query, and Enter on the row the palette
 // offers for it. The host answers a query a moment after the last key, and the
 // rows it shows before that answer are the previous query's: they are read
@@ -225,7 +239,7 @@ const settle = async (tab, by = 2) => {
 // first result under the palette's heading, which is what the highlight sits
 // on. Reading only for the row's presence raced that answer and sent Enter to
 // a row left over from the query before.
-const search = async (tab, command, query, row) => {
+const search = async (tab, command, query, row, opens = null) => {
   // The desk keeps the search up until what it opened has arrived, and the
   // chord toggles it: it is opened only when it is down.
   if (!await tab.evaluate('!!globalThis.tiloMount?.state()?.searchOpen')) {
@@ -242,12 +256,18 @@ const search = async (tab, command, query, row) => {
   const deadline = Date.now() + 120_000;
   // The text is in before its answer is: two reads a frame apart, agreeing,
   // are the palette's answer to this query and not a frame of the one before.
-  await settle(tab, 2);
+  // A settled desk presents no frame, so the wait between the two reads is
+  // the desk's search saying it owes no more rows as much as a frame.
+  await settle(tab, 2, () => searching(tab));
   for (;;) {
     const rows = await paletteRows(tab);
-    await settle(tab, 1);
+    await settle(tab, 1, () => searching(tab));
     const again = await paletteRows(tab);
     if (first(rows) === row && JSON.stringify(rows) === JSON.stringify(again)) {
+      // Enter is what opens the app: the watch is in the page before the press,
+      // so the frame it closes search and the frame the app's window arrives on
+      // are told apart on the page's own clock.
+      if (opens) await armOpen(tab, opens);
       await key(tab, 'Enter');
       chosen = rows;
       break;
@@ -260,6 +280,73 @@ const search = async (tab, command, query, row) => {
   await until(tab, '!globalThis.tiloMount?.state()?.searchOpen', `the search closing after ${row}`, 180_000);
   return chosen;
 };
+// A page-side clock around the person's Enter. What a person waits for is the
+// desk showing the app's window, and this desk paints into one canvas: the
+// window is on screen when the frame that carries it is presented. So both
+// moments are frames the page presented — the press, stamped where the key
+// arrives, and the first presented frame after it that lists the window —
+// kept on the page's own clock, where a round trip from here never lands in
+// the number.
+//
+// The press is stamped by a `keydown` listener, not by reading the desk's
+// state: a MutationObserver runs only after the frame the key caused has
+// already published, so a watch that took its press from the first status
+// showing search closed dated the press at or after the frame it was meant to
+// precede, and every open read as 0 ms.
+//
+// The frame that counts is the first presented one after the press whose
+// navigation lists the app's window: this desk draws a window in the pass that
+// publishes it, so that frame carries the window's pixels, where the entry
+// alone can be published a frame before its pixels are shown.
+const armOpen = (tab, app) => tab.evaluate(`(() => {
+  const mount = globalThis.tiloMount;
+  const host = mount.canvas.parentElement;
+  const watch = globalThis.__tiloOpen = {app: ${JSON.stringify(app)}, pressedAt: null,
+    framesAtPress: null, shownAt: null, framesShown: null};
+  if (!globalThis.__tiloOpenKeys) {
+    globalThis.__tiloOpenKeys = true;
+    addEventListener('keydown', event => {
+      const w = globalThis.__tiloOpen;
+      if (!w || w.pressedAt !== null) return;
+      if (event.key !== 'Enter' && event.key !== '\\r') return;
+      w.pressedAt = performance.now();
+      w.framesAtPress = Number(mount.canvas.parentElement.dataset.frames ?? 0);
+    }, true);
+  }
+  const read = () => {
+    const w = globalThis.__tiloOpen;
+    if (!w || w.pressedAt === null || w.shownAt !== null) return;
+    if (host.dataset.phase !== 'presented') return;
+    if (Number(host.dataset.frames ?? 0) <= w.framesAtPress) return;
+    if ((mount.navigation?.getSnapshot?.().entries ?? []).some(entry => entry.app === w.app)) {
+      w.shownAt = performance.now();
+      w.framesShown = Number(host.dataset.frames ?? 0);
+    }
+  };
+  new MutationObserver(read).observe(host, {attributes: true, attributeFilter: ['data-frames', 'data-phase']});
+  return true;
+})()`);
+// What the open cost, in the desk's own unit: the window is drawn on the frame
+// right after the one that took the key, so the open is worth no more frames
+// than that. The milliseconds ride along as what this machine's rasteriser
+// took to put that frame on screen — a megapixel through software costs about
+// half a second here and near nothing on a display, and neither says anything
+// about whether the desk heard the person.
+//
+// What was not measured is `ok: false`, never a number: an open the watch
+// never saw begun or never saw end is no reading at all, and the caller fails
+// on it rather than counting `0` as fast.
+const openMarks = tab => tab.evaluate(`(() => {
+  const watch = globalThis.__tiloOpen;
+  globalThis.__tiloOpen = undefined;
+  if (!watch || watch.pressedAt === null || watch.shownAt === null) {
+    return JSON.stringify({ok: false, pressed: watch?.pressedAt != null, shown: watch?.shownAt != null});
+  }
+  return JSON.stringify({ok: true,
+    presentMs: Math.round(watch.shownAt - watch.pressedAt),
+    frames: watch.framesShown - watch.framesAtPress});
+})()`).then(JSON.parse);
+
 // A canvas-drawn desktop takes the pointer; the search chord is Ctrl+K away
 // from the keyboard (Meta on a Mac, as the desktop reads it).
 const canvasTopLeft = tab => tab.evaluate(`(() => {
@@ -340,12 +427,18 @@ const callOn = async tab => JSON.parse(await tab.evaluate('JSON.stringify(global
 // leaves the others as they were, so each person gets one of their own: a
 // second tab in one browser is a desk that stops answering while the other
 // person is looked at.
+// People who come back to the site: a browser new to it opens on the first
+// screen (set up with an agent, or skip to one's own desktop), which these
+// people have been past already, so their page opens the Lounge itself.
+const returning = tab => tab.send('Page.addScriptToEvaluateOnNewDocument',
+  {source: "try { localStorage.setItem('tilo-first-run', '1'); } catch {}"});
 const anotherBrowser = async () => {
   const launched = await launch({args: browserArgs});
   browsers.push(launched);
   const tab = await launched.tab();
   await tab.send('Emulation.setDeviceMetricsOverride',
     {width: 1280, height: 800, deviceScaleFactor: 1, mobile: false}).catch(() => {});
+  await returning(tab);
   return tab;
 };
 // What a browser that reached the desktop leaves with the run: its arrival,
@@ -355,6 +448,9 @@ const mounted = async (tab, name) => {
     arrival: document.documentElement.dataset.arrival ?? null,
     door: document.documentElement.dataset.door ?? null,
     phase: document.documentElement.dataset.phase ?? null,
+    // Why a page stopped: refused, failed or unsupported, in the words it shows.
+    entry: document.documentElement.dataset.entry ?? null,
+    status: document.getElementById('status')?.textContent?.trim().slice(0, 300) ?? null,
   })`));
   if (arrival.arrival !== 'done') await failed(`${name} did not arrive: ${JSON.stringify(arrival)}`, tab);
   await sleep(2000);
@@ -847,18 +943,43 @@ try {
   const applications = (await nav(a.tab))?.applications ?? [];
   if (!applications.length) failed('the Lounge offers no app');
   const opened = [];
+  // What a person waits for: Enter on the app's row, to the desk showing its
+  // window. Opening an app is a window on the desk the person already has;
+  // the app's own code arriving is that window filling in, and it must not
+  // hold the window back. The desk draws the window on the frame after the one
+  // that took the key, and that is the whole wait: past it the desk reads as
+  // not having heard the person. How long that frame took to reach the screen
+  // is this machine's rasteriser, so it is reported and not held against the
+  // desk.
+  const OPEN_FRAMES = 1;
+  const timings = [];
   const started = Date.now();
   for (const application of applications) {
-    await search(a.tab, a.command, application.label.toLowerCase(), application.label);
+    await search(a.tab, a.command, application.label.toLowerCase(), application.label, application.id);
     await until(a.tab, `(globalThis.tiloMount?.navigation?.getSnapshot?.().entries ?? []).some(entry => entry.app === ${JSON.stringify(application.id)})`,
       `the window of ${application.label}`, 180_000);
+    const marks = await openMarks(a.tab);
+    // An open the page's own clock never saw begun or never saw end is not a
+    // fast one: it is no reading, and the gate says so instead of counting a
+    // missing number as zero frames.
+    if (!marks.ok) {
+      failed(`${application.label} opened, but Enter to its window was not measured (${JSON.stringify(marks)}); an unmeasured open is not a fast one`);
+    }
+    timings.push({app: application.id, ...marks});
     const shot = await a.tab.screenshot();
     if (shot) writeFileSync(`${out}/app-${application.id.replace(/[^a-z0-9]+/gi, '-')}.png`, shot);
     opened.push(application.id);
   }
   const spent = Math.round((Date.now() - started) / 1000);
-  report.applications = {offered: applications.map(application => application.id), opened, seconds: spent};
+  report.applications = {offered: applications.map(application => application.id), opened, seconds: spent, presented: timings};
+  const slow = timings.filter(timing => timing.frames > OPEN_FRAMES);
   console.log(`ok: each of the ${applications.length} apps the Lounge offers opened from the search (${spent}s)`);
+  for (const timing of timings) {
+    console.log(`  ${timing.app}: ${timing.presentMs === null ? 'on the frame that took its key' : `${timing.presentMs} ms from Enter to its window`}`);
+  }
+  if (slow.length) {
+    failed(`${slow.length} of ${timings.length} apps showed their window more than ${OPEN_FRAMES} frame after Enter: ${slow.map(timing => `${timing.app} ${timing.frames}`).join(', ')}`);
+  }
 
   // Two fingers sideways over Notes, which does not scroll that way: the
   // strip pans by the gesture and the windows stay as they were.

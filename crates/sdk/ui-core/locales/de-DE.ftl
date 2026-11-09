@@ -767,8 +767,9 @@ author-bot-details-as = { $name }, über { $bot } (Bot, hinzugefügt von { $inst
 author-bot-linked = Mit { $person } auf Tilo verknüpft
 author-persona-suffix = { $name } · { $service }
 
-# A context menu's query field: typing narrows its entries, and a sentence
-# no entry answers goes into the send-to box docked beside it.
+# Das Eingabefeld eines Kontextmenüs: Tippen schränkt seine Einträge ein, und
+# seine Senden-Zeile übernimmt das Getippte in die Sendebox, die an seiner
+# Stelle steht.
 menu-query-placeholder = Tippen zum Filtern
 menu-query-placeholder-ask = Tippen zum Filtern oder Senden
 menu-query-placeholder-send = Tippen zum Filtern oder Senden
@@ -778,8 +779,9 @@ menu-query-name-send = Filtern oder senden
 menu-send = Senden…
 menu-ask-typed = Senden: { $text }
 
-# The box beside a context menu: whom a message goes to, what it is about,
-# and its words.
+# Die Sendebox: an wen eine Nachricht geht, worum es geht und ihre Worte. Sie
+# steht, wo das Menü stand, dessen Senden-Zeile sie geöffnet hat, und für eine
+# Meldung allein.
 send-to-name = Senden an
 # The same box opened to the one place reports go.
 send-to-report-name = Problem melden
@@ -969,6 +971,14 @@ change-window = { $count ->
    *[other] { $count } Änderungen von { $who }
 }
 change-window-changed = Geändert von { $who }: { $count ->
+    [one] { $count } { $one }
+   *[other] { $count } { $noun }
+}
+change-window-new = Neu von { $who }: { $count ->
+    [one] { $count } { $one }
+   *[other] { $count } { $noun }
+}
+change-window-new-more = Neu von { $who }: mindestens { $count ->
     [one] { $count } { $one }
    *[other] { $count } { $noun }
 }

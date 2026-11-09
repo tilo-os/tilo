@@ -28,8 +28,8 @@ view overview(d: Desk) {
                     on press: session.join_workspace()
                 }
             }
-            ui.TextInput(value: query, placeholder: "Search windows across your workspaces") {
-                on submit: session.search(query: .some(query))
+            ui.TextInput(bind: query, placeholder: "Search windows across your workspaces") {
+                on submit: session.search(query: query)
             }
             rooms_here(d)
             if query == "" {
@@ -59,7 +59,7 @@ view rooms_here(d: Desk) {
                 ui.Chip(
                     r.name,
                     icon: if r.current { .layers } else { .folder },
-                    selected: .some(r.current),
+                    selected: r.current,
                 ) {
                     on press: device.switch_workspace(device.desk, workspace: r.key)
                 }
@@ -182,7 +182,7 @@ view window_menu(d: Desk, w: Win) {
                 ui.MenuItem("Move to {strip_name(d, s)}", icon: .arrow_right) {
                     on choose: session.move_tab(
                         tab: w.key,
-                        strip: .some(s),
+                        strip: s,
                         workspace: .none,
                         display: .none,
                     )
@@ -194,7 +194,7 @@ view window_menu(d: Desk, w: Win) {
                 on choose: session.move_tab(
                     tab: w.key,
                     strip: .none,
-                    workspace: .some(r.key),
+                    workspace: r.key,
                     display: .none,
                 )
             }
@@ -228,8 +228,8 @@ view found(d: Desk, elsewhere: List<Win>) {
 view window_line(d: Desk, w: Win) {
     ui.ListRow(
         w.title,
-        secondary: .some(app_line(w)),
-        meta: .some(w.workspace),
+        secondary: app_line(w),
+        meta: w.workspace,
         item: w,
         icon: if w.preview == "withheld" { .eye_off } else { .app_window },
     ) {
@@ -243,7 +243,7 @@ view window_line(d: Desk, w: Win) {
                         on choose: session.move_tab(
                             tab: w.key,
                             strip: .none,
-                            workspace: .some(front_workspace(d)),
+                            workspace: front_workspace(d),
                             display: .none,
                         )
                     }

@@ -21,7 +21,7 @@ use std::rc::Rc;
 use tilo_sort::CompactSort as _;
 
 use durable_store::{DurableStore, StorageKey, WriteOp};
-use tilo_desktop_model::{DesktopTree, TabId, TileContent, WorkspaceSlot};
+use tilo_desktop_model::{DesktopTree, TabId, TileContent, Workspace, WorkspaceSlot};
 use tilo_desktop_surface::activity::describer::{self, Describer, Job};
 use tilo_desktop_surface::activity::{
     ActivityHost, ActivitySnapshot, DetachedRecordHistory, WorkspaceDeparture,
@@ -178,9 +178,6 @@ pub(crate) struct PageHistory {
     peer: Option<u32>,
     author: String,
     shared: crate::desktop::Shared,
-    /// The profile's own copy of the desk's document, kept by
-    /// `desktop::Persistence`.
-    document: Rc<RefCell<AutoCommit>>,
     host: Rc<PageActivityHost>,
     /// Who each actor of the desk's document is, from the last read.
     authors: BTreeMap<String, String>,
@@ -235,7 +232,6 @@ impl PageHistory {
         Self {
             peer,
             author: author.clone(),
-            document: Rc::clone(&writer.document),
             shared,
             host: Rc::new(PageActivityHost {
                 author,
@@ -275,7 +271,8 @@ impl PageHistory {
             return;
         }
         let job = {
-            let mut document = self.document.borrow_mut();
+            let desk = self.writer.desk();
+            let mut document = desk.document_mut();
             self.describer.next(&mut document)
         };
         let Some(job) = job else {
@@ -311,7 +308,7 @@ impl PageHistory {
         let document = self
             .peer
             .and_then(crate::replication::desktop_history)
-            .unwrap_or_else(|| self.document.borrow().clone());
+            .unwrap_or_else(|| self.writer.desk().document());
         crate::desktop::as_desk_document(&document, &self.author)
     }
 
@@ -343,9 +340,7 @@ fn bound(
         .workspaces
         .iter()
         .filter(|w| w.slot == workspace)
-        .flat_map(|w| &w.strips)
-        .flat_map(|strip| &strip.window_groups)
-        .flat_map(|group| &group.tabs)
+        .flat_map(Workspace::tabs)
         .filter_map(|tab| match &tab.tile {
             TileContent::LocalApp { app_id, .. } => Some((tab.id, app_id.clone())),
             _ => None,
@@ -429,11 +424,7 @@ pub(crate) fn own_recent_actions(
     since_ms: u64,
 ) -> Vec<OwnAction> {
     let titles: HashMap<TabId, &str> = tree
-        .workspaces
-        .iter()
-        .flat_map(|w| &w.strips)
-        .flat_map(|strip| &strip.window_groups)
-        .flat_map(|group| &group.tabs)
+        .tabs()
         .map(|tab| (tab.id, tab.title.as_str()))
         .collect();
     let mut authors = ui::AuthorDirectory::new();
@@ -652,7 +643,7 @@ impl tilo_desktop_surface::HistorySource for PageHistory {
         let mut hasher = std::collections::hash_map::DefaultHasher::new();
         self.peer
             .and_then(crate::replication::desktop_history_heads)
-            .unwrap_or_else(|| self.document.borrow().base_heads())
+            .unwrap_or_else(|| self.writer.desk().heads())
             .hash(&mut hasher);
         let mut tree_records = self.shared.bound_records();
         tree_records.compact_sort_by_key(|(tab, _)| *tab);

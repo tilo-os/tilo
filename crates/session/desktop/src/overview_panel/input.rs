@@ -440,6 +440,14 @@ impl OverviewPanel {
             self.choose(OverviewPick::JoinWorkspace);
             return;
         }
+        // A row below the workspaces, or its control: what it does, or nothing for a row that
+        // only says something.
+        if let Some((index, on_action)) = self.tilo_hit(p) {
+            if let Some(pick) = self.tilo_pick(index, on_action) {
+                self.choose(pick);
+            }
+            return;
+        }
         let leaving = (0..self.desk.cards.len())
             .find(|&idx| self.leave_rect(idx).is_some_and(|leave| leave.contains(p)));
         if let Some(card) = leaving.and_then(|idx| self.desk.cards.get(idx)) {

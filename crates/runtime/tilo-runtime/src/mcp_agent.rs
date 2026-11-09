@@ -26,6 +26,7 @@ use std::collections::HashMap;
 use std::fmt::Write as _;
 use tilo_actions::remote::Found;
 use tilo_actions::{ActionDescriptor, OperationKind};
+use tilo_lock::MutexRecover as _;
 
 #[path = "mcp_agent_find.rs"]
 mod find;
@@ -107,7 +108,7 @@ fn tools() -> Vec<Value> {
         ),
         (
             "tilo_do",
-            "Run an action and get its result: `{path: \"notes/Todo#append-paragraph\", args: {text: \"Buy milk\"}}`. Several in order, stopping at the first failure: `calls: [{path, args}, …]`. Start an app: `{path: \"notes#open\"}`. Answers `ok` with the result, or `failed: why`; still running after wait_ms (default 5000) it says `pending <id>` for tilo_status. Same invocation_id never runs twice.",
+            "Run an action, get its result: `{path: \"notes/Todo#append-paragraph\", args: {text: \"Buy milk\"}}`. Several in order, stopping at a failure: `calls: [{path, args}, …]`. `notes#open` starts an app; `terminal#run` runs a shell `command`. Answers `ok` with the result, or `failed: why`; running past wait_ms (default 5000): `pending <id>` for tilo_status. Same invocation_id never runs twice.",
             json!({"path":string,"args":{"type":"object"},"calls":{"type":"array","minItems":1,"maxItems":MAX_CALLS,"items":call},"wait_ms":integer,"invocation_id":string}),
             json!([]),
             json!({"readOnlyHint":false,"destructiveHint":true,"idempotentHint":false,"openWorldHint":true}),
@@ -1453,7 +1454,11 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
         if let Some(instance) = instance {
             return pinned_window(&running, name, instance);
         }
-        let is_window = |provider: &str| provider.parse::<u64>().is_ok();
+        // A record a device serves whoever has it open (a host serving its
+        // workspace's records) is the app, live, as a window of it is.
+        let is_window = |provider: &str| {
+            provider.parse::<u64>().is_ok() || tilo_actions::remote::is_record_provider(provider)
+        };
         let ids_where = |window: bool| {
             running
                 .iter()
@@ -2017,7 +2022,7 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
     fn not_running_note(name: &str, opens: bool) -> String {
         if opens {
             format!(
-                "{name} is installed but not running; start it with tilo_do {{path: \"{}#open\"}}",
+                "{name} is installed but not running; start it with tilo_do {{path: \"{}#open\"}}, or run one of its actions and it starts first",
                 path_name(name)
             )
         } else {
@@ -2126,6 +2131,23 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
         text_result(result)
     }
 
+    /// Note the record a call resolved `in`: the one its provider names when
+    /// the workspace serves it as a record (`record:<app>:<record>`). A call
+    /// whose resource no record provider answers leaves the last one named:
+    /// the agent still acts there.
+    fn acted_in(&self, resolved: &Resolved) {
+        let Some((app, record)) = tilo_actions::remote::record_parts(&resolved.provider) else {
+            return;
+        };
+        if app != resolved.app_id {
+            return;
+        }
+        *self.acted.lock_recover() = Some(super::ActedRecord {
+            app: app.to_owned(),
+            record: record.to_owned(),
+        });
+    }
+
     async fn agent_ls(&self, args: LsArgs) -> Result<Reply, String> {
         let offset = match args.cursor.as_deref() {
             None | Some("") => 0,
@@ -2152,6 +2174,7 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
             Ok(resolved) => resolved,
             Err(note) => return Ok(Reply::ok(note)),
         };
+        self.acted_in(&resolved);
         let called = |action: &ActionDescriptor| forms.called(action, &resolved.app_id);
         if let Some(action) = &parsed.action {
             let (named_at, found) = self.pick_action_in(action, &resolved).await?;
@@ -2242,7 +2265,9 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
             // A host service (the desktop's layout) runs with the session,
             // and has no window.
             let windowed = running.iter().any(|(provider, app)| {
-                provider.parse::<u64>().is_ok() && app["app_id"].as_str() == Some(app_id)
+                (provider.parse::<u64>().is_ok()
+                    || tilo_actions::remote::is_record_provider(provider))
+                    && app["app_id"].as_str() == Some(app_id)
             });
             lines.push(format!(
                 "{}  {label}  {}",
@@ -2300,6 +2325,7 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
             (Ok(resolved), forms) => (resolved, forms),
             (Err(note), _) => return Ok(Reply::ok(note)),
         };
+        self.acted_in(&resolved);
         let provider = resolved.provider.clone();
         let mut levels = std::mem::take(&mut resolved.levels);
         let Some((owner, reader)) = self.reader(&resolved, &mut levels).await? else {
@@ -2472,6 +2498,39 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
         }
     }
 
+    /// The app `parsed` names and the provider its `action` runs in, and
+    /// whether the path pinned it; `None` for starting the app itself
+    /// ([`Self::launch`]). One of an installed app's own actions
+    /// (`terminal#run`) starts the app first and runs in what it opened, so
+    /// the caller asks once.
+    async fn acting_in(
+        &self,
+        parsed: &ParsedPath,
+        action: &str,
+        wait_ms: Option<u64>,
+    ) -> Result<Option<(String, String, bool)>, String> {
+        match self.app_ref(&parsed.app).await? {
+            AppRef::Installed { opens: false, .. } => {
+                Err(Self::not_running_note(&parsed.app, false))
+            }
+            AppRef::Installed { .. }
+                if action == tilo_actions::remote::APPLICATION_OPEN_ACTION
+                    || !parsed.segments.is_empty() =>
+            {
+                Ok(None)
+            }
+            AppRef::Installed { app_id, .. } => {
+                let provider = self.opened_provider(&app_id, wait_ms).await?;
+                Ok(Some((app_id, provider, true)))
+            }
+            AppRef::Running {
+                app_id,
+                provider,
+                pinned,
+            } => Ok(Some((app_id, provider, pinned))),
+        }
+    }
+
     /// Run the one action `path` names, answering what the host answered as it is.
     async fn do_one_value(
         &self,
@@ -2486,21 +2545,15 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
         })?;
         // The app is looked up once: resolving the path in it does not ask
         // again which apps run.
-        let (app_id, provider, pinned) = match self.app_ref(&parsed.app).await? {
-            AppRef::Installed { app_id, opens } => {
-                if !opens {
-                    return Err(Self::not_running_note(&parsed.app, false));
-                }
-                return self
-                    .launch(&parsed, &app_id, &action, arguments, invocation, wait_ms)
-                    .await
-                    .map(Done::Launched);
-            }
-            AppRef::Running {
-                app_id,
-                provider,
-                pinned,
-            } => (app_id, provider, pinned),
+        let Some((app_id, provider, pinned)) = self.acting_in(&parsed, &action, wait_ms).await?
+        else {
+            let AppRef::Installed { app_id, .. } = self.app_ref(&parsed.app).await? else {
+                return Err(format!("{} started while it was asked to", parsed.app));
+            };
+            return self
+                .launch(&parsed, &app_id, &action, arguments, invocation, wait_ms)
+                .await
+                .map(Done::Launched);
         };
         // A path names a type the way a listing does (`tasks.Task`), so an action is found on
         // the resource a listing showed: such a segment is read by the program form first, and
@@ -2542,6 +2595,7 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
                     .await?
             };
         }
+        self.acted_in(&resolved);
         let (named_at, descriptor) =
             if let Some(descriptor) = self.action_named(&resolved, &action).await? {
                 (resolved.path.clone(), descriptor)
@@ -2765,6 +2819,15 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
                 // lets the caller find it among the running ones.
                 if let Some(peer) = value.pointer(super::OPENED_PEER).and_then(Value::as_u64) {
                     return Ok(peer.to_string());
+                }
+                // A host serving the workspace's records names the record it
+                // opened the app on.
+                if let Some(provider) = value
+                    .pointer("/update/output/value/provider")
+                    .and_then(Value::as_str)
+                    .filter(|provider| tilo_actions::remote::is_record_provider(provider))
+                {
+                    return Ok(provider.to_owned());
                 }
                 let (_, running) = self.providers().await?;
                 running

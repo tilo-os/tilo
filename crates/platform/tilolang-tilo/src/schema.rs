@@ -200,23 +200,41 @@ pub struct TypeSchema {
     pub columns: Vec<ColumnSchema>,
     /// The outside kind it holds (`type Message (origin: imap.message)`), when it holds one.
     pub origin: Option<String>,
+    /// The field the type says names its records (`(title: subject)`), by id: the first text
+    /// [`Self::naming_scan`] reads.
+    pub title: Option<String>,
+    /// What one of its records is called while its title is empty, as the app wrote it
+    /// (`(untitled: "Untitled")`); its type's name when it declares none.
+    pub untitled: Option<String>,
+}
+
+/// A type's name as a sentence says it: `TodoList` as "Todo list".
+#[must_use]
+pub fn spoken(name: &str) -> String {
+    let mut out = String::new();
+    for (at, ch) in name.replace('_', " ").chars().enumerate() {
+        if at > 0 && ch.is_uppercase() {
+            out.push(' ');
+            out.extend(ch.to_lowercase());
+        } else {
+            out.push(ch);
+        }
+    }
+    out
 }
 
 impl TypeSchema {
     /// The type's name as a sentence says it: `TodoList` as "Todo list". What a resource of the
-    /// type with no title of its own is called.
+    /// type with no title of its own is called when its type declares no words for that.
     #[must_use]
     pub fn spoken_name(&self) -> String {
-        let mut out = String::new();
-        for (at, ch) in self.name.replace('_', " ").chars().enumerate() {
-            if at > 0 && ch.is_uppercase() {
-                out.push(' ');
-                out.extend(ch.to_lowercase());
-            } else {
-                out.push(ch);
-            }
-        }
-        out
+        spoken(&self.name)
+    }
+
+    /// What one of its records is called while its title is empty, in the words the app wrote.
+    #[must_use]
+    pub fn untitled(&self) -> String {
+        self.untitled.clone().unwrap_or_else(|| self.spoken_name())
     }
 
     #[must_use]
@@ -228,6 +246,8 @@ impl TypeSchema {
             fields: Vec::new(),
             columns: Vec::new(),
             origin: None,
+            title: None,
+            untitled: None,
         }
     }
 
@@ -265,8 +285,20 @@ impl TypeSchema {
     /// them would name a type with two texts differently on every build.
     #[must_use]
     pub fn naming_scan(&self) -> Vec<&FieldSchema> {
-        let mut scan: Vec<&FieldSchema> =
-            self.fields.iter().filter(|f| f.kind.holds_text()).collect();
+        // The field the type says names it comes before the others, so a type whose first text
+        // is a fact of the record (a message's sender, a draft's address) is still named by what
+        // names it.
+        let named = self.title.as_ref().and_then(|id| {
+            self.fields
+                .iter()
+                .find(|f| &f.id == id && f.kind.holds_text())
+        });
+        let mut scan: Vec<&FieldSchema> = named.into_iter().collect();
+        scan.extend(
+            self.fields
+                .iter()
+                .filter(|f| f.kind.holds_text() && Some(&f.id) != self.title.as_ref()),
+        );
         scan.extend(
             self.fields
                 .iter()

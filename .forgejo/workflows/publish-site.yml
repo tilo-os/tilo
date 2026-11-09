@@ -1,6 +1,6 @@
 name: Publish / site
 
-# The images tilo.coffee runs, built from one commit of main, tested and
+# The images tilo.sh runs, built from one commit of main, tested and
 # pushed as dev-<commit>: the web entry (the Tilo app on the web) and the
 # Lounge (one always-on public workspace, relay and Discord bridge). The site
 # is released by hand and independently of stable: whoever releases it

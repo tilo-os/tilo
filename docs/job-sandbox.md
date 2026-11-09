@@ -40,7 +40,10 @@ order:
    job had: no other job's files, no worker credentials, no route to the
    cluster.
 3. **A kernel exploit.** The kernel is shared, so a kernel bug is the one way
-   out we accept. We still shrink the attack surface: the syscalls behind
+   out we accept. That is why this sandbox is for our own jobs only: on a host
+   that runs strangers' code (hosted workspaces), every Linux program runs in
+   a VM of its workspace's own instead (see
+   [`environments.md`](app-model/environments.md#hosted-workspace-vms)). We still shrink the attack surface: the syscalls behind
    recent user-namespace exploits are refused.
 
 **Goal: getting out of a job takes a kernel escape, not a misconfiguration.**

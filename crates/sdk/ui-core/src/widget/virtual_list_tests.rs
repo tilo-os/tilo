@@ -1473,9 +1473,32 @@ fn a_reveal_a_click_asked_for_glides_and_the_wheel_takes_over() {
     assert!(list.scroll.to.opacity(at(2400)) >= 1.0);
 }
 
-/// A row's menu carries what the app says the row is about: the send-to box beside it starts
-/// with that subject, standing at the row. A list that names nothing for its rows opens the
-/// same menu with no box.
+/// What a person's right click does: the window notes the gesture, the row takes the press and
+/// its menu opens with the typing, and the release leaves it open.
+fn right_click_row<M>(list: &mut VirtualList<M>, row: usize)
+where
+    M: ListModel + 'static,
+{
+    use winit::event::{ElementState, MouseButton};
+    let (taffy, node) = lay_out(list, 300.0);
+    let at = list.rect.y0
+        + list.viewport.item_view_top(row).unwrap()
+        + list.viewport.item_height(row).unwrap() / 2.0;
+    let press = crate::synthetic_input::mouse_input(ElementState::Pressed, MouseButton::Right);
+    crate::widget::context_menu::note_input(&press);
+    dispatch(list, &cursor(at), &taffy, node);
+    dispatch(list, &press, &taffy, node);
+    dispatch(
+        list,
+        &crate::synthetic_input::mouse_input(ElementState::Released, MouseButton::Right),
+        &taffy,
+        node,
+    );
+}
+
+/// A row's menu carries what the app says the row is about: the row that sends it opens the
+/// send-to box on that subject, in the menu's place. A list that names nothing for its rows
+/// opens the same menu with no subject.
 #[test]
 fn a_rows_menu_carries_what_the_app_names_for_the_row() {
     use crate::shared_selection::{SharedSelection, set_send_host_available};
@@ -1483,41 +1506,62 @@ fn a_rows_menu_carries_what_the_app_names_for_the_row() {
     fn open_item(_: &VecListModel<u32, u32>, _: Option<&u32>) -> Vec<MenuItem> {
         vec![MenuItem::action("Open", || {})]
     }
+    fn send_to_of(
+        list: &mut VirtualList<VecListModel<u32, u32>>,
+        typed: &str,
+    ) -> Vec<SharedSelection> {
+        let menu = list.menus.owned_mut().expect("the list owns its menu");
+        if !typed.is_empty() {
+            menu.context_menu_mut().set_query(typed);
+        }
+        let send_at = menu.context_menu().items().len() - 1;
+        menu.context_menu_mut().click_item(send_at);
+        let menu = menu.context_menu();
+        assert!(!menu.is_open(), "the box takes the menu's place");
+        assert!(menu.send_to_alone_open(), "the box stands alone");
+        menu.send_to().subjects().to_vec()
+    }
     let mut list = plain_rows(10)
         .with_context_menu(open_item, |_, _| {})
         .with_row_about(|key: &u32| Some(SharedSelection::of_text(&format!("issue {key}"))));
-    lay_out(&mut list, 300.0);
-    assert!(list.open_row_menu(3, Point::new(40.0, 40.0)));
-    let subjects = list
-        .menus
-        .owned()
-        .expect("the list owns its menu")
-        .context_menu()
-        .send_to()
-        .subjects()
-        .to_vec();
+    right_click_row(&mut list, 3);
+    let subjects = send_to_of(&mut list, "a note");
     assert_eq!(subjects.len(), 1, "the menu is about the row the app named");
     assert_eq!(
         subjects[0].anchor,
         SharedSelection::of_text("issue 3").anchor
     );
+    // With the menu gone, the box is what the list hands the keyboard and the
+    // pointer to: what the person types next lands in its message.
     assert!(
-        subjects[0].bounds.is_some(),
-        "the box beside the menu stands at the row"
+        list.send_to_alone_open(),
+        "the box stands where the menu did"
     );
+    assert!(
+        list.modal_capture().is_some(),
+        "the box hears the pointer while it stands"
+    );
+    let (taffy, node) = lay_out(&mut list, 300.0);
+    dispatch(
+        &mut list,
+        &crate::synthetic_input::char_key("!"),
+        &taffy,
+        node,
+    );
+    let text = list
+        .menus
+        .owned()
+        .expect("the list owns its menu")
+        .context_menu()
+        .send_to()
+        .text()
+        .to_owned();
+    assert_eq!(text, "a note!", "the box takes the typing");
 
     let mut plain = plain_rows(3).with_context_menu(open_item, |_, _| {});
-    lay_out(&mut plain, 300.0);
-    assert!(plain.open_row_menu(0, Point::new(40.0, 40.0)));
+    right_click_row(&mut plain, 0);
     assert!(
-        plain
-            .menus
-            .owned()
-            .expect("the list owns its menu")
-            .context_menu()
-            .send_to()
-            .subjects()
-            .is_empty(),
+        send_to_of(&mut plain, "").is_empty(),
         "a row the app does not name opens a menu with no subject"
     );
     set_send_host_available(false);
@@ -1578,9 +1622,8 @@ fn a_second_click_activates_and_a_right_click_opens_the_rows_menu() {
 }
 
 #[test]
-fn a_right_click_opened_rows_menu_keeps_its_send_to_box_after_the_release() {
+fn a_right_click_opened_rows_menu_offers_to_send_after_the_release() {
     use crate::shared_selection::{SharedSelection, set_send_host_available};
-    use winit::event::{ElementState, MouseButton};
 
     set_send_host_available(true);
     let mut list = plain_rows(10)
@@ -1589,34 +1632,26 @@ fn a_right_click_opened_rows_menu_keeps_its_send_to_box_after_the_release() {
             |_, _| {},
         )
         .with_row_about(|key: &u32| Some(SharedSelection::of_text(&format!("issue {key}"))));
-    let (taffy, node) = lay_out(&mut list, 300.0);
-    let row = list.rect.y0
-        + list.viewport.item_view_top(3).unwrap()
-        + list.viewport.item_height(3).unwrap() / 2.0;
-    dispatch(&mut list, &cursor(row), &taffy, node);
-    dispatch(
-        &mut list,
-        &crate::synthetic_input::mouse_input(ElementState::Pressed, MouseButton::Right),
-        &taffy,
-        node,
-    );
-    dispatch(
-        &mut list,
-        &crate::synthetic_input::mouse_input(ElementState::Released, MouseButton::Right),
-        &taffy,
-        node,
-    );
-    let menu = list
-        .menus
-        .owned()
-        .expect("the list owns its menu")
-        .context_menu();
+    right_click_row(&mut list, 3);
     assert!(list.context_menu_is_open(), "the menu stays open");
+    let menu = list.menus.owned_mut().expect("the list owns its menu");
     assert!(
-        menu.send_to().is_open(),
-        "the box beside it stays open once the button is up"
+        !menu.context_menu().send_to().is_open(),
+        "the menu stands alone until the row that sends is chosen"
+    );
+    let send_at = menu.context_menu().items().len() - 1;
+    menu.context_menu_mut().click_item(send_at);
+    let menu = menu.context_menu();
+    assert!(!menu.is_open(), "the box takes the menu's place");
+    assert!(
+        menu.send_to_alone_open(),
+        "the box is what takes the typing"
     );
     assert_eq!(menu.send_to().subjects().len(), 1);
+    assert_eq!(
+        menu.send_to().subjects()[0].anchor,
+        SharedSelection::of_text("issue 3").anchor
+    );
     set_send_host_available(false);
 }
 
@@ -2020,6 +2055,20 @@ fn a_list_fitting_its_rows_is_as_tall_as_they_are() {
         list.rect,
         after.rect
     );
+}
+
+/// A list as tall as its rows settles on the height they come to even when the layout reads it
+/// a fraction of a pixel higher: the box it is given is that reading, not a height of its own to
+/// ask for again, or the window would lay itself out for ever.
+#[test]
+fn a_list_as_tall_as_its_rows_asks_for_the_height_its_rows_come_to_once() {
+    // The rows come to 580.35; the layout gave a box of 581 and the viewport already stands at
+    // the rows' height: nothing to ask for.
+    assert!(!fit_needs_layout(581.0, 580.35, 580.35));
+    // Rows that measured taller than the box the list stands in: the list grows to them.
+    assert!(fit_needs_layout(506.0, 580.35, 506.0));
+    // Rows that shrank under a box the viewport still stands at: the list shrinks to them.
+    assert!(fit_needs_layout(680.0, 673.0, 680.0));
 }
 
 /// A transcript shows the way back it owes its reader: to the first unread row while that is

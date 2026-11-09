@@ -1653,6 +1653,12 @@ impl<C: Widget + 'static> PopoverButton<C> {
 }
 
 impl<C: Widget + 'static> Widget for PopoverButton<C> {
+    /// The panel opens where the button stands, and the window's bar has no place to hang it: a
+    /// header holding one keeps its row.
+    fn window_slot_barrier(&self) -> bool {
+        true
+    }
+
     fn set_platform_conventions(&mut self, conventions: crate::platform::PlatformConventions) {
         self.button.set_platform_conventions(conventions);
         self.popover.set_platform_conventions(conventions);

@@ -324,6 +324,48 @@ impl EmbeddedApp {
         Some(widget)
     }
 
+    /// The controls the app names by their ids (`with_id`), where each stands
+    /// in its host's space: what a host that is the app's own shell offers by
+    /// name, as it offers its own controls (a session's setup, whose steps
+    /// the device's tooling presses by name). A hidden control, and one laid
+    /// out nowhere, is none.
+    #[must_use]
+    pub fn named_controls(&mut self) -> Vec<(String, vello::kurbo::Rect)> {
+        fn collect(
+            widget: &dyn Widget,
+            place: vello::kurbo::Affine,
+            out: &mut Vec<(String, vello::kurbo::Rect)>,
+        ) {
+            if widget.accessibility_hidden() {
+                return;
+            }
+            if let Some(id) = widget.test_id() {
+                let rect = widget.get_rect();
+                if rect.width() > 0.0 && rect.height() > 0.0 {
+                    out.push((id.to_owned(), place.transform_rect_bbox(rect)));
+                }
+            }
+            for child in widget.children() {
+                collect(child, place, out);
+            }
+        }
+        let place = vello::kurbo::Affine::translate(Widget::get_rect(self).origin().to_vec2());
+        let mut out = Vec::new();
+        if let Some(root) = self.component_root_mut() {
+            collect(root, place, &mut out);
+        }
+        out
+    }
+
+    /// Press the app's control `id` ([`Self::named_controls`]) as assistive
+    /// technology activates it: the press a person makes on it, through the
+    /// app's own input path. Whether the app shows such a control.
+    #[cfg(feature = "native")]
+    pub fn press_named(&mut self, id: &str) -> bool {
+        self.runs();
+        self.app.activate_test_id(id)
+    }
+
     /// `event` from the host, in its physical pixels at `scale`, moved into
     /// the region's logical pixels.
     fn local_event(&self, event: &WindowEvent, scale: f64) -> WindowEvent {

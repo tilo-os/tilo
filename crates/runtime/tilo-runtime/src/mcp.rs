@@ -5,6 +5,8 @@ mod agent;
 mod confirm;
 #[path = "mcp_content.rs"]
 mod content;
+#[path = "mcp_narration.rs"]
+mod narration;
 #[path = "mcp_page.rs"]
 mod page;
 #[path = "mcp_providers.rs"]
@@ -96,10 +98,32 @@ pub struct McpServer<H> {
     /// [`crate::remote_door::DEVICES_TOOL`] lists; `None` for a host that
     /// reaches none.
     devices: Option<std::sync::Arc<dyn crate::remote_door::DeviceDirectory>>,
+    /// The record this session's last agent call worked in
+    /// ([`ActedRecord`]): where its agent is, for the presence its door
+    /// shows the person.
+    acted: std::sync::Mutex<Option<ActedRecord>>,
+    /// Who is told what this session's actions on records are doing as they
+    /// go ([`Acting`]); `None` for a door that shows nobody its agent.
+    narration: Option<Narration>,
+    /// The record and action of each invocation still being told, by id.
+    narrating: std::sync::Mutex<std::collections::HashMap<tilo_actions::InvocationId, Acting>>,
+}
+
+/// The record an agent call worked in: the app's id and the workspace's
+/// record id, as the provider of the resource the call resolved names it.
+/// What a door that shows its agent present says the agent acts in.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ActedRecord {
+    /// The app's stable id (`so.tilo.notes`).
+    pub app: String,
+    /// The workspace's record id, which a provider's own token names.
+    pub record: String,
 }
 
 pub use agent::{PersonStep, literals_in};
 pub use agent::{TaskHosts, TaskProgram};
+use narration::ended;
+pub use narration::{Acting, Narration};
 
 /// The tools a session offers.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -113,6 +137,18 @@ pub enum Surface {
     /// terminal is served.
     Agent,
 }
+
+/// What an agent is told as it connects: what the tools reach, and the one
+/// step that runs a shell command in the workspace.
+const AGENT_INSTRUCTIONS: &str = "These tools act in the person's Tilo workspace, as them, and \
+     History keeps what you do as your run. tilo_ls lists the workspace's apps and what is in \
+     them; tilo_read reads a resource; tilo_do runs an action. To run a shell command in the \
+     workspace (ls, git, cargo build, npm test), call tilo_do with path \"terminal#run\" and \
+     args {command: \"...\"}: it answers with the command line, the directory it ran in, its \
+     exit status and its output. Nothing needs opening first: the first command starts your own \
+     shell in the workspace's files, and every later call runs in that same shell, so a cd or an \
+     export carries over. If a command answers with a refusal, tell the person what it says, then \
+     run the command again once they did it.";
 
 /// A session's requests that work at once; more wait for a turn. One agent
 /// cannot occupy the host with every call it can send.
@@ -655,7 +691,25 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
             task_hosts: None,
             devices: None,
             task: tokio::sync::Mutex::new(None),
+            acted: std::sync::Mutex::default(),
+            narration: None,
+            narrating: std::sync::Mutex::default(),
         }
+    }
+
+    /// Tell `narration` what this session's actions on records are doing
+    /// as they go ([`Acting`]).
+    #[must_use]
+    pub fn with_narration(mut self, narration: Narration) -> Self {
+        self.narration = Some(narration);
+        self
+    }
+
+    /// The record this session's last agent call worked in, when the
+    /// workspace serves the resource it resolved as one of its records.
+    #[must_use]
+    pub fn acted(&self) -> Option<ActedRecord> {
+        self.acted.lock_recover().clone()
     }
 
     /// Run the `tilo` tool's programs in task hosts `hosts` starts.
@@ -1492,9 +1546,13 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
         {
             fields.insert("agent".into(), json!(agent));
         }
-        Ok(
-            json!({"protocolVersion":selected,"capabilities":{"tools":{},"resources":{},"experimental":{SURFACE:{"version":3,"run":run,"execution_id":self.caller.execution_id()}}},"serverInfo":server}),
-        )
+        let mut answer = json!({"protocolVersion":selected,"capabilities":{"tools":{},"resources":{},"experimental":{SURFACE:{"version":3,"run":run,"execution_id":self.caller.execution_id()}}},"serverInfo":server});
+        if self.surface == Surface::Agent
+            && let Some(fields) = answer.as_object_mut()
+        {
+            fields.insert("instructions".into(), json!(AGENT_INSTRUCTIONS));
+        }
+        Ok(answer)
     }
     /// One catalogue page from the action host, as this bridge's caller.
     async fn ask(&self, query: CatalogueQuery) -> Result<CataloguePage, BridgeError> {
@@ -2813,6 +2871,7 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
             let change = self.host().next_change(&self.caller(), &id);
             let state = self.host().observe(&self.caller(), &id);
             if let Some(state) = state.as_ref().filter(|state| state.update.is_terminal()) {
+                self.narrate(id, None, ended(&state.update), state.left_at.clone());
                 return Ok(state_json(id, state));
             }
             let Some(deadline) =
@@ -2877,6 +2936,13 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
             .take()
             .filter(|_| !request.revision.as_deref().unwrap_or_default().is_empty());
         let revision = request.revision.clone().unwrap_or_default();
+        let invocation = request.invocation;
+        self.narrate(
+            invocation,
+            Some(&request.target),
+            tilo_actions::InteractionPhase::Locating,
+            None,
+        );
         let patience = wait.max(HOST_ANSWER_WAIT);
         let Ok(answer) = tokio::time::timeout(
             patience,
@@ -2890,8 +2956,16 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
             let effect = self.asked_effect(target, &revision).await;
             self.remember_effect(invocation, effect);
         }
+        let answer = answer.ok_or_else(|| BridgeError::from("Unavailable"))?;
+        let phase = match &answer {
+            Ok(_) => tilo_actions::InteractionPhase::Applying,
+            Err(error) => tilo_actions::InteractionPhase::Failed {
+                code: None,
+                message: error.to_string(),
+            },
+        };
+        self.narrate(invocation, None, phase, None);
         answer
-            .ok_or_else(|| BridgeError::from("Unavailable"))?
             .map(|_| Admission::Answered)
             .map_err(BridgeError::Host)
     }

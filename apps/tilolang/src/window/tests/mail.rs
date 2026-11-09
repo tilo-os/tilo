@@ -172,11 +172,30 @@ impl Workspace {
     /// Frames until `done` holds of the workspace, as the servers answer. It waits against the
     /// workspace's hang bound, so a busy runner makes the test slower rather than failing a
     /// server that answered in time.
-    fn until(&mut self, what: &str, done: impl Fn(&mut Self) -> bool) {
-        tilo_test_env::wait_until(what, || {
+    fn until(&mut self, what: &str, mut done: impl FnMut(&mut Self) -> bool) {
+        self.wait_for(what, |workspace| done(workspace).then_some(()));
+    }
+
+    /// Frames until `probe` yields what it looks for, and yields that. The workspace's state
+    /// changes before its window names it — a list names its rows a frame after the state they
+    /// read changed — so a read taken right after a write can still see the frame before it.
+    fn wait_for<T>(&mut self, what: &str, mut probe: impl FnMut(&mut Self) -> Option<T>) -> T {
+        tilo_test_env::wait_for(what, || {
             self.settle();
-            done(self)
-        });
+            probe(self)
+        })
+    }
+
+    /// The key of the root list's row that shows `item`, once the list shows it.
+    fn row_showing(&mut self, item: &ResourceRef) -> String {
+        let shown = item.id_string();
+        self.wait_for("the list to show the item", |workspace| {
+            workspace
+                .items()
+                .into_iter()
+                .find(|(_, row)| row.item.as_ref().is_some_and(|row| row.0 == shown))
+                .map(|(key, _)| key)
+        })
     }
 
     fn read(&self, at: &ResourceRef, field: &str) -> RtValue {
@@ -368,16 +387,7 @@ fn opening_a_conversation_reads_it_here_and_on_the_server() {
     synced(&mut workspace);
     let plan = workspace.thread("Launch plan");
     assert!(workspace.flag(&plan, "unread"));
-    let row = workspace
-        .items()
-        .into_iter()
-        .find(|(_, item)| {
-            item.item
-                .as_ref()
-                .is_some_and(|shown| shown.0 == plan.id_string())
-        })
-        .map(|(key, _)| key)
-        .expect("the inbox lists the conversation");
+    let row = workspace.row_showing(&plan);
     workspace.activate(&row);
     assert!(
         !workspace.flag(&plan, "unread"),
@@ -623,16 +633,7 @@ fn the_window_wakes_when_a_held_message_is_due() {
 /// The row of `message` in the conversation `thread`, as activating its list row made it: what
 /// it shows, and the keys of the controls under the row's fold.
 fn message_rows(workspace: &mut Workspace, thread: &ResourceRef) -> Vec<Vec<String>> {
-    let row = workspace
-        .items()
-        .into_iter()
-        .find(|(_, item)| {
-            item.item
-                .as_ref()
-                .is_some_and(|shown| shown.0 == thread.id_string())
-        })
-        .map(|(key, _)| key)
-        .expect("the inbox lists the conversation");
+    let row = workspace.row_showing(thread);
     workspace.activate(&row);
     let detail = workspace
         .window
@@ -943,16 +944,7 @@ fn texts_in(node: &tilolang_tilo::runtime::UiNode, out: &mut Vec<String>) {
 /// What a conversation's window shows, opened as activating its row opens it: every text its
 /// detail view rendered, its transcript's rows included (a virtual list sends its rows as rows).
 fn conversation_of(workspace: &mut Workspace, thread: &ResourceRef) -> Vec<String> {
-    let row = workspace
-        .items()
-        .into_iter()
-        .find(|(_, item)| {
-            item.item
-                .as_ref()
-                .is_some_and(|shown| shown.0 == thread.id_string())
-        })
-        .map(|(key, _)| key)
-        .expect("the inbox lists the conversation");
+    let row = workspace.row_showing(thread);
     workspace.activate(&row);
     let detail = workspace
         .window

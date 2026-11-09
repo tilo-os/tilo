@@ -36,6 +36,7 @@ async fn peer(root: PathBuf, governor: &ed25519_dalek::SigningKey, seed: u8) -> 
         issued_at_ns: 1,
         expires_at_ns: None,
         signature: [0; 64],
+        issuer: None,
     };
     sign_device_cert(&mut cert, governor).unwrap();
     persist::write_device_cert(&paths.device_cert, &cert).unwrap();

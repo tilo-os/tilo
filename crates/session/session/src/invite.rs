@@ -8,6 +8,7 @@
 
 use std::time::{Duration, SystemTime};
 
+use tilo_actions::remote::session_actions::ISSUE_INVITATION;
 use tilo_desktop::workspace_settings as domain;
 use tilo_desktop_model::role_from_id;
 use tilo_sheets::Seat as _;
@@ -99,7 +100,7 @@ impl Shared {
         let Some(started) =
             self.services
                 .borrow_mut()
-                .invoke(DESK_RESOURCE, "issue-invitation", &arguments)
+                .invoke(DESK_RESOURCE, ISSUE_INVITATION, &arguments)
         else {
             self.say(word("invite-no-answer"), true);
             return;
@@ -215,6 +216,13 @@ struct DeskInvites<'a>(&'a Shared);
 impl sheet::Invitations for DeskInvites<'_> {
     fn may_invite(&self) -> bool {
         self.0.may_invite_here()
+    }
+
+    fn workspace(&self) -> Option<String> {
+        self.0.handle.read(|tree| {
+            tree.active_workspace()
+                .map(|workspace| workspace.name.clone())
+        })
     }
 
     fn roles(&self) -> Vec<sheet::Role> {

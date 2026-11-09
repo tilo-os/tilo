@@ -20,19 +20,13 @@ impl QuickFS {
     ) -> Result<
         (
             Scope,
-            crate::history::RecordHistorySnapshot,
+            crate::namespace::history::RecordHistorySnapshot,
             Option<fs_protocol::ContentRevisionV1>,
         ),
         Error,
     > {
+        self.history.as_ref().ok_or(Error::Unavailable)?;
         let namespace = self.namespace.lock().map_err(|_| Error::Unavailable)?;
-        let history = self
-            .history
-            .as_ref()
-            .ok_or(Error::Unavailable)?
-            .0
-            .lease()
-            .map_err(|_| Error::Unavailable)?;
         let acl = self
             .enforcement
             .as_ref()
@@ -46,7 +40,9 @@ impl QuickFS {
             return Err(Error::NotVisible);
         }
         let record_id = namespace.record_id_for(ino).ok_or(Error::NotVisible)?;
-        let snapshot = history.snapshot(record_id).ok_or(Error::Unavailable)?;
+        let snapshot = namespace
+            .record_history(record_id)
+            .ok_or(Error::Unavailable)?;
         let current_revision = namespace.content_revision_for(ino);
         if let Some(revision) = current_revision
             && (revision.validate().is_err()

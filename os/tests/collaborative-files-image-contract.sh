@@ -82,8 +82,6 @@ done
 require_file /usr/lib/systemd/system/fs.service
 require_file /usr/lib/systemd/system/tilo-fs-start.timer
 require_file /usr/lib/systemd/system/fs-identity.path
-require_file /usr/lib/systemd/user/tilo-fs-recipient.service
-require_file /usr/lib/systemd/user/tilo-fs-recipient.socket
 require_file /usr/lib/systemd/user/tilo-fs-cloud.service
 require_file /usr/lib/systemd/user/tilo-graphical-session.target
 require_file /usr/share/tilo/selinux/tilo-base.cil
@@ -106,11 +104,10 @@ else
   require_file /usr/share/dbus-1/services/org.a11y.Bus.service
 fi
 
-# The system host and per-user recipient must be enabled, not merely copied.
+# The system host and the account service must be enabled, not merely copied.
 require_link /etc/systemd/system/timers.target.wants/tilo-fs-start.timer
 require_link /etc/systemd/system/timers.target.wants/tilo-growfs-sysroot.timer
 require_link /etc/systemd/system/multi-user.target.wants/fs-identity.path
-require_link /etc/systemd/user/graphical-session.target.wants/tilo-fs-recipient.socket
 require_link /etc/systemd/user/graphical-session.target.wants/tilo-fs-cloud.service
 require_file /usr/lib/systemd/system/tilo-growfs-sysroot.service
 require_file /usr/lib/systemd/system/tilo-growfs-sysroot.timer
@@ -160,13 +157,7 @@ require_line /usr/lib/systemd/system/tilo-store-volume.service "RuntimeDirectory
 require_line /usr/lib/systemd/system/tilo-store-loop.service "ExecStart=/usr/libexec/tilo-store-volume attach"
 require_line /usr/lib/systemd/system/fs-identity.path "PathChanged=/var/lib/tilo/device/cert.bin"
 require_line /usr/lib/systemd/system/fs-identity.path "Unit=fs.service"
-require_text /usr/lib/systemd/user/tilo-fs-recipient.service "/usr/bin/fs recipient-service --socket %t/tilo/services/tilo-fs.sock"
-require_text /usr/lib/systemd/user/tilo-fs-recipient.service "--mounts-root %h/Shared --cache-root %h/.cache/tilo/received-files"
 require_line /usr/lib/systemd/user/tilo-fs-cloud.service "Environment=TILO_ACCOUNT_CREDENTIAL_HELPER=/usr/libexec/tilo-account-credential"
-require_line /usr/lib/systemd/user/tilo-fs-recipient.service "PartOf=graphical-session.target"
-require_line /usr/lib/systemd/user/tilo-fs-recipient.socket "ListenStream=%t/tilo/services/tilo-fs.sock"
-require_line /usr/lib/systemd/user/tilo-fs-recipient.socket "Service=tilo-fs-recipient.service"
-require_line /usr/lib/systemd/user/tilo-fs-recipient.socket "SocketMode=0600"
 require_text /usr/lib/systemd/user/tilo-graphical-session.target "Requires=graphical-session-pre.target graphical-session.target"
 require_text /usr/lib/systemd/user/tilo-graphical-session.target "PropagatesStopTo=graphical-session.target graphical-session-pre.target"
 require_text /usr/share/tilo/selinux/tilo-base.cil "(allow init_t tilo_fs_t (process2 (nnp_transition nosuid_transition)))"
@@ -269,7 +260,6 @@ require_file /etc/tilo/runtime-bundle-trusted-publishers.txt
 if [ "$root" = / ]; then
   fs_help="$(/usr/bin/fs --help)" || die "shipped fs --help failed"
   grep -Fq 'serve' <<<"$fs_help" || die "shipped fs lacks serve"
-  grep -Fq 'recipient-service' <<<"$fs_help" || die "shipped fs lacks recipient-service"
   /usr/libexec/tilo/tilo-launcher --help >/dev/null || die "shipped launcher CLI failed"
   TILO_APPS_DATA_DIR=/usr/share/tilo-apps \
     /usr/libexec/tilo/tilo-install verify so.tilo.file-explorer >/dev/null \
@@ -318,20 +308,14 @@ if [ "$mode" = runtime ]; then
   # graphical login has started its systemd --user manager.
   user_runtime="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
   export XDG_RUNTIME_DIR="$user_runtime"
-  systemctl --user is-enabled --quiet tilo-fs-recipient.socket || die "recipient socket is not enabled"
 
   # SSH is normally ready before greetd has finished the graphical login.
   # Give the bounded boot transaction time to settle, while still failing
-  # closed if either service never becomes active.
-  await_user_active() {
-    local unit="$1" attempt
-    for attempt in $(seq 1 60); do
-      systemctl --user is-active --quiet "$unit" && return 0
-      sleep 1
-    done
-    die "$unit is not active after 60 seconds"
-  }
-  await_user_active tilo-fs-recipient.socket
+  # closed if it never becomes active.
+  for attempt in $(seq 1 60); do
+    systemctl --user is-active --quiet tilo-graphical-session.target && break
+    sleep 1
+  done
   systemctl --user is-active --quiet tilo-graphical-session.target \
     || die "Tilo graphical-session lifecycle target is not active"
 
@@ -351,27 +335,6 @@ if [ "$mode" = runtime ]; then
     || die "personal root private key is duplicated into shared system identity storage"
   /usr/bin/tilo-session --verify-collaboration-identity >/dev/null \
     || die "installed collaboration identity chain does not verify"
-
-  for attempt in $(seq 1 30); do
-    [ -S "$user_runtime/tilo/services/tilo-fs.sock" ] \
-      && [ -d "$HOME/.cache/tilo/received-files" ] \
-      && break
-    sleep 1
-  done
-  [ -S "$user_runtime/tilo/services/tilo-fs.sock" ] || die "recipient service socket is absent"
-  [ -d "$HOME/.cache/tilo/received-files" ] || die "recipient state root is absent"
-
-  # A listening socket proves nothing about identity: the recipient idles
-  # when its sandbox cannot read the device key. Start it and require that it
-  # loaded the certified identity the chain above verified.
-  systemctl --user start tilo-fs-recipient.service \
-    || die "recipient service does not start"
-  await_user_active tilo-fs-recipient.service
-  sleep 2
-  if journalctl --user -b -u tilo-fs-recipient.service --no-pager -q \
-    | grep -F 'no certified mount identity'; then
-    die "recipient service cannot load the device identity"
-  fi
 
   # SSH does not inherit the graphical user's display variables. Import only
   # the display and bus values from that same user's systemd manager. The

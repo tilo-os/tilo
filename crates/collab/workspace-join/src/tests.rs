@@ -22,6 +22,7 @@ fn certificate(
         issued_at_ns,
         expires_at_ns: None,
         signature: [0; 64],
+        issuer: None,
     };
     sign_device_cert(&mut cert, root).unwrap();
     cert
@@ -192,4 +193,17 @@ fn workspace_ids_are_stable() {
         3_029_697_355_180_468_570
     );
     assert!(crate::room_workspace_id("not a workspace").is_err());
+}
+
+#[test]
+fn a_desk_that_shows_no_workspace_has_no_topic() {
+    assert_eq!(
+        crate::workspace_topic("0b7e7dfa-3ad5-4b43-9d6c-5f0d7c1f6a11"),
+        3_029_697_355_180_468_570
+    );
+    assert_eq!(
+        crate::workspace_topic("00000000-0000-0000-0000-000000000000"),
+        0
+    );
+    assert_eq!(crate::workspace_topic("not a workspace"), 0);
 }

@@ -21,7 +21,7 @@ use crate::clock::unix_now_ms;
 use crate::eviction::{EvictionCoordinator, EvictionPlan, EvictionQueue, EvictionRequestId};
 use crate::namespace::{NodeKind, ROOT_INO};
 use crate::store::area::Retention;
-use crate::{FileHistoryStore, Hydrator, Namespace};
+use crate::{Hydrator, Namespace};
 use tilo_lock::MutexRecover as _;
 
 #[derive(Clone)]
@@ -33,7 +33,6 @@ pub struct StorageAuthority {
     /// it never treats a daemon-lifetime hydration source as durability.
     availability: Option<Arc<Mutex<AvailabilityRegistry>>>,
     eviction_queue: Option<Arc<tokio::sync::Mutex<EvictionQueue>>>,
-    history: Option<Arc<FileHistoryStore>>,
     eviction: Arc<tokio::sync::Mutex<()>>,
     workspace: String,
     #[cfg(target_os = "linux")]
@@ -179,7 +178,6 @@ impl StorageAuthority {
         dirty: Arc<Mutex<crate::fs::WriteStages>>,
         availability: Option<Arc<Mutex<AvailabilityRegistry>>>,
         eviction_queue: Option<Arc<tokio::sync::Mutex<EvictionQueue>>>,
-        history: Option<Arc<FileHistoryStore>>,
         workspace: impl Into<String>,
     ) -> Self {
         Self {
@@ -188,7 +186,6 @@ impl StorageAuthority {
             dirty,
             availability,
             eviction_queue,
-            history,
             eviction: Arc::new(tokio::sync::Mutex::new(())),
             workspace: workspace.into(),
             #[cfg(target_os = "linux")]
@@ -652,12 +649,7 @@ impl StorageAuthority {
                 .as_ref()
                 .ok_or_else(|| anyhow!("durable eviction queue is unavailable"))?
                 .clone(),
-            Some(
-                self.history
-                    .as_ref()
-                    .ok_or_else(|| anyhow!("durable version history is unavailable"))?
-                    .clone(),
-            ),
+            Arc::clone(&self.namespace),
         ))
     }
 }
@@ -944,7 +936,6 @@ mod tests {
             Arc::new(Mutex::new(HashMap::new())),
             None,
             None,
-            None,
             "work",
         )
         .with_cache_policy(Arc::new(policies));
@@ -1164,7 +1155,6 @@ mod tests {
             hydrator,
             Arc::new(Mutex::new(crate::fs::WriteStages::new())),
             Some(registry),
-            None,
             None,
             "notes",
         );

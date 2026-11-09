@@ -537,9 +537,10 @@ impl Flow {
             self.descendant_caches_released = false;
             self.drawn_shifted = false;
             let enclosing = crate::outside_paint::begin();
-            for child in &mut self.children {
-                super::draw_child(
+            for (index, child) in self.children.iter_mut().enumerate() {
+                super::draw_child_at(
                     child.as_mut(),
+                    Some(index),
                     scene,
                     transform,
                     text_renderer,
@@ -591,13 +592,15 @@ impl Flow {
                         .as_deref()
                         .and_then(|shifts| shifts.get(index).copied())
                         .unwrap_or(0.0);
-                    child.draw(
+                    let child_transform = Affine::translate((0.0, dy));
+                    let begun = crate::scene_parts::begin_widget(
                         local,
-                        Affine::translate((0.0, dy)),
-                        text_renderer,
-                        theme,
-                        presence,
+                        child.as_ref(),
+                        Some(index),
+                        child_transform,
                     );
+                    child.draw(local, child_transform, text_renderer, theme, presence);
+                    crate::scene_parts::end_widget(local, begun);
                 }
                 ghosts.draw(local, Affine::IDENTITY, shifts.as_deref());
                 if clip.is_some() {
@@ -708,7 +711,14 @@ impl Flow {
         // each of them paints other pixels: none of what the frame keeps is
         // still what it drew before.
         let model_moved = self.cache_model != crate::input_generation::model();
-        for child in self.children.get_mut(near).unwrap_or_default() {
+        let first = near.start;
+        for (offset, child) in self
+            .children
+            .get_mut(near)
+            .unwrap_or_default()
+            .iter_mut()
+            .enumerate()
+        {
             // What the frame keeps on screen, unchanged, is not drawn again.
             if !model_moved
                 && !child.needs_redraw()
@@ -717,8 +727,9 @@ impl Flow {
             {
                 continue;
             }
-            super::draw_child(
+            super::draw_child_at(
                 child.as_mut(),
+                Some(first + offset),
                 scene,
                 transform,
                 text_renderer,

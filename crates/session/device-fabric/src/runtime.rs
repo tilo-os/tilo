@@ -104,7 +104,9 @@ impl FabricRuntime {
     /// on its frames are attributed to the device its certificate names, and actions to
     /// it leave the same way. The certificates are the ones the transport verified
     /// ([`tilo_network_actor::NetEvent::Sibling`]). A device an entry in `revocations`
-    /// covers is no device of the person's any more, so what it said is dropped.
+    /// covers is no device of the person's any more, so what it said is dropped. Only
+    /// the person's own root speaks for their devices: another root's entry naming this
+    /// one refuses nothing of it.
     pub fn sibling(
         &mut self,
         peer: EndpointId,
@@ -120,10 +122,10 @@ impl FabricRuntime {
         let Ok(device) = DeviceId::new(hex::encode(cert.device_public_key)) else {
             return;
         };
-        if revocations
-            .iter()
-            .any(|entry| entry.revoked_device_public_key == cert.device_public_key)
-        {
+        if revocations.iter().any(|entry| {
+            (entry.user_public_key, entry.revoked_device_public_key)
+                == (cert.user_public_key, cert.device_public_key)
+        }) {
             self.fabric.remove_device(&device);
             self.siblings.remove(&device);
             return;
@@ -618,6 +620,7 @@ mod tests {
             issued_at_ns: 0,
             expires_at_ns: None,
             signature: [0; 64],
+            issuer: None,
         }
     }
 
@@ -889,6 +892,49 @@ mod tests {
                 .session,
             session,
             "the record this device shares says it"
+        );
+    }
+
+    /// One revocation entry, as the transport handed it over: this runtime
+    /// reads only whose root signed it and which device it names.
+    fn revocation(root: [u8; 32], device: [u8; 32]) -> RevocationEntry {
+        RevocationEntry {
+            user_public_key: root,
+            revoked_device_public_key: device,
+            revoked_at_ns: 1,
+            reason: tilo_user_identity::RevocationReason::Lost,
+            signature: [0; 64],
+        }
+    }
+
+    /// A revocation of the person's refuses the device of the root that signed
+    /// it, and no other: a stranger's entry naming the device leaves it one of
+    /// the person's, while the person's own (the root `cert` names) drops it.
+    #[test]
+    fn a_strangers_revocation_leaves_the_person_s_device_a_sibling() {
+        let mut runtime = runtime();
+        let peer = endpoint(2);
+        let other = device_at(peer);
+        runtime.sibling(
+            peer,
+            &[cert(peer, "Studio")],
+            &[revocation([8; 32], *peer.as_bytes())],
+        );
+        assert_eq!(
+            runtime.endpoint_of(&other),
+            Some(peer),
+            "a stranger's entry naming the device refuses nothing of it"
+        );
+
+        runtime.sibling(
+            peer,
+            &[cert(peer, "Studio")],
+            &[revocation([7; 32], *peer.as_bytes())],
+        );
+        assert_eq!(
+            runtime.endpoint_of(&other),
+            None,
+            "the person's own entry drops the device"
         );
     }
 

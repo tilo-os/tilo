@@ -1,17 +1,16 @@
 //! Workspaces this profile joined: enrolled replicas of workspaces a Tilo
 //! device or a cloud host governs. Their record is this profile's own file,
-//! never the desktop session's; each workspace syncs over one relay session
+//! never the desktop session's; each workspace syncs over one direct link
 //! with the host its enrollment pins, which also carries the workspace's
-//! channel governance between this device and the workspace's participants.
-//! The workspace's governor applies a foreign device's limits to this device
-//! there, as it does to every member.
+//! channel governance between this device and its participants, as the host
+//! forwards what each member's link brings to the others.
 use neighbour_wire::NeighbourMsg;
 use std::{
     collections::{BTreeMap, BTreeSet},
     io,
     path::Path,
     sync::{Arc, Mutex},
-    time::{Duration, SystemTime},
+    time::SystemTime,
 };
 use tilo_action_broker::{
     channel_encryption::{
@@ -23,13 +22,13 @@ use tilo_action_broker::{
 };
 use tilo_desktop_model::{Workspace, WorkspaceId, WorkspaceSlot};
 use tilo_identity_host::custody::HostIdentity;
+use tilo_peer_state::direct::{DirectSync, Heard};
 use tilo_peer_state::join::TransportHint;
 use tilo_peer_state::owner::{
     NativeWorkspaceOwner,
-    session::{Connect, DialError, Holder, Input, Link, Reach, Scope, hold},
+    session::{Connect, Holder, Input, Link, Linked, Reach, Scope, hold},
 };
 use tilo_peer_state::owner_commit::{CommitFuture, OwnerCommitRequest, OwnerCommitService};
-use tilo_relay_session::{Inbound, RelayCoeditSession};
 use tokio::sync::Notify;
 
 #[path = "joined_content.rs"]
@@ -42,8 +41,9 @@ pub(super) use hosted::RecordCreation;
 /// The record of every joined workspace, in the profile: the file profiles
 /// already keep it in.
 pub(super) const JOINED_WORKSPACES: &str = "joined-rooms.json";
-/// How often a live session asks its host for a fresh checkpoint.
-const REFRESH_INTERVAL: Duration = Duration::from_secs(30);
+
+#[path = "joined_enter.rs"]
+pub(in crate::standalone) mod enter;
 
 #[path = "mcp_admission.rs"]
 mod mcp_admission;
@@ -62,7 +62,6 @@ pub(super) struct Joined {
     sessions: Mutex<BTreeMap<WorkspaceId, WorkspaceSession>>,
     /// The profile's record-content service, once the broker runs.
     content: std::sync::OnceLock<Arc<tilo_action_broker::record_content::RouteContent>>,
-    requesters: content::Requesters,
     /// Channel governance the sessions received, for the channel service.
     governance: Mutex<Vec<InboundChannelGovernance>>,
     /// Wakes the channel service's pump when governance arrives.
@@ -72,26 +71,23 @@ pub(super) struct Joined {
     keys: ChannelKeyProvider,
     /// The workspace host this profile runs, once it runs.
     own_host: std::sync::OnceLock<hosted::OwnHost>,
-    /// Writes sent to a workspace's host as commits, waiting for its answer.
-    commits: Mutex<std::collections::HashMap<[u8; 16], CommitWaiter>>,
-    /// Woken when a workspace's session connects or ends.
-    live_changed: Notify,
     /// This value, for the futures its commits answer with.
     this: std::sync::Weak<Self>,
 }
 
-/// Where the host's answer to one commit goes.
-type CommitWaiter = tokio::sync::oneshot::Sender<Result<(), String>>;
-
 struct WorkspaceSession {
     /// Wakes the session to send what its owner holds for it.
     wake: Arc<Notify>,
-    /// The connected session, while there is one.
-    live: Option<Arc<RelayCoeditSession>>,
-    /// The device key of the host it is connected to, which serves the
+    /// Ticks when the link to the workspace's host comes up or ends: what a
+    /// commit waits on before it sends.
+    connected: Arc<Notify>,
+    /// The link to the workspace's host, while it is up.
+    live: Option<Arc<DirectSync>>,
+    /// The device key of the host it is linked to, which serves the
     /// workspace's content.
     host: Option<[u8; 32]>,
-    /// The workspace's members connected to that host, as it reports them.
+    /// The devices whose frames this session heard: the workspace's members
+    /// reach each other through its host.
     members: std::collections::BTreeSet<[u8; 32]>,
 }
 
@@ -111,18 +107,18 @@ impl Holder for WorkspaceHolder {
         &self,
         _via: TransportHint,
         _governor: bool,
-        error: DialError,
+        reason: String,
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send + '_>> {
-        tracing::debug!(%error, "joined workspace session unavailable");
+        tracing::debug!(%reason, "a joined workspace's link is unavailable");
         Box::pin(std::future::ready(()))
     }
 
     fn run(
         &self,
-        session: RelayCoeditSession,
+        linked: Linked,
         scope: Arc<Scope>,
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send + '_>> {
-        Box::pin(self.joined.run_session(session, scope, &self.wake))
+        Box::pin(self.joined.run_session(linked, scope, &self.wake))
     }
 }
 
@@ -149,13 +145,10 @@ impl Joined {
             fanout: broker.1,
             sessions: Mutex::new(BTreeMap::new()),
             content: std::sync::OnceLock::new(),
-            requesters: content::Requesters::default(),
             governance: Mutex::new(Vec::new()),
             governance_wake: Arc::default(),
             keys: ChannelKeyProvider::default(),
             own_host: std::sync::OnceLock::new(),
-            commits: Mutex::new(std::collections::HashMap::new()),
-            live_changed: Notify::new(),
             this: this.clone(),
         });
         for room in joined.owner.workspaces() {
@@ -167,6 +160,37 @@ impl Joined {
     /// This device's endpoint, which the profile's other services share.
     pub(super) fn endpoint(&self) -> iroh::Endpoint {
         self.endpoint.clone()
+    }
+
+    /// The joined workspaces kept in `profile`, held as the device `custody`
+    /// certifies, over `endpoint`: what a profile that serves them alone
+    /// starts with, as a member device that takes its workspaces' work does.
+    pub(in crate::standalone) fn from_profile(
+        profile: &Path,
+        custody: HostIdentity,
+        endpoint: iroh::Endpoint,
+    ) -> io::Result<Arc<Self>> {
+        let broker = (
+            Arc::new(Mutex::new(BrokerChannels::default())),
+            Arc::new(FanoutState::new()),
+        );
+        let refused = desktop_enrolled(profile)?;
+        Self::open(profile, custody, endpoint, refused, broker)
+    }
+
+    /// This device's signing key, as its plane signs every request it makes.
+    pub(in crate::standalone) fn device_key(&self) -> ed25519_dalek::SigningKey {
+        self.custody.device_signing_key.clone()
+    }
+
+    /// The device certificate this profile's custody holds.
+    pub(in crate::standalone) fn device_cert(&self) -> &tilo_user_identity::DeviceCert {
+        &self.custody.device_cert
+    }
+
+    /// The person this device belongs to: whose devices may ask it for work.
+    pub(in crate::standalone) fn operator(&self) -> [u8; 32] {
+        self.custody.device_cert.user_public_key
     }
 
     /// How this profile asks the other devices of its workspaces whether they
@@ -267,7 +291,7 @@ impl Joined {
     // Use the same current custody check as an enrolled relay session. Merely
     // retaining a peer or its device key cannot authenticate a selected root.
     fn current_workspace(&self, workspace: WorkspaceId) -> Result<(Workspace, String), String> {
-        let (_, cert, _, continuity) =
+        let (_, cert, continuity) =
             Connect::new(self.owner.clone(), workspace)?.material(&self.custody)?;
         self.owner.with_current(workspace, |view| {
             if view.continuity() != continuity || view.device() != &cert {
@@ -386,6 +410,7 @@ impl Joined {
             workspace,
             WorkspaceSession {
                 wake: Arc::clone(&wake),
+                connected: Arc::new(Notify::new()),
                 live: None,
                 host: None,
                 members: std::collections::BTreeSet::new(),
@@ -405,103 +430,152 @@ impl Joined {
         });
     }
 
-    async fn run_session(&self, session: RelayCoeditSession, scope: Arc<Scope>, wake: &Notify) {
+    async fn run_session(&self, linked: Linked, scope: Arc<Scope>, wake: &Notify) {
         let workspace = scope.workspace();
-        let session = Arc::new(session);
+        let link = Arc::new(linked.link.clone());
         let host = scope.host().host.device_public_key;
-        self.set_live(workspace, Some((Arc::clone(&session), host)));
-        // On the host's live plane the workspace's members learn this device is
-        // connected, and it learns who of them is.
-        if let Err(error) = session.live_join() {
-            tracing::debug!(%error, %workspace, "joined workspace live plane not joined");
-        }
-        self.publish(&scope, &session);
-        let mut replay = true;
-        let mut refresh = tokio::time::interval(REFRESH_INTERVAL);
-        loop {
+        // Subscribed before the link runs, so nothing it brings in is missed.
+        let mut heard = link.heard();
+        // The link is the workspace's to send on once it caught up with its
+        // host's history: a frame sent before reaches no one, and what this
+        // device holds for the workspace waits for it.
+        let mut caught_up = link.caught_up();
+        let mut live = false;
+        let mut running = Box::pin(linked.run());
+        let ended = loop {
             tokio::select! {
-                inbound = session.recv() => match inbound {
-                    None => break,
-                    Some(Inbound::Ready { .. }) => replay = false,
-                    Some(Inbound::Delta { author, data }) => {
-                        if let Ok(message) = postcard::from_bytes(&data)
-                            && self.admit(scope.input(author, replay, message))
-                            && let Err(error) = session.resubscribe()
-                        {
-                            tracing::debug!(%error, %workspace, "joined workspace replay not asked");
-                        }
-                        self.publish(&scope, &session);
+                ended = &mut running => break ended,
+                caught = caught_up.wait_for(|up| *up), if !live => {
+                    if caught.is_err() {
+                        break Err("the link closed".into());
                     }
-                    Some(Inbound::Presence { author, payload }) => {
-                        if let Ok(message) = postcard::from_bytes::<NeighbourMsg>(&payload)
-                            && !self.content_wanted(workspace, author, &message)
-                        {
-                            self.receive_governance(message);
-                        }
-                    }
-                    Some(Inbound::RecordContent { from, frame }) => {
-                        self.content_arrived(workspace, from, &frame);
-                    }
-                    Some(Inbound::Member { device, active }) => self.member(workspace, device, active),
-                    Some(Inbound::Committed { op }) => self.commit_answered(op, Ok(())),
-                    Some(Inbound::CommitRefused { op, reason }) => {
-                        self.commit_answered(op, Err(format!("the workspace's host refused the write: {reason}")));
-                    }
-                    Some(
-                        Inbound::RemoteAction { .. }
-                        | Inbound::RecordOpened { .. }
-                        | Inbound::Voice(_),
-                    ) => {}
-                },
-                () = wake.notified() => self.publish(&scope, &session),
-                _ = refresh.tick() => {
-                    if let Err(error) = scope.refresh(&session, &self.custody) {
-                        tracing::debug!(%error, "joined workspace checkpoint refresh blocked");
-                    }
-                    self.publish(&scope, &session);
+                    live = true;
+                    self.set_live(workspace, Some((Arc::clone(&link), host)));
+                    self.publish(&scope, &link);
                 }
+                frame = heard.recv() => match frame {
+                    Ok(heard) => {
+                        self.take(&scope, heard);
+                        self.publish(&scope, &link);
+                    }
+                    Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {
+                        break Err("the session fell behind the workspace's frames".into());
+                    }
+                    Err(tokio::sync::broadcast::error::RecvError::Closed) => {
+                        break Err("the link closed".into());
+                    }
+                },
+                () = wake.notified() => self.publish(&scope, &link),
             }
+        };
+        if let Err(reason) = ended {
+            tracing::debug!(%workspace, %reason, "a joined workspace's link ended");
         }
         scope.close();
         self.set_live(workspace, None);
     }
 
-    /// `workspace`'s session connected to its host, or ended. The workspace's content
-    /// follows: what is wanted is asked of a host that connected, and waits
-    /// while there is none.
-    fn set_live(&self, workspace: WorkspaceId, live: Option<(Arc<RelayCoeditSession>, [u8; 32])>) {
+    /// A frame the link brought this profile: what the workspace's members say
+    /// to each other beside their records, then the record itself.
+    fn take(&self, scope: &Arc<Scope>, heard: Heard) {
+        let workspace = scope.workspace();
+        let (author, message) = (heard.author, heard.message.clone());
+        // The workspace's retained history reaches this link too: a frame out
+        // of it is its author's record, not word that its author is here now,
+        // and neither an ask nor an answer to give.
+        if !heard.retained {
+            self.membership(workspace, author);
+            // Content and channel governance are between the workspace's
+            // devices: they go to the services that keep them, never into its
+            // records.
+            if self.content_wanted(workspace, &message) {
+                return;
+            }
+            if matches!(
+                message,
+                NeighbourMsg::RecordContentPiece { .. } | NeighbourMsg::RecordContentLacks { .. }
+            ) {
+                self.content_arrived(workspace, author, &message);
+                return;
+            }
+        }
+        self.receive_governance(message);
+        let input = Input::heard(Arc::clone(scope), heard);
+        match input.admit() {
+            Ok(report) => {
+                let Some(write) = input.app_write(&report) else {
+                    return;
+                };
+                // Another member's write reaches this profile's apps on its route.
+                collab_inbound::deliver(
+                    &self.channels,
+                    &self.fanout,
+                    RemoteDocument {
+                        app_id: write.app_id,
+                        cluster_id: write.cluster_id,
+                        record_id: write.record_id,
+                        author: write.author,
+                        replayed: write.replayed,
+                        envelope: write.envelope,
+                    },
+                    |_| format!("peer@{}", hex::encode(author)),
+                );
+            }
+            Err(reason) => {
+                tracing::debug!(%reason, %workspace, "a joined workspace's frame was not taken in");
+            }
+        }
+    }
+
+    /// `workspace`'s link connected to its host, or ended. The workspace's
+    /// content follows: what is wanted is asked of a host that connected, and
+    /// waits while there is none.
+    fn set_live(&self, workspace: WorkspaceId, live: Option<(Arc<DirectSync>, [u8; 32])>) {
+        let mut connected = None;
         if let Ok(mut sessions) = self.sessions.lock()
             && let Some(session) = sessions.get_mut(&workspace)
         {
             (session.live, session.host) = live.unzip();
             session.members.clear();
+            connected = Some(Arc::clone(&session.connected));
         }
-        self.live_changed.notify_waiters();
+        if let Some(connected) = connected {
+            connected.notify_waiters();
+        }
         if let Some(content) = self.content.get().cloned() {
             tilo_rt::app().spawn_blocking(move || content.sources_changed());
         }
     }
 
-    /// A member of `workspace` joined (`active`) or left its host's live plane.
-    fn member(&self, workspace: WorkspaceId, device: [u8; 32], active: bool) {
+    /// Ticks when `workspace`'s link to its host comes up or ends.
+    fn connected(&self, workspace: WorkspaceId) -> Result<Arc<Notify>, String> {
+        self.sessions
+            .lock()
+            .map_err(|_| "the joined workspaces closed".to_owned())?
+            .get(&workspace)
+            .map(|session| Arc::clone(&session.connected))
+            .ok_or_else(|| "this profile holds no session for the workspace".to_owned())
+    }
+
+    /// A device of `workspace` this session heard a frame from, other than
+    /// this profile's own and the host it is linked to, which its link
+    /// already names.
+    fn membership(&self, workspace: WorkspaceId, device: [u8; 32]) {
         if device == self.custody.device_signing_key.verifying_key().to_bytes() {
             return;
         }
         if let Ok(mut sessions) = self.sessions.lock()
             && let Some(session) = sessions.get_mut(&workspace)
+            && session.host != Some(device)
+            && session.members.insert(device)
+            && let Some(content) = self.content.get().cloned()
         {
-            if active {
-                session.members.insert(device);
-            } else {
-                session.members.remove(&device);
-            }
-        }
-        if let Some(content) = self.content.get().cloned() {
+            drop(sessions);
             tilo_rt::app().spawn_blocking(move || content.sources_changed());
         }
     }
 
-    /// The members of `workspace` connected to its host.
+    /// The devices this session heard `workspace`'s frames from.
     fn live_members(&self, workspace: WorkspaceId) -> Vec<[u8; 32]> {
         self.sessions
             .lock()
@@ -545,9 +619,11 @@ impl Joined {
         self.governance_wake.poke();
     }
 
-    fn publish(&self, scope: &Scope, session: &RelayCoeditSession) {
+    /// Send `workspace`'s own writes, and what its sealed records lack, to its
+    /// host: the link carries them to every member.
+    fn publish(&self, scope: &Scope, link: &DirectSync) {
         let Some(keys) = self.keys.get() else {
-            if let Err(error) = scope.publish(session, &self.custody) {
+            if let Err(error) = scope.publish(link, &self.custody) {
                 tracing::debug!(%error, "joined workspace publication remains in durable custody");
             }
             return;
@@ -568,48 +644,15 @@ impl Joined {
                 tracing::debug!(%error, "joined workspace sealed history stays uncompacted");
             }
         }
-        let result = scope.publish_renewing(session, &self.custody, &mut |sealed| {
+        if let Err(error) = scope.publish_renewing(link, &self.custody, &mut |sealed| {
             keys.renew_sealed(scope.workspace(), sealed)
-        });
-        if let Err(error) = result {
+        }) {
             tracing::debug!(%error, "joined workspace publication remains in durable custody");
         }
     }
 
-    /// Admit a relayed delta; another member's admitted document write then
-    /// reaches this device's apps on its route. Answers whether the workspace's
-    /// host should replay what it retains ([`tilo_peer_state::ReceiveOutcome::replay_wanted`]).
-    fn admit(&self, input: Input) -> bool {
-        let Some((input, report)) = Input::admit_batch(vec![input], &self.custody).inputs.pop()
-        else {
-            return false;
-        };
-        let Ok(report) = report else {
-            return false;
-        };
-        let replay = report.summary().replay_wanted;
-        let Some(write) = input.app_write(&report) else {
-            return replay;
-        };
-        let author = input.author();
-        collab_inbound::deliver(
-            &self.channels,
-            &self.fanout,
-            RemoteDocument {
-                app_id: write.app_id,
-                cluster_id: write.cluster_id,
-                record_id: write.record_id,
-                author: write.author,
-                replayed: write.replayed,
-                envelope: write.envelope,
-            },
-            |_| format!("peer@{}", hex::encode(author)),
-        );
-        replay
-    }
-
-    /// `workspace`'s connected session, while there is one.
-    fn live(&self, workspace: WorkspaceId) -> Option<Arc<RelayCoeditSession>> {
+    /// `workspace`'s connected link, while there is one.
+    fn live(&self, workspace: WorkspaceId) -> Option<Arc<DirectSync>> {
         self.sessions
             .lock()
             .ok()
@@ -697,11 +740,10 @@ impl GovernanceTransport for Joined {
             | NeighbourMsg::MlsRoutedAccessRequest { room, .. } => WorkspaceId::parse(room),
             _ => None,
         };
-        let live = workspace.and_then(|workspace| self.live(workspace));
-        let (Some(live), Ok(bytes)) = (live, postcard::to_allocvec(&message)) else {
+        let Some(live) = workspace.and_then(|workspace| self.live(workspace)) else {
             return false;
         };
-        live.publish_presence(bytes).is_ok()
+        live.send(message).is_ok()
     }
 
     fn take_inbound(&self) -> Vec<InboundChannelGovernance> {

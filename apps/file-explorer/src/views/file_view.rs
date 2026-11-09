@@ -1480,13 +1480,6 @@ fn accessible_entry_description(entry: &Entry) -> String {
         });
     }
 
-    if let Some(share) = &entry.share {
-        let active = share.active_grants();
-        facts.push(t_args(
-            "files-a11y-shared-recipients",
-            &[arg("count", i64::try_from(active).unwrap_or(i64::MAX))],
-        ));
-    }
     if entry.is_conflict() {
         facts.push(t("files-a11y-version-conflict"));
     }
@@ -1707,7 +1700,6 @@ mod tests {
             content_hash: None,
             record_id: None,
             availability: None,
-            share: None,
             history: None,
             app: None,
             rich_metadata: None,
@@ -2077,7 +2069,6 @@ mod tests {
             content_hash: None,
             record_id: None,
             availability: None,
-            share: None,
             history: None,
             app: None,
             rich_metadata: None,
@@ -2160,7 +2151,6 @@ mod tests {
             content_hash: None,
             record_id: None,
             availability: None,
-            share: None,
             history: None,
             app: None,
             rich_metadata: None,
@@ -2735,8 +2725,8 @@ mod tests {
         assert!(zoomed.row_h() > base.row_h(), "zoom grows list row height");
     }
 
-    /// A folder and a pinned, shared, replicated file: every fact the
-    /// accessibility description carries.
+    /// A folder and a pinned, replicated file: every fact the accessibility
+    /// description carries.
     fn accessible_entries() -> Vec<Entry> {
         let mut entries = vec![ent("folder", true), ent("report.pdf", false)];
         entries[1].size = 4_000;
@@ -2747,28 +2737,6 @@ mod tests {
             &serde_json::json!({"state": "known", "reachable": 2, "durable": 1}),
             false,
         ));
-        entries[1].share = fs_protocol::ShareProjectionV1::parse_xattr(
-            &serde_json::to_vec(&serde_json::json!({
-                "schema_version": 1,
-                "record_id": uuid::Uuid::nil().to_string(),
-                "observed_at_ms": 1,
-                "grants": [{
-                    "grant_id": uuid::Uuid::nil().to_string(),
-                    "subject": {"kind": "bearer_link"},
-                    "permission": "View",
-                    "expires_at_ms": null,
-                    "revoked": false,
-                    "expired": false,
-                    "used": false,
-                    "exhausted": false,
-                    "status": "active",
-                    "redemptions": 0,
-                    "max_redemptions": 1
-                }]
-            }))
-            .unwrap(),
-        )
-        .ok();
 
         entries
     }

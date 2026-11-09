@@ -166,6 +166,7 @@ fn with_view(mut row: CatalogueRow, primary: bool) -> CatalogueRow {
         primary,
         range: None,
         mount: None,
+        desktop: false,
     });
     row
 }

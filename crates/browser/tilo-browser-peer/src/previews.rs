@@ -52,14 +52,12 @@ impl LiveState {
     /// is not a preview.
     pub fn receive(&mut self, from: [u8; 32], frame: &[u8], now_ms: u64) -> Option<LiveChange> {
         let frame = LiveFrame::decode(frame).ok()?;
-        // Semantic work requires a separately authenticated consumer. It must
-        // never create a pointer member or refresh a pointer's idle lifetime.
-        if matches!(frame, LiveFrame::Ops(OpsFrame::Semantic { .. })) {
-            return None;
-        }
         let (record, ops) = match frame {
             LiveFrame::Ops(OpsFrame::Preview { record, ops, .. }) => (record, Some(ops)),
             LiveFrame::Ops(OpsFrame::End { record }) => (record, None),
+            // An agent's narrated work is admitted by the page's presence
+            // board, which knows its members: it never makes a member here
+            // or keeps one fresh.
             LiveFrame::RetiredPresence | LiveFrame::Ops(OpsFrame::Semantic { .. }) => return None,
         };
         let member = self.remote.entry(from).or_insert_with(|| RemoteMember {

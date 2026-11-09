@@ -135,18 +135,50 @@ fn a_sentence_no_row_answers_is_sent_from_the_box_and_never_reported_as_a_row() 
     assert!(ran.borrow().is_empty(), "no row ran");
     assert_eq!(menu.take_selection(), None);
     assert!(
-        menu.is_open(),
-        "the menu stays under the person's eyes, with the box beside it"
+        !menu.is_open() && !menu.is_drawn(),
+        "the box takes the menu's place: one field takes the typing, never two"
+    );
+    assert!(
+        menu.send_to_alone_open(),
+        "the box stands on its own, with the sentence it sends"
+    );
+    assert!(
+        menu.is_showing(),
+        "a host keeping it while it shows keeps the box past the menu it closed"
     );
     let box_ = menu.send_to();
-    assert!(box_.is_open());
     assert_eq!(box_.text(), "summarise this for Ana");
     assert_eq!(box_.subjects(), std::slice::from_ref(&item));
     assert!(
-        box_.rect().x0 >= menu.get_rect().x1,
-        "the box stands beside the menu, {} against {}",
+        box_.is_focused(),
+        "and it is where the keyboard types, with no menu field to type into"
+    );
+    assert!(
+        box_.rect().x0 >= menu.get_rect().x0,
+        "the box arrives where the menu stood, {} against {}",
         box_.rect(),
         menu.get_rect()
+    );
+    // What a screen reader reads is one surface too: the menu's field is gone
+    // with the menu, and of the box's fields exactly one holds the typing.
+    fn fields(node: &crate::a11y::AccessNode, out: &mut Vec<crate::a11y::AccessState>) {
+        for child in &node.children {
+            if child.role == crate::a11y::Role::TextInput && !child.state.hidden {
+                out.push(child.state);
+            }
+            fields(child, out);
+        }
+    }
+    let mut read = Vec::new();
+    fields(
+        &menu.accessibility().expect("the menu's place is read"),
+        &mut read,
+    );
+    assert_eq!(read.len(), 2, "the box's own fields, and no menu field");
+    assert_eq!(
+        read.iter().filter(|state| state.focused).count(),
+        1,
+        "one field takes the typing"
     );
 }
 

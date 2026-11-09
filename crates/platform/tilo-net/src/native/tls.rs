@@ -64,6 +64,124 @@ pub fn client_config() -> Result<ClientConfig, rustls::Error> {
     client_config_with_roots(system_roots())
 }
 
+/// A client config that verifies servers as [`client_config`] does, and also
+/// trusts each of `extra` (DER): as a root a server's chain may lead to, and
+/// as that exact server certificate, for a self-signed server certificate
+/// that is its own issuer (which a chain check does not take as its own
+/// root). Verification stays on: a server must still present one of these
+/// or a chain to a trusted root, for its name, and hold its key.
+///
+/// For a test that runs servers under its own certificates; production
+/// trust is [`client_config`] alone.
+pub fn client_config_also_trusting(
+    extra: Vec<CertificateDer<'static>>,
+) -> Result<ClientConfig, rustls::Error> {
+    let provider = crypto_provider();
+    // A certificate no chain check takes as a root (a leaf) is still pinned.
+    let roots: Vec<CertificateDer<'static>> = extra
+        .iter()
+        .filter(|cert| RootCertStore::empty().add((*cert).clone()).is_ok())
+        .cloned()
+        .collect();
+    let chain = chain_verifier(roots, Arc::clone(&provider))?;
+    Ok(ClientConfig::builder_with_provider(Arc::clone(&provider))
+        .with_safe_default_protocol_versions()?
+        .dangerous()
+        .with_custom_certificate_verifier(Arc::new(AlsoTrusting {
+            pinned: extra,
+            chain,
+            provider,
+        }))
+        .with_no_client_auth())
+}
+
+#[cfg(not(target_os = "android"))]
+fn chain_verifier(
+    roots: Vec<CertificateDer<'static>>,
+    provider: Arc<CryptoProvider>,
+) -> Result<Arc<dyn ServerCertVerifier>, rustls::Error> {
+    Ok(Arc::new(
+        rustls_platform_verifier::Verifier::new_with_extra_roots(roots, provider)?,
+    ))
+}
+
+#[cfg(target_os = "android")]
+fn chain_verifier(
+    roots: Vec<CertificateDer<'static>>,
+    provider: Arc<CryptoProvider>,
+) -> Result<Arc<dyn ServerCertVerifier>, rustls::Error> {
+    let mut store = system_roots();
+    for root in roots {
+        store.add(root)?;
+    }
+    rustls::client::WebPkiServerVerifier::builder_with_provider(Arc::new(store), provider)
+        .build()
+        .map(|verifier| verifier as Arc<dyn ServerCertVerifier>)
+        .map_err(|error| rustls::Error::General(error.to_string()))
+}
+
+#[derive(Debug)]
+struct AlsoTrusting {
+    pinned: Vec<CertificateDer<'static>>,
+    chain: Arc<dyn ServerCertVerifier>,
+    provider: Arc<CryptoProvider>,
+}
+
+impl ServerCertVerifier for AlsoTrusting {
+    fn verify_server_cert(
+        &self,
+        end_entity: &CertificateDer<'_>,
+        intermediates: &[CertificateDer<'_>],
+        server_name: &ServerName<'_>,
+        ocsp_response: &[u8],
+        now: UnixTime,
+    ) -> Result<ServerCertVerified, rustls::Error> {
+        if self
+            .pinned
+            .iter()
+            .any(|pinned| pinned.as_ref() == end_entity.as_ref())
+        {
+            return Ok(ServerCertVerified::assertion());
+        }
+        self.chain
+            .verify_server_cert(end_entity, intermediates, server_name, ocsp_response, now)
+    }
+
+    fn verify_tls12_signature(
+        &self,
+        message: &[u8],
+        cert: &CertificateDer<'_>,
+        dss: &DigitallySignedStruct,
+    ) -> Result<HandshakeSignatureValid, rustls::Error> {
+        rustls::crypto::verify_tls12_signature(
+            message,
+            cert,
+            dss,
+            &self.provider.signature_verification_algorithms,
+        )
+    }
+
+    fn verify_tls13_signature(
+        &self,
+        message: &[u8],
+        cert: &CertificateDer<'_>,
+        dss: &DigitallySignedStruct,
+    ) -> Result<HandshakeSignatureValid, rustls::Error> {
+        rustls::crypto::verify_tls13_signature(
+            message,
+            cert,
+            dss,
+            &self.provider.signature_verification_algorithms,
+        )
+    }
+
+    fn supported_verify_schemes(&self) -> Vec<SignatureScheme> {
+        self.provider
+            .signature_verification_algorithms
+            .supported_schemes()
+    }
+}
+
 /// A client config that trusts the server certificate `accept` admits, given
 /// its DER, instead of a chain to a root: a pinned certificate or hash, or any
 /// certificate the caller checks after the handshake. The handshake signature
@@ -152,6 +270,7 @@ mod tests {
         {
             assert!(client_config_with_roots(RootCertStore::empty()).is_ok());
             assert!(pinned_client_config(|_| true).is_ok());
+            assert!(client_config_also_trusting(Vec::new()).is_ok());
         }
         {
             install_crypto_provider();

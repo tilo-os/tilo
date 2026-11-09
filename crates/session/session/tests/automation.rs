@@ -354,6 +354,7 @@ fn a_shortcut_saved_by_someone_elses_device_fires_nothing_here() {
         issued_at_ns: tilo_clock::unix_now_ns(),
         expires_at_ns: None,
         signature: [0; 64],
+        issuer: None,
     };
     tilo_user_identity::sign_device_cert(&mut other_cert, &other_person).expect("their device");
 

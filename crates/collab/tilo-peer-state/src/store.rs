@@ -476,11 +476,14 @@ pub fn sealed(message: &NeighbourMsg) -> bool {
     }
 }
 
-/// The device that signed `message`, when it is a document frame.
+/// The device `message` names as its own, when it names one: a frame a
+/// workspace's host forwards says whose it is by its own signature, whatever
+/// link carried it.
 #[must_use]
 pub fn author_of(message: &NeighbourMsg) -> Option<[u8; 32]> {
     match message {
         NeighbourMsg::AppDocument { envelope, .. } => Some(*envelope.author.as_bytes()),
+        NeighbourMsg::IdentityHello { cert, .. } => Some(cert.device_public_key),
         _ => None,
     }
 }

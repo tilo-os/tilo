@@ -75,22 +75,15 @@ fn subtree(root: &File, relative: &Path) -> io::Result<File> {
 /// Missing kernel evidence is an error, never permission to cross mounts.
 /// This identifies mounts, not a portable filesystem or authorization grant.
 pub fn mount_id(directory: &File) -> io::Result<u64> {
-    // SAFETY: zero is valid output storage and an empty string plus AT_EMPTY_PATH
-    // identifies the held descriptor, not an ambient pathname.
-    let mut value: libc::statx = unsafe { std::mem::zeroed() };
-    let result = unsafe {
-        libc::statx(
-            directory.as_raw_fd(),
-            c"".as_ptr(),
-            libc::AT_EMPTY_PATH | libc::AT_SYMLINK_NOFOLLOW,
-            libc::STATX_MNT_ID,
-            &raw mut value,
-        )
-    };
-    if result < 0 {
-        return Err(io::Error::last_os_error());
-    }
-    if value.stx_mask & libc::STATX_MNT_ID == 0 {
+    // An empty string plus `EMPTY_PATH` identifies the held descriptor, not an
+    // ambient pathname; rustix issues the syscall on every C library.
+    let value = rustix::fs::statx(
+        directory,
+        c"",
+        rustix::fs::AtFlags::EMPTY_PATH | rustix::fs::AtFlags::SYMLINK_NOFOLLOW,
+        rustix::fs::StatxFlags::MNT_ID,
+    )?;
+    if value.stx_mask & rustix::fs::StatxFlags::MNT_ID.bits() == 0 {
         return Err(refusal("kernel cannot attest capture mount boundaries"));
     }
     Ok(value.stx_mnt_id)

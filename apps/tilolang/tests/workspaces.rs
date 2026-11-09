@@ -62,8 +62,8 @@ fn an_unsynced_workspace_says_it_is_connecting_and_a_synced_empty_workspace_says
         "before the first sync nothing claims the notebook is empty: {connecting:?}"
     );
     assert!(
-        connecting_to_lounge(&connecting) >= 2,
-        "the list and the note's column each say the workspace is connecting: {connecting:?}"
+        connecting_to_lounge(&connecting) >= 1,
+        "the list, which is the whole window until a note opens, says the workspace is connecting: {connecting:?}"
     );
 
     ui::workspace_sync::set(Some(told(WorkspaceSyncState::HostNeedsUpdate)));

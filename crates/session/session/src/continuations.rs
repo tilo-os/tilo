@@ -21,13 +21,20 @@
 //! The answers are kept here until the pass that asked for them takes them up
 //! ([`Continuations::take_handoffs`]): they arrive on the broker's own thread,
 //! which decides nothing about a move.
+#![cfg_attr(
+    target_arch = "wasm32",
+    allow(
+        dead_code,
+        reason = "the page notes its windows' records beside them next"
+    )
+)]
 
 use std::collections::{BTreeMap, VecDeque};
 use std::sync::Mutex;
 
 use collab_types::handoff::HandoffReport;
-use tilo_action_broker::route::CrdtRoute;
-use tilo_action_broker::services::ContinuationServices;
+use tilo_broker_core::route::CrdtRoute;
+use tilo_broker_core::steps::ContinuationServices;
 use tilo_desktop_model::WorkspaceId;
 use tilo_lock::MutexRecover as _;
 

@@ -121,6 +121,33 @@ fn letting_a_window_go_over_its_strip_still_lands_in_the_gap_it_was_dropped_in()
 }
 
 #[test]
+fn a_float_keeps_its_card_room_inside_the_desk() {
+    let (row, _taffy, _root) = make_row_with_groups_with_taffy(&[&[1], &[2]]);
+    let area = row.get_rect();
+    let room = FLOAT_CARD_ROOM;
+    let corner = Rect::from_origin_size(Point::new(area.x0, area.y0), FLOAT_SIZE);
+    let placed = row.keep_float_inside(corner);
+    assert_eq!(
+        placed.origin(),
+        Point::new(area.x0 + room, area.y0 + room),
+        "a float at the desk's corner stands clear of it, so its band and ring show"
+    );
+    let past = Rect::from_origin_size(Point::new(area.x1, area.y1), FLOAT_SIZE);
+    let past = row.keep_float_inside(past);
+    assert_eq!(
+        (past.x1, past.y1),
+        (area.x1 - room, area.y1 - room),
+        "a float pushed past the desk comes back with its card on it"
+    );
+    let inside = Rect::from_origin_size(Point::new(area.x0 + 120.0, area.y0 + 60.0), FLOAT_SIZE);
+    assert_eq!(
+        row.keep_float_inside(inside),
+        inside,
+        "a float with room round it stands where it was put"
+    );
+}
+
+#[test]
 fn a_floating_window_follows_the_hand_and_snaps_back_into_the_gap_over_the_strip() {
     let (row, _taffy, _root) = make_row_with_groups_with_taffy(&[&[1], &[2], &[3]]);
     let at = Rect::new(120.0, 500.0, 760.0, 900.0);
@@ -199,5 +226,72 @@ fn a_float_let_go_off_the_strip_stays_over_the_desk_where_it_was_dropped() {
         row.floats().get(&200),
         Some(&moved),
         "the window stands where it was let go"
+    );
+}
+
+#[test]
+fn a_float_covers_the_windows_under_it_once_it_has_arrived() {
+    use crate::motion::pin_frame_at;
+
+    let (row, _taffy, _root) = make_row_with_groups_with_taffy(&[&[1], &[2]]);
+    let at = Rect::new(120.0, 60.0, 760.0, 540.0);
+    let mut now = crate::time::now();
+    let mut row = row;
+    {
+        let _frame = pin_frame_at(now);
+        row.set_floats(floats(&[(100, at)]));
+    }
+    let (mut row, _taffy, _root) = relayout_row_owned(row, FIXTURE_USABLE_PX);
+    let theme = Theme::dark();
+    let text = &mut TextRenderer::new();
+    let presence = PresenceCtx::empty();
+    let mut draw = |row: &mut GroupRow, at: crate::time::Instant| {
+        let _frame = pin_frame_at(at);
+        let mut scene = Scene::new();
+        row.draw(&mut scene, Affine::IDENTITY, text, &theme, &presence);
+    };
+    // The frame it first shows on fades it in over the desk: what it covers still shows through, so
+    // the windows under it are drawn as they stand.
+    draw(&mut row, now);
+    assert!(
+        row.drawn_covers().is_empty(),
+        "a float still arriving covers nothing"
+    );
+    for _ in 0..600 {
+        if !row.drawn_covers().is_empty() {
+            break;
+        }
+        now += std::time::Duration::from_millis(16);
+        draw(&mut row, now);
+    }
+    let covers = row.drawn_covers();
+    assert_eq!(
+        covers.len(),
+        1,
+        "the one float stands over the desk: {covers:?}"
+    );
+    let (tab, cover) = covers[0];
+    let card = row.groups[0].get_rect();
+    let bar = row.groups[0].bar_rect();
+    assert_eq!(tab, 1, "the cover is of the window it shows, by its tab");
+    assert_eq!(
+        card.union(bar),
+        card,
+        "the float is one card: its bar is the head of the window it shows, inside the card: \
+         bar {bar:?} against card {card:?}"
+    );
+    assert!(
+        bar.height() > 0.0 && card.height() > bar.height(),
+        "and the window's body under it: bar {bar:?} against card {card:?}"
+    );
+    assert_eq!(
+        cover.union(card),
+        cover,
+        "the cover holds the whole card, bar and body: {cover:?} against {card:?}"
+    );
+    assert!(
+        cover.width() > card.width() && cover.height() > card.height(),
+        "and the lift it stands on, so the windows under it are drawn around that too: \
+         {cover:?} against {card:?}"
     );
 }

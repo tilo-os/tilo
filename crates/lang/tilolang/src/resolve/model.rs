@@ -25,8 +25,13 @@ pub struct TypeInfo {
     pub fields: Vec<FieldInfo>,
     /// Its filters, default order and hidden fields (search.md, "What a type declares").
     pub search: crate::meta::SearchMeta,
-    /// The kind of an outside service's resource it holds (`crate::origin`).
+    /// `(origin: imap.message)`: the kind of an outside service's resource it holds
+    /// (`crate::origin`).
     pub origin: Option<String>,
+    /// `(title: subject)`: the field a record of the type is named by, when the type says which.
+    pub title: Option<String>,
+    /// `(untitled: "Untitled")`: what one of its records is called while its title is empty.
+    pub untitled: Option<String>,
 }
 
 impl TypeInfo {
@@ -34,15 +39,18 @@ impl TypeInfo {
         self.fields.iter().find(|f| f.name == name)
     }
 
-    /// The field a record of the type is named by: its first `Text` or `RichText` field that
-    /// merges as text. A register of text is a code or a label, never what the record is
-    /// called. A type with no such field names its records by the type's name and the
-    /// record's `created`.
+    /// The field a record of the type is named by: the one it says (`title: subject`), else its
+    /// first `Text` or `RichText` field that merges as text. A register of text is a code or a
+    /// label, never what the record is called. A type with no such field names its records by the
+    /// type's name and the record's `created`.
     #[must_use]
     pub fn name_field(&self) -> Option<&FieldInfo> {
-        self.fields
-            .iter()
-            .find(|f| matches!(f.ty, Ty::Text | Ty::RichText) && f.merge != MergeKind::Register)
+        match &self.title {
+            Some(name) => self.field(name),
+            None => self.fields.iter().find(|f| {
+                matches!(f.ty, Ty::Text | Ty::RichText) && f.merge != MergeKind::Register
+            }),
+        }
     }
 
     pub fn field_names(&self) -> String {
@@ -234,9 +242,6 @@ pub struct Presentation {
     /// bar — draws the runs in the order the app declared them, so an app decides which
     /// commands read as one without any surface keeping a list of its own.
     pub group: Option<String>,
-    /// `frequent`: a command the person reaches for on most things of this type, which the
-    /// desktop's action bar shows directly rather than behind its menu of the rest.
-    pub frequent: bool,
     /// `did: "moved this"`: what the action did to its subject, as history's sentence reads it
     /// after who did it ("Ana moved this"); empty for one that says nothing, which history then
     /// names by the action and its description.

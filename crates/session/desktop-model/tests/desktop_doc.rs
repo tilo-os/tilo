@@ -573,6 +573,34 @@ fn the_canvas_is_recorded_so_history_can_take_it_back() {
 }
 
 #[test]
+fn a_desk_read_back_drops_a_place_whose_window_it_no_longer_holds() {
+    let (mut tree, mut doc) = seeded();
+    let mut no_ids = || Err::<u64, String>("no ids".into());
+    let mut no_records = |_: &str, _: u64| Err::<(String, TileContent), String>("none".into());
+    apply_command(
+        &mut tree.workspaces[0],
+        &DesktopCommand::PlaceGroup {
+            group: 11,
+            place: CanvasPlace::new(744, 0, 720, 520),
+        },
+        &mut no_ids,
+        &mut no_records,
+    )
+    .unwrap();
+    // A desk written by a build that closed a window without freeing its place: the document
+    // keeps the place, and the desk holds no window there.
+    tree.workspaces[0].strips[0]
+        .window_groups
+        .retain(|group| group.id != 11);
+    desktop_doc::seed(&mut doc, &tree);
+    assert_eq!(
+        read_back(&doc).workspaces[0].arrangement.place_of(11),
+        None,
+        "the desk reads back without a place for a window it does not hold"
+    );
+}
+
+#[test]
 fn a_float_is_recorded_for_everyone_and_history_can_take_it_back() {
     let float = FloatPlace::new(FloatCorner::BottomRight, 40, 24, 640, 480);
     let (mut tree, mut doc) = seeded();

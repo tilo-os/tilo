@@ -996,6 +996,35 @@ impl Session {
         outcome
     }
 
+    /// The workspace environment's own VM, on a host that serves
+    /// workspaces: it sees the directories the record grants as of each
+    /// program.
+    fn hosted_programs(
+        &self,
+        target: crate::hosted_vm::HostedTarget,
+        key: &str,
+        record: &Arc<RecordEnvironment>,
+    ) -> Arc<dyn ush_tilo::Programs> {
+        let grants = Arc::clone(record);
+        let programs = crate::hosted_vm::HostedPrograms::new(
+            target,
+            self.store.workspace_id().to_string(),
+            key.to_string(),
+            Box::new(move || {
+                let policy = Policy::new(ush_tilo::Environment::grants(&*grants));
+                let now = Some(unix_now());
+                crate::hosted_vm::shares_of(policy.trusted_dirs(now), policy.readable_dirs(now))
+            }),
+        )
+        .with_runs_key(self.opts.runs.clone());
+        // The session's terminal is its standard input, as for programs on
+        // a device.
+        Arc::new(match std::io::stdin().as_fd().try_clone_to_owned() {
+            Ok(terminal) => programs.terminal(terminal),
+            Err(_) => programs,
+        })
+    }
+
     fn tilo_side_in(
         &self,
         key: String,
@@ -1063,14 +1092,18 @@ impl Session {
                 .is_ok_and(|mut state| std::mem::take(&mut state.restart_requested))
         });
         let listing = self.image_listing(&state);
-        let programs = Arc::new(
-            SessionGuest::new(launch, restart_asked, streams()?, Arc::clone(&place))
-                .listing(listing),
-        );
+        let record = Arc::new(RecordEnvironment::new(Arc::clone(&state)));
+        let programs: Arc<dyn ush_tilo::Programs> = match self.opts.hosted_vm.clone() {
+            Some(target) => self.hosted_programs(target, &resolved.key, &record),
+            None => Arc::new(
+                SessionGuest::new(launch, restart_asked, streams()?, Arc::clone(&place))
+                    .listing(listing),
+            ),
+        };
         let session_streams = streams()?;
         let io = session_streams.stdio_editing(field.as_ref())?;
         let host: Arc<dyn ush_shell::Host> = Arc::new(ush_tilo::TiloHost::new(
-            Arc::new(RecordEnvironment::new(Arc::clone(&state))),
+            record,
             Arc::new(ush_tilo::NativeFiles),
             programs,
             place,

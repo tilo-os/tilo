@@ -85,6 +85,7 @@ impl Links {
                 id: "main".into(),
                 primary: true,
                 range: false,
+                desktop: false,
             }],
             invite: false,
             args: serde_json::Map::new(),

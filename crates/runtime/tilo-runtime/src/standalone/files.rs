@@ -2,10 +2,10 @@
 //! desktop does not: at `~/Tilo/<workspace>`.
 //!
 //! The files live in the profile as the filesystem daemon keeps them on
-//! Tilo OS: a namespace, the content store the profile's document media
-//! share, and a history of every version. On Linux with a usable FUSE the
-//! workspace is mounted there ([`mount`]); everywhere else a plain folder
-//! mirrors it both ways ([`tilo_fs::sync_folder`]).
+//! Tilo OS: a namespace holding the tree and every version of every record,
+//! and the content store the profile's document media share. On Linux with a
+//! usable FUSE the workspace is mounted there ([`mount`]); everywhere else a
+//! plain folder mirrors it both ways ([`tilo_fs::sync_folder`]).
 
 #[cfg(target_os = "linux")]
 mod mount;
@@ -19,7 +19,6 @@ use std::{
 };
 use tilo_fs::{
     fs::QuickFS,
-    history::FileHistoryStore,
     hydration::Hydrator,
     namespace::Namespace,
     smart::Heuristics,
@@ -29,7 +28,8 @@ use tilo_fs::{
 /// The profile directory holding the workspace files' state.
 const FILES: &str = "files";
 const NAMESPACE: &str = "namespace.bin";
-const HISTORY: &str = "history.json";
+/// Where releases before the versions moved into the namespace kept them.
+const LEGACY_HISTORY: &str = "history.json";
 /// Workspace changes reach the folder, and are persisted, within this.
 const INTERVAL: Duration = Duration::from_secs(2);
 
@@ -128,7 +128,6 @@ impl WorkspaceFiles {
 struct Files {
     state: PathBuf,
     namespace: Arc<NamespaceFile>,
-    history: Arc<FileHistoryStore>,
     hydrator: Arc<Hydrator>,
     actor: fs_protocol::FileActor,
 }
@@ -142,7 +141,7 @@ impl Files {
     ) -> io::Result<Self> {
         crate::unix::private_directory(state)?;
         let namespace = NamespaceFile::open(state.join(NAMESPACE), hex::encode(author.device))?;
-        let history = FileHistoryStore::open(state.join(HISTORY)).map_err(io::Error::other)?;
+        import_legacy_history(&namespace, state)?;
         let hydrator = {
             let _entered = tilo_rt::app().handle().enter();
             Arc::new(Hydrator::new(endpoint, store))
@@ -150,7 +149,6 @@ impl Files {
         Ok(Self {
             state: state.to_path_buf(),
             namespace: Arc::new(namespace),
-            history: Arc::new(history),
             hydrator,
             actor: fs_protocol::FileActor {
                 person: collab_types::Ed25519PublicKey(author.person),
@@ -166,7 +164,7 @@ impl Files {
             Arc::clone(&self.hydrator),
             heuristics,
         )
-        .with_history(Arc::clone(&self.history), self.actor)
+        .with_history(self.actor)
         .map_err(io::Error::other)
     }
 
@@ -175,6 +173,32 @@ impl Files {
         let commit = Box::new(move || namespace.save_if_changed());
         SyncFolder::open(Arc::new(self.quick_fs()?), folder, &self.state, commit)
     }
+}
+
+/// Take a profile's separate version history into its namespace document.
+///
+/// Releases before the versions moved into the document kept them in
+/// `history.json`; the profile keeps everything it recorded and the file is
+/// moved aside. A database this release cannot read stays where it is.
+fn import_legacy_history(namespace: &NamespaceFile, state: &Path) -> io::Result<()> {
+    let path = state.join(LEGACY_HISTORY);
+    let imported = namespace
+        .namespace
+        .lock()
+        .map_err(|_| io::Error::other("workspace namespace lock poisoned"))
+        .and_then(|mut namespace| {
+            tilo_fs::legacy_history::import(&mut namespace, &path).map_err(io::Error::other)
+        });
+    match imported {
+        Ok(imported) => {
+            if imported {
+                namespace.save_if_changed()?;
+            }
+            tilo_fs::legacy_history::retire(&path);
+        }
+        Err(error) => tracing::warn!(%error, "the profile's old version history stays unread"),
+    }
+    Ok(())
 }
 
 /// The workspace namespace and the profile file that keeps it.

@@ -1,5 +1,5 @@
 //! Exact-record projection from accepted replication envelopes into the live
-//! namespace and immutable history store.
+//! namespace and its immutable versions.
 //!
 //! Materialization never resolves a path or creates a node. Stable record
 //! identity is looked up only in the live namespace, so rename is transparent
@@ -11,7 +11,7 @@ use fs_protocol::{FileNodeKind, FileRecordId};
 use thiserror::Error;
 use uuid::Uuid;
 
-use crate::history::{FileHistoryStore, HistoryError};
+use crate::namespace::history::HistoryError;
 use crate::namespace::{ContentAuthority, Namespace, NodeKind};
 use crate::record_access::RecordAccessBinding;
 use crate::record_protocol::{RecordMutationSink, RecordMutationSinkError};
@@ -71,7 +71,8 @@ const MAX_RECONCILE_ROUNDS: usize = 4_096;
 pub struct RecordMaterializer {
     workspace_id: Uuid,
     namespace: Arc<Mutex<Namespace>>,
-    history: Option<Arc<FileHistoryStore>>,
+    /// Whether this device keeps immutable versions and conflicts.
+    history: bool,
     sync: Arc<std::sync::RwLock<Option<Arc<crate::sync::SyncHandle>>>>,
     transaction_runtime: Option<RemoteTransactionRuntime>,
     /// Records whose last projection found no live placement (not placed
@@ -98,17 +99,13 @@ impl std::fmt::Debug for RecordMaterializer {
         formatter
             .debug_struct("RecordMaterializer")
             .field("workspace_id", &self.workspace_id)
-            .field("history_enabled", &self.history.is_some())
+            .field("history_enabled", &self.history)
             .finish_non_exhaustive()
     }
 }
 
 impl RecordMaterializer {
-    pub fn new(
-        workspace_id: Uuid,
-        namespace: Arc<Mutex<Namespace>>,
-        history: Option<Arc<FileHistoryStore>>,
-    ) -> Self {
+    pub fn new(workspace_id: Uuid, namespace: Arc<Mutex<Namespace>>, history: bool) -> Self {
         Self {
             workspace_id,
             namespace,
@@ -141,6 +138,16 @@ impl RecordMaterializer {
     pub fn attach_sync(&self, sync: Arc<crate::sync::SyncHandle>) {
         if let Ok(mut current) = self.sync.write() {
             *current = Some(sync);
+        }
+    }
+
+    /// Peers, the ACL view and hydration learn of a projection that changed
+    /// the namespace.
+    fn announce(&self) {
+        if let Ok(sync) = self.sync.read()
+            && let Some(sync) = sync.as_ref()
+        {
+            sync.announce_change();
         }
     }
 
@@ -186,14 +193,6 @@ impl RecordMaterializer {
         keys: &[crate::record_repository::RecordRepositoryKey],
         scope: ReconcileScope,
     ) -> Result<RecordReconciliationReport, RecordMaterializerError> {
-        let deferral = self
-            .history
-            .as_ref()
-            .map(|history| history.defer_durability());
-        self.namespace
-            .lock()
-            .map_err(|_| RecordMaterializerError::NamespaceUnavailable)?
-            .begin_incremental_batch();
         let mut report = RecordReconciliationReport::default();
         let more = match scope {
             ReconcileScope::Touched => Vec::new(),
@@ -210,33 +209,51 @@ impl RecordMaterializer {
         all.extend(more);
         let projected = self.reconcile_keys(repository, &all, &mut report);
         let everything = scope != ReconcileScope::Touched || !keys.is_empty();
-        // One namespace delta for the whole batch.
-        let delta = self
-            .namespace
-            .lock()
-            .map_err(|_| RecordMaterializerError::NamespaceUnavailable)?
-            .end_incremental_batch();
-        if !delta.is_empty()
-            && let Ok(sync) = self.sync.read()
-            && let Some(sync) = sync.as_ref()
-        {
-            sync.announce_change();
-        }
+        self.announce();
         projected?;
         // A pull may complete a multi-record transaction.
         if everything {
             self.reconcile_transactions(repository, &mut report)?;
-        }
-        if let Some(deferral) = deferral {
-            deferral
-                .finish()
-                .map_err(|_| RecordMaterializerError::HistoryUnavailable)?;
         }
         // A full pass only heals what an earlier change already signalled.
         if !keys.is_empty() {
             self.notify_projection();
         }
         Ok(report)
+    }
+
+    /// Append versions that arrived in a signed record to their records.
+    fn import_versions(
+        &self,
+        versions: &[fs_protocol::FileVersionV1],
+    ) -> Result<(), RecordMaterializerError> {
+        if !self.history {
+            return Err(RecordMaterializerError::HistoryUnavailable);
+        }
+        self.namespace
+            .lock()
+            .map_err(|_| RecordMaterializerError::NamespaceUnavailable)?
+            .append_versions(versions)
+            .map_err(|_| RecordMaterializerError::HistoryRejected)?;
+        Ok(())
+    }
+
+    /// Record the resolution a signed record carries.
+    fn import_resolution(
+        &self,
+        record_id: FileRecordId,
+        conflict_id: Uuid,
+        resolution: &fs_protocol::ConflictResolution,
+    ) -> Result<(), RecordMaterializerError> {
+        if !self.history {
+            return Err(RecordMaterializerError::HistoryUnavailable);
+        }
+        self.namespace
+            .lock()
+            .map_err(|_| RecordMaterializerError::NamespaceUnavailable)?
+            .resolve_history_conflict(record_id, conflict_id, resolution)
+            .map_err(|_| RecordMaterializerError::HistoryRejected)?;
+        Ok(())
     }
 
     /// Tells what projects records onward (the native data plane) that the
@@ -305,16 +322,10 @@ impl RecordMaterializer {
         let live = namespace
             .ensure_ino_for_record_id(binding.record_id)
             .is_some();
-        // A namespace batch (a pulled changeset) collects this delta and
-        // broadcasts it once; a repository reconciliation persists it here.
-        let delta = changed.then(|| namespace.save_incremental());
+        namespace.note_change();
         drop(namespace);
-        if let Some(delta) = delta
-            && !delta.is_empty()
-            && let Ok(sync) = self.sync.read()
-            && let Some(sync) = sync.as_ref()
-        {
-            sync.announce_change();
+        if changed {
+            self.announce();
         }
         if live {
             Ok(BindingPlacement::Live)
@@ -540,14 +551,9 @@ impl RecordMaterializer {
             Ok(false) => Ok(()),
             Ok(true) => {
                 report.bindings_projected = report.bindings_projected.saturating_add(1);
-                let delta = namespace.save_incremental();
+                namespace.note_change();
                 drop(namespace);
-                if !delta.is_empty()
-                    && let Ok(sync) = self.sync.read()
-                    && let Some(sync) = sync.as_ref()
-                {
-                    sync.announce_change();
-                }
+                self.announce();
                 Ok(())
             }
             Err(crate::namespace::BindingProjectionError::UnknownParent) => {
@@ -599,10 +605,6 @@ impl RecordMaterializer {
             .complete_transactions(self.workspace_id)
             .map_err(|_| RecordMaterializerError::TransactionRejected)?
         {
-            let history = self
-                .history
-                .as_ref()
-                .ok_or(RecordMaterializerError::HistoryUnavailable)?;
             let versions = transaction
                 .manifest
                 .participants
@@ -613,13 +615,8 @@ impl RecordMaterializer {
                 // A later ordinary binding moved every participant away from
                 // this transaction. Keep its immutable versions, but never
                 // replay its structure over the newer placement.
-                history
-                    .append_batch(&versions)
-                    .map_err(|error| match error {
-                        HistoryError::Io(_) => RecordMaterializerError::HistoryUnavailable,
-                        _ => RecordMaterializerError::HistoryRejected,
-                    })?;
-                let delta = {
+                self.import_versions(&versions)?;
+                let changed = {
                     let mut namespace = self
                         .namespace
                         .lock()
@@ -642,14 +639,11 @@ impl RecordMaterializer {
                             changed = true;
                         }
                     }
-                    changed.then(|| namespace.save_incremental())
+                    namespace.note_change();
+                    changed
                 };
-                if let Some(delta) = delta
-                    && !delta.is_empty()
-                    && let Ok(sync) = self.sync.read()
-                    && let Some(sync) = sync.as_ref()
-                {
-                    sync.announce_change();
+                if changed {
+                    self.announce();
                 }
                 report.transactions_reconciled = report.transactions_reconciled.saturating_add(1);
                 continue;
@@ -659,19 +653,21 @@ impl RecordMaterializer {
                 // still owns. A later rename, move, restore or edit of one
                 // participant must not force every other participant to be
                 // superseded before this replay can run.
-                self.reconcile_partially_superseded_transaction(
-                    repository,
-                    &transaction,
-                    history,
-                    report,
-                )?;
+                self.reconcile_partially_superseded_transaction(repository, &transaction, report)?;
                 continue;
             }
-            let history_complete = versions.iter().all(|version| {
-                history.snapshot(version.record_id).is_some_and(|snapshot| {
-                    snapshot.versions.iter().any(|existing| existing == version)
+            let history_complete = {
+                let namespace = self
+                    .namespace
+                    .lock()
+                    .map_err(|_| RecordMaterializerError::NamespaceUnavailable)?;
+                versions.iter().all(|version| {
+                    namespace
+                        .record_version(version.record_id, version.id)
+                        .0
+                        .is_some_and(|existing| existing == *version)
                 })
-            });
+            };
             let namespace_already_complete = self
                 .namespace
                 .lock()
@@ -727,7 +723,6 @@ impl RecordMaterializer {
                     crate::transaction_coordinator::complete_checked_restore_after_repository(
                         repository,
                         &mut journal,
-                        history,
                         &self.namespace,
                         &runtime.namespace_path,
                         &entry,
@@ -736,7 +731,6 @@ impl RecordMaterializer {
                 } else {
                     crate::transaction_coordinator::complete_replacement_transaction_after_repository(
                         &mut journal,
-                        history,
                         &self.namespace,
                         &runtime.namespace_path,
                         &entry,
@@ -744,8 +738,7 @@ impl RecordMaterializer {
                     )
                 };
                 completion.map_err(|error| match error {
-                    RecordTransactionCoordinatorError::History(HistoryError::Io(_))
-                    | RecordTransactionCoordinatorError::Io(_)
+                    RecordTransactionCoordinatorError::Io(_)
                     | RecordTransactionCoordinatorError::NamespacePoisoned
                     | RecordTransactionCoordinatorError::Repository(
                         RecordRepositoryError::Io(_)
@@ -761,12 +754,7 @@ impl RecordMaterializer {
                     _ => RecordMaterializerError::TransactionRejected,
                 })?;
             } else {
-                history
-                    .append_batch(&versions)
-                    .map_err(|error| match error {
-                        HistoryError::Io(_) => RecordMaterializerError::HistoryUnavailable,
-                        _ => RecordMaterializerError::HistoryRejected,
-                    })?;
+                self.import_versions(&versions)?;
                 if let fs_protocol::FileMutationOperation::MergeContentConflict {
                     source_record,
                     conflict_id,
@@ -778,20 +766,18 @@ impl RecordMaterializer {
                         .participants
                         .first()
                         .ok_or(RecordMaterializerError::TransactionRejected)?;
-                    history
-                        .resolve(
-                            source_record,
-                            conflict_id,
-                            fs_protocol::ConflictResolution {
-                                strategy: fs_protocol::ConflictStrategy::Merge,
-                                result: source.proposed_version.id,
-                                actor: transaction.manifest.actor,
-                                timestamp_ms: transaction.manifest.timestamp_ms,
-                            },
-                        )
-                        .map_err(|_| RecordMaterializerError::HistoryRejected)?;
+                    self.import_resolution(
+                        source_record,
+                        conflict_id,
+                        &fs_protocol::ConflictResolution {
+                            strategy: fs_protocol::ConflictStrategy::Merge,
+                            result: source.proposed_version.id,
+                            actor: transaction.manifest.actor,
+                            timestamp_ms: transaction.manifest.timestamp_ms,
+                        },
+                    )?;
                 }
-                let delta = if matches!(
+                let changed = if matches!(
                     transaction.manifest.operation,
                     fs_protocol::FileMutationOperation::RestoreContent { .. }
                 ) {
@@ -825,19 +811,18 @@ impl RecordMaterializer {
                             transaction.manifest.timestamp_ms,
                         );
                     }
-                    Some(namespace.save_incremental())
+                    namespace.note_change();
+                    true
                 } else {
                     self.namespace
                         .lock()
                         .map_err(|_| RecordMaterializerError::NamespaceUnavailable)?
                         .apply_mutation_transaction(&transaction)
                         .map_err(|_| RecordMaterializerError::TransactionRejected)?
+                        .is_some()
                 };
-                if delta.is_some()
-                    && let Ok(sync) = self.sync.read()
-                    && let Some(sync) = sync.as_ref()
-                {
-                    sync.announce_change();
+                if changed {
+                    self.announce();
                 }
             }
             report.transactions_reconciled = report.transactions_reconciled.saturating_add(1);
@@ -860,7 +845,6 @@ impl RecordMaterializer {
         &self,
         repository: &RecordRepository,
         transaction: &fs_protocol::FileMutationTransaction,
-        history: &FileHistoryStore,
         report: &mut RecordReconciliationReport,
     ) -> Result<(), RecordMaterializerError> {
         let versions = transaction
@@ -869,12 +853,7 @@ impl RecordMaterializer {
             .iter()
             .map(|participant| participant.proposed_version.clone())
             .collect::<Vec<_>>();
-        history
-            .append_batch(&versions)
-            .map_err(|error| match error {
-                HistoryError::Io(_) => RecordMaterializerError::HistoryUnavailable,
-                _ => RecordMaterializerError::HistoryRejected,
-            })?;
+        self.import_versions(&versions)?;
         if let Some((source_record, conflict_id, strategy, role)) =
             match &transaction.manifest.operation {
                 fs_protocol::FileMutationOperation::KeepBothContentConflict {
@@ -908,18 +887,16 @@ impl RecordMaterializer {
                 .iter()
                 .find(|participant| participant.role == role)
                 .ok_or(RecordMaterializerError::TransactionRejected)?;
-            history
-                .resolve(
-                    source_record,
-                    conflict_id,
-                    fs_protocol::ConflictResolution {
-                        strategy,
-                        result: source.proposed_version.id,
-                        actor: transaction.manifest.actor,
-                        timestamp_ms: transaction.manifest.timestamp_ms,
-                    },
-                )
-                .map_err(|_| RecordMaterializerError::HistoryRejected)?;
+            self.import_resolution(
+                source_record,
+                conflict_id,
+                &fs_protocol::ConflictResolution {
+                    strategy,
+                    result: source.proposed_version.id,
+                    actor: transaction.manifest.actor,
+                    timestamp_ms: transaction.manifest.timestamp_ms,
+                },
+            )?;
         }
 
         let mut pending = transaction
@@ -985,16 +962,11 @@ impl RecordMaterializer {
             }
             pending = next;
         }
-        if let Some(delta) = changed.then(|| {
-            self.namespace
-                .lock()
-                .map(|mut namespace| namespace.save_incremental())
-                .unwrap_or_default()
-        }) && !delta.is_empty()
-            && let Ok(sync) = self.sync.read()
-            && let Some(sync) = sync.as_ref()
-        {
-            sync.announce_change();
+        if changed {
+            if let Ok(mut namespace) = self.namespace.lock() {
+                namespace.note_change();
+            }
+            self.announce();
         }
         report.transactions_reconciled = report.transactions_reconciled.saturating_add(1);
         Ok(())
@@ -1024,8 +996,8 @@ impl RecordMaterializer {
                 .map_err(|_| RecordMaterializerError::InvalidEnvelope)?;
         }
         // Who caused a version lives in the signed record alone: history
-        // reads read it from there, so nothing projects into the namespace or
-        // the history store, and a record deleted since still keeps it.
+        // reads read it from there, so nothing projects into the namespace,
+        // and a record deleted since still keeps it.
         if matches!(envelope.operation, RecordOperationV1::AttributeVersion(_)) {
             return Ok(());
         }
@@ -1037,20 +1009,6 @@ impl RecordMaterializer {
             .namespace
             .lock()
             .map_err(|_| RecordMaterializerError::NamespaceUnavailable)?;
-        let mut history_lease = if matches!(
-            envelope.operation,
-            RecordOperationV1::AppendConflict(_) | RecordOperationV1::ResolveConflict { .. }
-        ) {
-            Some(
-                self.history
-                    .as_ref()
-                    .ok_or(RecordMaterializerError::HistoryUnavailable)?
-                    .lease()
-                    .map_err(|_| RecordMaterializerError::HistoryUnavailable)?,
-            )
-        } else {
-            None
-        };
         // Repository admission completes before this sink is called. Taking R
         // only after N prevents a delayed handoff from reinstalling an older
         // captured winner, while retaining R protects the actual installation.
@@ -1093,14 +1051,11 @@ impl RecordMaterializer {
                 }
                 _ => RecordMaterializerError::BindingMismatch,
             })?;
-            let delta = changed.then(|| namespace.save_incremental());
+            namespace.note_change();
             drop(projection);
             drop(namespace);
-            if delta.is_some()
-                && let Ok(sync) = self.sync.read()
-                && let Some(sync) = sync.as_ref()
-            {
-                sync.announce_change();
+            if changed {
+                self.announce();
             }
             return Ok(());
         }
@@ -1160,29 +1115,18 @@ impl RecordMaterializer {
                 if !changed {
                     return Err(RecordMaterializerError::NamespaceUnavailable);
                 }
-                namespace.save_incremental();
+                namespace.note_change();
                 drop(projection);
                 drop(namespace);
-                if let Ok(sync) = self.sync.read()
-                    && let Some(sync) = sync.as_ref()
-                {
-                    sync.announce_change();
-                }
+                self.announce();
             }
             RecordOperationV1::AppendVersion(version) => {
-                // Do not hold the namespace lock across durable history I/O.
-                drop(projection);
-                drop(namespace);
-                let history = self
-                    .history
-                    .as_ref()
-                    .ok_or(RecordMaterializerError::HistoryUnavailable)?;
-                history
-                    .append(version.clone())
-                    .map_err(|error| match error {
-                        HistoryError::Io(_) => RecordMaterializerError::HistoryUnavailable,
-                        _ => RecordMaterializerError::HistoryRejected,
-                    })?;
+                if !self.history {
+                    return Err(RecordMaterializerError::HistoryUnavailable);
+                }
+                namespace
+                    .append_versions(std::slice::from_ref(version))
+                    .map_err(history_projection_error)?;
             }
             RecordOperationV1::SetContentRevision(_) => {
                 let ino = namespace.ensure_ino_for_record_id(record_id).ok_or(
@@ -1205,14 +1149,10 @@ impl RecordMaterializer {
                 if !namespace.set_content_revision(ino, revision, observed_at_ms) {
                     return Err(RecordMaterializerError::NamespaceUnavailable);
                 }
-                namespace.save_incremental();
+                namespace.note_change();
                 drop(projection);
                 drop(namespace);
-                if let Ok(sync) = self.sync.read()
-                    && let Some(sync) = sync.as_ref()
-                {
-                    sync.announce_change();
-                }
+                self.announce();
             }
             RecordOperationV1::AppendConflict(_) | RecordOperationV1::ResolveConflict { .. } => {
                 let conflict_id = match &envelope.operation {
@@ -1236,10 +1176,8 @@ impl RecordMaterializer {
                     match &envelope.operation {
                         RecordOperationV1::AppendConflict(conflict) => conflict.clone(),
                         RecordOperationV1::ResolveConflict { resolution, .. } => {
-                            history_lease
-                                .as_mut()
-                                .ok_or(RecordMaterializerError::HistoryUnavailable)?
-                                .resolve(record_id, conflict_id, resolution.clone())
+                            namespace
+                                .resolve_history_conflict(record_id, conflict_id, resolution)
                                 .map_err(history_projection_error)?;
                             return Ok(());
                         }
@@ -1250,9 +1188,9 @@ impl RecordMaterializer {
                         _ => unreachable!(),
                     }
                 };
-                let history = history_lease
-                    .as_mut()
-                    .ok_or(RecordMaterializerError::HistoryUnavailable)?;
+                if !self.history {
+                    return Err(RecordMaterializerError::HistoryUnavailable);
+                }
                 if let Some(resolution) = &conflict.resolution {
                     let result = snapshot
                         .versions
@@ -1262,28 +1200,23 @@ impl RecordMaterializer {
                     // A complete transaction can contribute its immutable result
                     // before the transaction projection pass. Import that exact
                     // verified version before projecting its resolved conflict.
-                    history
-                        .append_batch(std::slice::from_ref(result))
+                    namespace
+                        .append_versions(std::slice::from_ref(result))
                         .map_err(history_projection_error)?;
                 }
-                let existing = history.snapshot(record_id).and_then(|state| {
-                    state
-                        .conflicts
-                        .into_iter()
-                        .find(|value| value.id == conflict_id)
-                });
+                let existing = namespace.record_conflicts(record_id).remove(&conflict_id);
                 if let Some(existing) = existing {
                     if existing.versions != conflict.versions {
                         return Err(RecordMaterializerError::HistoryRejected);
                     }
                     if let Some(resolution) = conflict.resolution {
-                        history
-                            .resolve(record_id, conflict_id, resolution)
+                        namespace
+                            .resolve_history_conflict(record_id, conflict_id, &resolution)
                             .map_err(history_projection_error)?;
                     }
                 } else {
-                    history
-                        .record_conflict(conflict)
+                    namespace
+                        .record_history_conflict(&conflict)
                         .map_err(history_projection_error)?;
                 }
             }
@@ -1306,7 +1239,9 @@ impl RecordMaterializer {
 )]
 fn history_projection_error(error: HistoryError) -> RecordMaterializerError {
     match error {
-        HistoryError::Io(_) => RecordMaterializerError::HistoryUnavailable,
+        HistoryError::Document(_)
+        | HistoryError::CapacityExhausted(_)
+        | HistoryError::Publication(_) => RecordMaterializerError::HistoryUnavailable,
         _ => RecordMaterializerError::HistoryRejected,
     }
 }

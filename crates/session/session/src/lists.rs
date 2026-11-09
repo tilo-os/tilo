@@ -9,7 +9,10 @@ use std::sync::Arc;
 
 use tilo_action_broker::services::LaunchableApplication;
 use tilo_desktop_search::providers::AppEntry;
+use tilo_desktop_search::providers::catalogue::StoreCatalogue;
 use tilo_desktop_search::providers::host_apps::HostAppEntry;
+use tilo_desktop_search::providers::host_apps::HostApps;
+use tilo_desktop_search::providers::settings::Settings;
 use tilo_files::native::Watched;
 
 use runtime_portal::tools::{
@@ -427,6 +430,68 @@ impl Lists {
             Held::Fixed(lists) => Arc::clone(lists),
             Held::Followed(watched) => watched.get(),
         }
+    }
+}
+
+impl crate::platform::apps::Apps for Lists {
+    fn reading(&self) -> Arc<dyn crate::platform::apps::Reading> {
+        Arc::new(Listed(self.latest()))
+    }
+
+    fn name(&self, id: &str) -> String {
+        crate::app_names::app_name(id)
+    }
+
+    fn applications(&self) -> Vec<AppEntry> {
+        self.latest().applications.clone()
+    }
+
+    fn host_apps(&self) -> Vec<HostAppEntry> {
+        self.latest().host_apps.clone()
+    }
+}
+
+/// One reading of this device's lists, as search builds its sources from: the sources it keeps
+/// until the worker reads another one.
+struct Listed(Arc<AppLists>);
+
+impl crate::platform::apps::Reading for Listed {
+    fn generation(&self) -> usize {
+        Arc::as_ptr(&self.0) as usize
+    }
+
+    fn host_apps(
+        &self,
+        preferences: &tilo_desktop_search::SearchPreferences,
+    ) -> tilo_desktop_search::Held {
+        tilo_desktop_search::Held::new(HostApps::new(self.0.host_apps.clone(), preferences))
+    }
+
+    fn catalogue(&self, workspace: &str) -> tilo_desktop_search::Held {
+        tilo_desktop_search::Held::new(StoreCatalogue::new(self.0.catalogue.clone(), workspace))
+    }
+}
+
+/// The settings this desktop offers search: the pages of the person's own settings.
+pub(crate) struct DesktopSettings;
+
+impl crate::platform::apps::Settings for DesktopSettings {
+    fn source(
+        &self,
+        workspace: &str,
+        published: &[tilo_actions::ActionDescriptor],
+    ) -> tilo_desktop_search::Held {
+        // Settings the settings service changes in place are found as its actions.
+        let in_place: std::collections::HashSet<String> = published
+            .iter()
+            .filter_map(|action| {
+                tilo_settings_service::setting_of(action.address.resource.as_str())
+                    .map(str::to_owned)
+            })
+            .collect();
+        tilo_desktop_search::Held::new(Settings::changing_in_place(workspace, &|id| {
+            in_place.contains(id)
+        }))
     }
 }
 

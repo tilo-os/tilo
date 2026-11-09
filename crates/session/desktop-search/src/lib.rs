@@ -43,15 +43,35 @@ pub mod usage;
 pub mod window;
 pub mod workers;
 
+use std::path::Path;
+
+/// The `file://` address of `path`, as a row names a file it opens.
+#[must_use]
+pub fn file_uri(path: &Path) -> String {
+    use std::fmt::Write as _;
+    let mut uri = String::from("file://");
+    for byte in path.to_string_lossy().bytes() {
+        match byte {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'/' | b'-' | b'_' | b'.' | b'~' => {
+                uri.push(char::from(byte));
+            }
+            other => {
+                let _ = write!(uri, "%{other:02X}");
+            }
+        }
+    }
+    uri
+}
+
 pub use lazy::{
     DESKTOP_SEARCH, DesktopSearchApi, LazyDesktopSearch, MakeDesktopSearch, builtin_desktop_search,
 };
 pub use model::{
-    ALL_APPS_COMMAND, ActionTarget, CHROME_RESOURCE, DESKTOP_APP, Hit, InvokeTarget, LaunchPlace,
-    OPEN_ACTION, OPEN_ANCHOR, SHOW_COLLABORATORS, SearchStream, Source, Target, Thing,
+    ALL_APPS_COMMAND, ActionTarget, CHROME_RESOURCE, DESKTOP_APP, Held, Hit, InvokeTarget,
+    LaunchPlace, OPEN_ACTION, OPEN_ANCHOR, SHOW_COLLABORATORS, SearchStream, Source, Target, Thing,
     WORKSPACE_COMMAND_PREFIX, search, search_stream,
 };
-pub use palette::{DesktopSearch, SearchData};
+pub use palette::{ANSWER_POLL, DesktopSearch, SearchData};
 pub use preferences::SearchPreferences;
 pub use ui::search::system::ResourceKind;
 pub use usage::Usage;

@@ -7,8 +7,12 @@
 //! adds, a drag); it never reads `actions(r)` back to build chrome. The host reads those
 //! declarations where a view rendered them — the resource its boundary was opened on, and each
 //! item a row, card or tree node stands for — and puts them where every window keeps them, in
-//! the same order and shape: the primary action once in the window's bar, the frequent ones
-//! beside it, the rest behind the bar's own door, and on an item its actions in its menu.
+//! the same order and shape: the primary action once in the window's bar, a command that
+//! toggles a state beside it, the rest behind the bar's own door, and on an item its actions in
+//! its menu. An action's declaration says what it is; where it stands is read off that: a
+//! command that shows whether it is on (`on:`) belongs where the person sees that, and every
+//! other stands in a menu. A view that places the actions of what it shows says their order and
+//! which one leads.
 
 use std::collections::BTreeMap;
 
@@ -107,11 +111,10 @@ const ON: usize = 5;
 const KEY: usize = 6;
 const RUN: usize = 8;
 const GROUP: usize = 9;
-const FREQUENT: usize = 10;
-const AVAILABLE: usize = 11;
-const REASON: usize = 12;
-const APPLIES: usize = 13;
-const ID: usize = 14;
+const AVAILABLE: usize = 10;
+const REASON: usize = 11;
+const APPLIES: usize = 12;
+const ID: usize = 13;
 
 impl Core {
     /// The host's surfaces for the tree a boundary rendered: each item's menu, and the window's
@@ -323,7 +326,6 @@ impl Core {
             }
             let mut shown = action.clone();
             Self::put_field(&mut shown, PRIMARY, Value::Bool(false));
-            Self::put_field(&mut shown, FREQUENT, Value::Bool(false));
             Self::put_field(&mut shown, GROUP, Value::none());
             Self::put_field(&mut shown, AVAILABLE, Value::Bool(true));
             Self::put_field(&mut shown, REASON, Value::text(""));
@@ -351,7 +353,6 @@ impl Core {
                 vec![Value::text(SELECTION), Value::List(Vec::new())],
             )),
             Value::none(),
-            Value::Bool(false),
             Value::Bool(true),
             Value::text(""),
             Value::Bool(true),
@@ -493,7 +494,6 @@ impl Core {
             let Some(mut action) = left.get_mut(index).and_then(Option::take) else {
                 continue;
             };
-            Self::put_field(&mut action, FREQUENT, Value::Bool(false));
             if *primary {
                 Self::put_field(&mut action, PRIMARY, Value::Bool(true));
             }
@@ -514,11 +514,10 @@ impl Core {
     }
 
     /// `action` as one a menu draws behind its "More": in that run, and no longer the primary
-    /// or the frequent one of a bar.
+    /// one of a bar.
     fn behind_more(&self, mut action: Value) -> Value {
         let more = self.words.borrow().word(MORE_RUN, &[], MORE_RUN_WORDS);
         Self::put_field(&mut action, PRIMARY, Value::Bool(false));
-        Self::put_field(&mut action, FREQUENT, Value::Bool(false));
         Self::put_field(&mut action, GROUP, Value::some(Value::text(&more)));
         action
     }
@@ -701,9 +700,9 @@ impl Core {
     }
 
     /// The window's bar's controls: what the shell searches with, then the primary action, the
-    /// frequent ones, and the rest where the bar's own door lists them. A view that placed the
-    /// window's actions (`actions:`) has the ones it named in its bar, in its order, and the
-    /// rest behind a "More" the bar keeps itself.
+    /// commands that toggle a state of the window's subject, and the rest where the bar's own
+    /// door lists them. A view that placed the window's actions (`actions:`) has the ones it
+    /// named in its bar, in its order, and the rest behind a "More" the bar keeps itself.
     fn fill_bar(
         &self,
         shell: usize,
@@ -719,7 +718,7 @@ impl Core {
         for action in acted {
             let place = if flag(&action, PRIMARY) {
                 0
-            } else if flag(&action, FREQUENT) {
+            } else if opt_flag(&action, ON).is_some() {
                 1
             } else {
                 2
@@ -744,18 +743,17 @@ impl Core {
             );
             self.put_in_slot(shell, slot, node)?;
         }
-        if !rest.is_empty() {
-            let more = self.more_menu(&format!("{key}~{slot}~more"));
-            let at = self.push(more)?;
-            for (index, action) in rest.iter().enumerate() {
-                let item = Self::menu_item(action, &format!("{key}~{slot}~more-{index}"));
-                let child = self.push(item)?;
-                self.insert(at, usize::MAX, child)?;
-            }
-            self.put_at_in_slot(shell, slot, at)?;
-            self.costs
-                .publish(u64::try_from(rest.len()).unwrap_or(u64::MAX));
+        // What the view left unplaced stands in the bar's own "…", beside what does not fit in
+        // its row: one bar has one door, and the app's own menu beside it is a second "…" with
+        // nothing to tell them apart.
+        for (index, action) in rest.iter().enumerate() {
+            let mut node =
+                Self::action_button(action, &format!("{key}~{slot}~more-{index}"), entry, false);
+            node.props.insert("in_menu".to_owned(), on_off(true));
+            self.put_in_slot(shell, slot, node)?;
         }
+        self.costs
+            .publish(u64::try_from(rest.len()).unwrap_or(u64::MAX));
         Ok(())
     }
 
@@ -1187,7 +1185,8 @@ impl Core {
     }
 
     /// One action as a bar's control, as the standard library's header placed it: the primary
-    /// labelled, a frequent command a button of its own, all the rest behind the bar's door.
+    /// labelled, a command that toggles a state a control of its own, all the rest behind the
+    /// bar's door.
     /// `entry` is the key the list's entry declares, when the window has one: the primary it
     /// stands for is answered there, so it names the addition plainly rather than a form to
     /// fill in. A control of a selection's bar (`door` false) stands labelled among the others,
@@ -1195,7 +1194,7 @@ impl Core {
     fn action_button(action: &Value, key: &str, entry: Option<&str>, door: bool) -> NodeBuild {
         let primary = flag(action, PRIMARY);
         let destructive = flag(action, DESTRUCTIVE);
-        let frequent = flag(action, FREQUENT);
+        let toggles = opt_flag(action, ON).is_some();
         let icon = opt_text(action, ICON).map(str::to_owned);
         let mut name = Self::action_name(action);
         if primary && entry.is_some() && entry == opt_text(action, KEY) {
@@ -1215,10 +1214,10 @@ impl Core {
         } else if primary {
             node.props.insert("role".to_owned(), Value::text("primary"));
         }
-        if door && !primary && frequent && icon.is_some() {
+        if door && !primary && toggles && icon.is_some() {
             node.props.insert("icon_only".to_owned(), on_off(true));
         }
-        if door && !primary && !frequent {
+        if door && !primary && !toggles {
             node.props.insert("in_menu".to_owned(), on_off(true));
             if let Some(group) = opt_text(action, GROUP) {
                 node.props.insert("group".to_owned(), Value::text(group));

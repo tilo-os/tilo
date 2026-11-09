@@ -686,6 +686,9 @@ async function freshPage(browser, {cpuThrottle, network, frameTimeout, viewport}
   };
   await send('Runtime.enable');
   await send('Page.enable');
+  // The first visit's first screen (web/first-run.mjs) counts as seen: this
+  // drives the desktop behind it, as a returning person sees it.
+  await send('Page.addScriptToEvaluateOnNewDocument', {source: "try { localStorage.setItem('tilo-first-run', '1'); } catch {}"});
   await send('Emulation.setDeviceMetricsOverride', {...viewport, mobile: false});
   await send('Emulation.setFocusEmulationEnabled', {enabled: true});
   if (cpuThrottle > 1) await send('Emulation.setCPUThrottlingRate', {rate: cpuThrottle});

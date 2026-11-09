@@ -31,7 +31,7 @@ use crate::worker::ConfinedReplica;
 use tilo_actions::ActionOutput;
 use tilo_actions::door::{ActionAddress, ActionDescriptor};
 use tilo_browser_peer::{
-    Host, LiveState, MemoryPeerStore, PeerConfig, PeerEvent, PeerEvents, PeerHandle,
+    Host, LiveState, MemoryPeerStore, PeerConfig, PeerEvent, PeerEvents, PeerHandle, TransportPhase,
 };
 use tilo_lock::MutexRecover as _;
 use tilo_peer_state::document_frame::DocumentRoute;
@@ -754,6 +754,31 @@ impl AgentParticipant {
         self.ready && self.control.may_act() && self.settled() && !self.finish_committed()
     }
 
+    /// Fail what this agent holds when the session to its host ended for good
+    /// before it joined.
+    ///
+    /// A session that gave up — a refused device, an expired certificate —
+    /// sleeps until someone dials it again, and nobody does for a host's
+    /// agent: its tasks would wait for a workspace it never reached, showing
+    /// only that it is starting. They fail with the reason instead, so the
+    /// person who asked is told what happened.
+    fn fail_if_session_ended(&self) {
+        if self.ready || self.control.status() == AgentStatus::Failed {
+            return;
+        }
+        let status = self.peer.status();
+        if status.phase != TransportPhase::Failed {
+            return;
+        }
+        let reason = status
+            .failures
+            .last()
+            .map(|failure| failure.message.clone())
+            .filter(|message| !message.is_empty())
+            .unwrap_or_else(|| "the session to the host ended before it joined".to_owned());
+        self.control.fail(&reason);
+    }
+
     /// Whether the workspace's records have stopped arriving since the agent
     /// joined. Records another agent made just before this one joined can
     /// still be on their way after `Ready`: the first plan waits until none
@@ -772,6 +797,7 @@ impl AgentParticipant {
     /// (and planning it) when none runs. Returns whether another step that
     /// plans nothing is ready, so the pump may take it at once.
     fn step(&mut self) -> bool {
+        self.fail_if_session_ended();
         // The host answers `Ready` after replaying the workspace's records, and a
         // sealed record opens once the agent holds its keys, so a step never
         // runs on a workspace the agent has only half seen.

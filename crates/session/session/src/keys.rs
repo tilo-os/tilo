@@ -16,6 +16,7 @@ use tilo_desktop::desk_verbs::CHROME_RESOURCE;
 use tilo_desktop::desk_widgets::DeskFold;
 use tilo_desktop::osd::{Device, DeviceGlyph, Hint, Level, OSD_RESOURCE, Osd, OsdKind};
 use tilo_desktop::overlays::{Overlays, Slot};
+use tilo_sheets::shortcut_guide::{Caught, State as GuideState};
 use tilo_surface_host::DeskGesture;
 use ui::host_operation::ResourceOperationStart;
 use ui::shortcut_table::{FixedAction, KeyChord, ShortcutAction, ShortcutConfig};
@@ -304,74 +305,6 @@ fn classify(keysym: u32) -> Option<Hardware> {
     })
 }
 
-/// What the shortcut guide took from the person since it last looked.
-#[derive(Clone, Debug, PartialEq)]
-pub(crate) enum Caught {
-    /// Escape: the guide waits for no chord any more, and what the last press was refused for is no
-    /// longer the person's concern.
-    Cancelled,
-    /// The chord the person pressed for the shortcut that waited for one.
-    Chord(KeyChord),
-}
-
-/// What the shortcut guide and the session's keys share while the guide is up: that it is, which
-/// shortcut waits for a new chord, and the chords pressed for it since the guide last looked.
-/// It is the key surface's answer to the guide being modal: the surface sees every press before it
-/// acts anywhere, so it is the one place that can hold one back and hand it to the guide instead.
-#[derive(Clone, Default)]
-pub(crate) struct GuideKeys {
-    inner: Rc<GuideKeysInner>,
-}
-
-#[derive(Default)]
-struct GuideKeysInner {
-    up: Cell<bool>,
-    listening: RefCell<Option<String>>,
-    caught: RefCell<Vec<Caught>>,
-}
-
-impl GuideKeys {
-    /// The guide is up, or has gone: a guide that is gone waits for no chord and has nothing left
-    /// to answer.
-    pub(crate) fn set_up(&self, up: bool) {
-        self.inner.up.set(up);
-        if !up {
-            self.inner.listening.replace(None);
-            self.inner.caught.borrow_mut().clear();
-        }
-    }
-
-    /// Whether the guide is up.
-    pub(crate) fn up(&self) -> bool {
-        self.inner.up.get()
-    }
-
-    /// The shortcut whose new chord the next press is, while the guide waits for one.
-    pub(crate) fn listening(&self) -> Option<String> {
-        self.inner.listening.borrow().clone()
-    }
-
-    /// Wait for a new chord for `action` .
-    pub(crate) fn listen_for(&self, action: &str) {
-        self.inner.listening.replace(Some(action.to_owned()));
-    }
-
-    /// Stop waiting for a chord: the guide stays up and takes its keys for nothing but itself.
-    pub(crate) fn stop_listening(&self) {
-        self.inner.listening.replace(None);
-    }
-
-    /// Keep `caught` for the guide.
-    pub(crate) fn catch(&self, caught: Caught) {
-        self.inner.caught.borrow_mut().push(caught);
-    }
-
-    /// What was caught since the guide last looked, oldest first.
-    pub(crate) fn take_caught(&self) -> Vec<Caught> {
-        std::mem::take(&mut *self.inner.caught.borrow_mut())
-    }
-}
-
 /// The controller the person last drove the desktop with, and whether the keys being routed are
 /// that controller's own rather than their fingers on a keyboard.
 #[derive(Clone, Default)]
@@ -525,7 +458,7 @@ pub(crate) struct SessionKeys {
     portal: Option<tilo_portal::global_shortcuts::Shortcuts>,
     /// The shortcut guide's keys while it is up: what it holds back from the desktop behind it, and
     /// the chord it waits for.
-    guide: GuideKeys,
+    guide: Rc<GuideState>,
     /// Whether a desk widget has its card open, which Escape folds. The desk is under the windows
     /// and hears no keys itself, so it says here what its keys are worth.
     fold: DeskFold,
@@ -558,7 +491,7 @@ impl SessionKeys {
         shortcuts: Rc<RefCell<ShortcutConfig>>,
         presses: Presses,
         portal: Option<tilo_portal::global_shortcuts::Shortcuts>,
-        guide: GuideKeys,
+        guide: Rc<GuideState>,
         desk: DeskKeys,
         displays: Option<tilo_sheets::Presentation>,
         controller: ControllerKeys,
@@ -1403,7 +1336,7 @@ mod tests {
             Rc::new(RefCell::new(ShortcutConfig::default())),
             Presses::default(),
             None,
-            GuideKeys::default(),
+            Rc::default(),
             DeskKeys::default(),
             None,
             ControllerKeys::default(),
@@ -1412,8 +1345,8 @@ mod tests {
     }
 
     /// The key surface with the shortcut guide up, and the guide's shared keys.
-    fn with_guide() -> (SessionKeys, GuideKeys) {
-        let guide = GuideKeys::default();
+    fn with_guide() -> (SessionKeys, Rc<GuideState>) {
+        let guide: Rc<GuideState> = Rc::default();
         guide.set_up(true);
         let keys = SessionKeys::new(
             Rc::new(RefCell::new(ShortcutConfig::default())),
@@ -1435,7 +1368,7 @@ mod tests {
             Rc::new(RefCell::new(ShortcutConfig::default())),
             Presses::default(),
             None,
-            GuideKeys::default(),
+            Rc::default(),
             DeskKeys::default().with_switcher(walk.clone()),
             None,
             ControllerKeys::default(),
@@ -1634,7 +1567,7 @@ mod tests {
             Rc::new(RefCell::new(ShortcutConfig::default())),
             Presses::default(),
             None,
-            GuideKeys::default(),
+            Rc::default(),
             DeskKeys::new(DeskFold::default(), overlays.clone()).with_panel(Some(Rc::clone(&asks))),
             None,
             ControllerKeys::default(),
@@ -1654,7 +1587,7 @@ mod tests {
             Rc::new(RefCell::new(ShortcutConfig::default())),
             Presses::default(),
             None,
-            GuideKeys::default(),
+            Rc::default(),
             DeskKeys::new(DeskFold::default(), overlays),
             None,
             ControllerKeys::default(),
@@ -2162,7 +2095,7 @@ mod tests {
                 triggered: Rc::clone(&triggered),
             },
             None,
-            GuideKeys::default(),
+            Rc::default(),
             DeskKeys::default(),
             None,
             ControllerKeys::default(),
@@ -2228,7 +2161,7 @@ mod tests {
             Rc::new(RefCell::new(ShortcutConfig::default())),
             Presses::default(),
             None,
-            GuideKeys::default(),
+            Rc::default(),
             DeskKeys::new(fold.clone(), Overlays::new()),
             None,
             ControllerKeys::default(),
@@ -2258,7 +2191,7 @@ mod tests {
             Rc::new(RefCell::new(ShortcutConfig::default())),
             Presses::default(),
             None,
-            GuideKeys::default(),
+            Rc::default(),
             DeskKeys::default(),
             None,
             ControllerKeys::default(),

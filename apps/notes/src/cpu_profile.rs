@@ -320,7 +320,7 @@ fn mounted_text_note_view_only_scroll_contract_respects_title_editing() {
         app.harness().root_widget().view_only_scroll(&event),
         "mounted canonical text-note wheel opts in through its bound owner"
     );
-    app.surface(|notes: &mut crate::NotesApp| notes.main_panel_mut().begin_title_edit())
+    app.surface(|notes: &mut crate::NotesApp| notes.main_panel_mut().begin_title_edit(false))
         .unwrap();
     assert!(
         !app.harness().root_widget().view_only_scroll(&event),

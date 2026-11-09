@@ -212,6 +212,7 @@ impl AgentArgs {
             model,
             catalogue: None,
             feedback_reviewer: None,
+            shell: None,
         }))
     }
 }
@@ -300,6 +301,10 @@ pub async fn start_relay_lending(
     #[cfg(feature = "agents")]
     if let Some(mut options) = options {
         options.feedback_reviewer = lent.feedback_reviewer;
+        options.shell = Some(
+            tilo_relay::agents::host_shells(state_root.join("shells"))
+                .map_err(anyhow::Error::msg)?,
+        );
         let (relay, agents) = tilo_relay::agents::start(cfg, identity, options)
             .await
             .context("start the relay with agents")?;
@@ -311,10 +316,18 @@ pub async fn start_relay_lending(
     }
     #[cfg(feature = "agents")]
     if args.agents.room_records {
-        let relay =
-            tilo_relay::agents::start_serving_records(cfg, identity, None, lent.feedback_reviewer)
-                .await
-                .context("start the relay serving its workspaces' records")?;
+        let relay = tilo_relay::agents::start_serving_records(
+            cfg,
+            identity,
+            None,
+            lent.feedback_reviewer,
+            Some(
+                tilo_relay::agents::host_shells(state_root.join("shells"))
+                    .map_err(anyhow::Error::msg)?,
+            ),
+        )
+        .await
+        .context("start the relay serving its workspaces' records")?;
         return Ok(HostedRelay {
             relay,
             agents: None,
@@ -613,6 +626,7 @@ pub(crate) fn enrol(
         issued_at_ns: 1,
         expires_at_ns: None,
         signature: [0; 64],
+        issuer: None,
     };
     sign_device_cert(&mut cert, root).context("sign a dev device certificate")?;
     Ok(cert)

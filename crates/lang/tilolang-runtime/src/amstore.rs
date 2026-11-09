@@ -1109,7 +1109,7 @@ impl Store for AmStore {
                 out.extend(
                     crate::store::versions_in(changes.iter(), &at)
                         .into_iter()
-                        .filter(|v| v.task.as_ref().is_some_and(|task| task.id == run)),
+                        .filter(|v| v.run.as_ref().is_some_and(|held| held.id == run)),
                 );
             }
         }

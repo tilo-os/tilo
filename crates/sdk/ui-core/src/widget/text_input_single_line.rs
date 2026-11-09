@@ -151,6 +151,19 @@ impl TextInput {
         }
     }
 
+    /// The width the field's own text shows in: its box less the padding before the text, the
+    /// room its trailing text and an accessory take, and the caret at either end — which a
+    /// padding-free code line needs, or its caret's left edge stands on the clip boundary and
+    /// hides it entirely.
+    pub(super) fn text_room(&self, padding_x: f64, caret_width: f64) -> f64 {
+        (self.rect.width()
+            - padding_x
+            - self.trailing_text_inset(padding_x)
+            - self.accessory_room()
+            - caret_width * 2.0)
+            .max(0.0)
+    }
+
     /// Keep the caret in view, scrolled no further than the text needs: a
     /// field that widens shows the start of its text again.
     pub(super) fn update_single_line_scroll(
@@ -160,14 +173,7 @@ impl TextInput {
         padding_x: f64,
         caret_width: f64,
     ) {
-        // Include the caret's painted width, especially for padding-free code
-        // lines: putting its left edge on the clip boundary hides it entirely.
-        let visible_width = (self.rect.width()
-            - padding_x
-            - self.trailing_text_inset(padding_x)
-            - self.accessory_room()
-            - caret_width * 2.0)
-            .max(0.0);
+        let visible_width = self.text_room(padding_x, caret_width);
         if self.is_focused {
             if cursor_x_offset - self.scroll_x < 0.0 {
                 self.scroll_x = cursor_x_offset;
@@ -259,9 +265,16 @@ impl TextInput {
         }
     }
 
-    /// Paint the placeholder and the field's text from `single_origin`, as
-    /// laid out by `draw`; `display` is the masked text of a secret field.
-    pub(super) fn draw_single_line_text(&self, ctx: &mut PaintCtx<'_>, display: &str) {
+    /// Paint the placeholder and the field's text from `single_origin`, as laid out by `draw`
+    /// with its text inset by `padding_x`; `display` is the masked text of a secret field. A
+    /// prompt wider than the line it prompts for is elided, as any single line of text is: a
+    /// field cut its prompt off mid-word at whatever the clip fell on otherwise.
+    pub(super) fn draw_single_line_text(
+        &mut self,
+        ctx: &mut PaintCtx<'_>,
+        display: &str,
+        padding_x: f64,
+    ) {
         let PaintCtx {
             scene,
             transform,
@@ -275,8 +288,15 @@ impl TextInput {
         } else {
             theme.text_primary
         };
+        self.prompt_fit = None;
         if self.shows_placeholder() {
             let placeholder = crate::i18n!(&self.placeholder);
+            // The placeholder sets in the field's own style, in the tertiary
+            // ink: a prompt, clearly weaker than any value.
+            let style = self.placeholder_style(text_size);
+            let room = self.text_room(padding_x, theme.caret_width);
+            let shown = text_renderer.elide_to_width_style(&placeholder, room as f32, &style);
+            let (width, _) = text_renderer.measure_style(&shown, None, &style);
             // `Affine * Affine` composes two geometric transforms over f64
             // coordinates; it has no integer overflow/wrap semantics.
             #[allow(
@@ -284,16 +304,19 @@ impl TextInput {
                 reason = "Affine transform composition over f64 screen coordinates"
             )]
             let placeholder_origin = transform * Affine::translate((self.single_origin.x, text_y));
-            // The placeholder sets in the field's own style, in the tertiary
-            // ink: a prompt, clearly weaker than any value.
             text_renderer.draw_style(
                 scene,
-                &placeholder,
+                &shown,
                 theme.tokens.colors.text_tertiary,
                 placeholder_origin,
                 None,
-                &self.placeholder_style(text_size),
+                &style,
             );
+            self.prompt_fit = Some(super::PromptFit {
+                shown,
+                width,
+                room: room as f32,
+            });
         }
         #[allow(
             clippy::arithmetic_side_effects,

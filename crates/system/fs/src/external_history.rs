@@ -243,7 +243,7 @@ impl ExternalHistoryFactory {
                 .revocations
                 .read()
                 .map_err(|_| refused())?
-                .is_revoked_at(&cert.device_public_key, now_ns()?)
+                .refuses_at(cert, now_ns()?)
             || self.authority.governor() != cert.user_public_key
             || self.authority.workspace() != collab_types::personal_cluster(&cert.user_public_key)
             || self.publisher.workspace_id() != self.authority.workspace()

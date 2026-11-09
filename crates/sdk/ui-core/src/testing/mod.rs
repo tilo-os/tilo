@@ -7,6 +7,7 @@ mod clicks;
 mod dispatch;
 #[cfg(all(test, unix))]
 mod executable;
+mod layout;
 mod own_process;
 #[cfg(test)]
 mod owned_text;
@@ -17,6 +18,7 @@ pub(crate) use clicks::{clicks, record_click};
 pub use dispatch::{Dispatch, Dispatched, answer_controls, dispatch};
 #[cfg(all(test, unix))]
 pub use executable::write_executable;
+pub use layout::{lay_out, lay_out_in};
 #[cfg(test)]
 pub(crate) use own_process::{in_own_process, test_path};
 #[cfg(test)]

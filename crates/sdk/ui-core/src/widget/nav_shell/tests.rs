@@ -8,6 +8,7 @@ use std::rc::Rc as SharedRc;
 mod adaptive;
 mod band;
 mod capabilities;
+mod chosen;
 mod counts;
 mod hosted;
 mod inspector_sheet;
@@ -225,7 +226,13 @@ fn the_sidebar_docks_while_the_contents_real_minimum_fits() {
                 );
                 assert!(child_rect(&h, away).is_none(), "one at a time");
                 if name == "files" {
-                    assert!(g.back.width() > 0.0, "{name} {width}: Back to the places");
+                    // The list is the screen the window opened on: a place, left by the
+                    // toggle for the places behind it.
+                    assert_eq!(g.back, Rect::ZERO, "{name} {width}: the list is a place");
+                    assert!(
+                        g.toggle.width() > 0.0,
+                        "{name} {width}: the toggle leads to the places"
+                    );
                 }
             } else {
                 assert_eq!(
@@ -770,6 +777,36 @@ fn narrow_windows_push_the_content_over_the_overview() {
     assert!(h.dispatch_to_root(&esc));
     settle(&mut h, 560, 800);
     assert_eq!(h.root::<NavShell>().front_pane(), NavPane::Overview);
+}
+
+/// Escape goes back the way the bar's Back does, into an app's own page stack too: a page the app
+/// opened over its list pops, and the way back to the list goes with it.
+#[test]
+fn escape_pops_the_apps_page_stack() {
+    let can = SharedRc::new(Cell::new(true));
+    let read = SharedRc::clone(&can);
+    let write = SharedRc::clone(&can);
+    let shell = NavShell::new()
+        .content_kind(ContentKind::Document)
+        .sidebar(Probe::boxed("sidebar").0)
+        .content(Probe::boxed("content").0)
+        .content_header("Call the landlord", Vec::new())
+        .on_back(move || read.get(), move || write.set(false));
+    let mut h = harness(shell, 1280, 800, Theme::dark());
+    settle(&mut h, 1280, 800);
+    assert!(
+        h.root::<NavShell>().can_go_back(),
+        "the page has a way back"
+    );
+    let esc =
+        crate::synthetic_input::key_input(&Key::Named(NamedKey::Escape), ElementState::Pressed);
+    assert!(h.dispatch_to_root(&esc), "Escape is the way back");
+    settle(&mut h, 1280, 800);
+    assert!(!can.get(), "the app's page stack popped");
+    assert!(
+        !h.root::<NavShell>().can_go_back(),
+        "and the way back went with the page"
+    );
 }
 
 #[test]

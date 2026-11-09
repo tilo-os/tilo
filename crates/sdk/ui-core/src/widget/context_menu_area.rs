@@ -806,8 +806,7 @@ impl super::Decorator for ContextMenuArea {
     }
 
     fn wants_pointer_capture(&self) -> bool {
-        self.menu.is_open()
-            || self.menu.send_to_alone_open()
+        self.menu.is_showing()
             || self.pending.is_some()
             || self.picker.is_some()
             || self.content.wants_pointer_capture()
@@ -887,7 +886,7 @@ impl super::Decorator for ContextMenuArea {
         self.content
             .draw_overlay(scene, transform, text_renderer, theme, presence);
         // The menu paints in the overlay pass, over everything.
-        if self.menu.is_drawn() || self.menu.send_to_alone_open() {
+        if self.menu.is_drawn() || self.menu.send_to_alone_drawn() {
             self.menu
                 .draw_overlay(scene, transform, text_renderer, theme, presence);
         }

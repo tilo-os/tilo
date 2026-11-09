@@ -104,6 +104,8 @@ imports! {
     SomeI = "some_i" ([I64] -> [H]);
     SomeF = "some_f" ([F64] -> [H]);
     NoneV = "none" ([] -> [H]);
+    // An argument a call left out before one it gives: no value, completed at the invocation.
+    MissingV = "missing" ([] -> [H]);
     IsSome = "is_some" ([H] -> [I32]);
     UnwrapI = "unwrap_i" ([H] -> [I64]);
     UnwrapF = "unwrap_f" ([H] -> [F64]);
@@ -257,6 +259,7 @@ imports! {
     Query = "query" ([H, H, H, H] -> [H]);
     Filters = "filters" ([H] -> [H]);
     FilterLit = "filter_lit" ([H, H, H] -> [H]);
+    SortLit = "sort_lit" ([H, H] -> [H]);
     IdentPart = "ident_part" ([H, I32] -> [H]);
     RichNew = "rich_new" ([H] -> [H]);
     RichPart = "rich_part" ([H, I32] -> [H]);

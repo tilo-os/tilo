@@ -128,11 +128,8 @@ impl Room {
             // it, and the live plane's is the room's own origin host and that port.
             .env("TILO_ROOMS_RELAY_ORIGIN", ORIGIN)
             .env("TILO_ROOMS_PUBLIC_API", ORIGIN)
-            .env("TILO_ROOMS_WEB_ENTRY", "https://tilo.coffee/")
-            .env(
-                "TILO_ROOMS_SITE_ORIGINS",
-                "https://tilo.coffee,https://tilo.so",
-            )
+            .env("TILO_ROOMS_WEB_ENTRY", "https://tilo.sh/")
+            .env("TILO_ROOMS_SITE_ORIGINS", "https://tilo.sh,https://tilo.so")
             .env("TILO_ROOMS_ROOT_FILE", &root_file)
             .env("TILO_ROOMS_FEEDBACK_CHANNEL", "feedback")
             .env("TILO_ROOMS_WAIT_LIST_MAX", "16")
@@ -267,6 +264,7 @@ fn certified(
         issued_at_ns: tilo_clock::unix_now_ns(),
         expires_at_ns: None,
         signature: [0; 64],
+        issuer: None,
     };
     tilo_user_identity::sign_device_cert(&mut cert, root).expect("a certified device");
     cert

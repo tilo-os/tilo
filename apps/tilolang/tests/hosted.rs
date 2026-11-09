@@ -2468,11 +2468,6 @@ fn an_empty_windows_palette_lists_what_a_person_can_do_now(
                 Some(vec![command, "N".to_owned()]),
             ),
             (
-                "New task due today".to_owned(),
-                Some(ui::icons::Icon::Plus),
-                None,
-            ),
-            (
                 "New project".to_owned(),
                 Some(ui::icons::Icon::FolderPlus),
                 None,
@@ -2516,7 +2511,7 @@ fn an_empty_windows_palette_lists_what_a_person_can_do_now(
         .collect();
     assert_eq!(
         new,
-        ["New task", "New task due today", "New project"],
+        ["New task", "New project"],
         "the query narrows the list to what it names"
     );
 }
@@ -2551,7 +2546,6 @@ fn an_open_tasks_palette_lists_what_the_task_lets_a_person_do(
             "Water the plants",
             "Open",
             "New task",
-            "New task due today",
             "New project",
             "Task summary",
             "Complete",

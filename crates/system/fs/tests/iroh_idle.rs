@@ -3,7 +3,7 @@
 //! hears at once of a network change.
 //!
 //! Every Tilo process with an endpoint (the compositor, `fs serve`,
-//! `fs replica`, `fs mount-share`) used to wake on three iroh timers that had
+//! `fs replica`) used to wake on three iroh timers that had
 //! nothing to do: netwatch's 15 s wall-clock poll, the socket's 20-26 s
 //! re-STUN tick with no relays, and the 15 s ping of a home relay kept after
 //! the relays were removed. With relays, the

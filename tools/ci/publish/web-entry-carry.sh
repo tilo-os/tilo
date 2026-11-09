@@ -6,7 +6,7 @@
 # OUT/receipt-extra.json, which adds to the receipt the image this one replaces and the version
 # it carries.
 #
-# The outgoing image is the one production serves while this runs: tilo.coffee's version.json
+# The outgoing image is the one production serves while this runs: tilo.sh's version.json
 # names its revision, whose image is registry.tilo.so/tilo/web-entry:sha-<revision> (or
 # dev-<revision> for a build published from main), pulled
 # anonymously and pinned by digest. One that can't be observed fails the step: publishing
@@ -21,7 +21,7 @@ set -euo pipefail
 build=${1:?usage: web-entry-carry.sh BUILD OUT}
 out=${2:?}
 repository=registry.tilo.so/tilo/web-entry
-live=https://tilo.coffee/version.json
+live=https://tilo.sh/version.json
 container=$repo_root/crates/browser/tilo-browser-runtime/container
 
 revision=$(curl -fsS --retry 3 --max-time 30 -H 'Cache-Control: no-store' "$live" \
@@ -30,7 +30,7 @@ revision=$(curl -fsS --retry 3 --max-time 30 -H 'Cache-Control: no-store' "$live
 [[ $revision =~ ^[0-9a-f]{40}$ ]] || die "$live names no revision: $revision"
 use_buildah web-entry overlay
 # No credentials: the registry serves its images to anyone. Production may run a release
-# (sha-<revision>) or a build published from main (dev-<revision>), as tilo.coffee does when it
+# (sha-<revision>) or a build published from main (dev-<revision>), as tilo.sh does when it
 # ships ahead of stable; either is the image whose version open tabs hold.
 tag=
 for candidate in "sha-$revision" "dev-$revision"; do

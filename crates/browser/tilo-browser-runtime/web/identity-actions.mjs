@@ -44,6 +44,7 @@
  * chooses (their profile, signed by the root): each of their devices, paired
  * or signed in, comes up with it (`syncProfile`).
  */
+import {standInBody} from './login-code.mjs';
 import {forInvites, openInvites} from './pairing.mjs';
 import {
   fetchEnvelope, fetchProfile, fitDisplayName, IdentityError, publishEnvelope, publishProfile, signInWithPasskey,
@@ -79,6 +80,8 @@ export const ACTION_GAP_MS = 2000;
 const PAUSE_POLL_MS = 1000;
 /** Where this browser session remembers that it asked. */
 const ASKED_KEY = 'tilo.identity.asked';
+/** The desktop's ask to revoke one of the person's devices, by key (hex). */
+export const REVOKE_DEVICE = 'revoke-device';
 /** How often, while a pairing link is open, to ask for devices waiting. */
 const PAIR_POLL_MS = 3000;
 
@@ -155,6 +158,23 @@ export async function saveRecoveryKey(recoveryKey, {userPublicKey, name = 'Tilo'
  * that answered it, and `decide(approved)` answers, resolving to
  * `{approved, label}`. Both return `{close()}`, called once the link is
  * spent or expired.
+ * `connectAgent()` makes a pairing link for an agent the person sets up
+ * from this tab (the first screen's prompt, `first-run.mjs`): the device
+ * that answers it (the agent's `tilo` command, with a key of its own) is
+ * approved without asking, since the person copied the link here a moment
+ * ago and it works once, for `INVITE_TTL_MS`, in this tab only. The root
+ * signs its certificate here and never leaves. `onAgent({label})` hears
+ * that it signed in.
+ * `keepStandIn()` gives a person set up through an agent a stand-in on
+ * their host, so that clearing this tab, the one place their root is, does
+ * not lose them: the host makes a key (`standIn.ask`, a root-signed
+ * `key`), the root certifies it here as an approver of the person's new
+ * devices (`standIn.certify(key)`, resolving to the certificate as hex),
+ * and the host keeps the certificate (`certify`). Once the person keeps
+ * their root with a passkey, the root revokes the stand-in as it revokes
+ * any of their devices (`standIn.revoke(key)`, signed by the root and kept
+ * with the person, which every session of theirs announces to its host) and
+ * the host forgets it (`retire`). `standInStore` remembers which key it was.
  */
 export function createIdentityActions({
   identity, hosts = () => [], lookups = hosts, rpId = globalThis.location?.hostname, name = () => undefined,
@@ -165,8 +185,18 @@ export function createIdentityActions({
   every = (run, ms) => { const timer = setInterval(run, ms); return () => clearInterval(timer); },
   pause = () => true, later = (run, ms) => setTimeout(run, ms), session = globalThis.sessionStorage,
   searchChord = 'Ctrl+K', showPairLink = () => ({close() {}}), askPairing = () => ({close() {}}),
-  invites = openInvites({now}), passkeys = passkeysUsable,
+  invites = openInvites({now}), passkeys = passkeysUsable, onAgent = () => {},
+  standIn = null, standInStore = null,
 }) {
+  const standInKey = `tilo-stand-in:${identity.userPublicKey}`;
+  const remembered = () => { try { return standInStore?.getItem(standInKey) ?? null; } catch { return null; } };
+  const retireStandIn = async () => {
+    const key = remembered();
+    if (!key || !standIn) return;
+    await standIn.revoke(key);
+    await standIn.ask(await standInBody('retire', identity, now()));
+    try { standInStore?.removeItem(standInKey); } catch { /* Forgotten on the host already. */ }
+  };
   let mount;
   const offered = new Set();
   // Learnt on attach: without passkeys a recovery key is the way to keep.
@@ -232,10 +262,13 @@ export function createIdentityActions({
   // that answered it. Either closes once the invite is spent or expired.
   const shown = new Map();
   const asked = new Set();
+  // The open invites made for an agent, approved when answered.
+  const agents = new Set();
   const closeInvite = id => {
     shown.get(id)?.close();
     shown.delete(id);
     asked.delete(id);
+    agents.delete(id);
   };
   let stopPairing = null;
   // An answer spends the invite, approved or not: the host takes no second
@@ -257,6 +290,14 @@ export function createIdentityActions({
     for (const request of forInvites(pending, invites)) {
       if (asked.has(request.invite)) continue;
       asked.add(request.invite);
+      if (agents.has(request.invite)) {
+        agents.delete(request.invite);
+        try {
+          const {label} = await decide(request)(true);
+          onAgent({label});
+        } catch (error) { onError(error); }
+        continue;
+      }
       shown.get(request.invite)?.close();
       shown.set(request.invite, askPairing(request, decide(request)));
     }
@@ -290,6 +331,32 @@ export function createIdentityActions({
   };
   const controller = {
     actions,
+    /** A stand-in for this person on their host, while their root is in
+     * this tab alone: resolves to its key, or null where there is none to
+     * make (kept already, or no host to keep one). */
+    async keepStandIn() {
+      if (identity.kept || !standIn) return null;
+      const existing = remembered();
+      if (existing) return existing;
+      const {key} = await standIn.ask(await standInBody('key', identity, now()));
+      const cert = await standIn.certify(key);
+      await standIn.ask({op: 'certify', cert});
+      try { standInStore?.setItem(standInKey, key); } catch { /* Made again next time: the host names the same key. */ }
+      return key;
+    },
+    /** A pairing link for an agent set up from this tab: `{link, expiresAt}`,
+     * opening `workspace` (on the same host) when named, else this one. */
+    async connectAgent({workspace} = {}) {
+      const invite = invites.open();
+      const link = workspace ? pairing?.link(invite.id, workspace) : pairing?.link(invite.id);
+      if (!link) {
+        invites.spend(invite.id);
+        throw new IdentityError('no-workspace', 'Join a workspace before setting up an agent in it');
+      }
+      agents.add(invite.id);
+      stopPairing ??= every(() => { void askPending(); }, PAIR_POLL_MS);
+      return {link, expiresAt: invite.expiresAt};
+    },
     /** Show the actions in `mount`'s desktop. */
     async attach(target) {
       withPasskeys = await Promise.resolve().then(passkeys).then(Boolean, () => false);
@@ -324,6 +391,8 @@ export function createIdentityActions({
           await identity.keepWithPasskey({rpId, userName: name()});
           refresh();
           await publishEverywhere();
+          // Kept with a passkey: the stand-in approves nothing from now on.
+          await retireStandIn().catch(onError);
           // The next step, asked as the passkey sheet closes.
           offer({...RECOVERY, title: 'Save key'}, 'Also save a recovery key?',
             'In case this passkey is ever lost: to your password manager, or as a file.');
@@ -387,6 +456,10 @@ export function createIdentityActions({
           shown.set(invite.id, showPairLink({link, expiresAt: invite.expiresAt, copy: () => tryCopy(link)}));
           stopPairing ??= every(() => { void askPending(); }, PAIR_POLL_MS);
           await askPending();
+        } else if (id === REVOKE_DEVICE && typeof value === 'string') {
+          // An agent's grant taken back at the person's door: the root
+          // revokes the device it runs on, as it revokes any of theirs.
+          await identity.revokeDevice(value);
         } else if (id === SIGN_IN.id) {
           const origins = [...new Set(lookups())];
           await signIn({rpId, fetchEnvelope: root => find(root, origins)});

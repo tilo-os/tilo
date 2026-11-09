@@ -48,6 +48,8 @@
 
 mod feedback;
 mod reads;
+mod terminal;
+pub use terminal::{ShellRan, TERMINAL_APP, WorkspaceShell};
 
 use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::sync::mpsc;
@@ -63,10 +65,11 @@ use crate::participant::actions::{Outcome, door_outcome, open_row, record_of, re
 use crate::worker::{ConfinedReplica, ConfinedViews};
 use collab_types::DocumentMutation;
 use tilo_actions::remote::{
-    APPLICATION_OPEN_ACTION, APPLICATION_RESOURCE_PREFIX, ActionHostError, Caller, CallerPrincipal,
-    CataloguePage, CatalogueProvider, CatalogueQuery, CatalogueRow, Completer, Confirmation,
-    InvocationReceipt, InvocationState, InvokeArgument, InvokeRequest, Pending, ReceiptStatus,
-    RemoteActionMessage, pending, provider_workspace, workspace_provider,
+    APPLICATION_OPEN_ACTION, APPLICATION_RESOURCE_PREFIX, ActionHostError, ActorPlace, Caller,
+    CallerPrincipal, CataloguePage, CatalogueProvider, CatalogueQuery, CatalogueRow, Completer,
+    Confirmation, InvocationReceipt, InvocationState, InvokeArgument, InvokeRequest, Pending,
+    ReceiptStatus, RemoteActionMessage, application_provider, application_provider_record, pending,
+    provider_workspace, workspace_provider,
 };
 use tilo_actions::{
     ActionFailure, ActionOutput, ConfirmationPolicy, InvocationId, InvocationUpdate, PROMPTED_PARAM,
@@ -201,6 +204,12 @@ pub trait WorkspaceRecordsLink: Send + Sync {
     fn bot_personas(&self, _workspace: u64, _installation: &str) -> bool {
         false
     }
+    /// Where the workspaces' Terminal sessions run their shells on this
+    /// host ([`WorkspaceShell`]). Absence leaves a session's `run` to the
+    /// device running the session.
+    fn shell(&self) -> Option<Arc<dyn WorkspaceShell>> {
+        None
+    }
     /// The bytes `workspace`'s content store holds under `hash`, for an
     /// avatar an appearance names. Absence refuses the appearance.
     fn content_blob(&self, _workspace: u64, _hash: &str) -> Option<Vec<u8>> {
@@ -239,6 +248,8 @@ struct Entry {
     caller: Caller,
     request: InvokeRequest,
     update: InvocationUpdate,
+    /// Where the invocation left its actor in the record it acted on.
+    left_at: Option<ActorPlace>,
 }
 
 #[derive(Default)]
@@ -263,6 +274,7 @@ impl Ledger {
                 caller: caller.clone(),
                 request,
                 update: InvocationUpdate::Accepted { invocation },
+                left_at: None,
             },
         );
     }
@@ -295,6 +307,8 @@ enum Job {
         invocation: InvocationId,
         done: Completer<InvocationReceipt>,
     },
+    /// A Terminal session's run that ended in the host's shell, to record.
+    Ran(Box<terminal::Ended>),
 }
 
 impl Job {
@@ -303,6 +317,7 @@ impl Job {
             Self::Feedback { .. } => "feedback",
             Self::Catalogue { .. } => "catalogue",
             Self::Invoke { .. } => "invoke",
+            Self::Ran(_) => "ran",
         }
     }
 }
@@ -491,10 +506,10 @@ impl WorkspaceActions {
                 answer.map(RemoteActionMessage::Receipt)
             }
             RemoteActionMessage::Observe { invocation, .. } => {
-                let state = self
-                    .ledger()
-                    .owned(caller, &invocation)
-                    .map(|entry| InvocationState::new(invocation, entry.update.clone()));
+                let state = self.ledger().owned(caller, &invocation).map(|entry| {
+                    InvocationState::new(invocation, entry.update.clone())
+                        .left_at(entry.left_at.clone())
+                });
                 Pending::ready(RemoteActionMessage::Update { invocation, state })
             }
             RemoteActionMessage::Cancel { invocation } => {
@@ -1116,6 +1131,7 @@ impl Worker {
                     invocation,
                     done,
                 } => done.complete(self.invoke(workspace_id, invocation)),
+                Job::Ran(ended) => self.ran(&ended),
             }
         }
     }
@@ -1567,6 +1583,15 @@ impl Worker {
             drop(ledger);
             (caller, request)
         };
+        if let Some(receipt) = self.start_terminal_run(workspace_id, &caller, &request) {
+            let mut ledger = self.ledger();
+            ledger.running = None;
+            if matches!(receipt.status, ReceiptStatus::Rejected { .. }) {
+                ledger.forget(&invocation);
+            }
+            drop(ledger);
+            return receipt;
+        }
         let outcome = self.perform(workspace_id, &caller, &request);
         let target = &request.target;
         match &outcome {
@@ -1583,9 +1608,9 @@ impl Worker {
         }
         let mut ledger = self.ledger();
         ledger.running = None;
-        let update = match outcome {
-            Ok(output) => InvocationUpdate::Succeeded { invocation, output },
-            Err(Outcome::Failed(error)) => InvocationUpdate::Failed { invocation, error },
+        let (update, left_at) = match outcome {
+            Ok((output, left_at)) => (InvocationUpdate::Succeeded { invocation, output }, left_at),
+            Err(Outcome::Failed(error)) => (InvocationUpdate::Failed { invocation, error }, None),
             Err(Outcome::Rejected(error)) => {
                 ledger.forget(&invocation);
                 return InvocationReceipt {
@@ -1596,6 +1621,7 @@ impl Worker {
         };
         if let Some(entry) = ledger.entries.get_mut(&invocation) {
             entry.update = update.clone();
+            entry.left_at = left_at;
         }
         drop(ledger);
         InvocationState::new(invocation, update).receipt()
@@ -1627,16 +1653,38 @@ impl Worker {
         Ok(Some(admitted))
     }
 
+    /// `target`, its empty resource naming the record's own: a caller that
+    /// knows the app but not its code (the desktop asking a connector) names
+    /// its actions so.
+    fn with_record_resource(
+        &self,
+        target: &tilo_actions::remote::RemoteActionTarget,
+        app_id: &str,
+    ) -> tilo_actions::remote::RemoteActionTarget {
+        let mut target = target.clone();
+        if target.address.resource.is_empty()
+            && let Some(definition) = self.catalogue.get(app_id)
+        {
+            definition
+                .record_kind
+                .as_str()
+                .clone_into(&mut target.address.resource);
+        }
+        target
+    }
+
     #[allow(
         clippy::result_large_err,
         reason = "the outcome becomes the receipt the host records"
     )]
+    /// Run `request`: what it answered, and where it left its actor in the
+    /// record it changed.
     fn perform(
         &mut self,
         workspace_id: u64,
         caller: &Caller,
         request: &InvokeRequest,
-    ) -> Result<ActionOutput, Outcome> {
+    ) -> Result<(ActionOutput, Option<ActorPlace>), Outcome> {
         let appearance = self
             .admit_appearance(workspace_id, caller, request)
             .map_err(Outcome::Rejected)?;
@@ -1644,7 +1692,12 @@ impl Worker {
             .try_registered_read(workspace_id, caller, request)
             .map_err(|error| *error)?
         {
-            return Ok(output);
+            return Ok((output, None));
+        }
+        if let Some((named, app)) = application_provider(&request.target.provider) {
+            return self
+                .show_on_desk(workspace_id, caller, named, app, &request.target)
+                .map(|output| (output, None));
         }
         // Acting on a record waits for that record's keys and no other's;
         // opening an app on a new record needs only the workspace.
@@ -1666,46 +1719,25 @@ impl Worker {
         let workspace = state.workspace.clone();
         let target = &request.target;
         let owner = self.serves_as_owner(caller);
-        if let Some(workspace) = provider_workspace(&target.provider) {
-            if !owner
-                || tilo_relay_protocol::room_workspace_id(workspace).ok() != Some(workspace_id)
-            {
-                return Err(Outcome::Rejected(ActionHostError::UnknownAction));
-            }
-            let app = target
-                .address
-                .resource
-                .strip_prefix(APPLICATION_RESOURCE_PREFIX)
-                .filter(|_| target.address.action == APPLICATION_OPEN_ACTION)
-                .filter(|app| self.catalogue.get(app).is_some())
-                .ok_or(Outcome::Rejected(ActionHostError::UnknownAction))?
-                .to_owned();
-            return self.open_new(workspace_id, workspace, &app);
+        if let Some(named) = provider_workspace(&target.provider) {
+            return self
+                .open_asked(workspace_id, named, owner, target)
+                .map(|output| (output, None));
         }
         let workspace = workspace.ok_or(Outcome::Rejected(ActionHostError::UnknownAction))?;
         let route = record_of(&target.provider, &workspace)
             .filter(|route| self.catalogue.get(&route.app_id).is_some())
             .ok_or(Outcome::Rejected(ActionHostError::UnknownAction))?;
-        // An empty resource names the record's own: a caller that knows the
-        // app but not its code (the desktop asking a connector) names its
-        // actions so.
-        let mut target = target.clone();
-        if target.address.resource.is_empty()
-            && let Some(definition) = self.catalogue.get(&route.app_id)
-        {
-            definition
-                .record_kind
-                .as_str()
-                .clone_into(&mut target.address.resource);
-        }
-        let target = &target;
+        let target = &self.with_record_resource(target, &route.app_id);
         let arguments = invoke_arguments(&request.argument);
         let mounted = self
             .mount(&route, &state)
             .map_err(|_| Outcome::Rejected(ActionHostError::UnknownAction))?;
         let live = live_actions(&mounted.app);
         if target.address.action == ui::tilo_resource::share::SHARE_LINK {
-            return self.share_link(workspace_id, caller, &route, &live, target, arguments);
+            return self
+                .share_link(workspace_id, caller, &route, &live, target, arguments)
+                .map(|output| (output, None));
         }
         let descriptor = live
             .iter()
@@ -1722,22 +1754,138 @@ impl Worker {
             }
             let contract = descriptor.contract.clone();
             let address = target.address.clone();
-            return self.comment_as_member(
-                workspace_id,
-                caller,
-                (&route, &state, &contract),
-                (&address, &arguments, confirmed),
-            );
+            return self
+                .comment_as_member(
+                    workspace_id,
+                    caller,
+                    (&route, &state, &contract),
+                    (&address, &arguments, confirmed),
+                )
+                .map(|output| (output, None));
         }
+        let context = caller_context(request);
         let output = mounted
             .app
-            .invoke_appearing(&target.address, &arguments, confirmed, appearance.as_ref())
+            .invoke_in(
+                context.as_ref(),
+                appearance.as_ref(),
+                &target.address,
+                &arguments,
+                confirmed,
+            )
             .map_err(|error| door_outcome(&error))?;
+        // Where the action left its actor, for the door that shows it
+        // working: the text it wrote, the item it acted on.
+        let left_at = mounted.app.presence().map(|(anchor, head)| ActorPlace {
+            anchor: hex::encode(anchor.cursor),
+            head: hex::encode(head.cursor),
+        });
         let taken = take_all(&mounted.app, &route)
             .map_err(|error| commit_failed(error.to_string(), false))?;
         self.commit_taken(workspace_id, &route, taken)
             .map_err(|reason| commit_failed(reason, true))?;
-        Ok(output)
+        Ok((output, left_at))
+    }
+
+    /// Open an app on a new record of the workspace `named`, as its
+    /// workspace's own action asks (`app.<app>#open`): only for the
+    /// workspace's owner, in the workspace the session is in.
+    #[allow(
+        clippy::result_large_err,
+        reason = "the outcome becomes the receipt the host records"
+    )]
+    fn open_asked(
+        &mut self,
+        workspace_id: u64,
+        named: &str,
+        owner: bool,
+        target: &tilo_actions::remote::RemoteActionTarget,
+    ) -> Result<ActionOutput, Outcome> {
+        if !owner || tilo_relay_protocol::room_workspace_id(named).ok() != Some(workspace_id) {
+            return Err(Outcome::Rejected(ActionHostError::UnknownAction));
+        }
+        let app = target
+            .address
+            .resource
+            .strip_prefix(APPLICATION_RESOURCE_PREFIX)
+            .filter(|_| target.address.action == APPLICATION_OPEN_ACTION)
+            .filter(|app| self.catalogue.get(app).is_some())
+            .ok_or(Outcome::Rejected(ActionHostError::UnknownAction))?
+            .to_owned();
+        self.open_new(workspace_id, named, &app)
+    }
+
+    /// Show the record an application's `open` names (its own record when it names none) as a
+    /// window on the workspace's shared desktop, opened by `caller`: what a device of the owner's
+    /// that draws no desk asks for the record it works in (an agent's `tilo mcp`), so every member
+    /// sees it open as they see a colleague's window, without anyone's view moving to it
+    /// ([`crate::desk`]). A record a window already shows is left where the people put it.
+    #[allow(
+        clippy::result_large_err,
+        reason = "the outcome becomes the receipt the host records"
+    )]
+    fn show_on_desk(
+        &mut self,
+        workspace_id: u64,
+        caller: &Caller,
+        named: &str,
+        app: &str,
+        target: &tilo_actions::remote::RemoteActionTarget,
+    ) -> Result<ActionOutput, Outcome> {
+        let unknown = || Outcome::Rejected(ActionHostError::UnknownAction);
+        let CallerPrincipal::Person(person) = caller.principal() else {
+            return Err(unknown());
+        };
+        if !self.serves_as_owner(caller)
+            || target.address.action != APPLICATION_OPEN_ACTION
+            || tilo_relay_protocol::room_workspace_id(named).ok() != Some(workspace_id)
+        {
+            return Err(unknown());
+        }
+        let title = self
+            .catalogue
+            .get(app)
+            .map(|definition| definition.title().to_owned())
+            .ok_or_else(unknown)?;
+        let desk = crate::participant::desktop_route(named);
+        let state = self
+            .refresh(
+                workspace_id,
+                Needs::Act {
+                    app_id: &desk.app_id,
+                    record: &desk.record,
+                },
+            )
+            .map_err(Outcome::Rejected)?;
+        let route = DocumentRoute {
+            app_id: app.to_owned(),
+            cluster_id: named.to_owned(),
+            record: application_provider_record(&target.provider)
+                .unwrap_or_default()
+                .to_owned(),
+        };
+        if !state.records.contains_key(&route) {
+            return Err(Outcome::Rejected(ActionHostError::Refused {
+                reason: format!("this workspace has no {app} record {}", route.record),
+            }));
+        }
+        let workspace = self
+            .workspaces
+            .get_mut(&workspace_id)
+            .ok_or_else(|| commit_failed("the workspace was not joined".into(), true))?;
+        let view = crate::desk::View {
+            app_id: app,
+            title: &title,
+            record: &route.record,
+            beside: None,
+        };
+        let Some(change) = crate::desk::place_view(workspace.desktop.doc(), person, &view) else {
+            return Ok(ActionOutput::default());
+        };
+        workspace.desktop.receive(change.clone());
+        self.commit(workspace_id, &desk, &DocumentMutation::Incremental(change))
+            .map_err(|reason| commit_failed(reason, true))?;
+        Ok(ActionOutput::default())
     }
 
     /// Commit what the owner's action changed, each record on its own
@@ -2136,6 +2284,7 @@ impl Worker {
                 id: view.id.clone(),
                 primary: view.primary,
                 range: view.range.is_some(),
+                desktop: view.desktop,
             })
             .collect();
         let request = ui::tilo_resource::share::ShareRequest {
@@ -2163,6 +2312,20 @@ impl Worker {
 }
 
 /// The arguments an invocation carries, as the door binds them.
+/// What a caller may say of its own invocation, which History keeps: the
+/// work it belongs to (an agent's run), what it is for, and the gesture it
+/// was part of. Who invoked it is the host's to say, from the session that
+/// carried it, and what it did the action's.
+fn caller_context(request: &InvokeRequest) -> Option<tilo_actions::ActionContext> {
+    let said = request.context.as_ref()?;
+    Some(tilo_actions::ActionContext {
+        group: said.group.clone(),
+        purpose: said.purpose.clone(),
+        gesture: said.gesture,
+        ..tilo_actions::ActionContext::default()
+    })
+}
+
 fn invoke_arguments(argument: &InvokeArgument) -> serde_json::Map<String, serde_json::Value> {
     match argument {
         InvokeArgument::None => serde_json::Map::new(),

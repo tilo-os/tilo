@@ -72,6 +72,9 @@ listeners.push(msg => {
 });
 await send('Runtime.enable', {}, sessionId);
 await send('Page.enable', {}, sessionId);
+// The first visit's first screen (web/first-run.mjs) counts as seen: this
+// drives the desktop behind it, as a returning person sees it.
+await send('Page.addScriptToEvaluateOnNewDocument', {source: "try { localStorage.setItem('tilo-first-run', '1'); } catch {}"}, sessionId);
 await send('Page.addScriptToEvaluateOnNewDocument', {source: clamp}, sessionId);
 const [width, height] = (process.env.VIEWPORT ?? '1728x1117').split('x').map(Number);
 await send('Emulation.setDeviceMetricsOverride', {width, height, deviceScaleFactor: Number(process.env.DPR ?? 2), mobile: false}, sessionId);

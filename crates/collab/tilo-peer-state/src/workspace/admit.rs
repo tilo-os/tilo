@@ -229,41 +229,6 @@ pub fn admit_workspace_changes(
     }
 }
 
-/// Check a candidate workspace document against `input.before`, however it was
-/// built: from `input.before` and a batch ([`admit_workspace_changes`]), or as a
-/// whole checkpoint replacing it. Returns the candidate's media policy for the
-/// caller to bind.
-///
-/// 1. The document names this workspace ([`super::declared_workspace_mismatches`]).
-/// 2. A governance change — owner, capabilities, identities, media,
-///    coverage, receipts, durability or import proposals — is one an operation
-///    of the batch names, and its author's role permits it
-///    ([`super::membership::admit_operations`]); a batch with no operation is
-///    a membership change, judged where its writer made it
-///    ([`super::membership::authorize`]).
-/// 3. The workspace's hosts change only by the owner's devices.
-/// 4. Effect receipts are immutable ([`super::immutable_receipts`]), and
-///    one not from the owner's devices records only its writer's own
-///    ([`super::effect_slices_kept`]).
-/// 5. Every invitation keeps the one redemption the workspace recorded for it
-///    ([`super::redemptions_kept`]).
-/// 6. Coverage and durable receipts never rewind
-///    ([`crate::coverage::monotonic`], [`crate::durability::monotonic`]).
-/// 7. The media policy is well formed and its transition is permitted
-///    ([`media::validate_transition`]).
-/// 8. A shortcut names as who saved it only a proven saver
-///    ([`super::saved_shortcut`]).
-///
-/// # Errors
-///
-/// The first [`WorkspaceRefusal`] that applies.
-pub fn check_candidate(
-    input: &WorkspaceAdmission<'_>,
-    candidate: &AutoCommit,
-) -> Result<Option<media::WorkspaceMediaV1>, WorkspaceRefusal> {
-    checked(input, candidate, false)
-}
-
 /// A member's batch that changes governance, judged as a membership change
 /// where its writer made it ([`super::membership`]). Returns whether it was
 /// admitted as one.
@@ -296,9 +261,29 @@ fn membership(refusal: super::membership::MembershipRefusal) -> WorkspaceRefusal
     }
 }
 
-/// `governed`: the batch's governance change was admitted as its writer's
-/// membership change or as the rows its operations name, so only what neither
-/// touches is checked here.
+/// Check a candidate workspace document, however it was built: from
+/// `input.before` and a batch ([`admit_workspace_changes`]), or as a whole
+/// checkpoint replacing it. Returns the candidate's media policy for the caller
+/// to bind.
+///
+/// 1. The document names this workspace ([`super::declared_workspace_mismatches`]).
+/// 2. Governance changed beyond what an operation of the batch or its writer's
+///    own membership change admits is refused ([`WorkspaceRefusal::GovernanceWriter`]).
+/// 3. Effect receipts are immutable ([`super::immutable_receipts`]), and
+///    one not from the owner's devices records only its writer's own
+///    ([`super::effect_slices_kept`]).
+/// 4. Every invitation keeps the one redemption the workspace recorded for it
+///    ([`super::redemptions_kept`]).
+/// 5. Coverage and durable receipts never rewind
+///    ([`crate::coverage::monotonic`], [`crate::durability::monotonic`]).
+/// 6. The media policy is well formed and its transition is permitted
+///    ([`media::validate_transition`]).
+/// 7. A shortcut names as who saved it only a proven saver
+///    ([`super::saved_shortcut`]).
+///
+/// # Errors
+///
+/// The first [`WorkspaceRefusal`] that applies.
 fn checked(
     input: &WorkspaceAdmission<'_>,
     candidate: &AutoCommit,
@@ -318,14 +303,6 @@ fn checked(
         return Err(WorkspaceRefusal::DeclaredWorkspaceMismatch);
     }
     if !governs && !governed && !super::governance_unchanged(before, candidate) {
-        return Err(WorkspaceRefusal::GovernanceWriter);
-    }
-    // The workspace's hosts are its owner's to name.
-    if !governs
-        && !governed
-        && before.map_or_else(Vec::new, crate::workspace_hosts_of)
-            != crate::workspace_hosts_of(candidate)
-    {
         return Err(WorkspaceRefusal::GovernanceWriter);
     }
     if !governs {

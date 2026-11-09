@@ -327,7 +327,7 @@ fn a_window_that_fails_to_start_shows_its_failure_in_the_place_it_reserved() {
 
 #[test]
 fn a_window_waiting_between_two_steps_asks_for_no_frames() {
-    let mut w = opening(Source::host("eu1.tilo.coffee"));
+    let mut w = opening(Source::host("eu1.tilo.sh"));
     let _ = w.frame(0);
     assert!(!w.wants_frame(1), "the reserved ground draws nothing more");
     assert_eq!(

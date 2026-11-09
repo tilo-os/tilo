@@ -21,8 +21,12 @@ serde_json.workspace = true
 tar.workspace = true
 walkdir.workspace = true
 tilo-files = { path = "../../platform/tilo-files" }
-ui = { package = "tilo-ui", path = "../../sdk/ui-core" }
+ui = { package = "tilo-ui", path = "../../sdk/ui-core", default-features = false }
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+# The workspace-hack's native feature set does not build for wasm32.
 workspace-hack = { version = "0.1" }
+ui = { package = "tilo-ui", path = "../../sdk/ui-core" }
 
 [dev-dependencies]
 iroh.workspace = true

@@ -28,17 +28,41 @@ tilo-advisory-lock = { path = "../advisory-lock" }
 # The cleanup record, replaced atomically and durably.
 tilo-files = { path = "../../platform/tilo-files" }
 rustix = { workspace = true, features = ["fs", "std"] }
-workspace-hack = { version = "0.1" }
 tilo-paths.workspace = true
 # The desktop's apps and actions (`tilo open`, `tilo action`, `tilo do`): the
 # control protocol's one client, shared with tilo-control.
 tilo-control = { path = "../../session/control-cli" }
 # `tilo settings`: the profile's settings, held or followed.
 settings-store = { path = "../settings-store" }
+# `tilo login` and `tilo mcp`: this computer as one of the person's devices,
+# certified by the root their browser tab holds, in their workspace.
+tilo-browser-peer = { path = "../../browser/tilo-browser-peer" }
+tilo-relay-protocol = { path = "../../hosting/tilo-relay-protocol" }
+tilo-user-identity = { path = "../../collab/tilo-user-identity" }
+tilo-net = { path = "../../platform/tilo-net", features = ["http"] }
+# Reads the PEM certificates a test names for HTTPS to trust (`tilo login`).
+rustls.workspace = true
+ed25519-dalek.workspace = true
+postcard.workspace = true
+hex.workspace = true
+rand.workspace = true
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "sync", "time"] }
+# `tilo mcp`: the runtime's own MCP projection of a workspace, its actions
+# asked of the workspace's host through this device's session, as the person
+# their workspaces name.
+tilo-runtime = { path = "../../runtime/tilo-runtime" }
+collab-types = { path = "../../collab/collab-types" }
+# `tilo mcp` asks the host to open the record its agent acts in as a window,
+# and narrates what its actions are doing on the live plane.
+tilo-actions = { path = "../../collab/actions" }
+tilo-clock = { version = "0.1.0", path = "../../platform/tilo-clock" }
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+# The workspace-hack's native feature set does not build for wasm32.
+workspace-hack = { version = "0.1" }
 
 [dev-dependencies]
 tempfile.workspace = true
-tilo-clock = { version = "0.1.0", path = "../../platform/tilo-clock" }
 tilo-test-env = { path = "../../dev/test-env" }
 
 [[test]]

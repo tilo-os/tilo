@@ -21,7 +21,10 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 use crate::canonical::{CanonicalError, signing_digest};
-use crate::cert::{DeviceCapabilities, DeviceCert, sign_device_cert, verify_device_cert_at};
+use crate::cert::{
+    DeviceCapabilities, DeviceCert, sign_device_cert, verify_device_cert_at,
+    verify_stand_in_cert_at,
+};
 use crate::revocation::RevocationList;
 
 /// Signing-domain tag for [`CertificationRequest`]. Frozen wire ABI.
@@ -213,6 +216,8 @@ impl CertificationPolicy {
                 can_read_all_workspaces: false,
                 foreign: false,
                 can_administer_devices: false,
+                agent: None,
+                stand_in: false,
             },
             lifetime_ns: 7 * 24 * 60 * 60 * 1_000_000_000,
         }
@@ -230,6 +235,12 @@ impl CertificationPolicy {
             foreign: requested.foreign || self.ceiling.foreign,
             can_administer_devices: requested.can_administer_devices
                 && self.ceiling.can_administer_devices,
+            // An agent's grant is issued by the person approving the agent,
+            // never asked for by a device being enrolled.
+            agent: None,
+            // A stand-in is certified by its person's root on purpose, never
+            // through a device's request.
+            stand_in: false,
         }
     }
 
@@ -251,6 +262,7 @@ impl CertificationPolicy {
                 ceiling.can_administer_devices,
             )
             && (granted.foreign || !ceiling.foreign)
+            && !granted.stand_in
     }
 }
 
@@ -268,7 +280,7 @@ pub fn prepare_device_cert(
     if request.user_public_key != user_public_key {
         return Err(CertificationError::DifferentIdentity);
     }
-    if revocations.is_revoked(&request.device_public_key) {
+    if revocations.is_revoked(&user_public_key, &request.device_public_key) {
         return Err(CertificationError::Revoked);
     }
     Ok(DeviceCert {
@@ -279,6 +291,7 @@ pub fn prepare_device_cert(
         issued_at_ns: now_ns,
         expires_at_ns: Some(now_ns.saturating_add(policy.lifetime_ns)),
         signature: [0; 64],
+        issuer: None,
     })
 }
 
@@ -307,6 +320,46 @@ pub fn issue_device_cert(
     Ok(cert)
 }
 
+/// Have a person's stand-in approver (its key `stand_in_key`, certified by
+/// `stand_in_cert`) answer `request`: a certificate of a member device of
+/// that person for a browser's lifetime ([`CertificationPolicy::browser`]),
+/// signed by the stand-in and carrying its certificate as the issuer. What a
+/// host that keeps a person's stand-in calls once a device of the person
+/// asked for exactly this request; see [`crate::cert`] for what a stand-in
+/// may do.
+///
+/// # Errors
+///
+/// [`CertificationError::Certificate`] when `stand_in_cert` is no valid
+/// stand-in certificate at `now_ns` or not `stand_in_key`'s,
+/// [`CertificationError::Revoked`] when `revocations` refuse the stand-in or
+/// the device, or the errors of [`prepare_device_cert`].
+pub fn issue_device_cert_as_stand_in(
+    request: &CertificationRequest,
+    stand_in_key: &ed25519_dalek::SigningKey,
+    stand_in_cert: &DeviceCert,
+    revocations: &RevocationList,
+    now_ns: u64,
+) -> Result<DeviceCert, CertificationError> {
+    verify_stand_in_cert_at(stand_in_cert, now_ns).map_err(|_| CertificationError::Certificate)?;
+    if stand_in_cert.device_public_key != stand_in_key.verifying_key().to_bytes() {
+        return Err(CertificationError::Certificate);
+    }
+    if revocations.refuses_at(stand_in_cert, now_ns) {
+        return Err(CertificationError::Revoked);
+    }
+    let mut cert = prepare_device_cert(
+        request,
+        stand_in_cert.user_public_key,
+        &CertificationPolicy::browser(),
+        revocations,
+        now_ns,
+    )?;
+    cert.issuer = Some(Box::new(stand_in_cert.clone()));
+    sign_device_cert(&mut cert, stand_in_key).map_err(|_| CertificationError::Certificate)?;
+    Ok(cert)
+}
+
 /// Check that `cert` is a valid, unrevoked answer to exactly `request`
 /// within `policy`.
 pub fn verify_issued_cert(
@@ -332,7 +385,7 @@ pub fn verify_issued_cert(
         Some(expiry) if expiry.saturating_sub(cert.issued_at_ns) <= policy.lifetime_ns => {}
         _ => return Err(CertificationError::Policy),
     }
-    if revocations.is_revoked(&cert.device_public_key) {
+    if revocations.refuses(cert) {
         return Err(CertificationError::Revoked);
     }
     Ok(())
@@ -488,6 +541,70 @@ mod tests {
             ),
             Ok(()),
             "a host checking the browser policy accepts a narrower agent certificate"
+        );
+    }
+
+    #[test]
+    fn a_stand_in_answers_a_request_as_a_browser_until_it_is_revoked() {
+        let (root, user) = UserIdentity::generate("Ada", 1);
+        let stand_in_key = ed25519_dalek::SigningKey::generate(&mut UnwrapErr(SysRng));
+        let mut stand_in = crate::prepare_stand_in_cert(
+            user.public_key,
+            stand_in_key.verifying_key().to_bytes(),
+            "Stand-in on tilo.example",
+            NOW - 1,
+            NOW - 1 + crate::STAND_IN_LIFETIME_NS,
+        );
+        sign_device_cert(&mut stand_in, &root).unwrap();
+        let device = ed25519_dalek::SigningKey::generate(&mut UnwrapErr(SysRng));
+        let request = request(user.public_key, &device);
+        let policy = CertificationPolicy::browser();
+        let none = RevocationList::new();
+
+        let cert =
+            issue_device_cert_as_stand_in(&request, &stand_in_key, &stand_in, &none, NOW + 1)
+                .unwrap();
+        assert_eq!(cert.capabilities, DeviceCapabilities::member());
+        assert_eq!(cert.expires_at_ns, Some(NOW + 1 + policy.lifetime_ns));
+        assert_eq!(cert.issuer.as_deref(), Some(&stand_in));
+        verify_issued_cert(&request, &cert, &policy, &none, NOW + 2).unwrap();
+
+        // Not with another key, nor once the stand-in is gone.
+        let other = ed25519_dalek::SigningKey::generate(&mut UnwrapErr(SysRng));
+        assert_eq!(
+            issue_device_cert_as_stand_in(&request, &other, &stand_in, &none, NOW + 1),
+            Err(CertificationError::Certificate)
+        );
+        assert_eq!(
+            issue_device_cert_as_stand_in(
+                &request,
+                &stand_in_key,
+                &stand_in,
+                &none,
+                NOW - 1 + crate::STAND_IN_LIFETIME_NS
+            ),
+            Err(CertificationError::Certificate)
+        );
+        let mut entry = RevocationEntry {
+            user_public_key: user.public_key,
+            revoked_device_public_key: stand_in.device_public_key,
+            revoked_at_ns: NOW + 2,
+            reason: RevocationReason::Retired,
+            signature: [0; 64],
+        };
+        sign_revocation_entry(&mut entry, &root).unwrap();
+        let mut revoked = RevocationList::new();
+        revoked.insert(entry).unwrap();
+        assert_eq!(
+            issue_device_cert_as_stand_in(&request, &stand_in_key, &stand_in, &revoked, NOW + 2),
+            Err(CertificationError::Revoked)
+        );
+        // What it issued before stays valid.
+        verify_issued_cert(&request, &cert, &policy, &revoked, NOW + 3).unwrap();
+        // A stand-in is never what a device's request is answered with.
+        assert_eq!(
+            verify_issued_cert(&request, &stand_in, &policy, &none, NOW + 1),
+            Err(CertificationError::Certificate)
         );
     }
 

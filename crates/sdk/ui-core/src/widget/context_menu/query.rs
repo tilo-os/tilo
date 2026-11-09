@@ -5,7 +5,7 @@
 //! when a sentence can be asked of something: a query field at its top
 //! narrows its entries with the ranking every filtered list shares
 //! (`crate::search::ranked_rows`), and Enter runs the best match. A sentence
-//! none of its rows answers goes into the send-to box beside the menu
+//! its send row carries into the send-to box that takes the menu's place
 //! ([`crate::widget::SendToBox`]), which sends it to whom the person names.
 
 use std::cell::Cell;
@@ -230,27 +230,44 @@ impl ContextMenu {
         crate::widget::note_resource_presentation_changed();
     }
 
-    /// Carry the typed sentence into the box beside the menu, with the menu
-    /// still open under the person's eyes: the box sends it.
+    /// Choose the row that sends what the menu is about: the box takes the
+    /// menu's place, holding the sentence typed into it, so one field takes the
+    /// typing rather than the menu's query and the box's message at once.
     pub(super) fn ask_typed(&mut self) {
+        if self.ask_row().is_none() {
+            return;
+        }
         let text = self
             .query
             .as_ref()
             .map(|query| query.text.trim().to_owned())
             .unwrap_or_default();
-        // Only a menu that offered somewhere to send, when it opened, does.
-        if text.is_empty() || self.ask_row().is_none() {
-            return;
-        }
         if self.owner_asks {
+            if text.is_empty() {
+                return;
+            }
             self.asked = Some(text);
             self.close();
             return;
         }
-        self.send_to.set_about(self.about.clone());
-        self.send_to.open(Some(&text), &[]);
-        self.send_to.place(self.rect, self.viewport);
-        self.dirty = true;
+        let about = self.about.clone();
+        // The box stands where the menu stood: beside the box its rows were
+        // drawn in, or at the point it opened at when it never laid out.
+        let beside = if self.rect.width() > 0.0 {
+            self.rect
+        } else {
+            self.anchor.unwrap_or(self.rect)
+        };
+        // The menu goes as the box arrives where it stood: the sentence, when
+        // one is typed, is in the box's message, and the field it leaves to
+        // type in is the box's.
+        self.close_at_once();
+        self.open_send_to_alone(
+            about,
+            Some([beside.x0, beside.y0, beside.x1, beside.y1]),
+            (!text.is_empty()).then_some(text.as_str()),
+            &[],
+        );
     }
 
     /// The hovered row, when it opens a nested menu.

@@ -50,6 +50,7 @@ device's files folder as `~`, for a Terminal in no workspace. See
 | Tilo apps | The launcher sandbox (unchanged) | ~0 |
 | Environments (CLI) | Namespaces + seccomp + Landlock over shared read-only images | ~0 idle (socket activated); images are shared by content address |
 | Legacy apps | A VM on a host with KVM | Real: metered, quota'd, suspended when idle |
+| Hosted workspaces' Linux programs | The workspace environment's own Firecracker VM | Real: billed per second while it runs, limited per plan, snapshotted when idle |
 
 A member that takes work runs the first two. A legacy launch is a request to
 a member that advertises KVM.
@@ -332,6 +333,115 @@ the supervisor asks the legacy VM service to ensure the VM; the guest agent runs
 The Windows appliance (`crates/windows/windows-vm`) is the `windows` legacy VM;
 its guest bridge moves to the same vsock agent protocol.
 
+## Hosted workspace VMs
+
+On a host that serves other people's workspaces, a workspace's shell, its own
+commands and Tilo's actions run as everywhere else, and need no VM. A Linux
+program the shell hands on (tier 3: `cargo`, `npm`, `python`) runs in a VM of
+that workspace environment's own, never in a guest sharing the host's kernel
+(`crates/runtime/legacy-vm/src/hosted`).
+
+- **One VM per workspace environment,** with a size (`small` 2 vCPU / 4 GB,
+  `default` 4 / 8, `large` 8 / 16, `xlarge` 16 / 32) and a persistent disk of
+  50, 50, 110 or 250 GB.
+- **Lifecycle:** the first program boots it; once no program has run for the
+  idle limit (30 s by default) it is snapshotted to disk and its process
+  ends; the next program restores it. It is the legacy VM's lifecycle and
+  agent, on Firecracker: a restored VM maps its memory file and reads pages
+  as the guest touches them, and a suspend writes only the pages written
+  since the last one. The crate docs have the measurements behind the choice.
+- **More than one host:** a VM stays on the host that first woke it, where
+  its disk is. A placer (`tilo-legacy hosted place`) says which host runs a
+  workspace's VM: the one holding it, else the first host with room for its
+  size, the always-up one first. Each host reports what its awake VMs take of
+  its memory budget and what waiting wakes ask for. The placer starts another
+  host once the awake VMs pass three quarters of the hosts' budget, or a VM
+  waits, and never takes one away itself. A wake with no room waits, a
+  person's and an agent's alike, after one line ("Starting another machine
+  for it, about 3 minutes."); it is never refused for room.
+- **Eviction:** a host the cloud takes back at short notice (an Azure Spot
+  VM, about 30 seconds) is told by a file appearing (`--evict-notice`, written
+  by whatever watches the cloud's notice). It then wakes no more VMs, saying
+  the VM is moving to another host, and suspends every awake one at once onto
+  its state directory, which lives on storage that outlives the host. The
+  next host to open that directory restores each VM on its next command. A VM
+  lost before its suspend has no valid snapshot and boots afresh from its
+  disk, so old memory never meets a newer disk.
+- **Files:** the environment's granted directories, at the same paths, served
+  over vsock (the agent mounts them as FUSE). Each is served by its own host
+  process held to that directory by Landlock, in user, mount, network and IPC
+  namespaces of its own where the jails and the service's sockets do not
+  exist.
+- **Jail:** each VM runs as a uid of its own (a host has slots; slot `n` is
+  uid `base + 2n`), in Firecracker's jailer: a chroot holding only its
+  devices, its state, its sockets and the guest kernel; a cgroup bounding
+  its memory, CPU and processes; a mount and network namespace of its own.
+  The service is unprivileged; one small helper, `tilo-hosted-jail`, starts,
+  stops and releases a slot's VM. It is root-owned, runnable only by the
+  service's group, holds `cap_setuid,cap_setgid` to become root, refuses any
+  caller but the service, reads only a root-owned configuration
+  (`/etc/tilo/hosted-jail.json`), and takes the VM's directories as
+  descriptors the service opened. Releasing a slot hands every file back to
+  the service and removes the jail, so the next VM in the slot inherits
+  nothing.
+- **Network:** the public internet, nothing of the host's. In the VM's
+  network namespace (owned, through a user namespace, by the slot's network
+  uid) Firecracker's tap and `pasta`'s are bridged, and a bridge filter drops
+  frames to private, shared, link-local (the metadata endpoint
+  169.254.169.254), loopback, multicast and reserved networks, Azure's
+  168.63.129.16 and any network the host adds; IPv6 is off. `pasta` makes
+  every connection from a socket of the host's and forwards nothing inwards,
+  so the host routes and translates nothing, and in Kubernetes the pod's
+  network policy applies to VM traffic too. Every VM has the same address
+  (10.0.2.15, gateway .2, DNS .3), so a snapshot restores anywhere.
+  Firecracker's rate limiters bound each VM's bandwidth.
+- **Metering:** each run of the VM's process and each held snapshot is a
+  usage record (VM, workspace, account, size, start, end, seconds) in the
+  account's ledger, billed per second with the sub-second rest carried to
+  the next run. A stopped or suspended VM costs nothing.
+- **Plans:** an account's plan bounds its running VMs, its VMs kept and the
+  sizes it may use. A refused program says why in plain words, and what to
+  do, and the refusal is typed
+  (`tilo_actions::remote::host_account::Refusal`: a reason and the next
+  steps, each with the provider's page).
+- **Selling VMs:** a host that sells them says so in its plans file
+  (`sells`: its name, the plans it offers, the pages where a card is added,
+  limits raised and billing managed). An account the file does not name has
+  no card on file: nothing asks for one until its first Linux program, which
+  the guard refuses with `no_payment_method`. A person's command then waits
+  with Terminal's prompt and runs once the provider adds the account to the
+  file; an agent's is refused at once and tells the person what to do
+  ([`ush.md`](ush.md), "The shell marks each run"). Billing itself (checkout,
+  prices, credit, rate limits, fraud checks) is the provider's: it only
+  writes the plans file and answers its pages.
+- **The account, live:** the session serves the person's account with its
+  host (`tilo.hosting`, `host.account/account`) as a live read: the plans
+  offered, the account's standing, usage per workspace, limits, credit,
+  invoices and where billing is managed, sent again whenever the plans file
+  changes (`crates/hosting/tilo-host-account`). A host that sells nothing
+  answers no plans and no standing.
+- **ush** runs the program through the VM's agent with the shell's streams
+  relayed, when the host names its hosted-VM service (`TILO_HOSTED_VM_SOCKET`,
+  `TILO_HOSTED_ACCOUNT`, `TILO_HOSTED_VM_SIZE`, and `TILO_HOSTED_PLANS`, the
+  plans file a held command follows). Run records are the shell's,
+  unchanged. A program whose input and output are the session's terminal
+  runs on a terminal in the VM: the keys are relayed as typed, the size
+  follows, and the output is recorded like any other.
+- **The guest image** is one signed OCI image holding two files: an
+  uncompressed x86-64 kernel built from a pinned kernel.org longterm release
+  with everything a VM needs built in (virtio-mmio, blk, net, vsock, FUSE,
+  ext4, cgroups, namespaces, overlayfs) and no modules, and `rootfs.ext4`, a
+  raw ext4 of Debian 13 with the tenant account (`tilo`, uid 1000, passwordless
+  sudo), git, a compiler, python, node and rust on `PATH` for every shell, and
+  the same guest agent the legacy VM runs. It has no systemd: PID 1 is
+  `hosted-init`, which mounts what a guest needs, grows the filesystem to the
+  disk it was given, points DNS at the host's forwarder and hands over to the
+  agent. Each VM's disk is a reflinked copy of `rootfs.ext4`. Hosts do not
+  build it: CI publishes it, signs it with the release key and pins the digest
+  in `os/hosted-guest-snapshot.env`, and `tilo-legacy hosted fetch-guest`
+  fetches only that digest under `/etc/containers/policy.json`'s
+  `sigstoreSigned` scope for `registry.tilo.so/tilo/hosted-guest`.
+
 ## Members that take work
 
 A member with the take-work appetite serves its workspace's environments the
@@ -346,6 +456,16 @@ way a device serves its own:
   Terminal re-attaches by session id.
 - A legacy launch goes to a member that advertises `kvm`; its windows reach
   the requester as a window stream (`surface_stream`), with input routed back.
+
+A member holds a workspace as any device does, so its device plane admits the
+relay's runs. The first time the relay asks about a workspace it placed on the
+member, the member enters it: it asks the relay's own `room.enter`, which
+answers an invitation naming the member's person, and redeems it as a device
+joins any workspace. The relay decides which member may enter which
+workspace, never the request: a device of another person asking the member
+gets nothing from it, and a workspace the relay does not govern is refused
+there and remembered for a while, so nothing that names workspaces makes the
+member ask again and again.
 
 ## Terminal
 

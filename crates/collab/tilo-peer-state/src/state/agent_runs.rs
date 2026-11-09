@@ -43,7 +43,7 @@ impl PeerWorkspace<'_> {
                 .peer
                 .core
                 .revocations
-                .is_revoked(&task.device_public_key)
+                .is_revoked(&cert.user_public_key, &task.device_public_key)
             {
                 return Err("the delegating device has been revoked".into());
             }

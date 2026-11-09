@@ -1179,7 +1179,7 @@ impl Core {
             .menu
             .take_selection()
             .and_then(|index| open.actions.get(index).cloned());
-        if !open.menu.is_open() {
+        if !open.menu.is_showing() {
             self.menu = None;
         }
         if let Some(action) = chosen {

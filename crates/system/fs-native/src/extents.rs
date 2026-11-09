@@ -14,11 +14,11 @@ use std::os::fd::AsFd;
 use crate::sys;
 
 /// `FS_IOC_FIEMAP`: `_IOWR('f', 11, struct fiemap)`.
-const FS_IOC_FIEMAP: libc::Ioctl = 0xC020_660B;
+const FS_IOC_FIEMAP: u32 = 0xC020_660B;
 /// `FICLONE`: `_IOW(0x94, 9, int)`.
-const FICLONE: libc::Ioctl = 0x4004_9409;
+const FICLONE: u32 = 0x4004_9409;
 /// `FICLONERANGE`: `_IOW(0x94, 13, struct file_clone_range)`.
-const FICLONERANGE: libc::Ioctl = 0x4020_940d;
+const FICLONERANGE: u32 = 0x4020_940d;
 
 const FIEMAP_FLAG_SYNC: u32 = 0x0001;
 

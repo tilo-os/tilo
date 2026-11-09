@@ -74,7 +74,7 @@ pub struct SearchHostFeed {
     /// What providers publish through the host's action host, run by address there.
     pub published: Vec<tilo_desktop_search::providers::PublishedActions>,
     /// The host's own sources, each over what is published or a service answers.
-    pub sources: Vec<std::sync::Arc<dyn tilo_desktop_search::Source>>,
+    pub sources: Vec<tilo_desktop_search::Held>,
     /// The sources the person switched off.
     pub preferences: tilo_desktop_search::SearchPreferences,
     /// Now, in Unix seconds.
@@ -198,9 +198,16 @@ pub struct SearchRow {
 pub(crate) struct ShownSearch {
     pub query: String,
     pub rows: Vec<SearchRow>,
-    /// A source has still to answer for the query, or the rows are not cut to the card yet, so the
-    /// rows will change.
+    /// The rows shown are not the search's answer yet: they are not cut to
+    /// the card, or nothing is ready to show. What the desk publishes as a
+    /// search still searching — and what holds Enter from a search that has
+    /// nothing to press.
     pub searching: bool,
+    /// Rows are still expected to join the ones shown (a window's content
+    /// index being built, an app's server still looking). What the desk
+    /// looks again for, so a late row is drawn when it arrives, without
+    /// calling the ready rows "still searching".
+    pub expecting: bool,
 }
 
 const CLOSE_WINDOW: &str = "desktop.close-window";
@@ -407,12 +414,7 @@ impl DesktopHandle {
         let mut shared = self.shared.borrow_mut();
         let Some(app) = shared
             .tree
-            .workspaces
-            .iter()
-            .flat_map(|workspace| &workspace.strips)
-            .flat_map(|strip| &strip.window_groups)
-            .flat_map(|group| &group.tabs)
-            .find(|candidate| candidate.id == tab)
+            .tab(tab)
             .and_then(|tab| tilo_desktop_model::apps::canonical_app_id(&tab.tile))
         else {
             return;
@@ -499,6 +501,14 @@ impl DesktopHandle {
     /// change. What the desk publishes as a search still searching.
     pub fn search_searching(&self) -> bool {
         self.shared.borrow().shown_search.searching
+    }
+
+    /// Whether the open search still expects rows to join the ones shown, as
+    /// of the last update pass: a source is still out, so the desk looks
+    /// again shortly and draws the row when it arrives. It is not "still
+    /// searching": the rows shown are the search's answer.
+    pub fn search_expecting(&self) -> bool {
+        self.shared.borrow().shown_search.expecting
     }
 
     /// The field the person types into in the desktop itself, as of the last
@@ -982,7 +992,7 @@ impl DesktopSurface {
         let mut applications = self.tiles.search_applications();
         applications.extend(feed.applications);
         let mut sources = feed.sources;
-        sources.push(std::sync::Arc::new(
+        sources.push(tilo_desktop_search::Held::new(
             tilo_desktop_search::providers::people::People::new(workspace, people),
         ));
         let mut data = SearchData {
@@ -1118,6 +1128,7 @@ impl DesktopSurface {
             query,
             rows,
             searching: open && !search.settled(),
+            expecting: open && search.expecting(),
         };
         let mut shared = self.shared.borrow_mut();
         let changed = shared.shown_search != shown || shared.typed_field != typed;
@@ -1145,7 +1156,22 @@ impl DesktopSurface {
         if search.is_open() {
             let closed = search.observe();
             let refreshed = search.refresh();
-            self.structure_dirty |= closed || refreshed;
+            // The rows the palette found, and the card they stand in, are drawn by the host above
+            // the windows (`DesktopHandle::search_palette`), never in this desk's own tree: the
+            // card is not a child of the surface. A row that came or went is that card's paint,
+            // and a frame reaching it (`DesktopSurface::needs_redraw`, by `search_revision`) shows
+            // it. Rebuilding this desk's composition for it would re-encode every open window —
+            // each window's whole scene, measured and drawn again — for a change none of them
+            // holds, the cost growing with every window open: on a page drawing in software, a
+            // typed key then answered seconds late. Only the desk's own search *state* — one being
+            // open or closed, which moves where the card stands and what a choice opens into — is
+            // structure here.
+            self.structure_dirty |= closed;
+            // A refresh changed what the card shows: the frame that draws it is due, and the card
+            // is laid out again for the room its rows now take.
+            if refreshed {
+                self.note_search_activity();
+            }
         }
         let choice = search.take_choice();
         let usage = if choice.is_some() {
@@ -1299,7 +1325,7 @@ impl DesktopSurface {
             // window's new tab instead.
             Target::Launch { app, .. } => Some(
                 navigation::window_of_app(&shared.tree, &app)
-                    .map_or(Admitted::Launch(app, None), Admitted::Select),
+                    .map_or(Admitted::Launch(app, false), Admitted::Select),
             ),
             Target::Window { tab, .. } => route_of(&shared.tree, tab).map(Admitted::Select),
             Target::Command { id } => {

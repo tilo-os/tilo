@@ -1367,7 +1367,7 @@ impl crate::Session {
 
     /// Hand the shell the desk when it changed, and run what it asked through the door, as any
     /// caller of the action protocol does.
-    pub(crate) fn follow_shell(&mut self) -> Result<(), crate::Error> {
+    pub(crate) fn follow_shell(&mut self) -> Result<(), tilo_compositor::Error> {
         let Some(shell) = self.shell.as_ref() else {
             return Ok(());
         };

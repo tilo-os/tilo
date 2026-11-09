@@ -17,7 +17,7 @@ use collab_types::presence::{
 };
 use serde::{Deserialize, Serialize};
 use tilo_browser_peer::PeerHandle;
-use tilo_live::presence::{Board, Own, Point, Tile, shown};
+use tilo_live::presence::{Board, Own, Point, shown};
 use tilo_user_identity::DeviceCert;
 use wasm_bindgen::prelude::*;
 
@@ -166,12 +166,21 @@ struct Held {
     /// The workspace as the plane numbers it.
     number: u64,
     board: Board,
+    /// Semantic work its agents narrated since the mounts last took it,
+    /// admitted and bound to the member that published it.
+    interactions: Vec<tilo_actions::SemanticInteraction>,
 }
+
+/// The most narrated work a workspace holds for its mounts between two
+/// frames: a burst past it is older than what the frame shows anyway.
+const MAX_HELD_INTERACTIONS: usize = 32;
 
 /// A started page's presence: who it is, the handle it says on, and a board
 /// per workspace it takes part in.
 struct Page {
     device: [u8; 32],
+    /// The device of the host this page's session is with.
+    host: [u8; 32],
     handle: PeerHandle,
     /// The person this page belongs to, their root key as hex.
     user: String,
@@ -216,29 +225,29 @@ pub(crate) struct BoardView {
     pub(crate) device: [u8; 32],
     /// This page's own word.
     pub(crate) own: Own,
-    /// Everyone here, as the board merged their words.
+    /// Everyone here, as the board merged their words: where each of them
+    /// points, on the tiles the surface passed.
     pub(crate) members: Vec<Shown>,
-    /// Every member whose pointer is over a tile the surface shows, where
-    /// that tile stands: `(publisher, tab, x, y, heard_at)`.
-    pub(crate) placed: Vec<([u8; 32], u64, f64, f64, f64)>,
     /// Why this page has no live plane at all, in the words shown in the
     /// members' place.
     pub(crate) note: Option<String>,
 }
 
-/// Register `id`'s peer: the identity and handle its presence says on.
+/// Register `id`'s peer: the identity and handle its presence says on, and
+/// the host (`host`, its certificate) its session is with.
 pub(crate) fn register(
     id: u32,
-    device: [u8; 32],
     handle: &PeerHandle,
     cert: &DeviceCert,
+    host: &DeviceCert,
     label: &str,
 ) {
     PAGES.with_borrow_mut(|pages| {
         pages.insert(
             id,
             Page {
-                device,
+                device: cert.device_public_key,
+                host: host.device_public_key,
                 handle: handle.clone(),
                 user: hex::encode(cert.user_public_key),
                 device_label: cert.device_label.clone(),
@@ -247,6 +256,25 @@ pub(crate) fn register(
             },
         );
     });
+}
+
+/// Every started page of the person whose root is `user` (hex): what changes
+/// for that person as a whole, such as a revocation their root signs, reaches
+/// all of their sessions at once.
+pub(crate) fn handles_of(user: &str) -> Vec<PeerHandle> {
+    PAGES.with_borrow(|pages| {
+        pages
+            .values()
+            .filter(|page| page.user == user)
+            .map(|page| page.handle.clone())
+            .collect()
+    })
+}
+
+/// `id`'s session, and the device of the host it is with: where the
+/// person's agent door is asked.
+pub(crate) fn host_of(id: u32) -> Option<(PeerHandle, [u8; 32])> {
+    PAGES.with_borrow(|pages| pages.get(&id).map(|page| (page.handle.clone(), page.host)))
 }
 
 /// Forget `id`'s peer and what it said.
@@ -299,6 +327,7 @@ impl Page {
                         board.seed(self.own());
                         board
                     },
+                    interactions: Vec::new(),
                 },
             );
         }
@@ -402,10 +431,58 @@ pub(crate) fn hear(peer: u32, workspace_id: u64, from: [u8; 32], body: &[u8]) {
     }
 }
 
-/// What `peer`'s board for `workspace` holds, with the members' pointers
-/// placed over `tiles`: what the mount draws and lists. `None` while this
-/// page has no board there.
-pub(crate) fn view(peer: u32, workspace: &str, tiles: &[Tile], now_ms: f64) -> Option<BoardView> {
+/// Take semantic work `from` narrated on a record's live stream in
+/// `workspace_id` (`event`): admitted only from a member here that this
+/// page's board knows as an agent
+/// ([`tilo_browser_peer::narration::admit`]), and held for the mounts that
+/// draw the workspace, whose next frame shows it. Work from anyone else, or
+/// that does not hold, is dropped.
+pub(crate) fn narrated(
+    peer: u32,
+    workspace_id: u64,
+    from: [u8; 32],
+    event: &tilo_relay_protocol::live::SemanticFrame,
+) {
+    let admitted = PAGES.with_borrow_mut(|pages| {
+        let Some(page) = pages.get_mut(&peer) else {
+            return false;
+        };
+        page.workspaces
+            .values_mut()
+            .filter(|held| held.number == workspace_id)
+            .any(|held| {
+                let Some(interaction) =
+                    tilo_browser_peer::narration::admit(&held.board, from, event)
+                else {
+                    return false;
+                };
+                if held.interactions.len() >= MAX_HELD_INTERACTIONS {
+                    held.interactions.remove(0);
+                }
+                held.interactions.push(interaction);
+                true
+            })
+    });
+    if admitted {
+        crate::browser::presence::heard(peer, workspace_id);
+    }
+}
+
+/// The semantic work `peer`'s agents narrated in `workspace` since the last
+/// call, oldest first. Empty, and allocating nothing, while there is none.
+pub(crate) fn take_narrated(peer: u32, workspace: &str) -> Vec<tilo_actions::SemanticInteraction> {
+    PAGES.with_borrow_mut(|pages| {
+        pages
+            .get_mut(&peer)
+            .and_then(|page| page.workspaces.get_mut(workspace))
+            .map(|held| std::mem::take(&mut held.interactions))
+            .unwrap_or_default()
+    })
+}
+
+/// What `peer`'s board for `workspace` holds: what the mount draws and lists.
+/// `None` while this page has no board there.
+pub(crate) fn view(peer: u32, workspace: &str, now_ms: f64) -> Option<BoardView> {
     PAGES.with_borrow(|pages| {
         let page = pages.get(&peer)?;
         let held = page.workspaces.get(workspace)?;
@@ -415,17 +492,6 @@ pub(crate) fn view(peer: u32, workspace: &str, tiles: &[Tile], now_ms: f64) -> O
             device: page.device,
             own: board.own().clone(),
             members: board.here().map(|member| shown(member, now_ms)).collect(),
-            placed: {
-                let placed = board.placed(tiles, now_ms);
-                board
-                    .here()
-                    .filter_map(|member| {
-                        let heard = member.pointer_heard_at()?;
-                        let at = placed.iter().find(|at| at.publisher == member.publisher)?;
-                        Some((member.publisher, at.tab, at.x, at.y, heard))
-                    })
-                    .collect()
-            },
             note: page.handle.live_note(),
         })
     })

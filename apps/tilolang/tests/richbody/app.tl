@@ -1,7 +1,7 @@
 app so.tilo.lang.richbody "Notebook" (icon: .file_text, category: .office)
 
 /// A note: a title, and a body of rich text.
-type Note {
+type Note (untitled: "Untitled") {
     title: Text
     body: RichText
 }
@@ -24,14 +24,8 @@ primary action new_note(nb: Notebook) -> Note (icon: .plus) {
     nb.notes.insert(Note(title: ""))
 }
 
-/// A note's title as a row shows it.
-fn name_of(n: Note) -> Text {
-    if n.title.len() == 0 { "Untitled" } else { n.title }
-}
-
 /// The notebook's window: its notes, each opening in a window of its own.
 view notebook(nb: Notebook) {
-    state opened: Option<Note> = .none
     ui.NavShell(
         content_kind: .document,
         overview_title: .some(meta(Notebook).title),
@@ -41,7 +35,7 @@ view notebook(nb: Notebook) {
             if nb.notes.is_empty() {
                 ui.EmptyState("No notes yet", icon: meta(Note).icon)
             } else {
-                std.list(nb.notes, opened) { (n, at) ->
+                std.list(nb.notes) { (n, at) ->
                     ui.ListItem(item: n, presence: at) {
                         note_row(n)
                     }
@@ -59,13 +53,13 @@ view notebook(nb: Notebook) {
 
 /// One note in a list: its title, and the start of its body.
 view note_row(n: Note) {
-    ui.ListRow(title: name_of(n), secondary: n.body.excerpt)
+    ui.ListRow(title: meta(n).title, secondary: n.body.excerpt)
 }
 
 /// A note's window: its title, its body as rich text, and what happened to it.
 view note_editor(n: Note) {
     std.document(n) {
-        ui.TextInput(value: n.title, placeholder: "Untitled")
+        ui.TextInput(bind: n.title, title: true)
         ui.BlockEditor(bind: n.body, placeholder: "Write something")
         std.history(n)
     }

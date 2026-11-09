@@ -69,7 +69,7 @@ view book(b: Book) {
             ui.Scroll {
                 page {
                     stack(gap: .section) {
-                        ui.TextInput(value: b.title, placeholder: "Title")
+                        ui.TextInput(bind: b.title, placeholder: "Title")
                     }
                 }
             }

@@ -238,11 +238,12 @@ export function askToKeepStorage(storage = globalThis.navigator?.storage) {
 
 /**
  * The person `record` keeps, unlocked and made this page's current identity.
- * `record` is what this browser stores (`{rootPublicKey, held, envelope}`):
- * the root wrapped under the browser's own key, and what may travel (the
- * passkey and recovery wraps; empty until the person keeps it). Adds
- * `envelope`/`kept` (following what is kept) and the two ways to keep it,
- * each saved to `storage` as it lands. Keeping it asks the browser to keep
+ * `record` is what this browser stores (`{rootPublicKey, held, envelope,
+ * revocations}`): the root wrapped under the browser's own key, what may
+ * travel (the passkey and recovery wraps; empty until the person keeps it),
+ * and the revocations the root signed. Adds `envelope`/`kept` (following what
+ * is kept), the two ways to keep it, and `revocations`/`revokeDevice`, each
+ * saved to `storage` as it lands. Keeping it asks the browser to keep
  * this site's storage through `persist` (`askToKeepStorage`).
  */
 async function openKept(storage, record, persist) {
@@ -272,6 +273,22 @@ async function openKept(storage, record, persist) {
       await save(documentOf(envelope));
       return recoveryKey;
     },
+    /** The revocations this person's root signed, as they were kept here:
+     * one per key it no longer trusts, which every session of theirs
+     * announces to its host. */
+    get revocations() { return record.revocations ?? []; },
+    /** The root revokes `keyHex` — one of this person's devices, or the
+     * stand-in approver a host holds for them — from now on: resolves to the
+     * entry it signed, which is kept here beside the person and reaches
+     * every session of theirs, the open ones at once and later ones as they
+     * start. */
+    async revokeDevice(keyHex) {
+      const entry = JSON.parse(await runtime.revokeDevice(identity, keyHex));
+      const kept = (await storage.get(BROWSER_RECORD)) ?? record;
+      record = {...kept, revocations: [...(kept.revocations ?? []), entry]};
+      await storage.put(BROWSER_RECORD, record);
+      return entry;
+    },
   }));
 }
 
@@ -287,7 +304,8 @@ async function openKept(storage, record, persist) {
  * (`askToKeepStorage`, through `persist`).
  *
  * Resolves to the identity with `{envelope, kept, keepWithPasskey,
- * createRecoveryKey}`, or `null` with `create: false` and none kept.
+ * createRecoveryKey, revocations, revokeDevice}`, or `null` with
+ * `create: false` and none kept.
  */
 export async function browserIdentity({storage, create = true, persist = globalThis.navigator?.storage} = {}) {
   storage ??= (await import('./device-custody.mjs')).idbStorage();
@@ -301,6 +319,18 @@ export async function browserIdentity({storage, create = true, persist = globalT
   const identity = await openKept(storage, record, persist);
   current = identity;
   return identity;
+}
+
+/**
+ * The person this browser keeps, without opening them: their root key, hex,
+ * or `null` where none is kept. Opening one reads the runtime, and a page
+ * that only has to say whether there is anyone here (`sign-in.mjs`, before
+ * the person agrees to anything) asks this instead.
+ */
+export async function keptIdentity({storage} = {}) {
+  storage ??= (await import('./device-custody.mjs')).idbStorage();
+  const record = await storage.get(BROWSER_RECORD);
+  return record ? {rootPublicKey: record.rootPublicKey, held: record.held} : null;
 }
 
 /**

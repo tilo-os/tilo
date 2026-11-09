@@ -42,6 +42,9 @@ tilo-paths.workspace = true
 hex.workspace = true
 getrandom.workspace = true
 ed25519-dalek = { workspace = true, features = ["rand_core"] }
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+# The workspace-hack's native feature set does not build for wasm32.
 workspace-hack = { version = "0.1" }
 
 [target.'cfg(unix)'.dependencies]

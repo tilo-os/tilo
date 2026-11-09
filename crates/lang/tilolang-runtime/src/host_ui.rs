@@ -32,7 +32,7 @@ pub const THEN_ACTION: &str = "$then";
 pub const VIEW_STATE: &str = "$view:";
 
 /// The action of a change mark (`ui.ChangeMark`, and those the host places): show what the
-/// task run that made the change did. Its arguments are the run (its group) and the resource.
+/// run that made the change did. Its arguments are the run (its group) and the resource.
 pub const REVIEW_ACTION: &str = "$review";
 
 /// The action of `undo(v)` and `undo(run)`: take the step back, or every step of the run,
@@ -313,16 +313,16 @@ impl Core {
         }))
     }
 
-    /// `undo(v)` of a `host.Version` (`a.h(1) == 0`) or `undo(run)` of a `host.TaskRun`.
+    /// `undo(v)` of a `host.Version` (`a.h(1) == 0`) or `undo(run)` of a `host.Run`.
     fn act_undo(&self, a: &Args<'_>) -> HResult<Option<Wasm>> {
         let held = self.val(a.h(0)?)?;
         let run = a.h(1)? != 0;
         let Value::Tuple(fields) = held else {
-            return trap("undo: expected a version or a task run");
+            return trap("undo: expected a version or a run");
         };
         let args = if run {
             let Some(Value::Text(id)) = fields.first() else {
-                return trap("undo: a task run names its group first");
+                return trap("undo: a run names its group first");
             };
             vec![
                 Value::Text("run".to_owned()),
@@ -537,7 +537,7 @@ fn offered_event(prop: &str, index: usize) -> String {
 }
 
 /// One `host.Action` (`label`, `icon`, `role`, `primary`, `destructive`, `on`, `key`,
-/// `params`, `run`, `group`, `frequent`) as its control shows it, and the action reference its
+/// `params`, `run`, `group`) as its control shows it, and the action reference its
 /// event, `event`, runs.
 fn offered_action(action: &Value, event: &str) -> HResult<(Value, Value)> {
     let Value::Tuple(fields) = action else {

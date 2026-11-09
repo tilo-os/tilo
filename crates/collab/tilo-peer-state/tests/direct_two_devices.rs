@@ -251,3 +251,59 @@ async fn a_second_device_is_entered_by_the_first_and_content_crosses_both_ways()
     a_router.shutdown().await.unwrap();
     b_endpoint.close().await;
 }
+
+/// A device that hosts its own workspace serves its own member under the same
+/// key: what it publishes is the host's to keep, not an echo of a frame the
+/// host already has.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_device_that_hosts_its_own_workspace_syncs_with_it_in_process() {
+    let root = SigningKey::from_bytes(&[5; 32]);
+    let (key, cert) = device(&root, 7);
+    let now = SystemTime::now();
+    let roster = vec![cert.clone()];
+    let mut made = StatePeer::new(
+        WORKSPACE,
+        cert.clone(),
+        roster.clone(),
+        RevocationList::new(),
+        now,
+    )
+    .unwrap();
+    made.select_admission_v5().unwrap();
+    let mut document = AutoCommit::new();
+    document.put(ROOT, "value", "from the host").unwrap();
+    document.commit_edit("fixture", "value");
+    made.install_seed(
+        SeedState {
+            workspace_changes: seed_workspace(WORKSPACE, &cert, &roster).unwrap(),
+            documents: vec![SeedDocument {
+                app_id: APP.into(),
+                record_id: RECORD.into(),
+                kind: "test".into(),
+                bytes: document.save(),
+            }],
+        },
+        &key,
+        now,
+    )
+    .unwrap();
+    let joined = StatePeer::from_join(WORKSPACE, cert.clone(), roster, &[], now).unwrap();
+
+    let host = DirectSync::new(made, key.clone());
+    let member = DirectSync::new(joined, key.clone());
+    let paired = tokio::spawn({
+        let host = host.clone();
+        let member = member.clone();
+        async move { DirectSync::pair(&member, &host).await }
+    });
+
+    // The member has the host's history before it writes to it.
+    until(&member, |member| {
+        member.document_heads(APP, RECORD).is_some()
+    })
+    .await;
+    // The member writes as the device the host serves: its own.
+    let edited = edit(&member, &key, "from the member");
+    until(&host, |host| host.document_heads(APP, RECORD) == edited).await;
+    paired.abort();
+}

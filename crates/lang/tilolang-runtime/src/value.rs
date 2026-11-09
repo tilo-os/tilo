@@ -408,9 +408,15 @@ pub enum Value {
     /// `json.encode` writes keeps it as it was read.
     Json(Box<Json>),
     /// A picture in a component's prop (`ui.Image(photo)`): where its bytes are read from
-    /// (host-internal). It stays last: a value's compact encoding names a variant by its place
-    /// (`tools/policy/check_wire_enums.py`).
+    /// (host-internal).
     Picture(String),
+    /// An argument a call leaves out before one it gives (`change(item, title: "x")`): the
+    /// parameter it stands for gets its default when the action is invoked
+    /// ([`crate::Core::complete_args`]), which happens before anything else reads the action.
+    /// It holds no value: nothing makes one but the code of a call that left the parameter out.
+    /// It stays last: a value's compact encoding names a variant by its place
+    /// (`tools/policy/check_wire_enums.py`).
+    Missing,
 }
 
 impl Value {
@@ -478,6 +484,7 @@ impl Value {
             Self::Response(_) => "web response",
             Self::Json(_) => "json value",
             Self::AtEvent { .. } => "argument computed at the event",
+            Self::Missing => "argument left out",
         }
     }
 }
@@ -563,7 +570,8 @@ pub fn to_json(v: &Value) -> Result<Json, String> {
         | Value::Map(_)
         | Value::Offered(_)
         | Value::Bytes(_)
-        | Value::Response(_) => {
+        | Value::Response(_)
+        | Value::Missing => {
             return Err(format!("a {} cannot be stored", v.kind_name()));
         }
     })

@@ -876,7 +876,10 @@ fn a_page_column_holds_the_readable_measure_from_its_first_row() {
     }
 
     let mut source = WholeList {
-        props: BTreeMap::from([("page_column".to_owned(), Value::Bool(true))]),
+        props: BTreeMap::from([
+            ("page_column".to_owned(), Value::Bool(true)),
+            ("at_measure".to_owned(), Value::Bool(true)),
+        ]),
         items: ["a", "b", "c"]
             .iter()
             .map(|key| given(key, &[("title", Value::Text((*key).into()))]))

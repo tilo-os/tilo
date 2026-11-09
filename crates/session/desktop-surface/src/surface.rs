@@ -29,7 +29,8 @@ use ui::taffy::{NodeId, Style, TaffyTree};
 use ui::time::{Duration, Instant};
 use ui::vello::Scene;
 use ui::widget::{
-    GroupRow, OutputSpan, STRIP_EDGE_GUTTER_PX, TaffyTreeExt as _, TileHost, Widget, WindowGroup,
+    FLOAT_CARD_ROOM, FLOAT_SIZE, GroupRow, OutputSpan, STRIP_EDGE_GUTTER_PX, TaffyTreeExt as _,
+    TileHost, Widget, WindowGroup,
 };
 use ui::winit::event::{ElementState, MouseButton, MouseScrollDelta, WindowEvent};
 use ui::{TextRenderer, Theme};
@@ -209,6 +210,9 @@ struct Shared {
     replaced: bool,
     /// Where each shown window stands and the bounds of the tab it shows, as last laid out.
     shown_tabs: ShownTabs,
+    /// Each window floating over the desk, and what it is drawn whole over the windows under it —
+    /// its bar, its body and the shadow that lifts it — as last drawn.
+    float_covers: Vec<(TabId, Rect)>,
     /// The shown strip, the area it is drawn in and how far it is panned, as last laid out.
     shown_strip: Option<(StripId, Rect, f64)>,
     /// Where the shown strip's controls are for control hints, as last drawn.
@@ -647,10 +651,7 @@ impl DesktopHandle {
                 return Some(active.tab);
             }
             tree.active_workspace()?
-                .strips
-                .iter()
-                .flat_map(|strip| &strip.window_groups)
-                .flat_map(|group| &group.tabs)
+                .tabs()
                 .find(|tab| shows(tab))
                 .map(|tab| tab.id)
         });
@@ -725,7 +726,7 @@ const BUILD_BUDGET: std::time::Duration = std::time::Duration::from_millis(8);
 /// apart, all well inside this; the pauses between spins are mostly longer.
 const SWIPE_GAP: Duration = Duration::from_millis(200);
 /// How soon search looks again for an app's answer that is still coming.
-const SEARCH_ANSWER_POLL: Duration = Duration::from_millis(50);
+const SEARCH_ANSWER_POLL: Duration = tilo_desktop_search::ANSWER_POLL;
 
 /// Sideways travel that steps focus one window on a strip that cannot pan
 /// that way. About the width of a window: a Normal one is two thirds of a
@@ -1065,7 +1066,7 @@ impl DesktopSurface {
             self.shared
                 .borrow_mut()
                 .queue
-                .push(Admitted::Launch(app, None));
+                .push(Admitted::Launch(app, false));
         }
         let mut shared = self.shared.borrow_mut();
         let mut next = shared.presentation.clone();
@@ -1176,6 +1177,9 @@ impl DesktopSurface {
                     *strip,
                     floats::area_of(row.get_rect()),
                 )
+                .into_iter()
+                .map(|(group, at)| (group, row.keep_float_inside(at)))
+                .collect()
             } else {
                 HashMap::new()
             };
@@ -1694,12 +1698,6 @@ impl DesktopSurface {
                     }
                     Admitted::Workspace(workspace) => shared.tree.active = workspace,
                     Admitted::Launch(app, float) => {
-                        let float = float.and_then(|at| {
-                            Some(floats::Standing {
-                                area: self.shown_area(&shared)?,
-                                at,
-                            })
-                        });
                         match launch::open(self.tiles.as_mut(), &mut shared, &app, float) {
                             Some(op) => ops.push(op),
                             None => continue,
@@ -1818,7 +1816,8 @@ impl DesktopSurface {
                     group,
                     index,
                     tab,
-                } => self.open_group(strip, group, index, &tab),
+                    float,
+                } => self.open_group(strip, group, index, &tab, float),
                 RowOp::TabInGroup {
                     strip,
                     group,
@@ -1959,7 +1958,7 @@ impl DesktopSurface {
 
     /// Present a launched window. A row first built after the launch already holds it, with its
     /// content, from the tree.
-    fn open_group(&mut self, strip: StripId, group: GroupId, index: usize, tab: &Tab) {
+    fn open_group(&mut self, strip: StripId, group: GroupId, index: usize, tab: &Tab, float: bool) {
         let Some(row) = self.rows.get_mut(&strip) else {
             return;
         };
@@ -1987,7 +1986,32 @@ impl DesktopSurface {
             if let Some(display) = shared.tree.outputs.focused_display() {
                 row.set_group_display(group, display);
             }
-            row.share_with_neighbour(group);
+            // The strip lands where the window opens, in the pass that opens it: its slots take the
+            // widths they are going to and its windows the places, so the frame that maps the
+            // window shows it in place — the place the compositor is given is one on screen. Eased,
+            // the window would be laid out past a neighbour still on its way to its width, often
+            // off the display, and no frame would show it until it arrived there.
+            row.set_motion_source(ui::tokens::MotionSource::Action);
+            // A window the workspace holds floating takes no run of the strip, so
+            // it shares nothing with what stands there — unless it opens over the
+            // desk beside it, where the strip gives up the width its card draws at,
+            // band and ring included, so the card stands beside the window it
+            // opened next to, clear of it, not over it.
+            if float {
+                row.share_with_floating_neighbour(group, FLOAT_SIZE.0 + 2.0 * FLOAT_CARD_ROOM);
+            } else if !floats::holds(&shared.tree, strip, group) {
+                row.share_with_neighbour(group);
+            }
+        }
+        if float
+            && let Some(area) = {
+                let shared = self.shared.borrow();
+                self.shown_area(&shared)
+            }
+            && let Some(row) = self.rows.get(&strip)
+        {
+            let mut shared = self.shared.borrow_mut();
+            floats::stand_beside(&mut shared, strip, row, group, area);
         }
         self.reveal = Some((strip, group));
         self.structure_dirty = true;
@@ -2464,7 +2488,9 @@ impl Widget for DesktopSurface {
         }
         let reveal = self.reveal.take();
         let shown = self.shown;
-        let mut pending = None;
+        // A strip that is not drawn yet keeps its reveal: the window it opens is framed when the
+        // strip showing it is drawn, and until then the strip has not landed its widths.
+        let mut pending = reveal;
         for (i, strip) in strips.iter().enumerate() {
             let Some(&child) = nodes.get(i) else {
                 continue;
@@ -2473,22 +2499,23 @@ impl Widget for DesktopSurface {
                 continue;
             };
             row.apply_layout(taffy, child, inner);
-            // The launch frame itself shows the new window: move the strip to it, then place the
-            // groups again where the move has them.
-            if Some(*strip) != shown {
+            let Some((_, group)) = reveal.filter(|(reveal_strip, _)| reveal_strip == strip) else {
+                continue;
+            };
+            if !row.group_is_laid_out(group) {
                 continue;
             }
-            if let Some((reveal_strip, group)) = reveal
-                && reveal_strip == *strip
-            {
-                if !row.group_is_laid_out(group) {
-                    pending = reveal;
-                } else if row.scroll_group_into_view(group) {
-                    // The window is on screen in the frame that opens it,
-                    // not sliding in after it: the frame the person sees
-                    // their new window must show it.
-                    row.apply_layout(taffy, child, inner);
-                }
+            // The strip has laid its windows out where the window opens, in this pass: from here on
+            // they follow the hand again.
+            row.set_motion_source(ui::tokens::MotionSource::Pointer);
+            pending = None;
+            // The launch frame itself shows the new window: move the strip to it, then place the
+            // groups again where the move has them.
+            if Some(*strip) == shown && row.scroll_group_into_view(group) {
+                // The window is on screen in the frame that opens it,
+                // not sliding in after it: the frame the person sees
+                // their new window must show it.
+                row.apply_layout(taffy, child, inner);
             }
         }
         self.reveal = pending;
@@ -2555,6 +2582,21 @@ impl Widget for DesktopSurface {
     ) {
         self.draw_leaving_strip(scene, transform, text, theme, presence);
         self.draw_display_strips(scene, transform, text, theme, presence);
+        // What the strips just drew of their floated windows whole over the windows under them:
+        // the compositor draws those around it rather than under it, so nothing reads through its
+        // bar or its body and its lift shows against them.
+        let float_covers: Vec<(TabId, Rect)> = self
+            .drawn_strips()
+            .into_iter()
+            .filter_map(|strip| self.rows.get(&strip))
+            .flat_map(|row| row.drawn_covers().iter().copied())
+            .collect();
+        {
+            let mut shared = self.shared.borrow_mut();
+            if shared.float_covers != float_covers {
+                shared.float_covers = float_covers;
+            }
+        }
         let hint_places = self.shown_row().map(|row| {
             ui::widget::draw_child(row, scene, transform, text, theme, presence);
             row.hint_places()

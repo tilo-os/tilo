@@ -192,12 +192,7 @@ migration action drop_the_tasks_part(s: Shell) {
 
 /// Uses the preset `to`: every setting it names at once. The result is exactly that preset,
 /// so the picker shows it chosen and "custom" is off.
-primary action apply(s: Shell, to: Layout) (
-    icon: .layout_grid,
-    label: "Use this layout",
-    group: "Layout",
-    frequent: true,
-) {
+primary action apply(s: Shell, to: Layout) (icon: .layout_grid, label: "Use this layout") {
     s.preset = to
     s.based_on = to
     s.tuned = false
@@ -315,7 +310,7 @@ action hide_app_menus(s: Shell) (icon: .menu, label: "Hide the app's menus", gro
 }
 
 /// Returns the shell to the preset it was based on, dropping the person's tuning.
-action reset(s: Shell) (icon: .rotate_ccw, label: "Back to the preset", group: "Layout") {
+action reset(s: Shell) (icon: .rotate_ccw, label: "Back to the preset") {
     require s.tuned "Nothing was changed from the preset"
     apply(s, s.based_on)
 }
@@ -350,12 +345,12 @@ action set_bar_size(s: Shell, to: Size) (label: "Bar size: {to}", group: "Top ba
     s.tuned = true
 }
 
-/// Shows or hides the top bar.
-action show_bar(s: Shell, on: Bool) (
+/// Shows or hides the top bar: the one control that turns it on and off, so a person sees
+/// whether it is on where they press it.
+action show_bar(s: Shell, on: Bool = not s.bar_shown) (
     icon: .eye,
     label: "Show the top bar",
-    group: "Top bar",
-    frequent: true,
+    on: s.bar_shown,
 ) {
     s.bar_shown = on
     s.tuned = true
@@ -391,12 +386,12 @@ action set_dock_size(s: Shell, to: Size) (label: "Dock size: {to}", group: "Dock
     s.tuned = true
 }
 
-/// Shows or hides the dock.
-action show_dock(s: Shell, on: Bool) (
+/// Shows or hides the dock: the one control that turns it on and off, so a person sees
+/// whether it is on where they press it.
+action show_dock(s: Shell, on: Bool = not s.dock_shown) (
     icon: .eye,
     label: "Show the dock",
-    group: "Dock",
-    frequent: true,
+    on: s.dock_shown,
 ) {
     s.dock_shown = on
     s.tuned = true

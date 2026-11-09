@@ -485,7 +485,10 @@ impl TerminalWidget {
             self.handle_environments_panel_event(event, ctx);
             return true;
         }
-        if self.route_start_failure(event, ctx) || self.route_restart(event, ctx) {
+        if self.route_start_failure(event, ctx)
+            || self.route_restart(event, ctx)
+            || self.route_held(event, ctx)
+        {
             return true;
         }
         if let WindowEvent::MouseInput {

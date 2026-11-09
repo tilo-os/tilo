@@ -13,27 +13,27 @@ const missing = () => new Response('not found', {status: 404});
 const settle = () => new Promise(resolve => setTimeout(resolve, 0));
 
 test('a bundle file names the entry and the version it is served under', () => {
-  assert.deepEqual(servedVersion(`https://tilo.coffee/v/${OLD}/pkg/tilo_browser_runtime.calculator.wasm`),
-    {base: 'https://tilo.coffee/', version: OLD});
+  assert.deepEqual(servedVersion(`https://tilo.sh/v/${OLD}/pkg/tilo_browser_runtime.calculator.wasm`),
+    {base: 'https://tilo.sh/', version: OLD});
   assert.deepEqual(servedVersion(`https://example.org/tilo/v/${OLD}/entry-page.mjs`),
     {base: 'https://example.org/tilo/', version: OLD});
   // A development bundle is not laid out in versions: nothing to compare.
   assert.equal(servedVersion('http://127.0.0.1:8000/pkg/tilo_browser_runtime.calculator.wasm'), null);
-  assert.equal(servedVersion('https://tilo.coffee/v/short/pkg/x.wasm'), null);
+  assert.equal(servedVersion('https://tilo.sh/v/short/pkg/x.wasm'), null);
   assert.equal(servedVersion(undefined), null);
 });
 
 test('the deployed version is read past every cache, and only a well-formed one counts', async () => {
   const asked = [];
-  const deployed = await deployedVersion('https://tilo.coffee/', {fetch: async (url, init) => {
+  const deployed = await deployedVersion('https://tilo.sh/', {fetch: async (url, init) => {
     asked.push([String(url), init?.cache]);
     return json({version: NEW, revision: 'abc'});
   }});
   assert.equal(deployed, NEW);
-  assert.deepEqual(asked, [['https://tilo.coffee/version.json', 'no-store']]);
-  assert.equal(await deployedVersion('https://tilo.coffee/', {fetch: async () => missing()}), null);
-  assert.equal(await deployedVersion('https://tilo.coffee/', {fetch: async () => json({version: '../x'})}), null);
-  assert.equal(await deployedVersion('https://tilo.coffee/', {fetch: async () => { throw new TypeError('offline'); }}), null);
+  assert.deepEqual(asked, [['https://tilo.sh/version.json', 'no-store']]);
+  assert.equal(await deployedVersion('https://tilo.sh/', {fetch: async () => missing()}), null);
+  assert.equal(await deployedVersion('https://tilo.sh/', {fetch: async () => json({version: '../x'})}), null);
+  assert.equal(await deployedVersion('https://tilo.sh/', {fetch: async () => { throw new TypeError('offline'); }}), null);
 });
 
 test('a file missing under a version the entry no longer serves offers the update, once at a time', async () => {
@@ -42,7 +42,7 @@ test('a file missing under a version the entry no longer serves offers the updat
   let answer;
   const stop = watchForUpdate({target, fetch: async () => json({version: NEW}),
     offer: update => { offers.push(update); return new Promise(resolve => { answer = resolve; }); }});
-  const url = `https://tilo.coffee/v/${OLD}/pkg/tilo_browser_runtime.calculator.wasm`;
+  const url = `https://tilo.sh/v/${OLD}/pkg/tilo_browser_runtime.calculator.wasm`;
   target.dispatchEvent(new CustomEvent(UNAVAILABLE, {detail: {url}}));
   // A module and the shared module it needs fail together: one offer.
   target.dispatchEvent(new CustomEvent(UNAVAILABLE, {detail: {url: url.replace('calculator', 'shared0')}}));
@@ -66,7 +66,7 @@ test('a failure under the version still deployed, or offline, is no update', asy
     const checked = [];
     let offered = false;
     watchForUpdate({target, fetch, offer: () => { offered = true; }, onChecked: update => checked.push(update)});
-    target.dispatchEvent(new CustomEvent(UNAVAILABLE, {detail: {url: `https://tilo.coffee/v/${OLD}/pkg/x.wasm`}}));
+    target.dispatchEvent(new CustomEvent(UNAVAILABLE, {detail: {url: `https://tilo.sh/v/${OLD}/pkg/x.wasm`}}));
     await settle();
     assert.deepEqual(checked, [null]);
     assert.equal(offered, false);

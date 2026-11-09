@@ -1,5 +1,7 @@
 use tilo_automerge::ApplyIncoming as _;
 
+use std::collections::BTreeSet;
+
 use super::*;
 use crate::arrangement::{FloatCorner, FloatPlace};
 use crate::ids::StripId;
@@ -103,6 +105,7 @@ impl Device {
             &Kept {
                 mine: &|id| id / 1000 == actor,
                 private: &|_| false,
+                closed: &|_| false,
                 writing: false,
             },
         );
@@ -256,6 +259,7 @@ fn a_move_made_while_the_window_s_device_is_offline_sticks_and_applies_on_reconn
         &Kept {
             mine: &|id| id / 1000 == 2,
             private: &|_| false,
+            closed: &|_| false,
             writing: false,
         },
     );
@@ -284,6 +288,67 @@ fn a_move_made_while_the_window_s_device_is_offline_sticks_and_applies_on_reconn
     // Writing again after the merge changes nothing on either device.
     assert!(!laptop.write());
     assert!(!desk.write());
+}
+
+#[test]
+fn a_window_a_device_closed_is_not_folded_back_from_the_record() {
+    let (mut laptop, mut desk) = two_devices();
+    // The record as the laptop last wrote it, before the close: it holds the notes window.
+    let before_the_close = laptop.doc.clone();
+    // The laptop closes its notes window.
+    laptop.change(|w| close(w, NOTES));
+    desk.hear(&mut laptop);
+    assert!(
+        !desk.places().iter().any(|(_, _, tab)| *tab == NOTES),
+        "the window went on the desk that heard the close"
+    );
+    // The record still held the window when this device's last write was made, so folding it into
+    // the desk lays the window back: a slot nothing fills.
+    let mut laid_back = laptop.workspace.clone();
+    fold(&before_the_close, &mut laid_back, LAPTOP, &Kept::NOTHING);
+    assert!(
+        laid_back.strips.iter().any(|strip| strip
+            .window_groups
+            .iter()
+            .any(|group| group.tabs.iter().any(|tab| tab.id == NOTES))),
+        "fixture: the record holds the window this device closed"
+    );
+    // Told what this device closed, the fold leaves it out, so the write that follows takes the
+    // window's entry out of the record instead of writing it again.
+    let closed: BTreeSet<u64> = [NOTES].into();
+    let mut laid_out = laptop.workspace.clone();
+    fold(
+        &before_the_close,
+        &mut laid_out,
+        LAPTOP,
+        &Kept {
+            mine: &|id| id / 1000 == 1,
+            private: &|_| false,
+            closed: &|id| closed.contains(&id),
+            writing: true,
+        },
+    );
+    assert!(
+        !laid_out.strips.iter().any(|strip| strip
+            .window_groups
+            .iter()
+            .any(|group| group.tabs.iter().any(|tab| tab.id == NOTES))),
+        "a window this device closed is not laid back into its desk"
+    );
+    assert_eq!(
+        laid_out
+            .strips
+            .iter()
+            .flat_map(|strip| &strip.window_groups)
+            .count(),
+        laptop
+            .workspace
+            .strips
+            .iter()
+            .flat_map(|strip| &strip.window_groups)
+            .count(),
+        "the windows the desk does hold are still there"
+    );
 }
 
 #[test]
@@ -616,7 +681,16 @@ fn the_fold_a_write_makes_lays_down_the_floats_of_the_device_writing() {
     laptop.change(|w| {
         w.arrangement.set_float(EDITOR_GROUP, Some(floated));
     });
-    let writing = folded(&laptop, &laptop.doc, &Kept::OWN);
+    let writing = folded(
+        &laptop,
+        &laptop.doc,
+        &Kept {
+            mine: &|_| true,
+            private: &|_| true,
+            closed: &|_| false,
+            writing: true,
+        },
+    );
     assert_eq!(writing.arrangement.float_of(EDITOR_GROUP), Some(floated));
     assert_eq!(float_of(&laptop.doc, EDITOR_GROUP), Some(floated));
     desk.hear(&mut laptop);
@@ -663,6 +737,7 @@ fn a_window_the_record_does_not_hold_yet_floats_where_the_device_showing_it_put_
     let mine = Kept {
         mine: &|_| false,
         private: &|id| id == opened,
+        closed: &|_| false,
         writing: false,
     };
     let shown = folded(&laptop, &laptop.doc.clone(), &mine);

@@ -42,7 +42,6 @@ pub mod open_with;
 pub mod path_bar;
 pub mod places;
 pub mod places_sidebar;
-pub mod received_shares;
 pub mod recent;
 pub mod remote_accounts;
 pub mod resource;
@@ -50,7 +49,7 @@ pub mod resource;
 pub mod scenarios;
 
 pub mod search_provider;
-pub mod sharing;
+pub mod share_invite;
 pub mod shortcut_menu;
 pub mod templates;
 pub mod toolbar;

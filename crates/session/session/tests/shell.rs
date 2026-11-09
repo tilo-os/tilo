@@ -70,6 +70,16 @@ fn desk(session: &Session) -> DeskReading {
     .expect("the desk reads as the shell's desk")
 }
 
+/// How many notices the desk names the person has not seen: the count the shell's bell shows of
+/// the notices it reads.
+fn waiting(session: &Session) -> usize {
+    desk(session)
+        .notices
+        .iter()
+        .filter(|notice| !notice.seen)
+        .count()
+}
+
 /// Run frames until `done` holds.
 #[track_caller]
 fn until(session: &mut Session, done: impl FnMut(&mut Session) -> bool) {
@@ -517,7 +527,7 @@ fn an_apps_notification_is_counted_on_the_bar() {
     });
     // The bell stays named with what it shows, and says how many are unread.
     until(&mut session, |session| {
-        desk(session).unread == 1 && says(session, "Notifications, 1 unread")
+        waiting(session) == 1 && says(session, "Notifications, 1 unread")
     });
     // And the notice rises as the shell's banner, in place of the desk's own banners app,
     // which draws nothing under the shell: the desk names the one it has up, and the shell
@@ -868,10 +878,10 @@ fn a_press_on_the_centres_dismiss_takes_the_notice_off_the_desk() {
             .with_app_name("Settings"),
     );
     until(&mut session, |session| !desk(session).notices.is_empty());
-    // A notice that arrives is unread: the desk's own count says so, the same number the bar's bell
-    // shows.
-    until(&mut session, |session| desk(session).unread == 1);
-    assert!(!desk(&session).notices[0].read, "a fresh notice is unread");
+    // A notice that arrives is unseen: the shell counts what the person has not seen, and its
+    // bell says so.
+    until(&mut session, |session| waiting(session) == 1);
+    assert!(!desk(&session).notices[0].seen, "a fresh notice is unseen");
     session
         .invoke(
             tilo_surface_host::shell_part::DESK_RESOURCE,
@@ -883,10 +893,10 @@ fn a_press_on_the_centres_dismiss_takes_the_notice_off_the_desk() {
         )
         .unwrap();
     until(&mut session, |session| says(session, "Backup finished"));
-    // The centre opened, so the person saw them: every notice is read, and the desk's count the
-    // bell shows is none.
+    // The centre opened, so the person saw them: every notice is seen, and the count the bell
+    // shows is none.
     until(&mut session, |session| {
-        desk(session).unread == 0 && desk(session).notices.iter().all(|notice| notice.read)
+        waiting(session) == 0 && desk(session).notices.iter().all(|notice| notice.seen)
     });
     // The view draws each notice with its Dismiss; pressing it runs the desk's `dismiss-notice` on
     // that notice, as any action on the desk runs.
@@ -2444,7 +2454,7 @@ fn the_bells_count_stands_inside_the_bar() {
             "New mail", "From Ada",
         ));
     until(&mut session, |session| {
-        desk(session).unread == 1 && says(session, "Notifications, 1 unread")
+        waiting(session) == 1 && says(session, "Notifications, 1 unread")
     });
     let after = keep(&mut session, "shell-bar-bell-counted");
     let bell = bar_control(&session, "Notifications, 1 unread").expect("the bell");

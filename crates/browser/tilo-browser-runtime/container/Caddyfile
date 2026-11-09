@@ -23,8 +23,11 @@
 		# configured (TILO_WEB_EMBEDDER, see entrypoint.sh; an embed posts its
 		# state to that site alone), may frame the app: an embed joins on the
 		# visitor's first click, which another site could otherwise take with
-		# a frame laid under its own page.
-		Content-Security-Policy "frame-ancestors {$TILO_WEB_FRAME_ANCESTORS:'self'}"
+		# a frame laid under its own page. A default: this block also deletes
+		# a header, which makes Caddy apply all of it as the answer is
+		# written, after a route's own policy (/sign-in), which would be
+		# overwritten otherwise.
+		?Content-Security-Policy "frame-ancestors {$TILO_WEB_FRAME_ANCESTORS:'self'}"
 		X-Content-Type-Options nosniff
 		Referrer-Policy no-referrer
 		-Server
@@ -32,6 +35,66 @@
 
 	handle /healthz {
 		respond "ok" 200
+	}
+
+	# The tilo command's installer (dist/install/tilo.sh), for
+	# `curl -fsSL https://<site> | sh`: at /install.sh, and at / for curl and
+	# Wget, whose requests a browser never sends. Revalidated, so a new
+	# image's installer takes effect at once.
+	@installer path /install.sh
+	@fetcher {
+		path /
+		header_regexp User-Agent ^(curl|Wget)/
+	}
+	handle @fetcher {
+		rewrite * /install.sh
+		root * /srv/tilo-install
+		header Content-Type "text/x-shellscript; charset=utf-8"
+		header Cache-Control "no-cache"
+		header Vary User-Agent
+		file_server
+	}
+	handle @installer {
+		root * /srv/tilo-install
+		header Content-Type "text/x-shellscript; charset=utf-8"
+		header Cache-Control "no-cache"
+		file_server
+	}
+
+	# The tilo command's releases the installer downloads, as
+	# /releases/<latest|vX.Y.Z>/<file>, from where they are kept
+	# (TILO_RELEASES_ORIGIN, entrypoint.sh): only what such a path names, with
+	# no cookie or credential of the visitor's. A version's files never change,
+	# so caches keep them; latest moves with each release, so it is kept for a
+	# minute. Anything else the store answers is an error here, kept by no cache
+	# (handle_errors): a version asked for before it is published must not stay
+	# missing at the edge once it is.
+	@release path_regexp release ^/releases/(latest|v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.]+)?)/([A-Za-z0-9][A-Za-z0-9._-]*)$
+	handle @release {
+		@latest path /releases/latest/*
+		vars release_cache "public, max-age=31536000, immutable"
+		vars @latest release_cache "public, max-age=60"
+		rewrite * {$TILO_RELEASES_PATH}/{re.release.1}/{re.release.3}
+		reverse_proxy {$TILO_RELEASES_UPSTREAM} {
+			header_up -Cookie
+			header_up -Authorization
+			# The store's own caching, naming and cookies are not the site's.
+			header_down -Cache-Control
+			header_down -Content-Disposition
+			header_down -Set-Cookie
+			header_down Content-Type application/octet-stream
+			@found status 2xx 304
+			handle_response @found {
+				header Cache-Control {vars.release_cache}
+				copy_response
+			}
+			handle_response {
+				error "not a release file" {rp.status_code}
+			}
+		}
+	}
+	handle /releases/* {
+		error 404
 	}
 
 	# Written at start from the environment (entrypoint.sh).
@@ -79,6 +142,24 @@
 			file_server {
 				precompressed br zstd
 			}
+		}
+	}
+
+	# The sign-in page a service's sign-in link lands on. It answers with a
+	# form the browser posts to the service that asked, which is another
+	# origin by definition: `form-action` names the origins a sign-in link may
+	# name at all (`web/sign-in.mjs` accepts nothing else), so no other site
+	# can be handed a person's answer. Its policy is the whole of the page's,
+	# so it names the site-wide frame-ancestors too.
+	handle /sign-in {
+		root * /srv/tilo-web
+		header {
+			Cache-Control "no-cache"
+			Content-Security-Policy "frame-ancestors {$TILO_WEB_FRAME_ANCESTORS:'self'}; form-action https: http://localhost:* http://127.0.0.1:*"
+		}
+		rewrite * /sign-in.html
+		file_server {
+			precompressed br zstd
 		}
 	}
 

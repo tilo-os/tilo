@@ -26,18 +26,17 @@ impl Checker<'_> {
                 ..ex
             };
         }
+        // A value where an Option of it is expected is the value it holds: `label: title` is
+        // `label: .some(title)`. One level only, so `.some(x)` written is one `some` and never
+        // two, and an Option of an Option says which of its levels it means.
         if let Ty::Option(inner) = want
+            && !matches!(**inner, Ty::Option(_))
             && ex.ty.fits(inner)
         {
             let ex = Ex {
                 ty: (**inner).clone(),
                 ..ex
             };
-            return Self::some(ex, want);
-        }
-        if let Ty::Option(inner) = want
-            && ex.ty.same(inner)
-        {
             return Self::some(ex, want);
         }
         // A collection or set read is a list of its items.
@@ -125,7 +124,7 @@ impl Checker<'_> {
                 }
             },
             ExprKind::IfLet { binds, then, els } => {
-                self.if_let_value(binds, then, els.as_deref(), exp, e.span)
+                self.if_let_value(binds, then, els.as_deref(), exp)
             }
             ExprKind::OptChain { base, name, args } => {
                 self.opt_chain(base, name, args.as_deref(), e.span)
@@ -137,9 +136,7 @@ impl Checker<'_> {
             ExprKind::Ident(name) => self.ident(name, e.span, exp),
             ExprKind::Tuple(items) => self.tuple(items, exp),
             ExprKind::List(items) => self.list(items, exp, e.span),
-            ExprKind::If { cond, then, els } => {
-                self.if_value(cond, then, els.as_deref(), exp, e.span)
-            }
+            ExprKind::If { cond, then, els } => self.if_value(cond, then, els.as_deref(), exp),
             ExprKind::Block(b) => self.block_value(b, exp),
             ExprKind::Match { scrutinee, arms } => self.match_value(scrutinee, arms, exp, e.span),
             ExprKind::Variant { name, args } => self.variant(name, args.as_deref(), exp, e.span),
@@ -195,9 +192,10 @@ impl Checker<'_> {
                     self.not_a_value_of_import(&alias, &name.name, e.span);
                     return Ex::error();
                 }
-                // `Task.today`: a filter the type declares, as the value a query takes.
+                // `Task.today`: a filter the type declares, as the value a query takes; where
+                // a sort is asked (`sorts: [Task.due]`), the order by a field it has.
                 if let Some(Ty::Record(key)) = self.type_named(base)
-                    && let Some(ex) = self.filter_value(&key, name, None, e.span)
+                    && let Some(ex) = self.type_member(&key, name, exp, e.span)
                 {
                     return ex;
                 }
@@ -316,7 +314,7 @@ impl Checker<'_> {
             return Ex::error();
         }
         if name == "now" {
-            if matches!(self.st.ctx, Ctx::Action | Ctx::Program) {
+            if matches!(self.st.ctx, Ctx::Action | Ctx::Program) || self.st.press {
                 self.reads(crate::effects::Effect::Time, span, "`now`");
                 return Ex::host(Imp::Now, vec![], Ty::Time);
             }
@@ -330,7 +328,7 @@ impl Checker<'_> {
         // `today`: the day this invocation falls on for the person, read in their zone as the
         // filter's `today` reads it.
         if name == "today" {
-            if self.st.ctx == Ctx::Action {
+            if self.st.ctx == Ctx::Action || self.st.press {
                 self.reads(crate::effects::Effect::Time, span, "`today`");
                 return Ex::host(Imp::Today, vec![], Ty::Date);
             }
@@ -691,6 +689,11 @@ impl Checker<'_> {
 
     /// `list_push_*` of one item.
     pub(super) fn push_item(list: Ex, item: Ex) -> Ex {
+        // An argument a call left out is no value of its type: it goes on the list as the hole
+        // it is, for the invocation to fill.
+        if matches!(item.kind, Ek::Host(Imp::MissingV, _)) {
+            return Ex::host(Imp::ListPushH, vec![list, item], Ty::Unit);
+        }
         let (imp, c) = store_op(&item.ty, Imp::ListPushI, Imp::ListPushF, Imp::ListPushH);
         Ex::host(imp, vec![list, conv(c, item, Ty::Int)], Ty::Unit)
     }
@@ -772,10 +775,14 @@ impl Checker<'_> {
             Ty::Int | Ty::Float | Ty::Bool | Ty::Choice(_) | Ty::Duration => {
                 Ex::new(Ek::Bin(ir::BinOp::Eq, Box::new(l), Box::new(r)), Ty::Bool)
             }
-            // Enums, options, results, tuples and lists compare by value, payloads included.
-            Ty::Enum(_) | Ty::Option(_) | Ty::Result(..) | Ty::Tuple(_) | Ty::List(_) => {
-                Ex::host(Imp::ValueEq, vec![l, r], Ty::Bool)
-            }
+            // Enums, options, results, tuples and lists compare by value, payloads included;
+            // sorts and the options they are chosen as, by the entry they hold.
+            Ty::Enum(_)
+            | Ty::Option(_)
+            | Ty::Result(..)
+            | Ty::Tuple(_)
+            | Ty::List(_)
+            | Ty::Sort(_) => Ex::host(Imp::ValueEq, vec![l, r], Ty::Bool),
             // Filters compare by the query they ask: the filter `Task.inbox` and the entry
             // `filters(Task)` lists for it are the same.
             Ty::Filter(_) => Ex::host(
@@ -929,6 +936,14 @@ impl Checker<'_> {
             // A filter's fields: what a query names it by, what a control shows, what it asks.
             Ty::Filter(_) => {
                 let key = super::platform::host_ty("Filter");
+                let Ty::Record(key) = key else {
+                    return Ex::error();
+                };
+                self.value_field(b, &key, name).unwrap_or_else(Ex::error)
+            }
+            // A sort's: what its menu entry says, and the order it asks.
+            Ty::Sort(_) => {
+                let key = super::platform::host_ty("Sort");
                 let Ty::Record(key) = key else {
                     return Ex::error();
                 };

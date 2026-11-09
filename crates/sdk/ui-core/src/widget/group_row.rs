@@ -37,7 +37,7 @@ pub use hint_places::HintPlaces;
 mod canvas;
 #[path = "group_row_floats.rs"]
 mod floats;
-pub use floats::{FLOAT_SIZE, FloatAsk};
+pub use floats::{FLOAT_CARD_ROOM, FLOAT_SIZE, FloatAsk};
 #[path = "group_row_scroll.rs"]
 mod scroll;
 pub use canvas::{CANVAS_ZOOM_MAX, CANVAS_ZOOM_MIN, CanvasView};
@@ -220,6 +220,10 @@ pub struct GroupRow {
     last_cursor: Point,
     /// Set on structural mutation; App's tick handler polls & rebuilds taffy.
     structure_dirty: bool,
+    /// Windows back in their strip whose width must stand where the strip
+    /// now puts it, rather than slide there from where it floated: read by
+    /// the next [`Self::set_width_bases`].
+    settle_widths: Vec<u64>,
     /// The exact target currently previewed for a child tab drag. Release
     /// consumes this value rather than hit-testing a second time.
     tab_drop_target: Option<TabDropTarget>,
@@ -401,6 +405,9 @@ pub struct GroupRow {
     /// How open each floating window is drawn: one lifted fades in over the
     /// desk, one snapped fades back into its strip.
     float_fade: HashMap<u64, crate::motion::Presence>,
+    /// What the last draw covered of the windows under each floating window: its bar, its body and
+    /// the shadow that lifts it, in this row's coordinates, by the window it shows.
+    drawn_covers: Vec<(u64, Rect)>,
 }
 
 /// What of a group at `rect` the draw viewport shows across, limited to the group, which its
@@ -1141,6 +1148,7 @@ impl GroupRow {
             laid_group_ids: Vec::new(),
             last_cursor: Point::ZERO,
             structure_dirty: false,
+            settle_widths: Vec::new(),
             tab_drop_target: None,
             cross_strip_drop_target: None,
             external_drag_over: false,
@@ -1205,6 +1213,7 @@ impl GroupRow {
             float_drag_from: None,
             pending_float: None,
             float_fade: HashMap::new(),
+            drawn_covers: Vec::new(),
         }
     }
 
@@ -1778,7 +1787,14 @@ impl GroupRow {
         let lanes: Vec<usize> = (0..self.groups.len())
             .map(|i| self.lane_index_of(i))
             .collect();
-        let open: Vec<bool> = self.groups.iter().map(|g| !g.is_closing()).collect();
+        // A window floating over the desk takes no run of the strip: those
+        // standing in it are alone there and take the whole width between
+        // them.
+        let open: Vec<bool> = self
+            .groups
+            .iter()
+            .map(|g| !g.is_closing() && !self.is_floating(g.id))
+            .collect();
         (0..self.groups.len())
             .map(|i| {
                 open.get(i).copied().unwrap_or(false)
@@ -1804,13 +1820,17 @@ impl GroupRow {
                 .collect();
         }
         let alone = self.alone_per_group();
+        let floating = self.floating_flags();
         let mut canvas_x = self.rect.x0 + self.leading_inset;
         self.groups
             .iter()
             .zip(alone)
-            .map(|(g, alone)| {
+            .zip(&floating)
+            .map(|((g, alone), &floating)| {
                 let usable = self.usable_at(canvas_x);
-                canvas_x += g.width().resolve_in_strip(usable, alone) + HANDLE_SLOT_PX;
+                if !floating {
+                    canvas_x += g.width().resolve_in_strip(usable, alone) + HANDLE_SLOT_PX;
+                }
                 usable
             })
             .collect()
@@ -1821,6 +1841,7 @@ impl GroupRow {
     /// canvas starts at its display's edge.
     pub fn group_canvas_spans(&self) -> Vec<(u64, f64, f64)> {
         let alone = self.alone_per_group();
+        let floating = self.floating_flags();
         if !self.lanes.is_empty() {
             let usable = self.usable_per_group();
             let mut cursor: Vec<f64> = self
@@ -1834,11 +1855,14 @@ impl GroupRow {
                 .enumerate()
                 .map(|(i, g)| {
                     let lane = self.lane_index_of(i);
+                    let x0 = cursor.get(lane).copied().unwrap_or(0.0);
+                    if floating.get(i).copied().unwrap_or(false) {
+                        return (g.id, x0, x0);
+                    }
                     let width = g.width().resolve_in_strip(
                         usable.get(i).copied().unwrap_or(DEFAULT_STRIP_USABLE_PX),
                         alone.get(i).copied().unwrap_or(false),
                     );
-                    let x0 = cursor.get(lane).copied().unwrap_or(0.0);
                     if let Some(c) = cursor.get_mut(lane) {
                         *c = x0 + width + HANDLE_SLOT_PX;
                     }
@@ -1850,8 +1874,12 @@ impl GroupRow {
         self.groups
             .iter()
             .zip(alone)
-            .map(|(g, alone)| {
+            .zip(&floating)
+            .map(|((g, alone), &floating)| {
                 let usable = self.usable_at(canvas_x);
+                if floating {
+                    return (g.id, canvas_x, canvas_x);
+                }
                 let width = g.width().resolve_in_strip(usable, alone);
                 let span = (g.id, canvas_x, canvas_x + width);
                 canvas_x += width + HANDLE_SLOT_PX;
@@ -1870,6 +1898,7 @@ impl GroupRow {
         if collapsed {
             return inset;
         }
+        let floating = self.floating_flags();
         let mut x = inset;
         let mut prev = false;
         for i in 0..self.groups.len() {
@@ -1879,6 +1908,9 @@ impl GroupRow {
             let Some(g) = self.groups.get(i) else {
                 continue;
             };
+            if floating.get(i).copied().unwrap_or(false) {
+                continue;
+            }
             if prev && !self.external_navigation {
                 x += HANDLE_SLOT_PX;
             }
@@ -1966,6 +1998,23 @@ impl GroupRow {
     /// one after it: two that don't fit share the display, and when no share leaves both usable the
     /// strip scrolls instead. New widths are stamped as pending changes.
     pub fn share_with_neighbour(&mut self, group_id: u64) -> bool {
+        self.share_with_neighbour_placing(group_id, false)
+    }
+
+    /// [`Self::share_with_neighbour`] for a window back in its strip from floating over the desk:
+    /// both take their share at once, so the strip shows them whole from the first frame instead of
+    /// one running past its edge while its widths catch up.
+    pub fn share_with_neighbour_at_once(&mut self, group_id: u64) -> bool {
+        self.share_with_neighbour_placing(group_id, true)
+    }
+
+    /// Make room for the window `group_id` that opened over the desk beside its neighbour: the
+    /// card a floating window draws at — the window and the band and ring it draws round it — is
+    /// `card_px` wide, and the window it opened next to gives up exactly that much of the strip,
+    /// so the card stands beside what the person was reading rather than over it. Both widths
+    /// stand there from this frame, since the card lands over the place they make. False when the
+    /// strip has no room beside the card.
+    pub fn share_with_floating_neighbour(&mut self, group_id: u64, card_px: f64) -> bool {
         let Some(idx) = self.groups.iter().position(|g| g.id == group_id) else {
             return false;
         };
@@ -1977,7 +2026,60 @@ impl GroupRow {
             .unwrap_or(DEFAULT_STRIP_USABLE_PX);
         let beside = |i: usize| {
             self.groups.get(i).is_some_and(|g| {
-                !g.is_closing() && !g.maximized && self.lane_of_group(g.id) == lane
+                !g.is_closing()
+                    && !g.maximized
+                    && !self.is_floating(g.id)
+                    && self.lane_of_group(g.id) == lane
+            })
+        };
+        let neighbour = match idx.checked_sub(1) {
+            Some(left) if beside(left) => left,
+            _ if beside(idx.saturating_add(1)) => idx.saturating_add(1),
+            _ => return false,
+        };
+        if usable_per_group.get(neighbour) != Some(&usable) {
+            return false;
+        }
+        let gap = if self.external_navigation {
+            0.0
+        } else {
+            HANDLE_SLOT_PX
+        };
+        let Some((neighbour_width, card_width)) =
+            tilo_desktop_model::width::share_for_float(card_px, usable, gap)
+        else {
+            return false;
+        };
+        for (i, width) in [(neighbour, neighbour_width), (idx, card_width)] {
+            let Some(g) = self.groups.get_mut(i) else {
+                continue;
+            };
+            if g.width() != width {
+                g.share_width(width);
+                g.stamp_pending_width_change();
+                g.snap_width_spring();
+            }
+        }
+        self.structure_dirty = true;
+        true
+    }
+
+    fn share_with_neighbour_placing(&mut self, group_id: u64, at_once: bool) -> bool {
+        let Some(idx) = self.groups.iter().position(|g| g.id == group_id) else {
+            return false;
+        };
+        let lane = self.lane_of_group(group_id);
+        let usable_per_group = self.usable_per_group();
+        let usable = usable_per_group
+            .get(idx)
+            .copied()
+            .unwrap_or(DEFAULT_STRIP_USABLE_PX);
+        let beside = |i: usize| {
+            self.groups.get(i).is_some_and(|g| {
+                !g.is_closing()
+                    && !g.maximized
+                    && !self.is_floating(g.id)
+                    && self.lane_of_group(g.id) == lane
             })
         };
         let neighbour = match idx.checked_sub(1) {
@@ -2011,11 +2113,18 @@ impl GroupRow {
             return false;
         };
         for (i, width) in [(neighbour, neighbour_width), (idx, opened_width)] {
-            if let Some(g) = self.groups.get_mut(i)
-                && g.width() != width
-            {
+            let Some(g) = self.groups.get_mut(i) else {
+                continue;
+            };
+            if g.width() != width {
                 g.share_width(width);
                 g.stamp_pending_width_change();
+            }
+            if at_once {
+                // A width already on its way to the new share still has to
+                // stand there now: the pair is drawn whole in the frame the
+                // window lands in its strip.
+                g.snap_width_spring();
             }
         }
         self.structure_dirty = true;
@@ -3961,6 +4070,12 @@ impl GroupRow {
             g.set_strip_usable_px(usable);
             g.set_alone(alone);
         }
+        for group in &mut self.groups {
+            if let Some(at) = self.settle_widths.iter().position(|id| *id == group.id) {
+                self.settle_widths.swap_remove(at);
+                group.snap_width_spring();
+            }
+        }
     }
 
     /// Before the windows lay out: every width fraction resolved (left to right, so each group's
@@ -5350,6 +5465,17 @@ impl GroupRow {
             };
             if !lanes_match.get(i).copied().unwrap_or(true) {
                 // Between two displays there is no gap to drag.
+                h.set_neighbour_rects(Rect::ZERO, Rect::ZERO);
+                continue;
+            }
+            // A window floating over the desk stands nowhere in the strip: the room it left is no
+            // seam between the two it stood between, and its own rect is no neighbour's.
+            let floating = |index: usize| {
+                self.groups
+                    .get(index)
+                    .is_some_and(|group| self.floats.contains_key(&group.id))
+            };
+            if floating(i) || floating(i.saturating_add(1)) {
                 h.set_neighbour_rects(Rect::ZERO, Rect::ZERO);
                 continue;
             }

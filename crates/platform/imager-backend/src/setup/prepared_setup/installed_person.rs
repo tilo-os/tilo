@@ -49,7 +49,7 @@ fn validate(r: &Record) -> io::Result<RevocationList> {
         }
         list.insert(e.clone()).map_err(|_| invalid())?;
     }
-    if list.is_revoked(&r.certificate.device_public_key) {
+    if list.refuses(&r.certificate) {
         return Err(invalid());
     }
     Ok(list)
@@ -431,7 +431,7 @@ impl InstalledPersonAnchor {
         if seed
             .revocations
             .iter()
-            .any(|e| !list.is_revoked(&e.revoked_device_public_key))
+            .any(|e| !list.is_revoked(&e.user_public_key, &e.revoked_device_public_key))
         {
             return Err(invalid());
         }

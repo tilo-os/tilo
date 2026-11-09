@@ -235,12 +235,12 @@ mod tests {
         let empty = write("empty.toml", "site = \"\"\n");
         let blank = write("blank.toml", "site = \"   \"\n");
         let broken = write("broken.toml", "site = \n");
-        let named = write("named.toml", "site = \"tilo.coffee\"\n");
+        let named = write("named.toml", "site = \"tilo.sh\"\n");
         let missing = dir.path().join("missing.toml");
         let site_of = |paths: &[&Path]| configured_from(paths.iter().copied()).site;
         assert_eq!(
             site_of(&[named.as_path()]).map(|site| site.to_string()),
-            Some("https://tilo.coffee/".to_owned()),
+            Some("https://tilo.sh/".to_owned()),
             "a named site is the community"
         );
         assert_eq!(
@@ -257,7 +257,7 @@ mod tests {
         assert_eq!(
             site_of(&[missing.as_path(), broken.as_path(), named.as_path()])
                 .map(|site| site.to_string()),
-            Some("https://tilo.coffee/".to_owned()),
+            Some("https://tilo.sh/".to_owned()),
             "a file that is not there or does not parse leaves the next one to answer"
         );
     }
@@ -274,9 +274,9 @@ mod tests {
         };
         let told = write(
             "told.toml",
-            "site = \"tilo.coffee\"\n[feedback]\nworkspace = \"w_tilo\"\nchannel = \"c_feedback\"\n",
+            "site = \"tilo.sh\"\n[feedback]\nworkspace = \"w_tilo\"\nchannel = \"c_feedback\"\n",
         );
-        let untold = write("untold.toml", "site = \"tilo.coffee\"\n");
+        let untold = write("untold.toml", "site = \"tilo.sh\"\n");
         let only_a_channel = write("half.toml", "[feedback]\nchannel = \"c_feedback\"\n");
         let configured = configured_from([told.as_path()]);
         assert_eq!(

@@ -43,12 +43,7 @@ impl PeerGovernance<'_> {
             return Err("a renewed certificate grants no more than the one it replaces".into());
         }
         tilo_user_identity::verify_device_cert_at(renewed, now_ns(now)).map_err(err)?;
-        if self
-            .peer
-            .core
-            .revocations
-            .is_revoked(&renewed.device_public_key)
-        {
+        if self.peer.core.revocations.refuses(renewed) {
             return Err("device is revoked".into());
         }
         Ok(Some(held))

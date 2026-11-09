@@ -419,13 +419,6 @@ pub enum FilesEffect {
         #[param("The entry's row id")]
         entry: String,
     },
-    /// Sharing and access.
-    #[effect(view, row)]
-    #[effect(icon = "users")]
-    Sharing {
-        #[param("The entry's row id")]
-        entry: String,
-    },
     /// Version history.
     #[effect(view, row)]
     #[effect(icon = "history")]
@@ -491,11 +484,12 @@ pub enum FilesEffect {
         #[param("The receiver's TLS port")]
         port: u16,
     },
-    /// Create one-time share link.
+    /// Open the desk's invite sheet on the workspace the entry is in, where a
+    /// link into it is made and the part it brings people in at is picked.
     #[effect(row, job)]
-    #[effect(keywords = "share, send link, share file")]
-    #[effect(icon = "link")]
-    ShareLink {
+    #[effect(keywords = "share, invite, send link, share file")]
+    #[effect(icon = "share-2")]
+    Share {
         #[param("The entry's row id")]
         entry: String,
     },

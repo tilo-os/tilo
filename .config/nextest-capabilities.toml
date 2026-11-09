@@ -8,8 +8,10 @@
 # fails rather than skips when the capability is missing; and
 # tools/ci/capability_filter.py runs the probes where the tests run first and
 # leaves out each group whose probe fails, so the run reports those tests as
-# not run, naming the capability. A capability not yet mapped keeps the old
-# behaviour: its tests skip with a message where it is missing.
+# not run, naming the capability. tools/ci/nextest.sh asks it for that filter
+# before every run it makes, so a job t shards leaves them out exactly as a
+# workflow's shard does. A capability not yet mapped keeps the
+# old behaviour: its tests skip with a message where it is missing.
 #
 # A test that fails with "TILO_REQUIRE_... is set but ... is unavailable"
 # belongs in a group here.

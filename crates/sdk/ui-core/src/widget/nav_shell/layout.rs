@@ -1,0 +1,936 @@
+//! The shell's geometry for one size: which columns stand where, how the push
+//! stack lays its screens, and the header row's bands.
+
+use vello::kurbo::{Point, Rect, Vec2};
+
+use super::inspector::keep_clear;
+use super::{
+    Column, ContentKind, Inputs, InspectorPlacement, Metrics, NavMode, NavPane, OverviewPlacement,
+    Part, SidebarPlacement, inspector_layout_of, reaches,
+};
+use crate::num::f64_of_usize;
+use crate::tokens::Breakpoint;
+use crate::widget::flap::SplitLayout;
+
+/// The shell's geometry for one size, in coordinates local to the shell.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct NavGeometry {
+    pub sidebar: SidebarPlacement,
+    pub inspector: InspectorPlacement,
+    pub overview: OverviewPlacement,
+    /// The overview and content stand side by side.
+    pub side_by_side: bool,
+    /// The push stack's screens, first to last, when it has more than one.
+    pub stack: Vec<NavPane>,
+    pub header_height: f64,
+    /// Width at or above which the sidebar docks.
+    pub breakpoint: f64,
+    /// The class the rect this geometry was solved in asks for (`Breakpoint`, hysteresis held
+    /// across passes); read it instead of comparing a width to a number.
+    pub size_class: Breakpoint,
+    /// The size of the rect this plan was solved for. Two passes that differ here are a resize, and
+    /// a plan that switches between them lands at once.
+    pub size: Vec2,
+    /// Each column's visible area (header and body); a drawer's panel.
+    pub sidebar_column: Rect,
+    pub overview_column: Rect,
+    pub content_column: Rect,
+    pub inspector_column: Rect,
+    /// The overview's rail, where the overview collapsed into it.
+    pub rail: Rect,
+    pub(super) bodies: [Rect; 4],
+    pub(super) headers: [Rect; 4],
+    pub filter: Rect,
+    /// The band of the controls under the overview's header.
+    pub controls: Rect,
+    pub toggle: Rect,
+    pub back: Rect,
+    pub inspector_toggle: Rect,
+    /// The window's History control, at the trailing edge of the row.
+    pub history: Rect,
+    /// Where the window's controls stand at the trailing end of the row,
+    /// while the host merged the window's bar into it; else zero.
+    pub window_controls: Rect,
+    /// The window-wide row the window's bar covers (also while a header in
+    /// the bar hides), or zero.
+    pub window_row: Rect,
+    /// The band across the window's foot, or zero.
+    pub band: Rect,
+    /// The column whose header holds the sidebar toggle and the Back button.
+    pub(super) toggle_column: Option<Column>,
+    pub(super) back_column: Option<Column>,
+    pub(super) inspector_toggle_column: Option<Column>,
+    pub(super) history_column: Option<Column>,
+    pub resize_handle: Rect,
+    /// What the inspector's sheet stands in, and how much of the foot it
+    /// keeps the content clear of.
+    pub sheet: crate::widget::SheetFrame,
+    pub sheet_covered: f64,
+    /// The content edges of a centred page column (its leading and trailing
+    /// text edge), where the content is one ([`NavShell::with_page_column`]).
+    pub(super) page_edges: Option<(f64, f64)>,
+}
+
+impl NavGeometry {
+    pub(super) fn column(&self, column: Column) -> Rect {
+        match column {
+            Column::Sidebar => self.sidebar_column,
+            Column::Overview => self.overview_column,
+            Column::Content => self.content_column,
+            Column::Inspector => self.inspector_column,
+        }
+    }
+
+    pub(super) fn body(&self, column: Column) -> Rect {
+        self.bodies
+            .get(column.index())
+            .copied()
+            .unwrap_or(Rect::ZERO)
+    }
+
+    pub(super) fn header(&self, column: Column) -> Rect {
+        self.headers
+            .get(column.index())
+            .copied()
+            .unwrap_or(Rect::ZERO)
+    }
+
+    /// The sidebar's header, or `Rect::ZERO` where it has none.
+    #[must_use]
+    pub fn sidebar_header(&self) -> Rect {
+        self.header(Column::Sidebar)
+    }
+
+    /// The content's header, or `Rect::ZERO` where it holds nothing.
+    #[must_use]
+    pub fn content_header(&self) -> Rect {
+        self.header(Column::Content)
+    }
+
+    /// Where the content's own view stands, under its header if it has one.
+    #[must_use]
+    pub fn content_body(&self) -> Rect {
+        self.body(Column::Content)
+    }
+
+    pub(super) fn translated(&self, by: Vec2) -> Self {
+        let t = |r: Rect| if r == Rect::ZERO { r } else { r + by };
+        Self {
+            sidebar_column: t(self.sidebar_column),
+            overview_column: t(self.overview_column),
+            content_column: t(self.content_column),
+            inspector_column: t(self.inspector_column),
+            rail: t(self.rail),
+            bodies: self.bodies.map(t),
+            headers: self.headers.map(t),
+            filter: t(self.filter),
+            controls: t(self.controls),
+            toggle: t(self.toggle),
+            back: t(self.back),
+            inspector_toggle: t(self.inspector_toggle),
+            history: t(self.history),
+            window_controls: t(self.window_controls),
+            window_row: t(self.window_row),
+            band: t(self.band),
+            resize_handle: t(self.resize_handle),
+            sheet: crate::widget::SheetFrame {
+                area: t(self.sheet.area),
+                ..self.sheet
+            },
+            page_edges: self.page_edges.map(|(x0, x1)| (x0 + by.x, x1 + by.x)),
+            ..self.clone()
+        }
+    }
+
+    /// The parts this geometry shows, in build order (back to front). Behind
+    /// an open drawer the other columns stay: laid out and painted, inert.
+    pub(super) fn visible_parts(&self, inputs: &Inputs) -> Vec<Part> {
+        let mut parts = Vec::new();
+        let shows = |r: Rect| r.width() > 0.0 && r.height() > 0.0;
+        if inputs.has_rail && shows(self.rail) {
+            parts.push(Part::Rail);
+        }
+        for column in [
+            Column::Overview,
+            Column::Content,
+            Column::Inspector,
+            Column::Sidebar,
+        ] {
+            let present = match column {
+                Column::Sidebar => inputs.has_sidebar,
+                Column::Overview => inputs.has_overview,
+                Column::Content => inputs.has_content,
+                Column::Inspector => inputs.has_inspector,
+            };
+            if !present || !shows(self.column(column)) {
+                continue;
+            }
+            parts.push(Part::Body(column));
+            let i = column.index();
+            if shows(self.header(column)) {
+                let rail = column == Column::Sidebar
+                    && inputs.sidebar_reads_as_rail(self.body(column).width());
+                if inputs.titled.get(i).copied().unwrap_or(false) && !rail {
+                    parts.push(Part::Title(column));
+                }
+                if inputs.leading.get(i).copied().unwrap_or(false) {
+                    parts.push(Part::Leading(column));
+                }
+                let actions = inputs.actions.get(i).copied().unwrap_or(0);
+                for action in 0..actions {
+                    parts.push(Part::Action(column, action));
+                }
+                if actions > 0 {
+                    parts.push(Part::More(column));
+                }
+            }
+            if inputs.has_filter && self.filter_column(inputs) == Some(column) && shows(self.filter)
+            {
+                parts.push(Part::Filter);
+            }
+            if inputs.has_controls && column == Column::Overview && shows(self.controls) {
+                parts.push(Part::Controls);
+            }
+        }
+        if shows(self.back) {
+            parts.push(Part::Back);
+        }
+        if shows(self.inspector_toggle) {
+            parts.push(Part::InspectorToggle);
+        }
+        if let Some(control) = inputs.history
+            && shows(self.history)
+        {
+            parts.push(Part::History(control.is_open()));
+        }
+        if inputs.status_action && shows(self.header(self.status_column())) {
+            parts.push(Part::StatusAction);
+        }
+        if shows(self.toggle) {
+            parts.push(Part::Toggle);
+        }
+        if inputs.band.has {
+            parts.push(Part::Band);
+        }
+        parts
+    }
+
+    /// The column whose header row carries the window's sync status: the one
+    /// History stands in, reaching the window's trailing edge.
+    pub(super) fn status_column(&self) -> Column {
+        self.history_column.unwrap_or(Column::Content)
+    }
+
+    /// Whether `p` is on the header row, which stays live beside a drawer.
+    pub(super) fn window_row_contains(&self, p: Point) -> bool {
+        self.header_height > 0.0
+            && Column::ALL
+                .iter()
+                .any(|column| self.header(*column).contains(p))
+            || self.toggle.contains(p)
+            || self.back.contains(p)
+            || self.inspector_toggle.contains(p)
+            || self.history.contains(p)
+    }
+
+    /// An open drawer from either edge. A drawer is never modal: the content beside it stays
+    /// visible and live, and a press on it puts the drawer away.
+    pub(super) fn open_drawer(&self) -> Option<Column> {
+        [Column::Sidebar, Column::Inspector]
+            .into_iter()
+            .find(|column| self.floating(*column) && self.column(*column).width() > 0.0)
+    }
+
+    pub(super) fn floating(&self, column: Column) -> bool {
+        match column {
+            Column::Sidebar => self.sidebar == SidebarPlacement::Drawer,
+            Column::Inspector => self.inspector == InspectorPlacement::Sheet,
+            Column::Overview | Column::Content => false,
+        }
+    }
+
+    pub(super) fn filter_column(&self, inputs: &Inputs) -> Option<Column> {
+        if inputs.has_sidebar {
+            Some(Column::Sidebar)
+        } else if inputs.has_overview {
+            Some(Column::Overview)
+        } else if inputs.has_content {
+            Some(Column::Content)
+        } else {
+            None
+        }
+    }
+
+    /// Where the title (or, without one, the leading fill) of `column`'s header starts: after the
+    /// shell's leading buttons in it, else at the content gutter.
+    pub(super) fn lead_end(&self, column: Column, m: &Metrics) -> f64 {
+        let header = self.header(column);
+        let mut x = if column == Column::Sidebar {
+            header.x0 + m.inset
+        } else {
+            header.x0 + m.row.gutter
+        };
+        for (button, home) in [
+            (self.toggle, self.toggle_column),
+            (self.back, self.back_column),
+        ] {
+            if home == Some(column) && button.width() > 0.0 {
+                x = x.max(button.x1 + m.gap);
+            }
+        }
+        x
+    }
+
+    /// The trailing end of `column`'s actions: before the shell's trailing buttons, or a content
+    /// gutter in where the row reaches the window's edge.
+    pub(super) fn trail_start(&self, column: Column, m: &Metrics) -> f64 {
+        let band = self.actions_band(column);
+        let edge = if column == Column::Sidebar || band.x1 < self.header(column).x1 - 0.5 {
+            m.inset
+        } else {
+            m.row.gutter
+        };
+        band.x1 - edge
+    }
+
+    /// The run of a header the app's actions may take: from the header's
+    /// start to before the trailing shell buttons.
+    pub(super) fn actions_band(&self, column: Column) -> Rect {
+        let header = self.header(column);
+        if header == Rect::ZERO {
+            return Rect::ZERO;
+        }
+        let mut x1 = header.x1;
+        if self.window_controls.width() > 0.0 && header.x1 >= self.window_controls.x1 {
+            x1 = x1.min(self.window_controls.x0);
+        }
+        for (button, home) in [
+            (self.inspector_toggle, self.inspector_toggle_column),
+            (self.history, self.history_column),
+        ] {
+            if home == Some(column) && button.width() > 0.0 {
+                x1 = x1.min(button.x0);
+            }
+        }
+        Rect::new(header.x0, header.y0, x1, header.y1)
+    }
+}
+
+/// The content edges of a page column `lines` lines of body text wide, centred in `column`: the
+/// scroller keeps its bar's gutter on the trailing edge and the page's padding applies to each
+/// side.
+pub(super) fn page_edges(column: Rect, lines: f64, m: &Metrics) -> Option<(f64, f64)> {
+    if column.width() <= 0.0 {
+        return None;
+    }
+    let room = (column.width() - m.scroll_gutter).max(0.0);
+    let width = (m.body_line * lines).round().min(room);
+    let x0 = column.x0 + (room - width) / 2.0 + m.page_pad;
+    let x1 = (x0 + width - 2.0 * m.page_pad).max(x0);
+    Some((x0, x1))
+}
+
+/// Compute the geometry for a shell of size `w × h`.
+#[allow(
+    clippy::too_many_lines,
+    reason = "the responsive plan is one ordered decision: sidebar, inspector, split, stack, then rects"
+)]
+pub(super) fn plan_columns(inputs: &Inputs, w: f64, h: f64) -> NavGeometry {
+    let m = inputs.metrics;
+    let mut g = NavGeometry::default();
+    if w <= 0.0 || h <= 0.0 {
+        return g;
+    }
+    let ow = if inputs.has_overview { m.overview } else { 0.0 };
+    let iw = if inputs.has_inspector {
+        m.inspector
+    } else {
+        0.0
+    };
+    let held = inputs.held;
+    let band = m.hysteresis;
+    let content_min = inputs.content_min();
+    let content_need = ow + content_min;
+    let rail_sidebar = inputs.mode == NavMode::Docked;
+
+    g.size = Vec2::new(w, h);
+
+    // The sidebar docks while it fits beside the content's real minimum, shrinking toward its own
+    // first; below that the window shows one column at a time, or floats the sidebar over a
+    // content-primary app.
+    let preferred = inputs.sidebar_width().min(w);
+    let narrowest = if rail_sidebar {
+        preferred
+    } else {
+        m.sidebar_min.min(preferred)
+    };
+    g.breakpoint = if inputs.has_sidebar && !rail_sidebar {
+        narrowest + content_need
+    } else {
+        0.0
+    };
+    g.sidebar = if !inputs.has_sidebar {
+        SidebarPlacement::None
+    } else if rail_sidebar || reaches(w, g.breakpoint, held.sidebar_docked, band) {
+        SidebarPlacement::Docked
+    } else if inputs.kind.is_content_primary() {
+        SidebarPlacement::Drawer
+    } else {
+        SidebarPlacement::Screen
+    };
+    let sw = if g.sidebar == SidebarPlacement::Docked && !rail_sidebar {
+        preferred.min(w - content_need).max(narrowest)
+    } else {
+        preferred
+    };
+    let sidebar_layout = layout_of(g.sidebar);
+    let sidebar_open = inputs.sidebar.is_open(sidebar_layout);
+    let sidebar_reveal = inputs.sidebar.reveal_in(sidebar_layout);
+    let docked_target = if g.sidebar == SidebarPlacement::Docked && sidebar_open {
+        sw
+    } else {
+        0.0
+    };
+    let docked_now = if g.sidebar == SidebarPlacement::Docked {
+        sw * sidebar_reveal
+    } else {
+        0.0
+    };
+
+    // 2. The inspector docks while the content keeps its minimum beside it;
+    //    narrower, it is a sheet up from the window's foot.
+    g.inspector = if !inputs.has_inspector {
+        InspectorPlacement::None
+    } else if reaches(
+        w - docked_target,
+        content_need + iw,
+        held.inspector_docked,
+        band,
+    ) {
+        InspectorPlacement::Docked
+    } else {
+        InspectorPlacement::Sheet
+    };
+    let inspector_layout = inspector_layout_of(g.inspector);
+    let inspector_open = inputs.inspector.is_open(inspector_layout);
+    let inspector_reveal = inputs.inspector.reveal_in(inspector_layout);
+    let inspector_target = if g.inspector == InspectorPlacement::Docked && inspector_open {
+        iw
+    } else {
+        0.0
+    };
+    let inspector_now = if g.inspector == InspectorPlacement::Docked {
+        iw * inspector_reveal
+    } else {
+        0.0
+    };
+
+    // Overview and content side by side while both fit; where the list does not but its rail does,
+    // the overview collapses into the rail.
+    let region_target = w - docked_target - inspector_target;
+    let beside_sidebar = g.sidebar == SidebarPlacement::Docked && !rail_sidebar;
+    let list_fits = if beside_sidebar {
+        region_target >= content_need - 1e-6
+    } else {
+        reaches(region_target, content_need, held.list_fits, band)
+    };
+    let rail_fits =
+        inputs.has_rail && reaches(region_target, m.rail + content_min, held.rail_fits, band);
+    g.overview = if !inputs.has_overview {
+        OverviewPlacement::None
+    } else if inputs.has_content && !list_fits && rail_fits {
+        OverviewPlacement::Rail
+    } else {
+        OverviewPlacement::List
+    };
+    g.side_by_side = !inputs.has_overview || list_fits || rail_fits;
+
+    // 4. The push stack.
+    let mut stack = Vec::new();
+    if g.sidebar == SidebarPlacement::Screen {
+        stack.push(NavPane::Sidebar);
+    }
+    if inputs.has_overview && !g.side_by_side {
+        stack.push(NavPane::Overview);
+    }
+    if inputs.has_content {
+        stack.push(NavPane::Content);
+    } else if inputs.has_overview && g.side_by_side {
+        // Nothing stands beside the list: it is the screen after the sidebar's.
+        stack.push(NavPane::Overview);
+    }
+    let front = stack_index(&stack, inputs.pane);
+    let pos = inputs.push_pos.map_or(f64_of_usize(front), |pos| {
+        pos.clamp(0.0, f64_of_usize(stack.len().saturating_sub(1)))
+    });
+    g.stack = if stack.len() > 1 {
+        stack.clone()
+    } else {
+        Vec::new()
+    };
+    // The bar's toggle reaches the sidebar at every width. Back drills past the screen the
+    // window opened on — the content's own list — and reaches the sidebar; a window already on
+    // its opening screen is a place, left by the toggle, with no way back to nothing. A shell
+    // that declares the bar's slots has no toggle of its own.
+    let first = usize::from(inputs.toggle_in_bar && stack.first() == Some(&NavPane::Sidebar));
+    let drills = stack.len().saturating_sub(first) > 1;
+
+    // The header row holds a column's header only where the column stands at the window's top: a
+    // floating drawer carries its own, and a column the row holds nothing for starts at the top.
+    let in_row = |column: Column| match column {
+        Column::Sidebar => g.sidebar != SidebarPlacement::Drawer,
+        Column::Inspector => g.inspector != InspectorPlacement::Sheet,
+        Column::Overview | Column::Content => true,
+    };
+    // The shell's own buttons (and a window's controls merged into the row) stand over any column,
+    // so they keep the row across them all; a column whose header holds nothing then has none.
+    let shell_row = (inputs.has_sidebar && !inputs.toggle_in_bar)
+        || inputs.has_inspector
+        || inputs.history.is_some()
+        || inputs.window_controls.is_some()
+        || (!inputs.toggle_in_bar && (inputs.content_back || drills));
+    let needs_header = !inputs.slots_in_bar()
+        && (shell_row
+            || Column::ALL
+                .iter()
+                .any(|c| in_row(*c) && inputs.header_wanted(*c)));
+    let rows = |column: Column| shell_row || inputs.header_wanted(column);
+    // A header in the window's bar stands over the content and only while
+    // the person reaches for the bar; the columns' bodies start at the top.
+    let in_bar = inputs.header_in_window_bar();
+    // A drawer's own header, as tall as the row and hidden with it.
+    let drawer_hh = if in_bar && !inputs.bar_revealed {
+        0.0
+    } else {
+        m.header.min(h)
+    };
+    let row_h = if needs_header { m.header.min(h) } else { 0.0 };
+    g.header_height = if in_bar && !inputs.bar_revealed {
+        0.0
+    } else {
+        row_h
+    };
+    let hh = g.header_height;
+    let bt = if in_bar { 0.0 } else { hh };
+    let bt_of = |column: Column| if rows(column) { bt } else { 0.0 };
+    // A header in the window's bar stands below whatever overlays the
+    // window's top edge (the desktop's top bar while it shows).
+    let top = if in_bar {
+        inputs.bar_top.clamp(0.0, (h - row_h).max(0.0))
+    } else {
+        0.0
+    };
+    // A column's header and the top its body starts at.
+    let header_of = |col: Rect, column: Column| {
+        if hh > 0.0 && col.width() > 0.0 && rows(column) {
+            Rect::new(col.x0, col.y0 + top, col.x1, col.y0 + top + hh)
+        } else {
+            Rect::ZERO
+        }
+    };
+    // A floating drawer stands under the header row, `s2` in.
+    let drawer_top = if hh > 0.0 { top + hh + m.gap } else { m.gap };
+    let drawer_bottom = (h - m.gap).max(drawer_top);
+
+    // While a docked sidebar or inspector slides, the columns beside it keep the width they have
+    // with it shut and slide with its edge, so they reflow once at the wide end
+    // (`motion::PanelSlide`).
+    let sidebar_moving = g.sidebar == SidebarPlacement::Docked
+        && !rail_sidebar
+        && inputs.sidebar.is_animating(sidebar_layout);
+    let inspector_moving = g.inspector == InspectorPlacement::Docked
+        && inputs.inspector.is_animating(inspector_layout);
+    let settled_w = (w - inspector_now - docked_now).max(0.0);
+    let widest_w = w
+        - if sidebar_moving { 0.0 } else { docked_now }
+        - if inspector_moving { 0.0 } else { inspector_now };
+    let region_w = crate::motion::PanelSlide::content_width(
+        settled_w,
+        widest_w.max(0.0),
+        sidebar_moving || inspector_moving,
+    );
+    let region = Rect::new(docked_now, 0.0, docked_now + region_w, h);
+    let region_w = region.width();
+    let screen_x = |pane: NavPane| -> f64 {
+        let i = stack_index(&stack, pane);
+        (f64_of_usize(i) - pos) * w
+    };
+    // Sidebar.
+    let mut sidebar_body = Rect::ZERO;
+    let mut sidebar_header = Rect::ZERO;
+    match g.sidebar {
+        SidebarPlacement::None => {}
+        SidebarPlacement::Docked => {
+            if docked_now > 0.0 {
+                g.sidebar_column = Rect::new(0.0, 0.0, docked_now, h);
+                // The body keeps its width and slides under the edge, so its
+                // rows never reflow while it collapses.
+                sidebar_body = Rect::new(docked_now - sw, bt_of(Column::Sidebar), docked_now, h);
+                sidebar_header = header_of(g.sidebar_column, Column::Sidebar);
+            }
+        }
+        SidebarPlacement::Drawer => {
+            if sidebar_reveal > 0.001 {
+                // Keep a pointer-sized strip of the content exposed so the
+                // drawer can be dismissed even when enlarged text fills it.
+                let dw = m.drawer.min((w - m.gap - m.drawer_dismiss_band).max(0.0));
+                let x0 = m.gap - (dw + m.gap) * (1.0 - sidebar_reveal);
+                g.sidebar_column = Rect::new(x0, drawer_top, x0 + dw, drawer_bottom);
+                (sidebar_header, sidebar_body) = drawer_split(
+                    g.sidebar_column,
+                    drawer_hh,
+                    inputs.header_wanted(Column::Sidebar),
+                );
+            }
+        }
+        SidebarPlacement::Screen => {
+            let x = screen_x(NavPane::Sidebar);
+            if x > -w && x < w {
+                g.sidebar_column = Rect::new(x, 0.0, x + w, h);
+                sidebar_body = Rect::new(x, bt_of(Column::Sidebar), x + w, h);
+                sidebar_header = header_of(g.sidebar_column, Column::Sidebar);
+            }
+        }
+    }
+    // The overview follows what it lists up to its cap: the room the detail has past its reading
+    // measure is the list's, so a long title fits and the page still reads as a page.
+    let reading = m.reading_measure + m.scroll_gutter;
+    let roomy = ow + (region_w - reading - ow).max(0.0);
+    let widest_list = roomy.min(m.overview_max);
+    if g.side_by_side {
+        let x = region.x0 + screen_x(NavPane::Content);
+        let lead = match g.overview {
+            // Nothing stands beside the list: it lists for the window.
+            OverviewPlacement::List if !inputs.has_content => region_w,
+            OverviewPlacement::List => widest_list.min((region_w - content_min).max(0.0)),
+            OverviewPlacement::Rail => m.rail.min(region_w),
+            OverviewPlacement::None => 0.0,
+        };
+        match g.overview {
+            OverviewPlacement::List => g.overview_column = Rect::new(x, 0.0, x + lead, h),
+            OverviewPlacement::Rail => g.rail = Rect::new(x, 0.0, x + lead, h),
+            OverviewPlacement::None => {}
+        }
+        if inputs.has_content {
+            g.content_column = Rect::new(x + lead, 0.0, x + region_w, h);
+        }
+    } else {
+        let ox = region.x0 + screen_x(NavPane::Overview);
+        let cx = region.x0 + screen_x(NavPane::Content);
+        if ox > -w && ox < w {
+            g.overview_column = Rect::new(ox, 0.0, ox + region_w, h);
+        }
+        if inputs.has_content && cx > -w && cx < w {
+            g.content_column = Rect::new(cx, 0.0, cx + region_w, h);
+        }
+    }
+    // Inspector.
+    let mut inspector_body = Rect::ZERO;
+    let mut inspector_header = Rect::ZERO;
+    match g.inspector {
+        InspectorPlacement::None => {}
+        InspectorPlacement::Docked => {
+            if inspector_now > 0.0 {
+                g.inspector_column = Rect::new(w - inspector_now, 0.0, w, h);
+                inspector_body = Rect::new(
+                    w - inspector_now,
+                    bt_of(Column::Inspector),
+                    w - inspector_now + iw,
+                    h,
+                );
+                inspector_header = header_of(g.inspector_column, Column::Inspector);
+            }
+        }
+        InspectorPlacement::Sheet => {
+            let header = inputs.header_wanted(Column::Inspector);
+            g.sheet = crate::widget::SheetFrame {
+                area: Rect::new(0.0, drawer_top, w, h),
+                peek: if header {
+                    drawer_hh.max(m.header)
+                } else {
+                    m.header
+                },
+                grip: m.pointer,
+                least_half: m.sheet_least_half,
+            };
+            let sheet = inputs
+                .sheet
+                .geometry(g.sheet, inspector_reveal, inspector_open);
+            g.inspector_column = sheet.panel;
+            g.sheet_covered = sheet.covered;
+            (inspector_header, inspector_body) = drawer_split(sheet.content, drawer_hh, header);
+        }
+    }
+
+    // 7. Headers and bodies.
+    g.headers = [
+        sidebar_header,
+        header_of(g.overview_column, Column::Overview),
+        header_of(g.content_column, Column::Content),
+        inspector_header,
+    ];
+    let body_of = |col: Rect, column: Column| {
+        if col.width() > 0.0 {
+            Rect::new(col.x0, col.y0 + bt_of(column), col.x1, col.y1)
+        } else {
+            Rect::ZERO
+        }
+    };
+    g.bodies = [
+        sidebar_body,
+        body_of(g.overview_column, Column::Overview),
+        body_of(g.content_column, Column::Content),
+        inspector_body,
+    ];
+    if g.rail.width() > 0.0 {
+        g.rail = Rect::new(g.rail.x0, bt, g.rail.x1, g.rail.y1);
+    }
+    keep_clear(&mut g, h);
+    g.page_edges = inputs
+        .page_lines
+        .and_then(|lines| page_edges(g.content_column, lines, &m));
+
+    // The filter field and the overview's controls sit under their column's header, one control
+    // band each, a gap clear of the header's hairline; in a page column the band spans the content
+    // edges.
+    let take_band = |g: &mut NavGeometry, column: Column| -> Rect {
+        let body = g.body(column);
+        if g.column(column).width() <= 0.0 || body.height() <= 0.0 {
+            return Rect::ZERO;
+        }
+        let top = (body.y0 + m.gap).min(body.y1);
+        let (x0, x1) = match (column, g.page_edges) {
+            (Column::Content, Some(edges)) => edges,
+            _ => (body.x0 + m.inset, body.x1 - m.inset),
+        };
+        let band = Rect::new(x0, top, x1.max(x0), top + m.filter);
+        if let Some(slot) = g.bodies.get_mut(column.index()) {
+            slot.y0 = (top + m.filter + m.gap).min(slot.y1);
+        }
+        band
+    };
+    if inputs.has_filter
+        && let Some(column) = g.filter_column(inputs)
+    {
+        g.filter = take_band(&mut g, column);
+    }
+    if inputs.has_controls && inputs.has_overview {
+        g.controls = take_band(&mut g, Column::Overview);
+    }
+
+    // 9. The shell's own buttons.
+
+    let front_pane = stack.get(front).copied().unwrap_or(NavPane::Content);
+    let front_column = match front_pane {
+        NavPane::Sidebar => Column::Sidebar,
+        NavPane::Overview => Column::Overview,
+        NavPane::Content if inputs.has_overview && g.overview_column.width() > 0.0 => {
+            Column::Overview
+        }
+        NavPane::Content => Column::Content,
+    };
+    let push_back = drills && front > opening_pane(&stack, inputs.kind, first);
+    let window_row = Rect::new(0.0, top, w, top + hh);
+    let back_column = if push_back {
+        Some(front_column)
+    } else if inputs.content_back && g.content_column.width() > 0.0 {
+        Some(Column::Content)
+    } else {
+        None
+    };
+    // A screen that went somewhere deeper has one way back, at the leading edge: where the
+    // sidebar is no docked column but a drawer of the phone, its toggle stands aside for it,
+    // and comes back with the first screen. An open drawer keeps its way to close.
+    let back_leads =
+        back_column.is_some() && g.sidebar != SidebarPlacement::Docked && !sidebar_open;
+    // The toggle reaches the sidebar wherever it stands beside the window or over it; the
+    // sidebar's own screen shows the screen under it instead and keeps no toggle.
+    let toggle_leads = match g.sidebar {
+        SidebarPlacement::Docked | SidebarPlacement::Drawer => true,
+        SidebarPlacement::Screen => front_pane != NavPane::Sidebar,
+        SidebarPlacement::None => false,
+    };
+    if hh > 0.0
+        && !push_back
+        && !back_leads
+        && inputs.has_sidebar
+        && !inputs.toggle_in_bar
+        && toggle_leads
+    {
+        // Pinned to the window's top-leading corner, on the sidebar while it shows docked and on
+        // the next column otherwise, so it never chases a sliding edge.
+        g.toggle = m.row.leading_chip(window_row, 0);
+        g.toggle_column = Some(
+            if g.sidebar == SidebarPlacement::Docked && g.sidebar_column.x1 >= g.toggle.x1 {
+                Column::Sidebar
+            } else {
+                front_column
+            },
+        );
+    }
+    if let Some(column) = back_column
+        && inputs.slots_in_bar()
+    {
+        // Back is the window bar's, beside its toggle ([`NavShell::window_toolbar`]).
+        g.back_column = Some(column);
+    } else if let Some(column) = back_column
+        && (push_back || g.header(column) != Rect::ZERO)
+    {
+        // The bar declares none of the shell's slots, so Back is a chevron the shell draws, beside
+        // the toggle if the bar carries it.
+        let slot = usize::from(g.toggle_column == Some(column) && g.toggle.width() > 0.0);
+        // The page moves; navigation belongs to the window. Back must stay
+        // operable even before the incoming screen enters the viewport.
+        let row = if push_back {
+            window_row
+        } else {
+            g.header(column)
+        };
+        g.back = if slot == 0 {
+            m.row.leading_chip(row, 0)
+        } else {
+            // After the toggle, which is pinned to the window's corner.
+            let x = g.toggle.x1 + m.gap;
+            Rect::new(x, g.toggle.y0, x + m.chip, g.toggle.y1)
+        };
+        g.back_column = Some(column);
+    }
+    // The window's controls take the row's trailing end while the host merged the window's bar into
+    // it: the app's header and the window's controls side by side, the shell's buttons and actions
+    // before them.
+    if let Some(width) = inputs.window_controls
+        && row_h > 0.0
+    {
+        g.window_row = Rect::new(0.0, top, w, top + row_h);
+        let x1 = (w - m.inset).max(0.0);
+        g.window_controls = Rect::new((x1 - width).max(0.0), top, x1, top + row_h);
+    }
+    // Where a column's trailing shell buttons count from: its header's end,
+    // or before the window's controls in the header that reaches them.
+    let trailing_row = |g: &NavGeometry, header: Rect| -> Rect {
+        if g.window_controls.width() > 0.0 && header.x1 >= g.window_controls.x1 {
+            Rect::new(
+                header.x0,
+                header.y0,
+                (g.window_controls.x0 - m.gap + m.inset).max(header.x0),
+                header.y1,
+            )
+        } else {
+            header
+        }
+    };
+    // How far into `row` its trailing shell buttons stand: the gutter the column's title
+    // starts at where the row reaches the window's edge, one inset beside another control.
+    let trailing_edge = |column: Column, row: Rect| -> f64 {
+        if column == Column::Sidebar || row.x1 < w - 0.5 {
+            m.inset
+        } else {
+            m.row.gutter
+        }
+    };
+    // History stands in the window's top-trailing corner: the trailing edge
+    // of the column that reaches the window's trailing edge (never a drawer).
+    if inputs.history.is_some()
+        && let Some(column) = [
+            Column::Inspector,
+            Column::Content,
+            Column::Overview,
+            Column::Sidebar,
+        ]
+        .into_iter()
+        .find(|column| {
+            let header = g.header(*column);
+            !g.floating(*column)
+                && g.column(*column).width() > 0.0
+                && header.x0 < w - 0.5
+                && header.x1 >= w - 0.5
+        })
+    {
+        g.history_column = Some(column);
+        let row = trailing_row(&g, g.header(column));
+        g.history = m.row.trailing_chip_from(row, 0, trailing_edge(column, row));
+    }
+    if inputs.has_inspector && hh > 0.0 {
+        // Docked and open, the toggle heads the inspector; otherwise it
+        // stands in the content's header (a drawer opens under it).
+        let column = if g.inspector == InspectorPlacement::Docked && inspector_open {
+            Column::Inspector
+        } else if g.content_column.width() > 0.0 {
+            Column::Content
+        } else {
+            front_column
+        };
+        let row = g.header(column);
+        if row != Rect::ZERO && g.column(column).width() > 0.0 {
+            g.inspector_toggle_column = Some(column);
+            let slot = usize::from(g.history_column == Some(column));
+            let chip_row = trailing_row(&g, row);
+            g.inspector_toggle =
+                m.row
+                    .trailing_chip_from(chip_row, slot, trailing_edge(column, chip_row));
+        }
+    }
+    // Content is fully hidden by a pushed screen: no buttons on it.
+    if g.toggle_column.is_some_and(|c| g.column(c).width() <= 0.0) {
+        g.toggle = Rect::ZERO;
+        g.toggle_column = None;
+    }
+
+    // 10. Dragging the docked sidebar's trailing edge resizes it.
+    if g.sidebar == SidebarPlacement::Docked
+        && inputs.mode != NavMode::Docked
+        && sidebar_open
+        && g.sidebar_column.width() > 0.0
+    {
+        let x = g.sidebar_column.x1;
+        g.resize_handle = Rect::new(x - m.resize_grip, bt, x + m.resize_grip, h);
+    }
+    g
+}
+
+/// A floating drawer's header (when its column has one) and body.
+pub(super) fn drawer_split(col: Rect, hh: f64, header: bool) -> (Rect, Rect) {
+    if col.width() <= 0.0 {
+        return (Rect::ZERO, Rect::ZERO);
+    }
+    if header && hh > 0.0 {
+        let y1 = (col.y0 + hh).min(col.y1);
+        (
+            Rect::new(col.x0, col.y0, col.x1, y1),
+            Rect::new(col.x0, y1, col.x1, col.y1),
+        )
+    } else {
+        (Rect::ZERO, col)
+    }
+}
+
+pub(super) fn layout_of(sidebar: SidebarPlacement) -> SplitLayout {
+    match sidebar {
+        SidebarPlacement::Drawer | SidebarPlacement::Screen => SplitLayout::Overlay,
+        SidebarPlacement::Docked | SidebarPlacement::None => SplitLayout::Docked,
+    }
+}
+
+/// The screen a window opens on, which Back drills past: the content's own list where the
+/// content is a list, else the first screen of the stack. A screen at or before it is a place,
+/// reached and left by the sidebar's toggle; only a screen deeper than it has a way back.
+pub(super) fn opening_pane(stack: &[NavPane], kind: ContentKind, first: usize) -> usize {
+    if kind == ContentKind::List {
+        stack_index(stack, NavPane::Content)
+    } else {
+        first.min(stack.len().saturating_sub(1))
+    }
+}
+
+pub(super) fn stack_index(stack: &[NavPane], pane: NavPane) -> usize {
+    stack
+        .iter()
+        .position(|p| *p == pane)
+        .or_else(|| {
+            // An overview standing beside the content is the content screen.
+            (pane == NavPane::Overview)
+                .then(|| stack.iter().position(|p| *p == NavPane::Content))
+                .flatten()
+        })
+        .unwrap_or(stack.len().saturating_sub(1))
+}

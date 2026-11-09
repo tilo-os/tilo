@@ -777,6 +777,7 @@ struct Doors<'a> {
 }
 
 /// The session on `backend` 's displays, at `size` where the backend runs in one.
+#[cfg(target_os = "linux")]
 fn start_session(
     backend: Backend,
     options: tilo_session::Options,
@@ -1000,9 +1001,15 @@ fn device_options(
         displays::{Backlights, Screens},
     };
     let owned = machine.is_owned();
+    // This device's apps, as search and the surfaces that name an app read them, and the index
+    // apps publish what they hold into.
+    let lists = tilo_session::Lists::of_device();
+    let content = tilo_desktop_search::content_index::session();
     Options {
         config,
-        search: search_options(),
+        search: search_options(&lists, std::sync::Arc::clone(&content)),
+        lists,
+        content,
         // The apps this session starts reach its services over the socket the launcher hands them;
         // a session inside another desktop's window serves them on a socket of its own, leaving
         // that desktop's alone.
@@ -1187,7 +1194,10 @@ fn audio_helper() -> Option<std::path::PathBuf> {
 /// apps the person can get, each followed as it changes, what apps hold, the person's files, the
 /// records the workspaces hold, and the search sources they switched off.
 #[cfg(target_os = "linux")]
-fn search_options() -> tilo_session::SearchOptions {
+fn search_options(
+    lists: &tilo_session::Lists,
+    content: std::sync::Arc<tilo_desktop_search::content_index::AppContentIndex>,
+) -> tilo_session::SearchOptions {
     use std::sync::Arc;
     use tilo_desktop_search::providers::files::FileNames;
 
@@ -1199,7 +1209,6 @@ fn search_options() -> tilo_session::SearchOptions {
     });
     // What a reference written under an app's earlier id names, for search and for every decision
     // this process makes.
-    let content = tilo_desktop_search::content_index::session();
     match app_catalogue::apps::earlier_ids_from_env() {
         Ok(earlier) => {
             tilo_action_policy::earlier::register_all(&earlier);
@@ -1219,13 +1228,16 @@ fn search_options() -> tilo_session::SearchOptions {
         Err(error) => eprintln!("tilo-session: installed app surfaces: {error}"),
     }
     tilo_session::SearchOptions {
-        lists: tilo_session::Lists::of_device(),
-        content: Some(content),
-        files,
+        apps: Some(std::sync::Arc::new(lists.clone())),
+        indexes: Some(std::sync::Arc::new(
+            tilo_session::mount::indexes::SessionIndexes::new(content, files),
+        )),
         preferences: tilo_desktop_search::SearchPreferences::from_values(
             &settings_store::load_section(tilo_desktop_search::preferences::SECTION),
         ),
         places: tilo_desktop_search::providers::places::RecentPlaces::default(),
+        // The settings pages are this desktop's own: the session offers them to search itself.
+        settings: None,
         // The records the workspaces on this device hold, read now and followed as the apps of
         // those workspaces name more.
         records: Some(tilo_session::Records::of_device()),

@@ -106,12 +106,9 @@ pub(super) fn of(file: &File) -> io::Result<Coordinate> {
     })
 }
 fn filesystem_type(file: &File) -> io::Result<libc::c_long> {
-    let mut value = std::mem::MaybeUninit::<libc::statfs>::uninit();
-    // SAFETY: fstatfs initializes the output on success; file owns a live FD.
-    if unsafe { libc::fstatfs(file.as_raw_fd(), value.as_mut_ptr()) } < 0 {
-        return Err(io::Error::last_os_error());
-    }
-    Ok(unsafe { value.assume_init() }.f_type)
+    // rustix types `f_type` as the kernel's signed word on every C library;
+    // musl's own `statfs` types it unsigned.
+    Ok(rustix::fs::fstatfs(file)?.f_type)
 }
 fn reopen(path: &Path) -> io::Result<File> {
     File::options()

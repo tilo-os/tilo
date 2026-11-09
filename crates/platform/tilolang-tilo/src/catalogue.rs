@@ -531,6 +531,8 @@ impl Reader<'_> {
                     fields,
                     search: SearchMeta::default(),
                     origin: None,
+                    title: None,
+                    untitled: None,
                 });
             }
         }
@@ -564,6 +566,8 @@ impl Reader<'_> {
             fields,
             search: SearchMeta::default(),
             origin: None,
+            title: None,
+            untitled: None,
         });
     }
 
@@ -631,7 +635,6 @@ impl Reader<'_> {
             toggles: None,
             key: None,
             group: None,
-            frequent: false,
             guard: false,
             applies: false,
             uses: Vec::new(),

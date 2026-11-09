@@ -1,5 +1,7 @@
 //! The selection a list's rows paint, and the row that takes it.
 
+use vello::kurbo::Rect;
+
 use super::Widget;
 
 /// A row's selection with its neighbours', for a delegate that paints its
@@ -52,4 +54,49 @@ pub(super) fn selection_sink<'a>(
         return capability_mut::<dyn RowSelectionSink>(widget);
     }
     widget.children_mut().into_iter().find_map(selection_sink)
+}
+
+/// The box a row's own content takes, in the space its rect answers in: a list that paints its
+/// rows' selection paints it around this box, as a row that paints its own does, rather than
+/// across the space the row's layout keeps around what it shows.
+///
+/// A layout keeps the gutter its content stands in — a page centres its column inside one, a
+/// lane keeps the room for the column a row's leading control takes — and none of it belongs to
+/// the row a person chose.
+pub trait RowContentBox {
+    /// The box the content stands in, in the space of this widget's own rect.
+    fn row_content_box(&self) -> Option<Rect>;
+}
+
+/// The box `widget` — or the first of its children — shows its content in: what a list asks a
+/// row's view for before it paints the row's selection.
+pub fn row_content_box(widget: &dyn Widget) -> Option<Rect> {
+    use crate::widget::capability::capability;
+    if let Some(declared) = capability::<dyn RowContentBox>(widget) {
+        return declared.row_content_box();
+    }
+    widget.children().into_iter().find_map(row_content_box)
+}
+
+/// A selection lift a list painted around one of its rows, as it painted it: the box, and what
+/// the row shows that the box stands around.
+///
+/// An audit holds the one to the other: a lift reaching past what the row shows draws the
+/// person's choice across the space beside it.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct RowLift {
+    /// The box painted.
+    pub rect: Rect,
+    /// What the row shows: the lift stands around this box, `bleed` past it on each side.
+    pub content: Rect,
+    /// How far the lift reaches past the row's content on each side.
+    pub bleed: f64,
+}
+
+/// A list that paints its rows' selection, asked for through
+/// [`capability`](crate::widget::capability::capability): the lifts it painted last frame, in
+/// window space.
+pub trait PaintedRowLifts {
+    /// The selection lifts the list painted for its rows.
+    fn painted_row_lifts(&self) -> Vec<RowLift>;
 }

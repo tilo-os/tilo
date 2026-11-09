@@ -10,6 +10,7 @@ fn every_listen_address_requires_a_nonempty_token() {
                 address: address.parse().unwrap(),
                 token: token.map(str::to_owned),
                 workspace: None,
+                grants: Grants::Optional,
             };
             assert_eq!(
                 config.validate().is_ok(),
@@ -47,6 +48,7 @@ fn no_log_line_names_the_mcp_bearer_token() {
         address: "127.0.0.1:7391".parse().unwrap(),
         token: Some(read_token(&path).unwrap()),
         workspace: Some("0b0c8f0e-6f4a-4f2f-9d1c-2f2b0a5e11aa".into()),
+        grants: Grants::Optional,
     };
     let printed = [
         format!("{config:?}"),
@@ -126,20 +128,22 @@ fn missing_endpoint_credentials_deny_every_protected_route_before_side_effects()
             dir.path().join("ledger.json"),
         )
         .unwrap();
-        let endpoint = Endpoint::build(
+        let endpoint = Endpoint::hosted(
             StubHost::default(),
-            "workspace".into(),
             "owner".into(),
+            Some("workspace".into()),
             token.map(str::to_owned),
-            Some(Arc::new(viewer)),
+            None,
+            None,
         );
+        endpoint.serve_viewer(Some(Arc::new(viewer)));
         let admissions = Arc::new(AtomicUsize::new(0));
         let count = admissions.clone();
         endpoint
-            .serve_sessions(Arc::new(move || {
+            .serve_workspaces(one_factory(Arc::new(move || {
                 count.fetch_add(1, Ordering::SeqCst);
                 Err(std::io::Error::other("unexpected admission"))
-            }))
+            })))
             .unwrap();
         run(async {
             let revoke = format!("/viewer/invitations/{}", "ab".repeat(32));
@@ -183,7 +187,7 @@ fn a_session_id_never_replaces_the_token_for_calls_or_deletion() {
     let endpoint = endpoint(host);
     run(async {
         let id = open(&endpoint, "authenticated agent").await;
-        let execution = endpoint.find(&id).unwrap().execution_caller();
+        let execution = endpoint.find("workspace", &id).unwrap().execution_caller();
         let call = json!({"jsonrpc":"2.0", "id":2, "method":"tools/call", "params":{
             "name":"tilo_invoke", "arguments":{"peer_id":71, "revision":"1",
             "resource":"test.note:1", "action":tilo_resource::APPLY, "arguments":{}}

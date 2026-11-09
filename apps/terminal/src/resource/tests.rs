@@ -335,3 +335,75 @@ fn every_window_is_a_session_of_its_own() {
     let second = beside.read_document(|doc| doc.clone().get_heads());
     assert_ne!(first, second, "and holds nothing of it");
 }
+
+/// History reads an agent's command from the session's record as it is
+/// stored, never through this model: the request a `run` queued, how the
+/// terminal settled it, and the run it recorded under the request's id.
+/// This pins that stored shape.
+#[test]
+fn history_reads_a_requested_run_from_the_stored_record() {
+    use ui::tilo_resource::Settled;
+    let mut session = Replica::<Terminal>::new().as_author("agent:claude-code");
+    session
+        .apply(Terminal::CLAIM_PANE.with(uuid::Uuid::new_v4().to_string()))
+        .unwrap();
+    session
+        .apply(Terminal::RUN.with("cargo test -p signup".to_owned()))
+        .unwrap();
+    let request = session
+        .state()
+        .unwrap()
+        .requests
+        .pending()
+        .next()
+        .map(|(id, _)| id.clone())
+        .unwrap();
+    let hash = "ab".repeat(32);
+    session
+        .apply(Terminal::RECORD_RUN.with(Finished {
+            command: "cargo test -p signup".to_owned(),
+            cwd: "/home/ada/signup".to_owned(),
+            started_ms: 1_000,
+            ended_ms: 4_500,
+            exit: 101,
+            output: Some(hash.clone()),
+            output_len: 2_048,
+            truncated: false,
+            tool: "cargo".to_owned(),
+            undoable: false,
+            items: Vec::new(),
+            request: Some(request.clone()),
+            run: request.clone(),
+        }))
+        .unwrap();
+    session
+        .apply(Terminal::paths().requests.settle(
+            &request,
+            &Settled::Done(RunAnswer {
+                run: Some(request.clone()),
+                exit: Some(101),
+                refusal: None,
+            }),
+        ))
+        .unwrap();
+    let mut doc = session.doc().clone();
+    let heads = doc.get_heads();
+    let doc = doc.document();
+    let rows = tilo_automerge::items::outbox_entries(doc, &heads, "requests");
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].id, request.as_str());
+    assert_eq!(rows[0].value["command"], "cargo test -p signup");
+    let settled = rows[0].settled.as_ref().expect("the request is settled");
+    assert_eq!(
+        settled.pointer("/result/run"),
+        Some(&serde_json::json!(request.as_str()))
+    );
+    let run =
+        tilo_automerge::items::collection_item_json(doc, &heads, "runs", request.as_str()).unwrap();
+    assert_eq!(run["command"], "cargo test -p signup");
+    assert_eq!(run["cwd"], "/home/ada/signup");
+    assert_eq!(run["exit"], 101);
+    assert_eq!(run["started_ms"], 1_000);
+    assert_eq!(run["ended_ms"], 4_500);
+    assert_eq!(run["output"], format!("blake3:{hash}:2048"));
+}

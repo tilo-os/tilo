@@ -1937,10 +1937,20 @@ fn rows_of(
                 workspace.is_some_and(|workspace| is_workspace_bot(workspace, participant));
             let is_agent =
                 is_bot || names_agent(&agents, participant) || has_agent_marker(participant);
-            let (red, green, blue) = colors
-                .get(&participant.id)
-                .copied()
-                .unwrap_or_else(|| ui::presence::user_color(&participant.id));
+            // An agent wears its client's hue (`PresenceHue::of_agent_client`), as every face of
+            // it does.
+            let client_hue = is_agent
+                .then(|| ui::tokens::PresenceHue::of_agent_client(&participant.name))
+                .flatten();
+            let (red, green, blue) = client_hue.map_or_else(
+                || {
+                    colors
+                        .get(&participant.id)
+                        .copied()
+                        .unwrap_or_else(|| ui::presence::user_color(&participant.id))
+                },
+                ui::presence::identity_rgb,
+            );
             let has_view = participant.active_tab.is_some();
             RosterRow {
                 id: participant.id.clone(),
@@ -2093,10 +2103,7 @@ pub fn in_app(app: &str) -> String {
 
 fn tab_title_in(workspace: Option<&tilo_desktop_model::Workspace>, tab_id: u64) -> Option<String> {
     workspace?
-        .strips
-        .iter()
-        .flat_map(|strip| &strip.window_groups)
-        .flat_map(|group| &group.tabs)
+        .tabs()
         .find(|tab| tab.id == tab_id)
         .map(|tab| tab.title.trim())
         .filter(|title| !title.is_empty())

@@ -53,7 +53,7 @@ mod shown;
 use shown::ListShown;
 #[path = "virtual_list_tree.rs"]
 mod tree;
-pub use tree::{TREE_DISCLOSURE, TREE_INDENT, TreeMarks, TreeMove, TreeRow};
+pub use tree::{TREE_INDENT, TreeMarks, TreeMove, TreeRow};
 #[path = "virtual_list_menu.rs"]
 mod menu;
 use menu::RowMenus;
@@ -76,6 +76,14 @@ pub use row_group::RowGroup;
 const DEFAULT_VIEWPORT_HEIGHT: f64 = 320.0;
 /// How near its end a list that follows its end still counts as at it, in logical pixels.
 const END_SLACK: f64 = 0.5;
+
+/// Whether a list as tall as its rows (`VirtualList::fitting_rows`) asks the layout for another
+/// pass: its box stands at a height other than the one its rows come to, and that height is not
+/// the one its viewport already stands at. A box a fraction of a pixel off is the layout's own
+/// reading of the same height, and asking for it again would never settle.
+fn fit_needs_layout(box_height: f64, rows: f64, viewport: f64) -> bool {
+    (box_height - rows).abs() > 0.5 && (viewport - rows).abs() > 0.5
+}
 
 fn px(value: f64) -> f32 {
     #[allow(
@@ -180,6 +188,13 @@ pub trait ListModel {
         None
     }
 
+    /// The item the row `key` shows, as the app names a row's item: what a row keeps when the
+    /// app names the list's rows again under keys of their own. `None` when the model cannot
+    /// say, or the row shows no item.
+    fn item_presented(&self, _key: &Self::Key) -> Option<String> {
+        None
+    }
+
     /// What the row `index` is grouped by, when the model groups its rows: the list draws the
     /// heading over the first row of each group ([`RowGroup`]), a disclosure the keyboard
     /// reaches like a row and assistive technology reads as one. `None` for a row in no group,
@@ -266,7 +281,10 @@ type ReorderValidator<M> =
     Box<dyn FnMut(&M, &<M as ListModel>::Key, &DropTarget<<M as ListModel>::Key>) -> bool>;
 type ReorderCommit<M> = Box<dyn FnMut(&mut M, ReorderDrop<<M as ListModel>::Key>) -> bool>;
 use super::row_selection::selection_sink;
-pub use super::row_selection::{RowBuild, RowSelection, RowSelectionSink};
+pub use super::row_selection::{
+    PaintedRowLifts, RowBuild, RowContentBox, RowLift, RowSelection, RowSelectionSink,
+    row_content_box,
+};
 
 struct MountedRow<K> {
     key: K,
@@ -394,6 +412,8 @@ pub struct VirtualList<M: ListModel> {
     letting_go: Vec<(usize, LaidOutRow)>,
     selection: KeySelection<M::Key>,
     multi_select: bool,
+    /// The rows are read, not chosen ([`Self::reading`]): no gesture makes one the selection.
+    reading: bool,
     /// Moving the focused row by keyboard (or assistive technology) also
     /// selects it.
     follow_focus: bool,
@@ -430,6 +450,10 @@ pub struct VirtualList<M: ListModel> {
     /// that leaves the list closes with it ([`Self::set_open`]). One row stands open at a
     /// time, and the row builder is told which row it is drawing.
     open: Option<M::Key>,
+    /// The row that stood open when the app named the list's rows again
+    /// ([`ListModelChange::Reset`]): its keys are read anew, and until they arrive the row is
+    /// not one that left ([`Self::close_open_leaving`]).
+    rereading_open: Option<M::Key>,
     /// Rows whose measured height is on its way to another, at the height they show now: a row
     /// that grew into its item, or whose content changed, moves the rows after it as it
     /// arrives, and the list clips it to the height it shows.
@@ -481,6 +505,15 @@ pub struct VirtualList<M: ListModel> {
     disclosure: f64,
     /// How far a row's lift bleeds past its text ([`crate::chrome::row_bleed`]).
     lift: f64,
+    /// The selection lifts the last painted frame drew for its rows, and what those rows show
+    /// ([`crate::widget::RowLift`]): an audit holds a lift to the row it selects.
+    painted_lifts: Vec<crate::widget::RowLift>,
+    /// Whether a row with an item opens into it where it stands, or the item opens in front of
+    /// the list ([`Self::in_place`]).
+    in_place: bool,
+    /// The height of a row's own line, from the last layout's theme: what a row that grew into
+    /// its item still shows where it starts.
+    row_line: f64,
     /// Where the rows stand between the list's edges ([`Self::flush`], [`Self::in_column`]).
     stance: RowStance,
     /// The space above the first row and below the last ([`Self::with_edges`]).
@@ -647,6 +680,7 @@ impl<M: ListModel> VirtualList<M> {
             letting_go: Vec::new(),
             selection: KeySelection::new(),
             multi_select: false,
+            reading: false,
             follow_focus: false,
             focused_key: None,
             focused_group: None,
@@ -662,6 +696,7 @@ impl<M: ListModel> VirtualList<M> {
             on_opened: None,
             on_closed: None,
             open: None,
+            rereading_open: None,
             growth: Vec::new(),
             growing: HashSet::new(),
             menus: RowMenus::None,
@@ -693,6 +728,9 @@ impl<M: ListModel> VirtualList<M> {
                 crate::tokens::Metrics::BASE.icon_sm + crate::tokens::Spacing::BASE.rhythm.related,
             ),
             lift: f64::from(crate::tokens::Spacing::BASE.s2),
+            painted_lifts: Vec::new(),
+            in_place: true,
+            row_line: f64::from(crate::tokens::Metrics::BASE.row_single),
             stance: RowStance::Bleed,
             edges: None,
             rows_beside_bar: false,
@@ -928,6 +966,18 @@ impl<M: ListModel> VirtualList<M> {
     #[must_use]
     pub fn selection_follows_focus(mut self) -> Self {
         self.follow_focus = true;
+        self
+    }
+
+    /// The rows are read, not chosen: a press or a tap on one gives it the keyboard and
+    /// chooses nothing, so no row is left tinted behind the finger, and the keyboard's way
+    /// through the rows rings the row it is on without choosing that one either. A list that
+    /// shows what people said — a conversation's messages, a document's replies, the rows of a
+    /// page column — is read this way; a list that stands for the things a window opens is
+    /// chosen.
+    #[must_use]
+    pub const fn reading(mut self) -> Self {
+        self.reading = true;
         self
     }
 
@@ -1670,11 +1720,18 @@ where
     }
 }
 
+impl<M: ListModel> crate::widget::PaintedRowLifts for VirtualList<M> {
+    fn painted_row_lifts(&self) -> Vec<crate::widget::RowLift> {
+        self.painted_lifts.clone()
+    }
+}
+
 impl<M: ListModel + 'static> Widget for VirtualList<M> {
     crate::provides!(
         dyn crate::widget::controls::ActionControls,
         dyn crate::resources::PublishesResources,
-        dyn crate::widget::ResourceOperations
+        dyn crate::widget::ResourceOperations,
+        dyn crate::widget::PaintedRowLifts
     );
 
     fn set_interaction_environment(
@@ -1788,6 +1845,7 @@ impl<M: ListModel + 'static> Widget for VirtualList<M> {
         };
         self.lift = crate::chrome::row_bleed(theme);
         self.disclosure = crate::chrome::disclosure_gutter(theme);
+        self.row_line = f64::from(theme.tokens.metrics.row_single);
         // A chevron hangs left of the column so the column never moves: one left edge.
         let gutter = if self.tree.is_some() || self.model.discloses() {
             self.disclosure
@@ -1870,6 +1928,11 @@ impl<M: ListModel + 'static> Widget for VirtualList<M> {
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
         self.rect = crate::widget::layout_rect(taffy, node, origin);
+        // A list too narrow for one thing at a time shows the item in front of it, never grown
+        // into the row: the row that stood open closes as the window narrows.
+        if !self.in_place {
+            self.set_open(None);
+        }
         if self.fill_height
             && self.rect.height() > 0.0
             && (self.rect.height() - self.viewport.viewport()).abs() > 0.5
@@ -1951,9 +2014,12 @@ impl<M: ListModel + 'static> Widget for VirtualList<M> {
         // rows shorter than its box stand at its foot again.
         remeasured |= self.keep_end();
         remeasured |= (self.end_slack() - slack).abs() > 0.5;
-        // A list as tall as its rows grows or shrinks with what they measured.
-        if self.fit_rows && (self.rect.height() - self.viewport.content_extent()).abs() > 0.5 {
-            self.viewport.set_viewport(self.viewport.content_extent());
+        // A list as tall as its rows grows or shrinks with what they measured, once for each
+        // height they come to: the box a layout gives it is the layout's own reading of that
+        // height, so a fraction of a pixel is the same height and no reason to lay out again.
+        let extent = self.viewport.content_extent();
+        if self.fit_rows && fit_needs_layout(self.rect.height(), extent, self.viewport.viewport()) {
+            self.viewport.set_viewport(extent);
             self.box_dirty = true;
             remeasured = true;
         }
@@ -2172,20 +2238,20 @@ impl<M: ListModel + 'static> Widget for VirtualList<M> {
                             self.scroll.momentum.fling(drag.velocity);
                             self.last_tick = Some(crate::time::now());
                         }
-                    } else if let Some((index, key)) = self.row_at_cursor() {
-                        self.press_row_at(index, key, *ctx.modifiers);
+                    } else if let Some((_, key)) = self.row_at_cursor() {
+                        self.press_row(key, *ctx.modifiers);
                     } else {
                         // A press where no row stands, beside a row opened into its item: the
                         // person pressed outside it, and it closes.
                         self.close_open();
                     }
                     *ctx.handled = true;
-                } else if let Some((index, key)) = pressed
+                } else if let Some((_, key)) = pressed
                     && self.row_at_cursor().is_some_and(|(_, at)| at == key)
                 {
                     // The press went to a row's own gesture and came back without one: the
                     // tap's click is the list's.
-                    self.press_row_at(index, key, *ctx.modifiers);
+                    self.press_row(key, *ctx.modifiers);
                     *ctx.handled = true;
                 }
             }
@@ -2583,7 +2649,7 @@ impl<M: ListModel + 'static> Widget for VirtualList<M> {
     }
 
     fn traps_focus(&self) -> bool {
-        self.context_menu_is_open()
+        self.context_menu_is_open() || self.send_to_alone_open()
     }
 
     fn next_wake_deadline(&self) -> Option<Instant> {

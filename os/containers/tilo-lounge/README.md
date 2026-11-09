@@ -51,6 +51,7 @@ Optional, with these defaults:
 | `TILO_ROOMS_AUTHOR_APPS` | every first-party app | comma-separated apps members write through; `none` makes the workspace read-only |
 | `TILO_ROOMS_BOTS` | none | `;`-separated bot specs (`<program or directory entry> key=value …`) |
 | `TILO_ROOMS_INACTIVE_AFTER_DAYS` | `30` | days without a session before a member stops being one |
+| `TILO_ROOMS_OWN_WORKSPACES` | none | gigabytes each person may keep in the workspace of their own the host gives anyone who asks; unset gives none |
 | `TILO_ROOMS_STATE` | `/run/tilo-rooms` | the volume the workspace lives on |
 | `TILO_ROOMS_SITE_ORIGINS` | none | comma-separated origins besides the relay's that may join |
 | `TILO_ROOMS_RELAY_PLAIN` | `0.0.0.0:9780` | the listener the ingress forwards the workspace to |
@@ -98,7 +99,9 @@ deployment that still names one (eu1 does) starts unchanged.
 `tools/ci/publish/lounge-binaries.sh` builds the programs and
 `tools/ci/publish/lounge-context.sh` lays out the build context; the
 `publish-site` workflow (dispatch-only, main) builds this image and the web
-entry from one commit, tests both and publishes `dev-<commit>`.
+entry from one commit, tests both and publishes `dev-<commit>`. Those steps
+are also t's checks — `lounge-binaries`, `image-lounge-context`,
+`image-lounge` — so a change is built by naming them.
 `test-entrypoint.sh` asserts the environment-to-flags mapping and
 `test-image.sh` what the built image must carry.
 
@@ -116,6 +119,12 @@ publishing, so a dispatched build publishes nothing a person cannot use.
 bash os/containers/tilo-lounge/test-integration.sh \
   out/lounge/image.oci.tar out/web-desktop/bundle
 ```
+
+The same gate is t's, and runs on any commit and branch: `t test lounge-gate`
+builds the image and the web bundle it needs (each step its own cached check)
+and runs it. What the gate found stays in `/target/lounge-gate` — every page's
+snapshot and console, the site's and the Lounge's logs — which the check keeps
+as its outputs, and what the pages said reaches the run's log as they fail.
 
 It needs buildah (it starts the image chrooted, as `test-image.sh` does),
 node, a headless Chrome (`CHROME`, else Playwright's cache), curl and a Rust

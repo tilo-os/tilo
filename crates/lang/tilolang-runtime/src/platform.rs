@@ -428,19 +428,13 @@ impl Core {
         self.ret_h(Value::Principal(crate::ids::Principal::new(who)))
     }
 
-    /// A version of `of` as a `host.Version`: who, when, what, the task run, its kind, the
+    /// A version of `of` as a `host.Version`: who, when, what, the run, its kind, the
     /// fields it changed by name, the resource, what its action says it does, what it did, its
     /// icon, each field it changed with what it held before and after, and how many items the
     /// change was made over; then the id of the action that made it and of its change, which
     /// code compares rather than reads (`tilolang::host::action_id_at`).
     fn version_value(&self, v: crate::store::Version, of: &ResourceRef) -> HResult<Value> {
-        let task = v.task.as_ref().map(|run| {
-            Box::new(Value::Tuple(vec![
-                Value::Text(run.id.clone()),
-                Value::Text(run.task().to_owned()),
-                Value::Text(run.title.clone()),
-            ]))
-        });
+        let run = v.run.as_ref().map(|run| Box::new(run_value(run)));
         let info = self.type_of_ref(&of.ty).ok().map(|(_, info)| info);
         let named: Vec<String> = v
             .fields
@@ -475,7 +469,7 @@ impl Core {
             .as_ref()
             .and_then(|a| a.icon.clone())
             .map(|icon| Box::new(Value::Text(icon)));
-        let mine = v.task.is_none() && self.looking_now().as_deref() == Some(v.who.as_str());
+        let mine = v.run.is_none() && self.looking_now().as_deref() == Some(v.who.as_str());
         let actor = self.actor(&v.who, mine);
         // Who proposed the action the person accepted, by the name the workspace calls them.
         let suggested = v.suggested_by.as_ref().map_or_else(String::new, |who| {
@@ -493,7 +487,7 @@ impl Core {
             Value::Principal(Principal::new(v.who)),
             Value::Text(v.at),
             Value::Text(self.action_label(&v.action)),
-            Value::Opt(task),
+            Value::Opt(run),
             Value::Text(v.kind.word().to_owned()),
             Value::List(fields),
             Value::resource(of),
@@ -997,15 +991,9 @@ impl Core {
             };
             let who = Value::Principal(Principal::new(last.who.clone()));
             let at_time = Value::Text(last.at.clone());
-            let task = Value::Opt(last.task.as_ref().map(|run| {
-                Box::new(Value::Tuple(vec![
-                    Value::Text(run.id.clone()),
-                    Value::Text(run.task().to_owned()),
-                    Value::Text(run.title.clone()),
-                ]))
-            }));
+            let run = Value::Opt(last.run.as_ref().map(|run| Box::new(run_value(run))));
             let mine =
-                last.task.is_none() && self.looking_now().as_deref() == Some(last.who.as_str());
+                last.run.is_none() && self.looking_now().as_deref() == Some(last.who.as_str());
             // How many changes the step folds: versions of one change are one command over many
             // items, which history says the count of and Undo takes back together.
             let changes = {
@@ -1026,7 +1014,7 @@ impl Core {
             out.push(Value::Tuple(vec![
                 who,
                 at_time,
-                task,
+                run,
                 Value::List(versions),
                 Value::Bool(mine),
                 Value::Int(i64::try_from(changes).unwrap_or(i64::MAX)),
@@ -1035,17 +1023,17 @@ impl Core {
         Ok(Value::List(out))
     }
 
-    /// `changes(of: run)` of the `host.TaskRun` held at `h`: every version it made, oldest
+    /// `changes(of: run)` of the `host.Run` held at `h`: every version it made, oldest
     /// first, each of the resource it is a version of.
     fn run_changes_value(&self, h: i32) -> HResult<Value> {
         let run = match self.val(h)? {
             Value::Tuple(fields) => match fields.into_iter().next() {
                 Some(Value::Text(id)) => id,
-                _ => return trap("changes: a task run names its group first"),
+                _ => return trap("changes: a run names its group first"),
             },
             other => {
                 return trap(format!(
-                    "changes: expected a task run, got {}",
+                    "changes: expected a run, got {}",
                     other.kind_name()
                 ));
             }
@@ -1174,9 +1162,10 @@ impl Core {
     /// conversation's first unread message), as a transcript shows it.
     ///
     /// Read item by item from the collection's end, a page at most: an item is unseen when a
-    /// version of it is newer than what the person has seen of `at` (its mark, or the newest
-    /// item they made, which they wrote and so read). The first one found, oldest first, is the
-    /// answer, and a channel the person is caught up with costs the page it looks through.
+    /// version of it is newer than what the person has seen of `at` (its mark), and an item they
+    /// wrote is one they saw. The first one found, oldest first, is the answer, and a channel
+    /// the person is caught up with costs the page it looks through. Writing a message reads
+    /// nothing above it: a reply counts as neither a mark nor a reading of what came before it.
     pub(crate) fn first_unseen_of(
         &self,
         person: &str,
@@ -1213,32 +1202,31 @@ impl Core {
         let mark = self.seen_mark(person, &at.id_string());
         // Where the person read to, by the log rather than by a clock: the newest item whose
         // change their mark of the channel names (a store with no channel versions names the
-        // newest item it holds), and the newest item they made, since writing one means reading
-        // up to it. Both are looked for in the tail, a page deep.
+        // newest item it holds). It is looked for in the tail, a page deep.
         let mut read_to: Option<usize> = None;
         for index in (len.saturating_sub(TAIL)..len).rev() {
             let Some(id) = items.get(index) else {
                 continue;
             };
             let versions = store.versions(&at.item(&id, item.to_owned()))?;
-            let named = mark
+            if mark
                 .as_ref()
-                .is_some_and(|mark| versions.iter().any(|v| v.change == mark.change));
-            if named || versions.iter().any(|v| v.who == person) {
-                read_to = Some(read_to.map_or(index, |at| at.max(index)));
+                .is_some_and(|mark| versions.iter().any(|v| v.change == mark.change))
+            {
+                read_to = Some(index);
+                break;
             }
         }
-        let from = read_to.map_or(0, |index| index.saturating_add(1));
         // The first item after where they read that someone changed since, oldest first: a
-        // version of theirs is one they saw, so it never makes an item unread of its own. With
-        // nothing read (no mark, nothing of theirs), the first item is where they stopped: it
-        // alone is asked, so an unread conversation costs one message rather than all of them.
-        let upto = if read_to.is_none() {
-            from.saturating_add(1)
-        } else {
-            len
+        // version of theirs is one they saw, so it never makes an item unread of its own. A mark
+        // that named nothing in the tail is older than the page shown from it, so the page is
+        // all after it.
+        let from = match read_to {
+            Some(index) => index.saturating_add(1),
+            None if mark.is_some() => len.saturating_sub(TAIL),
+            None => 0,
         };
-        for index in from.min(len)..upto {
+        for index in from.min(len)..len {
             let Some(id) = items.get(index) else {
                 break;
             };
@@ -1252,7 +1240,8 @@ impl Core {
                 continue;
             }
             let seen = self.seen_mark(person, &candidate.id_string());
-            if !crate::seen::unseen(&versions, person, seen.as_ref(), &runs).is_empty() {
+            let un = crate::seen::unseen(&versions, person, seen.as_ref(), &runs);
+            if !un.is_empty() {
                 return Ok(Some(id.to_string()));
             }
         }
@@ -1338,7 +1327,7 @@ impl Core {
         Ok(found)
     }
 
-    /// The task runs `person` reviewed, as the runtime holds them.
+    /// The runs `person` reviewed, as the runtime holds them.
     pub(crate) fn seen_runs(&self, person: &str) -> Vec<String> {
         match self
             .view_states
@@ -1537,7 +1526,7 @@ impl Core {
         newest
     }
 
-    /// The task runs `person` reviewed are `runs` now.
+    /// The runs `person` reviewed are `runs` now.
     pub(crate) fn set_seen_runs(&self, person: &str, runs: &[String]) {
         let key = crate::seen::runs_key(person);
         let mut sorted = runs.to_vec();
@@ -1777,7 +1766,8 @@ impl Core {
 
     /// The title of `target`: the first line its first text field holds, when it holds more
     /// than spaces (a record is named by what it says, rich text as its reader reads it); else,
-    /// for a root of its package, the package's title; else its type's name.
+    /// for a root of its package, the package's title; else what the type says it is called
+    /// while its title is empty (`(untitled: "Untitled")`); else its type's name.
     pub(crate) fn title_of(
         &self,
         target: &ResourceRef,
@@ -1808,6 +1798,10 @@ impl Core {
                 &[],
                 &meta.title,
             ));
+        }
+        if let Some(untitled) = &ty.untitled {
+            let key = format!("{}.untitled", tilolang::messages::key_of(&ty.id));
+            return Ok(self.words.borrow().word(&key, &[], untitled));
         }
         Ok(sentence(&ty.name))
     }
@@ -2159,7 +2153,12 @@ impl Core {
         // item that opens a dialog does. What it asks is what this offer left unbound — the
         // parameters after the ones it gave, the subject and its places among them — so a
         // command the view or the host answers every question of runs, and reads, as it is.
-        if action.unbound(shown.args.len()).next().is_some() && !label.ends_with('…') {
+        let bound = shown
+            .args
+            .iter()
+            .position(|arg| *arg == Value::Missing)
+            .unwrap_or(shown.args.len());
+        if action.unbound(bound).next().is_some() && !label.ends_with('…') {
             label.push('…');
         }
         let role = action.role.clone().unwrap_or_default();
@@ -2200,7 +2199,6 @@ impl Core {
                 .clone()
                 .or_else(|| action.group.clone())
                 .map_or_else(Value::none, |group| Value::some(Value::Text(group))),
-            Value::Bool(action.frequent),
             Value::Bool(available),
             Value::Text(why),
             Value::Bool(applies),
@@ -2405,10 +2403,19 @@ impl Core {
     }
 }
 
+/// The run `run` as a `host.Run`: its group, the work it is a run of, and what it was asked.
+fn run_value(run: &crate::store::Run) -> Value {
+    Value::Tuple(vec![
+        Value::Text(run.id.clone()),
+        Value::Text(run.of().to_owned()),
+        Value::Text(run.title.clone()),
+    ])
+}
+
 /// Whether `next`, the version after `last`, folds into the same step of history: both made in
-/// the same task run, or both by the same person outside any run.
+/// the same run, or both by the same person outside any run.
 fn same_step(last: &crate::store::Version, next: &crate::store::Version) -> bool {
-    match (&last.task, &next.task) {
+    match (&last.run, &next.run) {
         (Some(a), Some(b)) => a.id == b.id,
         (None, None) => last.who == next.who,
         _ => false,

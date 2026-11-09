@@ -472,6 +472,7 @@ fn the_host_certificate_is_retained_where_replay_leads_with_it() {
         issued_at_ns: 1,
         expires_at_ns: None,
         signature: [0; 64],
+        issuer: None,
     };
     let (channel, frame) =
         identity_frame(&crate::payloads::NeighbourPayloads, &cert, WORKSPACE).unwrap();
@@ -1146,6 +1147,7 @@ async fn sealed_ask() -> SealedAsk {
         issued_at_ns: 1,
         expires_at_ns: None,
         signature: [0; 64],
+        issuer: None,
     };
     let compactor = Compactor::new(key(99), cert, crate::payloads::neighbour());
     compactor.volunteer(WORKSPACE, device(MEMBER));

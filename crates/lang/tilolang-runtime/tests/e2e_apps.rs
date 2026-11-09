@@ -30,6 +30,17 @@ mod cases {
         };
     }
 
+    /// The Tasks package, whose scenarios are a file of their own, compiled after its app.
+    macro_rules! tasks_source {
+        () => {
+            (
+                "apps/tl/tasks",
+                TASKS_SOURCE,
+                include_str!("../../../../apps/tl/tasks/app.ids"),
+            )
+        };
+    }
+
     /// Compile a package with its committed lock, which must already be complete: building
     /// assigns ids to anything new, and a lock that would change is a lock not committed.
     fn build((dir, src, ids): (&str, &str, &str), imports: &[&App]) -> App {
@@ -63,7 +74,7 @@ mod cases {
     fn apps() -> Apps {
         let discussion = build(app_source!("discussion"), &[]);
         let notes = build(app_source!("notes"), &[&discussion]);
-        let todo = build(app_source!("tasks"), &[&discussion]);
+        let todo = build(tasks_source!(), &[&discussion]);
         let chat = build(
             (
                 "crates/lang/tilolang-runtime/tests/block_chat",
@@ -532,7 +543,8 @@ mod cases {
             w.id_of(&apps.notes),
             "the nested view is the notes package's code, not the agent's"
         );
-        // A new note's title starts empty: "Untitled" is only what the field prompts with.
+        // A new note's title starts empty: what its type calls it while untitled is only what
+        // the field prompts with.
         assert_eq!(text_prop(title, "placeholder"), "Untitled");
 
         let key = title.key.clone();
@@ -1109,7 +1121,8 @@ mod cases {
             Some((&note, &field_id(&apps.notes, "Note", "title"))),
             "the note's editor edits its title"
         );
-        // A new note's title starts empty: "Untitled" is only what the field prompts with.
+        // A new note's title starts empty: what its type calls it while untitled is only what
+        // the field prompts with.
         assert_eq!(text_prop(title, "placeholder"), "Untitled");
         assert_eq!(
             w.rt.default_view(&note.ty).as_deref(),
@@ -1449,29 +1462,30 @@ mod cases {
     fn the_morning_cards_are_each_apps_own_place() {
         let apps = apps();
         let m = morning(&apps);
-        // Tasks' Today place: due today, or hers to do whenever. A task with no date, or one
-        // already done, is Tasks' own business and not hers this morning.
-        m.w.call(
-            &apps.todo,
-            "new_task_today",
-            vec![
-                res(&m.list),
-                Value::none(),
-                Value::text("call the landlord"),
-            ],
-        );
-        m.w.call(
-            &apps.todo,
-            "new_task",
-            vec![
-                res(&m.list),
-                Value::none(),
-                Value::none(),
-                Value::none(),
-                Value::none(),
-                Value::some(Value::Principal(me())),
-                Value::text("review the plan"),
-            ],
+        // Tasks' Today place: due today, or hers to do whenever. A task with no date is Tasks'
+        // own business and not hers this morning.
+        // Today is the day the clock says: the task due then, and the one that is hers to do.
+        m.w.rt.set_clock(|| "2026-10-29T12:00:00Z".to_owned());
+        let task = |due: Option<&str>, by: Option<Value>, title: &str| {
+            m.w.call(
+                &apps.todo,
+                "new_task",
+                vec![
+                    res(&m.list),
+                    Value::none(),
+                    Value::none(),
+                    due.map_or_else(Value::none, |day| Value::some(Value::text(day))),
+                    Value::none(),
+                    by.unwrap_or_else(Value::none),
+                    Value::text(title),
+                ],
+            );
+        };
+        task(Some("2026-10-29"), None, "call the landlord");
+        task(
+            None,
+            Some(Value::some(Value::Principal(me()))),
+            "review the plan",
         );
         add_todo(&m, &apps, "sort the paper mail", false);
         add_todo(&m, &apps, "bins", true);
@@ -1601,11 +1615,20 @@ mod cases {
     fn a_place_longer_than_a_cards_rows_says_how_many_it_holds() {
         let apps = apps();
         let m = morning(&apps);
+        m.w.rt.set_clock(|| "2026-10-29T12:00:00Z".to_owned());
         for day in ["mon", "tue", "wed", "thu", "fri", "sat", "sun"] {
             m.w.call(
                 &apps.todo,
-                "new_task_today",
-                vec![res(&m.list), Value::none(), Value::text(day)],
+                "new_task",
+                vec![
+                    res(&m.list),
+                    Value::none(),
+                    Value::none(),
+                    Value::some(Value::text("2026-10-29")),
+                    Value::none(),
+                    Value::none(),
+                    Value::text(day),
+                ],
             );
         }
         let view = m.w.view(&apps.today, "today", vec![res(&m.today)]);
@@ -1900,9 +1923,9 @@ mod cases {
             vec![res(&project), Value::text("Move flat")],
         );
         let mut v = w.view(&apps.todo, "home", vec![res(&list)]);
-        // The window opens on today, whose entry adds a task for today and takes no words
-        // besides its title: the person picks the inbox, whose entry reads a day, a moment, who
-        // the task is for and the project it is of.
+        // The window opens on today, whose entry makes a task that names no day today's: the
+        // person picks the inbox, whose entry reads a day, a moment, who the task is for and
+        // the project it is of, and leaves the day to the words.
         choose(&v, "is:inbox");
         v.poll_patches().unwrap();
         let entry = of_kind(v.tree(), "ui.TextInput")
@@ -2007,9 +2030,8 @@ mod cases {
         );
         let list = w.create("Tasks");
         let mut v = w.view(&apps.todo, "home", vec![res(&list)]);
-        // The window opens on today, whose entry adds a task for today and so takes only its
-        // title: the person picks the inbox, whose entry reads a day, a moment and who the task
-        // is for before the words it leaves as the title.
+        // The person picks the inbox, where an entry that would only name a day, a moment and
+        // who the task is for names nothing: no words of its own, no task.
         choose(&v, "is:inbox");
         v.poll_patches().unwrap();
         let entry = of_kind(v.tree(), "ui.TextInput")
@@ -2380,6 +2402,7 @@ mod cases {
         for tree in [&compact, &wide] {
             let rows = of_kind(tree, "ui.ListRow");
             assert_eq!(rows.len(), 1);
+            assert_eq!(text_prop(rows[0], "title"), "Untitled");
             assert!(rows[0].props.contains_key("secondary"));
             assert!(
                 of_kind(tree, "split").is_empty(),

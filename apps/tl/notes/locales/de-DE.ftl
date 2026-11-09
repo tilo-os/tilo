@@ -8,6 +8,7 @@ d-mavvhka7 = Notiz
         [one] Notiz
        *[other] Notizen
     }
+    .untitled = Ohne Titel
 
 d-dpj7scfe = Titel
 
@@ -50,18 +51,9 @@ d-v7cub7aw = Notizen
 
 d-tmqqtkeb = Notizen
 
-d-qef5yqkq = Notizreihenfolge
-    .doc = Die Reihenfolge, in der ein Notizbuch seine Notizen auflistet.
-
-d-spdco6z2 = Erstellt am
-
-d-vs3pg7vu = Titel
-
 d-akcqjax3 = Notizbuch
 
 d-xqxkoqbj = Notizzeile
-    .w-untitled = Ohne Titel
 
 d-6wqou47w = Notizeditor
-    .w-untitled = Ohne Titel
     .w-write-something = Schreib etwas

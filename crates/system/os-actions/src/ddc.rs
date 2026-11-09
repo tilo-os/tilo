@@ -197,6 +197,18 @@ pub fn set_vcp(transport: &mut dyn I2cTransport, vcp: u8, value: u16) -> Result<
 }
 
 /// An `i2c-dev` node bound to the DDC/CI address.
+/// An ioctl request code as the C library types it: glibc's `unsigned long`, musl's `int`, which
+/// carries the same 32 bits.
+#[cfg(all(target_os = "linux", not(target_env = "musl")))]
+fn ioctl_request(code: u32) -> libc::c_ulong {
+    libc::c_ulong::from(code)
+}
+
+#[cfg(all(target_os = "linux", target_env = "musl"))]
+fn ioctl_request(code: u32) -> libc::c_int {
+    libc::c_int::from_ne_bytes(code.to_ne_bytes())
+}
+
 #[cfg(target_os = "linux")]
 pub struct I2cDevice {
     file: std::fs::File,
@@ -205,7 +217,7 @@ pub struct I2cDevice {
 #[cfg(target_os = "linux")]
 impl I2cDevice {
     /// `I2C_SLAVE` from `linux/i2c-dev.h`.
-    const I2C_SLAVE: libc::c_ulong = 0x0703;
+    const I2C_SLAVE: u32 = 0x0703;
 
     pub fn open(path: &std::path::Path) -> io::Result<Self> {
         use std::os::fd::AsRawFd;
@@ -218,7 +230,7 @@ impl I2cDevice {
         let rc = unsafe {
             libc::ioctl(
                 file.as_raw_fd(),
-                Self::I2C_SLAVE,
+                ioctl_request(Self::I2C_SLAVE),
                 libc::c_ulong::from(DDC_ADDRESS),
             )
         };

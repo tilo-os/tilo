@@ -85,7 +85,7 @@ impl HostIdentity {
         for entry in &revocations {
             checked.insert(entry.clone()).map_err(|e| e.to_string())?;
         }
-        if checked.is_revoked(&cert.device_public_key) {
+        if checked.refuses(&cert) {
             return Err("native selected device is revoked".into());
         }
         Ok((cert, revocations))

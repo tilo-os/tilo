@@ -990,6 +990,14 @@ impl Workspace {
         Self::in_workspace(WorkspaceSlot::of_workspace(identity), identity, name)
     }
 
+    /// Every window of this workspace, in its order: strip by strip, group by group.
+    pub fn tabs(&self) -> impl Iterator<Item = &crate::Tab> {
+        self.strips
+            .iter()
+            .flat_map(|strip| &strip.window_groups)
+            .flat_map(|group| &group.tabs)
+    }
+
     /// The workspace that is `identity`, created or joined, in the local slot
     /// `slot`: new workspaces take [`WorkspaceSlot::of_workspace`], an existing
     /// one keeps the slot it was stored under.

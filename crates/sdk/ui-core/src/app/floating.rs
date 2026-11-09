@@ -796,13 +796,12 @@ impl App {
         // the person, making an agent, opening the conversation and posting
         // the message.
         for request in crate::shared_selection::take_send_to() {
-            let (to, attached, text, bounds) = self.send_reference(request);
+            let (to, attached, text) = self.send_reference(request);
             client.send(
                 &crate::floating_surface::FloatingSurfaceClientMessage::SendTo {
                     to,
                     attached,
                     text,
-                    bounds,
                 },
             )?;
             *changed = true;
@@ -1462,7 +1461,6 @@ impl App {
         Vec<crate::floating_surface::Recipient>,
         Vec<tilo_reference::Attached>,
         String,
-        Option<[f64; 4]>,
     ) {
         let published = self.collect_resources();
         let focused = crate::shared_selection::subtree_selection(self.root_widget.as_ref());
@@ -1484,7 +1482,7 @@ impl App {
                 attached.push(sent);
             }
         }
-        (request.to, attached, request.text, request.bounds)
+        (request.to, attached, request.text)
     }
 
     /// Without a desktop tab model, another instance is another window of

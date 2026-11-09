@@ -184,6 +184,13 @@ pub trait WindowHeader {
     fn window_bar_slot(&self) -> Option<WindowBarSlot> {
         None
     }
+
+    /// The height of the header row this widget draws at the window's top, while it draws one
+    /// of its own: `0.0` draws none. A window shows one bar, so a row under the window's bar is
+    /// a second one.
+    fn header_row_height(&self) -> f64 {
+        0.0
+    }
 }
 
 /// The window's bar, as the host offers it to a header row.
@@ -232,6 +239,59 @@ pub(crate) fn offer_window_bar(root: &mut dyn Widget, bar: Option<WindowBar>) ->
     root.children_mut()
         .into_iter()
         .any(|child| offer_window_bar(child, bar))
+}
+
+/// Whether a header row of `content` holds the window's bar as the window's own bar: the row the
+/// content draws at the window's top is the bar then — the window draws none of its own and its
+/// controls stand at the row's trailing end — where a row that stands as the bar's slots, or a
+/// content that draws no row at all, leaves the window its bar.
+///
+/// Every window asks this of its content, whatever draws it: a frame of the shell's preset
+/// ([`crate::widget::WindowFrame`]), a window of the desktop's strips
+/// ([`crate::widget::WindowGroup`]) and the frame the layout check stages
+/// ([`crate::headless::FrameHarness`]), so a window shows one bar, never two stacked, and no two
+/// of them can disagree about which.
+#[must_use]
+pub(crate) fn content_bar(content: &dyn Widget) -> Option<WindowBarSlot> {
+    let row = root_header_row(content)?;
+    (row.header_row_height() > 0.0)
+        .then(|| row.window_bar_slot())
+        .flatten()
+        .filter(|slot| slot.row.height() > 0.0)
+}
+
+/// Whether `widget` is a window's frame: a window standing in a shell, which offers the bar to
+/// its own content's header row as it draws.
+fn is_window_frame(widget: &dyn Widget) -> bool {
+    widget
+        .as_any()
+        .is_some_and(|any| any.is::<crate::widget::WindowFrame>())
+}
+
+/// The header row the window draws of its own: the first one down the root's tree, stopping at a
+/// window frame, whose content offers the bar to a row of its own. `None` for a root that draws
+/// none (a desk of windows, a page).
+pub(crate) fn root_header_row(root: &dyn Widget) -> Option<&dyn WindowHeader> {
+    if let Some(row) = super::capability::capability::<dyn WindowHeader>(root) {
+        return Some(row);
+    }
+    if is_window_frame(root) {
+        return None;
+    }
+    root.children().into_iter().find_map(root_header_row)
+}
+
+/// Offer the window's bar to the row [`root_header_row`] names. Returns whether a row took it.
+pub(crate) fn offer_root_header_bar(root: &mut dyn Widget, bar: Option<WindowBar>) -> bool {
+    if let Some(row) = super::capability::capability_mut::<dyn WindowHeader>(root) {
+        return row.set_window_bar(bar);
+    }
+    if is_window_frame(root) {
+        return false;
+    }
+    root.children_mut()
+        .into_iter()
+        .any(|child| offer_root_header_bar(child, bar))
 }
 
 /// The slot of the first header row in `root`'s tree that holds the bar.

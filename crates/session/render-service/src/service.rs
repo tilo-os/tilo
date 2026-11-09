@@ -6,8 +6,9 @@
 //! drawn; the copy into a buffer is submitted for every surface that got a
 //! frame in this pass, then the service waits for the GPU once and tells
 //! each app which buffer to attach. An app whose frame takes the GPU longer
-//! than its budget has its following frames dropped until it has waited out
-//! the overrun, so one app cannot take the workspace's GPU from the others.
+//! than its budget has its following frame held until it has waited out the
+//! overrun, so one app cannot take the workspace's GPU from the others and
+//! the frame it drew last still is its newest picture.
 //!
 //! Nothing an app sends can stop the loop: a refusal is a message back, a
 //! protocol violation closes that app's connection, and a panic while
@@ -39,10 +40,20 @@ struct Connection {
     ring: Option<Mapping>,
     registry: Registry,
     surfaces: HashMap<SurfaceId, Surface>,
-    /// Frames are dropped until then: the app overran its GPU budget.
+    /// Frames are held until then: the app overran its GPU budget.
     throttled_until: Option<Instant>,
+    /// The frame that arrived while the app was over its budget: drawn when the
+    /// overrun has been waited out.
+    held: Option<Held>,
     /// Frames drawn, for the session log when the app leaves.
     frames: u64,
+}
+
+/// A frame waiting for the app's GPU budget. The app sends its next frame only
+/// after this one is answered, so at most one is held.
+struct Held {
+    sequence: u64,
+    region: (u64, u32),
 }
 
 /// What became of a frame.
@@ -115,7 +126,24 @@ impl Service {
                     ));
                 }
             }
-            match rustix::event::poll(&mut fds, None) {
+            // A held frame is drawn the moment its app's overrun has been waited
+            // out, so the loop sleeps no longer than the earliest of them.
+            let timeout = self
+                .connections
+                .values()
+                .filter(|connection| connection.held.is_some())
+                .filter_map(|connection| connection.throttled_until)
+                .min()
+                .map(|until| {
+                    rustix::time::Timespec::try_from(
+                        until.saturating_duration_since(Instant::now()),
+                    )
+                    .unwrap_or(rustix::time::Timespec {
+                        tv_sec: 1,
+                        tv_nsec: 0,
+                    })
+                });
+            match rustix::event::poll(&mut fds, timeout.as_ref()) {
                 Ok(_) | Err(rustix::io::Errno::INTR) => {}
                 Err(error) => return Err(ChannelError::Io(error.into())),
             }
@@ -133,6 +161,7 @@ impl Service {
                     self.serve_connection(*id);
                 }
             }
+            self.serve_held();
             self.finish_pass();
             if let Some(reason) = self.gpu.lost() {
                 return Err(ChannelError::Io(std::io::Error::other(format!(
@@ -169,6 +198,7 @@ impl Service {
                                 registry: Registry::default(),
                                 surfaces: HashMap::new(),
                                 throttled_until: None,
+                                held: None,
                                 frames: 0,
                             },
                         );
@@ -371,8 +401,55 @@ impl Service {
         Ok(())
     }
 
+    /// Take a frame of connection `id`: drawn now, or held while the app is over
+    /// the GPU budget it overran, and drawn when that has been waited out. A held
+    /// frame is the app's newest picture — dropping it would leave the frame
+    /// before it on screen, and an app that has nothing left to draw would never
+    /// replace it.
+    fn frame(&mut self, id: u64, sequence: u64, region: (u64, u32)) {
+        let over = self
+            .connections
+            .get(&id)
+            .and_then(|connection| connection.throttled_until)
+            .is_some_and(|until| Instant::now() < until);
+        if over {
+            if let Some(connection) = self.connections.get_mut(&id) {
+                // An app that sent another frame meanwhile is answered for the one it
+                // replaces: every frame gets exactly one answer.
+                if let Some(older) = connection.held.replace(Held { sequence, region }) {
+                    drop_frame(connection.peer(), older.sequence, Refusal::Throttled);
+                }
+            }
+            return;
+        }
+        self.draw_frame(id, sequence, region);
+    }
+
+    /// Draw the frames whose app has waited out its overrun.
+    fn serve_held(&mut self) {
+        let now = Instant::now();
+        let due: Vec<u64> = self
+            .connections
+            .iter()
+            .filter(|(_, connection)| {
+                connection.held.is_some()
+                    && connection.throttled_until.is_none_or(|until| now >= until)
+            })
+            .map(|(id, _)| *id)
+            .collect();
+        for id in due {
+            let Some(connection) = self.connections.get_mut(&id) else {
+                continue;
+            };
+            let Some(held) = connection.held.take() else {
+                continue;
+            };
+            self.draw_frame(id, held.sequence, held.region);
+        }
+    }
+
     /// Read, validate and draw one frame of connection `id`.
-    fn frame(&mut self, id: u64, sequence: u64, (offset, len): (u64, u32)) {
+    fn draw_frame(&mut self, id: u64, sequence: u64, (offset, len): (u64, u32)) {
         let started = Instant::now();
         match self.draw(id, (offset, len), started) {
             Drawn::Done {
@@ -402,12 +479,6 @@ impl Service {
         let Some(connection) = self.connections.get_mut(&id) else {
             return Drawn::Dropped(Refusal::Invalid("gone".to_owned()));
         };
-        if connection
-            .throttled_until
-            .is_some_and(|until| started < until)
-        {
-            return Drawn::Dropped(Refusal::Throttled);
-        }
         let record = connection
             .ring
             .as_ref()

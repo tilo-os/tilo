@@ -52,13 +52,11 @@ pub mod full_replica;
 #[cfg(feature = "filesystem")]
 pub mod fuse_session;
 #[cfg(feature = "filesystem")]
-pub mod history;
-#[cfg(feature = "filesystem")]
 pub mod hydration;
 #[cfg(feature = "filesystem")]
 pub mod identity;
 #[cfg(feature = "filesystem")]
-pub mod named_share_delivery;
+pub mod legacy_history;
 #[cfg(feature = "filesystem")]
 pub mod namespace;
 #[cfg(feature = "filesystem")]
@@ -72,10 +70,6 @@ pub mod peer_auth;
 pub mod public_content;
 #[cfg(feature = "filesystem")]
 pub mod reachability;
-#[cfg(feature = "filesystem")]
-pub mod recipient_control;
-#[cfg(feature = "filesystem")]
-pub mod recipient_mount;
 #[cfg(feature = "filesystem")]
 pub mod record_access;
 #[cfg(feature = "filesystem")]
@@ -109,13 +103,7 @@ mod rich_metadata;
 #[cfg(feature = "filesystem")]
 pub mod share_authority;
 #[cfg(feature = "filesystem")]
-pub mod share_control;
-#[cfg(feature = "filesystem")]
 pub mod share_link;
-#[cfg(feature = "filesystem")]
-pub mod share_management;
-#[cfg(feature = "filesystem")]
-pub mod share_refresh;
 #[cfg(feature = "filesystem")]
 pub mod share_session;
 #[cfg(feature = "filesystem")]
@@ -148,6 +136,9 @@ pub mod write_attribution;
 
 #[cfg(test)]
 #[cfg(feature = "filesystem")]
+mod history_fixture;
+#[cfg(test)]
+#[cfg(feature = "filesystem")]
 mod tests;
 
 // The tilo-doc conflict merge decodes peer versions in Automerge workers.
@@ -169,16 +160,6 @@ pub use caps_file::{CapabilityFile, CapsError, Refresh};
 #[cfg(feature = "filesystem")]
 pub use fs::QuickFS;
 #[cfg(feature = "filesystem")]
-pub use fs_protocol::{
-    MAX_RECIPIENT_CONTROL_CONNECTIONS, MAX_RECIPIENT_CONTROL_FRAME_BYTES,
-    MAX_RECIPIENT_CONTROL_REQUESTS_PER_CONNECTION, RECIPIENT_CONTROL_VERSION,
-    RecipientControlErrorCode, RecipientControlOperationV1, RecipientControlRequestV1,
-    RecipientControlResponseV1, RecipientControlResultV1, RecipientFailureCodeV1,
-    RecipientFailureV1, RecipientSubscriptionKeyV1, RecipientSubscriptionStatusV1,
-};
-#[cfg(feature = "filesystem")]
-pub use history::{FileHistoryStore, HistoryError, RecordHistorySnapshot};
-#[cfg(feature = "filesystem")]
 pub use hydration::Hydrator;
 #[cfg(feature = "filesystem")]
 pub use identity::{
@@ -188,24 +169,13 @@ pub use identity::{
     load_revocation_list, load_workspace_share_issuer, revocation_list_path,
 };
 #[cfg(feature = "filesystem")]
-pub use named_share_delivery::{
-    MAX_NAMED_SHARE_INBOX_ENTRIES, NamedShareDeliveryClient, NamedShareDeliveryError,
-    NamedShareEnvelopeV1, NamedShareInbox, NamedShareInboxError, NamedShareInboxProtocol,
-    NamedShareOutbox, NamedShareOutboxEntryV1, TILO_FS_NAMED_SHARE_INBOX_ALPN,
-};
+pub use namespace::history::{HistoryError, RecordHistorySnapshot};
 #[cfg(feature = "filesystem")]
 pub use namespace::{Namespace, ROOT_INO, TransactionProjectionError};
 #[cfg(feature = "filesystem")]
 pub use peer_auth::{
     AuthenticatedFsPeer, PeerAuthChallenge, PeerAuthError, PeerAuthProof, PendingPeerChallenges,
 };
-#[cfg(feature = "filesystem")]
-pub use recipient_control::{
-    RecipientControlServer, RecipientControlServerError, read_recipient_control_response,
-    request_recipient_control, write_recipient_control_request,
-};
-#[cfg(feature = "filesystem")]
-pub use recipient_mount::{RecipientMountError, RecipientMountInfo, RecipientMountSupervisor};
 #[cfg(feature = "filesystem")]
 pub use record_access::{
     MAX_RECORD_ACCESS_ENTRIES, MAX_RECORD_ACCESS_TTL_MS, RecordAccessBinding, RecordAccessRegistry,
@@ -260,20 +230,7 @@ pub use replica_ack::{
 #[cfg(feature = "filesystem")]
 pub use share_authority::{Redemption, ShareAuthority, ShareAuthorityError};
 #[cfg(feature = "filesystem")]
-pub use share_control::{
-    MAX_SHARE_CONTROL_CONNECTIONS, MAX_SHARE_CONTROL_FRAME_BYTES,
-    MAX_SHARE_CONTROL_REQUESTS_PER_CONNECTION, NamedGrantMetadataV1, SHARE_CONTROL_VERSION,
-    ShareControlErrorCode, ShareControlOperationV1, ShareControlRequestV1, ShareControlResponseV1,
-    ShareControlResultV1, ShareControlServer, ShareControlServerError, read_share_control_response,
-    write_share_control_request,
-};
-#[cfg(feature = "filesystem")]
 pub use share_link::{FileShareLinkError, FileShareLinkV2};
-#[cfg(feature = "filesystem")]
-pub use share_management::{
-    BearerLinkRequest, MAX_BEARER_REDEMPTIONS, MAX_SHARE_LIFETIME_MS, MAX_TRUSTED_SHARE_ISSUERS,
-    NamedGrantRequest, ShareManagement, ShareManagementError,
-};
 #[cfg(feature = "filesystem")]
 pub use share_session::{LiveActorCertification, ShareSession, ShareSessionError};
 #[cfg(feature = "filesystem")]

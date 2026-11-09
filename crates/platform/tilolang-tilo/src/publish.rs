@@ -124,13 +124,35 @@ pub fn resource_id(app: &str, id: &str) -> String {
 }
 
 /// What a resource of `schema` in the package `meta` is called while none of its own text names
-/// it: a package's root by the app's title ("Notes"), anything else by its type ("Todo list").
+/// it: what its type declares (`(untitled: "Untitled")`, in the reader's words), else a
+/// package's root by the app's title ("Notes"), anything else by its type ("Todo list").
 #[must_use]
-pub fn untitled(meta: &Meta, schema: &crate::schema::TypeSchema) -> String {
-    if meta.roots.contains(&schema.id) {
+pub fn untitled(meta: &Meta, schema: &crate::schema::TypeSchema, words: &dyn Words) -> String {
+    meta.types
+        .iter()
+        .find(|declared| declared.id == schema.id)
+        .map_or_else(
+            || {
+                if meta.roots.contains(&schema.id) {
+                    meta.title.clone()
+                } else {
+                    schema.untitled()
+                }
+            },
+            |declared| untitled_of(meta, declared, words),
+        )
+}
+
+/// What a record of `declared` is called while its title is empty: the words its type declares,
+/// translated; else an app's root by the app's title; else its type's name.
+fn untitled_of(meta: &Meta, declared: &tilolang::meta::TypeMeta, words: &dyn Words) -> String {
+    if let Some(untitled) = &declared.untitled {
+        return said_of(words, &declared.id, "untitled", None, untitled);
+    }
+    if meta.roots.contains(&declared.id) {
         meta.title.clone()
     } else {
-        schema.spoken_name()
+        crate::schema::spoken(&declared.name)
     }
 }
 
@@ -288,13 +310,24 @@ struct TypeActions {
     /// What its resources are, as people name them: its noun, its app's name, and whether
     /// it is a root (each resource published with it says so, [`ResourceType`]).
     named: ResourceType,
+    /// What one of its resources is called while its title is empty ([`untitled_of`]).
+    untitled: String,
 }
 
 impl ActionTypes {
-    /// What a record of the type `schema` is called when no text in it names it: a package's
-    /// root (one per workspace) by the package's title, another by its type. Never by its id.
+    /// What a record of the type `schema` is called when no text in it names it: the words its
+    /// type declares, else a package's root (one per workspace) by the package's title, another
+    /// by its type. Never by its id.
     fn untitled(&self, schema: &crate::schema::TypeSchema) -> String {
-        untitled(&self.meta, schema)
+        self.untitled_of(&schema.name)
+    }
+
+    /// What a record of the type `type_name` is called while its title is empty.
+    fn untitled_of(&self, type_name: &str) -> String {
+        self.on_type.get(type_name).map_or_else(
+            || crate::schema::spoken(type_name),
+            |of_type| of_type.untitled.clone(),
+        )
     }
 
     /// The action types of the package `meta`, whose actions `planner` runs, described in the
@@ -332,6 +365,7 @@ impl ActionTypes {
                         // A root is the app's one resource of its type.
                         root: meta.roots.contains(&declared.id),
                     },
+                    untitled: untitled_of(meta, declared, words),
                 },
             );
         }
@@ -533,7 +567,7 @@ fn item_resources(
 /// items.
 fn item_resource(types: &ActionTypes, item: &crate::record::DynRecord, path: &str) -> ResourceSpec {
     let type_name = &item.schema().name;
-    let label = item_label(item).unwrap_or_else(|| type_name.clone());
+    let label = item_label(item).unwrap_or_else(|| types.untitled_of(type_name));
     let mut resource = types.resource(type_name, path, label);
     for child in item_resources(types, item, path) {
         resource = resource.with_child(child);
@@ -848,7 +882,7 @@ fn indexed_item(
         .ok()
         .flatten()
         .and_then(|(text, _)| reader.said(path, text))
-        .unwrap_or_else(|| schema.name.clone());
+        .unwrap_or_else(|| types.untitled(schema));
     let mut resource = types.resource(&schema.name, path, label);
     for child in indexed_items(types, view, reader, path, schema, reached) {
         resource = resource.with_child(child);
@@ -1889,7 +1923,7 @@ impl Published<'_> {
             let label = self
                 .store
                 .first_text(&at)
-                .map_or_else(|| schema.name.clone(), |(text, _)| text);
+                .map_or_else(|| schema.untitled(), |(text, _)| text);
             node.label == label
         });
         if !relabeled {
@@ -2060,7 +2094,7 @@ impl Published<'_> {
             let label = self
                 .store
                 .first_text(&at)
-                .map_or_else(|| schema.name.clone(), |(text, _)| text);
+                .map_or_else(|| schema.untitled(), |(text, _)| text);
             if node.label != label {
                 moved.push((node.id.as_str().to_owned(), label.clone()));
                 node.label = label;

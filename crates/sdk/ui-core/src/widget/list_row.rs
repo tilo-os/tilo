@@ -49,8 +49,8 @@ use winit::event::{ElementState, MouseButton, WindowEvent};
 const CHECK_ROW: &str = "tilo.ui.row.check";
 use crate::widget::avatar::AvatarFace;
 use crate::widget::{
-    ActionEmitter, ChipStyle, Element, MediaArt, MediaAspect, MediaSource, TaffyTreeExt, Tone,
-    Widget,
+    ActionEmitter, ChipStyle, Element, Fact, MediaArt, MediaAspect, MediaSource, TaffyTreeExt,
+    Tone, Widget,
 };
 
 /// What sits in a row's leading column.
@@ -266,6 +266,9 @@ pub struct ListRowFace<'a> {
     found: &'a [&'a str],
     subtitle: Option<&'a str>,
     secondary: Option<&'a str>,
+    /// The line under the title as separate facts, painted where a secondary line would stand:
+    /// facts are their own components, never one string joined by a separator glyph.
+    facts: &'a [Fact],
     secondary_lines: u8,
     /// A line under the text of the row's own: what waits on the item.
     note: Option<&'a str>,
@@ -357,6 +360,7 @@ impl<'a> ListRowFace<'a> {
             found: &[],
             subtitle: None,
             secondary: None,
+            facts: &[],
             note: None,
             secondary_lines: 1,
             meta: None,
@@ -498,6 +502,15 @@ impl<'a> ListRowFace<'a> {
     #[must_use]
     pub fn secondary(mut self, text: &'a str) -> Self {
         self.secondary = Some(text);
+        self
+    }
+
+    /// The line under the title as separate facts ([`Fact`]), in place of a secondary line: a
+    /// host and what it used, a plan and its usage. They stand apart by a sibling gap and each
+    /// elides on its own, so nothing must join them into one string with a separator.
+    #[must_use]
+    pub fn facts(mut self, facts: &'a [Fact]) -> Self {
+        self.facts = facts;
         self
     }
 
@@ -844,6 +857,13 @@ impl<'a> ListRowFace<'a> {
             .collect::<Vec<_>>()
             .join(" ");
         let count = self.count.map(|count| count.to_string());
+        // Separate facts read as their own words on the line under the title.
+        let facts: String = self
+            .facts
+            .iter()
+            .map(|fact| fact.text.as_str())
+            .collect::<Vec<_>>()
+            .join(", ");
         // A toned meta draws as spans of its own words: the row says it once.
         let meta = self.meta.filter(|_| self.meta_spans.is_empty());
         let mut value: Vec<&str> = self.tags.iter().map(|(label, _)| *label).collect();
@@ -851,6 +871,7 @@ impl<'a> ListRowFace<'a> {
             [
                 self.subtitle,
                 self.secondary,
+                (!facts.is_empty()).then_some(facts.as_str()),
                 self.note,
                 meta,
                 (!spans.is_empty()).then_some(spans.as_str()),
@@ -909,6 +930,17 @@ impl<'a> ListRowFace<'a> {
     }
 }
 
+/// The colour a row's leading avatar is drawn in where it has one of its own,
+/// instead of the one its identity derives.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum AvatarTint {
+    /// A colour chosen outright: an agent's keeper picked it.
+    Colour(Color),
+    /// One of the presence palette's hues, named by the caller: an agent's
+    /// client, warm for one and cool for another.
+    Hue(PresenceHue),
+}
+
 /// Owned form of [`RowLeading`] for the retained row.
 enum Leading {
     Avatar {
@@ -917,9 +949,7 @@ enum Leading {
         image: Option<ImageData>,
         square: bool,
         glyph: Option<Icon>,
-        /// The colour it is drawn in where it has one of its own (an agent's
-        /// chosen colour), instead of the one its identity derives.
-        colour: Option<Color>,
+        tint: Option<AvatarTint>,
     },
     /// The room an avatar takes, left empty ([`RowLeading::AvatarSpace`]).
     AvatarSpace,
@@ -1520,7 +1550,7 @@ impl ListRow {
             image: None,
             square: false,
             glyph: None,
-            colour: None,
+            tint: None,
         });
         self
     }
@@ -1565,6 +1595,17 @@ impl ListRow {
     pub fn square(mut self) -> Self {
         if let Some(Leading::Avatar { square, .. }) = &mut self.leading {
             *square = true;
+        }
+        self
+    }
+
+    /// Tint the leading avatar in `hue`, one of the presence palette's
+    /// colours, instead of the hue its identity derives: what an agent's
+    /// client looks like (warm for one, cool for another), in every theme.
+    #[must_use]
+    pub fn avatar_hue(mut self, hue: PresenceHue) -> Self {
+        if let Some(Leading::Avatar { tint, .. }) = &mut self.leading {
+            *tint = Some(AvatarTint::Hue(hue));
         }
         self
     }
@@ -2286,13 +2327,19 @@ impl ListRow {
                     image,
                     square,
                     glyph,
-                    colour,
+                    tint,
                 } => {
                     let avatar = AvatarFace::new(name, identity).image(image.as_ref());
-                    let avatar = colour.map_or(avatar, |colour| avatar.presence(colour));
                     let avatar = if *square { avatar.square() } else { avatar };
-                    RowLeading::Avatar(match glyph {
+                    let avatar = match glyph {
                         Some(glyph) => avatar.glyph(*glyph),
+                        None => avatar,
+                    };
+                    // Its own tint, after the glyph, which asks for the
+                    // neutral square.
+                    RowLeading::Avatar(match tint {
+                        Some(AvatarTint::Colour(colour)) => avatar.presence(*colour),
+                        Some(AvatarTint::Hue(hue)) => avatar.hue(*hue),
                         None => avatar,
                     })
                 }

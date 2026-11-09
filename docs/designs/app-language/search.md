@@ -179,11 +179,11 @@ known by (the registry's keywords: "youtube" for an app called Tube) are not par
 - **The list index** (each list's order and filter columns, so a list opens by reading one
   page) is still kept next to the record, because most workspaces' records aren't yet held by the
   system's storage service. It moves there when they are.
-- **Lanes are runs.** A filter may compare a field with a value the code holds
+- **A filter's bound value is a run.** A filter may compare a field with a value the code holds
   (`b.cards.filter(c -> c.column == col)`, `col` a local): the value is bound when the filter
-  is asked, and the index answers it as the run of that value in the field's column. A board
-  showing each column's cards and count reads, per lane, the run's bounds and the page it
-  starts on; a header saying how many cards a lane holds counts that lane's cards, which reads
+  is asked, and the index answers it as the run of that value in the field's column. A view
+  showing each value's items and count reads, per run, its bounds and the page it
+  starts on; a row saying how many items one run holds counts that run's items, which reads
   its run once and the count from then on, never the workspace; no separate grouping syntax is
   needed.
 - **A filter of several tests reads its run by pages.** One test that a column answers as a
@@ -196,8 +196,8 @@ known by (the registry's keywords: "youtube" for an app called Tube) are not par
   the list's length is the run's count — the most it can have — and says it is up to that
   many rather than claim it exact. Its `len` is that length, which a column's counts answer;
   its `count` is how many it holds, which reads the run it is drawn from to its end once, so a
-  lane's header says the cards it drew for the cards it holds, and a workspace's list of
-  everything shows the most it can hold rather than read itself.
+  view drawing a run's count says the items it drew for the items it holds, and a workspace's
+  list of everything shows the most it can hold rather than read itself.
 - **A checked listing is kept across a change.** A listing remembers the run it read and what
   it found of each entry: a change checks the items it wrote again, takes out those that left
   the run, and keeps every other entry's place and membership, so a step costs what it changed

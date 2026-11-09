@@ -705,7 +705,7 @@ fn settling_leaves_everything_that_is_not_membership_alone() {
     )
     .unwrap();
     let hosts = doc.put_object(ROOT, "hosts_v1", ObjType::Map).unwrap();
-    doc.put(&hosts, "relay", "tilo.coffee").unwrap();
+    doc.put(&hosts, "relay", "tilo.sh").unwrap();
     doc.put_object(ROOT, "invitation_receipts_v1", ObjType::Map)
         .unwrap();
     doc.commit();
@@ -789,7 +789,7 @@ fn lounge_bot_and_host(
     let hosts = doc.put_object(ROOT, "hosts_v1", ObjType::Map).unwrap();
     let hint = tilo_workspace_join::TransportHint {
         kind: "relay".to_owned(),
-        opaque_json: r#"{"url":"wss://tilo.coffee"}"#.to_owned(),
+        opaque_json: r#"{"url":"wss://tilo.sh"}"#.to_owned(),
         host: relay.clone(),
         service_public_key: [9; 32],
         host_signature: [0; 64],

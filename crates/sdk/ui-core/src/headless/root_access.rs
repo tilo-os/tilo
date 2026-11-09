@@ -170,6 +170,15 @@ impl FrameHarness {
         harness
     }
 
+    /// The app the window shows, for a root that is no widget of the app's:
+    /// the UI host's half of a window shows the app's own shell, and its bar
+    /// ([`Self::present_in_window_bar`]) wears the app's icon and title all
+    /// the same.
+    pub fn set_window_app(&mut self, kind: crate::widget::AppKind, title: impl Into<String>) {
+        self.invalidate_local();
+        self.window_app = Some((kind, title.into()));
+    }
+
     /// [`Self::for_root`] with every construction option spelled out.
     pub fn for_root_with<W: Widget + 'static>(
         state: State,

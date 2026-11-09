@@ -421,6 +421,11 @@ pub(super) async fn handle_delta(
         tracing::warn!(%limited, device = %hex::encode(peer.device_public_key), "refused a change over the member limit");
         return Ok(None);
     }
+    if let Some(full) = super::over_storage(peer, session, &ws).await {
+        // Neither kept nor forwarded, as above.
+        tracing::warn!(%full, device = %hex::encode(peer.device_public_key), "refused a change to a full workspace");
+        return Ok(None);
+    }
     // A page asks a record's channel for access on a plane of its own, and is
     // refused there by name.
     let op = crate::peer::admission::plane_of(&env);
@@ -501,10 +506,12 @@ async fn change_refusal(
     };
     // The change itself must say what it does and stay inside what its app
     // publishes, before the relay keeps or forwards it.
-    let (standings, payloads) = {
-        let runtime = ws.lock().await;
-        (runtime.standings.clone(), runtime.store.payloads().clone())
-    };
+    let (standings, payloads) =
+        crate::workspace::standings_deciding(ws, claimed, |standings, payloads| {
+            crate::surfaces::refusal(payloads, delta, standings).is_some()
+                || crate::surfaces::role_refusal(delta, standings, claimed).is_some()
+        })
+        .await;
     let refused = crate::surfaces::refusal(&*payloads, delta, standings.as_deref())
         .or_else(|| crate::surfaces::role_refusal(delta, standings.as_deref(), claimed));
     if let Some(reason) = refused {

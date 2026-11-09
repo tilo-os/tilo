@@ -13,7 +13,7 @@ mod cases {
         AmStore, InvokeOutcome, Principal, ResourceRef, Runtime, SimpleAuthority, Value,
     };
 
-    const TODO: &str = include_str!("../../../../apps/tl/tasks/app.tl");
+    const TODO: &str = super::common::TASKS_SOURCE;
     const NOTES: &str = include_str!("../../../../apps/tl/notes/app.tl");
     const DISCUSSION: &str = include_str!("../../../../apps/tl/discussion/app.tl");
 

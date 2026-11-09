@@ -6,7 +6,8 @@ use super::{Choosing, ListModel, VirtualList};
 impl<M: ListModel> VirtualList<M> {
     /// Choose `key` as the gesture says: `toggle` adds it to a choice or takes it away, and
     /// `extend` grows the choice to it. A gesture that only changes a choice does not open
-    /// what it touches, so only a plain choice tells the row's listener it was chosen.
+    /// what it touches, so only a plain choice tells the row's listener it was chosen. A list
+    /// whose rows are read chooses none ([`VirtualList::reading`]).
     pub(super) fn apply_selection(
         &mut self,
         key: M::Key,
@@ -14,6 +15,9 @@ impl<M: ListModel> VirtualList<M> {
         extend: bool,
         choosing: Choosing,
     ) {
+        if self.reading {
+            return;
+        }
         let model = &self.model;
         crate::widget::rows::choose(
             &mut self.selection,
@@ -32,6 +36,9 @@ impl<M: ListModel> VirtualList<M> {
     /// Move the selection onto `key` without reporting the choice: an action that opens
     /// the row moves it there on the way, and the opening is what the host hears.
     pub(super) fn choose_quietly(&mut self, key: M::Key) {
+        if self.reading {
+            return;
+        }
         let model = &self.model;
         crate::widget::rows::choose(
             &mut self.selection,

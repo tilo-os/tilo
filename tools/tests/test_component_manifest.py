@@ -185,7 +185,10 @@ class InstallerTests(unittest.TestCase):
     def test_source_session_layer_carries_verified_fonts_and_refuses_incomplete_catalogs(self):
         catalog = load("shell_font_catalog_under_test", REPO / "tools/font-catalog.py")
         source = REPO / "crates/sdk/ui-core/assets/fonts"
-        reviewed = catalog.prepared_root(source, "os", offline=True)
+        # The artifacts are reviewed pins fetched from the release store, not files of the
+        # tree: the shared cache answers when it holds them, and a node that has none
+        # fetches them once, as the catalog's own test does.
+        reviewed = catalog.prepared_root(source, "os")
         manifest = installer.load_manifest(REPO / "os/components.toml")
         fonts = next(e for e in manifest.files() if e.component == "tilo-session" and e.tree)
         self.assertEqual(fonts.to, "/usr/share/fonts/tilo/")

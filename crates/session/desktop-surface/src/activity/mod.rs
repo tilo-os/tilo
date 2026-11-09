@@ -226,6 +226,11 @@ pub trait ActivityHost {
     fn app_display_name(&self, _app: &str) -> Option<String> {
         None
     }
+    /// The bytes `app` keeps in `workspace` under the content hash `hash` (lower-case hex), when
+    /// this device holds them: what a command run's record names as its output.
+    fn record_content(&self, _workspace: &str, _app: &str, _hash: &str) -> Option<Vec<u8>> {
+        None
+    }
     /// The devices that refused writes in `workspace` , each with what it refused: one verdict per
     /// write, the highest sequence.
     fn refusals(&self, _workspace: &str) -> Vec<tilo_actions::remote::workspace_activity::Refusal> {

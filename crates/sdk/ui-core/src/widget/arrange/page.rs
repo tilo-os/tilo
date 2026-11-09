@@ -181,6 +181,12 @@ impl Arranged<PageLayout> {
         self.layout.measure = Some(measure);
         self
     }
+
+    /// The width this page keeps its content at: none for a page across the column (`full`).
+    #[must_use]
+    pub const fn readable_measure(&self) -> Option<Length> {
+        self.layout.measure
+    }
 }
 
 impl Default for Arranged<PageLayout> {

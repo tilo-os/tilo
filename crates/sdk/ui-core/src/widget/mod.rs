@@ -381,18 +381,49 @@ pub fn draw_child(
     theme: &Theme,
     presence: &PresenceCtx,
 ) {
-    if !presence.should_cull(child.paint_bounds()) {
-        #[cfg(debug_assertions)]
-        let open = scene.encoding().n_open_clips;
-        child.draw(scene, transform, text_renderer, theme, presence);
-        #[cfg(debug_assertions)]
-        debug_assert_eq!(
-            scene.encoding().n_open_clips,
-            open,
-            "{} left a layer open (or ended one it did not begin) in its draw",
-            child.concrete_type_name()
-        );
+    draw_child_at(
+        child,
+        None,
+        scene,
+        transform,
+        text_renderer,
+        theme,
+        presence,
+    );
+}
+
+/// [`draw_child`] for a container that knows `child`'s place among its
+/// children (`index`), so a host that keys widgets
+/// ([`crate::scene_parts::key_widgets`]) keys it by that place even when the
+/// container leaves siblings before it undrawn.
+pub fn draw_child_at(
+    child: &mut (impl Widget + ?Sized),
+    index: Option<usize>,
+    scene: &mut Scene,
+    transform: Affine,
+    text_renderer: &mut TextRenderer,
+    theme: &Theme,
+    presence: &PresenceCtx,
+) {
+    if presence.should_cull(child.paint_bounds()) {
+        // Counted all the same, so the siblings after it keep their keys.
+        if index.is_none() {
+            crate::scene_parts::skip_widget();
+        }
+        return;
     }
+    #[cfg(debug_assertions)]
+    let open = scene.encoding().n_open_clips;
+    let begun = crate::scene_parts::begin_widget(scene, child, index, transform);
+    child.draw(scene, transform, text_renderer, theme, presence);
+    crate::scene_parts::end_widget(scene, begun);
+    #[cfg(debug_assertions)]
+    debug_assert_eq!(
+        scene.encoding().n_open_clips,
+        open,
+        "{} left a layer open (or ended one it did not begin) in its draw",
+        child.concrete_type_name()
+    );
 }
 
 /// What a gated, presence-publishing widget draws over itself once drawn:
@@ -1634,6 +1665,19 @@ pub trait Widget {
         None
     }
 
+    /// Whether this control opens a panel where it stands, which the window's bar has no place
+    /// to hang: a header holding one keeps its row rather than moving it into the bar.
+    fn window_slot_barrier(&self) -> bool {
+        false
+    }
+
+    /// Choose the row `id` of a menu this control opens in the window's bar
+    /// ([`Self::window_slot`] named the rows): the bar shows the menu, and the row the person
+    /// chose comes back by the id it was given. `false` for a control that opens no menu.
+    fn window_choose(&mut self, _id: &str) -> bool {
+        false
+    }
+
     /// Downcast to the concrete widget, for hosts and tests that reach a
     /// known widget through `dyn Widget`. Default `None` (a widget may borrow
     /// and so not be `'static`); a widget opts in with `Some(self)`, and a
@@ -1660,11 +1704,12 @@ pub trait Widget {
         None
     }
 
-    /// Reveal a newly keyboard-focused descendant inside any enclosing
-    /// viewport. Containers override this to scroll; ordinary widgets simply
-    /// recurse toward the target and report whether it was found.
-    fn reveal_descendant(&mut self, target: *const dyn Widget) -> bool {
-        defaults::reveal_descendant(self.children_mut(), target)
+    /// Show `rect` of the descendant `target` (its own rect, or the part of
+    /// it to show, as laid out) inside every enclosing viewport. Containers
+    /// override this to scroll; ordinary widgets simply recurse toward the
+    /// target and report whether it was found.
+    fn reveal_descendant(&mut self, target: *const dyn Widget, rect: vello::kurbo::Rect) -> bool {
+        defaults::reveal_descendant(self.children_mut(), target, rect)
     }
 
     /// Named hit rects for widgets that paint several affordances into one
@@ -3207,8 +3252,9 @@ pub use slider::{
 };
 mod text_input;
 pub use text_input::{
-    AccessoryAction, FieldFace, SpanHighlighter, TextActionRequest, TextActionResult, TextInput,
-    TextInputKind, TextInputProps, paint_invalid_edge, paint_preedit_underline,
+    AccessoryAction, FieldFace, PlaceholderFit, PromptFit, SpanHighlighter, TextActionRequest,
+    TextActionResult, TextInput, TextInputKind, TextInputProps, paint_invalid_edge,
+    paint_preedit_underline,
 };
 pub mod code_editor;
 pub use code_editor::{
@@ -3382,10 +3428,10 @@ pub(crate) use overflow_door::give_way;
 pub use overflow_door::{OverflowDoor, plan as plan_overflow};
 mod group_row;
 pub use group_row::{
-    CANVAS_ZOOM_MAX, CANVAS_ZOOM_MIN, CanvasView, CrossStripDetach, FLOAT_SIZE, FloatAsk, GroupRow,
-    GroupTopology, HintPlaces, JUMP_PX_PER_DETENT, OutputSpan, Pan, STRIP_BOTTOM_GUTTER_PX,
-    STRIP_EDGE_GUTTER_PX, STRIP_TOP_GAP_PX, StripLane, TabDropTarget, WheelJumpAccum,
-    pan_within_canvas, wheel_jump_detents,
+    CANVAS_ZOOM_MAX, CANVAS_ZOOM_MIN, CanvasView, CrossStripDetach, FLOAT_CARD_ROOM, FLOAT_SIZE,
+    FloatAsk, GroupRow, GroupTopology, HintPlaces, JUMP_PX_PER_DETENT, OutputSpan, Pan,
+    STRIP_BOTTOM_GUTTER_PX, STRIP_EDGE_GUTTER_PX, STRIP_TOP_GAP_PX, StripLane, TabDropTarget,
+    WheelJumpAccum, pan_within_canvas, wheel_jump_detents,
 };
 mod finger_path;
 pub mod tooltip;
@@ -3559,9 +3605,9 @@ mod rows;
 pub mod virtual_list;
 pub use virtual_list::{
     DescribedList, DescribedRows, DuplicateListKey, ItemRow, ListEdges, ListItemProps, ListModel,
-    RowActionRects, RowBuild, RowGroup, RowRenameField, RowSelection, RowSelectionSink,
-    TREE_DISCLOSURE, TREE_INDENT, TreeMarks, TreeMove, TreeRow, VecListModel, VirtualList,
-    VirtualListProps,
+    PaintedRowLifts, RowActionRects, RowBuild, RowContentBox, RowGroup, RowLift, RowRenameField,
+    RowSelection, RowSelectionSink, TREE_INDENT, TreeMarks, TreeMove, TreeRow, VecListModel,
+    VirtualList, VirtualListProps, row_content_box,
 };
 mod activation;
 pub(crate) mod control_verb;

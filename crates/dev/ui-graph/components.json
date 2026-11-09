@@ -726,6 +726,11 @@
           "type": "bool"
         },
         {
+          "name": "added",
+          "doc": "Every change it counts only put items in (`$noun`): what it says is new rather than changed.",
+          "type": "bool"
+        },
+        {
           "name": "more",
           "doc": "The window's document holds more resources than the mark counted: what it says is a lower bound, and says so.",
           "type": "bool"
@@ -1405,7 +1410,7 @@
     },
     {
       "name": "UnreadDivider",
-      "doc": "The divider as a widget, for a list built of widgets: a band across its column with its label at the trailing end, over the first line the reader had not read.\nA described component, so a host that validates what an app sends builds it: the tilolang runtime places one per transcript over the row of the item the app named, and the host knows it from the toolkit's catalogue as it knows every other component.",
+      "doc": "The divider as a widget, for a list built of widgets: a band across its column with its label at its centre, over the first line the reader had not read.\nA described component, so a host that validates what an app sends builds it: a list told where the person stopped reading (`VirtualListProps::unseen_from`) stands one over the row of that item, and the host knows it from the toolkit's catalogue as it knows every other component.",
       "props": [
         {
           "name": "name",
@@ -5430,13 +5435,23 @@
           "type": "bool"
         },
         {
-          "name": "transcript",
-          "doc": "A conversation: each row stands in the page column, the list opens at its newest row and follows it.",
+          "name": "narrow",
+          "doc": "The window is too narrow to hold an item under its row: a row that carries an item opens it in front of the list, where the window's back leads back to the rows, and a row the host held open closes as the window narrows.",
+          "type": "bool"
+        },
+        {
+          "name": "follow_end",
+          "doc": "The list is read to its end: it opens at its last row and stays there as rows arrive and settle, unless the person scrolled away ([`VirtualList::following_end`]).",
           "type": "bool"
         },
         {
           "name": "page_column",
-          "doc": "Each row stands in the page column, at the readable measure every page sets its blocks on, a section's gap under the row before it. A list read from its first row to its last (a conversation's messages, a document's replies) keeps the measure without following its end as a transcript does.",
+          "doc": "Each row stands in the page column: a section's gap under the row before it, each run one author wrote under that author's name and the time ([`ListItemProps::author`], [`ListItemProps::time`]), and a press that gives a row the keyboard, choosing none.",
+          "type": "bool"
+        },
+        {
+          "name": "at_measure",
+          "doc": "The page column's rows keep the readable measure every page sets its blocks on ([`MEASURE_REM`]), centred in the width the list is given. Without it they fill that width, as a conversation's messages do.",
           "type": "bool"
         },
         {
@@ -5464,8 +5479,8 @@
           "type": "bool"
         },
         {
-          "name": "unread",
-          "doc": "The item a conversation's reader had not seen when they opened it (`first_unseen(c)`): the \"New messages\" divider stands over the row that shows it, and while that is above the view a pill at the foot offers to take the reader back to it. `None` draws neither. The list works out the row as it builds, so the same list keeps its rows and only the two the divider moved between build again.",
+          "name": "unseen_from",
+          "doc": "The item where the person looking has seen nothing yet (`first_unseen(c)`): the toolkit's [`UnreadDivider`](crate::widget::conversation::UnreadDivider) stands over the row that shows it, and while that is above the view a pill at the foot offers the way back to it ([`VirtualList::following_end`]). `None` draws neither. The list works out the row as it builds, so a list keeps its rows and only the two the divider moved between build again.",
           "type": {
             "option": "resource"
           }
@@ -7391,7 +7406,7 @@
       "slots": [
         {
           "name": "menu",
-          "doc": "What the item offers on its context menu (a right-click, the Menu key or a long press opens it, and selects the row): each of its allowed actions, after the menu the row's view placed (`attached`) and without those that menu placed already, so every action stays reachable.",
+          "doc": "What the item offers on its context menu (a right-click, the Menu key or a long press opens it, and selects the row unless the row opens where it stands): each of its allowed actions, after the menu the row's view placed (`attached`) and without those that menu placed already, so every action stays reachable.",
           "accepts": {
             "one_of": [
               "MenuItem",
@@ -7435,7 +7450,7 @@
         },
         {
           "name": "detail",
-          "doc": "The item's document, shown under the row while the row stands open into it, one lead in under the row's text: a row with a document opens where it stands in the list when it is chosen, and the list's own motion grows the row to hold it. Without one, choosing the row opens the item elsewhere (`ui.VirtualList`'s `activate`).",
+          "doc": "The item's document, shown in the row's place while the row stands open into it: a row with a document opens where it stands in the list when it is chosen, and the list's own motion grows the row to hold it. The document opens with the item's own leading control and title, in the row's column — the row becomes the item, its title written once — and what the item holds follows under them. Without a document, choosing the row opens the item elsewhere (`ui.VirtualList`'s `activate`).",
           "accepts": "view"
         }
       ],

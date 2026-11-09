@@ -5,9 +5,9 @@
 // Pages are served from 127.0.0.1, a secure context, so OPFS, Web Locks and
 // WebGPU are available.
 import {spawn} from 'node:child_process';
-import {accessSync, constants as fsConstants, readFileSync, existsSync, mkdtempSync, readdirSync, rmSync, statSync, statfsSync} from 'node:fs';
+import {accessSync, constants as fsConstants, readFileSync, existsSync, mkdtempSync, readdirSync, readlinkSync, rmSync, statSync, statfsSync} from 'node:fs';
 import {createServer} from 'node:http';
-import {homedir, tmpdir} from 'node:os';
+import {homedir, hostname, tmpdir} from 'node:os';
 import {extname, join, normalize, resolve} from 'node:path';
 import {fileURLToPath} from 'node:url';
 import {brotliCompressSync, constants as zlibConstants} from 'node:zlib';
@@ -26,6 +26,13 @@ const TYPES = {
 };
 
 export const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
+
+/** Run in a page before its own scripts: the entry page's first screen (its
+ * first visit's "Set up with your agent", web/first-run.mjs) counts as seen,
+ * so a test that opens the site in a fresh profile gets the desktop it drives,
+ * as a returning person does. A test of the first screen opts out
+ * (`tab({firstRun: true})`). */
+export const FIRST_RUN_SEEN = "try { localStorage.setItem('tilo-first-run', '1'); } catch {}";
 
 /** Compressed copies by path, kept until the file they were made from changes:
  * a bundle's start module is tens of megabytes and a page load asks for it
@@ -115,9 +122,9 @@ function chromeBinary() {
   throw new Error('no Chrome: set CHROME or install Playwright\'s chromium');
 }
 
-/** Where a throwaway profile goes: memory when the host has a tmpfs for it
- * (/dev/shm, else $XDG_RUNTIME_DIR), as tilo_paths::memory_temp_dir gives app
- * test profiles, else the temp directory. Nothing in it needs durability, and on
+/** Where a throwaway profile goes, in preference order: memory when the host has
+ * a tmpfs for it (/dev/shm, else $XDG_RUNTIME_DIR), as tilo_paths::memory_temp_dir
+ * gives app test profiles, else the temp directory. Nothing in it needs durability, and on
  * disk Chromium's exit waits on the profile's writeback: on a busy shared disk
  * its threads sat in the kernel past every shutdown deadline.
  *
@@ -126,9 +133,13 @@ function chromeBinary() {
  * /dev/shm is 64 MiB, which one browser fills. */
 const profileRoom = 1 << 30;
 
+function profileHomes() {
+  return [process.platform === 'linux' ? '/dev/shm' : null, process.env.XDG_RUNTIME_DIR, tmpdir()]
+    .filter(Boolean);
+}
+
 function throwawayDir() {
-  for (const dir of [process.platform === 'linux' ? '/dev/shm' : null, process.env.XDG_RUNTIME_DIR]) {
-    if (!dir) continue;
+  for (const dir of profileHomes()) {
     try {
       if (!statSync(dir).isDirectory()) continue;
       accessSync(dir, fsConstants.W_OK);
@@ -141,8 +152,58 @@ function throwawayDir() {
   return tmpdir();
 }
 
+/** A profile whose browser started less than this long ago is still starting. */
+const startingProfileMs = 10 * 60_000;
+
+/** Whether `profile`'s browser has stopped. Chromium names its owner in the
+ * profile's `SingletonLock` symlink as `hostname-pid`, so a profile whose pid
+ * is gone, or whose lock was never written and nobody has touched since, is a
+ * leftover; anything this cannot prove is left alone. */
+function abandoned(profile) {
+  let lock;
+  try {
+    lock = readlinkSync(join(profile, 'SingletonLock'));
+  } catch {
+    return Date.now() - statSync(profile).mtimeMs > startingProfileMs;
+  }
+  const owner = /^(.*)-(\d+)$/.exec(lock);
+  if (!owner || owner[1] !== hostname()) return false;
+  try {
+    process.kill(Number(owner[2]), 0);
+    return false;
+  } catch (error) {
+    return error.code === 'ESRCH';
+  }
+}
+
+/** Remove profiles whose browser stopped without a test noticing. A killed or
+ * crashed test leaves its supervisor and Chromium behind, and each profile
+ * holds hundreds of megabytes of memory-backed disk that only the test that
+ * created it would have removed. */
+function sweepProfiles() {
+  for (const home of new Set(profileHomes())) {
+    let names;
+    try {
+      names = readdirSync(home);
+    } catch {
+      continue;
+    }
+    for (const name of names) {
+      if (!name.startsWith('tilo-chrome-')) continue;
+      const profile = join(home, name);
+      try {
+        if (!abandoned(profile)) continue;
+        rmSync(profile, {recursive: true, force: true, maxRetries: 5, retryDelay: 100});
+      } catch {
+        // Another launch removed it first, or it is not ours to judge.
+      }
+    }
+  }
+}
+
 /** A headless browser on a fresh profile. */
 export async function launch({args = []} = {}) {
+  sweepProfiles();
   const profile = mkdtempSync(join(throwawayDir(), 'tilo-chrome-'));
   const supervised = process.platform === 'linux';
   const browser = chromeBinary();
@@ -167,9 +228,19 @@ export async function launch({args = []} = {}) {
   ];
   // The existing subreaper owns even detached utility processes. Chromium's
   // root exiting alone does not prove that its profile has stopped changing.
+  // It also follows this process's death: a test that is killed must not leave
+  // a browser rendering, and once its writers have stopped the supervisor
+  // removes the profile it was given.
   const child = spawn(supervised ? 'python3' : browser, supervised
     ? [fileURLToPath(new URL('./owned_browser.py', import.meta.url)), browser, ...browserArgs]
-    : browserArgs, {stdio: ['ignore', 'ignore', 'pipe']});
+    : browserArgs, {
+    stdio: ['ignore', 'ignore', 'pipe'],
+    ...(supervised ? {env: {
+      ...process.env,
+      TILO_OWNED_BROWSER_PARENT: String(process.pid),
+      TILO_OWNED_BROWSER_PROFILE: profile,
+    }} : {}),
+  });
   // The end of what the browser (or its supervisor) said: why a launch or a
   // shutdown failed is otherwise lost with the pipe.
   let said = '';
@@ -229,8 +300,9 @@ export async function launch({args = []} = {}) {
   });
 
   /** A tab: navigate, evaluate (awaiting promises), collect errors. In
-   * `context` (from `context()`) when given, else the browser's own profile. */
-  async function tab({context} = {}) {
+   * `context` (from `context()`) when given, else the browser's own profile.
+   * The entry page's first screen counts as seen unless `firstRun`. */
+  async function tab({context, firstRun = false} = {}) {
     const {result: {targetId}} = await send('Target.createTarget',
       {url: 'about:blank', ...(context ? {browserContextId: context} : {})});
     const {result: {sessionId}} = await send('Target.attachToTarget', {targetId, flatten: true});
@@ -248,6 +320,7 @@ export async function launch({args = []} = {}) {
     listeners.add(listener);
     await send('Runtime.enable', {}, sessionId);
     await send('Page.enable', {}, sessionId);
+    if (!firstRun) await send('Page.addScriptToEvaluateOnNewDocument', {source: FIRST_RUN_SEEN}, sessionId);
     const evaluate = async (expression, {timeout = 120000} = {}) => {
       const reply = await send('Runtime.evaluate', {
         expression, awaitPromise: true, returnByValue: true, timeout,
@@ -336,7 +409,9 @@ export async function launch({args = []} = {}) {
         throw new Error(`owned browser shutdown failed (${child.exitCode}); profile retained\n${shutdownLines()}`);
       }
       // Only the supervisor's successful exit proves every owned writer was
-      // reaped. Keep filesystem retries bounded and report persistent errors.
+      // reaped. It removes the profile it was given by then; this removal is
+      // the backup for the paths that never reached it. Keep filesystem
+      // retries bounded and report persistent errors.
       rmSync(profile, {recursive: true, force: true, maxRetries: 5, retryDelay: 100});
     },
   };

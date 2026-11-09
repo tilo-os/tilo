@@ -234,6 +234,7 @@ fn expiring(
             issued_at_ns.saturating_add(u64::try_from(lifetime.as_nanos()).unwrap()),
         ),
         signature: [0; 64],
+        issuer: None,
     };
     sign_device_cert(&mut cert, root).unwrap();
     cert

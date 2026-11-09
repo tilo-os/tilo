@@ -8,54 +8,18 @@
     reason = "in a test these are the assertion, not a hazard"
 )]
 use tilo_desktop::about::{AboutLinks, AboutVariant, TiloMenu};
-use tilo_desktop::desktop_host::{DesktopChrome, DesktopRules};
+use tilo_desktop::desktop_host::{DesktopChrome, NoticeTiles, PermissiveRules};
 use tilo_desktop::overlays::{Overlays, Slot};
 use tilo_desktop::topbar::TopBarChrome;
-use tilo_desktop_model::commands::DesktopCommand;
 use tilo_desktop_model::{
     DesktopTree, Strip, StripId, Tab, TileContent, WindowGroup, WindowWidth, Workspace,
     WorkspaceSlot,
 };
-use tilo_desktop_surface::{DesktopHandle, DesktopSurface, TileSource};
+use tilo_desktop_surface::DesktopSurface;
 use ui::headless::FrameHarness;
 use ui::kurbo::Rect;
-use ui::widget::TileHost;
 
 const DISPLAY: Rect = Rect::new(0.0, 0.0, 1280.0, 800.0);
-
-/// The windows of the test desk, with their content as plain notices.
-struct Notices;
-
-impl TileSource for Notices {
-    fn tile(&mut self, _: &Workspace, tab: &Tab) -> TileHost {
-        TileHost::new(ui::widget::TileContent::Notice {
-            title: tab.title.clone(),
-            detail: String::new(),
-        })
-    }
-}
-
-struct Rules {
-    handle: DesktopHandle,
-}
-
-impl DesktopRules for Rules {
-    fn tree(&self) -> DesktopTree {
-        self.handle.read(Clone::clone)
-    }
-
-    fn author(&self) -> String {
-        "Ada".into()
-    }
-
-    fn may(&self, _: &DesktopCommand) -> Result<(), String> {
-        Ok(())
-    }
-
-    fn may_create_workspace(&self) -> Result<(), String> {
-        Ok(())
-    }
-}
 
 fn desk_tree() -> DesktopTree {
     let tabs = vec![Tab {
@@ -98,13 +62,13 @@ fn desk_tree() -> DesktopTree {
 fn chrome() -> (FrameHarness, Overlays) {
     let tree = desk_tree();
     // The desk's own tree stays unmounted: the chrome is what the press is judged against.
-    let (_, handle) = DesktopSurface::new(tree.clone(), 7, Box::new(Notices));
+    let (_, handle) = DesktopSurface::new(tree.clone(), 7, Box::new(NoticeTiles));
     let overlays = Overlays::new();
     overlays.set_displays(&[DISPLAY], Some(DISPLAY));
     let mut chrome = DesktopChrome::new(
         handle.clone(),
         "g".into(),
-        std::rc::Rc::new(Rules { handle }),
+        std::rc::Rc::new(PermissiveRules::new(handle)),
         TopBarChrome::from_tree(&tree),
         TiloMenu::new(AboutVariant::Native, &AboutLinks::default()),
         false,
@@ -199,29 +163,26 @@ fn the_press_that_takes_the_menu_down_does_not_raise_it_again() {
     );
 }
 
-/// The same for the mark behind the Tilo menu.
+/// The Tilo mark zooms out of the workspace to the overview of the person's Tilo, and a second
+/// press zooms back in: no menu hangs off it for a desk press to take down.
 #[test]
-fn the_press_that_takes_the_tilo_menu_down_does_not_raise_it_again() {
+fn the_tilo_mark_zooms_out_and_back_in() {
     let (mut frame, overlays) = chrome();
     with_chrome(&mut frame, |chrome| {
         chrome.apply_intent(tilo_desktop::chrome::ChromeIntent::ToggleTiloMenu);
     });
     frame.relayout();
-    assert!(with_chrome(&mut frame, |chrome| chrome.menu_open()));
-    assert_eq!(
+    assert!(with_chrome(&mut frame, |chrome| chrome.overview_open()));
+    assert!(!with_chrome(&mut frame, |chrome| chrome.menu_open()));
+    assert_ne!(
         overlays.press_outside(DESK_PRESS.0, DESK_PRESS.1),
         Some(Slot::TiloMenu)
     );
-    overlays.dismiss(Slot::TiloMenu);
-    frame.relayout();
     with_chrome(&mut frame, |chrome| {
         chrome.apply_intent(tilo_desktop::chrome::ChromeIntent::ToggleTiloMenu);
     });
     frame.relayout();
-    assert!(
-        !with_chrome(&mut frame, |chrome| chrome.menu_open()),
-        "the mark the same press lands on does not open it again"
-    );
+    assert!(!with_chrome(&mut frame, |chrome| chrome.overview_open()));
 }
 
 #[test]
@@ -239,20 +200,6 @@ fn a_press_on_the_menu_itself_is_the_menus() {
         "a press on the menu leaves it up"
     );
     assert!(with_chrome(&mut frame, |chrome| chrome.menu_open()));
-}
-
-#[test]
-fn a_press_on_the_desk_closes_the_tilo_menu() {
-    let (mut frame, overlays) = chrome();
-    with_chrome(&mut frame, |chrome| {
-        chrome.apply_intent(tilo_desktop::chrome::ChromeIntent::ToggleTiloMenu);
-    });
-    frame.relayout();
-    assert!(with_chrome(&mut frame, |chrome| chrome.menu_open()));
-    assert_eq!(
-        overlays.press_outside(DESK_PRESS.0, DESK_PRESS.1),
-        Some(Slot::TiloMenu)
-    );
 }
 
 #[test]

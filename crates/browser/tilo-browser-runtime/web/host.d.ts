@@ -94,7 +94,7 @@ export interface MountOptions {
    * invitation, as an embed has nothing to invite into.
    */
   invite?: {
-    /** The page's entry, as a link names it (`https://tilo.coffee/`). */
+    /** The page's entry, as a link names it (`https://tilo.sh/`). */
     base: string;
     /** The workspace's host: where an invitation waits, and where the link points. */
     origin: string;
@@ -154,6 +154,12 @@ export interface MountOptions {
    * bar) offers; an empty or missing one is not offered.
    */
   about?: {notify?: string; source?: string; community?: string};
+  /**
+   * How the desktop is laid out: the full desktop (the default), or
+   * `console`, the Console app over the whole page until the person opens
+   * something from it.
+   */
+  layout?: 'desktop' | 'console';
 }
 /** Which window of a desktop an action call addresses. */
 export interface WindowOption {

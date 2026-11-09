@@ -53,6 +53,7 @@ pub(crate) fn guest_device() -> (SigningKey, DeviceCert) {
         issued_at_ns: 1,
         expires_at_ns: None,
         signature: [0; 64],
+        issuer: None,
     };
     sign_device_cert(&mut cert, &root).unwrap();
     (key, cert)
@@ -196,6 +197,70 @@ async fn a_crowds_shared_writes_hold_each_invitation_grant_and_challenge_across_
             .await;
         assert!(matches!(answer, JoinReply::Admitted { .. }), "{answer:?}");
     }
+    relay.shutdown().await;
+}
+
+/// An entry cut off between committing a device's admission and settling it
+/// (the page that asked closed meanwhile) leaves governance holding the
+/// device while the relay decides its changes against standings without it.
+/// The device's next entry finds it admitted already, and settles what
+/// governance holds before answering, so its changes are decided with it.
+#[tokio::test]
+async fn an_entry_cut_off_before_its_settle_is_settled_by_the_next() {
+    let dir = tempfile::tempdir().unwrap();
+    let (key, cert) = governor();
+    let relay = test_host(dir.path(), &key, &cert).await;
+    let workspaces = relay.workspaces();
+    let created = workspaces.create("Demo").await.unwrap();
+    let page = {
+        let root = SigningKey::from_bytes(&[1; 32]);
+        let mut page = DeviceCert {
+            user_public_key: root.verifying_key().to_bytes(),
+            device_public_key: SigningKey::from_bytes(&[9; 32]).verifying_key().to_bytes(),
+            device_label: "browser".into(),
+            capabilities: DeviceCapabilities::member(),
+            issued_at_ns: 1,
+            expires_at_ns: None,
+            signature: [0; 64],
+            issuer: None,
+        };
+        sign_device_cert(&mut page, &root).unwrap();
+        page
+    };
+    // The first entry commits the admission and stops there.
+    {
+        let governed = workspaces.workspace(&created.workspace).await.unwrap();
+        let mut governed = governed.lock().await;
+        let now = SystemTime::now();
+        let mut candidate = governed.peer().clone();
+        assert!(
+            candidate
+                .admit_certificate(page.clone(), &workspaces.inner.host.key, now)
+                .unwrap()
+        );
+        let state = governed.collaboration().clone();
+        governed
+            .commit(candidate, &workspaces.inner.host.key, now, |_, _| Ok(state))
+            .unwrap();
+    }
+    let access = &workspaces.inner.host.access;
+    assert!(
+        !access
+            .projects_standing(created.workspace_id, page.device_public_key)
+            .await,
+        "the cut-off entry left the device out of the standings changes are decided against"
+    );
+
+    assert!(
+        !workspaces.enter(&created.workspace, &page).await.unwrap(),
+        "the device is admitted already"
+    );
+    assert!(
+        access
+            .projects_standing(created.workspace_id, page.device_public_key)
+            .await,
+        "the next entry settled the admission"
+    );
     relay.shutdown().await;
 }
 
@@ -740,6 +805,7 @@ async fn legacy_window_write_respects_current_member_grants() {
         issued_at_ns: 1,
         expires_at_ns: None,
         signature: [0; 64],
+        issuer: None,
     };
     sign_device_cert(&mut foreign, &owner_root).unwrap();
     let state = workspaces.workspace(&created.workspace).await.unwrap();
@@ -1298,6 +1364,7 @@ async fn the_owner_bans_and_unbans_and_a_stranger_cannot() {
         issued_at_ns: 1,
         expires_at_ns: None,
         signature: [0; 64],
+        issuer: None,
     };
     sign_device_cert(&mut stranger, &stranger_root).unwrap();
     assert!(
@@ -2469,6 +2536,7 @@ async fn a_member_with_a_renewed_certificate_stays_the_same_member() {
             issued_at_ns,
             expires_at_ns,
             signature: [0; 64],
+            issuer: None,
         };
         sign_device_cert(&mut cert, &root).unwrap();
         cert
@@ -2653,6 +2721,7 @@ async fn a_host_serves_the_workspaces_its_renamed_certificate_governs() {
         issued_at_ns: 1,
         expires_at_ns: None,
         signature: [0; 64],
+        issuer: None,
     };
     tilo_user_identity::sign_device_cert(&mut other_cert, &other_root).unwrap();
     let refused = WorkspaceHost::open(

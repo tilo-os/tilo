@@ -541,6 +541,7 @@ mod tests {
             issued_at_ns: tilo_clock::unix_now_ns(),
             expires_at_ns: None,
             signature: [0; 64],
+            issuer: None,
         };
         sign_device_cert(&mut cert, root).unwrap();
         serde_json::to_string(&cert).unwrap()

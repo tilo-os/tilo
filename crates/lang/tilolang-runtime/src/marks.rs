@@ -5,10 +5,10 @@
 //! a bound control edits a field, a window shows its resource. As each node of a view is built,
 //! the host reads [`crate::seen::unseen`] there and marks it:
 //!
-//! - a row gets a `ui.ChangeMark` in its `change` slot: who, in which task run; a row a list
+//! - a row gets a `ui.ChangeMark` in its `change` slot: who, in which run; a row a list
 //!   folds away as done with stands with the rows above while the change is unseen, so the mark
-//!   is read where it happened. A row that is itself new, in a list that stands a divider where
-//!   its unseen part starts (`unread:`), takes no mark: the divider says it is new;
+//!   is read where it happened. A row in the unseen part of a list that stands a divider where
+//!   it starts (`unseen_from:`) takes no mark: the divider says it is new;
 //! - a bound text field takes the changer's colour (`changed_by`), and says what it held before
 //!   the change (`previous`);
 //! - a window's header holds a mark with how many changes of what it shows are unseen, and by
@@ -50,8 +50,9 @@ const VIRTUAL_LIST: &str = "ui.VirtualList";
 const LIST_ROW: &str = "ui.ListRow";
 /// How many resources of a window's document a window's mark reads changes of: one page of
 /// them, so a window of a workspace of any size costs the same to open, and says when the
-/// document holds more.
-const WINDOW_PAGE: usize = 128;
+/// document holds more. It is the page a window reads of a place as well: what it shows, and
+/// the most a number it reads is allowed to cost.
+pub(crate) const WINDOW_PAGE: usize = 128;
 
 /// The pseudo-field a mark reads versions through: of a resource, every version of it, and of
 /// a document, every version of every resource in it. A mark reads what a step made, not only
@@ -107,9 +108,10 @@ impl Core {
                 if places_mark(node, &r.target.id_string()) {
                     return Ok(());
                 }
-                // A row that is itself new, in a list that stands a divider where its unseen
-                // part starts: the divider says so, and a mark on the row says it again.
-                if walk.says_new && unseen.kind == VersionKind::Created {
+                // A row in the unseen part of a list that stands a divider where it starts:
+                // the divider says the rows from there on are new, so a mark on one of them
+                // says it again, whether it was put there or changed since it was.
+                if walk.says_new {
                     return Ok(());
                 }
                 let mut mark = UiNode::empty(CHANGE_MARK, &format!("{}~change", node.key));
@@ -308,16 +310,15 @@ impl Core {
         // "tasks"). A window's mark stands for the document's own resource, whose type only the
         // store names. Both numbers come from the type's one `<id>.noun` message, so the count
         // and the noun agree.
-        let ty = if self.type_of_ref(&at.ty).is_ok() {
-            Some(at.ty.clone())
-        } else {
-            self.store.borrow().type_of(at).ok()
-        };
-        if let Some((one, many)) = ty.as_deref().and_then(|ty| self.item_nouns(ty)) {
+        if let Some((one, many)) = self
+            .resolved_type(at)
+            .as_deref()
+            .and_then(|ty| self.item_nouns(ty))
+        {
             mark.props.insert("noun_one".to_owned(), Value::Text(one));
             mark.props.insert("noun".to_owned(), Value::Text(many));
         }
-        if let Some(run) = &newest.task {
+        if let Some(run) = &newest.run {
             mark.props
                 .insert("run".to_owned(), Value::Text(run.title.clone()));
         }
@@ -329,7 +330,7 @@ impl Core {
             "count".to_owned(),
             Value::Int(i64::try_from(unseen.len()).unwrap_or(i64::MAX)),
         );
-        if let Some(run) = &newest.task
+        if let Some(run) = &newest.run
             && !mark.events.contains_key("activate")
         {
             let review = Value::Action(ActionRef::new(
@@ -552,11 +553,19 @@ impl Core {
             mark.props.insert("more".to_owned(), Value::Bool(true));
         }
         self.fill_mark(&mut mark, &at, &unseen, viewer, acc);
-        // The count is what changed, one per item: what the person catches up on.
-        mark.props.insert(
-            "count".to_owned(),
-            Value::Int(i64::try_from(groups.len()).unwrap_or(i64::MAX)),
-        );
+        // A window counts the items the changes were made over rather than the versions that
+        // made them: what the person catches up on.
+        let count = unseen.iter().fold(0i64, |sum, version| {
+            sum.saturating_add(i64::from(version.count.max(1)))
+        });
+        mark.props.insert("count".to_owned(), Value::Int(count));
+        // Every change only put items in: what is new is said as new, not as changed.
+        if unseen
+            .iter()
+            .all(|version| self.puts_items_in(version, &at))
+        {
+            mark.props.insert("added".to_owned(), Value::Bool(true));
+        }
         // Activating the chip opens the catch-up, so what the chip does is show its list, not
         // the run of the newest step.
         mark.events.remove("activate");
@@ -578,6 +587,37 @@ impl Core {
             None => node.children.push(slot(name, &node.key, mark)),
         }
         Ok(())
+    }
+
+    /// The type of the resource `at` shows: its ref names one, and a window's mark stands for
+    /// the document's own resource, whose type only the store names.
+    fn resolved_type(&self, at: &ResourceRef) -> Option<String> {
+        if self.type_of_ref(&at.ty).is_ok() {
+            Some(at.ty.clone())
+        } else {
+            self.store.borrow().type_of(at).ok()
+        }
+    }
+
+    /// Whether `version` only put items into one of `at`'s collections: a change to a collection
+    /// of what the window shows and nothing else, and no item taken out of it.
+    fn puts_items_in(&self, version: &Version, at: &ResourceRef) -> bool {
+        if version.kind != VersionKind::Changed
+            || version.left.is_some()
+            || version.fields.len() != 1
+        {
+            return false;
+        }
+        let Some(ty) = self.resolved_type(at) else {
+            return false;
+        };
+        let Some((_, info)) = self.type_of_ref(&ty).ok() else {
+            return false;
+        };
+        info.fields.iter().any(|field| {
+            field.kind == crate::meta::FieldKind::Collection
+                && version.fields.first() == Some(&field.id)
+        })
     }
 
     /// The catch-up a window's mark opens (*Since you looked*): the changes it counts, grouped
@@ -632,9 +672,9 @@ impl Core {
                     viewer,
                 ));
             }
-            // A step of a task run offers the run, as the mark did: pressing it shows what the
+            // A step of a run offers the run, as the mark did: pressing it shows what the
             // run did.
-            if let Some(run) = versions.last().and_then(|v| v.task.as_ref()) {
+            if let Some(run) = versions.last().and_then(|v| v.run.as_ref()) {
                 let mut review = UiNode::empty("ui.Button", &format!("{group_key}~run"));
                 review
                     .props
@@ -706,7 +746,7 @@ impl Core {
         line.children.push(face);
         // The line leads with the name, as history writes a sentence: name, then what they did
         // ("Scout marked it done"). A face alone does not say who.
-        let mine = version.task.is_none() && viewer.0 == version.who;
+        let mine = version.run.is_none() && viewer.0 == version.who;
         let mut who = UiNode::empty("ui.Text", &format!("{key}~who"));
         who.props.insert(
             "value".to_owned(),

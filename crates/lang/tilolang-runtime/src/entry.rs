@@ -8,6 +8,11 @@
 //! collection of its type holds. The reader is [`tilolang::entry`], which knows nothing of
 //! storage or people; this module answers it from the workspace and builds the values.
 //!
+//! A parameter the call gave is a default: the words fill it where they name one, and the call's
+//! value stands where they say nothing. A view starts an item the way its place has it
+//! (`new_task(tasks, due: if in_today { today } else { .none })`) and the person typing "fri"
+//! says otherwise.
+//!
 //! What is typed fills the action when the entry commits it, not when the view draws: the text
 //! the entry sends with its `submit` is the one the action is made of, so a press right after a
 //! keystroke reads what was typed.
@@ -41,7 +46,7 @@ impl Core {
             }
         };
         let text = self.text(a.h(1)?)?;
-        let given: Vec<Option<Value>> = aref.args.iter().cloned().map(Some).collect();
+        let given: Vec<Option<Value>> = aref.args.iter().cloned().map(no_hole).collect();
         let (parsed, _) = self.read_entry(&aref.action, &given, &text)?;
         let parts = parsed
             .parts
@@ -65,10 +70,10 @@ impl Core {
     }
 
     /// Fills the action's one `Text` parameter of the action `aref` runs, and the parameters
-    /// the text says, with what `text` says ("Call the landlord fri 10am @bo"): the words
-    /// nothing else takes title the item, and the rest are its day, its moment, who it is for
-    /// and what it is of. An action with no one `Text` parameter, or whose call gave it, is left
-    /// as it is, as is every action `then` joins to one that is filled.
+    /// the words of `text` name ("Call the landlord fri 10am @bo"): the words nothing else takes
+    /// title the item, and the rest are its day, its moment, who it is for and what it is of. An
+    /// action with no one `Text` parameter, or whose call gave it, is left as it is, as is every
+    /// action `then` joins to one that is filled.
     ///
     /// Whether the entry makes anything: text that is nothing but space and what the other
     /// parameters take ("fri 10am @bo") names no item, so the action does not run.
@@ -82,7 +87,7 @@ impl Core {
             }
             return Ok(makes);
         }
-        let given: Vec<Option<Value>> = aref.args.iter().cloned().map(Some).collect();
+        let given: Vec<Option<Value>> = aref.args.iter().cloned().map(no_hole).collect();
         let Some(given) = self.entry_fill_given(&aref.action, given, text)? else {
             return Ok(false);
         };
@@ -92,13 +97,16 @@ impl Core {
         Ok(true)
     }
 
-    /// [`Core::entry_fill`] over the arguments of a call not yet made: the parameters `given`
-    /// leaves out are filled from `text`, and the entry parameter with the words the text says
-    /// of nothing else. A parameter a caller gave is left as it is, except the entry one, which
-    /// is what the person typed and so reads as the words other fields did not take.
+    /// [`Core::entry_fill`] over the arguments of a call not yet made: the entry parameter takes
+    /// the words the text says of nothing else, and the parameters the words name take what they
+    /// say, over what the call gave them. The call's values are defaults: they stand where the
+    /// words say nothing of the parameter.
     ///
     /// `None` when the text names no item: text that is nothing but space and what the other
     /// parameters take ("fri 10am @bo") makes nothing, as it does from a view's entry.
+    ///
+    /// A call that gave the entry parameter itself is not the entry's, so nothing is read: the
+    /// text of a plain field (`send(c, draft)`) is the message, not words the app parses.
     pub(crate) fn entry_fill_given(
         &self,
         action: &str,
@@ -169,13 +177,8 @@ impl Core {
         let params: Vec<Param> = meta
             .params
             .iter()
-            .enumerate()
-            .map(|(i, p)| Param {
+            .map(|p| Param {
                 takes: takes(&p.ty, p.entry, &app),
-                // A call that gave an optional `.none` left it empty: what is typed fills it.
-                given: given
-                    .get(i)
-                    .is_some_and(|v| v.as_ref().is_some_and(|v| !matches!(v, Value::Opt(None)))),
             })
             .collect();
         let subject = given.iter().flatten().find_map(|arg| match arg {
@@ -220,6 +223,11 @@ impl Core {
             }
         })
     }
+}
+
+/// The argument `value` as a call that gave it, `None` where the call left the parameter out.
+fn no_hole(value: Value) -> Option<Value> {
+    (value != Value::Missing).then_some(value)
 }
 
 /// What a parameter of type `ty` takes out of the text typed in an entry.

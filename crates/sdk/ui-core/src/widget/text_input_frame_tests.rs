@@ -847,3 +847,37 @@ fn a_bound_field_at_rest_asks_for_no_frame() {
         "a bound edit shows in place"
     );
 }
+
+/// A prompt wider than the field that shows it says what fits of it, and where it stops: the
+/// field elides the words to the line it prompts in, so no prompt is cut off mid-letter at the
+/// clip, and the frame's audit reads how the prompt fits the room the text has.
+#[test]
+fn a_prompt_wider_than_its_field_shows_what_fits_and_says_where_it_stopped() {
+    let prompt = "Reply to Launch plan for the autumn release";
+    let drawn = |width: f64| {
+        let mut field = TextInput::local().with_placeholder(prompt);
+        field.apply_layout_external(Rect::new(0.0, 0.0, width, 40.0));
+        draw_to_populate(&mut field);
+        field
+            .placeholder_fit()
+            .expect("a field showing a prompt reports how it fit")
+    };
+    let wide = drawn(600.0);
+    assert_eq!(
+        wide.shown, prompt,
+        "a field with room shows the whole prompt"
+    );
+    assert!(wide.width <= wide.room + 0.5, "{wide:?}");
+
+    let narrow = drawn(160.0);
+    assert!(narrow.shown.len() < prompt.len(), "{narrow:?}");
+    assert!(
+        prompt.starts_with(narrow.shown.trim_end_matches('…')),
+        "{narrow:?}"
+    );
+    assert!(narrow.shown.ends_with('…'), "{narrow:?}");
+    assert!(
+        narrow.width <= narrow.room + 0.5,
+        "what it shows fits the room it has: {narrow:?}"
+    );
+}

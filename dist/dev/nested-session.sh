@@ -40,7 +40,7 @@
 #   --community SITE   the community site this session is in (a site's
 #                      address, as /etc/tilo/community.toml names one): it
 #                      joins the site's home workspace through the site's door
-#                      as a computer joins tilo.coffee's Lounge. Without it
+#                      as a computer joins tilo.sh's Lounge. Without it
 #                      the session follows this machine's configuration.
 #   --model-provider SPEC  give the session's person a model provider, as
 #                      Settings' provider pane does (provider settings, and

@@ -4,13 +4,13 @@
 //! ([`HostMode::Device`](tilo_room_host::host::HostMode::Device)), in
 //! process: the host creates the profile's workspace and issues this device the
 //! invitation its replica redeems ([`WorkspaceHost::place_own_workspace`]), and from
-//! then on the workspace is one of the workspaces this profile joined, its session
-//! carried in process ([`WorkspaceHost::connect_local`]). The host takes part in
-//! the workspace's channels as this device's one peer, asking this device's own
-//! channel service for their keys.
+//! then on the workspace is one of the workspaces this profile joined, its link
+//! to the host paired in process. The host takes part in the workspace's
+//! channels as this device's one peer, asking this device's own channel service
+//! for their keys.
 //!
-//! An app's write to the workspace goes to the host as a commit and is
-//! acknowledged once the host keeps it. A write to a record the workspace does
+//! An app's write to the workspace is admitted here and acknowledged once the
+//! host keeps it. A write to a record the workspace does
 //! not hold yet is taken only in a resource kind the app's installed
 //! manifest declares; in dev mode, an app that is not installed is trusted
 //! with the kind its own build names. The workspace lets the app author its
@@ -24,7 +24,6 @@ use tilo_desktop_model::WorkspaceId;
 use tilo_peer_state::join_transport::WorkspaceJoinClient;
 use tilo_peer_state::owner::session::Reach;
 use tilo_peer_state::owner_commit::{CommitOperation, OwnerCommitReceipt, OwnerCommitRequest};
-use tilo_relay_session::{CoeditPayload, RelayCoeditSession};
 use tilo_room_host::host::WorkspaceHost;
 
 /// How long a write waits for the workspace's session and for its host to keep it.
@@ -153,7 +152,12 @@ impl Joined {
     }
 
     /// Commit `request`, an app's write to `workspace`, a workspace this device's host
-    /// hosts, at the host: answered once the host keeps it.
+    /// hosts: sent to the host over this device's link to it, and answered once
+    /// the host keeps it.
+    #[expect(
+        clippy::significant_drop_tightening,
+        reason = "the host is this profile's own, kept by a OnceLock: the reference holds no lock"
+    )]
     pub(super) async fn commit_hosted(
         &self,
         workspace: WorkspaceId,
@@ -165,32 +169,31 @@ impl Joined {
             app,
             record,
             envelope,
-        } = request.operation
+        } = &request.operation
         else {
             return Err("an app writes documents to its workspace".into());
         };
+        let (app, record, envelope) = (app.clone(), record.clone(), *envelope.clone());
         let own = self.own_device();
         if envelope.author.as_bytes() != &own {
             return Err("the document's signer differs from this device".into());
         }
-        let (held, authors, generation) = self.owner.with_current(workspace, |view| {
-            let now = SystemTime::now();
-            let member = view
-                .peer()
-                .permissions(own, now)
-                .map_err(|error| error.to_string())?;
-            Ok((
-                view.peer().holds_document(&app, &record),
-                member
-                    .policy
-                    .app_authors(&app, &tilo_action_policy::Context::at_time(now)),
-                view.generation(),
-            ))
-        })?;
         let own_host = self
             .own_host
             .get()
             .ok_or("this profile runs no workspace host")?;
+        let (held, authors, generation) = self.owner.with_current(workspace, |view| {
+            let now = SystemTime::now();
+            Ok((
+                view.peer().holds_document(&app, &record),
+                view.peer().permissions(own, now).is_ok_and(|member| {
+                    member
+                        .policy
+                        .app_authors(&app, &tilo_action_policy::Context::at_time(now))
+                }),
+                view.generation(),
+            ))
+        })?;
         if !held {
             let kind = record_kind
                 .as_deref()
@@ -201,7 +204,9 @@ impl Joined {
         }
         if !authors {
             // This device lets the app author, committed by its own host,
-            // which signs the workspace's history under this device's key.
+            // which signs the workspace's history under this device's key. The
+            // link carries the grant to this device behind the write, and the
+            // host decides the write with the grant in hand.
             own_host
                 .host
                 .workspaces()
@@ -216,44 +221,38 @@ impl Joined {
                 .map_err(|error| error.to_string())?;
         }
         let message = neighbour_wire::NeighbourMsg::AppDocument {
-            peer: u64::from_le_bytes([
-                own[0], own[1], own[2], own[3], own[4], own[5], own[6], own[7],
-            ]),
-            app_id: app,
+            peer: neighbour_wire::peer_handle(&own),
+            app_id: app.clone(),
             cluster_id: workspace.to_string(),
-            record_id: record,
-            envelope,
+            record_id: record.clone(),
+            envelope: Box::new(envelope.clone()),
         };
-        let (channel, retention) = neighbour_wire::retention(&message, false)
-            .ok_or("the write has no channel to be kept on")?;
-        let body = postcard::to_allocvec(&message).map_err(|error| error.to_string())?;
-        let digest = *blake3::hash(&body).as_bytes();
-        let mut op = [0; 16];
-        op.copy_from_slice(&digest[..16]);
-        let payload = match retention {
-            neighbour_wire::Retention::Checkpoint => CoeditPayload::Checkpoint { channel, body },
-            neighbour_wire::Retention::Delta => CoeditPayload::RetainedDelta { channel, body },
-        };
+        let digest =
+            *blake3::hash(&postcard::to_allocvec(&message).map_err(|error| error.to_string())?)
+                .as_bytes();
         let deadline = Instant::now()
             .checked_add(KEPT_WITHIN)
             .ok_or("the clock cannot count a write's wait")?;
-        let session = self.live_by(workspace, deadline).await?;
-        let (kept, keeping) = tokio::sync::oneshot::channel();
-        self.lock_commits().insert(op, kept);
-        if let Err(error) = session.commit(op, &payload) {
-            self.lock_commits().remove(&op);
-            return Err(error.to_string());
-        }
-        let answer =
-            tokio::time::timeout_at(tokio::time::Instant::from_std(deadline), keeping).await;
-        self.lock_commits().remove(&op);
-        match answer {
-            Ok(Ok(kept)) => kept?,
-            Ok(Err(_)) => {
-                return Err("the workspace's session ended before its host kept the write".into());
-            }
-            Err(_) => return Err("the workspace's host did not keep the write in time".into()),
-        }
+        let ws = super::workspace_topic(workspace)?;
+        let host = own_host
+            .host
+            .workspaces()
+            .direct()
+            .link(ws)
+            .ok_or("this device's host does not serve the workspace yet")?;
+        self.live_by(workspace, deadline).await?.send(message)?;
+        self.wait_until(
+            &host,
+            deadline,
+            "the workspace's host did not keep the write in time",
+            || {
+                Ok(host.read(|peer| {
+                    peer.lookup_exact_local_document(&app, &record, &envelope, SystemTime::now())
+                        .is_ok_and(|found| found.is_some())
+                }))
+            },
+        )
+        .await?;
         Ok(OwnerCommitReceipt {
             binding,
             generation: generation.max(1),
@@ -261,66 +260,98 @@ impl Joined {
         })
     }
 
-    /// `workspace`'s connected session, waited for until `deadline`.
+    /// This device's link to `workspace`'s host, up and ready to carry a frame,
+    /// waited for until `deadline`.
     async fn live_by(
         &self,
         workspace: WorkspaceId,
         deadline: Instant,
-    ) -> Result<Arc<RelayCoeditSession>, String> {
+    ) -> Result<Arc<tilo_peer_state::direct::DirectSync>, String> {
+        let connected = self.connected(workspace)?;
         loop {
-            let changed = self.live_changed.notified();
-            tokio::pin!(changed);
-            changed.as_mut().enable();
-            if let Some(session) = self.live(workspace) {
-                return Ok(session);
+            let waiting = connected.notified();
+            tokio::pin!(waiting);
+            waiting.as_mut().enable();
+            if let Some(link) = self.live(workspace) {
+                return Ok(link);
             }
-            if tokio::time::timeout_at(tokio::time::Instant::from_std(deadline), changed)
+            if tokio::time::timeout_at(tokio::time::Instant::from_std(deadline), waiting)
                 .await
                 .is_err()
             {
-                return Err("the workspace's session with its host is not up".into());
+                return Err("the workspace's link to its host is not up".into());
             }
         }
     }
 
-    /// The host answered commit `op`: kept, or refused for `reason`.
-    pub(super) fn commit_answered(&self, op: [u8; 16], answer: Result<(), String>) {
-        let waiting = self.lock_commits().remove(&op);
-        if let Some(waiting) = waiting {
-            let _ = waiting.send(answer);
-        }
-    }
-
-    fn lock_commits(
+    /// Wait until `check` holds as the host's replica changes, or `deadline`
+    /// passes and `missing` says what did not happen.
+    async fn wait_until(
         &self,
-    ) -> std::sync::MutexGuard<'_, std::collections::HashMap<[u8; 16], super::CommitWaiter>> {
-        self.commits
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
+        host: &tilo_peer_state::direct::DirectSync,
+        deadline: Instant,
+        missing: &str,
+        mut check: impl FnMut() -> Result<bool, String>,
+    ) -> Result<(), String> {
+        let mut changes = host.changes();
+        let waited = tokio::time::timeout_at(tokio::time::Instant::from_std(deadline), async {
+            loop {
+                if check()? {
+                    return Ok(());
+                }
+                changes
+                    .changed()
+                    .await
+                    .map_err(|_| format!("{missing}: the link closed"))?;
+            }
+        });
+        match waited.await {
+            Ok(kept) => kept,
+            Err(_) => Err(missing.to_owned()),
+        }
     }
 }
 
 #[cfg(test)]
 impl Joined {
     /// `app`'s `record` as this device's host keeps it in `workspace`: its latest
-    /// whole write, opened with the channel's keys. `Err` says where the write
+    /// whole write, out of the history the host keeps for the workspace's
+    /// devices, opened with the channel's keys. `Err` says where the write
     /// stops on the way there, so one that never arrives is explained rather
-    /// than just missing. Waits on the host: call it from a thread that may
-    /// block.
+    /// than just missing.
+    #[expect(
+        clippy::significant_drop_tightening,
+        reason = "the host is this profile's own: the handle holds no lock"
+    )]
     pub(in crate::standalone) fn test_kept_document(
         &self,
         workspace: WorkspaceId,
         app: &str,
         record: &str,
     ) -> Result<Vec<u8>, String> {
-        let host = Arc::clone(
-            self.room_host()
-                .ok_or("this profile runs no workspace host")?,
-        );
+        let host = self
+            .room_host()
+            .ok_or("this profile runs no workspace host")?;
         let ws = super::workspace_topic(workspace)?;
-        let retained = tilo_rt::app()
-            .handle()
-            .block_on(async move { host.workspace_records().retained(ws).await })?;
+        let link = host
+            .workspaces()
+            .direct()
+            .link(ws)
+            .ok_or("this device's host does not serve the workspace")?;
+        let store = link
+            .store()
+            .cloned()
+            .ok_or("this device's host keeps no history of the workspace")?;
+        let kept = store
+            .replay(
+                ws,
+                &[],
+                tilo_peer_state::store::Budget {
+                    max_frames: usize::MAX,
+                    max_bytes: u64::MAX,
+                },
+            )
+            .map_err(|error| error.to_string())?;
         let route = collab_types::ChannelRoute::new(app, record);
         let keys = self
             .channel_keys()
@@ -329,25 +360,24 @@ impl Joined {
             .record_keys(workspace, &route)
             .ok_or_else(|| {
                 format!(
-                    "the host keeps {} bodies but this device takes part in no channel of {app}'s {record}",
-                    retained.len()
+                    "the host keeps {} writes but this device takes part in no channel of {app}'s {record}",
+                    kept.frames.len()
                 )
             })?
             .map_err(|error| {
                 format!(
-                    "the host keeps {} bodies but this device holds no keys for {app}'s {record}: {error}",
-                    retained.len()
+                    "the host keeps {} writes but this device holds no keys for {app}'s {record}: {error}",
+                    kept.frames.len()
                 )
             })?;
         let mut kept_of_the_record = 0_usize;
-        for kept in retained.iter().rev() {
+        for message in kept.frames.iter().rev() {
             let neighbour_wire::NeighbourMsg::AppDocument {
                 app_id,
                 record_id,
                 envelope,
                 ..
-            } = postcard::from_bytes(&kept.body)
-                .map_err(|error| format!("the host keeps an unreadable body: {error}"))?
+            } = message
             else {
                 continue;
             };
@@ -358,7 +388,7 @@ impl Joined {
             let metadata = envelope
                 .encryption
                 .ok_or_else(|| format!("{app}'s {record} reached the host unsealed"))?;
-            let ciphertext = collab_types::sealed_ciphertext(&envelope)
+            let ciphertext = collab_types::sealed_ciphertext(envelope)
                 .map_err(|error| format!("{app}'s {record} is not sealed as one frame: {error}"))?;
             let plaintext = keys
                 .open_content(envelope.artifact, &metadata, &ciphertext)
@@ -374,8 +404,8 @@ impl Joined {
             }
         }
         Err(format!(
-            "the host keeps {} bodies, {kept_of_the_record} of them {app}'s {record}, none whole",
-            retained.len()
+            "the host keeps {} writes, {kept_of_the_record} of them {app}'s {record}, none whole",
+            kept.frames.len()
         ))
     }
 }

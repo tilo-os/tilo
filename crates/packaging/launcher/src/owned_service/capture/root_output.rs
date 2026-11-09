@@ -65,26 +65,11 @@ fn identity(file: &File) -> io::Result<(u64, u64)> {
     Ok((facts.dev(), facts.ino()))
 }
 fn mount_id(file: &File) -> io::Result<u64> {
-    let mut result = std::mem::MaybeUninit::<libc::statx>::zeroed();
-    // SAFETY: live fd, empty C path, valid writable statx buffer.
-    if unsafe {
-        libc::statx(
-            file.as_raw_fd(),
-            c"".as_ptr(),
-            libc::AT_EMPTY_PATH | libc::AT_SYMLINK_NOFOLLOW,
-            libc::STATX_MNT_ID,
-            result.as_mut_ptr(),
-        )
-    } < 0
-    {
-        return Err(io::Error::last_os_error());
-    }
-    // SAFETY: successful statx initialized the buffer.
-    let result = unsafe { result.assume_init() };
-    if result.stx_mask & libc::STATX_MNT_ID == 0 || result.stx_mnt_id == 0 {
-        return Err(refuse("Original output mount identity is unavailable"));
-    }
-    Ok(result.stx_mnt_id)
+    crate::fd::mount_id(
+        file,
+        rustix::fs::AtFlags::SYMLINK_NOFOLLOW,
+        "Original output mount identity is unavailable",
+    )
 }
 fn actual_capacity(file: &File) -> io::Result<u64> {
     let mut facts = std::mem::MaybeUninit::<libc::statvfs>::zeroed();

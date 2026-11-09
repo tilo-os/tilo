@@ -77,8 +77,6 @@ if [ "$mode" = static ]; then
   ok 'session tier: weights, floors, io delegation, oomd limits, OOM score'
   grep -Fqx 'Slice=session.slice' "$repo/os/usr/lib/systemd/user/tilo-app-host.service" \
     || bad 'tilo-app-host is not in session.slice'
-  grep -Fqx 'Slice=session.slice' "$repo/os/usr/lib/systemd/user/tilo-fs-recipient.service" \
-    || bad 'tilo-fs-recipient is not in session.slice'
   grep -Fqx 'Slice=background.slice' "$repo/os/usr/lib/systemd/user/tilo-fs-cloud.service" \
     || bad 'tilo-fs-cloud sync is not background'
   # Everything else nobody is waiting on: updates, catalogue and model

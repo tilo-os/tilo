@@ -124,7 +124,7 @@ mod linux {
         }
     }
 
-    struct NativeDecoder(NonNull<c_void>);
+    struct NativeDecoder(NonNull<c_void>, Option<Result<String, SpeechError>>);
     impl NativeDecoder {
         fn load(
             model: &ImmutableReviewModel,
@@ -147,11 +147,13 @@ mod linux {
             // through synchronous load; native code copies request state and
             // catches exceptions. No callback or Rust owner crosses the ABI.
             let pointer = unsafe { tilo_nemo_load(&raw const native, &raw mut status) };
-            NonNull::new(pointer).map(Self).ok_or(if status == -2 {
-                SpeechError::UnsupportedLanguage
-            } else {
-                SpeechError::Recognition
-            })
+            NonNull::new(pointer)
+                .map(|pointer| Self(pointer, None))
+                .ok_or(if status == -2 {
+                    SpeechError::UnsupportedLanguage
+                } else {
+                    SpeechError::Recognition
+                })
         }
         fn spellings(config: &SpeechConfig) -> Result<(CString, Zeroizing<Vec<u8>>), SpeechError> {
             if config.language.is_empty()
@@ -233,8 +235,17 @@ mod linux {
                 Err(SpeechError::Recognition)
             }
         }
-        fn draft(&mut self, _samples: &[f32]) -> Result<String, SpeechError> {
-            self.text(false)
+        fn start_draft(
+            &mut self,
+            _samples: &[f32],
+            _wake: &worker::DraftWake,
+        ) -> Result<(), SpeechError> {
+            // This engine streams in-process, so the preview is ready here.
+            self.1 = Some(self.text(false));
+            Ok(())
+        }
+        fn poll_draft(&mut self) -> Option<Result<String, SpeechError>> {
+            self.1.take()
         }
         fn finish(&mut self, _samples: &[f32]) -> Result<String, SpeechError> {
             self.text(true)
@@ -249,9 +260,8 @@ mod linux {
 
     pub fn main() -> std::process::ExitCode {
         let args = Cli::parse();
-        let input = std::io::stdin();
+        let mut input = worker::request_pipe();
         let output = std::io::stdout();
-        let mut input = input.lock();
         let mut output = output.lock();
         let result = (|| {
             // SAFETY: fresh single-threaded owned child; no descriptor owners

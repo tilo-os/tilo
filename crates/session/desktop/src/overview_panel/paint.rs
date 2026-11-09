@@ -129,12 +129,13 @@ impl OverviewPanel {
                 BlendMode::default(),
                 1.0,
                 transform,
-                &Rect::new(panel.x0, content.y0, panel.x1, content.y1),
+                // The current workspace's card stands `s2` above its text: room for it at the top.
+                &Rect::new(panel.x0, content.y0 - m.s2, panel.x1, content.y1),
             );
         }
         self.paint_here_section(
             &mut ui::paint::PaintCtx::new(scene, transform, text, theme),
-            content,
+            self.here_content(),
             here_rect,
         );
         self.paint_shares_section(
@@ -174,6 +175,10 @@ impl OverviewPanel {
             self.desk.cards.len().saturating_add(1),
             (&t("overview-join-workspace"), ui::icons::Icon::Link),
         );
+        self.paint_tilo_rows(
+            &mut ui::paint::PaintCtx::new(scene, transform, text, theme),
+            band,
+        );
         if self.scroll_y + 0.5 < self.max_scroll_y() {
             ui::surface::content_edge_fade(
                 scene,
@@ -187,6 +192,40 @@ impl OverviewPanel {
         if whole {
             scene.pop_layer();
         }
+        self.paint_scroll_thumb(
+            scene,
+            transform,
+            theme,
+            panel,
+            if whole { content } else { band },
+        );
+    }
+
+    /// The list's thumb in the panel's trailing margin while the list holds more than it shows,
+    /// so a row cut by the panel's foot reads as more to scroll to, not as the last one.
+    fn paint_scroll_thumb(
+        &self,
+        scene: &mut Scene,
+        transform: Affine,
+        theme: &Theme,
+        panel: Rect,
+        viewport: Rect,
+    ) {
+        let overflow = self.max_scroll_y();
+        if overflow <= 0.5 {
+            return;
+        }
+        let lane = Rect::new(self.content_rect().x1, viewport.y0, panel.x1, viewport.y1);
+        let bar = ui::widget::Scrollbar::vertical();
+        let height = self.viewport_height();
+        bar.draw(
+            scene,
+            transform,
+            bar.track_in(lane, theme),
+            ui::widget::ScrollMetrics::new(height + overflow, height, self.scroll_y),
+            theme,
+            false,
+        );
     }
 
     fn paint_backdrop(&self, scene: &mut Scene, transform: Affine, theme: &Theme, panel: Rect) {
@@ -275,7 +314,7 @@ impl OverviewPanel {
         let ground = ui::chrome::shell::panel_ground(theme);
         let m = self.metrics;
 
-        self.paint_here_selection(scene, transform, theme, content, here_rect, hi);
+        self.paint_here_selection(scene, transform, theme, here_rect, hi);
 
         // Faces claim the right edge, centred on the name line; the name elides against what they
         // leave.
@@ -324,6 +363,19 @@ impl OverviewPanel {
             .get(&card.id)
             .cloned()
             .unwrap_or_else(|| crate::overview::workspace_access_label(card));
+        // Where it runs and what it used, once hosting means something to the person.
+        let access = match &card.hosting {
+            Some(hosting) => t_args(
+                "overview-two-facts",
+                &[("first", access.into()), ("second", hosting.clone().into())],
+            ),
+            None => access,
+        };
+        let access = text.elide_to_width_style(
+            &access,
+            f32_of_f64(content.width()),
+            &tokens.typography.style(TextRole::Body),
+        );
         text.draw_style(
             scene,
             &access,
@@ -342,7 +394,6 @@ impl OverviewPanel {
         scene: &mut Scene,
         transform: Affine,
         theme: &Theme,
-        content: Rect,
         here_rect: Rect,
         hi: usize,
     ) {
@@ -350,14 +401,11 @@ impl OverviewPanel {
             return;
         }
         let s2 = self.metrics.s2;
-        // It stands `s2` off the block's text and stops short of the block's bottom air, so it does
-        // not run into the caption beneath.
-        let sel = Rect::new(
-            content.x0 - s2,
-            here_rect.y0 - s2,
-            content.x1 + s2,
-            here_rect.y1 - s2,
-        );
+        // It spans the panel's content, as a "go to" row's card does, holding the block's text
+        // a row's padding in; it stands `s2` above the text and stops short of the block's bottom
+        // air, so it does not run into the caption beneath.
+        let outer = self.content_rect();
+        let sel = Rect::new(outer.x0, here_rect.y0 - s2, outer.x1, here_rect.y1 - s2);
         let fill = theme
             .tokens
             .colors
@@ -365,7 +413,8 @@ impl OverviewPanel {
         ui::surface::card(scene, transform, sel, self.metrics.row_radius, fill);
         if self.window_selection.is_none() {
             let focus = if self.scrolls_whole_panel() {
-                sel.intersect(content)
+                // The page clips `s2` above the content, where the card's top stands.
+                sel.intersect(Rect::new(outer.x0, outer.y0 - s2, outer.x1, outer.y1))
             } else {
                 sel
             };
@@ -528,6 +577,12 @@ impl OverviewPanel {
             sub = t_args(
                 "overview-two-facts",
                 &[("first", sub.into()), ("second", shares.into())],
+            );
+        }
+        if let Some(hosting) = &card.hosting {
+            sub = t_args(
+                "overview-two-facts",
+                &[("first", sub.into()), ("second", hosting.clone().into())],
             );
         }
         let sub = text.elide_to_width_style(&sub, f32_of_f64(text_w), &sub_style);

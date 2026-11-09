@@ -8,25 +8,19 @@ default view places for Places
 /// The canvas's window: a map filling it, as a canvas stands, with a place at each point and a
 /// window standing on it as a traditional desktop's does.
 view places(p: Places) {
-    ui.Map(name: .some(p.title)) {
-        ui.MapPin(name: .some("Notes"), x: .some(40), y: .some(40), width: .some(240)) {
+    ui.Map(name: p.title) {
+        ui.MapPin(name: "Notes", x: 40, y: 40, width: 240) {
             ui.Card(title: "Notes") {
                 ui.Text("A place on the canvas.", role: .caption, secondary: true)
             }
         }
-        ui.MapPin(name: .some("Tasks"), x: .some(320), y: .some(160), width: .some(240)) {
+        ui.MapPin(name: "Tasks", x: 320, y: 160, width: 240) {
             ui.Card(title: "Tasks") {
                 ui.Text("Another, beside it.", role: .caption, secondary: true)
             }
         }
-        ui.MapPin(
-            name: .some("Window"),
-            x: .some(80),
-            y: .some(300),
-            width: .some(360),
-            height: .some(200),
-        ) {
-            ui.WindowFrame(name: .some("A window"), focused: true, fill) {
+        ui.MapPin(name: "Window", x: 80, y: 300, width: 360, height: 200) {
+            ui.WindowFrame(name: "A window", focused: true, fill) {
                 controls: {
                     ui.Button("Close", icon: .x, icon_only: true, role: .bar)
                 }

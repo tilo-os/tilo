@@ -945,136 +945,14 @@ pub trait KeyboardShortcutServices: Send + Sync {
     ) -> Result<tilo_actions::ActionOutput, Box<tilo_actions::ActionFailure>>;
 }
 
-/// One step the broker admitted for the host to run: action `address`
-/// for `actor` in `workspace`, with `argument` in its slot form.
-pub struct HostStepRequest<'a> {
-    pub workspace: &'a str,
-    pub actor: &'a crate::collab_app_broker::BrokerActor,
-    pub address: &'a tilo_actions::ActionAddress,
-    pub argument: Option<&'a str>,
-    /// The task run the step is taken in, when it is one of a run's steps
-    /// (a task's program): what the step does in turn goes through it, so it
-    /// is admitted by the run too.
-    pub task_run: Option<&'a crate::collab_app_broker::TaskRunHost>,
-}
+/// The steps a host serves the session, as every host names them:
+/// [`HostStepServices`] and its request, a live result, and what a window
+/// reports about resuming.
+pub use tilo_broker_core::steps::{
+    ContinuationServices, HostStepOutcome, HostStepRequest, HostStepServices, LiveRead, LiveView,
+    TaskRun,
+};
 
-/// How a host step ended.
-pub type HostStepOutcome = Result<tilo_actions::ActionOutput, Box<tilo_actions::ActionFailure>>;
-
-/// Steps the host itself runs for the person at this device: pairing a
-/// nearby device (LAN discovery, an administrator's approval through the
-/// host's polkit helper), administering the person's identities and the
-/// devices trusted under them (the root secret stays on the host), and
-/// changing the person's settings whether or not the app that shows them
-/// is open. The broker answers each service under its [`Self::provider`],
-/// only to a caller on this machine confined to a workspace, and checks each
-/// invocation against the caller's policy under [`Self::app_id`] before the
-/// host decides whether the actor may take it at all.
-pub trait HostStepServices: Send + Sync {
-    fn provider(&self) -> &'static str;
-    /// The application whose controls reach the steps. It reaches them as
-    /// the person using it, as it does its own actions.
-    fn app_id(&self) -> &str;
-    /// Every step, described.
-    fn descriptors(&self) -> Vec<tilo_actions::ActionDescriptor>;
-    /// Every step as the row it stands in: the resource of the level above
-    /// it, and whether its own resource holds rows below it, so a caller
-    /// that lists a level at a time finds what a step hangs under. By
-    /// default every step is a top-level row.
-    fn rows(&self) -> Vec<tilo_actions::door::PlacedAction> {
-        self.descriptors()
-            .into_iter()
-            .map(|action| tilo_actions::door::PlacedAction {
-                parent: String::new(),
-                has_children: false,
-                action,
-            })
-            .collect()
-    }
-    /// Whether its steps are a turn's steps (the session's own actions: the arrangement, its
-    /// undo, the windows and the notices). Such a step is offered in the catalogue of an agent
-    /// working a turn, and admitted by that turn exactly as the same agent's app action in it
-    /// is: the person's, the agent's turn's grants decide it, and a caller working no turn
-    /// takes none. Distinct from [`Self::for_tasks`], whose steps are a task run's programs and
-    /// carry a run host the turn has none of.
-    fn for_turns(&self) -> bool {
-        false
-    }
-    /// Whether its steps are steps a task agent takes in its run (a task's
-    /// programs): offered in a task agent's catalogue and admitted by its
-    /// run. No other host step is a task agent's.
-    fn for_tasks(&self) -> bool {
-        false
-    }
-    /// The step at `address` as one invocation with `argument` (its slot
-    /// form) is: by default as described, or, for a setting, as risky as
-    /// the value it carries makes it.
-    fn invocation(
-        &self,
-        address: &tilo_actions::ActionAddress,
-        argument: Option<&str>,
-    ) -> Option<tilo_actions::ActionDescriptor> {
-        let _ = argument;
-        self.descriptors()
-            .into_iter()
-            .find(|descriptor| &descriptor.address == address)
-    }
-    /// Start one admitted step. Its outcome arrives on the returned answer:
-    /// at once, or once the step ends (a LAN window, an administrator's
-    /// authentication, a step that reaches another device), completed from
-    /// another thread.
-    fn start(
-        &self,
-        request: &HostStepRequest<'_>,
-    ) -> Result<tilo_actions::remote::Pending<HostStepOutcome>, String>;
-    /// Follow one admitted step whose contract is
-    /// [`ExecutionMode::Live`](tilo_actions::ExecutionMode::Live): how to
-    /// read its result as it is now, and when that may have changed. The
-    /// broker reads it once at the start and again after each change, as
-    /// long as the caller follows it and may still read it.
-    fn watch(&self, request: &HostStepRequest<'_>) -> Result<LiveView, String> {
-        let _ = request;
-        Err("this step has no live result".into())
-    }
-}
-
-/// A live result a host step serves ([`HostStepServices::watch`]).
-pub struct LiveView {
-    /// The whole result as it is now. A host that reads it on a thread of
-    /// its own answers when it has; one that has it at hand answers at once
-    /// ([`Pending::ready`](tilo_actions::remote::Pending::ready)).
-    pub read: Box<dyn FnMut() -> tilo_actions::remote::Pending<LiveRead> + Send>,
-    /// Moves whenever the result may have changed. Moving without a
-    /// change costs one read whose item the caller already holds.
-    pub changes: tokio::sync::watch::Receiver<u64>,
-}
-
-/// One read of a [`LiveView`]: the result now, or why it failed for good.
-pub type LiveRead = Result<serde_json::Value, Box<tilo_actions::ActionFailure>>;
-
-pub trait ContinuationServices: Send + Sync {
-    /// Reports one application instance's continuation metadata.
-    fn report(
-        &self,
-        workspace: WorkspaceId,
-        app: String,
-        instance: u64,
-        schema: u16,
-        metadata: Vec<u8>,
-    ) -> Result<(), String>;
-    /// Clears one application instance's continuation metadata.
-    fn clear(&self, workspace: WorkspaceId, app: &str, instance: u64) -> Result<(), String>;
-    /// One application instance answering a handoff request, or reporting
-    /// that the document it shows arrived retired. `message` is an encoded
-    /// `collab_types::handoff::HandoffReport`.
-    fn handoff(
-        &self,
-        workspace: WorkspaceId,
-        app: String,
-        instance: u64,
-        message: Vec<u8>,
-    ) -> Result<(), String>;
-}
 /// Encoded bytes one application's search index change may take: the bound
 /// `ui::search::index_publication::MAX_DELTA_BYTES` publishers chunk to.
 pub const MAX_SEARCH_INDEX_DELTA_BYTES: usize = 512 * 1024;

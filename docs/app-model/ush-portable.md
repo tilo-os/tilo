@@ -12,7 +12,7 @@ Status: decided 2026-10-28 (see [Decisions](#decisions)), built in slices
 Today every ush command, even `ls`, needs a real shell on a real Linux: a
 bwrap guest on the person's own device. So:
 
-- a workspace hosted elsewhere (tilo.coffee, a browser tab, a phone) can't
+- a workspace hosted elsewhere (tilo.sh, a browser tab, a phone) can't
   run any command at all;
 - even `cat notes.md` pays for a whole Linux sandbox;
 - what a command changes lives outside Tilo's history unless ush rebuilds it.
@@ -57,7 +57,7 @@ These need no Linux and no process:
   under the same grants.
 
 They are written once, in Rust, against Tilo's file resources, and run in
-whatever hosts the shell: the device, the workspace's host (tilo.coffee), or
+whatever hosts the shell: the device, the workspace's host (tilo.sh), or
 the browser, compiled to WebAssembly. Writes are attributed and undoable
 through the workspace's History.
 
@@ -124,7 +124,7 @@ agents and History see one model whichever tier ran a command.
 
 ## How this plays out
 
-- **On tilo.coffee, in the Lounge or a member's workspace:**
+- **On tilo.sh, in the Lounge or a member's workspace:**
   - `ls`, `cat`, `mv`, `grep` and `jq` work right away, on the host or in the
     browser, with no VM;
   - `cargo build` asks for a compute place: the member's own device, another
@@ -161,6 +161,9 @@ agents and History see one model whichever tier ran a command.
 3. Tier 3 on the existing compute and placement system: one command as one
    job, writes as actions, guests scoped to the session, and a quota for
    compute on Tilo's own host.
+   On a host that serves other people's workspaces, tier 3 runs in the
+   workspace environment's own VM, metered per second and limited by the
+   account's plan ([`environments.md`](environments.md#hosted-workspace-vms)).
 4. The integration test: a workspace on a test site, with no Linux on the
    host, where `ls`, `jq` and `cargo build` all work, the last one on the
    member's device.

@@ -192,8 +192,7 @@ async fn framework_history_real_backend_uncertain_result_restore_undo_redo_and_r
             .unwrap(),
         )
     };
-    let history =
-        Arc::new(fs::FileHistoryStore::open(directory.path().join("history.json")).unwrap());
+    let mut versions = Vec::new();
     for (id, parents, hash, time, provenance) in [
         (
             old,
@@ -210,19 +209,18 @@ async fn framework_history_real_backend_uncertain_result_restore_undo_redo_and_r
             fs_protocol::FileProvenance::Edit,
         ),
     ] {
-        history
-            .append(fs_protocol::FileVersionV1 {
-                id,
-                record_id: record,
-                parents,
-                actor,
-                timestamp_ms: time,
-                content_hash: Some(fs_protocol::ContentHash(*hash.as_bytes())),
-                metadata_hash: fs_protocol::ContentHash([7; 32]),
-                provenance,
-            })
-            .unwrap();
+        versions.push(fs_protocol::FileVersionV1 {
+            id,
+            record_id: record,
+            parents,
+            actor,
+            timestamp_ms: time,
+            content_hash: Some(fs_protocol::ContentHash(*hash.as_bytes())),
+            metadata_hash: fs_protocol::ContentHash([7; 32]),
+            provenance,
+        });
     }
+    namespace.append_versions(&versions).unwrap();
     let namespace = Arc::new(Mutex::new(namespace));
     let hydrator = Arc::new(fs::Hydrator::new(endpoint.clone(), content));
     let heuristics = Arc::new(fs::Heuristics::new(hydrator.clone()));
@@ -234,7 +232,7 @@ async fn framework_history_real_backend_uncertain_result_restore_undo_redo_and_r
     ));
     let backend = Arc::new(
         fs::QuickFS::new(namespace, hydrator.clone(), heuristics)
-            .with_history(history.clone(), actor)
+            .with_history(actor)
             .unwrap()
             .with_checked_history_workspace(workspace)
             .with_record_publisher(publisher())
@@ -284,7 +282,14 @@ async fn framework_history_real_backend_uncertain_result_restore_undo_redo_and_r
     let submitted = transport.submitted.lock().unwrap().clone();
     assert_eq!(submitted.len(), 1);
     assert_eq!(
-        history.snapshot(record).unwrap().versions.len(),
+        backend
+            .namespace
+            .lock()
+            .unwrap()
+            .record_history(record)
+            .unwrap()
+            .versions
+            .len(),
         3,
         "backend committed despite hidden acknowledgement"
     );
@@ -301,7 +306,17 @@ async fn framework_history_real_backend_uncertain_result_restore_undo_redo_and_r
         submitted,
         "result observation must not submit a replacement operation"
     );
-    assert_eq!(history.snapshot(record).unwrap().versions.len(), 3);
+    assert_eq!(
+        backend
+            .namespace
+            .lock()
+            .unwrap()
+            .record_history(record)
+            .unwrap()
+            .versions
+            .len(),
+        3
+    );
     assert_eq!(
         driver.state_mut().doc.get_heads(),
         original_heads,
@@ -313,17 +328,57 @@ async fn framework_history_real_backend_uncertain_result_restore_undo_redo_and_r
     driver.click_named("history-files-undo").unwrap();
     confirm(driver, "backend undo");
     transport.returned.wait(driver, 2);
-    assert_eq!(history.snapshot(record).unwrap().versions.len(), 4);
+    assert_eq!(
+        backend
+            .namespace
+            .lock()
+            .unwrap()
+            .record_history(record)
+            .unwrap()
+            .versions
+            .len(),
+        4
+    );
     driver.key("Escape");
     wait(driver, "history-files-redo");
-    assert_eq!(history.snapshot(record).unwrap().versions.len(), 4);
+    assert_eq!(
+        backend
+            .namespace
+            .lock()
+            .unwrap()
+            .record_history(record)
+            .unwrap()
+            .versions
+            .len(),
+        4
+    );
     driver.click_named("history-files-redo").unwrap();
     confirm(driver, "backend redo");
     transport.returned.wait(driver, 3);
-    assert_eq!(history.snapshot(record).unwrap().versions.len(), 5);
+    assert_eq!(
+        backend
+            .namespace
+            .lock()
+            .unwrap()
+            .record_history(record)
+            .unwrap()
+            .versions
+            .len(),
+        5
+    );
     driver.key("Escape");
     wait(driver, "history-files-undo");
-    assert_eq!(history.snapshot(record).unwrap().versions.len(), 5);
+    assert_eq!(
+        backend
+            .namespace
+            .lock()
+            .unwrap()
+            .record_history(record)
+            .unwrap()
+            .versions
+            .len(),
+        5
+    );
     driver.click_named("history-back-live").unwrap();
     assert_eq!(driver.state_mut().doc.get_heads(), original_heads);
     let reopened_namespace = Arc::new(Mutex::new(
@@ -333,12 +388,10 @@ async fn framework_history_real_backend_uncertain_result_restore_undo_redo_and_r
         )
         .unwrap(),
     ));
-    let reopened_history =
-        Arc::new(fs::FileHistoryStore::open(directory.path().join("history.json")).unwrap());
     let reopened_heuristics = Arc::new(fs::Heuristics::new(hydrator.clone()));
     let reopened = fs::QuickFS::new(reopened_namespace, hydrator, reopened_heuristics)
         .without_legacy_record_migration()
-        .with_history(reopened_history.clone(), actor)
+        .with_history(actor)
         .unwrap()
         .with_checked_history_workspace(workspace)
         .with_record_publisher(publisher())

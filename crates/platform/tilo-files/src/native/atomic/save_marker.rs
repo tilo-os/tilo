@@ -64,19 +64,23 @@ pub fn decode(bytes: &[u8]) -> io::Result<&[u8]> {
     }
     Ok(target)
 }
+/// An ioctl request code as the C library types it: glibc's `unsigned long`, musl's `int`, which
+/// carries the same 32 bits (both codes have the top bit of an `int` set).
+#[cfg(not(target_env = "musl"))]
+fn request(code: u32) -> libc::c_ulong {
+    libc::c_ulong::from(code)
+}
+#[cfg(target_env = "musl")]
+fn request(code: u32) -> libc::c_int {
+    libc::c_int::from_ne_bytes(code.to_ne_bytes())
+}
 /// Probe the exact held Stage. Unsupported legacy filesystems retain their
 /// ordinary publication path. Once support is observed, every ARM failure is
 /// terminal before rename; refusal can never downgrade to a generic rename.
 pub(crate) fn arm(file: &File, target: &[u8]) -> io::Result<()> {
     let mut magic = [0u8; 4];
     // SAFETY: restricted fixed-size output points to four writable live bytes.
-    let result = unsafe {
-        libc::ioctl(
-            file.as_raw_fd(),
-            libc::c_ulong::from(PROBE),
-            magic.as_mut_ptr(),
-        )
-    };
+    let result = unsafe { libc::ioctl(file.as_raw_fd(), request(PROBE), magic.as_mut_ptr()) };
     if result < 0 {
         let error = io::Error::last_os_error();
         if matches!(error.raw_os_error(), Some(libc::ENOTTY | libc::ENOSYS)) {
@@ -89,7 +93,7 @@ pub(crate) fn arm(file: &File, target: &[u8]) -> io::Result<()> {
     }
     let input = encode(target)?;
     // SAFETY: restricted command's encoded size is exactly SIZE live input bytes.
-    let result = unsafe { libc::ioctl(file.as_raw_fd(), libc::c_ulong::from(ARM), input.as_ptr()) };
+    let result = unsafe { libc::ioctl(file.as_raw_fd(), request(ARM), input.as_ptr()) };
     if result < 0 {
         return Err(io::Error::last_os_error());
     }

@@ -13,10 +13,17 @@ use ui::tokens::MotionSource;
 const NARROW: (u32, u32) = (420, 860);
 
 /// Notes at a phone's width with the week of notes staged, as `--shots` stages it: the scenario
-/// opens its first note.
+/// opens its first note. A capture is photographed at rest, so this window moves on no frame.
 fn staged() -> TestApp<TlApp> {
     crate::support::installed("notes");
     TestApp::<TlApp>::capture_at(Some("a week of notes"), NARROW).expect("the scenario stages")
+}
+
+/// The same scene in a window a person drives: the same fixtures and the same note open, with the
+/// theme's motion playing as it plays live.
+fn driven() -> TestApp<TlApp> {
+    crate::support::installed("notes");
+    TestApp::<TlApp>::drive_at("a week of notes", NARROW).expect("the scenario stages")
 }
 
 /// Whether the live window would take a frame: for an animation, queued work (a component's
@@ -139,7 +146,7 @@ fn the_note_a_scenario_opens_in_a_narrow_window_is_in_front_at_rest() {
 
 #[test]
 fn a_push_in_a_narrow_window_settles_within_its_motion_and_then_asks_for_no_frames() {
-    let mut app = staged();
+    let mut app = driven();
     let motion = push_motion(app.harness());
     assert!(!motion.is_zero(), "a push moves at this motion setting");
     assert_settles(&mut app, motion, "the staged note");
@@ -166,7 +173,7 @@ fn a_push_in_a_narrow_window_settles_within_its_motion_and_then_asks_for_no_fram
 
 /// Notes back at its list, settled, with the scenario's note open behind it.
 fn at_the_list() -> TestApp<TlApp> {
-    let mut app = staged();
+    let mut app = driven();
     let motion = push_motion(app.harness());
     assert_settles(&mut app, motion, "the staged note");
     app.harness().key("Escape");

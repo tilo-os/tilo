@@ -127,6 +127,18 @@ Device-to-device *actions* (`tilo.own-device`) still admit only the person at
 the device, never an agent: an agent reaches another device through that
 device's agent door, where its person decides.
 
+## Hosted workspaces: the MCP front door
+
+A hosting provider puts [`tilo-front-door`](../../crates/hosting/tilo-front-door/README.md)
+in front of the `tilo-runtime` HTTP endpoints of the workspaces it hosts. It is
+the proxy those endpoints expect: the person authorizes an agent there (OAuth
+2.1 as the MCP authorization profile asks, signing in with a device of theirs
+through `tilo_user_identity::SignInProof`) for all their workspaces or one, and
+each agent session is routed to the endpoint of the workspace it acts in with
+that endpoint's token. Listing and creating workspaces go to the person's hosts
+as their own operations (`room.list`, `room.create`), asked by a device of the
+person the door holds; a host may refuse.
+
 ## What this is not
 
 - Not a full OS, compositor, or apps UI install

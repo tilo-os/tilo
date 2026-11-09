@@ -73,6 +73,8 @@ pub(super) struct Metrics {
     pub workspace_row_h: f64,
     pub workspace_row_gap: f64,
     pub row_pad: f64,
+    /// A row below the workspaces: its title, `s1` , its facts, and `s2` above and below.
+    pub tilo_row_h: f64,
     pub chip_h: f64,
     /// Gutter above the picture inside the panel (`s3`).
     pub window_gap: f64,
@@ -119,6 +121,7 @@ impl Metrics {
             workspace_row_h: lh(TextRole::Heading) + s1 + lh(TextRole::Caption) + 2.0 * s3,
             workspace_row_gap: s2,
             row_pad: s4,
+            tilo_row_h: lh(TextRole::Body) + s1 + lh(TextRole::Caption) + 2.0 * s2,
             chip_h: lh(TextRole::Caption) + s2,
             window_gap: s3,
             here_air: s6,
@@ -276,17 +279,10 @@ impl OverviewPanel {
         self.metrics.here_h + self.windows_row_height() + self.shares_height()
     }
 
-    /// Rows of the "go to" list: every workspace but the one you are in, then "New workspace" and
-    /// "Join a workspace…".
+    /// Rows of the list: every workspace but the one you are in, then "New workspace" and
+    /// "Join a workspace…", then the person's hosts, agents and account.
     pub(super) fn list_slots(&self) -> usize {
-        let workspaces = self
-            .desk
-            .cards
-            .len()
-            .saturating_sub(usize::from(self.here_index().is_some()));
-        workspaces
-            .saturating_add(usize::from(self.can_add()))
-            .saturating_add(usize::from(self.desk.can_join))
+        self.go_to_slots().saturating_add(self.tilo_slots())
     }
 
     /// Height of the list if nothing clipped it.
@@ -366,6 +362,14 @@ impl OverviewPanel {
     /// The band inside the panel that content is laid out in.
     pub(super) fn content_rect(&self) -> Rect {
         self.panel_rect().inset(-self.metrics.pad)
+    }
+
+    /// Where the "you are here" block's text and picture stand: a row's padding inside the
+    /// content, so they sit in its card as a "go to" row's do in theirs.
+    pub(super) fn here_content(&self) -> Rect {
+        let pad = self.metrics.row_pad;
+        let c = self.content_rect();
+        Rect::new(c.x0 + pad, c.y0, (c.x1 - pad).max(c.x0 + pad), c.y1)
     }
 
     /// The "you are here" block: the current workspace's identity, access and people, and its
@@ -585,7 +589,10 @@ impl OverviewPanel {
 
     /// Whether the overview pictures this workspace: it has strips and the host shows its windows.
     pub(super) fn shows_windows(&self) -> bool {
-        !self.desk.hide_windows && self.here_card().is_some_and(|card| !card.strips.is_empty())
+        // A page as narrow as a phone has no room for it: its windows would be slivers.
+        !self.desk.hide_windows
+            && !self.uses_full_window()
+            && self.here_card().is_some_and(|card| !card.strips.is_empty())
     }
 
     /// Height the picture adds to the "here" block when the panel holds it; nothing beside it.
@@ -611,7 +618,7 @@ impl OverviewPanel {
                 area.y1 - m.margin,
             );
         }
-        let content = self.content_rect();
+        let content = self.here_content();
         let top = self.here_rect().y0 + m.here_h - m.here_air + m.window_gap;
         Rect::new(
             content.x0,

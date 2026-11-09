@@ -2,7 +2,7 @@
 //! Both follow the desk's revision: the portal hears which apps run, which exited and when the
 //! screen locked, and the Files daemon and the capture broker hear what the person took away.
 
-use crate::running_apps;
+use crate::desk::running_apps;
 
 impl crate::Session {
     /// Tell the portal what it asks of the session about its apps: which run and how, which exited,

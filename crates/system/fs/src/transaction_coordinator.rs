@@ -10,7 +10,7 @@ use std::sync::OnceLock;
 
 use thiserror::Error;
 
-use crate::history::{FileHistoryStore, HistoryError};
+use crate::namespace::history::HistoryError;
 use crate::namespace::{Namespace, TransactionProjectionError};
 use crate::record_replication::RecordAuthorizer;
 use crate::record_repository::{RecordRepository, RecordRepositoryError};
@@ -63,7 +63,6 @@ fn fail_if_armed(
 pub fn complete_replacement_transaction<A, F>(
     repository: &RecordRepository,
     journal: &mut RecordTransactionJournal,
-    history: &FileHistoryStore,
     namespace: &Arc<Mutex<Namespace>>,
     namespace_path: &Path,
     entry: &RecordTransactionJournalEntry,
@@ -97,7 +96,6 @@ where
         return complete_checked_restore_after_repository(
             repository,
             journal,
-            history,
             namespace,
             namespace_path,
             entry,
@@ -108,7 +106,6 @@ where
 
     complete_replacement_transaction_after_repository(
         journal,
-        history,
         namespace,
         namespace_path,
         entry,
@@ -126,7 +123,6 @@ where
 pub(crate) fn complete_checked_restore_after_repository<F>(
     repository: &RecordRepository,
     journal: &mut RecordTransactionJournal,
-    history: &FileHistoryStore,
     namespace: &Arc<Mutex<Namespace>>,
     namespace_path: &Path,
     entry: &RecordTransactionJournalEntry,
@@ -155,13 +151,18 @@ where
         let mut namespace = namespace
             .lock()
             .map_err(|_| RecordTransactionCoordinatorError::NamespacePoisoned)?;
-        let mut history = history.lease()?;
         let repository = repository.lease()?;
         let snapshot = repository.snapshot(crate::record_repository::RecordRepositoryKey {
             workspace_id: entry.transaction.manifest.workspace_id,
             record_id: participant.record_id,
         })?;
-        history.append_batch(std::slice::from_ref(&participant.proposed_version))?;
+        namespace.append_versions(std::slice::from_ref(&participant.proposed_version))?;
+        // The version is a pending edit of the live document. Commit it here,
+        // in the same lock scope, so the delta staged below describes this
+        // restore alone: a change a later clone still folds would take a
+        // sequence number the staged bytes already use, and the retry that
+        // replays them would fail to load its own delta.
+        let _ = namespace.save_incremental();
         if journal
             .get(id)
             .is_some_and(|value| value.phase == RecordTransactionPhase::ParticipantRecordsCommitted)
@@ -169,7 +170,6 @@ where
             journal.advance(id, RecordTransactionPhase::HistoryCommitted, None)?;
         }
         let mut candidate = namespace.clone();
-        let _ = candidate.save_incremental();
         let staged = journal
             .get(id)
             .and_then(|value| value.namespace_delta.clone());
@@ -240,7 +240,6 @@ where
 )]
 pub(crate) fn complete_replacement_transaction_after_repository<F>(
     journal: &mut RecordTransactionJournal,
-    history: &FileHistoryStore,
     namespace: &Arc<Mutex<Namespace>>,
     namespace_path: &Path,
     entry: &RecordTransactionJournalEntry,
@@ -279,11 +278,14 @@ where
             .iter()
             .map(|participant| participant.proposed_version.clone())
             .collect::<Vec<_>>();
-        history.append_batch(&versions)?;
-        #[cfg(test)]
-        fail_if_armed(id, CoordinatorFaultPoint::AfterHistoryAppend)?;
-        if let Some((source_record, conflict_id, strategy, role)) =
-            match &entry.transaction.manifest.operation {
+        {
+            let mut namespace = namespace
+                .lock()
+                .map_err(|_| RecordTransactionCoordinatorError::NamespacePoisoned)?;
+            namespace.append_versions(&versions)?;
+            #[cfg(test)]
+            fail_if_armed(id, CoordinatorFaultPoint::AfterHistoryAppend)?;
+            let resolution = match &entry.transaction.manifest.operation {
                 fs_protocol::FileMutationOperation::KeepBothContentConflict {
                     source_record,
                     conflict_id,
@@ -307,25 +309,33 @@ where
                 fs_protocol::FileMutationOperation::ReplacementRename { .. }
                 | fs_protocol::FileMutationOperation::AtomicSave { .. }
                 | fs_protocol::FileMutationOperation::RestoreContent { .. } => None,
+            };
+            if let Some((source_record, conflict_id, strategy, role)) = resolution {
+                let source = entry
+                    .transaction
+                    .manifest
+                    .participants
+                    .iter()
+                    .find(|participant| participant.role == role)
+                    .ok_or(RecordTransactionCoordinatorError::InvalidKeepBothTransaction)?;
+                namespace.resolve_history_conflict(
+                    source_record,
+                    conflict_id,
+                    &fs_protocol::ConflictResolution {
+                        strategy,
+                        result: source.proposed_version.id,
+                        actor: entry.transaction.manifest.actor,
+                        timestamp_ms: entry.transaction.manifest.timestamp_ms,
+                    },
+                )?;
             }
-        {
-            let source = entry
-                .transaction
-                .manifest
-                .participants
-                .iter()
-                .find(|participant| participant.role == role)
-                .ok_or(RecordTransactionCoordinatorError::InvalidKeepBothTransaction)?;
-            history.resolve(
-                source_record,
-                conflict_id,
-                fs_protocol::ConflictResolution {
-                    strategy,
-                    result: source.proposed_version.id,
-                    actor: entry.transaction.manifest.actor,
-                    timestamp_ms: entry.transaction.manifest.timestamp_ms,
-                },
-            )?;
+            // The versions are a pending edit of the live document. Commit
+            // them here, in the same lock scope, so the delta staged below
+            // describes this transaction alone: a change a later clone still
+            // folds would take a sequence number the staged bytes already
+            // use, and the retry that replays them would fail to load its own
+            // delta.
+            let _ = namespace.save_incremental();
         }
         journal.advance(id, RecordTransactionPhase::HistoryCommitted, None)?;
     }
@@ -606,9 +616,10 @@ mod tests {
             actor,
             records: [source_record, victim_record].into_iter().collect(),
         };
-        let history = FileHistoryStore::open(temp.path().join("history.json")).unwrap();
-        history
-            .append_batch(&[source_baseline.clone(), victim_baseline.clone()])
+        namespace
+            .lock()
+            .unwrap()
+            .append_versions(&[source_baseline.clone(), victim_baseline.clone()])
             .unwrap();
         for (record_id, name, baseline) in [
             (source_record, "source.txt", source_baseline),
@@ -708,7 +719,6 @@ mod tests {
         let first = complete_replacement_transaction(
             &repository,
             &mut journal,
-            &history,
             &namespace,
             &namespace_path,
             &entry,
@@ -724,13 +734,18 @@ mod tests {
             RecordTransactionPhase::NamespaceCommitted
         );
         assert!(namespace_path.exists());
-        let source_history_len = history.snapshot(source_record).unwrap().versions.len();
+        let source_history_len = namespace
+            .lock()
+            .unwrap()
+            .record_history(source_record)
+            .unwrap()
+            .versions
+            .len();
 
         let mut broadcasts = Vec::new();
         complete_replacement_transaction(
             &repository,
             &mut journal,
-            &history,
             &namespace,
             &namespace_path,
             &entry,
@@ -744,7 +759,13 @@ mod tests {
         assert_eq!(broadcasts.len(), 1);
         assert!(journal.get(entry.transaction_id()).is_none());
         assert_eq!(
-            history.snapshot(source_record).unwrap().versions.len(),
+            namespace
+                .lock()
+                .unwrap()
+                .record_history(source_record)
+                .unwrap()
+                .versions
+                .len(),
             source_history_len
         );
         let mut namespace = namespace.lock().unwrap();

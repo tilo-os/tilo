@@ -5,7 +5,7 @@
 # App ↔ shell: what an app and the session shell say on the shell-ui
 # connection the launcher hands the app.
 name = "shell-ui"
-version = 26
+version = 27
 version_const = "crates/sdk/ui-core/src/floating_surface.rs:FLOATING_SURFACE_PROTOCOL_VERSION"
 encoding = "json"
 served_to_apps = true
@@ -237,7 +237,6 @@ Finish = "tokens::Finish: an object of `painter` (a painter set's name, text) an
 "FloatingSurfaceClientMessage::selection_capable" = "unit"
 "FloatingSurfaceClientMessage::send_to" = "struct"
 "FloatingSurfaceClientMessage::send_to.attached" = "Vec<Attached> optional"
-"FloatingSurfaceClientMessage::send_to.bounds" = "Option<[f64; 4]> optional"
 "FloatingSurfaceClientMessage::send_to.text" = "String"
 "FloatingSurfaceClientMessage::send_to.to" = "Vec<Recipient>"
 "FloatingSurfaceClientMessage::set_capture_protection" = "struct"

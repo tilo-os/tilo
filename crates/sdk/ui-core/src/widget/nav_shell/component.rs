@@ -134,6 +134,10 @@ impl Described for NavShell {
         }
         if let Some(content) = content {
             shell = shell.content(content);
+        } else {
+            // Nothing stands beside the overview: it lists for the whole window until the window
+            // after the root's brings something to show.
+            shell = shell.content_shown(false);
         }
         if let Some(inspector) = inspector {
             shell = shell.inspector(inspector);
@@ -343,6 +347,9 @@ impl SlotViews for NavShell {
             return;
         }
         if let Some(column) = self.edit_column() {
+            if column == Column::Content {
+                self.set_content_shown(true);
+            }
             self.stage_body(column, Some(view));
         }
     }
@@ -358,7 +365,10 @@ impl SlotViews for NavShell {
         }
         if let Some(column) = self.edit_column() {
             if column == Column::Content {
-                self.stage_body(column, Some(Box::new(crate::widget::Spacer::new())));
+                if self.content_shown {
+                    self.set_content_shown(false);
+                    self.stage_body(column, Some(Box::new(crate::widget::Spacer::new())));
+                }
             } else {
                 self.stage_body(column, None);
             }

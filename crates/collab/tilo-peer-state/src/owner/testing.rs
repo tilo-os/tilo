@@ -72,6 +72,34 @@ pub fn own_host_hint_here(
     )
 }
 
+/// Start `app`'s record `record` empty in `workspace` as `key`'s device: the
+/// genesis the record's first write carries, admitted whole as any other write
+/// of the record is. A workspace that seals its records refuses the cleartext,
+/// so only a workspace that commits them as documents starts one this way.
+pub fn start_record(
+    owner: &NativeWorkspaceOwner,
+    workspace: WorkspaceId,
+    app: &str,
+    record: &str,
+    key: &SigningKey,
+    now: SystemTime,
+) {
+    let message = owner
+        .with_current(workspace, |view| {
+            view.peer().clone().publication_mut().publish_document(
+                app,
+                record,
+                AutoCommit::new().save(),
+                key,
+                now,
+            )
+        })
+        .unwrap();
+    owner
+        .commit_document(publication::request(&message).unwrap(), now)
+        .unwrap();
+}
+
 /// Found `name` on `owner` as `certificate`'s device, naming its own host.
 pub fn founded(
     owner: &NativeWorkspaceOwner,
@@ -208,6 +236,7 @@ pub fn certificate_with(
         issued_at_ns: 1,
         expires_at_ns: None,
         signature: [0; 64],
+        issuer: None,
     };
     sign_device_cert(&mut cert, root).unwrap();
     cert

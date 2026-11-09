@@ -69,7 +69,7 @@ use access::{
 };
 use actions::{RemoteActionRoute, handle_host_action, handle_remote_action};
 use admin::handle_workspaces;
-use commit::{commit_run_key, handle_commit, handle_commit_run, over_change_limit};
+use commit::{commit_run_key, handle_commit, handle_commit_run, over_change_limit, over_storage};
 use compaction::handle_compaction;
 #[cfg(test)]
 use dispatch::handle_inbound_frame;
@@ -242,6 +242,9 @@ struct SessionCtx<'a> {
     metrics: &'a Arc<crate::metrics::Metrics>,
     trust_policy: &'a Arc<std::sync::RwLock<crate::policy::TrustPolicy>>,
     disconnect: &'a mpsc::Sender<()>,
+    /// Ends this session at once, as the person's agent door stops an
+    /// agent's run; `None` for a session nothing stops.
+    stop: Option<&'a Arc<tokio::sync::Notify>>,
     own_device_public_key: &'a [u8; 32],
     app_serving: Option<&'a Arc<dyn crate::app_serving::AppServingPlane>>,
     revocations: &'a Arc<std::sync::RwLock<tilo_user_identity::RevocationList>>,

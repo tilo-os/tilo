@@ -44,6 +44,7 @@ canvas = { path = "../../../apps/canvas" }
 chat = { path = "../../../apps/chat", default-features = false, features = [] }
 chip-design = { path = "../../../apps/chip-design" }
 clocks = { path = "../../../apps/clocks" }
+tilo-console = { path = "../../../apps/console" }
 contacts = { path = "../../../apps/contacts" }
 diffmerge = { path = "../../../apps/diffmerge" }
 ebook = { path = "../../../apps/ebook" }
@@ -106,7 +107,6 @@ tilo-model-gateway = { default-features = false, features = ["host-backend"], pa
 # Agents' sessions do their I/O on the host's runtime, or one of their own.
 tokio = { workspace = true, features = ["rt-multi-thread"] }
 tracing.workspace = true
-workspace-hack = { version = "0.1" }
 # App workers: an app's code runs in a confined process of this executable,
 # spoken to over framed messages; what it returns is admitted through the
 # isolate before the host signs it.
@@ -125,6 +125,10 @@ image = { workspace = true, features = ["png", "jpeg", "gif", "webp", "bmp"] }
 # agent's video renders run in (the helper itself is its binary).
 tilo-video-render = { path = "../../media/video-render", default-features = false }
 
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+# The workspace-hack's native feature set does not build for wasm32.
+workspace-hack = { version = "0.1" }
+
 [target.'cfg(unix)'.dependencies]
 # The worker's confinement: detach, resource limits and, on macOS, Seatbelt.
 tilo-sandbox = { path = "../../platform/tilo-sandbox" }
@@ -137,6 +141,8 @@ seccompiler.workspace = true
 libc.workspace = true
 # A connector app, mounted only where a workspace's host runs its worker.
 discord = { path = "../../../apps/discord" }
+# Terminal's session records, whose commands a workspace's host runs.
+terminal = { path = "../../../apps/terminal" }
 
 
 [dev-dependencies]
@@ -148,6 +154,8 @@ tempfile.workspace = true
 tilo-paths.workspace = true
 tilo-relay = { path = "../../hosting/tilo-relay", features = ["agents", "test-support"] }
 tilo-relay-client = { path = "../../hosting/tilo-relay-client" }
+# The MCP projection `tilo mcp` serves, driven over a device's session.
+tilo-runtime = { path = "../../runtime/tilo-runtime" }
 iroh.workspace = true
 # tilo-browser-peer's test support (its host fixture), included by path.
 tilo-net = { path = "../../platform/tilo-net" }

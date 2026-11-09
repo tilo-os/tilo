@@ -11,7 +11,7 @@ use uuid::Uuid;
 struct Fixture {
     namespace: Arc<Mutex<Namespace>>,
     hydrator: Arc<Hydrator>,
-    history: Arc<crate::history::FileHistoryStore>,
+    history: Arc<crate::history_fixture::History>,
     publisher: Arc<crate::record_publisher::RecordPublisher>,
     actor: FileActor,
     /// Last, so the stores above close before their files are deleted.
@@ -25,9 +25,7 @@ impl Fixture {
         let store = Arc::new(crate::store::ContentStore::memory());
         let hydrator = Arc::new(Hydrator::new(endpoint, store));
         let namespace = Arc::new(Mutex::new(Namespace::new("host").unwrap()));
-        let history = Arc::new(
-            crate::history::FileHistoryStore::open(dir.path().join("history.json")).unwrap(),
-        );
+        let history = Arc::new(crate::history_fixture::History::new(Arc::clone(&namespace)));
         let repository = Arc::new(
             crate::record_repository::RecordRepository::open(dir.path().join("records")).unwrap(),
         );
@@ -57,7 +55,7 @@ impl Fixture {
     fn mount(&self, staging: bool) -> QuickFS {
         let heuristics = Arc::new(Heuristics::new(self.hydrator.clone()));
         let fs = QuickFS::new(self.namespace.clone(), self.hydrator.clone(), heuristics)
-            .with_history(self.history.clone(), self.actor)
+            .with_history(self.actor)
             .unwrap()
             .with_record_publisher(self.publisher.clone())
             .unwrap();
@@ -88,10 +86,10 @@ impl Fixture {
 /// What the FUSE `create` callback leaves behind: a committed empty file
 /// with an empty buffer and one writable handle.
 fn create_open(fs: &QuickFS, name: &str) -> (u64, u64) {
-    let (ino, delta) = fs
+    let ino = fs
         .create_empty_file(crate::namespace::ROOT_INO, name)
         .unwrap();
-    fs.publish(delta);
+    fs.publish();
     fs.install_stage(ino, Vec::new());
     fs.buffer_states().insert(
         ino,
@@ -295,10 +293,10 @@ async fn a_file_backed_stage_syncs_commits_and_preserves_from_its_file() {
         let fs = fixture
             .mount(true)
             .with_write_stage_dir(fixture.dir.path().join("stage"));
-        let (ino, delta) = fs
+        let ino = fs
             .create_empty_file(crate::namespace::ROOT_INO, "db.sqlite")
             .unwrap();
-        fs.publish(delta);
+        fs.publish();
         let fh = open_handle(&fs, ino, true);
         let record_id = fs.ns().record_id_for(ino).unwrap();
         fs.write_buffer(ino, 0, &bytes).unwrap();
@@ -318,10 +316,10 @@ async fn a_file_backed_stage_syncs_commits_and_preserves_from_its_file() {
         let fs = fixture
             .mount(true)
             .with_write_stage_dir(fixture.dir.path().join("stage"));
-        let (ino, delta) = fs
+        let ino = fs
             .create_empty_file(crate::namespace::ROOT_INO, "capture.raw")
             .unwrap();
-        fs.publish(delta);
+        fs.publish();
         let fh = open_handle(&fs, ino, true);
         fs.write_buffer(ino, 0, &bytes).unwrap();
         *fs.commit_fault.lock().unwrap() = Some((ino, EDQUOT));

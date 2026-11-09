@@ -159,8 +159,9 @@ class TestEnvironmentSetupTests(unittest.TestCase):
                   {"host": 'cfg(target_os = "linux")'})],
                 f"the {profile} profile builds Chat and its launcher for the acceptance",
             )
-        # The lounge's end-to-end test starts a persistent relay room, a program
-        # of another package that only its `agents` feature builds.
+        # The lounge's end-to-end tests start a persistent relay room, a program
+        # of another package that only its `agents` feature builds: the
+        # session's room-service test and the browser peer's fresh-page test.
         lounge = scripts.pop("lounge-siblings")
         self.assertEqual(lounge["command"], ["bash", "tools/build-sibling-binaries.sh",
                                              "tilo-relay:tilo-relay=tilo-relay/agents"])
@@ -170,8 +171,23 @@ class TestEnvironmentSetupTests(unittest.TestCase):
             self.assertEqual(
                 [(rule["filter"], rule["platform"]) for rule in rules],
                 [("package(tilo-session) and binary(lounge_e2e)",
+                  {"host": 'cfg(target_os = "linux")'}),
+                 ("package(tilo-browser-peer) and binary(lounge_fresh_page)",
                   {"host": 'cfg(target_os = "linux")'})],
-                f"the {profile} profile builds the relay for the lounge's test",
+                f"the {profile} profile builds the relay for the lounge's tests",
+            )
+        # The browser peer's page tests drive the page's modules beside a
+        # runtime module the harness builds once, before they start.
+        page = scripts.pop("page-bundle")
+        self.assertEqual(page["command"], ["bash", "tools/build-page-bundle.sh"])
+        for profile in ("default", "ci"):
+            rules = [rule for rule in config["profile"][profile]["scripts"]
+                     if rule["setup"] == "page-bundle"]
+            self.assertEqual(
+                [(rule["filter"], rule["platform"]) for rule in rules],
+                [("package(tilo-browser-peer) and (binary(passkey_root) or binary(node_workspace))",
+                  {"host": 'cfg(target_os = "linux")'})],
+                f"the {profile} profile builds the page bundle its page tests run against",
             )
         steps = {name: script["command"][2:] for name, script in scripts.items()}
         self.assertEqual(steps, {"test-runtime": ["runtime"], "headless-audio": ["audio"],
@@ -183,6 +199,10 @@ class TestEnvironmentSetupTests(unittest.TestCase):
         self.assertEqual(rules, {"all()": ["test-runtime", "headless-audio"],
                                  "package(tilo-session) and binary(chat_2x2)": "chat-siblings",
                                  "package(tilo-session) and binary(lounge_e2e)": "lounge-siblings",
+                                 "package(tilo-browser-peer) and binary(lounge_fresh_page)":
+                                     "lounge-siblings",
+                                 "package(tilo-browser-peer) and (binary(passkey_root) or "
+                                 "binary(node_workspace))": "page-bundle",
                                  "package(tilo-ntfs-helper)": "ntfs-fixtures"})
 
     def test_runtime_provides_the_renderer_and_the_promised_capabilities(self) -> None:

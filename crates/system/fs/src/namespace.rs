@@ -48,6 +48,7 @@ const STRUCTURAL_CONFLICT_MARKER: &[u8] = b".sync-conflict-";
 pub const MAX_LIVE_RECORD_BLOB_SCAN: usize = 100_000;
 mod changes;
 mod changesets;
+pub mod history;
 #[cfg(test)]
 mod index_walk_tests;
 mod kernel_changes;
@@ -437,7 +438,6 @@ pub struct Namespace {
     /// of changes becomes one delta when it ends. Encoding a delta
     /// regenerates its changes from the op set (a pass over the document),
     /// so one per changed file is quadratic in a changeset.
-    incremental_batch: Option<(Vec<automerge::ChangeHash>, Vec<u8>)>,
     #[cfg(test)]
     record_index_rebuilds: u64,
     /// Changes whenever the verified (signed) content projection changes:
@@ -561,7 +561,12 @@ fn read_u64(doc: &AutoCommit, obj: &ObjId, key: &str) -> u64 {
 impl Namespace {
     /// A namespace over `doc` whose `nodes` map is already in place, with
     /// only the root bound and every derived index empty.
-    fn over(doc: AutoCommit, nodes: ObjId, author: String, next_id: u64) -> Self {
+    fn over(
+        doc: AutoCommit,
+        nodes: ObjId,
+        author: String,
+        next_id: u64,
+    ) -> Result<Self, automerge::AutomergeError> {
         let mut ns = Self {
             doc: ChangeTrackedDoc::new(doc),
             nodes,
@@ -581,7 +586,6 @@ impl Namespace {
             record_ids_complete: false,
             placed_since_resolve: HashSet::new(),
             cycle_scan_pending: true,
-            incremental_batch: None,
             #[cfg(test)]
             record_index_rebuilds: 0,
             verified_generation: next_verified_generation(),
@@ -597,7 +601,11 @@ impl Namespace {
         };
         ns.ino_to_id.insert(ROOT_INO, ROOT_ID.to_string());
         ns.id_to_ino.insert(ROOT_ID.to_string(), ROOT_INO);
-        ns
+        if ns.history_root().is_none() {
+            ns.doc
+                .put_object(&ROOT, history::HISTORY_KEY, ObjType::Map)?;
+        }
+        Ok(ns)
     }
 
     /// # Errors
@@ -606,7 +614,7 @@ impl Namespace {
     pub fn new(author: impl Into<String>) -> Result<Self, automerge::AutomergeError> {
         let mut doc = AutoCommit::new();
         let nodes = doc.put_object(&ROOT, "nodes", ObjType::Map)?;
-        let mut ns = Self::over(doc, nodes, author.into(), 0);
+        let mut ns = Self::over(doc, nodes, author.into(), 0)?;
         let root_record_id = FileRecordId::new();
         let _ = ns
             .doc
@@ -638,7 +646,7 @@ impl Namespace {
                 max_local = max_local.max(v.saturating_add(1));
             }
         }
-        let mut ns = Self::over(doc, nodes, author, max_local);
+        let mut ns = Self::over(doc, nodes, author, max_local)?;
         ns.ensure_record_ids();
         ns.rebuild_record_index();
         Ok(ns)
@@ -750,43 +758,29 @@ impl Namespace {
         }
         self.doc.save()
     }
+    /// Finish a mutation: every node it made has its stable record id before
+    /// anything reads the document (`save`, `changes_since`).
+    ///
+    /// INVARIANT: pair every mutation with its `note_change` inside the same
+    /// `Namespace` lock scope, so the ids of a change are there before another
+    /// change's `save` folds them.
+    pub fn note_change(&mut self) {
+        if !self.record_ids_complete {
+            self.ensure_record_ids();
+        }
+    }
+
     /// Changes since the last `save_incremental`/load/merge, advancing the shared
-    /// automerge watermark.
+    /// automerge watermark. For callers that carry the delta itself (a staged
+    /// transaction); a plain mutation follows [`Self::note_change`].
     ///
     /// INVARIANT: pair every mutation with its `save_incremental` inside the same
     /// `Namespace` lock scope — the watermark is one shared cursor, so a mutation
     /// saved outside that scope can have its delta silently swallowed by a
     /// concurrent remote-apply.
     pub fn save_incremental(&mut self) -> Vec<u8> {
-        if !self.record_ids_complete {
-            self.ensure_record_ids();
-        }
-        if self.incremental_batch.is_some() {
-            return Vec::new();
-        }
+        self.note_change();
         self.doc.save_incremental()
-    }
-
-    /// Collect every change from now on into the one delta
-    /// [`Self::end_incremental_batch`] returns; meanwhile
-    /// [`Self::save_incremental`] returns nothing.
-    pub fn begin_incremental_batch(&mut self) {
-        if self.incremental_batch.is_none() {
-            // Changes not yet taken lead the batch's delta.
-            let pending = self.doc.save_incremental();
-            self.incremental_batch = Some((self.doc.get_heads(), pending));
-        }
-    }
-
-    /// The delta of every change since the batch began. A full save made
-    /// meanwhile (which moves the incremental cursor) loses nothing.
-    pub fn end_incremental_batch(&mut self) -> Vec<u8> {
-        let Some((heads, mut delta)) = self.incremental_batch.take() else {
-            return self.save_incremental();
-        };
-        delta.extend(self.doc.save_after(&heads));
-        let _ = self.doc.save_incremental();
-        delta
     }
     pub fn apply_incremental(&mut self, data: &[u8]) -> Result<(), automerge::AutomergeError> {
         let before = self.doc.get_heads();

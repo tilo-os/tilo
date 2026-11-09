@@ -1273,6 +1273,7 @@ mod tests {
             issued_at_ns: tilo_clock::unix_now_ns(),
             expires_at_ns: None,
             signature: [0; 64],
+            issuer: None,
         };
         tilo_user_identity::sign_device_cert(&mut cert, &person).expect("a certified device");
         tilo_user_identity::persist::write_device_cert(&paths.device_cert, &cert)
@@ -1621,7 +1622,7 @@ mod tests {
         let broker = session
             .action_plane
             .as_ref()
-            .and_then(crate::Plane::action_broker)
+            .and_then(crate::plane::Plane::action_broker)
             .expect("the session serves its broker");
         wait_for_people(&broker, workspace_id);
         let job = broker
@@ -1893,7 +1894,7 @@ mod tests {
         let broker = session
             .action_plane
             .as_ref()
-            .and_then(crate::Plane::action_broker)
+            .and_then(crate::plane::Plane::action_broker)
             .expect("the session serves its broker");
         wait_for_people(&broker, workspace_id);
         assert!(

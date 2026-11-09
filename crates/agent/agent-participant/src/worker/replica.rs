@@ -328,6 +328,23 @@ impl ConfinedReplica {
         self.invoke_within(None, None, appearance, address, arguments, confirm)
     }
 
+    /// [`Self::invoke_appearing`] within `context`, what the caller said of
+    /// the invocation (the run it is part of), which History keeps.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::invoke`].
+    pub(crate) fn invoke_in(
+        &self,
+        context: Option<&tilo_actions::ActionContext>,
+        appearance: Option<&tilo_actions::Appearance>,
+        address: &ActionAddress,
+        arguments: &serde_json::Map<String, serde_json::Value>,
+        confirm: bool,
+    ) -> Result<ActionOutput, DoorError> {
+        self.invoke_within(None, context, appearance, address, arguments, confirm)
+    }
+
     /// [`Self::invoke`] as `invoker` within `context`:
     /// [`crate::Replica::invoke_with`].
     ///

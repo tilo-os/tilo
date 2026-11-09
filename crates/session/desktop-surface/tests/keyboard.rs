@@ -396,7 +396,7 @@ impl SearchHost for DeskHost {
     fn feed(&self, _: &str, scope: &Scope) -> SearchHostFeed {
         self.0.scopes.borrow_mut().push(scope.clone());
         SearchHostFeed {
-            sources: vec![std::sync::Arc::new(Plan)],
+            sources: vec![tilo_desktop_search::Held::new(Plan)],
             ..SearchHostFeed::default()
         }
     }

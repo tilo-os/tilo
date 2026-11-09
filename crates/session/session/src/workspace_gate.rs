@@ -15,12 +15,12 @@ use tilo_desktop_model::DesktopTree;
 
 /// What a workspace message is: the node below the workspace it acts at, and the kind of action it
 /// is.
-pub(crate) type WorkspaceAction = (TreePath, ActionKind);
+pub type WorkspaceAction = (TreePath, ActionKind);
 
 /// Whether the workspace `workspace` of `tree` lets `person` do `required`,
 /// at `now` (Unix seconds). A desk that holds no such workspace admits
 /// nothing: there is no policy here to ask.
-pub(crate) fn allows(
+pub fn allows(
     tree: &DesktopTree,
     workspace: &str,
     person: &str,
@@ -43,7 +43,7 @@ pub(crate) fn allows(
 /// generations and the messages settled before the gate (identity, codec adverts, the person's own
 /// list): one of those reaching it means that earlier path was bypassed, and it is refused rather
 /// than admitted on some default.
-pub(crate) fn required_workspace_action(msg: &NeighbourMsg) -> Option<WorkspaceAction> {
+pub fn required_workspace_action(msg: &NeighbourMsg) -> Option<WorkspaceAction> {
     match msg {
         // The workspace's state, published media, injected input and control consent change what
         // other members see or run.
@@ -136,6 +136,7 @@ mod tests {
             issued_at_ns: 1,
             expires_at_ns: None,
             signature: [0; 64],
+            issuer: None,
         }
     }
 

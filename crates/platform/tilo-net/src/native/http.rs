@@ -23,6 +23,9 @@ impl Backend {
                     }
                     Redirects::None => reqwest::redirect::Policy::none(),
                 });
+        if let Some(tls) = config.tls.clone() {
+            builder = builder.tls_backend_preconfigured(tls);
+        }
         if let Some(timeout) = config.connect_timeout {
             builder = builder.connect_timeout(timeout);
         }

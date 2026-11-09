@@ -100,6 +100,7 @@ fn existing_certificate_signatures_and_verification_keep_their_preimage() {
         issued_at_ns: 128,
         expires_at_ns: Some(u64::MAX),
         signature: [0; 64],
+        issuer: None,
     };
     // Postcard struct and tuple fields share the frozen, ordered wire shape.
     let view = (

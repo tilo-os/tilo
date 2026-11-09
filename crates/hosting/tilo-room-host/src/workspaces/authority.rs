@@ -9,7 +9,8 @@
 //!    it joins workspaces through its delegation).
 //! 2. A device of the relay's own person administers every workspace here. That
 //!    person is the host's, so what no workspace decides ([`HostOperation`]) is
-//!    theirs alone.
+//!    theirs alone, but for making a person's own workspace, which a host
+//!    that keeps them does for anyone.
 //! 3. Any other device administers a workspace as far as the workspace's governance
 //!    lets its person: the governance action, invitation or change is
 //!    checked against the workspace's policy, read under the workspace's lock so a
@@ -126,13 +127,26 @@ impl Workspaces {
                 "room administration requires a person's device, not an agent's",
             ));
         }
-        if self.revocations().is_revoked(&device.device_public_key) {
+        // An agent's grant acts in workspaces through the person's runtime,
+        // never on their governance: it may do only what the host's own
+        // operations allow it.
+        if device.capabilities.agent.is_some() && !matches!(op, WorkspaceOp::Host(_)) {
+            return Err(CollaborationError::new(
+                "room administration requires a person's device, not an agent's grant",
+            ));
+        }
+        if self.revocations().refuses(device) {
             return Err(CollaborationError::new("device revoked"));
         }
         tilo_user_identity::verify_device_cert_at(device, now)
             .map_err(|error| CollaborationError::new(error.to_string()))?;
         if let WorkspaceOp::Host(operation) = op {
-            return if operation.permits(&host, &device.user_public_key) {
+            if operation == HostOperation::CreateOwnWorkspace && self.own().is_none() {
+                return Err(CollaborationError::new(
+                    "this host keeps no workspaces of people's own",
+                ));
+            }
+            return if operation.permits(&host, device) {
                 Ok(hex::encode(host))
             } else {
                 Err(CollaborationError::new(HOST_PERSON_ONLY))

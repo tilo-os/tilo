@@ -64,6 +64,7 @@ pub mod approved_checks;
 pub mod audit;
 pub mod broker;
 pub mod content;
+pub mod environment_runs;
 pub mod file_actions;
 pub mod fleet;
 pub mod guard;
@@ -72,6 +73,7 @@ pub mod guest_exec;
 pub mod helper_runtime;
 pub mod home;
 pub mod host;
+pub mod hosted_vm;
 pub mod images;
 pub mod policy;
 pub mod records;
@@ -87,6 +89,7 @@ pub mod terminal_sessions;
 pub mod tilo_side;
 pub mod version;
 pub mod workspace;
+pub mod workspace_shell;
 
 pub use store::Store;
 /// The package id every `ush` grant is written against.

@@ -581,7 +581,7 @@ fn an_app_cannot_draw_another_app_s_image() {
 }
 
 #[test]
-fn an_app_over_its_gpu_budget_waits_out_the_overrun() {
+fn an_app_over_its_gpu_budget_waits_out_the_overrun_and_its_frame_is_drawn() {
     let broker = start(Limits {
         gpu_time_us: 0,
         ..Limits::default()
@@ -597,14 +597,24 @@ fn an_app_over_its_gpu_budget_waits_out_the_overrun() {
         panic!("the first frame is drawn");
     };
     assert!(gpu_us > 0, "the frame's time is measured");
-    app.frame(&scene, None);
-    assert!(matches!(
-        app.recv().message,
-        ServiceMessage::FrameDropped {
-            why: Refusal::Throttled,
-            ..
+    let sequence = app.frame(&scene, None);
+    // Held while the app is over its budget, then drawn: the picture on screen is
+    // the app's newest one, not the frame before it.
+    loop {
+        match app.recv().message {
+            ServiceMessage::Buffers { .. } => {}
+            ServiceMessage::FrameReady {
+                sequence: ready, ..
+            } => {
+                assert_eq!(ready, sequence);
+                break;
+            }
+            ServiceMessage::FrameDropped { why, .. } => {
+                panic!("the held frame is drawn rather than dropped: {why:?}");
+            }
+            other => panic!("unexpected {other:?}"),
         }
-    ));
+    }
 }
 
 #[test]

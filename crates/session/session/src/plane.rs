@@ -989,8 +989,8 @@ fn seams(
         personal: Seam::when(personal),
         // The steps only this session may take for the person: the
         // workspace's activity the Activity app reads, pairing a nearby
-        // device, and administering their identities and the devices trusted
-        // under them, whose secret stays here.
+        // device, administering their identities and the devices trusted
+        // under them, whose secret stays here, and their hosting account.
         host_steps: Seam::served(
             [
                 vec![
@@ -1004,6 +1004,10 @@ fn seams(
                         desk: desk_authority,
                         admin: crate::identity_admin::IdentityAdmin::session(),
                     }),
+                    // The person's account with the host the session runs
+                    // on: what Settings and the overview of their Tilo show,
+                    // followed as the host's plans change.
+                    crate::host_account::HostAccountDoor::session(),
                 ],
                 // An agent's task writes its programs; this session's door runs them as the
                 // steps of the run the task is in.
@@ -1630,9 +1634,9 @@ mod tests {
         );
         assert_eq!(
             services.host_steps.len(),
-            4,
+            5,
             "the steps this session serves are the workspace's activity, device \
-             pairing, identity administration and its own actions"
+             pairing, identity administration, the person's hosting account and its own actions"
         );
         let providers: Vec<&str> = services
             .host_steps
@@ -1651,6 +1655,10 @@ mod tests {
             (
                 tilo_actions::remote::SESSION_ACTIONS_PROVIDER,
                 "a turn's agent arranges the screen",
+            ),
+            (
+                tilo_actions::remote::host_account::PROVIDER,
+                "Settings' Billing reads the person's account with their host",
             ),
         ] {
             assert!(

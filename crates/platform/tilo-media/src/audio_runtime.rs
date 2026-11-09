@@ -371,12 +371,33 @@ impl AudioRuntimeControl for RealAudioRuntime {
     }
 
     fn start_echo_cancellation(&self) -> Result<Box<dyn BoundedSession>, String> {
-        let child = Command::new("pipewire")
+        let mut command = Command::new("pipewire");
+        command
             .args(["-c", ECHO_CANCEL_CONFIG])
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::null())
-            .process_group(0)
+            .process_group(0);
+        // The client lives as long as the session that started it: a session
+        // that is killed runs no drop, so the kernel ends the client with it.
+        #[cfg(target_os = "linux")]
+        {
+            // SAFETY: only async-signal-safe calls run between fork and exec.
+            let parent = unsafe { libc::getpid() };
+            unsafe {
+                command.pre_exec(move || {
+                    if libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGTERM, 0, 0, 0) != 0
+                        || libc::getppid() != parent
+                    {
+                        return Err(std::io::Error::other(
+                            "the session ended before its echo cancellation started",
+                        ));
+                    }
+                    Ok(())
+                });
+            }
+        }
+        let child = command
             .spawn()
             .map_err(|e| format!("pipewire is unavailable: {e}"))?;
         Ok(Box::new(ChildSession {

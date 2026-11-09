@@ -22,8 +22,12 @@ tilo-lock = { version = "0.1.0", path = "../../platform/tilo-lock" }
 tilo-network-actor = { path = "../network-actor" }
 tokio = { workspace = true, features = ["sync"] }
 tracing.workspace = true
-ui = { package = "tilo-ui", path = "../../sdk/ui-core" }
+ui = { package = "tilo-ui", path = "../../sdk/ui-core", default-features = false }
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+# The workspace-hack's native feature set does not build for wasm32.
 workspace-hack = { version = "0.1" }
+ui = { package = "tilo-ui", path = "../../sdk/ui-core" }
 
 [dev-dependencies]
 media = { package = "tilo-media", path = "../../platform/tilo-media", features = ["test-support"] }

@@ -63,12 +63,13 @@ use layout::{LocationForms, MeasureKey, Measured, Slot, Slots, ViewsMeasure, loc
 #[cfg(test)]
 use location_label::edited_word;
 use location_label::{LocationLabel, trailing_word};
+pub(crate) use paint::labelled_face;
 #[cfg(test)]
 pub(crate) use paint::location_shown;
+use paint::picker_width;
 #[cfg(test)]
 use paint::shows_on;
 pub(crate) use paint::{LocationLift, PickerText, paint_picker};
-use paint::{labelled_face, picker_width};
 
 /// Action targets of the slots, as assistive technology and automation
 /// address them.
@@ -96,7 +97,7 @@ const SECTION_GAP: f64 = crate::tokens::Spacing::BASE.s2 as f64;
 /// The location's leading icon: a control glyph.
 const LOCATION_ICON_PX: f64 = crate::tokens::Metrics::BASE.icon_control as f64;
 /// A location narrower than this is not shown: the bar keeps its buttons.
-const MIN_LOCATION_PX: f64 = crate::tokens::Metrics::BASE.location_min_width as f64;
+pub(crate) const MIN_LOCATION_PX: f64 = crate::tokens::Metrics::BASE.location_min_width as f64;
 /// Actions move into the overflow menu, last first, while the location
 /// would be narrower than this.
 const COMFORTABLE_LOCATION_PX: f64 = crate::tokens::Metrics::BASE.location_comfortable_width as f64;
@@ -503,9 +504,26 @@ impl ToolbarRow {
                     .collect()
             })
             .unwrap_or_default();
+        let actions: Vec<String> = self
+            .toolbar()
+            .map(|toolbar| {
+                toolbar
+                    .actions
+                    .iter()
+                    .map(|action| {
+                        if action.labelled {
+                            action.name.clone()
+                        } else {
+                            String::new()
+                        }
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
         let key = MeasureKey {
             labels,
             leading,
+            actions,
             forms,
             editable: location.is_some_and(|location| location.editable),
             picker: location
@@ -526,7 +544,10 @@ impl ToolbarRow {
                 .unwrap_or_default(),
             text_scale: theme.text_scale.to_bits(),
         };
-        if key.labels.is_empty() && key.forms.is_empty() && key.leading.iter().all(String::is_empty)
+        if key.labels.is_empty()
+            && key.forms.is_empty()
+            && key.leading.iter().all(String::is_empty)
+            && key.actions.iter().all(String::is_empty)
         {
             let had = self.views_size.take().is_some();
             if had {
@@ -566,26 +587,30 @@ impl ToolbarRow {
                 menu: picker_width(widest, theme),
                 location: Some(picker_width(0.0, theme)),
             });
-            let leading = key
-                .leading
-                .iter()
-                .map(|name| {
-                    if name.is_empty() {
-                        0.0
-                    } else {
-                        labelled_face(Rect::ZERO, name).intrinsic_width(text, theme)
-                    }
-                })
-                .collect();
-            (views, forms, tabs, leading)
+            let mut widths = |names: &[String]| -> Vec<f64> {
+                names
+                    .iter()
+                    .map(|name| {
+                        if name.is_empty() {
+                            0.0
+                        } else {
+                            labelled_face(Rect::ZERO, name).intrinsic_width(text, theme)
+                        }
+                    })
+                    .collect()
+            };
+            let leading = widths(&key.leading);
+            let actions = widths(&key.actions);
+            (views, forms, tabs, leading, actions)
         });
-        let (views, forms, tabs, leading) = measured;
+        let (views, forms, tabs, leading, actions) = measured;
         self.views_size = Some(Measured {
             key,
             views,
             forms,
             tabs,
             leading,
+            actions,
         });
         self.lay_out(self.row);
         true
@@ -599,18 +624,23 @@ impl ToolbarRow {
     pub(crate) fn lay_out(&mut self, row: Rect) {
         self.row = row;
         let unmeasured = LocationForms::default();
-        let (views, forms, labels) = self
-            .views_size
-            .as_ref()
-            .map_or((None, &unmeasured, &[][..]), |measured| {
-                (measured.views, &measured.forms, measured.leading.as_slice())
-            });
+        let (views, forms, labels, action_labels) =
+            self.views_size
+                .as_ref()
+                .map_or((None, &unmeasured, &[][..], &[][..]), |measured| {
+                    (
+                        measured.views,
+                        &measured.forms,
+                        measured.leading.as_slice(),
+                        measured.actions.as_slice(),
+                    )
+                });
         // The window's reactions stand at the row's end; the app's slots
         // share what they leave.
         let (app_row, reactions, reaction_add) = self.place_reactions(row);
         self.slots = self
             .toolbar()
-            .map(|toolbar| Slots::lay_out(toolbar, app_row, views, (forms, labels)))
+            .map(|toolbar| Slots::lay_out(toolbar, app_row, views, (forms, labels, action_labels)))
             .unwrap_or_default();
         self.slots.reactions = reactions;
         self.slots.reaction_add = reaction_add;

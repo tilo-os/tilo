@@ -6,7 +6,7 @@
 )]
 
 use super::*;
-use crate::door::Published;
+use tilo_session_core::door::Published;
 
 fn reading() -> DeskReading {
     DeskReading {
@@ -191,9 +191,7 @@ fn with_the_centre_up_and_nothing_changing_the_part_draws_nothing() {
             body: "12 GB safe".to_owned(),
             origin_app: "Settings".to_owned(),
             kind: "info".to_owned(),
-            read: true,
-            group: "Settings".to_owned(),
-            ..NoticeReading::default()
+            seen: true,
         }],
         ..reading()
     });
@@ -230,9 +228,7 @@ fn a_press_in_the_centre_hands_the_desk_its_notice_action() {
             body: "12 GB safe".to_owned(),
             origin_app: "Settings".to_owned(),
             kind: "info".to_owned(),
-            read: true,
-            group: "Settings".to_owned(),
-            ..NoticeReading::default()
+            seen: true,
         }],
         ..reading()
     });
@@ -409,7 +405,14 @@ fn each_change_is_one_turn() {
     let mut now = reading();
     let changes: [Change; 3] = [
         ("minute", |r| r.clock = "4:29 PM".to_owned()),
-        ("notification", |r| r.unread = 1),
+        ("notification", |r| {
+            r.notices.push(NoticeReading {
+                key: "n1".to_owned(),
+                title: "Backup finished".to_owned(),
+                seen: false,
+                ..Default::default()
+            });
+        }),
         ("workspace switch", |r| {
             r.workspace = "Studio".to_owned();
             // The reading lists the strip the bar shows first, so the switch moves the

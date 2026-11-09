@@ -12,11 +12,12 @@ use ui::host_operation::ResourceOperationStart;
 
 use tilo_action_broker::collab_broker::FanoutState;
 
+use crate::plane::Plane;
 use crate::plane::{DeskAuthority, Sealed, ShortcutLibrary};
 use crate::{
-    ActionPlane, DesktopHandle, Options, Plane, Service, Services, activity, activity_provider,
-    plane, surfaces,
+    ActionPlane, Options, Service, Services, activity, activity_provider, plane, surfaces,
 };
+use tilo_desktop_surface::DesktopHandle;
 
 /// What a service answered, as a caller of the action protocol reads it.
 pub(crate) fn answered(started: Started) -> ResourceOperationStart {
@@ -328,7 +329,7 @@ pub(crate) fn start_action_plane(
             native_media: calls_service.clone(),
             // The index search reads is the one apps publish into: a closed app's content is found
             // from here on.
-            content: options.search.content.clone(),
+            content: Some(std::sync::Arc::clone(&options.content)),
             records,
             desk: std::sync::Arc::clone(&desk),
             shortcuts,
@@ -347,7 +348,7 @@ pub(crate) fn start_action_plane(
             journal_root: options.state.as_deref().map(plane::journal_root),
             // What each installed app declares it may do on the action door,
             // read by search's own worker off the session's thread.
-            lists: options.search.lists.clone(),
+            lists: options.lists.clone(),
             // Files' waits for the drive and app lists to change, which the tools service answers.
             tools,
             task_programs,

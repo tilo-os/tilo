@@ -313,9 +313,9 @@ pub trait OwnerCommitService: Send + Sync {
     }
     fn commit(&self, request: OwnerCommitRequest) -> CommitFuture;
     /// [`Self::commit`] for a document write, with the resource kind of its
-    /// record as the writing app named it when joining the record. Only an
-    /// owner that creates a missing record on the app's first write reads
-    /// the kind; the request and its receipt binding never include it.
+    /// record as the writing app named it when joining the record. The kind is
+    /// the app's declaration of what it writes, never of a record anyone founds
+    /// ahead of the write; the request and its receipt binding never include it.
     fn commit_with_record_kind(
         &self,
         request: OwnerCommitRequest,

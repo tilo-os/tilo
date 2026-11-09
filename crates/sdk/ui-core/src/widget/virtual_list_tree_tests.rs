@@ -123,23 +123,23 @@ fn a_list_indents_a_row_under_the_row_it_names_and_folds_it_away() {
     assert_eq!(list.viewport.item_height(2), Some(0.0), "the whole chain");
     assert_eq!(list.viewport.item_height(3), Some(row));
 
-    // Its disclosure shows them again, where the person presses: the chevron of the row, in
-    // the step its own depth keeps free in front of its content.
-    let chevron = list.chevrons();
-    let first = chevron.x0 + chevron.lead + 10.0;
-    press(&mut list, first, 10.0, &taffy, node);
+    // Its disclosure shows them again, where the list says the person presses: the box the row
+    // shows its chevron in.
+    let at = list
+        .disclosure_rect(&0)
+        .expect("the folded row shows its disclosure")
+        .center();
+    press(&mut list, at.x, at.y, &taffy, node);
     let (taffy, node) = super::tests::lay_out(&mut list, 300.0);
     assert!(!list.row_folded(&0), "the press unfolded it");
     assert!((list.viewport.content_extent() - 5.0 * row).abs() < 0.5);
 
     // Deeper in, the chevron stands one indent further in, and folds only what is under it.
-    press(
-        &mut list,
-        first + chevron.step + 10.0,
-        row + 10.0,
-        &taffy,
-        node,
-    );
+    let at = list
+        .disclosure_rect(&1)
+        .expect("the branch one depth in shows its disclosure")
+        .center();
+    press(&mut list, at.x, at.y, &taffy, node);
     let _ = super::tests::lay_out(&mut list, 300.0);
     assert!(
         list.row_folded(&1) && !list.row_folded(&0),

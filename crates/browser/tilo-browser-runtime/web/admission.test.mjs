@@ -122,20 +122,20 @@ test('an invitation is opened, inspected and confirmed before it is redeemed', a
 });
 
 test('a link a site hands over opens at the site, and asks the host the invitation names', async () => {
-  const sealed = {kind: 'sealed', site: 'https://tilo.coffee', handle: 'abcdefghijklmnop'};
+  const sealed = {kind: 'sealed', site: 'https://tilo.sh', handle: 'abcdefghijklmnop'};
   const key = 'A'.repeat(43);
   const asked = [];
   const {calls, deps} = doors({
     openInvitation: async (site, secret) => {
       asked.push([site, secret]);
-      return {invitation: 'the invitation', host: 'https://lounge.tilo.coffee'};
+      return {invitation: 'the invitation', host: 'https://lounge.tilo.sh'};
     },
   });
   assert.deepEqual(await admit({scope: sealed, secrets: {invite: key}, deps}), {peer: {joined: true}});
-  assert.deepEqual(asked, [['https://tilo.coffee', `abcdefghijklmnop${key}`]], 'the site keeps it; the key never leaves the page');
+  assert.deepEqual(asked, [['https://tilo.sh', `abcdefghijklmnop${key}`]], 'the site keeps it; the key never leaves the page');
   assert.deepEqual(calls.map(([name]) => name), ['inspectInvitation', 'confirmInvitation', 'joinWorkspace']);
-  assert.equal(calls[0][1], 'https://lounge.tilo.coffee', 'the invitation is read at the host it admits into');
-  assert.equal(calls[2][1].origin, 'https://lounge.tilo.coffee');
+  assert.equal(calls[0][1], 'https://lounge.tilo.sh', 'the invitation is read at the host it admits into');
+  assert.equal(calls[2][1].origin, 'https://lounge.tilo.sh');
   // A shelf of a build that named no host: the site's home workspace's host.
   const unnamed = doors({openInvitation: async () => ({invitation: 'x'})});
   await admit({scope: sealed, secrets: {invite: key}, home: commons, deps: unnamed.deps});

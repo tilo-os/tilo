@@ -60,6 +60,22 @@ impl DeviceFleet {
             .any(|entry| &entry.revoked_device_public_key == device_public_key)
     }
 
+    /// Whether this fleet's revocations refuse `cert`: its device's, or its
+    /// stand-in issuer's from before it issued it
+    /// ([`tilo_user_identity::revocation::cert_refused`]).
+    #[must_use]
+    pub fn refuses(&self, cert: &tilo_user_identity::DeviceCert) -> bool {
+        tilo_user_identity::revocation::cert_refused(cert, None, |root, key| {
+            self.revocations
+                .iter()
+                .filter(|entry| {
+                    (&entry.user_public_key, &entry.revoked_device_public_key) == (root, key)
+                })
+                .map(|entry| entry.revoked_at_ns)
+                .min()
+        })
+    }
+
     /// The person's own devices this fleet certifies at `now_ns`: personal
     /// devices ([`DeviceCapabilities::is_personal_device`]) of `person`,
     /// unexpired and not revoked.
@@ -71,7 +87,7 @@ impl DeviceFleet {
                 &cert.user_public_key == person
                     && cert.capabilities.is_personal_device()
                     && verify_device_cert_at(cert, now_ns).is_ok()
-                    && !self.is_revoked(&cert.device_public_key)
+                    && !self.refuses(cert)
             })
             .map(|cert| cert.device_public_key)
             .collect()

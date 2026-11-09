@@ -183,7 +183,7 @@ fn show(
     let mut shown = settings(
         &fed.handle.read(Clone::clone),
         fed.person,
-        &fed.search.app_lists(),
+        &crate::app_icons::app_lists().unwrap_or_default(),
         tab,
         review,
         fed.personal,
@@ -501,7 +501,7 @@ fn next_workspace_default(seat: &sheet::WorkspaceSettingsSeat, fed: &Feeding<'_>
         tracing::debug!(%resource, "no such kind of file or link: nothing changed");
         return;
     };
-    let lists = fed.search.app_lists();
+    let lists = crate::app_icons::app_lists().unwrap_or_default();
     let candidates = lists.candidates.clone();
     let resolver = desktop_policy::DefaultAppResolver::new(&candidates);
     let handle = fed.handle;
@@ -532,7 +532,7 @@ fn next_personal_default(seat: &sheet::WorkspaceSettingsSeat, fed: &Feeding<'_>,
         tracing::debug!(%resource, "no such kind of file or link: nothing changed");
         return;
     };
-    let lists = fed.search.app_lists();
+    let lists = crate::app_icons::app_lists().unwrap_or_default();
     let candidates = lists.candidates.clone();
     let resolver = desktop_policy::DefaultAppResolver::new(&candidates);
     let handle = fed.handle;

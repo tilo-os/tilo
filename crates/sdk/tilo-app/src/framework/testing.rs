@@ -51,9 +51,11 @@ pub type TestApp<A> = HeadlessApp<A>;
 pub const SIDEBAR_BUTTON_WINDOWS: [(u32, u32); 2] = [(1280, 800), (400, 800)];
 
 /// Open the app with `open` in each of [`SIDEBAR_BUTTON_WINDOWS`], shown in
-/// the desktop's window bar, and click the bar's sidebar button three times
-/// there: every click flips the sidebar, on the bar, in the window's shell
-/// and on screen ([`FrameHarness::check_window_sidebar_button`]).
+/// the desktop's window bar, and click the bar's sidebar button there: every
+/// click flips the sidebar, on the bar, in the window's shell and on screen
+/// ([`FrameHarness::check_window_sidebar_button`]). A narrow window keeps the
+/// button on the sidebar's own screen, behind the screen the person is on,
+/// and the check takes the bar's way back to it.
 pub fn check_window_sidebar_button<A: ResourceApp>(
     mut open: impl FnMut() -> Result<HeadlessApp<A>, LaunchError>,
 ) -> Result<(), String> {

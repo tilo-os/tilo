@@ -34,8 +34,7 @@ pub fn ime(id: u64, kind: &str, text: &str) -> Result<(), JsValue> {
         let event = WindowEvent::Ime(event);
         m.frame.send_host_event(&event);
         m.publish_committed(&event);
-        m.pending = true;
-        m.window.request_redraw();
+        m.present_after_input();
         Ok(())
     })
 }
@@ -118,10 +117,17 @@ pub fn component_actions(
 #[wasm_bindgen]
 pub fn component_publications(id: u64) -> Result<String, JsValue> {
     with_mount(id, |m| {
-        let resources = m
+        let mut resources = m
             .frame
             .published_bound_resources_of(None)
             .map_err(|e| door_error(&e))?;
+        if let Some(desktop) = &m.desktop {
+            // The desk's own arranging actions are published beside the
+            // windows' applications, so the palette, a script and an agent
+            // reach the desk through the same listing as everything else.
+            desktop.arrangement.remember(&resources);
+            resources.extend(desktop.arrangement.resources());
+        }
         serde_json::to_string(&tilo_actions::door::survey(&resources)).map_err(error)
     })
 }
@@ -259,6 +265,25 @@ pub(super) fn invoke_as(
     by: Invoker,
 ) -> Result<String, JsValue> {
     with_mount(id, |m| {
+        // The desk's own actions name no window: the mount's arrangement
+        // carries them, as a native session's door does.
+        if let Some(desktop) = &m.desktop
+            && desktop.arrangement.holds(resource)
+        {
+            // What the page publishes now: what a place made from a resource
+            // reads its app and views from.
+            if let Ok(published) = m.frame.published_bound_resources_of(None) {
+                desktop.arrangement.remember(&published);
+            }
+            let address = tilo_actions::ActionAddress::new(resource, action);
+            let output = desktop
+                .arrangement
+                .invoke(&address, arguments)
+                .map_err(|e| door_error(&e))?;
+            m.pending = true;
+            m.window.request_redraw();
+            return Ok(output.to_string());
+        }
         let instance = m.action_window(window)?;
         let address = ui::bound_dispatch::BoundActionAddress {
             instance_id: instance

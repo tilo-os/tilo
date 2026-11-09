@@ -534,6 +534,26 @@ with the job's run and out of the line running meanwhile. A job's run is
 recorded in the session but not added to the person's history: the line
 that started it is there.
 
+On a host that serves workspaces, a Linux program the host's plan guard
+refuses holds its run ([`environments.md`](environments.md#hosted-workspace-vms)):
+
+```text
+ESC ] 133 ; W ; k=<key> ; a=<0|1> ; r=<b64> BEL   the run waits on its host, refused for r
+ESC ] 133 ; U ; k=<key> BEL                       the hold is over
+```
+
+`r` is base64 of the host's typed refusal as JSON
+(`tilo_actions::remote::host_account::Refusal`: its reason, its words and
+the steps that would let it through, with the provider's pages). Terminal
+shows the person one prompt over the run, "This needs a Linux machine. Add a
+card to continue.", whose Add a card opens the provider's page and whose
+Cancel interrupts the run as Ctrl+C does. For a person's run (`a=0`) the
+shell waits: once the host's plans file names the account the program runs,
+without the line being typed again. For an agent's run (`a=1`, a line run
+with `USH_RENDER=agent`) the shell does not wait: the run ends at once with
+the refusal's words on standard error, its answer carries the typed refusal,
+and the person sees the same prompt on it, which Cancel puts away.
+
 `cmd` and `cwd` are base64 of the command line as the shell's history holds
 it and of the working directory, and `t` is that command's place in the
 shell's history, read from the history entry the shell is about to run. A

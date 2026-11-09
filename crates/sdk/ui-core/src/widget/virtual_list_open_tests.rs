@@ -231,3 +231,130 @@ fn the_row_that_opens_grows_into_its_document_and_keeps_the_list_laying_out() {
         "the list asks for the frames its row moves in"
     );
 }
+
+/// A model whose app names its rows again as a whole, as it does when the list is read anew:
+/// the keys go until it answers with the ones it reads now.
+struct Renamed {
+    rows: Rc<RefCell<Vec<u64>>>,
+}
+
+impl ListModel for Renamed {
+    type Key = u64;
+
+    fn len(&self) -> usize {
+        self.rows.borrow().len()
+    }
+
+    fn key_at(&self, index: usize) -> Option<u64> {
+        self.rows.borrow().get(index).copied()
+    }
+
+    fn index_of(&self, key: &u64) -> Option<usize> {
+        self.rows.borrow().iter().position(|row| row == key)
+    }
+
+    fn opens_in_place(&self, index: usize) -> bool {
+        index.is_multiple_of(2)
+    }
+}
+
+/// A list over rows the test names again, and what the host hears of the open row.
+fn renamed_list() -> (VirtualList<Renamed>, Rc<RefCell<Vec<u64>>>, Rc<Cell<usize>>) {
+    let rows: Rc<RefCell<Vec<u64>>> = Rc::new(RefCell::new((0..6_u64).collect()));
+    let closes = Rc::new(Cell::new(0));
+    let shut = Rc::clone(&closes);
+    let list = VirtualList::with_selection_delegate(
+        Renamed {
+            rows: Rc::clone(&rows),
+        },
+        20.0,
+        |_, _, key, build| {
+            let height = if build.expanded { 120.0 } else { 20.0 };
+            Box::new(ProbeRow::new(
+                format!("row {key}"),
+                height,
+                false,
+                Rc::new(Cell::new(0)),
+            )) as Element
+        },
+    )
+    .with_viewport_height(200.0)
+    .on_closed(move || shut.set(shut.get() + 1));
+    (list, rows, closes)
+}
+
+#[test]
+fn a_row_named_again_keeps_standing_open_while_the_rows_come_back() {
+    let (mut list, rows, closes) = renamed_list();
+    let _ = lay_out(&mut list, 300.0);
+    list.set_open(Some(2));
+    assert_eq!(list.open_row(), Some(&2));
+
+    // The app names the list's rows again: the keys go until it answers with the ones it reads
+    // now, so the row that stood open is not one that left.
+    rows.borrow_mut().clear();
+    list.notify_model_changes(&[ListModelChange::Reset]);
+    assert_eq!(
+        list.open_row(),
+        Some(&2),
+        "the open waits for the rows the app names"
+    );
+    assert_eq!(closes.get(), 0, "a row named again is not heard to close");
+
+    // They arrive with the row where it stood, under the key it had: it goes on standing open.
+    rows.borrow_mut().extend(0..6_u64);
+    list.notify_model_changes(&[ListModelChange::RowsChanged {
+        keys: (0..6_u64).collect(),
+    }]);
+    assert_eq!(list.open_row(), Some(&2));
+    assert_eq!(closes.get(), 0);
+}
+
+#[test]
+fn a_row_named_again_closes_when_the_rows_arrive_without_it() {
+    let (mut list, rows, closes) = renamed_list();
+    let _ = lay_out(&mut list, 300.0);
+    list.set_open(Some(2));
+
+    rows.borrow_mut().clear();
+    list.notify_model_changes(&[ListModelChange::Reset]);
+    assert_eq!(list.open_row(), Some(&2));
+
+    // The rows the app reads now do not hold the item: the open closes with the row it stood
+    // on, and the host hears it.
+    rows.borrow_mut().extend([0_u64, 1, 3, 4, 5]);
+    list.notify_model_changes(&[ListModelChange::RowsChanged {
+        keys: vec![0, 1, 3, 4, 5],
+    }]);
+    assert_eq!(list.open_row(), None);
+    assert_eq!(closes.get(), 1);
+}
+
+#[test]
+fn a_list_too_narrow_to_hold_its_item_opens_it_in_front_instead() {
+    let opened = Rc::new(RefCell::new(Vec::new()));
+    let mut narrow = list(Rc::clone(&opened)).in_place(false);
+    let _ = lay_out(&mut narrow, 300.0);
+    // What a host holds open as the window narrows, and what a press does at that width: the
+    // item opens in front of the list, through the host, never grown into the row.
+    narrow.set_open(Some(0));
+    assert_eq!(
+        narrow.open_row(),
+        None,
+        "a list too narrow for the item keeps no row open"
+    );
+    narrow.activate_key(0);
+    assert_eq!(narrow.open_row(), None);
+    assert_eq!(
+        *opened.borrow(),
+        vec![0],
+        "the press opens the item in front, where the host shows it"
+    );
+    // A list with the room to hold the item opens it where it stands.
+    let opened = Rc::new(RefCell::new(Vec::new()));
+    let mut roomy = list(Rc::clone(&opened));
+    let _ = lay_out(&mut roomy, 300.0);
+    roomy.activate_key(0);
+    assert_eq!(roomy.open_row(), Some(&0));
+    assert!(opened.borrow().is_empty());
+}

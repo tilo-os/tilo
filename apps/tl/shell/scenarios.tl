@@ -17,7 +17,6 @@ scenario "an afternoon at the desk" {
     d.clock = "4:28 PM"
     d.weekday = "Thursday"
     d.date = "October 30"
-    d.unread = 3
     d.workspace = "Studio"
     d.strip = "Drafts"
     d.here = "none"
@@ -1206,16 +1205,14 @@ scenario "the notification centre" {
     d.person = "Ada Lovelace"
     d.workspace = "Studio"
     d.here = "centre"
-    d.unread = 9
     d.notices.insert(
         Notice(
             key: "n7",
             title: "Screenshot ready",
             body: "The capture is in Pictures.",
             origin_app: "Capture Studio",
-            group: "Capture Studio",
             kind: "info",
-            read: true,
+            seen: true,
         ),
     )
     d.notices.insert(
@@ -1224,9 +1221,8 @@ scenario "the notification centre" {
             title: "Ada replied in Chat",
             body: "Let's ship Friday.",
             origin_app: "Chat",
-            group: "Chat",
             kind: "info",
-            read: false,
+            seen: false,
         ),
     )
     d.notices.insert(
@@ -1235,9 +1231,8 @@ scenario "the notification centre" {
             title: "Your laptop is at 12%",
             body: "Plug it in to finish the backup.",
             origin_app: "Power",
-            group: "Power",
             kind: "warning",
-            read: true,
+            seen: true,
         ),
     )
     d.notices.insert(
@@ -1246,9 +1241,8 @@ scenario "the notification centre" {
             title: "Fieldwork filed 40 threads",
             body: "The mailbox is tidy.",
             origin_app: "Fieldwork",
-            group: "Fieldwork",
             kind: "info",
-            read: true,
+            seen: true,
         ),
     )
     d.notices.insert(
@@ -1257,9 +1251,8 @@ scenario "the notification centre" {
             title: "New member in Studio",
             body: "Sam Okafor joined.",
             origin_app: "Studio",
-            group: "Studio",
             kind: "info",
-            read: true,
+            seen: true,
         ),
     )
     d.notices.insert(
@@ -1268,9 +1261,8 @@ scenario "the notification centre" {
             title: "The release board moved to Review",
             body: "Jo moved 6 tasks.",
             origin_app: "Release 4.2",
-            group: "Release 4.2",
             kind: "info",
-            read: false,
+            seen: false,
         ),
     )
     d.notices.insert(
@@ -1279,9 +1271,8 @@ scenario "the notification centre" {
             title: "Backup finished",
             body: "12 GB of changes are safe.",
             origin_app: "Settings",
-            group: "Settings",
             kind: "info",
-            read: true,
+            seen: true,
         ),
     )
     d.notices.insert(
@@ -1290,9 +1281,8 @@ scenario "the notification centre" {
             title: "Calendar: Standup in 10 minutes",
             body: "Studio room.",
             origin_app: "Calendar",
-            group: "Calendar",
             kind: "info",
-            read: false,
+            seen: false,
         ),
     )
     d.notices.insert(
@@ -1301,10 +1291,8 @@ scenario "the notification centre" {
             title: "Fieldwork is waiting for you",
             body: "It asks which folder to archive.",
             origin_app: "Fieldwork",
-            group: "Fieldwork",
             kind: "warning",
-            read: false,
-            wants_reply: true,
+            seen: false,
         ),
     )
     seed_notices(d)
@@ -1322,16 +1310,14 @@ scenario "the notification centre, all read" {
     d.person = "Ada Lovelace"
     d.workspace = "Studio"
     d.here = "centre"
-    d.unread = 0
     d.notices.insert(
         Notice(
             key: "n1",
             title: "Mia mentioned you in Release planning",
             body: "Can you check the launch date?",
             origin_app: "Notes",
-            group: "Notes",
             kind: "info",
-            read: true,
+            seen: true,
         ),
     )
     d.notices.insert(
@@ -1340,9 +1326,8 @@ scenario "the notification centre, all read" {
             title: "Three threads filed",
             body: "Fieldwork filed 3 threads into Receipts.",
             origin_app: "Fieldwork",
-            group: "Fieldwork",
             kind: "info",
-            read: true,
+            seen: true,
         ),
     )
     d.notices.insert(
@@ -1351,9 +1336,8 @@ scenario "the notification centre, all read" {
             title: "Release 4.2 moved to Review",
             body: "Jo moved the board on.",
             origin_app: "Tasks",
-            group: "Tasks",
             kind: "info",
-            read: true,
+            seen: true,
         ),
     )
     d.notice_actions.insert(NoticeAction(notice: "n1", key: "open", label: "Reply"))
@@ -1373,7 +1357,6 @@ scenario "an empty notification centre" {
     d.person = "Ada Lovelace"
     d.workspace = "Studio"
     d.here = "centre"
-    d.unread = 0
 }
 
 /// The workspaces: every one the person is in, with who is there and what it holds.
@@ -1460,9 +1443,8 @@ scenario "a banner" {
             title: "Build failed",
             body: "The link check found 4 broken links.",
             origin_app: "Forgejo",
-            group: "Forgejo",
             kind: "error",
-            read: false,
+            seen: false,
         ),
     )
     d.banner = "n4"
@@ -1482,7 +1464,7 @@ scenario "the bar's status" {
     d.workspace = "Studio"
     d.strip = "Drafts"
     d.here = "none"
-    d.unread = 3
+    seed_waiting(d)
     d.people.insert(Person(key: "mia", name: "Mia Clayton"))
     d.people.insert(Person(key: "sam", name: "Sam Okafor"))
     seed(shell)
@@ -1509,38 +1491,15 @@ scenario "a person's menu" {
 
 /// The desk's notices a scenario starts from: what apps and an agent said today.
 action seed_notices(d: Desk) -> Int {
-    d.notices.insert(
-        Notice(
-            key: "n1",
-            title: "Mia mentioned you in Release planning",
-            body: "Can you check the launch date?",
-            origin_app: "Notes",
-            group: "Notes",
-            kind: "info",
-            read: false,
-            wants_reply: true,
-        ),
-    )
-    d.notices.insert(
-        Notice(
-            key: "n2",
-            title: "Three threads filed",
-            body: "Fieldwork filed 3 threads into Receipts.",
-            origin_app: "Fieldwork",
-            group: "Fieldwork",
-            kind: "success",
-            read: true,
-        ),
-    )
+    seed_waiting(d)
     d.notices.insert(
         Notice(
             key: "n3",
             title: "Release 4.2 moved to Review",
             body: "Jo moved the board on.",
             origin_app: "Tasks",
-            group: "Tasks",
             kind: "info",
-            read: true,
+            seen: true,
         ),
     )
     d.notices.insert(
@@ -1549,9 +1508,8 @@ action seed_notices(d: Desk) -> Int {
             title: "Build failed",
             body: "The link check found 4 broken links.",
             origin_app: "Forgejo",
-            group: "Forgejo",
             kind: "error",
-            read: false,
+            seen: false,
         ),
     )
     d.notices.insert(
@@ -1560,9 +1518,8 @@ action seed_notices(d: Desk) -> Int {
             title: "Ada shared a notebook",
             body: "Launch checklist is now yours to edit.",
             origin_app: "Chat",
-            group: "Chat",
             kind: "info",
-            read: true,
+            seen: true,
         ),
     )
     d.notices.insert(
@@ -1571,9 +1528,8 @@ action seed_notices(d: Desk) -> Int {
             title: "Backup finished",
             body: "Your laptop backed up 12 GB of changes.",
             origin_app: "Settings",
-            group: "Settings",
             kind: "success",
-            read: true,
+            seen: true,
         ),
     )
     return d.notices.len()
@@ -1868,7 +1824,7 @@ scenario "the traditional desktop" {
     d.clock = "4:28 PM"
     d.weekday = "Thursday"
     d.date = "October 30"
-    d.unread = 2
+    seed_waiting(d)
     d.workspace = "Studio"
     d.strip = "Drafts"
     d.here = "none"
@@ -2085,12 +2041,12 @@ fn channel_named(name: Text) -> Option<chat.TextChannel> {
         match x {
             c: chat.Category => {
                 if let t = c.channels.find(t -> t.name == name) {
-                    return .some(t)
+                    return t
                 }
             }
             t: chat.TextChannel => {
                 if t.name == name {
-                    return .some(t)
+                    return t
                 }
             }
             d: chat.Direct => {}

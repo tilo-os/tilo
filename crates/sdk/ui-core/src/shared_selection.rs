@@ -8,15 +8,16 @@
 //! excerpt. A widget that knows its selection better (a multi-block editor)
 //! says so through [`PublishesPresence::shared_selection`].
 //!
-//! Every context menu takes typing ([`crate::widget::ContextMenu`]): a
-//! sentence none of its entries answers goes into the send-to box docked
-//! beside it ([`crate::widget::SendToBox`]), where the person names whom to
-//! send it to. The box queues the request ([`send_to`]), and the app runner
-//! hands it to the session with a typed reference ([`resolve_selection`]),
-//! which the session acts on as the person: it makes a new agent when one is
-//! a recipient, opens or makes the one conversation, and posts the message
-//! there. The reference names a place; it grants nothing, so an agent reaches
-//! it only through the app's published actions, as every task does.
+//! Every context menu takes typing ([`crate::widget::ContextMenu`]): its send
+//! row carries a sentence its entries do not answer into the send-to box that
+//! takes the menu's place ([`crate::widget::SendToBox`]), where the person
+//! names whom to send it to. The box queues the request ([`send_to`]), and the
+//! app runner hands it to the session with a typed reference
+//! ([`resolve_selection`]), which the session acts on as the person: it makes
+//! a new agent when one is a recipient, opens or makes the one conversation,
+//! and posts the message there. The reference names a place; it grants
+//! nothing, so an agent reaches it only through the app's published actions,
+//! as every task does.
 //!
 //! [`PublishesPresence::shared_selection`]: crate::presence::capability::PublishesPresence::shared_selection
 
@@ -359,8 +360,6 @@ pub struct SendToRequest {
     pub about: Vec<SharedSelection>,
     /// What the person wrote.
     pub text: String,
-    /// Where the box stood in the window, as the protocol carries it.
-    pub bounds: Option<[f64; 4]>,
 }
 
 /// Where in the window a request points, and what it is about: the reference
@@ -971,7 +970,6 @@ mod tests {
                 to: vec![Recipient::new_agent("Ana")],
                 about: vec![SharedSelection::of_text("a")],
                 text: format!("note {index}"),
-                bounds: None,
             });
             let _ = search_recipients(&format!("ad{index}"));
         }

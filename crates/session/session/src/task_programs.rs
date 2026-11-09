@@ -12,15 +12,15 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use tilo_action_broker::collab_app_broker::{TASK_AGENT_APP, TaskRunHost};
-use tilo_action_broker::services::{HostStepOutcome, HostStepRequest, HostStepServices};
+use tilo_action_broker::collab_app_broker::TASK_AGENT_APP;
 use tilo_actions::remote::task_programs as wire;
 use tilo_actions::remote::{Pending, pending};
 use tilo_actions::{ActionArgs, ActionParam, ParamType};
+use tilo_broker_core::steps::{HostStepOutcome, HostStepRequest, HostStepServices, TaskRun};
 use tilo_lock::MutexRecover as _;
 
-/// One task's session of the door.
-type Door = tilo_runtime::mcp::McpServer<TaskRunHost>;
+/// One task's session of the door, over the run's own host.
+type Door = tilo_runtime::mcp::McpServer<Arc<dyn tilo_actions::remote::ActionHost + Send + Sync>>;
 
 /// A task, by the workspace it runs in, its agent and its issue.
 type TaskKey = (String, String, String);
@@ -47,7 +47,7 @@ impl TaskPrograms {
     /// admits.
     fn session_of(
         &self,
-        host: &TaskRunHost,
+        host: &dyn TaskRun,
         workspace: &str,
         agent: &str,
         person: Option<&str>,
@@ -63,7 +63,7 @@ impl TaskPrograms {
         }
         let run = group.id.clone();
         let door = Arc::new(
-            Door::for_task(host.clone(), workspace.to_owned(), agent, person)
+            Door::for_task(host.door(), workspace.to_owned(), agent, person)
                 .with_work_group(group)
                 .with_task_hosts(Some(Arc::new(crate::agent_door::TaskHosts::new(
                     person.unwrap_or_else(|| self.doors.person()),
@@ -273,7 +273,7 @@ mod tests {
         actor: &'a BrokerActor,
         address: &'a ActionAddress,
         argument: &'a str,
-        task_run: Option<&'a TaskRunHost>,
+        task_run: Option<&'a dyn TaskRun>,
     ) -> HostStepRequest<'a> {
         HostStepRequest {
             workspace: "the-workspace",

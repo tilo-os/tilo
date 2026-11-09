@@ -16,7 +16,6 @@ use crate::core::{Core, HResult, trap};
 use crate::ids::Principal;
 use crate::meta::{FieldKind, Ty};
 use crate::query::{Query, find, resolve};
-use crate::registry::FieldInfo;
 use crate::run::{RunOutcome, Suggestion};
 use crate::runtime::Runtime;
 use crate::value::{RefValue, ResourceRef, Value};
@@ -598,26 +597,17 @@ impl Core {
         }
     }
 
-    /// The text a resource is called by: its `title`, `name` or `label` field, else its first
-    /// text field.
+    /// The text a resource is called by, as a program, an answer or a citation names it: what
+    /// its type's title field holds, else what the type says it is called while that is empty
+    /// ([`Self::title_of`]).
     pub(crate) fn program_title(&self, target: &ResourceRef) -> Option<String> {
         if crate::reads::is_foreign(target) {
             return self.foreign.borrow().get(target)?.title.clone();
         }
-        let (_, info) = self.registry.borrow().type_info(&target.ty)?;
-        let texts: Vec<&FieldInfo> = info
-            .fields
-            .iter()
-            .filter(|f| f.kind == FieldKind::Text || f.ty == Ty::Text)
-            .collect();
-        let named = texts
-            .iter()
-            .find(|f| matches!(f.name.as_str(), "title" | "name" | "label"))
-            .or_else(|| texts.first())?;
-        match self.read_value(target, named, None).ok()? {
-            Value::Text(t) if !t.trim().is_empty() => Some(t.chars().take(120).collect()),
-            _ => None,
-        }
+        let (pkg, info) = self.registry.borrow().type_info(&target.ty)?;
+        let declared = pkg.meta.types.iter().find(|ty| ty.id == info.id)?;
+        let title = self.title_of(target, &pkg.meta, declared).ok()?;
+        Some(title.chars().take(120).collect())
     }
 
     /// A resource as `read` gives it: its literal and title, then each field on a line.

@@ -292,6 +292,14 @@ when = { step = "suites" }
 git = true
 
 [[check.matrix.set]]
+when = { step = "test-cargo" }
+git = true
+
+[[check.matrix.set]]
+when = { step = "test-spawns" }
+git = true
+
+[[check.matrix.set]]
 when = { step = "too-many-arguments" }
 git = true
 
@@ -331,6 +339,14 @@ git = true
 [[check.matrix.set]]
 when = { test = "ci_select" }
 git = true
+
+# The installer test stages the session layer's fonts, whose artifacts are reviewed pins
+# fetched from the release store rather than files of the tree. The node's build directory
+# keeps them, as it does for the checks that build with fonts, so a run reads them there
+# instead of fetching 55 MB into a cache this job's home does not outlive.
+[[check.matrix.set]]
+when = { test = "component_manifest" }
+env = { TILO_FONT_ASSET_CACHE = "/target/font-artifacts" }
 
 [[check.matrix.set]]
 when = { test = "image_builder_inputs" }
@@ -665,7 +681,7 @@ heavy = true
 
 [[check]]
 name = "real-fuse"
-run = "# Mounting FUSE needs a user namespace where the check is root: the job sandbox gives it no\n# capability, and no_new_privs keeps fusermount3's setuid bit from helping, so a mount from\n# the check itself fails with \"fusermount3: mount failed: Operation not permitted\".\nscript=$(cat <<'REAL_FUSE'\nexport TILO_FONT_ASSET_CACHE=$CARGO_TARGET_DIR/font-artifacts\npython3 tools/font-catalog.py root crates/sdk/ui-core/assets/fonts --scope fixtures --cache \"$TILO_FONT_ASSET_CACHE\"\nexport TILO_FONT_ASSETS_OFFLINE=1\nbash scripts/ci-fuse-preflight.sh\nbash os/tests/tilo-session-lifecycle.sh\ncargo test --locked -p tilo-fs named_share_delivery --lib -- --nocapture\ncargo test --locked -p fs-protocol share_control --lib -- --nocapture\ncargo test --locked -p tilo-user-identity projection --lib -- --nocapture\ncargo test --locked -p tilo-fs replica_ack::tests::exact_nonce_version_peer_and_freshness_are_bound --lib -- --nocapture\ncargo test --locked -p tilo-fs sync::tests::namespace_documents_reach_only_entitled_peers_and_readers_cannot_author --lib -- --nocapture\ncargo test --locked -p tilo-fs --lib -- --exact fs::tests::record_publisher_integration_tests::keep_current_and_use_other_append_signed_convergent_resolutions\ncargo test --locked -p tilo-fs durable_backup::tests --lib -- --nocapture\ncargo test --locked -p tilo-fs --lib -- --exact record_repository::tests::signed_transactions_merges_and_batches_project_whole_and_survive_restart record_repository::tests::a_received_changeset_applies_whole_or_not_at_all durable_backup::tests::backups_retain_generations_and_recover_from_the_newest_valid_one\ncargo test --locked -p tilo-fs namespace::tests::byte_names_survive_load_save_rename_and_replication_exactly --lib -- --nocapture\ncargo test --locked -p tilo-fs history::tests::history_logs_read_legacy_and_fail_closed_on_damage --lib -- --nocapture\ncargo test --locked -p tilo-fs record_transaction::tests::journal_restarts_exactly_with_monotonic_phases_and_whole_batches --lib -- --nocapture\ncargo test --locked -p tilo-fs transaction_coordinator::tests::broadcast_failure_recovers_exact_committed_namespace_without_duplicate_history --lib -- --nocapture\ncargo test --locked -p tilo-fs availability::tests::availability_registry_persists_by_stable_record_id_and_rejects_tampering --lib -- --nocapture\nREAL_FUSE\n)\nexec unshare --user --map-root-user --mount -- bash -ec \"$script\"\n"
+run = "# Mounting FUSE needs a user namespace where the check is root: the job sandbox gives it no\n# capability, and no_new_privs keeps fusermount3's setuid bit from helping, so a mount from\n# the check itself fails with \"fusermount3: mount failed: Operation not permitted\".\nscript=$(cat <<'REAL_FUSE'\nexport TILO_FONT_ASSET_CACHE=$CARGO_TARGET_DIR/font-artifacts\npython3 tools/font-catalog.py root crates/sdk/ui-core/assets/fonts --scope fixtures --cache \"$TILO_FONT_ASSET_CACHE\"\nexport TILO_FONT_ASSETS_OFFLINE=1\nbash scripts/ci-fuse-preflight.sh\nbash os/tests/tilo-session-lifecycle.sh\ncargo test --locked -p tilo-user-identity projection --lib -- --nocapture\ncargo test --locked -p tilo-fs replica_ack::tests::exact_nonce_version_peer_and_freshness_are_bound --lib -- --nocapture\ncargo test --locked -p tilo-fs sync::tests::namespace_documents_reach_only_entitled_peers_and_readers_cannot_author --lib -- --nocapture\ncargo test --locked -p tilo-fs --lib -- --exact fs::tests::record_publisher_integration_tests::keep_current_and_use_other_append_signed_convergent_resolutions\ncargo test --locked -p tilo-fs durable_backup::tests --lib -- --nocapture\ncargo test --locked -p tilo-fs --lib -- --exact record_repository::tests::signed_transactions_merges_and_batches_project_whole_and_survive_restart record_repository::tests::a_received_changeset_applies_whole_or_not_at_all durable_backup::tests::backups_retain_generations_and_recover_from_the_newest_valid_one\ncargo test --locked -p tilo-fs namespace::tests::byte_names_survive_load_save_rename_and_replication_exactly --lib -- --nocapture\ncargo test --locked -p tilo-fs history::tests::history_logs_read_legacy_and_fail_closed_on_damage --lib -- --nocapture\ncargo test --locked -p tilo-fs record_transaction::tests::journal_restarts_exactly_with_monotonic_phases_and_whole_batches --lib -- --nocapture\ncargo test --locked -p tilo-fs transaction_coordinator::tests::broadcast_failure_recovers_exact_committed_namespace_without_duplicate_history --lib -- --nocapture\ncargo test --locked -p tilo-fs availability::tests::availability_registry_persists_by_stable_record_id_and_rejects_tampering --lib -- --nocapture\nREAL_FUSE\n)\nexec unshare --user --map-root-user --mount -- bash -ec \"$script\"\n"
 env = { TILO_FS_FUSE_REQUIRED = "1", TILO_REQUIRE_FUSE = "1" }
 requires = ["/dev/fuse", "/dev/fuse"]
 isolation = "nested"
@@ -692,7 +708,7 @@ heavy = true
 
 [[check]]
 name = "real-fuse-shares"
-run = "# Mounting FUSE needs a user namespace where the check is root: the job sandbox gives it no\n# capability, and no_new_privs keeps fusermount3's setuid bit from helping, so a mount from\n# the check itself fails with \"fusermount3: mount failed: Operation not permitted\".\nscript=$(cat <<'REAL_FUSE'\nexport TILO_FONT_ASSET_CACHE=$CARGO_TARGET_DIR/font-artifacts\npython3 tools/font-catalog.py root crates/sdk/ui-core/assets/fonts --scope fixtures --cache \"$TILO_FONT_ASSET_CACHE\"\nexport TILO_FONT_ASSETS_OFFLINE=1\nbash scripts/ci-fuse-preflight.sh\ncargo test --locked -p tilo-fs --test exact_share_process_fuse -- --nocapture --test-threads=1\ncargo test --locked -p tilo-fs --test collab_release_matrix -- --nocapture --test-threads=1\ncargo test --locked -p tilo-fs --test corruption_matrix -- --nocapture --test-threads=1\nREAL_FUSE\n)\nexec unshare --user --map-root-user --mount -- bash -ec \"$script\"\n"
+run = "# Mounting FUSE needs a user namespace where the check is root: the job sandbox gives it no\n# capability, and no_new_privs keeps fusermount3's setuid bit from helping, so a mount from\n# the check itself fails with \"fusermount3: mount failed: Operation not permitted\".\nscript=$(cat <<'REAL_FUSE'\nexport TILO_FONT_ASSET_CACHE=$CARGO_TARGET_DIR/font-artifacts\npython3 tools/font-catalog.py root crates/sdk/ui-core/assets/fonts --scope fixtures --cache \"$TILO_FONT_ASSET_CACHE\"\nexport TILO_FONT_ASSETS_OFFLINE=1\nbash scripts/ci-fuse-preflight.sh\ncargo test --locked -p tilo-fs --test collab_release_matrix -- --nocapture --test-threads=1\ncargo test --locked -p tilo-fs --test corruption_matrix -- --nocapture --test-threads=1\nREAL_FUSE\n)\nexec unshare --user --map-root-user --mount -- bash -ec \"$script\"\n"
 env = { TILO_FS_FUSE_REQUIRED = "1", TILO_REQUIRE_FUSE = "1" }
 requires = ["/dev/fuse", "/dev/fuse"]
 isolation = "nested"
@@ -1646,7 +1662,7 @@ dispatch_inputs = { only = "", outputs = "1920x1080@1,1280x800@1.25", gl = "auto
 [[check]]
 name = "e2e-branch"
 run = "bash tools/ci/vm-e2e-branch.sh"
-needs = ["os-dev-disk-x86_64", "tilo-vm-binary-x86_64"]
+needs = ["os-dev-disk-lean-x86_64", "tilo-vm-binary-x86_64"]
 requires = ["arch=x86_64", "/dev/kvm", "disk-100g"]
 isolation = "vm"
 outputs = ["/target/e2e-branch/**"]
@@ -1663,7 +1679,7 @@ name = "e2e-agents"
 # in each environment's shell, the person's answers on the sheet and their Stop
 # (scripts/vm-acceptance/acceptance/checks/agents_e2e.py).
 run = "bash tools/ci/install-packages.sh tools/ci/packages/vm-acceptance.txt && bash tools/ci/vm-acceptance.sh e2e-agents"
-needs = ["os-dev-disk-x86_64", "tilo-vm-binary-x86_64"]
+needs = ["os-dev-disk-lean-x86_64", "tilo-vm-binary-x86_64"]
 requires = ["arch=x86_64", "/dev/kvm", "disk-100g"]
 isolation = "vm"
 outputs = ["/target/e2e-agents/report/**"]
@@ -1677,7 +1693,7 @@ on = ["dispatch"]
 # VMs: two boxes branched from one set-up box, a third of another person, on one local network.
 name = "e2e-remote"
 run = "bash tools/ci/e2e-remote.sh"
-needs = ["os-dev-disk-x86_64", "tilo-vm-binary-x86_64"]
+needs = ["os-dev-disk-lean-x86_64", "tilo-vm-binary-x86_64"]
 requires = ["arch=x86_64", "/dev/kvm", "disk-100g"]
 isolation = "vm"
 outputs = ["/target/e2e-remote/**"]
@@ -2042,14 +2058,24 @@ secrets = ["TILO_PACKAGES_TOKEN"]
 [check.matrix]
 runtime = ["llama-cpp-cpu-x86_64", "llama-cpp-cpu-aarch64", "llama-cpp-vulkan-x86_64", "llama-cpp-vulkan-aarch64", "llama-cpp-cuda-x86_64", "vllm-cuda-x86_64"]
 
+# The date the llama.cpp runtime images are built at, oci-build.sh's SOURCE_DATE_EPOCH: the commit
+# time of the newest commit that changed what they are built from (source-date.sh), as for the
+# images above. Only this reads Git: a runtime build keyed by its commit built the same bytes again
+# at every commit, and each CUDA build takes the better part of an hour.
+[[check]]
+name = "source-date-local-model-runtimes"
+run = "bash tools/ci/publish/source-date.sh /target/source-date/local-model-runtimes tools/release/local-model-runtime.sh dist/local-models/runtimes tools/ci/publish/oci-run.sh tools/ci/publish/lib.sh"
+git = true
+outputs = ["/target/source-date/local-model-runtimes"]
+default = false
+
 [[check]]
 name = "local-model-runtime-llama-cpp-{backend}-{arch}"
-run = "bash tools/release/local-model-runtime.sh build llama-cpp-{backend}-{arch} /target/local-model-runtimes/llama-cpp-{backend}-{arch}"
+run = "SOURCE_DATE_EPOCH=$(cat /target/source-date/local-model-runtimes)\nexport SOURCE_DATE_EPOCH\nbash tools/release/local-model-runtime.sh build llama-cpp-{backend}-{arch} /target/local-model-runtimes/llama-cpp-{backend}-{arch}\n"
+needs = ["source-date-local-model-runtimes"]
 image = "registry.tilo.so/tilo/buildah@sha256:07e637ad7a1df37f44afea8287935b350224ac193d63e5cc96debb50a366853c"
 requires = ["arch={arch}"]
 isolation = "vm"
-# The runtime image is dated by its commit's time, which `oci-build.sh` reads from the log.
-git = true
 outputs = ["/target/local-model-runtimes/llama-cpp-{backend}-{arch}/*"]
 timeout_secs = 7200
 on = ["stable", "dispatch"]
@@ -2060,11 +2086,11 @@ arch = ["x86_64", "aarch64"]
 
 [[check]]
 name = "local-model-runtime-llama-cpp-cuda-x86_64"
-run = "bash tools/release/local-model-runtime.sh build llama-cpp-cuda-x86_64 /target/local-model-runtimes/llama-cpp-cuda-x86_64"
+run = "SOURCE_DATE_EPOCH=$(cat /target/source-date/local-model-runtimes)\nexport SOURCE_DATE_EPOCH\nbash tools/release/local-model-runtime.sh build llama-cpp-cuda-x86_64 /target/local-model-runtimes/llama-cpp-cuda-x86_64\n"
+needs = ["source-date-local-model-runtimes"]
 image = "registry.tilo.so/tilo/buildah@sha256:07e637ad7a1df37f44afea8287935b350224ac193d63e5cc96debb50a366853c"
 requires = ["arch=x86_64", "disk-100g"]
 isolation = "vm"
-git = true
 outputs = ["/target/local-model-runtimes/llama-cpp-cuda-x86_64/*"]
 timeout_secs = 10800
 on = ["stable", "dispatch"]
@@ -2451,6 +2477,84 @@ outputs = ["/target/publish/relay/receipt.json"]
 on = ["tag:v[0-9]*.[0-9]*.[0-9]*"]
 id_token = ["registry.tilo.so"]
 
+# ---- The tilo command ----------------------------------------------------------------------
+#
+# What `curl -fsSL https://tilo.sh | sh` installs (dist/install/tilo.sh), by
+# tools/ci/publish/cli-release.sh: one statically linked archive per Linux architecture, both
+# built on the x86_64 node (aarch64 cross-compiles, so a node of that architecture is not needed),
+# and one per Mac architecture when a Mac node runs those builds; their SHA256SUMS; its signature
+# by the release key. It is released with the relay, on release tags: sign-cli alone holds the
+# release key, publish-cli alone the package token, and neither runs anywhere else.
+# cli-rehearsal signs the same release with a throwaway key the same way, publishes it into a
+# directory laid out as tilo.sh serves it, and installs it from there with the installer.
+#
+# A release carries both Linux archives or none. The Mac archives are built by the cli-macos
+# checks, which only a Mac node can run: no node of that platform is part of the fleet, so
+# cli-release does not wait for them, and the installer tells a Mac that the release has none.
+# With a Mac node, list cli-macos-aarch64 and cli-macos-x86_64 in cli-release's needs_any_outcome
+# again, and the archives built there join the release.
+
+[[check]]
+name = "cli-{arch}"
+run = "bash tools/ci/publish/cli-release.sh build {arch}-unknown-linux-musl /target/publish/cli/linux-{arch}"
+# The musl C compiler the program's C (ring, SQLite) needs, and for aarch64 the Zig toolchain
+# that cross-compiles it and qemu to run it: see tools/ci/install-cli-toolchain.sh.
+setup = { run = "bash tools/ci/install-cli-toolchain.sh {arch}" }
+requires = ["arch=x86_64"]
+outputs = ["/target/publish/cli/linux-{arch}/*"]
+default = false
+[check.matrix]
+arch = ["x86_64", "aarch64"]
+
+[[check]]
+name = "cli-macos-{arch}"
+run = "set -eu\nbash tools/ci/publish/cli-release.sh build {arch}-apple-darwin \"${CARGO_TARGET_DIR:-$PWD/target}/publish/cli/macos-{arch}\"\n"
+requires = ["os=macos", "arch=arm64"]
+outputs = ["/target/publish/cli/macos-{arch}/*"]
+default = false
+[check.matrix]
+arch = ["aarch64", "x86_64"]
+
+[[check]]
+name = "cli-release"
+run = "bash tools/ci/publish/cli-release.sh sums /target/publish/cli/release /target/publish/cli/linux-x86_64 /target/publish/cli/linux-aarch64 /target/publish/cli/macos-aarch64 /target/publish/cli/macos-x86_64"
+needs = ["cli-x86_64", "cli-aarch64"]
+requires = ["arch=any"]
+outputs = ["/target/publish/cli/release/*"]
+default = false
+
+[[check]]
+name = "cli-rehearsal"
+run = "bash tools/ci/publish/cli-release.sh rehearse /target/publish/cli/release"
+# The installer verifies with openssl, which the image lacks; so does this, the same way.
+setup = { run = "dnf install -y --setopt=install_weak_deps=False openssl && dnf clean all" }
+needs = ["cli-release", "signing-tools"]
+requires = ["arch=x86_64"]
+on = ["stable", "dispatch", "idle"]
+heavy = true
+
+[[check]]
+name = "sign-cli"
+run = "bash tools/ci/publish/cli-release.sh sign /target/publish/cli/release"
+setup = { run = "dnf install -y --setopt=install_weak_deps=False openssl && dnf clean all" }
+needs = ["cli-release", "cli-rehearsal", "signing-tools"]
+env = { COSIGN_KEY_REF = "awskms:///arn:aws:kms:us-east-1:125650147312:alias/tilo-release-signing", AWS_SIGNING_ROLE_ARN = "arn:aws:iam::125650147312:role/TiloTReleaseSigner", TILO_SIGNING_AUDIENCE = "sts.amazonaws.com", TILO_SIGN_TLOG = "1" }
+requires = ["arch=x86_64"]
+outputs = ["/target/publish/cli/release/SHA256SUMS.sig", "/target/publish/cli/release/SHA256SUMS.bundle", "/target/publish/cli/release/dry-run.pub"]
+cache = false
+on = ["tag:v[0-9]*.[0-9]*.[0-9]*"]
+id_token = ["sts.amazonaws.com"]
+
+[[check]]
+name = "publish-cli"
+run = "bash tools/ci/publish/cli-release.sh publish /target/publish/cli/release"
+setup = { run = "dnf install -y --setopt=install_weak_deps=False openssl && dnf clean all" }
+needs = ["cli-release", "sign-cli"]
+requires = ["arch=x86_64"]
+cache = false
+on = ["tag:v[0-9]*.[0-9]*.[0-9]*"]
+secrets = ["TILO_PACKAGES_TOKEN"]
+
 [[check]]
 name = "image-legacy-guest"
 run = "bash tools/ci/publish/legacy-guest.sh build /target/publish/legacy-guest/agent /target/publish/legacy-guest/image"
@@ -2480,6 +2584,58 @@ outputs = ["/target/publish/legacy-guest/image/receipt.json", "/target/publish/l
 on = ["stable"]
 id_token = ["registry.tilo.so"]
 pointers = { legacy-guest = "/target/publish/legacy-guest/image/pins.env" }
+
+[[check]]
+name = "hosted-guest-kernel"
+run = "bash tools/ci/publish/hosted-guest.sh kernel /target/publish/hosted-guest/kernel"
+needs = ["os-assets"]
+requires = ["arch=x86_64", "disk-100g"]
+isolation = "vm"
+outputs = ["/target/publish/hosted-guest/kernel/vmlinux", "/target/publish/hosted-guest/kernel/kver"]
+timeout_secs = 5400
+default = false
+
+[[check]]
+name = "hosted-guest-agent"
+run = "bash tools/ci/publish/hosted-guest.sh agent /target/publish/hosted-guest/agent"
+requires = ["arch=x86_64"]
+outputs = ["/target/publish/hosted-guest/agent/tilo-legacy-agent"]
+default = false
+
+[[check]]
+name = "image-hosted-guest"
+run = "bash tools/ci/publish/hosted-guest.sh build /target/publish/hosted-guest/agent /target/publish/hosted-guest/kernel /target/publish/hosted-guest/image"
+needs = ["hosted-guest-agent", "hosted-guest-kernel", "os-assets"]
+requires = ["arch=x86_64", "disk-100g"]
+isolation = "vm"
+outputs = ["/target/publish/hosted-guest/image/image.oci.tar", "/target/publish/hosted-guest/image/digest"]
+timeout_secs = 5400
+default = false
+
+# Signed with the release key, which signs only a release run: stable's, or a tag's. Until
+# stable publishes the guest, a release is a dispatch of publish-hosted-guest on a tag
+# (vhosted-guest-<date>; the release signer accepts tags beginning with v, and no check is
+# triggered by one that does not continue with a version number), and its pins.env is pinned
+# by hand with `hosted-guest.sh pin`'s checks.
+[[check]]
+name = "sign-hosted-guest"
+run = "bash tools/ci/publish/oci-sign.sh registry.tilo.so/tilo/hosted-guest /target/publish/hosted-guest/image"
+needs = ["image-hosted-guest", "signing-tools"]
+image = "registry.tilo.so/tilo/skopeo@sha256:7e735527d9d64c7456fc82d7f954c380b4a5dd1a8173115ce2ed7b3442ef36e0"
+env = { COSIGN_KEY_REF = "awskms:///arn:aws:kms:us-east-1:125650147312:alias/tilo-release-signing", AWS_SIGNING_ROLE_ARN = "arn:aws:iam::125650147312:role/TiloTReleaseSigner", TILO_SIGNING_AUDIENCE = "sts.amazonaws.com", TILO_SIGN_TLOG = "1" }
+outputs = ["/target/publish/hosted-guest/image/payload.json", "/target/publish/hosted-guest/image/signature", "/target/publish/hosted-guest/image/dry-run.pub", "/target/publish/hosted-guest/image/bundle.json", "/target/publish/hosted-guest/image/certified/**"]
+on = ["stable", "dispatch"]
+id_token = ["sts.amazonaws.com"]
+
+[[check]]
+name = "publish-hosted-guest"
+run = "bash tools/ci/publish/oci-publish.sh release registry.tilo.so/tilo/hosted-guest /target/publish/hosted-guest/image 'x86_64-{commit}'\nbash tools/ci/publish/hosted-guest.sh pins /target/publish/hosted-guest/image\n"
+needs = ["image-hosted-guest", "sign-hosted-guest", "signing-tools"]
+image = "registry.tilo.so/tilo/skopeo@sha256:7e735527d9d64c7456fc82d7f954c380b4a5dd1a8173115ce2ed7b3442ef36e0"
+outputs = ["/target/publish/hosted-guest/image/receipt.json", "/target/publish/hosted-guest/image/pins.env"]
+on = ["stable", "dispatch"]
+id_token = ["registry.tilo.so"]
+pointers = { hosted-guest = "/target/publish/hosted-guest/image/pins.env" }
 
 [[check]]
 name = "image-env-runtime-tree-{arch}"
@@ -2585,9 +2741,8 @@ optional_needs = ["mirror-base"]
 image = "registry.tilo.so/tilo/buildah@sha256:07e637ad7a1df37f44afea8287935b350224ac193d63e5cc96debb50a366853c"
 requires = ["arch={arch}", "disk-100g"]
 isolation = "vm"
-# `oci-build.sh` dates the image by its commit's time, read from the log before it takes a
-# `--timestamp` of its own.
-git = true
+# No Git: the snapshot is dated by when it was resolved (rpms-build.sh), never by the commit, so
+# its key is the package set's and every OS layer above it is reused across commits that keep it.
 outputs = ["/target/publish/rpms/{arch}/image.oci.tar", "/target/publish/rpms/{arch}/digest", "/target/publish/rpms/{arch}/epoch"]
 timeout_secs = 10800
 default = false
@@ -2760,6 +2915,14 @@ needs = ["signing-tools"]
 on = ["main"]
 reads_pointers = ["stable:legacy-guest"]
 pushes = ["os/legacy-guest-snapshot.env"]
+
+[[check]]
+name = "pin-hosted-guest"
+run = "bash tools/ci/publish/hosted-guest.sh pin"
+needs = ["signing-tools"]
+on = ["main"]
+reads_pointers = ["stable:hosted-guest"]
+pushes = ["os/hosted-guest-snapshot.env"]
 
 [[check]]
 name = "development-signing-context-{arch}"
@@ -3283,6 +3446,45 @@ requires = ["disk-100g"]
 isolation = "vm"
 outputs = ["/target/publish/os-dev-disk/{arch}/**"]
 git = true
+timeout_secs = 5400
+default = false
+[check.matrix]
+arch = ["x86_64", "aarch64"]
+
+# The development loop's dev image and disk: the dev image as os-dev-image-ARCH builds it, but
+# never published, so it needs neither what only a publication carries nor the commit
+# (TILO_DEV_LOOP=1, tools/ci/publish/os-image.sh): it keeps the OS image's own local model
+# catalog (the release's) in place of one naming this tree's runtimes, so asking for it builds
+# none of the local model runtimes (llama.cpp for the CPU, Vulkan and CUDA, vLLM) nor that
+# catalog; and it reads no Git, so a commit that changes none of its inputs is answered from the
+# cache instead of building the image and installing the disk again. Everything else is the same
+# build: the OS image, the dev components, the env-runtime, the install. Work on the disk, its
+# install or what boots on it asks for `os-dev-disk-lean-x86_64`; the end-to-end checks of boxes
+# boot it. Main's published dev images and disks, the gate and acceptance keep os-dev-image-ARCH
+# and os-dev-disk-ARCH: those name their commit, which publishing checks and the dev channel
+# moves forward by, and carry this tree's runtimes in their catalog.
+[[check]]
+name = "os-dev-image-lean-{arch}"
+run = "bash tools/ci/publish/os-image.sh dev {arch} /target/os/{arch}/image /target/publish/os-dev/{arch} /target/os/{arch}/compiled-dev"
+needs = ["image-rpms-{arch}", "os-image-{arch}", "os-compile-dev-{arch}", "env-runtime-dev-{arch}", "signing-tools"]
+image = { check = "os-assembler-{arch}", path = "/target/os/{arch}/assembler/oci" }
+env = { TILO_DEV_LOOP = "1" }
+requires = ["disk-100g"]
+isolation = "vm"
+outputs = ["/target/publish/os-dev/{arch}/**"]
+timeout_secs = 3600
+default = false
+[check.matrix]
+arch = ["x86_64", "aarch64"]
+
+[[check]]
+name = "os-dev-disk-lean-{arch}"
+run = "bash tools/ci/install-packages.sh tools/ci/packages/os-vm.txt tools/ci/packages/qemu-{arch}.txt && bash tools/ci/publish/os-dev-disk.sh {arch} /target/publish/os-dev/{arch} /target/publish/os-dev-disk/{arch}"
+needs = ["os-dev-image-lean-{arch}", "signing-tools"]
+image = { check = "os-assembler-{arch}", path = "/target/os/{arch}/assembler/oci" }
+requires = ["disk-100g"]
+isolation = "vm"
+outputs = ["/target/publish/os-dev-disk/{arch}/**"]
 timeout_secs = 5400
 default = false
 [check.matrix]
@@ -4244,7 +4446,7 @@ run = "bash tools/ci/publish/oci-build.sh /target/publish/web-entry/context /tar
 needs = ["image-web-entry-context"]
 outputs = ["/target/publish/web-entry/image.oci.tar", "/target/publish/web-entry/digest"]
 requires = ["arch=x86_64"]
-isolation = "nested"
+isolation = "vm"
 git = true
 default = false
 
@@ -4255,7 +4457,7 @@ run = "bash tools/ci/publish/web-entry-carry.sh /target/publish/web-entry /targe
 needs = ["image-web-entry"]
 outputs = ["/target/publish/web-entry/release/image.oci.tar", "/target/publish/web-entry/release/digest", "/target/publish/web-entry/release/receipt-extra.json"]
 requires = ["arch=x86_64"]
-isolation = "nested"
+isolation = "vm"
 on = ["dispatch"]
 cache = false
 
@@ -4283,13 +4485,80 @@ env = { TILO_RELEASE_OUT = "/target/publish/web-entry/release" }
 requires = ["arch=any"]
 on = ["dispatch"]
 
-# The Lounge: its image is built and used by publish-site on main — two headless browsers join
-# it through the web entry, chat, share a desk and see each other present — and this chain
-# releases that image rather than building a second one. carry-lounge pulls the gated
-# `dev-<commit>` anonymously and pins it by digest, sign-lounge signs that digest, and
-# publish-lounge tags it `sha-<commit>` for cloud-deploy. A commit whose Lounge publish-site has
-# not published is refused by name, so the release waits for a gated build instead of shipping
-# an image no one used.
+# The Lounge, built and gated here: the programs, the image and the image used by people — two
+# headless browsers joining it through the web entry, chatting, sharing a desk and seeing each
+# other present, then one of them opening a shared document's link. One check per step, so a
+# change leaves the earlier ones cached, and the gate runs on any commit and branch instead of
+# only in the publication on main. Image-lounge-context publishes the app surfaces from the
+# apps' history, so these read Git; the image is built at the commit time of the newest commit
+# that changed it, as every image here is.
+[[check]]
+name = "lounge-binaries"
+run = "bash tools/ci/publish/lounge-binaries.sh /target/publish/lounge/binaries"
+env = { CARGO_BUILD_JOBS = "8" }
+requires = ["arch=x86_64"]
+outputs = ["/target/publish/lounge/binaries/**"]
+default = false
+
+[[check]]
+name = "image-lounge-context"
+run = "bash tools/ci/publish/lounge-context.sh /target/publish/lounge/context /target/publish/lounge/binaries"
+needs = ["lounge-binaries"]
+outputs = ["/target/publish/lounge/context/**"]
+requires = ["arch=x86_64"]
+git = true
+default = false
+
+[[check]]
+name = "image-lounge"
+image = "registry.tilo.so/tilo/buildah@sha256:07e637ad7a1df37f44afea8287935b350224ac193d63e5cc96debb50a366853c"
+run = "bash os/containers/tilo-lounge/test-entrypoint.sh\nbash tools/ci/publish/oci-build.sh /target/publish/lounge/context /target/publish/lounge/context/Containerfile /target/publish/lounge --build-arg SOURCE_REVISION=$(cat /target/publish/lounge/context/source-revision)\nbash os/containers/tilo-lounge/test-image.sh /target/publish/lounge/image.oci.tar"
+needs = ["image-lounge-context"]
+# The entrypoint is also held against the programs the image carries, not only against its stub:
+# every flag it passes has to be one this build's `tilo-relay room` reads.
+env = { TILO_RELAY_BIN = "/target/publish/lounge/context/bin/tilo-relay" }
+outputs = ["/target/publish/lounge/image.oci.tar", "/target/publish/lounge/digest"]
+requires = ["arch=x86_64"]
+isolation = "vm"
+git = true
+default = false
+
+# The gate's own programs, built for the node's architecture as development builds: the
+# certificate mint the site's TLS needs, and the tilo command the workspace's agent runs. Neither
+# is a release build; the gate is about the image and the pages, not about a published artifact.
+# A selection of two packages resolves fewer features than the whole workspace's build does, so
+# the warnings-as-errors flags are off here (as they are for the other checks that only build a
+# program to run it): the lints themselves are `clippy`'s, over every package at once.
+[[check]]
+name = "lounge-gate-tools"
+run = "cargo build --locked -p tilo-crypto --bin tilo-crypto -p tilo-cli --bin tilo\nrm -rf /target/publish/lounge/gate-tools\nmkdir -p /target/publish/lounge/gate-tools\ncp \"$CARGO_TARGET_DIR/debug/tilo-crypto\" \"$CARGO_TARGET_DIR/debug/tilo\" /target/publish/lounge/gate-tools/\n"
+env = { CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS = "", CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_RUSTFLAGS = "" }
+requires = ["arch=x86_64"]
+outputs = ["/target/publish/lounge/gate-tools/**"]
+default = false
+
+# The image, run and used as the deployment runs it: a fresh volume reaching Ready, the
+# workspace listed in its public directory, the web entry served beside it, and people in
+# browsers using the Lounge through it. It keeps everything it found in /target/lounge-gate —
+# each page's snapshot and console, the site's and the Lounge's logs — as its outputs, and says
+# in its log what the pages said as they failed.
+[[check]]
+name = "lounge-gate"
+run = "bash os/containers/tilo-lounge/test-integration.sh /target/publish/lounge/image.oci.tar /target/publish/web-desktop/bundle /target/lounge-gate"
+setup = { run = "dnf install -y --setopt=install_weak_deps=False buildah && dnf clean all" }
+needs = ["image-lounge", "web-desktop-bundle", "lounge-gate-tools"]
+env = { TILO_CRYPTO_BIN = "/target/publish/lounge/gate-tools/tilo-crypto", TILO_CLI_BIN = "/target/publish/lounge/gate-tools/tilo" }
+requires = ["arch=x86_64"]
+isolation = "vm"
+outputs = ["/target/lounge-gate/**"]
+timeout_secs = 3600
+default = false
+
+# Releasing the image the gate passed: this chain does not build a second one. carry-lounge
+# pulls the published `dev-<commit>` anonymously and pins it by digest, sign-lounge signs that
+# digest, and publish-lounge tags it `sha-<commit>` for cloud-deploy. A commit whose Lounge
+# image has not been published is refused by name, so the release waits for a gated build
+# instead of shipping an image no one used.
 [[check]]
 name = "carry-lounge"
 image = "registry.tilo.so/tilo/skopeo@sha256:7e735527d9d64c7456fc82d7f954c380b4a5dd1a8173115ce2ed7b3442ef36e0"
@@ -4370,6 +4639,52 @@ run = "install -d /target/publish/registry-server\ncp /target/images/image-regis
 needs = ["image-registry-server", "signing-tools"]
 optional_needs = ["sign-registry-server"]
 outputs = ["/target/publish/registry-server/receipt.json"]
+id_token = ["registry.tilo.so"]
+requires = ["arch=any"]
+on = ["dispatch", "stable"]
+
+# The hosted VM host (os/containers/tilo-vm-host): the service that runs tilo.sh workspaces'
+# Linux programs in jailed Firecracker VMs, its jail helper, Firecracker and pasta. Built like
+# the registry server (this tree is its context, the pinned Firecracker release a named one),
+# tested in a micro-VM, and published on dispatch as dev-<commit> for the infra repository's
+# apps/tilo-sh-vm-host to pin, signed on stable.
+[[check]]
+name = "image-vm-host"
+build = { containerfile = "os/containers/tilo-vm-host/Containerfile", context = ".", contexts = { github-assets = { check = "os-assets", path = "os/external-assets/cache" } } }
+needs = ["os-assets"]
+requires = ["arch=x86_64"]
+timeout_secs = 7200
+default = false
+
+[[check]]
+name = "test-image-vm-host"
+image = "registry.tilo.so/tilo/buildah@sha256:07e637ad7a1df37f44afea8287935b350224ac193d63e5cc96debb50a366853c"
+run = "bash os/containers/tilo-vm-host/test-image.sh /target/images/image-vm-host/image.oci.tar"
+needs = ["image-vm-host"]
+requires = ["arch=x86_64"]
+isolation = "vm"
+timeout_secs = 1800
+default = false
+
+[[check]]
+name = "sign-vm-host"
+image = "registry.tilo.so/tilo/skopeo@sha256:7e735527d9d64c7456fc82d7f954c380b4a5dd1a8173115ce2ed7b3442ef36e0"
+run = "install -d /target/publish/vm-host\ncp /target/images/image-vm-host/image.oci.tar /target/images/image-vm-host/digest /target/publish/vm-host/\nbash tools/ci/publish/oci-sign.sh registry.tilo.so/tilo/vm-host /target/publish/vm-host"
+needs = ["image-vm-host", "test-image-vm-host", "signing-tools"]
+outputs = ["/target/publish/vm-host/payload.json", "/target/publish/vm-host/signature", "/target/publish/vm-host/dry-run.pub"]
+id_token = ["sts.amazonaws.com"]
+env = { COSIGN_KEY_REF = "awskms:///arn:aws:kms:us-east-1:125650147312:alias/tilo-release-signing", AWS_SIGNING_ROLE_ARN = "arn:aws:iam::125650147312:role/TiloTReleaseSigner", TILO_SIGNING_AUDIENCE = "sts.amazonaws.com" }
+requires = ["arch=any"]
+on = ["stable"]
+
+[[check]]
+name = "publish-vm-host"
+image = "registry.tilo.so/tilo/skopeo@sha256:7e735527d9d64c7456fc82d7f954c380b4a5dd1a8173115ce2ed7b3442ef36e0"
+run = "install -d /target/publish/vm-host\ncp /target/images/image-vm-host/image.oci.tar /target/images/image-vm-host/digest /target/publish/vm-host/\nbash tools/ci/publish/oci-publish.sh any registry.tilo.so/tilo/vm-host /target/publish/vm-host 'dev:dev-{commit}' 'release:sha-{commit}'"
+needs = ["image-vm-host", "test-image-vm-host", "signing-tools"]
+optional_needs = ["sign-vm-host"]
+outputs = ["/target/publish/vm-host/receipt.json"]
+pointers = { vm-host = "/target/publish/vm-host/receipt.json" }
 id_token = ["registry.tilo.so"]
 requires = ["arch=any"]
 on = ["dispatch", "stable"]

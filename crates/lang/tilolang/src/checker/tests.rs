@@ -937,6 +937,70 @@ fn a_generic_view_with_a_lambda_and_view_state_expands_where_it_is_called() {
     );
 }
 
+/// A `State<T>` parameter left out keeps the state the template declares as its default, so a
+/// view that lists declares none: a caller that wants the state passes its own, and the
+/// template then declares none of it.
+#[test]
+fn a_state_parameter_left_out_is_the_state_the_template_declares() {
+    let template = "enum Size {\n    small\n    large\n}\n\
+        view shown(items: List<Text>, size: State<Size> = own, extra: Option<State<Size>> = .none) {\n    \
+        state own: Size = .small\n    \
+        for c in cases(Size) {\n        button(c.label(), on: set(size, c))\n    }\n    \
+        if let e = extra {\n        button(\"e\", on: set(e, .small), label: \"e\")\n    }\n}\n\
+        type Bag {\n    items: Collection<Text>\n}\n";
+    // Left out: the template's own state, declared where it expands.
+    let (m, _) = lower(&format!(
+        "{template}view bag(b: Bag) {{\n    shown(b.items)\n}}"
+    ));
+    assert_eq!(
+        m.states.len(),
+        1,
+        "the template's own state: {:#?}",
+        m.states
+    );
+    assert!(
+        m.states[0].1.id.ends_with(":shown.own"),
+        "kept under the view's id and the template's: {:#?}",
+        m.states
+    );
+    // A caller's state of the same type takes its place, and the template declares none of it.
+    let (m, _) = lower(&format!(
+        "{template}view bag(b: Bag) {{\n    state mine: Size = .small\n    shown(b.items, size: mine)\n}}"
+    ));
+    assert!(
+        m.states.is_empty(),
+        "nothing of the template's own is declared: {:#?}",
+        m.states
+    );
+    // A template that takes an optional state keeps its own when a caller passes on none of it.
+    let (m, _) = lower(&format!(
+        "{template}view middle(items: List<Text>, opening: Option<State<Size>> = .none) {{\n    shown(items, size: opening)\n}}\n\
+         view bag(b: Bag) {{\n    middle(b.items)\n}}"
+    ));
+    assert_eq!(
+        m.states.len(),
+        1,
+        "the template's own state, through the absent option: {:#?}",
+        m.states
+    );
+    // The default must name a state the template declares, and a parameter without one is still
+    // the caller's to give.
+    let undeclared = diagnostics(
+        "type Bag {\n    n: Int\n}\nview shown(size: State<Int> = missing) {\n    text(\"x\")\n}\nview bag(b: Bag) {\n    shown()\n}",
+    );
+    assert!(
+        undeclared.iter().any(|d| d.code == "E066"),
+        "the default names no state of the template: {undeclared:#?}"
+    );
+    let missing = diagnostics(
+        "type Bag {\n    n: Int\n}\nview shown(size: State<Int>) {\n    text(\"x\")\n}\nview bag(b: Bag) {\n    shown()\n}",
+    );
+    assert!(
+        missing.iter().any(|d| d.code == "E022"),
+        "a state parameter with no default is the caller's: {missing:#?}"
+    );
+}
+
 /// A package may name a view as the library names one: only the same package's view is the same
 /// view, so an app's own `composer` calling `std.composer` expands the library's, not itself.
 #[test]

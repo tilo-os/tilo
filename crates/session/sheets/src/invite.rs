@@ -350,6 +350,11 @@ pub fn minutes_left(expires_at_ns: u64) -> usize {
 pub trait Invitations {
     /// Whether this person may make a link here.
     fn may_invite(&self) -> bool;
+    /// The workspace the links go into, when the sheet is opened for one: the
+    /// title says what is being shared, so nobody has to guess the scope.
+    fn workspace(&self) -> Option<String> {
+        None
+    }
     /// The parts they may hand out, least first.
     fn roles(&self) -> Vec<Role> {
         Vec::new()
@@ -392,8 +397,12 @@ pub trait Invitations {
 #[must_use]
 pub fn view(invitations: &dyn Invitations) -> Invite {
     let may_invite = invitations.may_invite();
+    let title = match invitations.workspace() {
+        Some(workspace) => words("invite-title-workspace", &[("workspace", &workspace)]),
+        None => word("invite-title"),
+    };
     Invite {
-        title: word("invite-title"),
+        title,
         description: word("invite-description"),
         close: word("invite-close"),
         may_invite,
@@ -879,7 +888,7 @@ impl ResourceApp for InviteApp {
             },
             Some("made") => {
                 let mut invite = sample_invite();
-                let link = "https://tilo.coffee/i/abcdefghijklmnop#AAABBBCCCDDDEEEFFFGGG\
+                let link = "https://tilo.sh/i/abcdefghijklmnop#AAABBBCCCDDDEEEFFFGGG\
                             HHHIIIJJJKKKLLLMMMNNNO";
                 invite.created = Some(Created {
                     invite: "8f2c".to_owned(),
@@ -981,7 +990,7 @@ mod tests {
 
     const INVITE: &str = "49a289c86314e68b618e01abca086915354cdb16fd11fdd45746a95161ee71f8";
     const LONG: &str = "tilo-invitation-v1:the invitation's own text";
-    const SHORT: &str = "https://tilo.coffee/#/@https:rooms.example/w/1?invite=abcdefghijklmnop";
+    const SHORT: &str = "https://tilo.sh/#/@https:rooms.example/w/1?invite=abcdefghijklmnop";
 
     fn made_link() -> Created {
         made(
@@ -991,6 +1000,36 @@ mod tests {
             brings("Editor", None),
             0,
         )
+    }
+
+    /// A sheet whose links go into `workspace`, when it names one.
+    struct Into(Option<&'static str>);
+
+    impl Invitations for Into {
+        fn may_invite(&self) -> bool {
+            false
+        }
+        fn workspace(&self) -> Option<String> {
+            self.0.map(str::to_owned)
+        }
+        fn create(&self, _role: &str, _recipient: &str) {}
+        fn revoke(&self, _invite: &str) {}
+        fn copy(&self, _link: &str) {}
+        fn clear_note(&self) {}
+    }
+
+    #[test]
+    fn the_sheet_says_which_workspace_its_links_go_into() {
+        assert_eq!(
+            view(&Into(None)).title,
+            word("invite-title"),
+            "a sheet opened for nothing in particular says only what it is for"
+        );
+        assert_eq!(
+            view(&Into(Some("Design"))).title,
+            words("invite-title-workspace", &[("workspace", "Design")]),
+            "a sheet opened for a workspace names it, so the scope is never a guess"
+        );
     }
 
     #[test]

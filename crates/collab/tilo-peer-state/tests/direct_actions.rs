@@ -58,6 +58,8 @@ fn agent_device(root: &SigningKey, n: u8) -> (SigningKey, DeviceCert) {
         can_read_all_workspaces: false,
         foreign: false,
         can_administer_devices: false,
+        agent: None,
+        stand_in: false,
     };
     sign_device_cert(&mut cert, root).unwrap();
     (key, cert)

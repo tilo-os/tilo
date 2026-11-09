@@ -40,6 +40,12 @@ pub const DETAIL: &str = "detail";
 /// Live: what the person last asked to be shown from outside the app, until
 /// an app shows it; answers an optional [`Focus`].
 pub const FOCUS: &str = "focus";
+/// Live: every agent run the history holds, each as the timeline of the
+/// actions it took, given a [`RunsQuery`]; answers [`Runs`].
+pub const RUNS: &str = "runs";
+/// Every line a command an agent ran printed, given the [`CommandRun`] its
+/// [`ActionView::Command`] names; answers [`RunOutput`].
+pub const RUN_OUTPUT: &str = "run-output";
 
 /// Mark the changes [`Viewed`] names as seen on this device.
 pub const MARK_VIEWED: &str = "mark-viewed";
@@ -639,6 +645,248 @@ pub struct Detail {
     pub changes: Vec<FieldChange>,
     /// The run is no longer in the history (an undo or a filter moved it).
     pub gone: bool,
+}
+
+/// What a [`RUNS`] reads.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct RunsQuery {
+    pub scope: Scope,
+    /// The newest this many runs; `0` for the first page.
+    pub limit: usize,
+}
+
+/// How many runs a [`RUNS`] read answers when its query asks for no number.
+pub const RUNS_PAGE: usize = 50;
+
+impl RunsQuery {
+    /// How many runs the read answers.
+    #[must_use]
+    pub const fn page(&self) -> usize {
+        if self.limit == 0 {
+            RUNS_PAGE
+        } else {
+            self.limit
+        }
+    }
+}
+
+/// What one action of a run shows when it is opened: every action an agent
+/// takes has a view of its own, so none of them is opaque.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "kebab-case")]
+pub enum ActionView {
+    /// A file it changed: its path, and the lines either side when the host
+    /// read them. Without lines the view reads them with a [`DETAIL`]
+    /// comparison of the action's range.
+    File {
+        target: Target,
+        path: String,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        lines: Vec<DiffLine>,
+    },
+    /// A command line it ran in a shell, with what came of it: the shell
+    /// session's own record of the run ([`CommandRun`]), never a copy.
+    Command {
+        target: Target,
+        /// The command line, as the shell ran it.
+        command: String,
+        /// The directory it ran in.
+        #[serde(default, skip_serializing_if = "String::is_empty")]
+        cwd: String,
+        /// The last lines it printed, without terminal escapes.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        output: Vec<String>,
+        /// It printed more than `output` holds; the rest is
+        /// read with [`RUN_OUTPUT`].
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        more: bool,
+        /// How the program ended; `None` while it runs or when unknown.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        exit: Option<i32>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        started_ms: Option<i64>,
+        /// When it ended; `None` while it runs.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        ended_ms: Option<i64>,
+        /// The run record, once the shell asked to run it.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        run: Option<CommandRun>,
+    },
+    /// A web page it opened or acted on.
+    Page {
+        target: Target,
+        url: String,
+        /// The page's title, when it had one.
+        #[serde(default, skip_serializing_if = "String::is_empty")]
+        title: String,
+    },
+    /// A record of an app it changed.
+    Record { target: Target },
+}
+
+impl ActionView {
+    /// Whether it is a command its shell has not finished running.
+    #[must_use]
+    pub const fn is_running(&self) -> bool {
+        matches!(
+            self,
+            Self::Command {
+                ended_ms: None,
+                run: Some(_),
+                ..
+            }
+        )
+    }
+
+    /// The resource the action touched, where it opens.
+    #[must_use]
+    pub const fn target(&self) -> &Target {
+        match self {
+            Self::File { target, .. }
+            | Self::Command { target, .. }
+            | Self::Page { target, .. }
+            | Self::Record { target } => target,
+        }
+    }
+}
+
+/// One line of a file's change.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DiffLine {
+    pub side: DiffSide,
+    pub text: String,
+}
+
+/// Which side of a change a [`DiffLine`] is on.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum DiffSide {
+    /// Unchanged, shown for its context.
+    Both,
+    Removed,
+    Added,
+}
+
+/// One action of an agent's run: what it did in one record, and the view
+/// that shows it.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RunAction {
+    /// Its changes, which [`UNDO`] takes back on their own.
+    pub range: Range,
+    pub at_ms: i64,
+    /// What it did, as a sentence.
+    pub summary: String,
+    pub view: ActionView,
+    /// The app and record it changed, as [`RecordQuery`] names them to undo
+    /// just this action.
+    pub app_id: String,
+    pub record: String,
+    /// The action that undoes this record's share of the run alone, when
+    /// it can be undone on its own here.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub undo: Option<Offer>,
+}
+
+/// One agent's run: an instruction it worked, and the actions it took for
+/// it, oldest first.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AgentRun {
+    /// The run's record, as the history keeps it.
+    pub id: String,
+    /// The agent, and who it acted for.
+    pub agent: Author,
+    /// The workspace it worked in, under [`Scope::AllWorkspaces`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workspace: Option<String>,
+    /// What it was asked, as the person phrased it.
+    pub instruction: String,
+    /// Why it did what it did, when it said.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub decision: Option<String>,
+    pub started_ms: i64,
+    /// When it last acted.
+    pub last_ms: i64,
+    /// Every change it made, which [`UNDO_RUN`] takes back.
+    pub range: Range,
+    pub actions: Vec<RunAction>,
+    /// Why it cannot be undone from here, when it cannot.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub undo_blocked: Option<String>,
+    /// What it is doing now, or did last: a command still running, else its
+    /// newest action. A reader shows it only for a run that is working.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub now: Option<Now>,
+}
+
+/// What a run is doing at the moment it is read.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "kebab-case")]
+pub enum Now {
+    /// A command line it asked a shell to run, which has not ended.
+    Running { command: String, since_ms: i64 },
+    /// A file it changed last.
+    Editing { path: String, at_ms: i64 },
+    /// A web page it opened or acted on last.
+    Browsing {
+        url: String,
+        #[serde(default, skip_serializing_if = "String::is_empty")]
+        title: String,
+        at_ms: i64,
+    },
+    /// A record of an app it changed last, as its action says it.
+    Changing { summary: String, at_ms: i64 },
+    /// A command it ran last, which ended.
+    Ran { command: String, at_ms: i64 },
+}
+
+/// Where a command's run is recorded: the shell session's record and the run
+/// in it. Terminal keeps every run a session ran there, with its command,
+/// directory, exit status, times and output.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct CommandRun {
+    /// The workspace the session's record is in.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub workspace: Option<String>,
+    /// The app that keeps the session's record.
+    pub app_id: String,
+    /// The session's record.
+    pub record: String,
+    /// The run, an item of the session's runs.
+    pub run: String,
+}
+
+/// Everything a run printed, as [`RUN_OUTPUT`] reads it.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct RunOutput {
+    /// Its lines, without terminal escapes, at most [`RUN_OUTPUT_LINES`].
+    pub lines: Vec<String>,
+    /// It printed more than the lines hold, or more than its shell kept.
+    pub truncated: bool,
+    /// The run is not known here, or its output has not reached this device.
+    pub unavailable: bool,
+    /// The run has not ended.
+    pub running: bool,
+}
+
+/// The most lines a [`RUN_OUTPUT`] read answers: its newest.
+pub const RUN_OUTPUT_LINES: usize = 10_000;
+/// The most lines an [`ActionView::Command`] carries.
+pub const COMMAND_TAIL_LINES: usize = 12;
+
+/// Every agent run a [`RunsQuery`] reads, newest first.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Runs {
+    pub runs: Vec<AgentRun>,
+    /// Runs the query matches, of which [`Self::runs`] holds the newest.
+    pub total: usize,
+    /// The history is still being read.
+    pub pending: bool,
+    /// Whether this device can undo here.
+    pub mutations: bool,
 }
 
 /// Which [`Focus`] [`FOCUSED`] says was shown.

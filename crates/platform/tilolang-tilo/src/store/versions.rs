@@ -1,5 +1,5 @@
 //! The versions of every resource, read from the workspace record's log (reflection, and what a
-//! task run did: task-legibility.md §2): each package action's change is a version of each
+//! run did: task-legibility.md §2): each package action's change is a version of each
 //! resource it made, changed or removed; each other step on the record (an undo, a revert) a
 //! version of each resource it wrote.
 

@@ -25,6 +25,7 @@ impl<M: ListModel> VirtualList<M> {
         theme: &Theme,
         presence: &PresenceCtx,
     ) {
+        self.painted_lifts.clear();
         self.corners = crate::widget::scrollbar::SurfaceCorners::seen(theme, transform);
         self.reduce_motion = theme.reduce_motion;
         if self.reduce_motion {
@@ -106,6 +107,9 @@ impl<M: ListModel> VirtualList<M> {
         // The tree's chevrons are the list's own, over the rows of any view: one place folds.
         let tree = self.tree.clone();
         let chevrons = self.chevrons();
+        // The row that grew into its item keeps its chevron on its own line, where it starts.
+        let open = self.open.clone();
+        let line_height = self.row_line;
         let guide_color = crate::surface::edge_on(theme.tokens.colors.surfaces.content);
         let _kept = crate::draw_cull::keep_scope(scene, self.draw_keep(opacity, now));
         let focused = self.focused_key.as_ref().filter(|_| self.is_focused);
@@ -119,9 +123,22 @@ impl<M: ListModel> VirtualList<M> {
             let Some(row_rect) = row_rect else {
                 continue;
             };
+            // The lift the row's selection takes: around what the row shows, as a `ListRow`
+            // paints it, and what an audit holds it to. A row whose view keeps no content box
+            // of its own takes the box every other thing the list draws for its rows takes.
+            let lift = (selection.selected && !self.delegate_selection).then(|| {
+                let content =
+                    crate::widget::row_content_box(row.widget.as_ref()).unwrap_or(row_rect);
+                let painted = super::lift::selection_around(row_rect, content, self.lift);
+                self.painted_lifts.push(crate::widget::RowLift {
+                    rect: painted,
+                    content,
+                    bleed: self.lift,
+                });
+                painted
+            });
             // A row the frame keeps on screen, unchanged, is not drawn
             // again: its selection, its ring and its widget are as they were.
-            let lift = (selection.selected && !self.delegate_selection).then_some(row_rect);
             if focused != Some(&row.key)
                 && !growing
                 && row_kept(scene, transform, row.widget.as_ref(), lift)
@@ -130,6 +147,13 @@ impl<M: ListModel> VirtualList<M> {
             }
             let row_rect = row_rect + vello::kurbo::Vec2::new(0.0, dy);
             let row_transform = transform * Affine::translate((0.0, dy));
+            // Each row is an element of its own on a page shown as HTML,
+            // kept by the row's key as rows scroll in and out.
+            let row_key = crate::scene_parts::begin_item(
+                scene,
+                crate::scene_parts::item_key("ui.list-row", &row.key),
+                transform * Affine::translate((row_rect.x0, row_rect.y0)),
+            );
             let faded = alpha < 1.0;
             if faded {
                 scene.push_layer(
@@ -143,19 +167,16 @@ impl<M: ListModel> VirtualList<M> {
             // The same selection a ListRow paints, so a list of ListRows
             // reads identically to a painted one; a run of selected rows is
             // one lift. A delegate that owns its selection paints its own.
-            if !self.delegate_selection {
+            if let Some(lift) = lift {
+                let lift = lift + vello::kurbo::Vec2::new(0.0, dy);
                 crate::chrome::paint_row_selection_joined(
                     scene,
                     transform,
-                    row_rect,
+                    lift,
                     crate::chrome::SelectionState::active(selection.selected),
                     theme.tokens.colors.surfaces.content,
                     theme,
-                    if selection.selected {
-                        selection.join()
-                    } else {
-                        crate::chrome::RowJoin::NONE
-                    },
+                    selection.join(),
                 );
             }
             if self.is_focused && self.focused_key.as_ref() == Some(&row.key) {
@@ -213,17 +234,27 @@ impl<M: ListModel> VirtualList<M> {
                 },
             );
             if let Some(marks) = tree.as_ref() {
+                let line = if open.as_ref() == Some(&row.key) && row_rect.height() > line_height {
+                    Rect::new(
+                        row_rect.x0,
+                        row_rect.y0,
+                        row_rect.x1,
+                        row_rect.y0 + line_height,
+                    )
+                } else {
+                    row_rect
+                };
                 if self.indent_guides {
                     chevrons.paint_guides(
                         marks,
                         scene,
                         transform,
                         &row.key,
-                        row_rect,
+                        line,
                         crate::ColorCompat::with_alpha_factor(guide_color, alpha),
                     );
                 }
-                chevrons.paint(marks, scene, transform, theme, &row.key, row_rect);
+                chevrons.paint(marks, scene, transform, theme, &row.key, line);
             }
             if clipped.is_some() {
                 scene.pop_layer();
@@ -231,6 +262,7 @@ impl<M: ListModel> VirtualList<M> {
             if faded {
                 scene.pop_layer();
             }
+            crate::scene_parts::end_widget(scene, row_key);
         }
         // The headings over the groups, over the rows they hold.
         self.draw_bands(scene, transform, text_renderer, theme);

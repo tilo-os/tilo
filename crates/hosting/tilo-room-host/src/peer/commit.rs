@@ -24,6 +24,35 @@ pub(super) fn over_change_limit(
         .err()
 }
 
+/// Why `ws` keeps no more of `peer`'s writes: it is a person's own workspace
+/// and keeps as much as they may ([`crate::workspaces::Workspaces::storage_refusal`]),
+/// as the typed refusal's text. The relay's own user is never refused: the
+/// host's own writes keep the workspace whole.
+pub(super) async fn over_storage(
+    peer: &AuthenticatedPeer,
+    session: &SessionCtx<'_>,
+    ws: &SharedWorkspace,
+) -> Option<String> {
+    if peer.user_public_key == *session.own_user_public_key {
+        return None;
+    }
+    let (workspaces, workspace, workspace_id) = {
+        let runtime = ws.lock().await;
+        let authority = runtime.workspace_authority.as_ref()?;
+        (
+            authority.workspaces()?,
+            authority.workspace().to_owned(),
+            runtime.store.workspace_id(),
+        )
+    };
+    // Measuring walks the workspace's files.
+    tokio::task::spawn_blocking(move || workspaces.storage_refusal(&workspace, workspace_id))
+        .await
+        .ok()
+        .flatten()
+        .map(|refusal| refusal.to_reason())
+}
+
 /// Handle an inbound `Commit`: admit it exactly like a `Delta` (the reply
 /// waits until the host persisted it), then tell the author its host order.
 /// A commit the host cannot admit is refused to the author without closing
@@ -155,6 +184,9 @@ async fn admit_commit(
     if let Some(limited) = over_change_limit(peer, session) {
         return refused(&limited.to_string());
     }
+    if let Some(full) = over_storage(peer, session, &ws).await {
+        return refused(&full);
+    }
     let Some(source) =
         authorized_state_source(&ws, peer, session, WorkspaceOperation::Publish).await?
     else {
@@ -278,10 +310,11 @@ async fn commit_refusal(
     let Envelope::Delta { delta: bytes, .. } = delta else {
         return None;
     };
-    let (standings, payloads) = {
-        let runtime = ws.lock().await;
-        (runtime.standings.clone(), runtime.store.payloads().clone())
-    };
+    let (standings, payloads) =
+        crate::workspace::standings_deciding(ws, author, |standings, payloads| {
+            crate::surfaces::refusal(payloads, bytes, standings).is_some()
+        })
+        .await;
     if let Some(reason) = crate::surfaces::refusal(&*payloads, bytes, standings.as_deref()) {
         tracing::warn!(%reason, device = %hex::encode(author), "refused a document change");
         file_refusal_of(ws, delta, &reason).await;

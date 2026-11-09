@@ -1,0 +1,21 @@
+[package]
+name = "tilo-host-account"
+version = "0.1.0"
+edition = "2024"
+publish.workspace = true
+license.workspace = true
+description = "A host's offers to a person's account, read from what its hosted-VM service admits by and has metered, and followed as they change."
+
+[dependencies]
+chrono = { workspace = true, features = ["std"] }
+legacy-vm = { path = "../../runtime/legacy-vm" }
+serde_json.workspace = true
+tilo-actions = { version = "0.1.0", path = "../../collab/actions" }
+tilo-files = { path = "../../platform/tilo-files", features = ["watch"] }
+workspace-hack = { version = "0.1" }
+
+[dev-dependencies]
+tempfile.workspace = true
+
+[lints]
+workspace = true

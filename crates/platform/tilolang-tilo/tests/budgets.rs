@@ -123,10 +123,19 @@ fn both(
     Some((work("1k")?, work("10k")?))
 }
 
+/// How many more, or fewer, of `name` a frame may read at one size than at the other: a page
+/// holds hundreds of entries where a frame shows tens, so whether the first row it shows starts a
+/// page decides whether its window spans one page or two, and two sizes put the same window at
+/// different offsets in a page. Only pages read so: what a frame reads of the workspace grows with
+/// its items, and every entry of it is still read once.
+fn slack(name: &str) -> u64 {
+    u64::from(name == "pages")
+}
+
 /// What `scenario` shows and changes is the same at 10k as at 1k, count for count.
 fn same_shown(app: &str, label: &str, (small, large): (Work, Work), misses: &mut Vec<String>) {
     for ((name, at_large), (_, at_small)) in shown(large).into_iter().zip(shown(small)) {
-        if at_large != at_small {
+        if at_large.abs_diff(at_small) > slack(name) {
             misses.push(format!(
                 "{app} {label}: {name} {at_large} at 10k, {at_small} at 1k"
             ));

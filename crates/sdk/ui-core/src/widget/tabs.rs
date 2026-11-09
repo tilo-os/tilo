@@ -14,6 +14,7 @@ use crate::widget::TaffyTreeExt;
 use crate::widget::Widget;
 use crate::widget::hover_intent::{HoverIntent, Item as IntentItem, Sample as IntentSample};
 use crate::widget::window_header::HistoryControl;
+use crate::widget::window_toolbar_row::MIN_LOCATION_PX;
 use std::collections::{HashMap, HashSet};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
@@ -426,6 +427,11 @@ pub struct TabBar {
     closable: bool,
     /// Whether the strip offers a new-tab control.
     new_tab: bool,
+    /// How wide the new-tab control's words stand, measured for the text scale it was measured
+    /// at (`None` until a layout has measured them): where the bar has room, it says them.
+    new_tab_words: Option<(f32, f64)>,
+    /// The strip shows the new-tab control with its words, the bar having room for them.
+    new_tab_labelled: bool,
     /// Per-tab content marks, keyed by tab id (a sidecar like the others).
     marks: HashMap<u64, TabMark>,
     /// When each busy tab became busy: its arc turns for [`BUSY_TURNING`].
@@ -621,6 +627,8 @@ impl TabBar {
             show_maximize: true,
             closable: true,
             new_tab: true,
+            new_tab_words: None,
+            new_tab_labelled: false,
             marks: HashMap::new(),
             busy_since: HashMap::new(),
             busy_drawn: None,
@@ -931,6 +939,19 @@ impl TabBar {
             .flatten()
     }
 
+    /// The words pill `i` draws beside its mark: its title as the bar last measured it, or none
+    /// for a pill shown as its icon alone — the bar's location names the window then, and two
+    /// labels would stand on each other in one place.
+    pub(super) fn pill_label(&self, i: usize) -> Option<&str> {
+        let tab = self.tabs.get(i)?;
+        match self.visible_titles.get(i) {
+            Some(Some(label)) => Some(label.as_str()),
+            Some(None) => None,
+            // Not measured this frame yet: the tab's own title, as the bar keeps it.
+            None => Some(tab.title.as_str()),
+        }
+    }
+
     /// A pill shown as its icon alone: a pinned tab, or the one tab of a
     /// window whose app put its slots in the title's row.
     fn icon_only(&self, id: u64) -> bool {
@@ -1163,6 +1184,184 @@ impl TabBar {
     #[must_use]
     pub fn history_action_rect(&self) -> Rect {
         self.history_action
+    }
+
+    /// The bar as it lays itself out now: every control it shows, in reading order (the active
+    /// tab's own slots — the sidebar toggle, Back and Forward, the leading actions, the views and
+    /// the location's picker, the actions and the overflow button — then the window's History
+    /// control and own controls), and the room it leaves empty beside its location's label. A
+    /// capture, an inspector and a layout check read the bar through it, and every one of them
+    /// shows each control once.
+    #[must_use]
+    pub fn bar_layout(&self) -> crate::window_toolbar::BarLayout {
+        use super::window_controls::WindowControl;
+        use crate::window_toolbar::{BarControl, BarLayout};
+        let lookup = crate::i18n::I18nManager::lookup_plain;
+        let mut spare = 0.0;
+        let mut out = Vec::new();
+        let mut push = |control: BarControl| {
+            if control.rect[2] > 0.0 && control.rect[3] > 0.0 {
+                out.push(control);
+            }
+        };
+        // The strip's own door to another application, after the tabs: a control of the bar as
+        // much as the app's slots are, and read with them.
+        if self.new_tab_rect.area() > 0.0 {
+            let control = BarControl::new("new-tab", "tab-new", self.new_tab_rect)
+                .named(NEW_TAB.to_owned())
+                .icon(Some(icons::Icon::Plus.name().to_owned()))
+                .words(self.new_tab_words.map_or(0.0, |(_, words)| words));
+            push(if self.new_tab_labelled {
+                control.labelled()
+            } else {
+                control
+            });
+        }
+        if let Some(toolbar) = self.active_toolbar() {
+            let slots = self.toolbar_row.slots();
+            spare = slots.spare;
+            if toolbar.sidebar.is_some() && !slots.sidebar_folded(toolbar) {
+                let key = if toolbar.sidebar == Some(true) {
+                    "window-toolbar-hide-sidebar"
+                } else {
+                    "window-toolbar-show-sidebar"
+                };
+                push(
+                    BarControl::new(
+                        "sidebar",
+                        super::window_toolbar_row::SIDEBAR_TARGET,
+                        slots.sidebar,
+                    )
+                    .named(lookup(key)),
+                );
+            }
+            if toolbar.navigation.is_some() {
+                push(
+                    BarControl::new("back", super::window_toolbar_row::BACK_TARGET, slots.back)
+                        .named(lookup("window-toolbar-back")),
+                );
+                if !slots.forward_folded(toolbar) {
+                    push(
+                        BarControl::new(
+                            "forward",
+                            super::window_toolbar_row::FORWARD_TARGET,
+                            slots.forward,
+                        )
+                        .named(lookup("window-toolbar-forward")),
+                    );
+                }
+            }
+            if let Some(location) = toolbar.location.as_ref() {
+                push(
+                    BarControl::new(
+                        "location",
+                        super::window_toolbar_row::LOCATION_TARGET,
+                        slots.location,
+                    )
+                    .named(location.label.clone()),
+                );
+            }
+            for (index, (action, rect)) in toolbar.leading.iter().zip(&slots.leading).enumerate() {
+                let labelled = action.labelled && slots.labelled;
+                let icon = (!action.icon.is_empty()).then(|| action.icon.clone());
+                if icon.is_none() && !labelled {
+                    continue;
+                }
+                let control = BarControl::new("leading", action.id.clone(), *rect)
+                    .named(action.name.clone())
+                    .words(slots.leading_words.get(index).copied().unwrap_or(0.0));
+                push(if labelled {
+                    control.icon(icon).labelled()
+                } else {
+                    control.icon(icon)
+                });
+            }
+            if let (Some(views), Some(first), Some(last)) = (
+                toolbar.views.as_ref(),
+                slots.views.first(),
+                slots.views.last(),
+            ) {
+                push(
+                    BarControl::new(
+                        "views",
+                        super::window_toolbar_row::VIEWS_MENU_TARGET,
+                        first.union(*last),
+                    )
+                    .named(views.name.clone()),
+                );
+            }
+            if let Some(views) = toolbar.views.as_ref()
+                && slots.views_menu.area() > 0.0
+            {
+                let chosen = views.chosen_index().and_then(|i| views.choices.get(i));
+                let label = chosen.map_or(views.name.as_str(), |view| view.label.as_str());
+                push(
+                    BarControl::new(
+                        "views-menu",
+                        super::window_toolbar_row::VIEWS_MENU_TARGET,
+                        slots.views_menu,
+                    )
+                    .named(label.to_owned())
+                    .icon(Some(icons::Icon::ChevronDown.name().to_owned()))
+                    .menu(),
+                );
+            }
+            for (index, (action, rect)) in toolbar.actions.iter().zip(&slots.actions).enumerate() {
+                let mut control = BarControl::new("action", action.id.clone(), *rect)
+                    .named(action.name.clone())
+                    .words(slots.action_words.get(index).copied().unwrap_or(0.0));
+                if !action.icon.is_empty() {
+                    control = control.icon(Some(action.icon.clone()));
+                }
+                if action.menu || !action.items.is_empty() {
+                    control = control.menu();
+                }
+                push(if action.labelled && slots.actions_labelled {
+                    control.labelled()
+                } else {
+                    control
+                });
+            }
+            if slots.overflow.area() > 0.0 {
+                push(
+                    BarControl::new(
+                        "overflow",
+                        super::window_toolbar_row::OVERFLOW_TARGET,
+                        slots.overflow,
+                    )
+                    .named(lookup("window-toolbar-more"))
+                    .icon(Some(icons::Icon::MoreHorizontal.name().to_owned()))
+                    .menu(),
+                );
+            }
+        }
+        if self.history_action.area() > 0.0 {
+            push(
+                BarControl::new("history", WINDOW_HISTORY_TARGET, self.history_action)
+                    .named(lookup("history-mode-title")),
+            );
+        }
+        for (slot, control, rect) in [
+            ("minimize", WindowControl::Minimize, self.controls.minimize),
+            ("maximize", WindowControl::Maximize, self.controls.maximize),
+            ("close", WindowControl::Close, self.controls.close),
+        ] {
+            let icon = match control {
+                WindowControl::Minimize => icons::Icon::Minus,
+                WindowControl::Maximize if self.maximized => icons::Icon::Minimize2,
+                WindowControl::Maximize => icons::Icon::Maximize2,
+                WindowControl::Close => icons::Icon::X,
+            };
+            push(
+                BarControl::new(slot, control.target(), rect)
+                    .named(lookup(control.name_key(self.maximized)))
+                    .icon(Some(icon.name().to_owned())),
+            );
+        }
+        BarLayout {
+            spare,
+            controls: out,
+        }
     }
 
     /// Whether tabs close from the strip (default `true`). Without it no
@@ -1581,12 +1780,11 @@ impl TabBar {
             return;
         }
         let clip_r = Rect::new(r.x0, r.y0, clip_x1.max(r.x0), r.y1);
-        // Backstop only — `visible_titles` already carries the elided form.
-        let label = self
-            .visible_titles
-            .get(i)
-            .and_then(|s| s.as_deref())
-            .unwrap_or(t.title.as_str());
+        // A pill drawn as its icon alone says nothing here: the words the window goes by stand
+        // in the bar's location, once.
+        let Some(label) = self.pill_label(i) else {
+            return;
+        };
         scene.push_layer(
             vello::peniko::Fill::NonZero,
             vello::peniko::BlendMode::default(),
@@ -3628,6 +3826,10 @@ const TOOLBAR_LEAD_GAP: f64 = crate::tokens::Spacing::BASE.s2 as f64;
 /// Square at pill height so the "+" chip reads as part of the pill row.
 pub const NEW_TAB_CHIP_PX: f64 = TAB_BAR_HEIGHT - 2.0 * TAB_PILL_INSET_Y;
 
+/// What the strip's new-tab control says for itself: its words where the bar has room for
+/// them, and what it is called to assistive technology everywhere.
+const NEW_TAB: &str = "New tab";
+
 const PILL_GAP: f64 = 6.0;
 /// Text inset on either end of a pill; the leading glyph starts here too.
 const PILL_PAD_X: f64 = 12.0;
@@ -3915,6 +4117,15 @@ impl Widget for TabBar {
         self.touch();
         self.reduce_motion = theme.reduce_motion || self.host_reduced_motion;
         self.motion = EffectiveMotion::new(theme.tokens.motion, self.reduce_motion);
+        // The room the new-tab control's words need, measured once per text scale: a bar that
+        // has room says what the control does, as it does for every other control.
+        if self.new_tab && self.new_tab_words.map(|(scale, _)| scale) != Some(theme.text_scale) {
+            let words = crate::text_render::with_layout_renderer(theme.text_scale, |text| {
+                super::window_toolbar_row::labelled_face(Rect::ZERO, NEW_TAB)
+                    .intrinsic_width(text, theme)
+            });
+            self.new_tab_words = Some((theme.text_scale, words));
+        }
         self.min_pointer_target = f64::from(theme.tokens.metrics.min_pointer_target);
         // A compact window says its app's notice in a strip under the bar's
         // rows: the bar measures it for the width it last had.
@@ -4117,12 +4328,27 @@ impl Widget for TabBar {
         // `x` is the strip's write head; the "+" chip is suppressed once pills
         // fill the bar. A window's title stands beside it too: one window is
         // still a place a person opens another application.
-        let plus_x1 = x + NEW_TAB_CHIP_PX;
-        self.new_tab_rect = if self.new_tab && plus_x1 <= row.x1 {
-            Rect::new(x, pill_y0, plus_x1, pill_y1)
+        let icon_x1 = x + NEW_TAB_CHIP_PX;
+        self.new_tab_rect = if self.new_tab && icon_x1 <= row.x1 {
+            Rect::new(x, pill_y0, icon_x1, pill_y1)
         } else {
             Rect::ZERO
         };
+        // The control says what it does where the row has room for its words and the location
+        // keeps the room it works at: a glyph nobody can name only where the room is not there.
+        self.new_tab_labelled = false;
+        if self.new_tab_rect.area() > 0.0
+            && let Some((_, words)) = self.new_tab_words
+        {
+            let words_x1 = x + words.max(NEW_TAB_CHIP_PX);
+            if words_x1 <= row.x1
+                && row.x1 - words_x1 >= MIN_LOCATION_PX
+                && words_x1 > self.new_tab_rect.x1
+            {
+                self.new_tab_rect.x1 = words_x1;
+                self.new_tab_labelled = true;
+            }
+        }
         self.lay_out_toolbar_row();
     }
     /// An undrawn bar repaints, and so does one whose own state moved since
@@ -4427,7 +4653,7 @@ impl Widget for TabBar {
         tab_children.extend(self.dev_build_access());
         tab_children.extend(self.shared_access());
         if self.new_tab {
-            let new_tab = AccessNode::new(Role::Button).with_name("New tab");
+            let new_tab = AccessNode::new(Role::Button).with_name(NEW_TAB);
             let new_tab = if self.new_tab_rect.area() > 0.0 {
                 new_tab.with_bounds(self.new_tab_rect)
             } else {
@@ -4986,12 +5212,17 @@ impl TabBar {
         if !(self.new_tab_rect.area() > 0.0 && self.pending_drag.is_none()) {
             return;
         }
-        // The shared icon button: bare at rest so it never competes with the
-        // active tab, a lift of the bar under the pointer.
-        let face =
-            crate::widget::ButtonFace::icon_only(self.new_tab_rect, icons::Icon::Plus, "New tab")
+        // The shared small button: bare at rest so it never competes with the
+        // active tab, a lift of the bar under the pointer. Where the bar has room for its words
+        // it says them, as every control of the bar does.
+        let face = if self.new_tab_labelled {
+            super::window_toolbar_row::labelled_face(self.new_tab_rect, NEW_TAB)
+                .hovered(self.hover_new_tab)
+        } else {
+            crate::widget::ButtonFace::icon_only(self.new_tab_rect, icons::Icon::Plus, NEW_TAB)
                 .control_size(crate::widget::ControlSize::Small)
-                .hovered(self.hover_new_tab);
+                .hovered(self.hover_new_tab)
+        };
         crate::widget::Button::paint(scene, transform, tr, theme, &face);
     }
 
@@ -9143,6 +9374,55 @@ mod tests {
         lay_out_at_width_with(&mut tabbed, 900.0, &theme);
         assert!((tabbed.bar_height() - TAB_BAR_HEIGHT).abs() < f64::EPSILON);
         assert!(!tabbed.toolbar_hit(location.center()));
+    }
+
+    /// The strip's own door to another application is a control of the bar as much as the
+    /// app's slots are: the bar reads it, it says what it does where the bar has room for its
+    /// words, and it stands as its glyph only where the room is not there.
+    #[test]
+    fn the_new_tab_control_says_what_it_does_where_the_bar_has_room() {
+        let theme = crate::theme::Theme::dark().with_reduce_motion(true);
+        let bar = |width: f64| {
+            let mut b = TabBar::new("g1", vec![TabDescriptor::new(1, "Chat")], 1);
+            b.set_window_controls(true);
+            lay_out_at_width_with(&mut b, width, &theme);
+            b
+        };
+        let wide = bar(1200.0);
+        let chip = wide
+            .bar_layout()
+            .controls
+            .into_iter()
+            .find(|control| control.slot == "new-tab")
+            .expect("the bar reads the strip's own door");
+        assert_eq!(chip.name, "New tab");
+        assert!(chip.labelled, "a bar with room says what the control does");
+        assert!(
+            chip.rect[2] >= chip.words - 0.5 && chip.words > NEW_TAB_CHIP_PX,
+            "the control stands as wide as its words: {chip:?}"
+        );
+
+        // A bar without the room says nothing it cannot say whole: its glyph stands alone.
+        let mut narrow = TabBar::new(
+            "g1",
+            vec![
+                TabDescriptor::new(1, "A conversation about the release"),
+                TabDescriptor::new(2, "Another conversation"),
+            ],
+            1,
+        );
+        narrow.set_window_controls(true);
+        lay_out_at_width_with(&mut narrow, 320.0, &theme);
+        let chip = narrow
+            .bar_layout()
+            .controls
+            .into_iter()
+            .find(|control| control.slot == "new-tab")
+            .expect("the bar reads the strip's own door");
+        assert!(
+            !chip.labelled,
+            "a bar without room for the words keeps the glyph: {chip:?}"
+        );
     }
 
     /// A window with a single tab still offers the button that opens another

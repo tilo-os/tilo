@@ -57,7 +57,7 @@ pub enum SeenWrite {
         resource: String,
         mark: Option<SeenMark>,
     },
-    /// `person` reviewed the task run `run` (its group): every version it made is seen.
+    /// `person` reviewed the run `run` (its group): every version it made is seen.
     Run { person: String, run: String },
 }
 
@@ -76,7 +76,7 @@ pub struct SeenUndo {
     pub before: Vec<(String, Option<SeenMark>)>,
 }
 
-/// The slot holding the task runs `person` reviewed: the state no resource id names.
+/// The slot holding the runs `person` reviewed: the state no resource id names.
 #[must_use]
 pub fn runs_key(person: &str) -> StateKey {
     seen_key(person, "$runs")
@@ -117,7 +117,7 @@ pub fn unseen(
         .unwrap_or_default()
         .iter()
         .filter(|v| is_marked(v, person))
-        .filter(|v| !v.task.as_ref().is_some_and(|task| runs.contains(&task.id)))
+        .filter(|v| !v.run.as_ref().is_some_and(|run| runs.contains(&run.id)))
         .cloned()
         .collect()
 }
@@ -125,14 +125,14 @@ pub fn unseen(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::store::{TaskRun, VersionKind};
+    use crate::store::{Run, VersionKind};
 
-    fn version(who: &str, at: &str, change: &str, task: bool) -> Version {
+    fn version(who: &str, at: &str, change: &str, run: bool) -> Version {
         Version {
             who: who.to_owned(),
             at: at.to_owned(),
             action: "a".to_owned(),
-            task: task.then(|| TaskRun {
+            run: run.then(|| Run {
                 id: "t1@1".to_owned(),
                 title: "Tidy".to_owned(),
             }),

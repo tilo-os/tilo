@@ -75,6 +75,16 @@ pub const HOST_ROOMS_RESOURCE: &str = "host.rooms";
 /// invitation when one is wanted (`invite_role`, `invite_recipient`,
 /// `invitee_name`, `invite_expires_in_seconds`). Answers a [`CreatedWorkspace`].
 pub const CREATE_ROOM: &str = "room.create";
+/// Make the one workspace of the caller's own person on a host that keeps
+/// workspaces of people's own, or answer theirs again: any person's device
+/// may ask. Arguments: `name` (the new workspace's; "My workspace" when
+/// omitted, unused once they have one), `room` (the identity of a workspace
+/// that moves here as theirs; a different one than theirs is refused with a
+/// `tilo_actions::remote::host_account::Refusal`), and `expires_in_seconds`
+/// (how long the invitation stays redeemable; 600 when omitted). Answers a
+/// [`CreatedWorkspace`] with the invitation the person's devices redeem to
+/// hold it, as its administrator.
+pub const CREATE_OWN_ROOM: &str = "room.create-own";
 /// Every workspace the host governs, each as a [`WorkspaceListing`].
 pub const LIST_ROOMS: &str = "room.list";
 /// Admit the calling device to `workspace` as one of its owner's. Answers
@@ -82,6 +92,12 @@ pub const LIST_ROOMS: &str = "room.list";
 /// restricted to its person and redeemable `expires_in_seconds` (600 when
 /// omitted).
 pub const ENTER_ROOM: &str = "room.enter";
+/// The revocations of the host's person the host enforces, as the person's
+/// devices announced them: a JSON array of root-signed
+/// `tilo_user_identity::RevocationEntry`. What a service that signs the
+/// person in checks a device against, from the same list the host's own
+/// handshakes read.
+pub const LIST_REVOCATIONS: &str = "identity.revocations";
 
 /// Serve a workspace a device of the host's own person governs, as that governor
 /// asks: arguments `workspace`, `workspace_id`, `governor_hint` (the governor's

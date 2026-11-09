@@ -31,9 +31,9 @@ lounge() {
   env -i PATH="$work/bin:/usr/bin:/bin" \
     TILO_ROOMS_PERSISTENT=lounge \
     TILO_ROOMS_ROOT_FILE=/run/secrets/room-root-lounge \
-    TILO_ROOMS_RELAY_ORIGIN=https://eu1.tilo.coffee/ \
+    TILO_ROOMS_RELAY_ORIGIN=https://eu1.tilo.sh/ \
     TILO_ROOMS_DESCRIPTION='Coffee and tea, and whatever is being made' \
-    TILO_ROOMS_WEB_ENTRY=https://tilo.coffee/ \
+    TILO_ROOMS_WEB_ENTRY=https://tilo.sh/ \
     TILO_ROOMS_STATE="$work/state" \
     "$@" sh "$here/entrypoint.sh"
 }
@@ -64,7 +64,7 @@ lounge
 --room-records
 --public-avatars
 --public-avatars-url
-https://eu1.tilo.coffee/avatars
+https://eu1.tilo.sh/avatars
 --listing-description
 Coffee and tea, and whatever is being made
 --default-role
@@ -80,13 +80,13 @@ dev
 --web-plain
 0.0.0.0:9780
 --public-origin
-https://eu1.tilo.coffee
+https://eu1.tilo.sh
 --http
 0.0.0.0:8790
 --web-entry
-https://tilo.coffee/
+https://tilo.sh/
 --allowed-origin
-https://eu1.tilo.coffee
+https://eu1.tilo.sh
 --fetch-proxy
 --chat-channel
 general
@@ -109,7 +109,7 @@ grep -Fqx -- --packet-relay-url "$work/args" && fail "a published relay URL was 
 # default it shares a flag with.
 lounge \
   TILO_ROOMS_NAME=Lounge \
-  TILO_ROOMS_SITE_ORIGINS='https://tilo.coffee, https://tilo.so' \
+  TILO_ROOMS_SITE_ORIGINS='https://tilo.sh, https://tilo.so' \
   TILO_ROOMS_CHAT_CHANNELS='general,feedback' \
   TILO_ROOMS_FEEDBACK_CHANNEL=feedback \
   TILO_ROOMS_SEED_APPS='so.tilo.chat,so.tilo.board' \
@@ -118,11 +118,12 @@ lounge \
   TILO_ROOMS_BOTS='/usr/local/share/tilo/bots/discord-bridge.json guild=1521251563828416532 server=Tilo mirror-channels=yes;/opt/echo.json a=b' \
   TILO_ROOMS_INACTIVE_AFTER_DAYS=7 \
   TILO_ROOMS_ROLES_FILE=/run/tilo-rooms/roles.json \
+  TILO_ROOMS_OWN_WORKSPACES=10 \
   TILO_ROOMS_FETCH_PROXY=0 \
   TILO_ROOMS_WEB=127.0.0.1:0 \
   TILO_ROOMS_RELAY_PLAIN=0.0.0.0:9880 \
   TILO_ROOMS_LIVE=0.0.0.0:9881 \
-  TILO_ROOMS_LIVE_ORIGIN=https://live.eu1.tilo.coffee/ \
+  TILO_ROOMS_LIVE_ORIGIN=https://live.eu1.tilo.sh/ \
   TILO_ROOMS_HTTP=0.0.0.0:8890 \
   TILO_ROOMS_MODERATION_KEY_FILE=/run/secrets/moderation-model-key \
   TILO_ROOMS_MODERATION_MODEL=claude-test \
@@ -143,11 +144,11 @@ pair() {
 }
 pair --web 127.0.0.1:0 || fail "the HTTPS listener setting did not reach the host"
 pair --web-plain 0.0.0.0:9880 || fail "the plain listener setting did not reach the host"
-pair --public-origin https://eu1.tilo.coffee || fail "the public origin did not reach the host"
+pair --public-origin https://eu1.tilo.sh || fail "the public origin did not reach the host"
 pair --packet-relay 0.0.0.0:9881 || fail "the packet relay's bind address did not reach the host"
-pair --packet-relay-url https://live.eu1.tilo.coffee || fail "the published relay URL did not reach the host"
+pair --packet-relay-url https://live.eu1.tilo.sh || fail "the published relay URL did not reach the host"
 pair --http 0.0.0.0:8890 || fail "the routes listener setting did not reach the host"
-pair --allowed-origin https://tilo.coffee || fail "a site origin did not reach the host"
+pair --allowed-origin https://tilo.sh || fail "a site origin did not reach the host"
 pair --allowed-origin https://tilo.so || fail "a site origin did not reach the host"
 pair --chat-channel feedback || fail "a chat channel did not reach the host"
 pair --seed-app so.tilo.board || fail "a seeded app did not reach the host"
@@ -162,10 +163,11 @@ pair --moderation-key-file /run/secrets/moderation-model-key || fail "the modera
 pair --moderation-model claude-test || fail "the moderation model did not reach the host"
 pair --discord-client-id 1559266815148953650 || fail "the Discord client id did not reach the host"
 pair --discord-client-secret-file /run/secrets/discord-client-secret || fail "the Discord secret did not reach the host"
-pair --discord-redirect-url https://eu1.tilo.coffee/discord/callback || fail "the Discord callback did not reach the host"
+pair --discord-redirect-url https://eu1.tilo.sh/discord/callback || fail "the Discord callback did not reach the host"
 pair --discord-authorize-url https://discord.com/oauth2/authorize || fail "the Discord consent page did not reach the host"
 pair --inactive-after-days 7 || fail "the inactivity setting did not reach the host"
 pair --roles-file /run/tilo-rooms/roles.json || fail "the roles file did not reach the host"
+pair --own-workspaces 10 || fail "the own workspaces' size did not reach the host"
 grep -Fqx -- --fetch-proxy "$work/args" && fail "fetch proxy 0 still asked for the proxy"
 # Every workspace's arrangement is its shared desktop record: the host has no
 # layout flag, so a deployment that still names one (eu1 does) starts without
@@ -185,11 +187,11 @@ eu1() {
     TILO_ROOMS_NAME=Lounge \
     TILO_ROOMS_ADMISSION=invite \
     TILO_ROOMS_ROOT_FILE=/run/secrets/room-root-lounge \
-    TILO_ROOMS_RELAY_ORIGIN=https://eu1.tilo.coffee \
-    TILO_ROOMS_PUBLIC_API=https://eu1.tilo.coffee \
-    TILO_ROOMS_LIVE_ORIGIN=https://live.eu1.tilo.coffee \
-    TILO_ROOMS_WEB_ENTRY=https://tilo.coffee/ \
-    TILO_ROOMS_SITE_ORIGINS=https://tilo.coffee,https://tilo.so \
+    TILO_ROOMS_RELAY_ORIGIN=https://eu1.tilo.sh \
+    TILO_ROOMS_PUBLIC_API=https://eu1.tilo.sh \
+    TILO_ROOMS_LIVE_ORIGIN=https://live.eu1.tilo.sh \
+    TILO_ROOMS_WEB_ENTRY=https://tilo.sh/ \
+    TILO_ROOMS_SITE_ORIGINS=https://tilo.sh,https://tilo.so \
     TILO_ROOMS_FEEDBACK_CHANNEL=feedback \
     TILO_ROOMS_STATE="$work/state" \
     sh "$here/entrypoint.sh"
@@ -199,12 +201,14 @@ grep -Fqx -- --invitation-only "$work/args" || fail "invite admission did not cl
 grep -Fqx -- --members-only "$work/args" && fail "invite admission unlisted the workspace"
 pair --listing-description Lounge || fail "the description did not default to the workspace's name"
 pair --persistent lounge || fail "the workspace is not the one eu1 names"
-pair --public-origin https://eu1.tilo.coffee || fail "eu1's origin did not reach the host"
+pair --public-origin https://eu1.tilo.sh || fail "eu1's origin did not reach the host"
 
 # An admission the image does not honor stops the start, as any other setting
 # it does not read does.
 fails_with lounge TILO_ROOMS_ADMISSION=anyone
 grep -Fq TILO_ROOMS_ADMISSION "$work/err" || fail "the refusal does not name the setting"
+fails_with lounge TILO_ROOMS_OWN_WORKSPACES=lots
+grep -Fq TILO_ROOMS_OWN_WORKSPACES "$work/err" || fail "the refusal does not name the setting"
 fails_with lounge TILO_ROOMS_MAX_SPECTATORS=2000
 grep -Fq TILO_ROOMS_MAX_SPECTATORS "$work/err" || fail "the refusal does not name the setting"
 
@@ -239,7 +243,7 @@ if [[ -n $relay ]] && "$relay" --version >/dev/null 2>&1; then
   # The arguments the entrypoint hands the host for eu1's environment.
   lounge \
     TILO_ROOMS_NAME=Lounge \
-    TILO_ROOMS_SITE_ORIGINS='https://tilo.coffee,https://tilo.so' \
+    TILO_ROOMS_SITE_ORIGINS='https://tilo.sh,https://tilo.so' \
     TILO_ROOMS_CHAT_CHANNELS='general,feedback' \
     TILO_ROOMS_FEEDBACK_CHANNEL=feedback \
     TILO_ROOMS_SEED_APPS='so.tilo.chat' \
@@ -248,7 +252,7 @@ if [[ -n $relay ]] && "$relay" --version >/dev/null 2>&1; then
     TILO_ROOMS_LAYOUT=shared \
     TILO_ROOMS_ROLES_FILE=/run/tilo-rooms/roles.json \
     TILO_ROOMS_LIVE=0.0.0.0:9881 \
-    TILO_ROOMS_LIVE_ORIGIN=https://live.eu1.tilo.coffee/ \
+    TILO_ROOMS_LIVE_ORIGIN=https://live.eu1.tilo.sh/ \
     TILO_ROOMS_MODERATION_KEY_FILE=/run/secrets/moderation-model-key \
     TILO_ROOMS_DISCORD_CLIENT_ID=1559266815148953650 \
     TILO_ROOMS_DISCORD_CLIENT_SECRET_FILE=/run/secrets/discord-client-secret \

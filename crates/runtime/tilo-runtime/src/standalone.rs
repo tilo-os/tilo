@@ -27,9 +27,11 @@ mod joined;
 mod media_import;
 #[cfg(test)]
 mod media_import_tests;
+pub mod take_work;
 mod workspace;
 mod workspaces;
 
+use crate::remote_door::PersonalDevices;
 use crate::{
     BLOB_SOCKET, COLLAB_SOCKET, IDENTITY_SOCKET, Joiner, RuntimeServices, apps, profile, unix,
 };
@@ -57,6 +59,7 @@ use tilo_identity_host::{
     broker::{IdentityBrokerHandle, WorkspaceMembership},
     provisioning::IdentityStorage,
 };
+use tilo_peer_state::actions::ActionPlane;
 use tilo_peer_state::owner_commit::OwnerCommitService;
 use tilo_peer_state::{PeerPersonal, PersonalSync};
 use workspace::{ProfileGrants, ProfileWorkspace};
@@ -94,6 +97,10 @@ pub struct Standalone {
     /// The agent doors of the person's other devices, dialed from this
     /// runtime's endpoint as the device its store certifies.
     remote_doors: Arc<crate::remote_door::Doors>,
+    /// The person's devices, as this runtime's store of them holds them: who a
+    /// grant certificate must belong to for the MCP endpoint, and whether it
+    /// still holds.
+    persons_devices: Arc<dyn crate::remote_door::PersonsDevices>,
     _lock: advisory_lock::FileLock,
 }
 
@@ -130,6 +137,7 @@ impl Standalone {
     }
 
     fn start(root: &Path, stage: &mut dyn FnMut(&str), serving: Serving) -> io::Result<Self> {
+        let take_work = taking_work(serving)?;
         stage("locking the profile");
         let lock = profile::lock(root)?;
         let storage = IdentityStorage::for_session();
@@ -141,14 +149,8 @@ impl Standalone {
             Serving::Admission { owner_uid } => admit_device(owner_uid, stage)?,
         };
         let dev = matches!(serving, Serving::Dev);
-        stage("loading the workspace");
-        let workspace = ProfileWorkspace::open(root)?;
+        let (workspace, identity, actor) = open_profile_workspace(root, stage)?;
         let workspace_id = workspace.workspace();
-        let identity = tilo_identity_host::registry::identity_for_workspace(&workspace_id)?
-            .ok_or_else(|| io::Error::other("runtime workspace has no selected identity"))?;
-        let actor = identity.principal_id();
-        stage("saving the workspace");
-        workspace.adopt(&actor)?;
         let workspace = Arc::new(workspace);
         let apps = Arc::new(apps::Apps::from_env(root, &workspace_id));
         serve_device_grants(root, &apps);
@@ -160,11 +162,13 @@ impl Standalone {
             (&workspace_id, workspace.governs()),
             storage,
             (Arc::clone(&channels), Arc::clone(&fanout)),
+            take_work.as_ref().map(|_| take_work::PORT),
         )?;
         if workspace.governs() {
             stage("placing the workspace on this device's workspace host");
             place_own_workspace(root, &workspace, &joined, &channel_keys.keys, (&apps, dev))?;
         }
+        let take_work = take_work_plane(root, &joined, take_work, stage)?;
         stage("opening the person's store to their other devices");
         let personal = serve_personally(PersonalServing {
             root,
@@ -173,6 +177,7 @@ impl Standalone {
             joined: &joined,
             channels: Arc::clone(&channels),
             fanout: Arc::clone(&fanout),
+            take_work,
         })?;
         let workspaces = Arc::new(Workspaces::new(&workspace, &joined));
         let identity_socket = root.join(IDENTITY_SOCKET);
@@ -217,6 +222,7 @@ impl Standalone {
             policy_origin,
             broker,
             remote_doors: remote_doors(&joined, &personal.sync),
+            persons_devices: Arc::new(PersonalDevices::new(personal.sync.clone())),
             joined,
             _channels: channel_keys,
             _identity: identity_broker,
@@ -232,6 +238,53 @@ impl Standalone {
             _lock: lock,
         })
     }
+}
+
+/// The profile's workspace and this device's identity for it, saved as the
+/// workspace its apps act in, and the actor they act as there.
+fn open_profile_workspace(
+    root: &Path,
+    stage: &mut dyn FnMut(&str),
+) -> io::Result<(
+    ProfileWorkspace,
+    tilo_identity_host::registry::IdentityProfile,
+    String,
+)> {
+    stage("loading the workspace");
+    let workspace = ProfileWorkspace::open(root)?;
+    let identity = tilo_identity_host::registry::identity_for_workspace(&workspace.workspace())?
+        .ok_or_else(|| io::Error::other("runtime workspace has no selected identity"))?;
+    let actor = identity.principal_id();
+    stage("saving the workspace");
+    workspace.adopt(&actor)?;
+    Ok((workspace, identity, actor))
+}
+
+/// The relay whose work this profile takes, when it is a member: what the
+/// environment names, read before anything of the profile is opened, so a
+/// broken configuration is no profile's. An admission profile is a session
+/// of an existing owner, never a member.
+fn taking_work(serving: Serving) -> io::Result<Option<take_work::Relay>> {
+    match serving {
+        Serving::Profile | Serving::Dev => take_work::Relay::from_env(),
+        Serving::Admission { .. } => Ok(None),
+    }
+    .map_err(io::Error::other)
+}
+
+/// The device plane this profile answers its relay's work on, when it takes
+/// work: served on the endpoint its other devices reach it at.
+fn take_work_plane(
+    root: &Path,
+    joined: &Arc<Joined>,
+    relay: Option<take_work::Relay>,
+    stage: &mut dyn FnMut(&str),
+) -> io::Result<Option<ActionPlane>> {
+    let Some(relay) = relay else {
+        return Ok(None);
+    };
+    stage("taking the work of the workspaces relayed here");
+    take_work::plane(root, joined, relay).map(Some)
 }
 
 /// What the broker's services are opened from: this profile's workspace, apps
@@ -439,6 +492,10 @@ impl RuntimeServices for Standalone {
 
     fn remote_doors(&self) -> Option<Arc<crate::remote_door::Doors>> {
         Some(Arc::clone(&self.remote_doors))
+    }
+
+    fn persons_devices(&self) -> Option<Arc<dyn crate::remote_door::PersonsDevices>> {
+        Some(Arc::clone(&self.persons_devices))
     }
 }
 
@@ -848,6 +905,9 @@ struct PersonalServing<'a> {
     joined: &'a Joined,
     channels: Arc<Mutex<BrokerChannels>>,
     fanout: Arc<FanoutState>,
+    /// The device plane this profile answers its relay's work on, when it
+    /// takes work at all.
+    take_work: Option<ActionPlane>,
 }
 
 /// The person's own store, and what serves it to their other devices.
@@ -860,9 +920,10 @@ struct PersonalParts {
 }
 
 /// Open the person's own store on the identity this device acts as, and serve
-/// it to their other devices from the endpoint this runtime runs: the store
-/// and the workspaces this device keeps answer on one router, so neither
-/// protocol is answered by a router the other one dropped.
+/// it to their other devices from the endpoint this runtime runs: the store,
+/// the workspaces this device keeps and, for a member that takes work, its
+/// device plane answer on one router, so neither protocol is answered by a
+/// router the other one dropped.
 ///
 /// # Errors
 ///
@@ -876,6 +937,7 @@ fn serve_personally(serving: PersonalServing<'_>) -> io::Result<PersonalParts> {
         joined,
         channels,
         fanout,
+        take_work,
     } = serving;
     let (key, device) = tilo_identity_host::broker::trusted_current_device(workspace_id)?;
     let state = root.join("state");
@@ -892,9 +954,12 @@ fn serve_personally(serving: PersonalServing<'_>) -> io::Result<PersonalParts> {
     let runtime = tilo_rt::app().handle();
     let router = {
         let _entered = runtime.enter();
-        iroh::protocol::Router::builder(joined.endpoint())
-            .accept(tilo_peer_state::PERSONAL_ALPN, sync.clone())
-            .spawn()
+        let mut router = iroh::protocol::Router::builder(joined.endpoint())
+            .accept(tilo_peer_state::PERSONAL_ALPN, sync.clone());
+        if let Some(plane) = take_work {
+            router = router.accept(tilo_peer_state::actions::ACTIONS_ALPN, plane);
+        }
+        router.spawn()
     };
     let door = tilo_action_broker::personal::Door::serve(
         runtime,
@@ -1064,16 +1129,24 @@ fn place_own_workspace(
 
 /// The joined workspaces and this device's channel keys for them, under the
 /// device's trusted custody. `workspace` is the profile's own, which it governs
-/// unless the desktop session does.
+/// unless the desktop session does. `listen` is the UDP port the endpoint
+/// binds when a relay must reach it, and the machine's own choice otherwise.
 fn joined_workspaces_and_keys(
     profile: &Path,
     (workspace, governs): (&str, bool),
     storage: IdentityStorage,
     broker: (Arc<Mutex<BrokerChannels>>, Arc<FanoutState>),
+    listen: Option<u16>,
 ) -> io::Result<(Arc<Joined>, channels::Channels)> {
     let custody = tilo_identity_host::broker::trusted_current_device(workspace)?;
     let channels = Arc::clone(&broker.0);
-    let joined = joined_workspaces(profile, (workspace, governs), custody.clone(), broker)?;
+    let joined = joined_workspaces(
+        profile,
+        (workspace, governs),
+        custody.clone(),
+        broker,
+        listen,
+    )?;
     let keys = channels::open(
         profile,
         WorkspaceId::parse(workspace)
@@ -1095,6 +1168,7 @@ fn joined_workspaces(
     (workspace, governs): (&str, bool),
     (key, cert): (ed25519_dalek::SigningKey, tilo_user_identity::DeviceCert),
     broker: (Arc<Mutex<BrokerChannels>>, Arc<FanoutState>),
+    listen: Option<u16>,
 ) -> io::Result<Arc<Joined>> {
     let custody = tilo_identity_host::custody::HostIdentity {
         device_cert: cert,
@@ -1103,19 +1177,43 @@ fn joined_workspaces(
         workspace_revocations: std::collections::HashMap::new(),
         identity_paths: Some(tilo_identity_host::provisioning::collaboration_identity_paths()),
     };
-    let endpoint = tilo_rt::app()
-        .handle()
-        .block_on(
-            iroh::Endpoint::builder(iroh::endpoint::presets::N0)
-                .secret_key(iroh::SecretKey::from_bytes(&key.to_bytes()))
-                .bind(),
-        )
-        .map_err(io::Error::other)?;
+    let endpoint = listen_endpoint(&key, listen)?;
     let mut refused = joined::desktop_enrolled(profile)?;
     if !governs {
         refused.extend(WorkspaceId::parse(workspace));
     }
     Joined::open(profile, custody, endpoint, refused, broker)
+}
+
+/// This device's endpoint, keyed by its device key: bound to `listen` on
+/// every interface when a host names the port it is reached at, and to
+/// whatever port the machine gives it otherwise.
+fn listen_endpoint(
+    key: &ed25519_dalek::SigningKey,
+    listen: Option<u16>,
+) -> io::Result<iroh::Endpoint> {
+    let mut builder = iroh::Endpoint::builder(iroh::endpoint::presets::N0)
+        .secret_key(iroh::SecretKey::from_bytes(&key.to_bytes()));
+    if let Some(port) = listen {
+        // Every interface, on the port a relay reaches this member at: IPv4,
+        // and IPv6 where the machine has it.
+        builder = builder
+            .clear_ip_transports()
+            .bind_addr_with_opts(
+                std::net::SocketAddr::from((std::net::Ipv4Addr::UNSPECIFIED, port)),
+                iroh::endpoint::BindOpts::default(),
+            )
+            .map_err(io::Error::other)?
+            .bind_addr_with_opts(
+                std::net::SocketAddr::from((std::net::Ipv6Addr::UNSPECIFIED, port)),
+                iroh::endpoint::BindOpts::default().set_is_required(false),
+            )
+            .map_err(io::Error::other)?;
+    }
+    tilo_rt::app()
+        .handle()
+        .block_on(builder.bind())
+        .map_err(io::Error::other)
 }
 
 /// The identity service apps sign with: over `workspaces`, handing out route

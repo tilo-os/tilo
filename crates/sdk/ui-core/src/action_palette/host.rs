@@ -391,14 +391,14 @@ impl ActionPalette {
         self.sync_list();
     }
 
-    /// The size the card asks for: the rows it holds, up to the tallest list
-    /// the host allows.
+    /// The size the card asks for, as layout measures it: the rows it holds,
+    /// up to the tallest list the host allows.
     #[must_use]
-    pub fn desired_size(&self) -> (f64, f64) {
+    pub fn desired_size(&self) -> (f32, f32) {
         if self.shows_field_only() {
             return (
-                self.card_width(),
-                PADDING * 2.0 + INPUT_HEIGHT * self.layout_scale(),
+                self.card_width() as f32,
+                (PADDING * 2.0 + INPUT_HEIGHT * self.layout_scale()) as f32,
             );
         }
         let list = if self.host_visible.is_empty() {
@@ -406,7 +406,10 @@ impl ActionPalette {
         } else {
             self.fitted_list_height()
         };
-        (self.card_width(), self.chrome_height() + list)
+        (
+            self.card_width() as f32,
+            (self.chrome_height() + list) as f32,
+        )
     }
 
     /// The card's height less its result list: the field, the band and the
@@ -672,7 +675,12 @@ impl ActionPalette {
             .set_empty_hint(nothing_matched.then(|| crate::i18n!("palette-no-results-hint")));
     }
 
-    fn is_searching(&self) -> bool {
+    /// Whether the card says it is still searching: the host set
+    /// [`Self::set_searching`] and a query is typed, or the rows it ranks
+    /// itself still wait for the index's code. What a desk publishes as a
+    /// search still searching.
+    #[must_use]
+    pub fn is_searching(&self) -> bool {
         // Rows this palette ranks itself wait for the index's code too.
         (self.searching || (!self.bypass_fuzzy && !crate::search::engine_ready()))
             && !self.query().is_empty()

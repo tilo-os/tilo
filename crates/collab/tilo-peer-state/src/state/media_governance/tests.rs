@@ -2,7 +2,9 @@ use super::*;
 use crate::SeedState;
 use crate::StatePeer;
 use crate::seed_workspace;
+use crate::{NeighbourMsg, TransportOrigin};
 use automerge::AutoCommit;
+use std::collections::BTreeMap;
 use tilo_user_identity::{
     DeviceCapabilities, DeviceCert, RevocationEntry, RevocationReason, sign_device_cert,
     sign_revocation_entry,
@@ -22,6 +24,7 @@ fn fixture(revision: u64) -> (StatePeer, SigningKey, SigningKey, SystemTime) {
         issued_at_ns: 1,
         expires_at_ns: None,
         signature: [0; 64],
+        issuer: None,
     };
     sign_device_cert(&mut cert, &root).unwrap();
     let workspace = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
@@ -236,7 +239,7 @@ fn workspace_media_security_no_policy_accepts_host_revocation_without_enabling_m
         observed
             .core
             .revocations
-            .is_revoked(&owner.device_public_key)
+            .is_revoked(&peer.owner(), &owner.device_public_key)
     );
     assert!(
         media::parse(observed.admitted_workspace().unwrap())

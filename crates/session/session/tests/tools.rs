@@ -137,7 +137,7 @@ fn session(
         // The person's lists as the device reads them, read once: what the tools service serves
         // Files is that same list.
         search: SearchOptions {
-            lists: Lists::fixed(AppLists::read()),
+            apps: Some(std::sync::Arc::new(Lists::fixed(AppLists::read()))),
             ..SearchOptions::default()
         },
         drives,

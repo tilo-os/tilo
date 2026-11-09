@@ -23,8 +23,8 @@ view launcher(d: Desk) {
     }
     ui.FloatingPanel {
         header: {
-            ui.TextInput(value: query, placeholder: "Search apps, windows, actions and files") {
-                on submit: session.search(query: .some(query))
+            ui.TextInput(bind: query, placeholder: "Search apps, windows, actions and files") {
+                on submit: session.search(query: query)
             }
         }
         body: {
@@ -41,7 +41,7 @@ view launcher(d: Desk) {
                     message: "Search everywhere for it",
                     icon: .search,
                 ) {
-                    on act: session.search(query: .some(query))
+                    on act: session.search(query: query)
                 }
             }
             if not typed {
@@ -56,7 +56,7 @@ view launcher(d: Desk) {
                             on press: session.place_found(
                                 text: query,
                                 view: .none,
-                                strip: .some(front),
+                                strip: front,
                                 x: .none,
                                 y: .none,
                             )
@@ -68,7 +68,7 @@ view launcher(d: Desk) {
                         role: if front == "" { .primary } else { .secondary },
                         size: .small,
                     ) {
-                        on press: session.search(query: .some(query))
+                        on press: session.search(query: query)
                     }
                 }
                 spacer
@@ -97,8 +97,8 @@ fn front_strip() -> Text {
 view window_row(w: Win) {
     ui.ListRow(
         w.title,
-        secondary: .some(w.origin_app),
-        meta: .some(if w.workspace != "" { w.workspace } else { w.strip }),
+        secondary: w.origin_app,
+        meta: if w.workspace != "" { w.workspace } else { w.strip },
         item: w,
         icon: if w.preview == "withheld" { .eye_off } else { .app_window },
     ) {
@@ -112,23 +112,15 @@ view desk_doors(d: Desk) {
     ui.Section("The desk") {
         ui.ListRow(
             "Overview",
-            secondary: .some("Every strip and window, to search and move"),
+            secondary: "Every strip and window, to search and move",
             icon: .layout_grid,
         ) {
             on activate: device.show_surface(device.desk, surface: "overview")
         }
-        ui.ListRow(
-            "Workspaces",
-            secondary: .some("Who is in each, and what it holds"),
-            icon: .layers,
-        ) {
+        ui.ListRow("Workspaces", secondary: "Who is in each, and what it holds", icon: .layers) {
             on activate: device.show_surface(device.desk, surface: "workspaces")
         }
-        ui.ListRow(
-            "Notifications",
-            secondary: .some("What apps and agents told you"),
-            icon: .bell,
-        ) {
+        ui.ListRow("Notifications", secondary: "What apps and agents told you", icon: .bell) {
             on activate: device.show_surface(device.desk, surface: "centre")
         }
     }

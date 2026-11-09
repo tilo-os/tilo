@@ -158,7 +158,7 @@ fn validate_fleet(fleet: &DeviceFleet, cert: &DeviceCert) -> io::Result<()> {
         || fleet.identity_id != hex::encode(cert.user_public_key)
         || fleet.certificates.len() > 256
         || fleet.revocations.len() > 256
-        || fleet.is_revoked(&cert.device_public_key)
+        || fleet.refuses(cert)
     {
         return Err(invalid());
     }

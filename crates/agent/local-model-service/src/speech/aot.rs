@@ -194,14 +194,27 @@ impl Drop for Native<'_> {
 struct Decoder<'a> {
     native: Native<'a>,
     recognition: SpeechRecognition,
+    pending: Option<Result<String, SpeechError>>,
 }
 impl worker::SpeechDecoder for Decoder<'_> {
     fn push(&mut self, _: &[f32]) -> Result<(), SpeechError> {
         Ok(())
     }
-    fn draft(&mut self, samples: &[f32]) -> Result<String, SpeechError> {
-        self.recognition
-            .recognize_with(samples, false, |chunk| self.native.transcribe(chunk))
+    fn start_draft(
+        &mut self,
+        samples: &[f32],
+        _wake: &worker::DraftWake,
+    ) -> Result<(), SpeechError> {
+        // This engine decodes one call at a time in-process, so the preview
+        // completes here; the loop replies from `poll_draft`.
+        self.pending = Some(
+            self.recognition
+                .recognize_with(samples, false, |chunk| self.native.transcribe(chunk)),
+        );
+        Ok(())
+    }
+    fn poll_draft(&mut self) -> Option<Result<String, SpeechError>> {
+        self.pending.take()
     }
     fn finish(&mut self, samples: &[f32]) -> Result<String, SpeechError> {
         self.recognition
@@ -211,7 +224,7 @@ impl worker::SpeechDecoder for Decoder<'_> {
 
 pub(super) fn serve(
     model: SealedSpeechModel,
-    input: &mut impl Read,
+    input: &mut (impl Read + std::os::fd::AsRawFd),
     output: &mut impl Write,
 ) -> Result<(), SpeechError> {
     if !cpu_compatible() || model.size() != MODEL_SIZE as u64 {
@@ -282,6 +295,7 @@ pub(super) fn serve(
             _library: &library,
         },
         recognition: SpeechRecognition::default(),
+        pending: None,
     };
     worker::serve_decoder(
         (&identity.0, &identity.1),

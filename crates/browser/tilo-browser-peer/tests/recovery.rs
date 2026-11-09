@@ -24,7 +24,9 @@ use collab_types::DocumentMutation;
 use tilo_browser_peer::{FailureSubject, LocalState, PeerEvent, PeerSnapshot};
 use tilo_user_identity::{DeviceCapabilities, UserIdentity};
 
-use support::{enrol, next_document, ready, route, start_host, start_peer, wait_for, workspace};
+use support::{
+    enrol, next_document, ready, route, start_host, start_host_at, start_peer, wait_for, workspace,
+};
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn refresh_asks_the_restarted_host_for_the_workspace_again() {
@@ -32,15 +34,19 @@ async fn refresh_asks_the_restarted_host_for_the_workspace_again() {
     let host_device = enrol(&root, "home-server", DeviceCapabilities::host());
     let browser = enrol(&root, "browser", DeviceCapabilities::member());
     let state = tempfile::tempdir().unwrap();
-    let host = start_host(
+    // The restarted host answers at the same web and iroh addresses, as a
+    // host that kept its place does.
+    let host = start_host_at(
         &root,
         &host_device,
         state.path(),
+        "127.0.0.1:0".parse().unwrap(),
         "127.0.0.1:0".parse().unwrap(),
     )
     .await;
     let _laptop = participant::Participant::start(&host.relay, &root).await;
     let listen = host.web.addr;
+    let iroh_listen = host.iroh_listen();
     let peer = start_peer(
         host.iroh(),
         browser.cert.clone(),
@@ -60,7 +66,7 @@ async fn refresh_asks_the_restarted_host_for_the_workspace_again() {
 
     drop(host.web);
     host.relay.shutdown().await;
-    let host = start_host(&root, &host_device, state.path(), listen).await;
+    let host = start_host_at(&root, &host_device, state.path(), listen, iroh_listen).await;
     // A reconnect resumes: the page already holds what it published.
     peer.reconnect().unwrap();
     let mut events = Vec::new();
@@ -98,14 +104,16 @@ async fn a_session_told_the_network_is_back_reconnects_now_instead_of_after_its_
     let host_device = enrol(&root, "home-server", DeviceCapabilities::host());
     let browser = enrol(&root, "browser", DeviceCapabilities::member());
     let state = tempfile::tempdir().unwrap();
-    let host = start_host(
+    let host = start_host_at(
         &root,
         &host_device,
         state.path(),
         "127.0.0.1:0".parse().unwrap(),
+        "127.0.0.1:0".parse().unwrap(),
     )
     .await;
     let listen = host.web.addr;
+    let iroh_listen = host.iroh_listen();
     let peer = start_peer(
         host.iroh(),
         browser.cert.clone(),
@@ -151,7 +159,7 @@ async fn a_session_told_the_network_is_back_reconnects_now_instead_of_after_its_
             .flatten()
     })
     .await;
-    let host = start_host(&root, &host_device, state.path(), listen).await;
+    let host = start_host_at(&root, &host_device, state.path(), listen, iroh_listen).await;
     peer.retry_now().unwrap();
     ready(&[&peer]).await;
     assert!(

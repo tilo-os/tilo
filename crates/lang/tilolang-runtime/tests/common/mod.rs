@@ -11,6 +11,13 @@ use tilolang_runtime::{
     Runtime, SimpleAuthority, Value,
 };
 
+/// The Tasks package (`apps/tl/tasks`): its app and the scenarios staged beside it.
+pub const TASKS_SOURCE: &str = concat!(
+    include_str!("../../../../../apps/tl/tasks/app.tl"),
+    "\n",
+    include_str!("../../../../../apps/tl/tasks/scenarios.tl")
+);
+
 #[derive(Default)]
 struct Overrides {
     denied_modules: std::collections::HashSet<ModuleHash>,
@@ -640,6 +647,32 @@ impl App {
         let v = self.meta().views.iter().find(|v| v.name == view).unwrap();
         let a = v.anchors.iter().find(|a| a.name == name);
         a.unwrap_or_else(|| panic!("no anchor {name}")).id.clone()
+    }
+
+    /// The arguments of `action` with the parameters `given` names set and the rest left to
+    /// their defaults, as an invocation carries them: what a caller says it means, so a
+    /// parameter the app adds or takes away changes no caller.
+    pub fn args(&self, rt: &Runtime, action: &str, given: &[(&str, Value)]) -> Vec<Value> {
+        let meta = self
+            .meta()
+            .actions
+            .iter()
+            .find(|a| a.name == action)
+            .unwrap_or_else(|| panic!("no action {action}"));
+        let mut args: Vec<Option<Value>> = meta.params.iter().map(|_| None).collect();
+        for (name, value) in given {
+            let at = meta
+                .params
+                .iter()
+                .position(|p| p.name == *name)
+                .unwrap_or_else(|| panic!("{action} has no parameter {name}"));
+            *args
+                .get_mut(at)
+                .unwrap_or_else(|| panic!("{action} has no parameter {name}")) =
+                Some(value.clone());
+        }
+        rt.complete_args(&meta.id, args)
+            .unwrap_or_else(|e| panic!("{action}: {e}"))
     }
 }
 

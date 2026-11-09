@@ -14,7 +14,7 @@ use crate::fixtures::Replica;
 
 const DISCUSSION: &str = include_str!("../../../../apps/tl/discussion/app.tl");
 const DISCUSSION_IDS: &str = include_str!("../../../../apps/tl/discussion/app.ids");
-const TASKS: &str = include_str!("../../../../apps/tl/tasks/app.tl");
+const TASKS: &str = crate::fixtures::TASKS_SOURCE;
 const TASKS_IDS: &str = include_str!("../../../../apps/tl/tasks/app.ids");
 const APP: &str = "so.tilo.lang.tasks";
 

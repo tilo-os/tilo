@@ -12,6 +12,11 @@ export TILO_TEST_ASSET_CACHE=${TILO_TEST_ASSET_CACHE:-${CARGO_TARGET_DIR:-$repo_
 
 die() { printf 'publish: %s\n' "$*" >&2; exit 1; }
 
+# Every check runs with XDG_RUNTIME_DIR set (t.toml's [env]). An image that lacks the directory,
+# such as the buildah image, makes buildah fail before it builds anything ("failed to get default
+# container config"), so it is made here.
+if [[ -n ${XDG_RUNTIME_DIR:-} ]]; then mkdir -p -m 700 "$XDG_RUNTIME_DIR"; fi
+
 # Under errexit a command that fails without a word (a grep that matched nothing) would end the
 # step silently: name it, its status and where it ran, in functions and substitutions too.
 set -o errtrace

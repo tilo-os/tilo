@@ -18,6 +18,7 @@ fn party(expires_at_ns: Option<u64>) -> (SigningKey, SigningKey, DeviceCert) {
         issued_at_ns: NOW - 100,
         expires_at_ns,
         signature: [0; 64],
+        issuer: None,
     };
     sign_device_cert(&mut cert, &root).unwrap();
     (root, device, cert)

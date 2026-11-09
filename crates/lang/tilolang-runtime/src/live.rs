@@ -57,6 +57,10 @@ pub(crate) struct Bound {
     /// When the time it read next reads differently (seconds since 1970, UTC): it runs again
     /// then. `None` when it read no time.
     pub changes_at: Option<i64>,
+    /// What the row was drawn knowing: whether the list it stands in stands a divider where
+    /// its unseen part starts, which its own marks answer to. A row is built again when that
+    /// changes under it, so a mark it drew for being new goes when the divider arrives.
+    pub says_new: bool,
     pub retained: Vec<Retained>,
 }
 
@@ -79,6 +83,7 @@ impl Bound {
             state_reads: Vec::new(),
             state_seen: Vec::new(),
             changes_at: None,
+            says_new: false,
             retained: Vec::new(),
         }
     }
@@ -423,6 +428,7 @@ impl Live {
             state_reads: Vec::new(),
             state_seen: Vec::new(),
             changes_at: None,
+            says_new: false,
             retained: Vec::new(),
         };
         let mut live = Self {
@@ -861,13 +867,7 @@ impl Live {
         };
         // A row of a `list` that stands a divider where its unseen part starts: the divider
         // already says which rows are new, so a row there says it no further.
-        let says_new = row
-            .as_deref()
-            .and_then(|path| path.split_last().and_then(|(_, above)| self.node_at(above)))
-            .is_some_and(|list| {
-                crate::view::is_virtual(&list.kind)
-                    && list.props.contains_key(crate::render::UNREAD)
-            });
+        let says_new = row.as_deref().is_some_and(|path| self.row_says_new(path));
         let old: HashMap<String, BoundId> = old_children
             .iter()
             .filter_map(|c| self.bound(*c).map(|b| (b.key.clone(), *c)))
@@ -941,6 +941,7 @@ impl Live {
             b.state_seen = state_seen;
             b.changes_at = changes_at;
             b.retained = retained;
+            b.says_new = says_new;
             b.rendered = true;
             self.index.add(id, &b);
             if let Some(slot) = self.bounds.get_mut(id) {
@@ -1066,11 +1067,53 @@ impl Live {
             let mut at = path.clone();
             collect_paths(&self.by_key, node, &mut at, &mut found, id == ROOT);
         }
+        let mut ahead: Vec<BoundId> = Vec::new();
         for (child, path) in found {
-            if let Some(b) = self.bound_mut(child) {
-                b.path = path;
+            // Only a row answers to the divider over it: it is built again when one comes or
+            // goes, so a mark it drew for being new goes with it.
+            let says_new = self.row_says_new(&path);
+            let Some(b) = self.bound_mut(child) else {
+                continue;
+            };
+            if b.lazy {
+                if b.says_new != says_new {
+                    ahead.push(child);
+                }
+                b.says_new = says_new;
             }
+            b.path = path;
         }
+        self.dirty.extend(ahead);
+    }
+
+    /// Whether the row at `path` stands in the unseen part of its list, under the divider where
+    /// that part starts: the divider says which rows are new, so a row there says it no further.
+    ///
+    /// A list holds only the rows built, so a row's node stands at its place among them: what
+    /// it is a row of is the index the list gave it ([`crate::live::virtual_rows`]).
+    fn row_says_new(&self, path: &[usize]) -> bool {
+        let Some((&place, above)) = path.split_last() else {
+            return false;
+        };
+        let Some(list) = self.node_at(above) else {
+            return false;
+        };
+        if !crate::view::is_virtual(&list.kind) {
+            return false;
+        }
+        let Some(Value::Ref(unseen)) = list.props.get(crate::render::UNSEEN_FROM) else {
+            return false;
+        };
+        let Some(item) = unseen.target.item.as_deref() else {
+            return false;
+        };
+        let Some(rows) = self.lists.get(&list.key) else {
+            return false;
+        };
+        let (Some(start), Some(index)) = (rows.place(item), rows.row(place)) else {
+            return false;
+        };
+        index >= start
     }
 
     /// Whether the `fragment` of boundary `id`, at `path`, is still the node the tree holds

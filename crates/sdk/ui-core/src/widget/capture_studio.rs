@@ -989,7 +989,9 @@ impl CaptureStudio {
 
     /// Whether the "Send…" target picker is open.
     pub fn send_menu_open(&self) -> bool {
-        self.send_menu.as_ref().is_some_and(|menu| menu.is_open())
+        self.send_menu
+            .as_ref()
+            .is_some_and(|menu| menu.is_showing())
     }
 
     fn close_send_menu(&mut self) {

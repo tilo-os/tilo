@@ -214,6 +214,9 @@ struct Config {
     /// records and desktop replicate through.
     #[serde(default)]
     peer: Option<u32>,
+    /// Where the person's agents connect over MCP, as the page tells them.
+    #[serde(default)]
+    mcp: Option<String>,
     /// Milliseconds between semantics deliveries while the tree keeps
     /// changing without a focus or structure change.
     #[serde(default)]
@@ -244,6 +247,11 @@ struct Config {
     /// (`#?link=`); the profile card asks the person to confirm it.
     #[serde(default)]
     link_offer: Option<String>,
+    /// How the page lays the desktop out (`mountDesktop({layout})`, from the
+    /// web host's `entry.json`): the full desktop, or the console a person
+    /// who has agents work for them starts in.
+    #[serde(default)]
+    layout: crate::shell::Layout,
     /// The workspace directory this page browses (`mountDesktop({directory})`):
     /// the site whose directory it lists, the person a join is made as, and
     /// the workspaces the page holds.
@@ -282,6 +290,16 @@ impl Config {
         self.author
             .clone()
             .unwrap_or_else(|| ui::collaboration::local_user_id().0)
+    }
+
+    /// Carry the agent-door asks of `session` to the person's host, through
+    /// this mount's peer; the grants they take back there, for the page.
+    fn agent_door(
+        &self,
+        session: &tilo_desktop_surface::session::DesktopSession,
+        woken: &Arc<std::sync::atomic::AtomicBool>,
+    ) -> crate::agent_door::Revoked {
+        crate::agent_door::serve(session, self.peer, &self.workspace, self.mcp.clone(), woken)
     }
 }
 
@@ -418,7 +436,7 @@ struct GpuSetup {
     clippy::struct_excessive_bools,
     reason = "independent per-mount flags, each read on its own"
 )]
-struct Mount {
+pub(crate) struct Mount {
     metrics: RefCell<crate::frame_metrics::FrameMetrics>,
     /// Which statuses carry the semantics tree: unchanged trees are omitted,
     /// content-only changes are throttled, focus and structure changes go out
@@ -427,15 +445,19 @@ struct Mount {
     window: Arc<Window>,
     canvas: web_sys::HtmlCanvasElement,
     frame: FrameHarness,
+    /// How far following an agent brought the view inside its window.
+    followed_view: ui::headless::FollowedView,
     media: ui::headless::host_media::MediaLane,
     store: Rc<durable_store::MemoryStore>,
     /// Every package record owner the mount opened, flushed together.
     stores: Rc<RefCell<Vec<RecordStore>>>,
     /// The single application's record; `None` for the desktop.
     checkout: Option<RecordCheckout>,
+    /// The single application's package id; `None` for the desktop.
+    app: Option<String>,
     /// The workspace's presence board, as the last frame read it: who is
     /// here, where their pointers are, and when what they say animates.
-    presence: crate::presence_clock::View,
+    presence: presence::Presence,
     /// This mount's id, to wake it when a silent member's pointer leaves.
     id: u64,
     desktop: Option<Desktop>,
@@ -494,6 +516,9 @@ struct Mount {
     replica_changed: Rc<std::cell::Cell<bool>>,
     focus_presence: RefCell<Option<serde_json::Value>>,
     live_place: RefCell<Option<serde_json::Value>>,
+    /// The theme generation a single application's page was last told the
+    /// colours of ([`Mount::add_page_theme`]).
+    theme_told: Cell<Option<u64>>,
     /// The last `liveWave` the page was told.
     live_wave: RefCell<Option<serde_json::Value>>,
     /// The last `liveFollowing` the page was told.
@@ -516,6 +541,9 @@ struct Desktop {
     handle: tilo_desktop_surface::DesktopHandle,
     shared: crate::desktop::Shared,
     persistence: Rc<crate::desktop::Persistence>,
+    /// The person's arrangement of this desk: what the palette, a script and an
+    /// agent arrange the windows with, as a session's arrangement does.
+    arrangement: crate::arranging::Arranging,
     /// Navigation commands name the mount generation they were issued for.
     generation: String,
     /// What the desktop asked of the page since its last status.
@@ -533,6 +561,9 @@ struct Desktop {
     session: std::sync::Arc<tilo_desktop_surface::session::DesktopSession>,
     /// The desktop's end of that session.
     openings: tilo_desktop_surface::session::Openings,
+    /// The agent grants the person took back at their door since the last
+    /// frame, for the page to sign.
+    revoked: crate::agent_door::Revoked,
     /// What the session asked of the page for its windows, still open.
     asks: session_asks::Asks,
     /// Mentions of this person in the workspace's records, and what was told.
@@ -542,6 +573,15 @@ struct Desktop {
     permissions: SharedPermissions,
     /// The workspace the session serves.
     workspace: String,
+    /// Agents that finished, waiting for the history's read of what their run did before their
+    /// notice: each with the read asked and when, Unix milliseconds.
+    finishing: RefCell<
+        Vec<(
+            tilo_desktop::here::AgentFinished,
+            tilo_actions::InvocationId,
+            u64,
+        )>,
+    >,
 }
 
 impl Desktop {
@@ -560,12 +600,22 @@ impl Desktop {
     /// Open the apps the windows asked for since the last frame. Whether
     /// any were asked.
     fn open_requested_apps(&self) -> bool {
+        self.revoke_agent_grants();
         self.ask_host_of_nodes();
         self.ask_app_actions();
         let permissions = self.permissions.borrow();
         self.openings.open(&self.handle, |app, existing| {
             crate::desktop::may_open(&permissions, app, existing)
         })
+    }
+
+    /// Hand the page the agent grants the person took back at their door:
+    /// their root signs each, as it revokes any of their devices.
+    fn revoke_agent_grants(&self) {
+        let revoked = std::mem::take(&mut *tilo_lock::MutexRecover::lock_recover(&*self.revoked));
+        self.requests
+            .borrow_mut()
+            .extend(revoked.into_iter().map(crate::shell::HostRequest::Revoke));
     }
 
     /// Ask the session, as this person, for the app actions they chose in
@@ -711,7 +761,7 @@ impl Mount {
         let p = crate::background_work::Presentation {
             hidden: self.hidden,
             suspended: self.viewport.suspended(),
-            gpu_ready: self.gpu.is_some(),
+            gpu_ready: self.presents(),
         };
         let mut attempted = false;
         let result = crate::background_work::run(p, || {
@@ -1015,6 +1065,7 @@ pub fn close(id: u64) -> Result<JsValue, JsValue> {
         &serde_json::json!({"phase":"closed","id":id,"closeReports":reports.len(),"pendingWrites":js_sys::Array::from(&writes).length()}),
     );
     unconfigure(&mount.canvas);
+    dom::forget(id);
     if let Some(gpu) = mount.gpu.take() {
         release_gpu(id, gpu);
     }
@@ -1127,6 +1178,21 @@ fn desktop_inputs(
     })
 }
 
+/// What the page offers its desktop beyond the workspace: inviting, its
+/// host and build, the About sheet's links and the layout it opens in.
+fn host_offers(config: &Config) -> crate::shell::HostOffers {
+    crate::shell::HostOffers {
+        invite: config.invite.clone(),
+        mac: config.mac,
+        host: config.host.clone(),
+        about: config.about.clone(),
+        build: config.build.clone(),
+        link_offer: config.link_offer.clone(),
+        directory: config.directory.clone(),
+        layout: config.layout,
+    }
+}
+
 fn present_desktop(
     id: u64,
     config: &Config,
@@ -1168,6 +1234,7 @@ fn present_desktop(
     let (session, openings) =
         tilo_desktop_surface::session::serve(config.workspace.clone(), Arc::clone(&shared.woken));
     surface.serve_activity(openings.activity());
+    let revoked = config.agent_door(&session, &shared.woken);
     surface.set_notifications(persistence.notifications.clone());
     if let Some(inbox) = crate::host_services::notification_inbox() {
         surface.set_app_notifications(inbox);
@@ -1184,15 +1251,7 @@ fn present_desktop(
         surface,
         handle.clone(),
         generation.clone(),
-        crate::shell::HostOffers {
-            invite: config.invite.clone(),
-            mac: config.mac,
-            host: config.host.clone(),
-            about: config.about.clone(),
-            build: config.build.clone(),
-            link_offer: config.link_offer.clone(),
-            directory: config.directory.clone(),
-        },
+        host_offers(config),
         Rc::clone(&requests),
         crate::shell::ChromeSources {
             here: Rc::clone(&here),
@@ -1212,6 +1271,11 @@ fn present_desktop(
         images: Rc::clone(&shared.images),
         image_owners: Rc::clone(&shared.image_owners),
         desktop: Some(Desktop {
+            arrangement: crate::arranging::Arranging::new(
+                &config.author(),
+                handle.clone(),
+                persistence.desk(),
+            ),
             handle,
             shared,
             persistence,
@@ -1222,6 +1286,7 @@ fn present_desktop(
             people,
             session,
             openings,
+            revoked,
             asks: session_asks::Asks::new(config.peer),
             mentions: RefCell::new(mention_notices::Mentions::new(
                 &config.workspace,
@@ -1229,6 +1294,7 @@ fn present_desktop(
             )),
             permissions: opening_permissions,
             workspace: config.workspace.clone(),
+            finishing: RefCell::default(),
         }),
     })
 }
@@ -1255,16 +1321,14 @@ fn present_component(
         definition.record_kind.clone(),
     );
     let (checkout, named_new) = match &config.record {
+        // The workspace's own document of an app that keeps one: opened as a
+        // launch naming nothing opens it, so a link to it works before anyone
+        // wrote it (the first write founds it), as it does natively.
         Some(existing)
             if definition.keeps_workspace_record()
                 && existing == RecordId::package_primary().as_str() =>
         {
-            (
-                Some(RecordCheckout::package_primary(
-                    definition.record_kind.clone(),
-                )),
-                None,
-            )
+            (None, None)
         }
         Some(existing) => (
             Some(RecordCheckout::new(
@@ -1536,7 +1600,8 @@ fn begin(event_loop: &ActiveEventLoop, id: u64, request: Request) -> Result<(), 
         store,
         stores,
         checkout,
-        presence: crate::presence_clock::View::default(),
+        app: definition.map(|definition| definition.app_id().to_owned()),
+        presence: presence::Presence::default(),
         id,
         desktop,
         gpu: None,
@@ -1563,6 +1628,7 @@ fn begin(event_loop: &ActiveEventLoop, id: u64, request: Request) -> Result<(), 
         error: None,
         oversized_scene: false,
         skipped_frame: false,
+        followed_view: ui::headless::FollowedView::default(),
         here_stale: false,
         workspace: config.workspace.clone(),
         theme_seen: crate::page_theme::generation(),
@@ -1570,6 +1636,7 @@ fn begin(event_loop: &ActiveEventLoop, id: u64, request: Request) -> Result<(), 
         replica_changed,
         focus_presence: RefCell::new(None),
         live_place: RefCell::new(None),
+        theme_told: Cell::new(None),
         live_wave: RefCell::new(None),
         live_following: RefCell::new(None),
         entries: 0,
@@ -1578,8 +1645,21 @@ fn begin(event_loop: &ActiveEventLoop, id: u64, request: Request) -> Result<(), 
         cursor: winit::window::CursorIcon::Default,
     };
     MOUNTS.with_borrow_mut(|m| m.insert(id, mount));
-    emit(&status, &serde_json::json!({"phase":"gpu-pending","id":id}));
-    initialize_gpu(id, 1, window, caps);
+    if dom::presenting() {
+        // Shown as HTML: no surface to wait for.
+        dom::claim(id);
+        emit(&status, &serde_json::json!({"phase":"dom","id":id}));
+        let _ = with_mount(id, |m| {
+            m.viewport.surface_installed();
+            m.queue_resize();
+            m.pending = true;
+            m.window.request_redraw();
+            Ok(())
+        });
+    } else {
+        emit(&status, &serde_json::json!({"phase":"gpu-pending","id":id}));
+        initialize_gpu(id, 1, window, caps);
+    }
     wasm_bindgen_futures::spawn_local(watch_first_frame(id));
     Ok(())
 }
@@ -2048,6 +2128,10 @@ impl Mount {
         }
         // A window the last frame opened shows what its open named.
         self.reveal_opened();
+        self.follow_view();
+        if dom::shows(self.id) {
+            return self.draw_dom();
+        }
         let Some(gpu) = self.gpu.as_mut() else {
             self.held = "no surface";
             return Ok(());
@@ -2229,6 +2313,8 @@ impl Mount {
                 .handle
                 .set_viewport_width(f64::from(viewport.logical_size().0));
             desktop.post_workspace_notices();
+            desktop.announce_agents_finished();
+            desktop.follow_notice_choices();
             desktop.tell_mentions();
             desktop.refresh_holders(self.peer.is_some())
         });
@@ -2629,6 +2715,37 @@ impl Mount {
         )
     }
 
+    /// Tell a page showing one application the colours it is drawn in, when
+    /// they changed: the page's own bar over it takes them, so the two read
+    /// as one surface in whatever theme the person chose. `pageTheme`:
+    /// `{dark, ground, ink, quiet, line}`, each colour `#rrggbb`. A desktop
+    /// draws its own bar and is never told.
+    fn add_page_theme(&self, value: &mut serde_json::Value) {
+        let generation = crate::page_theme::generation();
+        if self.desktop.is_some() || self.theme_told.get() == Some(generation) {
+            return;
+        }
+        let Some(object) = value.as_object_mut() else {
+            return;
+        };
+        self.theme_told.set(Some(generation));
+        let theme = crate::page_theme::current();
+        let hex = |color: ui::peniko::Color| {
+            let rgba = color.to_rgba8();
+            format!("#{:02x}{:02x}{:02x}", rgba.r, rgba.g, rgba.b)
+        };
+        object.insert(
+            "pageTheme".into(),
+            serde_json::json!({
+                "dark": theme.document.is_dark(),
+                "ground": hex(theme.tokens.colors.surfaces.content),
+                "ink": hex(theme.text_primary),
+                "quiet": hex(theme.text_dim),
+                "line": hex(theme.border_standard),
+            }),
+        );
+    }
+
     /// Add the focus presence and the place in the workspace to a status where
     /// they differ from what the page was last told.
     fn add_presence_changes(&self, value: &mut serde_json::Value) {
@@ -2799,6 +2916,11 @@ impl Mount {
             "record": self.checkout.as_ref().map(|checkout| checkout.id.as_str()),
             "desktopRevision": self.desktop.as_ref().map(|d| d.handle.revision()),
             "searchOpen": self.desktop.as_ref().is_some_and(|d| d.handle.search_open()),
+            // Whether the open search still owes rows. A settled desk presents no
+            // frame until something changes, so a page that waits for the palette's
+            // answer reads this rather than counting presented frames: the answer
+            // is the desk's own, and a frame of it may wait for the next minute.
+            "searchSearching": self.desktop.as_ref().is_some_and(|d| d.handle.search_searching()),
             // The page titles its tab after it.
             "workspaceName": self.desktop.as_ref().and_then(|d| d.handle.read(|tree| tree.active_workspace().map(|w| w.name.clone()))),
             "hostRequests": self.desktop.as_ref().map(|d| std::mem::take(&mut *d.requests.borrow_mut())).filter(|r| !r.is_empty()),
@@ -2808,6 +2930,7 @@ impl Mount {
         if !(unbuilt && change == FrameChange::Nothing) {
             self.add_presence_changes(&mut value);
         }
+        self.add_page_theme(&mut value);
         self.add_live_signals(&mut value);
         if self.error.is_none() && self.frames > 0 {
             FIRST_FRAME_PRESENTED.store(true, std::sync::atomic::Ordering::Release);
@@ -2835,7 +2958,10 @@ impl Mount {
 /// # Errors
 ///
 /// Rejects an unknown kind or a closed mount.
+mod agent_notices;
 mod desktop_exports;
+mod dom;
+pub(crate) use dom::draw_dom_frame;
 mod fonts;
 mod frame_loop;
 mod here_exports;

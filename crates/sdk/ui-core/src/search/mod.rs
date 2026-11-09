@@ -68,7 +68,14 @@ pub use scope::{AppScope, Scope, WindowGroupId};
 /// Fold text the way every index does: case, compatibility forms and
 /// alphabetic diacritics.
 pub use tilo_search::fold as fold_search_text;
+/// Fetch the engine's code ahead of a search, where it is fetched on first
+/// use: a surface about to search calls it as the palette opens, so the
+/// engine is in by the first keystroke rather than on the query that needed
+/// it.
+pub use tilo_search::prepare_engine;
 pub use tilo_search::{Frecency, ListIndex, MAX_FIELD_RANK, Matching, fold_char, initials, locate};
+#[cfg(feature = "lazy-engine")]
+pub use tilo_search::{defer_engine, engine_load_failed, install_engine};
 /// Whether no search waits for the engine, and when to search again: where
 /// the engine's code is fetched on first use (the browser desktop), a
 /// search of a large index finds nothing until it is in.

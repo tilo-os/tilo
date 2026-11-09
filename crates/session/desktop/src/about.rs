@@ -332,6 +332,16 @@ impl TiloMenu {
         self.menu.set_items(items);
     }
 
+    /// Whether the menu offers Feedback: the host has somewhere to send it.
+    pub fn offers_feedback(&self) -> bool {
+        self.offers_feedback
+    }
+
+    /// Ask for Feedback as choosing it in the menu does: the next [`Self::take_feedback`] says so.
+    pub fn ask_feedback(&mut self) {
+        self.feedback = self.offers_feedback;
+    }
+
     /// Whether Feedback was chosen since the last call; the host opens it about the window in
     /// front.
     pub fn take_feedback(&mut self) -> bool {

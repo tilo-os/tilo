@@ -876,7 +876,7 @@ impl FilesState {
                 // when it is pasted.
                 self.clipboard.clear();
                 self.clipboard_cut = offer.cut;
-                self.answer_effect(Ok(()));
+                self.answer_effect(Ok(tilo_actions::ActionOutput::default()));
             }
             Ok(Completion::Snapshot(offer)) => {
                 if let Some(reply) = self.effect_reply.take() {
@@ -1026,7 +1026,7 @@ mod tests {
             },
             HostedFileServices {
                 thumbnails: None,
-                local_clipboard: false,
+                local_clipboard: true,
             },
         );
         files.state().navigate(path.into());

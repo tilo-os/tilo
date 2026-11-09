@@ -14,7 +14,6 @@ use collab_types::presence::{
     ShellPresence, ShownWave as Wave,
 };
 
-use super::place::{Placed, Tile, tile};
 use super::publish::{KEEPALIVE_MS, Schedule};
 use super::smooth::Smoother;
 
@@ -23,7 +22,7 @@ pub type Device = [u8; 32];
 
 /// `shell` without its sequence and send time: what a shell says, which two
 /// views of it are compared by, never when it was said.
-fn without_clock(shell: &ShellPresence) -> ShellPresence {
+pub fn without_clock(shell: &ShellPresence) -> ShellPresence {
     ShellPresence {
         seq: 0,
         sent_at_ms: 0,
@@ -696,25 +695,6 @@ impl Board {
             .filter_map(|member| match member.pointer(now_ms) {
                 Some((at, x, y)) if at == tab => Some((member.publisher, x, y)),
                 _ => None,
-            })
-            .collect()
-    }
-
-    /// Everyone whose pointer is over a tile the surface shows, where that
-    /// tile stands on it: what a surface draws.
-    #[must_use]
-    pub fn placed(&self, tiles: &[Tile], now_ms: f64) -> Vec<Placed> {
-        self.here()
-            .filter_map(|member| {
-                let (tab, x, y) = member.pointer(now_ms)?;
-                let over = tile(tiles, tab)?;
-                let (x, y) = over.point((x, y));
-                Some(Placed {
-                    publisher: member.publisher,
-                    tab,
-                    x,
-                    y,
-                })
             })
             .collect()
     }

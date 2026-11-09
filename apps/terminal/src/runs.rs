@@ -101,6 +101,16 @@ pub enum Mark {
     /// The shell asks for the person's history: the newest `limit` command
     /// lines past the `skip` newest that contain `matching`.
     History(HistoryAsk),
+    /// The run going on waits on its host, which refused it for `refusal`
+    /// (a Linux machine without a card on file). `agent` says an agent
+    /// asked for the run: the shell is not waiting for it, and the refusal
+    /// is the agent's answer.
+    Held {
+        agent: bool,
+        refusal: Box<ui::tilo_actions::remote::host_account::Refusal>,
+    },
+    /// The hold is over: the host let the run through, or it was cancelled.
+    Released,
 }
 
 /// A question of the shell's line editor to the person's history.
@@ -236,6 +246,8 @@ impl Marks {
         let mut skip = None;
         let mut limit = None;
         let mut matching = None;
+        let mut agent = false;
+        let mut refusal = None;
         for field in fields {
             match field.split_once('=') {
                 Some(("k", value)) => key = Some(value),
@@ -247,6 +259,8 @@ impl Marks {
                 Some(("s", value)) => skip = value.parse().ok(),
                 Some(("n", value)) => limit = value.parse().ok(),
                 Some(("q", value)) => matching = Some(decode(value)?),
+                Some(("a", value)) => agent = value == "1",
+                Some(("r", value)) => refusal = Some(decode(value)?),
                 Some(_) => {}
                 None => status = field.parse().ok(),
             }
@@ -282,6 +296,11 @@ impl Marks {
                 number: number?,
                 open: kind == "J",
             }),
+            ("W", _) => Some(Mark::Held {
+                agent,
+                refusal: Box::new(serde_json::from_str(&refusal?).ok()?),
+            }),
+            ("U", _) => Some(Mark::Released),
             ("H", _) => Some(Mark::History(HistoryAsk {
                 skip: skip.unwrap_or(0),
                 limit: limit.unwrap_or(0),
@@ -316,6 +335,9 @@ pub struct FinishedRun {
     /// The shell's job number, for a background job's run: it is no line
     /// the person or a request typed.
     pub job: Option<u32>,
+    /// Why its host held it, when it did: an agent's run ends with this as
+    /// its answer.
+    pub refusal: Option<Box<ui::tilo_actions::remote::host_account::Refusal>>,
 }
 
 impl FinishedRun {
@@ -373,6 +395,7 @@ impl Runs {
                         output: Vec::new(),
                         truncated: false,
                         job: Some(*job),
+                        refusal: None,
                     },
                 );
                 None
@@ -387,7 +410,13 @@ impl Runs {
                 run.exit = *status;
                 Some(run)
             }
-            Piece::Mark(Mark::History(_)) => None,
+            Piece::Mark(Mark::History(_) | Mark::Released) => None,
+            Piece::Mark(Mark::Held { refusal, .. }) => {
+                if let Some(run) = self.open.as_mut() {
+                    run.refusal = Some(refusal.clone());
+                }
+                None
+            }
             Piece::Mark(Mark::Started { command, cwd, .. }) => {
                 self.open = Some(FinishedRun {
                     command: command.clone(),
@@ -399,6 +428,7 @@ impl Runs {
                     output: Vec::new(),
                     truncated: false,
                     job: None,
+                    refusal: None,
                 });
                 None
             }

@@ -168,6 +168,7 @@ d-lidkonvr = Draft
         [one] draft
        *[other] drafts
     }
+    .untitled = New message
 
 d-m2g6zrle = From
 
@@ -354,12 +355,10 @@ d-4fjgzcq6 = Unified
     .w-all-inboxes = All inboxes
     .w-all-mail = All mail
     .w-labels = Labels
-    .w-no-conversation-selected = No conversation selected
 
 d-gka45our = Mailboxes
     .w-all-mail = All mail
     .w-labels = Labels
-    .w-no-conversation-selected = No conversation selected
 
 d-zp2cy2sc = Inbox
     .w-nothing-here = Nothing here

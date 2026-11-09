@@ -43,6 +43,17 @@ pub struct WindowRequest {
 #[cfg(feature = "local-daemons")]
 pub use transport::*;
 
+/// Say on the door the launcher handed this process that it opens the windows
+/// the shell asks for, before the launch's first window is made: the shell
+/// takes a mapped window as proof the app cannot, so an app that answers only
+/// once its loop runs keeps a process per window.
+pub fn announce() {
+    #[cfg(feature = "local-daemons")]
+    {
+        transport::announce();
+    }
+}
+
 /// Build the window the shell asked for (`pending`), as the process's first
 /// window was built from its launch (`spec`, `args`), but with the window's
 /// own instance and connections, and nothing the launch named to open: that
@@ -314,10 +325,40 @@ mod transport {
     }
 
     /// The door the launcher handed this process, once (see
-    /// [`runtime_portal::windows::take_door`]).
+    /// [`runtime_portal::windows::take_door`]), told this app serves windows:
+    /// the shell routes an app's later windows to a process that said so
+    /// before it mapped one.
     #[must_use]
     pub fn take_door() -> Option<Descriptor> {
-        runtime_portal::windows::take_door()
+        door().take()
+    }
+
+    static DOOR: Mutex<Option<Descriptor>> = Mutex::new(None);
+
+    static TAKEN: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+    /// The door, taken once and answered for once: whoever wants it first
+    /// ([`announce`] before the launch's first window, [`take_door`] to serve
+    /// it) takes it and tells the shell so, and later callers get it until it
+    /// is handed out.
+    fn door() -> std::sync::MutexGuard<'static, Option<Descriptor>> {
+        let mut slot = DOOR
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if !TAKEN.swap(true, std::sync::atomic::Ordering::AcqRel) {
+            *slot = runtime_portal::windows::take_door();
+            if let Some(door) = slot.as_ref()
+                && let Err(error) = runtime_portal::windows::send_serves(door)
+            {
+                tracing::warn!(%error, "the shell was not told this app opens its windows");
+            }
+        }
+        slot
+    }
+
+    /// Take the door and tell the shell about it, keeping it for serving.
+    pub fn announce() {
+        drop(door());
     }
 
     /// Read `door` on a thread of its own, handing each request to `open`,
@@ -330,11 +371,6 @@ mod transport {
         door: Descriptor,
         open: impl Fn(PendingWindow) -> bool + Send + 'static,
     ) -> std::io::Result<()> {
-        // The shell routes this app's windows here only once it has heard
-        // this; an app that does not say it gets a process per window.
-        if let Err(error) = runtime_portal::windows::send_serves(&door) {
-            tracing::warn!(%error, "the shell was not told this app opens its windows");
-        }
         let open = Arc::new(Mutex::new(open));
         let reopen: Reopen = Arc::new(move |pending| match open.lock() {
             Ok(open) => open(pending),

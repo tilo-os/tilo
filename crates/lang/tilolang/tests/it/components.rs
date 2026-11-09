@@ -250,17 +250,39 @@ view v(nb: Notebook) {
 #[test]
 fn a_binding_binds_a_field_of_its_type() {
     let c = compile_body(&with_note(
-        "view v(n: Note) {\n    ui.TextInput(value: n.title, placeholder: \"Title\")\n    ui.ListRow(title: n.title, checkbox: n.done)\n}",
+        "view v(n: Note) {\n    ui.TextInput(bind: n.title, placeholder: \"Title\")\n    ui.ListRow(title: n.title, bind: n.done)\n}",
     ));
     validate(&c.wasm);
     let (code, _) = one_error(&with_note(
-        "view v(n: Note) {\n    ui.TextInput(value: n.done)\n}",
+        "view v(n: Note) {\n    ui.TextInput(bind: n.done)\n}",
     ));
     assert_eq!(code, "E062");
     let (code, _) = one_error(&with_note(
-        "view v(n: Note) {\n    ui.TextInput(value: \"fixed\")\n}",
+        "view v(n: Note) {\n    ui.TextInput(bind: \"fixed\")\n}",
     ));
     assert_eq!(code, "E062");
+}
+
+/// A control edits the place it is bound to through `bind:` alone: its own name for that value
+/// is no argument, and the error says what to write.
+#[test]
+fn a_control_edits_a_place_through_bind_alone() {
+    for src in [
+        "view v(n: Note) {\n    ui.TextInput(value: n.title)\n}",
+        "view v(n: Note) {\n    ui.Checkbox(value: n.done)\n}",
+        "view v(n: Note) {\n    checkbox(value: n.done)\n}",
+        "view v() {\n    state query: Text\n    input(value: query)\n}",
+    ] {
+        let (code, message) = one_error(&with_note(src));
+        assert_eq!(code, "E063", "{src}");
+        assert!(message.contains("`bind: "), "{src}: {message}");
+    }
+    // A value the view does not hold is given to the control it shows it in, not bound: a
+    // device's volume, whose change runs the device's own action.
+    let c = compile_body(&with_note(
+        "view v(n: Note) {\n    ui.Slider(value: 0.5, label: .some(\"Volume\"))\n}",
+    ));
+    validate(&c.wasm);
 }
 
 /// `bind:` names whatever the component's description declares its binding to be, so it is one

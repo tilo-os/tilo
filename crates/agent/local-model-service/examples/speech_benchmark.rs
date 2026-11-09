@@ -254,7 +254,7 @@ mod qualification {
         }
         let Some(seconds) = options.chunk_seconds else {
             return engine
-                .transcribe(samples, language)
+                .transcribe(samples, language, false)
                 .map_err(|_| "recognition failed".into());
         };
         let size = usize::try_from(seconds)?
@@ -267,7 +267,7 @@ mod qualification {
             let (chunk, next) = remaining.split_at(boundary);
             remaining = next;
             let part = engine
-                .transcribe(chunk, language)
+                .transcribe(chunk, language, false)
                 .map_err(|_| "segment recognition failed")?;
             let part = part.trim();
             if part.is_empty() {
@@ -345,7 +345,7 @@ mod qualification {
         // descriptor. Production memory/dump/death limits apply before loading.
         unsafe { local_model_service::speech::worker::prepare() }
             .map_err(|_| "worker limits failed")?;
-        let (mut model, probes) = prepare(&options)?;
+        let (model, probes) = prepare(&options)?;
         println!(
             "SPEECH_BENCHMARK_INPUT {}",
             serde_json::json!({
@@ -355,7 +355,7 @@ mod qualification {
         );
         local_model_service::speech::confine_worker().map_err(|_| "confinement failed")?;
         let start = Instant::now();
-        let mut engine = SpeechEngine::load(&mut model).map_err(|_| "model load failed")?;
+        let mut engine = SpeechEngine::load(&model).map_err(|_| "model load failed")?;
         drop(model);
         engine.prepare().map_err(|_| "decoder allocation failed")?;
         println!(

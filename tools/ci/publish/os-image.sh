@@ -9,7 +9,11 @@
 #                                  the dev-overrides components compiled in COMPILED by
 #                                  os/image/compile.sh --dev) FROM the OS image in IN (IN/oci), as
 #                                  an OCI layout in OUT/oci, its layers over the OS image's
-#                                  composed with them, with OUT/digest and OUT/revision
+#                                  composed with them, with OUT/digest and OUT/revision. With
+#                                  TILO_DEV_LOOP=1 the development loop's, never published: it
+#                                  keeps the OS image's local model catalog (the release's) in
+#                                  place of model-catalog-dev-ARCH's and names no commit, so it
+#                                  reads no Git (OUT/revision says development-loop)
 #   os-image.sh board BOARD IN OUT the board's sealed dev image (os/Containerfile.board: firmware,
 #                                  device tree, initramfs, a UKI) FROM the aarch64 dev image `dev`
 #                                  left in IN, as an OCI layout in OUT/oci, with OUT/digest, OUT/revision
@@ -184,8 +188,12 @@ case ${1:-} in
     out=${4:?}
     [[ $(uname -m) == "$arch" ]] || die "the $arch dev image builds natively, not on $(uname -m)"
     guest_tools
-    revision=$(git rev-parse --verify HEAD) || die 'the build names its commit: git = true'
     compiled=${5:?usage: os-image.sh dev ARCH IN OUT COMPILED}
+    if [[ ${TILO_DEV_LOOP:-0} == 1 ]]; then
+      revision=development-loop
+    else
+      revision=$(git rev-parse --verify HEAD) || die 'the build names its commit: git = true'
+    fi
     phase load
     load_image "$in" localhost/tilo:ci "$revision"
     # The snapshot the OS image was built from, which build-dev-image.sh would otherwise pull by
@@ -206,14 +214,25 @@ case ${1:-} in
     # and a publication sends it once.
     epoch=$(podman image inspect --format '{{index .Labels "org.tilo.source-date-epoch"}}' localhost/tilo:ci)
     [[ $epoch =~ ^[1-9][0-9]*$ ]] || die "the OS image carries no clock but '$epoch'"
+    # The development loop's image (TILO_DEV_LOOP=1, os-dev-image-lean-<arch>) is never published:
+    # it builds no runtime and keeps the OS image's catalog, the release's; it names no commit, and
+    # its base is dated by the OS image's clock, so nothing here reads Git and a commit that
+    # changes none of its inputs gives the same image.
+    catalog=/target/model-catalog/dev/$arch base_created= label=
+    if [[ ${TILO_DEV_LOOP:-0} == 1 ]]; then
+      catalog=
+    else
+      base_created=$(date -u -d "@$(git log -1 --format=%ct)" +%Y-%m-%dT%H:%M:%SZ)
+      label="--label org.opencontainers.image.revision=$revision"
+    fi
     phase build
     SOURCE_DATE_EPOCH=$epoch TILO_DEV_BASE=localhost/tilo:ci TILO_DEV_IMAGE=localhost/tilo-vm:ci TILO_DEV_DISK=0 \
-      TILO_DEV_BASE_CREATED=$(date -u -d "@$(git log -1 --format=%ct)" +%Y-%m-%dT%H:%M:%SZ) \
+      TILO_DEV_BASE_CREATED=$base_created \
       TILO_COMPILED_DEV=$compiled \
       TILO_DEV_ENV_RUNTIME=/target/publish/env-runtime/dev/$arch \
-      TILO_DEV_MODEL_CATALOG=/target/model-catalog/dev/$arch \
+      TILO_DEV_MODEL_CATALOG=$catalog \
       TILO_DISTROBOX= TILO_OUTPUT=$scratch/dev-output TMPDIR=/var/tmp \
-      TILO_BUILD_ARGS="--label org.opencontainers.image.revision=$revision" \
+      TILO_BUILD_ARGS=$label \
       bash os/dev/build-dev-image.sh
     # Kept as the layers it added over the OS image's, composed with them: the OS image's
     # layers are the same blobs in both, stored and sent once.

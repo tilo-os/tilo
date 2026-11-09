@@ -3,7 +3,7 @@ app so.tilo.lang.notes "Notes" (icon: .file_text, category: .office)
 use so.tilo.lang.discussion as discussion
 
 /// A note: a title, a body and the tags people gave it.
-type Note {
+type Note (untitled: "Untitled") {
     title: Text
     body: RichText
     pinned: Bool = false
@@ -20,14 +20,6 @@ type Notebook {
     notes: Collection<Note>
 }
 
-/// The order a notebook lists its notes in.
-enum NoteOrder {
-    /// Date created
-    created
-    /// Title
-    title
-}
-
 root notebook: Notebook
 
 default view notebook for Notebook
@@ -37,7 +29,7 @@ default view note_editor for Note
 row view note_row for Note
 
 /// Starts a note. Its title starts empty: what is typed first names it.
-primary action new_note(nb: Notebook) -> Note (icon: .plus, group: "Note", frequent: true) {
+primary action new_note(nb: Notebook) -> Note (icon: .plus) {
     nb.notes.insert(Note(title: ""))
 }
 
@@ -46,14 +38,12 @@ action pin(n: Note, pinned: Bool = not n.pinned) (
     label: if pinned { "Pin" } else { "Unpin" },
     icon: .pin,
     on: n.pinned,
-    group: "Note",
-    frequent: true,
 ) {
     n.pinned = pinned
 }
 
 /// Deletes a note.
-destructive action delete(nb: Notebook, n: Note) (icon: .trash, group: "Note") {
+destructive action delete(nb: Notebook, n: Note) (icon: .trash) {
     nb.notes.remove(n)
 }
 
@@ -63,7 +53,7 @@ action retitle(n: Note, title: Text) {
 }
 
 /// Gives a note a tag.
-action tag(n: Note, t: Text) (icon: .tag, group: "Tags", frequent: true) {
+action tag(n: Note, t: Text) (icon: .tag, group: "Tags") {
     n.tags.add(t)
 }
 
@@ -72,40 +62,24 @@ action untag(n: Note, t: Text) (label: "Untag", group: "Tags") {
     n.tags.remove(t)
 }
 
-/// The notes of a notebook, in an order.
-fn listed(nb: Notebook, order: NoteOrder) -> List<Note> {
-    let notes: List<Note> = nb.notes
-    match order {
-        .created => notes,
-        .title => notes.sort_by(.title),
-    }
-}
-
 /// The notebook's window: its notes, each opening in a window of its own, in the order the
 /// person looking chose, under the place they chose.
 view notebook(nb: Notebook) {
-    state order: NoteOrder = .created
-    // The note this window's list shows opened where it stands.
-    state opened: Option<Note> = .none
-    std.browse(nb, listed(nb, order), opened, places: [Note.pinned], sort: order) { n ->
+    std.browse(nb, nb.notes, places: [Note.pinned], sorts: [Note.title]) { n ->
         note_row(n)
     }
 }
 
 /// One note in a list: its title, the start of its body, and a pin when it is pinned.
 view note_row(n: Note) {
-    ui.ListRow(
-        title: if n.title.len() == 0 { "Untitled" } else { n.title },
-        secondary: n.body.excerpt,
-        mark: if n.pinned { .pin },
-    )
+    ui.ListRow(title: meta(n).title, secondary: n.body.excerpt, mark: if n.pinned { .pin })
 }
 
 /// A note's window: its title, its tags as chips that come off with their remove button, its
 /// body, and what happened to it.
 view note_editor(n: Note) {
     std.document(n) {
-        ui.TextInput(value: n.title, placeholder: "Untitled", title: true)
+        ui.TextInput(bind: n.title, title: true)
         if not n.tags.is_empty() {
             row(gap: .related, wrap: true) {
                 for t in n.tags {

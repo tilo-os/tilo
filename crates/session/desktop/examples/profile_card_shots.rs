@@ -56,6 +56,39 @@ fn ada() -> ProfileModel {
             can_follow: true,
             can_message: true,
             linked: Vec::new(),
+            agent: None,
+        }),
+        ..ProfileModel::default()
+    }
+}
+
+/// An agent in the workspace: Claude Code, connected over MCP, editing a note. Its card is square
+/// in its client's hue, says what it does now, and offers its card in Console and what can be done
+/// with it.
+fn claude() -> ProfileModel {
+    ProfileModel {
+        name: "Claude Code".to_owned(),
+        identity: "claude-device".to_owned(),
+        colour: Some(vello::peniko::Color::from_rgb8(
+            ui::presence::identity_rgb(ui::tokens::PresenceHue::Orange).0,
+            ui::presence::identity_rgb(ui::tokens::PresenceHue::Orange).1,
+            ui::presence::identity_rgb(ui::tokens::PresenceHue::Orange).2,
+        )),
+        other: Some(OtherPerson {
+            id: "claude-device".to_owned(),
+            status: Some(RosterStatus {
+                text: "Editing Storefront/checkout.rs".to_owned(),
+                source: LineSource::Written,
+            }),
+            place: Some("In Code".to_owned()),
+            presence: None,
+            following: true,
+            can_follow: true,
+            can_message: false,
+            linked: Vec::new(),
+            agent: Some(tilo_desktop::profile_card::AgentFacts {
+                client: "Claude Code".to_owned(),
+            }),
         }),
         ..ProfileModel::default()
     }
@@ -67,10 +100,18 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .map_or_else(|| PathBuf::from("profile-card-shots"), PathBuf::from);
     std::fs::create_dir_all(&output)?;
     ui::i18n::I18nManager::init("en-US");
-    for (theme_name, theme) in [("dark", Theme::dark()), ("light", Theme::light())] {
+    for ((theme_name, theme), (who, model)) in [("dark", Theme::dark()), ("light", Theme::light())]
+        .into_iter()
+        .flat_map(|theme| {
+            [
+                (theme.clone(), ("someone-elses", ada())),
+                (theme, ("agents", claude())),
+            ]
+        })
+    {
         let mut card = ProfileCard::new();
         card.toggle(
-            &ada(),
+            &model,
             Rect::new(1000.0, 2.0, 1020.0, 22.0),
             Rect::new(0.0, 0.0, 1280.0, 720.0),
         );
@@ -85,7 +126,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 break;
             }
         }
-        let path = output.join(format!("someone-elses-card-{theme_name}.png"));
+        let path = output.join(format!("{who}-card-{theme_name}.png"));
         Framed::harness(&frame).render_png(&path);
         println!("{theme_name}: {}", path.display());
     }

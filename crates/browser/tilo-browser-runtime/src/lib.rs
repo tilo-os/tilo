@@ -25,6 +25,16 @@
     allow(dead_code, reason = "only the browser page fetches deferred code")
 )]
 mod app_load;
+// The desk's arranging actions in the page: its tests run on the host too.
+#[cfg(any(target_arch = "wasm32", test))]
+#[cfg_attr(
+    not(target_arch = "wasm32"),
+    allow(
+        dead_code,
+        reason = "only the browser page arranges its desk; the host runs its tests"
+    )
+)]
+mod arranging;
 // Native builds compile it for its tests; the page is its only user.
 #[cfg(target_arch = "wasm32")]
 mod background_work;
@@ -33,6 +43,13 @@ mod background_work;
     allow(dead_code, reason = "only the browser page opens windows")
 )]
 mod capture_declarations;
+// Holding Console in front in the console layout: its tests run on the host too.
+#[cfg(any(target_arch = "wasm32", test))]
+#[cfg_attr(
+    not(target_arch = "wasm32"),
+    allow(dead_code, reason = "only the browser page holds a window in front")
+)]
+mod console_hold;
 // Content handed to an app, opened as its file: its tests run on the host too.
 #[cfg(any(target_arch = "wasm32", test))]
 mod content_open;
@@ -101,17 +118,22 @@ mod crash;
         reason = "only the browser page opens windows; the host runs its tests"
     )
 )]
-mod desk_records;
 #[cfg(target_arch = "wasm32")]
 mod desktop;
 #[cfg(target_arch = "wasm32")]
 mod directory;
+#[cfg(target_arch = "wasm32")]
+mod dom_code;
+#[cfg(target_arch = "wasm32")]
+pub use dom_code::{DOM_CODE, DomCode, builtin_dom};
 #[cfg(target_arch = "wasm32")]
 mod feedback_code;
 #[cfg(target_arch = "wasm32")]
 mod feedback_composer;
 #[cfg(target_arch = "wasm32")]
 mod feedback_crops;
+#[cfg(target_arch = "wasm32")]
+mod guide;
 #[cfg(target_arch = "wasm32")]
 mod invite;
 #[cfg(target_arch = "wasm32")]
@@ -168,11 +190,11 @@ pub use host_services::{defer_model_clients, install_model_clients, model_client
 mod link;
 // A pairing link drawn as the code a phone reads.
 #[cfg(target_arch = "wasm32")]
-mod qr_code;
-#[cfg(target_arch = "wasm32")]
 mod mount_service_custody;
 #[cfg(target_arch = "wasm32")]
 mod page_authors;
+#[cfg(target_arch = "wasm32")]
+mod qr_code;
 // The page's user root: the envelope it is kept in, and what it signs.
 #[cfg(target_arch = "wasm32")]
 mod root_identity;
@@ -184,18 +206,26 @@ mod page_theme;
 mod page_person;
 #[cfg(target_arch = "wasm32")]
 mod peer;
+// The person's agent door, as the page carries it to their host.
+#[cfg(target_arch = "wasm32")]
+mod agent_door;
 // The page's presence on its workspaces' boards.
 #[cfg(target_arch = "wasm32")]
 mod peer_presence;
+// The sign-in route's answer to a service (`web/sign-in.mjs`).
+#[cfg(target_arch = "wasm32")]
+mod sign_in_page;
 // The person's own records each window holds: its tests run on the host too.
 #[cfg(any(target_arch = "wasm32", test))]
 mod person_records;
 // What a page times of the members' presence itself: its tests run on the
 // host too.
 #[cfg(any(target_arch = "wasm32", test))]
-mod presence_clock;
 #[cfg(target_arch = "wasm32")]
 mod replication;
+// The workspaces a host governs, as the page administers them.
+#[cfg(target_arch = "wasm32")]
+mod rooms;
 #[cfg(target_arch = "wasm32")]
 #[cfg(target_arch = "wasm32")]
 mod semantics_status;

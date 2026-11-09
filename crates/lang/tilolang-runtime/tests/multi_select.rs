@@ -10,7 +10,7 @@ mod cases {
     use super::common::*;
     use tilolang_runtime::{AmStore, Principal, ResourceRef, Runtime, UiNode, Value, ViewInstance};
 
-    const TASKS: &str = include_str!("../../../../apps/tl/tasks/app.tl");
+    const TASKS: &str = super::common::TASKS_SOURCE;
     /// What a task's page says about it: tasks are made from discussions of them.
     const DISCUSSION: &str = include_str!("../../../../apps/tl/discussion/app.tl");
 
@@ -28,6 +28,7 @@ mod cases {
         let auth = TestAuthority::new();
         let rt = Runtime::new(store, auth.clone()).unwrap();
         let discussion = App::compile(DISCUSSION, &[]);
+        auth.trust(&discussion.load(&rt));
         let app = App::compile(TASKS, &[discussion.meta().clone()]);
         auth.trust(&app.load(&rt));
         Installed {
@@ -51,11 +52,16 @@ mod cases {
         }
 
         fn task(&self, root: &ResourceRef, title: &str) -> ResourceRef {
-            // `new_task` takes the fields a task can be started with before its title, and
-            // this makes one with nothing but a title.
-            let mut args = vec![Value::resource(root)];
-            args.resize(6, Value::none());
-            args.push(Value::text(title));
+            // What the task is made of by name, so the fields a task can be started with come
+            // and go without this caller: `new_task(tasks: root, title: title)`.
+            let args = self.app.args(
+                &self.rt,
+                "new_task",
+                &[
+                    ("tasks", Value::resource(root)),
+                    ("title", Value::text(title)),
+                ],
+            );
             returned_ref(self.call("new_task", args))
         }
 

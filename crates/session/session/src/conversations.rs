@@ -1450,7 +1450,7 @@ impl crate::Session {
         resource: &str,
         action: &str,
         arguments: &serde_json::Map<String, serde_json::Value>,
-    ) -> Result<Option<serde_json::Value>, String> {
+    ) -> Result<Option<tilo_actions::ActionOutput>, String> {
         crate::agent_door::invoke_service_step(
             &self.shared.services,
             actor,

@@ -30,6 +30,7 @@ fn binary() -> std::path::PathBuf {
 const TILO: &str = "registry.tilo.so/tilo/tilo";
 const CODE: &str = "code.tilo.so/tilo/tilo";
 const GUEST: &str = "registry.tilo.so/tilo/legacy-guest";
+const HOSTED_GUEST: &str = "registry.tilo.so/tilo/hosted-guest";
 const TRUST_ENV: &str = "\
 # a comment
 TILO_RELEASE_EPOCH=3
@@ -84,7 +85,7 @@ fn chain_requirement() -> Value {
 /// The generator's shape with `requirement` in every signed scope.
 fn generated(requirement: &Value) -> Value {
     let mut policy = shipped();
-    for scope in [TILO, CODE, GUEST] {
+    for scope in [TILO, CODE, GUEST, HOSTED_GUEST] {
         policy["transports"]["docker"][scope] = requirement.clone();
     }
     policy
@@ -234,6 +235,12 @@ fn weakened_cases() -> Vec<(&'static str, String)> {
             }),
         ),
         (
+            "hosted-guest-accepts-anything",
+            weakened(|d| {
+                d.insert(HOSTED_GUEST.into(), accept());
+            }),
+        ),
+        (
             "tilo-namespace-accepts-anything",
             weakened(|d| {
                 d.insert("registry.tilo.so/tilo".into(), accept());
@@ -283,8 +290,8 @@ fn every_weakened_policy_fails() {
     let cases = weakened_cases();
     assert_eq!(
         cases.len(),
-        18,
-        "plus the missing file: the 19 weakened policies of the boot audit"
+        19,
+        "plus the missing file: the 20 weakened policies of the boot audit"
     );
     for (name, text) in cases {
         assert!(check(&text, &key_trust()).is_err(), "{name} was accepted");
@@ -399,8 +406,14 @@ fn guarded_repositories_are_judged_by_their_effective_rule() {
     let mut policy = key_policy();
     let docker = policy["transports"]["docker"].as_object_mut().unwrap();
     docker.retain(|name, _| {
-        !["legacy-guest", "tilo-vm", "tilo-ci", "tilo-dev"]
-            .contains(&name.rsplit('/').next().unwrap())
+        ![
+            "legacy-guest",
+            "hosted-guest",
+            "tilo-vm",
+            "tilo-ci",
+            "tilo-dev",
+        ]
+        .contains(&name.rsplit('/').next().unwrap())
     });
     check(&policy.to_string(), &key_trust()).unwrap();
     // A namespace scope that rejects covers them too; one that accepts does not.
@@ -626,7 +639,7 @@ fn a_developer_image_reports_its_dev_key_scope_instead_of_failing() {
 #[test]
 fn the_dev_key_is_accepted_only_in_the_two_dev_repositories_and_only_alone() {
     // The dev key on a release scope is a downgrade, developer mode or not.
-    for scope in [TILO, CODE, GUEST] {
+    for scope in [TILO, CODE, GUEST, HOSTED_GUEST] {
         let mut policy = dev_policy();
         policy["transports"]["docker"][scope] = json!([{
             "type": "sigstoreSigned",

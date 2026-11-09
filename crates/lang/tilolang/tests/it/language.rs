@@ -50,6 +50,38 @@ fn calendar_literals_are_dates_times_and_months() {
 }
 
 #[test]
+fn one_branch_is_the_option_of_its_value() {
+    // `if c { v }` with no `else` is `v` where the condition holds and nothing where it does
+    // not, which is an Option of `v`.
+    ok("fn f(c: C) -> Option<Text> {\n    if c.b { c.t }\n}");
+    ok("fn f(c: C) -> Option<Text> {\n    if let first = c.items.first() { \"{first.t}\" }\n}");
+    ok(
+        "fn f(c: C) -> Option<Date> {\n    if c.b { c.due } else if c.items.is_empty() { 2026-06-29 }\n}",
+    );
+    // A branch that is an Option itself is that Option, as `else { .none }` gives it: one Option
+    // never holds another.
+    ok("fn f(c: C) -> Option<C> {\n    if c.b { c.items.first() }\n}");
+    ok("fn f(c: C) -> Option<Date> {\n    if let first = c.items.first() { first.due }\n}");
+    // Where an Option of a value is expected, the value is the Option: in an argument, a field
+    // and a comparison alike.
+    ok(
+        "fn g(x: Option<Text>) -> Text {\n    x ?? \"empty\"\n}\nfn f(c: C) -> Text {\n    g(c.t)\n}",
+    );
+    ok("action a(c: C) {\n    c.due = 2026-06-29\n}");
+    ok("fn f(c: C) -> Bool {\n    c.due == 2026-06-29\n}");
+    // One level: an Option of an Option says which of its levels it means.
+    ok(
+        "type N {\n    two: Option<Option<Text>> = .none\n}\naction a(n: N) {\n    n.two = .some(.none)\n}",
+    );
+    expect(
+        "E020",
+        "type N {\n    two: Option<Option<Text>> = .none\n}\naction a(n: N) {\n    n.two = \"one\"\n}",
+    );
+    // A branch is what it is: an `if` without `else` is not the value a Text is.
+    expect("E020", "fn f(c: C) -> Option<Text> {\n    if c.b { c }\n}");
+}
+
+#[test]
 fn if_let_binds_option_values_in_actions_fns_and_views() {
     ok(
         "fn f(c: C) -> Text {\n    if let first = c.items.first(), d = first.due {\n        \"{first.t} {d}\"\n    } else {\n        \"none\"\n    }\n}",
@@ -62,8 +94,9 @@ fn if_let_binds_option_values_in_actions_fns_and_views() {
         "E106",
         "fn f(c: C) -> Text {\n    if let t = c.t {\n        t\n    } else {\n        \"\"\n    }\n}",
     );
+    // One branch is the Option of it: a Text is not an Option<Text>.
     expect(
-        "E038",
+        "E020",
         "fn f(c: C) -> Text {\n    if let l = c.items.last() {\n        l.t\n    }\n}",
     );
     // The name is not seen in the `else` branch.
@@ -246,6 +279,35 @@ fn an_item_block_names_the_other_slots_beside_the_row() {
         !codes(&item_in_composer).is_empty(),
         "the composer does not see the item"
     );
+}
+
+#[test]
+fn an_action_a_view_applies_reads_the_clock_as_it_is_at_the_press() {
+    // An argument that names a day or a moment is read when the action is invoked, as its
+    // view state is: a list in a place that starts its items today says so in the argument.
+    let starts_today = "type Note {\n    title: Text\n    due: Option<Date> = .none\n}\ntype Book {\n    notes: Collection<Note>\n}\nroot book: Book\ndefault view book for Book\naction add(b: Book, due: Option<Date> = .none, title: Text = \"\") -> Note (icon: .plus) {\n    b.notes.insert(Note(title: title, due: due))\n}\nview book(b: Book) {\n    let in_today = true\n    stack {\n        button(add(b, due: if in_today { .some(today) } else { .none }))\n    }\n}\n";
+    let src = format!("app t.x \"X\"\n{starts_today}");
+    let compiled = crate::common::compile_with(&src, &[]).unwrap_or_else(|d| panic!("{d:#?}"));
+    validate(&compiled.wasm);
+    let at_event: Vec<(Vec<&str>, &str)> = compiled
+        .meta
+        .at_event
+        .iter()
+        .map(|f| {
+            let params = f.params.iter().map(|p| p.name.as_str()).collect();
+            (params, f.result.as_str())
+        })
+        .collect();
+    assert_eq!(
+        at_event,
+        [(vec!["in_today"], "Option<Date>")],
+        "the day is computed when the action is invoked, from what the view drew the rest \
+         with: {at_event:?}"
+    );
+    // A view's body itself still reads no clock: it is drawn again from what it is shown.
+    let drawn = "type Note {\n    title: Text\n    due: Option<Date> = .none\n}\ntype Book {\n    notes: Collection<Note>\n}\nroot book: Book\ndefault view book for Book\nview book(b: Book) {\n    let d = today\n    stack {\n        text(\"{d}\")\n    }\n}\n";
+    let got = codes(drawn);
+    assert!(got.iter().any(|c| c == "E049"), "{got:?}");
 }
 
 #[test]

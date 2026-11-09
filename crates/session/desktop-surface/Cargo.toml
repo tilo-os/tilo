@@ -46,6 +46,8 @@ tilo-clock = { version = "0.1.0", path = "../../platform/tilo-clock" }
 # media stack's realtime part is the native section's.
 tilo-media = { version = "0.1.0", path = "../../platform/tilo-media", default-features = false }
 serde.workspace = true
+# The bar's clock reads the weekday of the local time.
+chrono.workspace = true
 hex.workspace = true
 serde_json.workspace = true
 # The workspace history pane reads causal documents and draws with the

@@ -19,6 +19,7 @@ use tilo_desktop_model::{DesktopTree, IdMinter, Tab, TabId, TileContent, Workspa
 use tilo_desktop_surface::navigation::Application;
 use tilo_desktop_surface::{DesktopHandle, DesktopSurface, TileSource};
 use tilo_lock::MutexRecover as _;
+use tilo_session_core::desk::{Desk, Store};
 use ui::application::{
     AppComponent, ApplicationDefinition, HostContext, HostContextInputs, LaunchTarget, RestoreInput,
 };
@@ -344,7 +345,7 @@ pub(crate) struct Shared {
     /// whose code has not loaded, one it does not run, or a record it does not
     /// read. Each is written back to the shared desk under the spelling it
     /// arrived in, as native keeps the record a window held
-    /// ([`crate::desk_records::adopted`]).
+    /// ([`tilo_desktop_surface::host::records::adopted`]).
     unbound: Rc<RefCell<HashMap<TabId, String>>>,
     /// The content, by hash, each tab opened with its app is to open: what
     /// another window handed over (a capture, a recording).
@@ -632,23 +633,7 @@ impl Shared {
     /// application and the record id, empty for the package's primary
     /// record.
     pub fn live_record_of(&self, tree: &DesktopTree, tab: TabId) -> Option<(String, String)> {
-        let app = tree
-            .workspaces
-            .iter()
-            .flat_map(|w| &w.strips)
-            .flat_map(|strip| &strip.window_groups)
-            .flat_map(|group| &group.tabs)
-            .find(|candidate| candidate.id == tab)
-            .and_then(|tab| match &tab.tile {
-                TileContent::LocalApp { app_id, .. } => Some(app_id.clone()),
-                _ => None,
-            })?;
-        let records = self.records.borrow();
-        let checkout = records.get(&tab)?;
-        Some((
-            app,
-            crate::desk_records::wire_record(&checkout.id).to_owned(),
-        ))
+        tilo_desktop_surface::host::records::of_window(tree, &self.records.borrow(), tab)
     }
 }
 
@@ -1308,15 +1293,19 @@ pub(crate) const DESKTOP_PACKAGE: &str = "so.tilo.browser-desktop";
 /// durable host.
 pub(crate) struct Persistence {
     store: Rc<dyn DurableStore>,
-    key: StorageKey,
     saved_revision: Cell<u64>,
     records_changed: Rc<Cell<bool>>,
     records: Rc<RefCell<HashMap<TabId, RecordCheckout>>>,
     unbound: Rc<RefCell<HashMap<TabId, String>>>,
     authors: Authors,
-    /// The desk's document: the profile's copy of it, which is the desk's
-    /// history when this page is in no workspace.
-    pub document: Rc<RefCell<AutoCommit>>,
+    /// The desk's own document: the profile's copy of it, which is the desk's
+    /// history when this page is in no workspace. The rules of the document —
+    /// what one change of the desk is, who made it, how a step is taken back —
+    /// are the session core's, the same the native session runs. Shared with
+    /// the page's arrangement, which arranges that desk by action.
+    desk: Rc<Desk>,
+    /// Where the document is kept, and why the last write of it was refused.
+    profile: Rc<ProfileStore>,
     /// The peer whose workspace this page joined, whose copy of the desk document
     /// is the one that counts once the workspace answered
     /// ([`Self::mirror_workspace`]).
@@ -1324,10 +1313,14 @@ pub(crate) struct Persistence {
     pub notifications: tilo_desktop_surface::DesktopNotifications,
     notifications_key: StorageKey,
     saved_notifications_revision: Cell<u64>,
-    author: String,
 }
 
 impl Persistence {
+    /// The desk document, as the page's arrangement keeps it too.
+    pub(crate) fn desk(&self) -> Rc<Desk> {
+        Rc::clone(&self.desk)
+    }
+
     /// Write the desktop if it changed since the last save.
     ///
     /// # Errors
@@ -1343,36 +1336,33 @@ impl Persistence {
         // workspace and the window in front — so a reload returns the desk as
         // it was left, as native's own document does.
         let tree = handle.read(Clone::clone);
-        let mut document = self.document.borrow_mut();
-        let wrote = if self
+        let time = ui::time::unix_now_i64();
+        if self
             .peer
             .and_then(crate::replication::desktop_history_heads)
             .is_some()
         {
             // The workspace holds the desk itself; the copy keeps the view alone.
-            tilo_desktop_model::desktop_doc::seed_of_the_view(&mut document, &tree);
-            document.pending_ops() > 0
+            self.desk.record_view(&tree, time);
         } else {
             // No workspace holds this desk: what the person changed is this page's
             // change of its own document.
-            let records =
-                crate::desk_records::live(&self.records.borrow(), &self.unbound.borrow(), &tree);
-            let authors = live_authors(&self.authors.borrow(), &tree);
-            tilo_desktop_model::desktop_doc::write_shared(&mut document, &tree, &records, &authors)
-        };
-        if wrote {
-            tilo_desktop_surface::history_log::commit(
-                &mut document,
-                &self.author,
-                ui::time::unix_now_i64(),
+            let records = tilo_desktop_surface::host::records::live(
+                &self.records.borrow(),
+                &self.unbound.borrow(),
+                &tree,
             );
+            let authors = self.authors.borrow();
+            self.desk.record_now(&tree, time, &records, Some(&authors));
         }
-        if wrote || mirrored {
-            self.store
-                .write(&self.key, WriteOp::Replace(document.save()), None)
-                .map_err(|error| error.to_string())?;
+        if mirrored {
+            // The workspace's copy replaced this page's: what it holds is what
+            // the profile keeps from now on.
+            self.desk.keep_now();
         }
-        drop(document);
+        if let Some(error) = self.profile.refused() {
+            return Err(error);
+        }
         self.saved_revision.set(revision);
         self.records_changed.set(false);
         Ok(())
@@ -1389,22 +1379,7 @@ impl Persistence {
         if self.peer.is_some() {
             return false;
         }
-        let mut document = self.document.borrow_mut();
-        if !write(&mut document) {
-            document.rollback();
-            return false;
-        }
-        if document.pending_ops() == 0 {
-            return false;
-        }
-        tilo_desktop_surface::history_log::commit(
-            &mut document,
-            &self.author,
-            ui::time::unix_now_i64(),
-        );
-        self.store
-            .write(&self.key, WriteOp::Replace(document.save()), None)
-            .is_ok()
+        self.desk.write_metadata(write) && self.profile.refused().is_none()
     }
 
     /// Take the workspace's desk document into the profile's copy, once the page's
@@ -1418,22 +1393,17 @@ impl Persistence {
         let Some(heads) = crate::replication::desktop_history_heads(peer) else {
             return Ok(false);
         };
+        if heads
+            .iter()
+            .all(|head| self.desk.document().get_change_by_hash(head).is_some())
         {
-            // The workspace's changes are here already, whichever changes of its
-            // own the copy made since.
-            let mut document = self.document.borrow_mut();
-            if heads
-                .iter()
-                .all(|head| document.get_change_by_hash(head).is_some())
-            {
-                return Ok(false);
-            }
+            return Ok(false);
         }
         let Some(bytes) = crate::replication::desk_bytes(peer) else {
             return Ok(false);
         };
-        *self.document.borrow_mut() =
-            AutoCommit::load(&bytes).map_err(|error| error.to_string())?;
+        self.desk
+            .replace(AutoCommit::load(&bytes).map_err(|error| error.to_string())?);
         Ok(true)
     }
 
@@ -1467,22 +1437,27 @@ impl Persistence {
     }
 }
 
-/// Who made each strip and opened each window still on `tree`.
-fn live_authors(authors: &BTreeMap<u64, String>, tree: &DesktopTree) -> BTreeMap<u64, String> {
-    let mut live = std::collections::HashSet::new();
-    for workspace in &tree.workspaces {
-        for strip in &workspace.strips {
-            live.insert(strip.id.0);
-            for group in &strip.window_groups {
-                live.extend(group.tabs.iter().map(|tab| tab.id));
-            }
+/// Where the profile's copy of the desk's document is kept, and why the store
+/// refused the last write of it.
+struct ProfileStore {
+    store: Rc<dyn DurableStore>,
+    key: StorageKey,
+    refused: RefCell<Option<String>>,
+}
+
+impl ProfileStore {
+    /// Why the last write was refused, taken so the next one starts clean.
+    fn refused(&self) -> Option<String> {
+        self.refused.borrow_mut().take()
+    }
+}
+
+impl Store for ProfileStore {
+    fn keep(&self, bytes: Vec<u8>) {
+        if let Err(error) = self.store.write(&self.key, WriteOp::Replace(bytes), None) {
+            *self.refused.borrow_mut() = Some(error.to_string());
         }
     }
-    authors
-        .iter()
-        .filter(|(id, _)| live.contains(*id))
-        .map(|(id, author)| (*id, author.clone()))
-        .collect()
 }
 
 /// The desktop as peers share it: the tree and each tab's record.
@@ -1491,9 +1466,12 @@ pub(crate) fn shared_value(
     shared: &Shared,
 ) -> tilo_desktop_model::ownership::SharedDesktop {
     let tree = handle.shared_tree();
-    let records =
-        crate::desk_records::live(&shared.records.borrow(), &shared.unbound.borrow(), &tree);
-    let authors = live_authors(&shared.authors.borrow(), &tree);
+    let records = tilo_desktop_surface::host::records::live(
+        &shared.records.borrow(),
+        &shared.unbound.borrow(),
+        &tree,
+    );
+    let authors = tilo_session_core::desk::authors_on(&tree, &shared.authors.borrow());
     tilo_desktop_model::ownership::SharedDesktop {
         tree,
         records,
@@ -1575,11 +1553,11 @@ pub(crate) fn return_to(
 
 /// The record each window of a stored desktop shows, as this page takes it
 /// over: bound where the window's application runs here, and held under the
-/// desk's own spelling otherwise ([`crate::desk_records::adopted`]).
+/// desk's own spelling otherwise ([`tilo_desktop_surface::host::records::adopted`]).
 fn adopted_records(
     desktop: &tilo_desktop_model::ownership::SharedDesktop,
 ) -> (HashMap<TabId, RecordCheckout>, HashMap<TabId, String>) {
-    crate::desk_records::adopted(desktop, |app| {
+    tilo_desktop_surface::host::records::adopted(desktop, |app| {
         application(app).map(|definition| definition.record_kind.clone())
     })
 }
@@ -1760,20 +1738,28 @@ pub(crate) fn mount(
         notifications.restore_history(history);
     }
     let saved_notifications_revision = Cell::new(notifications.revision());
-    let persistence = Persistence {
-        store,
+    let profile = Rc::new(ProfileStore {
+        store: Rc::clone(&store),
         key,
+        refused: RefCell::new(None),
+    });
+    let persistence = Persistence {
+        desk: Rc::new(Desk::new(
+            document,
+            &inputs.author,
+            Some(Rc::clone(&profile) as Rc<dyn Store>),
+        )),
+        profile,
+        store,
         saved_revision: Cell::new(0),
         records_changed: Rc::clone(&shared.records_changed),
         records: Rc::clone(&shared.records),
         unbound: Rc::clone(&shared.unbound),
         authors: Rc::clone(&shared.authors),
-        document: Rc::new(RefCell::new(document)),
         peer: inputs.peer,
         notifications,
         notifications_key,
         saved_notifications_revision,
-        author: inputs.author.clone(),
     };
     let tiles = Tiles {
         inputs,

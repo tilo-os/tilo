@@ -17,12 +17,12 @@
 view canvas(a: Arrangement, name: Text, framed: Bool) {
     stack(gap: .related, fill) {
         canvas_entry(here_x(a), here_y(a))
-        ui.Map(name: .some(name), fill) {
+        ui.Map(name: name, fill) {
             for s in a.strips {
                 if s.placed {
                     for p in places_of(a, s.key) {
                         ui.MapPin(
-                            name: .some(p.key),
+                            name: p.key,
                             x: pin_x(a, s, p),
                             y: s.canvas_y,
                             width: pin_width(s),
@@ -67,7 +67,7 @@ fn pin_x(a: Arrangement, s: ArrangementStrip, p: ArrangementPlace) -> Int {
 /// inside, filling it, or the well its window shows in (shell.md §8). The toolbar stands
 /// outside it.
 view framed_place(a: Arrangement, p: ArrangementPlace) {
-    ui.WindowFrame(name: .some(place_title(p)), fill) {
+    ui.WindowFrame(name: place_title(p), fill) {
         controls: {
             place_controls(a, p)
         }
@@ -104,15 +104,9 @@ fn pin_height(s: ArrangementStrip) -> Int {
 /// instead. `x` and `y` are where the caret was, in canvas pixels.
 template view canvas_entry(x: Int, y: Int) {
     state typed: Text = ""
-    ui.TextInput(value: typed, placeholder: "Find something, or ask") {
+    ui.TextInput(bind: typed, placeholder: "Find something, or ask") {
         on submit: session
-            .place_found(
-                text: typed,
-                view: .none,
-                strip: .none,
-                x: .some(x),
-                y: .some(y),
-            )
+            .place_found(text: typed, view: .none, strip: .none, x: x, y: y)
             .then(set(typed, ""))
     }
 }

@@ -45,9 +45,12 @@ app-cli = { path = "../app-cli" }
 # The sidecar contract the PATH shim reads; its library half has no
 # dependencies beyond serde.
 cli-shim = { path = "../cli-shim" }
-workspace-hack = { version = "0.1" }
 
 # Registers the runtime's GNOME Shell and KRunner search providers.
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+# The workspace-hack's native feature set does not build for wasm32.
+workspace-hack = { version = "0.1" }
 [target.'cfg(all(unix, not(target_os = "macos")))'.dependencies]
 tilo-os-search = { path = "../../runtime/os-search" }
 

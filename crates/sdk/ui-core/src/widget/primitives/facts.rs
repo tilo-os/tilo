@@ -29,7 +29,7 @@ mod component;
 pub use component::{FactProps, FactsProps};
 
 /// One fact: an optional icon from the icon set and its text.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Fact {
     pub icon: Option<Icon>,
     pub text: String,

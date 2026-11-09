@@ -69,8 +69,12 @@ fn every_kind_of_broken_layout_is_caught_at_the_view_that_breaks_it() {
             // hold nothing to find in them.
             Kind::OffPixel
             | Kind::BareRow
+            // No page in this fixture stands inside another.
+            | Kind::PageInPage
             | Kind::RaggedColumns
             | Kind::DoubleSelection
+            // The fixture's lists paint no selection of their own.
+            | Kind::SelectionBleed
             | Kind::CrampedGutter
             | Kind::SeveralAdds
             | Kind::CodedName
@@ -95,6 +99,20 @@ fn every_kind_of_broken_layout_is_caught_at_the_view_that_breaks_it() {
             | Kind::DoubleNavigation
             // The fixture's sections hold no tree, so no first level stands off its title.
             | Kind::FirstLevelIndent
+            // The fixture's windows declare no actions of their own, so their bars hold the
+            // window's controls alone, each once, and no action stands as an icon.
+            | Kind::DuplicateBarControl
+            | Kind::IconOnlyBarAction
+            // The fixture's windows compose no shell with a header row of its own under a bar.
+            | Kind::StackedHeaderRows
+            // No window in this fixture lists items beside a pane that says nothing is chosen.
+            | Kind::PlaceholderPane
+            // The fixture's windows compose no sidebar over a header naming a place.
+            | Kind::UnchosenPlace
+            // The fixture's windows compose no page around a list, and open no item into its
+            // row.
+            | Kind::NestedScroller
+            | Kind::RepeatedRowTitle
             // The fixture's cards each hold what they are given, so none stands empty.
             | Kind::EmptySurface => "(no view)",
         };

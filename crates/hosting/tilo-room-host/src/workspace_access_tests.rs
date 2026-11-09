@@ -140,6 +140,7 @@ fn peer(
             issued_at_ns: 1,
             expires_at_ns,
             signature: [0; 64],
+            issuer: None,
         },
     }
 }
@@ -187,6 +188,17 @@ fn decide_matrix() {
             peer: peer(owner, [11; 32], false, None),
             setup: none(),
             expected: ["NNNNNNNNdNN", "ENNAAEANdNN", "NNNNNNNNdNN"],
+        },
+        Case {
+            name: "an agent's grant of the owner, even listed",
+            peer: {
+                let mut grant = peer(owner, [13; 32], false, Some(NOW + 1));
+                grant.cert.capabilities =
+                    DeviceCapabilities::agent_grant(tilo_user_identity::AgentScope::AllWorkspaces);
+                grant
+            },
+            setup: listed([13; 32]),
+            expected: ["NNNNNNNNNNN", "NNNNNNNNNNN", "NNNNNNNNNNN"],
         },
         Case {
             name: "owner's device a pending replacement removed",
@@ -489,6 +501,7 @@ fn signed_member(root: &SigningKey, device: &SigningKey, issued_at_ns: u64) -> D
         issued_at_ns,
         expires_at_ns: Some(issued_at_ns.saturating_add(24 * 60 * 60 * 1_000_000_000)),
         signature: [0; 64],
+        issuer: None,
     };
     tilo_user_identity::sign_device_cert(&mut cert, root).unwrap();
     cert

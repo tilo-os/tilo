@@ -47,7 +47,7 @@ view shell_parts(x: ShellParts) {
                 ui.BarChip("Invite", icon: .user_plus) {
                     on press: set(last, "Invite")
                 }
-                ui.BarChip("Bo is viewing", label: .some("Bo is viewing")) {
+                ui.BarChip("Bo is viewing", label: "Bo is viewing") {
                     on press: set(last, "Shared")
                 }
             }

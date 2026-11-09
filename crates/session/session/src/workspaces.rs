@@ -1786,6 +1786,7 @@ mod tests {
             issued_at_ns: tilo_clock::unix_now_ns(),
             expires_at_ns: None,
             signature: [0; 64],
+            issuer: None,
         };
         tilo_user_identity::sign_device_cert(&mut cert, &person).expect("a certified device");
         tilo_network_actor::HostIdentity {

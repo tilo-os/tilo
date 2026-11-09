@@ -530,7 +530,7 @@ fn certified_personal_devices(
         if cert.user_public_key == user
             && cert.capabilities.is_personal_device()
             && verify_device_cert_at(cert, now_ns).is_ok()
-            && !revocations.is_revoked(&cert.device_public_key)
+            && !revocations.refuses(cert)
             && !devices.contains(&cert.device_public_key)
         {
             devices.push(cert.device_public_key);
@@ -2797,6 +2797,8 @@ fn certify(options: &CertifyOptions<'_>) -> anyhow::Result<()> {
         can_read_all_workspaces: false,
         foreign: false,
         can_administer_devices: false,
+        agent: None,
+        stand_in: false,
     };
     for capability in capabilities {
         match capability.as_str() {
@@ -2818,6 +2820,7 @@ fn certify(options: &CertifyOptions<'_>) -> anyhow::Result<()> {
         issued_at_ns: validity_start_ns(now_ns()?),
         expires_at_ns: None,
         signature: [0; 64],
+        issuer: None,
     };
     sign_root_cert(&mut cert, root.as_ref())?;
     if let Some(identity_dir) = identity_dir {

@@ -21,6 +21,7 @@
 
 mod actions;
 mod admissions;
+mod agent_door;
 #[cfg(feature = "agents")]
 mod agent_members;
 pub mod app_files;
@@ -50,11 +51,13 @@ mod hard_stop_tests;
 pub(crate) use desktop_writes::writes_desktop;
 mod hosts;
 mod listing;
+mod own;
 mod pages;
 mod peer_parts;
 mod publisher;
 mod record_format;
 mod revocations;
+pub use own::OwnWorkspaceOffer;
 #[cfg(any(feature = "agents", feature = "web"))]
 pub(crate) mod sealed_records;
 pub use device_keys::{
@@ -535,31 +538,17 @@ impl GovernedWorkspace {
             &StatePeer,
         ) -> Result<collaboration::CollaborationState, String>,
     ) -> Result<u64, String> {
-        self.commit_as(candidate, (key, now), Change::Other, state)
+        let shared = self.peer.shared();
+        let mut replica = shared.lock();
+        self.commit_held(&mut replica, candidate, (key, now), Change::Other, state)
     }
 
-    /// [`Self::commit`] of a change that only admits people: members added
-    /// through their invitations, each perhaps named as they chose, and
-    /// nothing else changed. While every change since the workspace's document
-    /// last started over was such an admission, the newcomers' change is
-    /// appended to the publication rather than starting the workspace over: a
-    /// crowd arriving together cost the workspace its whole state, rebuilt,
-    /// written and sent to every member, once per arrival.
-    pub(crate) fn commit_admission(
+    /// Commit `candidate`, a change built from `replica`, which the caller
+    /// holds: a member's write taken into the replica meanwhile waits, so it is
+    /// neither lost to the change nor leaves the change uncommittable.
+    pub(super) fn commit_held(
         &mut self,
-        candidate: StatePeer,
-        key: &SigningKey,
-        now: SystemTime,
-        state: impl FnOnce(
-            &WorkspaceRecord,
-            &StatePeer,
-        ) -> Result<collaboration::CollaborationState, String>,
-    ) -> Result<u64, String> {
-        self.commit_as(candidate, (key, now), Change::Admission, state)
-    }
-
-    fn commit_as(
-        &mut self,
+        replica: &mut StatePeer,
         mut candidate: StatePeer,
         (key, now): (&SigningKey, SystemTime),
         change: Change,
@@ -569,14 +558,14 @@ impl GovernedWorkspace {
         ) -> Result<collaboration::CollaborationState, String>,
     ) -> Result<u64, String> {
         let committing = crate::timing::start();
-        if candidate.workspace_id() != self.peer().workspace_id()
-            || candidate.owner() != self.peer().owner()
+        if candidate.workspace_id() != replica.workspace_id()
+            || candidate.owner() != replica.owner()
         {
             return Err("a room change cannot replace the room".into());
         }
         // A member admitted from now on is given the workspace as it stands, not
         // what was withdrawn before they joined.
-        let joined = !member_roots(&candidate, now).is_subset(&member_roots(&self.peer(), now));
+        let joined = !member_roots(&candidate, now).is_subset(&member_roots(replica, now));
         let preparing = crate::timing::start();
         prepare_governance(&mut candidate, key, now)?;
         crate::timing::window("room.commit.prepare", preparing);
@@ -605,14 +594,14 @@ impl GovernedWorkspace {
             && self
                 .admissions_since_base
                 .as_ref()
-                .is_some_and(|clean| self.peer().workspace_heads().as_ref() == Some(clean));
+                .is_some_and(|clean| replica.workspace_heads().as_ref() == Some(clean));
         let started_over = (tail >= MAX_PUBLICATION_TAIL || joined) && !appended_admission;
         if started_over {
             // Keep unchanged record checkpoints on their own channels; replacing
             // those baselines could discard member writes. A record changed by
             // this commit must still publish at the governance rollover.
             let changed_records =
-                durable_messages(&mut candidate.clone(), &self.peer(), (key, now), generation)?
+                durable_messages(&mut candidate.clone(), replica, (key, now), generation)?
                     .into_iter()
                     .filter_map(|message| match message {
                         neighbour_wire::NeighbourMsg::AppDocument {
@@ -638,7 +627,7 @@ impl GovernedWorkspace {
             record.published = 0;
         } else {
             let diffing = crate::timing::start();
-            let messages = durable_messages(&mut candidate, &self.peer(), (key, now), generation)?;
+            let messages = durable_messages(&mut candidate, replica, (key, now), generation)?;
             for message in messages.iter().filter(|message| for_members(message)) {
                 record.outgoing.push(publication(message, false)?);
             }
@@ -659,7 +648,7 @@ impl GovernedWorkspace {
             self.record = prior;
             return Err(error);
         }
-        *self.peer.lock() = candidate;
+        *replica = candidate;
         self.rebased |= rebased;
         // Clean from a start made at an admission; kept clean only by
         // admissions appended to it; anything else spoils it until the next.
@@ -668,7 +657,7 @@ impl GovernedWorkspace {
         } else {
             appended_admission
         };
-        self.admissions_since_base = clean.then(|| self.peer().workspace_heads()).flatten();
+        self.admissions_since_base = clean.then(|| replica.workspace_heads()).flatten();
         crate::timing::event(
             "room.governance_commit",
             committing,
@@ -894,6 +883,12 @@ struct WorkspacesInner {
     /// Where invitations to mail to wait-list addresses go, once whoever
     /// runs the relay sends mail ([`Workspaces::mail_wait_list`]).
     wait_list_mail: std::sync::OnceLock<(String, tokio::sync::mpsc::UnboundedSender<WaitListMail>)>,
+    /// The workspaces of people's own, once the host's operator offers them
+    /// ([`Workspaces::offer_own_workspaces`]).
+    own: std::sync::OnceLock<own::OwnWorkspaces>,
+    /// The devices the host's own person runs an agent on, and their open
+    /// sessions ([`agent_door`]).
+    agent_door: agent_door::AgentDoor,
 }
 
 /// Notices one workspace hands its channel service at once; a device asks
@@ -1098,6 +1093,8 @@ impl Workspaces {
                 hosting: crate::hosted::Hosting::new(host.clone()),
                 host,
                 wait_list_mail: std::sync::OnceLock::new(),
+                own: std::sync::OnceLock::new(),
+                agent_door: agent_door::AgentDoor::default(),
             }),
         };
         let device = this.device_keys();
@@ -1411,14 +1408,64 @@ impl Workspaces {
     }
 
     /// Serve `workspace`'s replica over the direct link, keeping its history
-    /// at the host's store.
+    /// at the host's store, and take in what its members send there.
     fn serve_direct(&self, workspace: &GovernedWorkspace) -> Result<(), String> {
         let link = tilo_peer_state::direct::DirectSync::over(
             workspace.peer.clone(),
             self.inner.host.key.clone(),
         )
         .with_store(Arc::clone(&self.inner.store));
-        self.inner.direct.serve(link)
+        self.inner.direct.serve(link.clone())?;
+        self.follow_link(workspace, &link);
+        Ok(())
+    }
+
+    /// Take in what `workspace`'s link admits and answer what its members ask
+    /// there: a frame the link admitted is what a member's write through a
+    /// relay session was, so it is followed as one ([`Self::absorb`]), and each
+    /// ask for content is answered with what this host keeps of it, or word
+    /// that it keeps none, addressed to whoever asked. The link carries each
+    /// ask on to the workspace's other members itself.
+    fn follow_link(
+        &self,
+        workspace: &GovernedWorkspace,
+        link: &tilo_peer_state::direct::DirectSync,
+    ) {
+        let name = workspace.workspace().to_owned();
+        let workspaces = WeakWorkspaces(Arc::downgrade(&self.inner));
+        let link = link.clone();
+        let mut heard = link.heard();
+        tokio::spawn(async move {
+            while let Ok(frame) = heard.recv().await {
+                // The host this link served is gone: so is the answer.
+                let Some(workspaces) = workspaces.upgrade() else {
+                    return;
+                };
+                let asking = matches!(
+                    frame.message,
+                    neighbour_wire::NeighbourMsg::RecordContentWant { .. }
+                );
+                let Ok(body) = postcard::to_allocvec(&frame.message) else {
+                    continue;
+                };
+                if let Err(error) = workspaces.absorb(&name, frame.author, &body).await {
+                    tracing::warn!(%name, %error, "the host did not keep what its link admitted");
+                }
+                if !asking {
+                    continue;
+                }
+                for answer in workspaces.content_answer(&name, &body) {
+                    match postcard::from_bytes::<neighbour_wire::NeighbourMsg>(&answer) {
+                        Ok(message) => {
+                            let _ = link.send(message);
+                        }
+                        Err(error) => {
+                            tracing::warn!(%error, "a content answer did not encode");
+                        }
+                    }
+                }
+            }
+        });
     }
 
     /// Run the transform an offloadable action declares for the workspaces
@@ -2716,6 +2763,7 @@ impl Workspaces {
         let epoch = publisher.reconcile(&mut workspace.record.published);
         let workspace_id = workspace.workspace_id();
         let (publications, unreadable) = workspace.unpublished(&host.records);
+        self.announce(workspace, &publications);
         if let Err(error) = unreadable {
             // What precedes it is still published, in order.
             publisher.push(
@@ -2737,6 +2785,29 @@ impl Workspaces {
         self.observe_calls(workspace);
         self.governance_moved(workspace);
         Ok(())
+    }
+
+    /// Hand the governance `workspace` just committed to its direct link: the
+    /// link carries it to the member devices it holds, and to this device's
+    /// own replica when the workspace is hosted here, so a member's device
+    /// follows a decision at once rather than at its next catch-up.
+    fn announce(&self, workspace: &GovernedWorkspace, publications: &[publisher::Publication]) {
+        if publications.is_empty() {
+            return;
+        }
+        let Some(link) = self.inner.direct.link(workspace.workspace_id()) else {
+            return;
+        };
+        for publication in publications {
+            match postcard::from_bytes::<neighbour_wire::NeighbourMsg>(&publication.commit.body) {
+                Ok(message) => {
+                    if let Err(error) = link.send(message) {
+                        tracing::debug!(%error, "governance did not reach the workspace's links");
+                    }
+                }
+                Err(error) => tracing::warn!(%error, "a governance publication did not encode"),
+            }
+        }
     }
 
     /// Note `workspace`'s governance as it now stands, then tell whoever

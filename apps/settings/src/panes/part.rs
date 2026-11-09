@@ -5,10 +5,10 @@ use crate::categories::Category;
 use crate::effects::AreaVocabulary as _;
 
 use crate::panes::{
-    about, accessibility, accounts, agent_models, appearance, audio, bluetooth, device_mesh,
-    disk_unlock, display, drives, keyboard_shortcuts, mouse_keyboard, network, notifications,
-    permissions, personal_apps, power, printers, region, speakers, storage, time_date, updates,
-    users,
+    about, accessibility, accounts, agent_models, appearance, audio, billing, bluetooth,
+    device_mesh, disk_unlock, display, drives, keyboard_shortcuts, mouse_keyboard, network,
+    notifications, permissions, personal_apps, power, printers, region, speakers, storage,
+    time_date, updates, users,
 };
 
 /// The host client Device mesh carries pairing requests on, which the areas
@@ -87,6 +87,9 @@ pub(crate) const AREAS: &[(u16, crate::area::MakeArea)] = &[
         )
     }),
     (220, |_, _| Box::new(region::language::LanguageArea::new())),
+    (230, |context, made| {
+        Box::new(billing::BillingArea::new(context, mesh_remote(made)))
+    }),
 ];
 
 /// Every area's vocabulary, in the order the union declares them.
@@ -117,6 +120,7 @@ pub(crate) const FAMILIES: &[(u16, &crate::effects::EffectFamily)] = &[
     (210, device_mesh::DeviceMeshEffect::FAMILY),
     (260, region::language::LanguageEffect::FAMILY),
     (230, accounts::AccountsEffect::FAMILY),
+    (270, billing::BillingEffect::FAMILY),
 ];
 
 /// One [`crate::effects::LiveArea`]: the area `$module::$area` behind the

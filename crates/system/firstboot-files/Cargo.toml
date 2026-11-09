@@ -22,6 +22,9 @@ getrandom.workspace = true
 rustix = { workspace = true, features = ["fs", "process", "std"] }
 # The ids read as Python's int() read them.
 tilo-pycompat = { path = "../tilo-pycompat" }
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+# The workspace-hack's native feature set does not build for wasm32.
 workspace-hack = { version = "0.1" }
 
 [dev-dependencies]

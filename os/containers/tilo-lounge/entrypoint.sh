@@ -28,6 +28,10 @@
 # ingress binds TILO_ROOMS_WEB; an address ending in `:0` takes a port the
 # kernel picks, which the host announces in its started event.
 #
+# A host that gives each person who asks a workspace of their own, governed
+# here beside the Lounge, sets how many gigabytes each may keep:
+#   TILO_ROOMS_OWN_WORKSPACES  gigabytes per person (unset: no own workspaces)
+#
 # Everything else has the default below. Any other TILO_ROOMS_* variable stops
 # the start: this host does not read it, and a deployment that still sets what
 # the host no longer honors must not start believing it does.
@@ -46,6 +50,7 @@ TILO_ROOMS_WAIT_LIST_MAX TILO_ROOMS_PUBLIC_API TILO_ROOMS_LIVE_ORIGIN
 TILO_ROOMS_DEFAULT_ROLE TILO_ROOMS_CHAT_CHANNELS TILO_ROOMS_FEEDBACK_CHANNEL
 TILO_ROOMS_SEED_APPS TILO_ROOMS_AUTHOR_APPS TILO_ROOMS_REFOUND TILO_ROOMS_BOTS TILO_ROOMS_LAYOUT
 TILO_ROOMS_INACTIVE_AFTER_DAYS TILO_ROOMS_ROOT_FILE TILO_ROOMS_ROLES_FILE
+TILO_ROOMS_OWN_WORKSPACES
 TILO_ROOMS_STATE
 TILO_ROOMS_WEB_ENTRY TILO_ROOMS_SITE_ORIGINS TILO_ROOMS_RELAY_ORIGIN
 TILO_ROOMS_RELAY_PLAIN TILO_ROOMS_LIVE TILO_ROOMS_LIVE_ORIGIN TILO_ROOMS_WEB
@@ -148,6 +153,13 @@ if [ -n "$wait_list" ]; then
     ''|*[!0-9]*) fail "TILO_ROOMS_WAIT_LIST_MAX is a count, not $wait_list" ;;
   esac
   set -- "$@" --wait-list-max "$wait_list"
+fi
+own=${TILO_ROOMS_OWN_WORKSPACES:-}
+if [ -n "$own" ]; then
+  case $own in
+    ''|*[!0-9]*) fail "TILO_ROOMS_OWN_WORKSPACES is gigabytes per person, not $own" ;;
+  esac
+  set -- "$@" --own-workspaces "$own"
 fi
 if [ "${TILO_ROOMS_FETCH_PROXY:-1}" != 0 ]; then
   set -- "$@" --fetch-proxy

@@ -162,4 +162,12 @@ pub trait RuntimeServices: Sized {
     fn remote_doors(&self) -> Option<std::sync::Arc<remote_door::Doors>> {
         None
     }
+
+    /// The person's devices, as this host's own store of them holds them: who
+    /// a grant certificate must belong to for the MCP endpoint to open a
+    /// session, and whether it still holds. `None` for a host that opens no
+    /// grant-authenticated sessions.
+    fn persons_devices(&self) -> Option<std::sync::Arc<dyn remote_door::PersonsDevices>> {
+        None
+    }
 }

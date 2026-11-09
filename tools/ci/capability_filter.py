@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """The nextest filter that leaves out tests whose capability this machine lacks.
 
-    capability_filter.py [--probe-output FILE]        # prints the filter
-    capability_filter.py --require-variables          # prints KEY=1 lines
+    capability_filter.py [--packages NAME...] [--probe-output FILE]   # the filter
+    capability_filter.py --require-variables                          # KEY=1 lines
 
 Reads .config/nextest-capabilities.toml. Without --probe-output it runs the
 `capability_probe` test of tilo-test-env through `cargo nextest` (so it runs
@@ -12,12 +12,18 @@ capability and the reason, and the filter it prints on stdout leaves that
 group out, so nextest counts those tests as not run. The filter is empty when
 nothing is left out.
 
+--packages names the packages a run tests (every package when given none): a
+run of none of the manifest's packages prints nothing and probes nothing, so
+the ordinary job pays no probe. tools/ci/nextest.sh gives it what the run
+selects, which is how a run leaves these tests out wherever it is started.
+
 --require-variables prints the TILO_REQUIRE_* variable of every mapped
 capability: the ci profile's setup sets them, so a test of a mapped
 capability fails where the capability is missing instead of skipping.
 """
 
 import argparse
+import re
 import subprocess
 import sys
 import tomllib
@@ -29,11 +35,23 @@ PROBE = [
     "cargo", "nextest", "run", "--locked", "--profile", "ci",
     "-p", "tilo-test-env", "--test", "capability_probe", "--no-capture",
 ]
+# The packages a group's filter names (`.config/nextest-capabilities.toml`).
+PACKAGE = re.compile(r"package\(\s*([^)\s]+)\s*\)")
 
 
 def manifest() -> dict:
     with MANIFEST.open("rb") as handle:
         return tomllib.load(handle).get("capabilities", {})
+
+
+def groups(capabilities: dict, packages: set[str] | None = None) -> list[dict]:
+    """Every test group, or only those naming one of `packages`."""
+    found = [
+        group for capability in capabilities.values() for group in capability.get("tests", [])
+    ]
+    if packages is None:
+        return found
+    return [group for group in found if packages & set(PACKAGE.findall(group["filter"]))]
 
 
 def probe_report(text: str) -> tuple[dict[str, str | None], dict[str, str]]:
@@ -50,26 +68,26 @@ def probe_report(text: str) -> tuple[dict[str, str | None], dict[str, str]]:
     return probes, variables
 
 
-def check(capabilities: dict, probes: dict, variables: dict) -> None:
+def check(capabilities: dict, probes: dict, variables: dict, packages: set[str] | None) -> None:
     for name, capability in capabilities.items():
         if variables and variables.get(name) != capability.get("variable"):
             sys.exit(f"{MANIFEST}: {name}'s variable is {variables.get(name)!r} in tilo-test-env")
-        for group in capability.get("tests", []):
+        for group in groups({name: capability}, packages):
             if group["probe"] not in probes:
                 sys.exit(f"{MANIFEST}: {name} names probe {group['probe']!r}, which tilo-test-env does not have")
 
 
-def exclusions(text: str) -> tuple[str, list[str]]:
+def exclusions(text: str, packages: set[str] | None = None) -> tuple[str, list[str]]:
     """From a probe report: the filter leaving out what may not run here ('' when nothing),
     and a line per left-out group naming its capability and why."""
     capabilities = manifest()
     probes, variables = probe_report(text)
     if not probes:
         sys.exit("the capability probe reported nothing")
-    check(capabilities, probes, variables)
+    check(capabilities, probes, variables, packages)
     left_out, notes = [], []
     for name, capability in capabilities.items():
-        for group in capability.get("tests", []):
+        for group in groups({name: capability}, packages):
             reason = probes[group["probe"]]
             if reason is not None:
                 notes.append(f"not run: tests that need {name} ({group['probe']}: {reason}): {group['filter']}")
@@ -81,11 +99,22 @@ def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--probe-output", type=Path)
     parser.add_argument("--require-variables", action="store_true")
+    parser.add_argument(
+        "--packages",
+        nargs="*",
+        default=None,
+        help="the packages the run tests; the manifest's packages when none are named",
+    )
     args = parser.parse_args()
     if args.require_variables:
         for capability in manifest().values():
             if capability.get("mapped"):
                 print(f"{capability['variable']}=1")
+        return
+    packages = set(args.packages) if args.packages else None
+    if packages is not None and not groups(manifest(), packages):
+        # None of this run's packages has a test group here: nothing to probe,
+        # nothing to leave out.
         return
     if args.probe_output:
         text = args.probe_output.read_text()
@@ -95,7 +124,7 @@ def main() -> None:
         if run.returncode != 0:
             sys.stderr.write(text)
             sys.exit("the capability probe did not run")
-    left_out, notes = exclusions(text)
+    left_out, notes = exclusions(text, packages)
     for note in notes:
         print(note, file=sys.stderr)
     if left_out:

@@ -616,15 +616,20 @@ impl MainPanel {
         self.dirty = true;
     }
 
-    /// End naming a new note: Enter or Escape goes on to the start of its
-    /// body; a click away leaves the caret where the click puts it.
-    fn finish_naming(&mut self, event: &WindowEvent) {
-        if std::mem::take(&mut self.naming_new)
-            && matches!(event, WindowEvent::KeyboardInput { .. })
-        {
+    /// End editing the title: a key that ends it (Enter, Escape) hands the
+    /// keyboard to the note's body, and naming a new note goes on to the start
+    /// of its body. A click away leaves the caret where the click puts it.
+    fn finish_editing_title(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
+        if !matches!(event, WindowEvent::KeyboardInput { .. }) {
+            return;
+        }
+        if std::mem::take(&mut self.naming_new) {
             self.editor
                 .editor_mut()
                 .focus_block(0, ui::widget::CursorPlacement::Start);
+        }
+        if let Some(node) = self.editor_node {
+            *ctx.focus_target = Some(node);
         }
     }
 
@@ -1243,23 +1248,18 @@ impl MainPanel {
         )
     }
 
-    /// Enter the shared title editor from a note resource's Rename command.
-    pub fn begin_title_edit(&mut self) {
+    /// Enter the shared title editor, from a note resource's Rename command or
+    /// to name a note just made: that one opens empty, the placeholder showing,
+    /// so what is typed names it and Enter goes on to the start of its body.
+    pub fn begin_title_edit(&mut self, naming: bool) {
         if self.page_id.is_some() {
             self.editor.set_focus(false);
-            self.title_label.begin_edit();
-            self.naming_new = false;
-            self.dirty = true;
-        }
-    }
-
-    /// Name a note just made: its title opens empty, the placeholder showing,
-    /// so what is typed names it, and Enter goes on to the start of its body.
-    pub fn begin_new_title_edit(&mut self) {
-        if self.page_id.is_some() {
-            self.editor.set_focus(false);
-            self.title_label.begin_blank_edit();
-            self.naming_new = true;
+            if naming {
+                self.title_label.begin_blank_edit();
+            } else {
+                self.title_label.begin_edit();
+            }
+            self.naming_new = naming;
             self.dirty = true;
         }
     }
@@ -2416,7 +2416,7 @@ impl Widget for MainPanel {
             }
         ) && self.title_rect.contains(self.last_pointer);
         if !self.title_label.is_editing() && press_in_title {
-            self.begin_title_edit();
+            self.begin_title_edit(false);
             *ctx.focus_target = self.title_node;
             *ctx.handled = true;
             return;
@@ -2425,19 +2425,14 @@ impl Widget for MainPanel {
             self.title_label.apply_layout_external(self.title_rect);
             self.title_label
                 .handle_event(event, &mut ctx.reborrow(ctx.path, ctx.node_id));
-            match self.title_label.take_outcome() {
-                EditOutcome::Committed(new) => {
+            let outcome = self.title_label.take_outcome();
+            if !matches!(outcome, EditOutcome::None) {
+                if let EditOutcome::Committed(new) = outcome {
                     self.pending_rename = Some(new);
-                    self.editor.set_focus(true);
-                    self.finish_naming(event);
-                    self.dirty = true;
                 }
-                EditOutcome::Cancelled => {
-                    self.editor.set_focus(true);
-                    self.finish_naming(event);
-                    self.dirty = true;
-                }
-                EditOutcome::None => {}
+                self.editor.set_focus(true);
+                self.finish_editing_title(event, ctx);
+                self.dirty = true;
             }
             // Typing / Enter / Esc are consumed by the field; stop so they
             // never reach the body. A blur-commit press outside the title is

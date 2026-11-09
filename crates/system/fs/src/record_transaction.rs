@@ -859,11 +859,10 @@ mod tests {
         let mut journal = RecordTransactionJournal::open(&journal_path).unwrap();
         assert_eq!(journal.get(id).unwrap(), &value);
         let repository = RecordRepository::open(disk.path().join("records")).unwrap();
-        let history =
-            crate::history::FileHistoryStore::open(disk.path().join("history.bin")).unwrap();
         let namespace = Arc::new(Mutex::new(
             crate::namespace::Namespace::new("external-negative").unwrap(),
         ));
+        let history = crate::history_fixture::History::new(Arc::clone(&namespace));
         let namespace_path = disk.path().join("namespace.bin");
         let mut stripped = value.clone();
         stripped.external_native_effect = None;
@@ -878,14 +877,14 @@ mod tests {
             ));
             assert!(matches!(
                 complete_replacement_transaction(
-                    &repository, &mut journal, &history, &namespace,
+                    &repository, &mut journal, &namespace,
                     &namespace_path, supplied, &authorizer, |_| panic!("unobserved native effect must never broadcast"),
                 ),
                 Err(RecordTransactionCoordinatorError::ExternalNativeEffectPending(pending)) if pending == id
             ));
             assert!(matches!(
                 complete_replacement_transaction_after_repository(
-                    &mut journal, &history, &namespace, &namespace_path,
+                    &mut journal, &namespace, &namespace_path,
                     supplied, |_| panic!("unobserved native effect must never broadcast"),
                 ),
                 Err(RecordTransactionCoordinatorError::ExternalNativeEffectPending(pending)) if pending == id

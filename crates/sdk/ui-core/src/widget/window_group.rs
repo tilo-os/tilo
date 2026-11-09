@@ -7,6 +7,7 @@ use crate::time::{Duration, Instant};
 use crate::widget::TaffyTreeExt;
 use crate::widget::edge_resize::{WidthLimits, WindowEdge};
 use crate::widget::tabs::close_fade;
+use crate::widget::window_controls::{ControlsState, WindowControl, WindowControls};
 use crate::widget::{AppModel, ModelPath};
 use crate::widget::{
     FloatingSurfaceProvider, TabBar, TabDescriptor, TileContent, TileHost, Widget,
@@ -92,6 +93,8 @@ fn group_close_fade() -> Duration {
 
 #[path = "window_group_frame_spring.rs"]
 mod frame_spring;
+#[path = "window_group_held_bar.rs"]
+mod held_bar;
 use frame_spring::FrameSpring;
 
 impl WindowGroup {
@@ -164,6 +167,18 @@ pub struct WindowGroup {
     close_reports: Vec<crate::application::ComponentCloseReport>,
     pub id: u64,
     bar: TabBar,
+    /// Where the app's own header row stands while it holds the window's bar, and where the
+    /// window's controls go: the row is the window's bar then — the app draws it at the window's
+    /// top and the window draws no bar of its own above it
+    /// ([`crate::widget::window_header::content_bar`]).
+    held_bar: Option<crate::widget::WindowBarSlot>,
+    /// The window's controls in a held bar's row, and which of them the pointer is on and has
+    /// pressed: a row that is the bar carries the window's controls at its trailing end.
+    held_controls: WindowControls,
+    held_hover: Option<WindowControl>,
+    held_pressed: Option<WindowControl>,
+    /// The controls in the held row changed what they show: the window paints again.
+    held_dirty: bool,
     /// Each tab's host, boxed so it keeps its address while it stays in the
     /// window: the frame's layout pointer map names the shown host by
     /// address, and opening, closing or reordering another tab must not
@@ -423,6 +438,11 @@ impl WindowGroup {
             id,
             close_reports: vec![],
             bar,
+            held_bar: None,
+            held_controls: WindowControls::default(),
+            held_hover: None,
+            held_pressed: None,
+            held_dirty: false,
             hosts,
             width,
             strip_usable_px: DEFAULT_STRIP_USABLE_PX,
@@ -484,7 +504,11 @@ impl WindowGroup {
     }
 
     fn navigation_bar_visible(&self) -> bool {
-        !self.external_navigation && (!self.fullscreen_presentation || self.fullscreen_bar_drawn())
+        // A window shows one bar: while its app's own header row holds it, the row is that bar and
+        // the window draws none above it.
+        self.held_bar.is_none()
+            && !self.external_navigation
+            && (!self.fullscreen_presentation || self.fullscreen_bar_drawn())
     }
 
     pub(crate) fn set_fullscreen_presentation(&mut self, fullscreen: bool) {
@@ -1381,6 +1405,30 @@ impl WindowGroup {
             .map(|(_, h)| &mut **h)
     }
 
+    /// The window is drawn as a card whose outline the card paints: its tile
+    /// keeps its own edge off, so no arc of it is cut by the card's clip.
+    pub(crate) fn set_edge_by_card(&mut self, by_card: bool) {
+        if let Some(host) = self.active_host_mut() {
+            host.set_edge_by_card(by_card);
+        }
+    }
+
+    /// Stroke the window's edge, and its focus ring, along the card `rect` it
+    /// is drawn at: the outline a window keeps when it stands as one card off
+    /// the desk, in the colour and weight its tile's own edge has.
+    pub fn draw_card_edge(
+        &self,
+        scene: &mut Scene,
+        transform: Affine,
+        theme: &Theme,
+        radius: f64,
+        rect: Rect,
+    ) {
+        if let Some(host) = self.active_host() {
+            host.draw_card_edge(scene, transform, theme, radius, rect);
+        }
+    }
+
     /// Read-only twin of [`Self::active_host_mut`] — avoids a `&mut`
     /// borrow that would conflict with the frame builder's own borrows.
     pub fn active_host(&self) -> Option<&TileHost> {
@@ -1771,7 +1819,24 @@ impl WindowGroup {
     }
 
     pub fn bar_rect(&self) -> Rect {
+        // A window whose app's row is its bar draws none: nothing of the bar is there to hit.
+        if self.held_bar.is_some() {
+            return Rect::ZERO;
+        }
         self.bar.bar_rect()
+    }
+
+    /// Where the app's own header row stands while it holds the window's bar, and where the
+    /// window's controls go; `None` while the window draws its own bar.
+    #[cfg(test)]
+    pub fn held_bar_for_tests(&self) -> Option<crate::widget::WindowBarSlot> {
+        self.held_bar
+    }
+
+    /// Whether the window draws a bar of its own above its content.
+    #[cfg(test)]
+    pub fn draws_its_bar_for_tests(&self) -> bool {
+        self.navigation_bar_visible()
     }
 
     pub fn tab_rects(&self) -> &[Rect] {
@@ -3202,6 +3267,9 @@ impl Widget for WindowGroup {
         node_map: &mut std::collections::HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
         self.prepare_layout(theme);
+        // One bar per window: the app's own header row holds it where it cannot stand as the
+        // bar's slots, and the window draws none above it then.
+        self.held_bar = self.offer_bar_to_app(theme);
         let bar_node = self
             .navigation_bar_visible()
             .then(|| self.bar.build_layout(taffy, theme, node_map));
@@ -3253,6 +3321,14 @@ impl Widget for WindowGroup {
         ) {
             h.apply_layout(taffy, tile_child, new_origin);
         }
+        // The app's row may have taken the bar in this layout (or given it back): the window lays
+        // out again without its own bar then, or with it back.
+        let held = self.read_held_bar();
+        if held != self.held_bar {
+            self.held_bar = held;
+            self.style_dirty = true;
+        }
+        self.lay_out_held_controls();
     }
     fn draw(
         &mut self,
@@ -3397,6 +3473,28 @@ impl Widget for WindowGroup {
                 scene.pop_layer();
             }
         }
+        // While the app's header row is the window's bar, its controls stand at the row's
+        // trailing end, over the app's own drawing, as they do in the bar.
+        if self.held_bar.is_some() && self.held_controls.pill.area() > 0.0 {
+            self.held_controls.paint(
+                scene,
+                transform,
+                theme,
+                ControlsState {
+                    maximized: self.maximized,
+                    hovered: self.held_hover,
+                    pressed: self.held_pressed,
+                    lifts: self
+                        .held_hover
+                        .or(self.held_pressed)
+                        .map_or([0.0; 3], |control| {
+                            let mut lifts = [0.0; 3];
+                            lifts[control.index()] = 1.0;
+                            lifts
+                        }),
+                },
+            );
+        }
         self.draw_closing_hosts(scene, transform, tr, theme, presence);
         self.draw_bar_over_content(bar_over, scene, transform, tr, theme, presence);
         if self.navigation_bar_visible() {
@@ -3439,6 +3537,11 @@ impl Widget for WindowGroup {
             self.sync_host_keyboard();
         }
         if self.handle_edge_input(event, ctx.scale_factor, *ctx.modifiers) {
+            *ctx.handled = true;
+            return;
+        }
+        // The window's controls in its app's row are the window's, not the app's under them.
+        if self.held_control_input(event, ctx.scale_factor) {
             *ctx.handled = true;
             return;
         }
@@ -3588,6 +3691,7 @@ impl Widget for WindowGroup {
             .edge_reveal_at()
             .is_some_and(|due| crate::time::now() >= due);
         self.grip_dirty
+            || self.held_dirty
             || edge_due
             || (self.navigation_bar_visible()
                 && ((self.bar.needs_redraw() || self.bar.needs_animation_frame())
@@ -3597,6 +3701,7 @@ impl Widget for WindowGroup {
     }
     fn mark_drawn(&mut self) {
         self.grip_dirty = false;
+        self.held_dirty = false;
         self.next_frame();
         // The bar, its search and the active host: what the group draws. A
         // host drawing a card over the desk draws that card here too, so what

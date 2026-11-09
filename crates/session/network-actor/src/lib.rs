@@ -20,11 +20,9 @@ pub mod behaviour;
 mod device_sessions;
 pub mod fabric;
 mod fabric_link;
-pub mod held_log;
 pub mod local_host;
 pub mod media_caps;
 pub mod native_ingress;
-mod opened_records;
 pub mod services;
 #[cfg(any(test, feature = "test-support"))]
 pub mod siblings;
@@ -37,15 +35,7 @@ pub const DEFAULT_WS_TOPIC: u64 = 0;
 /// Stable transport/host shard for a durable workspace. Local workspace handles are
 /// deliberately not used: they differ between devices.
 pub fn workspace_topic_id(workspace: tilo_desktop_model::WorkspaceId) -> u64 {
-    if workspace.is_nil() {
-        return DEFAULT_WS_TOPIC;
-    }
-    // `workspace.to_string()` is `Uuid::to_string()`, which `room_workspace_id`
-    // can always re-parse, so the `Err` path is unreachable in practice.
-    // Fall back to the "no workspace identity" topic rather than panic on this
-    // hot path — `room_workspace_id` never returns 0 on success, so a real
-    // topic id can't collide with the fallback.
-    tilo_relay_protocol::room_workspace_id(&workspace.to_string()).unwrap_or(DEFAULT_WS_TOPIC)
+    tilo_relay_protocol::workspace_topic(&workspace.to_string())
 }
 
 /// A workspace host connection's error, as the actor reports it. A host at
@@ -58,7 +48,6 @@ fn relay_error(host: &iroh::EndpointId, error: &tilo_relay_session::ClientError)
     error.to_string()
 }
 
-mod sealed_outbox;
 mod workspace_lane;
 #[cfg(test)]
 mod workspace_lane_tests;
@@ -66,7 +55,7 @@ mod workspace_members;
 use workspace_members::Admission;
 pub use workspace_members::RosterDevice;
 
-use std::collections::{BTreeSet, HashMap, HashSet, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -78,7 +67,7 @@ use iroh::protocol::{AcceptError, ProtocolHandler, Router};
 use iroh::{Endpoint, EndpointAddr, EndpointId};
 use tilo_relay_session::{Inbound as HostInbound, RelayClient, RelayCoeditSession};
 use tilo_user_identity::{DeviceCert, RevocationList};
-use tokio::sync::mpsc;
+use tokio::sync::{broadcast, mpsc};
 
 use neighbour_wire::{NeighbourMsg, SurfaceId};
 use neighbour_wire::{Retention, retention};
@@ -473,7 +462,7 @@ pub enum WorkspaceControlRoute {
 
 #[derive(Debug, Clone)]
 pub enum NetEvent {
-    NativeInput(native_ingress::Input),
+    NativeInput(Box<native_ingress::Input>),
     /// One of the person's devices proved itself on the session between the
     /// two ([`device_sessions`]), or proved itself anew there (a renewed
     /// certificate, a new revocation): `certs` are its certificates of the
@@ -615,20 +604,29 @@ pub enum PeerDepartureCause {
 }
 
 enum InternalEvent {
-    /// A workspace's hold reached a host: the session runs until the actor lets
+    /// A workspace's hold reached a host: the link runs until the actor lets
     /// go of `held`.
-    NativeHostConnected {
+    NativeLinkConnected {
         ws: u64,
-        session: Box<RelayCoeditSession>,
+        linked: Box<tilo_peer_state::owner::session::Linked>,
         scope: Arc<native_ingress::Scope>,
         held: tokio::sync::oneshot::Sender<()>,
     },
+    /// A workspace's link brought a frame into this device's owner.
+    NativeHeard {
+        ws: u64,
+        heard: tilo_peer_state::direct::Heard,
+    },
+    /// A workspace's link has the host's retained history in hand.
+    NativeReady { ws: u64 },
+    /// A workspace's link ended.
+    NativeLinkClosed { ws: u64 },
     /// A workspace's hold failed to dial `via`, its `governor` or another host.
     NativeDialFailed {
         ws: u64,
         via: Box<tilo_peer_state::join::TransportHint>,
         governor: bool,
-        error: tilo_peer_state::owner::session::DialError,
+        reason: String,
     },
     Host {
         ws: WorkspaceId,
@@ -765,7 +763,6 @@ struct HeldSurfaceUnits {
 }
 
 enum HostEvent {
-    NativeInput(native_ingress::Input),
     Ready,
     /// A member joined or left the host's live plane.
     Member {
@@ -785,15 +782,6 @@ enum HostEvent {
         replayed: bool,
         msg: NeighbourMsg,
     },
-    /// The host keeps this device's sealed write sent as commit `op`
-    /// ([`sealed_outbox`]).
-    Kept {
-        op: [u8; 16],
-    },
-    /// The host did not keep sealed write `op`: it stays held.
-    Refused {
-        op: [u8; 16],
-    },
     Closed,
 }
 
@@ -807,16 +795,8 @@ struct HostedTopic {
 }
 
 struct HostRuntime {
-    native_scope: Option<Arc<native_ingress::Scope>>,
-    /// Held while a workspace's hold runs this session; let go with it.
-    native_held: Option<tokio::sync::oneshot::Sender<()>>,
-    /// The session goes to this device's own host, in this process: no
-    /// remote party, nothing to keep up.
-    local: bool,
     session: Arc<RelayCoeditSession>,
     pump: tokio::task::JoinHandle<()>,
-    /// Set while the host writes a replay, until its `Ready`.
-    replaying: Arc<std::sync::atomic::AtomicBool>,
 }
 
 /// Early boot of another of the person's devices asking for its sibling
@@ -1120,8 +1100,6 @@ struct Serving {
 pub struct Hosting {
     pub host: crate::local_host::LocalHost,
     pub protocols: crate::local_host::Protocols,
-    /// Where this device logs the sealed writes held for workspaces' hosts.
-    pub held_writes: std::path::PathBuf,
 }
 
 /// The channel governance a device published to one workspace: each message's
@@ -1166,9 +1144,8 @@ struct ActorState {
     sibling_events: Option<mpsc::Sender<NetEvent>>,
     hosts: HashMap<EndpointId, (EndpointAddr, Option<HomePeerExpectation>)>,
     host_sessions: HashMap<(WorkspaceId, EndpointId), HostRuntime>,
-    /// The on-demand records this device asked its workspaces' hosts for
-    /// ([`NetCmd::OpenRecord`]), by workspace.
-    opened_records: HashMap<WorkspaceId, BTreeSet<[u8; 32]>>,
+    /// Each joined workspace's link, on the direct lane.
+    native_links: HashMap<u64, native_ingress::NativeLink>,
     connecting_hosts: HashSet<(WorkspaceId, EndpointId)>,
     content_discovery_tasks: HashMap<(WorkspaceId, EndpointId), tokio::task::JoinHandle<()>>,
     /// Approver sessions that put this person's agents' questions on the
@@ -1188,14 +1165,7 @@ struct ActorState {
     /// Retained state published to a workspace while none of its hosts had a
     /// session (see [`ActorState::hold_for_host`]).
     host_backlog: HashMap<WorkspaceId, HostBacklog>,
-    /// This device's sealed writes to each workspace whose records are sealed
-    /// channels, until a host of the workspace keeps them (see
-    /// [`sealed_outbox`]).
-    sealed_outbox: HashMap<WorkspaceId, sealed_outbox::SealedOutbox>,
-    /// Keeps those writes in their workspaces' logs, off this actor's turn.
-    sealed_records: sealed_outbox::RecordKeeper,
-    /// Where those logs are, read when a workspace's route is set up.
-    held_log: Option<held_log::HeldLog>,
+
     /// Long-lived direct media connections. One unidirectional QUIC stream
     /// per frame avoids head-of-line blocking between viewers and frames.
     surface_connections: HashMap<EndpointId, iroh::endpoint::Connection>,
@@ -1295,11 +1265,6 @@ fn take_personal_transfer_generation(
 
 impl Drop for HostRuntime {
     fn drop(&mut self) {
-        if let Some(scope) = &self.native_scope {
-            scope.close();
-        }
-        // The workspace's hold dials again once its session is let go.
-        drop(self.native_held.take());
         self.pump.abort();
     }
 }
@@ -1398,7 +1363,7 @@ impl ActorState {
             Some(NetCmd::LeaveWorkspace { ws }) => {
                 self.topics.remove(&ws);
                 self.native_routes.remove(ws);
-                self.opened_records.remove(&ws);
+                self.native_links.remove(&ws);
                 self.subscribers.remove(&ws);
                 self.set_workspace_roster(ws, Vec::new(), false);
                 self.pending_surface_frames
@@ -1437,34 +1402,17 @@ impl ActorState {
                     }
                 }
             }
+            // A workspace's link brings what its host retains when it starts,
+            // and every frame after it live: nothing is held back to ask for.
             Some(NetCmd::NativeReplay { ws }) => {
-                // What the host sends until its `Ready` is its retained
-                // replay, this device's own writes included: marked so, as
-                // its first replay is, and not taken for live echoes.
-                let runtime = self
-                    .host_sessions
-                    .iter()
-                    .find(|((topic, _), runtime)| *topic == ws && runtime.native_scope.is_some())
-                    .map(|(_, runtime)| runtime);
-                if let Some(runtime) = runtime {
-                    // One replay at a time on a session: a replay asked
-                    // while one runs (each app opened at once asks for one)
-                    // waits for that one's `Ready`, which carries everything
-                    // the host retained when it began; what is written after
-                    // arrives live. Asking again mid-replay makes the host
-                    // start over, and it ends the session whose replay it
-                    // replaced.
-                    if !begins_replay(&runtime.replaying) {
-                        tracing::debug!(
-                            ws,
-                            "joined workspace replay already running; its Ready answers this too"
-                        );
-                    } else if let Err(error) = runtime.session.resubscribe() {
-                        tracing::debug!(ws, %error, "joined workspace replay not asked: not connected");
-                    }
-                }
+                tracing::debug!(
+                    ws,
+                    "a workspace's link replays as it starts; nothing to ask"
+                );
             }
-            Some(NetCmd::OpenRecord { ws, channel }) => self.open_record(ws, channel),
+            Some(NetCmd::OpenRecord { ws, channel }) => {
+                tracing::debug!(ws, channel = %hex::encode(channel), "a sealed record's frames come with its workspace's link");
+            }
             Some(NetCmd::Publish { ws, msg }) => {
                 self.observe_surface_stream(ws, &msg);
                 remember_governance(&mut self.governance, ws, &msg);
@@ -2185,23 +2133,14 @@ impl ActorState {
     /// native session holds. Only a workspace host's is news to the
     /// shell: this device's own host and the person's devices are no
     /// durable hosts it seeds.
-    fn host_ready(&self, ws: WorkspaceId, peer: EndpointId) -> Option<NetEvent> {
+    fn host_ready(&self, ws: WorkspaceId, peer: EndpointId) -> NetEvent {
         // The workspace's own host caught this device up: the workspace holds what it
         // holds. Another host on the topic (a personal relay, a peer) says
-        // nothing about the workspace's host.
-        if !self.native_routes.contains(ws)
-            || self
-                .host_sessions
-                .get(&(ws, peer))
-                .is_some_and(|runtime| runtime.native_scope.is_some())
-        {
+        // nothing about the workspace's host, whose link has its own word.
+        if !self.native_routes.contains(ws) {
             crate::workspace_sync::synced(ws);
         }
-        self.request_native_refresh(ws);
-        self.host_sessions
-            .get(&(ws, peer))
-            .is_some_and(|runtime| !runtime.local || runtime.native_scope.is_some())
-            .then_some(NetEvent::HostReady { ws, peer })
+        NetEvent::HostReady { ws, peer }
     }
 
     fn publish_record_content(&mut self, delivery: RecordContentDelivery) {
@@ -2404,18 +2343,23 @@ impl ActorState {
             }) => {
                 self.handle_host_connected(ws, peer, &addr, result);
             }
-            Some(InternalEvent::NativeHostConnected {
+            Some(InternalEvent::NativeLinkConnected {
                 ws,
-                session,
+                linked,
                 scope,
                 held,
-            }) => self.native_host_connected(ws, *session, scope, held),
+            }) => self.native_link_connected(ws, *linked, scope, held),
+            Some(InternalEvent::NativeHeard { ws, heard }) => {
+                self.native_heard(ws, heard).await;
+            }
+            Some(InternalEvent::NativeReady { ws }) => self.native_ready(ws).await,
+            Some(InternalEvent::NativeLinkClosed { ws }) => self.native_link_closed(ws),
             Some(InternalEvent::NativeDialFailed {
                 ws,
                 via,
                 governor,
-                error,
-            }) => self.native_dial_failed(ws, &via, governor, error),
+                reason,
+            }) => self.native_dial_failed(ws, &via, governor, &reason),
             Some(InternalEvent::Host {
                 ws,
                 peer,
@@ -2725,7 +2669,6 @@ impl ActorState {
                 if let Err(error) = session.live_join() {
                     tracing::warn!(ws, %error, "could not join the workspace host's live plane");
                 }
-                self.reopen_records(ws, &session);
                 let replaying = Arc::new(std::sync::atomic::AtomicBool::new(true));
                 let pump = spawn_host_pump(
                     ws,
@@ -2733,20 +2676,10 @@ impl ActorState {
                     Arc::clone(&session),
                     Arc::clone(&replaying),
                     self.internal_tx.clone(),
-                    None,
                     true,
                 );
-                self.host_sessions.insert(
-                    (ws, peer),
-                    HostRuntime {
-                        replaying,
-                        native_scope: None,
-                        native_held: None,
-                        local: false,
-                        session,
-                        pump,
-                    },
-                );
+                self.host_sessions
+                    .insert((ws, peer), HostRuntime { session, pump });
             }
             Err(error) => {
                 tracing::warn!(ws, peer = %peer, %error, "workspace host connection failed");
@@ -2778,7 +2711,6 @@ impl ActorState {
     /// to keep that dispatcher short.
     async fn handle_host_event(&mut self, ws: WorkspaceId, peer: EndpointId, event: HostEvent) {
         self.tally.note(host_event_kind(&event));
-        let event = self.admit_native_governance(ws, event).await;
         if let Some(event) = self.map_host_event(ws, peer, event) {
             self.publish_to_subscriber(ws, event).await;
         }
@@ -2793,8 +2725,7 @@ impl ActorState {
         event: HostEvent,
     ) -> Option<NetEvent> {
         match event {
-            HostEvent::NativeInput(input) => Some(NetEvent::NativeInput(input)),
-            HostEvent::Ready => self.host_ready(ws, peer),
+            HostEvent::Ready => Some(self.host_ready(ws, peer)),
             HostEvent::Member { device, active } => self.host_member(ws, peer, device, active),
             HostEvent::RecordOpened { channel, frames } => Some(NetEvent::RecordOpened {
                 ws,
@@ -2821,41 +2752,22 @@ impl ActorState {
                 replayed,
                 msg,
             } => self.host_message(ws, peer, author, fingerprint, replayed, msg),
-            HostEvent::Kept { op } => {
-                self.sealed_kept(ws, op);
-                None
-            }
-            HostEvent::Refused { op } => {
-                self.sealed_refused(ws, op);
-                None
-            }
-            HostEvent::Closed => self.host_session_closed(ws, peer),
+            HostEvent::Closed => Some(self.host_session_closed(ws, peer)),
         }
     }
 
     /// The session of `ws` with the host at `peer` ended.
-    fn host_session_closed(&mut self, ws: WorkspaceId, peer: EndpointId) -> Option<NetEvent> {
+    fn host_session_closed(&mut self, ws: WorkspaceId, peer: EndpointId) -> NetEvent {
         tracing::info!(ws, host = %peer, "workspace host session ended; the next heartbeat dials it again");
         if let Some(runtime) = self.host_sessions.remove(&(ws, peer)) {
             runtime.pump.abort();
-            if runtime.native_scope.is_some() {
-                drop(runtime);
-                // The workspace's hold dials again at once: no heartbeat runs
-                // for a workspace this device's own host serves.
-                self.native_routes.retry(ws);
-                // What this device holds for the workspace is not on its way now.
-                self.tell_unsynced(ws);
-            } else if runtime.local {
-                // This device's own host is no peer of it.
-                return None;
-            }
         }
-        Some(NetEvent::PeerLeft {
+        NetEvent::PeerLeft {
             ws,
             peer,
             cause: PeerDepartureCause::HostSessionClosed,
             membership_epoch: None,
-        })
+        }
     }
 
     /// Hand `event` to the workspace's subscriber and wake the loop for the
@@ -2927,13 +2839,13 @@ impl ActorState {
             || self
                 .native_routes
                 .local()
-                .any(|ws| !self.host_sessions.keys().any(|(topic, _)| *topic == ws))
+                .any(|ws| !self.native_links.contains_key(&ws))
     }
 
     /// Whether a host session goes to another machine: sessions with this
     /// device's own host keep nothing up.
     fn remote_host_sessions(&self) -> bool {
-        self.host_sessions.values().any(|runtime| !runtime.local)
+        !self.host_sessions.is_empty()
     }
 
     /// Whether `command` stays in this process: it goes to this device's
@@ -2943,7 +2855,7 @@ impl ActorState {
             command,
             NetCmd::NativeConnect(connect)
                 if self.host_identity.as_ref().is_some_and(|identity| {
-                    connect.material(identity).is_ok_and(|(hint, cert, _, _)| {
+                    connect.material(identity).is_ok_and(|(hint, cert, _)| {
                         tilo_peer_state::owner::session::hosted_by(&hint, &cert.device_public_key)
                     })
                 })
@@ -2991,17 +2903,10 @@ impl ActorState {
         self.retry_native_routes();
         // A session with this device's own host loses nothing between
         // heartbeats: it publishes as the owner commits.
-        let workspaces: Vec<_> = self
-            .host_sessions
-            .iter()
-            .filter(|(_, runtime)| !runtime.local)
-            .map(|((ws, _), _)| *ws)
-            .collect();
+        let workspaces: Vec<_> = self.native_links.keys().copied().collect();
         for ws in workspaces {
-            self.request_native_refresh(ws);
             self.drive_native_publication(ws);
         }
-        self.sealed_records.retry();
         self.schedule_all_topic_sessions();
         self.dial_siblings();
     }
@@ -3185,11 +3090,7 @@ impl ActorState {
     /// Re-announce every live workspace-host session so a late-joining
     /// subscriber still sees `HostReady`.
     async fn run_host_checkpoint_tick(&self) {
-        for (&(ws, peer), _) in self
-            .host_sessions
-            .iter()
-            .filter(|(_, runtime)| !runtime.local)
-        {
+        for &(ws, peer) in self.host_sessions.keys() {
             if let Some(tx) = self.subscribers.get(&ws) {
                 let _ = tx.send(NetEvent::HostReady { ws, peer }).await;
             }
@@ -3420,17 +3321,9 @@ async fn run(
         );
     // This device's workspace host answers here once it opens: until then its
     // handlers refuse, as a device hosting nothing does.
-    let (local_host, mut protocols, held_log) = match hosting {
-        Some(Hosting {
-            host,
-            protocols,
-            held_writes,
-        }) => (
-            Some(host),
-            protocols,
-            Some(held_log::HeldLog::new(held_writes)),
-        ),
-        None => (None, Vec::new(), None),
+    let (local_host, mut protocols) = match hosting {
+        Some(Hosting { host, protocols }) => (Some(host), protocols),
+        None => (None, Vec::new()),
     };
     // What the session serves beside the actor's own protocols: its action
     // plane, say, on the one endpoint both reach this device at.
@@ -3462,7 +3355,7 @@ async fn run(
         sibling_events: None,
         hosts: HashMap::new(),
         host_sessions: HashMap::new(),
-        opened_records: HashMap::new(),
+        native_links: HashMap::new(),
         connecting_hosts: HashSet::new(),
         content_discovery_tasks: HashMap::new(),
         agent_questions: services::approvers(),
@@ -3473,9 +3366,7 @@ async fn run(
         recent_input: HashMap::new(),
         governance: HashMap::new(),
         host_backlog: HashMap::new(),
-        sealed_outbox: HashMap::new(),
-        sealed_records: sealed_outbox::RecordKeeper::new(held_log.clone()),
-        held_log,
+
         surface_connections: HashMap::new(),
         surface_fanout_tasks: HashMap::new(),
         next_surface_fanout_generation: 0,
@@ -3802,23 +3693,25 @@ fn message_fingerprint(bytes: &[u8]) -> [u8; 32] {
 fn host_event_kind(event: &HostEvent) -> &'static str {
     match event {
         HostEvent::Message { msg, .. } => msg.kind(),
-        HostEvent::NativeInput(input) => match input.message() {
-            NeighbourMsg::AppDocument { envelope, .. } if envelope.encryption.is_some() => {
-                if input.retained() {
-                    "HostSealedReplay"
-                } else {
-                    "HostSealedLive"
-                }
-            }
-            NeighbourMsg::SyncResp { .. } => "HostGovernance",
-            _ => "HostNativeInput",
-        },
         HostEvent::Ready => "HostReady",
         HostEvent::Member { .. } => "HostMember",
         HostEvent::RecordOpened { .. } => "HostRecordOpened",
-        HostEvent::Kept { .. } => "HostKept",
-        HostEvent::Refused { .. } => "HostRefused",
         HostEvent::Closed => "HostClosed",
+    }
+}
+
+/// The tally name of a frame a workspace's link admitted.
+fn heard_kind(input: &native_ingress::Input) -> &'static str {
+    match input.message() {
+        NeighbourMsg::AppDocument { envelope, .. } if envelope.encryption.is_some() => {
+            if input.retained() {
+                "HostSealedReplay"
+            } else {
+                "HostSealedLive"
+            }
+        }
+        NeighbourMsg::SyncResp { .. } => "HostGovernance",
+        _ => "HostNativeInput",
     }
 }
 
@@ -4175,7 +4068,6 @@ fn host_event(
     host: EndpointId,
     replaying: &std::sync::atomic::AtomicBool,
     replay: bool,
-    native_scope: Option<&Arc<native_ingress::Scope>>,
 ) -> Option<HostEvent> {
     use std::sync::atomic::Ordering;
     Some(match inbound {
@@ -4184,18 +4076,16 @@ fn host_event(
             HostEvent::Ready
         }
         HostInbound::Member { device, active } => HostEvent::Member { device, active },
-        // A call's audio is the session's, carried by the relay session the
-        // call itself holds.
-        HostInbound::Voice(_) => return None,
+        // Nothing here holds either: a call's audio is the session's, carried
+        // by the relay session the call itself holds, and a host keeps what a
+        // link's store kept.
+        HostInbound::Voice(_) | HostInbound::Committed { .. } => return None,
         HostInbound::RecordOpened { channel, frames } => {
             HostEvent::RecordOpened { channel, frames }
         }
-        HostInbound::Committed { op } => HostEvent::Kept { op },
-        // Not kept: the write stays held, and the workspace's next
-        // session sends it again.
-        HostInbound::CommitRefused { op, reason } => {
+        HostInbound::CommitRefused { reason, .. } => {
             tracing::warn!(ws, host = %host, %reason, "the host did not keep a sealed write");
-            HostEvent::Refused { op }
+            return None;
         }
         HostInbound::RemoteAction { from, frame } => {
             let Ok(author) = EndpointId::from_bytes(&from) else {
@@ -4210,12 +4100,6 @@ fn host_event(
             }
         }
         HostInbound::RecordContent { from, frame } => record_content_event(&from, &frame)?,
-        HostInbound::Delta { author, data } if native_scope.is_some() => {
-            let Ok(msg) = postcard::from_bytes(&data) else {
-                return None;
-            };
-            HostEvent::NativeInput(native_scope?.input(author, replay, msg))
-        }
         HostInbound::Delta { author, data }
         | HostInbound::Presence {
             author,
@@ -4255,7 +4139,6 @@ fn spawn_host_pump(
     session: Arc<RelayCoeditSession>,
     replaying: Arc<std::sync::atomic::AtomicBool>,
     tx: mpsc::Sender<InternalEvent>,
-    native_scope: Option<Arc<native_ingress::Scope>>,
     keepalive: bool,
 ) -> tokio::task::JoinHandle<()> {
     use std::sync::atomic::Ordering;
@@ -4282,9 +4165,7 @@ fn spawn_host_pump(
             };
             let replay = replaying.load(Ordering::Acquire)
                 || matches!(&inbound, HostInbound::Delta { data, .. } if owed_replay(data, &session));
-            let Some(event) =
-                host_event(inbound, ws, host, &replaying, replay, native_scope.as_ref())
-            else {
+            let Some(event) = host_event(inbound, ws, host, &replaying, replay) else {
                 continue;
             };
             if tx
@@ -4301,9 +4182,6 @@ fn spawn_host_pump(
             }
         }
         // Fence already queued evidence before notifying the actor of closure.
-        if let Some(scope) = native_scope {
-            scope.close();
-        }
         let _ = tx
             .send(InternalEvent::Host {
                 ws,
@@ -4312,6 +4190,63 @@ fn spawn_host_pump(
                 event: HostEvent::Closed,
             })
             .await;
+    })
+}
+
+/// Run a workspace's link and report what it brings: each frame it admits
+/// into the workspace's owner, its catch-up, and its end.
+fn spawn_direct_pump(
+    ws: u64,
+    linked: tilo_peer_state::owner::session::Linked,
+    link: Arc<tilo_peer_state::direct::DirectSync>,
+    scope: Arc<native_ingress::Scope>,
+    tx: mpsc::Sender<InternalEvent>,
+) -> tokio::task::JoinHandle<()> {
+    tokio::spawn(async move {
+        let mut heard = link.heard();
+        let mut caught_up = link.caught_up();
+        let running = linked.run();
+        tokio::pin!(running);
+        let waiting = async move {
+            loop {
+                if *caught_up.borrow_and_update() {
+                    return;
+                }
+                if caught_up.changed().await.is_err() {
+                    return;
+                }
+            }
+        };
+        tokio::pin!(waiting);
+        let mut announced = false;
+        loop {
+            tokio::select! {
+                result = &mut running => {
+                    if let Err(reason) = result {
+                        tracing::debug!(ws, %reason, "a workspace's link ended");
+                    }
+                    break;
+                }
+                received = heard.recv() => match received {
+                    Ok(heard) => {
+                        if tx.send(InternalEvent::NativeHeard { ws, heard }).await.is_err() {
+                            return;
+                        }
+                    }
+                    Err(broadcast::error::RecvError::Lagged(_)) => {}
+                    Err(broadcast::error::RecvError::Closed) => break,
+                },
+                () = &mut waiting, if !announced => {
+                    announced = true;
+                    if tx.send(InternalEvent::NativeReady { ws }).await.is_err() {
+                        return;
+                    }
+                }
+            }
+        }
+        // Fence already queued evidence before notifying the actor of closure.
+        scope.close();
+        let _ = tx.send(InternalEvent::NativeLinkClosed { ws }).await;
     })
 }
 
@@ -4338,32 +4273,3 @@ fn record_content_event(from: &[u8; 32], frame: &[u8]) -> Option<HostEvent> {
     reason = "test fixtures transitively own long-lived permits and lock guards by design"
 )]
 mod tests;
-
-/// Mark a replay of a workspace host's session as running: whether this begins
-/// one (`false` while one already runs, until its `Ready` clears the mark).
-/// The host serves one replay per session; a second asked mid-replay makes
-/// it start over and end the session whose replay it replaced.
-fn begins_replay(replaying: &std::sync::atomic::AtomicBool) -> bool {
-    !replaying.swap(true, std::sync::atomic::Ordering::AcqRel)
-}
-
-#[cfg(test)]
-mod replay_requests {
-    use super::begins_replay;
-    use std::sync::atomic::{AtomicBool, Ordering};
-
-    /// Apps opened at once each ask the workspace's host for a replay: the
-    /// first asks, the rest wait on it, and the next is asked once its
-    /// `Ready` came.
-    #[test]
-    fn only_one_replay_runs_on_a_session_at_a_time() {
-        let replaying = AtomicBool::new(false);
-        assert!(begins_replay(&replaying));
-        assert!(!begins_replay(&replaying));
-        assert!(!begins_replay(&replaying));
-        replaying.store(false, Ordering::Release);
-        assert!(begins_replay(&replaying));
-        // A session's own first replay counts as running.
-        assert!(!begins_replay(&AtomicBool::new(true)));
-    }
-}

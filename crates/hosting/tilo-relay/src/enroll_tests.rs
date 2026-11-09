@@ -154,6 +154,7 @@ fn an_out_of_band_certificate_joins_its_identity() {
             issued_at_ns: 1,
             expires_at_ns: None,
             signature: [0; 64],
+            issuer: None,
         };
         sign_device_cert(&mut cert, root).unwrap();
         let path = identity_dir
@@ -220,6 +221,7 @@ fn personal_payload(
         issued_at_ns: 1,
         expires_at_ns: None,
         signature: [0; 64],
+        issuer: None,
     };
     sign_device_cert(&mut cert, root).unwrap();
     let fleet = FleetProjection {
@@ -263,6 +265,7 @@ fn payload(root: &ed25519_dalek::SigningKey) -> ResponsePayload {
         issued_at_ns: 1,
         expires_at_ns: None,
         signature: [0; 64],
+        issuer: None,
     };
     sign_device_cert(&mut cert, root).unwrap();
     ResponsePayload {
@@ -295,6 +298,7 @@ fn enrollment_responses_are_signed_encrypted_and_certificate_bound() {
             issued_at_ns: 1,
             expires_at_ns: Some(2),
             signature: [0; 64],
+            issuer: None,
         };
         sign_device_cert(&mut cert, &root).unwrap();
         let identity = tempfile::tempdir().unwrap();
@@ -475,6 +479,7 @@ fn personal_projection_publishes_only_live_valid_identity_state() {
             issued_at_ns: 1,
             expires_at_ns: None,
             signature: [0; 64],
+            issuer: None,
         };
         sign_device_cert(&mut old_cert, &old_root).unwrap();
         tilo_user_identity::persist::write_device_cert(&paths.device_cert, &old_cert).unwrap();
@@ -611,6 +616,7 @@ fn personal_projection_publishes_only_live_valid_identity_state() {
             issued_at_ns: 1,
             expires_at_ns: None,
             signature: [0; 64],
+            issuer: None,
         };
         sign_device_cert(&mut cert, &root).unwrap();
         let fleet = FleetProjection {
@@ -687,6 +693,7 @@ fn personal_projection_publishes_only_live_valid_identity_state() {
             issued_at_ns: 1,
             expires_at_ns: None,
             signature: [0; 64],
+            issuer: None,
         };
         sign_device_cert(&mut other_cert, &other_root).unwrap();
         let other = HomePeerRegistration {
@@ -728,6 +735,7 @@ fn personal_projection_publishes_only_live_valid_identity_state() {
             issued_at_ns: 1,
             expires_at_ns: None,
             signature: [0; 64],
+            issuer: None,
         };
         sign_device_cert(&mut cert, &root).unwrap();
         let mut registration = HomePeerRegistration {
@@ -865,6 +873,7 @@ fn nearby_personal_device_pairing_transfers_cert_fleet_and_home_peer() {
         issued_at_ns: 1,
         expires_at_ns: None,
         signature: [0; 64],
+        issuer: None,
     };
     sign_device_cert(&mut issuer_cert, &root).unwrap();
     tilo_user_identity::persist::write_device_cert(&paths.device_cert, &issuer_cert).unwrap();
@@ -893,6 +902,7 @@ fn nearby_personal_device_pairing_transfers_cert_fleet_and_home_peer() {
         issued_at_ns: 1,
         expires_at_ns: None,
         signature: [0; 64],
+        issuer: None,
     };
     sign_device_cert(&mut home_cert, &root).unwrap();
     register_home_peer(approver_root.path(), &home_cert, [43; 32], &[], None).unwrap();
@@ -1055,6 +1065,7 @@ fn a_device_holding_no_key_pairs_a_device_its_key_holder_approved() {
         issued_at_ns: 1,
         expires_at_ns: None,
         signature: [0; 64],
+        issuer: None,
     };
     sign_device_cert(&mut member_cert, &root).unwrap();
     tilo_user_identity::persist::write_device_cert(&paths.device_cert, &member_cert).unwrap();
@@ -1100,6 +1111,7 @@ fn a_device_holding_no_key_pairs_a_device_its_key_holder_approved() {
             issued_at_ns: validity_start_ns(now),
             expires_at_ns: None,
             signature: [0; 64],
+            issuer: None,
         },
         service,
         1,
@@ -1251,6 +1263,7 @@ fn a_joining_device_records_only_certified_live_personal_devices() {
                 issued_at_ns: 1,
                 expires_at_ns: None,
                 signature: [0; 64],
+                issuer: None,
             };
             sign_device_cert(&mut cert, signer).unwrap();
             cert
@@ -1596,6 +1609,7 @@ fn a_key_holder_answers_as_every_build_expects_and_an_introducer_with_its_certif
         issued_at_ns: 1,
         expires_at_ns: None,
         signature: [0; 64],
+        issuer: None,
     };
     sign_device_cert(&mut issuer, &root).unwrap();
     let introducer = Approver::Introducer {

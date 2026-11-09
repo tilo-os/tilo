@@ -103,8 +103,10 @@ pub fn save_revocations(
     Ok(())
 }
 
-/// Add `entry` to the relay's revocation log unless the log already
-/// revokes its device as early. Whether the log changed.
+/// Add `entry` to the relay's revocation log unless the log already holds
+/// its root's revocation of its device as early. Whether the log changed.
+/// Each root's entries are its own: another root's entry naming the same key
+/// neither replaces nor is replaced by it.
 ///
 /// # Errors
 ///
@@ -114,13 +116,17 @@ pub fn append_revocation(
     entry: &tilo_user_identity::RevocationEntry,
 ) -> Result<bool, StoreError> {
     let mut entries = load_revocations(state_root)?;
-    if entries.iter().any(|known| {
-        known.revoked_device_public_key == entry.revoked_device_public_key
-            && known.revoked_at_ns <= entry.revoked_at_ns
-    }) {
+    let same = |known: &tilo_user_identity::RevocationEntry| {
+        (known.user_public_key, known.revoked_device_public_key)
+            == (entry.user_public_key, entry.revoked_device_public_key)
+    };
+    if entries
+        .iter()
+        .any(|known| same(known) && known.revoked_at_ns <= entry.revoked_at_ns)
+    {
         return Ok(false);
     }
-    entries.retain(|known| known.revoked_device_public_key != entry.revoked_device_public_key);
+    entries.retain(|known| !same(known));
     entries.push(entry.clone());
     save_revocations(state_root, &entries)?;
     Ok(true)

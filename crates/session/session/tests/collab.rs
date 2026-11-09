@@ -33,8 +33,8 @@ use tilo_desktop_model::{
 };
 use tilo_desktop_search::providers::PublishedActions;
 use tilo_desktop_search::providers::jobs::JobEntry;
-use tilo_network_actor::{NetEvent, workspace_topic_id};
-use tilo_session::sync::{Client, OwnPresence};
+use tilo_network_actor::workspace_topic_id;
+use tilo_session::sync::{Client, Event, OwnPresence};
 use tilo_session::{AppActions, Options, Session};
 
 type Arguments = serde_json::Map<String, serde_json::Value>;
@@ -89,13 +89,11 @@ fn desk() -> DesktopTree {
 }
 
 /// One thing the other device said in the workspace.
-fn said(from: u8, msg: NeighbourMsg) -> NetEvent {
-    NetEvent::Msg {
+fn said(from: u8, msg: NeighbourMsg) -> Event {
+    Event::Msg {
         ws: workspace_topic_id(workspace_id()),
         peer: device(from),
-        membership_epoch: None,
-        replayed: false,
-        msg,
+        msg: Box::new(msg),
     }
 }
 
@@ -109,12 +107,12 @@ fn person(seed: u8) -> String {
 }
 
 /// A device's identity: the person it is a device of, and its name here.
-fn hello(from: u8, label: &str) -> NetEvent {
+fn hello(from: u8, label: &str) -> Event {
     hello_of(from, from, label)
 }
 
 /// The device `device` of the person `person` : their certificate here.
-fn hello_of(person: u8, at: u8, label: &str) -> NetEvent {
+fn hello_of(person: u8, at: u8, label: &str) -> Event {
     let device_key = device(at);
     let root = ed25519_dalek::SigningKey::from_bytes(&[person; 32]);
     let mut cert = tilo_user_identity::DeviceCert {
@@ -128,10 +126,13 @@ fn hello_of(person: u8, at: u8, label: &str) -> NetEvent {
             can_read_all_workspaces: false,
             foreign: false,
             can_administer_devices: false,
+            agent: None,
+            stand_in: false,
         },
         issued_at_ns: 0,
         expires_at_ns: None,
         signature: [0; 64],
+        issuer: None,
     };
     tilo_user_identity::sign_device_cert(&mut cert, &root).expect("a certified device");
     said(
@@ -195,6 +196,31 @@ fn pointer(sync: &Client, from: u8, x: f32, y: f32) {
     sync.heard_presence(WORKSPACE, device(from), &frame);
 }
 
+/// Everyone's pointer as a desk showing `tiles` draws it: the tab each is over, and where it stands
+/// on the surface.
+#[expect(
+    clippy::cast_precision_loss,
+    reason = "milliseconds since the epoch are exact in an f64 for the life of a session"
+)]
+fn done_by(sync: &Client, tiles: &[tilo_live::presence::Tile]) -> Vec<(u64, f64, f64)> {
+    let mut chats = ui::presence::CursorChats::default();
+    let pointers = tilo_session_core::presence::pointers(
+        &sync.members(WORKSPACE),
+        tiles,
+        &mut chats,
+        &ui::presence::PresenceCtx::empty(),
+        ui::time::Instant::now(),
+        ui::time::unix_now_ms() as f64,
+        ui::tokens::EffectiveMotion::default(),
+    );
+    pointers
+        .drawn
+        .iter()
+        .zip(pointers.tabs)
+        .map(|(cursor, tab)| (tab, cursor.pos.0, cursor.pos.1))
+        .collect()
+}
+
 /// A session taking part in the workspace through `sync` , showing `desk` .
 fn session(sync: &Rc<Client>) -> Session {
     session_over(sync, None)
@@ -202,6 +228,11 @@ fn session(sync: &Rc<Client>) -> Session {
 
 /// [`session`], with `apps` answering what an app asks or is asked to do.
 fn session_over(sync: &Rc<Client>, apps: Option<Rc<dyn AppActions>>) -> Session {
+    showing(sync, apps, desk())
+}
+
+/// A session taking part in the workspace through `sync` , showing `tree` .
+fn showing(sync: &Rc<Client>, apps: Option<Rc<dyn AppActions>>, tree: DesktopTree) -> Session {
     let mut session = crate::common::headless_on(
         &[OutputConfig::new("HEADLESS-1", WIDTH, HEIGHT)],
         Options {
@@ -210,11 +241,77 @@ fn session_over(sync: &Rc<Client>, apps: Option<Rc<dyn AppActions>>) -> Session 
             ..Options::default()
         },
     );
-    session.handle().replace_tree(desk());
+    session.handle().replace_tree(tree);
     for _ in 0..4 {
         session.step(Duration::from_millis(1)).expect("step");
     }
     session
+}
+
+/// The window of Chat, which Ada is not in.
+const CHAT_TAB: u64 = 9;
+
+/// [`desk`], with Chat in front of Notes.
+fn desk_of_two() -> DesktopTree {
+    let mut tree = desk();
+    let workspace = tree.workspaces.first_mut().expect("a workspace");
+    workspace.strips[0].window_groups.push(WindowGroup {
+        id: GroupId::from(2_u64),
+        tabs: vec![Tab {
+            id: TabId::from(CHAT_TAB),
+            title: "Chat".to_owned(),
+            tile: TileContent::LocalApp {
+                app_id: "so.tilo.chat".to_owned(),
+                label: "Chat".to_owned(),
+                note: String::new(),
+            },
+            app_title: None,
+            view: String::new(),
+            pinned: false,
+        }],
+        active_tab: TabId::from(CHAT_TAB),
+        width: WindowWidth::Normal,
+        maximized: false,
+        focus_history: Vec::new(),
+    });
+    tree.active_group
+        .insert(StripId::from(1), GroupId::from(2_u64));
+    tree
+}
+
+/// The window in front of the desk `session` shows.
+fn front(session: &Session) -> Option<TabId> {
+    session
+        .handle()
+        .read(|tree| tilo_desktop_surface::navigation::active_route(tree).map(|route| route.tab))
+}
+
+/// `device`'s page says where its windows are, and that the person works in `app`.
+fn page_working_in(sync: &Client, from: u8, app: &str) {
+    let shell = collab_types::presence::ShellPresence {
+        seq: 1,
+        sent_at_ms: 0,
+        label: "Ada".to_owned(),
+        agent: false,
+        colour: String::new(),
+        activity: None,
+        place: None,
+        size: [WIDTH.cast_unsigned(), HEIGHT.cast_unsigned()],
+        windows: vec![collab_types::presence::ShellWindow {
+            app: app.to_owned(),
+            record: [0; 8],
+            rect: [0, 0, 10_000, 10_000],
+            focused: true,
+        }],
+        selection: None,
+        chat: None,
+        reaction: None,
+    };
+    sync.heard_presence(
+        WORKSPACE,
+        device(from),
+        &Presence::desktop(WORKSPACE, Payload::Shell(Box::new(shell))),
+    );
 }
 
 /// An action host that keeps what it was asked to run, and starts nothing.
@@ -411,14 +508,16 @@ fn the_people_button_lists_who_is_here_and_where_their_pointers_are() {
         "where their pointer is: {labels:?}"
     );
     assert!(listed("Away"), "how they said they are: {labels:?}");
-    assert_eq!(
-        sync.placed(
-            WORKSPACE,
-            &[(NOTES, ui::kurbo::Rect::new(0.0, 0.0, 1000.0, 1000.0))]
-        ),
-        [(device(0xaa).to_string(), NOTES, 12.0, 34.0)],
-        "their pointer is over Notes, where the desk draws it"
+    let pointers = done_by(
+        &sync,
+        &[tilo_live::presence::Tile::new(
+            NOTES, 0.0, 0.0, 1000.0, 1000.0,
+        )],
     );
+    let [(tab, x, y)] = pointers.as_slice() else {
+        panic!("their pointer is over Notes, where the desk draws it: {pointers:?}");
+    };
+    assert_eq!((*tab, *x, *y), (NOTES, 12.0, 34.0));
 
     // The faces again: the roster goes back to them.
     press_faces(&mut session);
@@ -890,4 +989,57 @@ fn your_own_avatar_opens_your_card() {
         "one card, the same surface another person's opens in: {:?}",
         session.controls()
     );
+}
+
+/// Following someone moves this view with them: the window of the app their page says they work in
+/// comes forward, and stays where it is while their place does not move. They leaving ends the
+/// following, and the workspace hears this device follows nobody.
+#[test]
+fn following_someone_brings_forward_the_window_of_the_app_they_work_in() {
+    let _settled = ui::motion::testing::settled();
+    let own = OwnPresence {
+        label: "Quinten".to_owned(),
+        ..OwnPresence::default()
+    };
+    let sync = Rc::new(Client::untethered(device(0xf0), own));
+    let mut session = showing(&sync, None, desk_of_two());
+    assert_eq!(
+        front(&session),
+        Some(TabId::from(CHAT_TAB)),
+        "Chat is the window the person at this device works in"
+    );
+
+    // Ada is here, and her page says she works in Notes.
+    sync.hear(hello(0xaa, "Framework 16"));
+    arrived_as(&sync, 0xaa, "Ada");
+    page_working_in(&sync, 0xaa, "so.tilo.notes");
+    for _ in 0..4 {
+        session.step(Duration::from_millis(1)).expect("step");
+    }
+
+    // This device follows her, as its own presence word says.
+    let mut own = sync.own();
+    own.following = Some(device(0xaa).to_string());
+    sync.set_own(own);
+    until(
+        &mut session,
+        "the window of the app Ada works in comes forward",
+        |session| front(session) == Some(TabId::from(NOTES)),
+    );
+
+    // Their place does not move: neither does the view.
+    for _ in 0..4 {
+        session.step(Duration::from_millis(1)).expect("step");
+    }
+    assert_eq!(
+        front(&session),
+        Some(TabId::from(NOTES)),
+        "the view stays where it was brought"
+    );
+
+    // They leave: following ends with them, and the workspace hears it.
+    presence(&sync, 0xaa, collab_types::PeerPresencePayload::Left);
+    until(&mut session, "following ends when they leave", |_| {
+        sync.own().following.is_none()
+    });
 }

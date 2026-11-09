@@ -70,26 +70,14 @@ impl Facts {
 }
 pub(super) fn measure(file: &File) -> io::Result<Facts> {
     let metadata = file.metadata()?;
-    let mut stat: libc::statx = unsafe { std::mem::zeroed() };
-    if unsafe {
-        libc::statx(
-            file.as_raw_fd(),
-            c"".as_ptr(),
-            libc::AT_EMPTY_PATH | libc::AT_STATX_DONT_SYNC,
-            libc::STATX_MNT_ID,
-            &raw mut stat,
-        )
-    } != 0
-    {
-        return Err(io::Error::last_os_error());
-    }
-    if stat.stx_mask & libc::STATX_MNT_ID == 0 || stat.stx_mnt_id == 0 {
-        return Err(refused("Target observation mount identity unavailable"));
-    }
-    let mut fs: libc::statfs = unsafe { std::mem::zeroed() };
-    if unsafe { libc::fstatfs(file.as_raw_fd(), &raw mut fs) } != 0 {
-        return Err(io::Error::last_os_error());
-    }
+    let mount_id = crate::fd::mount_id(
+        file,
+        rustix::fs::AtFlags::STATX_DONT_SYNC,
+        "Target observation mount identity unavailable",
+    )?;
+    // rustix types `f_type` as the kernel's signed word on every C library;
+    // musl's own `statfs` types it unsigned.
+    let fs = rustix::fs::fstatfs(file)?;
     let mut mount: libc::statvfs = unsafe { std::mem::zeroed() };
     if unsafe { libc::fstatvfs(file.as_raw_fd(), &raw mut mount) } != 0 {
         return Err(io::Error::last_os_error());
@@ -101,7 +89,7 @@ pub(super) fn measure(file: &File) -> io::Result<Facts> {
         uid: metadata.uid(),
         gid: metadata.gid(),
         size: metadata.len(),
-        mount_id: stat.stx_mnt_id,
+        mount_id,
         fs_type: fs.f_type,
         fs_flags: mount.f_flag as u64,
     })

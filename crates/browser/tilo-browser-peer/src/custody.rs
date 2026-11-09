@@ -20,8 +20,10 @@ use tilo_relay_protocol::certify::{
     PendingCertification,
 };
 use tilo_user_identity::{
-    CERTIFICATION_SCHEMA_VERSION, CertificationPolicy, CertificationRequest, DeviceCapabilities,
-    DeviceCert, RevocationList, verify_device_cert_at, verify_issued_cert,
+    AgentScope, CERTIFICATION_SCHEMA_VERSION, CertificationPolicy, CertificationRequest,
+    DeviceCapabilities, DeviceCert, MAX_AGENT_GRANT_LIFETIME_NS, RevocationEntry, RevocationList,
+    RevocationReason, STAND_IN_LIFETIME_NS, certification::MAX_CERTIFICATION_LABEL_BYTES,
+    verify_device_cert_at, verify_issued_cert,
 };
 
 use crate::session::Host;
@@ -273,6 +275,7 @@ pub async fn issue_device_cert(
         issued_at_ns: now,
         expires_at_ns: Some(now.saturating_add(role.lifetime_ns())),
         signature: [0; 64],
+        issuer: None,
     };
     let request = |error: &dyn std::fmt::Display| CertifyError::Request(error.to_string());
     let digest = tilo_user_identity::device_cert_signing_digest(&cert).map_err(|e| request(&e))?;
@@ -282,6 +285,166 @@ pub async fn issue_device_cert(
         .map_err(|error| CertifyError::Request(error.0))?;
     verify_device_cert_at(&cert, now).map_err(|e| request(&e))?;
     Ok(cert)
+}
+
+/// Have `root` (the user root the page holds) certify `device_public_key`
+/// as the key of an agent's grant reaching `scope`, expiring at
+/// `expires_at_ns`: what a service that runs an agent for the person keeps,
+/// so the agent acts for them in those workspaces and nowhere else, and not
+/// after that. A grant is no device of the person: it admits no devices and
+/// has no life of its own to extend. Never certifies the root itself.
+///
+/// # Errors
+///
+/// Returns [`CertifyError::Request`] for the root's own key, an expiry that
+/// is not in the future or is beyond
+/// [`MAX_AGENT_GRANT_LIFETIME_NS`], a label a certificate does not carry, or
+/// when signing fails or does not verify.
+pub async fn issue_agent_grant(
+    root: &dyn DeviceSigner,
+    device_public_key: [u8; 32],
+    label: &str,
+    scope: AgentScope,
+    expires_at_ns: u64,
+) -> Result<DeviceCert, CertifyError> {
+    let request = |error: &dyn std::fmt::Display| CertifyError::Request(error.to_string());
+    let user_public_key = root.device_public_key();
+    if device_public_key == user_public_key {
+        return Err(CertifyError::Request(
+            "the root certifies devices, never itself".into(),
+        ));
+    }
+    let label = label.trim();
+    if label.is_empty()
+        || label.len() > MAX_CERTIFICATION_LABEL_BYTES
+        || label.chars().any(char::is_control)
+    {
+        return Err(CertifyError::Request(
+            "a grant's label names who holds it".into(),
+        ));
+    }
+    let now = tilo_clock::unix_now_ns();
+    if expires_at_ns <= now || expires_at_ns.saturating_sub(now) > MAX_AGENT_GRANT_LIFETIME_NS {
+        return Err(CertifyError::Request(
+            "a grant expires after now, and within 90 days".into(),
+        ));
+    }
+    let mut cert = DeviceCert {
+        user_public_key,
+        device_public_key,
+        device_label: label.to_owned(),
+        capabilities: DeviceCapabilities::agent_grant(scope),
+        issued_at_ns: now,
+        expires_at_ns: Some(expires_at_ns),
+        signature: [0; 64],
+        issuer: None,
+    };
+    let digest = tilo_user_identity::device_cert_signing_digest(&cert).map_err(|e| request(&e))?;
+    cert.signature = root
+        .sign(digest.to_vec())
+        .await
+        .map_err(|error| CertifyError::Request(error.0))?;
+    verify_device_cert_at(&cert, now).map_err(|e| request(&e))?;
+    Ok(cert)
+}
+
+/// Have `root` (the user root the page holds) make `stand_in_public_key`,
+/// a key the page's host holds, the person's stand-in approver for
+/// `lifetime_ns` from now: while the root lives in this page only, the stand-in can
+/// certify a new member device of the person (a browser, for 30 days) when a
+/// device of theirs asks for exactly that, and nothing else. It is no device
+/// of the person and reaches nothing of theirs. The root revokes it once the
+/// person keeps their root with a passkey; what it certified before stays
+/// valid. See `tilo_user_identity::cert` for what a stand-in can and cannot
+/// do. Never certifies the root itself.
+///
+/// # Errors
+///
+/// Returns [`CertifyError::Request`] for the root's own key, a lifetime of
+/// zero or beyond [`STAND_IN_LIFETIME_NS`], a label a certificate does
+/// not carry, or when signing fails or does not verify.
+pub async fn issue_stand_in(
+    root: &dyn DeviceSigner,
+    stand_in_public_key: [u8; 32],
+    label: &str,
+    lifetime_ns: u64,
+) -> Result<DeviceCert, CertifyError> {
+    let request = |error: &dyn std::fmt::Display| CertifyError::Request(error.to_string());
+    let user_public_key = root.device_public_key();
+    if stand_in_public_key == user_public_key {
+        return Err(CertifyError::Request(
+            "the root certifies a stand-in, never itself".into(),
+        ));
+    }
+    let label = label.trim();
+    if label.is_empty()
+        || label.len() > MAX_CERTIFICATION_LABEL_BYTES
+        || label.chars().any(char::is_control)
+    {
+        return Err(CertifyError::Request(
+            "a stand-in's label names who holds it".into(),
+        ));
+    }
+    if lifetime_ns == 0 || lifetime_ns > STAND_IN_LIFETIME_NS {
+        return Err(CertifyError::Request(
+            "a stand-in lasts for a while, and at most 30 days".into(),
+        ));
+    }
+    let now = tilo_clock::unix_now_ns();
+    let mut cert = tilo_user_identity::prepare_stand_in_cert(
+        user_public_key,
+        stand_in_public_key,
+        label,
+        now,
+        now.saturating_add(lifetime_ns),
+    );
+    let digest = tilo_user_identity::device_cert_signing_digest(&cert).map_err(|e| request(&e))?;
+    cert.signature = root
+        .sign(digest.to_vec())
+        .await
+        .map_err(|error| CertifyError::Request(error.0))?;
+    tilo_user_identity::verify_stand_in_cert_at(&cert, now).map_err(|e| request(&e))?;
+    Ok(cert)
+}
+
+/// Have `root` (the user root the page holds) revoke `device_public_key` as
+/// of `at_ns`, for `reason`: the entry every host and device refuses that key
+/// from then on with, while whatever it signed before stays valid. A person's
+/// stand-in approver is revoked this way once they keep their root with a
+/// passkey: it approves nothing from then on, and the devices it certified
+/// before stay devices of theirs.
+///
+/// # Errors
+///
+/// Returns [`CertifyError::Request`] for the root's own key, when signing
+/// fails, or when the entry does not verify.
+pub async fn revoke_device(
+    root: &dyn DeviceSigner,
+    device_public_key: [u8; 32],
+    at_ns: u64,
+    reason: RevocationReason,
+) -> Result<RevocationEntry, CertifyError> {
+    let request = |error: &dyn std::fmt::Display| CertifyError::Request(error.to_string());
+    let user_public_key = root.device_public_key();
+    if device_public_key == user_public_key {
+        return Err(CertifyError::Request(
+            "a root revokes the keys it made, never itself".into(),
+        ));
+    }
+    let mut entry = RevocationEntry {
+        user_public_key,
+        revoked_device_public_key: device_public_key,
+        revoked_at_ns: at_ns,
+        reason,
+        signature: [0; 64],
+    };
+    let digest = tilo_user_identity::revocation_signing_digest(&entry).map_err(|e| request(&e))?;
+    entry.signature = root
+        .sign(digest.to_vec())
+        .await
+        .map_err(|error| CertifyError::Request(error.0))?;
+    tilo_user_identity::verify_revocation_entry(&entry).map_err(|e| request(&e))?;
+    Ok(entry)
 }
 
 async fn member_approval(
@@ -562,6 +725,233 @@ mod tests {
         let own = root.verifying_key().to_bytes();
         assert!(matches!(
             issue_device_cert(&root, own, "Root", IssuedRole::Node).await,
+            Err(CertifyError::Request(_))
+        ));
+    }
+
+    #[tokio::test]
+    async fn the_root_certifies_an_agent_grant_until_it_expires_and_never_past_its_bound() {
+        let root = SigningKey::from_bytes(&[3; 32]);
+        let agent = SigningKey::from_bytes(&[4; 32]).verifying_key().to_bytes();
+        let now = tilo_clock::unix_now_ns();
+        let week = 7 * 24 * 60 * 60 * 1_000_000_000;
+        let scope = AgentScope::Workspace([9; 16]);
+        let grant = issue_agent_grant(
+            &root,
+            agent,
+            "Claude Code via door.example",
+            scope,
+            now + week,
+        )
+        .await
+        .unwrap();
+        assert_eq!(verify_device_cert_at(&grant, grant.issued_at_ns), Ok(()));
+        assert_eq!(grant.user_public_key, root.verifying_key().to_bytes());
+        assert_eq!(grant.capabilities, DeviceCapabilities::agent_grant(scope));
+        assert!(grant.capabilities.agent_grant_holds());
+        assert_eq!(grant.expires_at_ns, Some(now + week));
+        assert_eq!(grant.device_label, "Claude Code via door.example");
+        assert!(verify_device_cert_at(&grant, now + week).is_err());
+
+        let all = AgentScope::AllWorkspaces;
+        assert!(matches!(
+            issue_agent_grant(
+                &root,
+                agent,
+                "Claude Code",
+                all,
+                now + MAX_AGENT_GRANT_LIFETIME_NS + 60_000_000_000
+            )
+            .await,
+            Err(CertifyError::Request(_))
+        ));
+        assert!(matches!(
+            issue_agent_grant(&root, agent, "Claude Code", all, now - 1).await,
+            Err(CertifyError::Request(_))
+        ));
+        assert!(matches!(
+            issue_agent_grant(
+                &root,
+                root.verifying_key().to_bytes(),
+                "Claude Code",
+                all,
+                now + week
+            )
+            .await,
+            Err(CertifyError::Request(_))
+        ));
+        assert!(matches!(
+            issue_agent_grant(&root, agent, " ", all, now + week).await,
+            Err(CertifyError::Request(_))
+        ));
+        assert!(matches!(
+            issue_agent_grant(&root, agent, &"x".repeat(81), all, now + week).await,
+            Err(CertifyError::Request(_))
+        ));
+    }
+
+    #[tokio::test]
+    async fn the_root_makes_a_host_key_its_stand_in_whose_certificates_check_as_a_browser() {
+        let root = SigningKey::from_bytes(&[5; 32]);
+        let stand_in = SigningKey::from_bytes(&[6; 32]);
+        let now = tilo_clock::unix_now_ns();
+        let day = 24 * 60 * 60 * 1_000_000_000;
+        let cert = issue_stand_in(
+            &root,
+            stand_in.verifying_key().to_bytes(),
+            "Stand-in on tilo.example",
+            30 * day,
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            tilo_user_identity::verify_stand_in_cert_at(&cert, cert.issued_at_ns),
+            Ok(())
+        );
+        assert!(
+            verify_device_cert(&cert).is_err(),
+            "a stand-in is no device"
+        );
+        assert_eq!(cert.capabilities, DeviceCapabilities::stand_in_approver());
+
+        // What the stand-in approves checks as a browser this page asked for.
+        let browser = SigningKey::from_bytes(&[7; 32]);
+        let issued_at = cert.issued_at_ns + 1;
+        let request = CertificationRequest {
+            version: CERTIFICATION_SCHEMA_VERSION,
+            user_public_key: root.verifying_key().to_bytes(),
+            device_public_key: browser.verifying_key().to_bytes(),
+            device_label: "Browser".into(),
+            requested: DeviceCapabilities::member(),
+            nonce: [8; 16],
+            invite: [0; 16],
+            issued_at_ns: issued_at,
+            expires_at_ns: issued_at + 60_000_000_000,
+            signature: [0; 64],
+        }
+        .sign(&browser)
+        .unwrap();
+        let issued = tilo_user_identity::issue_device_cert_as_stand_in(
+            &request,
+            &stand_in,
+            &cert,
+            &RevocationList::new(),
+            issued_at,
+        )
+        .unwrap();
+        verify_issued_cert(
+            &request,
+            &issued,
+            &CertificationPolicy::browser(),
+            &RevocationList::new(),
+            issued_at,
+        )
+        .unwrap();
+
+        assert_eq!(cert.expires_at_ns, Some(cert.issued_at_ns + 30 * day));
+        assert!(cert.issued_at_ns >= now);
+        for lifetime in [0, 30 * day + 1] {
+            assert!(matches!(
+                issue_stand_in(
+                    &root,
+                    stand_in.verifying_key().to_bytes(),
+                    "Stand-in",
+                    lifetime
+                )
+                .await,
+                Err(CertifyError::Request(_))
+            ));
+        }
+        assert!(matches!(
+            issue_stand_in(&root, root.verifying_key().to_bytes(), "Stand-in", day).await,
+            Err(CertifyError::Request(_))
+        ));
+    }
+
+    /// Revoking the host's stand-in once the person keeps their root with a
+    /// passkey refuses what it would approve from then on, and keeps every
+    /// device it approved before a device of theirs.
+    #[tokio::test]
+    async fn a_revoked_stand_in_approves_nothing_after_and_what_it_approved_before_stays_valid() {
+        let root = SigningKey::from_bytes(&[5; 32]);
+        let stand_in = SigningKey::from_bytes(&[6; 32]);
+        let day = 24 * 60 * 60 * 1_000_000_000;
+        let cert = issue_stand_in(
+            &root,
+            stand_in.verifying_key().to_bytes(),
+            "Stand-in on tilo.example",
+            30 * day,
+        )
+        .await
+        .unwrap();
+        let request = |key: u8, at: u64| {
+            let browser = SigningKey::from_bytes(&[key; 32]);
+            CertificationRequest {
+                version: CERTIFICATION_SCHEMA_VERSION,
+                user_public_key: root.verifying_key().to_bytes(),
+                device_public_key: browser.verifying_key().to_bytes(),
+                device_label: "Browser".into(),
+                requested: DeviceCapabilities::member(),
+                nonce: [key; 16],
+                invite: [0; 16],
+                issued_at_ns: at,
+                expires_at_ns: at + 60_000_000_000,
+                signature: [0; 64],
+            }
+            .sign(&browser)
+            .unwrap()
+        };
+        // A browser the stand-in approves while the root is still in this tab.
+        let before = request(7, cert.issued_at_ns + 1);
+        let approved = tilo_user_identity::issue_device_cert_as_stand_in(
+            &before,
+            &stand_in,
+            &cert,
+            &RevocationList::new(),
+            before.issued_at_ns,
+        )
+        .unwrap();
+
+        let revoked_at = cert.issued_at_ns + 2;
+        let entry = revoke_device(
+            &root,
+            stand_in.verifying_key().to_bytes(),
+            revoked_at,
+            RevocationReason::Retired,
+        )
+        .await
+        .unwrap();
+        tilo_user_identity::verify_revocation_entry(&entry).unwrap();
+        assert_eq!(entry.user_public_key, root.verifying_key().to_bytes());
+        assert_eq!(entry.reason, RevocationReason::Retired);
+        let mut revocations = RevocationList::new();
+        revocations.insert(entry).unwrap();
+
+        assert!(
+            !revocations.refuses(&approved),
+            "a device the stand-in approved before the revocation stays a device of the person"
+        );
+        assert!(revocations.refuses(&cert), "the stand-in itself is refused");
+        let later = request(8, revoked_at);
+        assert_eq!(
+            tilo_user_identity::issue_device_cert_as_stand_in(
+                &later,
+                &stand_in,
+                &cert,
+                &revocations,
+                later.issued_at_ns,
+            ),
+            Err(tilo_user_identity::CertificationError::Revoked),
+            "a revoked stand-in approves nothing from its revocation on"
+        );
+        assert!(matches!(
+            revoke_device(
+                &root,
+                root.verifying_key().to_bytes(),
+                1,
+                RevocationReason::Retired
+            )
+            .await,
             Err(CertifyError::Request(_))
         ));
     }

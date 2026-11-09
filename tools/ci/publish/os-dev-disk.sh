@@ -5,6 +5,10 @@
 # step. Nothing here holds a secret or publishes.
 #
 #   os-dev-disk.sh ARCH DEV OUT   DEV: os-dev-image-ARCH's layout; the disk into OUT/disk
+#
+# DEV/revision names the commit the disk is of. The development loop's image
+# (os-dev-image-lean-ARCH) names none (development-loop): its disk (os-dev-disk-lean-ARCH) reads
+# no Git, takes the image's clock for the install's and is never published.
 set -euo pipefail
 . "$(dirname -- "${BASH_SOURCE[0]}")/lib.sh"
 cd "$repo_root"
@@ -27,16 +31,33 @@ use_cosign
 rm -rf "$out"
 mkdir -p "$out/disk"
 
-revision=$(git rev-parse --verify HEAD) || die 'the disk names its commit: git = true'
+if [[ $(cat "$dev/revision") == development-loop ]]; then
+  revision=development-loop
+else
+  revision=$(git rev-parse --verify HEAD) || die 'the disk names its commit: git = true'
+fi
 id=$(podman pull -q "oci:$dev/oci")
 [[ $(podman image inspect --format '{{.Digest}}' "$id") == "$(cat "$dev/digest")" ]] || die "$dev/oci is not the image $dev/digest names"
 podman tag "$id" localhost/tilo-vm:ci
+if [[ $revision == development-loop ]]; then
+  SOURCE_DATE_EPOCH=$(podman image inspect --format '{{index .Labels "org.tilo.source-date-epoch"}}' "$id")
+  [[ $SOURCE_DATE_EPOCH =~ ^[1-9][0-9]*$ ]] || die "the dev image carries no clock but '$SOURCE_DATE_EPOCH'"
+  export SOURCE_DATE_EPOCH
+fi
 export TILO_DISTROBOX= TILO_VM_ARCH=$arch TMPDIR=/var/tmp TILO_USER=tester TILO_PASS=tilo
 if [[ $arch == aarch64 ]]; then export TILO_DEV_DIRECT_BUNDLE_DIR=$out/disk/direct-boot; fi
+# The install's log is written on this guest's own disk and copied into the outputs once it
+# ends. A descriptor held open on the outputs' share for the whole install went bad partway
+# (writes to it failed with EBADF while new opens of the same file succeeded): tee, writing
+# bootc's output there, then failed the install after it had completed, and every message
+# after that point, the die that said why among them, was lost with it.
+log=$scratch/install.log
+status=0
 TILO_IMAGE=localhost/tilo-vm:ci TILO_SKIP_BUILD=1 TILO_OUTPUT=$scratch/dev-disk TILO_RUN=$scratch/dev-disk-run \
   TILO_DISK_SIZE=64G TILO_TARGET_IMGREF="registry.tilo.so/tilo/tilo-vm:$arch-ci" \
-  bash os/dev/build-image.sh > "$out/install.log" 2>&1 \
-  || { tail -n 80 "$out/install.log"; die 'the dev image does not install onto a disk'; }
+  bash os/dev/build-image.sh > "$log" 2>&1 || status=$?
+cp "$log" "$out/install.log"
+(( status == 0 )) || { tail -n 80 "$log"; die 'the dev image does not install onto a disk'; }
 mv "$scratch/dev-disk/qcow2/disk.qcow2" "$out/disk/disk.qcow2"
 printf '%s\n' "$revision" > "$out/disk/revision"
 cp "$dev/digest" "$out/disk/image-digest"

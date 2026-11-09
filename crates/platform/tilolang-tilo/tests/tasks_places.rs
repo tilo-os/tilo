@@ -11,6 +11,32 @@ use crate::tasks::{
 #[cfg(feature = "record")]
 use crate::tasks::{bound_key, task_page};
 
+/// The title the window's header reads, as a person reads it: the shell's own, unwrapped.
+fn shown_title(view: &ViewInstance) -> Option<String> {
+    let shell = all(view.tree(), "ui.NavShell").into_iter().next()?;
+    match shell.props.get("title") {
+        Some(Value::Text(title)) => Some(title.clone()),
+        Some(Value::Opt(Some(title))) => match &**title {
+            Value::Text(title) => Some(title.clone()),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+/// How many things the window's header says its page lists, or nothing when it says no number.
+fn shown_count(view: &ViewInstance) -> Option<i64> {
+    let shell = all(view.tree(), "ui.NavShell").into_iter().next()?;
+    match shell.props.get("count") {
+        Some(Value::Int(count)) => Some(*count),
+        Some(Value::Opt(Some(count))) => match **count {
+            Value::Int(count) => Some(count),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
 /// The places under each heading of the sidebar, in order.
 fn sections(view: &ViewInstance) -> Vec<ShownSection> {
     fn places_in(node: &UiNode, out: &mut Vec<ShownPlace>) {
@@ -135,6 +161,7 @@ fn a_project_place_shows_its_tasks_and_adds_into_it_in_the_same_window() {
     call(&ada, "new_task", create(&root, "Book a haircut"));
     ada.commit();
     let mut view = ada.view(APP);
+    go_to(&mut view, "Inbox");
     assert_eq!(home_list_rows(&mut view).len(), 1, "the inbox first");
     go_to(&mut view, "Groceries");
     let listed: Vec<String> = home_list_rows(&mut view)
@@ -150,15 +177,14 @@ fn a_project_place_shows_its_tasks_and_adds_into_it_in_the_same_window() {
         node_of(view.tree(), &nav).is_some(),
         "the window's place is the project's"
     );
-    let shells = all(view.tree(), "ui.NavShell");
-    let shell = shells.first().expect("the window");
     assert_eq!(
-        shell.props.get("overview_title"),
-        Some(&Value::text("Groceries")),
+        shown_title(&view).as_deref(),
+        Some("Groceries"),
         "and the window's page is titled after it"
     );
-    assert!(
-        !shell.props.contains_key("overview_count"),
+    assert_eq!(
+        shown_count(&view),
+        None,
         "a project's place is its own list, not a tally"
     );
     let entry = key_of(&view, "ui.TextInput", &|node| {
@@ -197,11 +223,9 @@ fn every_place_leads_to_a_list_not_to_the_nothing_chosen_page() {
     let labels: Vec<String> = places(&view).into_iter().map(|(label, _)| label).collect();
     for place in labels {
         go_to(&mut view, &place);
-        let shells = all(view.tree(), "ui.NavShell");
-        let shell = shells.first().expect("the window");
         assert_eq!(
-            shell.props.get("overview_title"),
-            Some(&Value::text(&place)),
+            shown_title(&view).as_deref(),
+            Some(place.as_str()),
             "{place} is the page the window shows"
         );
         let shown = !all(view.tree(), "ui.VirtualList").is_empty()
@@ -291,6 +315,7 @@ fn a_place_that_holds_nothing_says_so_rather_than_all_done() {
     );
     ada.commit();
     let mut view = ada.view(APP);
+    go_to(&mut view, "Inbox");
     let said: Vec<String> = all(view.tree(), "ui.EmptyState")
         .into_iter()
         .filter_map(|node| match node.props.get("title") {

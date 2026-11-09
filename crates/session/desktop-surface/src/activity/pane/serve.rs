@@ -15,14 +15,14 @@ use super::{
     handled_outcome, humanize_app_id, local_resume_snapshot, t, t_args,
 };
 
-fn millis(at: SystemTime) -> i64 {
+pub(super) fn millis(at: SystemTime) -> i64 {
     at.duration_since(SystemTime::UNIX_EPOCH)
         .map_or(0, |since| {
             i64::try_from(since.as_millis()).unwrap_or(i64::MAX)
         })
 }
 
-fn author(author: &ui::widget::history::HistoryAuthor) -> wire::Author {
+pub(super) fn author(author: &ui::widget::history::HistoryAuthor) -> wire::Author {
     let (r, g, b) = author.rgb();
     wire::Author {
         name: author.name.clone(),
@@ -74,7 +74,7 @@ fn history_target(target: &wire::Target) -> ui::HistoryResourceTarget {
     }
 }
 
-const fn scope(scope: wire::Scope) -> WorkspaceScope {
+pub(super) const fn scope(scope: wire::Scope) -> WorkspaceScope {
     match scope {
         wire::Scope::ThisWorkspace => WorkspaceScope::ThisWorkspace,
         wire::Scope::AllWorkspaces => WorkspaceScope::AllWorkspaces,
@@ -143,12 +143,12 @@ fn entry_id(hex: &str) -> Option<HistoryEntryId> {
     wire::entry_id(hex).map(HistoryEntryId::from_bytes)
 }
 
-fn hex(id: &HistoryEntryId) -> String {
+pub(super) fn hex(id: &HistoryEntryId) -> String {
     wire::entry_hex(id.as_bytes())
 }
 
 /// The arguments an action carries, read as `T` .
-fn read<T: serde::de::DeserializeOwned>(
+pub(super) fn read<T: serde::de::DeserializeOwned>(
     arguments: &serde_json::Map<String, serde_json::Value>,
 ) -> Result<T, String> {
     serde_json::from_value(serde_json::Value::Object(arguments.clone()))
@@ -196,6 +196,8 @@ pub fn is_read(action: &str) -> bool {
         wire::REPLAY,
         wire::DETAIL,
         wire::FOCUS,
+        wire::RUNS,
+        wire::RUN_OUTPUT,
     ]
     .contains(&action)
 }
@@ -225,9 +227,13 @@ pub fn refused_to_agent(
     action: &str,
     arguments: &serde_json::Map<String, serde_json::Value>,
 ) -> Option<String> {
-    let all_workspaces = action == wire::FEED
-        && read::<wire::FeedQuery>(arguments)
-            .is_ok_and(|query| query.scope == wire::Scope::AllWorkspaces);
+    let all_workspaces = match action {
+        wire::FEED => read::<wire::FeedQuery>(arguments)
+            .is_ok_and(|query| query.scope == wire::Scope::AllWorkspaces),
+        wire::RUNS => read::<wire::RunsQuery>(arguments)
+            .is_ok_and(|query| query.scope == wire::Scope::AllWorkspaces),
+        _ => false,
+    };
     (is_personal(action) || all_workspaces).then(|| t("activity-served-personal-only"))
 }
 
@@ -298,6 +304,14 @@ impl WorkspaceActivityPane {
             wire::SUMMARY => serde_json::to_value(self.serve_summary()),
             wire::REPLAY => serde_json::to_value(self.serve_replay()),
             wire::FOCUS => serde_json::to_value(self.serve_focus()),
+            wire::RUNS => {
+                let query: wire::RunsQuery = read(arguments)?;
+                serde_json::to_value(tree.read(|tree| self.serve_runs(&query, tree)))
+            }
+            wire::RUN_OUTPUT => {
+                let query: wire::CommandRun = read(arguments)?;
+                serde_json::to_value(tree.read(|tree| self.serve_run_output(&query, tree)))
+            }
             wire::DETAIL => {
                 let query: wire::DetailQuery = read(arguments)?;
                 serde_json::to_value(tree.write(|tree| self.serve_detail(&query, tree)))
@@ -714,7 +728,12 @@ impl WorkspaceActivityPane {
                 DetailAction::Split => wire::DetailAction::Split,
                 DetailAction::Merge => wire::DetailAction::Merge,
             },
-            label: self.detail_action_label(action),
+            // An agent connection's run is no task: it is named as the run it is.
+            label: if action == DetailAction::UndoTask && self.selected_group_run().is_some() {
+                t("activity-detail-undo-run")
+            } else {
+                self.detail_action_label(action)
+            },
         })
         .collect()
     }
@@ -909,30 +928,7 @@ impl WorkspaceActivityPane {
                 Ok(self.apply_detail_action(action, tree))
             }
             wire::UNDO_RUN => detail(self, &read(arguments)?, DetailAction::UndoTask, tree),
-            wire::UNDO_RECORD => {
-                let query: wire::RecordQuery = read(arguments)?;
-                let task = if let Some(task) = query.task {
-                    // Named by its task: the run recorded for it, if it changed anything.
-                    self.task_agent_run(&task)
-                        .and_then(|indexed| indexed.run.task.clone())
-                } else {
-                    if !self.select_range(&query.range) {
-                        return Err(t("activity-history-gone"));
-                    }
-                    self.selected_agent_run()
-                        .and_then(|indexed| indexed.run.task.clone())
-                };
-                let Some(task) = task else {
-                    return Err(t("activity-undo-task-unavailable"));
-                };
-                // Asked of the task, so undo names the run's group in the document: the same step a
-                // task-wide undo would take back, one record at a time.
-                Ok(if self.undo_task_record(&task, &query.app_id, &query.id) {
-                    handled_outcome()
-                } else {
-                    WorkspaceActivityOutcome::default()
-                })
-            }
+            wire::UNDO_RECORD => self.serve_undo_record(&read(arguments)?),
             wire::CHOOSE_SOURCE => {
                 detail(self, &read(arguments)?, DetailAction::MorningSource, tree)
             }
@@ -948,6 +944,50 @@ impl WorkspaceActivityPane {
             wire::SOURCE => Ok(self.serve_source(&read(arguments)?)),
             other => Err(format!("workspace activity has no action `{other}`")),
         }
+    }
+
+    /// Undo one record's share of the run `query` names: the task it was recorded for, or the
+    /// agent connection's group the range's changes are under. The document's own history takes it
+    /// back as that one step.
+    fn serve_undo_record(
+        &mut self,
+        query: &wire::RecordQuery,
+    ) -> Result<WorkspaceActivityOutcome, String> {
+        // Named by its task, the run is the one recorded for it, if it changed anything.
+        if let Some(task) = query.task.as_deref() {
+            let Some(task) = self
+                .task_agent_run(task)
+                .and_then(|indexed| indexed.run.task.clone())
+            else {
+                return Err(t("activity-undo-task-unavailable"));
+            };
+            let asked = self.undo_task_record(&task, &query.app_id, &query.id);
+            return Ok(if asked {
+                handled_outcome()
+            } else {
+                WorkspaceActivityOutcome::default()
+            });
+        }
+        if !self.select_range(&query.range) {
+            return Err(t("activity-history-gone"));
+        }
+        // Asked of the run as the record's history knows it, so undo names its group in that
+        // document: the same step a run-wide undo would take back, one record at a time.
+        let asked = if let Some(task) = self
+            .selected_agent_run()
+            .and_then(|indexed| indexed.run.task.clone())
+        {
+            self.undo_task_record(&task, &query.app_id, &query.id)
+        } else if let Some(group) = self.selected_group_run() {
+            self.undo_group_record(&group, &query.app_id, &query.id)
+        } else {
+            return Err(t("activity-undo-task-unavailable"));
+        };
+        Ok(if asked {
+            handled_outcome()
+        } else {
+            WorkspaceActivityOutcome::default()
+        })
     }
 
     /// Move the boundary between the work sessions `boundary` names.

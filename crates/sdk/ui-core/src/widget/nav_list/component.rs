@@ -101,6 +101,11 @@ pub struct NavItemProps {
 impl From<NavItemProps> for NavItem {
     fn from(props: NavItemProps) -> Self {
         let mut item = Self::new(props.key, props.label);
+        // The resource the place shows: the list chooses the place of the resource a window
+        // shows, whatever the app calls the place.
+        if let Some(item_of) = props.item {
+            item = item.resource(item_of.0);
+        }
         if let Some(icon) = props.icon {
             item = item.icon(icon);
         }

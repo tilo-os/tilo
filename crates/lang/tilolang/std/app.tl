@@ -8,18 +8,17 @@ app tilo.std "Standard library"
 ///
 /// A window that lists resources composes it: `std.list` puts the items down a column of rows
 /// with what the platform does on a row, `std.places` the places the app names in the sidebar,
-/// `std.header` the sort menu, `std.add_entry` the entry at the list's end, and the app writes
-/// the shell around them and says where each stands. A window that is only that is `std.browse`,
-/// which takes the resource its window is of, the items, the places and the sort, and writes that
-/// shell the standard way.
+/// `std.sorts` the fields it offers as orders, `std.add_entry` the entry at the list's end, and
+/// the app writes the shell around them and says where each stands. A window that is only that is
+/// `std.browse`, which takes the resource its window is of, the items, the places and the sorts,
+/// and writes that shell the standard way.
 ///
 /// The bar's actions are the ones the owner's type declares, which the host places there — the
 /// primary one as the Primary button, the rest behind the bar's one menu; the primary's key is
 /// the entry's at the list's end, so the key and the button lead the person there to type the
 /// item; each item is a row whose actions the host puts on its context menu and its swipe, a
-/// destructive one undone rather than confirmed; a command the app marked `frequent` a button of
-/// its own, never folded into a run. Items whose type has a window of their own open in the next
-/// column; the list follows which one is open.
+/// destructive one undone rather than confirmed. Items whose type has a window of their own
+/// open in the next column; the list follows which one is open.
 ///
 /// The items of a list down a column of rows, each built as it shows: a row with a document of
 /// its own opens into it where it stands — the row grows into the item's page, and pressing it
@@ -32,23 +31,32 @@ app tilo.std "Standard library"
 /// fold, which are the app's to say, and what it puts inside is the item's row. A list that
 /// nests its rows gives `tree`; one that groups says the name of the items that group under
 /// nothing (`ungrouped`) and of the run it folds under its tail (`tail_title`); one that does
-/// neither gives neither.
+/// neither gives neither. The list is the column's scroller unless `in_column` is off: a list
+/// standing in a page's own scroller is as tall as its rows, and the page scrolls them with the
+/// rest, so no list scrolls inside a scroller that scrolls it. A window too narrow for a page
+/// beside the list gives the row's item a page of its own, opened in front of the list.
+///
+/// The row the person opened is the list's own state, so a window that lists and nothing else
+/// declares none. A view that opens a row from elsewhere in the window — what `on show` does —
+/// keeps that state itself and passes it as `opened:`.
 template view list<T>(
     items: List<T>,
-    opened: State<Option<T>>,
+    opened: State<Option<T>> = open_item,
     tree: Bool = false,
     ungrouped: Option<Text> = .none,
     tail_title: Option<Text> = .none,
+    in_column: Bool = true,
     row: (T, Option<Principal>) -> View,
 ) {
-    // The item the person opened where it stands — the row grows into it, and pressing it again,
-    // Escape, or a press beside it closes it — is the window's `opened`: the view that lists the
-    // items holds it, so it can also open one from outside the list (what `on show` does). A row
-    // without a document opens elsewhere, in the window's pane, so the list keeps nothing of it.
+    // The item the person opened where it stands: the row grows into it, and pressing it again,
+    // Escape, or a press beside it closes it. A row without a document opens elsewhere, in the
+    // window's pane, so the list keeps nothing of it.
+    state open_item: Option<T> = .none
     ui.VirtualList(
         selection_follows_focus: true,
         multi_select: true,
-        in_column: true,
+        in_column: in_column,
+        narrow: space.compact,
         tree: tree,
         ungrouped_title: ungrouped,
         tail_title: tail_title,
@@ -91,10 +99,13 @@ template view places<T>(
 /// item of it, through `create`, an action whose one `Text` parameter takes the words nothing
 /// else does. What the words say of the action's other parameters ("Call the landlord fri 10am
 /// @Bo") fills them: the entry shows each as a chip under what is typed, and removing a chip
-/// takes its words away. With no words of its own — nothing typed, space, or only what the
-/// other parameters take — the entry makes nothing: Enter does nothing and leaves the text
-/// there, and Escape leaves none. The host gives it the window's primary action's key, so the
-/// key and the bar's button come here.
+/// takes its words away. A parameter the call gave is the default there: it stands where the
+/// words say nothing of it, and the words win where they do, so a list in a place that starts
+/// its items one way (`new_task(tasks, due: if in_today { today })`) reads
+/// "fri" as the day the person said. With no words of its own — nothing typed, space, or only
+/// what the other parameters take — the entry makes nothing: Enter does nothing and leaves the
+/// text there, and Escape leaves none. The host gives it the window's primary action's key, so
+/// the key and the bar's button come here.
 template view add_entry(placeholder: Text, create: Action) {
     state typed: Text = ""
     let parts = entry_parts(create, typed)
@@ -108,35 +119,35 @@ template view add_entry(placeholder: Text, create: Action) {
                 }
             }
         }
-        ui.TextInput(value: typed, placeholder: placeholder, entry: true) {
+        ui.TextInput(bind: typed, placeholder: placeholder, entry: true) {
             on submit: create.then(set(typed, ""))
         }
     }
 }
 
 /// The window of `of` that lists `items`: the places the app names (`places`) in the sidebar,
-/// with all of them called `everything`; the sort menu when it gives `sort`; the entry at the
-/// list's end when it gives `entry`; and nothing to list when the place chosen finds nothing,
-/// where it says `empty`. The window owns the query: the place a person chose is its state,
-/// kept for them alone, and the list is what that place finds (`items.matching(query)`), the
-/// title over it and its count naming that place.
+/// with all of them called `everything`; the sort menu when it gives `sorts`, the fields the app
+/// names as orders (`[Note.title]`), the list's own order first; the entry at the list's end when
+/// it gives `entry`; and nothing to list when the place chosen finds nothing, where it says
+/// `empty`. The window owns the query — the place a person chose and the order they chose are its
+/// state, kept for them alone — and the list is that one query, the title over it and its count
+/// naming that place.
 ///
-/// The rows open beside the list when their type has a window of its own (`opens`, the type's
-/// own fact); then choosing one opens it in the column beside the list, and the window says
-/// beside them that nothing is chosen. A window whose rows open in front of it instead gives
-/// `opens: false`: then the list is the window's content, under its own title, with no column
-/// to open beside it.
+/// The rows open beside the list when their type has a window of its own (`opens`, the type's own
+/// fact): choosing one opens it in the column beside the list, and until one is chosen the list
+/// lists for the whole window. A window whose rows open in front of it gives `opens: false`
+/// instead: the list is then its content, under its own title, with no column to open beside it.
 ///
-/// `row` draws one item's row and the window puts it down the list, with who else is at the
-/// item as every list of the platform shows it. An app whose window needs more than this — a
-/// list that groups or nests its rows, a sidebar of its own — composes `std.list`,
-/// `std.places` and `std.header` itself.
-template view browse<R, T, S>(
+/// `row` draws one item's row and the window puts it down the list, with who else is at the item
+/// as every list shows it. The row the person opened is the list's own, unless the app keeps one
+/// (`opened`) to open a row from elsewhere. A window that needs more — grouped or nested rows, a
+/// sidebar of its own — composes `std.list`, `std.places` and `std.sorts` itself.
+template view browse<R, T>(
     of: R,
     items: List<T>,
-    opened: State<Option<T>>,
+    opened: Option<State<Option<T>>> = .none,
     places: List<Filter<T>> = [],
-    sort: Option<State<S>> = .none,
+    sorts: List<Sort<T>> = [],
     everything: Text = phrase("tilolang-all", kind: meta(T).plural),
     empty: Text = phrase("tilolang-empty-kind", kind: meta(T).plural),
     entry: Option<Action> = .none,
@@ -145,16 +156,18 @@ template view browse<R, T, S>(
     row: (T) -> View,
 ) {
     state query: Text = ""
+    state order: Option<Sort<T>> = .none
     let kind = meta(T)
-    let shown = items.matching(query)
+    let asked = if let o = order { query + " " + o.query } else { query }
+    let shown = items.matching(asked)
     let title = places.find(p -> p.query == query)?.label ?? everything
-    let sidebar_title: Option<Text> = if places.is_empty() { .none } else { .some(meta(of).title) }
+    let sidebar_title = if not places.is_empty() { meta(of).title }
     if opens {
         ui.NavShell(
             content_kind: .document,
             sidebar_title: sidebar_title,
-            overview_title: .some(title),
-            overview_count: .some(shown.len()),
+            overview_title: title,
+            overview_count: shown.len(),
         ) {
             sidebar: {
                 if not places.is_empty() {
@@ -162,22 +175,21 @@ template view browse<R, T, S>(
                 }
             }
             overview_actions: {
-                std.header(sort: sort)
+                if not sorts.is_empty() {
+                    std.sorts(order, sorts)
+                }
             }
             overview: {
                 browse_rows(shown, opened, empty, kind.icon, entry, entry_placeholder) { x ->
                     row(x)
                 }
             }
-            content: {
-                ui.EmptyState(phrase("tilolang-none-selected", kind: kind.noun), icon: kind.icon)
-            }
         }
     } else {
         ui.NavShell(
             content_kind: .list,
-            title: .some(title),
-            count: .some(shown.len()),
+            title: title,
+            count: shown.len(),
             sidebar_title: sidebar_title,
         ) {
             sidebar: {
@@ -186,7 +198,9 @@ template view browse<R, T, S>(
                 }
             }
             actions: {
-                std.header(sort: sort)
+                if not sorts.is_empty() {
+                    std.sorts(order, sorts)
+                }
             }
             content: {
                 browse_rows(shown, opened, empty, kind.icon, entry, entry_placeholder) { x ->
@@ -203,7 +217,7 @@ template view browse<R, T, S>(
 /// as the first.
 template view browse_rows<T>(
     items: List<T>,
-    opened: State<Option<T>>,
+    opened: Option<State<Option<T>>> = .none,
     empty: Text,
     icon: Option<Text>,
     entry: Option<Action>,
@@ -243,8 +257,8 @@ template view browse_rows<T>(
 /// is the page's, not a row over the items, so the page states it once. A move — a drag, `Tab`
 /// and `Shift-Tab`, the accessibility move actions — is reported with the item it lands under
 /// and the item it lands before, and `place` puts it in the one place they name:
-/// `(moved, .none, .none)` is the end of the top level, `(moved, .some(x), .none)` the end of
-/// `x`'s own, and `(moved, .none, .some(x))` where `x` stands. One step, so two people moving
+/// `(moved, .none, .none)` is the end of the top level, `(moved, x, .none)` the end of `x`'s
+/// own, and `(moved, .none, x)` where `x` stands. One step, so two people moving
 /// items at once never leave one in two places. A row's checkbox asks `toggled`. Give `progress`
 /// and a row with items under it says how far its branch got ("1/3"), as the list of the same
 /// items says it. An item whose parent is not among `items` stands at the top, so a deleted
@@ -266,13 +280,7 @@ view outline<T>(
     if items.is_empty() {
         ui.EmptyState(empty, icon: icon)
     } else {
-        ui.TreeView(
-            name: .some(name),
-            fill: fill,
-            reorder: true,
-            tab_indents: true,
-            hide_root: true,
-        ) {
+        ui.TreeView(name: name, fill: fill, reorder: true, tab_indents: true, hide_root: true) {
             on drop(moved: T): place(moved, .none, .none)
             for x in items {
                 // The node just above this one under the same parent, as the outline shows
@@ -281,10 +289,10 @@ view outline<T>(
                     .take(items.index_of(x) ?? 0)
                     .filter(y -> parent(y) == parent(x))
                     .last()
-                let count: Option<Text> = if let c = progress { c(x) } else { .none }
+                let count = if let c = progress { c(x) }
                 ui.TreeViewNode(x, label(x), parent: parent(x), above: above, progress: count) {
-                    on drop(moved: T): place(moved, .none, .some(x))
-                    on into(moved: T): place(moved, .some(x), .none)
+                    on drop(moved: T): place(moved, .none, x)
+                    on into(moved: T): place(moved, x, .none)
                     on check: toggled(x)
                     row: {
                         row(x, parent(x))
@@ -295,27 +303,41 @@ view outline<T>(
     }
 }
 
-/// A window's own controls, before the actions the host puts in the bar: the sort menu, and
-/// `extra`, a page's controls. The window's actions come from what its type declares, and the
-/// host places them after these: its primary action as the labelled Primary button, a command
-/// the app marked `frequent` as a button of its own, and all the rest behind the bar's one
-/// menu, so every action stays reachable at every width without the view having read them.
-view header<S>(sort: Option<State<S>> = .none, extra: View) {
-    if let s = sort {
-        ui.MenuButton(phrase("tilolang-sort"), icon: .arrow_up_down, icon_only: true) {
-            for c in cases(S) {
-                ui.MenuItem(c.label(), checked: c == s) {
-                    on choose: set(s, c)
-                }
+/// The orders a window offers, in its bar: the list's own order first, called `everything`, then
+/// each field the app named, its entry saying the field's label. The one chosen is the window's
+/// `chosen` order; none of them is the list as the store keeps it. A window lists the orders its
+/// app declares, never every field its item type has.
+template view sorts<T>(
+    chosen: State<Option<Sort<T>>>,
+    of: List<Sort<T>>,
+    everything: Text = phrase("tilolang-order-default"),
+) {
+    ui.MenuButton(phrase("tilolang-sort"), icon: .arrow_up_down, icon_only: true) {
+        ui.MenuItem(everything, checked: chosen == .none) {
+            on choose: set(chosen, .none)
+        }
+        for s in of {
+            ui.MenuItem(s.label, checked: chosen == s) {
+                on choose: set(chosen, s)
             }
         }
     }
+}
+
+/// A window's own controls, before the actions the host puts in the bar: `extra`, a page's
+/// controls. The window's actions come from what its type declares, and the host places them
+/// after these: its primary action as the labelled Primary button, a command that toggles a
+/// state of the window's resource as a control of its own, and all the rest behind the bar's one
+/// menu, so every action stays reachable at every width without the view having read them.
+template view header(extra: View) {
     extra
 }
 
 /// A window that is a document of `of`: its content at the readable measure. A document edits
 /// its title as its large title, and the host puts what can be done with it behind the "…"
-/// beside that title.
+/// beside that title. The title is `meta(of).title`: the field its type says names it, or the
+/// first text field when the type says none, so a draft whose type names its subject is called
+/// by the subject and its heading never repeats a line of its body.
 view document<R>(of: R, content: View) {
     ui.NavShell(content_kind: .document, title: meta(of).title) {
         content: {
@@ -390,24 +412,31 @@ view page<R>(
 /// its words and what it holds (`items.matching(Task.today)`), and one whose place no filter
 /// asks, such as the conversations with anything left unread, writes a view of its own over
 /// this. A card is a summary, so a list longer than the rows it shows ends with the way into
-/// the rest: `Show all`, which opens `of`, as pressing the card does. The count is how many the
-/// place holds, so a card never says more than it shows.
+/// the rest: `Show all`, which opens `of`, as pressing the card does. The count is the one the
+/// store answers without reading the place: exact, and none where a filter of several tests is
+/// checked item by item, so a card of a place of the workspace's size never pays for its number.
 ///
 /// A place with nothing in it takes no room on the page: one quiet line says it is caught up,
 /// which is what a morning's page is for. Nothing else of it stands there — no count of none,
 /// no empty list.
 template view place<R, T>(of: R, name: Text, items: List<T>, row: (T) -> View) {
-    let n = items.count()
-    ui.Card(item: of, title: name, count: if n == 0 { .none } else { .some(n) }) {
-        if n == 0 {
+    // Whether the place holds anything at all, and how many where the store answers it without
+    // reading the place: counting a filter checked item by item reads every item behind the
+    // rows it shows, each time the page opens.
+    let empty = items.is_empty()
+    let counted = items.counted()
+    ui.Card(item: of, title: name, count: if empty { .none } else { counted }) {
+        if empty {
             ui.Text(phrase("tilolang-all-caught-up"), secondary: true)
         } else {
             list(items) { x ->
                 row(x)
             }
-            if n > preview_rows() {
-                ui.Button("Show all {n}") {
-                    on press: open(of)
+            if let n = counted {
+                if n > preview_rows() {
+                    ui.Button("Show all {n}") {
+                        on press: open(of)
+                    }
                 }
             }
         }
@@ -442,7 +471,7 @@ view transcript<R, T>(
                         composer
                     }
                 }
-                ui.VirtualList(transcript: true, unread: unread) {
+                ui.VirtualList(follow_end: true, page_column: true, unseen_from: unread) {
                     for m in items {
                         let made = created(m)
                         ui.ListItem(item: m, author: made?.who, time: made?.at) {
@@ -498,7 +527,7 @@ view origin<R>(of: R) {
     if let made = created(of), f = made.from {
         let kind = meta(f)
         // The glyph the app gives the type, and a link for a type whose app gives none.
-        let glyph: Option<Text> = if let i = kind.icon { .some(i) } else { .some("link") }
+        let glyph = if let i = kind.icon { i } else { "link" }
         ui.ListRow(kind.title, prefix: phrase("tilolang-from"), item: f, icon: glyph)
     }
 }
@@ -512,7 +541,7 @@ view linked_row<R>(of: R, dense: Bool = false) {
     if kind.row {
         show(of, row: true)
     } else {
-        let glyph: Option<Text> = if let i = kind.icon { .some(i) } else { .some("link") }
+        let glyph = if let i = kind.icon { i } else { "link" }
         ui.ListRow(kind.title, item: of, icon: glyph, dense: dense)
     }
 }
@@ -551,17 +580,22 @@ view suggestions<R>(of: R) {
 }
 
 /// What happened to `of`, newest first, as the platform folds its history (`steps`): each step,
-/// consecutive changes by one person or by one task run, is an entry saying who made it, what
+/// consecutive changes by one person or by one run, is an entry saying who made it, what
 /// they did and when — one sentence, wrapping as a sentence does, the face of whoever made it
 /// beside it. What they did is what its last change says (`version_said`), worked out from the
 /// fields the change wrote, the person looking as "You". What the sentence leaves out stands
 /// under it, muted (`version_notes`): each field the change wrote, what it held before beside
 /// what it holds now, each as the field's type shows it. Steps of one hand, moments apart, group
-/// under the face of the step that opens them. Undo ends the step that offers it, as quiet as
-/// the words around it, a run's undo taking the whole run; each change of theirs in a step of
-/// several is undone on its own, where the step opens. One change made over many items at
-/// once — a command run on a choice of them — is one step: it says how many items it changed,
-/// and its Undo takes them all back together.
+/// under the face of the step that opens them.
+///
+/// A change is taken back where a person means it. The newest step is the change the page shows
+/// the result of, so it offers its undo where it stands, as quiet as the words around it, a
+/// run's undo taking the whole run. Every older step keeps its undo in the step's own menu: a
+/// history reads as a timeline, not as a column of buttons. The step that made the resource
+/// offers nothing to take back — reversing it would remove the thing whose page a person is
+/// reading it on. A step of several changes is opened to each of them, each taken back on its
+/// own there. One change made over many items at once — a command run on a choice of them — is
+/// one step: it says how many items it changed, and its undo takes them all back together.
 view history<R>(of: R) {
     state open: Text = ""
     let steps = steps(of)
@@ -573,6 +607,13 @@ view history<R>(of: R) {
                 // one joins the visit that step's face opened.
                 let prev = steps.previous(s)
                 let joined = if let p = prev { p.who == s.who and s.at - p.at < 1h } else { false }
+                // The newest step, whose result is what the page shows.
+                let newest = prev == .none
+                // The step's first change made the resource: the step holds its making, and
+                // nothing of it is taken back from the page of the thing it made. A step's
+                // versions run oldest first, so its newest is what its sentence says.
+                let made = if let v = s.versions.first() { v.kind == "created" } else { false }
+                let undoable = not made and (s.run != .none or s.mine and s.changes == 1)
                 stack(gap: .related) {
                     row(gap: .tight, align: .start) {
                         if joined {
@@ -584,46 +625,73 @@ view history<R>(of: R) {
                         }
                         stack(gap: .tight, fill: 1.0) {
                             // Who, what, when: one sentence. It wraps rather than squeezing the
-                            // name it opens with — an undo's own word is as long as its language
-                            // says — and what can be undone is offered at its end, quietly.
+                            // name it opens with, and what can be taken back at its end is one
+                            // quiet control.
                             row(gap: .tight, align: .center, wrap: true) {
                                 if let v = s.versions.last() {
                                     ui.Text(v.actor, role: .label)
                                     // A run's own words stand under its sentence: its changes are
                                     // what it did, and it names them all.
-                                    if s.task == .none {
+                                    if s.run == .none {
                                         std.version_said(v)
                                     }
                                 }
                                 ui.Text("·", role: .caption, secondary: true)
                                 ui.Time(s.at, role: .caption, secondary: true)
                                 spacer()
-                                if let run = s.task {
-                                    ui.Button(
-                                        phrase("tilolang-history-undo-run"),
-                                        role: .plain,
-                                        size: .small,
-                                    ) {
-                                        on press: undo(run)
-                                    }
-                                } else if s.changes == 1 and s.mine {
-                                    if let v = s.versions.last() {
-                                        ui.Button(
-                                            phrase("tilolang-undo"),
+                                // Taken back here, quietly, on the step the page ends with; in
+                                // the step's menu anywhere older.
+                                if undoable {
+                                    if newest {
+                                        if let run = s.run {
+                                            ui.Button(
+                                                phrase("tilolang-history-undo-run"),
+                                                role: .plain,
+                                                size: .small,
+                                            ) {
+                                                on press: undo(run)
+                                            }
+                                        } else if let v = s.versions.last() {
+                                            ui.Button(
+                                                phrase("tilolang-undo"),
+                                                role: .plain,
+                                                size: .small,
+                                            ) {
+                                                on press: undo(v)
+                                            }
+                                        }
+                                    } else {
+                                        ui.MenuButton(
+                                            phrase("tilolang-history-actions"),
+                                            icon: .more_horizontal,
+                                            icon_only: true,
                                             role: .plain,
-                                            size: .small,
                                         ) {
-                                            on press: undo(v)
+                                            if let run = s.run {
+                                                ui.MenuItem(
+                                                    phrase("tilolang-history-undo-run"),
+                                                    icon: .undo_2,
+                                                ) {
+                                                    on choose: undo(run)
+                                                }
+                                            } else if let v = s.versions.last() {
+                                                ui.MenuItem(
+                                                    phrase("tilolang-history-revert"),
+                                                    icon: .undo_2,
+                                                ) {
+                                                    on choose: undo(v)
+                                                }
+                                            }
                                         }
                                     }
                                 }
                             }
-                            if let run = s.task {
+                            if let run = s.run {
                                 ui.Text(run.title, role: .caption, secondary: true)
                             }
                             if s.changes == 1 {
                                 if let v = s.versions.last() {
-                                    std.version_notes(v, spoken: s.task == .none)
+                                    std.version_notes(v, spoken: s.run == .none)
                                 }
                             } else if s.changes > 1 {
                                 ui.Text(
@@ -647,7 +715,7 @@ view history<R>(of: R) {
                                                 ui.Text("·", role: .caption, secondary: true)
                                                 ui.Time(v.at, role: .caption, secondary: true)
                                                 spacer()
-                                                if v.mine {
+                                                if v.mine and v.kind != "created" {
                                                     ui.Button(
                                                         phrase("tilolang-undo"),
                                                         role: .plain,
@@ -657,7 +725,7 @@ view history<R>(of: R) {
                                                     }
                                                 }
                                             }
-                                            std.version_notes(v, spoken: s.task == .none)
+                                            std.version_notes(v, spoken: s.run == .none)
                                         }
                                     }
                                 } else {

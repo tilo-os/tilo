@@ -20,8 +20,11 @@
 mod dock;
 mod own_status;
 mod peek;
+mod peers;
 #[cfg(test)]
 mod tests;
+
+pub use peers::peer_screens;
 
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, Size};

@@ -14,6 +14,9 @@ path = "src/main.rs"
 tracing.workspace = true
 tilo-sheets = { path = "../sheets" }
 ui = { package = "tilo-app", path = "../../sdk/tilo-app" }
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+# The workspace-hack's native feature set does not build for wasm32.
 workspace-hack = { version = "0.1" }
 
 [dev-dependencies]

@@ -787,6 +787,21 @@ impl GovernedAccessWriter {
         &self.shell_payloads
     }
 
+    /// Whether the relay decides `workspace_id`'s changes against standings
+    /// that hold `device`'s. A workspace this relay has not opened yet is
+    /// projected by the settle that opens it, so it counts as holding it.
+    pub(crate) async fn projects_standing(&self, workspace_id: u64, device: [u8; 32]) -> bool {
+        let Some(workspace) = self.workspaces.lock().await.get(&workspace_id).cloned() else {
+            return true;
+        };
+        workspace
+            .lock()
+            .await
+            .standings
+            .as_ref()
+            .is_none_or(|standings| standings.contains_key(&device))
+    }
+
     /// Replace the standing of each member device of the workspace.
     pub(crate) async fn replace_standings(
         &self,
@@ -804,7 +819,7 @@ impl GovernedAccessWriter {
             crate::peer::MAX_AUTOBOUND_WORKSPACES,
         )
         .await?;
-        workspace.lock().await.standings = Some(Arc::new(standings));
+        workspace.lock().await.project_standings(standings);
         Ok(())
     }
 
@@ -966,10 +981,7 @@ pub fn validate_host_device_identity(identity: &HostIdentity) -> Result<(), Host
             "device certificate does not match the configured device signing key".into(),
         ));
     }
-    if identity
-        .revocations
-        .is_revoked(&identity.device_cert.device_public_key)
-    {
+    if identity.revocations.refuses(&identity.device_cert) {
         return Err(HostError::Identity("device certificate is revoked".into()));
     }
     Ok(())
@@ -1172,15 +1184,8 @@ impl tilo_peer_state::owner::session::OwnHost for WorkspaceHost {
         Self::join_service(self)
     }
 
-    fn connect_local(
-        &self,
-        cert: DeviceCert,
-        key: ed25519_dalek::SigningKey,
-        revocations: RevocationList,
-    ) -> std::pin::Pin<
-        Box<dyn std::future::Future<Output = Result<RelayClient, ClientError>> + Send + '_>,
-    > {
-        Box::pin(Self::connect_local(self, cert, key, revocations))
+    fn direct(&self, workspace: u64) -> Option<tilo_peer_state::direct::DirectSync> {
+        self.workspaces().direct().link(workspace)
     }
 }
 

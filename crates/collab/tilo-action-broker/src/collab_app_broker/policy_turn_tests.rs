@@ -153,6 +153,7 @@ fn the_next_policy_change_is_the_first_grant_or_certificate_expiry() {
         issued_at_ns: after.saturating_sub(NS),
         expires_at_ns: Some(certificate_ends),
         signature: [0; 64],
+        issuer: None,
     });
     let _context = state.subscribe_context(
         &route.channel_key(),

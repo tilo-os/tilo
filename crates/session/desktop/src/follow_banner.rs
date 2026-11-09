@@ -1,10 +1,11 @@
 //! The "Following Ada" banner: what says, while this person's view tracks someone else's, whose
 //! view it is and how to stop.
-//! A 2 px frame in their colour runs round the work area, and a small bar hangs in the transients'
-//! zone under the top bar (never on a window's bar) with their face, "Following Ada" and Stop. When
-//! the person's own input ends it, the bar says "Stopped following" for a moment. The native shell
-//! and the browser paint the same banner; each host keeps its own follow state and tells the banner
-//! when following starts and ends.
+//! A 2 px frame in their colour runs round the work area, and a small bar hangs centred under the
+//! top bar with their face, "Following Ada" and Stop: centred so it never stands on a window's
+//! buttons, which sit at its ends, and clear of any window's bar a host names. When the person's own
+//! input ends it, the bar says "Stopped following" for a moment. The native shell and the browser
+//! paint the same banner; each host keeps its own follow state and tells the banner when following
+//! starts and ends.
 
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
@@ -232,9 +233,8 @@ impl FollowBanner {
     }
 }
 
-/// Where the bar and its Stop go: the transients' slot in the viewport,
-/// below any window bar it would cover. Their face, `label` and, while
-/// following, Stop.
+/// Where the bar and its Stop go: centred across the top of the work area, under the bar and below
+/// any window bar it would cover. Their face, `label` and, while following, Stop.
 fn rects(
     text: &mut TextRenderer,
     theme: &Theme,
@@ -263,11 +263,12 @@ fn rects(
             0.0
         }
         + pad;
-    let chip = crate::notifications::transient_slot(
+    let chip = centred_slot(
         place.viewport,
-        place.viewport.y0,
+        place.work_area,
         (width, 40.0),
         place.window_bars,
+        f64::from(spacing.s3),
     );
     let stop = Rect::new(
         chip.x1 - pad - stop_width,
@@ -276,6 +277,37 @@ fn rects(
         chip.center().y + 14.0,
     );
     (chip, stop)
+}
+
+/// Where a bar of `size` hangs: centred across `work_area`, its top `inset` under the higher of the
+/// work area's and `viewport`'s top, and lower still while it would stand on one of `window_bars`.
+/// Centred, its ends never reach a window's buttons.
+fn centred_slot(
+    viewport: Rect,
+    work_area: Rect,
+    size: (f64, f64),
+    window_bars: &[Rect],
+    inset: f64,
+) -> Rect {
+    let (width, height) = size;
+    let x0 = work_area.center().x - width / 2.0;
+    let mut y0 = viewport.y0.max(work_area.y0) + inset;
+    // Each shift clears at least one bar, so this ends.
+    for _ in 0..=window_bars.len() {
+        let slot = Rect::new(x0, y0, x0 + width, y0 + height);
+        let below = window_bars
+            .iter()
+            .filter(|bar| bar.intersect(slot).area() > 0.0)
+            .map(|bar| bar.y1 + inset)
+            .fold(None, |most: Option<f64>, y| {
+                Some(most.map_or(y, |m| m.max(y)))
+            });
+        match below {
+            Some(y) if y > y0 => y0 = y,
+            _ => break,
+        }
+    }
+    Rect::new(x0, y0, x0 + width, y0 + height)
 }
 
 /// The bar's contents: their face, `label` and, while following, Stop.

@@ -10,6 +10,10 @@
 //! (`waypipe` over vsock, see [`legacy_agent_protocol::waypipe`]). Installed
 //! apps get search entries and environment shims ([`apps`]).
 //!
+//! Hosted workspaces run their Linux programs in a VM of their own, a
+//! sibling of the legacy VM with the same agent and lifecycle on
+//! Firecracker, metered per second ([`hosted`]).
+//!
 //! Windows is not a legacy VM: the Windows appliance in `windows-vm` is a
 //! separate VM type (one owner-managed system domain, `RemoteApp` windows and
 //! an HTTPS guest bridge). The two share only [`libvirt_domain`].
@@ -27,6 +31,8 @@ pub mod confine;
 pub mod control;
 pub mod domain;
 pub mod grants;
+#[cfg(target_os = "linux")]
+pub mod hosted;
 pub mod image;
 pub mod lifecycle;
 pub mod memory;

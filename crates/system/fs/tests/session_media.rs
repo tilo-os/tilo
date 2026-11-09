@@ -29,6 +29,7 @@ use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
 
 use runtime_fs::blobs::{BlobClient, BlobPrincipal, BlobScope, ReadOutcome, write_handoff};
+use tilo_test_env::SpawnUnderEnvLock as _;
 
 /// The shipped `fs` binary, which serves a session's document media.
 fn fs_binary() -> PathBuf {
@@ -54,7 +55,7 @@ impl Server {
             .env_remove("TILO_FS_BLOB_SOCKET")
             .stdout(Stdio::null())
             .stderr(Stdio::null())
-            .spawn()
+            .spawn_locked()
             .expect("the session's document media starts");
         // Readiness is a connection the server answers, not the file it leaves: a session
         // killed outright leaves a socket behind that no one listens on, and a later start of

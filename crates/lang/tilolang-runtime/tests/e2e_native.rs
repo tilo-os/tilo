@@ -29,11 +29,6 @@ enum NoteFilter {
     pinned
 }
 
-enum NoteOrder {
-    created
-    title
-}
-
 root Notebook
 
 default view notebook for Notebook
@@ -57,12 +52,9 @@ view note_line(n: Note) {
 }
 
 view notebook(nb: Notebook) {
-    state order: NoteOrder = .created
+    state order: Option<Sort<Note>> = .none
     state place: Text = ""
-    state opened: Option<Note> = .none
-    let notes: List<Note> = nb.notes
-    let sorted = if order == .title { notes.sort_by(.title) } else { notes }
-    let shown = sorted.matching(place)
+    let shown = nb.notes.matching(if let o = order { place + " " + o.query } else { place })
     ui.NavShell(
         content_kind: .document,
         sidebar_title: .some(meta(Notebook).title),
@@ -73,13 +65,13 @@ view notebook(nb: Notebook) {
             std.places(place, of: filters(Note).filter(f -> f.toggle), everything: "All notes", icon: meta(Note).icon)
         }
         overview_actions: {
-            std.header(sort: order)
+            std.sorts(order, [Note.title])
         }
         overview: {
             if shown.is_empty() {
                 ui.EmptyState("No notes yet", icon: meta(Note).icon)
             } else {
-                std.list(shown, opened) { (n, at) ->
+                std.list(shown) { (n, at) ->
                     ui.ListItem(item: n, presence: at) {
                         note_line(n)
                     }
@@ -236,7 +228,11 @@ view detail(n: Note) {
                 .get("checked")
                 .cloned()
         };
-        assert_eq!(checked(tree, "Created"), Some(Value::Int(1)));
+        // The list's own order stands first, named by the host's phrase: no phrase source is
+        // hosted here, so its entry reads as the phrase's key.
+        let orders = of_kind(tree, "ui.MenuItem");
+        assert_eq!(text_prop(orders[0], "label"), "tilolang-order-default");
+        assert_eq!(checked(tree, "tilolang-order-default"), Some(Value::Int(1)));
         assert_ne!(checked(tree, "Title"), Some(Value::Int(1)));
         // Rows are read here as a host that draws every row does.
         view.set_lazy_rows(false).unwrap();

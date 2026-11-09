@@ -6,9 +6,8 @@
 use agent_provider_config::ProviderConfig;
 use tilo_desktop_surface::activity::describer;
 
-/// The package the describer asks as: what the person's AI settings can choose a model for, and
-/// what the gateway authorizes for a plain completion.
-pub(crate) const PACKAGE: &str = "so.tilo.activity";
+/// The package the describer asks as, as every question this session asks does.
+pub(crate) use crate::search_ask::PACKAGE;
 
 /// Whether the person chose any model for Activity: what the describer asks of the desk's thread,
 /// before a request is worth building.
@@ -27,6 +26,15 @@ pub(crate) fn ask(job: &tilo_desktop_surface::activity::describer::Job) -> Optio
         .block_on(async move { models.complete(&request).await.ok() })
         .ok()??;
     Some(describer::answer_text(&answer))
+}
+
+/// The model gateway this session runs, as a question asked here reaches it.
+pub(crate) struct Gateway;
+
+impl crate::platform::Models for Gateway {
+    fn models(&self) -> Option<ui::models::Models> {
+        models()
+    }
 }
 
 /// The model Activity asks, as a capability of this session; `None` while settings choose none or

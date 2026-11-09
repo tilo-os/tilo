@@ -42,7 +42,7 @@ fn listing(key: &str, name: &str, action: ListingAction) -> Listing {
         key: key.to_owned(),
         name: name.to_owned(),
         about: format!("About {name}"),
-        host: "tilo.coffee".to_owned(),
+        host: "tilo.sh".to_owned(),
         activity: "Active today".to_owned(),
         joins_as: "You join as an editor".to_owned(),
         action,

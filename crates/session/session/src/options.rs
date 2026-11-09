@@ -54,6 +54,12 @@ pub struct Options {
     pub backlights: Option<Box<dyn Backlights>>,
     /// What the desktop's search reaches beyond the desktop.
     pub search: SearchOptions,
+    /// The apps this device lists — installed here, the machine's own and those a person can get —
+    /// as search, the app sheets and the tool service read them.
+    pub lists: crate::lists::Lists,
+    /// The index apps publish what they hold into: what search finds in an app that is not open,
+    /// and what the broker keeps current.
+    pub content: std::sync::Arc<tilo_desktop_search::content_index::AppContentIndex>,
     /// The action host: what open apps publish and run, and where what is chosen in search runs by
     /// address. Without one, search finds the desktop's own and starts nothing.
     pub apps: Option<Rc<dyn AppActions>>,
@@ -356,6 +362,8 @@ impl Default for Options {
             services: Vec::new(),
             backlights: None,
             search: SearchOptions::default(),
+            lists: crate::lists::Lists::default(),
+            content: tilo_desktop_search::content_index::session(),
             apps: None,
             launch: None,
             setup: None,

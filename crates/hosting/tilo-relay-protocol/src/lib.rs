@@ -47,6 +47,7 @@ pub mod config;
 pub mod directory;
 pub mod home_peer;
 pub mod live;
+pub mod login_code;
 pub mod mesh;
 pub mod metrics;
 pub mod operator;
@@ -64,7 +65,7 @@ pub mod workspaces;
 /// the admission core can verify them without linking the relay protocol.
 pub use tilo_workspace_join::delegation;
 /// The stable relay shard of a workspace UUID, defined beside [`delegation`].
-pub use tilo_workspace_join::room_workspace_id;
+pub use tilo_workspace_join::{room_workspace_id, workspace_topic};
 
 pub use auth::{AuthError, AuthenticatedPeer};
 pub use config::{ConfigError, RelayConfig};

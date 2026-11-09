@@ -165,6 +165,7 @@ where
     let (tx, mut rx) = mpsc::channel::<Envelope>(PEER_OUTBOUND_CAPACITY);
     let (state_tx, mut state_rx) = mpsc::channel::<StateDelivery>(PEER_OUTBOUND_CAPACITY);
     let (disconnect_tx, mut disconnect_rx) = mpsc::channel::<()>(1);
+    let stop = Arc::new(tokio::sync::Notify::new());
     let mut reader = SessionReader::new(read);
     // Track our subscriptions so we can unregister on disconnect.
     let mut subscribed: Vec<u64> = Vec::new();
@@ -188,6 +189,7 @@ where
         metrics: &metrics,
         trust_policy: &trust_policy,
         disconnect: &disconnect_tx,
+        stop: Some(&stop),
         own_device_public_key: &own_device_public_key,
         app_serving: app_serving.as_ref(),
         revocations: &revocations,
@@ -235,10 +237,14 @@ where
             end_writer,
             &mut closed,
             &mut disconnect_rx,
+            &stop,
             &metrics,
         )
         .await
     };
+    if let Some(admin) = &admin {
+        admin.agent_session_ended(&peer.device_public_key, &stop);
+    }
 
     connection_live.end();
     grant.end();
@@ -256,7 +262,8 @@ where
 }
 
 /// Run a session's `reading` and `writing` until the session ends: the
-/// connection closes, the peer overflows its queue, or either half ends.
+/// connection closes, the peer overflows its queue, the session is stopped
+/// (`stop`), or either half ends.
 /// When the reader ends it (the peer closed, or lost its access), the
 /// writer is told through `end_writer` and writes what was queued for the
 /// peer then, a refusal among it, before the close; unless the connection
@@ -268,11 +275,14 @@ async fn until_ended<C: std::future::Future>(
     end_writer: tokio::sync::watch::Sender<bool>,
     closed: &mut std::pin::Pin<&mut C>,
     disconnect: &mut mpsc::Receiver<()>,
+    stop: &tokio::sync::Notify,
     metrics: &crate::metrics::Metrics,
 ) -> Result<(), PeerError> {
     tokio::pin!(reading, writing, heartbeats);
     tokio::select! {
         _ = closed.as_mut() => Ok(()),
+        // The person stopped the agent this session is a run of.
+        () = stop.notified() => Ok(()),
         _ = disconnect.recv() => {
             metrics.inc_subscriber_dropped_backpressure();
             Err(PeerError::Protocol("subscriber exceeded outbound backpressure limit".into()))

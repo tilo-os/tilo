@@ -649,21 +649,13 @@ fn a_desk_launch_holds_the_tab_the_apps_window_takes() {
 }
 
 #[test]
-fn a_conversation_opens_floated_where_its_box_stood() {
+fn a_conversation_opens_beside_its_sender() {
     let (mut driver, mut policy) = mount();
     map(&mut driver, &mut policy, 1, "so.tilo.chat");
-    let content = policy
-        .content_rect(window_tab(&policy, 1))
-        .expect("the chat window's content stands on the desk");
-    let at = [
-        content.x0 + 40.0,
-        content.y0 + 120.0,
-        content.x0 + 520.0,
-        content.y0 + 480.0,
-    ];
+    let sender = window_tab(&policy, 1);
     assert!(
-        policy.open_floated("so.tilo.chat", at),
-        "the desk takes the float"
+        policy.hold_window("so.tilo.chat", false),
+        "the desk takes the place beside the sender"
     );
     settle(&mut driver);
 
@@ -676,20 +668,80 @@ fn a_conversation_opens_floated_where_its_box_stood() {
         .find(|(_, tile)| matches!(tile, TileContent::AppPlaceholder { .. }))
         .map(|(tab, _)| tab)
         .expect("the desk holds the tab the conversation's window takes");
+    let made = policy.take_held_launches();
+    assert_eq!(
+        made.len(),
+        1,
+        "the session starts the window the place waits for"
+    );
+    assert_eq!(made[0].app, "so.tilo.chat");
+    assert_eq!(
+        made[0].tab, tab,
+        "the tab the window takes is the instance it is known by"
+    );
     let groups = groups(&policy);
+    let (sender_group, _, _) = groups
+        .iter()
+        .find(|(_, tabs, _)| tabs.contains(&sender))
+        .expect("the window that sent stands in a group");
     let (group, _, active) = groups
         .iter()
         .find(|(_, tabs, _)| tabs.contains(&tab))
-        .expect("the floated tab sits in a group");
+        .expect("the conversation's tab sits in a group");
+    assert_ne!(
+        group, sender_group,
+        "the conversation opens beside the sender, not in its window"
+    );
     assert_eq!(*active, tab, "the conversation is the tab in front");
-    let float = policy
-        .handle()
-        .read(|tree| tree.workspaces.first()?.arrangement.float_of(*group))
-        .expect("the desk keeps where the conversation stands");
+    let widths: Vec<tilo_desktop_model::WindowWidth> = policy.handle().read(|tree| {
+        tree.workspaces
+            .first()
+            .and_then(|workspace| workspace.strips.first())
+            .map(|strip| {
+                strip
+                    .window_groups
+                    .iter()
+                    .map(|group| group.width)
+                    .collect()
+            })
+            .unwrap_or_default()
+    });
     assert_eq!(
-        (float.width, float.height),
-        (480, 360),
-        "the size the box asked for"
+        widths.len(),
+        2,
+        "the sender and the conversation stand side by side: {widths:?}"
+    );
+    assert!(
+        widths
+            .iter()
+            .all(|width| matches!(width, tilo_desktop_model::WindowWidth::Fraction(_))),
+        "the two share the strip, so the sender keeps what the person was reading in view: {widths:?}"
+    );
+
+    // It stands over the desk, where its strip gave it room: beside the
+    // sender, never over the message list the person was reading.
+    let place = policy
+        .handle()
+        .read(|tree| tree.workspaces.first()?.arrangement.float_of(*group));
+    assert!(
+        place.is_some(),
+        "the conversation stands over the desk, in the workspace's record"
+    );
+    let sender_content = policy
+        .content_rect(sender)
+        .expect("the sender's content stands on the desk");
+    let content = policy
+        .content_rect(tab)
+        .expect("the conversation's content stands on the desk");
+    assert!(
+        content.x0 >= sender_content.x1,
+        "the conversation stands beside its sender, never over what the person was reading: \
+         sender {sender_content:?}, conversation {content:?}"
+    );
+    assert_eq!(
+        policy.float_covers().len(),
+        0,
+        "a place no window fills yet draws nothing over the desk"
     );
 
     // The session gives the place up when nothing came to fill it: the tab
@@ -700,6 +752,42 @@ fn a_conversation_opens_floated_where_its_box_stood() {
         tabs(&policy).len(),
         1,
         "the place held for a window that never came is gone"
+    );
+}
+
+#[test]
+fn a_floated_windows_cover_is_where_the_desk_draws_it() {
+    let (mut driver, mut policy) = mount();
+    map(&mut driver, &mut policy, 1, "so.tilo.chat");
+    policy
+        .handle()
+        .dispatch(ChromeEffect::OpenApp {
+            app: "so.tilo.notes".into(),
+            beside: None,
+            background: None,
+            float: Some(true),
+        })
+        .unwrap();
+    settle(&mut driver);
+    assert!(
+        policy.float_covers().is_empty(),
+        "a place no window fills draws nothing over the desk"
+    );
+    // The window the desk held the place for takes it.
+    map(&mut driver, &mut policy, 2, "so.tilo.notes");
+    settle(&mut driver);
+    let covers = policy.float_covers();
+    assert_eq!(covers.len(), 1, "one window floats: {covers:?}");
+    let (window, cover) = covers[0];
+    assert_eq!(window, 2, "the cover is of the window that floats");
+    assert_eq!(
+        (cover.width() > 640.0, cover.height() > 480.0),
+        (true, true),
+        "the whole of its bar and body and the lift it stands on, as the desk draws it: {cover:?}"
+    );
+    assert!(
+        policy.layout().covers == covers,
+        "the layout a surface publishes carries the covers"
     );
 }
 

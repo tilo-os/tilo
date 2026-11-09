@@ -22,6 +22,9 @@ use crate::presence::PresenceCtx;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use crate::widget::Widget as _;
+use crate::widget::floating_surface::card_radius;
+use crate::widget::primitives::{SurfaceLevel, paint_floating_window_card};
+use crate::widget::tile_host::FOCUSED_EDGE_STROKE_WIDTH;
 
 /// The size a window takes when it floats: the design's floating window,
 /// smaller than the strip's tile so it reads as lifted over the desk.
@@ -29,6 +32,18 @@ pub const FLOAT_SIZE: (f64, f64) = (640.0, 480.0);
 /// The pointer's room above a floating window's bar where it is let go: the
 /// window hangs below and right of the hand, as a carried window does.
 const FLOAT_GRAB: (f64, f64) = (80.0, 14.0);
+/// The band of floating material a floated window stands in, round its bar and
+/// body: the card's own ground showing between the window and its hairline, so
+/// a window over the desk reads as lifted on any ground under it — a shadow
+/// alone is invisible on the dark windows a float usually stands over.
+const FLOAT_FRAME: f64 = 6.0;
+/// The room a float's card keeps inside the desk on every side: the band of
+/// the card's own ground round the window and the focus ring drawn outside
+/// that. A float placed to the desk's edge stands this far in, and the strip
+/// makes room for it beside a neighbour, so the whole card it draws — ring and
+/// band — shows on the desk instead of under the bar above it, past the
+/// display, or over the window it opened beside.
+pub const FLOAT_CARD_ROOM: f64 = FLOAT_FRAME + FOCUSED_EDGE_STROKE_WIDTH;
 
 /// Where a float the person moved or let go goes, for the host to keep in
 /// the workspace's record.
@@ -79,14 +94,40 @@ impl GroupRow {
                 fade
             });
         }
+        let back: Vec<u64> = self
+            .floats
+            .keys()
+            .filter(|id| !floats.contains_key(id))
+            .copied()
+            .collect();
         self.floats = floats;
         self.structure_dirty = true;
+        // A window back in its strip takes its share of it again: the one
+        // that stayed grew into the room the float left, so the two tile
+        // the strip rather than one running off its edge. Every window's
+        // width stands where it now belongs from this frame, rather than
+        // sliding there while the strip shows one of them over the other.
+        if !back.is_empty() {
+            for id in back {
+                self.share_with_neighbour_at_once(id);
+                self.settle_widths.push(id);
+            }
+            self.structure_dirty = true;
+        }
     }
 
     /// The windows floating above the desk, by group id, at their rects.
     #[must_use]
     pub fn floats(&self) -> &HashMap<u64, Rect> {
         &self.floats
+    }
+
+    /// Each floating window the row just drew whole over what is under it — the card it shows: its
+    /// bar and its body as one window, and the shadow that lifts it, as one rect in the surface's
+    /// coordinates. A float still fading in lets what is under it show, so it is not one yet.
+    #[must_use]
+    pub fn drawn_covers(&self) -> &[(u64, Rect)] {
+        &self.drawn_covers
     }
 
     /// Whether the group `id` floats above the desk.
@@ -247,7 +288,8 @@ impl GroupRow {
     }
 
     /// The rect a window let go at `p` floats in: the floating size, hung
-    /// from the hand, kept inside the row's display.
+    /// from the hand, kept inside the row's display with the room its card
+    /// draws in.
     #[must_use]
     pub fn float_rect_at(&self, p: Point) -> Rect {
         let at = Rect::from_origin_size(
@@ -257,11 +299,23 @@ impl GroupRow {
         self.keep_float_inside(at)
     }
 
-    /// `at` kept inside the display the row stands on.
-    pub(super) fn keep_float_inside(&self, at: Rect) -> Rect {
+    /// `at` kept inside the desk the row stands on, clear of its edge by
+    /// [`FLOAT_CARD_ROOM`]: the card a float draws round its window — the
+    /// band of its own ground and the focus ring outside it — stays whole.
+    #[must_use]
+    pub fn keep_float_inside(&self, at: Rect) -> Rect {
         let area = self.rect;
-        let x = at.x0.min(area.x1 - at.width()).max(area.x0).max(0.0);
-        let y = at.y0.min(area.y1 - at.height()).max(area.y0).max(0.0);
+        let room = FLOAT_CARD_ROOM;
+        let x = at
+            .x0
+            .min(area.x1 - room - at.width())
+            .max(area.x0 + room)
+            .max(0.0);
+        let y = at
+            .y0
+            .min(area.y1 - room - at.height())
+            .max(area.y0 + room)
+            .max(0.0);
         Rect::from_origin_size(Point::new(x, y), at.size())
     }
 
@@ -281,6 +335,7 @@ impl GroupRow {
         transform: Affine,
         (tr, theme, presence): (&mut TextRenderer, &Theme, &PresenceCtx),
     ) {
+        self.drawn_covers.clear();
         let now = crate::motion::frame_now();
         let floated: Vec<(usize, f32)> = (0..self.groups.len())
             .filter_map(|i| {
@@ -293,30 +348,50 @@ impl GroupRow {
             if alpha <= f32::EPSILON {
                 continue;
             }
-            let rect = self.groups[i].get_rect();
+            // A float is one window card: its bar is not a strip bar above a body, it is the head of
+            // the window, so the card is the body and the bar over it, lifted and framed as one, in
+            // the material a floating surface carries: the window stands in a band of the card's
+            // own ground, with the card's hairline round it and its lift under, so it reads as
+            // standing over the desk and not on it.
+            let window = self.groups[i].get_rect().union(self.groups[i].bar_rect());
+            let card = window.inflate(FLOAT_FRAME, FLOAT_FRAME);
+            let radius = card_radius(card, theme);
             if alpha < 1.0 - f32::EPSILON {
                 scene.push_layer(
                     vello::peniko::Fill::NonZero,
                     vello::peniko::BlendMode::default(),
                     alpha,
                     transform,
-                    &rect.inflate(160.0, 160.0),
+                    &card.inflate(160.0, 160.0),
                 );
+            } else {
+                // Drawn whole: the windows under it are drawn around its lift, so none of them reads
+                // through its bar or its body.
+                let tab = self.groups[i].active_tab_id();
+                self.drawn_covers
+                    .push((tab, crate::surface::floating_shadow_bounds(card, theme)));
             }
-            // A float stands over the desk rather than in its strip: the
-            // floating elevation lifts it off what it covers, and its own
-            // opaque ground stands between them, so the window below never
-            // reads through its bar or its body.
-            let radius = f64::from(theme.tokens.radii.tile);
-            crate::surface::floating_shadow(scene, transform, rect, radius, alpha, theme);
-            scene.fill(
-                vello::peniko::Fill::NonZero,
-                transform,
-                theme.tokens.colors.surfaces.content,
-                None,
-                &vello::kurbo::RoundedRect::from_rect(rect, radius),
-            );
-            self.draw_group_plain(i, scene, transform, (tr, theme, presence));
+            // The window's own edge, and the focus ring it becomes, runs round the card rather
+            // than round the tile the card holds: drawn inside the card's clip, only the band under
+            // the bar would survive, so the card paints it whole and the tile keeps its own off.
+            self.groups[i].set_edge_by_card(true);
+            paint_floating_window_card(scene, transform, card, theme, |scene, on| {
+                let shape = vello::kurbo::RoundedRect::from_rect(
+                    window,
+                    SurfaceLevel::Window.radius(theme),
+                );
+                scene.push_layer(
+                    vello::peniko::Fill::NonZero,
+                    vello::peniko::BlendMode::default(),
+                    1.0,
+                    transform,
+                    &shape,
+                );
+                self.draw_group_plain(i, scene, transform, (tr, on, presence));
+                scene.pop_layer();
+            });
+            self.groups[i].draw_card_edge(scene, transform, theme, radius, card);
+            self.groups[i].set_edge_by_card(false);
             if alpha < 1.0 - f32::EPSILON {
                 scene.pop_layer();
             }

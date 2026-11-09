@@ -50,6 +50,7 @@ use crate::Shared;
 use crate::app_names::app_name;
 use crate::launches::Launches;
 use crate::plane::DeskAuthority;
+use crate::platform::steps::SessionSteps as _;
 use crate::remote_door::Remote;
 
 /// The kind of question the door asks the person.
@@ -1412,7 +1413,7 @@ enum DoorAsk {
         actor: String,
         address: tilo_actions::ActionAddress,
         slot: Option<String>,
-        done: tilo_actions::remote::Completer<Result<Option<serde_json::Value>, String>>,
+        done: tilo_actions::remote::Completer<Result<Option<tilo_actions::ActionOutput>, String>>,
     },
     /// The record of the package the session runs itself, by its app (`so.tilo.shell`): its
     /// document and the packages a program reading it loads, or `None` for one no service keeps a
@@ -1459,6 +1460,27 @@ fn unanswered() -> ActionHostError {
     }
 }
 
+impl crate::platform::steps::SessionSteps for SessionDoors {
+    /// Run the session's own action `address` as `actor` with `slot` (its
+    /// arguments in the slot form the broker carries), as a step of an agent's
+    /// turn the broker already decided: answered on the loop's pass, which is
+    /// where the arrangement and the windows are.
+    fn invoke_step(
+        &self,
+        actor: String,
+        address: tilo_actions::ActionAddress,
+        slot: Option<String>,
+        done: tilo_actions::remote::Completer<Result<Option<tilo_actions::ActionOutput>, String>>,
+    ) {
+        self.ask(DoorAsk::Step {
+            actor,
+            address,
+            slot,
+            done,
+        });
+    }
+}
+
 impl SessionDoors {
     /// Who sits here: the person a program typed in a conversation, or one an agent writes in its
     /// task, runs as.
@@ -1496,25 +1518,6 @@ impl SessionDoors {
     /// lives on the thread holding the desktop.
     pub(crate) fn find(&self, needle: String, done: crate::search::FoundSearch) {
         self.ask(DoorAsk::Find { needle, done });
-    }
-
-    /// Run the session's own action `address` as `actor` with `slot` (its
-    /// arguments in the slot form the broker carries), as a step of an agent's
-    /// turn the broker already decided: answered on the loop's pass, which is
-    /// where the arrangement and the windows are.
-    pub(crate) fn invoke_step(
-        &self,
-        actor: String,
-        address: tilo_actions::ActionAddress,
-        slot: Option<String>,
-        done: tilo_actions::remote::Completer<Result<Option<serde_json::Value>, String>>,
-    ) {
-        self.ask(DoorAsk::Step {
-            actor,
-            address,
-            slot,
-            done,
-        });
     }
 
     /// Answer what the connections asked since the last pass, from `doors`,
@@ -1568,10 +1571,7 @@ impl SessionDoors {
                                     .map(|started| match started {
                                         ui::host_operation::ResourceOperationStart::Completed(
                                             output,
-                                        ) => Some(serde_json::json!({
-                                            "value": output.value,
-                                            "resources": output.resources,
-                                        })),
+                                        ) => Some(output),
                                         ui::host_operation::ResourceOperationStart::Accepted => {
                                             None
                                         }
@@ -1621,7 +1621,7 @@ pub(crate) fn invoke_service_step(
     actor: &str,
     address: &tilo_actions::ActionAddress,
     arguments: &serde_json::Map<String, serde_json::Value>,
-) -> Result<Option<serde_json::Value>, String> {
+) -> Result<Option<tilo_actions::ActionOutput>, String> {
     use tilo_service::Started;
     let invoker = tilo_actions::ActionInvoker::actor(actor);
     let invoker = if actor.starts_with("agent:") {
@@ -1633,10 +1633,7 @@ pub(crate) fn invoke_service_step(
         .borrow_mut()
         .invoke_as(&invoker, &address.resource, &address.action, arguments)
     {
-        Ok(Started::Done(output)) => Ok(Some(serde_json::json!({
-            "value": output.value,
-            "resources": output.resources,
-        }))),
+        Ok(Started::Done(output)) => Ok(Some(output)),
         Ok(Started::Accepted) => Ok(None),
         Err(error) => Err(error.to_string()),
     }
@@ -1860,12 +1857,8 @@ impl Host {
         ran.map(move |ran| {
             use tilo_actions::remote::ReceiptStatus;
             let status = match ran {
-                Ok(output) => ReceiptStatus::Completed {
-                    output: tilo_actions::ActionOutput {
-                        value: output,
-                        resources: Vec::new(),
-                    },
-                },
+                Ok(Some(output)) => ReceiptStatus::Completed { output },
+                Ok(None) => ReceiptStatus::Accepted,
                 Err(reason) => ReceiptStatus::Rejected {
                     error: ActionHostError::Refused { reason },
                 },

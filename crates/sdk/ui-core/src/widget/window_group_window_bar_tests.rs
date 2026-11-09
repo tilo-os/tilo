@@ -526,3 +526,172 @@ fn a_pointer_on_a_tabs_pill_names_the_whole_title() {
         "a point off the window names nothing"
     );
 }
+
+/// An app whose window is the one a person's desktop draws: its shell declares what its header
+/// row holds as the window's bar's slots, unless the row holds something the bar cannot draw (a
+/// catch-up, a popover), when the shell keeps the row.
+struct ShellApp {
+    shell: crate::widget::NavShell,
+}
+
+impl Widget for ShellApp {
+    crate::testing::delegate_widget_methods!(
+        shell: sync, build_layout, apply_layout, get_rect
+    );
+
+    fn name(&self) -> &str {
+        "ShellApp"
+    }
+
+    fn children(&self) -> Vec<&dyn Widget> {
+        vec![&self.shell]
+    }
+
+    fn children_mut(&mut self) -> Vec<&mut dyn Widget> {
+        vec![&mut self.shell]
+    }
+
+    fn update(&mut self, state: &crate::widget::AppModel, path: &crate::widget::ModelPath) -> bool {
+        self.shell.update(state, path)
+    }
+}
+
+impl crate::widget::app_widget::AppWidget for ShellApp {
+    fn app_kind(&self) -> AppKind {
+        AppKind::Editor
+    }
+    fn app_title(&self) -> &'static str {
+        "Shell"
+    }
+    fn app_icon(&self) -> crate::widget::app_widget::IconDescriptor {
+        crate::widget::app_widget::IconDescriptor::Glyph("S")
+    }
+}
+
+/// A window of `shell` laid out the way a desktop lays one out each frame: the app of the
+/// window's one tab is told what the bar hosts and runs against it.
+fn shell_window(shell: crate::widget::NavShell) -> crate::headless::FrameHarness {
+    let mut g = WindowGroup::new(
+        10,
+        vec![(
+            TabDescriptor::new(1, "Design"),
+            TileContent::App(Box::new(ShellApp { shell })),
+        )],
+        1,
+        WindowWidth::Normal,
+    );
+    if let Some(host) = g.host_for_tab_mut(1) {
+        host.set_hosted_window(crate::hosted_window::HostedWindow::new());
+    }
+    let mut frame = crate::headless::FrameHarness::for_root(
+        crate::State::new(),
+        g,
+        (u32_of(W), u32_of(H)),
+        Theme::dark().with_reduce_motion(true),
+    );
+    for _ in 0..3 {
+        frame.relayout();
+    }
+    frame
+}
+
+/// The header row's height the window's app draws of its own.
+fn row_of(frame: &mut crate::headless::FrameHarness) -> f64 {
+    let mut root = frame.root_mut::<WindowGroup>();
+    let g: &mut WindowGroup = &mut root;
+    g.active_host_mut()
+        .and_then(TileHost::app_mut)
+        .and_then(|app| crate::widget::window_header::root_header_row(app as &dyn Widget))
+        .map_or(0.0, crate::widget::WindowHeader::header_row_height)
+}
+
+/// A header row that cannot stand as the window's bar's slots (it holds a popover) is the window's
+/// bar: the app draws it at the window's top, the window draws no bar of its own above it, and its
+/// controls stand at the row's trailing end. A header row that stands as the slots draws none and
+/// leaves the window its bar.
+#[test]
+fn a_header_row_that_holds_a_popover_is_the_window_bar() {
+    let _settled = crate::motion::testing::settled();
+    let mut frame = shell_window(
+        crate::widget::NavShell::new()
+            .content(Box::new(crate::widget::Text::new("Body")))
+            .content_header(
+                "Design",
+                vec![Box::new(
+                    crate::widget::Button::new("catch-up", "Mia changed 3 messages")
+                        .with_popover(crate::widget::Text::new("What changed")),
+                )],
+            ),
+    );
+    let row = row_of(&mut frame);
+    let (held, content, window, draws) = {
+        let g = frame.root_mut::<WindowGroup>();
+        (
+            g.held_bar_for_tests(),
+            g.active_host().map(Widget::get_rect).unwrap_or(Rect::ZERO),
+            g.get_rect(),
+            g.draws_its_bar_for_tests(),
+        )
+    };
+    assert!(
+        !draws,
+        "the row is the window's bar, not a second row under one"
+    );
+    assert!(row > 0.0, "the app keeps its header row: {row}px");
+    assert!(
+        (content.y0 - window.y0).abs() < 0.5,
+        "the row is the window's top: {content:?} in {window:?}"
+    );
+    let held = held.expect("the app's row is the window's bar");
+    assert!(
+        held.controls.height() > 0.0
+            && held.controls.y0 >= content.y0 - 0.5
+            && held.controls.y1 <= content.y0 + row + 0.5,
+        "the window's controls stand in the row: {held:?} in {content:?}"
+    );
+    assert!(
+        content.x1 - held.controls.x1 < 40.0,
+        "at its trailing end: {held:?} in {content:?}"
+    );
+
+    // A header row that stands as the window's bar's slots draws none of its own: the window
+    // keeps its bar, and its content stands under it.
+    let mut plain = shell_window(
+        crate::widget::NavShell::new()
+            .content(Box::new(crate::widget::Text::new("Body")))
+            .content_header(
+                "Design",
+                vec![Box::new(
+                    crate::widget::Button::icon_only("new", icons::Icon::Plus, "New")
+                        .on_effect(|| {}),
+                )],
+            ),
+    );
+    assert_eq!(row_of(&mut plain), 0.0, "the app draws no row of its own");
+    let (kept, held, content, window) = {
+        let g = plain.root_mut::<WindowGroup>();
+        (
+            g.draws_its_bar_for_tests(),
+            g.held_bar_for_tests(),
+            g.active_host().map(Widget::get_rect).unwrap_or(Rect::ZERO),
+            g.get_rect(),
+        )
+    };
+    assert!(kept, "the window keeps its bar");
+    assert!(held.is_none(), "no row holds it");
+    assert!(
+        content.y0 > window.y0 + 1.0,
+        "the content stands under the bar: {content:?} in {window:?}"
+    );
+}
+
+/// `v` as a logical pixel count: the fixtures' sizes are small.
+fn u32_of(v: f64) -> u32 {
+    #[allow(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "a fixture's viewport: a small positive pixel count"
+    )]
+    let out = v as u32;
+    out
+}

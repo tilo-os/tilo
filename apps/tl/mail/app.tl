@@ -99,7 +99,7 @@ type Message (origin: imap.message) {
 
 /// A message being written: who it goes to, what it says, what it answers, and how it stands on
 /// its way out. The account it goes from is named by its key.
-type Draft {
+type Draft (title: subject, untitled: "New message") {
     from: Text
     to: Text
     cc: Text
@@ -619,9 +619,9 @@ view unified(m: Mail) {
         let shown = a.threads.matching(query)
         ui.NavShell(
             content_kind: .document,
-            sidebar_title: .some("All accounts"),
-            overview_title: .some(title),
-            overview_count: .some(shown.len()),
+            sidebar_title: "All accounts",
+            overview_title: title,
+            overview_count: shown.len(),
         ) {
             sidebar: {
                 ui.NavList(selected: query) {
@@ -638,7 +638,7 @@ view unified(m: Mail) {
                                     label_query(l.name),
                                     l.name,
                                     icon: .tag,
-                                    count: .some(a.threads.matching(label_query(l.name)).len()),
+                                    count: a.threads.matching(label_query(l.name)).len(),
                                 ) {
                                     on select: set(query, label_query(l.name))
                                 }
@@ -659,9 +659,6 @@ view unified(m: Mail) {
             overview: {
                 thread_list(shown, fill)
             }
-            content: {
-                ui.EmptyState("No conversation selected", icon: .mail)
-            }
         }
     }
 }
@@ -679,20 +676,15 @@ view mailboxes(a: Account) {
     let title = place_title(m, query)
     ui.NavShell(
         content_kind: .document,
-        sidebar_title: .some(a.address),
-        overview_title: .some(title),
-        overview_count: .some(shown.len()),
+        sidebar_title: a.address,
+        overview_title: title,
+        overview_count: shown.len(),
     ) {
         sidebar: {
             ui.NavList(selected: if query == "" { "all" } else { query }) {
                 for p in places {
                     let unread = a.threads.matching("{p.query} is:unread").len()
-                    ui.NavItem(
-                        p.query,
-                        p.label,
-                        icon: p.icon,
-                        count: if unread > 0 { .some(unread) } else { .none },
-                    ) {
+                    ui.NavItem(p.query, p.label, icon: p.icon, count: if unread > 0 { unread }) {
                         on select: set(query, p.query)
                     }
                 }
@@ -706,7 +698,7 @@ view mailboxes(a: Account) {
                                 label_query(l.name),
                                 l.name,
                                 icon: .tag,
-                                count: .some(a.threads.matching(label_query(l.name)).len()),
+                                count: a.threads.matching(label_query(l.name)).len(),
                             ) {
                                 on select: set(query, label_query(l.name))
                             }
@@ -717,9 +709,6 @@ view mailboxes(a: Account) {
         }
         overview: {
             thread_list(shown, fill)
-        }
-        content: {
-            ui.EmptyState("No conversation selected", icon: .mail)
         }
     }
 }
@@ -780,7 +769,7 @@ view thread_row(t: Thread) {
 /// One message being written in a list: its subject and who it goes to.
 view draft_row(d: Draft) {
     row(
-        d.subject,
+        meta(d).title,
         secondary: if d.sent or d.recalled { delivery_says(d) } else { d.to },
         mark: if d.sent and not d.recalled { .send },
     )
@@ -820,7 +809,7 @@ view conversation(t: Thread) {
             ui.Docked(page_column: true) {
                 foot: {
                     row {
-                        ui.TextInput(value: draft, placeholder: "Reply to {t.subject}", fill) {
+                        ui.TextInput(bind: draft, placeholder: "Reply to {t.subject}", fill) {
                             on submit: answer(t, draft).then(set(draft, ""))
                         }
                         ui.Button("Reply", icon: .send, icon_only: true) {
@@ -828,7 +817,7 @@ view conversation(t: Thread) {
                         }
                     }
                 }
-                ui.VirtualList(page_column: true) {
+                ui.VirtualList(page_column: true, at_measure: true) {
                     for m in t.messages {
                         ui.ListItem(item: m) {
                             message(m)
@@ -910,9 +899,9 @@ view editor(d: Draft) {
         if can_undo(d) {
             ui.Banner(
                 "Sending",
-                message: .some("It goes in a moment. Take it back if you need to."),
+                message: "It goes in a moment. Take it back if you need to.",
                 kind: .info,
-                action: .some("Undo send"),
+                action: "Undo send",
             ) {
                 on act: undo_send(d)
             }

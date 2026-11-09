@@ -18,8 +18,8 @@ use ui::shortcut_table::{FixedAction, ShortcutAction};
 use crate::i18n::{t, t_args};
 use crate::keys::Invocation;
 use crate::{
-    AppLists, Magnify, SessionAction, SessionCommand, Shared, identity, mount, people,
-    workspace_settings, workspaces,
+    Magnify, SessionAction, SessionCommand, Shared, identity, mount, people, workspace_settings,
+    workspaces,
 };
 
 /// How far a popover stands clear of the caret it was opened from, logical pixels.
@@ -36,6 +36,9 @@ impl Shared {
         for ask in asked {
             match ask {
                 people::PeopleAsk::Message { key } => self.message_person(&key),
+                people::PeopleAsk::Agent { client, ask } => {
+                    self.invoke_app_action(LaunchpadAppAction::ask_agent(&client, ask));
+                }
                 people::PeopleAsk::Rename(name) => self.name_self(&name),
                 people::PeopleAsk::Status(status) => self.set_own_status(&status),
                 people::PeopleAsk::Availability(chosen) => {
@@ -91,6 +94,14 @@ impl Shared {
                         .liveness_choice(tab, tilo_desktop_surface::LivenessChoice::ForceQuit);
                 }
                 DesktopAsk::ReportProblem => self.report_problem(),
+                // Billing is the person's account: Settings holds it, beside who they are.
+                DesktopAsk::AccountSettings => {
+                    crate::quick_settings::open_settings(self, "settings://billing");
+                }
+                // The grant is taken back at the person's agent door, as Console takes it back:
+                // whatever this session offers it on answers, and without one the person hears
+                // that it did not happen.
+                DesktopAsk::RevokeAgentGrant(grant) => self.revoke_agent_grant(grant),
             }
         }
         // What the press asked is carried out: what it closed may be raised again, though the press
@@ -276,6 +287,21 @@ impl Shared {
         });
         if let Err(error) = carried {
             self.answer_failed(&action.display_name, &error);
+        }
+    }
+
+    /// Take the agent grant `grant` back at the person's agent door.
+    fn revoke_agent_grant(&self, grant: String) {
+        use tilo_actions::remote::agent_door;
+        let mut arguments = serde_json::Map::new();
+        arguments.insert("grant".into(), grant.into());
+        let revoked = self.doors.invoke(
+            &ActionAddress::new(agent_door::RESOURCE, agent_door::REVOKE),
+            &arguments,
+            &mut tilo_surface_host::Look::none(),
+        );
+        if let Err(error) = revoked {
+            self.answer_failed(&t("action-failed-that-agent"), &error);
         }
     }
 
@@ -522,7 +548,7 @@ impl Shared {
         tools: &mount::tools::Handle,
         media: Vec<mount::drives::Medium>,
     ) {
-        tools.saw_apps(&self.app_lists().tools);
+        tools.saw_apps(&crate::app_icons::app_lists().unwrap_or_default().tools);
         tools.saw_media(media);
         for ask in tools.take_asks() {
             let answered = match &ask {
@@ -558,11 +584,6 @@ impl Shared {
             self.personal.as_ref(),
             self.engine.as_deref(),
         )
-    }
-
-    /// This machine's applications, as the session's own lists read them.
-    fn app_lists(&self) -> std::sync::Arc<AppLists> {
-        self.search.app_lists()
     }
 
     /// Make a new workspace through the desk's own published action, so the rules and the naming

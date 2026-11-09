@@ -49,13 +49,14 @@ snapshot_epoch() {
 }
 
 assets=$(pinned_assets virtio-win-0.1.302-1.noarch.rpm)
-# The image is dated when its packages were resolved, not at oci-build.sh's fixed epoch (a
-# later --timestamp wins): an OS build from the published snapshot sets its offline dnf clock to
-# the newest of its base's and its snapshot's dates (os/dev/image-epoch.sh), and rpm refuses a
-# package signed after that clock, as every update signed since the base was mirrored is. A build
-# from this unpublished one takes OUT/epoch instead.
-bash tools/ci/publish/oci-build.sh . os/Containerfile.rpms "$out" --platform "$platform" \
-  --timestamp "$(date -u +%s)" --build-context "github-assets=$assets" \
+# The image is dated when its packages were resolved, not by the commit oci-build.sh would read
+# from the log: an OS build from the published snapshot sets its offline dnf clock to the newest
+# of its base's and its snapshot's dates (os/dev/image-epoch.sh), and rpm refuses a package signed
+# after that clock, as every update signed since the base was mirrored is. A build from this
+# unpublished one takes OUT/epoch instead. Given as SOURCE_DATE_EPOCH, so nothing reads Git and the
+# check's key is not its commit's (t.toml, image-rpms-ARCH).
+SOURCE_DATE_EPOCH=$(date -u +%s) bash tools/ci/publish/oci-build.sh . os/Containerfile.rpms "$out" \
+  --platform "$platform" --build-context "github-assets=$assets" \
   --build-arg "BASE_REF=$BASE_REF" --build-arg "PACKAGES=$packages"
 snapshot_epoch "$out/image.oci.tar" > "$out/epoch"
 printf 'dated %s by its newest package signature\n' "$(cat "$out/epoch")"

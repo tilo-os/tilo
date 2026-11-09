@@ -1,0 +1,149 @@
+# syntax=docker/dockerfile:1.7
+# The hosted workspace VM guest: the Linux an environment's own programs run
+# in, on a host that serves other people's workspaces (Firecracker,
+# crates/runtime/legacy-vm/src/hosted).
+#
+# It is a root *filesystem*, not a disk and not an installed system: no
+# systemd, no bootloader, no kernel inside. tools/ci/publish/hosted-guest.sh
+# exports this container's filesystem into a raw ext4 (`rootfs.ext4`), which
+# every VM's disk starts as a reflinked copy of, and that the guest grows to
+# its size at boot. PID 1 is os/hosted-guest/hosted-init, which mounts what a
+# guest needs, grows the filesystem and hands over to the guest agent
+# (crates/runtime/legacy-agent) — a VM must answer within a few hundred
+# milliseconds of being restored.
+#
+# Debian because the tenant gets a distribution they know: `apt install`
+# works, and so does everything else they would do on their own machine.
+ARG BASE_REF
+# The build context holding the guest agent, built by this repository's CI
+# (hosted-guest.sh agent). The three names below are also what
+# os/external-assets/github-assets.tsv pins, and the cache
+# hosted-guest.sh passes as the github-assets context is verified against it
+# before this build starts.
+ARG NODE_ASSET=node-v26.13.0-linux-x64.tar.xz
+ARG FNM_ASSET=fnm-1.39.0-linux.zip
+ARG RUSTUP_INIT_ASSET=rustup-init-x86_64-unknown-linux-gnu
+
+FROM scratch AS external-assets
+COPY --from=github-assets / /
+
+# Debian's own useradd, chfn and passwd; the toolchain versions this image
+# puts in the tenant's hands, and the sizes the checks in
+# tools/ci/publish/hosted-guest.sh assert.
+FROM ${BASE_REF}
+
+ENV DEBIAN_FRONTEND=noninteractive LANG=C.UTF-8
+
+# What a person expects from a Linux box they were given: a compiler, git,
+# python, and the archivers everything unpacks. tini is the agent's subreaper
+# (os/hosted-guest/hosted-init), e2fsprogs grows the filesystem at boot.
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends \
+      ca-certificates \
+      curl \
+      git \
+      build-essential \
+      pkg-config \
+      libssl-dev \
+      python3 \
+      python3-pip \
+      python3-venv \
+      unzip \
+      xz-utils \
+      zstd \
+      jq \
+      less \
+      procps \
+      iproute2 \
+      openssh-client \
+      sudo \
+      e2fsprogs \
+      tini \
+      passwd \
+ && apt-get clean \
+ && rm -rf /var/lib/apt/lists/* /var/cache/apt/archives
+
+# The tenant's own account: uid 1000, a real shell, and sudo without a
+# password because the VM is theirs and nobody else is in it.
+RUN useradd --create-home --uid 1000 --user-group --shell /bin/bash tilo \
+ && printf 'tilo ALL=(ALL:ALL) NOPASSWD:ALL\n' > /etc/sudoers.d/tilo \
+ && chmod 0440 /etc/sudoers.d/tilo \
+ && install -d -o tilo -g tilo /home/tilo/.local/bin /home/tilo/.local/share
+
+# node: fnm manages the versions, this build places the one that ships. The
+# tarball is checksum-pinned in os/external-assets/github-assets.tsv and put
+# where fnm keeps a version's installation (node-versions/v<version>/installation),
+# so `fnm install` and `fnm use` work for the tenant and the shipped LTS is
+# just the version it comes with.
+ARG NODE_ASSET
+ARG FNM_ASSET
+COPY --from=external-assets /${FNM_ASSET} /var/tmp/fnm.zip
+COPY --from=external-assets /${NODE_ASSET} /var/tmp/node.tar.xz
+ENV FNM_DIR=/home/tilo/.local/share/fnm
+RUN set -eu; \
+    v=${NODE_ASSET#node-}; \
+    v=${v%-linux-x64.tar.xz}; \
+    install -d -o tilo -g tilo /var/tmp/fnm \
+      "$FNM_DIR/node-versions/v$v/installation"; \
+    unzip -q -o /var/tmp/fnm.zip -d /var/tmp/fnm; \
+    install -o tilo -g tilo -m 0755 /var/tmp/fnm/fnm /home/tilo/.local/bin/fnm; \
+    tar -xJf /var/tmp/node.tar.xz -C "$FNM_DIR/node-versions/v$v/installation" \
+      --strip-components=1; \
+    chown -R tilo:tilo "$FNM_DIR"; \
+    rm -rf /var/tmp/fnm /var/tmp/fnm.zip /var/tmp/node.tar.xz
+
+# node, npm and npx on PATH for every shell and for every program the agent
+# starts, without a shell hook: the agent sets PATH to
+# /usr/local/bin:/usr/bin:/bin (crates/runtime/legacy-agent/src/launch.rs).
+ARG NODE_ASSET
+RUN set -eu; \
+    v=${NODE_ASSET#node-}; \
+    node_bin="$FNM_DIR/node-versions/v${v%-linux-x64.tar.xz}/installation/bin"; \
+    ln -sf /home/tilo/.local/bin/fnm /usr/local/bin/fnm; \
+    for program in node npm npx corepack; do \
+      if [ -e "$node_bin/$program" ]; then ln -sf "$node_bin/$program" "/usr/local/bin/$program"; fi; \
+    done
+
+# rust: rustup (checksum-pinned) with the stable toolchain, minimal profile —
+# cargo, rustc, rustup and rustdoc, and no documentation or clippy the tenant
+# did not ask for. `rustup component add` and `rustup toolchain install` work.
+ARG RUSTUP_INIT_ASSET
+COPY --from=external-assets /${RUSTUP_INIT_ASSET} /var/tmp/rustup-init
+RUN set -eu; \
+    install -d -o tilo -g tilo /home/tilo/.cargo /home/tilo/.rustup; \
+    chmod 0755 /var/tmp/rustup-init; \
+    su -s /bin/bash tilo -c \
+      "env HOME=/home/tilo RUSTUP_HOME=/home/tilo/.rustup CARGO_HOME=/home/tilo/.cargo \
+         /var/tmp/rustup-init -y --profile minimal --default-toolchain stable --no-modify-path"; \
+    for tool in /home/tilo/.cargo/bin/*; do \
+      ln -sf "$tool" "/usr/local/bin/${tool##*/}"; \
+    done; \
+    rm -f /var/tmp/rustup-init
+
+# The guest agent and the init that runs it. Neither is a service: nothing else
+# is started, and there is no manager to start it with.
+COPY --from=hosted-agent /tilo-legacy-agent /usr/libexec/tilo/tilo-legacy-agent
+COPY os/hosted-guest/hosted-init /usr/libexec/tilo/hosted-init
+RUN chmod 0755 /usr/libexec/tilo/hosted-init /usr/libexec/tilo/tilo-legacy-agent
+
+# What this image says it has, in the build log: a guest whose node, rust or
+# agent went missing fails here rather than in somebody's workspace. node and
+# rust are asked as the tenant asks them — through the PATH the agent gives a
+# program and with HOME set to the tenant's — so a toolchain that only works
+# for root fails this build.
+RUN set -eu; \
+    du -shx / 2>/dev/null | sed 's/^/rootfs: /'; \
+    node --version | sed 's/^/node: /'; \
+    npm --version | sed 's/^/npm: /'; \
+    fnm --version | sed 's/^/fnm: /'; \
+    su -s /bin/bash tilo -c 'cargo --version; rustc --version' | sed 's/^/rust: /'; \
+    python3 --version | sed 's/^/python: /'; \
+    bash -n /usr/libexec/tilo/hosted-init; \
+    agent_says=$(/usr/libexec/tilo/tilo-legacy-agent --user no-such-user 2>&1 || true); \
+    case $agent_says in \
+      *"no ordinary user"*) echo 'agent: runs on this root filesystem' ;; \
+      *) echo "agent: $agent_says"; exit 1 ;; \
+    esac
+
+# A directory the tenant owns, at the paths their programs start in.
+WORKDIR /home/tilo

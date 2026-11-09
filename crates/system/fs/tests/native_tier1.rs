@@ -100,6 +100,7 @@ fn install_identity(root: &Path, person_seed: [u8; 32], device_seed: [u8; 32], p
             .saturating_sub(1_000_000_000),
         expires_at_ns: None,
         signature: [0; 64],
+        issuer: None,
     };
     sign_device_cert(&mut cert, &person).unwrap();
     write_device_cert(&paths.device_cert, &cert).unwrap();
@@ -708,11 +709,10 @@ fn persisted_namespace(cache: &Path) -> fs::Namespace {
 /// The provenance of every version of the record at `path`, oldest first.
 fn provenance(cache: &Path, path: &str) -> Vec<fs_protocol::FileProvenance> {
     let ns = persisted_namespace(cache);
-    let history = fs::FileHistoryStore::open(cache.join("file-history.json")).unwrap();
     let entry = ns
         .entry_at(path)
         .unwrap_or_else(|| panic!("{path} is not a record"));
-    let mut versions = history.snapshot(entry.record_id).unwrap().versions;
+    let mut versions = ns.record_history(entry.record_id).unwrap().versions;
     versions.sort_by_key(|v| v.timestamp_ms);
     versions.into_iter().map(|v| v.provenance).collect()
 }
@@ -721,14 +721,13 @@ fn provenance(cache: &Path, path: &str) -> Vec<fs_protocol::FileProvenance> {
 /// persisted namespace and history.
 fn first_versions(cache: &Path, paths: &[&str]) -> Vec<u64> {
     let ns = persisted_namespace(cache);
-    let history = fs::FileHistoryStore::open(cache.join("file-history.json")).unwrap();
     paths
         .iter()
         .map(|p| {
             let entry = ns
                 .entry_at(p)
                 .unwrap_or_else(|| panic!("{p} is not a record"));
-            let snapshot = history.snapshot(entry.record_id).unwrap();
+            let snapshot = ns.record_history(entry.record_id).unwrap();
             snapshot
                 .versions
                 .iter()

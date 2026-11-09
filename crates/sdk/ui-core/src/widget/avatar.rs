@@ -69,6 +69,9 @@ impl AvatarSize {
 enum Tint<'a> {
     Identity(&'a str),
     Presence(Color),
+    /// One of the presence palette's hues, named by the caller rather than
+    /// derived from an identity (an agent's client colour).
+    Hue(PresenceHue),
     /// No one's: an app, a device, a thing.
     Neutral,
 }
@@ -171,6 +174,15 @@ impl<'a> AvatarFace<'a> {
     #[must_use]
     pub fn presence(mut self, colour: Color) -> Self {
         self.tint = Tint::Presence(colour);
+        self
+    }
+
+    /// Wear one of the presence palette's hues, named directly instead of
+    /// derived from the identity: how an agent's client reads (warm for one,
+    /// cool for another) at the theme's presence lightness and chroma.
+    #[must_use]
+    pub fn hue(mut self, hue: PresenceHue) -> Self {
+        self.tint = Tint::Hue(hue);
         self
     }
 
@@ -294,6 +306,7 @@ impl<'a> AvatarFace<'a> {
         let person = match self.tint {
             Tint::Identity(id) => presence.hue(PresenceHue::of_identity(id)),
             Tint::Presence(colour) => presence.of(colour),
+            Tint::Hue(hue) => presence.hue(hue),
             Tint::Neutral => return theme.tokens.colors.surfaces.raised,
         };
         let person = match self.idle_on {
@@ -478,11 +491,18 @@ impl<'a> AvatarFace<'a> {
             // The glyph takes the share of the tile an icon takes in the
             // icon set's own 24 px grid, centred.
             let side = shape.rect().width() * 0.55;
+            // It reads in the ink the tile calls for: the primary ink on a
+            // neutral square, the initials' ink on a tinted one.
+            let ink = if self.tint == Tint::Neutral {
+                ctx.theme.text_primary
+            } else {
+                initial_ink(fill, ctx.theme)
+            };
             glyph.draw(
                 ctx.scene,
                 ctx.transform,
                 Rect::from_center_size(shape.rect().center(), (side, side)),
-                ctx.theme.text_primary,
+                ink,
             );
             self.paint_status(ctx, rect);
             return;
@@ -743,6 +763,16 @@ impl Avatar {
         self
     }
 
+    /// Software, not a person: the agent mark on a rounded square, in its presence colour
+    /// ([`Self::with_presence`], its client's hue), so it is never read as anyone's face.
+    #[must_use]
+    pub fn agent(mut self) -> Self {
+        self.glyph = Some(crate::icons::Icon::Bot);
+        self.square = true;
+        self.neutral = false;
+        self
+    }
+
     /// Bind the displayed name and accessible description to process-local
     /// presentation state, retaining the avatar and adjacent input widgets.
     /// Identity, picture and geometry remain independently configured.
@@ -845,6 +875,11 @@ impl Avatar {
 
     fn face(&self) -> AvatarFace<'_> {
         let mut face = AvatarFace::new(&self.name, &self.identity).image(self.image.as_ref());
+        // A glyph draws on the neutral square unless a colour is given: the colour comes after
+        // it, so an agent's mark wears its client's hue.
+        if let Some(glyph) = self.glyph {
+            face = face.glyph(glyph);
+        }
         if let Some(colour) = self.presence {
             face = face.presence(colour);
         }
@@ -853,9 +888,6 @@ impl Avatar {
         }
         if self.neutral {
             face = face.neutral();
-        }
-        if let Some(glyph) = self.glyph {
-            face = face.glyph(glyph);
         }
         if let Some(status) = self.status {
             face = face.status(status);

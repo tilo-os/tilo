@@ -168,6 +168,72 @@ impl Checker<'_> {
         )
     }
 
+    /// The value `T.name` is where code reads a member of a type: the filter the type declares
+    /// (`Task.today`), or, where a `Sort<T>` is asked, the order by one of its fields
+    /// (`sorts: [Task.due]`).
+    pub(super) fn type_member(
+        &mut self,
+        key: &TypeKey,
+        name: &ast::Ident,
+        exp: Option<&Ty>,
+        span: Span,
+    ) -> Option<Ex> {
+        match exp {
+            Some(Ty::Sort(of)) if of == key => Some(self.sort_value(key, name, span)),
+            _ => self.filter_value(key, name, None, span),
+        }
+    }
+
+    /// The order by the field `name` of `key`, as a `Sort<T>`: the menu entry's label comes
+    /// from the field, and the order from its kind (`sort:title`, `sort:-received`).
+    fn sort_value(&mut self, key: &TypeKey, name: &ast::Ident, span: Span) -> Ex {
+        let env = self.env;
+        let Some(info) = env.type_info(key) else {
+            return Ex::error();
+        };
+        let ordered_fields: Vec<(&str, &str)> = info
+            .fields
+            .iter()
+            .filter(|f| ordered(&f.ty))
+            .map(|f| (f.name.as_str(), f.doc.lines().next().unwrap_or_default()))
+            .collect();
+        let Some(f) = info.field(&name.name) else {
+            let hint = crate::diag::suggestion_about(&name.name, ordered_fields.clone());
+            let names: Vec<String> = ordered_fields
+                .iter()
+                .map(|(name, _)| format!("`{}.{name}`", key.name))
+                .collect();
+            let known = if names.is_empty() {
+                "it has no field with an order".to_owned()
+            } else {
+                format!("the fields of it with an order: {}", names.join(", "))
+            };
+            self.err(
+                "E105",
+                name.span,
+                format!("`{}` has no field `{}`{hint}; {known}", key.name, name.name),
+            );
+            return Ex::error();
+        };
+        if !ordered(&f.ty) {
+            let t = f.ty.display(&env.app);
+            self.err(
+                "E105",
+                span,
+                format!(
+                    "`{}.{}` is {t}, which has no order: sort by a Date, a Time or a number, or a Text",
+                    key.name, f.name
+                ),
+            );
+            return Ex::error();
+        }
+        Ex::host(
+            Imp::SortLit,
+            vec![Ex::str(&info.id), Ex::str(&f.name)],
+            Ty::Sort(key.clone()),
+        )
+    }
+
     /// The query text the filter values in `args` give, joined with spaces: a query asks all of
     /// them. With `text_too`, an argument may also be the query as people type it in search
     /// (`is:done`), which a list takes beside its filters.
@@ -863,6 +929,16 @@ impl Checker<'_> {
             }
         };
         Ex::host(Imp::RichPart, vec![v, Ex::new(Ek::I32(part), Ty::Bool)], ty)
+    }
+}
+
+/// Whether a field of this type has an order, and so is one a window may sort by: a Date, a
+/// Time or a number, the latest or largest first, or a Text, A to Z.
+fn ordered(ty: &Ty) -> bool {
+    match ty {
+        Ty::Date | Ty::Time | Ty::Int | Ty::Float | Ty::Text | Ty::Identifier => true,
+        Ty::Option(inner) => ordered(inner),
+        _ => false,
     }
 }
 

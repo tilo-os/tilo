@@ -236,12 +236,7 @@ impl PeerGovernanceMut<'_> {
             return Err("an agent's certificate holds no capability".into());
         }
         tilo_user_identity::verify_device_cert_at(&cert, now_ns(now)).map_err(err)?;
-        if self
-            .peer
-            .core
-            .revocations
-            .is_revoked(&cert.device_public_key)
-        {
+        if self.peer.core.revocations.refuses(&cert) {
             return Err("device revoked".into());
         }
         if let Some(old) = self.peer.core.certificates.get(&cert.device_public_key)

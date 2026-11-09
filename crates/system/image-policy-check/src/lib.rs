@@ -67,8 +67,9 @@ pub const TILO_NAMESPACE_ROOTS: [&str; 4] = [
 ];
 /// Tilo repositories whose effective rule must be the release signature or a
 /// reject, whichever scope supplies it.
-pub const GUARDED_REPOSITORIES: [&str; 7] = [
+pub const GUARDED_REPOSITORIES: [&str; 8] = [
     "registry.tilo.so/tilo/legacy-guest",
+    "registry.tilo.so/tilo/hosted-guest",
     "registry.tilo.so/tilo/tilo-vm",
     "registry.tilo.so/tilo/tilo-ci",
     "registry.tilo.so/tilo/tilo-dev",

@@ -34,7 +34,7 @@ use tilo_browser_peer::{
 };
 use tilo_peer_state::document_frame::DocumentRoute;
 use tilo_relay_protocol::live::{LiveAnchor, LiveFrame, LiveRecord, OpsFrame, PreviewOp};
-use tilo_user_identity::{DeviceCert, RevocationList};
+use tilo_user_identity::{DeviceCert, RevocationEntry, RevocationList, RevocationReason};
 use wasm_bindgen::prelude::*;
 use wasm_bindgen_futures::JsFuture;
 
@@ -54,7 +54,7 @@ fn failure_subject(surface: Option<String>, asset: Option<String>) -> FailureSub
 }
 
 /// A device signer backed by page custody.
-enum PageSigner {
+pub(crate) enum PageSigner {
     /// `{publicKey: Uint8Array(32), sign(message): Promise<Uint8Array(64)>}`
     /// over a non-extractable `WebCrypto` key.
     WebCrypto {
@@ -68,7 +68,7 @@ enum PageSigner {
 }
 
 impl PageSigner {
-    fn from_js(custody: &JsValue) -> Result<Self, JsError> {
+    pub(crate) fn from_js(custody: &JsValue) -> Result<Self, JsError> {
         let seed = Reflect::get(custody, &"seed".into()).map_err(|_| js_error("custody"))?;
         if !seed.is_undefined() && !seed.is_null() {
             let seed: [u8; 32] = Uint8Array::new(&seed)
@@ -313,6 +313,12 @@ struct ConnectConfig {
     /// The person's chosen name, for history and presence; empty for none.
     #[serde(default)]
     display_name: String,
+    /// The revocations this person's root signed, as the page kept them: the
+    /// session announces them to its host with its certificate, so a host
+    /// refuses a device of theirs, or a stand-in it holds for them, from the
+    /// moment each entry names.
+    #[serde(default)]
+    revocations: Vec<RevocationEntry>,
 }
 
 /// The certified user as the toolkit's local identity.
@@ -437,7 +443,7 @@ pub async fn certify_device(
     .map_err(js_error)
 }
 
-fn device_key(text: &str) -> Result<[u8; 32], JsError> {
+pub(crate) fn device_key(text: &str) -> Result<[u8; 32], JsError> {
     hex::decode(text)
         .map_err(js_error)?
         .try_into()
@@ -759,6 +765,55 @@ pub async fn certify_with_root(
         host_cert: &host_cert,
     })
     .map_err(js_error)
+}
+
+/// Have the root the page holds (`root`, the identity handle
+/// `pendingPairings` takes) make `key_hex`, a key the page's host holds, the
+/// person's stand-in approver for as long as a stand-in may last: while the
+/// root is in this page only, the host can then certify a new member device
+/// of the person that a device of theirs asked for, and nothing else.
+/// Resolves to the certificate's canonical bytes (postcard) as hex, as the
+/// host's stand-in `certify` request carries it.
+///
+/// # Errors
+///
+/// Rejects for a malformed key, the root's own key, or a failed signature.
+#[wasm_bindgen(js_name = certifyStandIn)]
+pub async fn certify_stand_in(root: JsValue, key_hex: String) -> Result<String, JsError> {
+    let root = PageSigner::from_js(&root)?;
+    let cert = tilo_browser_peer::issue_stand_in(
+        &root,
+        device_key(&key_hex)?,
+        "Stand-in approver",
+        tilo_user_identity::STAND_IN_LIFETIME_NS,
+    )
+    .await
+    .map_err(js_error)?;
+    tilo_user_identity::canonical::canonical_bytes(&cert)
+        .map(hex::encode)
+        .map_err(js_error)
+}
+
+/// Revoke `keyHex` — a device key of this person's, or the stand-in approver
+/// their host holds — with the root the page holds (`root`): resolves to the
+/// root-signed revocation as JSON, which the page keeps beside the person. It
+/// is announced to every session of theirs at once, so their hosts refuse
+/// what the key signs from now on and keep valid what it signed before.
+#[wasm_bindgen(js_name = revokeDevice)]
+pub async fn revoke_device(root: JsValue, key_hex: String) -> Result<String, JsError> {
+    let root = PageSigner::from_js(&root)?;
+    let entry = tilo_browser_peer::revoke_device(
+        &root,
+        device_key(&key_hex)?,
+        tilo_clock::unix_now_ns(),
+        RevocationReason::Retired,
+    )
+    .await
+    .map_err(js_error)?;
+    for handle in crate::peer_presence::handles_of(&hex::encode(entry.user_public_key)) {
+        handle.revoke(entry.clone()).map_err(js_error)?;
+    }
+    serde_json::to_string(&entry).map_err(js_error)
 }
 
 /// The new devices waiting at the host at `post` for the member root the
@@ -1380,6 +1435,22 @@ pub fn verify_agent_delegation(
     .map_err(js_error)
 }
 
+/// The revocations of `entries` the person `cert` certifies signed: a
+/// session announces only its own person's, since a host reads a hello's
+/// entries as its sender's root's and refuses one signed by another.
+fn own_revocations(
+    entries: Vec<RevocationEntry>,
+    cert: &DeviceCert,
+) -> Result<RevocationList, JsError> {
+    let mut revocations = RevocationList::new();
+    for entry in entries {
+        if entry.user_public_key == cert.user_public_key {
+            revocations.insert(entry).map_err(js_error)?;
+        }
+    }
+    Ok(revocations)
+}
+
 /// A running certified peer.
 #[wasm_bindgen]
 pub struct WasmPeer {
@@ -1418,6 +1489,28 @@ fn set_member_name(handle: &PeerHandle, workspace: &str, name: &str) {
         name: name.to_owned(),
     };
     let _ = handle.rooms_then(request, Box::new(|_| {}));
+}
+
+impl WasmPeer {
+    /// Ask the host `request`, and resolve to its answer.
+    pub(crate) async fn rooms_request(
+        &self,
+        request: tilo_relay_protocol::workspaces::WorkspacesRequest,
+    ) -> Result<tilo_relay_protocol::workspaces::WorkspacesReply, JsError> {
+        let (reply, receipt) = tokio::sync::oneshot::channel();
+        self.handle
+            .rooms_then(
+                request,
+                Box::new(move |answer| {
+                    let _ = reply.send(answer);
+                }),
+            )
+            .map_err(js_error)?;
+        receipt
+            .await
+            .map_err(|_| js_error("peer session closed"))?
+            .map_err(js_error)
+    }
 }
 
 #[wasm_bindgen]
@@ -1481,12 +1574,13 @@ impl WasmPeer {
         let reporter_cert = config.cert.clone();
         let owner_cert = config.host_cert.clone();
         let display_name = config.display_name;
+        let revocations = own_revocations(config.revocations, &config.cert)?;
         let handle = PeerHandle::start(
             PeerConfig {
                 host: config.address.host(),
                 cert: config.cert,
                 host_cert: config.host_cert,
-                revocations: RevocationList::new(),
+                revocations,
             },
             Arc::new(signer),
             store,
@@ -1496,7 +1590,7 @@ impl WasmPeer {
             next.set(id.wrapping_add(1).max(1));
             id
         });
-        crate::peer_presence::register(id, device_key, &handle, &reporter_cert, &display_name);
+        crate::peer_presence::register(id, &handle, &reporter_cert, &owner_cert, &display_name);
         // A lobby started beside the workspace's peer does not rename the
         // page's person.
         if crate::page_person::claim(id) {
@@ -1639,28 +1733,6 @@ impl WasmPeer {
         self.id
     }
 
-    /// Administer the host's workspaces as this device: `request` is a
-    /// `WorkspacesRequest` as JSON (serde's external tagging, byte arrays as
-    /// arrays of numbers); resolves to the `WorkspacesReply` as JSON.
-    pub async fn govern(&self, request: String) -> Result<String, JsError> {
-        let request: tilo_relay_protocol::workspaces::WorkspacesRequest =
-            serde_json::from_str(&request).map_err(js_error)?;
-        let (reply, receipt) = tokio::sync::oneshot::channel();
-        self.handle
-            .rooms_then(
-                request,
-                Box::new(move |answer| {
-                    let _ = reply.send(answer);
-                }),
-            )
-            .map_err(js_error)?;
-        let answer = receipt
-            .await
-            .map_err(|_| js_error("peer session closed"))?
-            .map_err(js_error)?;
-        serde_json::to_string(&answer).map_err(js_error)
-    }
-
     /// The session token the host's fetch proxy (`/peer/v1/fetch`) takes,
     /// while this page is connected to a host that serves one; `undefined`
     /// otherwise. It changes when the page reconnects, so the page's fetch
@@ -1673,13 +1745,14 @@ impl WasmPeer {
     /// Pre-admit whoever redeems the invitation this issues and presents
     /// the token whose SHA-256 the grant names: `options` is JSON
     /// `{requestId, workspace, role, tokenSha256, label, expiresInSeconds,
-    /// inviterName?}` (hex ids, `role` `Viewer`/`Commenter`/`Editor`); the
-    /// owner's `root` signs the grant. Resolves to the `WorkspacesReply` as JSON.
+    /// inviterName?}` (hex ids, `role` `viewer`/`commenter`/`editor`/
+    /// `moderator`); the owner's `root` signs the grant. Resolves to the
+    /// invitation's text.
     ///
     /// # Errors
     ///
-    /// Rejects for malformed options, when the root does not sign, or as
-    /// [`Self::workspaces`].
+    /// Rejects for malformed options, when the root does not sign, or when the
+    /// host refuses.
     #[wasm_bindgen(js_name = preAdmit)]
     pub async fn pre_admit(&self, root: JsValue, options: String) -> Result<String, JsError> {
         use tilo_browser_peer::DeviceSigner as _;
@@ -1688,22 +1761,25 @@ impl WasmPeer {
         struct Options {
             request_id: String,
             workspace: String,
-            role: tilo_relay_protocol::workspaces::WorkspaceRole,
+            role: String,
             token_sha256: String,
             label: String,
             expires_in_seconds: u64,
             inviter_name: Option<String>,
         }
         let options: Options = serde_json::from_str(&options).map_err(js_error)?;
+        if options.label.trim().is_empty() {
+            return Err(js_error("a pre-admission needs a label"));
+        }
+        let seconds = crate::rooms::seconds(Some(options.expires_in_seconds))?;
         let root = PageSigner::from_js(&root)?;
         let now_ns = ui::time::unix_now_ns();
         let mut grant = tilo_relay_protocol::workspaces::PreAdmission {
             workspace: options.workspace,
-            role: options.role,
+            role: crate::rooms::wire_role(&options.role)?,
             token_sha256: device_key(&options.token_sha256)?,
             label: options.label,
-            expires_at_ns: now_ns
-                .saturating_add(options.expires_in_seconds.saturating_mul(1_000_000_000)),
+            expires_at_ns: now_ns.saturating_add(seconds.saturating_mul(1_000_000_000)),
             owner_user_public_key: root.device_public_key(),
             signature: [0; 64],
         };
@@ -1711,17 +1787,16 @@ impl WasmPeer {
             .sign(grant.digest().map_err(js_error)?.to_vec())
             .await
             .map_err(|error| js_error(error.0))?;
-        self.govern(
-            serde_json::to_string(
-                &tilo_relay_protocol::workspaces::WorkspacesRequest::PreAdmit {
+        let reply = self
+            .rooms_request(
+                tilo_relay_protocol::workspaces::WorkspacesRequest::PreAdmit {
                     request_id: request_id(&options.request_id)?,
                     grant,
                     inviter_name: options.inviter_name,
                 },
             )
-            .map_err(js_error)?,
-        )
-        .await
+            .await?;
+        crate::rooms::invitation_text(reply)
     }
 
     /// Say this page's `value` of itself in `workspace` (the live layer's
@@ -2194,6 +2269,7 @@ impl WasmPeer {
                     })
                 })
                 .collect::<Result<_, JsError>>()?,
+            agent: false,
         };
         request.validate().map_err(js_error)?;
         let (reply, receipt) = tokio::sync::oneshot::channel();
@@ -2277,7 +2353,11 @@ impl WasmPeer {
                     hear(self.id, workspace_id, from, &body);
                     None
                 }
-                PeerEvent::Live { from, frame, .. } if from != self.device_key => {
+                PeerEvent::Live {
+                    workspace_id,
+                    from,
+                    frame,
+                } if from != self.device_key => {
                     let publisher = hex::encode(from);
                     let event = match LiveFrame::decode(&frame).ok()? {
                         LiveFrame::Ops(OpsFrame::Preview { seq, record, ops }) => {
@@ -2292,11 +2372,14 @@ impl WasmPeer {
                             publisher,
                             record: record_to_js(record),
                         },
-                        // Semantic work requires an authenticated record
-                        // consumer, and presence no longer comes this way.
-                        LiveFrame::Ops(OpsFrame::Semantic { .. }) | LiveFrame::RetiredPresence => {
+                        // An agent's narrated work is drawn on this page's
+                        // windows once its board admits the publisher.
+                        LiveFrame::Ops(OpsFrame::Semantic { event, .. }) => {
+                            crate::peer_presence::narrated(self.id, workspace_id, from, &event);
                             return None;
                         }
+                        // Presence no longer comes this way.
+                        LiveFrame::RetiredPresence => return None,
                     };
                     serde_json::to_value(event).ok()
                 }

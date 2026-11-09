@@ -18,9 +18,9 @@
 //!   camera and screen tracks for what a call carries): the grants that admit
 //!   the page to a call, and the pictures and voice it publishes and shows.
 //!
-//! [`health`] derives `PeerSnapshot` and `SessionHealth` v1 from it. With the
-//! `toolkit` feature, [`presence_anchors`] carries an editor's ranges on the
-//! live plane as every native device does.
+//! [`health`] derives `PeerSnapshot` and `SessionHealth` v1 from it.
+//! [`presence_anchors`] carries an editor's ranges on the live plane as every
+//! native device does.
 
 #![deny(rust_2018_idioms)]
 #![cfg_attr(
@@ -40,11 +40,20 @@ pub mod document;
 pub mod health;
 mod held_live;
 pub mod invite;
-#[cfg(feature = "toolkit")]
+/// Logging a computer in as one of the person's devices (native only).
+#[cfg(not(target_arch = "wasm32"))]
+pub mod login;
+pub mod narration;
+/// The login code a page hands a computer, read (native only: a page writes
+/// it, never reads it).
+#[cfg(not(target_arch = "wasm32"))]
+pub mod pairing_link;
 pub mod presence_anchors;
 mod previews;
 mod replica;
 pub mod session;
+pub mod session_actions;
+pub mod sign_in;
 pub mod surfaces;
 pub mod voice;
 
@@ -52,7 +61,8 @@ pub use channel_crypto::ChannelContentKeys;
 pub use channels::{document_admission, document_history_admission};
 pub use custody::{
     CertifyError, IssuedRole, MemoryPeerStore, OutboxEntry, PeerRecord, PeerStore, answer_pairing,
-    certify, certify_with_root, decide_pairing, issue_device_cert, pending_pairings,
+    certify, certify_with_root, decide_pairing, issue_agent_grant, issue_device_cert,
+    issue_stand_in, pending_pairings, revoke_device,
 };
 pub use health::{PeerSnapshot, SessionHealth};
 pub use previews::{LiveChange, LiveState, RemoteMember};
@@ -61,7 +71,10 @@ pub use session::{
     PAGE_FAILURE_CODES, PeerConfig, PeerEvent, PeerEvents, PeerHandle, PeerStatus, RoomsCompletion,
     TransportPhase,
 };
+pub use sign_in::{encode, grant_label, sign_in_proof};
 pub use tilo_live::live::Track;
+/// The record a session's [`PeerHandle::open_route`] takes part in.
+pub use tilo_peer_state::document_frame::DocumentRoute;
 pub use tilo_relay_client::LinkError;
 pub use tilo_relay_client::https::{HttpClient, HttpFuture, host_info};
 pub use tilo_relay_client::{DeviceSigner, SignError, SignFuture};

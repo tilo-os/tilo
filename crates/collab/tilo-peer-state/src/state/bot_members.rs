@@ -147,7 +147,7 @@ impl StatePeer {
             return Err("a bot's certificate holds no capability".into());
         }
         tilo_user_identity::verify_device_cert_at(cert, now_ns(now)).map_err(err)?;
-        if self.core.revocations.is_revoked(&cert.device_public_key) {
+        if self.core.revocations.refuses(cert) {
             return Err("device revoked".into());
         }
         if delegation.delegate.installation() != Some(id) {

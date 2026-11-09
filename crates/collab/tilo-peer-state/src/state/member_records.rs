@@ -1,6 +1,8 @@
 //! A record a member creates: empty, where the workspace lets its app author
 //! records and the member change the record.
-use super::{AutoCommit, MemberAuthority, Route, StatePeer, SystemTime};
+use super::{
+    AutoCommit, DocumentMutation, MemberAuthority, Route, SignedOp, StatePeer, SystemTime,
+};
 use tilo_action_policy::ActionKind;
 
 impl StatePeer {
@@ -27,4 +29,23 @@ impl StatePeer {
 /// holding no change at all.
 pub(super) fn empty_genesis(bytes: &[u8]) -> bool {
     AutoCommit::load(bytes).is_ok_and(|mut doc| doc.get_heads().is_empty())
+}
+
+/// Whether `envelope` starts `app`'s record `record` in `workspace`: the
+/// record's genesis, cleartext and holding no change at all.
+pub(super) fn empty_genesis_op(
+    app: &str,
+    record: &str,
+    workspace: &str,
+    envelope: &SignedOp,
+) -> bool {
+    collab_types::validate_whole_document_payload_route(app, workspace, record, envelope).is_ok_and(
+        |payload| {
+            matches!(
+                payload,
+                collab_types::WholeDocumentPayload::Cleartext(DocumentMutation::Snapshot(bytes))
+                    if empty_genesis(&bytes)
+            )
+        },
+    )
 }

@@ -10,8 +10,13 @@
 //!                                         guest → one answer, then close
 //! host  → Launch(Launch)                  guest → Started { pid }
 //! host  → Stdin(..) | CloseStdin | Signal guest → Stdout(..) | Stderr(..)
-//!                                         guest → Exited(ExitStatus), close
+//!         | Resize                        guest → Exited(ExitStatus), close
 //! ```
+//!
+//! A launch with [`Stdio::Terminal`] runs on a pseudo-terminal in the
+//! guest: its input is the terminal's keys, its output (both streams) comes
+//! back as `Stdout`, and `Resize` follows the host terminal's size, so
+//! programs that read the terminal (editors, prompts, pagers) work.
 //!
 //! Every message is one [`FRAMING`] frame carrying a postcard value. The
 //! guest is not trusted with anything the host did not already give it: the
@@ -34,6 +39,7 @@ use thiserror::Error;
 use wire_frame::{FrameError, Framing};
 
 pub mod client;
+pub mod files;
 pub mod link;
 #[cfg(target_os = "linux")]
 pub mod vsock;
@@ -123,6 +129,14 @@ pub enum HostMessage {
     Stdin(Vec<u8>),
     CloseStdin,
     Signal(Signal),
+    /// The complete set of directories the guest should have mounted over
+    /// vsock ([`files`]), for a VM without virtio-fs. Missing ones are
+    /// unmounted.
+    MountFiles {
+        shares: Vec<files::FileShare>,
+    },
+    /// The host terminal of a [`Stdio::Terminal`] launch changed size.
+    Resize(TerminalSize),
 }
 
 /// Guest → host.
@@ -131,13 +145,23 @@ pub enum GuestMessage {
     Hello(AgentHello),
     Health(Health),
     Running(Vec<RunningApp>),
-    Mounted { shares: Vec<GuestShare> },
+    Mounted {
+        shares: Vec<GuestShare>,
+    },
     InstalledApps(Vec<InstalledApp>),
-    Started { pid: u32 },
+    Started {
+        pid: u32,
+    },
     Stdout(Vec<u8>),
     Stderr(Vec<u8>),
     Exited(ExitStatus),
-    Error { message: String },
+    Error {
+        message: String,
+    },
+    /// The paths mounted over vsock after a [`HostMessage::MountFiles`].
+    FilesMounted {
+        paths: Vec<String>,
+    },
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -208,6 +232,16 @@ pub enum Stdio {
     Relay,
     /// The app gets `/dev/null`; the connection only reports its exit.
     Null,
+    /// The app runs on a pseudo-terminal of this size, its session's
+    /// controlling terminal: input is keys, output both streams in one.
+    Terminal(TerminalSize),
+}
+
+/// A terminal's size in character cells.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct TerminalSize {
+    pub cols: u16,
+    pub rows: u16,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -369,6 +403,28 @@ impl GuestShare {
     }
 }
 
+impl files::FileShare {
+    /// Validates a whole desired set: each path allowed, none twice.
+    pub fn validate_set(shares: &[Self]) -> Result<(), ProtocolError> {
+        if shares.len() > MAX_SHARES {
+            return Err(ProtocolError::Invalid("share count"));
+        }
+        for (index, share) in shares.iter().enumerate() {
+            if !share_path_allowed(Path::new(&share.path)) {
+                return Err(ProtocolError::Invalid("share path"));
+            }
+            if shares
+                .iter()
+                .skip(index.saturating_add(1))
+                .any(|other| other.path == share.path || other.port == share.port)
+            {
+                return Err(ProtocolError::Invalid("duplicate share"));
+            }
+        }
+        Ok(())
+    }
+}
+
 /// An absolute, normalised path outside the guest's own system directories.
 #[must_use]
 pub fn share_path_allowed(path: &Path) -> bool {
@@ -433,6 +489,14 @@ mod tests {
                 HostMessage::Launch(launch(&["code", "."])),
                 HostMessage::Stdin(b"input".to_vec()),
                 HostMessage::Signal(Signal::Terminate),
+                HostMessage::Resize(TerminalSize {
+                    cols: 120,
+                    rows: 40,
+                }),
+                HostMessage::Launch(Launch {
+                    stdio: Stdio::Terminal(TerminalSize { cols: 80, rows: 24 }),
+                    ..launch(&["vim"])
+                }),
                 HostMessage::Mount {
                     shares: vec![GuestShare {
                         tag: "fs-0123".into(),

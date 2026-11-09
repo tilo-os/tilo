@@ -76,13 +76,13 @@ test('every entry page inlines the scrubber verbatim as its first script', () =>
 
 test('a sealed invitation keeps only its handle in the address', () => {
   const key = 'A'.repeat(43);
-  const out = scrub(`https://tilo.coffee/i/abcdefghijklmnop#${key}`);
-  assert.equal(out.url, 'https://tilo.coffee/i/abcdefghijklmnop');
+  const out = scrub(`https://tilo.sh/i/abcdefghijklmnop#${key}`);
+  assert.equal(out.url, 'https://tilo.sh/i/abcdefghijklmnop');
   assert.deepEqual({...out.secrets}, {invite: key});
   for (const write of out.writes) assert.ok(!write.includes(key), `${write} holds the key`);
   // A key alone is an invitation's only at the route that opens one: at any
   // other address the fragment is the page's own, and left alone.
-  const elsewhere = scrub(`https://tilo.coffee/#${key}`);
-  assert.equal(elsewhere.url, `https://tilo.coffee/#${key}`);
+  const elsewhere = scrub(`https://tilo.sh/#${key}`);
+  assert.equal(elsewhere.url, `https://tilo.sh/#${key}`);
   assert.deepEqual({...elsewhere.secrets}, {});
 });

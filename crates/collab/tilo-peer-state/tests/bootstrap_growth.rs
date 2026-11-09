@@ -64,6 +64,7 @@ fn fixture_with_documents_and_expiry(
         issued_at_ns: 1,
         expires_at_ns,
         signature: [0; 64],
+        issuer: None,
     };
     sign_device_cert(&mut cert, &root).unwrap();
     let now = SystemTime::UNIX_EPOCH + Duration::from_secs(2000);

@@ -3,6 +3,7 @@
 
 use std::rc::Rc;
 
+use tilolang::messages;
 use tilolang::meta::{FilterKind, FilterMeta, TypeMeta};
 
 use crate::abi::Imp;
@@ -310,11 +311,44 @@ impl Core {
         Ok(filter)
     }
 
+    /// `sort_lit(ty, field)`: the order by a field of a type as code names it (`Note.title`),
+    /// the value `Sort<T>` holds: what its menu entry says, and the order it asks as a query
+    /// writes it (`sort:title`, `sort:-received`).
+    pub(crate) fn sort_lit_import(&self, ty: i32, field: i32) -> HResult<Value> {
+        let ty = self.text(ty)?;
+        let field = self.text(field)?;
+        let found = {
+            let registry = self.registry.borrow();
+            let (pkg, _) = registry.type_info(&ty).ok_or_else(|| {
+                format!("sort: type `{ty}` is not declared by any loaded package")
+            })?;
+            let Some(declared) = pkg.meta.types.iter().find(|t| t.id == ty) else {
+                return trap(format!("sort: type `{ty}` is not declared"));
+            };
+            let Some(f) = declared.fields.iter().find(|f| f.name == field) else {
+                return trap(format!("sort: `{}` has no field `{field}`", declared.name));
+            };
+            let Some(query) = crate::query::sort_of(&f.name, &f.ty) else {
+                return trap(format!(
+                    "sort: `{}.{field}` is a `{}`, which has no order",
+                    declared.name, f.ty
+                ));
+            };
+            let label =
+                self.words
+                    .borrow()
+                    .word(&messages::key_of(&f.id), &[], &messages::label(&f.name));
+            Value::Tuple(vec![Value::Text(label), Value::Text(query)])
+        };
+        Ok(found)
+    }
+
     /// The type's catalogue, as a view asks for it: `filters(T)` lists it, and `filter_lit`
-    /// is one of its entries.
+    /// is one of its entries; `sort_lit` is one of the orders it offers.
     pub(crate) fn catalogue_import(&self, imp: Imp, a: &Args<'_>) -> HResult<Option<Wasm>> {
         let found = match imp {
             Imp::Filters => self.filters_import(a.h(0)?)?,
+            Imp::SortLit => self.sort_lit_import(a.h(0)?, a.h(1)?)?,
             _ => self.filter_lit_import(a.h(0)?, a.h(1)?, a.h(2)?)?,
         };
         self.ret_h(found)

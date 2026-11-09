@@ -775,7 +775,10 @@ fn ensure_running(profile: &Path) -> io::Result<Status> {
 
 /// Start one production Session. The executable prepares its profile environment
 /// before entering this function; reusable serving code never mutates it.
-pub fn serve<S: RuntimeServices>(profile: &Path, dev: bool) -> io::Result<()> {
+pub fn serve<S: RuntimeServices + Send + Sync + 'static>(
+    profile: &Path,
+    dev: bool,
+) -> io::Result<()> {
     serve_profile::<S>(
         profile,
         if dev {
@@ -787,7 +790,10 @@ pub fn serve<S: RuntimeServices>(profile: &Path, dev: bool) -> io::Result<()> {
 }
 
 /// Start the existing native endpoint under an existing-owner admission policy.
-pub fn serve_admission<S: RuntimeServices>(profile: &Path, owner_uid: u32) -> io::Result<()> {
+pub fn serve_admission<S: RuntimeServices + Send + Sync + 'static>(
+    profile: &Path,
+    owner_uid: u32,
+) -> io::Result<()> {
     serve_profile::<S>(profile, StartupPolicy::Admission { owner_uid })
 }
 
@@ -798,52 +804,62 @@ enum StartupPolicy {
     Admission { owner_uid: u32 },
 }
 
-fn serve_profile<S: RuntimeServices>(profile: &Path, policy: StartupPolicy) -> io::Result<()> {
+fn serve_profile<S: RuntimeServices + Send + Sync + 'static>(
+    profile: &Path,
+    policy: StartupPolicy,
+) -> io::Result<()> {
     validate_profile(profile)?;
     let mut stages = StartupStages::open(profile)?;
     let mut stage = |stage: &str| stages.enter(stage);
-    let session = match policy {
+    let session = Arc::new(match policy {
         StartupPolicy::Development => S::start_in_dev_mode(profile, &mut stage)?,
         StartupPolicy::Normal => S::start_reporting(profile, &mut stage)?,
         StartupPolicy::Admission { owner_uid } => {
             S::start_admission_reporting(profile, owner_uid, &mut stage)?
         }
-    };
+    });
     let host = session.action_host()?;
-    let mcp = crate::mcp_http::Config::from_env()?
-        .map(|config| {
-            session
-                .mcp_workspace(config.workspace.as_deref())
-                .map(|workspace| (config, workspace))
-        })
-        .transpose()?;
+    let mcp = crate::mcp_http::Config::from_env()?;
     let search = crate::os_search::start(host.clone(), session.workspace(), session.actor())?;
     let path = profile.join("native.sock");
     // Session already owns runtime.lock. Only that owner may remove a stale
     // endpoint, and a second --daemon cannot reach this point.
     stages.enter("binding the native endpoint");
     let listener = tilo_files::native::private::bind_socket(&path)?;
-    if let Some((config, workspace)) = mcp {
+    if let Some(config) = mcp {
         stages.enter("binding the MCP HTTP endpoint");
+        // What the bearer token alone reaches: the configured workspace on a
+        // self-hosted agent host, and nothing on a hosted deployment.
+        let served = match config.grants {
+            crate::mcp_http::Grants::Optional => {
+                Some(session.mcp_workspace(config.workspace.as_deref())?)
+            }
+            crate::mcp_http::Grants::Required => None,
+        };
         // Viewer and media are scoped to this profile's private desktop. A
         // shared-workspace endpoint has only the semantic action door.
-        let private = workspace == session.workspace();
+        let private = served.as_deref() == Some(session.workspace());
         let viewer = if private {
             crate::viewer::start_from_env(profile)?
         } else {
             None
         };
-        let endpoint = crate::mcp_http::Endpoint::with_viewer(
+        let endpoint = crate::mcp_http::Endpoint::hosted(
             host,
-            workspace.clone(),
             session.actor().to_owned(),
+            served,
             config.token.clone(),
-            viewer,
+            session.persons_devices(),
+            session.joiner(),
         );
-        endpoint.serve_sessions(session.mcp_session_factory(&workspace)?)?;
+        endpoint.serve_viewer(viewer);
         if private {
             endpoint.serve_media(session.media());
         }
+        let resolving = Arc::clone(&session);
+        endpoint.serve_workspaces(Arc::new(move |workspace: &str| {
+            resolving.mcp_session_factory(workspace)
+        }))?;
         let bound = crate::mcp_http::spawn(&config, endpoint)?;
         tracing::info!(%bound, "MCP HTTP endpoint listening");
     }

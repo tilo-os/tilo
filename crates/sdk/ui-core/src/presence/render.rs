@@ -834,6 +834,40 @@ pub fn draw_peer_cursors(
     painted
 }
 
+/// An agent's pointer at `tip` with its name tag, as every agent here is
+/// drawn: its mark in its colour, and beside it a pill with its face and
+/// `label`, kept inside `viewport`. What an agent's action marker paints, so
+/// an agent at work wears the same nametag as an agent pointing. Returns the
+/// bounds painted, in the scene's coordinates before `transform`.
+pub(super) fn draw_agent_nametag(
+    scene: &mut Scene,
+    transform: Affine,
+    text_renderer: &mut TextRenderer,
+    theme: &Theme,
+    (tip, viewport): (Point, Rect),
+    label: &str,
+    color: Color,
+) -> Rect {
+    let at = (tip.x, tip.y);
+    draw_peer_pointer(scene, transform, theme, at, color, true);
+    let size = peer_pill_size_for(text_renderer, theme, label, true);
+    let mut bounds = pointer_bounds(at);
+    if let Some(place) = layout_peer_pills(viewport, &[PillRequest { at, size }]).first() {
+        draw_peer_pill_kind(
+            scene,
+            transform,
+            text_renderer,
+            theme,
+            place.rect,
+            label,
+            color,
+            true,
+        );
+        bounds = bounds.union(place.rect.inflate(FADE_EDGE, FADE_EDGE));
+    }
+    bounds.intersect(viewport)
+}
+
 /// How far above the pointer's tip a reaction starts.
 const REACTION_LIFT: f64 = 6.0;
 

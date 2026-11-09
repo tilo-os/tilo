@@ -173,6 +173,7 @@ mod tests {
             issued_at_ns: 3,
             expires_at_ns: Some(100),
             signature: [0; 64],
+            issuer: None,
         };
         sign_device_cert(&mut cert, &root).unwrap();
         let mut grant = ImageSigningAuthorization {

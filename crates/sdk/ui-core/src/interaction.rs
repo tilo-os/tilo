@@ -76,6 +76,35 @@ impl ControllerFamily {
             Self::Generic
         }
     }
+
+    /// The face buttons that confirm, cancel and carry the third and fourth
+    /// roles, in that order: the buttons printed A, B, X and Y on this family.
+    #[must_use]
+    pub fn faces(self) -> [crate::input::ControllerButton; 4] {
+        use crate::input::ControllerButton;
+        let legends = [
+            ["A", "×", "←"],
+            ["B", "○", "↓"],
+            ["X", "□", "↑"],
+            ["Y", "△", "→"],
+        ];
+        let mut faces = [ControllerButton::South; 4];
+        for button in [
+            ControllerButton::South,
+            ControllerButton::East,
+            ControllerButton::West,
+            ControllerButton::North,
+        ] {
+            let printed = button.label(self);
+            if let Some(role) = legends
+                .iter()
+                .position(|printed_on| printed_on.contains(&printed))
+            {
+                faces[role] = button;
+            }
+        }
+        faces
+    }
 }
 
 /// Physical legends printed on the connected keyboard. Tilo may run on Linux

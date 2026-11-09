@@ -336,6 +336,7 @@ fn an_enrolled_device_takes_up_its_persons_identity_at_login() {
         issued_at_ns: now,
         expires_at_ns: None,
         signature: [0; 64],
+        issuer: None,
     };
     sign_device_cert(&mut cert, &person).expect("the person's signature");
     // The node was enrolled from the factory, never set up here: no root and no key of an identity

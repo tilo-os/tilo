@@ -59,6 +59,16 @@ mod cases {
             "its title starts empty: what is typed first names it"
         );
         assert_eq!(n.rt.read(&note, "pinned").unwrap(), Value::Bool(false));
+        assert_eq!(
+            n.rt.title(&note).unwrap(),
+            "Untitled",
+            "a note with no title is called what its type says"
+        );
+        assert_eq!(
+            n.rt.title(&n.nb).unwrap(),
+            "Notes",
+            "the notebook is called by the app's title"
+        );
         assert_eq!(n.count(), 1);
     }
 
@@ -191,6 +201,11 @@ mod cases {
 
         let mut editor = n.rt.open_resource(&me(), &note, None).unwrap();
         assert_eq!(text_prop(editor.tree(), "content_kind"), "document");
+        assert_eq!(
+            text_prop(of_kind(editor.tree(), "ui.TextInput")[0], "placeholder"),
+            "Untitled",
+            "the title field prompts with the words its type declares"
+        );
         let title = of_kind(editor.tree(), "ui.TextInput")[0].key.clone();
         assert_eq!(
             editor.edit(&title, &Value::text("Plans")).unwrap(),

@@ -22,8 +22,6 @@
 use std::collections::{HashMap, HashSet};
 use tilo_sort::CompactSort as _;
 
-use tilo_actions::ResourceSemanticIdentity;
-
 use crate::ExportedAction;
 
 /// Bytes of a content hash naming a shape or a template.
@@ -32,13 +30,7 @@ pub const SHAPE_ID_BYTES: usize = 16;
 /// A catalogue entry's or template's content hash, chosen by the publisher.
 pub type ShapeId = [u8; SHAPE_ID_BYTES];
 
-/// The fields of a resource every one of its actions carries.
-#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-pub struct ResourceFields {
-    pub resource_kind: String,
-    pub resource_label: String,
-    pub semantic_identity: Option<ResourceSemanticIdentity>,
-}
+pub use tilo_actions::published::ResourceFields;
 
 /// One resource: the fields that are its own, and the template of the actions
 /// it offers.
@@ -47,30 +39,6 @@ pub struct SurfaceResource {
     pub resource: String,
     pub fields: ResourceFields,
     pub template: ShapeId,
-}
-
-impl ExportedAction {
-    /// The catalogue entry of this action: everything but its resource's own
-    /// fields, which a [`SurfaceResource`] carries.
-    #[must_use]
-    pub fn shape(&self) -> Self {
-        Self {
-            resource: String::new(),
-            semantic_identity: None,
-            resource_kind: String::new(),
-            resource_label: String::new(),
-            ..self.clone()
-        }
-    }
-
-    #[must_use]
-    pub fn resource_fields(&self) -> ResourceFields {
-        ResourceFields {
-            resource_kind: self.resource_kind.clone(),
-            resource_label: self.resource_label.clone(),
-            semantic_identity: self.semantic_identity.clone(),
-        }
-    }
 }
 
 /// A change to a connection's published surface.

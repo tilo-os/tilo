@@ -74,8 +74,6 @@ action send(c: Conversation, text: Text) (icon: .send, label: "Send") {
 /// The chat's window: its conversations, the latest active first, each opening in a window of
 /// its own. A post is a change of its conversation; an edit of a message, or a draft, is not.
 view chats(all: BlockChat) {
-    // The conversation this window's list shows opened where it stands.
-    state opened: Option<Conversation> = .none
     let shown = all.items.sort_by(c -> updated(c), desc)
     ui.NavShell(
         content_kind: .document,
@@ -86,7 +84,7 @@ view chats(all: BlockChat) {
             if shown.is_empty() {
                 ui.EmptyState("No conversations yet", icon: meta(Conversation).icon)
             } else {
-                std.list(shown, opened) { (c, at) ->
+                std.list(shown) { (c, at) ->
                     ui.ListItem(item: c, presence: at) {
                         conversation_row(c)
                     }

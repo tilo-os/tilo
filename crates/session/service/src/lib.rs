@@ -186,6 +186,7 @@ pub trait Service {
     ///
     /// # Errors
     /// The connection cannot be used.
+    #[cfg(unix)]
     fn connect(&mut self, _origin: &str, _connection: std::os::fd::OwnedFd) -> Result<(), String> {
         Ok(())
     }
@@ -642,6 +643,7 @@ impl Service for Services {
         Self::served(self)
     }
 
+    #[cfg(unix)]
     fn connect(&mut self, origin: &str, connection: std::os::fd::OwnedFd) -> Result<(), String> {
         // The service that names `origin` takes it; a session with two is asked for the first.
         let mut connection = Some(connection);

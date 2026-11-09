@@ -174,7 +174,7 @@ it stands with `delivery(r)`: `.none` until the resource's actions queued one, e
   item's place is a field of the item, its *placement*: the item holding its collection (or the
   document), the collection's field, and an order key placed beside its neighbours. A
   collection is the items placed in it, by order key, ties by id; the index keeps each
-  collection's list, so `for`, `count`, lanes and sorted queries read it as before.
+  collection's list, so `for`, `count`, filtered runs and sorted queries read it as before.
 - **A reference is the id** (`doc/item`). It stays valid when the item moves to another
   collection, and history follows the one item through its moves. Moves stay within the
   document, the unit an origin orders.

@@ -182,8 +182,7 @@ view bar(a: Album) {\n    if space.compact {\n        row(distribute: .between) 
     }
 
     /// The host puts a record's actions on the record, grouped as their declarations say: a
-    /// row's menu carries the group of each action on it (`group:`), and whether the person
-    /// reaches for it on most things of its type (`frequent: true`). This is the seam the
+    /// row's menu carries the run of each action on it (`group:`). This is the seam the
     /// traditional desktop's action bar stands on.
     #[test]
     fn a_resource_read_by_id_offers_the_actions_its_declaration_grouped() {
@@ -192,7 +191,7 @@ type Album {\n    title: Text\n    pinned: Bool = false\n}\n\
 type Shelf {\n    albums: Collection<Album>\n}\n\
 root Shelf\n\ndefault view shelf for Shelf\n\
 action add(s: Shelf) -> Album (icon: .plus) {\n    s.albums.insert(Album(title: \"Blue\"))\n}\n\
-action pin(a: Album, pinned: Bool = not a.pinned) (icon: .pin, group: \"Pin\", frequent: true) {\n    a.pinned = pinned\n}\n\
+action pin(a: Album, pinned: Bool = not a.pinned) (icon: .pin, on: a.pinned, group: \"Pin\") {\n    a.pinned = pinned\n}\n\
 action rename(a: Album, title: Text) (icon: .pen_tool, group: \"Edit\") {\n    a.title = title\n}\n\
 view shelf(s: Shelf) {\n    ui.NavShell(content_kind: .list, title: meta(s).title) {\n        content: {\n            stack {\n                for a in s.albums {\n                    ui.ListItem(item: a) {\n                        ui.ListRow(title: a.title)\n                    }\n                }\n            }\n        }\n    }\n}\n\
 view album(a: Album) {\n    text(a.title)\n}";

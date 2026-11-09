@@ -294,6 +294,7 @@ activity-detail-open-app = Open app
 activity-detail-compare = Compare
 activity-detail-undo = Undo
 activity-detail-undo-task = Undo whole task
+activity-detail-undo-run = Undo this whole run
 activity-detail-split = Split
 activity-detail-merge = Merge
 activity-detail-action-count = { $count } { $count ->
@@ -349,6 +350,9 @@ activity-why-this-work = Why this work
 activity-no-decision = No decision route was recorded.
 activity-affected-records = Affected records
 activity-undo-task-needs-open = Open every affected document to undo this task together.
+activity-undo-run-needs-open = Open every document this run changed to undo it together.
+activity-undo-run-in-progress = Undoing this run is still under way.
+activity-undo-run-nothing-to-undo = This run changed no document that keeps its own history.
 activity-undo-task-needs-documents = Nothing changed. Open every affected document first.
 activity-undo-task-partial = Task partly undone; later collaborator edits were kept.
 activity-undo-task-partial-records = Task undone, except for records listed below.
@@ -498,30 +502,8 @@ desktop-view-explore-activity = Explore workspace activity
 desktop-view-replay-activity = Replay workspace activity
 
 ## Desktop window search
-search-provider-desktop-windows = Desktop windows
-search-window-move-tab = Move tab “{ $tab }” to workspace “{ $workspace }”
-search-window-move-tab-detail = From workspace “{ $workspace }”
-search-window-copy-tab = Copy tab “{ $tab }” to workspace “{ $workspace }”
-search-window-move-tab-to = Move “{ $tab }” to another workspace
-search-window-copy-tab-to = Copy “{ $tab }” to another workspace
-search-window-group-untitled = Untitled window
 search-window-nth = { $nth } of { $count }
 search-window-placeholder = Search { $searched }…
-search-window-close-group = Close window group “{ $group }”
-search-window-close-group-detail = Workspace “{ $workspace }” · strip “{ $strip }” · { $count ->
-    [one] 1 tab
-   *[other] { $count } tabs
-}
-search-window-close-tab = Close tab “{ $tab }”
-search-window-close-tab-detail = Workspace “{ $workspace }” · strip “{ $strip }”
-search-window-share-tab = Share “{ $tab }” with the workspace
-search-window-unshare-tab = Stop sharing “{ $tab }”
-search-window-focus-place-strip = Strip “{ $strip }”
-# Words that ask for a window's close or move/copy rows; a search for a
-# window by name only offers going to it. Space-separated, lowercase.
-search-window-verb-close = close quit
-search-window-verb-relocate = move copy send
-search-window-verb-share = share show unshare stop
 
 # Notifications: banner stack and notification centre
 drill-in-back = Back
@@ -1080,8 +1062,7 @@ window-switcher-hint-stay = Stay
 # Workspace overview
 overview-empty-window = Empty window
 overview-untitled = Untitled
-overview-access-nobody = No one has access
-overview-access-private = Private to you
+overview-access-only-you = Only you
 overview-access-one = Shared with { $name }
 overview-access-two = Shared with { $name } and { $other }
 overview-access-many = Shared with { $name } and { $count } others
@@ -1120,6 +1101,28 @@ overview-join-workspace = Join a workspace…
 overview-leave-workspace = Leave
 overview-a11y-leave = Leave { $name }
 overview-two-facts = { $first }, { $second }
+overview-tilo-more-workspaces = More workspaces
+overview-tilo-hours = { $hours } hr
+overview-tilo-hosts = Hosts & compute
+overview-tilo-agents = Agents
+overview-tilo-account = Account
+overview-tilo-about = About Tilo
+overview-tilo-workspace-usage = { $host }, { $time } this month
+overview-tilo-plan-used-of = { $used } of { $included } hr
+overview-tilo-plan-used = { $used }
+overview-tilo-credit = { $amount } credit
+overview-tilo-no-card = No card yet: added the first time something needs a Linux machine
+overview-tilo-no-plan = No plan chosen
+overview-tilo-host-device = This device
+overview-tilo-host-self = Your own host
+overview-tilo-host-provider = Hosting provider
+overview-tilo-manage-billing = Manage billing
+overview-tilo-agent-everywhere = All your workspaces
+overview-tilo-agent-running = { $runs ->
+        [one] working now
+       *[other] { $runs } runs now
+    }
+overview-tilo-revoke = Revoke
 overview-windows-title = Windows in this workspace
 overview-windows-description = Each strip of this workspace, top to bottom, with its windows in order. The arrow keys move between them and Enter goes to one. F2 renames the strip a window is on, and Alt with Up or Down moves that strip. Click or tap a window to go there, middle-click one to close it, or drag it onto another workspace or strip to move it there.
 overview-strips-title = Strips in this workspace
@@ -1128,6 +1131,16 @@ overview-strip-move-up = Move up
 overview-strip-move-down = Move down
 browser-new-workspace-name = Workspace { $number }
 workspace-notice-joined = { $name } joined
+workspace-notice-agent-finished = { $agent } finished
+workspace-notice-agent-card = Open card
+workspace-notice-agent-finished-changes = { $agent } finished: { $count ->
+    [one] 1 change
+   *[other] { $count } changes
+}
+workspace-notice-agent-finished-in = { $agent } finished: { $count ->
+    [one] 1 change
+   *[other] { $count } changes
+} in { $workspace }
 workspace-notice-renamed = { $name } renamed the workspace to { $workspace }
 # What the desk says when something a person asked for did not happen: what
 # they asked for, why, and the button that tries it again.
@@ -1146,8 +1159,6 @@ answer-why-cannot-start = Apps cannot be started right now.
 # rather than doing nothing.
 answer-capture-not-in-browser = Screenshots and recordings run in Tilo on a computer
 answer-why-capture-not-in-browser = It needs the whole screen, which a browser page does not have.
-answer-guide-not-in-browser = Keyboard shortcuts are listed in Tilo on a computer
-answer-why-guide-not-in-browser = It opens over the whole system, which a browser page is not.
 answer-remote-not-in-browser = Remote control runs in Tilo on a computer
 answer-why-remote-not-in-browser = Nothing here is under someone else's control.
 
@@ -1478,3 +1489,9 @@ activities-layer = Activities
 activity-collapse = Put away
 activity-close = Close
 
+profile-agent-card = Open card
+profile-agent-stop = Stop
+profile-agent-undo-run = Undo run
+profile-agent-take-over = Take over
+profile-agent-revoke = Revoke access
+profile-agent-now = Now

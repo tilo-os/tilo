@@ -95,8 +95,6 @@ package-store = { path = "../package-store", features = ["lease"] }
 # the compositor and the filesystem use — a launcher-local permission
 # type would be a second vocabulary to drift out of sync.
 collab-types = { path = "../../collab/collab-types" }
-# The received-file admission protocol spoken to the filesystem service.
-fs-protocol = { path = "../../system/fs-protocol" }
 wire-frame = { path = "../../system/wire-frame" }
 tilo-render-protocol = { path = "../../platform/tilo-render-protocol" }
 # The system information service's handoff, written before the app holds
@@ -124,9 +122,12 @@ tilo-rt.workspace = true
 # which the launcher's filtered accessibility proxy forwards.
 zbus = { workspace = true, features = ["tokio", "blocking-api"] }
 tokio = { workspace = true, features = ["io-util", "macros", "net", "rt", "sync", "time"] }
-workspace-hack = { version = "0.1" }
 # Bounds the process-tree fixture's waits (`managed-tree-test`).
 tilo-test-env = { path = "../../dev/test-env", optional = true }
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+# The workspace-hack's native feature set does not build for wasm32.
+workspace-hack = { version = "0.1" }
 
 [dev-dependencies]
 tilo-action-policy = { path = "../../collab/action-policy" }
@@ -162,7 +163,7 @@ workspace = true
 # `live_module`'s watch of the app store.
 tilo-files = { path = "../../platform/tilo-files", features = ["watch"] }
 landlock.workspace = true
-rustix = { workspace = true, features = ["event", "net", "process", "std"] }
+rustix = { workspace = true, features = ["event", "fs", "net", "process", "std"] }
 # `gpu.rs` asks each installed Vulkan ICD directly which render node its
 # devices are on (`VK_EXT_physical_device_drm`), loading the library itself
 # so every answer belongs to exactly one manifest.

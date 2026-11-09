@@ -49,11 +49,7 @@ pub fn record(log: &mut AutoCommit, value: &serde_json::Value, author: &str, tim
 /// Commit what `doc` holds as one change, by `author` at `time` (seconds since the epoch), so the
 /// desk's history says who did it and when.
 pub fn commit(doc: &mut AutoCommit, author: &str, time: i64) {
-    doc.commit_with(
-        CommitOptions::default()
-            .with_message(shared_record::change_message(Some(author)))
-            .with_time(time),
-    );
+    shared_record::commit_change(doc, author, time, None);
 }
 
 /// The author a change of a desktop log names.
@@ -383,13 +379,7 @@ mod tests {
         assert_eq!(rebuilt.workspaces[0].name, tree.workspaces[0].name);
         assert_eq!(rebuilt.workspaces[0].id(), tree.workspaces[0].id());
         let windows = |desk: &DesktopTree| -> Vec<(u64, String)> {
-            desk.workspaces
-                .iter()
-                .flat_map(|workspace| &workspace.strips)
-                .flat_map(|strip| &strip.window_groups)
-                .flat_map(|group| &group.tabs)
-                .map(|tab| (tab.id, tab.title.clone()))
-                .collect()
+            desk.tabs().map(|tab| (tab.id, tab.title.clone())).collect()
         };
         assert_eq!(windows(&rebuilt), windows(&tree));
 

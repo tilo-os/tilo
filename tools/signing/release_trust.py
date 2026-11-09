@@ -57,12 +57,13 @@ PURPOSES = ('os-images', 'extension-manifests')
 OPERATIONAL_KEYS = {'os-images': KEYS / 'cosign.pub', 'extension-manifests': KEYS / 'extensions.pub'}
 
 # Repositories installed systems pull and verify: bootc updates (the board
-# images live in the forge's own registry) and the legacy VM guest
-# (crates/runtime/legacy-vm).
+# images live in the forge's own registry), the legacy VM guest and the hosted
+# workspace VMs' guest image (crates/runtime/legacy-vm).
 SIGNED_REPOSITORIES = {
     'registry.tilo.so/tilo/tilo': 'os-images',
     'code.tilo.so/tilo/tilo': 'os-images',
     'registry.tilo.so/tilo/legacy-guest': 'os-images',
+    'registry.tilo.so/tilo/hosted-guest': 'os-images',
 }
 # Development and CI images Tilo publishes unsigned. Only a development
 # image's own policy admits one; the default would refuse them too, these

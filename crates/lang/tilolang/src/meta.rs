@@ -340,6 +340,15 @@ pub struct TypeMeta {
     /// which the system keeps in step with the service (`crate::origin`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub origin: Option<String>,
+    /// `(title: subject)`: the field a record of the type is named by, as the field's name. A
+    /// type that says none is named by its first text field.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
+    /// `(untitled: "Untitled")`: what one of its records is called while its title is empty,
+    /// as the app wrote it. Surfaces that name a record fall back to it, and the control that
+    /// edits the record's title shows it while the title holds nothing.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub untitled: Option<String>,
 }
 
 /// What search, a list's filters and agents offer of a type (search.md, "What a type declares"):
@@ -570,7 +579,7 @@ pub struct ProposalMeta {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[allow(
     clippy::struct_excessive_bools,
-    reason = "each flag is one part of what a surface offers and is read on its own: whether the action is a scenario's, whether it is frequent, and the two conditions its subject and its place decide"
+    reason = "each flag is one part of what a surface offers and is read on its own: whether the action is a scenario's, and the two conditions its subject and its place decide"
 )]
 pub struct ActionMeta {
     pub id: String,
@@ -622,10 +631,6 @@ pub struct ActionMeta {
     /// declared them.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub group: Option<String>,
-    /// `frequent: true`: a command the person reaches for on most things of this type, which a
-    /// surface showing the resource's actions draws directly rather than behind the rest.
-    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-    pub frequent: bool,
     /// `uses web, random, time`: the effects the action's body reads, each of which its
     /// invocation records and a replay answers from the record ([`crate::effects::Effect`]).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]

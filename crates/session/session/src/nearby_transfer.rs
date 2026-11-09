@@ -2358,6 +2358,7 @@ mod transfers_between_devices {
             issued_at_ns: tilo_clock::unix_now_ns(),
             expires_at_ns: None,
             signature: [0; 64],
+            issuer: None,
         };
         sign_device_cert(&mut cert, person).expect("the person signs their own device");
         let client = Client::start(

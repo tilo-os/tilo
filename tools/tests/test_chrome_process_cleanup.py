@@ -7,11 +7,18 @@ import shutil
 import signal
 import subprocess
 import tempfile
+import time
 import unittest
 from hang import HANG_BOUND
 
 
 REPO = Path(__file__).resolve().parents[2]
+
+# How long the supervisor gets to stop a browser whose test process was killed
+# and remove its profile: it asks for TERM, then KILLs, then reaps every owned
+# writer. Only a regression makes this wait long; HANG_BOUND stays the guard
+# for waits on a host under load.
+ORPHAN_BOUND = min(HANG_BOUND, 10)
 
 BROWSER = r'''#!/usr/bin/env python3
 import json, os, pathlib, signal, sys, time
@@ -77,6 +84,14 @@ class FixtureSocket extends EventTarget {
 globalThis.WebSocket = FixtureSocket;
 const {launch} = await import(pathToFileURL(process.env.FIXTURE_HELPER));
 const roots = JSON.parse(process.env.FIXTURE_ROOTS);
+if (process.env.FIXTURE_MODE === 'wait') {
+  // A test that has launched its browser and then hangs: what a killed run
+  // looks like from the browser's side.
+  process.env.CHROME = roots[0] + '/fake-chrome';
+  await launch();
+  writeFileSync(process.env.FIXTURE_READY, 'ready');
+  setInterval(() => {}, 1000);
+} else {
 const browsers = [];
 for (const root of roots) {
   process.env.CHROME = root + '/fake-chrome';
@@ -108,6 +123,7 @@ if (browsers.length > 1) {
 }
 console.log(JSON.stringify({first, independent, closeError}));
 process.exit(0);
+}
 '''
 
 
@@ -121,6 +137,25 @@ class ChromeProcessCleanup(unittest.TestCase):
         executable = root / 'fake-chrome'
         executable.write_text(BROWSER)
         executable.chmod(0o755)
+
+    def wait_until(self, condition, message, bound):
+        deadline = time.monotonic() + bound
+        while not condition():
+            self.assertLess(time.monotonic(), deadline, message)
+            time.sleep(.02)
+
+    @staticmethod
+    def identity_running(record):
+        """Whether the fixture process `record` names is still there: its pid
+        alone says nothing once another process can have reused it."""
+        if not record.exists():
+            return False
+        identity = json.loads(record.read_text())
+        try:
+            fields = Path(f'/proc/{identity["pid"]}/stat').read_text().rsplit(')', 1)[1].split()
+        except (FileNotFoundError, ProcessLookupError):
+            return False
+        return fields[19] == identity['birth'] and fields[0] != 'Z'
 
     @staticmethod
     def stop_owned_fixture(root):
@@ -229,6 +264,68 @@ class ChromeProcessCleanup(unittest.TestCase):
         self.assertTrue(result['first']['writerClosed'], result)
         self.assertFalse(result['first']['earlyRemoval'], result)
         self.assertTrue(result['first']['profileExists'], result)
+
+    def test_killed_test_process_takes_its_browser_and_profile(self):
+        with tempfile.TemporaryDirectory(prefix='tilo-chrome-orphan-') as temporary:
+            root = Path(temporary) / 'fixture'
+            self.fixture(root)
+            # A browser which keeps running until it is asked to stop: what a
+            # killed test leaves rendering, at full tilt, for ever.
+            (root / 'stall-close').touch()
+            ready = root / 'ready'
+            script = root / 'client.mjs'
+            script.write_text(CLIENT)
+            environment = dict(os.environ, FIXTURE_MODE='wait', FIXTURE_READY=str(ready),
+                               FIXTURE_HELPER=str(REPO / 'tools/web/chrome.mjs'),
+                               FIXTURE_ROOTS=json.dumps([str(root)]))
+            client = subprocess.Popen(['node', str(script)], cwd=REPO, env=environment,
+                                      stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True)
+            try:
+                self.wait_until(ready.exists, 'the fixture browser did not start', HANG_BOUND)
+                profile = Path((root / 'profile').read_text())
+                self.assertTrue(self.identity_running(root / 'root-process.json'), profile)
+                client.send_signal(signal.SIGTERM)  # the recorded pid, and nothing else
+                self.wait_until(lambda: not self.identity_running(root / 'root-process.json')
+                                and not self.identity_running(root / 'writer-process.json')
+                                and not profile.exists(),
+                                'the killed run left its browser or its profile behind', ORPHAN_BOUND)
+            finally:
+                if client.poll() is None:
+                    client.kill()
+                client.wait()
+                client.stderr.close()
+                self.stop_owned_fixture(root)
+
+    def test_launch_removes_profiles_whose_browser_is_gone(self):
+        with tempfile.TemporaryDirectory(prefix='tilo-chrome-sweep-') as temporary:
+            home = Path(temporary)
+            stale = home / 'tilo-chrome-stale'
+            live = home / 'tilo-chrome-live'
+            for directory in (stale, live):
+                (directory / 'Default').mkdir(parents=True)
+            gone = subprocess.Popen(['true'])
+            gone.wait()
+            host = os.uname().nodename
+            (stale / 'SingletonLock').symlink_to(f'{host}-{gone.pid}')
+            (live / 'SingletonLock').symlink_to(f'{host}-{os.getpid()}')
+            root = home / 'fixture'
+            self.fixture(root)
+            script = home / 'client.mjs'
+            script.write_text(CLIENT)
+            # chrome.mjs keeps its throwaway profiles where the host has memory
+            # for them, and sweeps every one of those places.
+            environment = dict(os.environ, CHROME=str(root / 'fake-chrome'), XDG_RUNTIME_DIR=str(home),
+                               FIXTURE_HELPER=str(REPO / 'tools/web/chrome.mjs'),
+                               FIXTURE_ROOTS=json.dumps([str(root)]))
+            try:
+                process = subprocess.run(['node', str(script)], cwd=REPO, env=environment,
+                                         capture_output=True, text=True, timeout=HANG_BOUND)
+                self.assertEqual(process.returncode, 0, process.stdout + process.stderr)
+                self.assertFalse(stale.exists(), 'a profile whose browser is gone must not stay')
+                self.assertTrue(live.exists(), 'a profile whose browser is running must stay')
+            finally:
+                self.stop_owned_fixture(root)
+                shutil.rmtree(live, ignore_errors=True)
 
 
 if __name__ == '__main__':

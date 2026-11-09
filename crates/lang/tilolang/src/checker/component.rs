@@ -39,14 +39,13 @@ fn doc_of(doc: &str) -> String {
 
 /// The names of a description's arguments, for messages.
 fn arguments(d: &Description) -> String {
-    let mut names: Vec<String> = d.props.iter().map(|p| p.name.clone()).collect();
-    names.extend(d.bindings.iter().map(|b| b.name.clone()));
-    names.extend(d.state.iter().map(|s| s.name.clone()));
-    if names.is_empty() {
-        "none".into()
-    } else {
-        names.join(", ")
-    }
+    listed(
+        d.props
+            .iter()
+            .map(|p| p.name.clone())
+            .chain(d.bindings.iter().map(|b| b.name.clone()))
+            .chain(d.state.iter().map(|s| s.name.clone())),
+    )
 }
 
 fn listed(names: impl Iterator<Item = String>) -> String {
@@ -199,7 +198,7 @@ impl Checker<'_> {
                 placement = Some(&a.value);
                 continue;
             }
-            self.component_arg(n, d, &name, &a.value);
+            self.component_arg(n, d, &name, &a.value, &given);
         }
         if let Some(value) = placement {
             self.placement_prop(n, d, value, args);
@@ -485,14 +484,16 @@ impl Checker<'_> {
         )
     }
 
-    /// One argument of a component call: a prop, a binding, a piece of state, or a sizing
-    /// argument of the node.
+    /// One argument of a component call: a prop, a value the control shows given to it, a piece
+    /// of state, or a sizing argument of the node. The place a control edits is the `bind:` of
+    /// the call, never an argument of its own name.
     fn component_arg(
         &mut self,
         n: LocalId,
         d: &'static Description,
         name: &str,
         value: &ast::Expr,
+        given: &HashSet<String>,
     ) {
         if let Some(msg) = super::ui::removed_arg(&d.name, name) {
             self.err("E096", value.span, msg);
@@ -512,7 +513,7 @@ impl Checker<'_> {
                     ),
                 );
             } else {
-                self.binding_prop(n, d, value, &d.bindings);
+                self.binding_prop(n, d, value, given);
             }
             return;
         }
@@ -522,16 +523,26 @@ impl Checker<'_> {
                 self.mark_shown(value);
             }
             self.typed_prop(n, d, name, &p.ty, &p.doc, value, p.identity);
-        } else if let Some(b) = d.binding(name)
-            && d.event("change").is_some()
-            && !self.is_place(value)
-        {
+        } else if let Some(b) = d.binding(name) {
             // A value the view does not hold (a device's volume, read from its reading) is
             // given, not bound: the control shows it, and the person's change goes to the
-            // view's `on change(v)`, which asks whoever holds the value to change it.
-            self.typed_prop(n, d, name, &b.ty, &b.doc, value, false);
-        } else if let Some(b) = d.binding(name) {
-            self.binding_prop(n, d, value, std::slice::from_ref(b));
+            // view's `on change(v)`, which asks whoever holds the value to change it. A place
+            // is never an argument: a control edits it through `bind:`, the one spelling.
+            if d.event("change").is_some() && !self.is_place(value) {
+                self.typed_prop(n, d, name, &b.ty, &b.doc, value, false);
+            } else {
+                self.err(
+                    "E063",
+                    value.span,
+                    format!(
+                        "{} has no argument `{name}`: a control edits the place it binds, so \
+                         write `bind: {}`",
+                        shown(d),
+                        crate::print::expr_source(value)
+                    ),
+                );
+                let _ = self.expr(value, None);
+            }
         } else if let Some(s) = d.state(name) {
             self.typed_prop(n, d, name, &s.ty, &s.doc, value, false);
         } else if prims::NODE_ARGS.contains(&name) {
@@ -557,23 +568,29 @@ impl Checker<'_> {
         }
     }
 
-    /// A binding of the component bound to what `value` names: checked against the binding's
-    /// own type, and the node carries the binding's name, which is the name the host merges
-    /// under. Of `bindings`, the one whose type the bound place has is the one bound.
+    /// `bind:` of the component, bound to what `value` names: checked against its bindings' own
+    /// types, and the node carries the name of the one the bound place fits, which the host
+    /// merges under.
     pub(super) fn binding_prop(
         &mut self,
         n: LocalId,
         d: &'static Description,
         value: &ast::Expr,
-        bindings: &[tilo_ui_graph::component::Binding],
+        given: &HashSet<String>,
     ) {
+        let bindings = &d.bindings;
         let node = Ex::local(n, Ty::View);
         let want: Vec<Ty> = bindings.iter().flat_map(|b| binding_types(&b.ty)).collect();
         let enum_case = bindings.iter().any(|b| b.ty == Type::Enum);
         // A control that declares `title` draws the resource's title when it edits it, as a
-        // document's large title is drawn.
+        // document's large title is drawn; one that shows a placeholder takes it from the type
+        // when the call gives none.
         let titled = d.prop("title").is_some_and(|title| title.ty == Type::Bool);
-        let Some(ty) = self.bind_typed(&node, value, &want, enum_case, titled) else {
+        let placeholder = !given.contains("placeholder")
+            && d.prop("placeholder").is_some_and(|p| {
+                p.ty == Type::Text || matches!(&p.ty, Type::Option(inner) if **inner == Type::Text)
+            });
+        let Some(ty) = self.bind_typed(&node, value, &want, enum_case, titled, placeholder) else {
             return;
         };
         let Some(b) = bindings.iter().find(|b| binds(&b.ty, &ty)) else {

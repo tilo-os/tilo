@@ -48,7 +48,7 @@ pub enum Source {
     /// Another device, the person's own or a collaborator's, by the name the
     /// person knows it by ("Laptop").
     Peer(Arc<str>),
-    /// A host that serves the data ("eu1.tilo.coffee").
+    /// A host that serves the data ("eu1.tilo.sh").
     Host(Arc<str>),
 }
 
@@ -754,7 +754,7 @@ mod tests {
     #[test]
     fn a_remote_read_shows_ground_then_a_skeleton_then_its_source() {
         let t0 = crate::time::now();
-        let clock = ArrivalClock::with_budget(t0, Source::host("eu1.tilo.coffee"), BUDGET);
+        let clock = ArrivalClock::with_budget(t0, Source::host("eu1.tilo.sh"), BUDGET);
         assert!(!clock.holds_frame(t0), "a remote read never holds a frame");
         assert_eq!(clock.step(t0), Step::Ground);
         assert_eq!(clock.step(at(t0, 149)), Step::Ground);

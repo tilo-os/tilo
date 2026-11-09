@@ -74,7 +74,7 @@ pub enum HistoryAsk {
     Redo,
     /// Take back the step the change (a change id of the record) is part of.
     UndoStep(String),
-    /// Take back every step of the task run (its group).
+    /// Take back every step of the run (its group).
     UndoRun(String),
 }
 
@@ -2680,36 +2680,12 @@ pub fn sentence(name: &str) -> String {
     })
 }
 
-/// The title of a resource: its first text field; else, for a package's root, the package's
-/// title; else its type's name.
+/// The title of a resource, as every surface that names it shows it: its first text field's
+/// first line; else, for a package's root, the package's title; else what its type declares for
+/// it while untitled; else its type's name.
 #[must_use]
 pub fn title_of(host: &Host, resource: &ResourceRef) -> String {
-    let Some((meta, ty)) = type_of(host, &resource.ty) else {
-        return String::new();
-    };
-    let titled = ty
-        .fields
-        .iter()
-        .find(|field| matches!(field.ty.trim(), "Text" | "RichText" | "std.RichText"));
-    if let Some(field) = titled
-        && let Ok(value) = host.runtime().read(resource, &field.id)
-    {
-        let text = match value {
-            Value::Text(text) => text,
-            Value::Opt(Some(held)) => match *held {
-                Value::Text(text) => text,
-                _ => String::new(),
-            },
-            _ => String::new(),
-        };
-        if !text.trim().is_empty() {
-            return text;
-        }
-    }
-    if resource.item.is_none() && meta.roots.contains(&ty.id) {
-        return meta.title;
-    }
-    sentence(&ty.name)
+    host.runtime().title(resource).unwrap_or_default()
 }
 
 /// The cases of the enum `id`: each case's name, what a control shows for it, and its icon's

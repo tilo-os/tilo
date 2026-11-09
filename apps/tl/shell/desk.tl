@@ -97,7 +97,7 @@ fn desk_lists(traditional: Bool, roomy: Bool) -> Bool {
 /// style's chrome and `body` the places: every style that shows the arrangement beside the
 /// desk's bar and dock draws through this, so no style repeats the chrome.
 template view desk_style(a: Arrangement, traditional: Bool, body: View) {
-    desk_around(root Desk, .some(a), traditional, body)
+    desk_around(root Desk, a, traditional, body)
 }
 
 /// Strips

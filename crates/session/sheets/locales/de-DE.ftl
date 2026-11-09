@@ -177,7 +177,7 @@ directory-search = Öffentliche Arbeitsbereiche suchen oder Link oder Code einf�
 directory-link-or-code = Mit Link oder Code beitreten
 directory-loading = Öffentliche Arbeitsbereiche werden gesucht…
 directory-empty-title = Noch keine öffentlichen Arbeitsbereiche
-directory-empty = Gib eine Website wie tilo.coffee ein und drücke die Eingabetaste, um ihre Arbeitsbereiche zu sehen.
+directory-empty = Gib eine Website wie tilo.sh ein und drücke die Eingabetaste, um ihre Arbeitsbereiche zu sehen.
 directory-no-match-title = Nichts passt zu „{ $query }“
 directory-no-match = Drücke die Eingabetaste, um es als Website nachzuschlagen.
 directory-failed-title = Arbeitsbereiche konnten nicht gelesen werden
@@ -578,6 +578,7 @@ workspace-delete-lens = Arbeitsbereich löschen
 # Inviting people: the link into the workspace in front, and the links that
 # still work.
 invite-title = Personen einladen
+invite-title-workspace = Personen in „{ $workspace }“ einladen
 invite-description = Erstelle einen Link, der jemanden in diesen Arbeitsbereich bringt. Jeder Link gilt eine Stunde, und du kannst ihn hier zurücknehmen.
 invite-close = Schließen
 invite-refusal = Nur wer hier eine Rolle hat, die Einladen erlaubt, kann einen Link erstellen.

@@ -15,6 +15,7 @@
 //! | Piece | What it settles |
 //! |---|---|
 //! | [`day`] | Day boundaries, the divider that marks one, the local clock a line carries |
+//! | [`band`] | The band both of a conversation's dividers stand in: a centred caption, ruled out to both sides |
 //! | [`delivery`] | One delivery-state vocabulary — the same words, glyphs and tones in both apps |
 //! | [`attachment`] | The ladder an attachment opens through: preview → full size → save → open the saved copy |
 //! | [`draft`] | A draft kept per conversation, and the line that shows it wherever the conversation is listed |
@@ -27,6 +28,7 @@
 //! private thread still shows one person and their transport.
 
 pub mod attachment;
+pub mod band;
 pub mod composer;
 pub mod day;
 pub mod delivery;

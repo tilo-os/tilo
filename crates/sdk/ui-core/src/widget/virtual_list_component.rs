@@ -61,9 +61,9 @@ pub struct ListItemProps {
     /// over the first message of each day.
     pub time: Option<Moment>,
     /// What the item offers on its context menu (a right-click, the Menu key or a long press
-    /// opens it, and selects the row): each of its allowed actions, after the menu the row's
-    /// view placed (`attached`) and without those that menu placed already, so every action
-    /// stays reachable.
+    /// opens it, and selects the row unless the row opens where it stands): each of its
+    /// allowed actions, after the menu the row's view placed (`attached`) and without those
+    /// that menu placed already, so every action stays reachable.
     #[component(slot)]
     pub menu: Vec<MenuPart>,
     /// What swiping the row from its trailing edge does, unless its view says
@@ -109,10 +109,12 @@ pub struct ListItemProps {
     /// The row: a `ui.ListRow`, or any view.
     #[component(slot(default))]
     pub row: ItemRow,
-    /// The item's document, shown under the row while the row stands open into it, one lead
-    /// in under the row's text: a row with a document opens where it stands in the list when
-    /// it is chosen, and the list's own motion grows the row to hold it. Without one, choosing
-    /// the row opens the item elsewhere (`ui.VirtualList`'s `activate`).
+    /// The item's document, shown in the row's place while the row stands open into it: a row
+    /// with a document opens where it stands in the list when it is chosen, and the list's own
+    /// motion grows the row to hold it. The document opens with the item's own leading control
+    /// and title, in the row's column — the row becomes the item, its title written once — and
+    /// what the item holds follows under them. Without a document, choosing the row opens the
+    /// item elsewhere (`ui.VirtualList`'s `activate`).
     #[component(slot)]
     pub detail: ItemRow,
 }
@@ -179,14 +181,21 @@ pub struct VirtualListProps {
     /// The list is a column's whole body: its rows' text starts where the column's header
     /// starts its title.
     pub in_column: bool,
-    /// A conversation: each row stands in the page column, the list opens at its newest row
-    /// and follows it.
-    pub transcript: bool,
-    /// Each row stands in the page column, at the readable measure every page sets its blocks
-    /// on, a section's gap under the row before it. A list read from its first row to its last
-    /// (a conversation's messages, a document's replies) keeps the measure without following
-    /// its end as a transcript does.
+    /// The window is too narrow to hold an item under its row: a row that carries an item opens
+    /// it in front of the list, where the window's back leads back to the rows, and a row the
+    /// host held open closes as the window narrows.
+    pub narrow: bool,
+    /// The list is read to its end: it opens at its last row and stays there as rows arrive and
+    /// settle, unless the person scrolled away ([`VirtualList::following_end`]).
+    pub follow_end: bool,
+    /// Each row stands in the page column: a section's gap under the row before it, each run one
+    /// author wrote under that author's name and the time ([`ListItemProps::author`],
+    /// [`ListItemProps::time`]), and a press that gives a row the keyboard, choosing none.
     pub page_column: bool,
+    /// The page column's rows keep the readable measure every page sets its blocks on
+    /// ([`MEASURE_REM`]), centred in the width the list is given. Without it they fill that
+    /// width, as a conversation's messages do.
+    pub at_measure: bool,
     /// The title over the list's tail group: the rows whose item says it is one of those done
     /// with ([`ListItemProps::tail`]) stand after every group, under it, closed until the
     /// person opens them. `None` leaves those rows among the others.
@@ -204,12 +213,12 @@ pub struct VirtualListProps {
     /// away the row it lands on, one with shift takes the range from the last row chosen, and
     /// Escape puts the selection away. Without it a click chooses the one row the window shows.
     pub multi_select: bool,
-    /// The item a conversation's reader had not seen when they opened it (`first_unseen(c)`):
-    /// the "New messages" divider stands over the row that shows it, and while that is above
-    /// the view a pill at the foot offers to take the reader back to it. `None` draws neither.
-    /// The list works out the row as it builds, so the same list keeps its rows and only the
-    /// two the divider moved between build again.
-    pub unread: Option<ResourceId>,
+    /// The item where the person looking has seen nothing yet (`first_unseen(c)`): the toolkit's
+    /// [`UnreadDivider`](crate::widget::conversation::UnreadDivider) stands over the row that
+    /// shows it, and while that is above the view a pill at the foot offers the way back to it
+    /// ([`VirtualList::following_end`]). `None` draws neither. The list works out the row as it
+    /// builds, so a list keeps its rows and only the two the divider moved between build again.
+    pub unseen_from: Option<ResourceId>,
     /// The items, in order.
     #[component(slot(default))]
     pub rows: DescribedRows,
@@ -626,6 +635,17 @@ impl ListModel for DescribedRows {
     fn key_presenting(&self, id: &str) -> Option<String> {
         DescribedRows::key_presenting(self, id)
     }
+
+    fn item_presented(&self, key: &String) -> Option<String> {
+        if let Held::Given(items) = &self.held
+            && let Some(item) = items.iter().find(|item| item.key == *key)
+        {
+            return item.item.as_ref().map(|shown| shown.0.clone());
+        }
+        // A row of a loop over a collection is keyed by the loop and the item's id
+        // (`<loop>/<id>`): the id is what the app names the row's item by.
+        key.split_once('/').map(|(_, item)| item.to_owned())
+    }
 }
 
 /// The list a described [`VirtualList`] is: over its items, under the one context menu its
@@ -637,6 +657,11 @@ pub struct DescribedList {
     /// The items the list's events read, as its model holds them now: a list given its items
     /// again answers with the items it has, not the ones it was built with.
     reading: Rc<RefCell<DescribedRows>>,
+    /// The item where the person looking has seen nothing yet, as the rows build: the props
+    /// say it after the list is built as well as with it, and the rows it moves between build
+    /// again, so a row reads it as it builds rather than as the list was made. `None` for a
+    /// list whose rows draw no divider.
+    unseen: Option<Rc<RefCell<Option<String>>>>,
 }
 
 /// The props of a described list that decide the widget, its items aside.
@@ -645,8 +670,11 @@ struct Face {
     name: Option<String>,
     selection_follows_focus: bool,
     in_column: bool,
-    transcript: bool,
+    /// The window is too narrow to hold an item under its row.
+    narrow: bool,
+    follow_end: bool,
     page_column: bool,
+    at_measure: bool,
     /// The rows stand in a tree: each under the row of the item it names.
     tree: bool,
     /// The rows the host renders as they are shown, by identity: they then change through
@@ -656,6 +684,25 @@ struct Face {
     removed: Vec<String>,
     /// The heading over the rows whose item names no group.
     ungrouped: Option<String>,
+}
+
+impl Face {
+    /// What the props say of the list, its items aside.
+    fn of(props: &VirtualListProps) -> Self {
+        Self {
+            name: props.name.clone(),
+            selection_follows_focus: props.selection_follows_focus,
+            in_column: props.in_column,
+            narrow: props.narrow,
+            follow_end: props.follow_end,
+            page_column: props.page_column,
+            at_measure: props.at_measure,
+            tree: props.tree,
+            rendered: rendered(&props.rows),
+            removed: props.removed.keys(),
+            ungrouped: props.ungrouped_title.clone(),
+        }
+    }
 }
 
 /// The identity of the rows a host renders, when it renders them.
@@ -953,20 +1000,21 @@ fn bare_row(
             }
             ItemRow::None => Box::new(ListRow::new(key.to_owned(), "")),
         };
-        // A row standing open into its item: the item's document under the row, one lead in
-        // under the text the row's leading control leads to, so the row becomes the item where
-        // it stands in the list rather than opening a page of its own.
+        // A row standing open into its item: the item's document takes the row's place in the
+        // very column the row stands in, so the leading control and the title it opens with are
+        // the row's own, written once, and what the item holds follows under them. A view takes
+        // the step a tree gives a row's view, a list row the one it gives a row's content.
         let row = match (expanded, detail) {
-            (true, ItemRow::View(document)) => {
-                let mut open = Stack::stack().fill_width();
-                open.set_lead(1);
-                Box::new(open.push(row).push(document)) as Element
-            }
+            (true, ItemRow::View(document)) => match tree {
+                Some(marks) => indent_view(document, marks.depth(&key.to_owned()), None),
+                None => document,
+            },
             (true, ItemRow::Row(props)) => {
-                let document = Box::new(ListRow::from_props(key, *props)) as Element;
-                let mut open = Stack::stack().fill_width();
-                open.set_lead(1);
-                Box::new(open.push(row).push(document)) as Element
+                let mut document = ListRow::from_props(key, *props);
+                if let Some(marks) = tree {
+                    document = document.depth(marks.depth(&key.to_owned()));
+                }
+                Box::new(document) as Element
             }
             (true, ItemRow::None) | (false, _) => row,
         };
@@ -1057,12 +1105,8 @@ fn message_of(
     });
     let said = rows.with_item(key, |item| (item.author, item.time));
     let Some((Some(author), at)) = said else {
-        let row = page_row(
-            row_of(rows, key, feel, None, RowBuild::default()),
-            RUN_GAP,
-            measure,
-        );
-        return if first_unread { with_unread(row) } else { row };
+        let row = row_of(rows, key, feel, None, RowBuild::default());
+        return page_row(under_unread(row, first_unread), RUN_GAP, measure);
     };
     let before = rows
         .index_of(&key.to_owned())
@@ -1088,11 +1132,8 @@ fn message_of(
                 }
         });
     let Some((said, swipe, attached)) = bare_row(rows, key, feel, None, RowBuild::default()) else {
-        return page_row(
-            row_of(rows, key, feel, None, RowBuild::default()),
-            RUN_GAP,
-            measure,
-        );
+        let row = row_of(rows, key, feel, None, RowBuild::default());
+        return page_row(under_unread(row, first_unread), RUN_GAP, measure);
     };
     let avatar = Avatar::person(author.name.clone(), author.identity.clone());
     let message = Row::row().fill_width().align(Align::Start);
@@ -1131,34 +1172,33 @@ fn message_of(
         attached,
     );
     let gap = if continues { Rhythm::Tight } else { RUN_GAP };
-    let row = match day.filter(|_| new_day) {
-        Some(day) => page_row(
-            Box::new(
-                Stack::stack()
-                    .gap(RUN_GAP)
-                    .push(Box::new(DayDivider::new(clock.day_label(day))))
-                    .push(message),
-            ),
-            gap,
-            measure,
-        ),
-        None => page_row(message, gap, measure),
+    let shown = match day.filter(|_| new_day) {
+        Some(day) => Box::new(
+            Stack::stack()
+                .gap(RUN_GAP)
+                .push(Box::new(DayDivider::new(clock.day_label(day))))
+                .push(message),
+        ) as Element,
+        None => message,
     };
-    if first_unread { with_unread(row) } else { row }
+    page_row(under_unread(shown, first_unread), gap, measure)
 }
 
-/// A transcript's row for the first message the reader had not read, with the "New messages"
-/// divider over it: the divider is the toolkit's
-/// ([`crate::widget::conversation::UnreadDivider`]), placed from what the app says is unread, so
-/// every conversation draws the same one.
-fn with_unread(row: Element) -> Element {
+/// `content` under the "New messages" divider, for the row of the first message the reader had
+/// not read: the divider is the toolkit's ([`crate::widget::conversation::UnreadDivider`]),
+/// placed from what the app says is unread, so every conversation draws the same one.
+///
+/// It stands in the row's own column, one gap above what the row shows, so the row keeps the
+/// column it has without it: the divider adds its band and nothing else.
+fn under_unread(content: Element, first_unread: bool) -> Element {
+    if !first_unread {
+        return content;
+    }
     Box::new(
-        Page::full()
-            .row_after(RUN_GAP)
-            .push_slot(Slot::new(Box::new(
-                crate::widget::conversation::UnreadDivider::new(),
-            )))
-            .push_slot(Slot::new(row)),
+        Stack::stack()
+            .gap(RUN_GAP)
+            .push(Box::new(crate::widget::conversation::UnreadDivider::new()))
+            .push(content),
     )
 }
 
@@ -1177,7 +1217,8 @@ fn page_row(content: Element, gap: Rhythm, measure: Option<Length>) -> Element {
 }
 
 /// The menu of the row under `at` (its focused row when the keyboard opened it): what its
-/// item offers. Opening it selects the row.
+/// item offers. Opening it selects the row, unless the row opens where it stands: that row
+/// shows its item under itself, and a menu over it is not the window opening it elsewhere.
 fn row_menu(list: &dyn Widget, at: Option<Point>, select: &Event) -> Vec<MenuEntry> {
     let Some(list) = list
         .as_any()
@@ -1204,7 +1245,11 @@ fn row_menu(list: &dyn Widget, at: Option<Point>, select: &Event) -> Vec<MenuEnt
     if entries.is_empty() {
         return Vec::new();
     }
-    if let Some(id) = shown {
+    let opens_here = list
+        .model()
+        .index_of(&key)
+        .is_some_and(|index| list.opens_here(index));
+    if let (Some(id), false) = (shown, opens_here) {
         select.fire(Some(Value::Resource(id.0)));
     }
     entries
@@ -1214,17 +1259,20 @@ impl Described for DescribedList {
     type Props = VirtualListProps;
 
     fn from_props(key: &str, props: VirtualListProps) -> Self {
+        let face = Face::of(&props);
         let VirtualListProps {
             name,
             selection_follows_focus,
             in_column,
-            transcript,
+            follow_end,
+            narrow,
             page_column,
+            at_measure,
             tail_title,
             tree,
             ungrouped_title,
             multi_select,
-            unread,
+            unseen_from,
             mut rows,
             removed,
             selection,
@@ -1238,43 +1286,31 @@ impl Described for DescribedList {
             opened: opened_changed,
             closed: closed_changed,
         } = props;
-        let face = Face {
-            name: name.clone(),
-            selection_follows_focus,
-            in_column,
-            transcript,
-            page_column,
-            tree,
-            rendered: rendered(&rows),
-            removed: removed.keys(),
-            ungrouped: ungrouped_title.clone(),
-        };
         rows.removed = removed.0;
         rows.ungrouped = ungrouped_title;
         let feel = motion.unwrap_or(crate::motion::Feel::Standard);
         // The items the list's events read, kept as the list holds them.
         let reading = Rc::new(RefCell::new(rows.reader()));
-        if transcript || page_column {
-            // A transcript's divider stands over the row that shows the item: a row says which
-            // item it shows, so the list finds it as the rows arrive.
-            let marked = if transcript {
-                unread.as_ref().map(|item| item.0.clone())
-            } else {
-                None
-            };
-            let divider = marked.clone();
-            // A page column's rows keep the width a page's blocks are read at; a transcript's
-            // fill the column they are in.
-            let measure = page_column.then_some(Length::Rem(MEASURE_REM));
+        if page_column {
+            // The divider of the unseen part stands over the row that shows the item: a row says
+            // which item it shows, so the list finds it as the rows arrive.
+            let unseen = Rc::new(RefCell::new(unseen_from.map(|item| item.0)));
+            let marked = unseen.borrow().clone();
+            let divider = Rc::clone(&unseen);
+            let measure = at_measure.then_some(Length::Rem(MEASURE_REM));
             let mut list = VirtualList::new(rows, MESSAGE_ESTIMATE, move |rows, _, key| {
-                message_of(rows, key, divider.as_deref(), feel, measure)
+                let unread = divider.borrow().clone();
+                message_of(rows, key, unread.as_deref(), feel, measure)
             })
             .flush()
             .with_edges(TranscriptEdges::new(RUN_GAP))
             .filling()
             .with_id(key)
-            .with_feel(feel);
-            if transcript {
+            .with_feel(feel)
+            // A message is read, not chosen: a tap on one gives it the keyboard and leaves
+            // nothing tinted behind it.
+            .reading();
+            if follow_end {
                 list = list.following_end();
             }
             let list = list.unread_from(marked);
@@ -1286,6 +1322,7 @@ impl Described for DescribedList {
                 body: ListBody::Menus(Box::new(area)),
                 face,
                 reading,
+                unseen: Some(unseen),
             };
         }
         // What the rows of a tree are: the list fills it as it mounts them, and reads it as it
@@ -1308,13 +1345,21 @@ impl Described for DescribedList {
         } else {
             list.fitting_rows()
         };
+        // Whatever its rows, a list read to its end opens at the last one and stays there.
+        if follow_end {
+            list = list.following_end();
+        }
+        list = list.in_place(!narrow);
         if selection_follows_focus {
             list = list.selection_follows_focus();
         }
         if multi_select {
             list = list.multi_select(true);
         }
-        list = list.with_id(key).with_semantic_key(Clone::clone);
+        list = list
+            .with_id(key)
+            .with_semantic_key(Clone::clone)
+            .unread_from(unseen_from.map(|item| item.0));
         if let Some(name) = name {
             list = list.with_accessible_name(name);
         }
@@ -1389,6 +1434,7 @@ impl Described for DescribedList {
             body: ListBody::Menus(Box::new(area)),
             face,
             reading,
+            unseen: None,
         }
     }
 
@@ -1397,22 +1443,18 @@ impl Described for DescribedList {
     /// scroll, the row their keyboard holds and what they opened stay. Rows a host renders
     /// change through the host; anything that makes the list another list builds it again.
     fn set_props(&mut self, props: VirtualListProps) -> bool {
+        if Face::of(&props) != self.face {
+            return false;
+        }
         let VirtualListProps {
-            name,
             selection_follows_focus,
-            in_column,
-            transcript,
-            page_column,
             tail_title,
-            tree,
             ungrouped_title,
             multi_select,
-            unread,
+            unseen_from,
             mut rows,
             removed,
-            selection: _,
             chosen,
-            scroll: _,
             open,
             motion,
             select,
@@ -1420,26 +1462,16 @@ impl Described for DescribedList {
             selected: selected_changed,
             opened: opened_changed,
             closed: closed_changed,
+            ..
         } = props;
-        let face = Face {
-            name,
-            selection_follows_focus,
-            in_column,
-            transcript,
-            page_column,
-            tree,
-            rendered: rendered(&rows),
-            removed: removed.keys(),
-            ungrouped: ungrouped_title.clone(),
-        };
-        if face != self.face {
-            return false;
-        }
         let feel = motion.unwrap_or(crate::motion::Feel::Standard);
         rows.removed = removed.0;
         rows.ungrouped = ungrouped_title;
         let replaced = rendered(&rows).is_none();
-        let unread = unread.as_ref().map(|item| item.0.clone());
+        let unseen_from = unseen_from.as_ref().map(|item| item.0.clone());
+        if let Some(unseen) = &self.unseen {
+            (*unseen.borrow_mut()).clone_from(&unseen_from);
+        }
         // The items given again, as the list's events read them.
         let reading = rows.reader();
         let picked = picked_rows(chosen, &reading, self.chosen_rows());
@@ -1456,9 +1488,9 @@ impl Described for DescribedList {
             // the menus its rows open are the list's own and stay.
             list.update_model(move |model| *model = rows);
         }
-        // The unread row moved without the list's items changing: the list takes it, and the
+        // The unseen row moved without the list's items changing: the list takes it, and the
         // rows it left and arrived at build again.
-        list.set_unread(unread);
+        list.set_unread(unseen_from);
         // The item the host holds open: its row grows into its document where it stands, and
         // an item that left the list opens nothing.
         let standing = open
@@ -1573,6 +1605,15 @@ mod tests {
 
     /// Lay the list out in a column of `height`, as the window does.
     fn lay_out(list: &mut VirtualList<DescribedRows>, height: f32) {
+        lay_out_tree(list, height);
+    }
+
+    /// Lay the list out in a column of `height` and give back the tree it was laid out in, for
+    /// the events sent to it afterwards.
+    fn lay_out_tree(
+        list: &mut VirtualList<DescribedRows>,
+        height: f32,
+    ) -> (taffy::TaffyTree<()>, taffy::NodeId) {
         list.set_viewport_height(height);
         let doc = automerge::AutoCommit::new();
         Widget::sync(list, &doc, &automerge::ROOT);
@@ -1589,6 +1630,7 @@ mod tests {
             )
             .unwrap();
         Widget::apply_layout(list, &taffy, node, Point::ZERO);
+        (taffy, node)
     }
 
     /// The items of a list where each carries a document of its own: they open where they
@@ -1616,6 +1658,330 @@ mod tests {
         }
     }
 
+    /// The rows of a list whose items offer on their menu the one command their type offers:
+    /// each opens where it stands when `opens_here`, and elsewhere when not.
+    fn rows_offering(count: usize, opens_here: bool) -> DescribedRows {
+        let items = (0..count)
+            .map(|at| ListItemProps {
+                key: format!("row-{at}"),
+                item: Some(ResourceId(format!("task-{at}"))),
+                row: ItemRow::Row(Box::new(ListRowProps {
+                    title: format!("row {at}"),
+                    ..ListRowProps::default()
+                })),
+                detail: if opens_here {
+                    ItemRow::Row(Box::new(ListRowProps {
+                        title: format!("what row {at} is about"),
+                        ..ListRowProps::default()
+                    }))
+                } else {
+                    ItemRow::None
+                },
+                menu: vec![MenuPart::Item(MenuItemProps {
+                    label: "Complete".to_owned(),
+                    ..MenuItemProps::default()
+                })],
+                ..ListItemProps::default()
+            })
+            .collect();
+        DescribedRows {
+            held: Held::Given(Rc::new(items)),
+            ..DescribedRows::default()
+        }
+    }
+
+    /// Lay `list` out in a column of `height` and press `button` over the row `index`, as a
+    /// person does: the left button to tap the row, the right one to see what its item offers
+    /// there.
+    fn press_row(
+        list: &mut DescribedList,
+        index: usize,
+        button: crate::winit::event::MouseButton,
+        height: f32,
+    ) {
+        let (taffy, node) = {
+            let inner = list.list_mut().expect("the list stands");
+            lay_out_tree(inner, height)
+        };
+        let row = list
+            .list()
+            .and_then(|list| list.row_rect(&format!("row-{index}")))
+            .expect("the row is laid out");
+        let at = Point::new(20.0, row.center().y);
+        let pressed = crate::winit::event::ElementState::Pressed;
+        let mut events = vec![
+            crate::synthetic_input::cursor_moved(at.x, at.y),
+            crate::synthetic_input::mouse_input(pressed, button),
+        ];
+        if button == crate::winit::event::MouseButton::Left {
+            events.push(crate::synthetic_input::mouse_input(
+                crate::winit::event::ElementState::Released,
+                button,
+            ));
+        }
+        for event in &events {
+            crate::testing::Dispatch::new()
+                .layout(&taffy, node)
+                .send(list, event);
+        }
+    }
+
+    /// The messages of a transcript, two of one day and two of the next: each shows a line of
+    /// its own, under its author and the time it was said.
+    fn transcript_messages() -> DescribedRows {
+        let at = [
+            1_790_000_000_i64,
+            1_790_000_060,
+            1_790_090_000,
+            1_790_090_060,
+        ];
+        let items = at
+            .iter()
+            .enumerate()
+            .map(|(index, said)| ListItemProps {
+                key: format!("row-{index}"),
+                item: Some(ResourceId(format!("message-{index}"))),
+                author: Some(Person {
+                    identity: format!("person-{index}"),
+                    name: format!("Writer {index}"),
+                }),
+                time: Some(Moment(*said)),
+                row: ItemRow::Row(Box::new(ListRowProps {
+                    title: format!("message {index}"),
+                    ..ListRowProps::default()
+                })),
+                ..ListItemProps::default()
+            })
+            .collect();
+        DescribedRows {
+            held: Held::Given(Rc::new(items)),
+            ..DescribedRows::default()
+        }
+    }
+
+    /// What `list` lays out, as the inspection sees it: where each widget stands.
+    fn laid_out(list: DescribedList) -> crate::headless::InspectionNode {
+        let mut harness = crate::headless::FrameHarness::for_root(
+            crate::State::new(),
+            list,
+            (900, 600),
+            crate::theme::Theme::dark(),
+        );
+        harness.relayout();
+        harness.inspection().root
+    }
+
+    /// Where the first widget `widget` stands, in `node`.
+    fn rect_of_widget(node: &crate::headless::InspectionNode, widget: &str) -> Option<[f64; 4]> {
+        if node.widget == widget {
+            return Some(node.rect);
+        }
+        node.children
+            .iter()
+            .find_map(|child| rect_of_widget(child, widget))
+    }
+
+    /// Where the first widget `widget` whose words are `words` stands, in `node`.
+    fn rect_of(
+        node: &crate::headless::InspectionNode,
+        widget: &str,
+        words: &str,
+    ) -> Option<[f64; 4]> {
+        let speaks_it = node
+            .semantics
+            .as_ref()
+            .and_then(|semantics| semantics.name.as_deref())
+            == Some(words);
+        if node.widget == widget && speaks_it {
+            return Some(node.rect);
+        }
+        node.children
+            .iter()
+            .find_map(|child| rect_of(child, widget, words))
+    }
+
+    /// A message the reader has not read yet keeps the column every message stands in: the
+    /// "New messages" divider over it adds its band above the row and nothing else, and the two
+    /// dividers of a conversation rule the same column.
+    #[test]
+    fn a_row_under_the_unread_divider_keeps_its_column() {
+        let list = |unseen: Option<&str>| {
+            DescribedList::from_props(
+                "transcript",
+                VirtualListProps {
+                    page_column: true,
+                    unseen_from: unseen.map(|item| ResourceId(item.to_owned())),
+                    rows: transcript_messages(),
+                    ..VirtualListProps::default()
+                },
+            )
+        };
+        let plain = laid_out(list(None));
+        let marked = laid_out(list(Some("message-2")));
+        let message = |node: &crate::headless::InspectionNode, at: usize| {
+            rect_of(node, "ListRow", &format!("message {at}"))
+                .unwrap_or_else(|| panic!("the message {at} shows"))
+        };
+        // The row the divider stands over keeps the column and the size it has without it: the
+        // divider adds its band over the row and moves nothing else.
+        let unread = message(&marked, 2);
+        let alone = message(&plain, 2);
+        assert_eq!(
+            [unread[0], unread[2], unread[3]],
+            [alone[0], alone[2], alone[3]],
+            "the message under the divider has the box it has without it: {unread:?} against \
+             {alone:?}"
+        );
+        assert!(
+            unread[1] > alone[1],
+            "the divider stands over the row, taking room of its own: {unread:?} against {alone:?}"
+        );
+        // Every message of one run starts on one line: the one under the divider stands on the
+        // column of the messages around it, the one over it and the one under it alike.
+        for at in [0, 1, 3] {
+            let other = message(&marked, at);
+            assert_eq!(
+                unread[0], other[0],
+                "the unread message starts at x {:.0} where message {at} does, at x {:.0}",
+                unread[0], other[0]
+            );
+        }
+        // The two dividers of one conversation rule the same column: the day's over the third
+        // message, and the "New messages" one over it.
+        let day = rect_of_widget(&marked, "DayDivider").expect("the day's divider shows");
+        let new = rect_of_widget(&marked, "UnreadDivider").expect("the unread divider shows");
+        assert_eq!(
+            [new[0], new[2]],
+            [day[0], day[2]],
+            "the two dividers end at the same edges: the day's {day:?}, the new messages' {new:?}"
+        );
+    }
+
+    /// A page column's rows are read, not chosen: a press on a message gives it the keyboard
+    /// and leaves nothing tinted behind, and the keyboard's way through the rows moves (and
+    /// rings) the row it is on without choosing that one either. A column's rows stand for
+    /// what a window opens, and are chosen as they always were.
+    #[test]
+    fn a_press_on_a_transcript_row_chooses_nothing() {
+        let left = crate::winit::event::MouseButton::Left;
+        let mut transcript = DescribedList::from_props(
+            "transcript",
+            VirtualListProps {
+                follow_end: true,
+                page_column: true,
+                rows: given_rows(6),
+                ..VirtualListProps::default()
+            },
+        );
+        press_row(&mut transcript, 1, left, 400.0);
+        let list = transcript.list_mut().expect("the list stands");
+        assert_eq!(
+            list.selection_len(),
+            0,
+            "a message is read, not chosen: nothing stays selected"
+        );
+        assert_eq!(
+            list.focused_key().map(String::as_str),
+            Some("row-1"),
+            "the row the person pressed takes the keyboard"
+        );
+        // The keyboard's way through the rows rings the row it is on, and chooses none.
+        let (taffy, node) = lay_out_tree(list, 400.0);
+        Widget::set_focus(list, true);
+        let up = crate::synthetic_input::named_key(winit::keyboard::NamedKey::ArrowUp);
+        assert!(
+            crate::testing::Dispatch::new()
+                .layout(&taffy, node)
+                .send(list, &up)
+                .handled,
+            "the list follows the keyboard"
+        );
+        assert_eq!(
+            list.focused_key().map(String::as_str),
+            Some("row-0"),
+            "the keyboard moved up a row"
+        );
+        assert_eq!(list.selection_len(), 0, "no row was chosen on the way");
+
+        // A column's rows are chosen, as a list of things to open always was.
+        let mut column = DescribedList::from_props("column", column_of(given_rows(6)));
+        press_row(&mut column, 1, left, 400.0);
+        let list = column.list().expect("the list stands");
+        assert_eq!(list.selection_len(), 1, "a column's rows are chosen");
+    }
+
+    /// A menu opened over a row that opens where it stands is about that row alone: choosing
+    /// the row shows its item under it, so opening the menu reports no choice of it for the
+    /// window to open the item elsewhere.
+    #[test]
+    fn a_menu_over_a_row_that_opens_in_place_reports_no_choice() {
+        let queue = crate::Intents::<Fired>::default();
+        let select = Event::View(Intent::new(&queue, "list", "select"));
+        let props = VirtualListProps {
+            select,
+            ..column_of(rows_offering(4, true))
+        };
+        let mut list = DescribedList::from_props("list", props);
+        press_row(&mut list, 1, crate::winit::event::MouseButton::Right, 400.0);
+        assert!(
+            list.menu_area_mut()
+                .as_deref()
+                .is_some_and(ContextMenuArea::is_open),
+            "the row's menu opens where the press was"
+        );
+        assert!(
+            queue.take().is_empty(),
+            "the list reports no choice of a row it opens where it stands"
+        );
+
+        // A row of a list whose items carry no document opens elsewhere, and the menu over it
+        // chooses it, as a press on it would.
+        let props = VirtualListProps {
+            select: Event::View(Intent::new(&queue, "list", "select")),
+            ..column_of(rows_offering(4, false))
+        };
+        let mut plain = DescribedList::from_props("list", props);
+        press_row(
+            &mut plain,
+            1,
+            crate::winit::event::MouseButton::Right,
+            400.0,
+        );
+        assert!(
+            plain
+                .menu_area_mut()
+                .as_deref()
+                .is_some_and(ContextMenuArea::is_open),
+            "the row's menu opens where the press was"
+        );
+        let fired = queue.take();
+        assert_eq!(fired.len(), 1, "the menu chooses the row: {fired:?}");
+        assert_eq!(fired[0].event, "select");
+
+        // A window too narrow to hold the item under its row opens it in front of the list, so
+        // the menu over the row chooses it, as a press on it would.
+        let select = Event::View(Intent::new(&queue, "list", "select"));
+        let props = VirtualListProps {
+            select,
+            narrow: true,
+            ..column_of(rows_offering(4, true))
+        };
+        let mut front = DescribedList::from_props("list", props);
+        press_row(
+            &mut front,
+            1,
+            crate::winit::event::MouseButton::Right,
+            400.0,
+        );
+        let fired = queue.take();
+        assert_eq!(
+            fired.len(),
+            1,
+            "the menu chooses a row whose item opens in front: {fired:?}"
+        );
+        assert_eq!(fired[0].event, "select");
+    }
+
     /// The item a host holds open stands open where it stands: the list it builds again shows
     /// it as the person left it, and an item it does not hold open does not.
     #[test]
@@ -1632,13 +1998,28 @@ mod tests {
             "the item the host holds open is the row standing open"
         );
         lay_out(inner, 400.0);
-        let closed = inner.viewport.item_height(0).unwrap_or_default();
-        let open = inner.viewport.item_height(2).unwrap_or_default();
-        assert!(
-            open > closed,
-            "the row grows into its document: {open} over a closed row's {closed}"
+        // The item's document stands in the row's place: the rows over it keep their slots,
+        // and the rows under it follow where the document ends, never standing one row above
+        // it. What the row writes there is the layout check's to read (`repeated_row_title`),
+        // which watches a title written in a row and again in the item it opened into.
+        let standing = inner.viewport.item_top(2).unwrap_or_default();
+        let above = inner.viewport.item_top(1).unwrap_or_default()
+            + inner.viewport.item_height(1).unwrap_or_default();
+        assert_eq!(
+            standing, above,
+            "the document stands where the row stood: {standing} over the row's {above}"
         );
-
+        assert_eq!(
+            inner.row_box(2).map(|row| row.y0),
+            Some(standing),
+            "the row drawn for the item starts where its slot does"
+        );
+        let below = standing + inner.viewport.item_height(2).unwrap_or_default();
+        assert_eq!(
+            inner.viewport.item_top(3),
+            Some(below),
+            "the rows under the item follow where its document ends"
+        );
         // The same list given the item again keeps it open, and given none closes it.
         let same = VirtualListProps {
             open: Some(ResourceId("task-2".into())),

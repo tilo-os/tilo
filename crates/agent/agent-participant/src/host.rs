@@ -81,6 +81,9 @@ struct Shared {
     model: ModelChoice,
     catalogue: CatalogueFactory,
     endpoint: OnceLock<HostEndpoint>,
+    /// The link the supervisor asks the host it runs on through, once it
+    /// started.
+    link: OnceLock<Arc<dyn AgentHostLink>>,
     /// The runtime agents' sessions run their I/O on.
     runtime: OnceLock<tokio::runtime::Handle>,
     stopping: AtomicBool,
@@ -163,6 +166,7 @@ impl AgentHost {
             model,
             catalogue,
             endpoint: OnceLock::new(),
+            link: OnceLock::new(),
             runtime: OnceLock::new(),
             stopping: AtomicBool::new(false),
             threads: Mutex::new(Vec::new()),
@@ -222,6 +226,7 @@ impl AgentHost {
             handle
         };
         let _ = self.shared.runtime.set(runtime);
+        let _ = self.shared.link.set(Arc::clone(&link));
         self.supervisor.set_link(link);
         let snapshot = read_state(&self.state_file())?;
         let resume = self.supervisor.restore(snapshot, (self.shared.clock)());
@@ -385,6 +390,11 @@ fn run_agent(
         return;
     };
     let _runtime = runtime.enter();
+    // A workspace admits only the devices its roster names, and a session it
+    // refuses is not dialled again on its own: the agent waits for its place
+    // on its workspaces before it joins, rather than race the host that
+    // writes it.
+    wait_admitted(shared, &identity);
     // The agent holds records as replicas of their resources and runs no
     // app's code, so it reads nothing of this machine's files or secrets;
     // it plans with the host's model.
@@ -434,6 +444,31 @@ fn run_agent(
     }
     participant.close();
     tracing::info!(agent = %agent_id, "agent left its workspace");
+}
+
+/// How long an agent waits for its workspaces to admit it before it joins
+/// anyway, so that a host which never answers still lets it try and report
+/// why it could not.
+const ADMISSION_WAIT: Duration = Duration::from_secs(30);
+
+/// Wait until the host's workspaces hold `identity` as a member of their own,
+/// when the host says when they do.
+fn wait_admitted(shared: &Shared, identity: &AgentIdentity) {
+    let Some(link) = shared.link.get() else {
+        return;
+    };
+    let (admitted, wait) = std::sync::mpsc::channel();
+    link.when_admitted(
+        &identity.cert,
+        &identity.delegation,
+        Box::new(move || {
+            let _ = admitted.send(());
+        }),
+    );
+    if wait.recv_timeout(ADMISSION_WAIT).is_err() {
+        tracing::warn!(agent = %crate::control::agent_id(&identity.delegation),
+            "the agent's workspaces did not admit it in time");
+    }
 }
 
 fn read_state(file: &Path) -> Result<SupervisorSnapshot, String> {

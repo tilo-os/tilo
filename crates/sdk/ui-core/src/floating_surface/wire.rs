@@ -402,10 +402,6 @@ pub enum FloatingSurfaceClientMessage {
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         attached: Vec<tilo_reference::Attached>,
         text: String,
-        /// Where the box stood in this window, in its logical coordinates
-        /// (`[x0, y0, x1, y1]`): the conversation it opens stands there.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        bounds: Option<[f64; 4]>,
     },
     /// The person typed `query` into the box's recipient field: the shell
     /// answers with [`FloatingSurfaceHostMessage::Recipients`], from the one

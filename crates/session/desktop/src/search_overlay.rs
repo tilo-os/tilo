@@ -39,6 +39,12 @@ pub struct SearchOverlay {
     /// What the last drawn frame showed: whether the palette was up and what the desk had published
     /// then.
     shown: (bool, u64),
+    /// The palette's own layout node, while it is built: the leaf the in-place resize gives its new
+    /// size ([`Self::adjust_layout_style`]).
+    palette_node: Option<NodeId>,
+    /// The theme the card was last built and drawn with: what an in-place resize places the card
+    /// by, as the solve reaches here without one.
+    theme: Theme,
 }
 
 impl SearchOverlay {
@@ -54,6 +60,8 @@ impl SearchOverlay {
             seen,
             built: (false, None, seen),
             shown: (false, seen),
+            palette_node: None,
+            theme: Theme::default(),
         }
     }
 
@@ -78,6 +86,24 @@ impl SearchOverlay {
         self.handle.toggle_search();
         self.handle.note_search_activity();
     }
+
+    /// The card's left edge, inside the desk's edges even where it is barely
+    /// wider than the card.
+    fn card_left(&self, x: f64, width: f64) -> f64 {
+        x.clamp(
+            self.rect.x0 + PALETTE_EDGE,
+            (self.rect.x1 - width - PALETTE_EDGE).max(self.rect.x0 + PALETTE_EDGE),
+        )
+    }
+}
+
+/// A place on the desk, as layout measures it.
+#[allow(
+    clippy::cast_possible_truncation,
+    reason = "a desk is a few thousand pixels"
+)]
+fn place(value: f64) -> taffy::LengthPercentageAuto {
+    taffy::LengthPercentageAuto::length(value as f32)
 }
 
 impl Widget for SearchOverlay {
@@ -104,10 +130,77 @@ impl Widget for SearchOverlay {
     }
 
     fn take_structure_dirty(&mut self) -> bool {
-        // The card is mounted when the palette opens and gone when it closes,
-        // and it grows and shrinks with the rows the desk published and the
-        // pace it stands on: the composition is built again for any of them.
+        self.take_structure_change().rebuilds()
+    }
+
+    /// The card is mounted when the palette opens and gone when it closes, and
+    /// it stands where the search says: those are the composition's changes,
+    /// and the tree is built again for them. The rows the card shows — a
+    /// keystroke's results, an answer arriving — are not: the card is one leaf,
+    /// the same node, and its rows only change its own size. Telling them apart
+    /// matters because a rebuild discards the whole page's layout and re-encodes
+    /// every window's scene for a change in the card alone, the cost growing
+    /// with every window open. A row that changed re-solves the card's size in
+    /// place instead ([`Widget::layout_needs_measure`], the palette's own
+    /// [`Widget::adjust_layout_style`]), and the frame repaints only the card
+    /// ([`Self::draw`]'s own damage part).
+    fn take_structure_change(&mut self) -> ui::widget::StructureChange {
+        // Open or closed, or standing over another area: the composition. The
+        // revision alone (the rows, the query, the scope) is the card's paint
+        // and its size, never the tree's shape. A card that is up with no node
+        // yet — its code arrived after it was opened, and the palette had
+        // nothing to build then — is built now, once.
+        let missing = self.is_open() && self.palette_node.is_none();
+        let structural =
+            (self.is_open(), self.handle.search_area()) != (self.built.0, self.built.1) || missing;
+        ui::widget::StructureChange::of(structural)
+    }
+
+    /// The card resizes in place when its rows or the room it stands in changed,
+    /// without rebuilding the tree ([`Self::take_structure_change`]).
+    fn layout_needs_measure(&self) -> bool {
         self.built != self.pace()
+    }
+
+    /// The card's own leaf is the overlay's child: what it shows changed, so
+    /// it is given its new size here and the tree solves around it, without a
+    /// rebuild. The overlay node itself keeps the whole chrome, absolute, and
+    /// its own style never changes.
+    fn adjust_layout_style(
+        &mut self,
+        taffy: &mut TaffyTree<()>,
+        _node: NodeId,
+        _text: &mut ui::TextRenderer,
+    ) -> bool {
+        let Some(palette) = self.palette_node else {
+            return false;
+        };
+        if !self.is_open() || self.rect.width() <= 0.0 {
+            return false;
+        }
+        let area = self.handle.search_area().unwrap_or(self.rect);
+        let theme = self.theme.clone();
+        let (origin, width) = ui::action_palette::placement(area, &theme);
+        let search = self.handle.search_palette();
+        let mut search = search.borrow_mut();
+        search.set_room(width, ui::action_palette::list_cap(area, &theme));
+        let size = search.desired_size();
+        let Ok(current) = taffy.style(palette) else {
+            return false;
+        };
+        let mut style = current.clone();
+        style.size = taffy::Size::from_lengths(size.0, size.1);
+        let x0 = self.card_left(origin.x, f64::from(size.0));
+        style.inset.left = place(x0 - self.rect.x0);
+        style.inset.top = place(origin.y - self.rect.y0);
+        if style == *current {
+            // Nothing moved: still this frame laid the card out for this pace.
+            self.built = self.pace();
+            return false;
+        }
+        let changed = taffy.set_style(palette, style).is_ok();
+        self.built = self.pace();
+        changed
     }
 
     fn build_layout(
@@ -131,29 +224,26 @@ impl Widget for SearchOverlay {
                 .palette_mut()
                 .map(|palette| palette.build_layout(taffy, theme, map));
             if let Some(node) = node {
-                let (width, _) = search.desired_size();
+                let width = f64::from(search.desired_size().0);
                 let mut style = taffy.style(node).cloned().unwrap_or_default();
                 style.position = taffy::Position::Absolute;
-                // Inside the desk's edges, even where it is barely wider than the card.
-                let x0 = origin.x.clamp(
-                    self.rect.x0 + PALETTE_EDGE,
-                    (self.rect.x1 - width - PALETTE_EDGE).max(self.rect.x0 + PALETTE_EDGE),
-                );
-                #[allow(
-                    clippy::cast_possible_truncation,
-                    reason = "a place on the desk is a few thousand logical pixels"
-                )]
-                let at = |value: f64| taffy::LengthPercentageAuto::length(value as f32);
+                let x0 = self.card_left(origin.x, width);
                 style.inset = taffy::Rect {
-                    left: at(x0 - self.rect.x0),
+                    left: place(x0 - self.rect.x0),
                     right: taffy::LengthPercentageAuto::auto(),
-                    top: at(origin.y - self.rect.y0),
+                    top: place(origin.y - self.rect.y0),
                     bottom: taffy::LengthPercentageAuto::auto(),
                 };
                 let _ = taffy.set_style(node, style);
                 kids.push(node);
+                self.palette_node = Some(node);
+            } else {
+                self.palette_node = None;
             }
+        } else {
+            self.palette_node = None;
         }
+        self.theme = theme.clone();
         // Over the whole chrome, out of its flow: the card sits where it was placed and dims what
         // stands under it.
         let style = Style {
@@ -200,11 +290,38 @@ impl Widget for SearchOverlay {
         // palette, over everything the card stands above, the window in front included. Then the
         // card, where it was laid out.
         ui::overlay::scrim::modal(scene, transform, self.rect, 1.0, theme);
-        let search = self.handle.search_palette();
-        let mut search = search.borrow_mut();
-        if let Some(palette) = search.palette_mut() {
-            palette.draw(scene, transform, text, theme, presence);
-        }
+        // The card is one part of the page's scene, bounded by what it paints: a person typing into
+        // it (every key, its caret) or a result arriving repaints the card, not the scrimmed
+        // display under it. Without the part the card's commands sit outside every part, which the
+        // retained-damage producer cannot prove sparse, so every frame of a search repaints the
+        // whole display — seconds a frame under a software rasteriser. The scrim stays outside the
+        // part on purpose: it paints the whole area, and a part's bounds must cover everything it
+        // paints; it changes only as the search opens or the theme does.
+        let card = {
+            let search = self.handle.search_palette();
+            let search = search.borrow();
+            search
+                .palette()
+                .map(ui::widget::Widget::get_rect)
+                .filter(|card| !card.is_zero_area())
+        };
+        let Some(card) = card else {
+            // No card laid out yet: nothing of the palette draws this frame.
+            self.shown = (true, self.handle.search_revision());
+            return;
+        };
+        let key = ui::scene_parts::PartKey::new("desktop.search-overlay", ());
+        ui::scene_parts::part_drawn(scene, key, |scene| {
+            let search = self.handle.search_palette();
+            let mut search = search.borrow_mut();
+            if let Some(palette) = search.palette_mut() {
+                palette.draw(scene, transform, text, theme, presence);
+            }
+            vec![
+                transform
+                    .transform_rect_bbox(ui::widget::floating_surface::painted_bounds(card, theme)),
+            ]
+        });
         self.shown = (true, self.handle.search_revision());
     }
 
@@ -373,7 +490,27 @@ impl Widget for SearchOverlay {
     fn next_wake_deadline(&self) -> Option<ui::time::Instant> {
         let search = self.handle.search_palette();
         let search = search.borrow();
-        search.palette().and_then(ui::Widget::next_wake_deadline)
+        // A search still filling in is looked for again shortly: its rows arrive off the frame (a
+        // worker's answer wakes the desk; an application's answer comes on the host's clock), and
+        // a desk with nothing else to draw presents none. The desk's own schedule is not the
+        // chrome's — the palette is drawn from here — so the deadline goes with the card's. A
+        // search that never asked for it shows the rows it had when the person stopped typing,
+        // and Enter on an app's row comes long after the person pressed it.
+        // Rows are still expected to join what the search shows (a window's
+        // content index being built, an app's server still looking): look
+        // again shortly, so a late row is drawn when it arrives. This is not
+        // "still searching": the rows already shown are the search's answer,
+        // and a fresh window's content must not keep them drawn as if it
+        // were.
+        let expecting = (self.handle.search_open() && self.handle.search_expecting())
+            .then(|| ui::time::now().checked_add(tilo_desktop_search::ANSWER_POLL))
+            .flatten();
+        search
+            .palette()
+            .and_then(ui::Widget::next_wake_deadline)
+            .into_iter()
+            .chain(expecting)
+            .min()
     }
 
     fn name(&self) -> &'static str {

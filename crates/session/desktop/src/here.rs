@@ -14,7 +14,7 @@ use std::collections::HashMap;
 use tilo_sort::CompactSort as _;
 
 use collab_types::presence::Shown;
-use tilo_desktop_model::{Collaborator, DesktopTree, TabId, TileContent};
+use tilo_desktop_model::{Collaborator, DesktopTree, TabId, TileContent, Workspace};
 use ui::permissions::UserId;
 use ui::presence::{PresenceCtx, PresenceKey};
 
@@ -184,6 +184,9 @@ pub struct Person {
     pub agent: bool,
     /// The window of the record they focus, when this desktop shows it.
     pub tab: Option<TabId>,
+    /// The app of the record they focus, as their presence names it: where following them goes
+    /// while no window here shows that record.
+    pub focus_app: Option<String>,
     /// Where they are, saying only what their status line does not:
     /// "Strip · App", the strip only where the workspace has more than one,
     /// the app only where the status does not already name it
@@ -201,6 +204,19 @@ pub struct Person {
     pub availability: ui::Availability,
     /// The voice channel they are in, as their presence says.
     pub call: Option<ui::CallPresence>,
+}
+
+impl Person {
+    /// The app following them brings forward where no window here shows their record: the one in
+    /// front on their screen, else (an agent has no screen) the app of the record they act in.
+    #[must_use]
+    pub fn followed_app(&self) -> Option<&str> {
+        self.screen
+            .as_ref()
+            .and_then(|screen| screen.windows.iter().find(|window| window.focused))
+            .map(|window| window.app.as_str())
+            .or(self.focus_app.as_deref())
+    }
 }
 
 /// What the page told the desktop about the workspace.
@@ -243,6 +259,64 @@ pub struct HereState {
     /// Each person's accounts elsewhere as their profile names them, by their root key (lower-case
     /// hex).
     linked: HashMap<String, Vec<tilo_app::linked_accounts::ProfileLink>>,
+    /// This person's own agents already met on this page, by publisher
+    /// ([`HereState::take_own_agents_arrived`]).
+    met_agents: std::collections::BTreeSet<String>,
+    /// Every agent present, by publisher: its name, what it last said it was doing, and when it was
+    /// last here (Unix milliseconds), so one gone for good is said to have finished
+    /// ([`HereState::take_agents_finished`]).
+    working_agents: HashMap<String, (String, Option<String>, u64)>,
+}
+
+/// An agent that left the workspace: its work is over.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AgentFinished {
+    pub publisher: String,
+    /// Its name ("Claude Code").
+    pub label: String,
+    /// What it last said it was doing.
+    pub last: Option<String>,
+}
+
+/// What an agent's newest run did, as its finished notice says it: how many of its actions
+/// changed a record (a command it ran or a page it read changed none), and the workspace it
+/// worked in, when the history names it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RunSummary {
+    pub changes: usize,
+    pub workspace: Option<String>,
+}
+
+impl AgentFinished {
+    /// What this agent's newest run in `runs` did: the history names a connection's run as the
+    /// connection named its agent ("Claude Code", or "Claude Code #2" for a numbered run of it).
+    /// `None` when the history lists no run of it.
+    #[must_use]
+    pub fn summary(
+        &self,
+        runs: &tilo_actions::remote::workspace_activity::Runs,
+    ) -> Option<RunSummary> {
+        use tilo_actions::remote::workspace_activity::ActionView;
+        let client = ui::presence::agent_client(&self.label);
+        let run = runs
+            .runs
+            .iter()
+            .filter(|run| ui::presence::agent_client(&run.agent.name) == client)
+            .max_by_key(|run| run.last_ms)?;
+        Some(RunSummary {
+            changes: run
+                .actions
+                .iter()
+                .filter(|action| {
+                    matches!(
+                        action.view,
+                        ActionView::File { .. } | ActionView::Record { .. }
+                    )
+                })
+                .count(),
+            workspace: run.workspace.clone().filter(|name| !name.trim().is_empty()),
+        })
+    }
 }
 
 pub type Here = std::rc::Rc<std::cell::RefCell<HereState>>;
@@ -367,6 +441,62 @@ impl HereState {
         self.linked
             .get(&user.to_ascii_lowercase())
             .map_or(&[], Vec::as_slice)
+    }
+
+    /// This person's own agents (devices of theirs that are agents, such as the one their setup
+    /// prompt connected) present now and not met on this page before, each once, as `(publisher,
+    /// label)`: the page follows one and opens its card, so the person watches it work from the
+    /// moment it arrives. Someone else's agent is not theirs to be shown into.
+    pub fn take_own_agents_arrived(&mut self) -> Vec<(String, String)> {
+        let Some(own) = self.own_user().map(str::to_owned) else {
+            return Vec::new();
+        };
+        let arrived: Vec<(String, String)> = self
+            .members
+            .iter()
+            .flatten()
+            .filter(|member| member.kind == "agent")
+            .filter(|member| !self.met_agents.contains(&member.publisher))
+            .filter(|member| {
+                self.user_of(&member.publisher)
+                    .is_some_and(|user| user.eq_ignore_ascii_case(&own))
+            })
+            .map(|member| (member.publisher.clone(), member.label.clone()))
+            .collect();
+        self.met_agents
+            .extend(arrived.iter().map(|(publisher, _)| publisher.clone()));
+        arrived
+    }
+
+    /// The agents that left since the last call, each once: gone from the live layer for longer than
+    /// a reconnect takes (`REJOIN_QUIET_MS`), so a page renewing its grant is no agent finishing.
+    /// An agent's finishing is news the person did not cause, which a notice says.
+    pub fn take_agents_finished(&mut self, now_ms: u64) -> Vec<AgentFinished> {
+        let Some(members) = &self.members else {
+            return Vec::new();
+        };
+        for member in members.iter().filter(|member| member.kind == "agent") {
+            let held = self
+                .working_agents
+                .entry(member.publisher.clone())
+                .or_insert_with(|| (member.label.clone(), None, now_ms));
+            held.0.clone_from(&member.label);
+            if let Some(activity) = member.activity.as_deref().filter(|a| !a.trim().is_empty()) {
+                held.1 = Some(activity.to_owned());
+            }
+            held.2 = now_ms;
+        }
+        let mut finished: Vec<AgentFinished> = self
+            .working_agents
+            .extract_if(|_, (_, _, seen)| now_ms.saturating_sub(*seen) >= REJOIN_QUIET_MS)
+            .map(|(publisher, (label, last, _))| AgentFinished {
+                publisher,
+                label,
+                last,
+            })
+            .collect();
+        finished.sort_by(|a, b| a.publisher.cmp(&b.publisher));
+        finished
     }
 
     /// Who joined since the last call, by the name everyone here sees: a person who was not in the
@@ -731,10 +861,18 @@ impl HereState {
         };
         let keys: Vec<&str> = present.iter().map(|(_, key)| *key).collect();
         let settled = ui::presence::assign_peer_colors(&keys, &[]);
-        present
+        let mut colors: HashMap<String, (u8, u8, u8)> = present
             .into_iter()
             .filter_map(|(id, key)| settled.get(key).map(|rgb| (id.to_owned(), *rgb)))
-            .collect()
+            .collect();
+        // An agent wears its client's hue, so Claude Code reads as Claude Code on every face and
+        // caret of it; one this build does not know keeps the hue it settled on.
+        for member in self.members.iter().flatten().filter(|m| m.kind == "agent") {
+            if let Some(hue) = ui::tokens::PresenceHue::of_agent_client(&member.label) {
+                colors.insert(member.publisher.clone(), ui::presence::identity_rgb(hue));
+            }
+        }
+        colors
     }
 
     /// This page's own line from the host.
@@ -803,6 +941,7 @@ impl HereState {
                 rgb: color_in(&colors, &member.publisher),
                 agent,
                 tab,
+                focus_app: member.focus.as_ref().map(|focus| focus.app.clone()),
                 place,
                 status,
                 recent: line_of.and_then(|l| host_line(&l.recent, l.generated)),
@@ -836,6 +975,7 @@ impl HereState {
                 rgb: color_in(&colors, &l.device),
                 agent: false,
                 tab,
+                focus_app: None,
                 place: tab.and_then(|tab| worded_place(tree, tab, app_name, status.as_ref())),
                 status,
                 recent: host_line(&l.recent, l.generated),
@@ -994,10 +1134,7 @@ pub fn guest_label() -> String {
 fn shown_window(tree: &DesktopTree, line: &HostLine) -> Option<TabId> {
     let tab = u64::from_str_radix(line.window.as_deref()?, 16).ok()?;
     tree.active_workspace()?
-        .strips
-        .iter()
-        .flat_map(|strip| &strip.window_groups)
-        .flat_map(|group| &group.tabs)
+        .tabs()
         .any(|t| t.id == tab)
         .then_some(tab)
 }
@@ -1007,9 +1144,7 @@ fn window_of(tree: &DesktopTree, records: &[(TabId, String)], focus: &Focus) -> 
     let tabs: HashMap<TabId, &str> = tree
         .active_workspace()
         .into_iter()
-        .flat_map(|w| &w.strips)
-        .flat_map(|strip| &strip.window_groups)
-        .flat_map(|group| &group.tabs)
+        .flat_map(Workspace::tabs)
         .filter_map(|tab| match &tab.tile {
             TileContent::LocalApp { app_id, .. } => Some((tab.id, app_id.as_str())),
             _ => None,
@@ -1104,11 +1239,13 @@ pub fn overlay_collaborators(tree: &mut DesktopTree, people: &[Person]) {
             known.call = person.call.as_ref().map(ui::CallPresence::encode);
             continue;
         }
-        let (r, g, b) = person.rgb;
+        let (r, g, b) = ui::presence::user_color(&person.id);
         workspace.collaborators.push(Collaborator {
             id: person.id.clone(),
             name: person.label.clone(),
             active_tab: person.tab,
+            // The colour their pointer is drawn in on this desk, so a face, a pill and a caret for
+            // one person all wear the one colour.
             cursor_color: Some(format!("#{r:02x}{g:02x}{b:02x}")),
             role_id: person.agent.then(|| "agent".to_owned()),
             availability: Some(person.availability.id().to_owned()),
@@ -1138,6 +1275,214 @@ mod tests {
             availability: None,
             call: None,
         }
+    }
+
+    /// An MCP agent connected for this page's person is in the workspace's presence as an agent:
+    /// listed after the people, in its client's hue, saying what it does now, and naming the app
+    /// of the record it acts in, which following it opens. It is met once: the page follows it and
+    /// opens its card the first time only, and someone else's agent is never theirs to be shown
+    /// into.
+    #[test]
+    fn an_mcp_agent_session_is_present_as_an_agent_and_met_once() {
+        let mut here = HereState::default();
+        let own = LiveMember {
+            user: Some("aa".into()),
+            ..member("me", "person", "Pat")
+        };
+        let claude = LiveMember {
+            focus: Some(Focus {
+                app: "so.tilo.notes".into(),
+                record: "0123456789abcdef".into(),
+            }),
+            activity: Some("Editing notes/Welcome".into()),
+            ..member("claude", "agent", "Claude Code")
+        };
+        here.set_members(
+            Some(own.clone()),
+            Some(vec![
+                own,
+                member("ada", "person", "Ada"),
+                claude,
+                member("theirs", "agent", "Codex"),
+            ]),
+        );
+        here.set_lines(
+            vec![
+                HostLine {
+                    device: "claude".into(),
+                    user: "aa".into(),
+                    label: "Claude Code".into(),
+                    ..HostLine::default()
+                },
+                HostLine {
+                    device: "theirs".into(),
+                    user: "bb".into(),
+                    ..HostLine::default()
+                },
+            ],
+            0,
+        );
+        let people = here.people(&DesktopTree::default(), &[], &|_| None, 0);
+        let ids: Vec<&str> = people.iter().map(|p| p.id.as_str()).collect();
+        assert_eq!(
+            ids,
+            ["ada", "claude", "theirs"],
+            "people first, then agents"
+        );
+        let agent = &people[1];
+        assert!(
+            agent.agent,
+            "an MCP session is an agent, not this person's own device"
+        );
+        assert_eq!(
+            agent.rgb,
+            ui::presence::identity_rgb(ui::tokens::PresenceHue::Orange),
+            "Claude Code wears its client's hue"
+        );
+        assert_eq!(
+            agent.status.as_ref().map(|line| line.text.as_str()),
+            Some("Editing notes/Welcome")
+        );
+        assert_eq!(agent.focus_app.as_deref(), Some("so.tilo.notes"));
+        assert_eq!(
+            here.take_own_agents_arrived(),
+            [("claude".to_owned(), "Claude Code".to_owned())],
+            "only this person's own agent is met"
+        );
+        assert!(here.take_own_agents_arrived().is_empty(), "met once");
+    }
+
+    /// A finished agent's notice counts what its newest run changed: its record and file edits,
+    /// not the commands it ran or pages it read, and names the workspace the history gives it.
+    #[test]
+    fn a_finished_agent_says_how_many_changes_its_run_made_and_where() {
+        use tilo_actions::remote::workspace_activity as wire;
+        let target = wire::Target {
+            app_id: Some("so.tilo.notes".into()),
+            app_label: Some("Notes".into()),
+            id: "note".into(),
+            kind: String::new(),
+            label: "Welcome".into(),
+        };
+        let action = |view: wire::ActionView| wire::RunAction {
+            range: wire::Range {
+                from: "aa".into(),
+                to: "ab".into(),
+            },
+            at_ms: 1,
+            summary: String::new(),
+            view,
+            app_id: "so.tilo.notes".into(),
+            record: "note".into(),
+            undo: None,
+        };
+        let record = || {
+            action(wire::ActionView::Record {
+                target: target.clone(),
+            })
+        };
+        let run = |name: &str, last_ms: i64, actions: Vec<wire::RunAction>| wire::AgentRun {
+            id: format!("mcp:{name}{last_ms}"),
+            agent: wire::Author {
+                name: name.into(),
+                ..wire::Author::default()
+            },
+            workspace: Some("Storefront".into()),
+            instruction: String::new(),
+            decision: None,
+            started_ms: 0,
+            last_ms,
+            range: wire::Range {
+                from: "aa".into(),
+                to: "ab".into(),
+            },
+            actions,
+            undo_blocked: None,
+            now: None,
+        };
+        let runs = wire::Runs {
+            runs: vec![
+                run("Claude Code", 5, vec![record()]),
+                run(
+                    "Claude Code #2",
+                    9,
+                    vec![
+                        record(),
+                        record(),
+                        action(wire::ActionView::Command {
+                            target: target.clone(),
+                            command: "cargo test".into(),
+                            cwd: String::new(),
+                            output: Vec::new(),
+                            more: false,
+                            exit: Some(0),
+                            started_ms: None,
+                            ended_ms: None,
+                            run: None,
+                        }),
+                        record(),
+                        record(),
+                    ],
+                ),
+                run("Codex", 12, vec![record()]),
+            ],
+            total: 3,
+            pending: false,
+            mutations: true,
+        };
+        let finished = AgentFinished {
+            publisher: "claude".into(),
+            label: "Claude Code".into(),
+            last: None,
+        };
+        assert_eq!(
+            finished.summary(&runs),
+            Some(RunSummary {
+                changes: 4,
+                workspace: Some("Storefront".into()),
+            }),
+            "its newest run, counting the four records it changed and not the command"
+        );
+        let unknown = AgentFinished {
+            label: "Cursor".into(),
+            ..finished
+        };
+        assert_eq!(unknown.summary(&runs), None);
+    }
+
+    /// An agent that leaves has finished, said once and only after a reconnect's grace: one back
+    /// within it never left.
+    #[test]
+    fn an_agent_gone_for_good_has_finished() {
+        let mut here = HereState::default();
+        let claude = || LiveMember {
+            activity: Some("Editing notes/Welcome".into()),
+            ..member("claude", "agent", "Claude Code")
+        };
+        here.set_members(None, Some(vec![claude()]));
+        assert!(here.take_agents_finished(1_000).is_empty());
+        here.set_members(None, Some(Vec::new()));
+        assert!(
+            here.take_agents_finished(1_000 + REJOIN_QUIET_MS / 2)
+                .is_empty(),
+            "a reconnect is not finishing"
+        );
+        here.set_members(None, Some(vec![claude()]));
+        assert!(
+            here.take_agents_finished(2_000 + REJOIN_QUIET_MS / 2)
+                .is_empty()
+        );
+        here.set_members(None, Some(Vec::new()));
+        let later = 3_000 + REJOIN_QUIET_MS * 2;
+        assert_eq!(
+            here.take_agents_finished(later),
+            [AgentFinished {
+                publisher: "claude".into(),
+                label: "Claude Code".into(),
+                last: Some("Editing notes/Welcome".into()),
+            }]
+        );
+        assert!(here.take_agents_finished(later + 1).is_empty(), "said once");
     }
 
     /// A person's screen is their device's layout; an agent has none, even when its frame says one.
@@ -1773,6 +2118,65 @@ mod tests {
         assert_eq!(place("cy"), None, "an app this page cannot name");
     }
 
+    /// A member's focus names the record its window shows by that record's short digest, as
+    /// presence names it: the host that holds the same window knows which window they are in.
+    #[test]
+    fn a_focus_naming_a_window_here_puts_them_in_that_window() {
+        use tilo_desktop_model::{
+            Strip, StripId, Tab, WindowGroup, WindowWidth, Workspace, WorkspaceSlot,
+        };
+        let digest = "0123456789abcdef";
+        let welcome = Tab {
+            id: 7,
+            title: "Welcome".into(),
+            tile: TileContent::LocalApp {
+                app_id: "so.tilo.notes".into(),
+                label: "Notes".into(),
+                note: String::new(),
+            },
+            app_title: None,
+            view: String::new(),
+            pinned: false,
+        };
+        let mut strip = Strip::new(StripId(1), "Main");
+        strip.window_groups.push(WindowGroup {
+            id: 8,
+            active_tab: welcome.id,
+            tabs: vec![welcome],
+            width: WindowWidth::Normal,
+            maximized: false,
+            focus_history: Vec::new(),
+        });
+        let mut workspace = Workspace::new(WorkspaceSlot(1), "Design");
+        workspace.strips = vec![strip];
+        let tree = DesktopTree {
+            active: workspace.slot,
+            workspaces: vec![workspace],
+            ..DesktopTree::default()
+        };
+        let mut here = HereState::default();
+        here.set_members(
+            None,
+            Some(vec![LiveMember {
+                focus: Some(Focus {
+                    app: "so.tilo.notes".into(),
+                    record: digest.into(),
+                }),
+                activity: None,
+                ..member("ann", "person", "Ann")
+            }]),
+        );
+        let app = |id: &str| (id == "so.tilo.notes").then(|| "Notes".to_owned());
+        let held = [(7, digest.to_owned())];
+        let people = here.people(&tree, &held, &app, 0);
+        let ann = people
+            .iter()
+            .find(|person| person.id == "ann")
+            .expect("ann is here");
+        assert_eq!(ann.tab, Some(7), "the window her focus names");
+        assert_eq!(ann.place.as_deref(), Some("Notes"));
+    }
+
     /// Two pages going by one name are numbered, this page included, by their publishers — the same
     /// numbers on every page in the workspace.
     #[test]
@@ -2004,6 +2408,7 @@ mod tests {
             rgb: (1, 2, 3),
             agent: true,
             tab: None,
+            focus_app: None,
             place: None,
             status: None,
             recent: None,
@@ -2019,7 +2424,12 @@ mod tests {
             .find(|c| c.id == "bot")
             .expect("overlaid");
         assert_eq!(bot.role_id.as_deref(), Some("agent"));
-        assert_eq!(bot.cursor_color.as_deref(), Some("#010203"));
+        let (r, g, b) = ui::presence::user_color("bot");
+        assert_eq!(
+            bot.cursor_color.as_deref(),
+            Some(format!("#{r:02x}{g:02x}{b:02x}").as_str()),
+            "the colour their pointer is drawn in"
+        );
         overlay_collaborators(&mut tree, &people);
         assert_eq!(
             tree.active_workspace().map(|w| w

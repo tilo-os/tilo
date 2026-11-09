@@ -674,7 +674,7 @@ impl Shell {
         args: &[String],
     ) -> i32 {
         let io = self.stdio();
-        let env = self.vars.exported();
+        let env = self.program_env();
         let dispatch = crate::dispatch::ShellDispatch::new(self);
         let ctx = crate::commands::Ctx {
             host: self.host.as_ref(),
@@ -699,6 +699,21 @@ impl Shell {
         }
     }
 
+    /// The environment a command the shell hands on gets: what the shell
+    /// exports and, for a run an agent asked for, `USH_RENDER=agent`, so
+    /// the program and the place that runs it know whom they answer
+    /// (a host that would hold a person's command for them refuses an
+    /// agent's at once instead).
+    pub(crate) fn program_env(&self) -> Vec<(String, String)> {
+        let mut env = self.vars.exported();
+        if self.render() == crate::commands::Render::Agent
+            && !env.iter().any(|(name, _)| name == "USH_RENDER")
+        {
+            env.push(("USH_RENDER".to_owned(), "agent".to_owned()));
+        }
+        env
+    }
+
     /// A command that is none of the shell's own: the host's, if it can run
     /// it; else a script the shell can read itself; else the plain answer of
     /// which tier it needs.
@@ -707,7 +722,7 @@ impl Shell {
             return 0;
         };
         let io = self.stdio();
-        let env = self.vars.exported();
+        let env = self.program_env();
         match self.host.program(argv, &env, &self.cwd, &io) {
             Program::Exited(status) => {
                 if status == 130 {

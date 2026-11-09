@@ -91,12 +91,12 @@ view media(m: Media) {
         }
         ui.Section("Text") {
             ui.CodeEditor(
-                value: m.source,
+                bind: m.source,
                 language: .tilolang,
                 min_lines: 4,
                 placeholder: "Write a view",
             )
-            ui.RichTextLine(value: m.source, placeholder: "A line of text", role: .body) {
+            ui.RichTextLine(bind: m.source, placeholder: "A line of text", role: .body) {
                 on enter(at: Int): mark_page(last, at)
             }
         }

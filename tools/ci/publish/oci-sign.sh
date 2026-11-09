@@ -91,5 +91,11 @@ if [[ $run_channel == release && -e $repo_root/keys/release/root.crt ]] && devic
     printf '%s\n' "$epoch" > "$out/certified/$n.epoch"
   done
   ((n)) || die "keys/release/root.crt exists but keys/operational/os-images.crt does not"
+elif device_verified "$repository"; then
+  # No release root yet, so nothing is certified. Its signing check declares OUT/certified/**
+  # among its outputs, and t fails a check whose declared output matches no file: an empty
+  # OUT/certified/none marks "none", which oci-publish.sh passes over.
+  mkdir -p "$out/certified"
+  : > "$out/certified/none"
 fi
 printf 'signed %s@%s\n' "$repository" "$expected"

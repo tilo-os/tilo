@@ -16,7 +16,7 @@ use tilo_action_broker::collab_app_broker::AppBrokerState;
 use tilo_action_broker::services::LaunchPlace;
 use tilo_actions::remote::{
     APPLICATION_OPEN_ACTION, APPLICATION_RESOURCE_PREFIX, Caller, InvokeArgument, InvokeRequest,
-    RemoteActionTarget, application_open_target, application_provider,
+    RemoteActionTarget, application_open_target, application_provider, provider_workspace,
 };
 use tilo_actions::{ActionDescriptor, DoorError, ExecutionLocus, InvocationId};
 use tilo_app_launch::routing;
@@ -471,8 +471,7 @@ impl Apps {
     /// Start what the desktop queued since the last pass, show what stopped, and start what a
     /// service, an app or an agent asked for: called once per pass of the session's loop.
     pub fn follow(&self) {
-        self.start_asked();
-        self.start_asked_of_services();
+        self.start_asked_now();
         self.follow_ended();
         self.follow_policy();
         self.follow_served();
@@ -492,6 +491,27 @@ impl Apps {
         };
         for (app, root) in services.borrow().served() {
             launches.serves(&app, &root);
+        }
+    }
+
+    /// Start what the desktop and anything waiting on a launch asked for: a launch's answer, and
+    /// the app's own start, then run beside the frame this pass waits for instead of after it.
+    pub(crate) fn start_asked_now(&self) {
+        self.start_asked();
+        self.start_asked_of_services();
+    }
+
+    /// Start the launches a service, an app or an agent waits on, when one waits: what a pass woken
+    /// while it waits for its frame does at once, so the asker hears back before the frame.
+    pub(crate) fn start_waiting(&self) {
+        let waiting = self
+            .state
+            .borrow()
+            .launches
+            .as_ref()
+            .is_some_and(|launches| launches.waiting());
+        if waiting {
+            self.start_asked_of_services();
         }
     }
 
@@ -863,10 +883,16 @@ impl Apps {
         arguments: serde_json::Map<String, serde_json::Value>,
         place: OpenPlace,
     ) -> Result<(), DoorError> {
-        let Some((workspace, _)) = application_provider(&target.provider) else {
-            return Err(no_action_host());
+        // A row is published in one of two shapes: a workspace's `open` of an app
+        // (`workspace:<workspace>`, what `application_open_target` builds) and an app's own action
+        // (`application:<workspace>:<app>`). Read both, or every app row answers that apps cannot be
+        // started.
+        let workspace = match application_provider(&target.provider) {
+            Some((workspace, _)) => workspace.to_owned(),
+            None => provider_workspace(&target.provider)
+                .ok_or_else(no_action_host)?
+                .to_owned(),
         };
-        let workspace = workspace.to_owned();
         let app = target
             .address
             .resource
@@ -923,7 +949,7 @@ impl Apps {
             return;
         }
         let launch = match self.agent_plan(kept) {
-            Ok(planned) => match self.spawn(&planned, None, &kept.workspace, None) {
+            Ok(planned) => match self.spawn(&planned, None, &kept.workspace, None, None) {
                 Ok(launch) => Some(launch),
                 Err(error) => {
                     tracing::warn!(
@@ -1067,11 +1093,15 @@ impl Apps {
             narrate_placed(app, &workspace.id, &placed);
             return placed.map(|_| true);
         }
+        // The open is timed from here to the app's first presented frame: everything this session
+        // does for it is in the launch's share, and the phases below say where that share went.
+        let app = launch.app();
+        let timed = tilo_startup_metrics::launch_requested(app);
         // A service running this app's model serves its record: the launch names the resource the
         // session publishes, so the app opens no record of its own (`docs/architecture/apps.md` §8
         // step 2).
         let hosted = matches!(launch, Launch::Record { .. } | Launch::Package { .. })
-            .then(|| self.hosted(launch.app()))
+            .then(|| self.hosted(app))
             .flatten();
         let planned = {
             let state = self.state.borrow();
@@ -1098,7 +1128,14 @@ impl Apps {
             };
             Planned::of(launch, &context)
         };
-        let mut planned = planned.map_err(|error| DoorError::Failed(error.to_string()))?;
+        let mut planned = match planned {
+            Ok(planned) => planned,
+            Err(error) => {
+                tilo_startup_metrics::launch_failed(timed);
+                return Err(DoorError::Failed(error.to_string()));
+            }
+        };
+        tilo_startup_metrics::launch_phase(app, "planned");
         // The window this launch starts is the one the shell asked for: a
         // process has no door open to it yet, so its launch says which item
         // it opens (`ui::window_door::REVEAL_ENV`).
@@ -1118,19 +1155,26 @@ impl Apps {
         let asked = launch.id();
         let Some(doors) = self.state.borrow().doors.clone() else {
             return self
-                .spawn(&planned, Some(&asked), &workspace.id, None)
+                .spawn(&planned, Some(&asked), &workspace.id, None, Some(timed))
                 .map(|_| true);
         };
         // The app's own window with nothing named to open is the one its running process opens
         // itself, as it opens any later one.
         let routable =
             planned.kind == Kind::Package && matches!(launch, Launch::Package { open: None, .. });
-        let alone = self.start_alone(&planned, &asked, &workspace.id);
-        let reserved =
-            doors.route_or_reserve(&planned.app, &workspace.id, routable, reveal, &alone);
+        let alone = self.start_alone(&planned, &asked, &workspace.id, timed);
+        let reserved = doors.route_or_reserve(
+            &planned.app,
+            &workspace.id,
+            routable,
+            reveal,
+            &alone,
+            instance,
+        );
         let reservation = match reserved {
             // The process running the app opens this window itself: nothing starts.
             Err(Routed::Opened) => {
+                tilo_startup_metrics::launch_failed(timed);
                 tracing::info!(app = %planned.app, "the app's running process opens the window");
                 return Ok(true);
             }
@@ -1138,8 +1182,9 @@ impl Apps {
             Err(Routed::NotRunning) | Ok(None) => None,
             Ok(reservation) => reservation,
         };
+        tilo_startup_metrics::launch_phase(app, "routed");
         let door = doors.hold(&planned.app, &workspace.id);
-        let started = self.spawn(&planned, Some(&asked), &workspace.id, door);
+        let started = self.spawn(&planned, Some(&asked), &workspace.id, door, Some(timed));
         if started.is_ok()
             && let Some(reservation) = reservation
         {
@@ -1156,6 +1201,7 @@ impl Apps {
         planned: &Planned,
         asked: &str,
         workspace: &str,
+        timed: u64,
     ) -> impl Fn() -> StartAlone {
         let me = self.state.borrow().me.clone();
         let (planned, asked, workspace) = (planned.clone(), asked.to_owned(), workspace.to_owned());
@@ -1170,7 +1216,9 @@ impl Apps {
                 let Some(apps) = me.upgrade() else {
                     return;
                 };
-                if let Err(error) = apps.spawn(&planned, Some(&asked), &workspace, None) {
+                if let Err(error) =
+                    apps.spawn(&planned, Some(&asked), &workspace, None, Some(timed))
+                {
                     tracing::warn!(%error, app = %planned.app, "an app did not start");
                 }
             })
@@ -1179,20 +1227,21 @@ impl Apps {
 
     /// Start `planned` with the door `door` , which the launch holds until it ends, and write it
     /// down as a launch of this session before the app can reach a service of it. A service asked
-    /// as nothing has no window to offer again.
+    /// as nothing has no window to offer again. `timed` is the launch timing of the request that
+    /// led here, which an agent start of no person's ask begins for itself.
     fn spawn(
         &self,
         planned: &Planned,
         asked: Option<&str>,
         workspace: &str,
         door: Option<HeldDoor>,
+        timed: Option<u64>,
     ) -> Result<u64, DoorError> {
         let launches = self.state.borrow().launches.clone();
         let mut state = self.state.borrow_mut();
-        // The open is timed from the session starting the process to its first presented frame: the
-        // launcher's and the app's share in the launch-latency log, the surface's in the
-        // compositor's.
-        let timed = tilo_startup_metrics::launch_requested(&planned.app);
+        // The launch's share in the launch-latency log runs from the request to the first presented
+        // frame: the launcher's and the app's in this log, the surface's in the compositor's.
+        let timed = timed.unwrap_or_else(|| tilo_startup_metrics::launch_requested(&planned.app));
         let started = state.spawner.start_with(planned, door, &|pid| {
             if let Some(launches) = &launches {
                 // The launcher binds the session's documents store into a package's sandbox and
@@ -1458,28 +1507,6 @@ fn installed_package(app: &str) -> Option<String> {
         .map(|package| package.package_id)
 }
 
-/// The resource kinds `app` 's installed package declares for the records it keeps, from its signed
-/// manifest: what a workspace takes a record it starts under ([`crate::engine::Engine`] starting an
-/// app's first record). `None` for an app this device has not installed.
-///
-/// The tilolang host ([`tilolang_tilo::HOST_APP`]) is no installed package — it is the runtime
-/// every tilolang app runs on — and the kinds of the records it keeps are the runtime's own: the
-/// person's personal state of each app's workspace (`tilolang.personal`). A record an app starts
-/// under it is taken in that kind, so a device's first change of one is admitted like any other,
-/// rather than refused as an app this device has not installed.
-pub(crate) fn declared_resource_kinds(app: &str) -> Option<Vec<String>> {
-    if app == tilolang_tilo::HOST_APP {
-        return Some(vec![
-            tilolang_tilo::tilolang::PERSONAL_RECORD_KIND.to_owned(),
-        ]);
-    }
-    let package = installed_package(app)?;
-    let installed = app_catalogue::apps::read_one_from_env(&package)
-        .ok()
-        .flatten()?;
-    Some(installed.declared_resource_kinds())
-}
-
 /// Why an action an app publishes cannot be run here: the action host an app's resources arrive on
 /// is not mounted in this session.
 fn no_action_host() -> DoorError {
@@ -1536,27 +1563,6 @@ mod tests {
 
     fn apps() -> Apps {
         Apps::with_launcher(SessionEnvironment::default(), None, None)
-    }
-
-    /// The tilolang host keeps the person's own state of each app's workspace
-    /// (`tilolang.personal`), and it is no installed package: the record a tilolang app starts
-    /// under it must still be taken in a declared kind, or a device's first change of it — the
-    /// personal record every tilolang app writes — is refused as "tilo.host is not installed on
-    /// this device" and nothing the app does reaches its records.
-    #[test]
-    fn the_tilolang_hosts_record_kind_is_declared_without_an_installed_package() {
-        assert_eq!(
-            declared_resource_kinds(tilolang_tilo::HOST_APP),
-            Some(vec![
-                tilolang_tilo::tilolang::PERSONAL_RECORD_KIND.to_owned()
-            ]),
-            "the host's personal record is a kind the owner may start"
-        );
-        assert_eq!(
-            declared_resource_kinds("so.tilo.not-installed-anywhere"),
-            None,
-            "an app this device has not installed declares no kinds"
-        );
     }
 
     /// An agent is a service the launcher runs, and the agent's own options follow the entrypoint:

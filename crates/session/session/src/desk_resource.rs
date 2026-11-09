@@ -8,6 +8,8 @@ use std::rc::Rc;
 
 use serde_json::{Map, Value};
 use tilo_actions::{ActionAddress, DoorError, ResourceSpec};
+use tilo_desktop::chrome::ChromeIntent;
+use tilo_desktop::desktop_host::DesktopAsk;
 use tilo_desktop_model::{DesktopTree, Strip, Tab, WindowGroup, Workspace, WorkspaceId};
 use tilo_desktop_surface::DesktopHandle;
 use tilo_desktop_surface::navigation::ChromeEffect;
@@ -26,7 +28,7 @@ use crate::notifications::NoticeSignals;
 #[derive(Clone, PartialEq, Eq)]
 pub(crate) struct DeskKey {
     /// The revisions, the minute, the signals and the names the reading is made of.
-    reading: (u64, i64, u32, bool, u64, u64, u64, u64, u64, u64, String),
+    reading: (u64, i64, bool, u64, u64, u64, u64, u64, u64, String),
     /// The agents seated at the person's agent door.
     agents: u64,
     /// Whether the switcher's panel shows: it comes up on its own while Alt is held, with no
@@ -110,6 +112,14 @@ pub(crate) enum DeskEffect {
         /// How long the link works for, in seconds
         #[param("How long the link works for, in seconds")]
         expires_in_seconds: Option<u64>,
+        /// The workspace, by its key; the one in front when absent
+        #[param("The workspace, by its key; the one in front when absent")]
+        workspace: Option<String>,
+    },
+    /// Open the invite sheet on a workspace: where a link into it is made, the part it brings
+    /// someone in at picked and the links that still work taken back. An app shares what it shows
+    /// by asking this, so it offers the one sheet the bar's invite button opens.
+    ShowInvite {
         /// The workspace, by its key; the one in front when absent
         #[param("The workspace, by its key; the one in front when absent")]
         workspace: Option<String>,
@@ -332,6 +342,9 @@ pub(crate) struct Desk {
     pub(crate) surfaces: Surfaces,
     /// Who is here, when this session takes part in the collaboration plane.
     pub(crate) sync: Option<Rc<crate::sync::Client>>,
+    /// What each window of the desk shows, as its app reports it: where a person's record stands,
+    /// so the reading places them in the window they work in.
+    pub(crate) notes: std::sync::Arc<crate::continuations::Continuations>,
     /// The apps' live activities: Clocks' timer is the bar's clock beside the time, and the person
     /// putting the floating one away hides it until Clocks shows something new.
     pub(crate) activities: Rc<crate::chrome::Activities>,
@@ -346,6 +359,9 @@ pub(crate) struct Desk {
     /// This device's workspaces' record, when the session holds one: the invitations a workspace's
     /// people made are kept there, by the device that made them.
     pub(crate) engine: Option<std::sync::Arc<crate::engine::Engine>>,
+    /// What the desk asks the session for while it runs: opening the invite sheet, which is the
+    /// session's own surface and not a layer the desk draws.
+    pub(crate) asks: Rc<std::cell::RefCell<Vec<tilo_desktop::desktop_host::DesktopAsk>>>,
     /// The desk styles every installed package offers, as `session.desk_styles` reads them
     /// (shell.md §6): what the person's switch offers. The session fills it from its package
     /// store, and moves it when a package is installed or taken away.
@@ -362,9 +378,11 @@ pub(crate) struct Shared {
     pub(crate) activities: Rc<crate::chrome::Activities>,
     pub(crate) surfaces: Surfaces,
     pub(crate) sync: Option<Rc<crate::sync::Client>>,
+    pub(crate) notes: std::sync::Arc<crate::continuations::Continuations>,
     pub(crate) notices: tilo_desktop_surface::DesktopNotifications,
     pub(crate) tray: Option<std::sync::Arc<tilo_tray_host::Tray>>,
     pub(crate) engine: Option<std::sync::Arc<crate::engine::Engine>>,
+    pub(crate) asks: Rc<std::cell::RefCell<Vec<tilo_desktop::desktop_host::DesktopAsk>>>,
 }
 
 /// A factory making the session's desk, its styles read from the person's store as they move
@@ -380,9 +398,11 @@ pub(crate) fn desk_from(shared: Shared) -> impl Fn() -> Desk {
         activities: Rc::clone(&shared.activities),
         surfaces: shared.surfaces.clone(),
         sync: shared.sync.clone(),
+        notes: std::sync::Arc::clone(&shared.notes),
         notices: shared.notices.clone(),
         tray: shared.tray.clone(),
         engine: shared.engine.clone(),
+        asks: Rc::clone(&shared.asks),
         styles: Rc::clone(&styles),
     }
 }
@@ -703,7 +723,6 @@ impl Desk {
             reading: (
                 self.handle.revision(),
                 ui::clock::local_now().timestamp().div_euclid(60),
-                self.signals.unread(),
                 self.signals.quiet(),
                 self.sync
                     .as_ref()
@@ -766,7 +785,7 @@ impl Desk {
         let instant = std::time::Instant::now();
         let people = self.handle.read(|tree| {
             self.sync.as_ref().map_or_else(Vec::new, |sync| {
-                sync.people(tree, &|_: &str| None)
+                sync.people(tree, &self.notes.records(), &|_: &str| None)
                     .into_iter()
                     .map(|person| shell_part::PersonReading {
                         key: person.id,
@@ -790,9 +809,7 @@ impl Desk {
                 }),
             weekday: ui::format::weekday_short(chrono::Datelike::weekday(&now)),
             date: ui::format::month_day(now.date_naive()),
-            unread: self.signals.unread(),
             quiet: self.signals.quiet(),
-            status_panel: self.surfaces.status_panel,
             workspace: tree
                 .active_workspace()
                 .map(|workspace| workspace.name.clone())
@@ -916,21 +933,13 @@ fn notices(notices: &tilo_desktop_surface::DesktopNotifications) -> Vec<shell_pa
             title: notification.title.clone(),
             body: notification.body.clone(),
             origin_app: notification.app_name.clone().unwrap_or_default(),
-            icon: String::new(),
             kind: match notification.severity {
                 tilo_desktop_surface::notifications::NotificationSeverity::Info => "info",
                 tilo_desktop_surface::notifications::NotificationSeverity::Warning => "warning",
                 tilo_desktop_surface::notifications::NotificationSeverity::Error => "error",
             }
             .to_owned(),
-            // Seen or not is the desk's own count, the same set the bell counts: the centre's rows
-            // and its header never disagree about what is new.
-            read: !notices.is_unread(notification.id),
-            group: notification
-                .app_name
-                .clone()
-                .unwrap_or_else(|| notification.id.to_string()),
-            wants_reply: false,
+            seen: !notices.is_unread(notification.id),
         })
         .collect()
 }
@@ -1182,6 +1191,49 @@ impl Desk {
     }
 }
 
+impl Desk {
+    /// Open the invite sheet on a workspace: the workspace comes to the front, and the sheet the
+    /// bar's button opens is shown on it, through the session, which holds the surface.
+    fn show_invite(&self, workspace: Option<&str>) -> Result<Started, DoorError> {
+        let workspace = match workspace {
+            Some(key) => key.to_owned(),
+            None => self
+                .handle
+                .read(|tree| {
+                    tree.active_workspace()
+                        .map(|active| active.slot.0.to_string())
+                })
+                .ok_or_else(|| DoorError::Failed("no workspace is in front".to_owned()))?,
+        };
+        let known = self.handle.read(|tree| {
+            tree.workspaces
+                .iter()
+                .any(|candidate| candidate.slot.0.to_string() == workspace)
+        });
+        if !known {
+            return Err(DoorError::InvalidArguments(format!(
+                "there is no workspace {workspace} on this device"
+            )));
+        }
+        let active = self.handle.read(|tree| {
+            tree.active_workspace()
+                .map(|active| active.slot.0.to_string())
+        });
+        if active.as_deref() != Some(workspace.as_str()) {
+            self.handle
+                .dispatch(ChromeEffect::SwitchWorkspace {
+                    workspace: Some(workspace),
+                    delta: None,
+                })
+                .map_err(DoorError::Failed)?;
+        }
+        self.asks
+            .borrow_mut()
+            .push(DesktopAsk::Intent(ChromeIntent::Invite));
+        Ok(Started::Done(tilo_actions::ActionOutput::default()))
+    }
+}
+
 /// A pending invitation as listing invitations reports it, in the workspace host's own words: a
 /// client that lists them from a host reads the same fields.
 fn invitation_json(invitation: &PendingInvitation) -> Value {
@@ -1296,6 +1348,9 @@ impl Service for Desk {
         }
         if let Some(answer) = self.invitation(&effect) {
             return answer;
+        }
+        if let DeskEffect::ShowInvite { workspace } = &effect {
+            return self.show_invite(workspace.as_deref());
         }
         if let DeskEffect::ShowSurface { surface } = &effect {
             self.surfaces.toggle(surface);

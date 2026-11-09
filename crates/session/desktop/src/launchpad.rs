@@ -57,6 +57,18 @@ impl LaunchpadAppAction {
             action: "open-direct-conversation".to_owned(),
         }
     }
+
+    /// The app action that asks `ask` of the agent of `client` ("Claude Code"): its own action in
+    /// Console, on the resource Console publishes for it, which also brings its card forward.
+    #[must_use]
+    pub fn ask_agent(client: &str, ask: crate::profile_card::AgentAsk) -> Self {
+        Self {
+            app_id: "so.tilo.console".to_owned(),
+            display_name: "Console".to_owned(),
+            resource: format!("console.agent:{client}"),
+            action: ask.action().to_owned(),
+        }
+    }
 }
 
 /// A welcome verb of the empty desk, declared once: the card that shows it,

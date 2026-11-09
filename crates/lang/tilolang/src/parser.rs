@@ -7,9 +7,9 @@ use crate::ast::{
     ActionDecl, ActionOpt, ActionRole, AliasDecl, AppHeader, Arg, AssignOp, BinOp, Block,
     DefaultViewDecl, EnumDecl, Expr, ExprKind, FieldDecl, FnDecl, Ident, Item, LetBind, MatchArm,
     MergeSpec, Module, NodeId, Param, Pattern, Place, Proposal, RootDecl, ScenarioDecl,
-    SearchBlock, SearchEntry, SearchEntryKind, StateDecl, Stmt, StmtKind, StrPart, TypeDecl,
-    TypeExpr, TypeExprKind, UiArm, UiCall, UiKind, UiStmt, UnOp, UseDecl, VariantDecl, ViewDecl,
-    ViewsDecl,
+    SearchBlock, SearchEntry, SearchEntryKind, StateDecl, Stmt, StmtKind, StrPart, TitleDecl,
+    TypeDecl, TypeExpr, TypeExprKind, UiArm, UiCall, UiKind, UiStmt, UnOp, UntitledDecl, UseDecl,
+    VariantDecl, ViewDecl, ViewsDecl,
 };
 use crate::diag::{Diagnostic, Span};
 use crate::lexer::{Comment, StrPiece, Tok, Token, lex, lex_at};
@@ -233,6 +233,7 @@ const TYPE_ARGS: &[&str] = &[
     "Collection",
     "Option",
     "Filter",
+    "Sort",
     "Result",
     "State",
 ];
@@ -1119,10 +1120,42 @@ impl<'a> Parser<'a> {
         let node = self.node();
         let name = self.ident("a type name")?;
         let mut origin = None;
+        let mut title = None;
+        let mut untitled = None;
         if self.eat(&Tok::LParen) {
-            // One option: the kind of an outside service's resource the type holds.
-            origin = Some(self.type_origin()?);
-            self.expect(&Tok::RParen)?;
+            loop {
+                self.skip_nl();
+                if self.eat(&Tok::RParen) {
+                    break;
+                }
+                let key = self.ident("`origin`, `title` or `untitled`")?;
+                self.expect(&Tok::Colon)?;
+                match key.name.as_str() {
+                    "origin" => origin = Some(self.type_origin()?),
+                    "title" => {
+                        let span = self.span();
+                        let field = self.ident("the field that names a record of the type")?;
+                        title = Some(TitleDecl { field, span });
+                    }
+                    "untitled" => {
+                        let span = self.span();
+                        let words =
+                            self.plain_string("what the type is called while its title is empty")?;
+                        untitled = Some(UntitledDecl { words, span });
+                    }
+                    other => {
+                        return self.fail(
+                            key.span,
+                            format!(
+                                "a type's options are `origin:`, `title:` and `untitled:`, not `{other}:`"
+                            ),
+                        );
+                    }
+                }
+                if !self.eat(&Tok::Comma) && !matches!(self.peek(), Tok::RParen) {
+                    return self.unexpected("`,` or `)` after a type's option");
+                }
+            }
         }
         self.expect(&Tok::LBrace)?;
         let mut fields = Vec::new();
@@ -1182,6 +1215,8 @@ impl<'a> Parser<'a> {
             doc,
             name,
             origin,
+            title,
+            untitled,
             fields,
             search,
             span: start.to(Span::new(self.prev_end(), self.prev_end())),
@@ -1191,14 +1226,6 @@ impl<'a> Parser<'a> {
     /// `origin: imap.message` in a type's options: the kind of an outside service's resource,
     /// one dotted name.
     fn type_origin(&mut self) -> PResult<Ident> {
-        let key = self.ident("`origin`")?;
-        if key.name != "origin" {
-            return self.fail(
-                key.span,
-                "a type takes one option, `origin:` (`type Message (origin: imap.message) { ... }`)",
-            );
-        }
-        self.expect(&Tok::Colon)?;
         let first = self.ident("the origin's kind, such as `imap.message`")?;
         let mut name = first.name.clone();
         let mut span = first.span;

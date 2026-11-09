@@ -5,6 +5,7 @@ desktop:chrome desktop (Desktop)
   delete-workspace Delete a workspace
   equalize Equalize widths
   fixed-shortcut Run a fixed desktop shortcut
+  float Lift a window out of its strip, or put it back
   fullscreen Fill the display with a window
   history Move through a window's own history
   join-workspace Show the workspaces this computer may join

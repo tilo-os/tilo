@@ -56,6 +56,7 @@ mod rich_text;
 mod scenarios;
 #[cfg(feature = "record")]
 mod shell_record;
+mod sorting;
 mod suggest;
 mod surface;
 mod sync;

@@ -65,6 +65,13 @@
       "module": "clocks"
     },
     {
+      "id": "so.tilo.console",
+      "name": "Console",
+      "category": "System",
+      "version": "0.1.0",
+      "module": "tilo_console"
+    },
+    {
       "id": "so.tilo.contacts",
       "name": "Contacts",
       "category": "Office",

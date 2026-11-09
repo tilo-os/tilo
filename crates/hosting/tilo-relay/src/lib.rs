@@ -82,6 +82,8 @@ pub mod offload;
 mod offload_content;
 #[cfg(not(target_arch = "wasm32"))]
 mod offload_media;
+#[cfg(feature = "agents")]
+pub mod placed_shells;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod public_avatars;
 #[cfg(feature = "agents")]

@@ -674,6 +674,7 @@ impl<'a> DrawGlyphs<'a> {
                 style: Fill::NonZero.into(),
                 glyphs: glyphs_start..glyphs_start,
                 stream_offsets,
+                text: None,
             },
             brush: palette::css::BLACK.into(),
             brush_alpha: 1.0,
@@ -687,6 +688,14 @@ impl<'a> DrawGlyphs<'a> {
     #[must_use]
     pub fn transform(mut self, transform: Affine) -> Self {
         self.run.transform = Transform::from_kurbo(&transform);
+        self
+    }
+
+    /// Sets the characters this run sets, for renderers that present text as
+    /// text rather than as outlines.
+    #[must_use]
+    pub fn text(mut self, text: Option<Arc<str>>) -> Self {
+        self.run.text = text;
         self
     }
 
@@ -1475,6 +1484,7 @@ mod tests {
                 transforms: 5,
                 styles: 6,
             },
+            text: None,
         });
         encoding.resources.patches = vec![
             Patch::Ramp {

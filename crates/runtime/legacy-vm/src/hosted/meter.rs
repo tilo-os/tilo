@@ -1,0 +1,465 @@
+//! What a hosted VM used, as records an account's bill is made from.
+//!
+//! A VM is billed per second for the time its hypervisor process runs:
+//! from the moment it is started (a cold boot or a restore) until the
+//! moment it is gone (suspended to a snapshot, shut down, or crashed). A
+//! suspended or stopped VM costs nothing; its persistent disk stays. A
+//! snapshot kept on disk is counted on its own, by size and time held.
+//!
+//! The [`Meter`] of one VM turns those moments into [`UsageRecord`]s, one
+//! per run and one per snapshot, and the [`Ledger`] keeps them per account,
+//! one JSON object per line, in the order they ended. Billing reads the
+//! ledger ([`Ledger::records`], [`summarize`]); nothing here knows prices.
+//!
+//! # Seconds
+//!
+//! Times are wall-clock milliseconds. A run's billed `seconds` are its
+//! milliseconds plus what earlier runs of the same VM left over, in whole
+//! seconds; the remainder carries to the next run. So a VM woken ten times
+//! for 1.5 s is billed 15 s, never 10 s or 20 s, and the sum of a VM's
+//! `seconds` is always its total running time rounded down, with less than a
+//! second outstanding.
+//!
+//! # Crashes
+//!
+//! The meter's open run is saved with the last moment the VM was seen
+//! alive ([`Meter::seen`]). If the service stops without closing it, the
+//! next start closes it at that moment ([`Meter::recover`]): the gap is
+//! never billed.
+
+use std::fs::{File, OpenOptions};
+use std::io::{BufRead as _, BufReader, Write as _};
+use std::path::{Path, PathBuf};
+
+use serde::{Deserialize, Serialize};
+
+use super::size::VmSize;
+use super::valid_name;
+
+/// Who pays for a VM, and which VM it is.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct VmIdentity {
+    /// `<workspace>/<environment>`: one VM per hosted workspace environment.
+    pub vm: String,
+    pub workspace: String,
+    pub environment: String,
+    pub account: String,
+    pub size: VmSize,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum UsageKind {
+    /// The VM's hypervisor ran.
+    Running,
+    /// A snapshot of the VM's memory and devices was kept on disk.
+    Snapshot,
+}
+
+/// How a run ended.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum RunEnd {
+    /// Idle, and saved to a snapshot; the next command restores it.
+    Suspended,
+    /// Shut down on request; the next command boots it.
+    Stopped,
+    /// The hypervisor went away by itself.
+    Crashed,
+    /// The service stopped while it ran; closed at the last moment it was
+    /// seen alive.
+    Recovered,
+}
+
+/// One run or one held snapshot of one VM.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct UsageRecord {
+    pub kind: UsageKind,
+    #[serde(flatten)]
+    pub identity: VmIdentity,
+    pub start_ms: u64,
+    pub end_ms: u64,
+    /// `end_ms - start_ms`.
+    pub millis: u64,
+    /// Whole seconds billed for this record (see the module docs).
+    pub seconds: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ended: Option<RunEnd>,
+    /// A snapshot's size on disk.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub snapshot_bytes: Option<u64>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct OpenRun {
+    pub start_ms: u64,
+    pub last_seen_ms: u64,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct HeldSnapshot {
+    pub start_ms: u64,
+    pub bytes: u64,
+    /// What of a held snapshot's time is not yet billed, in milliseconds.
+    #[serde(default)]
+    pub carry_ms: u64,
+}
+
+/// One VM's meter. Saved beside the VM after every change, so a restarted
+/// service carries on where it was.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct Meter {
+    pub identity: VmIdentity,
+    #[serde(default)]
+    pub open: Option<OpenRun>,
+    #[serde(default)]
+    pub snapshot: Option<HeldSnapshot>,
+    /// Running milliseconds not yet billed as a whole second.
+    #[serde(default)]
+    pub carry_ms: u64,
+    /// Snapshot milliseconds not yet billed as a whole second.
+    #[serde(default)]
+    pub snapshot_carry_ms: u64,
+}
+
+impl Meter {
+    #[must_use]
+    pub const fn new(identity: VmIdentity) -> Self {
+        Self {
+            identity,
+            open: None,
+            snapshot: None,
+            carry_ms: 0,
+            snapshot_carry_ms: 0,
+        }
+    }
+
+    #[must_use]
+    pub const fn running(&self) -> bool {
+        self.open.is_some()
+    }
+
+    /// The hypervisor was started at `now`. A run already open stays open:
+    /// starting twice is still one run.
+    pub fn started(&mut self, now: u64) {
+        if self.open.is_none() {
+            self.open = Some(OpenRun {
+                start_ms: now,
+                last_seen_ms: now,
+            });
+        }
+    }
+
+    /// The VM was seen alive at `now`.
+    pub fn seen(&mut self, now: u64) {
+        if let Some(open) = self.open.as_mut() {
+            open.last_seen_ms = open.last_seen_ms.max(now);
+        }
+    }
+
+    /// The hypervisor is gone since `now`. `None` when nothing ran.
+    pub fn stopped(&mut self, now: u64, ended: RunEnd) -> Option<UsageRecord> {
+        let open = self.open.take()?;
+        let end = now.max(open.start_ms);
+        Some(self.run_record(open.start_ms, end, ended))
+    }
+
+    /// Close a run the service left open, at the last moment it was seen.
+    pub fn recover(&mut self) -> Option<UsageRecord> {
+        let open = self.open.take()?;
+        Some(self.run_record(open.start_ms, open.last_seen_ms, RunEnd::Recovered))
+    }
+
+    fn run_record(&mut self, start_ms: u64, end_ms: u64, ended: RunEnd) -> UsageRecord {
+        let millis = end_ms.saturating_sub(start_ms);
+        let total = self.carry_ms.saturating_add(millis);
+        self.carry_ms = total % 1000;
+        UsageRecord {
+            kind: UsageKind::Running,
+            identity: self.identity.clone(),
+            start_ms,
+            end_ms,
+            millis,
+            seconds: total / 1000,
+            ended: Some(ended),
+            snapshot_bytes: None,
+        }
+    }
+
+    /// A snapshot of `bytes` was written at `now`. One that was held is
+    /// replaced, and its record returned.
+    pub fn snapshot_taken(&mut self, now: u64, bytes: u64) -> Option<UsageRecord> {
+        let replaced = self.snapshot_dropped(now);
+        self.snapshot = Some(HeldSnapshot {
+            start_ms: now,
+            bytes,
+            carry_ms: 0,
+        });
+        replaced
+    }
+
+    /// The held snapshot was deleted at `now`.
+    pub fn snapshot_dropped(&mut self, now: u64) -> Option<UsageRecord> {
+        let held = self.snapshot.take()?;
+        let end_ms = now.max(held.start_ms);
+        let millis = end_ms.saturating_sub(held.start_ms);
+        let total = self.snapshot_carry_ms.saturating_add(millis);
+        self.snapshot_carry_ms = total % 1000;
+        Some(UsageRecord {
+            kind: UsageKind::Snapshot,
+            identity: self.identity.clone(),
+            start_ms: held.start_ms,
+            end_ms,
+            millis,
+            seconds: total / 1000,
+            ended: None,
+            snapshot_bytes: Some(held.bytes),
+        })
+    }
+
+    pub fn load(path: &Path) -> Option<Self> {
+        serde_json::from_slice(&std::fs::read(path).ok()?).ok()
+    }
+
+    pub fn save(&self, path: &Path) -> std::io::Result<()> {
+        let bytes = serde_json::to_vec(self).map_err(std::io::Error::other)?;
+        tilo_files::native::atomic::write_creating_parent(path, &bytes)
+    }
+}
+
+/// Every account's usage records, one file per account.
+#[derive(Clone, Debug)]
+pub struct Ledger {
+    dir: PathBuf,
+}
+
+impl Ledger {
+    #[must_use]
+    pub const fn new(dir: PathBuf) -> Self {
+        Self { dir }
+    }
+
+    fn file(&self, account: &str) -> std::io::Result<PathBuf> {
+        if !valid_name(account) {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                format!("{account:?} is not an account id"),
+            ));
+        }
+        Ok(self.dir.join(format!("{account}.jsonl")))
+    }
+
+    /// Append `record` to its account's file and wait until it is on disk:
+    /// a record is money.
+    pub fn append(&self, record: &UsageRecord) -> std::io::Result<()> {
+        let path = self.file(&record.identity.account)?;
+        std::fs::create_dir_all(&self.dir)?;
+        let mut line = serde_json::to_vec(record).map_err(std::io::Error::other)?;
+        line.push(b'\n');
+        let mut file = OpenOptions::new().create(true).append(true).open(path)?;
+        file.write_all(&line)?;
+        file.sync_data()
+    }
+
+    /// The account's records, oldest first. A line that is not a record
+    /// (a torn write at a crash) is skipped.
+    pub fn records(&self, account: &str) -> std::io::Result<Vec<UsageRecord>> {
+        let file = match File::open(self.file(account)?) {
+            Ok(file) => file,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+            Err(error) => return Err(error),
+        };
+        Ok(BufReader::new(file)
+            .lines()
+            .map_while(Result::ok)
+            .filter_map(|line| serde_json::from_str(&line).ok())
+            .collect())
+    }
+}
+
+/// One size's usage in a period.
+#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+pub struct SizeUsage {
+    pub size: VmSize,
+    pub running_seconds: u64,
+    /// Snapshot storage, in byte-seconds.
+    pub snapshot_byte_seconds: u128,
+}
+
+impl SizeUsage {
+    /// Snapshot storage in GB-days (10⁹ bytes held for 86 400 s).
+    #[must_use]
+    #[allow(
+        clippy::cast_precision_loss,
+        reason = "a display figure; billing uses the exact byte-seconds"
+    )]
+    pub fn snapshot_gb_days(&self) -> f64 {
+        self.snapshot_byte_seconds as f64 / 1e9 / 86_400.0
+    }
+}
+
+/// What an account used per size, from the records that ended in
+/// `[from_ms, to_ms)`. A record belongs to the period it ended in.
+#[must_use]
+pub fn summarize(records: &[UsageRecord], from_ms: u64, to_ms: u64) -> Vec<SizeUsage> {
+    let mut by_size: std::collections::BTreeMap<VmSize, SizeUsage> =
+        std::collections::BTreeMap::new();
+    for record in records
+        .iter()
+        .filter(|record| (from_ms..to_ms).contains(&record.end_ms))
+    {
+        let usage = by_size
+            .entry(record.identity.size)
+            .or_insert_with(|| SizeUsage {
+                size: record.identity.size,
+                ..SizeUsage::default()
+            });
+        match record.kind {
+            UsageKind::Running => {
+                usage.running_seconds = usage.running_seconds.saturating_add(record.seconds);
+            }
+            UsageKind::Snapshot => {
+                let held = u128::from(record.snapshot_bytes.unwrap_or(0))
+                    .saturating_mul(u128::from(record.seconds));
+                usage.snapshot_byte_seconds = usage.snapshot_byte_seconds.saturating_add(held);
+            }
+        }
+    }
+    by_size.into_values().collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn identity(size: VmSize) -> VmIdentity {
+        VmIdentity {
+            vm: "ws1/default".into(),
+            workspace: "ws1".into(),
+            environment: "default".into(),
+            account: "acct-1".into(),
+            size,
+        }
+    }
+
+    #[test]
+    fn runs_are_billed_per_second_across_suspends() {
+        // phase: ten 1.5 s runs bill 15 s, carried across records
+        {
+            let mut meter = Meter::new(identity(VmSize::Small));
+            let mut seconds = Vec::new();
+            for wake in 0..10_u64 {
+                let start = 1_000_000 + wake * 60_000;
+                meter.started(start);
+                meter.started(start + 200);
+                let record = meter.stopped(start + 1_500, RunEnd::Suspended).unwrap();
+                assert_eq!((record.start_ms, record.millis), (start, 1_500));
+                seconds.push(record.seconds);
+            }
+            assert_eq!(seconds, [1, 2, 1, 2, 1, 2, 1, 2, 1, 2]);
+            assert_eq!(seconds.iter().sum::<u64>(), 15);
+            assert_eq!(meter.carry_ms, 0);
+            assert_eq!(
+                meter.stopped(2_000_000, RunEnd::Stopped),
+                None,
+                "nothing ran"
+            );
+        }
+        // phase: a run the service lost is closed where it was last seen
+        {
+            let mut meter = Meter::new(identity(VmSize::Default));
+            meter.started(10_000);
+            meter.seen(14_000);
+            meter.seen(13_000);
+            let saved = serde_json::to_vec(&meter).unwrap();
+            let mut restarted: Meter = serde_json::from_slice(&saved).unwrap();
+            let record = restarted.recover().unwrap();
+            assert_eq!(
+                (record.end_ms, record.seconds, record.ended),
+                (14_000, 4, Some(RunEnd::Recovered))
+            );
+            assert!(!restarted.running());
+        }
+        // phase: a clock that steps back never bills negative time
+        {
+            let mut meter = Meter::new(identity(VmSize::Small));
+            meter.started(50_000);
+            let record = meter.stopped(49_000, RunEnd::Crashed).unwrap();
+            assert_eq!((record.millis, record.seconds), (0, 0));
+        }
+    }
+
+    #[test]
+    fn snapshots_are_counted_apart_from_running_time() {
+        let mut meter = Meter::new(identity(VmSize::Large));
+        assert_eq!(meter.snapshot_taken(0, 2_000_000_000), None);
+        let replaced = meter.snapshot_taken(86_400_000, 1_000_000_000).unwrap();
+        assert_eq!(replaced.kind, UsageKind::Snapshot);
+        assert_eq!(
+            (replaced.seconds, replaced.snapshot_bytes),
+            (86_400, Some(2_000_000_000))
+        );
+        let dropped = meter.snapshot_dropped(86_400_000 + 43_200_000).unwrap();
+        assert_eq!(dropped.seconds, 43_200);
+        assert_eq!(meter.snapshot_dropped(0), None);
+
+        meter.started(0);
+        let run = meter.stopped(90_500, RunEnd::Suspended).unwrap();
+        let usage = summarize(&[replaced, dropped, run], 0, u64::MAX);
+        assert_eq!(usage.len(), 1);
+        let large = usage.first().unwrap();
+        assert_eq!(large.running_seconds, 90);
+        assert!((large.snapshot_gb_days() - 2.5).abs() < 1e-9);
+    }
+
+    #[test]
+    fn the_ledger_keeps_each_accounts_records_in_order() {
+        let dir = tempfile::tempdir().unwrap();
+        let ledger = Ledger::new(dir.path().join("usage"));
+        let mut small = Meter::new(identity(VmSize::Small));
+        let mut other = Meter::new(VmIdentity {
+            account: "acct-2".into(),
+            ..identity(VmSize::Xlarge)
+        });
+        small.started(0);
+        other.started(0);
+        ledger
+            .append(&small.stopped(3_000, RunEnd::Suspended).unwrap())
+            .unwrap();
+        ledger
+            .append(&other.stopped(5_000, RunEnd::Stopped).unwrap())
+            .unwrap();
+        small.started(10_000);
+        ledger
+            .append(&small.stopped(12_000, RunEnd::Suspended).unwrap())
+            .unwrap();
+        // A torn last line, as a crash mid-write leaves it.
+        let path = dir.path().join("usage/acct-1.jsonl");
+        let mut file = OpenOptions::new().append(true).open(&path).unwrap();
+        file.write_all(b"{\"kind\":\"runn").unwrap();
+
+        let records = ledger.records("acct-1").unwrap();
+        assert_eq!(
+            records.iter().map(|r| r.seconds).collect::<Vec<_>>(),
+            [3, 2]
+        );
+        let line = std::fs::read_to_string(&path).unwrap();
+        let first = line.lines().next().unwrap();
+        for field in [
+            "\"kind\":\"running\"",
+            "\"vm\":\"ws1/default\"",
+            "\"workspace\":\"ws1\"",
+            "\"account\":\"acct-1\"",
+            "\"size\":\"small\"",
+            "\"seconds\":3",
+            "\"ended\":\"suspended\"",
+        ] {
+            assert!(first.contains(field), "{field} missing from {first}");
+        }
+        assert_eq!(ledger.records("acct-2").unwrap().len(), 1);
+        assert!(ledger.records("nobody").unwrap().is_empty());
+        assert!(ledger.records("../etc/passwd").is_err());
+        let usage = summarize(&records, 0, 11_000);
+        assert_eq!(usage.first().map(|u| u.running_seconds), Some(3));
+    }
+}

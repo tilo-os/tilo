@@ -307,6 +307,12 @@ impl SharedDesktop {
         }
     }
 
+    /// The desktop as admitted so far, admitting what waits first.
+    pub(crate) fn doc(&mut self) -> &AutoCommit {
+        self.admit();
+        &self.doc
+    }
+
     /// The records bound to the desktop's tabs, admitting what waits first.
     pub(crate) fn tabs(&mut self) -> &HashSet<String> {
         self.admit();

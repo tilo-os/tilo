@@ -60,7 +60,7 @@ view data(d: Data) {
     state last: Text = ""
     std.page(d) {
         ui.Section("Table") {
-            ui.DataTable(name: .some("Files")) {
+            ui.DataTable(name: "Files") {
                 columns: {
                     ui.DataTableColumn("Name", sortable: true, width: .flex)
                     ui.DataTableColumn("State")
@@ -69,9 +69,9 @@ view data(d: Data) {
                 for x in d.rows {
                     ui.DataTableRow(x) {
                         cells: {
-                            ui.DataTableCell("Name", value: .some(x.title))
-                            ui.DataTableCell("State", value: .some(x.state))
-                            ui.DataTableCell("Size", value: .some("{x.size}"))
+                            ui.DataTableCell("Name", value: x.title)
+                            ui.DataTableCell("State", value: x.state)
+                            ui.DataTableCell("Size", value: "{x.size}")
                         }
                     }
                 }
@@ -80,13 +80,13 @@ view data(d: Data) {
             }
         }
         ui.Section("Tree") {
-            ui.TreeView(name: .some("Project"), fill: false, hide_root: true) {
+            ui.TreeView(name: "Project", fill: false, hide_root: true) {
                 for f in d.files {
                     ui.TreeViewNode(f, f.title, parent: f.parent, branch: f.folder) {
                         row: {
                             ui.TreeViewRow(
                                 icon: if f.folder { .folder } else { .file_text },
-                                trailing: if f.folder { .none } else { .some("{f.size} B") },
+                                trailing: if not f.folder { "{f.size} B" },
                             )
                         }
                     }
@@ -99,22 +99,16 @@ view data(d: Data) {
             // The divider a view that draws a conversation's own rows marks a day with; the
             // list below places the same one over each day it shows.
             ui.DayDivider("Jun 30")
-            ui.ConversationList(name: .some("Conversation with Ada")) {
+            ui.ConversationList(name: "Conversation with Ada") {
                 for m in d.messages {
-                    ui.ConversationEntry(
-                        m,
-                        m.body,
-                        author: .some(m.from),
-                        time: .some(m.at),
-                        outgoing: m.mine,
-                    )
+                    ui.ConversationEntry(m, m.body, author: m.from, time: m.at, outgoing: m.mine)
                 }
             }
         }
         ui.Section("Cards") {
-            ui.CardGrid(name: .some("Collections")) {
+            ui.CardGrid(name: "Collections") {
                 for c in d.cards {
-                    ui.CardGridCard(c, title: .some(c.title), count: .some(c.count)) {
+                    ui.CardGridCard(c, title: c.title, count: c.count) {
                         on activate: open(c)
                         ui.Text("Open it to see what it holds.", role: .caption, secondary: true)
                     }
@@ -124,7 +118,7 @@ view data(d: Data) {
         ui.Section("History") {
             ui.ActivityTimeline(newest_first: true) {
                 for c in d.changes {
-                    ui.ActivityEntry(c, c.summary, time: .some(c.at), kind: .details)
+                    ui.ActivityEntry(c, c.summary, time: c.at, kind: .details)
                 }
                 on revert(x: Change): open(x)
                 on open(x: Change): open(x)

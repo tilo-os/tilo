@@ -197,7 +197,7 @@ impl Core {
             | (Ty::List(_) | Ty::Collection(_), Value::Coll(_))
             | (Ty::Option(_), Value::Opt(_))
             | (Ty::Enum(_) | Ty::Result(..), Value::Enum(_))
-            | (Ty::Tuple(_) | Ty::Filter(_), Value::Tuple(_))
+            | (Ty::Tuple(_) | Ty::Filter(_) | Ty::Sort(_), Value::Tuple(_))
             | (Ty::Action, Value::Action(_))
             | (Ty::Principal, Value::Principal(_))
             | (Ty::View, _) => true,
@@ -340,11 +340,18 @@ impl Core {
     // ----- actions -----------------------------------------------------------------------
 
     /// See [`crate::Runtime::complete_args`].
+    ///
+    /// A [`Value::Missing`] is an argument the call left out: nothing stands for it, so the
+    /// parameter its place names takes its default, as one left out at the end does.
     pub(crate) fn complete_args(
         &self,
         action: &str,
         given: Vec<Option<Value>>,
     ) -> Result<Vec<Value>, RuntimeError> {
+        let given: Vec<Option<Value>> = given
+            .into_iter()
+            .map(|arg| arg.filter(|arg| *arg != Value::Missing))
+            .collect();
         let Some(pkg) = self.registry.borrow().action_package(action) else {
             // A platform action (`$set`, `then`) no package declares takes what it is given.
             return given
@@ -398,7 +405,13 @@ impl Core {
         let Some(meta) = pkg.action(&aref.action) else {
             return Vec::new();
         };
-        meta.unbound(aref.args.len()).map(|(at, _)| at).collect()
+        // The arguments up to the first the call left out are the ones it gave.
+        let bound = aref
+            .args
+            .iter()
+            .position(|arg| *arg == Value::Missing)
+            .unwrap_or(aref.args.len());
+        meta.unbound(bound).map(|(at, _)| at).collect()
     }
 
     /// The default of the parameter `at` of `action`, over the arguments before it: `None`
@@ -516,8 +529,14 @@ impl Core {
             .borrow()
             .action_package(&aref.action)
             .and_then(|pkg| pkg.action(&aref.action).map(|a| a.params.len()));
+        // The arguments up to the first the call left out are the ones it gave.
+        let bound = aref
+            .args
+            .iter()
+            .position(|arg| *arg == Value::Missing)
+            .unwrap_or(aref.args.len());
         match wanted {
-            Some(n) if n > aref.args.len() => {
+            Some(n) if n > bound => {
                 let given = aref.args.iter().cloned().map(Some).collect();
                 Ok(ActionRef {
                     args: self.complete_args(&aref.action, given)?,
@@ -2161,6 +2180,12 @@ impl Core {
     /// first time, from its journal when it recorded one then, else from the host, which it
     /// records. Code that is no run (a view's) reads the host live.
     pub(crate) fn clock(&self) -> HResult<crate::run::Clock> {
+        // Code that is no run reads the host live: the frames are let go first, because
+        // reading the host asks them what the run it belongs to reads.
+        let in_a_run = { self.frames.borrow_mut().run_mut().is_some() };
+        if !in_a_run {
+            return Ok(self.host_clock());
+        }
         {
             let mut frames = self.frames.borrow_mut();
             let Some(run) = frames.run_mut() else {

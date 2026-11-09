@@ -10,8 +10,11 @@ use crate::RuntimeServices as _;
 use automerge::{AutoCommit, ROOT, transaction::Transactable};
 use collab_types::CommitNamed as _;
 use ed25519_dalek::SigningKey;
-use std::sync::Arc;
-use tilo_delivery_protocol::workspace_join::{WORKSPACE_JOIN_ALPN, WorkspaceJoinService};
+use iroh::protocol::DynProtocolHandler;
+use std::{sync::Arc, time::Duration};
+use tilo_delivery_protocol::workspace_join::{
+    IrohWorkspaceHostHintV1, WORKSPACE_JOIN_ALPN, WorkspaceJoinService,
+};
 use tilo_peer_state::join::{self, JoinTransportRequest, JoinTransportResponse, MemberRole};
 use tilo_peer_state::owner::testing::governor::TestGovernor;
 use tilo_peer_state::owner_commit::CommitOperation;
@@ -23,8 +26,56 @@ type Authority = Arc<std::sync::Mutex<TestGovernor>>;
 /// What a sealed write says, which no file outside its key holders may hold.
 const SECRET: &str = "only the workspace's key holders read this";
 
+/// The workspace's host on the fixture's endpoint, as the governor's copy of
+/// it: the certified host device admits the members the governor admitted,
+/// carries each member's frames on to the others, and keeps none of their
+/// content.
 #[derive(Clone)]
-struct JoinService(Authority);
+struct HostParts {
+    authority: Authority,
+    host: DeviceCert,
+    host_key: SigningKey,
+    serving: tilo_peer_state::direct::Serving,
+}
+
+impl HostParts {
+    /// Serve the workspace as the governor holds it now: the members a join
+    /// just admitted are admitted here from then on.
+    fn serve(&self) {
+        let peer = self.authority.lock().unwrap().peer().clone();
+        let link = DirectSync::over(
+            tilo_peer_state::direct::Replica::new(peer),
+            self.host_key.clone(),
+        );
+        self.serving.serve(link.clone()).unwrap();
+        let host = tilo_peer_state::peer_handle(&self.host.device_public_key);
+        let mut heard = link.heard();
+        tilo_rt::app().spawn(async move {
+            while let Ok(frame) = heard.recv().await {
+                let NeighbourMsg::RecordContentWant {
+                    requester,
+                    app_id,
+                    cluster_id,
+                    hash,
+                } = frame.message
+                else {
+                    continue;
+                };
+                let lacks = NeighbourMsg::RecordContentLacks {
+                    responder: host,
+                    requester,
+                    app_id,
+                    cluster_id,
+                    hash,
+                };
+                let _ = link.send(lacks);
+            }
+        });
+    }
+}
+
+#[derive(Clone)]
+struct JoinService(HostParts);
 impl std::fmt::Debug for JoinService {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str("JoinService")
@@ -36,7 +87,11 @@ impl WorkspaceJoinService for JoinService {
         remote: [u8; 32],
         request: JoinTransportRequest,
     ) -> JoinTransportResponse {
-        self.0.lock().unwrap().handle(remote, request)
+        let response = self.0.authority.lock().unwrap().handle(remote, request);
+        // The governor committed the join: the host serves the workspace as it
+        // stands now, the newcomer admitted with it.
+        self.0.serve();
+        response
     }
 }
 
@@ -77,6 +132,7 @@ impl Joined {
             issued_at_ns: 1,
             expires_at_ns: None,
             signature: [0; 64],
+            issuer: None,
         };
         sign_device_cert(&mut cert, &root).unwrap();
         let joined = Self::open(
@@ -138,18 +194,15 @@ impl Joined {
     }
 }
 
-/// A workspace its governor's certified host serves over a relay with the join
-/// service, and the governor's own session on it once it publishes.
+/// A workspace its governor's certified host serves over an endpoint with the
+/// join service and its direct links, and the governor's own session on it
+/// once it publishes.
 struct HostedWorkspace {
     authority: Authority,
     relay: tilo_relay::Relay,
-    server: iroh::Endpoint,
-    relay_root: std::path::PathBuf,
     workspace: WorkspaceId,
-    topic: u64,
     governor: DeviceCert,
     governor_key: SigningKey,
-    host: DeviceCert,
     hint: join::TransportHint,
 }
 
@@ -160,7 +213,10 @@ impl HostedWorkspace {
         let governor_key = governing.governor_key().clone();
         let host = governing.host().clone();
         let host_key = governing.host_key().clone();
+        // The host's endpoint is keyed by its device key: a member device dials
+        // it as the workspace's host, which is what its links admit.
         let server = iroh::Endpoint::builder(iroh::endpoint::presets::Minimal)
+            .secret_key(iroh::SecretKey::from_bytes(&host_key.to_bytes()))
             .relay_mode(iroh::RelayMode::Disabled)
             .bind_addr((std::net::Ipv4Addr::LOCALHOST, 0))
             .unwrap()
@@ -182,6 +238,13 @@ impl HostedWorkspace {
             .save_snapshot(&baseline)
             .unwrap();
         let authority: Authority = Arc::new(std::sync::Mutex::new(governing));
+        let hosted = HostParts {
+            authority: Arc::clone(&authority),
+            host: host.clone(),
+            host_key: host_key.clone(),
+            serving: tilo_peer_state::direct::Serving::new(),
+        };
+        let join = JoinService(hosted.clone());
         let relay = tilo_relay::Relay::start_on_endpoint_with_protocols(
             tilo_relay::RelayConfig {
                 state_root: relay_root.clone(),
@@ -200,25 +263,26 @@ impl HostedWorkspace {
                 revocations: RevocationList::new(),
             },
             server.clone(),
-            vec![(
-                WORKSPACE_JOIN_ALPN.to_vec(),
-                Box::new(WorkspaceJoinProtocol::new(JoinService(Arc::clone(
-                    &authority,
-                )))),
-            )],
+            vec![
+                (
+                    WORKSPACE_JOIN_ALPN.to_vec(),
+                    Box::new(WorkspaceJoinProtocol::new(join)) as Box<dyn DynProtocolHandler>,
+                ),
+                (
+                    tilo_peer_state::direct::DIRECT_ALPN.to_vec(),
+                    Box::new(hosted.serving.clone()) as Box<dyn DynProtocolHandler>,
+                ),
+            ],
         )
         .await
         .unwrap();
+        hosted.serve();
         Self {
             authority,
             relay,
-            server,
-            relay_root,
             workspace,
-            topic,
             governor,
             governor_key,
-            host,
             hint,
         }
     }
@@ -236,60 +300,24 @@ impl HostedWorkspace {
         join::encode_invitation_text(&signed)
     }
 
-    /// Admit the workspace's current members at the relay, open the governor's
-    /// session once `member` is subscribed, and publish the workspace's history
-    /// through it.
-    async fn publish_history(&self, member: [u8; 32]) -> (RelayCoeditSession, iroh::Endpoint) {
-        let (access, publications) = {
-            let owner = self.authority.lock().unwrap();
-            (
-                owner.governed_access(SystemTime::now()).unwrap(),
-                owner
-                    .outgoing()
-                    .map(|(bytes, kind)| (bytes.to_vec(), kind))
-                    .collect::<Vec<_>>(),
-            )
-        };
-        self.relay
-            .replace_governed_workspace_access(self.topic, true, access, self.relay_root.clone())
-            .await
-            .unwrap();
-        let endpoint = local_endpoint(&self.governor_key).await;
-        let client = tilo_relay::RelayClient::connect_v2_to_enrolled_home_peer(
-            endpoint.clone(),
-            self.server.addr(),
-            self.host.user_public_key,
-            self.host.device_public_key,
-            self.governor.clone(),
+    /// The governor's own device, linked to the workspace's host as another of
+    /// its member devices: what it sends crosses the host to every member, and
+    /// what they send reaches it. The endpoint the link dials from comes back
+    /// with it: dropping an endpoint ends its links.
+    async fn member_link(&self) -> (DirectSync, iroh::Endpoint) {
+        let link = DirectSync::new(
+            self.authority.lock().unwrap().peer().clone(),
             self.governor_key.clone(),
-            RevocationList::new(),
-        )
-        .await
-        .unwrap();
-        let publisher =
-            RelayCoeditSession::join(client, self.topic, self.governor.device_public_key).unwrap();
-        tilo_test_env::within("the governor's session", async {
-            while !matches!(publisher.recv().await, Some(Inbound::Ready { .. })) {}
-        })
-        .await;
-        tilo_test_env::within("the member's session", async {
-            while !self.relay.is_subscribed(self.topic, &member).await {
-                tokio::time::sleep(Duration::from_millis(20)).await;
-            }
-        })
-        .await;
-        for (bytes, kind) in &publications {
-            let message: NeighbourMsg = postcard::from_bytes(bytes).unwrap();
-            let checkpoint = *kind == neighbour_wire::Retention::Checkpoint;
-            let (channel, _) = neighbour_wire::retention(&message, checkpoint).unwrap();
-            if checkpoint {
-                publisher.publish_checkpoint(channel, bytes.clone())
-            } else {
-                publisher.publish_retained_delta(channel, bytes.clone())
-            }
-            .unwrap();
-        }
-        (publisher, endpoint)
+        );
+        let (payload, _) =
+            IrohWorkspaceHostHintV1::authenticate_transport_hint(&self.hint).unwrap();
+        let endpoint = local_endpoint(&self.governor_key).await;
+        let dialed = link.dial(&endpoint, payload.endpoint_addr).await.unwrap();
+        let running = link.clone();
+        tilo_rt::app().spawn(async move {
+            let _ = dialed.run(&running).await;
+        });
+        (link, endpoint)
     }
 }
 
@@ -320,10 +348,7 @@ fn assert_changed_custody_refused(joined: &Joined, workspace: WorkspaceId, actor
         governance_wake: joined.governance_wake(),
         keys: joined.keys.clone(),
         content: std::sync::OnceLock::new(),
-        requesters: content::Requesters::default(),
         own_host: std::sync::OnceLock::new(),
-        commits: Mutex::new(std::collections::HashMap::new()),
-        live_changed: Notify::new(),
         this: std::sync::Weak::new(),
     };
     assert!(
@@ -530,6 +555,7 @@ async fn a_foreign_runtime_joins_a_hosted_workspace_as_an_editor_and_syncs_both_
         issued_at_ns: 1,
         expires_at_ns: None,
         signature: [0; 64],
+        issuer: None,
     };
     sign_device_cert(&mut device, &root_key).unwrap();
     let invitation = governing.invite(device.user_public_key);
@@ -675,10 +701,12 @@ async fn a_foreign_runtime_joins_a_hosted_workspace_as_an_editor_and_syncs_both_
         "the enrollment is kept in the profile's own record"
     );
 
-    // The governor publishes the workspace's history through its host; the
-    // runtime's own session admits it.
-    let (publisher, publisher_endpoint) = governing.publish_history(device.device_public_key).await;
-    let chat = tilo_test_env::within("the governor's history", async {
+    // The governor's device is linked to the workspace's host as its other
+    // members are; the workspace's history reaches the runtime over its own
+    // link, which catches up from the host.
+    let (governor, _governor_endpoint) = governing.member_link().await;
+    let mut heard = governor.heard();
+    let chat = tilo_test_env::within("the workspace's history", async {
         loop {
             if let Ok(chat) = joined.owner.with_current(workspace, |view| {
                 view.peer()
@@ -723,10 +751,10 @@ async fn a_foreign_runtime_joins_a_hosted_workspace_as_an_editor_and_syncs_both_
         })
         .await;
     receipt.expect("a member's write commits to the joined workspace");
-    tilo_test_env::within("the write at the governor", async {
+    tilo_test_env::within("the write at the host's link", async {
         loop {
-            if let Some(Inbound::Delta { author, .. }) = publisher.recv().await
-                && author == device.device_public_key
+            if let Ok(heard) = heard.recv().await
+                && heard.author == device.device_public_key
             {
                 break;
             }
@@ -785,11 +813,11 @@ async fn a_foreign_runtime_joins_a_hosted_workspace_as_an_editor_and_syncs_both_
         })
         .await
         .expect("a keyless member keeps a sealed write as ciphertext");
-    tilo_test_env::within("the sealed write at the governor", async {
+    tilo_test_env::within("the sealed write at the host's link", async {
         loop {
-            if let Some(Inbound::Delta { author, data }) = publisher.recv().await
-                && author == device.device_public_key
-                && let Ok(NeighbourMsg::AppDocument { envelope, .. }) = postcard::from_bytes(&data)
+            if let Ok(heard) = heard.recv().await
+                && heard.author == device.device_public_key
+                && let NeighbourMsg::AppDocument { envelope, .. } = heard.message
                 && envelope.encryption.is_some()
             {
                 break;
@@ -822,8 +850,7 @@ async fn a_foreign_runtime_joins_a_hosted_workspace_as_an_editor_and_syncs_both_
             .is_err(),
         "stale identity removes the selected audience"
     );
-    publisher.close().await;
-    publisher_endpoint.close().await;
+    drop(governor);
     governing.relay.shutdown().await;
     for (file, bytes) in settled_files(directory.path()) {
         assert!(
@@ -876,15 +903,14 @@ fn a_live_sdk_app_in_a_joined_workspace_gets_its_keys_from_the_device() {
         .unwrap();
     let workspace = session.joiner().unwrap()(&governing.invite(device.user_public_key)).unwrap();
     assert_eq!(workspace, governing.workspace.to_string());
-    let (publisher, publisher_endpoint) = tilo_rt::app()
-        .block_on(governing.publish_history(device.device_public_key))
-        .unwrap();
+    let (governor, _governor_endpoint) = tilo_rt::app().block_on(governing.member_link()).unwrap();
+    let mut heard = governor.heard();
     // A member writes only into a record it holds, and joining brings the
     // workspace's governance alone: the chat record arrives through the workspace's
-    // sync, once the host has kept the governor's history. The app opens
+    // link to its host, which catches up from what the host keeps. The app opens
     // in the workspace as it stands then.
     tilo_rt::app()
-        .block_on(tilo_test_env::within("the governor's history", async {
+        .block_on(tilo_test_env::within("the workspace's history", async {
             while session
                 .joined
                 .owner
@@ -932,11 +958,9 @@ fn a_live_sdk_app_in_a_joined_workspace_gets_its_keys_from_the_device() {
             "the SDK app's sealed write at the workspace",
             async {
                 loop {
-                    if let Inbound::Delta { author, data } =
-                        publisher.recv().await.expect("the workspace's session")
-                        && author == device.device_public_key
-                        && let Ok(NeighbourMsg::AppDocument { envelope, .. }) =
-                            postcard::from_bytes(&data)
+                    if let Ok(heard) = heard.recv().await
+                        && heard.author == device.device_public_key
+                        && let NeighbourMsg::AppDocument { envelope, .. } = heard.message
                         && envelope.encryption.is_some()
                     {
                         break *envelope;
@@ -978,12 +1002,9 @@ fn a_live_sdk_app_in_a_joined_workspace_gets_its_keys_from_the_device() {
         .unwrap()
         .and_then(|(value, _)| value.into_string().ok());
     assert_eq!(text.as_deref(), Some(SDK_WRITTEN));
+    drop(governor);
     tilo_rt::app()
-        .block_on(async {
-            publisher.close().await;
-            publisher_endpoint.close().await;
-            governing.relay.shutdown().await;
-        })
+        .block_on(async { governing.relay.shutdown().await })
         .unwrap();
     // Neither the runtime's profile nor the host keeps it in the clear.
     for root in [&profile, &governor_root] {
@@ -1113,6 +1134,7 @@ async fn a_joined_workspace_s_record_content_crosses_the_host_both_ways() {
         issued_at_ns: 1,
         expires_at_ns: None,
         signature: [0; 64],
+        issuer: None,
     };
     sign_device_cert(&mut device, &root_key).unwrap();
     let invitation = governing.invite(device.user_public_key);
@@ -1135,7 +1157,8 @@ async fn a_joined_workspace_s_record_content_crosses_the_host_both_ways() {
     .unwrap();
     let content = content::record_content_on(&joined, Arc::new(Shelf::default()));
     assert_eq!(joined.join(&invitation).await.unwrap(), workspace);
-    let (governor, _endpoint) = governing.publish_history(device.device_public_key).await;
+    let (governor, _governor_endpoint) = governing.member_link().await;
+    let mut heard = governor.heard();
     let governor_handle = peer_handle(&governing.governor.device_public_key);
     let runtime_handle = peer_handle(&device.device_public_key);
     let route = tilo_action_broker::route::CrdtRoute::record(
@@ -1155,13 +1178,13 @@ async fn a_joined_workspace_s_record_content_crosses_the_host_both_ways() {
             content.want(&route, &hash);
             let request = tokio::time::timeout(Duration::from_millis(500), async {
                 loop {
-                    if let Some(Inbound::Presence { author, payload }) = governor.recv().await
-                        && author == device.device_public_key
-                        && let Ok(NeighbourMsg::RecordContentWant {
+                    if let Ok(heard) = heard.recv().await
+                        && heard.author == device.device_public_key
+                        && let NeighbourMsg::RecordContentWant {
                             requester,
                             hash: asked,
                             ..
-                        }) = postcard::from_bytes(&payload)
+                        } = heard.message
                     {
                         break (requester, asked);
                     }
@@ -1187,12 +1210,7 @@ async fn a_joined_workspace_s_record_content_crosses_the_host_both_ways() {
             offset: (index * PIECE_BYTES) as u64,
             bytes: chunk.to_vec(),
         };
-        governor
-            .publish_record_content(
-                device.device_public_key,
-                postcard::to_allocvec(&piece).unwrap(),
-            )
-            .unwrap();
+        governor.send(piece).unwrap();
     }
     // Where the want stood comes first; then the picture.
     let arrival = tilo_test_env::within("the picture at the runtime", async {
@@ -1213,39 +1231,30 @@ async fn a_joined_workspace_s_record_content_crosses_the_host_both_ways() {
         cluster_id: route.cluster_id.clone(),
         hash: hash.clone(),
     };
-    governor
-        .publish_presence(postcard::to_allocvec(&want).unwrap())
-        .unwrap();
+    governor.send(want).unwrap();
     let mut gathered = vec![0_u8; picture.len()];
     let mut received = 0;
     tilo_test_env::within("the picture at the governor", async {
         while received < picture.len() {
-            if let Some(Inbound::RecordContent { from, frame }) = governor.recv().await {
-                // The host, which keeps none of it, says so: the picture
-                // comes from the runtime.
-                if from == governing.host.device_public_key
-                    && matches!(
-                        postcard::from_bytes(&frame),
-                        Ok(NeighbourMsg::RecordContentLacks { .. })
-                    )
-                {
-                    continue;
-                }
-                assert_eq!(from, device.device_public_key);
-                let Ok(NeighbourMsg::RecordContentPiece {
-                    requester,
-                    offset,
-                    bytes,
-                    ..
-                }) = postcard::from_bytes(&frame)
-                else {
-                    panic!("a piece of record content");
-                };
-                assert_eq!(requester, governor_handle);
-                let start = usize::try_from(offset).unwrap();
-                gathered[start..start + bytes.len()].copy_from_slice(&bytes);
-                received += bytes.len();
-            }
+            let Ok(heard) = heard.recv().await else {
+                panic!("the governor's link ended");
+            };
+            // The host, which keeps none of it, says so: the picture
+            // comes from the runtime.
+            let NeighbourMsg::RecordContentPiece {
+                requester,
+                offset,
+                bytes,
+                ..
+            } = heard.message
+            else {
+                continue;
+            };
+            assert_eq!(heard.author, device.device_public_key);
+            assert_eq!(requester, governor_handle);
+            let start = usize::try_from(offset).unwrap();
+            gathered[start..start + bytes.len()].copy_from_slice(&bytes);
+            received += bytes.len();
         }
     })
     .await;
@@ -1277,6 +1286,7 @@ async fn a_want_through_the_host_waits_for_its_offline_holder_and_arrives_when_i
         issued_at_ns: 1,
         expires_at_ns: None,
         signature: [0; 64],
+        issuer: None,
     };
     sign_device_cert(&mut device, &root_key).unwrap();
     let invitation = governing.invite(device.user_public_key);
@@ -1299,8 +1309,7 @@ async fn a_want_through_the_host_waits_for_its_offline_holder_and_arrives_when_i
     .unwrap();
     let content = content::record_content_on(&joined, Arc::new(Shelf::default()));
     assert_eq!(joined.join(&invitation).await.unwrap(), workspace);
-    // The holder publishes the workspace's history, then goes offline.
-    drop(governing.publish_history(device.device_public_key).await);
+    // The holder is offline: it is no device of the workspace's link yet.
     let governor_handle = peer_handle(&governing.governor.device_public_key);
     let runtime_handle = peer_handle(&device.device_public_key);
     let route = tilo_action_broker::route::CrdtRoute::record(
@@ -1331,17 +1340,17 @@ async fn a_want_through_the_host_waits_for_its_offline_holder_and_arrives_when_i
 
     // The holder connects to the host: the want is asked of it, and it
     // answers with the book.
-    let (holder, _endpoint) = governing.publish_history(device.device_public_key).await;
-    holder.live_join().unwrap();
+    let (holder, _holder_endpoint) = governing.member_link().await;
+    let mut heard = holder.heard();
     tilo_test_env::within("the want asked of the holder", async {
         loop {
-            if let Some(Inbound::Presence { author, payload }) = holder.recv().await
-                && author == device.device_public_key
-                && let Ok(NeighbourMsg::RecordContentWant {
+            if let Ok(heard) = heard.recv().await
+                && heard.author == device.device_public_key
+                && let NeighbourMsg::RecordContentWant {
                     requester,
                     hash: asked,
                     ..
-                }) = postcard::from_bytes(&payload)
+                } = heard.message
             {
                 assert_eq!((requester, asked.as_str()), (runtime_handle, hash.as_str()));
                 break;
@@ -1365,12 +1374,7 @@ async fn a_want_through_the_host_waits_for_its_offline_holder_and_arrives_when_i
             offset: (index * PIECE_BYTES) as u64,
             bytes: chunk.to_vec(),
         };
-        holder
-            .publish_record_content(
-                device.device_public_key,
-                postcard::to_allocvec(&piece).unwrap(),
-            )
-            .unwrap();
+        holder.send(piece).unwrap();
     }
     let arrived = tilo_test_env::within("the book at the runtime", news.recv())
         .await

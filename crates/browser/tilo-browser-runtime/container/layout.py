@@ -5,20 +5,22 @@ usage: layout.py BUNDLE_DIR SITE_DIR
 The bundle's files keep their names, which say nothing about their content,
 so the whole bundle goes under one directory named after its content,
 `v/<hash>/`, which never changes once published and is cached as immutable.
-Only the two entry pages (`index.html`, `app/index.html`) stay at the top,
-revalidated on every visit and pointing into that directory, and beside them
-their home-screen icon (`apple-touch-icon.png`), where Safari also looks for
-it unasked; every other file is found relative to its module
-(`import.meta.url`), so it follows. The entry configuration (`entry.json`) is
-written when the container starts.
+Only the pages stay at the top — the two entry pages (`index.html`,
+`app/index.html`) and the sign-in page (`sign-in.html`, where a service's
+sign-in link lands) — revalidated on every visit and pointing into that
+directory, and beside them their home-screen icon (`apple-touch-icon.png`),
+where Safari also looks for it unasked; every other file is found relative to
+its module (`import.meta.url`), so it follows. The entry configuration
+(`entry.json`) is written when the container starts.
 
-A first visit starts at one module, `entry-page.mjs`, and the browser learns
-of the modules it imports only after downloading and parsing it: at sixty-odd
-modules three and four levels deep that is a waterfall of round trips before
-the editor runs. So the page names every module `entry-page.mjs` statically
-imports, in the order a browser meets them, as `<link rel="modulepreload">`
-next to the hints the page was written with; each is then fetched at once,
-alongside the start module.
+A first visit starts at one module, and the browser learns of the modules it
+imports only after downloading and parsing it: at sixty-odd modules three and
+four levels deep that is a waterfall of round trips before the editor runs.
+So each page names every module its start module statically imports, in the
+order a browser meets them, as `<link rel="modulepreload">` next to the hints
+the page was written with; each is then fetched at once, alongside the start
+module. The sign-in page's graph is four modules, the entry page's sixty-odd:
+one round trip beyond the page either way.
 """
 
 import hashlib
@@ -122,38 +124,54 @@ version = hashlib.sha256(json.dumps(files, sort_keys=True).encode()).hexdigest()
 assets = site / 'v' / version
 shutil.copytree(bundle, assets)
 
-modules = graph(assets / 'entry-page.mjs')
-# The bundle is the bundle: a module the entry module imports and it lacks is
-# a broken build, not a page to serve.
-missing = [module for module in modules if not module.is_file()]
-missing += [target for module in modules for target in static_imports(module)
-            if not target.is_file()]
-if missing:
-    sys.exit(f'{missing[0].relative_to(assets)} is imported but not in the bundle')
-names = [module.relative_to(assets).as_posix() for module in modules]
+# Each page starts one module, names it by a path of its own, and preloads it
+# (so a page laid out without this step still starts at once). A bundle built
+# for a site that serves no sign-in page — an app's own — carries none, and is
+# laid out without one.
+pages = {'index.html': './entry-page.mjs', 'app/index.html': '../entry-page.mjs',
+         'sign-in.html': './sign-in.mjs'}
+pages = {page: entry for page, entry in pages.items() if (assets / page).is_file()}
+graphs = {}
+for entry in dict.fromkeys(pages.values()):
+    start = pathlib.PurePosixPath(entry).name
+    # The bundle is the bundle: a module a page's start module imports and it
+    # lacks is a broken build, not a page to serve.
+    modules = graph(assets / start)
+    missing = [module for module in modules if not module.is_file()]
+    missing += [target for module in modules for target in static_imports(module)
+                if not target.is_file()]
+    if missing:
+        sys.exit(f'{missing[0].relative_to(assets)} is imported but not in the bundle')
+    graphs[entry] = [module.relative_to(assets).as_posix() for module in modules]
 
-# Each page imports the entry module by a path of its own, and names a few
-# files by path besides; all of them are in the versioned directory.
-pages = {'index.html': './entry-page.mjs', 'app/index.html': '../entry-page.mjs'}
 for page, entry in pages.items():
-    prefix = '../' if page.startswith('app/') else './'
+    start = pathlib.PurePosixPath(entry).name
+    names = graphs[entry]
+    prefix = '../' if '/' in page else './'
     text = (assets / page).read_text()
     statement = f"from '{entry}';"
     if text.count(statement) != 1:
         sys.exit(f'{page}: expected one import of {entry}')
-    text = text.replace(statement, f"from '{prefix}v/{version}/entry-page.mjs';")
+    text = text.replace(statement, f"from '{prefix}v/{version}/{start}';")
     for rel in ('preload', 'modulepreload'):
         hint = f'<link rel="{rel}" href="{prefix}'
         text = text.replace(hint, f'{hint}v/{version}/')
-    # The entry module the page preloads itself (so a page laid out without
-    # this step still starts it at once) leads the graph's hints; every other
-    # module it reaches gets one here.
-    entry = 'entry-page.mjs'
-    anchor = f'<link rel="modulepreload" href="{prefix}v/{version}/{entry}">'
+    # A module the page loads by a script of its own (the first screen's,
+    # which works before the entry module is in) is in the bundle too, and
+    # moves with it: left at the page's path it would be a request for nothing.
+    def versioned(match):
+        name = match.group(2)
+        if not (assets / name).is_file():
+            sys.exit(f'{page}: loads {name}, which is not in the bundle')
+        return f'{match.group(1)}{prefix}v/{version}/{name}"'
+    text = re.sub(r'(<script\b[^>]*\bsrc=")' + re.escape(prefix) + r'(?!v/)([^"]+\.m?js)"', versioned, text)
+    # The start module the page preloads itself leads the graph's hints; every
+    # other module it reaches gets one here.
+    anchor = f'<link rel="modulepreload" href="{prefix}v/{version}/{start}">'
     if text.count(anchor) != 1:
-        sys.exit(f'{page}: expected one modulepreload of {entry}')
+        sys.exit(f'{page}: expected one modulepreload of {start}')
     for name in names:
-        if name == entry:
+        if name == start:
             continue
         text = re.sub(r'\n[ \t]*' + re.escape(f'<link rel="modulepreload" href="{prefix}v/{version}/{name}">'),
                       '', text)
@@ -165,7 +183,8 @@ for page, entry in pages.items():
     # Only the pages at the top are entries: a copy under v/ would be served
     # with the entry.json of its own directory, which is not the home one.
     (assets / page).unlink()
-(assets / 'app').rmdir()
+if (assets / 'app').is_dir():
+    (assets / 'app').rmdir()
 (assets / 'apple-touch-icon.png').rename(site / 'apple-touch-icon.png')
 (site / 'version.json').write_text(json.dumps({'version': version, 'revision': build['revision']}) + '\n')
 print(version)

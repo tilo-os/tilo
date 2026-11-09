@@ -16,6 +16,7 @@ import {createHere} from './here.mjs';
 import {fetchPersonProfile,followPhotos,photoPixels} from './profile-photos.mjs';
 import {createPresentedSource} from './panorama.mjs';
 import {createSemanticPresentation} from './semantic-presentation.mjs';
+import {createDomPresenter} from './dom-present.mjs';
 export {createPanorama} from './panorama.mjs';
 import {createNativeCatalogueBridge, invokeMembershipAction, runRecordAction} from './native-catalogue.mjs';
 import {isWebKit,webgpuRefusal} from './webgpu-safety.mjs';
@@ -104,6 +105,53 @@ export function prefetchApplication(app,{fetch=globalThis.fetch,load=()=>import(
     if(typeof module==='string')(await load()).prefetch(module);
   })().catch(()=>{});
 }
+/** The name `apps.json` gives `app`, or `null`: what the bar over one app calls it. */
+export async function applicationName(app,{fetch=globalThis.fetch}={}){
+  const listed=(await applications(fetch)).find(entry=>entry.id===app);
+  return typeof listed?.name==='string'?listed.name:null;
+}
+/** How many apps' modules `prefetchOfferedApplications` fetches and compiles
+ * at once. A desktop offers dozens; fetching them all at once saturates the
+ * link the person's own work shares, so a bounded few go at a time, each in
+ * an idle period, and the rest wait for one to finish. */
+const PREFETCH_AT_ONCE=2;
+/** Fetch and compile the modules of every app the desktop offers, in the
+ * background after the page has drawn its first frame.
+ *
+ * The desktop bundle names each app's module in `apps.json`, and an app
+ * whose module is not yet in has nothing to draw when the person opens it:
+ * its window appears at once but stays a placeholder until the module lands
+ * — on a cold page, the seconds before an app the person chose shows
+ * anything. The apps the desktop offers do not depend on what the person
+ * opens, so their modules are fetched ahead of time, starting after the
+ * first frame so nothing of it delays what the person sees. It never
+ * competes: [`PREFETCH_AT_ONCE`] modules at a time, each in the page's idle
+ * period (or a timeout when it is never idle), and the browser's HTTP cache
+ * and the splitter's own compiled-module cache keep what came, so an app
+ * opened later instantiates without fetching or compiling again.
+ *
+ * An app the listing does not name, or a module that fails, is left to the
+ * app's first open, as without this: a prefetch never breaks a page. It runs
+ * once; asking again is the same run. */
+let offeredPrefetch;
+export function prefetchOfferedApplications({fetch=globalThis.fetch,load=()=>import('./pkg/__wasm_split.js'),after=ready,idle=globalThis.requestIdleCallback??(run=>setTimeout(()=>run({timeRemaining:()=>4}),0))}={}){
+  offeredPrefetch??=(async()=>{
+    const [modules]=await Promise.all([applications(fetch),after()]);
+    const names=modules.map(entry=>entry.module).filter(name=>typeof name==='string');
+    if(!names.length)return;
+    const compiled=await load();
+    let next=0;
+    const worker=async()=>{
+      while(next<names.length){
+        const name=names[next++];
+        await new Promise(resolve=>idle(resolve));
+        try{await compiled.prefetch(name);}catch{}
+      }
+    };
+    await Promise.all(Array.from({length:Math.min(PREFETCH_AT_ONCE,names.length)},worker));
+  })().catch(()=>{});
+  return offeredPrefetch;
+}
 export async function openProfileStorage(profile,device,options={}){await ready();return durableHost.open(profile,device,options);}
 export async function mountDesktop(target,options={}) {
   const token=registry.begin(target);
@@ -124,6 +172,23 @@ export async function mountDesktop(target,options={}) {
   const commandStatus=document.createElement('div');commandStatus.setAttribute('role','status');commandStatus.setAttribute('aria-live','polite');
   const status=createHostStatus(commandStatus);
   surface.append(canvas,editor,accessibility,commandStatus);target.append(surface);
+  // Shown as HTML (`dom: true`): the frames are built as elements in a layer
+  // under the canvas, which stays the input surface but shows nothing. A
+  // wheel over one of the layer's scroll containers scrolls it natively
+  // (below); `selectText(true)` lets the pointer through to the layer, where
+  // the browser's own text selection works on the real text.
+  let domPresenter;
+  if(options.dom){
+    const domLayer=document.createElement('div');domLayer.className='tilo-dom';
+    domLayer.style.cssText='position:absolute;inset:0;overflow:hidden;contain:strict;user-select:text;-webkit-user-select:text;';
+    canvas.style.cssText+='position:absolute;inset:0;opacity:0;';
+    surface.prepend(domLayer);
+    domPresenter=createDomPresenter(domLayer,{onFrame:options.onDomFrame,onScroll:(key,offset)=>{
+      if(id===undefined||closed)return;
+      try{runtime.dom_scrolled(id,key,offset);}catch(error){report({domScroll:String(error)});}
+    }});
+    globalThis.__tiloDom={stats:domPresenter.stats,layer:domLayer,selectText:on=>{canvas.style.pointerEvents=on?'none':'';}};
+  }
   const fillScreen=createScreenFill(surface,{canvas,observe:globalThis.ResizeObserver});
   let id,storage,closed=false,crashed=false,composing=false,pasteShift=false,lastState,readyResolve,readyReject,persistenceFailed=false;
   const presented=new Promise((resolve,reject)=>{readyResolve=resolve;readyReject=reject;});
@@ -150,7 +215,7 @@ export async function mountDesktop(target,options={}) {
   if(options.models)config.models={endpoint:options.models.endpoint,sessionToken:options.models.sessionToken,profileId:options.models.profileId,modelId:options.models.modelId};
   // Administration is opt-in and never borrows the inference session token.
   if(options.providerManagement)config.providerManagement={endpoint:options.providerManagement.endpoint,sessionToken:options.providerManagement.sessionToken};
-  delete config.peer;if(options.peer?.runtimeId!==undefined)config.peer=options.peer.runtimeId;delete config.settings;delete config.onNavigation;delete config.onStatus;delete config.signal;delete config.loadAsset;delete config.actionsV1;delete config.subscribeDesktopCommits;delete config.live;delete config.liveMembers;delete config.restartOnCrash;delete config.presenceUrl;
+  delete config.peer;if(options.peer?.runtimeId!==undefined)config.peer=options.peer.runtimeId;delete config.settings;delete config.onNavigation;delete config.onStatus;delete config.signal;delete config.loadAsset;delete config.actionsV1;delete config.subscribeDesktopCommits;delete config.live;delete config.liveMembers;delete config.restartOnCrash;delete config.presenceUrl;delete config.dom;delete config.onDomFrame;
   // The desktop shows its invite sheet when the page configures one: what it
   // makes links through, as `mountDesktop({invite})` hands it over.
   delete config.onInvite;
@@ -193,8 +258,20 @@ export async function mountDesktop(target,options={}) {
     keydown:(...args)=>{inputScope.capture();return active()&&semanticKeys?.keydown(...args);},
     keyup:(...args)=>{inputScope.capture();return active()&&semanticKeys?.keyup(...args);},
     blur:owner=>{inputScope.capture();if(active())semanticKeys?.blur(owner);},
-  },inputScope);
+  },inputScope,domPresenter?.host);
   const listeners=new AbortController();const on=(node,type,fn,opts={})=>node.addEventListener(type,fn,{...opts,signal:listeners.signal});
+  // A wheel over a scroll container of the HTML layer moves that container,
+  // as on any page: the browser shows the move at once, and the widget hears
+  // of it through the container's scroll (`dom_scrolled`). Anything else is
+  // the canvas's, which hands it to the runtime.
+  if(domPresenter)on(surface,'wheel',event=>{
+    if(event.ctrlKey||!active())return;
+    const dy=event.deltaMode===1?event.deltaY*40:event.deltaMode===2?event.deltaY*surface.clientHeight:event.deltaY;
+    const scroller=dy&&domPresenter.scrollerAt(event.clientX,event.clientY,dy);
+    if(!scroller)return;
+    event.preventDefault();event.stopPropagation();
+    scroller.scrollTop+=dy;
+  },{capture:true,passive:false});
   if(globalThis.ResizeObserver){const resized=new ResizeObserver(([entry])=>{canvasCssSize=[entry.contentRect.width,entry.contentRect.height];placeSemantics();});resized.observe(canvas);listeners.signal.addEventListener('abort',()=>resized.disconnect());}
   const editorListeners=[];
   function onEditor(type,fn,opts={}){
@@ -216,7 +293,9 @@ export async function mountDesktop(target,options={}) {
   }
   function active(){return !closed&&!crashed&&!surface.inert&&registry.current(token)&&id!==undefined&&runtimeReady;}
   // The pictures people chose for their profiles, worn by their avatars here.
-  async function showPhoto(user,url){const pixels=url?await photoPixels(url):null;if(active()&&runtime.desktop_set_person_photo)runtime.desktop_set_person_photo(id,user,pixels?.width??0,pixels?.height??0,pixels?.rgba??new Uint8Array());}
+  // The people on the desktop's bar and cards are the desktop's: a page
+  // showing one app has none to give a picture, links or a status to.
+  async function showPhoto(user,url){if(config.app)return;const pixels=url?await photoPixels(url):null;if(active()&&runtime.desktop_set_person_photo)runtime.desktop_set_person_photo(id,user,pixels?.width??0,pixels?.height??0,pixels?.rgba??new Uint8Array());}
   // What the person says they are doing and how they share it, as their
   // profile keeps it: set on another of their devices, it shows here too.
   function ownStatus(profile){
@@ -226,10 +305,10 @@ export async function mountDesktop(target,options={}) {
     // Whether their picture is a linked account's, which a newer one of
     // that account's replaces, or one they uploaded, which stays.
     options.onHostAction?.('set-linked',{photoFrom:typeof profile.photo_from==='string'?profile.photo_from:null,linked:Array.isArray(profile.linked)?profile.linked:[],keep:false});
-    if(active()&&runtime.desktop_set_own_status)runtime.desktop_set_own_status(id,status,sharing);
+    if(!config.app&&active()&&runtime.desktop_set_own_status)runtime.desktop_set_own_status(id,status,sharing);
   }
   // The accounts elsewhere someone's profile names, which their card says.
-  function showLinked(user,linked){if(active()&&runtime.desktop_set_person_links)runtime.desktop_set_person_links(id,user,JSON.stringify(linked));}
+  function showLinked(user,linked){if(!config.app&&active()&&runtime.desktop_set_person_links)runtime.desktop_set_person_links(id,user,JSON.stringify(linked));}
   const photos=followPhotos({profileOf:user=>fetchPersonProfile(options.peer.origin,user),show:showPhoto,linked:showLinked,own:()=>options.peer?.userPublicKey,onOwn:ownStatus,onError:error=>report({photoError:String(error)})});
   const nativeCatalogue = createNativeCatalogueBridge({current:active,
     actions:()=>options.peer?.actions,
@@ -251,7 +330,7 @@ export async function mountDesktop(target,options={}) {
       delete state.semanticsPatch;
     }
     nativeCatalogue.pump();
-    for(const request of state.hostRequests??[]){if(typeof request?.copy==='string')void writeClipboard(request.copy).then(()=>report({clipboard:'copied'}),error=>report({clipboard:'failed',clipboardError:String(error?.message??error)}));else if(request?.action)options.onHostAction?.(request.action);else if(typeof request?.named==='string')options.onHostAction?.('set-name',request.named);else if(request?.status)options.onHostAction?.('set-status',{...request.status,keep:true});else if(Array.isArray(request?.linked))options.onHostAction?.('set-linked',{accounts:request.linked,keep:true});else if(request?.joined)/* The directory's door let this person into a workspace: the page joins with the invitation it granted. */options.onJoinGranted?.(request.joined);else if(typeof request?.open==='string'){/* Signing in elsewhere (Connect Discord) leaves the page for that site, which sends the person back. */if(/^https?:\/\//.test(request.open))location.assign(request.open);}else if(request?.['room-action']){const asked=request['room-action'];void runRecordAction(options.peer?.actions,asked).then(answer=>{if(active())runtime.desktop_record_action_answer(id,asked.id,JSON.stringify(answer));});}}
+    for(const request of state.hostRequests??[]){if(typeof request?.copy==='string')void writeClipboard(request.copy).then(()=>report({clipboard:'copied'}),error=>report({clipboard:'failed',clipboardError:String(error?.message??error)}));else if(request?.action)options.onHostAction?.(request.action);else if(typeof request?.named==='string')options.onHostAction?.('set-name',request.named);else if(request?.status)options.onHostAction?.('set-status',{...request.status,keep:true});else if(Array.isArray(request?.linked))options.onHostAction?.('set-linked',{accounts:request.linked,keep:true});else if(typeof request?.revoke==='string')/* The person takes an agent's grant back: the root this tab holds revokes its device. */options.onHostAction?.('revoke-device',request.revoke);else if(request?.joined)/* The directory's door let this person into a workspace: the page joins with the invitation it granted. */options.onJoinGranted?.(request.joined);else if(typeof request?.open==='string'){/* Signing in elsewhere (Connect Discord) leaves the page for that site, which sends the person back. */if(/^https?:\/\//.test(request.open))location.assign(request.open);}else if(request?.['room-action']){const asked=request['room-action'];void runRecordAction(options.peer?.actions,asked).then(answer=>{if(active()&&!config.app)runtime.desktop_record_action_answer(id,asked.id,JSON.stringify(answer));});}}
     if('focusPresence' in state)liveLayer()?.publishPresence({selection:state.focusPresence});
     if('livePlace' in state){livePlace=state.livePlace;liveLayer()?.publishPresence({focus:livePlace?.focus??null,place:livePlace?.place??null,layout:livePlace?.layout??null});}
     // This person's latest wave, which the one it is for shows once.
@@ -426,8 +505,10 @@ export async function mountDesktop(target,options={}) {
     else on(options.signal,'abort',()=>registry.remove(token),{once:true});
   }
   try{
-    const refusal=webgpuRefusal();if(refusal)throw Error(refusal);
-    if(!navigator.gpu)throw Error('WebGPU is required for the Tilo Vello compute renderer');
+    if(!options.dom){
+      const refusal=webgpuRefusal();if(refusal)throw Error(refusal);
+      if(!navigator.gpu)throw Error('WebGPU is required for the Tilo Vello compute renderer');
+    }
     const startupFonts=fonts();void startupFonts.catch(()=>{});
     await ready();if(!registry.current(token))throw Error('mount disposed');
     mark('wasm-ready');
@@ -457,6 +538,7 @@ export async function mountDesktop(target,options={}) {
     // Each startup font goes in with the digest the loader computed natively,
     // which the runtime checks against its build instead of hashing again.
     for(const [name,bytes] of Object.entries(assets))runtime.provide_startup_font(name,bytes,fontLoader.digestOf(bytes)??'');
+    if(domPresenter)runtime.present_as_dom(domPresenter.present);
     id=runtime.mount(canvas,JSON.stringify(config),entries,raw=>{
       // Pin pixels and geometry while this presentation is still current,
       // before another presentation or a queued page callback can replace it.
@@ -599,16 +681,16 @@ export async function mountDesktop(target,options={}) {
       state:()=>lastState,canvas,captureSource:capture.handle,observeSemanticTarget:target=>semanticPresentation.observe(target),get editor(){return editor;},semantics:accessibility,requestSemantics,
       get navigation(){return navigation?.controller;},
       // Host actions (`[{id, title, subtitle?}]`) in place of earlier ones, and a banner offering one (`{action, title, body}`).
-      setHostActions:actions=>{if(active()&&runtime.desktop_set_host_actions)runtime.desktop_set_host_actions(id,JSON.stringify(actions));},
-      offerHostAction:offer=>{if(active()&&runtime.desktop_offer_host_action)runtime.desktop_offer_host_action(id,JSON.stringify(offer));},
+      setHostActions:actions=>{if(active()&&!config.app&&runtime.desktop_set_host_actions)runtime.desktop_set_host_actions(id,JSON.stringify(actions));},
+      offerHostAction:offer=>{if(active()&&!config.app&&runtime.desktop_offer_host_action)runtime.desktop_offer_host_action(id,JSON.stringify(offer));},
       // The picture `user` (root key, hex) chose, as a `data:` URL, shown on their avatars now; `null` takes it away.
       setPersonPhoto:(user,url)=>{photos.chose(user,url);return showPhoto(user,url);},
       // On a desktop with no workspace (the person's own), who it shows as its person (`{user, label}`): a workspace's peer names its own.
-      setOwnPerson:({user,label})=>{if(active()&&!options.peer&&runtime.desktop_set_people)runtime.desktop_set_people(id,JSON.stringify({own:{publisher:'own',kind:'person',label:String(label??''),user}}));},
+      setOwnPerson:({user,label})=>{if(active()&&!config.app&&!options.peer&&runtime.desktop_set_people)runtime.desktop_set_people(id,JSON.stringify({own:{publisher:'own',kind:'person',label:String(label??''),user}}));},
       // What the page just did out of sight, said in passing ("Link copied").
-      acknowledge:text=>{if(active()&&runtime.desktop_acknowledge)runtime.desktop_acknowledge(id,String(text));},
+      acknowledge:text=>{if(active()&&!config.app&&runtime.desktop_acknowledge)runtime.desktop_acknowledge(id,String(text));},
       // Who the desktop shows as here (`[{id, label, agent}]`, one row per person), or null for a single app.
-      people:()=>{const shown=active()&&runtime.desktop_here_people?.(id);return shown?JSON.parse(shown):null;},
+      people:()=>{const shown=active()&&!config.app&&runtime.desktop_here_people?.(id);return shown?JSON.parse(shown):null;},
       // What the workspace's live layer says of itself: whether it is live,
       // this page's publisher in it, the members it reads, and the publisher's
       // own counters and last publish error (`{state, publisher, members,

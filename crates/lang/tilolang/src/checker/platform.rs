@@ -222,7 +222,7 @@ impl Checker<'_> {
     }
 
     /// `steps(r)`: the history of `r` as people read it, newest first: consecutive versions by
-    /// the same person, or by the same task run, folded into one `host.Step`. Which versions
+    /// the same person, or by the same run, folded into one `host.Step`. Which versions
     /// fold is the platform's rule, the same in every app's history, so no view writes it.
     pub(super) fn builtin_steps(&mut self, args: &[ast::Arg], span: Span) -> Ex {
         let Some(r) = self.resource_arg("steps", args, span) else {
@@ -241,14 +241,10 @@ impl Checker<'_> {
         Ex::host(Imp::Unseen, vec![r], Ty::List(Box::new(host_ty("Version"))))
     }
 
-    /// `changes(of: run)`: every version the task run made, of every resource, oldest first.
+    /// `changes(of: run)`: every version the run made, of every resource, oldest first.
     pub(super) fn builtin_changes(&mut self, args: &[ast::Arg], span: Span) -> Ex {
         let [a] = args else {
-            self.err(
-                "E022",
-                span,
-                "`changes` takes one task run: `changes(of: run)`",
-            );
+            self.err("E022", span, "`changes` takes one run: `changes(of: run)`");
             return Ex::error();
         };
         if a.name.as_ref().is_some_and(|n| n.name != "of") {
@@ -258,7 +254,7 @@ impl Checker<'_> {
                 "`changes` takes the run as `of`: `changes(of: run)`",
             );
         }
-        let run_ty = host_ty("TaskRun");
+        let run_ty = host_ty("Run");
         let run = self.expr(&a.value, Some(&run_ty));
         match &run.ty {
             Ty::Error => return Ex::error(),
@@ -268,7 +264,7 @@ impl Checker<'_> {
                 self.err(
                     "E020",
                     a.value.span,
-                    format!("`changes` takes a `host.TaskRun` (a version's `task`); this is {t}"),
+                    format!("`changes` takes a `host.Run` (a version's `run`); this is {t}"),
                 );
                 return Ex::error();
             }
@@ -757,7 +753,7 @@ impl Checker<'_> {
         Ex::host(Imp::ChangeView, vec![b, side, key], Ty::View)
     }
 
-    /// `undo(v)` of a `host.Version`, or `undo(run)` of a `host.TaskRun`: the action that takes
+    /// `undo(v)` of a `host.Version`, or `undo(run)` of a `host.Run`: the action that takes
     /// the step back, or every step of the run, through the platform's history (`undo`), as
     /// the person who applies it. Applied from a view, on a control: `button(undo(v))`.
     pub(super) fn builtin_undo(&mut self, args: &[ast::Arg], span: Span) -> Ex {
@@ -774,7 +770,7 @@ impl Checker<'_> {
             self.err(
                 "E022",
                 span,
-                "`undo` takes one version or task run: `undo(v)`, `undo(v.task)`",
+                "`undo` takes one version or run: `undo(v)`, `undo(v.run)`",
             );
             return Ex::error();
         };
@@ -786,7 +782,7 @@ impl Checker<'_> {
             );
         }
         let what = self.expr(&a.value, None);
-        let (version, run) = (host_ty("Version"), host_ty("TaskRun"));
+        let (version, run) = (host_ty("Version"), host_ty("Run"));
         let of = match &what.ty {
             Ty::Error => return Ex::error(),
             ty if *ty == version => 0,
@@ -795,7 +791,7 @@ impl Checker<'_> {
                 self.err(
                     "E020",
                     a.value.span,
-                    "a version's `task` is `.none` for a change made outside a run: `if let run = v.task { button(undo(run)) }`",
+                    "a version's `run` is `.none` for a change made outside a run: `if let run = v.run { button(undo(run)) }`",
                 );
                 return Ex::error();
             }
@@ -804,7 +800,7 @@ impl Checker<'_> {
                 self.err(
                     "E020",
                     a.value.span,
-                    format!("`undo` takes a `host.Version` or a `host.TaskRun`; this is {t}"),
+                    format!("`undo` takes a `host.Version` or a `host.Run`; this is {t}"),
                 );
                 return Ex::error();
             }

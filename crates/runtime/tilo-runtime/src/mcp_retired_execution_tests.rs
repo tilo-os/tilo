@@ -7,7 +7,7 @@ fn retired_execution_retained_server_refuses_tools_after_delete() {
     let endpoint = endpoint(host.clone());
     run(async {
         let id = open(&endpoint, "retained execution").await;
-        let retained = endpoint.find(&id).unwrap();
+        let retained = endpoint.find("workspace", &id).unwrap();
         let live_reply = retained
             .handle(json!({
                 "jsonrpc": "2.0", "id": 2, "method": "tools/call",
@@ -25,7 +25,7 @@ fn retired_execution_retained_server_refuses_tools_after_delete() {
             )
             .await;
         assert_eq!(deleted.status(), StatusCode::NO_CONTENT);
-        assert!(endpoint.find(&id).is_none());
+        assert!(endpoint.find("workspace", &id).is_none());
         let invocation = tilo_actions::InvocationId::new().0.to_string();
         for (name, arguments) in [
             ("tilo_list_apps", json!({})),

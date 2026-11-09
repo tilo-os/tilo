@@ -1,7 +1,8 @@
-//! Undoing an agent's run of a workspace task as one, from the activity.
+//! Undoing an agent's run as one, from the activity.
 //!
 //! An agent working a task stamps every change with the task's group, so each document it changed
-//! takes those changes back by naming the task: its history's `undo` with `{"run": task}`. That
+//! takes those changes back by naming the task: its history's `undo` with `{"run": task}`. An agent
+//! connection stamps them with its session's group instead, which undo names the same way. That
 //! goes through the document's own history, so edits others made since are kept and a step's
 //! compensation runs. Each document the run changed is asked through the session's action door as
 //! the person at the screen, on a thread of its own, so the activity's request answers at once.
@@ -76,9 +77,10 @@ fn settled(status: &ReceiptStatus) -> Result<(), String> {
     }
 }
 
-/// Undo task `task`'s run in each document `steps` names (its app and record), through `door` as
-/// `caller`: one [`TaskRunDocument`] per document the run changed, in the order `steps` names them,
-/// so a record nobody reverted is reported rather than dropped.
+/// Undo the run `run` (a task's id, or an agent connection's group) in each document `steps` names
+/// (its app and record), through `door` as `caller`: one [`TaskRunDocument`] per document the run
+/// changed, in the order `steps` names them, so a record nobody reverted is reported rather than
+/// dropped.
 ///
 /// # Errors
 /// Nothing was undone: no document the run changed is open, or each refused. A run undone in some
@@ -86,7 +88,7 @@ fn settled(status: &ReceiptStatus) -> Result<(), String> {
 pub(crate) fn undo_task_run(
     door: &dyn UndoDoor,
     caller: &Caller,
-    task: &str,
+    run: &str,
     steps: &[(String, String)],
     timeout: Duration,
 ) -> Result<Vec<TaskRunDocument>, String> {
@@ -104,7 +106,7 @@ pub(crate) fn undo_task_run(
         .providers;
     let targets = undo_targets(&providers, caller.workspace().unwrap_or_default(), steps);
     if targets.is_empty() {
-        return Err("open the documents this task changed to undo it".into());
+        return Err("open the documents this run changed to undo it".into());
     }
     let mut undone: usize = 0;
     let mut refused = Vec::new();
@@ -114,7 +116,7 @@ pub(crate) fn undo_task_run(
             continue;
         };
         let mut args = serde_json::Map::new();
-        args.insert(RUN.into(), task.into());
+        args.insert(RUN.into(), run.into());
         let request = InvokeRequest {
             invocation: tilo_actions::InvocationId::new(),
             target: RemoteActionTarget {
@@ -138,12 +140,12 @@ pub(crate) fn undo_task_run(
         return Err(refused.join("; "));
     }
     if !refused.is_empty() {
-        tracing::warn!(task, refused = %refused.join("; "), "a task's run was undone only in part");
+        tracing::warn!(run, refused = %refused.join("; "), "a run was undone only in part");
     }
     Ok(targets.into_iter().map(|target| target.outcome).collect())
 }
 
-/// One document the task's run changed, and the publisher that serves it.
+/// One document the run changed, and the publisher that serves it.
 struct UndoTarget {
     provider: CatalogueProvider,
     /// The step as the run recorded it, which the outcome is reported under.
@@ -233,15 +235,15 @@ pub(crate) enum UndoState {
 }
 
 impl Undos {
-    /// Start undoing `task`'s run in `workspace` as `person`, through `door`; `done` is told once it
-    /// ended, on its thread.
+    /// Start undoing the run `run` in `workspace` as `person`, through `door`; `done` is told once
+    /// it ended, on its thread.
     pub(crate) fn start(
         &self,
         door: Arc<dyn UndoDoor>,
         person: String,
         workspace: String,
         invocation: uuid::Uuid,
-        task: String,
+        run: String,
         steps: Vec<(String, String)>,
         done: impl FnOnce() + Send + 'static,
     ) -> Result<(), String> {
@@ -255,7 +257,7 @@ impl Undos {
                 let caller = Caller::local_person(person)
                     .in_workspace(workspace)
                     .in_new_execution();
-                let outcome = undo_task_run(door.as_ref(), &caller, &task, &steps, UNDO_TIMEOUT);
+                let outcome = undo_task_run(door.as_ref(), &caller, &run, &steps, UNDO_TIMEOUT);
                 running.lock_recover().insert(invocation, Some(outcome));
                 done();
             })
@@ -355,8 +357,8 @@ mod tests {
         }
     }
 
-    /// A note with one sentence, and an agent's run appending to it.
-    fn edited() -> (AutoCommit, ObjId) {
+    /// A note with one sentence, and an agent's run, in the group `run`, appending to it.
+    fn edited(run: &str) -> (AutoCommit, ObjId) {
         let mut doc = AutoCommit::new();
         doc.set_actor(ActorId::from(b"person".as_slice()));
         let body = doc.put_object(ROOT, "body", ObjType::Text).unwrap();
@@ -366,7 +368,7 @@ mod tests {
         doc.splice_text(&body, 15, 0, " Sent.").unwrap();
         let message = ActionContext::default()
             .with_group(
-                TASK,
+                run,
                 "Ship the release",
                 ui::history_source::steps::AGENT_RUN,
             )
@@ -391,10 +393,14 @@ mod tests {
     }
 
     fn undo(door: &FakeDoor) -> Result<Vec<TaskRunDocument>, String> {
+        undo_run(door, TASK)
+    }
+
+    fn undo_run(door: &FakeDoor, run: &str) -> Result<Vec<TaskRunDocument>, String> {
         undo_task_run(
             door,
             &caller(),
-            TASK,
+            run,
             &[(APP.to_owned(), RECORD.to_owned())],
             Duration::from_secs(5),
         )
@@ -404,7 +410,7 @@ mod tests {
     /// undone in is reported.
     #[test]
     fn a_tasks_run_is_undone_in_the_document_it_changed() {
-        let (doc, body) = edited();
+        let (doc, body) = edited(TASK);
         let door = door(doc, true, true);
         assert_eq!(
             undo(&door).expect("the document publishes its history"),
@@ -419,11 +425,37 @@ mod tests {
         );
     }
 
+    /// An agent connection's run is taken back by its group like a task's: the document's own
+    /// history undoes what it grouped under the connection, and the person's later sentence stays.
+    #[test]
+    fn a_connections_run_is_undone_by_its_group_and_keeps_later_edits() {
+        const CONNECTION: &str = "mcp:5b1f0c2e-3a9d";
+        let (mut doc, body) = edited(CONNECTION);
+        // The person writes elsewhere in the same note after the run: their words are no step of
+        // it, and the revert leaves them.
+        doc.set_actor(ActorId::from(b"person".as_slice()));
+        doc.splice_text(&body, 0, 0, "Reviewed: ").unwrap();
+        doc.commit();
+        let door = door(doc, true, true);
+        assert_eq!(
+            undo_run(&door, CONNECTION).expect("the document publishes its history"),
+            vec![TaskRunDocument {
+                app: APP.into(),
+                record: RECORD.into(),
+            }]
+        );
+        assert_eq!(
+            door.doc.lock_recover().text(&body).unwrap(),
+            "Reviewed: Shipping notes.",
+            "the run's sentence went, the person's later one stayed"
+        );
+    }
+
     /// The host cannot undo a run it cannot reach or that publishes no history: it says so, and
     /// writes nothing.
     #[test]
     fn a_run_no_open_document_can_take_back_is_refused_by_name() {
-        let (doc, _) = edited();
+        let (doc, _) = edited(TASK);
         let refused = undo(&door(doc.clone(), true, false)).unwrap_err();
         assert!(refused.contains("open the documents"), "{refused}");
         let refused = undo(&door(doc, false, true)).unwrap_err();

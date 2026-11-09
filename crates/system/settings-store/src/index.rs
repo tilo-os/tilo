@@ -334,6 +334,7 @@ pub const PAGES: &[Page] = &[
     Page { slug: "printers" },
     Page { slug: "power" },
     Page { slug: "users" },
+    Page { slug: "billing" },
     Page {
         slug: "external_accounts",
     },

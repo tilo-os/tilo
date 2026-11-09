@@ -1,0 +1,36 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Plain DOM baseline</title>
+<style>
+  html,body{margin:0;height:100%;font:15px/1.5 system-ui,sans-serif}
+  #side{position:fixed;left:0;top:0;bottom:0;width:240px;border-right:1px solid #ddd;overflow:auto;padding:8px;box-sizing:border-box}
+  #doc{position:fixed;left:240px;right:0;top:0;bottom:0;overflow:auto;padding:24px 48px;box-sizing:border-box}
+  #doc p{margin:0 0 10px}
+</style>
+</head>
+<body>
+<nav id="side"></nav>
+<article id="doc" contenteditable="true"></article>
+<script>
+// What a page written in plain HTML costs for the same interactions the spike
+// measures on Notes: typing into an editable document and scrolling it.
+const side = document.getElementById('side');
+for (let i = 0; i < 40; i++) {
+  const item = document.createElement('div');
+  item.textContent = `Note ${i + 1}`;
+  side.append(item);
+}
+const doc = document.getElementById('doc');
+const words = 'the quick brown fox jumps over the lazy dog while notes keep every thought close at hand'.split(' ');
+for (let i = 0; i < 200; i++) {
+  const p = document.createElement('p');
+  p.textContent = Array.from({length: 40}, (_, j) => words[(i * 7 + j) % words.length]).join(' ');
+  doc.append(p);
+}
+window.renderMarks = {presented: []};
+</script>
+</body>
+</html>

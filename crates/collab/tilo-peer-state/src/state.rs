@@ -39,7 +39,7 @@ pub(crate) use durable_before_owner::{
     DURABLE_BASE_VERSION, DurableV4, DurableV5, DurableV6, durable_base_is_before_owner,
 };
 mod member_records;
-use member_records::empty_genesis;
+use member_records::{empty_genesis, empty_genesis_op};
 mod facades;
 mod governance;
 pub use facades::{
@@ -569,7 +569,7 @@ impl StatePeer {
             .chain([VerifiedCertificate::new(owner_device, now)])
         {
             let certificate = certificate?;
-            if revocations.is_revoked(&certificate.device_public_key) {
+            if revocations.refuses(&certificate) {
                 return Err("device revoked".into());
             }
             certificates.insert(certificate.device_public_key, certificate);
@@ -614,7 +614,7 @@ impl StatePeer {
             return Err("enrollment root mismatch".into());
         }
         tilo_user_identity::verify_device_cert_at(&cert, now_ns(now)).map_err(err)?;
-        if self.core.revocations.is_revoked(&cert.device_public_key) {
+        if self.core.revocations.refuses(&cert) {
             return Err("device revoked".into());
         }
         if let Some(old) = self.core.certificates.get(&cert.device_public_key)
@@ -823,7 +823,10 @@ impl StatePeer {
     /// for evidence a device signed earlier, of any person taking part.
     #[must_use]
     fn known_device(&self, device: &[u8; 32]) -> bool {
-        self.core.certificates.get(device).is_some() && !self.core.revocations.is_revoked(device)
+        self.core
+            .certificates
+            .get(device)
+            .is_some_and(|cert| !self.core.revocations.refuses(cert))
     }
 
     /// Whether `device` is a known, unrevoked device of the owner's, at no
@@ -858,7 +861,12 @@ impl StatePeer {
                 .workspace_doc
                 .as_deref()
                 .ok_or("missing workspace")?;
-            workspace::media::refresh_authorization(held, &mut doc).map_err(err)?;
+            // A policy the workspace holds is rebound to the security basis its
+            // change moves; one it does not hold yet is its author's, and
+            // initialising it is never this refresh's.
+            if workspace::media::parse(held).map_err(err)?.is_some() {
+                workspace::media::refresh_authorization(held, &mut doc).map_err(err)?;
+            }
             crate::workspace::changed_rows(Some(held), Some(&doc), false)
         };
         self.record_membership(&mut doc, before, key, now)?;
@@ -1929,7 +1937,11 @@ impl StatePeer {
             }
             metadata_changed |= self.core.revocations.insert(entry).map_err(err)?;
         }
-        if self.core.revocations.is_revoked(&source) {
+        if self
+            .core
+            .revocations
+            .is_revoked(&cert.user_public_key, &source)
+        {
             return Err("device revoked".into());
         }
         self.core.certificates.insert(source, verified);
@@ -2101,28 +2113,32 @@ impl StatePeer {
         write: LocalWrite<'_>,
         now: SystemTime,
     ) -> Result<AdmissionReport, String> {
+        let source = *envelope.author.as_bytes();
         if self.document(app, record).is_none() {
             // A local publication is an authored change to a record the
-            // workspace owns already; only a write that is the whole record
-            // founds one, and the workspace says first whether this device
-            // may create it, as it does for a cleartext genesis.
-            if !envelope.is_whole_record() {
-                return Err("local app publication cannot create a record owner".into());
-            }
-            if !self.signed_by_owner(envelope.author.as_bytes())
-                && !self.may_create_record(
-                    &self.membership(*envelope.author.as_bytes(), now)?,
+            // workspace owns already. A write that is the whole record founds
+            // one, and so does the empty genesis a device the workspace lets
+            // create the record starts it with: the same founding write a peer
+            // sends takes. A record this device seals refuses the cleartext
+            // below, whichever of the two it is.
+            let creator = self.signed_by_owner(&source)
+                || self.may_create_record(
+                    &self.membership(source, now)?,
                     &Route {
                         app: app.into(),
                         record: record.into(),
                     },
                     now,
-                )
-            {
+                );
+            if !creator {
                 return Err("the workspace does not let this device create the record".into());
             }
+            if !envelope.is_whole_record()
+                && !empty_genesis_op(app, record, &self.core.workspace, &envelope)
+            {
+                return Err("local app publication cannot create a record owner".into());
+            }
         }
-        let source = *envelope.author.as_bytes();
         self.admit_document(
             source,
             NeighbourMsg::AppDocument {

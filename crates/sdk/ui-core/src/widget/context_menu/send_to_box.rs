@@ -1,6 +1,5 @@
-//! The send-to box beside a menu: where it stands, the keyboard moving
-//! between it and the menu's rows, and the box a window opens with no menu
-//! around it.
+//! The send-to box: where it stands, the keyboard moving round its own fields,
+//! and the box a window opens with no menu around it.
 
 use vello::kurbo::Rect;
 use winit::event::{ElementState, KeyEvent, MouseButton, WindowEvent};
@@ -10,16 +9,17 @@ use super::ContextMenu;
 use crate::widget::EventCtx;
 
 impl ContextMenu {
-    /// The box beside the menu, as it stands.
+    /// The box, as it stands.
     #[must_use]
     pub fn send_to(&self) -> &crate::widget::SendToBox {
         &self.send_to
     }
 
-    /// Open the box with no menu around it: a window's own send key over a
-    /// selection, and a shell asking an app to send what it holds, or to
-    /// report a problem, when it names whom the box goes to. `anchor` is
-    /// where what is sent stands; the box stands beside it.
+    /// Open the box with no menu around it: the row that sends what a menu is
+    /// about, a window's own send key over a selection, and a shell asking an
+    /// app to send what it holds, or to report a problem, when it names whom
+    /// the box goes to. `bounds` is where what is sent stands; the box stands
+    /// beside it.
     pub fn open_send_to_alone(
         &mut self,
         about: Option<crate::shared_selection::SharedSelection>,
@@ -34,8 +34,10 @@ impl ContextMenu {
             .map(|[x0, y0, x1, y1]| Rect::new(x0, y0, x1, y1))
             .unwrap_or_else(|| Rect::new(cursor.x, cursor.y, cursor.x, cursor.y));
         self.alone = Some(anchor);
+        // The box's own opening leaves the keyboard where the person's next
+        // keystroke belongs: in the message when it carries the sentence the
+        // menu took, else in the field that names whom it goes to.
         self.send_to.open(draft, to);
-        self.send_to.focus_first();
         self.send_to.place(anchor, self.viewport);
         self.dirty = true;
     }
@@ -53,9 +55,9 @@ impl ContextMenu {
         self.alone.is_some() && (self.send_to.is_open() || self.send_to.is_drawn())
     }
 
-    /// Hand what the person does to the send-to box beside this menu: a
-    /// press in it, a key while the keyboard is in it, and Tab between the
-    /// box's fields and the menu's rows. Whether it took it.
+    /// Hand what the person does to the box that took the menu's place: a
+    /// press in it, a key while the keyboard is in it, and Tab round the box's
+    /// own fields and back to its first. Whether it took it.
     pub(super) fn route_to_send_to(&mut self, event: &WindowEvent, ctx: &mut EventCtx<'_>) -> bool {
         if !self.send_to.is_open() {
             return false;
@@ -86,23 +88,17 @@ impl ContextMenu {
             }
         );
         if tab {
+            // With no menu around it, the box is the whole of what Tab can
+            // reach: past its last stop it wraps back to its first.
             if self.send_to.is_focused() {
-                let left = !ctx.modifiers.state().shift_key();
                 let _ = self.send_to.handle_event(event, ctx);
-                if left && !self.send_to.is_focused() {
-                    // With no menu to move to, the box is the whole of what
-                    // Tab can reach: it wraps back to its first stop.
-                    if self.open {
-                        self.focus_first_action();
-                    } else {
-                        self.send_to.focus_first();
-                    }
-                    self.dirty = true;
+                if !self.send_to.is_focused() {
+                    self.send_to.focus_first();
                 }
             } else {
                 self.send_to.focus_first();
-                self.dirty = true;
             }
+            self.dirty = true;
             *ctx.handled = true;
             return true;
         }

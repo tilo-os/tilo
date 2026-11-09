@@ -28,12 +28,15 @@ vello.workspace = true
 winit.workspace = true
 taffy.workspace = true
 tracing.workspace = true
-workspace-hack = { version = "0.1" }
 
 # The system information service: the session's on Linux (the sandbox shows
 # Monitor no other process, so it never reads /proc itself), one in this
 # process over the platform's own interfaces elsewhere.
 tilo-system-info = { path = "../../crates/platform/tilo-system-info" }
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+# The workspace-hack's native feature set does not build for wasm32.
+workspace-hack = { version = "0.1" }
 
 [dev-dependencies]
 tilo-test-env = { path = "../../crates/dev/test-env" }

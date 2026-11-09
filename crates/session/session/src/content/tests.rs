@@ -29,7 +29,7 @@ use tilo_desktop_model::WorkspaceId as ModelWorkspaceId;
 use tilo_network_actor::{RecordContentDelivery, WorkspaceId, workspace_topic_id};
 
 use super::Plane;
-use crate::sync::Outgoing;
+use crate::platform::plane::Cmd;
 
 /// The app whose record references the content.
 const APP: &str = "so.tilo.notes";
@@ -54,7 +54,7 @@ fn topic() -> WorkspaceId {
 struct Device {
     plane: Arc<Plane>,
     address: EndpointId,
-    said: tokio::sync::mpsc::UnboundedReceiver<Outgoing>,
+    said: tokio::sync::mpsc::UnboundedReceiver<Cmd>,
 }
 
 impl Device {
@@ -89,11 +89,11 @@ impl Device {
     fn carry(&mut self, other: &Self) {
         while let Ok(outgoing) = self.said.try_recv() {
             match outgoing {
-                Outgoing::Publish { ws, msg } => {
+                Cmd::Publish { ws, msg } => {
                     assert_eq!(ws, topic(), "content on its own workspace's topic");
                     other.plane.heard(ws, WORKSPACE, self.address, &msg);
                 }
-                Outgoing::Content(RecordContentDelivery { ws, target, msg }) => {
+                Cmd::Content(RecordContentDelivery { ws, target, msg }) => {
                     assert_eq!(ws, topic(), "content on its own workspace's topic");
                     assert!(
                         matches!(

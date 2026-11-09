@@ -203,6 +203,7 @@ const NFNL_MSG_BATCH_END: u16 = 0x11;
 const NFPROTO_INET: u8 = 1;
 const NFPROTO_IPV4: u8 = 2;
 const NFPROTO_IPV6: u8 = 10;
+const NFPROTO_BRIDGE: u8 = 7;
 
 const NFT_MSG_NEWTABLE: u16 = 0;
 const NFT_MSG_DELTABLE: u16 = 2;
@@ -229,6 +230,8 @@ const NFTA_CHAIN_TYPE: u16 = 7;
 const NFTA_HOOK_HOOKNUM: u16 = 1;
 const NFTA_HOOK_PRIORITY: u16 = 2;
 const NF_INET_LOCAL_OUT: u32 = 3;
+/// `NF_BR_FORWARD`: frames the bridge passes from one port to another.
+const NF_BR_FORWARD: u32 = 2;
 const NF_DROP: u32 = 0;
 const NF_ACCEPT: u32 = 1;
 const NFTA_RULE_TABLE: u16 = 1;
@@ -259,7 +262,9 @@ const NFT_REG_VERDICT: u32 = 0;
 const NFT_REG_1: u32 = 1;
 const NFTA_META_DREG: u16 = 1;
 const NFTA_META_KEY: u16 = 2;
+const NFT_META_PROTOCOL: u32 = 1;
 const NFT_META_OIF: u32 = 5;
+const NFT_META_IIFNAME: u32 = 6;
 const NFT_META_NFPROTO: u32 = 15;
 const NFT_META_L4PROTO: u32 = 16;
 const NFTA_CMP_SREG: u16 = 1;
@@ -509,14 +514,20 @@ struct Batch {
     buf: Vec<u8>,
     seq: u32,
     acked: Vec<u32>,
+    family: u8,
 }
 
 impl Batch {
     fn new(seq: u32) -> Self {
+        Self::of_family(seq, NFPROTO_INET)
+    }
+
+    fn of_family(seq: u32, family: u8) -> Self {
         let mut b = Self {
             buf: Vec::with_capacity(4096),
             seq,
             acked: Vec::new(),
+            family,
         };
         b.raw(
             NFNL_MSG_BATCH_BEGIN,
@@ -560,7 +571,7 @@ impl Batch {
         self.raw(
             (NFNL_SUBSYS_NFTABLES << 8) | kind,
             NLM_F_REQUEST | NLM_F_ACK | flags,
-            NFPROTO_INET,
+            self.family,
             0,
             attrs,
         );
@@ -662,6 +673,251 @@ fn element_message(
     });
 }
 
+/// The bridge table of a VM's network namespace: what the VM's frames may
+/// reach.
+///
+/// ```text
+/// table bridge tilo_guest {
+///     chain forward { type filter hook forward priority 0; policy drop; … }
+/// }
+/// ```
+///
+/// The namespace bridges two ports: the VM's tap and the uplink (`pasta`'s
+/// tap, which re-makes every connection from a host socket). Frames from
+/// the uplink are answers (nothing is forwarded inwards) and pass. From the
+/// VM, ARP passes, and IPv4 does unless its destination is in a blocked
+/// network; the one exception is DNS to the uplink's forwarder. Everything
+/// else, IPv6 included, is dropped. Only destinations are matched, so no
+/// connection tracking is needed on the bridge.
+pub const GUEST_TABLE: &str = "tilo_guest";
+pub const GUEST_CHAIN: &str = "forward";
+
+/// What a VM's bridge lets through.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GuestFilter {
+    /// The VM's tap device.
+    pub guest: String,
+    /// The uplink's tap device.
+    pub uplink: String,
+    /// The uplink's DNS forwarder, reachable on port 53 though blocked.
+    pub dns: std::net::Ipv4Addr,
+    /// Networks the VM never reaches: the host's, the cluster's, the cloud's
+    /// metadata endpoints, other VMs'.
+    pub blocked: Vec<(std::net::Ipv4Addr, u8)>,
+}
+
+/// One condition of a [`GuestFilter`] rule.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GuestMatch {
+    /// The frame came in on this port (an interface name, NUL-padded).
+    InIface([u8; 16]),
+    /// An ARP frame.
+    Arp,
+    /// An IPv4 packet.
+    Ipv4,
+    Proto(Proto),
+    DestPort(u16),
+    /// Destination in `address/prefix` (follows [`GuestMatch::Ipv4`]).
+    DestNet(std::net::Ipv4Addr, u8),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GuestVerdict {
+    Accept,
+    Drop,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GuestRule {
+    pub matches: Vec<GuestMatch>,
+    pub verdict: GuestVerdict,
+}
+
+/// An interface name as `nf_tables` compares it.
+fn ifname(name: &str) -> [u8; 16] {
+    let mut out = [0_u8; 16];
+    for (slot, byte) in out.iter_mut().zip(name.bytes().take(15)) {
+        *slot = byte;
+    }
+    out
+}
+
+/// The network's mask, `prefix` leading ones.
+fn mask4(prefix: u8) -> [u8; 4] {
+    let bits = u32::MAX
+        .checked_shl(32_u32.saturating_sub(u32::from(prefix.min(32))))
+        .unwrap_or(0);
+    bits.to_be_bytes()
+}
+
+fn net4(address: std::net::Ipv4Addr, prefix: u8) -> [u8; 4] {
+    let mask = u32::from_be_bytes(mask4(prefix));
+    (u32::from(address) & mask).to_be_bytes()
+}
+
+impl GuestFilter {
+    /// The forward chain, in order. Its policy is drop.
+    pub fn rules(&self) -> Vec<GuestRule> {
+        use GuestMatch::{Arp, DestNet, DestPort, InIface, Ipv4, Proto as P};
+        let rule = |matches: &[GuestMatch], verdict| GuestRule {
+            matches: matches.to_vec(),
+            verdict,
+        };
+        let (guest, uplink) = (ifname(&self.guest), ifname(&self.uplink));
+        let mut rules = vec![
+            rule(&[InIface(uplink)], GuestVerdict::Accept),
+            rule(&[InIface(guest), Arp], GuestVerdict::Accept),
+        ];
+        for proto in [Proto::Udp, Proto::Tcp] {
+            rules.push(rule(
+                &[
+                    InIface(guest),
+                    Ipv4,
+                    DestNet(self.dns, 32),
+                    P(proto),
+                    DestPort(53),
+                ],
+                GuestVerdict::Accept,
+            ));
+        }
+        for (address, prefix) in &self.blocked {
+            rules.push(rule(
+                &[InIface(guest), Ipv4, DestNet(*address, *prefix)],
+                GuestVerdict::Drop,
+            ));
+        }
+        rules.push(rule(&[InIface(guest), Ipv4], GuestVerdict::Accept));
+        rules
+    }
+
+    /// The table in `nft` syntax.
+    pub fn render(&self) -> String {
+        let mut out = format!(
+            "table bridge {GUEST_TABLE} {{\n\tchain {GUEST_CHAIN} {{\n\
+             \t\ttype filter hook forward priority 0; policy drop;\n"
+        );
+        for r in self.rules() {
+            let mut words: Vec<String> = Vec::new();
+            let mut proto = None;
+            for m in &r.matches {
+                match *m {
+                    GuestMatch::InIface(name) => {
+                        let end = name.iter().position(|b| *b == 0).unwrap_or(name.len());
+                        words.push(format!(
+                            "iifname \"{}\"",
+                            String::from_utf8_lossy(name.get(..end).unwrap_or_default())
+                        ));
+                    }
+                    GuestMatch::Arp => words.push("ether type arp".into()),
+                    GuestMatch::Ipv4 => words.push("ether type ip".into()),
+                    GuestMatch::Proto(p) => {
+                        proto = Some(p);
+                        words.push(format!("meta l4proto {}", p.nft_name()));
+                    }
+                    GuestMatch::DestPort(port) => words.push(format!(
+                        "{} dport {port}",
+                        proto.map_or("th", Proto::nft_name)
+                    )),
+                    GuestMatch::DestNet(address, 32) => words.push(format!("ip daddr {address}")),
+                    GuestMatch::DestNet(address, prefix) => words.push(format!(
+                        "ip daddr {}/{prefix}",
+                        std::net::Ipv4Addr::from(net4(address, prefix))
+                    )),
+                }
+            }
+            words.push(
+                match r.verdict {
+                    GuestVerdict::Accept => "accept",
+                    GuestVerdict::Drop => "drop",
+                }
+                .into(),
+            );
+            out.push_str("\t\t");
+            out.push_str(&words.join(" "));
+            out.push('\n');
+        }
+        out.push_str("\t}\n}\n");
+        out
+    }
+}
+
+fn guest_exprs(m: GuestMatch) -> Vec<Expr> {
+    const ETH_P_IP: u16 = 0x0800;
+    const ETH_P_ARP: u16 = 0x0806;
+    match m {
+        GuestMatch::InIface(name) => vec![
+            Expr::Meta(NFT_META_IIFNAME),
+            Expr::Cmp(NFT_CMP_EQ, name.to_vec()),
+        ],
+        GuestMatch::Arp => vec![
+            Expr::Meta(NFT_META_PROTOCOL),
+            Expr::Cmp(NFT_CMP_EQ, ETH_P_ARP.to_be_bytes().to_vec()),
+        ],
+        GuestMatch::Ipv4 => vec![
+            Expr::Meta(NFT_META_PROTOCOL),
+            Expr::Cmp(NFT_CMP_EQ, ETH_P_IP.to_be_bytes().to_vec()),
+        ],
+        GuestMatch::Proto(p) => exprs(Match::Proto(p)),
+        GuestMatch::DestPort(port) => exprs(Match::DestPort(port)),
+        GuestMatch::DestNet(address, prefix) => {
+            let load = Expr::Payload {
+                base: NFT_PAYLOAD_NETWORK_HEADER,
+                offset: 16,
+                len: 4,
+            };
+            let compare = Expr::Cmp(NFT_CMP_EQ, net4(address, prefix).to_vec());
+            if prefix >= 32 {
+                vec![load, compare]
+            } else {
+                vec![
+                    load,
+                    Expr::Bitwise {
+                        mask: mask4(prefix).to_vec(),
+                        xor: vec![0; 4],
+                    },
+                    compare,
+                ]
+            }
+        }
+    }
+}
+
+fn add_guest_messages(b: &mut Batch, filter: &GuestFilter) {
+    b.msg(NFT_MSG_NEWTABLE, NLM_F_CREATE, |a| {
+        a.str(NFTA_TABLE_NAME, GUEST_TABLE);
+    });
+    b.msg(NFT_MSG_NEWCHAIN, NLM_F_CREATE, |a| {
+        a.str(NFTA_CHAIN_TABLE, GUEST_TABLE);
+        a.str(NFTA_CHAIN_NAME, GUEST_CHAIN);
+        a.nest(NFTA_CHAIN_HOOK, |a| {
+            a.be32(NFTA_HOOK_HOOKNUM, NF_BR_FORWARD);
+            a.be32(NFTA_HOOK_PRIORITY, 0);
+        });
+        a.be32(NFTA_CHAIN_POLICY, NF_DROP);
+        a.str(NFTA_CHAIN_TYPE, "filter");
+    });
+    for r in filter.rules() {
+        b.msg(NFT_MSG_NEWRULE, NLM_F_CREATE | NLM_F_APPEND, |a| {
+            a.str(NFTA_RULE_TABLE, GUEST_TABLE);
+            a.str(NFTA_RULE_CHAIN, GUEST_CHAIN);
+            a.nest(NFTA_RULE_EXPRESSIONS, |a| {
+                for m in &r.matches {
+                    for e in guest_exprs(*m) {
+                        encode_expr(a, &e);
+                    }
+                }
+                encode_expr(
+                    a,
+                    &Expr::Verdict(match r.verdict {
+                        GuestVerdict::Accept => NF_ACCEPT,
+                        GuestVerdict::Drop => NF_DROP,
+                    }),
+                );
+            });
+        });
+    }
+}
+
 /// The filter of one network namespace.
 #[derive(Debug)]
 pub struct Netfilter {
@@ -724,6 +980,15 @@ impl Netfilter {
         self.commit(b)?;
         self.installed = true;
         Ok(())
+    }
+
+    /// Install `filter` as the namespace's bridge table, in one
+    /// transaction: before this returns nothing crosses the bridge that it
+    /// does not allow, and if it fails nothing was installed.
+    pub fn install_guest(&mut self, filter: &GuestFilter) -> io::Result<()> {
+        let mut b = Batch::of_family(self.seq, NFPROTO_BRIDGE);
+        add_guest_messages(&mut b, filter);
+        self.commit(b)
     }
 
     /// Delete the table: egress is unrestricted afterwards.
@@ -993,6 +1258,71 @@ table inet tilo_egress {
         assert!(set.contains(&(NFTA_SET_KEY_LEN, 4_u32.to_be_bytes().to_vec())));
         // Every nftables message is for the inet family.
         assert!(msgs[1..msgs.len() - 1].iter().all(|m| m.2 == NFPROTO_INET));
+    }
+
+    fn guest_filter() -> GuestFilter {
+        GuestFilter {
+            guest: "tap0".into(),
+            uplink: "pt0".into(),
+            dns: std::net::Ipv4Addr::new(10, 0, 2, 3),
+            blocked: vec![
+                (std::net::Ipv4Addr::new(10, 0, 0, 0), 8),
+                (std::net::Ipv4Addr::new(169, 254, 169, 254), 16),
+                (std::net::Ipv4Addr::new(168, 63, 129, 16), 32),
+            ],
+        }
+    }
+
+    #[test]
+    fn a_vms_bridge_passes_answers_dns_and_the_internet_and_drops_blocked_networks() {
+        let expected = "\
+table bridge tilo_guest {
+\tchain forward {
+\t\ttype filter hook forward priority 0; policy drop;
+\t\tiifname \"pt0\" accept
+\t\tiifname \"tap0\" ether type arp accept
+\t\tiifname \"tap0\" ether type ip ip daddr 10.0.2.3 meta l4proto udp udp dport 53 accept
+\t\tiifname \"tap0\" ether type ip ip daddr 10.0.2.3 meta l4proto tcp tcp dport 53 accept
+\t\tiifname \"tap0\" ether type ip ip daddr 10.0.0.0/8 drop
+\t\tiifname \"tap0\" ether type ip ip daddr 169.254.0.0/16 drop
+\t\tiifname \"tap0\" ether type ip ip daddr 168.63.129.16 drop
+\t\tiifname \"tap0\" ether type ip accept
+\t}
+}
+";
+        assert_eq!(guest_filter().render(), expected);
+        // A blocked network is a masked compare of the destination.
+        assert_eq!(
+            guest_exprs(GuestMatch::DestNet(
+                std::net::Ipv4Addr::new(169, 254, 169, 254),
+                16
+            )),
+            [
+                Expr::Payload {
+                    base: NFT_PAYLOAD_NETWORK_HEADER,
+                    offset: 16,
+                    len: 4
+                },
+                Expr::Bitwise {
+                    mask: vec![255, 255, 0, 0],
+                    xor: vec![0; 4]
+                },
+                Expr::Cmp(NFT_CMP_EQ, vec![169, 254, 0, 0]),
+            ]
+        );
+        // One bridge-family transaction: table, chain on the forward hook, rules.
+        let mut b = Batch::of_family(1, NFPROTO_BRIDGE);
+        add_guest_messages(&mut b, &guest_filter());
+        let (bytes, _, _) = b.finish();
+        let msgs = messages(&bytes);
+        assert_eq!(msgs.len(), 2 + 2 + guest_filter().rules().len());
+        assert!(
+            msgs[1..msgs.len() - 1]
+                .iter()
+                .all(|m| m.2 == NFPROTO_BRIDGE)
+        );
+        let chain = attrs(&msgs[2].3);
+        assert!(chain.contains(&(NFTA_CHAIN_POLICY, NF_DROP.to_be_bytes().to_vec())));
     }
 
     #[test]

@@ -80,8 +80,10 @@ fn the_workspace_menu_hangs_under_the_workspace_name() {
         .unwrap()
         .expect("rows");
     let labels: Vec<String> = labels.into_iter().flatten().collect();
-    assert!(labels.contains(&"Studio".to_owned()), "{labels:?}");
-    assert!(labels.contains(&"Home".to_owned()), "{labels:?}");
+    // The workspaces themselves are in the overview the menu leads to, not listed in the menu.
+    assert!(labels.contains(&"Overview".to_owned()), "{labels:?}");
+    assert!(labels.contains(&"New workspace".to_owned()), "{labels:?}");
+    assert!(!labels.contains(&"Home".to_owned()), "{labels:?}");
 }
 
 #[test]
@@ -107,7 +109,7 @@ fn every_other_display_carries_a_compact_bar() {
 }
 
 #[test]
-fn choosing_a_workspace_in_the_menu_asks_the_desktop() {
+fn choosing_in_the_workspace_menu_asks_the_desktop() {
     let (mut app, link) = hosted("bar");
     let name = link.shown().workspace_name;
     assert!(!name.is_zero_area(), "the workspace has its name");
@@ -115,14 +117,15 @@ fn choosing_a_workspace_in_the_menu_asks_the_desktop() {
     app.settle();
     assert!(link.shown().modal, "the menu takes the next press");
     let chosen = app
-        .surface(|surface: &mut TopBarSurface| surface.choose_in_workspace_menu("Home"))
+        .surface(|surface: &mut TopBarSurface| surface.choose_in_workspace_menu("New workspace"))
         .unwrap();
     assert!(chosen);
     let asks = link.take_asks();
     assert!(asks.contains(&Ask::Opened), "{asks:?}");
     assert!(
         asks.iter()
-            .any(|ask| matches!(ask, Ask::WorkspaceMenu(WorkspaceMenuChoice::Switch(_)))),
+            .any(|ask| *ask
+                == Ask::WorkspaceMenu(WorkspaceMenuChoice::Action("new-workspace".into()))),
         "{asks:?}"
     );
 }

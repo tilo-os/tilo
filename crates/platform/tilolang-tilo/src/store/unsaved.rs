@@ -6,12 +6,14 @@
 //! any write — so reads see it at once — but committing it queues nothing ([`commit_derived`]).
 //! It stays in the mirror's open transaction and the overlay, which is what reads answer from.
 //!
-//! The record moving on ([`crate::store::TiloStore::sync`]) drops the store's saved writes
-//! (the record has them) and leaves the derived ones: [`Inner::drop_committed_local`] takes the
-//! saved ones out of [`super::Inner::local`], [`Inner::rescan`] keeps the derived docs known,
-//! and [`Inner::reapply_derived`] writes them onto the record's new copy again. An origin's
-//! update thus never round-trips through the record: no action is committed, no peer replays
-//! it, and no index is rebuilt for it.
+//! The record moving on ([`crate::store::TiloStore::sync`]) drops the store's writes the record
+//! now holds and leaves every other one — the derived ones, which the record never holds, and
+//! the saved ones whose change has not come back yet: [`Inner::drop_committed_local`] takes the
+//! committed ones out of [`super::Inner::local`], [`Inner::rescan`] keeps the derived docs
+//! known, and [`Inner::reapply_kept`] writes everything still pending onto the record's new copy
+//! again. An origin's update thus never round-trips through the record: no action is committed,
+//! no peer replays it, and no index is rebuilt for it; and a change that arrives from elsewhere
+//! leaves the edits a person has here where they are.
 //!
 //! [`Inner::reapply`] is the plain replay of everything the store wrote, which rollback and
 //! rewind use; the derived writes it leaves in place are the unsaved layer's.
@@ -22,7 +24,7 @@ use std::sync::Arc;
 use tilolang_runtime::ids::{AppId, DocId, TypeId};
 use tilolang_runtime::store::{ChangeNote, ChangeSummary, FieldKey, ListingChange, Version};
 
-use crate::action::{Made, apply_edits};
+use crate::action::{DynEdit, Made, apply_edits};
 use crate::chunk::ChunkNo;
 use crate::index as idx;
 use crate::index::derive::Derive;
@@ -167,18 +169,33 @@ impl Inner {
         }
     }
 
-    /// [`Inner::drop_local_from`], for the writes into the chunk `chunk`, keeping every write
-    /// an origin derives: those are never the record's, so the record moving on leaves them
-    /// where they are (the caller applies them again onto its new copy, as the rollback took
-    /// the whole transaction out).
-    pub(super) fn drop_committed_local(&mut self, chunk: ChunkNo) -> ItemTouches {
+    /// The store's writes the record now holds — the ones in the chunk `chunk` whose edit is one
+    /// of `committed`, the edits the record's new changes carry — taking them out of the
+    /// store's pending writes and its overlay. Every write the record has not taken stays: a
+    /// change that arrives from elsewhere leaves the edits a person has here, and the reads that
+    /// answer from the store keep showing them, until the record's change for them comes back.
+    pub(super) fn drop_committed_local(
+        &mut self,
+        chunk: ChunkNo,
+        committed: &[DynEdit],
+    ) -> ItemTouches {
         let mut items = ItemTouches::new();
+        let mut held: Vec<DynEdit> = committed.iter().map(|edit| edit.bare().clone()).collect();
         let mut kept = Vec::with_capacity(self.local.len());
         for write in std::mem::take(&mut self.local) {
-            if write.derived || write.chunk != chunk {
+            let at = if write.derived || write.chunk != chunk {
+                None
+            } else {
+                let bare = write.edit.bare();
+                held.iter().position(|edit| edit == bare)
+            };
+            // A write an origin derives is never the record's, whatever edit the record's
+            // changes carry: it stays in the mirror and the overlay.
+            let Some(at) = at else {
                 kept.push(write);
                 continue;
-            }
+            };
+            held.swap_remove(at);
             for (key, id) in write.items {
                 items.entry(key).or_default().insert(id);
             }
@@ -187,29 +204,30 @@ impl Inner {
         items
     }
 
-    /// Write the store's derived writes of the chunk `chunk` onto the mirror again, as pending
-    /// ops: after the record's changes reached it, which dropped everything else the store
-    /// wrote. The mirror's committed state (the record's) is untouched, so nothing else rolls
-    /// back.
-    pub(super) fn reapply_derived(&mut self, chunk: ChunkNo) {
-        let derived: Vec<LocalWrite> = self
+    /// Write the store's pending writes of the chunk `chunk` onto the mirror again, as pending
+    /// ops: after the record's changes reached it, which rolled the whole open transaction back.
+    /// What the record has not taken is still what the store answers, so it is written back as
+    /// the store wrote it; the mirror's committed state (the record's) is untouched, so nothing
+    /// else rolls back.
+    pub(super) fn reapply_kept(&mut self, chunk: ChunkNo) {
+        let kept: Vec<LocalWrite> = self
             .local
             .iter()
-            .filter(|write| write.derived && write.chunk == chunk)
+            .filter(|write| write.chunk == chunk)
             .cloned()
             .collect();
-        if derived.is_empty() {
+        if kept.is_empty() {
             return;
         }
         if let Some(mirror) = self.chunks.mirror_mut(chunk) {
-            for write in &derived {
+            for write in &kept {
                 if let Err(error) = apply_edits(
                     mirror,
                     &write.app,
                     std::slice::from_ref(&write.edit),
                     &write.seed,
                 ) {
-                    tracing::error!(app = write.app, %error, "a derived write did not apply again");
+                    tracing::error!(app = write.app, %error, "a pending write did not apply again");
                 }
             }
         }
@@ -355,7 +373,7 @@ impl Inner {
                 who: note.invoker.clone(),
                 at,
                 action: note.action.clone(),
-                task: note.group.clone(),
+                run: note.group.clone(),
                 from: note.from.clone(),
                 count: note.count.max(1),
                 // No change yet: the action was invoked on top of every change this device

@@ -285,17 +285,24 @@ impl ResourceSearch {
         }
     }
 
-    /// A token for the answers still coming from the surfaces, if any are:
-    /// the search showing keeps asking for them.
+    /// A token for the rows still coming, if any are: the search showing
+    /// keeps asking for them. Two kinds — the surfaces' answers to a server
+    /// query, and the index of this window's own content, built off the
+    /// frame now, so the build's rows join the ones the search already shows
+    /// when it lands.
     fn waiting(&self) -> Option<PendingToken> {
         let live = self.live.as_ref()?;
-        if !self.queries.iter().any(SearchQueries::answering) {
+        let surfaces = self.queries.iter().any(SearchQueries::answering);
+        let building = live.cache.borrow_mut().building();
+        if !surfaces && !building {
             return None;
         }
         let mut cache = live.cache.borrow_mut();
-        cache.watching = true;
-        cache.answered = None;
-        Some(PendingToken::new(self.indexed.generation))
+        if surfaces {
+            cache.watching = true;
+            cache.answered = None;
+        }
+        Some(PendingToken::new(self.indexed().generation))
     }
 
     /// The index this search answers from: the surfaces' answers once they
@@ -402,9 +409,18 @@ impl SearchProvider for ResourceSearch {
         if self.queries.iter().any(SearchQueries::answering) {
             return PagePoll::Pending;
         }
-        let Some(answer) = live.cache.borrow_mut().answer() else {
+        // The window's own index is built off the frame: until it lands, the
+        // rows shown are the last index's, and the search looks again.
+        if live.cache.borrow_mut().building() {
             return PagePoll::Pending;
-        };
+        }
+        // A build that landed answers with the rows it found; a search only
+        // waiting on a build (no surface answer) has nothing in `answer`.
+        let answer = live
+            .cache
+            .borrow_mut()
+            .answer()
+            .unwrap_or_else(|| self.indexed());
         let _ = token;
         *live.answered.borrow_mut() = Some(answer);
         let Some(query) = self.queries.iter().find_map(SearchQueries::last) else {

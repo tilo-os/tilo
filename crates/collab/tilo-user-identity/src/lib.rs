@@ -35,6 +35,12 @@
 //!
 //! - [`DEVCERT_PREIMAGE_TAG`] — `tilo-devcert-v1\0`
 //! - [`DEVCERT_V2_PREIMAGE_TAG`] — `tilo-devcert-v2\0` (foreign devices)
+//! - `DEVCERT_V3_PREIMAGE_TAG` — `tilo-devcert-v3\0` (administration)
+//! - [`DEVCERT_V4_PREIMAGE_TAG`] — `tilo-devcert-v4\0` (agents' grants)
+//! - [`DEVCERT_V5_PREIMAGE_TAG`] — `tilo-devcert-v5\0` (a person's stand-in
+//!   approver)
+//! - [`DEVCERT_V6_PREIMAGE_TAG`] — `tilo-devcert-v6\0` (certificates a
+//!   stand-in issued, binding its certificate)
 //! - [`REVOCATION_PREIMAGE_TAG`] — `tilo-revocation-v1\0`
 //! - [`ENROLLMENT_PREIMAGE_TAG`] — `tilo-enrollment-v2\0`
 //! - [`APPROVAL_REQUEST_TAG`] — `tilo-device-approval-request-v1\0`
@@ -88,6 +94,7 @@ pub mod projection;
 pub mod revocation;
 pub mod root_envelope;
 pub mod root_statement;
+pub mod sign_in;
 #[cfg(unix)]
 pub mod update_lock;
 
@@ -97,14 +104,17 @@ pub use approval::{
 };
 pub use canonical::CanonicalError;
 pub use cert::{
-    DEVCERT_PREIMAGE_TAG, DEVCERT_V2_PREIMAGE_TAG, DeviceCapabilities, DeviceCert, DeviceCertError,
-    UNNAMED_PRIMARY_DEVICE, UNNAMED_SHARED_DEVICE, device_cert_signing_digest, device_name,
-    sign_device_cert, verify_device_cert, verify_device_cert_at,
+    AgentScope, DEVCERT_PREIMAGE_TAG, DEVCERT_V2_PREIMAGE_TAG, DEVCERT_V4_PREIMAGE_TAG,
+    DEVCERT_V5_PREIMAGE_TAG, DEVCERT_V6_PREIMAGE_TAG, DeviceCapabilities, DeviceCert,
+    DeviceCertError, MAX_AGENT_GRANT_LIFETIME_NS, STAND_IN_LIFETIME_NS, UNNAMED_PRIMARY_DEVICE,
+    UNNAMED_SHARED_DEVICE, device_cert_signing_digest, device_name, prepare_stand_in_cert,
+    sign_device_cert, verify_device_cert, verify_device_cert_at, verify_stand_in_cert,
+    verify_stand_in_cert_at,
 };
 pub use certification::{
     CERTIFICATION_REQUEST_TAG, CERTIFICATION_SCHEMA_VERSION, CertificationError,
     CertificationPolicy, CertificationRequest, MAX_CERTIFICATION_REQUEST_LIFETIME_NS,
-    issue_device_cert, prepare_device_cert, verify_issued_cert,
+    issue_device_cert, issue_device_cert_as_stand_in, prepare_device_cert, verify_issued_cert,
 };
 #[cfg(not(target_arch = "wasm32"))]
 pub use clock::wait_for_wall_clock;
@@ -149,6 +159,7 @@ pub use revocation::{
     REVOCATION_PREIMAGE_TAG, RevocationEntry, RevocationError, RevocationList, RevocationReason,
     revocation_signing_digest, sign_revocation_entry, verify_revocation_entry,
 };
+pub use sign_in::{SIGN_IN_TAG, SignInError, SignInProof, agent_endpoint_audience, sign_in_digest};
 
 use serde::{Deserialize, Serialize};
 
@@ -284,6 +295,10 @@ mod tests {
             assert_eq!(cert::DEVCERT_PREIMAGE_TAG, b"tilo-devcert-v1\0");
             assert_eq!(cert::DEVCERT_PREIMAGE_TAG.len(), 16);
             assert_eq!(cert::DEVCERT_V2_PREIMAGE_TAG, b"tilo-devcert-v2\0");
+            assert_eq!(cert::DEVCERT_V3_PREIMAGE_TAG, b"tilo-devcert-v3\0");
+            assert_eq!(cert::DEVCERT_V4_PREIMAGE_TAG, b"tilo-devcert-v4\0");
+            assert_eq!(cert::DEVCERT_V5_PREIMAGE_TAG, b"tilo-devcert-v5\0");
+            assert_eq!(cert::DEVCERT_V6_PREIMAGE_TAG, b"tilo-devcert-v6\0");
 
             assert_eq!(revocation::REVOCATION_PREIMAGE_TAG, b"tilo-revocation-v1\0");
             assert_eq!(revocation::REVOCATION_PREIMAGE_TAG.len(), 19);

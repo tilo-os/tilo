@@ -444,6 +444,7 @@ decorator_trait! {
         fn name() -> &str;
         fn test_id() -> Option<&str>;
         fn window_slot(id: String) -> Option<crate::window_toolbar::ToolbarAction>;
+        fn window_slot_barrier() -> bool;
         fn test_rects() -> Vec<(String, vello::kurbo::Rect)>;
         fn get_rect() -> vello::kurbo::Rect;
         fn paint_bounds() -> vello::kurbo::Rect;
@@ -520,6 +521,7 @@ decorator_trait! {
     }
 
     mut {
+        fn window_choose(id: &str) -> bool;
         fn set_full_bleed(full_bleed: bool);
         fn place_disclosing(slot: vello::kurbo::Rect);
         fn note_placement(placement: crate::widget::Placement);
@@ -563,7 +565,7 @@ decorator_trait! {
         fn observe_physical_input(input: crate::widget::PhysicalInput);
         fn handle_event(event: &WindowEvent, ctx: &mut EventCtx<'_>);
         fn children_mut() -> Vec<&mut (dyn Widget + '_)>;
-        fn reveal_descendant(target: *const dyn Widget) -> bool;
+        fn reveal_descendant(target: *const dyn Widget, rect: vello::kurbo::Rect) -> bool;
         fn take_action_palette_request() -> Option<tilo_actions::ActionAddress>;
         fn take_search_request() -> bool;
         fn set_focus(focused: bool);

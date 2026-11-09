@@ -96,7 +96,7 @@ impl Widget for EventSpy {
         "EventSpy"
     }
 
-    fn reveal_descendant(&mut self, target: *const dyn Widget) -> bool {
+    fn reveal_descendant(&mut self, target: *const dyn Widget, _rect: Rect) -> bool {
         std::ptr::addr_eq(std::ptr::from_ref::<dyn Widget>(self), target)
     }
 }
@@ -331,7 +331,7 @@ fn focus_reveal_scrolls_to_new_focus_with_context_but_respects_manual_scroll() {
             std::ptr::from_ref::<dyn Widget>(child)
         };
 
-        assert!(scroll.reveal_descendant(target));
+        assert!(scroll.reveal_descendant(target, Rect::new(12.0, 520.0, 188.0, 568.0)));
         assert!(
             scroll.offset_y() <= 484.0,
             "focus reveal should retain at least 36px of label/context above the field; offset={} ",

@@ -1077,6 +1077,10 @@ fn a_guest_that_cannot_be_set_up_says_so_on_its_lease_and_nothing_on_its_termina
 /// A guest whose sandbox cannot be built says why in words under `bwrap`'s
 /// own one-line reason; one that can be built runs without that notice.
 /// Both halves assert: which one runs depends on the machine, as probed.
+///
+/// The command runs a program, not a built-in: the session's shell answers
+/// `printf` itself, on the Tilo side, and only a program starts the guest
+/// whose sandbox this test is about.
 #[test]
 fn a_sandbox_that_cannot_be_built_is_explained() {
     let _guest = GUEST_ENV.lock().expect("guest env lock");
@@ -1093,7 +1097,7 @@ fn a_sandbox_that_cannot_be_built_is_explained() {
     std::os::unix::fs::symlink(tilo_test_env::package_binary!("tilo-ush"), &public_command)
         .unwrap();
     let out = std::process::Command::new(&public_command)
-        .args(["-c", "printf ush-command-output"])
+        .args(["-c", "bash -c 'printf ush-command-output'"])
         .env(ush::store::STORE_ENV, dir.path().join("store"))
         .env("TILO_USH_IMAGES", &images)
         .stdin(std::process::Stdio::null())
@@ -1106,7 +1110,10 @@ fn a_sandbox_that_cannot_be_built_is_explained() {
         "generic overlay advice must not mask the actual cause: {stderr}"
     );
     if let Some(reason) = unavailable {
-        assert!(!out.status.success(), "{reason}; yet the guest ran");
+        assert!(
+            !out.status.success(),
+            "{reason}; yet the guest ran: {stderr}"
+        );
         assert!(
             explained,
             "a guest that cannot mount ({reason}) must say so, not leave only \

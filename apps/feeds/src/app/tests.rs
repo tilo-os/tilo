@@ -1635,10 +1635,12 @@ fn the_failing_rows_reason_reaches_assistive_technology() {
     })
     .unwrap();
     a.core_mut().drain_fetches_live();
-    // The sidebar's list is built from exactly these sections.
-    let list = ui::widget::NavList::new(a.core().nav_sections())
+    // The sidebar's list is built from exactly these sections, and holds
+    // its rows once laid out, as the window lays it out.
+    let mut list = ui::widget::NavList::new(a.core().nav_sections())
         .with_id("feeds.sidebar")
         .with_accessible_name("Subscriptions");
+    ui::testing::lay_out(&mut list, 280.0, 720.0).expect("the subscriptions lay out");
     let tree = Widget::accessibility(&list).expect("the subscriptions are semantics");
     let row = named_node(&tree, &title).unwrap_or_else(|| panic!("the row for {title:?}"));
     let description = row.description.clone().unwrap_or_default();

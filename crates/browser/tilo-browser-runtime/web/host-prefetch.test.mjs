@@ -82,3 +82,89 @@ test('a failed load leaves the app to its first open, not an unhandled rejection
   await settle();
   assert.deepEqual(prefetched, []);
 });
+
+/** A loader whose prefetch records the modules it was asked for and settles
+ * at once, as the splitter's does (`__wasm_split.js`). */
+function offeredHarness(listed) {
+  const prefetched = [];
+  const loader = async () => ({prefetch: module => { prefetched.push(module); return Promise.resolve(true); }});
+  const fetch = async () => ({ok: true, json: async () => ({applications: listed})});
+  return {prefetched, options: {fetch, load: loader, idle: run => run({timeRemaining: () => 4})}};
+}
+const flush = async () => { for (let i = 0; i < 40; i += 1) await Promise.resolve(); };
+
+test('every app the desktop offers is prefetched, so opening one needs no fetch', async () => {
+  const {prefetchOfferedApplications} = await load();
+  const listed = [
+    {id: 'so.tilo.activity', module: 'activity'},
+    {id: 'so.tilo.chat', module: 'chat'},
+    {id: 'so.tilo.notes', module: 'notes'},
+    {id: 'so.tilo.typst-editor', module: 'typst_editor'},
+  ];
+  const {prefetched, options} = offeredHarness(listed);
+  await prefetchOfferedApplications(options);
+  await flush();
+  assert.deepEqual(
+    [...prefetched].sort(),
+    listed.map(entry => entry.module).sort(),
+    'every offered app module was prefetched',
+  );
+});
+
+test('the prefetch runs a bounded few at a time, each in an idle period', async () => {
+  const {prefetchOfferedApplications} = await load();
+  const listed = Array.from({length: 8}, (_, i) => ({id: `so.tilo.app${i}`, module: `app${i}`}));
+  const prefetched = [];
+  let inFlight = 0;
+  let peak = 0;
+  const idled = [];
+  const loader = async () => ({prefetch: async module => {
+    inFlight += 1;
+    peak = Math.max(peak, inFlight);
+    await Promise.resolve();
+    prefetched.push(module);
+    inFlight -= 1;
+    return true;
+  }});
+  const fetch = async () => ({ok: true, json: async () => ({applications: listed})});
+  await prefetchOfferedApplications({fetch, load: loader, idle: run => { idled.push(1); run({timeRemaining: () => 4}); }});
+  await flush();
+  assert.equal(prefetched.length, listed.length, 'every app was prefetched');
+  assert.ok(peak <= 2, `at most two modules compiled at once, saw ${peak}`);
+  assert.ok(idled.length >= listed.length, 'each fetch waited for the page to be idle first');
+});
+
+test('an app listing the bundle does not name is left to its first open', async () => {
+  const {prefetchOfferedApplications} = await load();
+  const {prefetched, options} = offeredHarness([{id: 'so.tilo.chat'}]);
+  await prefetchOfferedApplications(options);
+  await flush();
+  assert.deepEqual(prefetched, [], 'an entry with no module prefetches nothing');
+});
+
+test('a refused listing, or a failed compile, leaves apps to their first open', async () => {
+  const {prefetchOfferedApplications} = await load();
+  const missing = {fetch: async () => ({ok: false, json: async () => ({})}),
+    load: async () => ({prefetch: () => { throw new Error('no'); }}), idle: run => run()};
+  await prefetchOfferedApplications(missing);
+  await flush();
+  const broken = {fetch: async () => ({ok: true, json: async () => ({applications: [{id: 'so.tilo.chat', module: 'chat'}]})}),
+    load: async () => ({prefetch: async () => { throw new Error('module gone'); }}), idle: run => run()};
+  await prefetchOfferedApplications(broken);
+  await flush();
+  // Nothing thrown: a failed prefetch is the app's first open to report.
+});
+
+test('the prefetch asks once', async () => {
+  const {prefetchOfferedApplications} = await load();
+  let fetches = 0;
+  const fetch = async () => { fetches += 1; return {ok: true, json: async () => ({applications: [{id: 'so.tilo.chat', module: 'chat'}]})}; };
+  const prefetched = [];
+  const loader = async () => ({prefetch: module => { prefetched.push(module); return Promise.resolve(true); }});
+  const options = {fetch, load: loader, idle: run => run()};
+  await prefetchOfferedApplications(options);
+  await prefetchOfferedApplications(options);
+  await flush();
+  assert.equal(fetches, 1, 'one listing for the page');
+  assert.equal(prefetched.length, 1, 'one prefetch for the page');
+});

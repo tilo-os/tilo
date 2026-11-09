@@ -960,6 +960,7 @@ mod tests {
             issued_at_ns: 10,
             expires_at_ns: None,
             signature: [3; 64],
+            issuer: None,
         })
     }
 

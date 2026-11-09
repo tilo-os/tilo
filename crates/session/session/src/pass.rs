@@ -93,6 +93,14 @@ impl Session {
         let timeout = self.wait(timeout.into());
         tilo_frame_metrics::profile::expire(Instant::now());
         self.compositor.dispatch(timeout)?;
+        // A launch asked since the last pass starts before this one waits for its frame, and
+        // again each time that wait is woken: the app's own start then runs beside the frame the
+        // desk draws rather than after it, and whoever is waiting on the launch hears back at
+        // once.
+        let launch = self.shared.launch.clone();
+        if let Some(launch) = &launch {
+            launch.start_asked_now();
+        }
         // What search reads of the desk is read in turns that have nothing to draw. What arrived
         // above is drawn first: a window committing the frame it was configured for is answered by
         // this turn's frame rather than by a turn the index is read in first. A desk that keeps
@@ -108,7 +116,11 @@ impl Session {
         // A frame that is owed is shown at the display's next blank: what arrives before that blank
         // joins the frame it is shown in, so the desk below is laid out once per refresh however
         // fast events come.
-        self.compositor.await_frame()?;
+        self.compositor.await_frame_arrivals(|| {
+            if let Some(launch) = &launch {
+                launch.start_waiting();
+            }
+        })?;
         self.follow_logout_request();
         // What the session itself does before the frame: the desk, the apps and the overlays this
         // pass lays out.
@@ -119,7 +131,7 @@ impl Session {
         // left opens once it is.
         self.follow_folder_import();
         // What the person is in the middle of, as the desk may not move under it (shell.md §1).
-        let underway = self.compositor.underway();
+        let underway = crate::arrangement::busy(self.compositor.underway());
         self.shared.underway.set(underway);
         // What each window shows, as its app holds the record: the note this pass's desk, layout
         // and arrangement are read from.

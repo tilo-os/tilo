@@ -16,6 +16,20 @@ struct Decoder<'a> {
     accepted: usize,
     processed: usize,
     provisional: Zeroizing<String>,
+    pending: Option<Result<String, SpeechError>>,
+}
+impl Decoder<'_> {
+    fn preview(&mut self, samples: &[f32]) -> Result<String, SpeechError> {
+        if samples.len() != self.accepted {
+            return Err(SpeechError::Protocol);
+        }
+        if samples.len() > self.processed {
+            let new = samples.get(self.processed..).ok_or(SpeechError::Protocol)?;
+            self.provisional = Zeroizing::new(self.native.call(0, new)?);
+            self.processed = samples.len();
+        }
+        Ok(self.provisional.to_string())
+    }
 }
 impl worker::SpeechDecoder for Decoder<'_> {
     fn draft_policy(&self) -> DraftPolicy {
@@ -31,19 +45,20 @@ impl worker::SpeechDecoder for Decoder<'_> {
         }
         Ok(())
     }
-    fn draft(&mut self, samples: &[f32]) -> Result<String, SpeechError> {
-        if samples.len() != self.accepted {
-            return Err(SpeechError::Protocol);
-        }
-        if samples.len() > self.processed {
-            let new = samples.get(self.processed..).ok_or(SpeechError::Protocol)?;
-            self.provisional = Zeroizing::new(self.native.call(0, new)?);
-            self.processed = samples.len();
-        }
-        Ok(self.provisional.to_string())
+    fn start_draft(
+        &mut self,
+        samples: &[f32],
+        _wake: &worker::DraftWake,
+    ) -> Result<(), SpeechError> {
+        // This engine streams in-process, so the preview is ready here.
+        self.pending = Some(self.preview(samples));
+        Ok(())
+    }
+    fn poll_draft(&mut self) -> Option<Result<String, SpeechError>> {
+        self.pending.take()
     }
     fn finish(&mut self, samples: &[f32]) -> Result<String, SpeechError> {
-        self.draft(samples)?;
+        self.preview(samples)?;
         self.native.call(1, samples)
     }
 }
@@ -99,7 +114,7 @@ fn run() -> Result<(), SpeechError> {
         "b6e02f048568ac5d01a2042556c658061e699acbc0aa2a1439f52f3d461dffeb",
     )?;
     let library = bridge::Library::load(bridge_path, bridge_sha)?;
-    let mut input = std::io::stdin().lock();
+    let mut input = worker::request_pipe();
     let mut output = std::io::stdout().lock();
     let (session, config) = worker::configure(&mut input)?;
     validate(&config)?;
@@ -118,6 +133,7 @@ fn run() -> Result<(), SpeechError> {
         accepted: 0,
         processed: 0,
         provisional: Zeroizing::new(String::new()),
+        pending: None,
     };
     worker::serve_decoder(
         (

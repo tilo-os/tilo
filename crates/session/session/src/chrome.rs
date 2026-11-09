@@ -8,17 +8,16 @@ use std::sync::Arc;
 use tilo_action_policy::Role;
 use tilo_desktop::about::{AboutLinks, AboutVariant, TiloMenu};
 use tilo_desktop::chrome::{
-    AppTrayIcon, AppTrayItem, AppTrayStatus, AvatarAsk, ChromeIntent, ClockSnapshot,
-    DesktopChromeSnapshot, DesktopChromeSource, Invite, OwnChip, SystemStatus,
+    AppTrayIcon, AppTrayItem, AppTrayStatus, ChromeIntent, DesktopChromeSnapshot, OwnChip,
 };
-use tilo_desktop::desktop_host::DesktopRules;
 use tilo_desktop::desktop_host::{DesktopAsk, DesktopChrome};
 use tilo_desktop::launchpad::LaunchpadAction;
 use tilo_desktop::overlays::{Overlays, Slot, Target};
 use tilo_desktop::topbar::{Placement, TopBarChrome};
 use tilo_desktop_model::DesktopTree;
-use tilo_desktop_model::commands::{DesktopCommand, Standing, may_command, may_create_workspace};
+use tilo_desktop_model::commands::Standing;
 use tilo_desktop_model::ownership::Authors;
+use tilo_desktop_surface::host::chrome::{ChromeSource, Facts, HostChrome, Notices};
 use tilo_desktop_surface::navigation::ChromeEffect;
 use tilo_desktop_surface::notifications::Notification;
 use tilo_desktop_surface::{DesktopHandle, DesktopNotifications};
@@ -391,63 +390,41 @@ pub(crate) struct ChromeWiring {
     pub(crate) feeds: BarFeeds,
     /// This device's workspaces, as their records hold them.
     pub(crate) engine: Option<Arc<crate::engine::Engine>>,
+    /// What the desktop's control hints read and give back.
+    pub(crate) hints: tilo_desktop::control_hints::HintsFeed,
 }
 
-/// What the snapshot revision was last bumped for: the tree's revision, who
-/// is here, the minute, the last wave heard, the ask on the person's avatar,
-/// the tray's revision, the displays a fullscreen window owns, who views the
-/// windows this session shares, the notification count, whether the bell is
-/// silenced beside whether the person may invite someone here, and the
-/// Identify request the chrome answers.
-#[derive(PartialEq)]
-struct Seen {
-    tree: u64,
-    people: u64,
-    minute: i64,
-    waved: Option<String>,
-    ask: u64,
-    tray: u64,
-    fullscreen: Vec<String>,
-    exposures: Vec<(u64, u64, bool)>,
-    unread: u32,
-    quiet: bool,
-    invitable: bool,
-    identify: Option<u64>,
-    activities: u64,
-    words: u64,
-    /// The name and colour this person wears: renaming themselves or choosing a colour relabels and
-    /// repaints their chip in the bar.
-    own_name: Option<String>,
-    own_colour: Option<String>,
-    /// The name and identity the bar's own avatar is drawn from.
-    own_face: (String, String),
-}
-
-/// The bar's view of the session: the desktop's tree, the wall clock, and the person at this
-/// device.
+/// The bar's view of the session: the desktop's tree, the wall clock, who is here, the machine's
+/// readings and the apps' activities. What the bar shows of them is the shared chrome's
+/// ([`tilo_desktop_surface::host::chrome::HostChrome`]); this answers only where the facts come
+/// from.
 pub(crate) struct SessionChrome {
     pub(crate) handle: DesktopHandle,
     /// Where the bar's intents go: the chrome carries them out.
-    pub(crate) intents: Rc<RefCell<Vec<ChromeIntent>>>,
-    pub(crate) person: String,
+    intents: Rc<RefCell<Vec<ChromeIntent>>>,
+    /// Who this desktop acts for, and changes the workspace as.
+    person: String,
     /// What the bar reads of the notifications: the unread count, the silenced bell and each app's
     /// own badge.
-    pub(crate) signals: Rc<NoticeSignals>,
+    signals: Rc<NoticeSignals>,
     /// The session has no quick settings panel: the status cluster is the bell that opens the
     /// notification centre.
-    pub(crate) notifications_only: bool,
+    notifications_only: bool,
     /// Who is here, when this session takes part in the collaboration plane: the bar's trees carry
     /// them as the active workspace's collaborators.
-    pub(crate) sync: Option<Rc<crate::sync::Client>>,
+    sync: Option<Rc<crate::sync::Client>>,
+    /// What each window of the desk shows, as its app reports it: where a person's record stands,
+    /// so the roster places them in the window they work in.
+    notes: std::sync::Arc<crate::continuations::Continuations>,
     /// The machine as the services last published it: the status cluster's battery, network and
     /// volume glyphs, and the streams being captured.
-    pub(crate) readings: crate::status::Shared,
+    readings: crate::status::Shared,
     /// The apps' live activities, which the bar's pill names and the floating layer shows as cards.
-    pub(crate) activities: Rc<Activities>,
+    activities: Rc<Activities>,
     /// The desk's notifications, where a due timer is announced.
-    pub(crate) notices: DesktopNotifications,
+    notices: DesktopNotifications,
     /// The running applications' status-notifier items, as their host keeps them.
-    pub(crate) tray: Option<Arc<tilo_tray_host::Tray>>,
+    tray: Option<Arc<tilo_tray_host::Tray>>,
     /// The monitors of the displays a fullscreen window owns, which the loop takes from the
     /// compositor each pass.
     fullscreen: Rc<RefCell<Vec<String>>>,
@@ -457,9 +434,11 @@ pub(crate) struct SessionChrome {
     identify: Rc<RefCell<Option<tilo_desktop::display_identify::Ask>>>,
     /// Whether the person may invite someone into the workspace in front.
     invitable: Rc<Cell<bool>>,
-    /// The [`Seen`] the snapshot revision was last bumped for.
-    seen: RefCell<Seen>,
-    revision: Cell<u64>,
+    /// This device's workspaces, as their records hold them: what says whether a workspace may be
+    /// deleted.
+    engine: Option<Arc<crate::engine::Engine>>,
+    /// Who made each strip: what its maker may change of it.
+    authors: RefCell<Authors>,
 }
 
 impl SessionChrome {
@@ -470,6 +449,8 @@ impl SessionChrome {
         feeds: BarFeeds,
         notifications_only: bool,
         sync: Option<Rc<crate::sync::Client>>,
+        notes: std::sync::Arc<crate::continuations::Continuations>,
+        engine: Option<Arc<crate::engine::Engine>>,
     ) -> Self {
         let BarFeeds {
             signals,
@@ -490,6 +471,7 @@ impl SessionChrome {
             signals,
             notifications_only,
             sync,
+            notes,
             readings,
             activities,
             notices,
@@ -498,130 +480,130 @@ impl SessionChrome {
             shares,
             identify,
             invitable,
-            seen: RefCell::new(Seen {
-                tree: u64::MAX,
-                people: u64::MAX,
-                minute: 0,
-                waved: None,
-                ask: u64::MAX,
-                tray: u64::MAX,
-                fullscreen: Vec::new(),
-                exposures: Vec::new(),
-                unread: 0,
-                quiet: false,
-                invitable: false,
-                identify: None,
-                activities: u64::MAX,
-                words: u64::MAX,
-                own_name: None,
-                own_colour: None,
-                own_face: (String::new(), String::new()),
-            }),
-            revision: Cell::new(0),
+            engine,
+            authors: RefCell::new(Authors::new()),
         }
-    }
-
-    /// The machine as the services last published it, in the bar's own terms: what its battery,
-    /// network and volume glyphs draw and what its status cluster says of them. A part no service
-    /// read draws no glyph (absence, never a zero).
-    fn status(&self) -> SystemStatus {
-        self.readings.borrow().status()
     }
 }
 
-impl DesktopChromeSource for SessionChrome {
-    fn snapshot(&self) -> DesktopChromeSnapshot {
-        let clock = ClockSnapshot::now();
-        let waved = self.sync.as_ref().and_then(|sync| sync.wave_notice());
-        // A due event is announced once, here, where the bar reads it.
-        self.activities.announce(&self.notices);
-        // The pill the bar shows, built once here: the bar reads its snapshot many times a frame,
-        // and the activities' own words do not change between its reads.
-        let activities = self.activities.pill();
-        // The bar's pixels for an ask that comes, opens, folds, is answered or is put off change
-        // with it, so the revision moves for those as it does for the tree.
-        let exposures = self.shares.borrow().exposures();
-        let identify = self.identify.borrow().clone();
-        let own_name = ui::local_identity::load().map(|identity| identity.display_name);
-        let own_colour = settings_store::identity::COLOUR.get();
-        // The bar's own avatar is the same face their card shows: one name,
-        // one identity, one colour, read where the card reads it.
+impl ChromeSource for SessionChrome {
+    fn handle(&self) -> &DesktopHandle {
+        &self.handle
+    }
+
+    fn person(&self) -> &str {
+        &self.person
+    }
+
+    /// Who is here, the window they are in and the call they are in reach the bar as its faces and
+    /// roster, and none of it moves the tree: without this the face of everyone who arrives after
+    /// the first frame never draws.
+    fn people_revision(&self) -> u64 {
+        self.sync.as_ref().map_or(0, |sync| sync.people_revision())
+    }
+
+    fn place_people(&self, tree: &mut DesktopTree) {
+        if let Some(sync) = &self.sync {
+            sync.show(tree, &self.notes.records(), &|_: &str| None);
+        }
+    }
+
+    /// The person at this device owns its desktop: the desktop's one policy answers what they may
+    /// change, as it answers a workspace's owner.
+    fn with_standing<R>(&self, answer: impl FnOnce(&Standing<'_>) -> R) -> R {
+        answer(&Standing {
+            person: &self.person,
+            role: Some(Role::Owner),
+            members: None,
+        })
+    }
+
+    fn with_authors<R>(&self, answer: impl FnOnce(&mut Authors) -> R) -> R {
+        answer(&mut self.authors.borrow_mut())
+    }
+
+    fn own_chip(&self) -> OwnChip {
         let own = self
             .sync
             .as_ref()
             .map_or_else(crate::sync::OwnPresence::default, |sync| sync.own());
-        let (own_chip_name, own_chip_identity) = crate::people::own_face(&own, &self.person);
-        let (red, green, blue) = crate::people::own_rgb(&own_chip_identity);
-        let seen = Seen {
-            tree: self.handle.revision(),
-            // Who is here, the window they are in and the call they are in reach the bar as its
-            // faces and roster, and none of it moves the tree: without this the face of everyone
-            // who arrives after the first frame never draws.
-            people: self.sync.as_ref().map_or(0, |sync| sync.people_revision()),
-            minute: clock.unix_seconds.div_euclid(60),
-            waved: waved.as_ref().map(|notice| notice.from.clone()),
-            ask: self.handle.personal_ask_revision(),
-            tray: self.app_tray_revision(),
-            fullscreen: self.fullscreen.borrow().clone(),
-            exposures: exposures
-                .iter()
-                .map(|exposure| (exposure.surface, exposure.peer, exposure.can_control))
-                .collect(),
-            unread: self.signals.unread(),
-            quiet: self.signals.quiet(),
-            invitable: self.invitable.get(),
-            identify: identify.as_ref().map(|ask| ask.id),
-            activities: self.activities.board().revision(),
-            // The bar says its words in the person's language: another one relabels it as any other
-            // change to what it shows does.
-            words: ui::I18nManager::revision(),
-            own_name,
-            own_colour,
-            // The name and identity their own avatar is drawn from: the presence label they gave
-            // themselves moves the bar as their display name does.
-            own_face: (own_chip_name.clone(), own_chip_identity.clone()),
-        };
-        if *self.seen.borrow() != seen {
-            self.seen.replace(seen);
-            self.revision.set(self.revision.get().wrapping_add(1));
-        }
-        DesktopChromeSnapshot {
-            revision: self.revision.get(),
-            // The bar steps aside for the window covering its display, which only this device's
-            // desk knows: the state, never a chord.
-            fullscreen: self.handle.read(|tree| tree.fullscreen_group().is_some()),
-            status: self.status(),
-            clock,
-            activities,
-            waved,
-            arrived: self.sync.as_ref().and_then(|sync| sync.arrival_notice()),
-            own: Some(OwnChip {
-                // The name they go by, and the root key the picture they chose hangs on: the id is
-                // never shown as their name.
-                name: own_chip_name,
-                rgb: (red, green, blue),
-                identity: own_chip_identity,
-            }),
-            notification_badge: self.signals.unread(),
-            notifications_quiet: self.signals.quiet(),
-            notifications_only: self.notifications_only,
-            // Who views the windows this session shares: the bar says the share is live while
-            // anyone does.
-            active_exposures: exposures,
-            identify,
-            invite: Invite::when(self.invitable.get()),
-            ..DesktopChromeSnapshot::default()
+        // The bar's own avatar is the same face their card shows: one name, one identity, one
+        // colour, read where the card reads it.
+        let (name, identity) = crate::people::own_face(&own, &self.person);
+        let (red, green, blue) = crate::people::own_rgb(&identity);
+        OwnChip {
+            // The name they go by, and the root key the picture they chose hangs on: the id is
+            // never shown as their name.
+            name,
+            rgb: (red, green, blue),
+            identity,
         }
     }
 
-    fn tree(&self) -> DesktopTree {
-        let mut tree = self.handle.read(Clone::clone);
-        // Who is here, as the active workspace's collaborators: the bar's faces and every roster
-        // read the tree, not a list of their own.
-        if let Some(sync) = &self.sync {
-            sync.show(&mut tree, &|_: &str| None);
+    fn notices(&self) -> Notices {
+        Notices {
+            unread: self.signals.unread(),
+            quiet: self.signals.quiet(),
         }
-        tree
+    }
+
+    fn may_invite(&self) -> bool {
+        self.invitable.get()
+    }
+
+    fn waved(&self) -> Option<tilo_desktop::chrome::WaveNotice> {
+        self.sync.as_ref().and_then(|sync| sync.wave_notice())
+    }
+
+    fn app_badge(&self, app: &str) -> u32 {
+        self.signals.badge(app)
+    }
+
+    fn facts(&self, facts: &mut Facts) {
+        // Who views the windows this session shares: the bar says the share is live while anyone
+        // does.
+        for exposure in self.shares.borrow().exposures() {
+            facts.number(exposure.surface);
+            facts.number(exposure.peer);
+            facts.when(exposure.can_control);
+        }
+        facts.number(self.tray.as_ref().map_or(0, |tray| tray.revision()));
+        // A fullscreen window on a display makes that display's bar step aside.
+        for monitor in self.fullscreen.borrow().iter() {
+            facts.words(monitor);
+        }
+        if let Some(ask) = self.identify.borrow().as_ref() {
+            facts.number(ask.id);
+        }
+        facts.number(self.activities.board().revision());
+        // The bar says its words in the person's language: another one relabels it.
+        facts.number(ui::I18nManager::revision());
+        // Renaming themselves or choosing a colour relabels and repaints their chip in the bar,
+        // and the presence label they gave themselves moves it as their display name does.
+        match ui::local_identity::load().map(|identity| identity.display_name) {
+            Some(name) => facts.words(&name),
+            None => facts.number(0),
+        }
+        match settings_store::identity::COLOUR.get() {
+            Some(colour) => facts.words(&colour),
+            None => facts.number(0),
+        }
+    }
+
+    fn fill(&self, snapshot: &mut DesktopChromeSnapshot) {
+        // A due event is announced once, here, where the bar reads it.
+        self.activities.announce(&self.notices);
+        snapshot.status = self.readings.borrow().status();
+        snapshot.activities = self.activities.pill();
+        snapshot.notifications_only = self.notifications_only;
+        snapshot.arrived = self.sync.as_ref().and_then(|sync| sync.arrival_notice());
+        snapshot.active_exposures = self.shares.borrow().exposures();
+        snapshot.identify.clone_from(&self.identify.borrow());
+    }
+
+    fn take_intent(&self, intent: ChromeIntent) -> bool {
+        self.intents.borrow_mut().push(intent);
+        true
     }
 
     /// One bar per display: the one in use full, the others compact, each on its own display's
@@ -632,14 +614,29 @@ impl DesktopChromeSource for SessionChrome {
             .read(|tree| Placement::of(tree, fullscreen.as_slice()))
     }
 
-    fn app_notification_badge(&self, app_id: &str) -> u32 {
-        self.signals.badge(app_id)
-    }
-
-    /// Changes whenever an application's tray item appears, changes or goes, so the bar redraws
-    /// that icon and nothing else.
-    fn app_tray_revision(&self) -> u64 {
-        self.tray.as_ref().map_or(0, |tray| tray.revision())
+    fn may_delete_workspace(
+        &self,
+        workspace: tilo_desktop_model::WorkspaceSlot,
+    ) -> Result<(), String> {
+        let Some(engine) = &self.engine else {
+            return Err(tilo_desktop_surface::i18n::t(
+                "desktop-cannot-delete-workspace",
+            ));
+        };
+        let id = self
+            .handle
+            .read(|tree| {
+                tree.workspaces
+                    .iter()
+                    .find(|held| held.slot == workspace)
+                    .map(tilo_desktop_model::Workspace::id)
+            })
+            .ok_or_else(|| tilo_desktop_surface::i18n::t("desktop-workspace-gone"))?;
+        if engine.may_delete(id) {
+            Ok(())
+        } else {
+            Err(tilo_desktop_surface::i18n::t("desktop-workspace-stays"))
+        }
     }
 
     /// The running applications' tray items, in the order they registered: each one's own title,
@@ -651,20 +648,10 @@ impl DesktopChromeSource for SessionChrome {
         tray.snapshot().into_iter().map(app_tray_item).collect()
     }
 
-    /// The ask waiting on the person's own avatar: what the session put to them there (see
-    /// [`crate::identity::offer`]), open beside their face until they answer it or put it off.
-    fn avatar_ask(&self) -> Option<AvatarAsk> {
-        self.handle.personal_ask().map(|ask| AvatarAsk {
-            question: ask.title,
-            detail: ask.body,
-            answer: ask.action.title,
-            open: ask.open,
-        })
-    }
-
-    fn intent(&self, intent: ChromeIntent) -> bool {
-        self.intents.borrow_mut().push(intent);
-        true
+    /// Changes whenever an application's tray item appears, changes or goes, so the bar redraws
+    /// that icon and nothing else.
+    fn app_tray_revision(&self) -> u64 {
+        self.tray.as_ref().map_or(0, |tray| tray.revision())
     }
 }
 
@@ -698,84 +685,6 @@ fn app_tray_item(item: tilo_tray_host::TrayItem) -> AppTrayItem {
             tilo_tray_host::TrayIcon::Letter(letter) => AppTrayIcon::Letter(letter),
         },
         item_is_menu: item.item_is_menu,
-    }
-}
-
-/// The person at this device owns its desktop: the desktop's one policy answers what they may
-/// change, as it answers a workspace's owner.
-pub(crate) struct SessionRules {
-    pub(crate) handle: DesktopHandle,
-    pub(crate) person: String,
-    /// This device's workspaces, as their records hold them: what says whether a workspace may be
-    /// deleted.
-    pub(crate) engine: Option<std::sync::Arc<crate::engine::Engine>>,
-    /// Who made each strip and opened each window.
-    pub(crate) authors: RefCell<Authors>,
-}
-
-impl SessionRules {
-    fn standing(&self) -> Standing<'_> {
-        Standing {
-            person: &self.person,
-            role: Some(Role::Owner),
-            members: None,
-        }
-    }
-}
-
-impl DesktopRules for SessionRules {
-    fn tree(&self) -> DesktopTree {
-        self.handle.read(Clone::clone)
-    }
-
-    fn author(&self) -> String {
-        self.person.clone()
-    }
-
-    fn may(&self, command: &DesktopCommand) -> Result<(), String> {
-        let authors = self.authors.borrow();
-        self.handle.read(|tree| {
-            let workspace = tree
-                .active_workspace()
-                .ok_or_else(|| "There is no workspace open".to_owned())?;
-            may_command(&self.standing(), &authors, workspace, command)
-                .map_err(|refusal| refusal.to_string())
-        })
-    }
-
-    fn may_create_workspace(&self) -> Result<(), String> {
-        may_create_workspace(&self.standing()).map_err(|refusal| refusal.to_string())
-    }
-
-    fn may_delete_workspace(
-        &self,
-        workspace: tilo_desktop_model::WorkspaceSlot,
-    ) -> Result<(), String> {
-        let Some(engine) = &self.engine else {
-            return Err(tilo_desktop_surface::i18n::t(
-                "desktop-cannot-delete-workspace",
-            ));
-        };
-        let id = self
-            .handle
-            .read(|tree| {
-                tree.workspaces
-                    .iter()
-                    .find(|held| held.slot == workspace)
-                    .map(tilo_desktop_model::Workspace::id)
-            })
-            .ok_or_else(|| tilo_desktop_surface::i18n::t("desktop-workspace-gone"))?;
-        if engine.may_delete(id) {
-            Ok(())
-        } else {
-            Err(tilo_desktop_surface::i18n::t("desktop-workspace-stays"))
-        }
-    }
-
-    fn made_strip(&self, strip: tilo_desktop_model::StripId) {
-        self.authors
-            .borrow_mut()
-            .insert(strip.0, self.person.clone());
     }
 }
 
@@ -842,31 +751,29 @@ pub(crate) fn host(
         shortcuts,
         feeds,
         engine,
+        hints,
     } = wiring;
     let reveals = Rc::clone(&feeds.reveals);
-    let rules = Rc::new(SessionRules {
-        handle: handle.clone(),
-        person: options.person.clone(),
-        engine,
-        authors: RefCell::new(std::collections::BTreeMap::new()),
-    });
     let tree = handle.read(Clone::clone);
-    // The bar's source hands its intents to the chrome it sits in.
-    let source = Rc::new(SessionChrome::new(
+    // The bar's source hands its intents to the chrome it sits in, and answers the desk's rules
+    // from the same facts.
+    let source = Rc::new(HostChrome::new(Rc::new(SessionChrome::new(
         handle.clone(),
         Rc::clone(&intents),
         options.person.clone(),
         feeds,
         !crate::quick_settings::installed(&options.surfaces),
         sync,
-    ));
+        options.launches.notes(),
+        engine,
+    ))));
     let bar = TopBarChrome::from_tree(&tree)
-        .with_chrome(source)
+        .with_chrome(source.clone())
         .with_tilo_mark();
     let mut chrome = DesktopChrome::new(
         handle.clone(),
         crate::GENERATION.into(),
-        rules,
+        source,
         bar,
         TiloMenu::new(AboutVariant::Native, &AboutLinks::default()),
         false,
@@ -879,6 +786,7 @@ pub(crate) fn host(
     chrome.set_switcher(switcher.clone());
     chrome.set_reveals(reveals);
     chrome.set_shortcuts(shortcuts);
+    chrome.set_hints_feed(hints);
     // Keys come to the chrome while one of the surfaces it draws holds the keyboard: the stack says
     // which, and it says the window's again as soon as the top surface closes.
     let desk = handle.clone();

@@ -107,6 +107,7 @@ fn certificate(root: &SigningKey, device: &SigningKey) -> DeviceCert {
         issued_at_ns: 1,
         expires_at_ns: None,
         signature: [0; 64],
+        issuer: None,
     };
     tilo_user_identity::sign_device_cert(&mut cert, root).unwrap();
     cert
@@ -313,7 +314,7 @@ fn signed_revocations_require_exact_root_and_outer_proof_before_monotonic_merge(
         .revalidate(&omitted, &[19; 32], &fixture.peer, &cert, &held)
         .unwrap();
     assert!(
-        held.is_revoked(&[31; 32]),
+        held.is_revoked(&root.verifying_key().to_bytes(), &[31; 32]),
         "omission cannot erase root retained entries"
     );
     let mut revoked = current.clone();

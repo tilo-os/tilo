@@ -25,7 +25,6 @@ import {createActions} from './actions.mjs';
 import {resolveResourceReference, openResourceReference} from './resource-reference.mjs';
 import {createAgents} from './agents.mjs';
 import {openChannelVault} from './channel-vault.mjs';
-import {createMembership, createWorkspaces} from './membership.mjs';
 import {backoffDelay} from './reconnect.mjs';
 import {createSpeakers} from './live-speakers.mjs';
 import {createPeerVoice} from './voice-peer.mjs';
@@ -33,6 +32,7 @@ import {memberText, objectText} from './json-text.mjs';
 import {WEBKIT_WEBGPU_REFUSAL} from './webgpu-safety.mjs';
 import {AdmissionError} from './admission.mjs';
 import {idbStorage, openDeviceCustody} from './device-custody.mjs';
+import {identityProfile} from './identity-profile.mjs';
 import {currentIdentity, fitDisplayName, IdentityError} from './identity.mjs';
 import {FETCH_PROXY_PATH} from './fetch-proxy.mjs';
 
@@ -80,8 +80,8 @@ export function profileStore(runtime, profile, device) {
 }
 const PEER_RECORD = 'peer-record';
 /** The profile an identity keeps for one host: its device key, certificate
- * and documents there. */
-export const identityProfile = (identity, origin) => `tilo-identity:${identity.userPublicKey}@${new URL(origin).host}`;
+ * and documents there (`identity-profile.mjs`). */
+export {identityProfile};
 
 /** The namespace of a profile's storage its peer keeps its certificate,
  * record (outbox, synced documents) and channel state in, until the host at
@@ -694,7 +694,13 @@ async function connect({
     }
     const record = storage ? undefined : await store.get(PEER_RECORD);
     peer = runtime.WasmPeer.start(
-      withStartFields(certified, {displayName, address: host.address}),
+      withStartFields(certified, {
+        displayName, address: host.address,
+        // What this person's root revoked: announced with this device's
+        // certificate, so the host refuses those keys from the moment each
+        // entry names on.
+        revocations: identity?.revocations?.length ? identity.revocations : undefined,
+      }),
       custodyForWasm,
       storage ? JSON.stringify({profile, device}) : undefined,
       storage ? undefined : (record ?? undefined),
@@ -797,10 +803,34 @@ async function connect({
   }
   signal?.addEventListener('abort', dispose, {once: true});
 
-  const membership = createMembership({
-    workspaces: request => peer.govern(request), workspace, displayName,
-    preAdmit: identity ? options => peer.preAdmit(identity, options) : undefined,
-  });
+  /** One workspace request, in the shape the page draws (`rooms.rs`). */
+  const rooms = async (op, args) => JSON.parse(await peer.rooms(op, JSON.stringify(args ?? {})));
+  const membership = {
+    createInvitation: ({role = 'editor', expiresIn = 7 * 86_400, waitListEntry = null} = {}) =>
+      rooms('invite', {workspace, role, expiresInSeconds: Math.floor(expiresIn), inviterName: displayName,
+        ...(waitListEntry ? {waitListEntry} : {})}),
+    preAdmit: options => {
+      if (!identity) throw new Error('pre-admitting needs the owner\'s unlocked identity');
+      return peer.preAdmit(identity, JSON.stringify(options));
+    },
+    list: () => rooms('list', {workspace}),
+    waitList: () => rooms('waitList', {workspace}),
+    unlist: requestId => rooms('unlist', {workspace, requestId}),
+    mailInvite: (requestId, link) => rooms('mailInvite', {workspace, requestId, link: String(link)}),
+    setRole: (userPublicKey, role) => rooms('setRole', {workspace, userPublicKey, role}),
+    remove: userPublicKey => rooms('remove', {workspace, userPublicKey}),
+    ban: userPublicKey => rooms('ban', {workspace, userPublicKey}),
+    unban: userPublicKey => rooms('unban', {workspace, userPublicKey}),
+    cancelInvitation: inviteId => rooms('cancel', {workspace, inviteId}),
+  };
+  const governed = {
+    list: () => rooms('workspaces'),
+    create: name => {
+      if (typeof name !== 'string' || !name.trim()) throw new TypeError('a workspace needs a name');
+      return rooms('create', {name: name.trim()});
+    },
+    enter: room => rooms('enter', {workspace: room}),
+  };
   const certifiedPeer = {
     get host() { return host; },
     /** The host origin and workspace this peer is in, as a link names them; the
@@ -818,16 +848,15 @@ async function connect({
       try { return peer?.workspaceName?.() ?? undefined; } catch { return undefined; }
     },
     setDisplayName: name => rename(name),
-    /** Issue an invitation to the workspace (`membership.mjs`): resolves to its
+    /** Issue an invitation to the workspace (`rooms.rs`): resolves to its
      * text, when the person's role lets them invite. */
     createInvitation: options => membership.createInvitation(options),
-    /** The workspace's members and invitations, for its owner
-     * (`membership.mjs`): `list()`, `setRole`, `remove`,
-     * `cancelInvitation`. */
+    /** Who is in the workspace, for its owner (`rooms.rs`): `list()`,
+     * `setRole`, `remove`, `cancelInvitation`. */
     get membership() { return membership; },
-    /** The workspaces the host governs (`membership.mjs`): `list()`,
+    /** The workspaces the host governs (`rooms.rs`): `list()`,
      * `create(name)`, `enter(workspace)`; needs no workspace. */
-    workspaces: createWorkspaces({workspaces: request => peer.govern(request)}),
+    workspaces: governed,
     getSnapshot: () => snapshot,
     /** How many changes this page made to the workspace's records and sent:
      * above zero once the person posted or created something. */
@@ -1023,7 +1052,10 @@ async function connect({
           if (peer !== source || snapshot.phase === 'failed') { finish(new Error('Shared resource connection changed')); return; }
           if (hasRecord(app, record)) finish();
         };
-        const timer = setTimeout(() => finish(new Error(`the workspace sent no ${app} record ${record}`)), timeoutMs);
+        // `no-record`: nothing arrived in time, which for a record nobody
+        // wrote yet (an app's workspace document before its first write) is
+        // the answer, not a failure of the connection.
+        const timer = setTimeout(() => finish(Object.assign(new Error(`the workspace sent no ${app} record ${record}`), {code: 'no-record'})), timeoutMs);
         listeners.add(check); pendingRecordWaits.add(finish);
         signal?.addEventListener('abort', abort, {once: true});
       });

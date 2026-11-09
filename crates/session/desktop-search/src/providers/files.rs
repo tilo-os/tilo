@@ -244,24 +244,8 @@ impl Held {
     }
 }
 
-/// The `file://` address of `path`.
-#[must_use]
-pub fn file_uri(path: &Path) -> String {
-    use std::fmt::Write as _;
-    let mut uri = String::from("file://");
-    for byte in path.to_string_lossy().bytes() {
-        match byte {
-            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'/' | b'-' | b'_' | b'.' | b'~' => {
-                uri.push(char::from(byte));
-            }
-            other => {
-                let _ = write!(uri, "%{other:02X}");
-            }
-        }
-    }
-    uri
-}
-
+/// One reading of the person's files: the names under the home folder, and what the files hold
+/// through the content index, when the host keeps one.
 pub struct Files {
     home: PathBuf,
     names: FileNames,
@@ -308,7 +292,7 @@ impl Files {
             score,
             icon: None,
             target: Target::Open {
-                uri: file_uri(path),
+                uri: crate::file_uri(path),
                 fallback: None,
             },
         }

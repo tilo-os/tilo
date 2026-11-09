@@ -16,7 +16,7 @@ const DISCUSSION: &str = include_str!("../../../../apps/tl/discussion/app.tl");
 const DISCUSSION_IDS: &str = include_str!("../../../../apps/tl/discussion/app.ids");
 const NOTES: &str = include_str!("../../../../apps/tl/notes/app.tl");
 const NOTES_IDS: &str = include_str!("../../../../apps/tl/notes/app.ids");
-const TASKS: &str = include_str!("../../../../apps/tl/tasks/app.tl");
+const TASKS: &str = crate::fixtures::TASKS_SOURCE;
 const TASKS_IDS: &str = include_str!("../../../../apps/tl/tasks/app.ids");
 const DISCUSSION_APP: &str = "so.tilo.lang.discussion";
 const NOTES_APP: &str = "so.tilo.lang.notes";
@@ -158,6 +158,14 @@ fn mark_of(view: &mut ViewInstance, resource: &str) -> Option<UiNode> {
         .1
 }
 
+/// The Tasks window these tests read their marks off, on the Inbox the tasks they make wait
+/// in: the window opens on Today, where an undated task is not.
+fn tasks_window(ada: &Replica) -> ViewInstance {
+    let mut view = ada.view(TASKS_APP);
+    crate::tasks::go_to(&mut view, "Inbox");
+    view
+}
+
 /// Ada's replication of a workspace that has the discussion app, notes and tasks.
 fn workspace() -> Replica {
     let (replica, _) = Replica::new(
@@ -254,7 +262,7 @@ fn a_comment_is_made_from_the_task_it_is_about_and_changes_it() {
 
     // A comment under the task is a change to the task: Ada's row for it is marked, and the
     // window that lists it counts one change she has not seen.
-    let mut view = ada.view(TASKS_APP);
+    let mut view = tasks_window(&ada);
     let mark = mark_of(&mut view, &task.id_string()).expect("Bo's comment marks Ada's row");
     assert_eq!(
         mark.props.get("by"),
@@ -296,7 +304,7 @@ fn a_thread_draws_what_was_said_and_is_read_with_what_it_is_about() {
     // the thread says anything: reading a task reads what was said about it.
     assert!(ada.host.runtime().mark_seen("ada", &task).unwrap());
     ada.commit();
-    let mut view = ada.view(TASKS_APP);
+    let mut view = tasks_window(&ada);
     assert!(
         mark_of(&mut view, &task.id_string()).is_none(),
         "{:?}",
@@ -376,7 +384,7 @@ fn an_agent_comments_through_the_same_action() {
     assert_eq!(made.from.map(|r| r.id_string()), Some(task.id_string()));
 
     // Ada's row is marked for it, and the thread draws the agent's comment as anyone's.
-    let mut view = ada.view(TASKS_APP);
+    let mut view = tasks_window(&ada);
     assert!(mark_of(&mut view, &task.id_string()).is_some());
     let page = ada.host.open_resource(&task, None).unwrap();
     assert!(
@@ -663,7 +671,7 @@ fn only_its_author_edits_or_deletes_a_comment() {
 
     // The row of what it is about is marked for the edit too: what changed is the task's
     // discussion, and the place counts it as the change it is.
-    let mut view = ada.view(TASKS_APP);
+    let mut view = tasks_window(&ada);
     let mark = mark_of(&mut view, &task.id_string()).expect("the edit marks the task's row");
     assert_eq!(
         mark.props.get("by"),

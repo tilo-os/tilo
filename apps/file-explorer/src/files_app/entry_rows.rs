@@ -400,11 +400,6 @@ fn entry_row(context: &RowContext, facts: &EntryRowFacts, entry: &Entry) -> Reso
                 t("files-menu-properties"),
             ),
             (
-                FilesEffect::Sharing { entry: id() },
-                "sharing",
-                t("files-sharing-access"),
-            ),
-            (
                 FilesEffect::History { entry: id() },
                 "history",
                 t("files-version-history"),
@@ -469,9 +464,9 @@ fn entry_row(context: &RowContext, facts: &EntryRowFacts, entry: &Entry) -> Reso
     }
     if entry.record_id.is_some() {
         resource.actions.push(row_action(
-            &FilesEffect::ShareLink { entry: id() },
-            "share-link",
-            "Create one-time share link",
+            &FilesEffect::Share { entry: id() },
+            "share",
+            t("files-share"),
         ));
     }
     resource
