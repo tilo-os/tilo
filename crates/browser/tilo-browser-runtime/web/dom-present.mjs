@@ -25,11 +25,14 @@ export function createDomPresenter(layer, {onFrame} = {}) {
     }
   }
 
-  function element(key, tag, svg) {
+  // An element is reused only for an op of the same kind: a box that was a
+  // clip keeps a clip's properties and a clip a box's, which no write here
+  // would clear.
+  function element(key, tag, svg, kind = currentKind) {
     let node = previous.get(key);
-    if (!node || node.tiloTag !== tag) {
+    if (!node || node.tiloTag !== `${kind}:${tag}`) {
       node = svg ? document.createElementNS(SVG, tag) : document.createElement(tag);
-      node.tiloTag = tag;
+      node.tiloTag = `${kind}:${tag}`;
       node.tiloProps = {};
     }
     return node;
@@ -44,6 +47,7 @@ export function createDomPresenter(layer, {onFrame} = {}) {
     else node.style.setProperty(prop, value);
   }
 
+  let currentKind = '';
   const px = v => `${Math.round(v * 100) / 100}px`;
 
   function place(node, x, y, w, h, origin) {
@@ -66,6 +70,7 @@ export function createDomPresenter(layer, {onFrame} = {}) {
       const top = stack[stack.length - 1];
       const key = `${stack.length}:${i++}`;
       const kind = op[0];
+      currentKind = kind;
       if (kind === 'e') {
         if (stack.length > 1) {
           const done = stack.pop();
@@ -83,6 +88,9 @@ export function createDomPresenter(layer, {onFrame} = {}) {
         set(node, 'background', fill || 'transparent');
         set(node, 'border-radius', radius ? px(radius) : '0');
         set(node, 'border', stroke ? `${px(width)} solid ${stroke}` : 'none');
+        // Only text takes the pointer, so a drag that starts on it selects
+        // it rather than the box behind it.
+        set(node, 'pointer-events', 'none');
       } else if (kind === 'p' || kind === 'i') {
         const [, x, y, w, h, d, fill, stroke, width, evenOdd] = op;
         if (kind === 'i') {
@@ -94,6 +102,7 @@ export function createDomPresenter(layer, {onFrame} = {}) {
           node = element(key, 'svg', true);
           set(node, 'position', 'absolute');
           set(node, 'overflow', 'visible');
+          set(node, 'pointer-events', 'none');
           place(node, x, y, Math.max(w, 1), Math.max(h, 1), top.origin);
           set(node, '@width', String(Math.max(Math.ceil(w), 1)));
           set(node, '@height', String(Math.max(Math.ceil(h), 1)));
@@ -110,6 +119,7 @@ export function createDomPresenter(layer, {onFrame} = {}) {
         node = element(key, 'span');
         set(node, 'position', 'absolute');
         set(node, 'white-space', 'pre');
+        set(node, 'pointer-events', 'auto');
         set(node, 'font-family', `"${family}"`);
         set(node, 'font-size', px(size));
         set(node, 'line-height', '1');
@@ -130,9 +140,12 @@ export function createDomPresenter(layer, {onFrame} = {}) {
         place(node, x, y, w, h, top.origin);
         set(node, 'border-radius', px(radius));
         set(node, 'box-shadow', `0 0 ${px(blur * 2)} ${color}`);
+        set(node, 'pointer-events', 'none');
       } else if (kind === 'c' || kind === 'cp' || kind === 'g') {
         node = element(key, 'div');
         set(node, 'position', 'absolute');
+        // A clip is transparent: what it holds takes the pointer, not it.
+        set(node, 'pointer-events', 'none');
         let origin = top.origin;
         if (kind === 'g') {
           set(node, 'left', '0px'); set(node, 'top', '0px');
@@ -161,6 +174,7 @@ export function createDomPresenter(layer, {onFrame} = {}) {
     stats.elements = next.size;
     stats.lastMs = performance.now() - started;
     stats.meta = meta;
+    stats.ops = opsJson;
     onFrame?.(stats);
   }
 

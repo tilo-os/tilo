@@ -73,11 +73,25 @@ def main():
         name = names.get(imports + i, '?')
         by_crate[crate(name)] += size
     total = sum(bodies)
-    renderer = {k: v for k, v in by_crate.items() if re.match(r'^(wgpu|wgpu_core|wgpu_hal|wgpu_types|naga|tilo_vello|vello|vello_shaders|web_sys_gpu)$', k)}
+    renderer = {k: v for k, v in by_crate.items() if re.match(r'^(wgpu|wgpu_core|wgpu_hal|wgpu_types|naga|tilo_vello|vello|vello_shaders|tilo_vello_shaders|spirv)$', k)}
+    text = {k: v for k, v in by_crate.items() if re.match(r'^(cosmic_text|harfrust|rustybuzz|skrifa|read_fonts|swash|fontdb|ttf_parser|unicode_bidi|unicode_linebreak|unicode_segmentation|hypher|icu_\w+)$', k)}
     print(json.dumps({'total': total, 'renderer': renderer, 'renderer_total': sum(renderer.values()),
+                      'text': text, 'text_total': sum(text.values()),
+                      'taffy': by_crate.get('taffy', 0), 'tilo_cpu_raster': by_crate.get('tilo_cpu_raster', 0), 'vello_cpu': by_crate.get('vello_cpu', 0),
                       'top': by_crate.most_common(int(sys.argv[3]) if len(sys.argv) > 3 else 40)}, indent=1))
 
 def crate(name):
+    # v0 mangling: the first crate root (`C`, an optional `s<hash>_`
+    # disambiguator, then a length-prefixed identifier) is the crate that
+    # defines the item; a generic's instantiations count for that crate.
+    if name.startswith('_R'):
+        m = re.search(r'C(?:s[0-9A-Za-z]*_)?(\d+)', name)
+        if m:
+            l = int(m.group(1))
+            return name[m.end():m.end() + l]
+    return legacy_crate(name)
+
+def legacy_crate(name):
     # Mangled v0/legacy names carry the crate path; take the first path segment
     # that is not a generic wrapper.
     n = name

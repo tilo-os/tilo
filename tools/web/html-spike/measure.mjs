@@ -76,7 +76,8 @@ function transfer(names) {
 const INSTRUMENT = `(() => {
   const m = window.spikeMarks;
   m.inputs = []; m.painted = [];
-  const changed = () => requestAnimationFrame(() => { const t = performance.now(); m.painted.push(t); });
+  m.changed = [];
+  const changed = () => { m.changed.push(performance.now()); requestAnimationFrame(() => { const t = performance.now(); m.painted.push(t); }); };
   const push = m.presented.push.bind(m.presented);
   m.presented.push = (...v) => { changed(); return push(...v); };
   for (const type of ['keydown', 'wheel']) addEventListener(type, e => m.inputs.push([type, e.timeStamp]), {capture: true, passive: true});
@@ -110,12 +111,14 @@ const FIND = text => `(() => {
 
 // Each input's latency: from its event to the first painted change after it.
 const LATENCIES = `(() => {
-  const m = window.spikeMarks, out = {keydown: [], wheel: []};
+  const m = window.spikeMarks, out = {keydown: [], wheel: [], keydownChanged: [], wheelChanged: []};
   for (const [type, at] of m.inputs) {
     const painted = m.painted.find(t => t >= at);
     if (painted !== undefined) out[type].push(painted - at);
+    const changed = (m.changed ?? []).find(t => t >= at);
+    if (changed !== undefined) out[type + 'Changed'].push(changed - at);
   }
-  m.inputs = []; m.painted = [];
+  m.inputs = []; m.painted = []; m.changed = [];
   return out;
 })()`;
 
@@ -162,6 +165,7 @@ async function run({page, render, width, height, dark = false, shot, interact = 
       result.firstFrameMs = Math.round(await tab.evaluate('performance.getEntriesByType("paint").find(e=>e.name==="first-contentful-paint")?.startTime ?? 0'));
     }
     if (shot) writeFileSync(join(out, shot), await tab.screenshot());
+    if (shot && render === 'dom') writeFileSync(join(out, shot.replace('.png', '-ops.json')), await tab.evaluate('window.__tiloDom?.stats.ops ?? "null"'));
     const names = await tab.evaluate('JSON.stringify([location.href, ...performance.getEntriesByType("resource").map(e => e.name)])').then(JSON.parse);
     result.transfer = transfer(names);
     if (interact) {
@@ -170,7 +174,8 @@ async function run({page, render, width, height, dark = false, shot, interact = 
       // editor's body, as a person would.
       const target = page === 'baseline.html'
         ? {x: width < 500 ? width / 2 : 600, y: 120}
-        : {x: width < 500 ? width / 2 : Math.round(width * 0.6), y: Math.round(height * 0.35)};
+        // Inside the second paragraph's first line, at either width.
+        : {x: width < 500 ? 200 : 700, y: width < 500 ? 287 : 256};
       for (const type of ['mousePressed', 'mouseReleased']) {
         await tab.send('Input.dispatchMouseEvent', {type, x: target.x, y: target.y, button: 'left', clickCount: 1});
       }
@@ -188,6 +193,7 @@ async function run({page, render, width, height, dark = false, shot, interact = 
       await sleep(300);
       const typed = await tab.evaluate(LATENCIES);
       result.typing = {n: typed.keydown.length, p50: pct(typed.keydown, 0.5), p90: pct(typed.keydown, 0.9), max: pct(typed.keydown, 1)};
+      result.typingChanged = {p50: pct(typed.keydownChanged, 0.5), p90: pct(typed.keydownChanged, 0.9)};
       if (shot) writeFileSync(join(out, shot.replace('.png', '-typed.png')), await tab.screenshot());
       for (let i = 0; i < 30 * rounds; i++) {
         await tab.send('Input.dispatchMouseEvent', {type: 'mouseWheel', x: target.x, y: target.y, deltaX: 0, deltaY: i % 20 < 10 ? 120 : -120});
@@ -196,6 +202,23 @@ async function run({page, render, width, height, dark = false, shot, interact = 
       await sleep(300);
       const scrolled = await tab.evaluate(LATENCIES);
       result.scrolling = {n: scrolled.wheel.length, p50: pct(scrolled.wheel, 0.5), p90: pct(scrolled.wheel, 0.9), max: pct(scrolled.wheel, 1)};
+      result.scrollingChanged = {p50: pct(scrolled.wheelChanged, 0.5), p90: pct(scrolled.wheelChanged, 0.9)};
+      if (render === 'dom' && width > 500) {
+        // The browser's own selection over the real text: the canvas lets
+        // the pointer through, and a drag selects as on any page.
+        await tab.evaluate('window.__tiloDom.selectText(true)');
+        const spans = await tab.evaluate(`JSON.stringify([...document.querySelectorAll('.tilo-dom span')].filter(s => /Paragraph/.test(s.textContent)).slice(1, 3).map(s => { const r = s.getBoundingClientRect(); return [r.left, r.top + r.height / 2, r.right]; }))`).then(JSON.parse);
+        if (spans.length === 2) {
+          await tab.send('Input.dispatchMouseEvent', {type: 'mousePressed', x: spans[0][0] + 2, y: spans[0][1], button: 'left', clickCount: 1});
+          for (let k = 1; k <= 8; k++) await tab.send('Input.dispatchMouseEvent', {type: 'mouseMoved', x: spans[0][0] + (spans[1][2] - spans[0][0]) * k / 8, y: spans[0][1] + (spans[1][1] - spans[0][1]) * k / 8, button: 'left', buttons: 1});
+          await tab.send('Input.dispatchMouseEvent', {type: 'mouseReleased', x: spans[1][2] - 2, y: spans[1][1], button: 'left', clickCount: 1});
+          await sleep(200);
+          result.nativeSelection = await tab.evaluate('getSelection().toString()');
+          if (shot) writeFileSync(join(out, shot.replace('.png', '-selected.png')), await tab.screenshot());
+        }
+        await tab.evaluate('window.__tiloDom.selectText(false)');
+        result.semanticMirror = await tab.evaluate(`JSON.stringify({textareas: document.querySelectorAll('[data-tilo-semantic] , textarea').length, buttons: document.querySelectorAll('button[data-tilo-semantic]').length, roles: [...new Set([...document.querySelectorAll('[data-tilo-semantic][role]')].map(e => e.getAttribute('role')))]})`).then(JSON.parse);
+      }
       if (page === 'notes.html') result.domAfter = await tab.evaluate('JSON.stringify(window.spikeMarks.dom ?? null)').then(JSON.parse);
     }
     const metrics = Object.fromEntries((await tab.send('Performance.getMetrics', {})).result.metrics.map(m => [m.name, m.value]));
@@ -214,6 +237,12 @@ async function run({page, render, width, height, dark = false, shot, interact = 
 }
 
 const results = [];
+if (process.env.QUICK) {
+  await run({page: 'notes.html', render: 'dom', width: 1280, height: 800, interact: false});
+  results.push(await run({page: 'notes.html', render: 'dom', width: 1280, height: 800, shot: 'quick-dom-1280.png', interact: false}));
+  writeFileSync(join(out, 'quick.json'), JSON.stringify(results, null, 1));
+  process.exit(0);
+}
 // The server compresses each file on its first request; a throwaway load
 // keeps that out of the first measured run.
 await run({page: 'notes.html', render: 'dom', width: 1280, height: 800, interact: false});
