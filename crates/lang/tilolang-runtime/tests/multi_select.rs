@@ -10,7 +10,7 @@ mod cases {
     use super::common::*;
     use tilolang_runtime::{AmStore, Principal, ResourceRef, Runtime, UiNode, Value, ViewInstance};
 
-    const TASKS: &str = include_str!("../../../../apps/tl/tasks/app.tl");
+    const TASKS: &str = super::common::TASKS_SOURCE;
     /// What a task's page says about it: tasks are made from discussions of them.
     const DISCUSSION: &str = include_str!("../../../../apps/tl/discussion/app.tl");
 

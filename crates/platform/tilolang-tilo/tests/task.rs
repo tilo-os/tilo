@@ -18,7 +18,7 @@ const NOTES: (&str, &str) = (
     include_str!("../../../../apps/tl/notes/app.ids"),
 );
 const TODO: (&str, &str) = (
-    include_str!("../../../../apps/tl/tasks/app.tl"),
+    crate::fixtures::TASKS_SOURCE,
     include_str!("../../../../apps/tl/tasks/app.ids"),
 );
 const NOTES_APP: &str = "so.tilo.lang.notes";

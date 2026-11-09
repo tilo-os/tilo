@@ -12,6 +12,13 @@ use tilolang_tilo::record::{DynRecord, DynValue};
 /// The counter package (`apps/tl/counter`): the first package of the host.
 pub const COUNTER: &str = include_str!("../../../../apps/tl/counter/app.tl");
 
+/// The Tasks package (`apps/tl/tasks`): its app and the scenarios staged beside it.
+pub const TASKS_SOURCE: &str = concat!(
+    include_str!("../../../../apps/tl/tasks/app.tl"),
+    "\n",
+    include_str!("../../../../apps/tl/tasks/scenarios.tl")
+);
+
 /// A list with text, a collection and a set, for the merge kinds the counter does not use.
 pub const TODO: &str = r#"app so.tilo.todo "Todo"
 

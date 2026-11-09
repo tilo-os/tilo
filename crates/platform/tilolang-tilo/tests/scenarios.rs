@@ -15,13 +15,27 @@ macro_rules! app {
     };
 }
 
+/// An app whose scenarios are a file of their own (`scenarios.tl`), as its package compiles them.
+macro_rules! app_and_scenarios {
+    ($name:literal) => {
+        (
+            concat!(
+                include_str!(concat!("../../../../apps/tl/", $name, "/app.tl")),
+                "\n",
+                include_str!(concat!("../../../../apps/tl/", $name, "/scenarios.tl")),
+            ),
+            include_str!(concat!("../../../../apps/tl/", $name, "/app.ids")),
+        )
+    };
+}
+
 /// Each app's package with the packages it imports before it, and the app it is.
 fn apps() -> Vec<(&'static str, Vec<(&'static str, &'static str)>)> {
     vec![
         ("so.tilo.lang.counter", vec![app!("counter")]),
         (
             "so.tilo.lang.tasks",
-            vec![app!("discussion"), app!("tasks")],
+            vec![app!("discussion"), app_and_scenarios!("tasks")],
         ),
         (
             "so.tilo.lang.notes",
@@ -34,7 +48,7 @@ fn apps() -> Vec<(&'static str, Vec<(&'static str, &'static str)>)> {
             vec![
                 app!("discussion"),
                 app!("notes"),
-                app!("tasks"),
+                app_and_scenarios!("tasks"),
                 app!("chat"),
                 app!("today"),
             ],
@@ -87,7 +101,7 @@ fn every_scenario_of_every_app_seeds_its_root_and_the_first_fills_a_list_past_a_
 /// members offers them too, by the name the scenario gave.
 #[test]
 fn a_scenarios_named_person_is_a_member_of_the_workspace() {
-    let packages = vec![app!("discussion"), app!("tasks")];
+    let packages = vec![app!("discussion"), app_and_scenarios!("tasks")];
     let (mut replica, loaded) = Replica::new("ada", AutoCommit::new(), &packages);
     replica.host.root_of("so.tilo.lang.tasks").unwrap();
     replica.commit();
@@ -118,7 +132,7 @@ fn todays_cards_follow_the_roots_of_the_apps_it_uses() {
     let packages = vec![
         app!("discussion"),
         app!("notes"),
-        app!("tasks"),
+        app_and_scenarios!("tasks"),
         app!("chat"),
         app!("today"),
     ];

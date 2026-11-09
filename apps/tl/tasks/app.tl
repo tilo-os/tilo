@@ -195,8 +195,7 @@ action due_clear(t: Task) (label: "No date", group: "Due") {
     t.due = .none
 }
 
-/// Rings a task's reminder when its moment comes, with no window of this app open: the
-/// workspace's own device runs it, once for all of them.
+/// Rings a task's reminder when its moment comes, once for the whole workspace, window or not.
 trigger ring(t: Task) at t.remind: remind(t)
 
 /// Sets the moment whoever is doing a task is reminded of it.
@@ -333,8 +332,7 @@ action duplicate(tasks: Tasks, t: Task) -> Task (
     if let last = last_below(tasks.items, t) {
         tasks.items.move(copy, after: last)
     } else { tasks.items.move(copy, after: t) }
-    // The copies stand in the shape of the tasks they copy, in the order they are made: a task's
-    // copy hangs under the copy of the task it stands under, at the place it takes itself.
+    // Each copy hangs under the copy of the task it stands under, at the place it takes itself.
     for x in under {
         let under_copy = under.index_of(x.parent ?? t) ?? -1
         let at = tasks.items.descendants(copy, .parent).at(under_copy) ?? copy
@@ -360,8 +358,7 @@ destructive action clear_done(tasks: Tasks) -> Int (
     icon: .circle_check,
     label: "Delete finished tasks",
 ) {
-    // A task that is done stands in a finished branch or under unfinished work: the entry says
-    // nothing of it, so the guard is every task's own mark, read once.
+    // The guard is every task's own mark, read once: a done task stands in a finished branch.
     require tasks.items.count(x -> x.done) > 0 "Nothing is finished yet"
     let every = tasks.items.filter(x -> true)
     let gone = every.filter(x -> finished(every, x))
@@ -458,22 +455,18 @@ fn last_below(items: List<Task>, t: Task) -> Option<Task> {
     items.filter(x -> x == t or items.ancestors(x, .parent).any(a -> a == t)).last()
 }
 
-/// Whether `t` is finished: done itself, and every task under it. Read over `items`, the list
-/// the caller holds, so a branch two people finish at once is finished once both changes are in.
+/// Whether `t` is finished: done itself, and every task under it, read over the caller's list.
 fn finished(items: List<Task>, t: Task) -> Bool {
     let under = items.descendants(t, .parent)
     if under.is_empty() { t.done } else { under.all(x -> x.done) }
 }
 
-/// Whether `t` stands in a list's Done tail: finished, and so is everything over it, so a step
-/// done under a task still open stays where it stands, checked and muted.
+/// Whether `t` stands in a list's Done tail: finished, and everything over it too.
 fn folded(items: List<Task>, t: Task) -> Bool {
     finished(items, t) and items.ancestors(t, .parent).all(a -> finished(items, a))
 }
 
-/// How many of a task's subtasks are done, of all of them ("1/3"), from the tasks that name a
-/// parent, read once for the view around them. None while the window has not read the whole
-/// workspace: what it holds so far is not the whole.
+/// How many of a task's subtasks are done ("1/3"); none before the whole workspace is read.
 fn subtask_count(kids: List<Task>, t: Task) -> Option<Text> {
     let mine = kids.filter(x -> x.parent == t)
     if let total = mine.counted() {
@@ -486,42 +479,27 @@ fn own_due(t: Task, under: Option<Task>) -> Option<Date> {
     if let p = under { if p.due != t.due { t.due } } else { t.due }
 }
 
-/// When a task was finished: the moment its box was last checked off, read from the index, one
-/// value a task, never its history.
+/// When a task was finished: when its box was last checked off, from the index, never its history.
 fn finished_at(t: Task) -> Option<Time> {
     if let v = changed(t, .done) { if t.done { v.at } }
 }
 
-/// The day a task stands under in a place's list: the day it is due on, or in Done the day it
-/// was finished on.
+/// The day a task stands under in a place's list: its due day, or in Done the day it was finished.
 fn task_day(t: Task, by_day: Bool, done_place: Bool) -> Option<Date> {
     if by_day { t.due } else if done_place { finished_at(t)?.day() }
 }
 
-/// The tasks of a project, in order.
-fn tasks_of(p: Project) -> List<Task> {
-    tasks.items.filter(t -> t.project == p)
-}
-
-/// The sections of a project, in order.
-fn sections_of(p: Project) -> List<Section> {
-    tasks.sections.filter(s -> s.project == p)
-}
-
-/// The open tasks of one lane of a project's board: those of the section `s`, or of none. A
-/// subtask is not a card; it goes where the task it is under goes.
+/// The open tasks of one lane of a board: those of section `s`, or of none; never a card.
 fn lane_of(p: Project, s: Option<Section>) -> List<Task> {
     tasks.items.filter(t -> t.project == p and t.section == s and not t.done and t.parent == .none)
 }
 
-/// How many wait somewhere, as a badge shows it: none while nothing waits, and none before the
-/// window has read the whole workspace, so a part read so far never reads as a count.
+/// How many wait somewhere, as a badge shows it: none while nothing waits, or before all is read.
 fn waiting(count: Option<Int>) -> Option<Int> {
     if let n = count { if n > 0 { count } }
 }
 
-/// The places a window offers, in the order it offers them: what is assigned to the person
-/// looking is one only where someone else may be assigned it too.
+/// The places a window offers: what is assigned to me is one only where someone else may share it.
 fn places(shared: Bool) -> List<Filter<Task>> {
     if shared {
         [Task.inbox, Task.today, Task.upcoming, Task.done, Task.assigned_to_me]
@@ -530,8 +508,7 @@ fn places(shared: Bool) -> List<Filter<Task>> {
     }
 }
 
-/// The tasks a list shows, with the one held open where it stands: a row stays while it is open,
-/// so what a person just changed does not vanish from under them.
+/// The tasks a list shows, with the one held open where it stands until it is closed.
 fn holding(listed: List<Task>, opened: Option<Task>) -> List<Task> {
     if let o = opened {
         if listed.contains(o) {
@@ -551,8 +528,7 @@ fn place_of(side: List<Filter<Task>>, x: Task) -> Filter<Task> {
     }
 }
 
-/// The tasks window: Inbox, Today, Upcoming, Done, what is assigned to the person looking, and the
-/// projects. A window's state is its person's own, and so is what its entry holds until Enter.
+/// The tasks window: Inbox, Today, Upcoming, Done, what is assigned to me, and the projects.
 view home(t: Tasks) {
     state place: Filter<Task> = Task.today
     state opened: Option<Task> = .none
@@ -575,14 +551,12 @@ view home(t: Tasks) {
         found.sort_by(x -> changed(x, .done)?.at, desc)
     } else if folds { ordered.sort_by(x -> folded(found, x)) } else { ordered }
     let title = if let p = project { p.name } else { chosen?.label ?? "Tasks" }
-    // What waits in the place, read from the index rather than walked: three tasks or three
-    // thousand answer as fast.
+    // What waits here, read from the index: the same cost at three tasks or three thousand.
     let open: Int = if let p = project {
         found.len() - t.items.matching(Task.project(p), Task.done).len()
     } else { found.len() }
     let all_done = open == 0 and not found.is_empty()
-    // The places whose badge counts what waits there: what a person goes to, not a list read
-    // through, and a count only once the window has read the whole workspace ([`waiting`]).
+    // The places whose badge counts what waits: what a person goes to, once the whole is read.
     let counted: List<Text> = ["inbox", "today", "assigned_to_me"]
     let header_count = if let c = chosen {
         if counted.any(k -> k == c.key) { waiting(found.counted()) }
@@ -646,8 +620,7 @@ view home(t: Tasks) {
     }
 }
 
-/// The tasks of a place as a list: each branch nested under the task it is a subtask of, the
-/// finished work under the foot `folds` when it says so.
+/// The tasks of a place as a list, branches nested under their tasks, finished work under the foot.
 view task_list(
     items: List<Task>,
     kids: List<Task>,
@@ -719,12 +692,11 @@ view task_item(
     }
 }
 
-/// A project's window: its tasks, in order, with the entry that adds to it at their foot. The
-/// bar switches it to the project's board, the same tasks as a lane per section.
+/// A project's window: its tasks, with the entry that adds to them at their foot.
 view project_list(p: Project) {
     state opened: Option<Task> = .none
     on show(x: Task): set(opened, x)
-    let shown = tasks_of(p)
+    let shown = tasks.items.filter(t -> t.project == p)
     let kids = shown.filter(x -> x.parent != .none)
     let listed = holding(shown, opened)
     ui.NavShell(content_kind: .list, title: p.name) {
@@ -749,13 +721,12 @@ view project_list(p: Project) {
 
 /// A project's board: a lane per section, the first for the tasks in none, each open task a card.
 view project_board(p: Project) {
-    let sections = sections_of(p)
+    let sections = tasks.sections.filter(s -> s.project == p)
     std.page(p, canvas: true, fill: true) {
         ui.Scroll(across: true) {
             ui.Board(name: p.name) {
                 let loose = lane_of(p, .none)
-                // No section named: the lane keeps its heading's height so cards line up with a
-                // lane beside it, and is not headed where the project has no sections.
+                // No section named: it keeps its heading's height so cards line up, and is not headed.
                 ui.BoardLane {
                     on drop(moved: Task, at: Int): place(moved, .none, at)
                     foot: {
@@ -782,8 +753,7 @@ view project_board(p: Project) {
     }
 }
 
-/// A task on a board: its row. It opens in a window of its own, and its menu moves it to another
-/// lane; the host appends what its type declares after the moves.
+/// A task on a board: its row, opening in a window of its own, with its lane moves in its menu.
 view task_card(t: Task, sections: List<Section>) {
     ui.BoardCard(t, actions: [check(primary: true), schedule(group: "Plan"), assign, remove]) {
         on activate: open(t)
@@ -805,9 +775,7 @@ view task_card(t: Task, sections: List<Section>) {
     }
 }
 
-/// One task as a row: whether it is done, its title, its project, when it is due, a flag while it
-/// matters, and who is doing it. `place` and `under` leave out what the list and the row over it
-/// already say.
+/// One task as a row, leaving out what the list and the row over it already say.
 view task_row(t: Task, place: RowPlace, under: Option<Task>) {
     let project = if place != .project { t.project?.name }
     let due = if place != .day { own_due(t, under) }
@@ -836,8 +804,7 @@ view task_summary(t: Task) {
     )
 }
 
-/// One task in an outline, counting its done subtasks while it is folded. `project` is the page's
-/// project: a row names its own only when it differs, and repeats no day its parent already says.
+/// One task in an outline, counting done subtasks while folded, naming only what differs.
 view task_outline_row(t: Task, project: Option<Project>, under: Option<Task>) {
     ui.TreeViewRow(
         checkbox: t.done,
@@ -922,370 +889,4 @@ template view task_body(t: Task) {
         discussion.thread(t)
         std.history(t)
     }
-}
-
-/// A household and a small team in one week: an inbox to sort, two projects, some of it done.
-scenario "a busy week" -> Task {
-    let mia = person("Mia")
-    let flat = tasks.projects.insert(
-        Project(
-            name: "Move flat",
-            notes: RichText("Keys on the 15th. The van is booked for the morning."),
-        ),
-    )
-    let launch = tasks.projects.insert(Project(name: "Website launch"))
-    tasks.items.insert(Task(title: "Take the bins out", done: true))
-    let milk = tasks.items.insert(Task(title: "Buy oat milk and eggs", due: 2026-06-30))
-    tasks.items.insert(
-        Task(title: "Check what is in the fridge", parent: milk, due: 2026-06-30, done: true),
-    )
-    // What no one has sorted yet: no project, no day.
-    tasks.items.insert(Task(title: "Sort the paper mail"))
-    let call = tasks.items.insert(
-        Task(
-            title: "Call the landlord about the boiler",
-            notes: RichText("Ask whether Tuesday morning works for the engineer."),
-            due: 2026-06-30,
-            at: 2026-06-30T09:00,
-            priority: .high,
-        ),
-    )
-    let service = tasks.items.insert(
-        Task(title: "Find the last service date", parent: call, due: 2026-06-30),
-    )
-    tasks.items.insert(
-        Task(title: "Look through the email folder", parent: service, due: 2026-06-30),
-    )
-    tasks.items.insert(
-        Task(title: "Ask whether Tuesday morning works", parent: call, due: 2026-06-30),
-    )
-    tasks.items.insert(Task(title: "Book a haircut", due: 2026-06-29))
-    tasks.items.insert(Task(title: "Reply to Mia about Sunday lunch", due: 2026-07-01))
-    tasks.items.insert(Task(title: "Order boxes and tape", project: flat, due: 2026-07-02))
-    tasks.items.insert(
-        Task(
-            title: "Give notice to the electricity company",
-            project: flat,
-            due: 2026-07-04,
-            priority: .medium,
-        ),
-    )
-    tasks.items.insert(Task(title: "Measure the new bedroom", project: flat))
-    tasks.items.insert(Task(title: "Pack the books", project: flat, done: true))
-    let copy = tasks.items.insert(
-        Task(
-            title: "Write the launch post",
-            project: launch,
-            due: 2026-07-06,
-            priority: .urgent,
-            notes: RichText("Lead with the offline editor, then sharing."),
-            assignee: mia,
-        ),
-    )
-    // Checked off before the subtask under it was added: clearing it keeps the subtask.
-    let outline = tasks.items.insert(
-        Task(title: "Outline", done: true, parent: copy, project: launch),
-    )
-    tasks.items.insert(Task(title: "Collect the beta quotes", parent: outline, project: launch))
-    tasks.items.insert(Task(title: "First draft", parent: copy, project: launch))
-    tasks.items.insert(Task(title: "Screenshots", parent: copy, project: launch))
-    tasks.items.insert(
-        Task(title: "Check the pricing page on phones", project: launch, due: 2026-07-08),
-    )
-    tasks.items.insert(Task(title: "Set up the redirects", project: launch, done: true))
-    call
-}
-
-/// The week's log: what was finished on each day, newest first. It answers with one of them, whose
-/// place is Done, so the window stands in Done with it open where it stands.
-scenario "what got done this week" -> Task {
-    let mia = person("Mia")
-    let flat = tasks.projects.insert(Project(name: "Move flat"))
-    let van = tasks.items.insert(Task(title: "Book the van", project: flat, due: 2026-07-02))
-    let boxes = tasks.items.insert(Task(title: "Order boxes and tape", project: flat))
-    let notice = tasks.items.insert(
-        Task(title: "Give notice to the electricity company", project: flat),
-    )
-    let passports = tasks.items.insert(Task(title: "Find the passports"))
-    tasks.items.insert(Task(title: "Buy oat milk and eggs", due: 2026-06-30))
-    tasks.items.insert(Task(title: "Measure the new bedroom", project: flat))
-    invoke(check(passports, true), by: mia, at: 2026-06-23T12:00Z)
-    invoke(check(van, true), by: mia, at: 2026-06-29T12:00Z)
-    invoke(check(boxes, true), by: mia, at: 2026-06-29T15:40Z)
-    invoke(check(notice, true), by: mia, at: 2026-06-30T07:15Z)
-    passports
-}
-
-/// Today: what is due, what went by, and what is done with it.
-scenario "today" -> Task {
-    let flat = tasks.projects.insert(Project(name: "Move flat"))
-    tasks.items.insert(Task(title: "Buy oat milk and eggs", due: 2026-06-30))
-    let call = tasks.items.insert(
-        Task(
-            title: "Call the landlord about the boiler",
-            due: 2026-06-30,
-            at: 2026-06-30T09:00,
-            priority: .high,
-        ),
-    )
-    tasks.items.insert(Task(title: "Book a haircut", due: 2026-06-29))
-    tasks.items.insert(Task(title: "Pack the kitchen", project: flat, due: 2026-06-30))
-    tasks.items.insert(Task(title: "Order boxes and tape", project: flat, due: 2026-07-02))
-    // Mine, with no day of its own: it stands in my Today because it is mine.
-    tasks.items.insert(Task(title: "Sort the paper mail", assignee: invoker))
-    call
-}
-
-/// A launch post half written, and the subtasks it was broken into, one of them broken into its own.
-scenario "a task's subtasks" -> Task {
-    let mia = person("Mia")
-    let launch = tasks.projects.insert(Project(name: "Website launch"))
-    let copy = tasks.items.insert(
-        Task(
-            title: "Write the launch post",
-            project: launch,
-            due: 2026-07-06,
-            priority: .urgent,
-            notes: RichText("Lead with the offline editor, then sharing."),
-            assignee: mia,
-        ),
-    )
-    // Checked off before the subtask under it was added: clearing it keeps the subtask.
-    let outline = tasks.items.insert(
-        Task(title: "Outline", done: true, parent: copy, project: launch),
-    )
-    tasks.items.insert(
-        Task(title: "Collect the quotes from the beta testers", parent: outline, project: launch),
-    )
-    tasks.items.insert(
-        Task(
-            title: "First draft, with the quotes from the beta testers",
-            parent: copy,
-            project: launch,
-        ),
-    )
-    tasks.items.insert(Task(title: "Screenshots", parent: copy, project: launch))
-    copy
-}
-
-/// A week a person, a colleague and their agent share: who holds what, and what each did to it.
-scenario "a shared week" -> Task {
-    let mia = person("Mia")
-    let scout = agent("Scout")
-    let launch = tasks.projects.insert(Project(name: "Website launch"))
-    let copy = tasks.items.insert(
-        Task(title: "Write the launch post", project: launch, due: 2026-07-06, assignee: mia),
-    )
-    let quotes = tasks.items.insert(
-        Task(
-            title: "Collect the quotes from the beta testers",
-            parent: copy,
-            project: launch,
-            assignee: scout,
-        ),
-    )
-    tasks.items.insert(
-        Task(
-            title: "Check the pricing page on phones",
-            project: launch,
-            due: 2026-07-08,
-            assignee: invoker,
-        ),
-    )
-    tasks.items.insert(Task(title: "Book the van", due: 2026-07-10, assignee: mia))
-    invoke(add_subtask(tasks, copy, "Ask three customers for a quote"), by: scout)
-    invoke(check(quotes, true), by: mia)
-    copy
-}
-
-/// A task added but not yet named: its row is the field its title is typed in.
-scenario "a task being named" {
-    tasks.items.insert(Task(title: "Book the van", due: 2026-07-10))
-    tasks.items.insert(Task(title: ""))
-}
-
-/// A week everyone has finished: it answers with one of them, whose place is Done.
-scenario "all done" -> Task {
-    let passports = tasks.items.insert(Task(title: "Passports", done: true))
-    tasks.items.insert(Task(title: "Chargers", done: true))
-    tasks.items.insert(Task(title: "Sun cream", done: true))
-    passports
-}
-
-/// A task the day went by on, with steps under it due the same day and later.
-scenario "a task that is late" -> Task {
-    let flat = tasks.projects.insert(Project(name: "Move flat"))
-    let call = tasks.items.insert(
-        Task(
-            title: "Call the landlord about the boiler",
-            notes: RichText("Ask whether Tuesday morning works for the engineer."),
-            project: flat,
-            due: 2026-06-29,
-            at: 2026-06-29T09:00,
-            priority: .high,
-        ),
-    )
-    tasks.items.insert(
-        Task(title: "Find the last service date", parent: call, project: flat, due: 2026-06-29),
-    )
-    tasks.items.insert(
-        Task(title: "Book the engineer's visit", parent: call, project: flat, due: 2026-07-02),
-    )
-    call
-}
-
-/// A task whose notes name another one: its page draws the task it names as a card beside it.
-scenario "a task naming another" -> Task {
-    let flat = tasks.projects.insert(Project(name: "Move flat"))
-    let van = tasks.items.insert(
-        Task(title: "Book the van", project: flat, due: 2026-07-10, priority: .high),
-    )
-    tasks.items.insert(
-        Task(
-            title: "Pack the kitchen",
-            project: flat,
-            notes: RichText("Put everything in ", van, " before the morning."),
-        ),
-    )
-}
-
-/// A task made from another, which was made from a third: its page names the one it was made from
-/// and draws the task made from it as a card.
-scenario "a task made from another" -> Task {
-    let flat = tasks.projects.insert(Project(name: "Move flat"))
-    let van = tasks.items.insert(
-        Task(title: "Book the van", project: flat, due: 2026-07-10, priority: .high),
-    )
-    let pack = invoke(
-        tasks.items.insert(
-            Task(title: "Pack the kitchen", project: flat, due: 2026-07-08, priority: .high),
-        ),
-        from: van,
-    )
-    invoke(
-        tasks.items.insert(
-            Task(title: "Load the boxes by the door", project: flat, due: 2026-07-09),
-        ),
-        from: pack,
-    )
-    pack
-}
-
-/// What an agent suggested about a task, before anyone decided it: its page says what the change
-/// would be and who proposed it, and its row carries the same in a line. Nothing has changed yet.
-scenario "an agent's suggestion" -> Task {
-    let scout = agent("Scout")
-    let flat = tasks.projects.insert(Project(name: "Move flat"))
-    let van = tasks.items.insert(Task(title: "Book the van", project: flat))
-    invoke(suggest schedule(van, due: 2026-07-10), by: scout)
-    van
-}
-
-/// A move a week away, on its project's board: a lane per stage, the tasks in each.
-scenario "a project board" -> Project {
-    let flat = tasks.projects.insert(
-        Project(name: "Move flat", notes: RichText("Keys on the 15th.")),
-    )
-    let packing = tasks.sections.insert(Section(name: "Packing", project: flat))
-    let booked = tasks.sections.insert(Section(name: "Booked", project: flat))
-    tasks.items.insert(Task(title: "Measure the new bedroom", project: flat))
-    tasks.items.insert(Task(title: "Ask Mia about the sofa", project: flat, due: 2026-07-01))
-    tasks.items.insert(Task(title: "Ring the letting agent", project: flat, due: 2026-06-29))
-    tasks.items.insert(
-        Task(
-            title: "Order boxes and tape",
-            project: flat,
-            section: packing,
-            due: 2026-07-02,
-            priority: .medium,
-        ),
-    )
-    tasks.items.insert(Task(title: "Pack the books", project: flat, section: packing, done: true))
-    tasks.items.insert(
-        Task(title: "Pack the kitchen", project: flat, section: packing, due: 2026-07-10),
-    )
-    tasks.items.insert(Task(title: "Book the van", project: flat, section: booked, priority: .high))
-    tasks.items.insert(
-        Task(
-            title: "Give notice to the electricity company",
-            project: flat,
-            section: booked,
-            due: 2026-07-04,
-        ),
-    )
-    flat
-}
-
-/// A task page with the discussion under it: what two people said about the chairs, days apart.
-scenario "a discussion on a task" -> Task {
-    let ada = person("Ada")
-    let bo = person("Bo")
-    let t = tasks.items.insert(
-        Task(
-            title: "Order the new office chairs",
-            notes: RichText("Two for the window desks, and four for the room."),
-            due: 2026-07-01,
-            assignee: ada,
-        ),
-    )
-    invoke(
-        discussion.comment(
-            discussion.comments,
-            RichText("The supplier quotes six weeks. Do we order before the summer?"),
-        ),
-        by: ada,
-        at: 2026-06-24T09:12Z,
-        from: t,
-    )
-    invoke(
-        discussion.comment(discussion.comments, RichText("Yes. The room stays empty either way.")),
-        by: bo,
-        at: 2026-06-24T15:40Z,
-        from: t,
-    )
-    invoke(
-        discussion.comment(
-            discussion.comments,
-            RichText("Ordered, delivery the first week of August."),
-        ),
-        by: ada,
-        at: 2026-06-25T08:03Z,
-        from: t,
-    )
-    t
-}
-
-/// A day away from the week's tasks: while the person looking was out, a colleague and their agent
-/// changed three of them, so the header counts what it holds unseen and the rows are marked.
-scenario "while you were away" -> Task {
-    let ada = invoker
-    let bo = person("Bo")
-    let scout = agent("Scout")
-    let paper = Task(title: "Sort the paper mail")
-    let permit = Task(title: "Ask the neighbours about the parking permit")
-    let survey = Task(title: "Read the survey responses", due: 2026-07-02)
-    let milk = Task(title: "Buy oat milk and eggs", due: 2026-06-30)
-    paper = tasks.items.insert(paper)
-    permit = tasks.items.insert(permit)
-    survey = tasks.items.insert(survey)
-    milk = tasks.items.insert(milk)
-    invoke(assign(paper, ada), by: bo, at: 2026-06-29T16:20Z)
-    invoke(schedule(survey, 2026-06-30), by: scout, at: 2026-06-29T17:05Z)
-    invoke(check(milk, true), by: scout, at: 2026-06-29T17:12Z)
-    survey
-}
-
-/// A task the person looking wrote, which a colleague changed since: its page says the change is
-/// unseen, and its history says who made it.
-scenario "a task that changed since you looked" -> Task {
-    let bo = person("Bo")
-    let call = Task(
-        title: "Call the landlord about the boiler",
-        notes: RichText("Ask whether Tuesday morning works for the engineer."),
-        due: 2026-07-06,
-        priority: .medium,
-    )
-    call = tasks.items.insert(call)
-    invoke(schedule(call, 2026-06-30), by: bo, at: 2026-06-29T16:32Z)
-    call
 }

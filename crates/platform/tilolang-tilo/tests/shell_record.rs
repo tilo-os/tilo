@@ -55,7 +55,7 @@ fn workspace() -> Replica {
                 include_str!("../../../../apps/tl/notes/app.ids"),
             ),
             (
-                include_str!("../../../../apps/tl/tasks/app.tl"),
+                crate::fixtures::TASKS_SOURCE,
                 include_str!("../../../../apps/tl/tasks/app.ids"),
             ),
         ],

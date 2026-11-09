@@ -10,7 +10,7 @@ use crate::fixtures::Replica;
 
 pub(crate) const DISCUSSION: &str = include_str!("../../../../apps/tl/discussion/app.tl");
 pub(crate) const DISCUSSION_IDS: &str = include_str!("../../../../apps/tl/discussion/app.ids");
-pub(crate) const TASKS: &str = include_str!("../../../../apps/tl/tasks/app.tl");
+pub(crate) const TASKS: &str = crate::fixtures::TASKS_SOURCE;
 pub(crate) const TASKS_IDS: &str = include_str!("../../../../apps/tl/tasks/app.ids");
 /// What a task's page is drawn from: the tasks and the discussion under them.
 pub(crate) const PACKAGES: &[(&str, &str)] = &[(DISCUSSION, DISCUSSION_IDS), (TASKS, TASKS_IDS)];

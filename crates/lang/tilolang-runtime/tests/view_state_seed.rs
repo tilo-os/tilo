@@ -11,7 +11,7 @@ mod cases {
     use super::common::*;
     use tilolang_runtime::{AmStore, Principal, ResourceRef, Runtime, UiNode, Value, ViewInstance};
 
-    const TASKS: &str = include_str!("../../../../apps/tl/tasks/app.tl");
+    const TASKS: &str = super::common::TASKS_SOURCE;
     const DISCUSSION: &str = include_str!("../../../../apps/tl/discussion/app.tl");
 
     /// An app installed in a workspace of its own: its actions runnable, its views openable.

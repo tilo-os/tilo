@@ -11,6 +11,13 @@ use tilolang_runtime::{
     Runtime, SimpleAuthority, Value,
 };
 
+/// The Tasks package (`apps/tl/tasks`): its app and the scenarios staged beside it.
+pub const TASKS_SOURCE: &str = concat!(
+    include_str!("../../../../../apps/tl/tasks/app.tl"),
+    "\n",
+    include_str!("../../../../../apps/tl/tasks/scenarios.tl")
+);
+
 #[derive(Default)]
 struct Overrides {
     denied_modules: std::collections::HashSet<ModuleHash>,

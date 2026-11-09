@@ -30,6 +30,17 @@ mod cases {
         };
     }
 
+    /// The Tasks package, whose scenarios are a file of their own, compiled after its app.
+    macro_rules! tasks_source {
+        () => {
+            (
+                "apps/tl/tasks",
+                TASKS_SOURCE,
+                include_str!("../../../../apps/tl/tasks/app.ids"),
+            )
+        };
+    }
+
     /// Compile a package with its committed lock, which must already be complete: building
     /// assigns ids to anything new, and a lock that would change is a lock not committed.
     fn build((dir, src, ids): (&str, &str, &str), imports: &[&App]) -> App {
@@ -63,7 +74,7 @@ mod cases {
     fn apps() -> Apps {
         let discussion = build(app_source!("discussion"), &[]);
         let notes = build(app_source!("notes"), &[&discussion]);
-        let todo = build(app_source!("tasks"), &[&discussion]);
+        let todo = build(tasks_source!(), &[&discussion]);
         let chat = build(
             (
                 "crates/lang/tilolang-runtime/tests/block_chat",
