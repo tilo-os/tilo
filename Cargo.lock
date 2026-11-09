@@ -22754,6 +22754,7 @@ dependencies = [
  "sha2 0.11.0",
  "tempfile",
  "tilo-actions",
+ "tilo-advisory-lock",
  "tilo-app-module",
  "tilo-app-package",
  "tilo-files",

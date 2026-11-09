@@ -732,6 +732,23 @@ fn spawn_worker<'scope, 'env>(
         .map_err(|error| format!("a worker could not start: {error}"))
 }
 
+/// Wait for any other layout check on this machine to finish, and hold the machine until this
+/// one has: the lock lives as long as the returned guard.
+fn machine_lock() -> Result<advisory_lock::FileLock, String> {
+    use advisory_lock::{FileLock, LockMode, TryLockError};
+    let dir = std::env::var_os("XDG_RUNTIME_DIR").map_or_else(std::env::temp_dir, Into::into);
+    let path = std::path::Path::new(&dir).join("tilolang-layout-check.lock");
+    match FileLock::try_open(&path, LockMode::Exclusive) {
+        Ok(lock) => Ok(lock),
+        Err(TryLockError::WouldBlock) => {
+            eprintln!("waiting for another layout check on this machine to finish");
+            FileLock::open(&path, LockMode::Exclusive)
+                .map_err(|error| format!("{}: {error}", path.display()))
+        }
+        Err(TryLockError::Error(error)) => Err(format!("{}: {error}", path.display())),
+    }
+}
+
 /// Run every unit of `units` at the same time, each on a worker of its own, and return what each
 /// found in the order given. A worker reads an app's package itself: the compiled packages a
 /// window loads belong to one window at a time, so no two workers share them.
@@ -739,6 +756,8 @@ fn run(apps: &[App], units: &[Unit], options: &Options) -> Result<Vec<Found>, St
     if units.is_empty() {
         return Ok(Vec::new());
     }
+    // Every worker below takes a core, so a second check at the same time only slows both.
+    let _machine = machine_lock()?;
     // A dump is read as a page of one layout after another, so it runs alone.
     let workers = if options.dump.is_some() {
         1

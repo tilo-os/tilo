@@ -16,6 +16,7 @@ name = "tilolang_cli"
 path = "src/lib.rs"
 
 [dependencies]
+tilo-advisory-lock = { path = "../../system/advisory-lock" }
 chrono = { workspace = true, features = ["clock", "std"] }
 ed25519-dalek.workspace = true
 getrandom.workspace = true
