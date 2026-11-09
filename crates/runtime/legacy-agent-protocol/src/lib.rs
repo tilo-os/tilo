@@ -10,8 +10,13 @@
 //!                                         guest → one answer, then close
 //! host  → Launch(Launch)                  guest → Started { pid }
 //! host  → Stdin(..) | CloseStdin | Signal guest → Stdout(..) | Stderr(..)
-//!                                         guest → Exited(ExitStatus), close
+//!         | Resize                        guest → Exited(ExitStatus), close
 //! ```
+//!
+//! A launch with [`Stdio::Terminal`] runs on a pseudo-terminal in the
+//! guest: its input is the terminal's keys, its output (both streams) comes
+//! back as `Stdout`, and `Resize` follows the host terminal's size, so
+//! programs that read the terminal (editors, prompts, pagers) work.
 //!
 //! Every message is one [`FRAMING`] frame carrying a postcard value. The
 //! guest is not trusted with anything the host did not already give it: the
@@ -130,6 +135,8 @@ pub enum HostMessage {
     MountFiles {
         shares: Vec<files::FileShare>,
     },
+    /// The host terminal of a [`Stdio::Terminal`] launch changed size.
+    Resize(TerminalSize),
 }
 
 /// Guest → host.
@@ -225,6 +232,16 @@ pub enum Stdio {
     Relay,
     /// The app gets `/dev/null`; the connection only reports its exit.
     Null,
+    /// The app runs on a pseudo-terminal of this size, its session's
+    /// controlling terminal: input is keys, output both streams in one.
+    Terminal(TerminalSize),
+}
+
+/// A terminal's size in character cells.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct TerminalSize {
+    pub cols: u16,
+    pub rows: u16,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -472,6 +489,14 @@ mod tests {
                 HostMessage::Launch(launch(&["code", "."])),
                 HostMessage::Stdin(b"input".to_vec()),
                 HostMessage::Signal(Signal::Terminate),
+                HostMessage::Resize(TerminalSize {
+                    cols: 120,
+                    rows: 40,
+                }),
+                HostMessage::Launch(Launch {
+                    stdio: Stdio::Terminal(TerminalSize { cols: 80, rows: 24 }),
+                    ..launch(&["vim"])
+                }),
                 HostMessage::Mount {
                     shares: vec![GuestShare {
                         tag: "fs-0123".into(),

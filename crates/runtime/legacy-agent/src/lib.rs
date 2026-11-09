@@ -20,4 +20,6 @@ pub mod mounts;
 pub mod remote_fs;
 pub mod server;
 pub mod system;
+#[cfg(unix)]
+pub mod terminal;
 pub mod user;
