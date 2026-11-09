@@ -19,7 +19,7 @@ use std::sync::Arc;
 use tilo_action_broker::services::{HostStepOutcome, HostStepRequest, HostStepServices};
 use tilo_actions::remote::session_actions as wire;
 use tilo_actions::remote::{Pending, pending};
-use tilo_actions::{ActionDescriptor, ActionFailure, ActionOutput};
+use tilo_actions::{ActionDescriptor, ActionFailure};
 
 use crate::agent_door::SessionDoors;
 
@@ -114,10 +114,7 @@ impl HostStepServices for SessionActions {
                     retryable: false,
                 })
             })
-            .map(|output| ActionOutput {
-                value: output,
-                resources: Vec::new(),
-            })
+            .map(Option::unwrap_or_default)
         }))
     }
 }

@@ -608,6 +608,21 @@ fn two_people_at_a_site_carrying(
     authored: &[&str],
     install: impl Fn(&Device),
 ) -> (Site, Person, Person, Device, Device) {
+    let (site, ada, bob, ada_laptop) = site_carrying(authored, &install);
+    let bob_laptop = joined_carrying(&site, &bob, "Bob's laptop", &install);
+    site.wait_for_member(bob.public);
+    (site, ada, bob, ada_laptop, bob_laptop)
+}
+
+/// [`two_people_at_a_site_with_files`] before the second person joins: Ada's laptop holds the
+/// workspace, and what brings Bob in is the invitation her session hands out for it.
+pub fn a_site_with_files_for_one_laptop() -> (Site, Person, Person, Device) {
+    site_carrying(&[FILES_APP], &Device::install_files)
+}
+
+/// The site the two people share and the first person's laptop in it, carrying what `install`
+/// puts in its store, with the workspace letting `authored` author its records.
+fn site_carrying(authored: &[&str], install: &impl Fn(&Device)) -> (Site, Person, Person, Device) {
     let ada = Person::new("Ada");
     let bob = Person::new("Bob");
     let site = Site::start(&ada, "Studio");
@@ -615,10 +630,43 @@ fn two_people_at_a_site_carrying(
         .chain(authored.iter().copied())
         .collect();
     site.author_apps(&authored);
-    let ada_laptop = joined_carrying(&site, &ada, "Ada's laptop", &install);
-    let bob_laptop = joined_carrying(&site, &bob, "Bob's laptop", &install);
-    site.wait_for_member(bob.public);
-    (site, ada, bob, ada_laptop, bob_laptop)
+    let ada_laptop = joined_carrying(&site, &ada, "Ada's laptop", install);
+    (site, ada, bob, ada_laptop)
+}
+
+/// The invitation `device`'s session hands out for the workspace it holds, made by the desk's own
+/// action at `role` for `person`: what an app shares, and what only `person`'s devices redeem.
+pub fn shared_invitation(device: &Device, role: &str, person: [u8; 32]) -> Invitation {
+    let answer = desk_answer(
+        device,
+        &json!({"role": role, "recipient": hex::encode(person)}),
+    );
+    let update = &answer["answer"]["receipt"]["update"];
+    assert_eq!(
+        update["state"],
+        json!("succeeded"),
+        "{} shares an invitation: {answer}\n{}",
+        device.label,
+        device.diagnostic()
+    );
+    update["output"]["value"]["link"]
+        .as_str()
+        .unwrap_or_else(|| panic!("{}'s invitation carries its text: {answer}", device.label))
+        .to_owned()
+}
+
+/// The answer `device`'s desk gives when asked to hand out an invitation into the workspace it
+/// shows, as the app sharing what is on screen asks it.
+pub fn desk_answer(device: &Device, args: &serde_json::Value) -> serde_json::Value {
+    device.act_wait(
+        tilo_actions::remote::session_actions::PROVIDER,
+        &format!(
+            "{}\u{1f}{}",
+            tilo_actions::remote::session_actions::DESK_RESOURCE,
+            tilo_actions::remote::session_actions::ISSUE_INVITATION
+        ),
+        args,
+    )
 }
 
 /// One person with two devices of their own in one workspace their site hosts, both editors: the
@@ -1230,7 +1278,7 @@ impl Device {
     }
 
     /// What this device shows and logged, for a step that never happened.
-    fn diagnostic(&self) -> String {
+    pub fn diagnostic(&self) -> String {
         let mut apps = String::new();
         if let Ok(entries) = std::fs::read_dir(self.logs_dir()) {
             for entry in entries.flatten() {

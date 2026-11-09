@@ -1412,7 +1412,7 @@ enum DoorAsk {
         actor: String,
         address: tilo_actions::ActionAddress,
         slot: Option<String>,
-        done: tilo_actions::remote::Completer<Result<Option<serde_json::Value>, String>>,
+        done: tilo_actions::remote::Completer<Result<Option<tilo_actions::ActionOutput>, String>>,
     },
     /// The record of the package the session runs itself, by its app (`so.tilo.shell`): its
     /// document and the packages a program reading it loads, or `None` for one no service keeps a
@@ -1507,7 +1507,7 @@ impl SessionDoors {
         actor: String,
         address: tilo_actions::ActionAddress,
         slot: Option<String>,
-        done: tilo_actions::remote::Completer<Result<Option<serde_json::Value>, String>>,
+        done: tilo_actions::remote::Completer<Result<Option<tilo_actions::ActionOutput>, String>>,
     ) {
         self.ask(DoorAsk::Step {
             actor,
@@ -1554,10 +1554,7 @@ impl SessionDoors {
                             .invoke_as(&actor, &address, &arguments, look)
                             .map(|started| match started {
                                 ui::host_operation::ResourceOperationStart::Completed(output) => {
-                                    Some(serde_json::json!({
-                                        "value": output.value,
-                                        "resources": output.resources,
-                                    }))
+                                    Some(output)
                                 }
                                 ui::host_operation::ResourceOperationStart::Accepted => None,
                             })
@@ -1812,12 +1809,8 @@ impl Host {
         ran.map(move |ran| {
             use tilo_actions::remote::ReceiptStatus;
             let status = match ran {
-                Ok(output) => ReceiptStatus::Completed {
-                    output: tilo_actions::ActionOutput {
-                        value: output,
-                        resources: Vec::new(),
-                    },
-                },
+                Ok(Some(output)) => ReceiptStatus::Completed { output },
+                Ok(None) => ReceiptStatus::Accepted,
                 Err(reason) => ReceiptStatus::Rejected {
                     error: ActionHostError::Refused { reason },
                 },
