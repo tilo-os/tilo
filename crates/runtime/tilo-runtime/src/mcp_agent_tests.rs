@@ -1622,6 +1622,77 @@ fn the_calls_of_one_task_step_share_its_undo_step_and_each_other_call_has_its_ow
     });
 }
 
+/// The actions a listing writes, as the names an agent would call: one line
+/// each, `#name(params?)  What it does`.
+fn listed_actions(listing: &str) -> Vec<String> {
+    listing
+        .lines()
+        .filter_map(|line| line.strip_prefix('#'))
+        .map(|rest| rest.split(['(', ' ']).next().unwrap_or(rest).to_string())
+        .collect()
+}
+
+/// The resources a listing names under `app`, as the paths it writes them by:
+/// `Todo/  notes.page` is `notes/Todo`.
+fn listed_paths(listing: &str, app: &str) -> Vec<String> {
+    listing
+        .lines()
+        .map(str::trim_end)
+        .filter(|line| !line.starts_with('#') && !line.starts_with(&format!("{app}  (")))
+        .filter_map(|line| line.split_whitespace().next())
+        .map(|name| format!("{app}/{}", name.trim_end_matches('/')))
+        .collect()
+}
+
+/// An agent reads a listing and then runs what it read: every action a
+/// listing writes must run by the path that listing names, with no argument
+/// where the listing asks for none. What a listing offers and what the door
+/// admits are one answer, not two.
+#[test]
+fn what_a_listing_offers_is_what_its_path_invokes() {
+    let host = Notes::new(true).live();
+    run(async {
+        let server = agent(&host);
+        let (app, failed) = tool(&server, "tilo_ls", json!({"path": "notes"})).await;
+        assert!(!failed, "{app}");
+        let mut tried = 0;
+        for path in std::iter::once("notes".to_owned()).chain(listed_paths(&app, "notes")) {
+            let (listing, failed) =
+                tool(&server, "tilo_ls", json!({"path": path, "kind": "actions"})).await;
+            assert!(!failed, "{path}: {listing}");
+            for action in listed_actions(&listing) {
+                // The point here is the path, not the arguments: an action
+                // that needs one is asked for its arguments by the door, and
+                // that answer is not this test's.
+                let signature = listing
+                    .lines()
+                    .find(|line| line.starts_with(&format!("#{action}(")))
+                    .unwrap_or("");
+                let inside = signature
+                    .split_once('(')
+                    .and_then(|(_, rest)| rest.split_once(')'))
+                    .map(|(inside, _)| inside)
+                    .unwrap_or("");
+                if inside
+                    .split(',')
+                    .map(str::trim)
+                    .any(|param| !param.is_empty() && !param.ends_with('?'))
+                {
+                    continue;
+                }
+                let at = format!("{path}#{action}");
+                let (text, failed) = tool(&server, "tilo_do", json!({"path": at})).await;
+                assert!(
+                    !failed,
+                    "the listing names {at}, which that same path refuses: {text}"
+                );
+                tried += 1;
+            }
+        }
+        assert!(tried >= 2, "the listing named no action to try in\n{app}");
+    });
+}
+
 #[test]
 fn a_newer_instance_with_nothing_published_does_not_hide_the_app() {
     let host = Notes::with_unpublished_instance();
