@@ -1032,20 +1032,20 @@ impl TabBar {
         self.interaction.minimum_target_rect(band)
     }
 
-    /// Where the active tab's slots stand: after the icon in the title's row for one tab, across a
-    /// row of their own under several, and between the two on the tabs' motion.
+    /// Where the active tab's slots stand: in the title's row for one tab, past the strip's own
+    /// leading controls (so the title never paints under the "+"), across a row of their own under
+    /// several, and between the two on the tabs' motion.
     fn toolbar_row_rect(&self) -> Rect {
         let tab_row = self.tab_row();
         if let Some(menu) = self.menu_button_row(tab_row) {
             return menu;
         }
         let solo = {
-            let icon = self.tab_rects.first().copied().unwrap_or(Rect::ZERO);
-            let x0 = if icon.area() > 0.0 {
-                icon.x1 + TOOLBAR_LEAD_GAP
-            } else {
-                self.pill_row().x0
-            };
+            // Past the strip's own leading controls, not merely past the window's icon: a window of
+            // one tab shows its title here, and the "+" stands between the icon and that title —
+            // starting the row under it painted the title over the control's words (and the words
+            // over the title).
+            let x0 = self.tabs_end() + TOOLBAR_LEAD_GAP;
             let x1 = (self.trailing_limit(tab_row) - self.search_control.unwrap_or(0.0)).max(x0);
             Rect::new(x0, tab_row.y0, x1, tab_row.y1)
         };
@@ -9468,6 +9468,38 @@ mod tests {
             solo.tab_rects()[0].width() < wide_title,
             "the title is what shrinks"
         );
+    }
+
+    /// A window of one tab names itself in the bar's location slot, and the strip's own "+" stands
+    /// beside that name. Neither paints over the other: the title used to start under the control,
+    /// so the two strings were drawn on top of each other ("New tab" across "Notes").
+    #[test]
+    fn a_windows_title_stands_clear_of_the_new_tab_control() {
+        use crate::window_toolbar::{ToolbarLocation, WindowToolbar};
+        let _settled = crate::motion::testing::settled();
+        let theme = crate::theme::Theme::dark().with_reduce_motion(true);
+        for width in [1280.0, 390.0] {
+            let mut b = TabBar::new("g1", vec![TabDescriptor::new(1, "Notes")], 1);
+            b.set_window_controls(true);
+            // An app that declares a location of its own but names nothing yet: the bar fills the
+            // name in from the tab (`show_toolbar_row`), so this is where the window's title stands.
+            b.set_toolbar(
+                1,
+                Some(WindowToolbar {
+                    location: Some(ToolbarLocation::default()),
+                    ..WindowToolbar::default()
+                }),
+            );
+            lay_out_at_width_with(&mut b, width, &theme);
+            let plus = b.new_tab_rect();
+            let title = b.location_rect();
+            assert!(plus.area() > 0.0, "{width}: the strip offers its +");
+            assert!(title.area() > 0.0, "{width}: the window names itself here");
+            assert!(
+                title.x0 >= plus.x1,
+                "{width}: the title starts past the + ({title:?} over {plus:?})"
+            );
+        }
     }
 
     pub(super) fn four_tab_bar() -> TabBar {
