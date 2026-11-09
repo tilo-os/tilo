@@ -950,7 +950,9 @@ fn bare_row(
         // The mark the item's page takes where the row stands open into it: the row the page
         // takes the place of is not drawn, and the change the person has not seen goes with the
         // item, never away with it.
-        let page_mark = change.as_ref().map(ChangeMarkProps::again);
+        let page_mark = expanded
+            .then(|| change.as_ref().map(ChangeMarkProps::again))
+            .flatten();
         // What someone else changed and the person has not seen, at the row's own height: on a
         // list row their face on its trailing edge and their colour under it; beside a row's
         // own view their face alone.
