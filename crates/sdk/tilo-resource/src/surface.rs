@@ -2,7 +2,8 @@
 //! its declarations and stored shape. `tilo-app surface` writes it to the
 //! app's `surface.toml` and `tilo-app check` compares it with the code, so a
 //! rename or an incompatible storage change shows up in review, and it is
-//! what the OS knows about an app that is not running.
+//! what the OS knows about an app that is not running and what another
+//! language compiles its actions and types against.
 
 pub use tilo_actions::surface::{
     FieldSurface, FieldType, NamedType, ParamSurface, ReturnsSurface, Surface, TypeCase, TypeField,

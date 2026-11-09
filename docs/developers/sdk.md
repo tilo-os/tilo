@@ -47,10 +47,13 @@ tilo sdk gen --lang ts -w jane-doe        # writes tilo-types.d.ts
   workspace, including ones added later. Without generated types, everything still works
   through `ws.do(path, **args)`.
 
-The catalogue has to cover more than it does today: surfaces publish fields and undoable
-verbs, but not read effects (`read-form-fields`) or conversions (Writer's export), and not
-return types. Those are `ActionSpec`s with schemas already, so the surface writer publishes
-them too, with their return schema. tilolang benefits from the same change.
+A surface publishes every action of its app that a caller of another language reads: its
+record's verbs, and its read effects and conversions (`read-form-fields`, Writer's
+`export-content`) as actions of the record too, each with its parameters and the value it
+answers with. A read action's return type is part of the surface, so `read_form_fields`
+types the form a script reads its fields from; an action that answers nothing or a job has
+no return type. What a window shows and does to itself (its zoom, the caret) is no action
+of the catalogue.
 
 ## Async first
 

@@ -12,9 +12,11 @@
 //! in `locales/en-US.ftl` is reported.
 //!
 //! The file is the bytes a package ships and a change names by hash, so it
-//! keeps only what deciding a change and checking storage need ([`filed`]):
-//! kinds, verb ids, kinds, footprints and parameters, field paths, layouts
-//! and types, and whether a record is the person's own. Labels,
+//! keeps only what deciding a change, checking storage and compiling against
+//! it need ([`filed`]): kinds, verb ids, kinds, footprints, parameters and
+//! the value each answers with, field paths, layouts and types, and whether a
+//! record is the person's own. The app's read effects are verbs of its own
+//! resource here, as they are actions of it for anyone else. Labels,
 //! descriptions, field titles and owners stay in the code; a field type's
 //! own operation vocabulary is kept as its digest. One line per field keeps
 //! the file small and its diffs readable.

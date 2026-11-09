@@ -1,7 +1,9 @@
 //! A resource kind's public surface as data: its verbs with their
-//! parameters and kinds, and its fields with their schema. An app's
-//! `surface.toml` holds it (written by `tilo-app surface` from the code), and
-//! it is what a receiver without the app knows about the app's changes.
+//! parameters, kinds and the value each answers with, and its fields with
+//! their schema. An app's `surface.toml` holds it (written by `tilo-app
+//! surface` from the code), and it is what a receiver without the app knows
+//! about the app's changes, and what another language compiles its actions
+//! and types against.
 //!
 //! The file keeps what receipt and the storage check need. The labels,
 //! descriptions, field titles and owners the code reports are for people and
