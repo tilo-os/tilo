@@ -32,7 +32,7 @@ use std::time::Duration;
 use tilo_actions::remote::{
     ActionHost, ActionHostError, Caller, CataloguePage, CatalogueQuery, Completer,
     InvocationReceipt, InvocationState, InvokeRequest, MAX_REMOTE_WAIT, Pending, ReceiptStatus,
-    RemoteActionFrame, RemoteActionMessage, UpdateMark, pending,
+    RemoteActionFrame, RemoteActionMessage, UpdateMark, pending, serve,
 };
 use tilo_actions::{InvocationId, InvocationUpdate};
 use tilo_lock::MutexRecover as _;
@@ -238,6 +238,25 @@ fn split<T>(all: &mut HashMap<InvocationId, Vec<Asked<T>>>, now: Instant) -> Vec
     }
     all.retain(|_, waiting| !waiting.is_empty());
     late
+}
+
+/// What `host` answers `message`, asked as `caller`: the request decoded, the answer as JSON.
+///
+/// # Errors
+/// A text that is not a request, a host that abandoned the answer, or an answer that will not
+/// encode.
+pub async fn ask<H: ActionHost + Clone + Send + Sync + 'static>(
+    host: &H,
+    caller: &Caller,
+    message: &str,
+) -> Result<String, String> {
+    let message: RemoteActionMessage =
+        serde_json::from_str(message).map_err(|error| error.to_string())?;
+    let answer = serve(host, caller, message)
+        .ok_or_else(|| "that is not a request".to_owned())?
+        .await
+        .ok_or_else(|| "the answer was abandoned".to_owned())?;
+    serde_json::to_string(&answer).map_err(|error| error.to_string())
 }
 
 impl SessionActions {
@@ -579,5 +598,114 @@ impl ActionHost for SessionActions {
             }
         }
         answered
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use tilo_actions::remote::TestHost;
+
+    use super::*;
+
+    /// A host shared with the continuation [`serve`] answers through: a test holds one handle to
+    /// see what was asked, the door holds another.
+    #[derive(Clone)]
+    struct Shared(Arc<TestHost>);
+
+    impl ActionHost for Shared {
+        fn query(
+            &self,
+            caller: &Caller,
+            query: CatalogueQuery,
+        ) -> Pending<Result<CataloguePage, ActionHostError>> {
+            self.0.query(caller, query)
+        }
+
+        fn invoke(
+            &self,
+            caller: &Caller,
+            request: InvokeRequest,
+        ) -> Pending<Result<InvocationReceipt, ActionHostError>> {
+            self.0.invoke(caller, request)
+        }
+
+        fn observe(&self, caller: &Caller, id: &InvocationId) -> Option<InvocationState> {
+            self.0.observe(caller, id)
+        }
+
+        fn cancel(
+            &self,
+            caller: &Caller,
+            id: &InvocationId,
+        ) -> Pending<Result<(), ActionHostError>> {
+            self.0.cancel(caller, id)
+        }
+    }
+
+    fn caller() -> Caller {
+        Caller::local_person("person").in_workspace("workspace")
+    }
+
+    /// A page asks a catalogue and an invocation as the JSON a frame carries, and reads the
+    /// answer as JSON: the door speaks the remote-action vocabulary, not one of its own.
+    #[tokio::test]
+    async fn a_request_is_asked_and_answered_as_the_frames_json() {
+        let host = Arc::new(TestHost::new());
+        let door = Shared(Arc::clone(&host));
+        let answered = ask(
+            &door,
+            &caller(),
+            r#"{"CatalogueRequest":{"correlation":7,"query":{"max_results":8}}}"#,
+        )
+        .await
+        .expect("the door answers");
+        let catalogue: serde_json::Value = serde_json::from_str(&answered).expect("JSON");
+        assert_eq!(catalogue["CatalogueResponse"]["correlation"], 7);
+        assert!(
+            catalogue["CatalogueResponse"]["result"]["Ok"].is_object(),
+            "a host that offers nothing still answers a page: {catalogue}"
+        );
+
+        let invocation = InvocationId::new();
+        let request = serde_json::json!({"Invoke": {
+            "invocation": invocation,
+            "target": {"provider": "record:notes:one", "address": {"resource": "notes.note:one", "action": "open"}},
+        }});
+        let answered = ask(&door, &caller(), &request.to_string())
+            .await
+            .expect("the door answers");
+        let receipt: serde_json::Value = serde_json::from_str(&answered).expect("JSON");
+        assert_eq!(
+            receipt["Receipt"]["invocation"],
+            serde_json::json!(invocation)
+        );
+        assert!(
+            receipt["Receipt"]["status"]["Completed"].is_object(),
+            "the host completed it: {receipt}"
+        );
+        assert_eq!(host.asked().len(), 1, "the host ran the invocation once");
+    }
+
+    /// A text that is not a request is refused instead of asked, and so is an answer to a
+    /// request nobody made here.
+    #[tokio::test]
+    async fn only_a_request_is_asked() {
+        let door = Shared(Arc::new(TestHost::new()));
+        assert!(
+            ask(&door, &caller(), "not a message").await.is_err(),
+            "a text that is no message is refused"
+        );
+        assert!(
+            ask(
+                &door,
+                &caller(),
+                r#"{"CatalogueResponse":{"correlation":1,"result":"Ok"}}"#
+            )
+            .await
+            .is_err(),
+            "an answer is never asked as a request"
+        );
     }
 }

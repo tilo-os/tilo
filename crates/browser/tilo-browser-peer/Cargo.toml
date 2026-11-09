@@ -66,6 +66,8 @@ default = []
 toolkit = ["dep:ui"]
 
 [dev-dependencies]
+# The host a test asks through the page's door, as a session's device answers it.
+tilo-actions = { path = "../../collab/actions", features = ["test-support"] }
 # A test that must hold the wall clock of its whole process (and the
 # helper threads reading it) takes the process to itself.
 tilo-clock = { version = "0.1.0", path = "../../platform/tilo-clock", features = ["test-support"] }

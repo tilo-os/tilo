@@ -1,6 +1,5 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {createActions} from './actions.mjs';
 import {resolveResourceReference, openResourceReference} from './resource-reference.mjs';
 
 const room = 'fixture-room', host = 'ab'.repeat(32), provider = 'record:so.tilo.chat:uuid:1';
@@ -10,23 +9,18 @@ const view = {address: {resource: resource.id, action: 'show'}, kind: 'View',
   view: {id: 'resource', label: 'Resource', open_action: 'show', primary: true}};
 const row = {provider, app_id: 'so.tilo.chat', resource, action: view};
 
-// Two endpoints exchange the actual remote action frames. Authentication and
-// workspace admission remain the existing CertifiedPeer's job, not this resolver's.
+// The resolver reads through one door: what the workspace's host answers for a catalogue
+// query. Authentication and workspace admission remain the CertifiedPeer's job, not this
+// resolver's.
 function endpoints(reply) {
-  const received = [], sent = [];
-  const peer = {
-    sendRemoteAction(toRoom, toHost, frame) {
-      assert.equal(toRoom, room); assert.equal(toHost, host);
-      const message = JSON.parse(frame).message; sent.push(message);
-      assert.ok(message.CatalogueRequest, 'resolution never invokes an action');
-      const {correlation, query} = message.CatalogueRequest;
-      received.push({kind: 'remoteAction', from: host, frame: JSON.stringify({version: 1,
-        message: {CatalogueResponse: {correlation, result: {Ok: reply(query)}}}})});
-      queueMicrotask(() => actions.pump());
+  const sent = [];
+  const actions = {
+    async catalogue(query) {
+      sent.push(query);
+      return reply(query);
     },
-    takeRemoteActionEvents: () => JSON.stringify(received.splice(0)),
+    dispose() {},
   };
-  const actions = createActions({peer, workspace: room, hostDevice: host});
   return {actions, sent};
 }
 

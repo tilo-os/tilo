@@ -103,8 +103,6 @@ function fakeRuntime({phase = 'ready'} = {}) {
           },
           async endPreview(workspace, record) { peer.endedPreviews.push(JSON.parse(record)); },
           takeLiveEvents: () => JSON.stringify(liveEvents.splice(0)),
-          takeRemoteActionEvents: () => '[]',
-          sendRemoteAction: () => {},
           reconnect: () => { peer.reconnects++; },
           retryNow: () => { peer.retries++; },
           refresh: () => { peer.refreshes++; peer.onRefresh?.(); },

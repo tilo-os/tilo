@@ -21,9 +21,7 @@
  * that key itself instead of waiting for an approver.
  * `getSnapshot()` returns `PeerSnapshot` with `SessionHealth` v1.
  */
-import {createActions} from './actions.mjs';
 import {resolveResourceReference, openResourceReference} from './resource-reference.mjs';
-import {createAgents} from './agents.mjs';
 import {openChannelVault} from './channel-vault.mjs';
 import {backoffDelay} from './reconnect.mjs';
 import {createSpeakers} from './live-speakers.mjs';
@@ -195,6 +193,22 @@ export function statusAsset(status) {
 const recordKey = record => `${record.app}\u0000${record.record}`;
 const unhex = text => Uint8Array.from(text.match(/../g) ?? [], byte => parseInt(byte, 16));
 const hexKey = key => (typeof key === 'string' ? key : Array.from(key ?? [], byte => byte.toString(16).padStart(2, '0')).join(''));
+
+/** `InvokeArgument` for a JavaScript value: nothing, a prompted text, or a typed object. */
+function invokeArgument(argument) {
+  if (argument === undefined || argument === null || argument === 'None') return 'None';
+  if (typeof argument === 'string') return {Text: argument};
+  if (typeof argument === 'object' && (argument.Text !== undefined || argument.Json !== undefined)) return argument;
+  if (typeof argument === 'object' && !Array.isArray(argument)) return {Json: argument};
+  throw new TypeError('an action argument is a string or an object');
+}
+
+/** The person's answer to an action that asks first, as the host takes it. */
+function wireConfirmation(confirmation) {
+  if (!confirmation) return undefined;
+  if (confirmation.kind === 'phrase') return {Phrase: String(confirmation.phrase ?? '')};
+  return 'Confirmed';
+}
 
 const LOOPBACK = new Set(['localhost', '127.0.0.1', '[::1]']);
 /** A host served over plain HTTP on this machine (`tilo-relay workspace --web-plain`). */
@@ -463,7 +477,6 @@ async function connect({
   let channelVault = storage ? await vaultOf() : undefined;
   const post = httpsPost(origin, fetcher);
   const custodyForWasm = custody.kind === 'sealed-seed' ? await custody.unseal() : custody;
-  const custodyKeyHex = () => [...(custodyForWasm.publicKey ?? [])].map(b => b.toString(16).padStart(2, '0')).join('');
   // The colour this person's presence names, the runtime's for who they are
   // (their user root): the same one a native desktop draws them in. A
   // desktop settles everyone here over the whole workspace instead, so people
@@ -482,7 +495,6 @@ async function connect({
   let ready;
   const resetReady = () => { ready = new Promise(resolve => { admitted = resolve; }); };
   resetReady();
-  let agents;
   let actions;
   let voice;
   let disposed = false;
@@ -499,13 +511,6 @@ async function connect({
     publishParticipant();
   };
   let snapshot = {phase: 'authenticating', records: []};
-  // The session's remote-action events are taken once per change and read
-  // by every consumer: agents' and the workspace's actions share the path.
-  let remoteEvents = '[]';
-  const remote = {
-    sendRemoteAction: (...args) => peer.sendRemoteAction(...args),
-    takeRemoteActionEvents: () => remoteEvents,
-  };
   // Desktop surfaces mounted through this peer, by surface id: their failures
   // are reported into SessionHealth and recovered through `recover`.
   const surfaces = new Map();
@@ -522,10 +527,6 @@ async function connect({
       live.pump(JSON.parse(peer.takeLiveEvents()));
     }
     voice?.pump(peer.takeVoiceEvents?.() ?? '[]');
-    remoteEvents = peer.takeRemoteActionEvents();
-    agents?.pump();
-    actions?.pump();
-    remoteEvents = '[]';
     for (const listener of [...listeners]) listener(snapshot);
     onStatus?.(snapshot);
     for (const listener of [...statusListeners]) {
@@ -716,16 +717,12 @@ async function connect({
           kind: 'person', label: (displayName || label).slice(0, 32), color: ownColor(), activity,
         }});
       }
-      agents?.dispose();
       actions?.dispose();
       const hostDevice = hexKey(host.hostCert?.device_public_key);
       // The host bridges this page into a call, so its frames carry the
       // host's device and it is the page's own voice there.
       voice ??= voiceOptions === false ? undefined : createPeerVoice({peer: () => peer, workspace, device: hostDevice, ...voiceOptions});
-      agents = hostDevice ? createAgents({peer: remote, runtime, workspace, live, userPublicKey, hostDevice}) : undefined;
-      actions = hostDevice
-        ? createActions({peer: remote, workspace, hostDevice, device: custodyKeyHex(), userPublicKey, store})
-        : undefined;
+      actions = hostDevice ? createActions() : undefined;
     }
     publish();
   }
@@ -750,6 +747,158 @@ async function connect({
     };
   }
   const hasRecord = (app, record) => Boolean(peer?.hasRecord?.(app, record));
+
+  // The page's actions: the workspace's host lists and runs them, asked through the
+  // session this page holds with it (`actionMessage` in wasm) — the same door the page's
+  // own Rust asks, so nothing here speaks the frames. A ticket follows one invocation: the
+  // host's receipt, then what became of it.
+  function createActions() {
+    const TERMINAL = new Set(['succeeded', 'failed', 'cancelled']);
+    const entries = new Map();
+    let correlation = 0;
+    class ActionsError extends Error {
+      constructor(code, message) { super(message); this.name = 'ActionsError'; this.code = code; }
+    }
+    const failure = error => new ActionsError(error?.code ?? error?.reason ?? 'refused',
+      error?.reason ?? error?.code ?? 'the workspace\'s host refused the action');
+
+    /** Ask the workspace's host `message` (a `RemoteActionMessage`) and answer what it said. */
+    async function ask(message) {
+      try {
+        return JSON.parse(await peer.actionMessage(workspace, '', userPublicKey, JSON.stringify(message)));
+      } catch (error) {
+        throw new ActionsError('unavailable', String(error?.message ?? error));
+      }
+    }
+
+    /** The state an `InvocationUpdate` says, as a ticket reports it. */
+    function stateOf(update) {
+      const [variant, body] = Object.entries(update ?? {})[0] ?? [];
+      if (!variant) return null;
+      switch (variant) {
+        case 'Accepted': return {state: 'accepted'};
+        case 'Progress': return {state: 'progress', sequence: String(body.sequence), phase: body.phase,
+          completed: body.completed ?? null, total: body.total ?? null, message: body.message ?? null};
+        case 'Item': return {state: 'item', sequence: String(body.sequence), value: body.value};
+        case 'Succeeded': return {state: 'succeeded', output: {value: body.output?.value, resources: body.output?.resources ?? []}};
+        case 'Failed': return {state: 'failed', error: body.error};
+        case 'Cancelled': return {state: 'cancelled', message: body.message ?? null};
+        default: return null;
+      }
+    }
+
+    /** The state a receipt says. */
+    function receiptState(status) {
+      if (status === 'Accepted') return {state: 'accepted'};
+      if (status?.Completed) return {state: 'succeeded', output: {value: status.Completed.output?.value, resources: status.Completed.output?.resources ?? []}};
+      if (status?.Failed) return {state: 'failed', error: status.Failed.error};
+      if (status?.Cancelled) return {state: 'cancelled', message: status.Cancelled.message ?? null};
+      return null;
+    }
+
+    function keep(id, state, extra = {}) {
+      const held = entries.get(id) ?? {invocation: id};
+      const entry = {...held, ...extra, ...(state ?? {}), invocation: id, update: state ?? held.update ?? null};
+      entry.terminal = TERMINAL.has(entry.state);
+      entry.updatedAt = Date.now();
+      entries.set(id, entry);
+      return entry;
+    }
+
+    function send(entry) {
+      const message = {Invoke: {
+        invocation: entry.invocation,
+        target: entry.target,
+        argument: entry.argument,
+        ...(entry.confirmation ? {confirmation: entry.confirmation} : {}),
+      }};
+      return ask(message).then(answer => {
+        const receipt = answer.Receipt;
+        if (!receipt) {
+          const state = keep(entry.invocation, {state: 'unknown', reason: 'unanswered'});
+          throw Object.assign(new ActionsError('unavailable', 'the host did not answer'), {entry: state});
+        }
+        if (receipt.status?.Rejected) {
+          const error = failure(receipt.status.Rejected.error);
+          keep(entry.invocation, {state: 'failed', error: {code: error.code, message: error.message}},
+            {reason: error.code});
+          throw Object.assign(error, {entry: entries.get(entry.invocation)});
+        }
+        return keep(entry.invocation, receiptState(receipt.status));
+      }, error => {
+        // The outcome is unknown: the host may have run it. Keep the id so a
+        // retry observes the original instead of running it again.
+        keep(entry.invocation, {state: 'unknown', reason: error.code ?? 'unknown'});
+        throw error;
+      });
+    }
+
+    function ticket(entry, done) {
+      return {
+        id: entry.invocation,
+        get entry() { return entries.get(entry.invocation); },
+        done,
+        status: () => status(entry.invocation),
+        cancel: () => cancel(entry.invocation),
+      };
+    }
+
+    /** List what the host offers; `query` is a `CatalogueQuery` (`{provider, needle, …}`). */
+    async function catalogue(query = {}) {
+      correlation += 1;
+      const answer = await ask({CatalogueRequest: {correlation, query: {max_results: 200, ...query}}});
+      const result = answer.CatalogueResponse?.result;
+      if (result?.Ok) return result.Ok;
+      throw failure(result?.Err ?? {code: 'unavailable', reason: 'the host did not answer'});
+    }
+
+    /** Run one action; `target` is `{provider, address: {resource, action}}` from a catalogue row. */
+    function invoke(target, argument, {confirmation = null, invocation, label} = {}) {
+      const resource = target?.address?.resource;
+      const recordsOwn = resource === '' && String(target?.provider).startsWith('record:');
+      if (!target?.provider || !(resource || recordsOwn) || !target?.address?.action) {
+        throw new TypeError('target is {provider, address: {resource, action}} copied from a catalogue row');
+      }
+      const id = invocation ?? globalThis.crypto.randomUUID();
+      const existing = entries.get(id);
+      if (existing) return ticket(existing, existing.terminal ? Promise.resolve(existing) : send(existing));
+      const entry = keep(id, {state: 'unknown'}, {
+        target: {provider: target.provider, address: {resource: target.address.resource, action: target.address.action}},
+        argument: invokeArgument(argument), confirmation: wireConfirmation(confirmation), label: label ?? null,
+      });
+      return ticket(entry, send(entry));
+    }
+
+    async function status(id) {
+      const held = entries.get(id);
+      if (!held) throw new ActionsError('unknown_invocation', 'no such invocation in this page');
+      const answer = await ask({Observe: {invocation: id}});
+      const update = answer.Update?.state?.update;
+      if (update) return keep(id, stateOf(update));
+      // The host never admitted it (lost on the way, or refused and forgotten): send it again
+      // under the same id.
+      if (held.state === 'unknown') return send(held).catch(() => entries.get(id));
+      return entries.get(id);
+    }
+
+    async function cancel(id) {
+      const held = entries.get(id);
+      if (!held) throw new ActionsError('unknown_invocation', 'no such invocation in this page');
+      if (held.terminal) return held;
+      const result = (await ask({Cancel: {invocation: id}})).CancelResponse?.result;
+      if (result && !('Ok' in result)) throw failure(result.Err);
+      keep(id, null, {cancellationRequested: true});
+      return status(id);
+    }
+
+    return {
+      catalogue,
+      invoke,
+      status,
+      cancel,
+      dispose() { entries.clear(); },
+    };
+  }
 
   try {
     await start();
@@ -789,7 +938,6 @@ async function connect({
       for (const refuse of [...pendingRecordWaits]) refuse(new Error('Shared resource connection closed'));
       for (const entry of [...surfaces.values()]) dropSurface(entry);
       unsubscribeStorage?.();
-      agents?.dispose();
       actions?.dispose();
       voice?.dispose();
       stopLive();
@@ -872,8 +1020,6 @@ async function connect({
      * words shown in the members' place (`here.mjs`), or `null` while it can
      * (or did): a browser without WebTransport, which has no fallback. */
     liveNote: () => { try { return peer?.liveNote?.() ?? null; } catch { return null; } },
-    /** The workspace's agents (`agents.mjs`), or `undefined` without a workspace. */
-    get agents() { return agents; },
     /** This person as their presence names them: `{label, color}`. */
     get participant() {
       return {label: (displayName || label).slice(0, 32), color: ownColor()};
@@ -968,8 +1114,6 @@ async function connect({
     },
     /** The workspace's calls (`voice-peer.mjs`), or `undefined` without a workspace. */
     get voice() { return voice; },
-    /** `actions` in the frozen `actionsV1` contract. */
-    get actionsV1() { return actions?.v1; },
     /** This peer in the wasm runtime, for mounts that replicate through it. */
     get runtimeId() { return peer?.id; },
     /** The desktop mount (`host.mjs`) in this peer's profile and workspace.

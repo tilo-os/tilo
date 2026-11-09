@@ -1364,17 +1364,6 @@ impl JsCallOperation {
     }
 }
 
-/// A remote-action event for `web/agents.mjs` (and `actionsV1`).
-#[derive(Serialize)]
-#[serde(tag = "kind", rename_all = "camelCase")]
-enum JsRemoteAction {
-    /// A frame another device addressed to this one (`frame` is the JSON
-    /// `RemoteActionFrame` text).
-    RemoteAction { from: String, frame: String },
-    /// The host could not deliver a frame this device sent.
-    Undeliverable { to: String, reason: String },
-}
-
 /// `{agentId, label, color, device, workspaces, apps, mayConfirm, expiresAtNs}`
 /// of a delegation that verified.
 #[derive(Serialize)]
@@ -1462,7 +1451,6 @@ pub struct WasmPeer {
     handle: PeerHandle,
     durable_events: PeerEvents,
     live_events: PeerEvents,
-    remote_events: PeerEvents,
     voice_events: PeerEvents,
     /// Joined workspaces by workspace, to name them in call events.
     voice_workspaces: RefCell<std::collections::HashMap<u64, String>>,
@@ -1474,6 +1462,8 @@ pub struct WasmPeer {
     /// The workspace the person takes part in through this page, once joined
     /// as a person: the one that names them.
     speaking_workspace: RefCell<Option<String>>,
+    /// The doors this page asks actions through, one per device it asks.
+    doors: crate::actions::Doors,
 }
 
 /// Tell `workspace` its member, the page's person, goes by `name` from now on:
@@ -1639,13 +1629,13 @@ impl WasmPeer {
             owner_cert,
             durable_events: handle.events(),
             live_events: handle.events(),
-            remote_events: handle.events(),
             voice_events: handle.events(),
             voice_workspaces: RefCell::default(),
             handle,
             listeners,
             replication,
             speaking_workspace: RefCell::default(),
+            doors: crate::actions::Doors::default(),
         })
     }
 
@@ -2413,53 +2403,41 @@ impl WasmPeer {
         serde_json::to_string(&out).unwrap_or_else(|_| "[]".into())
     }
 
-    /// Send one remote-action frame (JSON `RemoteActionFrame` text) to the
-    /// device `to` (hex) of `workspace`; the host's own device key reaches its
-    /// app-serving plane (apps and the agent supervisor).
+    /// Ask one action of the device `device` (hex, or empty for the workspace's host) in
+    /// `workspace`: `message` is a JSON `RemoteActionMessage`, `person` the person this page acts
+    /// for, and the answer resolves to the JSON answer the device gave. The session carries the
+    /// request there and its answer back, so the page holds no frames of its own.
     ///
     /// # Errors
     ///
-    /// Throws for a malformed workspace or device, or a closed session.
-    #[wasm_bindgen(js_name = sendRemoteAction)]
-    pub fn send_remote_action(
+    /// Throws for a malformed workspace, device or message, a page with no session with a host,
+    /// and a device whose answer never came.
+    #[wasm_bindgen(js_name = actionMessage)]
+    pub async fn action_message(
         &self,
         workspace: &str,
-        to: &str,
-        frame: &str,
-    ) -> Result<(), JsError> {
-        let to: [u8; 32] = hex::decode(to)
-            .ok()
-            .and_then(|bytes| bytes.try_into().ok())
-            .ok_or_else(|| js_error("device must be 32 bytes of hex"))?;
-        self.handle
-            .send_remote_action(workspace_number(workspace)?, to, frame.as_bytes().to_vec())
-            .map_err(js_error)
-    }
-
-    /// Remote-action frames and undeliverable answers since the last call,
-    /// as a JSON array of `{kind: 'remoteAction', from, frame}` and
-    /// `{kind: 'undeliverable', to, reason}`.
-    #[wasm_bindgen(js_name = takeRemoteActionEvents)]
-    pub fn take_remote_action_events(&self) -> String {
-        let out: Vec<JsRemoteAction> = self
-            .remote_events
-            .drain()
-            .into_iter()
-            .filter_map(|event| match event {
-                PeerEvent::RemoteAction { from, frame, .. } => Some(JsRemoteAction::RemoteAction {
-                    from: hex::encode(from),
-                    frame: String::from_utf8(frame).ok()?,
-                }),
-                PeerEvent::RemoteActionUndeliverable { to, reason, .. } => {
-                    Some(JsRemoteAction::Undeliverable {
-                        to: hex::encode(to),
-                        reason,
-                    })
-                }
-                _ => None,
-            })
-            .collect();
-        serde_json::to_string(&out).unwrap_or_else(|_| "[]".into())
+        device: &str,
+        person: &str,
+        message: &str,
+    ) -> Result<String, JsError> {
+        let device = if device.is_empty() {
+            crate::peer_sync::host_of(self.id)
+                .map(|(_, host)| host)
+                .ok_or_else(|| js_error("this page holds no session with a host"))?
+        } else {
+            hex::decode(device)
+                .ok()
+                .and_then(|bytes| bytes.try_into().ok())
+                .ok_or_else(|| js_error("device must be 32 bytes of hex"))?
+        };
+        let door = self
+            .doors
+            .of(&self.handle, workspace_number(workspace)?, device);
+        let caller =
+            tilo_actions::remote::Caller::local_person(person.to_owned()).in_workspace(workspace);
+        tilo_browser_peer::session_actions::ask(&door, &caller, message)
+            .await
+            .map_err(|error| js_error(&error))
     }
 
     /// Whether the page holds the workspace's record `record` of `app`: open in

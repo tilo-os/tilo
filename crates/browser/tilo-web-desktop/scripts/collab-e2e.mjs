@@ -40,6 +40,10 @@ import {dirname, extname, join, normalize, resolve} from 'node:path';
 import {fileURLToPath} from 'node:url';
 import {launch, sleep} from '../../../../tools/web/chrome.mjs';
 
+/** The page expression that runs one of the supervisor's actions and answers its output. */
+const agentInvoke = (resource, action, argument) => `peer.actions.invoke({provider: 'agents', address: {resource: ${JSON.stringify(resource)}, `
+  + `action: ${JSON.stringify(action)}}}, ${JSON.stringify(argument ?? 'None')}).done.then(entry => entry?.update?.output?.value ?? entry)`;
+
 const here = dirname(fileURLToPath(import.meta.url));
 const repo = resolve(here, '../../../..');
 const argv = process.argv.slice(2);
@@ -587,23 +591,23 @@ async function runApp(name) {
     // 7. The agent edits; native and pages show it, with its cursor.
     if (withAgent) await phase('agent edit -> native and browsers', async () => {
       const label = 'E2E agent';
-      const grant = await a.tab.evaluate(`peer.agents.requestGrant(${JSON.stringify({label, rooms: [room], apps: [app.id], expiresInSecs: 3600})})`);
+      const grant = await a.tab.evaluate(`${agentInvoke('agents', 'request-grant', {Json: {label, rooms: [room], apps: [app.id], expiresInSecs: 3600}})}`);
       const grantId = grant?.grant ?? grant;
       const approved = await until(async () => {
-        const status = await a.tab.evaluate('peer.agents.status()');
-        return (status.grants ?? []).some(g => JSON.stringify(g).includes(String(grantId)) && /approved/i.test(JSON.stringify(g)));
+        const status = await a.tab.evaluate(`${agentInvoke('agents', 'status')}`);
+        return (status?.grants ?? []).some(g => JSON.stringify(g).includes(String(grantId)) && /approved/i.test(JSON.stringify(g)));
       }, 30000, 500);
       const task = app.agentTask(T.agent);
-      const spawned = approved && await a.tab.evaluate(`peer.agents.spawn(${JSON.stringify({grant: grantId, task})})`);
+      const spawned = approved && await a.tab.evaluate(`${agentInvoke('agents', 'spawn', {Json: {grant: grantId, task}})}`);
       const started = Date.now();
       let agentCursor = null, agentState = null;
       await until(async () => {
         if (!agentCursor) {
-          const seen = (await cursorLabels(b)).find(m => m.kind === 'agent') ?? (await b.tab.evaluate('peer.agents.cursors()'))[0];
+          const seen = (await cursorLabels(b)).find(m => m.kind === 'agent');
           if (seen) agentCursor = seen;
         }
-        const status = await a.tab.evaluate('peer.agents.status()');
-        const agent = (status.agents ?? []).find(x => JSON.stringify(x).includes(label)) ?? status.agents?.[0];
+        const status = await a.tab.evaluate(`${agentInvoke('agents', 'status')}`);
+        const agent = (status?.agents ?? []).find(x => JSON.stringify(x).includes(label)) ?? status?.agents?.[0];
         const run = agent?.tasks?.at(-1);
         if (run && !/queued|running|planning|working/i.test(String(run.state))) agentState = run;
         return agentState && agentCursor;
