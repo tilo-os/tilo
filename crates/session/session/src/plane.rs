@@ -1634,9 +1634,9 @@ mod tests {
         );
         assert_eq!(
             services.host_steps.len(),
-            4,
+            5,
             "the steps this session serves are the workspace's activity, device \
-             pairing, identity administration and its own actions"
+             pairing, identity administration, the person's hosting account and its own actions"
         );
         let providers: Vec<&str> = services
             .host_steps
@@ -1655,6 +1655,10 @@ mod tests {
             (
                 tilo_actions::remote::SESSION_ACTIONS_PROVIDER,
                 "a turn's agent arranges the screen",
+            ),
+            (
+                tilo_actions::remote::host_account::PROVIDER,
+                "Settings' Billing reads the person's account with their host",
             ),
         ] {
             assert!(
