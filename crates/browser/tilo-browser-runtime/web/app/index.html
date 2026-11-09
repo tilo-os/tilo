@@ -77,13 +77,15 @@ if(navigator.gpu&&!/[?&]unsafeWebKitGPU=0(&|$)/.test(location.search))globalThis
   <style>
     html, body { margin: 0; height: 100%; overscroll-behavior: none; background: #121214; color: #ddd; font: 14px system-ui, sans-serif; }
     /* The bar over the one app (app-bar.mjs): where it is, who is here,
-       Share and the way to the whole desktop, thin and in the page's own
-       colours, on top as a shared document's bar is. On a phone it keeps
-       the same four things, the names cut short first. */
+       Share and the way to the whole desktop, thin and on top as a shared
+       document's bar is, in the colours the app is drawn in (the bar takes
+       them from the mount once it draws; these are the dark theme's until
+       then). It shows once the app is open; until then only the status line
+       inside it is seen, on the arrival screen. On a phone it keeps the
+       same four things, the names cut short first. */
     :root { --bar-h: 44px; --bar-bg: #17181c; --bar-line: #26282e; --bar-text: #e6e6e9; --bar-quiet: #9b9ba3; --bar-button: #26282e; --bar-button-hover: #30333a; --bar-primary: #f2f2f4; --bar-primary-text: #121214; --bar-sheet: #1c1d21; --bar-focus: #9ab4ff; }
-    @media (prefers-color-scheme: light) {
-      :root { --bar-bg: #f7f7f8; --bar-line: #e2e2e6; --bar-text: #1d1d21; --bar-quiet: #6b6b74; --bar-button: #ebebee; --bar-button-hover: #e0e0e5; --bar-primary: #1d1d21; --bar-primary-text: #ffffff; --bar-sheet: #ffffff; --bar-focus: #2a3fd1; }
-    }
+    html:not([data-bar]) #bar { visibility: hidden; }
+    html:not([data-bar]) #bar #status { visibility: visible; }
     #surface { position: fixed; top: calc(var(--bar-h) + env(safe-area-inset-top)); left: 0; right: 0; bottom: 0; }
     #bar { position: fixed; top: 0; left: 0; right: 0; z-index: 2; box-sizing: border-box; height: calc(var(--bar-h) + env(safe-area-inset-top)); padding: env(safe-area-inset-top) max(12px, env(safe-area-inset-right)) 0 max(12px, env(safe-area-inset-left)); display: flex; align-items: center; gap: 10px; overflow: hidden; background: var(--bar-bg); border-bottom: 1px solid var(--bar-line); color: var(--bar-text); }
     #bar-where { display: flex; align-items: baseline; gap: 6px; min-width: 0; flex: 1 1 auto; overflow: hidden; white-space: nowrap; }

@@ -501,6 +501,9 @@ struct Mount {
     replica_changed: Rc<std::cell::Cell<bool>>,
     focus_presence: RefCell<Option<serde_json::Value>>,
     live_place: RefCell<Option<serde_json::Value>>,
+    /// The theme generation a single application's page was last told the
+    /// colours of ([`Mount::add_page_theme`]).
+    theme_told: Cell<Option<u64>>,
     /// The last `liveWave` the page was told.
     live_wave: RefCell<Option<serde_json::Value>>,
     /// The last `liveFollowing` the page was told.
@@ -1137,6 +1140,21 @@ fn desktop_inputs(
     })
 }
 
+/// What the page offers its desktop beyond the workspace: inviting, its
+/// host and build, the About sheet's links and the layout it opens in.
+fn host_offers(config: &Config) -> crate::shell::HostOffers {
+    crate::shell::HostOffers {
+        invite: config.invite.clone(),
+        mac: config.mac,
+        host: config.host.clone(),
+        about: config.about.clone(),
+        build: config.build.clone(),
+        link_offer: config.link_offer.clone(),
+        directory: config.directory.clone(),
+        layout: config.layout,
+    }
+}
+
 fn present_desktop(
     id: u64,
     config: &Config,
@@ -1194,16 +1212,7 @@ fn present_desktop(
         surface,
         handle.clone(),
         generation.clone(),
-        crate::shell::HostOffers {
-            invite: config.invite.clone(),
-            mac: config.mac,
-            host: config.host.clone(),
-            about: config.about.clone(),
-            build: config.build.clone(),
-            link_offer: config.link_offer.clone(),
-            directory: config.directory.clone(),
-            layout: config.layout,
-        },
+        host_offers(config),
         Rc::clone(&requests),
         crate::shell::ChromeSources {
             here: Rc::clone(&here),
@@ -1585,6 +1594,7 @@ fn begin(event_loop: &ActiveEventLoop, id: u64, request: Request) -> Result<(), 
         replica_changed,
         focus_presence: RefCell::new(None),
         live_place: RefCell::new(None),
+        theme_told: Cell::new(None),
         live_wave: RefCell::new(None),
         live_following: RefCell::new(None),
         entries: 0,
@@ -2644,6 +2654,37 @@ impl Mount {
         )
     }
 
+    /// Tell a page showing one application the colours it is drawn in, when
+    /// they changed: the page's own bar over it takes them, so the two read
+    /// as one surface in whatever theme the person chose. `pageTheme`:
+    /// `{dark, ground, ink, quiet, line}`, each colour `#rrggbb`. A desktop
+    /// draws its own bar and is never told.
+    fn add_page_theme(&self, value: &mut serde_json::Value) {
+        let generation = crate::page_theme::generation();
+        if self.desktop.is_some() || self.theme_told.get() == Some(generation) {
+            return;
+        }
+        let Some(object) = value.as_object_mut() else {
+            return;
+        };
+        self.theme_told.set(Some(generation));
+        let theme = crate::page_theme::current();
+        let hex = |color: ui::peniko::Color| {
+            let rgba = color.to_rgba8();
+            format!("#{:02x}{:02x}{:02x}", rgba.r, rgba.g, rgba.b)
+        };
+        object.insert(
+            "pageTheme".into(),
+            serde_json::json!({
+                "dark": theme.document.is_dark(),
+                "ground": hex(theme.tokens.colors.surfaces.content),
+                "ink": hex(theme.text_primary),
+                "quiet": hex(theme.text_dim),
+                "line": hex(theme.border_standard),
+            }),
+        );
+    }
+
     /// Add the focus presence and the place in the workspace to a status where
     /// they differ from what the page was last told.
     fn add_presence_changes(&self, value: &mut serde_json::Value) {
@@ -2828,6 +2869,7 @@ impl Mount {
         if !(unbuilt && change == FrameChange::Nothing) {
             self.add_presence_changes(&mut value);
         }
+        self.add_page_theme(&mut value);
         self.add_live_signals(&mut value);
         if self.error.is_none() && self.frames > 0 {
             FIRST_FRAME_PRESENTED.store(true, std::sync::atomic::Ordering::Release);

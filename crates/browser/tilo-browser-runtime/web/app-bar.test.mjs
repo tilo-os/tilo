@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {ANYONE_LINK_SECONDS, MAX_FACES, desktopRoute, drawPeople, initial, peopleHere, shareSheet} from './app-bar.mjs';
+import {ANYONE_LINK_SECONDS, MAX_FACES, applyTheme, desktopRoute, drawPeople, initial, peopleHere, shareSheet} from './app-bar.mjs';
 
 const tick = async () => { for (let i = 0; i < 20; i++) await Promise.resolve(); };
 
@@ -128,4 +128,19 @@ test('a refused link for anyone says the host’s words and keeps the sheet', as
   assert.ok(sheet.find(node => node.textContent === 'Your role here does not let you invite people'));
   assert.equal(buttons[1].disabled, false);
   document.press('Escape');
+});
+
+test('the bar takes the colours the app is drawn in, not the browser’s preference', () => {
+  const set = new Map();
+  const style = {setProperty: (name, value) => set.set(name, value)};
+  assert.equal(applyTheme(style, {dark: false, ground: '#fafafa', ink: '#1d1d21', quiet: '#6b6b74', line: '#e2e2e6'}), true);
+  assert.equal(set.get('--bar-bg'), '#fafafa');
+  assert.equal(set.get('--bar-primary'), '#1d1d21');
+  assert.equal(set.get('--bar-primary-text'), '#fafafa');
+  assert.equal(set.get('--bar-button'), 'color-mix(in srgb, #1d1d21 9%, #fafafa)');
+  assert.equal(set.get('color-scheme'), 'light');
+  set.clear();
+  assert.equal(applyTheme(style, {dark: true, ground: 'red', ink: '#fff', quiet: '#999999', line: '#333333'}), false);
+  assert.equal(applyTheme(style, null), false);
+  assert.equal(set.size, 0);
 });

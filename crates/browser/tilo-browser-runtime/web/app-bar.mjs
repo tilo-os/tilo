@@ -49,6 +49,29 @@ export function desktopRoute(target) {
   return {mode: 'desktop', target: {scope, app}};
 }
 
+/** Whether `value` is a colour as the mount names one (`#rrggbb`). */
+const isHex = value => typeof value === 'string' && /^#[0-9a-f]{6}$/i.test(value);
+
+/**
+ * Draw the bar in the colours the app is drawn in (the mount's `pageTheme`:
+ * `{dark, ground, ink, quiet, line}`), so bar and app read as one surface
+ * whatever theme the person chose rather than whatever the browser
+ * prefers. Fills are the ink laid thinly over the ground; the primary
+ * button is the ink itself. Returns whether it applied.
+ */
+export function applyTheme(style, theme) {
+  const {ground, ink, quiet, line} = theme ?? {};
+  if (![ground, ink, quiet, line].every(isHex)) return false;
+  const mix = percent => `color-mix(in srgb, ${ink} ${percent}%, ${ground})`;
+  for (const [name, value] of Object.entries({
+    '--bar-bg': ground, '--bar-text': ink, '--bar-quiet': quiet, '--bar-line': line,
+    '--bar-button': mix(9), '--bar-button-hover': mix(15),
+    '--bar-primary': ink, '--bar-primary-text': ground, '--bar-sheet': ground,
+  })) style.setProperty(name, value);
+  style.setProperty('color-scheme', theme.dark ? 'dark' : 'light');
+  return true;
+}
+
 /** A name's initial, as a face shows it. */
 export const initial = label => ([...String(label ?? '').trim()][0] ?? '?').toUpperCase();
 
@@ -188,6 +211,7 @@ export function startAppBar({page, appName = id => id, workspaceName = () => '',
   const target = () => page.router.route.target;
   let stopped = false;
   let timer;
+  let theme = null;
 
   const named = () => {
     const name = workspaceName() || page.peer?.workspaceName || '';
@@ -198,7 +222,12 @@ export function startAppBar({page, appName = id => id, workspaceName = () => '',
   const refresh = () => {
     // The mount names the document it shows as its presence does (its
     // app and record digest), so the bar matches members against that.
-    const here = page.mount?.state?.()?.livePlace?.focus ?? null;
+    const state = page.mount?.state?.();
+    const here = state?.livePlace?.focus ?? null;
+    if (state?.pageTheme && state.pageTheme !== theme && applyTheme(root.style, state.pageTheme)) {
+      theme = state.pageTheme;
+      root.dataset.barTheme = theme.dark ? 'dark' : 'light';
+    }
     if (list) drawPeople(list, peopleHere(page.peer?.live?.presenceMembers?.() ?? [], {self: page.peer?.userPublicKey, here}), document);
     named();
   };
