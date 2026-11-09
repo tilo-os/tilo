@@ -762,7 +762,7 @@ impl AgentParticipant {
     /// agent: its tasks would wait for a workspace it never reached, showing
     /// only that it is starting. They fail with the reason instead, so the
     /// person who asked is told what happened.
-    fn fail_if_session_ended(&mut self) {
+    fn fail_if_session_ended(&self) {
         if self.ready || self.control.status() == AgentStatus::Failed {
             return;
         }

@@ -65,10 +65,10 @@ use crate::participant::actions::{Outcome, door_outcome, open_row, record_of, re
 use crate::worker::{ConfinedReplica, ConfinedViews};
 use collab_types::DocumentMutation;
 use tilo_actions::remote::{
-    APPLICATION_OPEN_ACTION, APPLICATION_RESOURCE_PREFIX, ActionHostError, ActorPlace, Caller, CallerPrincipal,
-    CataloguePage, CatalogueProvider, CatalogueQuery, CatalogueRow, Completer, Confirmation,
-    InvocationReceipt, InvocationState, InvokeArgument, InvokeRequest, Pending, ReceiptStatus,
-    RemoteActionMessage, application_provider, application_provider_record, pending,
+    APPLICATION_OPEN_ACTION, APPLICATION_RESOURCE_PREFIX, ActionHostError, ActorPlace, Caller,
+    CallerPrincipal, CataloguePage, CatalogueProvider, CatalogueQuery, CatalogueRow, Completer,
+    Confirmation, InvocationReceipt, InvocationState, InvokeArgument, InvokeRequest, Pending,
+    ReceiptStatus, RemoteActionMessage, application_provider, application_provider_record, pending,
     provider_workspace, workspace_provider,
 };
 use tilo_actions::{
@@ -1653,6 +1653,26 @@ impl Worker {
         Ok(Some(admitted))
     }
 
+    /// `target`, its empty resource naming the record's own: a caller that
+    /// knows the app but not its code (the desktop asking a connector) names
+    /// its actions so.
+    fn with_record_resource(
+        &self,
+        target: &tilo_actions::remote::RemoteActionTarget,
+        app_id: &str,
+    ) -> tilo_actions::remote::RemoteActionTarget {
+        let mut target = target.clone();
+        if target.address.resource.is_empty()
+            && let Some(definition) = self.catalogue.get(app_id)
+        {
+            definition
+                .record_kind
+                .as_str()
+                .clone_into(&mut target.address.resource);
+        }
+        target
+    }
+
     #[allow(
         clippy::result_large_err,
         reason = "the outcome becomes the receipt the host records"
@@ -1708,19 +1728,7 @@ impl Worker {
         let route = record_of(&target.provider, &workspace)
             .filter(|route| self.catalogue.get(&route.app_id).is_some())
             .ok_or(Outcome::Rejected(ActionHostError::UnknownAction))?;
-        // An empty resource names the record's own: a caller that knows the
-        // app but not its code (the desktop asking a connector) names its
-        // actions so.
-        let mut target = target.clone();
-        if target.address.resource.is_empty()
-            && let Some(definition) = self.catalogue.get(&route.app_id)
-        {
-            definition
-                .record_kind
-                .as_str()
-                .clone_into(&mut target.address.resource);
-        }
-        let target = &target;
+        let target = &self.with_record_resource(target, &route.app_id);
         let arguments = invoke_arguments(&request.argument);
         let mounted = self
             .mount(&route, &state)

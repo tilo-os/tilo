@@ -48,16 +48,15 @@ async fn tool(server: &McpServer<SessionActions>, name: &str, arguments: Value) 
     )
 }
 
+/// Semantic work a member narrated on a record's live stream: who published
+/// it, the record, and what was done.
+type Narrated = ([u8; 32], LiveRecord, tilo_actions::SemanticInteraction);
+
 /// What the page heard since it last looked, in order: the presence frames,
 /// and the semantic work members narrated on records' live streams, with
 /// who published it. Everything else it received it takes as its own pump
 /// does.
-fn heard(
-    browser: &mut Browser,
-) -> (
-    Vec<collab_types::presence::Presence>,
-    Vec<([u8; 32], LiveRecord, tilo_actions::SemanticInteraction)>,
-) {
+fn heard(browser: &mut Browser) -> (Vec<collab_types::presence::Presence>, Vec<Narrated>) {
     let mut frames = Vec::new();
     let mut narrated = Vec::new();
     for event in browser.events.drain() {
@@ -124,11 +123,11 @@ async fn an_agents_computer_lists_the_workspace_and_writes_what_another_device_s
     presence.arrive();
     let narrating = std::sync::Arc::clone(&presence);
     let server = McpServer::new(actions, WORKSPACE.into(), person)
-    .with_surface(Surface::Agent)
-    .with_agent_run("run-1", "Claude Code")
-    .with_narration(std::sync::Arc::new(move |acting| {
-        narrating.acting(&acting);
-    }));
+        .with_surface(Surface::Agent)
+        .with_agent_run("run-1", "Claude Code")
+        .with_narration(std::sync::Arc::new(move |acting| {
+            narrating.acting(&acting);
+        }));
 
     let listed = ask(
         &server,
