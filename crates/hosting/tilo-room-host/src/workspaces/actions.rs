@@ -799,6 +799,17 @@ fn speaks_for_themselves(caller: &Caller) -> bool {
     matches!(caller.principal(), CallerPrincipal::Person(_))
 }
 
+/// Whether `caller` asks the host's own operations as the person
+/// `certificate` names: the person themselves, or an agent's grant, which
+/// the host's operations treat as its person within its scope
+/// ([`crate::host_authority`]) while every workspace takes it as their agent.
+fn asks_as_person(caller: &Caller, certificate: &DeviceCert) -> bool {
+    speaks_for_themselves(caller)
+        || (certificate.capabilities.agent.is_some()
+            && caller.is_session_delegated()
+            && matches!(caller.principal(), CallerPrincipal::Agent(_)))
+}
+
 /// What a catalogue offers its caller, before it is paged.
 #[derive(Default)]
 struct Offer {
@@ -914,7 +925,8 @@ impl Workspaces {
             offer.add(GOVERNANCE, workspace.workspace(), rows);
         }
         if wants(HOST_ACTIONS_PROVIDER)
-            && let Some(certificate) = certificate.filter(|_| speaks_for_themselves(caller))
+            && let Some(certificate) =
+                certificate.filter(|certificate| asks_as_person(caller, certificate))
         {
             offer.add(host::HOST, "", self.host_rows(certificate));
         }
@@ -940,7 +952,7 @@ impl Workspaces {
                 // Unknown and forbidden are the same answer.
                 let certificate = certificate
                     .filter(|certificate| {
-                        speaks_for_themselves(caller)
+                        asks_as_person(caller, certificate)
                             && caller.device_public_key() == Some(&certificate.device_public_key)
                             && caller.user_public_key() == Some(&certificate.user_public_key)
                     })

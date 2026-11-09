@@ -351,6 +351,19 @@ fn session_caller(
         Some(None) => {
             return Err((UnavailableReason::NotAuthorised, "the agent was withdrawn"));
         }
+        // An agent's grant (a key its person certified for a service acting
+        // for an agent they approved) is their agent: what it does is the
+        // agent's, for them, never above what an agent of theirs may do, and
+        // it governs nothing.
+        None if peer.cert.capabilities.agent.is_some() => {
+            Caller::authenticated(peer.user_public_key, peer.device_public_key)
+                .delegated_to(grant_agent_id(&peer.device_public_key))
+        }
         None => Caller::authenticated(peer.user_public_key, peer.device_public_key),
     })
+}
+
+/// The agent an agent's grant is, by its key: History names its runs.
+fn grant_agent_id(device: &[u8; 32]) -> String {
+    format!("grant-{}", hex::encode(device))
 }

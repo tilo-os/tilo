@@ -249,12 +249,11 @@ async fn an_agents_grant_makes_its_persons_own_workspace_when_it_makes_workspace
     host.attach(workspaces.clone());
     let root = SigningKey::from_bytes(&rand::random());
     let now = tilo_clock::unix_now_ns();
+    let grant_key = SigningKey::from_bytes(&rand::random());
     let grant = |scope| {
         let mut cert = DeviceCert {
             user_public_key: root.verifying_key().to_bytes(),
-            device_public_key: SigningKey::from_bytes(&rand::random())
-                .verifying_key()
-                .to_bytes(),
+            device_public_key: grant_key.verifying_key().to_bytes(),
             device_label: "agent".into(),
             capabilities: DeviceCapabilities::agent_grant(scope),
             issued_at_ns: now,
@@ -271,9 +270,19 @@ async fn an_agents_grant_makes_its_persons_own_workspace_when_it_makes_workspace
         Err(ActionHostError::UnknownAction)
     ));
     let all = grant(AgentScope::AllWorkspaces);
-    let created = create_own(&host, &all, json!({})).await.unwrap();
-    // The invitation is the person's, for their runtime.
-    let issued = created.invitation.unwrap().decode().unwrap();
+    // The grant asks as its session makes it: its person's agent.
+    let agent =
+        Caller::authenticated(all.user_public_key, all.device_public_key).delegated_to("grant");
+    let receipt = settled(host.as_host(&all).invoke(&agent, own_request(json!({}))))
+        .await
+        .unwrap();
+    let ReceiptStatus::Completed { output } = receipt.status else {
+        panic!("the grant's person's own workspace is made: {receipt:?}");
+    };
+    let created: CreatedWorkspace = serde_json::from_value(output.value.unwrap()).unwrap();
+    // The invitation is the person's, which the grant redeems as any new
+    // device of theirs does.
+    let issued = created.invitation.as_ref().unwrap().decode().unwrap();
     assert!(
         decode_and_verify_invitation(
             &issued.signed_invitation,
@@ -283,6 +292,28 @@ async fn an_agents_grant_makes_its_persons_own_workspace_when_it_makes_workspace
         )
         .is_ok()
     );
+    join(workspaces, &created, &grant_key, &all).await;
+    assert_eq!(
+        standing(
+            workspaces,
+            &created.workspace.workspace,
+            root.verifying_key().to_bytes()
+        )
+        .await,
+        Some((MemberRole::Editor, true)),
+        "its person is a member, who administers their own workspace"
+    );
+    // Listing answers the grant's person only their own workspace.
+    let mut list = own_request(json!({}));
+    list.target.address.action = tilo_relay_session::workspaces::LIST_ROOMS.into();
+    let listed = settled(host.as_host(&all).invoke(&agent, list))
+        .await
+        .unwrap();
+    let ReceiptStatus::Completed { output } = listed.status else {
+        panic!("the grant lists: {listed:?}");
+    };
+    let listed: Vec<Value> = serde_json::from_value(output.value.unwrap()).unwrap();
+    assert_eq!(listed.len(), 1, "{listed:?}");
     relay.shutdown().await;
 }
 

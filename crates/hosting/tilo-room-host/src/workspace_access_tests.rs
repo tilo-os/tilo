@@ -3,7 +3,9 @@ use std::sync::{Arc, RwLock};
 
 use ed25519_dalek::SigningKey;
 use tilo_relay_protocol::delegation::{Delegate, DelegateScope, Delegation};
-use tilo_user_identity::{DeviceCapabilities, DeviceCert, RevocationEntry, RevocationReason};
+use tilo_user_identity::{
+    AgentScope, DeviceCapabilities, DeviceCert, RevocationEntry, RevocationReason,
+};
 
 use super::*;
 use crate::workspace::Membership;
@@ -145,6 +147,32 @@ fn peer(
     }
 }
 
+/// An agent's grant of `user`'s, reaching `scope`.
+fn grant(
+    user: [u8; 32],
+    device: [u8; 32],
+    scope: AgentScope,
+    expires_at_ns: Option<u64>,
+) -> AuthenticatedPeer {
+    let mut grant = peer(user, device, false, expires_at_ns);
+    grant.cert.capabilities = DeviceCapabilities::agent_grant(scope);
+    grant
+}
+
+/// The scope of one workspace, by its id.
+fn one(workspace: &str) -> AgentScope {
+    AgentScope::parse(workspace).unwrap()
+}
+
+/// A grant `device` that redeemed an invitation of its person `user`, a
+/// member of the workspace.
+fn member_grant(device: [u8; 32], user: [u8; 32]) -> Setup {
+    Box::new(move |runtime, _| {
+        runtime.membership.devices.push(device);
+        runtime.governed_user_roots.insert(user);
+    })
+}
+
 fn workspace(root: &std::path::Path) -> WorkspaceRuntime {
     let id = crate::room_workspace_id(ROOM).unwrap();
     WorkspaceRuntime::open(root, id, false, Membership::default()).unwrap()
@@ -189,16 +217,69 @@ fn decide_matrix() {
             setup: none(),
             expected: ["NNNNNNNNdNN", "ENNAAEANdNN", "NNNNNNNNdNN"],
         },
+        // An agent's grant: its person's agent where its scope reaches, it
+        // redeemed its person's invitation and its person is a member, on an
+        // agent's planes only.
         Case {
-            name: "an agent's grant of the owner, even listed",
-            peer: {
-                let mut grant = peer(owner, [13; 32], false, Some(NOW + 1));
-                grant.cert.capabilities =
-                    DeviceCapabilities::agent_grant(tilo_user_identity::AgentScope::AllWorkspaces);
-                grant
-            },
-            setup: listed([13; 32]),
+            name: "a grant for all its person's workspaces, a member device of a member",
+            peer: grant(owner, [13; 32], AgentScope::AllWorkspaces, Some(NOW + 1)),
+            setup: member_grant([13; 32], owner),
+            expected: ["AAAAANNANAA", "AAAAANNANAA", "AAAAANNANAA"],
+        },
+        Case {
+            name: "a grant listed in a governed room its person is no member of",
+            peer: grant(owner, [14; 32], AgentScope::AllWorkspaces, Some(NOW + 1)),
+            setup: listed([14; 32]),
+            expected: ["AAAAANNANAA", "AAAAANNANAA", "NNNNNNNNNNN"],
+        },
+        Case {
+            name: "a grant for exactly this room",
+            peer: grant(owner, [15; 32], one(ROOM), Some(NOW + 1)),
+            setup: member_grant([15; 32], owner),
+            expected: ["AAAAANNANAA", "AAAAANNANAA", "AAAAANNANAA"],
+        },
+        Case {
+            name: "a grant for another room, even listed here",
+            peer: grant(owner, [16; 32], one(OTHER_ROOM), Some(NOW + 1)),
+            setup: member_grant([16; 32], owner),
             expected: ["NNNNNNNNNNN", "NNNNNNNNNNN", "NNNNNNNNNNN"],
+        },
+        Case {
+            name: "a grant that never redeemed an invitation here, on its person's own host",
+            peer: grant(owner, [17; 32], AgentScope::AllWorkspaces, Some(NOW + 1)),
+            setup: Box::new(move |runtime, _| {
+                runtime.governed_user_roots.insert(owner);
+            }),
+            expected: ["NNNNNNNNNNN", "NNNNNNNNNNN", "NNNNNNNNNNN"],
+        },
+        Case {
+            name: "a grant past its certificate's expiry",
+            peer: grant(owner, [18; 32], AgentScope::AllWorkspaces, Some(NOW)),
+            setup: member_grant([18; 32], owner),
+            expected: ["xxxxxxxxxxx", "xxxxxxxxxxx", "xxxxxxxxxxx"],
+        },
+        Case {
+            name: "a grant its person revoked",
+            peer: grant(owner, [19; 32], AgentScope::AllWorkspaces, Some(NOW + 1)),
+            setup: Box::new(move |runtime, relay| {
+                member_grant([19; 32], owner)(runtime, relay);
+                relay.revoke([19; 32]);
+            }),
+            expected: ["rrrrrrrrrrr", "rrrrrrrrrrr", "rrrrrrrrrrr"],
+        },
+        Case {
+            name: "a grant minted for this room by a grant its person revoked",
+            peer: {
+                let parent = grant(owner, [62; 32], AgentScope::AllWorkspaces, Some(NOW + 1));
+                let mut minted = grant(owner, [63; 32], one(ROOM), Some(NOW + 1));
+                minted.cert.issuer = Some(Box::new(parent.cert));
+                minted
+            },
+            setup: Box::new(move |runtime, relay| {
+                member_grant([63; 32], owner)(runtime, relay);
+                relay.revoke([62; 32]);
+            }),
+            expected: ["rrrrrrrrrrr", "rrrrrrrrrrr", "rrrrrrrrrrr"],
         },
         Case {
             name: "owner's device a pending replacement removed",

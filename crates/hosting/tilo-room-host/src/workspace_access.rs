@@ -17,9 +17,28 @@
 //! 6. Anything else is not a member.
 //!
 //! An agent's grant (a key the person certified for a service that acts for
-//! an agent they approved) is admitted on none of these planes: it acts in
-//! workspaces through the person's runtime, which checks it, and asks this
-//! host only its own operations, which no workspace decides.
+//! an agent they approved, [`tilo_user_identity::AgentScope`]) is its
+//! person's agent, and its rule replaces steps 3 to 6: after step 1, it is
+//! admitted iff
+//!
+//! - its scope reaches this workspace (all of the person's, or exactly this
+//!   one: a one-workspace grant, root-certified or minted, reaches no other
+//!   and never the site's home workspace);
+//! - it is an exact member device here: it redeemed an invitation for its
+//!   person, as any new device of theirs does, so the workspace's roster
+//!   holds it under its person;
+//! - in a governed workspace, its person is still a member;
+//! - and the plane is one an agent works on: subscribe, state, publish,
+//!   replay, channel access, remote actions, the live plane and content
+//!   discovery. Never compute, environments or governed membership, and
+//!   never by attachment or a same-owner host's enrolment.
+//!
+//! What it does there is its person's agent's ([`crate::peer`] makes its
+//! caller the agent, for its person): an agent's role cap holds it at
+//! Editor at most, and it governs, invites and administers nothing
+//! (`workspaces::authority`). Its certificate's expiry and its person's
+//! revocations (a minted grant's issuer included) are step 1, checked at
+//! every handshake and audit.
 //!
 //! A public workspace is no exception to the rule: whoever visits it is a
 //! member of it with the role its owner gave them, and every device certified
@@ -433,8 +452,8 @@ pub(crate) fn decide_in(
     if let Err(reason) = trust.principal(peer, workspace.runtime.store.workspace_id(), now_ns) {
         return Decision::Deny(reason);
     }
-    if peer.cert.capabilities.agent.is_some() {
-        return Decision::Deny(DenyReason::NotAMember);
+    if let Some(scope) = peer.cert.capabilities.agent {
+        return grant_decision(workspace, peer, scope, op);
     }
     let own_user = &peer.user_public_key == trust.own_user;
     #[cfg(any(test, feature = "agents"))]
@@ -469,6 +488,45 @@ pub(crate) fn decide_in(
         }
     }
     Decision::Deny(DenyReason::NotAMember)
+}
+
+/// The rule for an agent's grant whose certificate holds relay-wide (see the
+/// module): its person's agent, only where its scope reaches, it redeemed
+/// its person's invitation and its person is a member, on an agent's planes.
+fn grant_decision(
+    workspace: WorkspaceFacts<'_>,
+    peer: &AuthenticatedPeer,
+    scope: tilo_user_identity::AgentScope,
+    op: WorkspaceOperation,
+) -> Decision {
+    let here = workspace.runtime.store.workspace_id();
+    let reaches = match scope {
+        tilo_user_identity::AgentScope::AllWorkspaces => true,
+        tilo_user_identity::AgentScope::Workspace(_) => {
+            crate::room_workspace_id(&scope.name()).is_ok_and(|id| id == here)
+        }
+    };
+    let agents_plane = matches!(
+        op,
+        WorkspaceOperation::Subscribe
+            | WorkspaceOperation::State
+            | WorkspaceOperation::Publish
+            | WorkspaceOperation::Replay
+            | WorkspaceOperation::ChannelAccess
+            | WorkspaceOperation::RemoteAction
+            | WorkspaceOperation::Live
+            | WorkspaceOperation::ContentDiscovery
+    );
+    let person_member = workspace.runtime.admission != AdmissionMode::Governed
+        || workspace
+            .runtime
+            .governed_user_roots
+            .contains(&peer.user_public_key);
+    if reaches && agents_plane && person_member && workspace.lists(&peer.device_public_key) {
+        Decision::Admit
+    } else {
+        Decision::Deny(DenyReason::NotAMember)
+    }
 }
 
 /// Whether `role`'s preset lets its members make undoable changes across a

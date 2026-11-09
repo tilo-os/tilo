@@ -8,9 +8,11 @@
 //! of the host, say) changes this table rather than a comparison in a
 //! handler.
 //!
-//! One is anyone's: making the workspace of their own a host that offers
-//! them keeps for each person ([`HostOperation::CreateOwnWorkspace`]). The
-//! workspace is governed here like any other; the person administers it.
+//! Two are anyone's: making the workspace of their own a host that offers
+//! them keeps for each person ([`HostOperation::CreateOwnWorkspace`]), and
+//! listing workspaces, which answers anyone but the host's person only the
+//! one of their own. The workspace is governed here like any other; the
+//! person administers it.
 //!
 //! An agent's grant (a key the person certified for a service that acts for
 //! an agent they approved, [`tilo_user_identity::AgentScope`]) is the person
@@ -90,7 +92,9 @@ impl HostOperation {
     /// (see the module). The caller's certificate, revocation and agent
     /// standing are checked by the door before it asks.
     pub fn permits(self, host: &[u8; 32], caller: &DeviceCert) -> bool {
-        if caller.user_public_key != *host && self != Self::CreateOwnWorkspace {
+        if caller.user_public_key != *host
+            && !matches!(self, Self::CreateOwnWorkspace | Self::ListWorkspaces)
+        {
             return false;
         }
         let Some(scope) = caller.capabilities.agent else {
@@ -155,7 +159,10 @@ mod tests {
     fn only_the_hosts_person_does_what_no_room_decides() {
         let host = [1; 32];
         for operation in ALL {
-            let anyones = operation == HostOperation::CreateOwnWorkspace;
+            let anyones = matches!(
+                operation,
+                HostOperation::CreateOwnWorkspace | HostOperation::ListWorkspaces
+            );
             assert!(
                 operation.permits(&host, &device(host, DeviceCapabilities::member())),
                 "{}",
@@ -202,15 +209,18 @@ mod tests {
                 "{}",
                 operation.name()
             );
-            // Someone else's grant is someone else, who may only make a
-            // workspace of their own.
+            // Someone else's grant is someone else, who may only make and
+            // list the workspace of their own.
             let stranger = device(
                 [2; 32],
                 DeviceCapabilities::agent_grant(AgentScope::AllWorkspaces),
             );
             assert_eq!(
                 operation.permits(&host, &stranger),
-                operation == HostOperation::CreateOwnWorkspace,
+                matches!(
+                    operation,
+                    HostOperation::CreateOwnWorkspace | HostOperation::ListWorkspaces
+                ),
                 "{}",
                 operation.name()
             );

@@ -380,10 +380,17 @@ impl Workspaces {
                 self.authorize(device, None, WorkspaceOp::Host(operation), now)
                     .map_err(|error| refused(&error))?;
                 let workspaces = self.list().await;
-                // An agent's grant is shown only the workspaces it reaches.
+                // Anyone but the host's person is shown only the workspace
+                // of their own, and an agent's grant only what it reaches.
+                let own = (device.user_public_key != self.inner.host.cert.user_public_key)
+                    .then(|| self.own_workspace_of(&device.user_public_key));
                 answer(
                     &workspaces
                         .iter()
+                        .filter(|summary| {
+                            own.as_ref()
+                                .is_none_or(|own| own.as_deref() == Some(&summary.workspace))
+                        })
                         .filter(|summary| {
                             device
                                 .capabilities
