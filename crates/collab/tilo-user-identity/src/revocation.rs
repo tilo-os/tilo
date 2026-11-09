@@ -7,7 +7,10 @@
 //! > no longer be trusted as part of my fleet, effective now."
 //!
 //! Peers holding a valid revocation entry MUST reject any signature
-//! made by that device key on or after `revoked_at_ns`. The
+//! made by that device key, under a certificate the same root issued, on
+//! or after `revoked_at_ns`. A root speaks only for the devices it
+//! certified: its entry naming a key another root certified refuses
+//! nothing of that other person's. The
 //! revocation list lives in the user's directory CRDT (see
 //! [`crate::WorkspaceDirectory`]) so it propagates to every device
 //! that syncs with the user, and once acknowledged cannot be
@@ -154,7 +157,8 @@ pub fn verify_revocation_entry(entry: &RevocationEntry) -> Result<(), Revocation
 }
 
 /// Whether revocations refuse `cert`, given when each key was first revoked
-/// (`revoked_at`): its device's revocation counts from its time when `at_ns`
+/// by a root (`revoked_at(root, key)`), asked only of the root that
+/// certified the key: its device's revocation counts from its time when `at_ns`
 /// names the moment asked about, and at any time otherwise; its stand-in
 /// issuer's (see [`DeviceCert::issuer`]) counts when the stand-in was
 /// revoked at or before it issued `cert`. The rule
@@ -164,27 +168,32 @@ pub fn verify_revocation_entry(entry: &RevocationEntry) -> Result<(), Revocation
 pub fn cert_refused(
     cert: &DeviceCert,
     at_ns: Option<u64>,
-    revoked_at: impl Fn(&[u8; 32]) -> Option<u64>,
+    revoked_at: impl Fn(&[u8; 32], &[u8; 32]) -> Option<u64>,
 ) -> bool {
-    let device = revoked_at(&cert.device_public_key)
+    let device = revoked_at(&cert.user_public_key, &cert.device_public_key)
         .is_some_and(|revoked| at_ns.is_none_or(|at| at >= revoked));
     let issuer = cert.issuer.as_ref().is_some_and(|issuer| {
-        revoked_at(&issuer.device_public_key).is_some_and(|revoked| cert.issued_at_ns >= revoked)
+        revoked_at(&issuer.user_public_key, &issuer.device_public_key)
+            .is_some_and(|revoked| cert.issued_at_ns >= revoked)
     });
     device || issuer
 }
 
-/// In-memory, verified revocation list for one user identity.
+/// In-memory, verified revocation list.
 ///
-/// Populated by merging every [`RevocationEntry`] the user's
-/// directory holds. On insertion we (a) verify the signature and
-/// (b) keep only the *earliest* `revoked_at_ns` for a given device
-/// key — a compromised device could try to publish a later
+/// Populated by merging every [`RevocationEntry`] a user's directory,
+/// a workspace or a host holds; one list may hold several people's.
+/// Each entry is kept under the root that signed it and the device it
+/// names, and is asked about only for that root: any root can sign an
+/// entry naming any key, so another person's entry never reaches a
+/// device this root certified. On insertion we (a) verify the
+/// signature and (b) keep only the *earliest* `revoked_at_ns` per root
+/// and device — a compromised device could try to publish a later
 /// revocation to "reset" its cut-off, but only the user root can
 /// sign, so this collapses to "the user chose the earliest".
 #[derive(Clone, Debug, Default)]
 pub struct RevocationList {
-    entries: HashMap<[u8; 32], RevocationEntry>,
+    entries: HashMap<([u8; 32], [u8; 32]), RevocationEntry>,
 }
 
 impl RevocationList {
@@ -201,7 +210,7 @@ impl RevocationList {
     /// should log + drop, not propagate.
     pub fn insert(&mut self, entry: RevocationEntry) -> Result<bool, RevocationError> {
         verify_revocation_entry(&entry)?;
-        let key = entry.revoked_device_public_key;
+        let key = (entry.user_public_key, entry.revoked_device_public_key);
         match self.entries.get(&key) {
             Some(existing) if existing.revoked_at_ns <= entry.revoked_at_ns => Ok(false),
             _ => {
@@ -211,19 +220,25 @@ impl RevocationList {
         }
     }
 
-    /// True if `device_public_key` has been revoked at any point.
-    pub fn is_revoked(&self, device_public_key: &[u8; 32]) -> bool {
-        self.entries.contains_key(device_public_key)
+    /// True if the root `user_public_key` has revoked its device
+    /// `device_public_key` at any point.
+    pub fn is_revoked(&self, user_public_key: &[u8; 32], device_public_key: &[u8; 32]) -> bool {
+        self.revoked_at(user_public_key, device_public_key)
+            .is_some()
     }
 
-    /// True if `device_public_key` was revoked at or before
-    /// `at_ns`. Callers validating a signed change use this to ask
-    /// "was the signer already revoked when they made this
-    /// change?"
-    pub fn is_revoked_at(&self, device_public_key: &[u8; 32], at_ns: u64) -> bool {
-        self.entries
-            .get(device_public_key)
-            .is_some_and(|e| at_ns >= e.revoked_at_ns)
+    /// True if the root `user_public_key` revoked its device
+    /// `device_public_key` at or before `at_ns`. Callers validating a
+    /// signed change use this to ask "was the signer already revoked
+    /// when they made this change?"
+    pub fn is_revoked_at(
+        &self,
+        user_public_key: &[u8; 32],
+        device_public_key: &[u8; 32],
+        at_ns: u64,
+    ) -> bool {
+        self.revoked_at(user_public_key, device_public_key)
+            .is_some_and(|revoked| at_ns >= revoked)
     }
 
     /// Whether this list refuses `cert` at any time: its device was revoked,
@@ -234,7 +249,7 @@ impl RevocationList {
     /// revocations; prefer it to asking about its device key alone.
     #[must_use]
     pub fn refuses(&self, cert: &DeviceCert) -> bool {
-        cert_refused(cert, None, |key| self.revoked_at(key))
+        cert_refused(cert, None, |root, key| self.revoked_at(root, key))
     }
 
     /// [`Self::refuses`] with the device's own revocation counted only from
@@ -242,12 +257,14 @@ impl RevocationList {
     /// at `at_ns`.
     #[must_use]
     pub fn refuses_at(&self, cert: &DeviceCert, at_ns: u64) -> bool {
-        cert_refused(cert, Some(at_ns), |key| self.revoked_at(key))
+        cert_refused(cert, Some(at_ns), |root, key| self.revoked_at(root, key))
     }
 
-    /// When `key` was revoked, if it was.
-    fn revoked_at(&self, key: &[u8; 32]) -> Option<u64> {
-        self.entries.get(key).map(|entry| entry.revoked_at_ns)
+    /// When `root` revoked its device `key`, if it did.
+    fn revoked_at(&self, root: &[u8; 32], key: &[u8; 32]) -> Option<u64> {
+        self.entries
+            .get(&(*root, *key))
+            .map(|entry| entry.revoked_at_ns)
     }
 
     /// Iterate over the revocation entries currently held.
@@ -255,7 +272,7 @@ impl RevocationList {
         self.entries.values()
     }
 
-    /// Number of unique revoked devices in the list.
+    /// Number of entries in the list: one per root and revoked device.
     pub fn len(&self) -> usize {
         self.entries.len()
     }
@@ -379,11 +396,11 @@ mod tests {
             // Later duplicate is a no-op.
             assert!(!list.insert(sign(300)).unwrap());
 
-            assert!(list.is_revoked(&device_pk));
-            assert!(list.is_revoked_at(&device_pk, 100));
-            assert!(list.is_revoked_at(&device_pk, 200));
+            assert!(list.is_revoked(&user_pk, &device_pk));
+            assert!(list.is_revoked_at(&user_pk, &device_pk, 100));
+            assert!(list.is_revoked_at(&user_pk, &device_pk, 200));
             // Just before the cut-off — not revoked yet.
-            assert!(!list.is_revoked_at(&device_pk, 99));
+            assert!(!list.is_revoked_at(&user_pk, &device_pk, 99));
         }
 
         // Phase: list_rejects_bad_signature.
@@ -397,5 +414,47 @@ mod tests {
             );
             assert!(list.is_empty());
         }
+    }
+
+    /// Any root can sign an entry naming any key. Another person's entry
+    /// naming Ada's device refuses nothing of hers and does not move the
+    /// cut-off of her own root's entry; hers still refuses it.
+    #[test]
+    fn a_revocation_reaches_only_devices_its_own_root_certified() {
+        let (ada_root, _) = UserIdentity::generate("Ada", 1);
+        let (bob_root, _) = UserIdentity::generate("Bob", 1);
+        let ada = ada_root.verifying_key().to_bytes();
+        let bob = bob_root.verifying_key().to_bytes();
+        let cert = crate::prepare_stand_in_cert(ada, [9; 32], "laptop", 10, 10_000);
+        let entry = |root: &ed25519_dalek::SigningKey, at: u64| {
+            let mut entry = RevocationEntry {
+                user_public_key: root.verifying_key().to_bytes(),
+                revoked_device_public_key: cert.device_public_key,
+                revoked_at_ns: at,
+                reason: RevocationReason::Stolen,
+                signature: [0; 64],
+            };
+            sign_revocation_entry(&mut entry, root).unwrap();
+            entry
+        };
+
+        let mut list = RevocationList::new();
+        assert!(list.insert(entry(&bob_root, 20)).unwrap());
+        assert!(list.is_revoked(&bob, &cert.device_public_key));
+        assert!(!list.is_revoked(&ada, &cert.device_public_key));
+        assert!(!list.refuses(&cert), "Bob's entry refuses nothing of Ada's");
+        assert!(!list.refuses_at(&cert, 30));
+
+        assert!(
+            list.insert(entry(&ada_root, 50)).unwrap(),
+            "Ada's own entry is kept beside Bob's"
+        );
+        assert_eq!(list.len(), 2);
+        assert!(list.refuses(&cert));
+        assert!(
+            !list.refuses_at(&cert, 30),
+            "her cut-off is her own, not Bob's earlier one"
+        );
+        assert!(list.refuses_at(&cert, 50));
     }
 }

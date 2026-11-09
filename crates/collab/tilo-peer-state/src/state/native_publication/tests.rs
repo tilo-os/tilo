@@ -526,7 +526,7 @@ fn native_publication_streaming_cut_cannot_drop_rejected_deferred_input() {
         !receiver
             .core
             .revocations
-            .is_revoked(&cert.device_public_key)
+            .is_revoked(&cert.user_public_key, &cert.device_public_key)
     );
 }
 

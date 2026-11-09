@@ -280,7 +280,7 @@ pub fn prepare_device_cert(
     if request.user_public_key != user_public_key {
         return Err(CertificationError::DifferentIdentity);
     }
-    if revocations.is_revoked(&request.device_public_key) {
+    if revocations.is_revoked(&user_public_key, &request.device_public_key) {
         return Err(CertificationError::Revoked);
     }
     Ok(DeviceCert {

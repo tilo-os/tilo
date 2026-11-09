@@ -239,7 +239,7 @@ fn workspace_media_security_no_policy_accepts_host_revocation_without_enabling_m
         observed
             .core
             .revocations
-            .is_revoked(&owner.device_public_key)
+            .is_revoked(&peer.owner(), &owner.device_public_key)
     );
     assert!(
         media::parse(observed.admitted_workspace().unwrap())

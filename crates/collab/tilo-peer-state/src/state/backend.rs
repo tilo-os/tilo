@@ -294,7 +294,10 @@ impl PeerCore {
             .ok_or(CertificateLookupError::Missing)?
             .current_typed(now_ns(now))
             .map_err(CertificateLookupError::Validity)?;
-        if self.revocations.is_revoked(source) {
+        if self
+            .revocations
+            .is_revoked(&certificate.user_public_key, source)
+        {
             return Err(CertificateLookupError::Revoked);
         }
         Ok(certificate)

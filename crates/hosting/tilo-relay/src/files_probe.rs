@@ -65,7 +65,8 @@ pub(super) fn discover(
         .context("load signed device revocations for Files probe")?;
     let expected_device = super::device_key(device)?;
     anyhow::ensure!(
-        !revocations.refuses_at(&cert, now) && !revocations.is_revoked_at(&expected_device, now),
+        !revocations.refuses_at(&cert, now)
+            && !revocations.is_revoked_at(&cert.user_public_key, &expected_device, now),
         "local device or selected home peer is revoked"
     );
     let service_id = super::device_key(service)?;

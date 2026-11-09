@@ -126,6 +126,48 @@ async fn nobody_else_reaches(
     );
 }
 
+/// Someone else's root (`other_root`) signs a revocation naming `computer`,
+/// and their browser `other` announces it with one of their own: a
+/// root speaks only for the devices it certified, so the host (keeping its
+/// state at `state`) keeps theirs and the agent stays in.
+async fn revoked_by_someone_else(
+    other: &PeerHandle,
+    other_root: &ed25519_dalek::SigningKey,
+    agent: &PeerHandle,
+    computer: &support::Device,
+    state: &std::path::Path,
+) {
+    let device = computer.cert.device_public_key;
+    let foreign = revoke_device(other_root, device, now(), Retired)
+        .await
+        .unwrap();
+    other.revoke(foreign).unwrap();
+    let spare = enrol(other_root, "old phone", DeviceCapabilities::member());
+    let theirs = revoke_device(other_root, spare.cert.device_public_key, now(), Retired)
+        .await
+        .unwrap();
+    other.revoke(theirs.clone()).unwrap();
+    wait_for("the host to keep their own revocation", || {
+        let logged = tilo_relay::store::load_revocations(state);
+        let theirs = theirs.clone();
+        async move {
+            logged
+                .is_ok_and(|entries| entries.contains(&theirs))
+                .then_some(())
+        }
+    })
+    .await;
+    let logged = tilo_relay::store::load_revocations(state).unwrap();
+    assert!(
+        logged
+            .iter()
+            .all(|entry| entry.revoked_device_public_key != device),
+        "nothing names the computer: {logged:?}"
+    );
+    assert!(agent.status().authenticated, "the agent's session goes on");
+    assert!(agent_says_here(agent).await, "and it is still let in");
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn the_persons_door_lists_stops_and_revokes_their_agent_and_nobody_elses() {
     let (root, _) = UserIdentity::generate("Ada", 1);
@@ -207,6 +249,9 @@ async fn the_persons_door_lists_stops_and_revokes_their_agent_and_nobody_elses()
         door.run("Claude Code").is_some()
     })
     .await;
+
+    revoked_by_someone_else(&other, &other_root, &agent, &computer, state.path()).await;
+    assert!(door_now(&door, &read).unwrap().run("Claude Code").is_some());
 
     // The root revokes the computer: its session ends at once, it leaves the
     // door, and the host refuses it from then on.

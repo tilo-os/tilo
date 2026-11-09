@@ -155,7 +155,7 @@ mod tests {
         sink.merge_and_publish(&mut restarted, [entry(&key, 4, 200), entry(&key, 5, 50)])
             .unwrap();
         assert_eq!(restarted.len(), 2);
-        assert!(restarted.is_revoked_at(&[4; 32], 100));
+        assert!(restarted.is_revoked_at(&key.verifying_key().to_bytes(), &[4; 32], 100));
         let loaded: Vec<RevocationEntry> =
             postcard::from_bytes(&std::fs::read(directory.path().join(CACHE_NAME)).unwrap())
                 .unwrap();
@@ -182,7 +182,7 @@ mod tests {
             sink.merge_and_publish(&mut live, [entry(&key, 6, 80)])
                 .is_err()
         );
-        assert!(live.is_revoked_at(&[6; 32], 80));
+        assert!(live.is_revoked_at(&key.verifying_key().to_bytes(), &[6; 32], 80));
         assert_eq!(
             std::fs::read(directory.path().join(CACHE_NAME)).unwrap(),
             [0xff]

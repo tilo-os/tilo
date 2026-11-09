@@ -823,7 +823,10 @@ impl StatePeer {
     /// for evidence a device signed earlier, of any person taking part.
     #[must_use]
     fn known_device(&self, device: &[u8; 32]) -> bool {
-        self.core.certificates.get(device).is_some() && !self.core.revocations.is_revoked(device)
+        self.core
+            .certificates
+            .get(device)
+            .is_some_and(|cert| !self.core.revocations.refuses(cert))
     }
 
     /// Whether `device` is a known, unrevoked device of the owner's, at no
@@ -1934,7 +1937,11 @@ impl StatePeer {
             }
             metadata_changed |= self.core.revocations.insert(entry).map_err(err)?;
         }
-        if self.core.revocations.is_revoked(&source) {
+        if self
+            .core
+            .revocations
+            .is_revoked(&cert.user_public_key, &source)
+        {
             return Err("device revoked".into());
         }
         self.core.certificates.insert(source, verified);

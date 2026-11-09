@@ -120,7 +120,12 @@ impl PersonsDevices for Devices {
         }
         tilo_user_identity::verify_device_cert_at(certificate, tilo_clock::unix_now_ns())
             .map_err(|error| Refusal::NotCertified(error.to_string()))?;
-        if self.revoked.lock().unwrap().is_revoked(&dialer) {
+        if self
+            .revoked
+            .lock()
+            .unwrap()
+            .is_revoked(&certificate.user_public_key, &dialer)
+        {
             return Err(Refusal::Revoked);
         }
         Ok(())

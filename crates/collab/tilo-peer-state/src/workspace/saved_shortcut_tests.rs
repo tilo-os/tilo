@@ -158,6 +158,6 @@ fn the_workspaces_revocations_are_those_its_identity_rows_carry() {
         .unwrap();
     }
     let revocations = workspace_revocations(&doc);
-    assert!(revocations.is_revoked(&ada.cert.device_public_key));
+    assert!(revocations.is_revoked(&ada.cert.user_public_key, &ada.cert.device_public_key));
     assert_eq!(revocations.len(), 1);
 }

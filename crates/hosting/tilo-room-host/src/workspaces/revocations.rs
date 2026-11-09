@@ -2,7 +2,10 @@
 //!
 //! A person's root revokes a key it made, and any device of theirs announces
 //! the signed entry in a workspace it shares with the relay (`IdentityHello`).
-//! The relay takes it from there. Every entry joins the relay's revocation
+//! The relay takes it from there. An entry reaches only keys its own root
+//! certified: one naming a device the relay knows certified by another root
+//! is dropped, and every list the relay keeps asks a revocation of the root
+//! that certified the key. Every other entry joins the relay's revocation
 //! log, which every handshake, session and administration door reads, so the
 //! key is refused everywhere at once — a device of the person's, and the
 //! stand-in approver this host holds for them, which no workspace lists
@@ -14,7 +17,7 @@
 use std::time::SystemTime;
 
 use tilo_lock::RwLockRecover as _;
-use tilo_user_identity::{RevocationEntry, verify_revocation_entry};
+use tilo_user_identity::{DeviceCert, RevocationEntry, verify_revocation_entry};
 
 use super::{GovernedWorkspace, Workspaces};
 
@@ -25,19 +28,14 @@ use super::{GovernedWorkspace, Workspaces};
 const MAX_LOGGED_REVOCATIONS: usize = 4096;
 
 impl Workspaces {
-    /// Take in the root-signed `entries` a device announced.
+    /// Take in the root-signed `entries` a device announced. An entry
+    /// naming a device this relay knows certified by another root is
+    /// another person's key, which the entry's root has no say over: it is
+    /// dropped.
     pub(super) async fn take_revocations(
         &self,
         entries: Vec<RevocationEntry>,
     ) -> Result<(), String> {
-        let entries = entries
-            .into_iter()
-            .filter(|entry| verify_revocation_entry(entry).is_ok())
-            .collect::<Vec<_>>();
-        if entries.is_empty() {
-            return Ok(());
-        }
-        self.record(&entries)?;
         let workspaces = self
             .inner
             .workspaces
@@ -46,6 +44,18 @@ impl Workspaces {
             .values()
             .cloned()
             .collect::<Vec<_>>();
+        let mut known = vec![self.inner.host.cert.clone()];
+        for workspace in &workspaces {
+            known.extend(workspace.lock().await.peer().certificates());
+        }
+        let entries = entries
+            .into_iter()
+            .filter(|entry| verify_revocation_entry(entry).is_ok() && !crosses_roots(entry, &known))
+            .collect::<Vec<_>>();
+        if entries.is_empty() {
+            return Ok(());
+        }
+        self.record(&entries)?;
         let mut refused = Ok(());
         for workspace in workspaces {
             let mut workspace = workspace.lock().await;
@@ -73,7 +83,11 @@ impl Workspaces {
         let fresh = entries
             .iter()
             .filter(|entry| {
-                !live.is_revoked_at(&entry.revoked_device_public_key, entry.revoked_at_ns)
+                !live.is_revoked_at(
+                    &entry.user_public_key,
+                    &entry.revoked_device_public_key,
+                    entry.revoked_at_ns,
+                )
             })
             .collect::<Vec<_>>();
         if fresh.is_empty() {
@@ -98,9 +112,12 @@ impl Workspaces {
                 .write_recover()
                 .insert(entry.clone())
                 .map_err(|error| error.to_string())?;
-            self.inner
-                .agent_door
-                .forget(&entry.revoked_device_public_key);
+            // The door holds only the host's own person's devices.
+            if entry.user_public_key == host.cert.user_public_key {
+                self.inner
+                    .agent_door
+                    .forget(&entry.revoked_device_public_key);
+            }
         }
         if changed {
             crate::authority_epoch::bump();
@@ -112,7 +129,8 @@ impl Workspaces {
     /// relay's live list) it may carry and does not yet: those its
     /// authority's root signed, and those of a root the workspace certifies the
     /// revoked device to. A workspace never carries the revocation of its own
-    /// governing device, which would leave it without a writer.
+    /// governing device, which would leave it without a writer, nor one
+    /// naming a device it certifies to another root.
     pub(super) async fn carry_revocations(
         &self,
         workspace: &mut GovernedWorkspace,
@@ -127,6 +145,7 @@ impl Workspaces {
             .iter()
             .chain(live.iter())
             .filter(|entry| entry.revoked_device_public_key != authority.device_public_key)
+            .filter(|entry| !crosses_roots(entry, &certified))
             .filter(|entry| {
                 entry.user_public_key == authority.user_public_key
                     || certified.iter().any(|cert| {
@@ -135,10 +154,13 @@ impl Workspaces {
                     })
             })
             .filter(|entry| {
-                !carried.iter().any(|known| {
-                    known.revoked_device_public_key == entry.revoked_device_public_key
-                        && known.revoked_at_ns <= entry.revoked_at_ns
-                })
+                !carried
+                    .iter()
+                    .filter(|known| {
+                        (known.user_public_key, known.revoked_device_public_key)
+                            == (entry.user_public_key, entry.revoked_device_public_key)
+                    })
+                    .any(|known| known.revoked_at_ns <= entry.revoked_at_ns)
             })
             .cloned()
             .collect::<Vec<_>>();
@@ -157,5 +179,95 @@ impl Workspaces {
             tracing::info!(workspace = %workspace.workspace(), revocations = carry.len(), "workspace carries revocations");
         }
         self.settle(workspace).await
+    }
+}
+
+/// Whether `entry` names a device one of `certificates` gives to a root other
+/// than the one that signed it.
+fn crosses_roots(entry: &RevocationEntry, certificates: &[DeviceCert]) -> bool {
+    certificates
+        .iter()
+        .filter(|cert| cert.device_public_key == entry.revoked_device_public_key)
+        .any(|cert| cert.user_public_key != entry.user_public_key)
+}
+
+#[cfg(test)]
+mod tests {
+    use ed25519_dalek::SigningKey;
+    use tilo_user_identity::{
+        DeviceCapabilities, RevocationEntry, RevocationReason, sign_device_cert,
+        sign_revocation_entry,
+    };
+
+    use super::super::fixtures::{admit_view_reader, governor, test_host};
+
+    fn revocation(root: &SigningKey, device: [u8; 32]) -> RevocationEntry {
+        let mut entry = RevocationEntry {
+            user_public_key: root.verifying_key().to_bytes(),
+            revoked_device_public_key: device,
+            revoked_at_ns: tilo_clock::unix_now_ns(),
+            reason: RevocationReason::Compromised,
+            signature: [0; 64],
+        };
+        sign_revocation_entry(&mut entry, root).unwrap();
+        entry
+    }
+
+    /// Bob's root signs an entry naming a device of Ada's: the host keeps
+    /// nothing of it, moves no admission and no workspace carries it. Ada's
+    /// own root's entry still revokes the device everywhere.
+    #[tokio::test]
+    #[expect(
+        clippy::significant_drop_tightening,
+        reason = "the relay a test binds is kept until it ends; dropping it earlier closes the host the test drives"
+    )]
+    async fn another_roots_revocation_of_a_device_is_not_taken() {
+        let dir = tempfile::tempdir().unwrap();
+        let (key, cert) = governor();
+        let relay = test_host(dir.path(), &key, &cert).await;
+        let workspaces = relay.workspaces();
+        let created = workspaces.create("Plans").await.unwrap();
+        let ada = SigningKey::from_bytes(&[1; 32]);
+        let mut laptop = cert.clone();
+        laptop.device_public_key = SigningKey::from_bytes(&[3; 32]).verifying_key().to_bytes();
+        laptop.capabilities = DeviceCapabilities::member();
+        sign_device_cert(&mut laptop, &ada).unwrap();
+        admit_view_reader(workspaces, &created.workspace, &key, &laptop).await;
+        let workspace = workspaces.workspace(&created.workspace).await.unwrap();
+
+        let epoch = crate::authority_epoch::current();
+        let bob = SigningKey::from_bytes(&[7; 32]);
+        workspaces
+            .take_revocations(vec![revocation(&bob, laptop.device_public_key)])
+            .await
+            .unwrap();
+        assert!(
+            crate::store::load_revocations(dir.path())
+                .unwrap()
+                .is_empty()
+        );
+        assert!(workspaces.revocations().is_empty());
+        assert!(!workspaces.revocations().refuses(&laptop));
+        assert_eq!(
+            crate::authority_epoch::current(),
+            epoch,
+            "no session is re-checked"
+        );
+        assert!(workspace.lock().await.peer().revocations().is_empty());
+
+        let own = revocation(&ada, laptop.device_public_key);
+        workspaces
+            .take_revocations(vec![own.clone()])
+            .await
+            .unwrap();
+        assert_eq!(
+            crate::store::load_revocations(dir.path()).unwrap(),
+            vec![own.clone()]
+        );
+        assert!(workspaces.revocations().refuses(&laptop));
+        assert_ne!(crate::authority_epoch::current(), epoch);
+        assert_eq!(workspace.lock().await.peer().revocations(), vec![own]);
+        drop(workspace);
+        relay.shutdown().await;
     }
 }

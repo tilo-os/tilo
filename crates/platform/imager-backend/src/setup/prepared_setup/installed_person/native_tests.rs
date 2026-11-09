@@ -163,7 +163,10 @@ fn fixture() -> Fixture {
         serde_json::to_vec(&actual).unwrap(),
         serde_json::to_vec(&certificate).unwrap()
     );
-    assert!(revoked.is_revoked(&baseline.revoked_device_public_key));
+    assert!(revoked.is_revoked(
+        &baseline.user_public_key,
+        &baseline.revoked_device_public_key
+    ));
     assert!(InstalledPersonAnchor::open_at(&system, [7; 32], device).is_err());
     assert!(InstalledPersonAnchor::open_at(&system, person, [7; 32]).is_err());
     Fixture {
@@ -193,16 +196,19 @@ fn monotonic_and_foreign_issuer() {
     let reopened = InstalledPersonAnchor::open_at(&f.system, f.person, f.device).unwrap();
     for anchor in [&f.anchor, &reopened] {
         let (_, list) = anchor.current().unwrap();
-        assert!(list.is_revoked(&f.baseline.revoked_device_public_key));
-        assert!(list.is_revoked(&learned.revoked_device_public_key));
+        assert!(list.is_revoked(
+            &f.baseline.user_public_key,
+            &f.baseline.revoked_device_public_key
+        ));
+        assert!(list.is_revoked(&learned.user_public_key, &learned.revoked_device_public_key));
     }
     // Earliest root-authored cutoff survives a later valid duplicate.
     let earlier = revocation(&f.signer, [56; 32], 150);
     let later = revocation(&f.signer, [56; 32], 300);
     f.anchor.refresh_verified(&[earlier, later]).unwrap();
     let (_, list) = reopened.current().unwrap();
-    assert!(list.is_revoked_at(&[56; 32], 150));
-    assert!(!list.is_revoked_at(&[56; 32], 149));
+    assert!(list.is_revoked_at(&learned.user_public_key, &[56; 32], 150));
+    assert!(!list.is_revoked_at(&learned.user_public_key, &[56; 32], 149));
     let before = std::fs::read(refresh_path(&f)).unwrap();
     let foreign = revocation(
         &ed25519_dalek::SigningKey::from_bytes(&[71; 32]),

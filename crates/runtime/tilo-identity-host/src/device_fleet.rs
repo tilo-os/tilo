@@ -65,10 +65,12 @@ impl DeviceFleet {
     /// ([`tilo_user_identity::revocation::cert_refused`]).
     #[must_use]
     pub fn refuses(&self, cert: &tilo_user_identity::DeviceCert) -> bool {
-        tilo_user_identity::revocation::cert_refused(cert, None, |key| {
+        tilo_user_identity::revocation::cert_refused(cert, None, |root, key| {
             self.revocations
                 .iter()
-                .filter(|entry| &entry.revoked_device_public_key == key)
+                .filter(|entry| {
+                    (&entry.user_public_key, &entry.revoked_device_public_key) == (root, key)
+                })
                 .map(|entry| entry.revoked_at_ns)
                 .min()
         })

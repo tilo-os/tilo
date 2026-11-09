@@ -431,7 +431,7 @@ impl InstalledPersonAnchor {
         if seed
             .revocations
             .iter()
-            .any(|e| !list.is_revoked(&e.revoked_device_public_key))
+            .any(|e| !list.is_revoked(&e.user_public_key, &e.revoked_device_public_key))
         {
             return Err(invalid());
         }

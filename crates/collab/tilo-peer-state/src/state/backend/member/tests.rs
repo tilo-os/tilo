@@ -100,7 +100,7 @@ fn original_role(peer: &StatePeer, source: &[u8; 32], now: SystemTime) -> Result
         }
         revoked.insert(entry).map_err(err)?;
     }
-    if revoked.is_revoked(source) {
+    if revoked.is_revoked(&cert.user_public_key, source) {
         return Err("device revoked by workspace".into());
     }
     let person = Principal::person_from_key(Ed25519PublicKey::from_bytes(cert.user_public_key));

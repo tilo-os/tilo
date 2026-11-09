@@ -320,7 +320,10 @@ impl CertificationProtocol {
         if request.user_public_key != self.identity.user_public_key && !member {
             return Err("this host serves another user identity".into());
         }
-        if self.revocations().is_revoked(&request.device_public_key) {
+        if self
+            .revocations()
+            .is_revoked(&request.user_public_key, &request.device_public_key)
+        {
             return Err("device is revoked".into());
         }
         if request.invite != [0; 16]

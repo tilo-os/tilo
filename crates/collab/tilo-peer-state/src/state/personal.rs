@@ -214,7 +214,7 @@ impl PersonalStore {
         // A device the person revoked is told once why its writes stop, not
         // once per write: what it already learned of its own revocation is
         // not repeated by every write it sends.
-        if self.revocations.is_revoked(&author) {
+        if self.revocations.is_revoked(&self.root, &author) {
             self.refusals.retain(|held| {
                 !(held.by == self.device.device_public_key && held.author == author)
             });
@@ -383,7 +383,7 @@ impl PersonalStore {
     /// is admitted to the connection alone; nothing it sends is admitted
     /// before the certificate its first frame carries checks out.
     pub fn admits_device(&self, device: &[u8; 32], now: SystemTime) -> Result<(), String> {
-        if self.revocations.is_revoked(device) {
+        if self.revocations.is_revoked(&self.root, device) {
             return Err("device revoked".into());
         }
         if let Some(certificate) = self.certificates.get(device) {
@@ -596,7 +596,7 @@ impl PersonalStore {
         // A device the person revoked is admitted to nothing it says, and
         // told what it was refused instead of being dropped at the door: a
         // person whose device was taken away learns why their writes stop.
-        if !self.revocations.is_revoked(&source) {
+        if !self.revocations.is_revoked(&self.root, &source) {
             let held = self
                 .certificates
                 .get(&source)
