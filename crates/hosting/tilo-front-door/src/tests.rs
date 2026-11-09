@@ -844,15 +844,6 @@ async fn the_grant_is_exactly_what_the_door_asked_the_person_to_certify() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn the_person_may_narrow_a_grant_to_one_workspace_and_never_widen_it() {
-    let hosted = Arc::new(Hosted::default());
-    let alice = Person::new(1);
-    let studio = hosted.add(&alice.id(), "Studio").await;
-    let garden = hosted.add(&alice.id(), "Garden").await;
-    let door = door(&hosted);
-    let client = register(&door).await;
-    let proof = |asked: &Asked| {
-        SignInProof::sign(alice.cert.clone(), &alice.device, ISSUER, asked.challenge).unwrap()
-    };
     // The person's Tilo takes a code out of a grant it certified, and the
     // grant the door then holds.
     async fn granted(
@@ -870,6 +861,15 @@ async fn the_person_may_narrow_a_grant_to_one_workspace_and_never_widen_it() {
         door.store.grants_of(&person.id())[0].clone()
     }
 
+    let hosted = Arc::new(Hosted::default());
+    let alice = Person::new(1);
+    let studio = hosted.add(&alice.id(), "Studio").await;
+    let garden = hosted.add(&alice.id(), "Garden").await;
+    let door = door(&hosted);
+    let client = register(&door).await;
+    let proof = |asked: &Asked| {
+        SignInProof::sign(alice.cert.clone(), &alice.device, ISSUER, asked.challenge).unwrap()
+    };
     // The agent asked for all of them and the person chose one: the grant is
     // that workspace's, not the agent's request.
     let asked = authorize(&door, &client, ISSUER).await;

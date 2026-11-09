@@ -12,25 +12,57 @@
   <style>
     /* A service's sign-in link opens this page, and nothing else: one card
        over the desktop's own ground, in its colours and type, holding what
-       the link asks and the two answers, Allow and Cancel. */
-    html { color-scheme: dark; }
-    html, body { margin: 0; min-height: 100%; background: #121214; color: #ddd; font: 14px/1.5 system-ui, sans-serif; }
+       the link asks and the two answers, Allow and Cancel. The card follows
+       the person's own light or dark preference. */
+    :root {
+      color-scheme: dark;
+      --ground: #121214; --card: #1c1d21; --line: #2c2e34; --shadow: rgb(0 0 0 / 45%);
+      --ink: #ddd; --heading: #f2f2f4; --quiet: #8f8f99; --text: #b9b9c0; --value: #e6e6e9;
+      --button-line: #34363d; --button: #d4d4d8; --button-hover: #26282e;
+      --primary-bg: #f2f2f4; --primary-ink: #121214; --primary-hover: #ffffff;
+      --choice-bg: #17181c; --choice-hover: #202127; --choice-on: #23252b; --choice-on-line: #3f424b;
+      --dot: #f2f2f4; --dot-line: #52555f; --focus: #9ab4ff;
+    }
+    @media (prefers-color-scheme: light) {
+      :root {
+        color-scheme: light;
+        --ground: #f5f5f7; --card: #ffffff; --line: #e2e3e8; --shadow: rgb(15 18 32 / 12%);
+        --ink: #26272b; --heading: #121214; --quiet: #6a6b73; --text: #55565e; --value: #1b1c20;
+        --button-line: #d5d6dc; --button: #3a3b42; --button-hover: #f0f1f4;
+        --primary-bg: #1b1c20; --primary-ink: #ffffff; --primary-hover: #000000;
+        --choice-bg: #fafafb; --choice-hover: #f0f1f4; --choice-on: #eef0f5; --choice-on-line: #b9bcd0;
+        --dot: #121214; --dot-line: #6a6b73; --focus: #2a55d6;
+      }
+    }
+    html, body { margin: 0; min-height: 100%; background: var(--ground); color: var(--ink); font: 14px/1.5 system-ui, sans-serif; }
     body { display: grid; place-items: center; box-sizing: border-box; padding: 16px; }
-    .tilo-sign-in { display: grid; gap: 18px; box-sizing: border-box; width: min(380px, 100%); padding: 26px; border-radius: 14px; background: #1c1d21; border: 1px solid #2c2e34; box-shadow: 0 12px 40px rgb(0 0 0 / 45%); }
+    .tilo-sign-in { display: grid; gap: 18px; box-sizing: border-box; width: min(380px, 100%); padding: 26px; border-radius: 14px; background: var(--card); border: 1px solid var(--line); box-shadow: 0 12px 40px var(--shadow); }
     .tilo-sign-in svg { display: block; }
-    .tilo-sign-in h1 { margin: 0; font-size: 19px; font-weight: 600; line-height: 1.35; color: #f2f2f4; text-wrap: balance; overflow-wrap: anywhere; }
-    .tilo-sign-in p { margin: 0; color: #b9b9c0; }
+    .tilo-sign-in h1 { margin: 0; font-size: 19px; font-weight: 600; line-height: 1.35; color: var(--heading); text-wrap: balance; overflow-wrap: anywhere; }
+    .tilo-sign-in p { margin: 0; color: var(--text); }
     .tilo-sign-in dl { display: grid; gap: 10px; margin: 14px 0 0; }
     .tilo-sign-in dl > div { display: grid; grid-template-columns: 6em 1fr; gap: 12px; }
-    .tilo-sign-in dt { color: #8f8f99; font-size: 13px; }
-    .tilo-sign-in dd { margin: 0; color: #e6e6e9; overflow-wrap: anywhere; }
+    .tilo-sign-in dt { color: var(--quiet); font-size: 13px; }
+    .tilo-sign-in dd { margin: 0; min-width: 0; color: var(--value); overflow-wrap: anywhere; }
+    /* What a grant reaches, where the person has workspaces to choose between:
+       one option each, the service's own ask first. */
+    .tilo-sign-in-scopes { display: grid; gap: 6px; margin: 0; padding: 0; min-width: 0; border: 0; }
+    .tilo-sign-in-scope { display: flex; align-items: center; gap: 9px; padding: 7px 10px; border-radius: 8px; border: 1px solid var(--line); background: var(--choice-bg); color: var(--value); cursor: pointer; }
+    .tilo-sign-in-scope:hover { background: var(--choice-hover); }
+    .tilo-sign-in-scope:has(input:checked) { background: var(--choice-on); border-color: var(--choice-on-line); }
+    .tilo-sign-in-scope input { flex: none; appearance: none; display: grid; place-content: center; width: 15px; height: 15px; margin: 0; border-radius: 50%; border: 1.5px solid var(--dot-line); background: transparent; cursor: pointer; }
+    .tilo-sign-in-scope input::after { content: ''; width: 7px; height: 7px; border-radius: 50%; background: var(--dot); transform: scale(0); transition: transform 120ms ease-out; }
+    .tilo-sign-in-scope input:checked { border-color: var(--dot); }
+    .tilo-sign-in-scope input:checked::after { transform: scale(1); }
+    .tilo-sign-in-scope input:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
+    .tilo-sign-in-scope span { min-width: 0; overflow-wrap: anywhere; }
     .tilo-sign-in-actions { display: flex; flex-direction: row-reverse; justify-content: flex-start; gap: 8px; }
-    .tilo-sign-in button { font: inherit; padding: 8px 14px; border-radius: 8px; border: 1px solid #34363d; background: transparent; color: #d4d4d8; cursor: pointer; }
-    .tilo-sign-in button:hover { background: #26282e; }
-    .tilo-sign-in button.primary { border-color: transparent; background: #f2f2f4; color: #121214; font-weight: 500; }
-    .tilo-sign-in button.primary:hover { background: #ffffff; }
+    .tilo-sign-in button { font: inherit; padding: 8px 14px; border-radius: 8px; border: 1px solid var(--button-line); background: transparent; color: var(--button); cursor: pointer; }
+    .tilo-sign-in button:hover { background: var(--button-hover); }
+    .tilo-sign-in button.primary { border-color: transparent; background: var(--primary-bg); color: var(--primary-ink); font-weight: 500; }
+    .tilo-sign-in button.primary:hover { background: var(--primary-hover); }
     .tilo-sign-in button:disabled { opacity: .6; cursor: default; }
-    .tilo-sign-in button:focus-visible { outline: 2px solid #9ab4ff; outline-offset: 2px; }
+    .tilo-sign-in button:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
     .tilo-sign-in-message { min-height: 1.5em; font-size: 13px; }
     [hidden] { display: none !important; }
   </style>
@@ -55,6 +87,10 @@ setTimeout(function(){
       <p id="sign-in-service"></p>
       <dl>
         <div id="sign-in-reaches-row" hidden><dt>May reach</dt><dd id="sign-in-reaches"></dd></div>
+        <div id="sign-in-scope-row" hidden>
+          <dt id="sign-in-scope-label">May reach</dt>
+          <dd><fieldset id="sign-in-scope" class="tilo-sign-in-scopes" aria-labelledby="sign-in-scope-label"></fieldset></dd>
+        </div>
         <div id="sign-in-until-row" hidden><dt>Until</dt><dd id="sign-in-until"></dd></div>
       </dl>
     </div>

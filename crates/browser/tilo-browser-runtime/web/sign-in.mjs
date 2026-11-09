@@ -15,9 +15,12 @@
  * certified by the person's own root for this answer, proves them to the
  * service (`tilo-browser-peer`'s `sign_in_proof`), and — where the service
  * asked for it — the root certifies the key the service generated for the
- * agent's grant. The answer goes back as a form the browser posts to
- * `return`, so the service resolves the sign-in it started (`pending`) with
- * a session cookie of its own. Cancel posts the same form with
+ * agent's grant, reaching what the card shows: a service that asked for all
+ * of the person's workspaces lets them hold the agent to one of the ones this
+ * browser knows (`entered-workspaces.mjs`), and one that asked for a
+ * workspace gets that one. The answer goes back as a form the browser posts
+ * to `return`, so the service resolves the sign-in it started (`pending`)
+ * with a session cookie of its own. Cancel posts the same form with
  * `decision=deny`.
  *
  * The page holds no peer and reads no runtime until the person agrees: a
@@ -26,6 +29,7 @@
  */
 
 import {openDeviceCustody, idbStorage} from './device-custody.mjs';
+import {enteredWorkspaces} from './entered-workspaces.mjs';
 import {browserIdentity, currentIdentity, keptIdentity} from './identity.mjs';
 import {identityProfile} from './identity-profile.mjs';
 
@@ -145,7 +149,7 @@ export function readSignInRequest(search, {now = Date.now()} = {}) {
  * which service, what the grant reaches and until when. `locale` is the
  * page's (tests fix it; the page leaves it to the browser).
  */
-export function requestWords(request, {locale = undefined} = {}) {
+export function requestWords(request, {locale = undefined, local = globalThis.localStorage} = {}) {
   const {client, host, grantScope, grantExpiresMs} = request;
   if (grantScope === null) {
     return {
@@ -160,9 +164,44 @@ export function requestWords(request, {locale = undefined} = {}) {
     service: `Through ${host}.`,
     reaches: grantScope === 'all'
       ? 'All your workspaces, and it may create new ones'
-      : `Only the workspace ${grantScope}`,
+      : `Only the workspace ${workspaceName(grantScope, {local})}`,
     until: new Date(grantExpiresMs).toLocaleDateString(locale, {year: 'numeric', month: 'long', day: 'numeric'}),
   };
+}
+
+/**
+ * The workspaces this browser entered, each by the id a grant names it by
+ * and the name the person saw it under (its host's name where none was
+ * learned yet): `[{scope, name}]`, most recently opened first, each once.
+ */
+export function rememberedWorkspaces({local = globalThis.localStorage} = {}) {
+  const seen = new Set();
+  const workspaces = [];
+  for (const {room, origin, name} of enteredWorkspaces(local)) {
+    if (seen.has(room)) continue;
+    seen.add(room);
+    workspaces.push({scope: room, name: name ?? new URL(origin).host});
+  }
+  return workspaces;
+}
+
+/** The name this browser knows the workspace `id` by, or the id itself where
+ * it knows none: what a card names a workspace it was asked to reach. */
+export function workspaceName(id, {local = globalThis.localStorage} = {}) {
+  return rememberedWorkspaces({local}).find(workspace => workspace.scope === id)?.name ?? id;
+}
+
+/**
+ * What the card offers the person to choose what `request`'s grant reaches,
+ * or `null` where there is nothing to choose: the service asked for one
+ * workspace, or for no grant at all. One that asked for all of them is a
+ * choice of the person's workspaces, the service's own ask first, so the
+ * agent is held to what they chose and never to more.
+ */
+export function grantChoices(request, {local = globalThis.localStorage} = {}) {
+  if (request.grantScope !== 'all') return null;
+  const workspaces = rememberedWorkspaces({local});
+  return workspaces.length ? [{scope: 'all', name: 'All my workspaces'}, ...workspaces] : null;
 }
 
 /** The fields that answer `request` with `{proof, grant}`: what the service
@@ -203,17 +242,16 @@ export function postForm({document = globalThis.document, action, fields}) {
 
 /**
  * The two texts the service takes from `request`, signed: the proof of the
- * person, and the grant where the link asked for one. `runtime` is the
+ * person, and the grant where the link asked for one, reaching `scope` —
+ * what the service asked for unless the person narrowed it. `runtime` is the
  * page's bundle, loaded only now.
  */
-export async function signedAnswer(request, {identity, custody, runtime}) {
+export async function signedAnswer(request, {identity, custody, runtime, scope = request.grantScope}) {
   const ask = {
     audience: request.audience,
     challenge: request.challenge,
     client: request.client,
-    ...(request.grantKey === null
-      ? {}
-      : {grantKey: request.grantKey, grantScope: request.grantScope, expiresAtMs: request.grantExpiresMs}),
+    ...(request.grantKey === null ? {} : {grantKey: request.grantKey, grantScope: scope, expiresAtMs: request.grantExpiresMs}),
   };
   // A device key kept as a sealed seed is opened for the one call that
   // signs; one held by `WebCrypto` signs where it is.
@@ -230,6 +268,8 @@ const ELEMENT_IDS = {
   service: 'sign-in-service',
   reaches: 'sign-in-reaches',
   reachesRow: 'sign-in-reaches-row',
+  scope: 'sign-in-scope',
+  scopeRow: 'sign-in-scope-row',
   until: 'sign-in-until',
   untilRow: 'sign-in-until-row',
   message: 'sign-in-message',
@@ -249,14 +289,15 @@ export function signInElements(document = globalThis.document) {
  * decision posts a form away from this page.
  *
  * The seams (all defaulted for the page): `elements` the card's own,
- * `storage` where this browser keeps its person, `identity` the person
- * already unlocked, `loadRuntime` the page's bundle, `openCustody` the
- * device key store.
+ * `storage` where this browser keeps its person, `local` where it keeps the
+ * workspaces it entered, `identity` the person already unlocked, `loadRuntime`
+ * the page's bundle, `openCustody` the device key store.
  */
 export async function startSignInPage({
   window = globalThis,
   elements,
   storage,
+  local = globalThis.localStorage,
   identity,
   loadRuntime = async () => (await import('./host.mjs')).loadRuntime(),
   openCustody = openDeviceCustody,
@@ -294,11 +335,36 @@ export async function startSignInPage({
     return stop('Open Tilo in this browser and sign in first, then follow this link again.');
   }
 
-  const words = requestWords(request);
+  const words = requestWords(request, {local});
   card.heading.textContent = words.heading;
   card.service.textContent = words.service;
   card.reaches.textContent = words.reaches ?? '';
   show('reachesRow', words.reaches !== null);
+  // Where the service asked for all of the person's workspaces, they say
+  // which it reaches; where it asked for one, the card names it and holds
+  // the agent to it. Either way what is certified is what is shown.
+  let scope = request.grantScope;
+  const choices = grantChoices(request, {local});
+  if (choices) {
+    show('reachesRow', false);
+    card.scope.replaceChildren(...choices.map((choice, index) => {
+      const option = document.createElement('label');
+      option.className = 'tilo-sign-in-scope';
+      const radio = document.createElement('input');
+      radio.type = 'radio';
+      radio.name = 'sign-in-scope';
+      radio.value = choice.scope;
+      radio.checked = index === 0;
+      radio.addEventListener('change', () => {
+        if (radio.checked) scope = choice.scope;
+      });
+      const name = document.createElement('span');
+      name.textContent = choice.name;
+      option.append(radio, name);
+      return option;
+    }));
+  }
+  show('scopeRow', Boolean(choices));
   card.until.textContent = words.until ?? '';
   show('untilRow', words.until !== null);
   for (const name of ['allow', 'cancel']) card[name].textContent = name === 'allow' ? 'Allow' : 'Cancel';
@@ -324,7 +390,7 @@ export async function startSignInPage({
         profile: identityProfile(person, request.audience),
         storage: idbStorage(),
       });
-      const answer = await signedAnswer(request, {identity: person, custody, runtime});
+      const answer = await signedAnswer(request, {identity: person, custody, runtime, scope});
       tell('');
       postForm({document, action: request.returnTo, fields: allowFields(request, answer)});
     } catch (error) {

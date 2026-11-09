@@ -140,27 +140,47 @@ test('the answer is a form field the service resolves its sign-in from', () => {
 });
 
 class Element {
-  constructor() {
+  constructor(tag = 'div') {
+    this.tag = tag;
     this.children = [];
     this.listeners = new Map();
     this.disabled = false;
     this.hidden = false;
+    this.className = '';
+    this.name = '';
+    this.value = '';
+    this.checked = false;
     this.textContent = '';
   }
   addEventListener(type, listener) { this.listeners.set(type, listener); }
+  append(...children) { this.children.push(...children); }
+  replaceChildren(...children) { this.children = children; }
   async fire(type) {
     await this.listeners.get(type)?.({preventDefault() {}});
     for (let i = 0; i < 40; i++) await Promise.resolve();
   }
 }
 
-const NAMES = ['heading', 'request', 'service', 'reaches', 'reachesRow', 'until', 'untilRow', 'message',
-  'actions', 'allow', 'cancel'];
+const NAMES = ['heading', 'request', 'service', 'reaches', 'reachesRow', 'scope', 'scopeRow', 'until', 'untilRow',
+  'message', 'actions', 'allow', 'cancel'];
+
+/** A store with the workspaces `entries` as this browser entered them, as
+ * `rememberEntered` writes them. */
+function entered(...entries) {
+  const items = new Map();
+  if (entries.length) {
+    items.set('tilo-entered-workspaces', JSON.stringify(entries.map(([room, name]) => ({
+      origin: 'https://eu1.tilo.example', room, hostDevice: 'a'.repeat(64), ...(name ? {name} : {}),
+    }))));
+  }
+  return {getItem: key => items.get(key) ?? null, setItem: (key, value) => items.set(key, value), removeItem: key => items.delete(key)};
+}
 
 /** A sign-in page at `search`, its card's elements, and the forms it posts. */
-function page({search = link(), kept = {rootPublicKey: ROOT, held: 'browser'}, identity = {
-  userPublicKey: ROOT, locked: false, sign: async () => new Uint8Array(64),
-}} = {}) {
+function page({
+  search = link(), kept = {rootPublicKey: ROOT, held: 'browser'}, local = entered(),
+  identity = {userPublicKey: ROOT, locked: false, sign: async () => new Uint8Array(64)},
+} = {}) {
   const elements = Object.fromEntries(NAMES.map(name => [name, new Element()]));
   const posted = [];
   const formed = [];
@@ -168,14 +188,14 @@ function page({search = link(), kept = {rootPublicKey: ROOT, held: 'browser'}, i
     documentElement: {dataset: {}},
     body: {append() {}},
     createElement(tag) {
-      if (tag !== 'form') return {};
-      const form = {
-        method: '', action: '', acceptCharset: '', hidden: false, children: [], submitted: 0,
-        append(child) { this.children.push(child); },
+      const element = new Element(tag);
+      if (tag !== 'form') return element;
+      Object.assign(element, {
+        method: '', action: '', acceptCharset: '', submitted: 0,
         submit() { this.submitted += 1; },
-      };
-      formed.push(form);
-      return form;
+      });
+      formed.push(element);
+      return element;
     },
   };
   const window = {document, location: {search}};
@@ -191,6 +211,7 @@ function page({search = link(), kept = {rootPublicKey: ROOT, held: 'browser'}, i
     window,
     elements,
     storage: {get: async () => kept, put: async () => {}},
+    local,
     identity,
     loadRuntime: async () => runtime,
     openCustody: async request => {
@@ -198,7 +219,14 @@ function page({search = link(), kept = {rootPublicKey: ROOT, held: 'browser'}, i
       return {kind: 'webcrypto-ed25519', close: async () => {}};
     },
   });
-  return {elements, document, formed, posted, mounted, shown: () => ({
+  /** The choices the card offers for what the grant reaches, as the person reads them. */
+  const scopes = () => (elements.scopeRow.hidden ? null
+    : elements.scope.children.map(option => ({
+      name: option.children[1].textContent,
+      value: option.children[0].value,
+      checked: option.children[0].checked,
+    })));
+  return {elements, document, formed, posted, mounted, scopes, shown: () => ({
     state: document.documentElement.dataset.signIn,
     heading: elements.heading.textContent,
     service: elements.service.textContent,
@@ -275,6 +303,61 @@ test('nothing is signed before the person decides', async () => {
   assert.equal(shown().until, untilText(NOW + 7 * DAY));
 });
 
+const STUDIO = '0b0c8f0e-6f4a-4f2f-9d1c-2f2b0a5e11aa';
+const LOUNGE = '1c2d3e4f-5a6b-4c8d-9e0f-1a2b3c4d5e6f';
+
+test('a service that asks for every workspace lets the person hold the agent to one', async () => {
+  const {elements, formed, posted, scopes, shown, mounted} = page({
+    search: link_(), local: entered([LOUNGE, 'Lounge'], [STUDIO, 'Studio']),
+  });
+  await mounted;
+  // The service's own ask first, checked; then the workspaces by name.
+  assert.deepEqual(scopes(), [
+    {name: 'All my workspaces', value: 'all', checked: true},
+    {name: 'Lounge', value: LOUNGE, checked: false},
+    {name: 'Studio', value: STUDIO, checked: false},
+  ]);
+  // What the grant reaches is the choice itself, not a second line saying it.
+  assert.equal(shown().reaches, '');
+  // Allowed as it stands, the grant reaches all of them.
+  await elements.allow.fire('click');
+  assert.equal(posted.find(entry => entry.ask)?.ask.grantScope, 'all');
+  assert.deepEqual(formed[0].children.map(input => input.name), ['pending', 'proof', 'grant']);
+});
+
+test('the workspace the person chooses is the one the grant reaches', async () => {
+  const {elements, posted, mounted} = page({
+    search: link_(), local: entered([LOUNGE, 'Lounge'], [STUDIO, 'Studio']),
+  });
+  await mounted;
+  const studio = elements.scope.children[2].children[0];
+  studio.checked = true;
+  await studio.fire('change');
+  await elements.allow.fire('click');
+  assert.equal(posted.find(entry => entry.ask)?.ask.grantScope, STUDIO);
+});
+
+test('a service that asks for one workspace is held to it, and the card names it', async () => {
+  const {elements, posted, scopes, shown, mounted} = page({
+    search: link_({grant_scope: STUDIO}), local: entered([LOUNGE, 'Lounge'], [STUDIO, 'Studio']),
+  });
+  await mounted;
+  assert.equal(shown().reaches, 'Only the workspace Studio');
+  // Nothing to choose: the service asked for that one.
+  assert.equal(scopes(), null);
+  await elements.allow.fire('click');
+  assert.equal(posted.find(entry => entry.ask)?.ask.grantScope, STUDIO);
+});
+
+test('a browser that knows no workspaces is offered no choice', async () => {
+  const {elements, posted, scopes, shown, mounted} = page({search: link_(), local: entered()});
+  await mounted;
+  assert.equal(scopes(), null);
+  assert.equal(shown().reaches, 'All your workspaces, and it may create new ones');
+  await elements.allow.fire('click');
+  assert.equal(posted.find(entry => entry.ask)?.ask.grantScope, 'all');
+});
+
 test('a person this browser keeps but has not unlocked is told so, and nothing is signed', async () => {
   const {elements, formed, posted, shown, mounted} = page({
     search: link_(),
@@ -313,8 +396,8 @@ test('a link the route will not answer shows why, and asks nothing', async () =>
 test('the route’s page is the card the module drives', () => {
   const html = readFileSync(new URL('./sign-in.html', import.meta.url), 'utf8');
   for (const id of ['sign-in-heading', 'sign-in-request', 'sign-in-service', 'sign-in-reaches',
-    'sign-in-reaches-row', 'sign-in-until', 'sign-in-until-row', 'sign-in-message', 'sign-in-actions',
-    'sign-in-allow', 'sign-in-cancel']) {
+    'sign-in-reaches-row', 'sign-in-scope', 'sign-in-scope-row', 'sign-in-until', 'sign-in-until-row',
+    'sign-in-message', 'sign-in-actions', 'sign-in-allow', 'sign-in-cancel']) {
     assert.match(html, new RegExp(`id="${id}"`), `${id} is missing`);
   }
   // The page starts this module, which layout.py names in the versioned

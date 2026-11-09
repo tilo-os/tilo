@@ -72,6 +72,7 @@ class Layout(unittest.TestCase):
             'identity.mjs': "export const keptIdentity = () => null;\n",
             'device-custody.mjs': "export const openDeviceCustody = () => null;\n",
             'identity-profile.mjs': "export const identityProfile = () => '';\n",
+            'entered-workspaces.mjs': "export const enteredWorkspaces = () => [];\n",
         }
         for name, text in modules.items():
             module = bundle / name
@@ -99,7 +100,7 @@ class Layout(unittest.TestCase):
 
     # The sign-in page's module and what it statically imports, in the order a
     # browser meets them.
-    SIGN_IN = ('sign-in.mjs', 'device-custody.mjs', 'identity.mjs', 'identity-profile.mjs')
+    SIGN_IN = ('sign-in.mjs', 'device-custody.mjs', 'entered-workspaces.mjs', 'identity.mjs', 'identity-profile.mjs')
 
     def hints(self, site, page):
         return re.findall(r'<link rel="modulepreload" href="([^"]+)">', self.page(site, page))
