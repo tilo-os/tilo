@@ -440,7 +440,7 @@ struct Mount {
     checkout: Option<RecordCheckout>,
     /// The workspace's presence board, as the last frame read it: who is
     /// here, where their pointers are, and when what they say animates.
-    presence: crate::presence_clock::View,
+    presence: presence::Presence,
     /// This mount's id, to wake it when a silent member's pointer leaves.
     id: u64,
     desktop: Option<Desktop>,
@@ -1542,7 +1542,7 @@ fn begin(event_loop: &ActiveEventLoop, id: u64, request: Request) -> Result<(), 
         store,
         stores,
         checkout,
-        presence: crate::presence_clock::View::default(),
+        presence: presence::Presence::default(),
         id,
         desktop,
         gpu: None,

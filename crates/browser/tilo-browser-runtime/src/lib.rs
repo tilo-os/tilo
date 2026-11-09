@@ -199,7 +199,6 @@ mod person_records;
 // What a page times of the members' presence itself: its tests run on the
 // host too.
 #[cfg(any(target_arch = "wasm32", test))]
-mod presence_clock;
 #[cfg(target_arch = "wasm32")]
 mod replication;
 // The workspaces a host governs, as the page administers them.

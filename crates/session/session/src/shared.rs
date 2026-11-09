@@ -63,10 +63,9 @@ impl Shared {
         }
     }
 
-    /// Whom this device follows, as its own presence word says: the window of theirs shown here
-    /// comes forward each time the place they work in changes, and their app where no window here
-    /// shows their record. Doing something of their own takes their view back, and the workspace
-    /// hears that they follow nobody.
+    /// Whom this device follows, as its own presence word says: the window of theirs shown here comes forward each
+    /// time the place they work in changes, and their app where no window here shows their record. Doing something of
+    /// their own takes their view back, and the workspace hears that they follow nobody.
     pub(crate) fn follow_people(&self) {
         let Some(sync) = &self.sync else {
             return;
@@ -76,9 +75,9 @@ impl Shared {
         if followed.is_none() && follow.followed().is_none() {
             return;
         }
+        // Their own gesture or typing is them, not the person they followed: the view is theirs
+        // again, and the workspace hears they follow nobody.
         if self.underway.get().holds() {
-            // The person's own gesture or typing: the view is theirs again, and the workspace hears
-            // that they follow nobody.
             follow.follow(None);
             drop(follow);
             self.say_following_nobody();
@@ -98,21 +97,17 @@ impl Shared {
                     .map(|window| window.app.as_str()),
             })
             .collect();
-        match follow.step(&places) {
+        let step = follow.step(&places);
+        drop(follow);
+        match step {
             Step::Rest => {}
             Step::Bring(Target::Window(tab)) => {
                 self.handle.focus_tab(tab);
             }
             Step::Bring(Target::App(app)) => {
-                // The app they work in, where the workspace's layout is each person's own: the
-                // window of it here, if this desk has one.
                 self.handle.focus_app(&app);
             }
-            Step::Gone => {
-                // They left, so following them ends here and the workspace hears it.
-                drop(follow);
-                self.say_following_nobody();
-            }
+            Step::Gone => self.say_following_nobody(),
         }
     }
 

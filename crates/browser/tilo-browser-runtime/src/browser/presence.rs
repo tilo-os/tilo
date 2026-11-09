@@ -12,6 +12,7 @@
 use tilo_desktop::here::LiveMember;
 use ui::permissions::UserId;
 use ui::presence::PresenceKey;
+use ui::tokens::EffectiveMotion;
 use wasm_bindgen::prelude::*;
 
 use crate::peer_presence::BoardView;
@@ -25,6 +26,33 @@ const SETTLE_MS: f64 = 250.0;
 /// member here restates itself every keepalive, so a longer silence is a page
 /// that left before the workspace noticed.
 const POINTER_STALE_MS: f64 = tilo_live::presence::KEEPALIVE_MS + 1000.0;
+
+/// What this mount keeps of who is here between frames: how far it read the board, the names and
+/// carets it drew, what people say beside their pointer, and the frames it still owes.
+#[derive(Default)]
+pub(crate) struct Presence {
+    /// How many times the board's contents had changed when it was last read.
+    pub(crate) revision: u64,
+    /// Who was here, by publisher.
+    pub(crate) seen: Vec<String>,
+    /// Who a caret is drawn for, by publisher: a member who stops selecting has theirs taken away.
+    pub(crate) carets: Vec<String>,
+    /// Keep drawing until then: the newest pointer heard plus the settle window, so it eases to
+    /// rest.
+    pub(crate) motion_until: f64,
+    /// When a silent member's pointer has to leave the screen, as of the wake already asked for.
+    pub(crate) wake_at: Option<f64>,
+    /// What people say beside their pointer, as the toolkit times it for every host.
+    chats: ui::presence::CursorChats,
+}
+
+impl Presence {
+    /// Whether a shown pointer is still easing towards where it landed: it was heard within the
+    /// settle window, so the next frame draws it further on.
+    fn settling(&self, now: f64) -> bool {
+        now < self.motion_until
+    }
+}
 
 impl Mount {
     /// Who is here changed: the next frame puts them on the windows they are
@@ -97,7 +125,10 @@ impl Mount {
             self.here_from(&view);
             self.names_from(&view);
         }
-        let mut settling = false;
+        // The toolkit's clock times what arrived here, so a sender's skewed clock cannot keep a
+        // bubble up.
+        let at = ui::time::now();
+        let motion: EffectiveMotion = crate::page_theme::current().motion();
         let mut leaving = f64::INFINITY;
         let mut cursors = Vec::new();
         let presence = self.frame.presence();
@@ -116,39 +147,24 @@ impl Mount {
             else {
                 continue;
             };
-            let chat = self
-                .presence
-                .chat(
-                    &publisher,
-                    member
-                        .chat
-                        .as_ref()
-                        .map(|chat| (chat.text.as_str(), chat.sent)),
-                    now,
-                )
-                .map(|(text, typing, opacity)| ui::presence::ChatBubble {
-                    text,
-                    typing,
-                    opacity,
-                });
-            let reaction = self
-                .presence
-                .reaction(
-                    &publisher,
-                    member
-                        .reaction
-                        .as_ref()
-                        .map(|reaction| (reaction.seq, reaction.emoji.as_str())),
-                    now,
-                )
-                .map(|(emoji, rise, opacity)| ui::presence::ReactionFloat {
-                    emoji,
-                    rise,
-                    opacity,
-                });
-            settling |= self.presence.animating(&publisher, now);
+            let user = UserId(publisher);
+            self.presence.chats.say(
+                &user,
+                member
+                    .chat
+                    .as_ref()
+                    .map(|chat| (chat.text.as_str(), chat.sent)),
+                at,
+            );
+            if let Some(reaction) = &member.reaction {
+                self.presence
+                    .chats
+                    .react(&user, reaction.seq, &reaction.emoji, at);
+            }
+            let chat = self.presence.chats.bubble(&user, at, motion);
+            let reaction = self.presence.chats.reaction(&user, at, motion);
             cursors.push(presence.placed_cursor(ui::presence::PlacedPointer {
-                user: UserId(publisher),
+                user,
                 at: (*x, *y),
                 name: Some(member.label.clone()),
                 agent: member.agent,
@@ -157,6 +173,8 @@ impl Mount {
                 reaction,
             }));
         }
+        self.presence.chats.prune(at);
+        let settling = self.presence.chats.animating(at);
         if self.frame.set_placed_pointers(cursors) {
             self.pending = true;
             self.window.request_redraw();

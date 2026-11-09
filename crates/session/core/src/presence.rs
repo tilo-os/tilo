@@ -1,7 +1,6 @@
 //! Following a person: the view of the person who follows someone moves with them.
 //! Whom a view follows is the follower's own word on their live presence, which every roster reads; this keeps only
-//! what a view must not repeat — which of that person's places was already brought forward — so a view that shows it
-//! stays where it is and a change of place moves it once.
+//! what a view must not repeat — which of that person's places it already brought forward.
 
 /// A place a person is in: the window of theirs shown here, or the app they work in where no window here shows it.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -28,7 +27,7 @@ pub enum Step {
     Rest,
     /// Bring this forward.
     Bring(Target),
-    /// The person followed is no longer here: following them is over, and so is their word that they follow.
+    /// The person followed is no longer here: following them is over.
     Gone,
 }
 
@@ -40,8 +39,8 @@ pub struct Follow {
 }
 
 impl Follow {
-    /// Whose view this follows now (`None`: nobody's). What was brought forward belonged to the person followed before,
-    /// so a change of person forgets it. Answers whether it changed.
+    /// Whose view this follows now (`None`: nobody's); a change of person forgets what was brought forward, so their
+    /// place is brought too. Answers whether it changed.
     pub fn follow(&mut self, id: Option<String>) -> bool {
         if self.followed == id {
             return false;
@@ -58,7 +57,7 @@ impl Follow {
     }
 
     /// What this pass owes, as `places` has everyone here: their place is brought forward the first time it is seen and
-    /// each time it moves, and a person who left ends it.
+    /// each time it moves, and someone who left ends it.
     pub fn step(&mut self, places: &[Place<'_>]) -> Step {
         let Some(followed) = self.followed.as_deref() else {
             return Step::Rest;
