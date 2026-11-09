@@ -5,14 +5,32 @@ kind = "disks.system"
 label = "Storage devices"
 version = 1
 fields = [
-  { path = "names", type = "BTreeMap<String, Atom>" },
+  { path = "names", type = { map = "text" } },
 ]
 
 [[resources.verbs]]
 id = "name-drive"
 kind = "undoable"
 params = [
-  { name = "serial", required = true, schema = { type = "string" } },
-  { name = "name", required = false, schema = { type = ["string", "null"] } },
+  { name = "serial", type = "text", required = true, schema = { type = "string" } },
+  { name = "name", type = { option = "text" }, required = false, schema = { type = ["string", "null"] } },
+]
+
+[[resources.verbs]]
+id = "rescan"
+kind = "read"
+
+[[resources.verbs]]
+id = "select"
+kind = "read"
+params = [
+  { name = "device", type = "text", required = true },
+]
+
+[[resources.verbs]]
+id = "show-tab"
+kind = "read"
+params = [
+  { name = "tab", type = "text", required = true },
 ]
 

@@ -145,6 +145,7 @@ params = [
 [[resources.verbs]]
 id = "create-draft"
 kind = "undoable"
+returns = { schema = { type = "object" } }
 params = [
   { name = "id", type = "text", required = true, schema = { type = "string" } },
   { name = "message", type = { named = "DraftData" }, required = true, schema = { type = "object", additionalProperties = false, properties = { attachments = { type = "array", items = { type = "object", additionalProperties = false, properties = { content_id = { type = "string" }, filename = { type = "string" }, mime = { type = "string" }, size = { type = "integer", minimum = 0 } }, required = ["content_id", "filename", "mime", "size"] } }, bcc = { type = "string" }, body = { type = "string" }, calendar_ics = { type = ["string", "null"] }, cc = { type = "string" }, html_body = { type = ["string", "null"] }, sender = { type = ["object", "null"], additionalProperties = false, properties = { account = { type = "string" }, email = { type = "string" } }, required = ["account", "email"] }, subject = { type = "string" }, to = { type = "string" } }, required = ["to", "cc", "bcc", "subject", "body"] } },
@@ -183,6 +184,7 @@ params = [
 id = "send-message"
 destructive = true
 kind = "outside"
+returns = { schema = { type = ["object", "array", "null"] } }
 params = [
   { name = "account", type = "text", required = true, schema = { type = "string" } },
   { name = "message", type = { named = "DraftData" }, required = true, schema = { type = "object", additionalProperties = false, properties = { attachments = { type = "array", items = { type = "object", additionalProperties = false, properties = { content_id = { type = "string" }, filename = { type = "string" }, mime = { type = "string" }, size = { type = "integer", minimum = 0 } }, required = ["content_id", "filename", "mime", "size"] } }, bcc = { type = "string" }, body = { type = "string" }, calendar_ics = { type = ["string", "null"] }, cc = { type = "string" }, html_body = { type = ["string", "null"] }, sender = { type = ["object", "null"], additionalProperties = false, properties = { account = { type = "string" }, email = { type = "string" } }, required = ["account", "email"] }, subject = { type = "string" }, to = { type = "string" } }, required = ["to", "cc", "bcc", "subject", "body"] } },
@@ -193,6 +195,7 @@ params = [
 [[resources.verbs]]
 id = "deliver-message"
 kind = "undoable"
+returns = { schema = { type = "object" } }
 params = [
   { name = "from", type = "text", required = true, schema = { type = "string" } },
   { name = "to", type = { option = "text" }, required = false, schema = { type = ["string", "null"] } },
@@ -209,6 +212,7 @@ params = [
 [[resources.verbs]]
 id = "draft-message"
 kind = "undoable"
+returns = { schema = { type = "object" } }
 params = [
   { name = "to", type = "text", required = true, schema = { type = "string" } },
   { name = "subject", type = "text", required = true, schema = { type = "string" } },
@@ -220,8 +224,31 @@ params = [
 [[resources.verbs]]
 id = "cancel-send"
 kind = "outside"
+returns = { schema = { type = ["object", "array", "null"] } }
 params = [
   { name = "id", type = "text", required = true, schema = { type = "string" } },
+]
+
+[[resources.verbs]]
+id = "search-messages"
+kind = "read"
+params = [
+  { name = "query", type = { option = "text" }, required = false },
+  { name = "folder", type = { option = { named = "Folder" } }, required = false },
+  { name = "from", type = { option = "text" }, required = false },
+  { name = "subject", type = { option = "text" }, required = false },
+  { name = "since", type = { option = "text" }, required = false },
+  { name = "until", type = { option = "text" }, required = false },
+  { name = "has_attachment", type = { option = "bool" }, required = false },
+]
+
+[[resources.verbs]]
+id = "export-content"
+kind = "read"
+params = [
+  { name = "format", type = { option = "text" }, required = false },
+  { name = "message", type = { option = "text" }, required = false },
+  { name = "folder", type = { option = { named = "Folder" } }, required = false },
 ]
 
 [[resources.types]]

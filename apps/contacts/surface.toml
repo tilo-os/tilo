@@ -5,51 +5,51 @@ kind = "contacts.book"
 label = "Contacts"
 version = 1
 fields = [
-  { path = "contacts", type = "Keyed<Contact>", stored = "keyed" },
-  { path = "contacts.*.id", type = "ContactId", readonly = true },
-  { path = "contacts.*.first", type = "String", label = true },
-  { path = "contacts.*.last", type = "String" },
-  { path = "contacts.*.org", type = "String" },
-  { path = "contacts.*.title", type = "String" },
-  { path = "contacts.*.website", type = "String" },
-  { path = "contacts.*.birthday", type = "Option<Birthday>" },
-  { path = "contacts.*.notes", type = "String" },
-  { path = "contacts.*.phones", type = "Ordered<Labeled>", stored = "collection" },
-  { path = "contacts.*.phones.*.id", type = "Uuid", readonly = true },
-  { path = "contacts.*.phones.*.label", type = "String" },
-  { path = "contacts.*.phones.*.value", type = "String", label = true },
-  { path = "contacts.*.emails", type = "Ordered<Labeled>", stored = "collection" },
-  { path = "contacts.*.emails.*.id", type = "Uuid", readonly = true },
-  { path = "contacts.*.emails.*.label", type = "String" },
-  { path = "contacts.*.emails.*.value", type = "String", label = true },
-  { path = "contacts.*.addresses", type = "Ordered<Address>", stored = "collection" },
-  { path = "contacts.*.addresses.*.id", type = "Uuid", readonly = true },
-  { path = "contacts.*.addresses.*.label", type = "String" },
-  { path = "contacts.*.addresses.*.street", type = "String", label = true },
-  { path = "contacts.*.addresses.*.city", type = "String" },
-  { path = "contacts.*.addresses.*.region", type = "String" },
-  { path = "contacts.*.addresses.*.postal", type = "String" },
-  { path = "contacts.*.addresses.*.country", type = "String" },
-  { path = "contacts.*.groups", type = "Ordered<GroupEntry>", stored = "collection" },
-  { path = "contacts.*.groups.*.id", type = "Uuid", readonly = true },
-  { path = "contacts.*.groups.*.value", type = "String", label = true },
+  { path = "contacts", type = { collection = { named = "Contact" } }, stored = "keyed" },
+  { path = "contacts.*.id", type = "text", readonly = true },
+  { path = "contacts.*.first", type = "text", label = true },
+  { path = "contacts.*.last", type = "text" },
+  { path = "contacts.*.org", type = "text" },
+  { path = "contacts.*.title", type = "text" },
+  { path = "contacts.*.website", type = "text" },
+  { path = "contacts.*.birthday", type = { option = "any" } },
+  { path = "contacts.*.notes", type = "text" },
+  { path = "contacts.*.phones", type = { collection = { named = "Labeled" } }, stored = "collection" },
+  { path = "contacts.*.phones.*.id", type = "text", readonly = true },
+  { path = "contacts.*.phones.*.label", type = "text" },
+  { path = "contacts.*.phones.*.value", type = "text", label = true },
+  { path = "contacts.*.emails", type = { collection = { named = "Labeled" } }, stored = "collection" },
+  { path = "contacts.*.emails.*.id", type = "text", readonly = true },
+  { path = "contacts.*.emails.*.label", type = "text" },
+  { path = "contacts.*.emails.*.value", type = "text", label = true },
+  { path = "contacts.*.addresses", type = { collection = { named = "Address" } }, stored = "collection" },
+  { path = "contacts.*.addresses.*.id", type = "text", readonly = true },
+  { path = "contacts.*.addresses.*.label", type = "text" },
+  { path = "contacts.*.addresses.*.street", type = "text", label = true },
+  { path = "contacts.*.addresses.*.city", type = "text" },
+  { path = "contacts.*.addresses.*.region", type = "text" },
+  { path = "contacts.*.addresses.*.postal", type = "text" },
+  { path = "contacts.*.addresses.*.country", type = "text" },
+  { path = "contacts.*.groups", type = { collection = { named = "GroupEntry" } }, stored = "collection" },
+  { path = "contacts.*.groups.*.id", type = "text", readonly = true },
+  { path = "contacts.*.groups.*.value", type = "text", label = true },
   { path = "contacts.*.favorite", type = "bool" },
-  { path = "contacts.*.photo", type = "String", readonly = true },
-  { path = "removed", type = "Set<ContactId>", readonly = true },
+  { path = "contacts.*.photo", type = "text", readonly = true },
+  { path = "removed", type = { set = "text" }, readonly = true },
 ]
 
 [[resources.verbs]]
 id = "new-contact"
 kind = "undoable"
 params = [
-  { name = "name", required = true, schema = { type = "string", minLength = 1, pattern = "\\S" } },
+  { name = "name", type = "text", required = true, schema = { type = "string", minLength = 1, pattern = "\\S" } },
 ]
 
 [[resources.verbs]]
 id = "add-contacts"
 kind = "undoable"
 params = [
-  { name = "contacts", required = true, schema = { type = "array", items = { type = "object", additionalProperties = false, properties = { addresses = { type = "array", items = { type = "object", additionalProperties = false, properties = { city = { type = "string" }, country = { type = "string" }, id = { type = "string", format = "uuid" }, label = { type = "string" }, postal = { type = "string" }, region = { type = "string" }, street = { type = "string" } }, required = ["id", "label", "street", "city", "region", "postal", "country"] } }, birthday = { oneOf = [{ type = "null" }, { oneOf = [{ type = "object", additionalProperties = false, properties = { Full = { type = "object", additionalProperties = false, properties = { day = { type = "integer", maximum = 4294967295, minimum = 0 }, month = { type = "integer", maximum = 4294967295, minimum = 0 }, year = { type = "integer", maximum = 2147483647, minimum = -2147483648 } }, required = ["year", "month", "day"] } }, required = ["Full"] }, { type = "object", additionalProperties = false, properties = { MonthDay = { type = "object", additionalProperties = false, properties = { day = { type = "integer", maximum = 4294967295, minimum = 0 }, month = { type = "integer", maximum = 4294967295, minimum = 0 } }, required = ["month", "day"] } }, required = ["MonthDay"] }] }] }, emails = { type = "array", items = { type = "object", additionalProperties = false, properties = { id = { type = "string", format = "uuid" }, label = { type = "string" }, value = { type = "string" } }, required = ["id", "label", "value"] } }, favorite = { type = "boolean" }, first = { type = "string" }, groups = { type = "array", items = { type = "object", additionalProperties = false, properties = { id = { type = "string", format = "uuid" }, value = { type = "string" } }, required = ["id", "value"] } }, id = { type = "string", format = "uuid" }, last = { type = "string" }, notes = { type = "string" }, org = { type = "string" }, phones = { type = "array", items = { type = "object", additionalProperties = false, properties = { id = { type = "string", format = "uuid" }, label = { type = "string" }, value = { type = "string" } }, required = ["id", "label", "value"] } }, photo = { type = "string" }, title = { type = "string" }, website = { type = "string" } }, required = ["id", "first", "last", "org", "title", "website", "notes", "phones", "emails", "addresses", "groups", "favorite"] } } },
+  { name = "contacts", type = { list = { named = "Contact" } }, required = true, schema = { type = "array", items = { type = "object", additionalProperties = false, properties = { addresses = { type = "array", items = { type = "object", additionalProperties = false, properties = { city = { type = "string" }, country = { type = "string" }, id = { type = "string", format = "uuid" }, label = { type = "string" }, postal = { type = "string" }, region = { type = "string" }, street = { type = "string" } }, required = ["id", "label", "street", "city", "region", "postal", "country"] } }, birthday = { oneOf = [{ type = "null" }, { oneOf = [{ type = "object", additionalProperties = false, properties = { Full = { type = "object", additionalProperties = false, properties = { day = { type = "integer", maximum = 4294967295, minimum = 0 }, month = { type = "integer", maximum = 4294967295, minimum = 0 }, year = { type = "integer", maximum = 2147483647, minimum = -2147483648 } }, required = ["year", "month", "day"] } }, required = ["Full"] }, { type = "object", additionalProperties = false, properties = { MonthDay = { type = "object", additionalProperties = false, properties = { day = { type = "integer", maximum = 4294967295, minimum = 0 }, month = { type = "integer", maximum = 4294967295, minimum = 0 } }, required = ["month", "day"] } }, required = ["MonthDay"] }] }] }, emails = { type = "array", items = { type = "object", additionalProperties = false, properties = { id = { type = "string", format = "uuid" }, label = { type = "string" }, value = { type = "string" } }, required = ["id", "label", "value"] } }, favorite = { type = "boolean" }, first = { type = "string" }, groups = { type = "array", items = { type = "object", additionalProperties = false, properties = { id = { type = "string", format = "uuid" }, value = { type = "string" } }, required = ["id", "value"] } }, id = { type = "string", format = "uuid" }, last = { type = "string" }, notes = { type = "string" }, org = { type = "string" }, phones = { type = "array", items = { type = "object", additionalProperties = false, properties = { id = { type = "string", format = "uuid" }, label = { type = "string" }, value = { type = "string" } }, required = ["id", "label", "value"] } }, photo = { type = "string" }, title = { type = "string" }, website = { type = "string" } }, required = ["id", "first", "last", "org", "title", "website", "notes", "phones", "emails", "addresses", "groups", "favorite"] } } },
 ]
 
 [[resources.verbs]]
@@ -57,7 +57,7 @@ id = "delete-contact"
 destructive = true
 kind = "undoable"
 params = [
-  { name = "contact", required = true, schema = { type = "string" } },
+  { name = "contact", type = "text", required = true, schema = { type = "string" } },
 ]
 
 [[resources.verbs]]
@@ -65,9 +65,75 @@ id = "merge-contacts"
 destructive = true
 kind = "undoable"
 params = [
-  { name = "contact", required = true, schema = { type = "string" } },
-  { name = "source", required = true, schema = { type = "string", format = "uuid" } },
-  { name = "take_from_source", required = true, schema = { type = "array", items = { type = "string", enum = ["First", "Last", "Organization", "Title", "Website", "Birthday", "Notes"] } } },
+  { name = "contact", type = "text", required = true, schema = { type = "string" } },
+  { name = "source", type = "text", required = true, schema = { type = "string", format = "uuid" } },
+  { name = "take_from_source", type = { list = { named = "MergeField" } }, required = true, schema = { type = "array", items = { type = "string", enum = ["First", "Last", "Organization", "Title", "Website", "Birthday", "Notes"] } } },
+]
+
+[[resources.verbs]]
+id = "export-vcard-content"
+kind = "read"
+params = [
+  { name = "contact", type = { option = "text" }, required = false },
+  { name = "name", type = { option = "text" }, required = false },
+]
+
+[[resources.types]]
+name = "Address"
+fields = [
+  { name = "id", type = "text" },
+  { name = "label", type = "text" },
+  { name = "street", type = "text" },
+  { name = "city", type = "text" },
+  { name = "region", type = "text" },
+  { name = "postal", type = "text" },
+  { name = "country", type = "text" },
+]
+
+[[resources.types]]
+name = "Contact"
+fields = [
+  { name = "id", type = "text" },
+  { name = "first", type = "text" },
+  { name = "last", type = "text" },
+  { name = "org", type = "text" },
+  { name = "title", type = "text" },
+  { name = "website", type = "text" },
+  { name = "birthday", type = { option = "any" } },
+  { name = "notes", type = "text" },
+  { name = "phones", type = { collection = { named = "Labeled" } } },
+  { name = "emails", type = { collection = { named = "Labeled" } } },
+  { name = "addresses", type = { collection = { named = "Address" } } },
+  { name = "groups", type = { collection = { named = "GroupEntry" } } },
+  { name = "favorite", type = "bool" },
+  { name = "photo", type = "text" },
+]
+
+[[resources.types]]
+name = "GroupEntry"
+fields = [
+  { name = "id", type = "text" },
+  { name = "value", type = "text" },
+]
+
+[[resources.types]]
+name = "Labeled"
+fields = [
+  { name = "id", type = "text" },
+  { name = "label", type = "text" },
+  { name = "value", type = "text" },
+]
+
+[[resources.types]]
+name = "MergeField"
+cases = [
+  { name = "First" },
+  { name = "Last" },
+  { name = "Organization" },
+  { name = "Title" },
+  { name = "Website" },
+  { name = "Birthday" },
+  { name = "Notes" },
 ]
 
 [[resources]]
@@ -76,17 +142,17 @@ label = "Contact identities"
 version = 2
 person = true
 fields = [
-  { path = "people", type = "Collection<Person>", stored = "collection" },
-  { path = "people.*.label", type = "String" },
+  { path = "people", type = { collection = { named = "Person" } }, stored = "collection" },
+  { path = "people.*.label", type = "text" },
   { path = "people.*.removed", type = "bool" },
-  { path = "people.*.phones", type = "Vec<String>" },
-  { path = "people.*.emails", type = "Vec<String>" },
-  { path = "people.*.photo", type = "String" },
-  { path = "people.*.endpoints", type = "Collection<Endpoint>", stored = "collection" },
-  { path = "people.*.endpoints.*.service", type = "String" },
-  { path = "people.*.endpoints.*.recipient", type = "String" },
-  { path = "people.*.endpoints.*.scope", type = "String" },
-  { path = "people.*.endpoints.*.revision", type = "String" },
+  { path = "people.*.phones", type = { list = "text" } },
+  { path = "people.*.emails", type = { list = "text" } },
+  { path = "people.*.photo", type = "text" },
+  { path = "people.*.endpoints", type = { collection = { named = "Endpoint" } }, stored = "collection" },
+  { path = "people.*.endpoints.*.service", type = "text" },
+  { path = "people.*.endpoints.*.recipient", type = "text" },
+  { path = "people.*.endpoints.*.scope", type = "text" },
+  { path = "people.*.endpoints.*.revision", type = "text" },
   { path = "people.*.endpoints.*.removed", type = "bool" },
 ]
 
@@ -94,15 +160,15 @@ fields = [
 id = "project-contact"
 kind = "undoable"
 params = [
-  { name = "person", required = true, schema = { type = "string" } },
-  { name = "label", required = true, schema = { type = "string" } },
+  { name = "person", type = "text", required = true, schema = { type = "string" } },
+  { name = "label", type = "text", required = true, schema = { type = "string" } },
 ]
 
 [[resources.verbs]]
 id = "remove-contact"
 kind = "undoable"
 params = [
-  { name = "person", required = true, schema = { type = "string" } },
+  { name = "person", type = "text", required = true, schema = { type = "string" } },
 ]
 
 [[resources.verbs]]
@@ -110,10 +176,10 @@ id = "confirm-endpoint"
 destructive = true
 kind = "undoable"
 params = [
-  { name = "person", required = true, schema = { type = "string" } },
-  { name = "endpoint", required = true, schema = { type = "string" } },
-  { name = "service", required = true, schema = { type = "string" } },
-  { name = "recipient", required = true, schema = { type = "string" } },
+  { name = "person", type = "text", required = true, schema = { type = "string" } },
+  { name = "endpoint", type = "text", required = true, schema = { type = "string" } },
+  { name = "service", type = "text", required = true, schema = { type = "string" } },
+  { name = "recipient", type = "text", required = true, schema = { type = "string" } },
 ]
 
 [[resources.verbs]]
@@ -121,12 +187,12 @@ id = "confirm-account"
 destructive = true
 kind = "undoable"
 params = [
-  { name = "person", required = true, schema = { type = "string" } },
-  { name = "endpoint", required = true, schema = { type = "string" } },
-  { name = "service", required = true, schema = { type = "string" } },
-  { name = "scope", required = true, schema = { type = "string" } },
-  { name = "recipient", required = true, schema = { type = "string" } },
-  { name = "revision", required = true, schema = { type = "string" } },
+  { name = "person", type = "text", required = true, schema = { type = "string" } },
+  { name = "endpoint", type = "text", required = true, schema = { type = "string" } },
+  { name = "service", type = "text", required = true, schema = { type = "string" } },
+  { name = "scope", type = "text", required = true, schema = { type = "string" } },
+  { name = "recipient", type = "text", required = true, schema = { type = "string" } },
+  { name = "revision", type = "text", required = true, schema = { type = "string" } },
 ]
 
 [[resources.verbs]]
@@ -134,11 +200,11 @@ id = "replace-endpoint"
 destructive = true
 kind = "undoable"
 params = [
-  { name = "person", required = true, schema = { type = "string" } },
-  { name = "previous", required = true, schema = { type = "string" } },
-  { name = "endpoint", required = true, schema = { type = "string" } },
-  { name = "service", required = true, schema = { type = "string" } },
-  { name = "recipient", required = true, schema = { type = "string" } },
+  { name = "person", type = "text", required = true, schema = { type = "string" } },
+  { name = "previous", type = "text", required = true, schema = { type = "string" } },
+  { name = "endpoint", type = "text", required = true, schema = { type = "string" } },
+  { name = "service", type = "text", required = true, schema = { type = "string" } },
+  { name = "recipient", type = "text", required = true, schema = { type = "string" } },
 ]
 
 [[resources.verbs]]
@@ -146,37 +212,37 @@ id = "replace-account"
 destructive = true
 kind = "undoable"
 params = [
-  { name = "person", required = true, schema = { type = "string" } },
-  { name = "previous", required = true, schema = { type = "string" } },
-  { name = "endpoint", required = true, schema = { type = "string" } },
-  { name = "service", required = true, schema = { type = "string" } },
-  { name = "scope", required = true, schema = { type = "string" } },
-  { name = "recipient", required = true, schema = { type = "string" } },
-  { name = "revision", required = true, schema = { type = "string" } },
+  { name = "person", type = "text", required = true, schema = { type = "string" } },
+  { name = "previous", type = "text", required = true, schema = { type = "string" } },
+  { name = "endpoint", type = "text", required = true, schema = { type = "string" } },
+  { name = "service", type = "text", required = true, schema = { type = "string" } },
+  { name = "scope", type = "text", required = true, schema = { type = "string" } },
+  { name = "recipient", type = "text", required = true, schema = { type = "string" } },
+  { name = "revision", type = "text", required = true, schema = { type = "string" } },
 ]
 
 [[resources.verbs]]
 id = "project-phones"
 kind = "undoable"
 params = [
-  { name = "person", required = true, schema = { type = "string" } },
-  { name = "phones", required = true, schema = { type = "array", items = { type = "string" } } },
+  { name = "person", type = "text", required = true, schema = { type = "string" } },
+  { name = "phones", type = { list = "text" }, required = true, schema = { type = "array", items = { type = "string" } } },
 ]
 
 [[resources.verbs]]
 id = "project-emails"
 kind = "undoable"
 params = [
-  { name = "person", required = true, schema = { type = "string" } },
-  { name = "emails", required = true, schema = { type = "array", items = { type = "string" } } },
+  { name = "person", type = "text", required = true, schema = { type = "string" } },
+  { name = "emails", type = { list = "text" }, required = true, schema = { type = "array", items = { type = "string" } } },
 ]
 
 [[resources.verbs]]
 id = "project-contacts"
 kind = "undoable"
 params = [
-  { name = "people", required = true, schema = { type = "array", items = { type = "object", additionalProperties = false, properties = { emails = { type = "array", items = { type = "string" } }, label = { type = "string" }, person = { type = "string" }, phones = { type = "array", items = { type = "string" } }, photo = { type = "string" } }, required = ["person", "label", "phones", "emails"] } } },
-  { name = "removed", required = true, schema = { type = "array", items = { type = "string" } } },
+  { name = "people", type = { list = { named = "Projected" } }, required = true, schema = { type = "array", items = { type = "object", additionalProperties = false, properties = { emails = { type = "array", items = { type = "string" } }, label = { type = "string" }, person = { type = "string" }, phones = { type = "array", items = { type = "string" } }, photo = { type = "string" } }, required = ["person", "label", "phones", "emails"] } } },
+  { name = "removed", type = { list = "text" }, required = true, schema = { type = "array", items = { type = "string" } } },
 ]
 
 [[resources.verbs]]
@@ -184,7 +250,38 @@ id = "forget-endpoint"
 destructive = true
 kind = "undoable"
 params = [
-  { name = "person", required = true, schema = { type = "string" } },
-  { name = "endpoint", required = true, schema = { type = "string" } },
+  { name = "person", type = "text", required = true, schema = { type = "string" } },
+  { name = "endpoint", type = "text", required = true, schema = { type = "string" } },
+]
+
+[[resources.types]]
+name = "Endpoint"
+fields = [
+  { name = "service", type = "text" },
+  { name = "recipient", type = "text" },
+  { name = "scope", type = "text" },
+  { name = "revision", type = "text" },
+  { name = "removed", type = "bool" },
+]
+
+[[resources.types]]
+name = "Person"
+fields = [
+  { name = "label", type = "text" },
+  { name = "removed", type = "bool" },
+  { name = "phones", type = { list = "text" } },
+  { name = "emails", type = { list = "text" } },
+  { name = "photo", type = "text" },
+  { name = "endpoints", type = { collection = { named = "Endpoint" } } },
+]
+
+[[resources.types]]
+name = "Projected"
+fields = [
+  { name = "person", type = "text" },
+  { name = "label", type = "text" },
+  { name = "phones", type = { list = "text" } },
+  { name = "emails", type = { list = "text" } },
+  { name = "photo", type = "text" },
 ]
 

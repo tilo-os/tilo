@@ -5,34 +5,34 @@ kind = "maps.workspace"
 label = "Maps"
 version = 1
 fields = [
-  { path = "places", type = "Keyed<Place>", stored = "keyed" },
-  { path = "places.*.id", type = "String", readonly = true },
-  { path = "places.*.name", type = "String", label = true },
-  { path = "places.*.category", type = "Category" },
-  { path = "places.*.address", type = "String" },
-  { path = "places.*.pos", type = "LatLon", readonly = true, stored = "record" },
-  { path = "places.*.pos.lat", type = "f64" },
-  { path = "places.*.pos.lon", type = "f64" },
+  { path = "places", type = { collection = { named = "Place" } }, stored = "keyed" },
+  { path = "places.*.id", type = "text", readonly = true },
+  { path = "places.*.name", type = "text", label = true },
+  { path = "places.*.category", type = { named = "Category" } },
+  { path = "places.*.address", type = "text" },
+  { path = "places.*.pos", type = { named = "LatLon" }, readonly = true, stored = "record" },
+  { path = "places.*.pos.lat", type = "float" },
+  { path = "places.*.pos.lon", type = "float" },
   { path = "places.*.saved", type = "bool" },
-  { path = "recents", type = "RecentSearches", readonly = true },
-  { path = "mode", type = "TravelMode" },
-  { path = "transit_time", type = "TransitTime" },
-  { path = "route_plan", type = "ActivePlan", readonly = true },
-  { path = "transit_plan", type = "ActivePlan", readonly = true },
+  { path = "recents", type = "any", readonly = true },
+  { path = "mode", type = { named = "TravelMode" } },
+  { path = "transit_time", type = "any" },
+  { path = "route_plan", type = "any", readonly = true },
+  { path = "transit_plan", type = "any", readonly = true },
 ]
 
 [[resources.verbs]]
 id = "accept-places"
 kind = "undoable"
 params = [
-  { name = "places", required = true, schema = { type = "array", items = { type = "object", additionalProperties = false, properties = { name = { type = "string" }, address = { type = "string" }, category = { type = "string", enum = ["landmark", "cafe", "restaurant", "bar", "museum", "park", "transit", "hotel", "shop", "hospital", "other"] }, id = { type = "string" }, pos = { type = "object", additionalProperties = false, properties = { lat = { type = "number" }, lon = { type = "number" } }, required = ["lat", "lon"] }, saved = { type = "boolean" } }, required = ["id", "name", "category", "address", "pos", "saved"] } } },
+  { name = "places", type = { list = { named = "Place" } }, required = true, schema = { type = "array", items = { type = "object", additionalProperties = false, properties = { name = { type = "string" }, address = { type = "string" }, category = { type = "string", enum = ["landmark", "cafe", "restaurant", "bar", "museum", "park", "transit", "hotel", "shop", "hospital", "other"] }, id = { type = "string" }, pos = { type = "object", additionalProperties = false, properties = { lat = { type = "number" }, lon = { type = "number" } }, required = ["lat", "lon"] }, saved = { type = "boolean" } }, required = ["id", "name", "category", "address", "pos", "saved"] } } },
 ]
 
 [[resources.verbs]]
 id = "commit-search"
 kind = "undoable"
 params = [
-  { name = "query", required = true, schema = { type = "string" } },
+  { name = "query", type = "text", required = true, schema = { type = "string" } },
 ]
 
 [[resources.verbs]]
@@ -43,12 +43,12 @@ kind = "undoable"
 id = "accept-route"
 kind = "undoable"
 params = [
-  { name = "route", required = true, schema = { type = "object", additionalProperties = false, properties = { distance_m = { type = "number" }, duration_s = { type = "number" }, from = { type = "object", additionalProperties = false, properties = { lat = { type = "number" }, lon = { type = "number" } }, required = ["lat", "lon"] }, geometry = { type = "array", items = { type = "object", additionalProperties = false, properties = { lat = { type = "number" }, lon = { type = "number" } }, required = ["lat", "lon"] } }, mode = { type = "string", enum = ["car", "transit", "bike", "foot"] }, steps = { type = "array", items = { type = "object", additionalProperties = false, properties = { distance_m = { type = "number" }, instruction = { type = "string" }, maneuver = { type = "string", enum = ["Depart", "Continue", "SlightLeft", "Left", "SharpLeft", "SlightRight", "Right", "SharpRight", "Uturn", "Roundabout", "Merge", "Arrive"] } }, required = ["instruction", "distance_m", "maneuver"] } }, to = { type = "object", additionalProperties = false, properties = { lat = { type = "number" }, lon = { type = "number" } }, required = ["lat", "lon"] } }, required = ["mode", "distance_m", "duration_s", "geometry", "steps", "from", "to"] } },
-  { name = "origin", required = false, schema = { type = ["object", "null"], additionalProperties = false, properties = { lat = { type = "number" }, lon = { type = "number" } }, required = ["lat", "lon"] } },
-  { name = "origin_name", required = true, schema = { type = "string" } },
-  { name = "dest", required = false, schema = { type = ["object", "null"], additionalProperties = false, properties = { lat = { type = "number" }, lon = { type = "number" } }, required = ["lat", "lon"] } },
-  { name = "dest_name", required = true, schema = { type = "string" } },
-  { name = "mode", required = true, schema = { type = "string", enum = ["car", "transit", "bike", "foot"] } },
+  { name = "route", type = { named = "Route" }, required = true, schema = { type = "object", additionalProperties = false, properties = { distance_m = { type = "number" }, duration_s = { type = "number" }, from = { type = "object", additionalProperties = false, properties = { lat = { type = "number" }, lon = { type = "number" } }, required = ["lat", "lon"] }, geometry = { type = "array", items = { type = "object", additionalProperties = false, properties = { lat = { type = "number" }, lon = { type = "number" } }, required = ["lat", "lon"] } }, mode = { type = "string", enum = ["car", "transit", "bike", "foot"] }, steps = { type = "array", items = { type = "object", additionalProperties = false, properties = { distance_m = { type = "number" }, instruction = { type = "string" }, maneuver = { type = "string", enum = ["Depart", "Continue", "SlightLeft", "Left", "SharpLeft", "SlightRight", "Right", "SharpRight", "Uturn", "Roundabout", "Merge", "Arrive"] } }, required = ["instruction", "distance_m", "maneuver"] } }, to = { type = "object", additionalProperties = false, properties = { lat = { type = "number" }, lon = { type = "number" } }, required = ["lat", "lon"] } }, required = ["mode", "distance_m", "duration_s", "geometry", "steps", "from", "to"] } },
+  { name = "origin", type = { option = { named = "LatLon" } }, required = false, schema = { type = ["object", "null"], additionalProperties = false, properties = { lat = { type = "number" }, lon = { type = "number" } }, required = ["lat", "lon"] } },
+  { name = "origin_name", type = "text", required = true, schema = { type = "string" } },
+  { name = "dest", type = { option = { named = "LatLon" } }, required = false, schema = { type = ["object", "null"], additionalProperties = false, properties = { lat = { type = "number" }, lon = { type = "number" } }, required = ["lat", "lon"] } },
+  { name = "dest_name", type = "text", required = true, schema = { type = "string" } },
+  { name = "mode", type = { named = "TravelMode" }, required = true, schema = { type = "string", enum = ["car", "transit", "bike", "foot"] } },
 ]
 
 [[resources.verbs]]
@@ -59,45 +59,240 @@ kind = "undoable"
 id = "accept-transit"
 kind = "undoable"
 params = [
-  { name = "transit", required = true, schema = { type = "array", items = { type = "object", additionalProperties = false, properties = { arr = { type = "string" }, dep = { type = "string" }, duration_min = { type = "integer", maximum = 4294967295, minimum = 0 }, legs = { type = "array", items = { type = "object", additionalProperties = false, properties = { agency = { type = "string" }, arr = { type = "string" }, color = { type = ["string", "null"] }, dep = { type = "string" }, duration_min = { type = "integer", maximum = 4294967295, minimum = 0 }, from_name = { type = "string" }, geometry = { type = "array", items = { type = "object", additionalProperties = false, properties = { lat = { type = "number" }, lon = { type = "number" } }, required = ["lat", "lon"] } }, headsign = { type = "string" }, line = { type = "string" }, mode = { type = "string", enum = ["Walk", "Bus", "Tram", "Subway", "Rail", "Ferry"] }, num_stops = { type = "integer", maximum = 4294967295, minimum = 0 }, realtime = { type = "boolean" }, text_color = { type = ["string", "null"] }, to_name = { type = "string" } }, required = ["mode", "line", "headsign", "from_name", "to_name", "dep", "arr", "duration_min", "num_stops", "geometry"] } }, transfers = { type = "integer", maximum = 4294967295, minimum = 0 } }, required = ["dep", "arr", "duration_min", "transfers", "legs"] } } },
-  { name = "origin", required = false, schema = { type = ["object", "null"], additionalProperties = false, properties = { lat = { type = "number" }, lon = { type = "number" } }, required = ["lat", "lon"] } },
-  { name = "origin_name", required = true, schema = { type = "string" } },
-  { name = "dest", required = false, schema = { type = ["object", "null"], additionalProperties = false, properties = { lat = { type = "number" }, lon = { type = "number" } }, required = ["lat", "lon"] } },
-  { name = "dest_name", required = true, schema = { type = "string" } },
+  { name = "transit", type = { list = { named = "TransitJourney" } }, required = true, schema = { type = "array", items = { type = "object", additionalProperties = false, properties = { arr = { type = "string" }, dep = { type = "string" }, duration_min = { type = "integer", maximum = 4294967295, minimum = 0 }, legs = { type = "array", items = { type = "object", additionalProperties = false, properties = { agency = { type = "string" }, arr = { type = "string" }, color = { type = ["string", "null"] }, dep = { type = "string" }, duration_min = { type = "integer", maximum = 4294967295, minimum = 0 }, from_name = { type = "string" }, geometry = { type = "array", items = { type = "object", additionalProperties = false, properties = { lat = { type = "number" }, lon = { type = "number" } }, required = ["lat", "lon"] } }, headsign = { type = "string" }, line = { type = "string" }, mode = { type = "string", enum = ["Walk", "Bus", "Tram", "Subway", "Rail", "Ferry"] }, num_stops = { type = "integer", maximum = 4294967295, minimum = 0 }, realtime = { type = "boolean" }, text_color = { type = ["string", "null"] }, to_name = { type = "string" } }, required = ["mode", "line", "headsign", "from_name", "to_name", "dep", "arr", "duration_min", "num_stops", "geometry"] } }, transfers = { type = "integer", maximum = 4294967295, minimum = 0 } }, required = ["dep", "arr", "duration_min", "transfers", "legs"] } } },
+  { name = "origin", type = { option = { named = "LatLon" } }, required = false, schema = { type = ["object", "null"], additionalProperties = false, properties = { lat = { type = "number" }, lon = { type = "number" } }, required = ["lat", "lon"] } },
+  { name = "origin_name", type = "text", required = true, schema = { type = "string" } },
+  { name = "dest", type = { option = { named = "LatLon" } }, required = false, schema = { type = ["object", "null"], additionalProperties = false, properties = { lat = { type = "number" }, lon = { type = "number" } }, required = ["lat", "lon"] } },
+  { name = "dest_name", type = "text", required = true, schema = { type = "string" } },
 ]
 
 [[resources.verbs]]
 id = "clear-transit"
 kind = "undoable"
 
+[[resources.verbs]]
+id = "search"
+kind = "read"
+params = [
+  { name = "query", type = "text", required = true },
+]
+
+[[resources.verbs]]
+id = "locate"
+kind = "read"
+
+[[resources.verbs]]
+id = "toggle-traffic"
+kind = "read"
+
+[[resources.verbs]]
+id = "open-place"
+kind = "read"
+params = [
+  { name = "place", type = "text", required = true },
+]
+
+[[resources.verbs]]
+id = "directions"
+kind = "read"
+params = [
+  { name = "place", type = "text", required = true },
+]
+
+[[resources.verbs]]
+id = "open-poi"
+kind = "read"
+params = [
+  { name = "poi", type = "text", required = true },
+]
+
+[[resources.verbs]]
+id = "poi-directions"
+kind = "read"
+params = [
+  { name = "poi", type = "text", required = true },
+]
+
+[[resources.verbs]]
+id = "delete-offline-area"
+destructive = true
+kind = "read"
+params = [
+  { name = "area", type = "text", required = true },
+]
+
+[[resources.verbs]]
+id = "clear-offline-areas"
+destructive = true
+kind = "read"
+
+[[resources.types]]
+name = "Category"
+cases = [
+  { name = "landmark" },
+  { name = "cafe" },
+  { name = "restaurant" },
+  { name = "bar" },
+  { name = "museum" },
+  { name = "park" },
+  { name = "transit" },
+  { name = "hotel" },
+  { name = "shop" },
+  { name = "hospital" },
+  { name = "other" },
+]
+
+[[resources.types]]
+name = "LatLon"
+fields = [
+  { name = "lat", type = "float" },
+  { name = "lon", type = "float" },
+]
+
+[[resources.types]]
+name = "Maneuver"
+cases = [
+  { name = "Depart" },
+  { name = "Continue" },
+  { name = "SlightLeft" },
+  { name = "Left" },
+  { name = "SharpLeft" },
+  { name = "SlightRight" },
+  { name = "Right" },
+  { name = "SharpRight" },
+  { name = "Uturn" },
+  { name = "Roundabout" },
+  { name = "Merge" },
+  { name = "Arrive" },
+]
+
+[[resources.types]]
+name = "Place"
+fields = [
+  { name = "id", type = "text" },
+  { name = "name", type = "text" },
+  { name = "category", type = { named = "Category" } },
+  { name = "address", type = "text" },
+  { name = "pos", type = { named = "LatLon" } },
+  { name = "saved", type = "bool" },
+]
+
+[[resources.types]]
+name = "Route"
+fields = [
+  { name = "mode", type = { named = "TravelMode" } },
+  { name = "distance_m", type = "float" },
+  { name = "duration_s", type = "float" },
+  { name = "geometry", type = { list = { named = "LatLon" } } },
+  { name = "steps", type = { list = { named = "RouteStep" } } },
+  { name = "from", type = { named = "LatLon" } },
+  { name = "to", type = { named = "LatLon" } },
+]
+
+[[resources.types]]
+name = "RouteStep"
+fields = [
+  { name = "instruction", type = "text" },
+  { name = "distance_m", type = "float" },
+  { name = "maneuver", type = { named = "Maneuver" } },
+]
+
+[[resources.types]]
+name = "TransitJourney"
+fields = [
+  { name = "dep", type = "text" },
+  { name = "arr", type = "text" },
+  { name = "duration_min", type = "int" },
+  { name = "transfers", type = "int" },
+  { name = "legs", type = { list = { named = "TransitLeg" } } },
+]
+
+[[resources.types]]
+name = "TransitLeg"
+fields = [
+  { name = "mode", type = { named = "TransitMode" } },
+  { name = "line", type = "text" },
+  { name = "headsign", type = "text" },
+  { name = "from_name", type = "text" },
+  { name = "to_name", type = "text" },
+  { name = "dep", type = "text" },
+  { name = "arr", type = "text" },
+  { name = "duration_min", type = "int" },
+  { name = "num_stops", type = "int" },
+  { name = "geometry", type = { list = { named = "LatLon" } } },
+  { name = "color", type = { option = "text" } },
+  { name = "text_color", type = { option = "text" } },
+  { name = "agency", type = "text" },
+  { name = "realtime", type = "bool" },
+]
+
+[[resources.types]]
+name = "TransitMode"
+cases = [
+  { name = "Walk" },
+  { name = "Bus" },
+  { name = "Tram" },
+  { name = "Subway" },
+  { name = "Rail" },
+  { name = "Ferry" },
+]
+
+[[resources.types]]
+name = "TravelMode"
+cases = [
+  { name = "car" },
+  { name = "transit" },
+  { name = "bike" },
+  { name = "foot" },
+]
+
 [[resources]]
 kind = "maps.offline-areas"
 label = "Offline areas"
 version = 1
 fields = [
-  { path = "devices", type = "BTreeMap<String, DeviceAreas>" },
+  { path = "devices", type = { map = "any" } },
 ]
 
 [[resources.verbs]]
 id = "record"
 kind = "undoable"
 params = [
-  { name = "device", required = true, schema = { type = "string" } },
-  { name = "region", required = true, schema = { type = "object", additionalProperties = false, properties = { name = { type = "string" }, id = { type = "string" }, max = { type = "object", additionalProperties = false, properties = { lat = { type = "number" }, lon = { type = "number" } }, required = ["lat", "lon"] }, min = { type = "object", additionalProperties = false, properties = { lat = { type = "number" }, lon = { type = "number" } }, required = ["lat", "lon"] }, tiles = { type = "integer", maximum = 4294967295, minimum = 0 }, z0 = { type = "integer", maximum = 255, minimum = 0 }, z1 = { type = "integer", maximum = 255, minimum = 0 } }, required = ["id", "name", "min", "max", "z0", "z1", "tiles"] } },
+  { name = "device", type = "text", required = true, schema = { type = "string" } },
+  { name = "region", type = { named = "DownloadedRegion" }, required = true, schema = { type = "object", additionalProperties = false, properties = { name = { type = "string" }, id = { type = "string" }, max = { type = "object", additionalProperties = false, properties = { lat = { type = "number" }, lon = { type = "number" } }, required = ["lat", "lon"] }, min = { type = "object", additionalProperties = false, properties = { lat = { type = "number" }, lon = { type = "number" } }, required = ["lat", "lon"] }, tiles = { type = "integer", maximum = 4294967295, minimum = 0 }, z0 = { type = "integer", maximum = 255, minimum = 0 }, z1 = { type = "integer", maximum = 255, minimum = 0 } }, required = ["id", "name", "min", "max", "z0", "z1", "tiles"] } },
 ]
 
 [[resources.verbs]]
 id = "forget"
 kind = "undoable"
 params = [
-  { name = "device", required = true, schema = { type = "string" } },
-  { name = "area", required = true, schema = { type = "string" } },
+  { name = "device", type = "text", required = true, schema = { type = "string" } },
+  { name = "area", type = "text", required = true, schema = { type = "string" } },
 ]
 
 [[resources.verbs]]
 id = "clear"
 kind = "undoable"
 params = [
-  { name = "device", required = true, schema = { type = "string" } },
+  { name = "device", type = "text", required = true, schema = { type = "string" } },
+]
+
+[[resources.types]]
+name = "DownloadedRegion"
+fields = [
+  { name = "id", type = "text" },
+  { name = "name", type = "text" },
+  { name = "min", type = { named = "LatLon" } },
+  { name = "max", type = { named = "LatLon" } },
+  { name = "z0", type = "int" },
+  { name = "z1", type = "int" },
+  { name = "tiles", type = "int" },
+]
+
+[[resources.types]]
+name = "LatLon"
+fields = [
+  { name = "lat", type = "float" },
+  { name = "lon", type = "float" },
 ]
 

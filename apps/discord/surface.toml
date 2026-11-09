@@ -5,317 +5,336 @@ kind = "discord.guild"
 label = "Discord server"
 version = 4
 fields = [
-  { path = "guild_id", type = "String", readonly = true },
-  { path = "name", type = "String", label = true },
-  { path = "only_channel", type = "Option<String>", readonly = true },
+  { path = "guild_id", type = "text", readonly = true },
+  { path = "name", type = "text", label = true },
+  { path = "only_channel", type = { option = "text" }, readonly = true },
   { path = "mirror_channels", type = "bool", readonly = true },
   { path = "map_roles", type = "bool", readonly = true },
-  { path = "ownership", type = "Ownership" },
-  { path = "token_item", type = "Option<String>" },
-  { path = "bot_user", type = "String" },
-  { path = "channels", type = "Keyed<DChannel>", stored = "keyed" },
-  { path = "channels.*.id", type = "String", readonly = true },
-  { path = "channels.*.kind", type = "ChannelKind" },
-  { path = "channels.*.name", type = "String" },
-  { path = "channels.*.parent", type = "Option<String>" },
-  { path = "channels.*.position", type = "i64" },
-  { path = "channels.*.topic", type = "String" },
-  { path = "channels.*.overwrites", type = "Vec<OverwriteInfo>" },
-  { path = "roles", type = "Keyed<DRole>", stored = "keyed" },
-  { path = "roles.*.id", type = "String", readonly = true },
-  { path = "roles.*.name", type = "String" },
-  { path = "roles.*.permissions", type = "String" },
-  { path = "roles.*.color", type = "u32" },
-  { path = "roles.*.position", type = "i64" },
+  { path = "ownership", type = { named = "Ownership" } },
+  { path = "token_item", type = { option = "text" } },
+  { path = "bot_user", type = "text" },
+  { path = "channels", type = { collection = { named = "DChannel" } }, stored = "keyed" },
+  { path = "channels.*.id", type = "text", readonly = true },
+  { path = "channels.*.kind", type = { named = "ChannelKind" } },
+  { path = "channels.*.name", type = "text" },
+  { path = "channels.*.parent", type = { option = "text" } },
+  { path = "channels.*.position", type = "int" },
+  { path = "channels.*.topic", type = "text" },
+  { path = "channels.*.overwrites", type = { list = { named = "OverwriteInfo" } } },
+  { path = "roles", type = { collection = { named = "DRole" } }, stored = "keyed" },
+  { path = "roles.*.id", type = "text", readonly = true },
+  { path = "roles.*.name", type = "text" },
+  { path = "roles.*.permissions", type = "text" },
+  { path = "roles.*.color", type = "int" },
+  { path = "roles.*.position", type = "int" },
   { path = "roles.*.managed", type = "bool" },
-  { path = "emojis", type = "BTreeMap<String, String>" },
-  { path = "map", type = "Keyed<Mapping>", stored = "keyed" },
-  { path = "map.*.key", type = "String", readonly = true },
-  { path = "map.*.kind", type = "MappedKind" },
-  { path = "map.*.tilo", type = "String" },
-  { path = "map.*.discord", type = "String" },
-  { path = "map.*.origin", type = "Origin" },
-  { path = "map.*.persona", type = "Option<String>" },
-  { path = "map.*.root", type = "Option<String>" },
-  { path = "map.*.picture", type = "Option<String>" },
-  { path = "links", type = "Keyed<Link>", stored = "keyed" },
-  { path = "links.*.discord_user", type = "String", readonly = true },
-  { path = "links.*.person", type = "String" },
-  { path = "links.*.linked_at", type = "i64" },
-  { path = "links.*.user_name", type = "String" },
-  { path = "links.*.display_name", type = "Option<String>" },
-  { path = "links.*.avatar", type = "Option<String>" },
-  { path = "links.*.interaction", type = "Option<String>" },
-  { path = "links.*.photo", type = "Option<String>" },
-  { path = "links.*.photo_avatar", type = "Option<String>" },
-  { path = "link_offers", type = "Keyed<LinkOffer>", stored = "keyed" },
-  { path = "link_offers.*.check", type = "String", readonly = true },
-  { path = "link_offers.*.discord_user", type = "String" },
-  { path = "link_offers.*.user_name", type = "String" },
-  { path = "link_offers.*.display_name", type = "Option<String>" },
-  { path = "link_offers.*.avatar", type = "Option<String>" },
-  { path = "link_offers.*.person", type = "Option<String>" },
-  { path = "link_offers.*.interaction", type = "Option<String>" },
-  { path = "link_offers.*.expires_ms", type = "i64" },
-  { path = "connects", type = "Keyed<Connect>", stored = "keyed" },
-  { path = "connects.*.person", type = "String", readonly = true },
-  { path = "connects.*.state_sha256", type = "String" },
-  { path = "connects.*.expires_ms", type = "i64" },
-  { path = "sign_in_page", type = "Option<String>" },
-  { path = "avatars", type = "BTreeMap<String, String>" },
-  { path = "blocked_personas", type = "Set<String>" },
-  { path = "vanished", type = "Set<String>" },
-  { path = "tilo_only", type = "Set<String>" },
-  { path = "discord_only", type = "Set<String>" },
-  { path = "outbox", type = "Outbox<Queued, DiscordResult>", unit = true },
-  { path = "voice_problem", type = "Option<String>" },
-  { path = "emoji_problem", type = "Option<String>" },
+  { path = "emojis", type = { map = "text" } },
+  { path = "map", type = { collection = { named = "Mapping" } }, stored = "keyed" },
+  { path = "map.*.key", type = "text", readonly = true },
+  { path = "map.*.kind", type = { named = "MappedKind" } },
+  { path = "map.*.tilo", type = "text" },
+  { path = "map.*.discord", type = "text" },
+  { path = "map.*.origin", type = { named = "Origin" } },
+  { path = "map.*.persona", type = { option = "text" } },
+  { path = "map.*.root", type = { option = "text" } },
+  { path = "map.*.picture", type = { option = "text" } },
+  { path = "links", type = { collection = { named = "Link" } }, stored = "keyed" },
+  { path = "links.*.discord_user", type = "text", readonly = true },
+  { path = "links.*.person", type = "text" },
+  { path = "links.*.linked_at", type = "int" },
+  { path = "links.*.user_name", type = "text" },
+  { path = "links.*.display_name", type = { option = "text" } },
+  { path = "links.*.avatar", type = { option = "text" } },
+  { path = "links.*.interaction", type = { option = "text" } },
+  { path = "links.*.photo", type = { option = "text" } },
+  { path = "links.*.photo_avatar", type = { option = "text" } },
+  { path = "link_offers", type = { collection = { named = "LinkOffer" } }, stored = "keyed" },
+  { path = "link_offers.*.check", type = "text", readonly = true },
+  { path = "link_offers.*.discord_user", type = "text" },
+  { path = "link_offers.*.user_name", type = "text" },
+  { path = "link_offers.*.display_name", type = { option = "text" } },
+  { path = "link_offers.*.avatar", type = { option = "text" } },
+  { path = "link_offers.*.person", type = { option = "text" } },
+  { path = "link_offers.*.interaction", type = { option = "text" } },
+  { path = "link_offers.*.expires_ms", type = "int" },
+  { path = "connects", type = { collection = { named = "Connect" } }, stored = "keyed" },
+  { path = "connects.*.person", type = "text", readonly = true },
+  { path = "connects.*.state_sha256", type = "text" },
+  { path = "connects.*.expires_ms", type = "int" },
+  { path = "sign_in_page", type = { option = "text" } },
+  { path = "avatars", type = { map = "text" } },
+  { path = "blocked_personas", type = { set = "text" } },
+  { path = "vanished", type = { set = "text" } },
+  { path = "tilo_only", type = { set = "text" } },
+  { path = "discord_only", type = { set = "text" } },
+  { path = "outbox", type = { outbox = "any" }, unit = true },
+  { path = "voice_problem", type = { option = "text" } },
+  { path = "emoji_problem", type = { option = "text" } },
 ]
 
 [[resources.verbs]]
 id = "connect"
 kind = "undoable"
 params = [
-  { name = "guild_id", required = true, schema = { type = "string" } },
-  { name = "name", required = true, schema = { type = "string" } },
-  { name = "only_channel", required = false, schema = { type = ["string", "null"] } },
-  { name = "mirror_channels", required = false, schema = { type = ["boolean", "null"] } },
-  { name = "map_roles", required = false, schema = { type = ["boolean", "null"] } },
+  { name = "guild_id", type = "text", required = true, schema = { type = "string" } },
+  { name = "name", type = "text", required = true, schema = { type = "string" } },
+  { name = "only_channel", type = { option = "text" }, required = false, schema = { type = ["string", "null"] } },
+  { name = "mirror_channels", type = { option = "bool" }, required = false, schema = { type = ["boolean", "null"] } },
+  { name = "map_roles", type = { option = "bool" }, required = false, schema = { type = ["boolean", "null"] } },
 ]
 
 [[resources.verbs]]
 id = "observe-layout"
 kind = "undoable"
 params = [
-  { name = "bot_user", required = true, schema = { type = "string" } },
-  { name = "channels", required = true, schema = { type = "array", items = { type = "object", additionalProperties = false, properties = { name = { type = "string" }, id = { type = "string" }, kind = { type = "string", enum = ["text", "voice", "category", "thread"] }, overwrites = { type = "array", items = { type = "object", additionalProperties = false, properties = { allow = { type = "string" }, deny = { type = "string" }, id = { type = "string" }, kind = { type = "integer", maximum = 255, minimum = 0 } }, required = ["id", "kind", "allow", "deny"] } }, parent = { type = ["string", "null"] }, position = { type = "integer" }, topic = { type = "string" } }, required = ["id", "kind", "name", "position"] } } },
-  { name = "roles", required = true, schema = { type = "array", items = { type = "object", additionalProperties = false, properties = { name = { type = "string" }, color = { type = "integer", maximum = 4294967295, minimum = 0 }, id = { type = "string" }, managed = { type = "boolean" }, permissions = { type = "string" }, position = { type = "integer" } }, required = ["id", "name", "permissions", "color", "position", "managed"] } } },
-  { name = "emojis", required = true, schema = { type = "array", items = { type = "object", additionalProperties = false, properties = { name = { type = "string" }, animated = { type = "boolean" }, id = { type = "string" } }, required = ["id", "name"] } } },
+  { name = "bot_user", type = "text", required = true, schema = { type = "string" } },
+  { name = "channels", type = { list = { named = "ChannelInfo" } }, required = true, schema = { type = "array", items = { type = "object", additionalProperties = false, properties = { name = { type = "string" }, id = { type = "string" }, kind = { type = "string", enum = ["text", "voice", "category", "thread"] }, overwrites = { type = "array", items = { type = "object", additionalProperties = false, properties = { allow = { type = "string" }, deny = { type = "string" }, id = { type = "string" }, kind = { type = "integer", maximum = 255, minimum = 0 } }, required = ["id", "kind", "allow", "deny"] } }, parent = { type = ["string", "null"] }, position = { type = "integer" }, topic = { type = "string" } }, required = ["id", "kind", "name", "position"] } } },
+  { name = "roles", type = { list = { named = "RoleInfo" } }, required = true, schema = { type = "array", items = { type = "object", additionalProperties = false, properties = { name = { type = "string" }, color = { type = "integer", maximum = 4294967295, minimum = 0 }, id = { type = "string" }, managed = { type = "boolean" }, permissions = { type = "string" }, position = { type = "integer" } }, required = ["id", "name", "permissions", "color", "position", "managed"] } } },
+  { name = "emojis", type = { list = { named = "EmojiInfo" } }, required = true, schema = { type = "array", items = { type = "object", additionalProperties = false, properties = { name = { type = "string" }, animated = { type = "boolean" }, id = { type = "string" } }, required = ["id", "name"] } } },
 ]
 
 [[resources.verbs]]
 id = "map"
 kind = "undoable"
 params = [
-  { name = "kind", required = true, schema = { oneOf = [{ type = "string", const = "channel" }, { type = "string", const = "category" }, { type = "string", const = "thread" }, { type = "string", const = "message" }, { type = "string", const = "webhook" }, { type = "string", const = "role" }, { type = "string", const = "emoji" }] } },
-  { name = "tilo", required = true, schema = { type = "string" } },
-  { name = "discord", required = true, schema = { type = "string" } },
-  { name = "origin", required = true, schema = { type = "string", enum = ["tilo", "discord"] } },
-  { name = "persona", required = false, schema = { type = ["string", "null"] } },
-  { name = "root", required = false, schema = { type = ["string", "null"] } },
+  { name = "kind", type = { named = "MappedKind" }, required = true, schema = { oneOf = [{ type = "string", const = "channel" }, { type = "string", const = "category" }, { type = "string", const = "thread" }, { type = "string", const = "message" }, { type = "string", const = "webhook" }, { type = "string", const = "role" }, { type = "string", const = "emoji" }] } },
+  { name = "tilo", type = "text", required = true, schema = { type = "string" } },
+  { name = "discord", type = "text", required = true, schema = { type = "string" } },
+  { name = "origin", type = { named = "Origin" }, required = true, schema = { type = "string", enum = ["tilo", "discord"] } },
+  { name = "persona", type = { option = "text" }, required = false, schema = { type = ["string", "null"] } },
+  { name = "root", type = { option = "text" }, required = false, schema = { type = ["string", "null"] } },
 ]
 
 [[resources.verbs]]
 id = "unmap"
 kind = "undoable"
 params = [
-  { name = "kind", required = true, schema = { oneOf = [{ type = "string", const = "channel" }, { type = "string", const = "category" }, { type = "string", const = "thread" }, { type = "string", const = "message" }, { type = "string", const = "webhook" }, { type = "string", const = "role" }, { type = "string", const = "emoji" }] } },
-  { name = "tilo", required = true, schema = { type = "string" } },
-  { name = "keep_apart", required = false, schema = { type = ["boolean", "null"] } },
+  { name = "kind", type = { named = "MappedKind" }, required = true, schema = { oneOf = [{ type = "string", const = "channel" }, { type = "string", const = "category" }, { type = "string", const = "thread" }, { type = "string", const = "message" }, { type = "string", const = "webhook" }, { type = "string", const = "role" }, { type = "string", const = "emoji" }] } },
+  { name = "tilo", type = "text", required = true, schema = { type = "string" } },
+  { name = "keep_apart", type = { option = "bool" }, required = false, schema = { type = ["boolean", "null"] } },
 ]
 
 [[resources.verbs]]
 id = "send"
 kind = "outside"
+returns = { schema = { type = ["object", "array", "null"] } }
 params = [
-  { name = "op", required = true, schema = { type = "object", additionalProperties = false, properties = { attachments = { type = "array", items = { type = "object", additionalProperties = false, properties = { name = { type = "string" }, blob = { type = "string" }, size = { type = "integer", minimum = 0 } }, required = ["blob", "name", "size"] } }, avatar_blob = { type = ["string", "null"] }, avatar_url = { type = ["string", "null"] }, channel = { type = "string" }, content = { type = "string" }, created_ms = { type = "integer" }, thread = { type = ["string", "null"] }, tilo = { type = "string" }, username = { type = "string" }, webhook = { type = "string" } }, required = ["channel", "webhook", "username", "content", "created_ms", "tilo"] } },
+  { name = "op", type = { named = "SendOp" }, required = true, schema = { type = "object", additionalProperties = false, properties = { attachments = { type = "array", items = { type = "object", additionalProperties = false, properties = { name = { type = "string" }, blob = { type = "string" }, size = { type = "integer", minimum = 0 } }, required = ["blob", "name", "size"] } }, avatar_blob = { type = ["string", "null"] }, avatar_url = { type = ["string", "null"] }, channel = { type = "string" }, content = { type = "string" }, created_ms = { type = "integer" }, thread = { type = ["string", "null"] }, tilo = { type = "string" }, username = { type = "string" }, webhook = { type = "string" } }, required = ["channel", "webhook", "username", "content", "created_ms", "tilo"] } },
 ]
 
 [[resources.verbs]]
 id = "edit"
 kind = "outside"
+returns = { schema = { type = ["object", "array", "null"] } }
 params = [
-  { name = "op", required = true, schema = { type = "object", additionalProperties = false, properties = { channel = { type = "string" }, content = { type = "string" }, message = { type = "string" }, thread = { type = ["string", "null"] }, webhook = { type = "string" } }, required = ["channel", "webhook", "message", "content"] } },
+  { name = "op", type = { named = "EditOp" }, required = true, schema = { type = "object", additionalProperties = false, properties = { channel = { type = "string" }, content = { type = "string" }, message = { type = "string" }, thread = { type = ["string", "null"] }, webhook = { type = "string" } }, required = ["channel", "webhook", "message", "content"] } },
 ]
 
 [[resources.verbs]]
 id = "delete"
 kind = "outside"
+returns = { schema = { type = ["object", "array", "null"] } }
 params = [
-  { name = "op", required = true, schema = { type = "object", additionalProperties = false, properties = { channel = { type = "string" }, message = { type = "string" }, thread = { type = ["string", "null"] }, webhook = { type = ["string", "null"] } }, required = ["channel", "message"] } },
+  { name = "op", type = { named = "DeleteOp" }, required = true, schema = { type = "object", additionalProperties = false, properties = { channel = { type = "string" }, message = { type = "string" }, thread = { type = ["string", "null"] }, webhook = { type = ["string", "null"] } }, required = ["channel", "message"] } },
 ]
 
 [[resources.verbs]]
 id = "react"
 kind = "outside"
+returns = { schema = { type = ["object", "array", "null"] } }
 params = [
-  { name = "op", required = true, schema = { type = "object", additionalProperties = false, properties = { channel = { type = "string" }, emoji = { type = "string" }, message = { type = "string" } }, required = ["channel", "message", "emoji"] } },
+  { name = "op", type = { named = "ReactOp" }, required = true, schema = { type = "object", additionalProperties = false, properties = { channel = { type = "string" }, emoji = { type = "string" }, message = { type = "string" } }, required = ["channel", "message", "emoji"] } },
 ]
 
 [[resources.verbs]]
 id = "unreact"
 kind = "outside"
+returns = { schema = { type = ["object", "array", "null"] } }
 params = [
-  { name = "op", required = true, schema = { type = "object", additionalProperties = false, properties = { channel = { type = "string" }, emoji = { type = "string" }, message = { type = "string" } }, required = ["channel", "message", "emoji"] } },
+  { name = "op", type = { named = "ReactOp" }, required = true, schema = { type = "object", additionalProperties = false, properties = { channel = { type = "string" }, emoji = { type = "string" }, message = { type = "string" } }, required = ["channel", "message", "emoji"] } },
 ]
 
 [[resources.verbs]]
 id = "start-thread"
 kind = "outside"
+returns = { schema = { type = ["object", "array", "null"] } }
 params = [
-  { name = "op", required = true, schema = { type = "object", additionalProperties = false, properties = { name = { type = "string" }, channel = { type = "string" }, message = { type = "string" }, tilo = { type = "string" } }, required = ["channel", "message", "name", "tilo"] } },
+  { name = "op", type = { named = "StartThreadOp" }, required = true, schema = { type = "object", additionalProperties = false, properties = { name = { type = "string" }, channel = { type = "string" }, message = { type = "string" }, tilo = { type = "string" } }, required = ["channel", "message", "name", "tilo"] } },
 ]
 
 [[resources.verbs]]
 id = "create-webhook"
 kind = "outside"
+returns = { schema = { type = ["object", "array", "null"] } }
 params = [
-  { name = "op", required = true, schema = { type = "object", additionalProperties = false, properties = { channel = { type = "string" }, tilo = { type = "string" } }, required = ["channel", "tilo"] } },
+  { name = "op", type = { named = "CreateWebhookOp" }, required = true, schema = { type = "object", additionalProperties = false, properties = { channel = { type = "string" }, tilo = { type = "string" } }, required = ["channel", "tilo"] } },
 ]
 
 [[resources.verbs]]
 id = "apply-channel"
 kind = "outside"
+returns = { schema = { type = ["object", "array", "null"] } }
 params = [
-  { name = "op", required = true, schema = { type = "object", additionalProperties = false, properties = { name = { type = "string" }, id = { type = ["string", "null"] }, kind = { type = "string", enum = ["text", "voice", "category", "thread"] }, parent = { type = ["string", "null"] }, position = { type = "integer" }, tilo = { type = "string" }, topic = { type = "string" } }, required = ["tilo", "kind", "name", "position"] } },
+  { name = "op", type = { named = "ChannelSpec" }, required = true, schema = { type = "object", additionalProperties = false, properties = { name = { type = "string" }, id = { type = ["string", "null"] }, kind = { type = "string", enum = ["text", "voice", "category", "thread"] }, parent = { type = ["string", "null"] }, position = { type = "integer" }, tilo = { type = "string" }, topic = { type = "string" } }, required = ["tilo", "kind", "name", "position"] } },
 ]
 
 [[resources.verbs]]
 id = "delete-channel"
 kind = "outside"
+returns = { schema = { type = ["object", "array", "null"] } }
 params = [
-  { name = "op", required = true, schema = { type = "object", additionalProperties = false, properties = { channel = { type = "string" } }, required = ["channel"] } },
+  { name = "op", type = { named = "DeleteChannelOp" }, required = true, schema = { type = "object", additionalProperties = false, properties = { channel = { type = "string" } }, required = ["channel"] } },
 ]
 
 [[resources.verbs]]
 id = "arrange-channels"
 kind = "outside"
+returns = { schema = { type = ["object", "array", "null"] } }
 params = [
-  { name = "op", required = true, schema = { type = "object", additionalProperties = false, properties = { categories = { type = "array", items = { type = "object", additionalProperties = false, properties = { category = { type = "string" }, position = { type = "integer" } }, required = ["category", "position"] } }, channels = { type = "array", items = { type = "object", additionalProperties = false, properties = { channel = { type = "string" }, parent = { type = ["string", "null"] }, position = { type = "integer" } }, required = ["channel", "position"] } } } } },
+  { name = "op", type = { named = "ArrangeOp" }, required = true, schema = { type = "object", additionalProperties = false, properties = { categories = { type = "array", items = { type = "object", additionalProperties = false, properties = { category = { type = "string" }, position = { type = "integer" } }, required = ["category", "position"] } }, channels = { type = "array", items = { type = "object", additionalProperties = false, properties = { channel = { type = "string" }, parent = { type = ["string", "null"] }, position = { type = "integer" } }, required = ["channel", "position"] } } } } },
 ]
 
 [[resources.verbs]]
 id = "apply-role"
 kind = "outside"
+returns = { schema = { type = ["object", "array", "null"] } }
 params = [
-  { name = "op", required = true, schema = { type = "object", additionalProperties = false, properties = { name = { type = "string" }, color = { type = "integer", maximum = 4294967295, minimum = 0 }, id = { type = ["string", "null"] }, permissions = { type = "string" }, tilo = { type = "string" } }, required = ["tilo", "name", "permissions", "color"] } },
+  { name = "op", type = { named = "RoleSpec" }, required = true, schema = { type = "object", additionalProperties = false, properties = { name = { type = "string" }, color = { type = "integer", maximum = 4294967295, minimum = 0 }, id = { type = ["string", "null"] }, permissions = { type = "string" }, tilo = { type = "string" } }, required = ["tilo", "name", "permissions", "color"] } },
 ]
 
 [[resources.verbs]]
 id = "delete-role"
 kind = "outside"
+returns = { schema = { type = ["object", "array", "null"] } }
 params = [
-  { name = "op", required = true, schema = { type = "object", additionalProperties = false, properties = { role = { type = "string" } }, required = ["role"] } },
+  { name = "op", type = { named = "DeleteRoleOp" }, required = true, schema = { type = "object", additionalProperties = false, properties = { role = { type = "string" } }, required = ["role"] } },
 ]
 
 [[resources.verbs]]
 id = "set-member-roles"
 kind = "outside"
+returns = { schema = { type = ["object", "array", "null"] } }
 params = [
-  { name = "op", required = true, schema = { type = "object", additionalProperties = false, properties = { add = { type = "array", items = { type = "string" } }, remove = { type = "array", items = { type = "string" } }, user = { type = "string" } }, required = ["user", "add", "remove"] } },
+  { name = "op", type = { named = "MemberRolesOp" }, required = true, schema = { type = "object", additionalProperties = false, properties = { add = { type = "array", items = { type = "string" } }, remove = { type = "array", items = { type = "string" } }, user = { type = "string" } }, required = ["user", "add", "remove"] } },
 ]
 
 [[resources.verbs]]
 id = "kick"
 kind = "outside"
+returns = { schema = { type = ["object", "array", "null"] } }
 params = [
-  { name = "op", required = true, schema = { type = "object", additionalProperties = false, properties = { reason = { type = "string" }, user = { type = "string" } }, required = ["user"] } },
+  { name = "op", type = { named = "MemberOp" }, required = true, schema = { type = "object", additionalProperties = false, properties = { reason = { type = "string" }, user = { type = "string" } }, required = ["user"] } },
 ]
 
 [[resources.verbs]]
 id = "ban"
 kind = "outside"
+returns = { schema = { type = ["object", "array", "null"] } }
 params = [
-  { name = "op", required = true, schema = { type = "object", additionalProperties = false, properties = { reason = { type = "string" }, user = { type = "string" } }, required = ["user"] } },
+  { name = "op", type = { named = "MemberOp" }, required = true, schema = { type = "object", additionalProperties = false, properties = { reason = { type = "string" }, user = { type = "string" } }, required = ["user"] } },
 ]
 
 [[resources.verbs]]
 id = "unban"
 kind = "outside"
+returns = { schema = { type = ["object", "array", "null"] } }
 params = [
-  { name = "op", required = true, schema = { type = "object", additionalProperties = false, properties = { reason = { type = "string" }, user = { type = "string" } }, required = ["user"] } },
+  { name = "op", type = { named = "MemberOp" }, required = true, schema = { type = "object", additionalProperties = false, properties = { reason = { type = "string" }, user = { type = "string" } }, required = ["user"] } },
 ]
 
 [[resources.verbs]]
 id = "set-overwrite"
 kind = "outside"
+returns = { schema = { type = ["object", "array", "null"] } }
 params = [
-  { name = "op", required = true, schema = { type = "object", additionalProperties = false, properties = { allow = { type = "string" }, channel = { type = "string" }, deny = { type = "string" }, target = { type = "string" }, target_kind = { type = "string", enum = ["role", "member"] } }, required = ["channel", "target", "target_kind", "allow", "deny"] } },
+  { name = "op", type = { named = "OverwriteOp" }, required = true, schema = { type = "object", additionalProperties = false, properties = { allow = { type = "string" }, channel = { type = "string" }, deny = { type = "string" }, target = { type = "string" }, target_kind = { type = "string", enum = ["role", "member"] } }, required = ["channel", "target", "target_kind", "allow", "deny"] } },
 ]
 
 [[resources.verbs]]
 id = "fetch-asset"
 kind = "outside"
+returns = { schema = { type = ["object", "array", "null"] } }
 params = [
-  { name = "op", required = true, schema = { type = "object", additionalProperties = false, properties = { attachment = { type = ["object", "null"], additionalProperties = false, properties = { name = { type = "string" }, blob = { type = "string" }, height = { type = "integer", maximum = 4294967295, minimum = 0 }, kind = { type = "string" }, size = { type = "integer", minimum = 0 }, width = { type = "integer", maximum = 4294967295, minimum = 0 } }, required = ["kind", "name"] }, inline = { type = "boolean" }, max_bytes = { type = "integer", minimum = 0 }, url = { type = "string" } }, required = ["url", "max_bytes"] } },
+  { name = "op", type = { named = "FetchAssetOp" }, required = true, schema = { type = "object", additionalProperties = false, properties = { attachment = { oneOf = [{ type = "null" }, { oneOf = [{ type = "object", additionalProperties = false, properties = { name = { type = "string" }, blob = { type = "string" }, h = { type = "integer", maximum = 4294967295, minimum = 0 }, kind = { type = "string", const = "image" }, w = { type = "integer", maximum = 4294967295, minimum = 0 } }, required = ["kind", "name", "w", "h"] }, { type = "object", additionalProperties = false, properties = { name = { type = "string" }, blob = { type = "string" }, h = { type = "integer", maximum = 4294967295, minimum = 0 }, kind = { type = "string", const = "video" }, size = { type = "integer", minimum = 0 }, w = { type = "integer", maximum = 4294967295, minimum = 0 } }, required = ["kind", "name", "w", "h"] }, { type = "object", additionalProperties = false, properties = { name = { type = "string" }, blob = { type = "string" }, kind = { type = "string", const = "file" }, size = { type = "integer", minimum = 0 } }, required = ["kind", "name"] }] }] }, inline = { type = "boolean" }, max_bytes = { type = "integer", minimum = 0 }, url = { type = "string" } }, required = ["url", "max_bytes"] } },
 ]
 
 [[resources.verbs]]
 id = "begin-connect"
 kind = "undoable"
 params = [
-  { name = "state_sha256", required = true, schema = { type = "string" } },
+  { name = "state_sha256", type = "text", required = true, schema = { type = "string" } },
 ]
 
 [[resources.verbs]]
 id = "offer-link"
 kind = "undoable"
 params = [
-  { name = "check", required = true, schema = { type = "string" } },
-  { name = "discord_user", required = true, schema = { type = "string" } },
-  { name = "user_name", required = true, schema = { type = "string" } },
-  { name = "display_name", required = false, schema = { type = ["string", "null"] } },
-  { name = "avatar", required = false, schema = { type = ["string", "null"] } },
-  { name = "interaction", required = false, schema = { type = ["string", "null"] } },
+  { name = "check", type = "text", required = true, schema = { type = "string" } },
+  { name = "discord_user", type = "text", required = true, schema = { type = "string" } },
+  { name = "user_name", type = "text", required = true, schema = { type = "string" } },
+  { name = "display_name", type = { option = "text" }, required = false, schema = { type = ["string", "null"] } },
+  { name = "avatar", type = { option = "text" }, required = false, schema = { type = ["string", "null"] } },
+  { name = "interaction", type = { option = "text" }, required = false, schema = { type = ["string", "null"] } },
 ]
 
 [[resources.verbs]]
 id = "offer-sign-in"
 kind = "undoable"
 params = [
-  { name = "check", required = true, schema = { type = "string" } },
-  { name = "discord_user", required = true, schema = { type = "string" } },
-  { name = "user_name", required = true, schema = { type = "string" } },
-  { name = "display_name", required = false, schema = { type = ["string", "null"] } },
-  { name = "avatar", required = false, schema = { type = ["string", "null"] } },
-  { name = "state_sha256", required = true, schema = { type = "string" } },
+  { name = "check", type = "text", required = true, schema = { type = "string" } },
+  { name = "discord_user", type = "text", required = true, schema = { type = "string" } },
+  { name = "user_name", type = "text", required = true, schema = { type = "string" } },
+  { name = "display_name", type = { option = "text" }, required = false, schema = { type = ["string", "null"] } },
+  { name = "avatar", type = { option = "text" }, required = false, schema = { type = ["string", "null"] } },
+  { name = "state_sha256", type = "text", required = true, schema = { type = "string" } },
 ]
 
 [[resources.verbs]]
 id = "complete-link"
 kind = "undoable"
 params = [
-  { name = "proof", required = true, schema = { type = "string" } },
+  { name = "proof", type = "text", required = true, schema = { type = "string" } },
 ]
 
 [[resources.verbs]]
 id = "set-sign-in"
 kind = "undoable"
 params = [
-  { name = "page", required = true, schema = { type = "string" } },
+  { name = "page", type = "text", required = true, schema = { type = "string" } },
 ]
 
 [[resources.verbs]]
 id = "answer-interaction"
 kind = "outside"
+returns = { schema = { type = ["object", "array", "null"] } }
 params = [
-  { name = "op", required = true, schema = { type = "object", additionalProperties = false, properties = { content = { type = "string" }, interaction = { type = "string" } }, required = ["interaction", "content"] } },
+  { name = "op", type = { named = "AnswerInteractionOp" }, required = true, schema = { type = "object", additionalProperties = false, properties = { content = { type = "string" }, interaction = { type = "string" } }, required = ["interaction", "content"] } },
 ]
 
 [[resources.verbs]]
 id = "rename-link"
 kind = "undoable"
 params = [
-  { name = "discord_user", required = true, schema = { type = "string" } },
-  { name = "user_name", required = true, schema = { type = "string" } },
-  { name = "display_name", required = false, schema = { type = ["string", "null"] } },
-  { name = "avatar", required = false, schema = { type = ["string", "null"] } },
+  { name = "discord_user", type = "text", required = true, schema = { type = "string" } },
+  { name = "user_name", type = "text", required = true, schema = { type = "string" } },
+  { name = "display_name", type = { option = "text" }, required = false, schema = { type = ["string", "null"] } },
+  { name = "avatar", type = { option = "text" }, required = false, schema = { type = ["string", "null"] } },
 ]
 
 [[resources.verbs]]
 id = "set-link-photo"
 kind = "undoable"
 params = [
-  { name = "discord_user", required = true, schema = { type = "string" } },
-  { name = "avatar", required = true, schema = { type = "string" } },
-  { name = "photo", required = true, schema = { type = "string" } },
+  { name = "discord_user", type = "text", required = true, schema = { type = "string" } },
+  { name = "avatar", type = "text", required = true, schema = { type = "string" } },
+  { name = "photo", type = "text", required = true, schema = { type = "string" } },
 ]
 
 [[resources.verbs]]
 id = "unlink"
 kind = "undoable"
 params = [
-  { name = "discord_user", required = true, schema = { type = "string" } },
+  { name = "discord_user", type = "text", required = true, schema = { type = "string" } },
 ]
 
 [[resources.verbs]]
@@ -323,7 +342,7 @@ id = "block-persona"
 field = "moderation"
 kind = "undoable"
 params = [
-  { name = "discord_user", required = true, schema = { type = "string" } },
+  { name = "discord_user", type = "text", required = true, schema = { type = "string" } },
 ]
 
 [[resources.verbs]]
@@ -331,53 +350,454 @@ id = "unblock-persona"
 field = "moderation"
 kind = "undoable"
 params = [
-  { name = "discord_user", required = true, schema = { type = "string" } },
+  { name = "discord_user", type = "text", required = true, schema = { type = "string" } },
 ]
 
 [[resources.verbs]]
 id = "remember-avatar"
 kind = "undoable"
 params = [
-  { name = "hash", required = true, schema = { type = "string" } },
-  { name = "blob", required = true, schema = { type = "string" } },
+  { name = "hash", type = "text", required = true, schema = { type = "string" } },
+  { name = "blob", type = "text", required = true, schema = { type = "string" } },
 ]
 
 [[resources.verbs]]
 id = "finish-import"
 kind = "undoable"
 params = [
-  { name = "tilo_only", required = true, schema = { type = "array", items = { type = "string" } } },
+  { name = "tilo_only", type = { list = "text" }, required = true, schema = { type = "array", items = { type = "string" } } },
 ]
 
 [[resources.verbs]]
 id = "apply-emoji"
 kind = "outside"
+returns = { schema = { type = ["object", "array", "null"] } }
 params = [
-  { name = "op", required = true, schema = { type = "object", additionalProperties = false, properties = { name = { type = "string" }, id = { type = ["string", "null"] }, picture = { type = ["string", "null"] }, tilo = { type = "string" } }, required = ["name", "tilo"] } },
+  { name = "op", type = { named = "EmojiSpec" }, required = true, schema = { type = "object", additionalProperties = false, properties = { name = { type = "string" }, id = { type = ["string", "null"] }, picture = { type = ["string", "null"] }, tilo = { type = "string" } }, required = ["name", "tilo"] } },
 ]
 
 [[resources.verbs]]
 id = "delete-emoji"
 kind = "outside"
+returns = { schema = { type = ["object", "array", "null"] } }
 params = [
-  { name = "op", required = true, schema = { type = "object", additionalProperties = false, properties = { emoji = { type = "string" }, tilo = { type = "string" } }, required = ["emoji", "tilo"] } },
+  { name = "op", type = { named = "DeleteEmojiOp" }, required = true, schema = { type = "object", additionalProperties = false, properties = { emoji = { type = "string" }, tilo = { type = "string" } }, required = ["emoji", "tilo"] } },
 ]
 
 [[resources.verbs]]
 id = "settle-emoji"
 kind = "undoable"
 params = [
-  { name = "tilo", required = true, schema = { type = "string" } },
-  { name = "result", required = true, schema = { oneOf = [{ type = "object", additionalProperties = false, properties = { message_id = { type = "string" }, result = { type = "string", const = "message" }, tilo = { type = "string" } }, required = ["result", "message_id", "tilo"] }, { type = "object", additionalProperties = false, properties = { result = { type = "string", const = "thread" }, thread_id = { type = "string" }, tilo = { type = "string" } }, required = ["result", "thread_id", "tilo"] }, { type = "object", additionalProperties = false, properties = { result = { type = "string", const = "webhook" }, tilo = { type = "string" }, webhook_id = { type = "string" } }, required = ["result", "webhook_id", "tilo"] }, { type = "object", additionalProperties = false, properties = { channel_id = { type = "string" }, result = { type = "string", const = "channel" }, tilo = { type = "string" } }, required = ["result", "channel_id", "tilo"] }, { type = "object", additionalProperties = false, properties = { result = { type = "string", const = "role" }, role_id = { type = "string" }, tilo = { type = "string" } }, required = ["result", "role_id", "tilo"] }, { type = "object", additionalProperties = false, properties = { emoji_id = { type = "string" }, problem = { type = ["string", "null"] }, result = { type = "string", const = "emoji" }, tilo = { type = "string" } }, required = ["result", "tilo"] }, { type = "object", additionalProperties = false, properties = { attachment = { type = ["object", "null"], additionalProperties = false, properties = { name = { type = "string" }, blob = { type = "string" }, height = { type = "integer", maximum = 4294967295, minimum = 0 }, kind = { type = "string" }, size = { type = "integer", minimum = 0 }, width = { type = "integer", maximum = 4294967295, minimum = 0 } }, required = ["kind", "name"] }, blob = { type = "string" }, content_type = { type = "string" }, data_url = { type = ["string", "null"] }, result = { type = "string", const = "asset" }, size = { type = "integer", minimum = 0 } }, required = ["result", "blob", "size", "content_type"] }, { type = "object", additionalProperties = false, properties = { result = { type = "string", const = "done" } }, required = ["result"] }] } },
-  { name = "picture", required = false, schema = { type = ["string", "null"] } },
-  { name = "was", required = false, schema = { type = ["string", "null"] } },
-  { name = "deleted", required = false, schema = { type = ["boolean", "null"] } },
+  { name = "tilo", type = "text", required = true, schema = { type = "string" } },
+  { name = "result", type = { named = "DiscordResult" }, required = true, schema = { oneOf = [{ type = "object", additionalProperties = false, properties = { message_id = { type = "string" }, result = { type = "string", const = "message" }, tilo = { type = "string" }, webhook_id = { type = ["string", "null"] } }, required = ["result", "message_id", "tilo"] }, { type = "object", additionalProperties = false, properties = { result = { type = "string", const = "thread" }, thread_id = { type = "string" }, tilo = { type = "string" } }, required = ["result", "thread_id", "tilo"] }, { type = "object", additionalProperties = false, properties = { result = { type = "string", const = "webhook" }, tilo = { type = "string" }, webhook_id = { type = "string" } }, required = ["result", "webhook_id", "tilo"] }, { type = "object", additionalProperties = false, properties = { channel_id = { type = "string" }, result = { type = "string", const = "channel" }, tilo = { type = "string" } }, required = ["result", "channel_id", "tilo"] }, { type = "object", additionalProperties = false, properties = { result = { type = "string", const = "role" }, role_id = { type = "string" }, tilo = { type = "string" } }, required = ["result", "role_id", "tilo"] }, { type = "object", additionalProperties = false, properties = { emoji_id = { type = "string" }, problem = { type = ["string", "null"] }, result = { type = "string", const = "emoji" }, tilo = { type = "string" } }, required = ["result", "tilo"] }, { type = "object", additionalProperties = false, properties = { attachment = { oneOf = [{ type = "null" }, { oneOf = [{ type = "object", additionalProperties = false, properties = { name = { type = "string" }, blob = { type = "string" }, h = { type = "integer", maximum = 4294967295, minimum = 0 }, kind = { type = "string", const = "image" }, w = { type = "integer", maximum = 4294967295, minimum = 0 } }, required = ["kind", "name", "w", "h"] }, { type = "object", additionalProperties = false, properties = { name = { type = "string" }, blob = { type = "string" }, h = { type = "integer", maximum = 4294967295, minimum = 0 }, kind = { type = "string", const = "video" }, size = { type = "integer", minimum = 0 }, w = { type = "integer", maximum = 4294967295, minimum = 0 } }, required = ["kind", "name", "w", "h"] }, { type = "object", additionalProperties = false, properties = { name = { type = "string" }, blob = { type = "string" }, kind = { type = "string", const = "file" }, size = { type = "integer", minimum = 0 } }, required = ["kind", "name"] }] }] }, blob = { type = "string" }, content_type = { type = "string" }, data_url = { type = ["string", "null"] }, result = { type = "string", const = "asset" }, size = { type = "integer", minimum = 0 } }, required = ["result", "blob", "size", "content_type"] }, { type = "object", additionalProperties = false, properties = { result = { type = "string", const = "done" } }, required = ["result"] }] } },
+  { name = "picture", type = { option = "text" }, required = false, schema = { type = ["string", "null"] } },
+  { name = "was", type = { option = "text" }, required = false, schema = { type = ["string", "null"] } },
+  { name = "deleted", type = { option = "bool" }, required = false, schema = { type = ["boolean", "null"] } },
 ]
 
 [[resources.verbs]]
 id = "report-voice"
 kind = "undoable"
 params = [
-  { name = "problem", required = false, schema = { type = ["string", "null"] } },
+  { name = "problem", type = { option = "text" }, required = false, schema = { type = ["string", "null"] } },
+]
+
+[[resources.verbs]]
+id = "my-link"
+kind = "read"
+
+[[resources.verbs]]
+id = "link-offer"
+kind = "read"
+params = [
+  { name = "token", required = true },
+]
+
+[[resources.verbs]]
+id = "plan-route"
+kind = "read"
+params = [
+  { name = "event", required = true },
+]
+
+[[resources.verbs]]
+id = "plan-event"
+kind = "read"
+params = [
+  { name = "event", required = true },
+  { name = "chat", required = true },
+  { name = "context", type = { option = { named = "Context" } }, required = false },
+  { name = "room", type = { option = "any" }, required = false },
+  { name = "emoji", type = { option = "any" }, required = false },
+]
+
+[[resources.types]]
+name = "AnswerInteractionOp"
+fields = [
+  { name = "interaction", type = "text" },
+  { name = "content", type = "text" },
+]
+
+[[resources.types]]
+name = "ArrangeOp"
+fields = [
+  { name = "categories", type = { list = { named = "CategoryPlace" } } },
+  { name = "channels", type = { list = { named = "ChannelPlace" } } },
+]
+
+[[resources.types]]
+name = "CategoryPlace"
+fields = [
+  { name = "category", type = "text" },
+  { name = "position", type = "int" },
+]
+
+[[resources.types]]
+name = "ChannelInfo"
+fields = [
+  { name = "id", type = "text" },
+  { name = "kind", type = { named = "ChannelKind" } },
+  { name = "name", type = "text" },
+  { name = "parent", type = { option = "text" } },
+  { name = "position", type = "int" },
+  { name = "topic", type = "text" },
+  { name = "overwrites", type = { list = { named = "OverwriteInfo" } } },
+]
+
+[[resources.types]]
+name = "ChannelKind"
+cases = [
+  { name = "text" },
+  { name = "voice" },
+  { name = "category" },
+  { name = "thread" },
+]
+
+[[resources.types]]
+name = "ChannelPlace"
+fields = [
+  { name = "channel", type = "text" },
+  { name = "parent", type = { option = "text" } },
+  { name = "position", type = "int" },
+]
+
+[[resources.types]]
+name = "ChannelSpec"
+fields = [
+  { name = "id", type = { option = "text" } },
+  { name = "tilo", type = "text" },
+  { name = "kind", type = { named = "ChannelKind" } },
+  { name = "name", type = "text" },
+  { name = "topic", type = "text" },
+  { name = "parent", type = { option = "text" } },
+  { name = "position", type = "int" },
+]
+
+[[resources.types]]
+name = "Connect"
+fields = [
+  { name = "person", type = "text" },
+  { name = "state_sha256", type = "text" },
+  { name = "expires_ms", type = "int" },
+]
+
+[[resources.types]]
+name = "CreateWebhookOp"
+fields = [
+  { name = "channel", type = "text" },
+  { name = "tilo", type = "text" },
+]
+
+[[resources.types]]
+name = "DChannel"
+fields = [
+  { name = "id", type = "text" },
+  { name = "kind", type = { named = "ChannelKind" } },
+  { name = "name", type = "text" },
+  { name = "parent", type = { option = "text" } },
+  { name = "position", type = "int" },
+  { name = "topic", type = "text" },
+  { name = "overwrites", type = { list = { named = "OverwriteInfo" } } },
+]
+
+[[resources.types]]
+name = "DRole"
+fields = [
+  { name = "id", type = "text" },
+  { name = "name", type = "text" },
+  { name = "permissions", type = "text" },
+  { name = "color", type = "int" },
+  { name = "position", type = "int" },
+  { name = "managed", type = "bool" },
+]
+
+[[resources.types]]
+name = "DeleteChannelOp"
+fields = [
+  { name = "channel", type = "text" },
+]
+
+[[resources.types]]
+name = "DeleteEmojiOp"
+fields = [
+  { name = "emoji", type = "text" },
+  { name = "tilo", type = "text" },
+]
+
+[[resources.types]]
+name = "DeleteOp"
+fields = [
+  { name = "channel", type = "text" },
+  { name = "webhook", type = { option = "text" } },
+  { name = "message", type = "text" },
+  { name = "thread", type = { option = "text" } },
+]
+
+[[resources.types]]
+name = "DeleteRoleOp"
+fields = [
+  { name = "role", type = "text" },
+]
+
+[[resources.types]]
+name = "DiscordResult"
+cases = [
+  { name = "message", fields = [{ name = "message_id", type = "text" }, { name = "tilo", type = "text" }, { name = "webhook_id", type = { option = "text" } }] },
+  { name = "thread", fields = [{ name = "thread_id", type = "text" }, { name = "tilo", type = "text" }] },
+  { name = "webhook", fields = [{ name = "webhook_id", type = "text" }, { name = "tilo", type = "text" }] },
+  { name = "channel", fields = [{ name = "channel_id", type = "text" }, { name = "tilo", type = "text" }] },
+  { name = "role", fields = [{ name = "role_id", type = "text" }, { name = "tilo", type = "text" }] },
+  { name = "emoji", fields = [{ name = "emoji_id", type = "text" }, { name = "tilo", type = "text" }, { name = "problem", type = { option = "text" } }] },
+  { name = "asset", fields = [{ name = "blob", type = "text" }, { name = "size", type = "int" }, { name = "content_type", type = "text" }, { name = "attachment", type = { option = { named = "InAttachment" } } }, { name = "data_url", type = { option = "text" } }] },
+  { name = "done" },
+]
+
+[[resources.types]]
+name = "EditOp"
+fields = [
+  { name = "channel", type = "text" },
+  { name = "webhook", type = "text" },
+  { name = "message", type = "text" },
+  { name = "thread", type = { option = "text" } },
+  { name = "content", type = "text" },
+]
+
+[[resources.types]]
+name = "EmojiInfo"
+fields = [
+  { name = "id", type = "text" },
+  { name = "name", type = "text" },
+  { name = "animated", type = "bool" },
+]
+
+[[resources.types]]
+name = "EmojiSpec"
+fields = [
+  { name = "id", type = { option = "text" } },
+  { name = "name", type = "text" },
+  { name = "picture", type = { option = "text" } },
+  { name = "tilo", type = "text" },
+]
+
+[[resources.types]]
+name = "FetchAssetOp"
+fields = [
+  { name = "url", type = "text" },
+  { name = "max_bytes", type = "int" },
+  { name = "attachment", type = { option = { named = "InAttachment" } } },
+  { name = "inline", type = "bool" },
+]
+
+[[resources.types]]
+name = "InAttachment"
+cases = [
+  { name = "image", fields = [{ name = "name", type = "text" }, { name = "blob", type = "text" }, { name = "w", type = "int" }, { name = "h", type = "int" }] },
+  { name = "video", fields = [{ name = "name", type = "text" }, { name = "blob", type = "text" }, { name = "w", type = "int" }, { name = "h", type = "int" }, { name = "size", type = "int" }] },
+  { name = "file", fields = [{ name = "name", type = "text" }, { name = "blob", type = "text" }, { name = "size", type = "int" }] },
+]
+
+[[resources.types]]
+name = "Link"
+fields = [
+  { name = "discord_user", type = "text" },
+  { name = "person", type = "text" },
+  { name = "linked_at", type = "int" },
+  { name = "user_name", type = "text" },
+  { name = "display_name", type = { option = "text" } },
+  { name = "avatar", type = { option = "text" } },
+  { name = "interaction", type = { option = "text" } },
+  { name = "photo", type = { option = "text" } },
+  { name = "photo_avatar", type = { option = "text" } },
+]
+
+[[resources.types]]
+name = "LinkOffer"
+fields = [
+  { name = "check", type = "text" },
+  { name = "discord_user", type = "text" },
+  { name = "user_name", type = "text" },
+  { name = "display_name", type = { option = "text" } },
+  { name = "avatar", type = { option = "text" } },
+  { name = "person", type = { option = "text" } },
+  { name = "interaction", type = { option = "text" } },
+  { name = "expires_ms", type = "int" },
+]
+
+[[resources.types]]
+name = "MappedKind"
+cases = [
+  { name = "channel" },
+  { name = "category" },
+  { name = "thread" },
+  { name = "message" },
+  { name = "webhook" },
+  { name = "role" },
+  { name = "emoji" },
+]
+
+[[resources.types]]
+name = "Mapping"
+fields = [
+  { name = "key", type = "text" },
+  { name = "kind", type = { named = "MappedKind" } },
+  { name = "tilo", type = "text" },
+  { name = "discord", type = "text" },
+  { name = "origin", type = { named = "Origin" } },
+  { name = "persona", type = { option = "text" } },
+  { name = "root", type = { option = "text" } },
+  { name = "picture", type = { option = "text" } },
+]
+
+[[resources.types]]
+name = "MemberOp"
+fields = [
+  { name = "user", type = "text" },
+  { name = "reason", type = "text" },
+]
+
+[[resources.types]]
+name = "MemberRolesOp"
+fields = [
+  { name = "user", type = "text" },
+  { name = "add", type = { list = "text" } },
+  { name = "remove", type = { list = "text" } },
+]
+
+[[resources.types]]
+name = "Origin"
+cases = [
+  { name = "tilo" },
+  { name = "discord" },
+]
+
+[[resources.types]]
+name = "OutAttachment"
+fields = [
+  { name = "blob", type = "text" },
+  { name = "name", type = "text" },
+  { name = "size", type = "int" },
+]
+
+[[resources.types]]
+name = "OverwriteInfo"
+fields = [
+  { name = "id", type = "text" },
+  { name = "kind", type = "int" },
+  { name = "allow", type = "text" },
+  { name = "deny", type = "text" },
+]
+
+[[resources.types]]
+name = "OverwriteKind"
+cases = [
+  { name = "role" },
+  { name = "member" },
+]
+
+[[resources.types]]
+name = "OverwriteOp"
+fields = [
+  { name = "channel", type = "text" },
+  { name = "target", type = "text" },
+  { name = "target_kind", type = { named = "OverwriteKind" } },
+  { name = "allow", type = "text" },
+  { name = "deny", type = "text" },
+]
+
+[[resources.types]]
+name = "Ownership"
+cases = [
+  { name = "importing" },
+  { name = "adopted" },
+]
+
+[[resources.types]]
+name = "ReactOp"
+fields = [
+  { name = "channel", type = "text" },
+  { name = "message", type = "text" },
+  { name = "emoji", type = "text" },
+]
+
+[[resources.types]]
+name = "RoleInfo"
+fields = [
+  { name = "id", type = "text" },
+  { name = "name", type = "text" },
+  { name = "permissions", type = "text" },
+  { name = "color", type = "int" },
+  { name = "position", type = "int" },
+  { name = "managed", type = "bool" },
+]
+
+[[resources.types]]
+name = "RoleSpec"
+fields = [
+  { name = "id", type = { option = "text" } },
+  { name = "tilo", type = "text" },
+  { name = "name", type = "text" },
+  { name = "permissions", type = "text" },
+  { name = "color", type = "int" },
+]
+
+[[resources.types]]
+name = "SendOp"
+fields = [
+  { name = "channel", type = "text" },
+  { name = "webhook", type = "text" },
+  { name = "thread", type = { option = "text" } },
+  { name = "username", type = "text" },
+  { name = "avatar_url", type = { option = "text" } },
+  { name = "avatar_blob", type = { option = "text" } },
+  { name = "content", type = "text" },
+  { name = "attachments", type = { list = { named = "OutAttachment" } } },
+  { name = "created_ms", type = "int" },
+  { name = "tilo", type = "text" },
+]
+
+[[resources.types]]
+name = "StartThreadOp"
+fields = [
+  { name = "channel", type = "text" },
+  { name = "message", type = "text" },
+  { name = "name", type = "text" },
+  { name = "tilo", type = "text" },
+]
+
+[[resources.types]]
+name = "Context"
+fields = [
+  { name = "avatars", type = "text" },
+  { name = "link", type = "text" },
+  { name = "links", type = { option = { named = "Links" } } },
+]
+
+[[resources.types]]
+name = "Links"
+fields = [
+  { name = "web_entry", type = "text" },
+  { name = "origin", type = "text" },
+  { name = "room", type = "text" },
+  { name = "host_device", type = "text" },
 ]
 

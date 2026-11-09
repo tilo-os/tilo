@@ -5,16 +5,31 @@ kind = "containers.engine"
 label = "Containers"
 version = 1
 fields = [
-  { path = "draft", type = "CreateDraft", stored = "record" },
-  { path = "draft.name", type = "String" },
-  { path = "draft.image", type = "String" },
-  { path = "draft.ports", type = "String" },
-  { path = "draft.env", type = "String" },
-  { path = "draft.volumes", type = "String" },
-  { path = "draft.command", type = "String" },
+  { path = "draft", type = { named = "CreateDraft" }, stored = "record" },
+  { path = "draft.name", type = "text" },
+  { path = "draft.image", type = "text" },
+  { path = "draft.ports", type = "text" },
+  { path = "draft.env", type = "text" },
+  { path = "draft.volumes", type = "text" },
+  { path = "draft.command", type = "text" },
 ]
 
 [[resources.verbs]]
 id = "clear-create"
 kind = "undoable"
+
+[[resources.verbs]]
+id = "create"
+kind = "read"
+
+[[resources.types]]
+name = "CreateDraft"
+fields = [
+  { name = "name", type = "text" },
+  { name = "image", type = "text" },
+  { name = "ports", type = "text" },
+  { name = "env", type = "text" },
+  { name = "volumes", type = "text" },
+  { name = "command", type = "text" },
+]
 
