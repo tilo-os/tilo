@@ -5,48 +5,51 @@ kind = "terminal.session"
 label = "Terminal"
 version = 1
 fields = [
-  { path = "target", type = "Option<Atom>", readonly = true },
-  { path = "relay_session", type = "Option<Atom>", readonly = true },
-  { path = "pane", type = "Option<Atom>", readonly = true },
-  { path = "device", type = "Option<Atom>", readonly = true },
-  { path = "holder", type = "Option<Atom>", readonly = true },
-  { path = "runs", type = "Collection<Run>", readonly = true, stored = "collection" },
-  { path = "runs.*.command", type = "Atom", label = true },
-  { path = "runs.*.cwd", type = "Atom" },
-  { path = "runs.*.environment", type = "Option<Atom>" },
-  { path = "runs.*.actor", type = "Atom" },
-  { path = "runs.*.for_person", type = "Option<Atom>" },
-  { path = "runs.*.started_ms", type = "i64" },
-  { path = "runs.*.ended_ms", type = "i64" },
-  { path = "runs.*.exit", type = "i32" },
-  { path = "runs.*.output", type = "Bytes" },
+  { path = "target", type = { option = "text" }, readonly = true },
+  { path = "relay_session", type = { option = "text" }, readonly = true },
+  { path = "pane", type = { option = "text" }, readonly = true },
+  { path = "device", type = { option = "text" }, readonly = true },
+  { path = "holder", type = { option = "text" }, readonly = true },
+  { path = "runs", type = { collection = { named = "Run" } }, readonly = true, stored = "collection" },
+  { path = "runs.*.command", type = "text", label = true },
+  { path = "runs.*.cwd", type = "text" },
+  { path = "runs.*.environment", type = { option = "text" } },
+  { path = "runs.*.actor", type = "text" },
+  { path = "runs.*.for_person", type = { option = "text" } },
+  { path = "runs.*.started_ms", type = "int" },
+  { path = "runs.*.ended_ms", type = "int" },
+  { path = "runs.*.exit", type = "int" },
+  { path = "runs.*.output", type = "any" },
   { path = "runs.*.truncated", type = "bool" },
-  { path = "runs.*.tool", type = "Atom" },
+  { path = "runs.*.tool", type = "text" },
   { path = "runs.*.undoable", type = "bool" },
-  { path = "runs.*.items", type = "Vec<RunItem>" },
-  { path = "requests", type = "Outbox<RunRequest, RunAnswer>", readonly = true, unit = true },
+  { path = "runs.*.items", type = { list = { named = "RunItem" } } },
+  { path = "requests", type = { outbox = { named = "RunRequest" } }, readonly = true, unit = true },
 ]
 
 [[resources.verbs]]
 id = "run"
 kind = "outside"
+returns = { schema = { type = ["object", "array", "null"] } }
 params = [
-  { name = "command", required = true, schema = { type = "string" } },
+  { name = "command", type = "text", required = true, schema = { type = "string" } },
 ]
 
 [[resources.verbs]]
 id = "rerun"
 kind = "outside"
+returns = { schema = { type = ["object", "array", "null"] } }
 params = [
-  { name = "runs", required = true, schema = { type = "string" } },
+  { name = "runs", type = "text", required = true, schema = { type = "string" } },
 ]
 
 [[resources.verbs]]
 id = "rerun-test"
 kind = "outside"
+returns = { schema = { type = ["object", "array", "null"] } }
 params = [
-  { name = "runs", required = true, schema = { type = "string" } },
-  { name = "test", required = true, schema = { type = "string" } },
+  { name = "runs", type = "text", required = true, schema = { type = "string" } },
+  { name = "test", type = "text", required = true, schema = { type = "string" } },
 ]
 
 [[resources.verbs]]
@@ -57,42 +60,137 @@ kind = "undoable"
 id = "record-run"
 kind = "undoable"
 params = [
-  { name = "command", required = true, schema = { type = "string" } },
-  { name = "cwd", required = true, schema = { type = "string" } },
-  { name = "started_ms", required = true, schema = { type = "integer" } },
-  { name = "ended_ms", required = true, schema = { type = "integer" } },
-  { name = "exit", required = true, schema = { type = "integer", maximum = 2147483647, minimum = -2147483648 } },
-  { name = "output", required = false, schema = { type = ["string", "null"] } },
-  { name = "output_len", required = true, schema = { type = "integer", minimum = 0 } },
-  { name = "truncated", required = true, schema = { type = "boolean" } },
-  { name = "tool", required = true, schema = { type = "string" } },
-  { name = "undoable", required = true, schema = { type = "boolean" } },
-  { name = "items", required = true, schema = { type = "array", items = { type = "object", additionalProperties = false, properties = { path = { type = ["string", "null"] }, code = { type = ["string", "null"] }, column = { type = ["integer", "null"], maximum = 4294967295, minimum = 0 }, kind = { type = "string", enum = ["error", "warning", "location", "url", "test-passed", "test-failed", "test-ignored", "change"] }, line = { type = ["integer", "null"], maximum = 4294967295, minimum = 0 }, text = { type = "string" } }, required = ["kind", "text"] } } },
-  { name = "request", required = false, schema = { type = ["string", "null"] } },
-  { name = "run", required = true, schema = { type = "string" } },
+  { name = "command", type = "text", required = true, schema = { type = "string" } },
+  { name = "cwd", type = "text", required = true, schema = { type = "string" } },
+  { name = "started_ms", type = "int", required = true, schema = { type = "integer" } },
+  { name = "ended_ms", type = "int", required = true, schema = { type = "integer" } },
+  { name = "exit", type = "int", required = true, schema = { type = "integer", maximum = 2147483647, minimum = -2147483648 } },
+  { name = "output", type = { option = "text" }, required = false, schema = { type = ["string", "null"] } },
+  { name = "output_len", type = "int", required = true, schema = { type = "integer", minimum = 0 } },
+  { name = "truncated", type = "bool", required = true, schema = { type = "boolean" } },
+  { name = "tool", type = "text", required = true, schema = { type = "string" } },
+  { name = "undoable", type = "bool", required = true, schema = { type = "boolean" } },
+  { name = "items", type = { list = "any" }, required = true, schema = { type = "array", items = { type = "object", additionalProperties = false, properties = { path = { type = ["string", "null"] }, code = { type = ["string", "null"] }, column = { type = ["integer", "null"], maximum = 4294967295, minimum = 0 }, kind = { type = "string", enum = ["error", "warning", "location", "url", "test-passed", "test-failed", "test-ignored", "change"] }, line = { type = ["integer", "null"], maximum = 4294967295, minimum = 0 }, text = { type = "string" } }, required = ["kind", "text"] } } },
+  { name = "request", type = { option = "text" }, required = false, schema = { type = ["string", "null"] } },
+  { name = "run", type = "text", required = true, schema = { type = "string" } },
 ]
 
 [[resources.verbs]]
 id = "record-target"
 kind = "undoable"
 params = [
-  { name = "target", required = true, schema = { type = "string" } },
-  { name = "device", required = false, schema = { type = ["string", "null"] } },
+  { name = "target", type = "text", required = true, schema = { type = "string" } },
+  { name = "device", type = { option = "text" }, required = false, schema = { type = ["string", "null"] } },
 ]
 
 [[resources.verbs]]
 id = "record-relay-session"
 kind = "undoable"
 params = [
-  { name = "session", required = false, schema = { type = ["string", "null"] } },
+  { name = "session", type = { option = "text" }, required = false, schema = { type = ["string", "null"] } },
 ]
 
 [[resources.verbs]]
 id = "claim-pane"
 kind = "undoable"
 params = [
-  { name = "pane", required = true, schema = { type = "string" } },
-  { name = "device", required = false, schema = { type = ["string", "null"] } },
+  { name = "pane", type = "text", required = true, schema = { type = "string" } },
+  { name = "device", type = { option = "text" }, required = false, schema = { type = ["string", "null"] } },
+]
+
+[[resources.verbs]]
+id = "inspect-session"
+kind = "read"
+
+[[resources.verbs]]
+id = "read-screen"
+kind = "read"
+
+[[resources.verbs]]
+id = "inspect-editor"
+kind = "read"
+
+[[resources.verbs]]
+id = "copy-visible"
+destructive = true
+kind = "read"
+
+[[resources.verbs]]
+id = "copy-selection"
+destructive = true
+kind = "read"
+
+[[resources.verbs]]
+id = "select-all"
+destructive = true
+kind = "read"
+
+[[resources.verbs]]
+id = "history-top"
+kind = "read"
+
+[[resources.verbs]]
+id = "history-live"
+kind = "read"
+
+[[resources.verbs]]
+id = "open-link"
+destructive = true
+kind = "read"
+params = [
+  { name = "url", type = "text", required = true },
+]
+
+[[resources.types]]
+name = "ItemKind"
+cases = [
+  { name = "error" },
+  { name = "warning" },
+  { name = "location" },
+  { name = "url" },
+  { name = "test-passed" },
+  { name = "test-failed" },
+  { name = "test-ignored" },
+  { name = "change" },
+]
+
+[[resources.types]]
+name = "Run"
+fields = [
+  { name = "command", type = "text" },
+  { name = "cwd", type = "text" },
+  { name = "environment", type = { option = "text" } },
+  { name = "actor", type = "text" },
+  { name = "for_person", type = { option = "text" } },
+  { name = "started_ms", type = "int" },
+  { name = "ended_ms", type = "int" },
+  { name = "exit", type = "int" },
+  { name = "output", type = "any" },
+  { name = "truncated", type = "bool" },
+  { name = "tool", type = "text" },
+  { name = "undoable", type = "bool" },
+  { name = "items", type = { list = { named = "RunItem" } } },
+]
+
+[[resources.types]]
+name = "RunItem"
+fields = [
+  { name = "kind", type = { named = "ItemKind" } },
+  { name = "text", type = "text" },
+  { name = "path", type = { option = "text" } },
+  { name = "line", type = { option = "int" } },
+  { name = "column", type = { option = "int" } },
+  { name = "code", type = { option = "text" } },
+]
+
+[[resources.types]]
+name = "RunRequest"
+fields = [
+  { name = "command", type = "text" },
+  { name = "requested_by", type = "text" },
+  { name = "for_person", type = { option = "text" } },
+  { name = "pane", type = "text" },
+  { name = "agent", type = "bool" },
 ]
 
 [[resources]]
@@ -100,29 +198,42 @@ kind = "terminal.history"
 label = "Command history"
 version = 1
 fields = [
-  { path = "runs", type = "Collection<Remembered>", readonly = true, stored = "collection" },
-  { path = "runs.*.command", type = "Atom", label = true },
-  { path = "runs.*.cwd", type = "Atom" },
-  { path = "runs.*.environment", type = "Option<Atom>" },
-  { path = "runs.*.exit", type = "i32" },
-  { path = "runs.*.ended_ms", type = "i64" },
-  { path = "runs.*.actor", type = "Atom" },
-  { path = "runs.*.session", type = "Atom" },
-  { path = "runs.*.run", type = "Id" },
+  { path = "runs", type = { collection = { named = "Remembered" } }, readonly = true, stored = "collection" },
+  { path = "runs.*.command", type = "text", label = true },
+  { path = "runs.*.cwd", type = "text" },
+  { path = "runs.*.environment", type = { option = "text" } },
+  { path = "runs.*.exit", type = "int" },
+  { path = "runs.*.ended_ms", type = "int" },
+  { path = "runs.*.actor", type = "text" },
+  { path = "runs.*.session", type = "text" },
+  { path = "runs.*.run", type = "text" },
 ]
 
 [[resources.verbs]]
 id = "remember"
 kind = "undoable"
 params = [
-  { name = "command", required = true, schema = { type = "string" } },
-  { name = "cwd", required = true, schema = { type = "string" } },
-  { name = "environment", required = false, schema = { type = ["string", "null"] } },
-  { name = "exit", required = true, schema = { type = "integer", maximum = 2147483647, minimum = -2147483648 } },
-  { name = "ended_ms", required = true, schema = { type = "integer" } },
-  { name = "actor", required = true, schema = { type = "string" } },
-  { name = "session", required = true, schema = { type = "string" } },
-  { name = "run", required = true, schema = { type = "string" } },
+  { name = "command", type = "text", required = true, schema = { type = "string" } },
+  { name = "cwd", type = "text", required = true, schema = { type = "string" } },
+  { name = "environment", type = { option = "text" }, required = false, schema = { type = ["string", "null"] } },
+  { name = "exit", type = "int", required = true, schema = { type = "integer", maximum = 2147483647, minimum = -2147483648 } },
+  { name = "ended_ms", type = "int", required = true, schema = { type = "integer" } },
+  { name = "actor", type = "text", required = true, schema = { type = "string" } },
+  { name = "session", type = "text", required = true, schema = { type = "string" } },
+  { name = "run", type = "text", required = true, schema = { type = "string" } },
+]
+
+[[resources.types]]
+name = "Remembered"
+fields = [
+  { name = "command", type = "text" },
+  { name = "cwd", type = "text" },
+  { name = "environment", type = { option = "text" } },
+  { name = "exit", type = "int" },
+  { name = "ended_ms", type = "int" },
+  { name = "actor", type = "text" },
+  { name = "session", type = "text" },
+  { name = "run", type = "text" },
 ]
 
 [[resources]]
@@ -130,14 +241,14 @@ kind = "terminal.recent-environments"
 label = "Recent environments"
 version = 1
 fields = [
-  { path = "devices", type = "BTreeMap<String, String>" },
+  { path = "devices", type = { map = "text" } },
 ]
 
 [[resources.verbs]]
 id = "used"
 kind = "undoable"
 params = [
-  { name = "device", required = true, schema = { type = "string" } },
-  { name = "target", required = true, schema = { type = "string" } },
+  { name = "device", type = "text", required = true, schema = { type = "string" } },
+  { name = "target", type = "text", required = true, schema = { type = "string" } },
 ]
 
