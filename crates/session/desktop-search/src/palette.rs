@@ -94,6 +94,16 @@ enum ChosenRow {
     ShowAll(ResourceKind),
 }
 
+/// What a row the palette handed out stands for, by the entry id it was handed out under.
+#[derive(Clone)]
+enum ShownRow {
+    /// A hit, by the thing it is about: one row per thing, so an answer that re-offers the same
+    /// thing under another source still names the row the person read.
+    Thing(crate::model::Thing),
+    /// A group asked whole, by its kind.
+    ShowAll(ResourceKind),
+}
+
 /// The sources a search asks. Those over plain data stand in an [`Arc`], so
 /// a frame hands the same source to a worker ([`Source::shared`]) rather
 /// than asking it on the frame.
@@ -266,6 +276,11 @@ pub struct DesktopSearch {
     /// in: a frame that has no room for it yet does not take their choice
     /// away.
     kept_choice: Option<ChosenRow>,
+    /// What each row the palette hands out stands for, by the entry id it is handed out under, as
+    /// of the last frame: `hit:{i}` is the thing `rows[i]` is about, `more:{i}` is a group asked
+    /// whole. A press names the row the person saw by one of these ids, and is taken as that row
+    /// even when a source's answer rebuilt the list in the same frame and renumbered it.
+    shown_rows: std::collections::HashMap<String, ShownRow>,
     /// Where this search stands: the workspace, every workspace, one app's
     /// own — so a row carried out by the host can be asked again where the
     /// person was when they chose it.
@@ -314,6 +329,7 @@ impl DesktopSearch {
             rows_room: RowRoom::Guess(0),
             shown_two_lines: false,
             kept_choice: None,
+            shown_rows: std::collections::HashMap::new(),
             scope: Scope::Workspace,
             refusal: None,
         }
@@ -366,6 +382,7 @@ impl DesktopSearch {
         self.sources = Some(Sources::new(data));
         self.choice = None;
         self.shown_query = None;
+        self.shown_rows.clear();
         self.shown_kinds.clear();
         self.stream = None;
         self.expanded.clear();
@@ -735,6 +752,17 @@ impl DesktopSearch {
                 .map(|index| format!("{MORE_PREFIX}{index}")),
         });
         self.palette.set_entries(entries);
+        self.shown_rows.clear();
+        for (index, hit) in rows.iter().enumerate() {
+            self.shown_rows
+                .insert(format!("hit:{index}"), ShownRow::Thing(hit.thing()));
+        }
+        for (index, kind) in self.more_rows.iter().enumerate() {
+            self.shown_rows.insert(
+                format!("{MORE_PREFIX}{index}"),
+                ShownRow::ShowAll(kind.clone()),
+            );
+        }
         let cursor = kept.and_then(|id| {
             self.palette
                 .visible_entries()
@@ -908,7 +936,7 @@ impl DesktopSearch {
                     id: crate::model::ALL_APPS_COMMAND.into(),
                 });
                 self.palette.close();
-            } else if let Some(hit) = self.hit(&outcome.id) {
+            } else if let Some(hit) = self.pressed_hit(&outcome.id) {
                 self.choose_hit(hit, outcome.argument);
             }
         }
@@ -1023,6 +1051,30 @@ impl DesktopSearch {
     /// over every workspace.
     pub fn take_scope_widened(&mut self) -> bool {
         self.palette.take_scope_token_removed()
+    }
+
+    /// Take the press `id` names, as [`Self::observe`] does for the palette's own outcome: a row
+    /// the frame handed out, opened as the thing it stood for then.
+    pub fn take_the_press(&mut self, id: &str) {
+        if let Some(more) = more_row(id) {
+            // The group's own row: taken as the rows now list it.
+            self.expand(more);
+        } else if let Some(hit) = self.pressed_hit(id) {
+            self.choose_hit(hit, None);
+        }
+    }
+
+    /// The row the press `id` names: the thing that stood under that id when the frame handed it
+    /// out, as the rows hold it now. An answer that rebuilt the list in the same frame renumbered
+    /// the rows; the press still opens the row the person saw. A row this search no longer lists
+    /// is no press.
+    fn pressed_hit(&self, id: &str) -> Option<Hit> {
+        match self.shown_rows.get(id) {
+            Some(ShownRow::Thing(thing)) => {
+                self.rows.iter().find(|hit| hit.thing() == *thing).cloned()
+            }
+            Some(ShownRow::ShowAll(_)) | None => self.hit(id),
+        }
     }
 
     fn hit(&self, id: &str) -> Option<Hit> {
@@ -2491,6 +2543,52 @@ mod tests {
         assert_eq!(
             selected(&search),
             Some((best.provider.clone(), best.id.clone()))
+        );
+    }
+
+    /// Enter opens the row the person saw under the highlight, not the row that took its place
+    /// when a source answered in the same frame: the press names the row by the id the frame
+    /// handed out, and that id is read as the thing it stood for, never as a place in the list.
+    #[test]
+    fn enter_opens_the_row_the_person_saw_though_an_answer_renumbered_the_list() {
+        let (mut search, arrived) = with_a_late_app(data());
+        search.set_query("notes");
+        settled(&mut search);
+        assert!(search.waiting(), "the app's answer is still coming");
+        // The person arrows down to the second row and presses Enter there.
+        search.palette_mut().set_cursor(1);
+        let seen: Vec<String> = search
+            .results()
+            .iter()
+            .map(|hit| hit.title.clone())
+            .collect();
+        let under = search
+            .palette()
+            .selected_id()
+            .map(str::to_owned)
+            .expect("a row is selected");
+        let chosen = search
+            .rows
+            .get(search.palette().cursor())
+            .map(|hit| (hit.title.clone(), hit.target.clone()))
+            .expect("the row under the highlight");
+
+        // The answer lands in the frame the press is taken: the list is rebuilt and renumbered
+        // under it before the press reaches the desk.
+        arrived.set(true);
+        assert!(search.refresh(), "the answer re-ranks the rows");
+        settled(&mut search);
+        assert!(
+            search.results().len() > seen.len(),
+            "the answer listed its row: {seen:?}"
+        );
+        // Enter, as the page routes it: the id the person saw, taken against the rows now.
+        search.take_the_press(&under);
+        search.observe();
+        assert_eq!(
+            search.take_choice(),
+            Some(chosen.1),
+            "the press opened another row than {under:?}, the one the person saw ({seen:?})"
         );
     }
 
