@@ -85,7 +85,7 @@ fn chain_requirement() -> Value {
 /// The generator's shape with `requirement` in every signed scope.
 fn generated(requirement: &Value) -> Value {
     let mut policy = shipped();
-    for scope in [TILO, CODE, GUEST] {
+    for scope in [TILO, CODE, GUEST, HOSTED_GUEST] {
         policy["transports"]["docker"][scope] = requirement.clone();
     }
     policy
@@ -290,8 +290,8 @@ fn every_weakened_policy_fails() {
     let cases = weakened_cases();
     assert_eq!(
         cases.len(),
-        18,
-        "plus the missing file: the 19 weakened policies of the boot audit"
+        19,
+        "plus the missing file: the 20 weakened policies of the boot audit"
     );
     for (name, text) in cases {
         assert!(check(&text, &key_trust()).is_err(), "{name} was accepted");
@@ -639,7 +639,7 @@ fn a_developer_image_reports_its_dev_key_scope_instead_of_failing() {
 #[test]
 fn the_dev_key_is_accepted_only_in_the_two_dev_repositories_and_only_alone() {
     // The dev key on a release scope is a downgrade, developer mode or not.
-    for scope in [TILO, CODE, GUEST] {
+    for scope in [TILO, CODE, GUEST, HOSTED_GUEST] {
         let mut policy = dev_policy();
         policy["transports"]["docker"][scope] = json!([{
             "type": "sigstoreSigned",
