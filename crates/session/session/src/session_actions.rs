@@ -12,21 +12,29 @@
 //! pass, attributed to the agent and the person who asked, as a change the person takes
 //! back like any other. The arrangement is `Rc<RefCell<…>>` on the loop's thread and is
 //! never shared: its rows are read on the pass and handed here, and an invocation is handed
-//! to [`SessionDoors`] and answered on the pass, as the door's own calls are.
+//! to the session's door ([`SessionSteps`](crate::platform::steps::SessionSteps)) and answered
+//! on the pass, as the door's own calls are.
+#![cfg_attr(
+    target_arch = "wasm32",
+    allow(
+        dead_code,
+        reason = "the page offers the arrangement and the windows as steps next"
+    )
+)]
 
 use std::sync::Arc;
 
-use tilo_action_broker::services::{HostStepOutcome, HostStepRequest, HostStepServices};
 use tilo_actions::remote::session_actions as wire;
 use tilo_actions::remote::{Pending, pending};
 use tilo_actions::{ActionDescriptor, ActionFailure};
+use tilo_broker_core::steps::{HostStepOutcome, HostStepRequest, HostStepServices};
 use tilo_lock::RwLockRecover as _;
 
-use crate::agent_door::SessionDoors;
+use crate::platform::steps::SessionSteps;
 
 /// The session's own actions, as the broker's catalogue names them.
 pub(crate) struct SessionActions {
-    doors: Arc<SessionDoors>,
+    doors: Arc<dyn SessionSteps>,
     /// The rows the session's own door offered on its last pass: what the catalogue lists.
     /// Read on the loop and written here, so a catalogue built on the broker's own thread
     /// never waits on the session, and never reads the arrangement from off its thread.
@@ -35,7 +43,7 @@ pub(crate) struct SessionActions {
 
 impl SessionActions {
     /// The session's actions, whose rows the session hands over on each pass through `doors`.
-    pub(crate) fn new(doors: Arc<SessionDoors>) -> Self {
+    pub(crate) fn new(doors: Arc<dyn SessionSteps>) -> Self {
         Self {
             doors,
             rows: std::sync::RwLock::default(),

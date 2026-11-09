@@ -46,6 +46,7 @@ pub mod overlays;
 pub mod records;
 pub mod search;
 mod search_ask;
+mod session_actions;
 pub mod workspace_gate;
 
 // The Linux host's effects: the compositor, the services it starts, the
@@ -281,8 +282,6 @@ pub mod seeded_apps;
 mod send_to;
 #[cfg(target_os = "linux")]
 mod service_sessions;
-#[cfg(target_os = "linux")]
-mod session_actions;
 #[cfg(target_os = "linux")]
 pub mod session_package;
 #[cfg(target_os = "linux")]

@@ -50,6 +50,7 @@ use crate::Shared;
 use crate::app_names::app_name;
 use crate::launches::Launches;
 use crate::plane::DeskAuthority;
+use crate::platform::steps::SessionSteps as _;
 use crate::remote_door::Remote;
 
 /// The kind of question the door asks the person.
@@ -1459,6 +1460,27 @@ fn unanswered() -> ActionHostError {
     }
 }
 
+impl crate::platform::steps::SessionSteps for SessionDoors {
+    /// Run the session's own action `address` as `actor` with `slot` (its
+    /// arguments in the slot form the broker carries), as a step of an agent's
+    /// turn the broker already decided: answered on the loop's pass, which is
+    /// where the arrangement and the windows are.
+    fn invoke_step(
+        &self,
+        actor: String,
+        address: tilo_actions::ActionAddress,
+        slot: Option<String>,
+        done: tilo_actions::remote::Completer<Result<Option<tilo_actions::ActionOutput>, String>>,
+    ) {
+        self.ask(DoorAsk::Step {
+            actor,
+            address,
+            slot,
+            done,
+        });
+    }
+}
+
 impl SessionDoors {
     /// Who sits here: the person a program typed in a conversation, or one an agent writes in its
     /// task, runs as.
@@ -1496,25 +1518,6 @@ impl SessionDoors {
     /// lives on the thread holding the desktop.
     pub(crate) fn find(&self, needle: String, done: crate::search::FoundSearch) {
         self.ask(DoorAsk::Find { needle, done });
-    }
-
-    /// Run the session's own action `address` as `actor` with `slot` (its
-    /// arguments in the slot form the broker carries), as a step of an agent's
-    /// turn the broker already decided: answered on the loop's pass, which is
-    /// where the arrangement and the windows are.
-    pub(crate) fn invoke_step(
-        &self,
-        actor: String,
-        address: tilo_actions::ActionAddress,
-        slot: Option<String>,
-        done: tilo_actions::remote::Completer<Result<Option<tilo_actions::ActionOutput>, String>>,
-    ) {
-        self.ask(DoorAsk::Step {
-            actor,
-            address,
-            slot,
-            done,
-        });
     }
 
     /// Answer what the connections asked since the last pass, from `doors`,

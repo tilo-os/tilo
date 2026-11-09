@@ -684,9 +684,9 @@ impl Session {
         // The session's own actions, offered to a turn's agent as the broker's steps: the
         // arrangement, its undo, the windows and the notices, which the REPL already calls.
         // Each is answered on the loop's pass, where the arrangement is.
-        let session_actions = std::sync::Arc::new(crate::session_actions::SessionActions::new(
-            std::sync::Arc::clone(&session_doors),
-        ));
+        let steps: std::sync::Arc<dyn crate::platform::steps::SessionSteps> = session_doors.clone();
+        let session_actions =
+            std::sync::Arc::new(crate::session_actions::SessionActions::new(steps));
         session_doors.keep_actions(std::sync::Arc::clone(&session_actions));
         // The agents the person admits at its door, as the desk and the bar show them.
         let seats = crate::agent_door::Seats::new();
